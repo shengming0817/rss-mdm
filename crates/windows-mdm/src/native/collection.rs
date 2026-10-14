@@ -263,6 +263,12 @@ impl State {
             .iter()
             .any(|s| s.sent == Some((message, command)))
     }
+    /// Whether a cached server message contains reads owned by this plan.
+    pub fn sent_in(&self, message: u32) -> bool {
+        self.steps
+            .iter()
+            .any(|s| s.sent.is_some_and(|(m, _)| m == message))
+    }
     /// Whether any nonfailed field still requires a response.
     pub fn pending(&self) -> bool {
         self.steps

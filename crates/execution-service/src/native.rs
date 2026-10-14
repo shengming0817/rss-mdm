@@ -59,6 +59,37 @@ fn correlate(
     };
     s::correlate(expected, &response, &limits).map_err(|_| Error::Conflict)
 }
+/// One encryption identity shared by native collection persistence and replay admission.
+pub fn collection_aad(
+    scope: &rss_observation::Scope,
+    id: uuid::Uuid,
+) -> std::result::Result<rss_mdm_native_protection::DerivedAad, Error> {
+    let owner = serde_json::to_string(&(scope.registration().as_str(), scope.epoch().as_str(), id))
+        .map_err(|_| protocol())?;
+    rss_mdm_native_protection::ProtectionContext::new(
+        scope.tenant(),
+        &owner,
+        "windows.collection.request",
+        1,
+    )
+    .map(|c| c.derive())
+    .map_err(|_| protocol())
+}
+/// Open the single persisted collection state, also used to authorize continuation and replay.
+pub fn open_collection_state(
+    protection: &rss_mdm_native_protection::Protector,
+    scope: &rss_observation::Scope,
+    id: uuid::Uuid,
+    bytes: &[u8],
+) -> std::result::Result<rss_mdm_windows_mdm::native::collection::State, Error> {
+    if bytes.len() > CodecLimits::default().object_bytes + 128 {
+        return Err(protocol());
+    }
+    let plain = protection
+        .open_bytes(bytes, &collection_aad(scope, id)?)
+        .map_err(|_| protocol())?;
+    serde_json::from_slice(plain.expose()).map_err(|_| protocol())
+}
 /// A large-object continuation is a further data request and needs current operation authority.
 /// Resolve the exact producer before applying its current collection/prerequisite authority.
 pub async fn result_eligible_on(
@@ -72,7 +103,7 @@ pub async fn result_eligible_on(
     let row=sqlx::query("SELECT o.id,o.device,o.registration,o.registration_generation,o.input_context,o.request,o.approval::text,d.status AS command_status,(o.input_context->>'deadline')::bigint>extract(epoch FROM clock_timestamp()) AS within_deadline,a.ordinal=(SELECT max(b.ordinal) FROM mdm_commands.attempts b WHERE b.tenant_id=a.tenant_id AND b.operation=a.operation AND b.phase=a.phase) AS latest FROM mdm_commands.attempts a JOIN mdm_commands.attempt_items i ON (i.tenant_id,i.attempt)=(a.tenant_id,a.id) JOIN mdm_commands.operations o ON(o.tenant_id,o.id)=(a.tenant_id,a.operation) JOIN rss_device_command.commands d ON d.tenant_id=o.tenant_id AND d.command_id=o.id::text WHERE o.tenant_id=$1::uuid AND o.registration=$2 AND o.registration_generation=$3 AND a.credential=$4 AND a.session=$5 AND a.message=$6 AND i.command=$7 AND i.uri=$8")
         .bind(p.tenant().to_string()).bind(p.registration()).bind(p.generation()).bind(p.credential()).bind(i64::from(session)).bind(i64::from(reference.message_id)).bind(i64::from(reference.command_id)).bind(&reference.uri).fetch_optional(&mut *c).await.map_err(db)?;
     let Some(row) = row else {
-        return collection_result_eligible(source, c, p, session, reference).await;
+        return collection_result_eligible(source, c, protection, p, session, reference).await;
     };
     let input = super::input_storage::open_row(
         protection,
@@ -86,27 +117,34 @@ pub async fn result_eligible_on(
 async fn collection_result_eligible(
     source: &dyn crate::source_authority::SourceAuthority,
     c: &mut PgConnection,
+    protection: &rss_mdm_native_protection::Protector,
     p: &DevicePrincipal,
     session: u32,
     reference: &s::Reference,
 ) -> std::result::Result<bool, Error> {
-    let row=sqlx::query("SELECT w.id,coalesce(r.evidence ? 'nativeTemplate',false) AS template,r.sealed_at IS NULL AND (r.deadline IS NULL OR r.deadline>clock_timestamp()) AS live FROM mdm_windows.collections w JOIN mdm_access.collection_runs r USING(tenant_id,id) WHERE w.tenant_id=$1::uuid AND w.registration=$2 AND w.session_id=$3 AND w.request_message=$4 AND $5 BETWEEN w.first_command AND w.first_command+(CASE WHEN w.channel_state IS NOT NULL THEN 4 ELSE jsonb_array_length(r.attempts::jsonb->'definition'->'fields') END)-1")
-        .bind(p.tenant().to_string()).bind(p.registration()).bind(session.to_string()).bind(i64::from(reference.message_id)).bind(i64::from(reference.command_id)).fetch_optional(&mut *c).await.map_err(db)?;
-    if let Some(row) = row {
-        if !row.try_get::<bool, _>("live").map_err(db)? {
-            return Ok(false);
+    let rows=sqlx::query("SELECT w.id,w.kind,w.template_state,r.scope,r.sealed_at IS NULL AND r.deadline>clock_timestamp() AS live,w.kind='agent' AND w.request_message=$4 AND $5 BETWEEN w.first_command AND w.first_command+3 AS agent_match FROM mdm_windows.collections w JOIN mdm_access.collection_runs r USING(tenant_id,id) WHERE w.tenant_id=$1::uuid AND w.registration=$2 AND w.session_id=$3")
+        .bind(p.tenant().to_string()).bind(p.registration()).bind(session.to_string()).bind(i64::from(reference.message_id)).bind(i64::from(reference.command_id)).fetch_all(&mut *c).await.map_err(db)?;
+    for row in rows {
+        let id = row.try_get("id").map_err(db)?;
+        if row.try_get::<String, _>("kind").map_err(db)? == "template" {
+            let scope = serde_json::from_str(&row.try_get::<String, _>("scope").map_err(db)?)
+                .map_err(|_| protocol())?;
+            let state = open_collection_state(
+                protection,
+                &scope,
+                id,
+                &row.try_get::<Vec<u8>, _>("template_state").map_err(db)?,
+            )?;
+            if state.owns(reference.message_id, reference.command_id) {
+                return if row.try_get::<bool, _>("live").map_err(db)? {
+                    crate::actions::native_collection::delivery_eligible_on(source, c, p, id).await
+                } else {
+                    Ok(false)
+                };
+            }
+        } else if row.try_get::<bool, _>("agent_match").map_err(db)? {
+            return row.try_get("live").map_err(db);
         }
-        return if row.try_get::<bool, _>("template").map_err(db)? {
-            crate::actions::native_collection::delivery_eligible_on(
-                source,
-                c,
-                p,
-                row.try_get("id").map_err(db)?,
-            )
-            .await
-        } else {
-            Ok(true)
-        };
     }
     // Capability prerequisites are bounded, registration-owned reads, never user operations.
     sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_commands.capability_queries WHERE tenant_id=$1::uuid AND registration=$2 AND generation=$3 AND session=$4 AND ((version_command=$5 AND $6='./DevDetail/SwV') OR (edition_command=$5 AND $6='./Vendor/MSFT/DeviceStatus/OS/Edition')))" )
@@ -1108,10 +1146,22 @@ pub async fn replay_on(
             return Err(Error::Forbidden);
         }
     }
-    let collections: Vec<uuid::Uuid> = sqlx::query_scalar("SELECT w.id FROM mdm_windows.collections w JOIN mdm_access.collection_runs r USING(tenant_id,id) WHERE w.tenant_id=$1::uuid AND w.registration=$2 AND w.session_id=$3 AND w.request_message=$4 AND r.evidence ? 'nativeTemplate'")
-        .bind(p.tenant().to_string()).bind(p.registration()).bind(m.header.session_id.to_string()).bind(i64::from(m.header.message_id)).fetch_all(&mut *c).await.map_err(db)?;
-    for id in collections {
-        if !crate::actions::native_collection::delivery_eligible_on(source, c, p, id).await? {
+    let collections=sqlx::query("SELECT w.id,w.template_state,r.scope FROM mdm_windows.collections w JOIN mdm_access.collection_runs r USING(tenant_id,id) WHERE w.tenant_id=$1::uuid AND w.registration=$2 AND w.session_id=$3 AND w.kind='template'")
+        .bind(p.tenant().to_string()).bind(p.registration()).bind(m.header.session_id.to_string()).fetch_all(&mut *c).await.map_err(db)?;
+    for row in collections {
+        let id = row.try_get("id").map_err(db)?;
+        let scope = serde_json::from_str(&row.try_get::<String, _>("scope").map_err(db)?)
+            .map_err(|_| protocol())?;
+        let state = open_collection_state(
+            protection,
+            &scope,
+            id,
+            &row.try_get::<Vec<u8>, _>("template_state").map_err(db)?,
+        )?;
+        let continuation=m.commands.iter().any(|command| matches!(command,Command::Results(v) if v.items.iter().any(|i|i.more_data) && v.message_ref.zip(v.command_ref).is_some_and(|(message,command)|state.owns(message,command))));
+        if (state.sent_in(m.header.message_id) || continuation)
+            && !crate::actions::native_collection::delivery_eligible_on(source, c, p, id).await?
+        {
             return Err(Error::Forbidden);
         }
     }

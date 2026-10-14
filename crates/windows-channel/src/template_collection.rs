@@ -21,13 +21,8 @@ fn refs(command: &Command) -> Option<(u32, u32)> {
     }
 }
 fn open(protection: &Protector, run: &store::Run, id: Uuid, bytes: &[u8]) -> Result<State, Error> {
-    if bytes.len() > CodecLimits::default().object_bytes + 128 {
-        return Err(corrupt());
-    }
-    let plain = protection
-        .open_bytes(bytes, &crate::protection::collection_aad(&run.scope, id)?)
-        .map_err(|_| corrupt())?;
-    serde_json::from_slice(plain.expose()).map_err(|_| corrupt())
+    rss_mdm_execution_service::native::open_collection_state(protection, &run.scope, id, bytes)
+        .map_err(|_| corrupt())
 }
 fn seal(
     protection: &Protector,

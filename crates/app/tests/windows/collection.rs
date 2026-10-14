@@ -83,6 +83,16 @@ async fn dynamic_final_budget_preserves_partial_inventory() -> anyhow::Result<()
     )
     .await
 }
+#[tokio::test]
+#[ignore = "MODULE=windows.management: dynamic leaf MoreData uses exact persisted ownership"]
+async fn dynamic_leaf_more_data_completes() -> anyhow::Result<()> {
+    template_flow(None, 9, Completion::FragmentInventory).await
+}
+#[tokio::test]
+#[ignore = "MODULE=windows.management: dynamic leaf replay and continuation recheck grants"]
+async fn dynamic_leaf_replay_and_continuation_revalidate_grants() -> anyhow::Result<()> {
+    template_flow(None, 9, Completion::RevokedInventory).await
+}
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Completion {
     Snapshot,
@@ -90,6 +100,8 @@ enum Completion {
     MissingChild,
     EmptyInventory,
     FinalInventoryBudget,
+    FragmentInventory,
+    RevokedInventory,
     Historical,
     SessionAbort,
     MessageBudget,
@@ -205,6 +217,8 @@ async fn template_flow(
             | Completion::MissingChild
             | Completion::EmptyInventory
             | Completion::FinalInventoryBudget
+            | Completion::FragmentInventory
+            | Completion::RevokedInventory
     ) {
         let mut spec = template.spec().clone();
         let builtin = rss_mdm_resource::blueprints::get("windows.software.win32", "2").unwrap();
@@ -393,6 +407,8 @@ async fn template_flow(
             | Completion::MissingChild
             | Completion::EmptyInventory
             | Completion::FinalInventoryBudget
+            | Completion::FragmentInventory
+            | Completion::RevokedInventory
     ) {
         dynamic_result(&host, &mut f, &peer, &mut pg, policy, wire, completion).await?;
         crate::test_support::stop_worker(owner.take()).await?;
@@ -783,6 +799,8 @@ async fn dynamic_result(
         if gets.is_empty() {
             break;
         }
+        let fragment = completion == Completion::FragmentInventory
+            && gets.iter().any(|(_, uri)| uri.ends_with("/Name"));
         let mut packet = native::report(&peer.message, &gets, "", 200);
         packet.header.message_id = wire.header.message_id + 1;
         packet.final_message = true;
@@ -829,6 +847,30 @@ async fn dynamic_result(
             }
         }
         packet.commands.retain(|c|!matches!(c,s::Command::Results(v) if completion==Completion::MissingChild && v.items.iter().any(|i|i.source.as_deref().is_some_and(|u|u.ends_with("/Version")))));
+        let mut tail = None;
+        if fragment {
+            packet.final_message = false;
+            for c in &mut packet.commands {
+                if let s::Command::Results(v) = c {
+                    if v.items[0]
+                        .source
+                        .as_deref()
+                        .is_some_and(|u| u.ends_with("/Name"))
+                    {
+                        let mut result = v.clone();
+                        result.items[0].data = Some(rss_mdm_windows_mdm::Secret("ple".into()));
+                        tail = Some(s::Command::Results(result));
+                        v.items[0].data = Some(rss_mdm_windows_mdm::Secret("Exam".into()));
+                        v.items[0].more_data = true;
+                        v.items[0].meta = Some(s::Meta {
+                            format: Some("chr".into()),
+                            size: Some(7),
+                            ..Default::default()
+                        });
+                    }
+                }
+            }
+        }
         let response = native::post(&peer.mutual, &peer.url, &packet).await?;
         ensure!(
             response.status() == StatusCode::OK,
@@ -836,16 +878,93 @@ async fn dynamic_result(
             response.status()
         );
         let bytes = response.bytes().await?;
+        let next = s::decode(&bytes, &CodecLimits::default())?;
+        let leaf_gets: Vec<_> = next
+            .commands
+            .iter()
+            .filter_map(|c| match c {
+                s::Command::Get { id, items, .. } => Some((*id, items[0].target.clone().unwrap())),
+                _ => None,
+            })
+            .collect();
+        if completion == Completion::RevokedInventory
+            && leaf_gets.iter().any(|(_, u)| u.ends_with("/Name"))
+        {
+            crate::test_support::identity::set_grants(
+                case_tenant(),
+                crate::test_support::case::admin(),
+                vec![],
+            )
+            .await?;
+            let replay = native::post(&peer.mutual, &peer.url, &packet).await?;
+            ensure!(
+                !replay.status().is_success(),
+                "revoked dynamic cached leaf was redelivered"
+            );
+            let mut denied = native::report(&peer.message, &leaf_gets, "Exam", 200);
+            denied.header.message_id = next.header.message_id + 1;
+            denied.final_message = false;
+            for c in &mut denied.commands {
+                match c {
+                    s::Command::Status(v) => v.message_ref = next.header.message_id,
+                    s::Command::Results(v) => {
+                        v.message_ref = Some(next.header.message_id);
+                        if v.items[0]
+                            .source
+                            .as_deref()
+                            .is_some_and(|u| u.ends_with("/Name"))
+                        {
+                            v.items[0].more_data = true;
+                            v.items[0].meta = Some(s::Meta {
+                                format: Some("chr".into()),
+                                size: Some(7),
+                                ..Default::default()
+                            });
+                        }
+                    }
+                    _ => (),
+                }
+            }
+            let response = native::post(&peer.mutual, &peer.url, &denied).await?;
+            ensure!(response.status() == StatusCode::OK);
+            let response = s::decode(&response.bytes().await?, &CodecLimits::default())?;
+            ensure!(response.commands.iter().any(|c| matches!(
+                c,
+                s::Command::Alert {
+                    alert: s::Alert::SessionAbort,
+                    ..
+                }
+            )));
+            let failed:bool=sqlx::query_scalar("SELECT result='failed' AND batch IS NULL FROM mdm_access.collection_runs WHERE tenant_id=$1::uuid AND id=$2").bind(case_tenant()).bind(run).fetch_one(&mut *pg).await?;
+            ensure!(failed);
+            return Ok(());
+        }
         let replay = native::post(&peer.mutual, &peer.url, &packet).await?;
         ensure!(replay.status() == StatusCode::OK);
         ensure!(replay.bytes().await? == bytes);
-        wire = s::decode(&bytes, &CodecLimits::default())?;
+        wire = next;
+        if let Some(tail) = tail {
+            ensure!(
+                wire.commands
+                    .iter()
+                    .any(|c| matches!(c,s::Command::Status(v) if v.code==213))
+            );
+            packet.header.message_id += 1;
+            packet.commands = vec![tail];
+            packet.final_message = true;
+            let response = native::post(&peer.mutual, &peer.url, &packet).await?;
+            ensure!(response.status() == StatusCode::OK);
+            wire = s::decode(&response.bytes().await?, &CodecLimits::default())?;
+        }
     }
     let result:(String,String)=sqlx::query_as("SELECT result,attempts FROM mdm_access.collection_runs WHERE tenant_id=$1::uuid AND id=$2 AND sealed_at IS NOT NULL").bind(case_tenant()).bind(run).fetch_one(&mut *pg).await?;
     let attempts: serde_json::Value = serde_json::from_str(&result.1)?;
     if matches!(
         completion,
-        Completion::MissingChild | Completion::FinalInventoryBudget
+        Completion::MissingChild
+            | Completion::FinalInventoryBudget
+            | Completion::FragmentInventory
+            | Completion::RevokedInventory
     ) {
         ensure!(result.0 == "partial", "{result:?}");
         ensure!(
@@ -857,7 +976,10 @@ async fn dynamic_result(
             result.0 == "snapshot" && enumerations == 2,
             "{result:?}, enumerations={enumerations}"
         );
-        if completion == Completion::Inventory {
+        if matches!(
+            completion,
+            Completion::Inventory | Completion::FragmentInventory
+        ) {
             let row = &attempts["fields"]["device.software.windows.win32"]["value"]["value"]["value"]
                 [0]["value"];
             ensure!(
@@ -886,7 +1008,10 @@ async fn dynamic_result(
                 tokio::time::sleep(Duration::from_millis(50)).await;
             }
         }).await??;
-        if completion == Completion::Inventory {
+        if matches!(
+            completion,
+            Completion::Inventory | Completion::FragmentInventory
+        ) {
             ensure!(page.1.to_string().contains("Example"), "{page:?}");
         }
     }
@@ -895,7 +1020,10 @@ async fn dynamic_result(
     let value:serde_json::Value=sqlx::query_scalar("SELECT value::jsonb FROM mdm.inventory WHERE tenant_id=$1::uuid AND scope=$2 AND field=$3 ORDER BY collection_sequence DESC LIMIT 1").bind(case_tenant()).bind(saved.scope.encode()?).bind(key.as_str()).fetch_one(&mut *pg).await?;
     if matches!(
         completion,
-        Completion::MissingChild | Completion::FinalInventoryBudget
+        Completion::MissingChild
+            | Completion::FinalInventoryBudget
+            | Completion::FragmentInventory
+            | Completion::RevokedInventory
     ) {
         ensure!(value == serde_json::to_value(&old)?);
     }
