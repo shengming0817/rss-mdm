@@ -268,7 +268,7 @@ for name, target in (('manual', 'manual'), ('reader', 'reader')):
         sources=('crates/inventory-postgres/src/*', 'crates/inventory-postgres/migrations/*'),
         tests=(f'crates/inventory-postgres/tests/{target}.rs',),
         support=('crates/inventory-postgres/tests/support/*',))
-MODULES['inventory.manual'] = replace(MODULES['inventory.manual'], policies=(CasePolicy('field_catalog_cas_history_and_rollback_are_atomic','reuse','tenant'),))
+MODULES['inventory.manual'] = replace(MODULES['inventory.manual'], policies=(CasePolicy('field_catalog_cas_history_and_rollback_are_atomic','reuse','tenant'), CasePolicy('seed_retirement_and_reinitialization_preserve_tenant_catalog','reuse','tenant')))
 for name in ('projection', 'recovery', 'process'):
     add('inventory.' + name,
         build=Build('rss-mdm-examples', features=('integration',)),
@@ -682,6 +682,10 @@ def consume(inputs, names):
     for name in names.split():
         MODULES[name] = replace(MODULES[name], production_inputs=MODULES[name].production_inputs + tuple(inputs))
 
+
+consume(('crates/execution-service/src/collection_eligibility.rs',), 'windows.management apple.collection planning.agent_policy planning.http')
+consume(('crates/inventory/src/builtin/standard.rs',), 'inventory.manual inventory.runtime assets.http')
+consume(('crates/resource/src/blueprints.rs',), 'planning.http')
 
 consume(('crates/content-service/src/range.rs',),
         'content.http execution.agent.content execution.software.content')

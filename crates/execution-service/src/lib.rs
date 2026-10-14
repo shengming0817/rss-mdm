@@ -293,3 +293,5 @@ pub mod enrollment_preparation;
 
 pub const INSTALL_SQL: &str = include_str!("../schema/install.sql");
 pub const RELATIONS_SQL: &str = include_str!("../schema/relations.sql");
+
+mod collection_eligibility;

@@ -98,8 +98,8 @@ fn registered_paths_feed_group_sets_and_sensitive_conditions_need_an_explicit_gr
     };
     assert!(filter::require_visible(&catalog, &sensitive, false).is_err());
     assert!(filter::require_visible(&catalog, &sensitive, true).is_ok());
-    let path = FieldKey::parse("device.software.installed.name").unwrap();
-    let root = FieldKey::parse("device.software.installed").unwrap();
+    let path = FieldKey::parse("device.software.installations.name").unwrap();
+    let root = FieldKey::parse("device.software.installations").unwrap();
     let condition = Criteria::Predicate {
         field: path,
         op: Operator::ContainsAny,
@@ -113,7 +113,11 @@ fn registered_paths_feed_group_sets_and_sensitive_conditions_need_an_explicit_gr
             ("name".into(), Scalar::String("Repair Tool".into())),
             ("version".into(), Scalar::String("1".into())),
             ("publisher".into(), Scalar::String("".into())),
-            ("scope".into(), Scalar::String("system".into())),
+            ("scope".into(), Scalar::String("device".into())),
+            ("native_id".into(), Scalar::String("".into())),
+            ("owner".into(), Scalar::String("".into())),
+            ("origin".into(), Scalar::String("fixture".into())),
+            ("location".into(), Scalar::String("".into())),
         ]
         .into(),
     )]);
@@ -170,9 +174,9 @@ fn installed_id_groups_use_existing_sets_and_preserve_unknown_states() {
     use rss_mdm_inventory::{Catalog, ResolvedField, State};
     let tenant = TenantId::parse("11111111-1111-4111-8111-111111111111").unwrap();
     let catalog = Catalog::new(rss_mdm_inventory::builtin::fields()).unwrap();
-    let root = FieldKey::parse("device.software.installed").unwrap();
+    let root = FieldKey::parse("device.software.installations").unwrap();
     let criteria = Criteria::Predicate {
-        field: FieldKey::parse("device.software.installed.id").unwrap(),
+        field: FieldKey::parse("device.software.installations.id").unwrap(),
         op: Operator::ContainsAny,
         value: None,
         values: Some(vec![Scalar::String("acme.app".into())]),
@@ -185,7 +189,11 @@ fn installed_id_groups_use_existing_sets_and_preserve_unknown_states() {
                 ("name".into(), Scalar::String(id.into())),
                 ("version".into(), Scalar::String(version.into())),
                 ("publisher".into(), Scalar::String("Acme".into())),
-                ("scope".into(), Scalar::String("system".into())),
+                ("scope".into(), Scalar::String("device".into())),
+                ("native_id".into(), Scalar::String("".into())),
+                ("owner".into(), Scalar::String("".into())),
+                ("origin".into(), Scalar::String("fixture".into())),
+                ("location".into(), Scalar::String("".into())),
             ]
             .into(),
         )

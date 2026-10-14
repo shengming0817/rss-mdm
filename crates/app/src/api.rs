@@ -546,16 +546,6 @@ pub(crate) fn from_state(
             ),
             devices: state.devices.clone(),
             collection: state.collection.clone(),
-            collection_intake: rss_mdm_inventory_service::apple_collection::Service {
-                audit_store: state.audit_store.clone(),
-                tenant: state.identity.tenant,
-                participant: state.apple.as_ref().map(|_| {
-                    Arc::new(rss_mdm_apple_channel::collection::Participant {
-                        protection: state.protection.clone(),
-                    })
-                        as Arc<dyn rss_mdm_inventory_service::apple_collection::Participant>
-                }),
-            },
             windows: state.windows.is_some(),
             apple: state.apple.is_some(),
         },

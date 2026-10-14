@@ -116,6 +116,22 @@ pub async fn advance_run(
         && run.available_at <= now
         && run.deadline > now
     {
+        let tenant_id = tx.tenant_id();
+        let target = run.target.clone();
+        let template = native.frozen.definition.clone();
+        let allowed = tx
+            .with_connection(move |c| {
+                Box::pin(async move {
+                    Ok(
+                        crate::collection_eligibility::native_on(c, tenant_id, &target, &template)
+                            .await,
+                    )
+                })
+            })
+            .await??;
+        if !allowed {
+            return Ok(());
+        }
         let tenant = tx.tenant_id().to_string();
         let id = run.id;
         let accepted:bool=tx.with_connection(move|c|Box::pin(async move{sqlx::query_scalar("SELECT gateway_accepted FROM mdm_commands.action_runs WHERE tenant_id=$1::uuid AND id=$2").bind(tenant).bind(id).fetch_one(c).await})).await?;
@@ -431,6 +447,9 @@ pub(crate) async fn eligible_target_on(
     let crate::frozen::Frozen::NativeCollection { action, .. } = frozen else {
         return Err(Error::Malformed);
     };
+    if !crate::collection_eligibility::native_on(c, tenant, target, &action.definition).await? {
+        return Ok(false);
+    }
     let Some(grants) = action
         .grants
         .get(target.device.as_str())

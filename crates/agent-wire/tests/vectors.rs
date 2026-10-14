@@ -1,4 +1,4 @@
-//! Fixed vectors emitted by the unmodified develop baseline recorded in the fixture.
+//! Current fixed vectors: task bytes from the recorded baseline; collection scope revised by COLLECT-M01.
 //! Regenerate only when a protocol owner deliberately changes the current contract.
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use ring::signature::Ed25519KeyPair;

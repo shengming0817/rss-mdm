@@ -9,3 +9,9 @@ mod self_service;
 
 /// Public device trust revisions and installation acknowledgements.
 pub mod pki;
+
+mod collection_scope;
+pub use collection_scope::CollectionScope;
+
+mod collection_environment;
+pub use collection_environment::CollectionEnvironment;

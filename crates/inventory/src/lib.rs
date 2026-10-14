@@ -81,3 +81,6 @@ pub type Result<T> = std::result::Result<T, Invalid>;
 
 mod progress;
 pub use progress::{CollectionProgress, FieldAttempt, NativeValue, Quality};
+
+mod collection_scope;
+pub use collection_scope::CollectionScope;

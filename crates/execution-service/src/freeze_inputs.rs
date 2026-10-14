@@ -14,7 +14,7 @@ pub(crate) async fn freeze_script_in(
     run_lifetime_seconds: u32,
 ) -> crate::transaction::Result<FrozenAction> {
     let script = prepared.definition();
-    let collection = if let r::ScriptPurpose::Collection { mappings } = &script.spec().purpose {
+    let collection = if let r::ScriptPurpose::Collection { mappings, .. } = &script.spec().purpose {
         let source = if script.spec().profile == r::ScriptProfile::Osquery {
             rss_mdm_inventory::Source::AgentOsquery
         } else {
@@ -79,7 +79,8 @@ pub(crate) async fn prepare_collection_in<'a>(
         "resource.{:x}",
         Sha256::digest(checked_input(serde_json::to_vec(&(
             version.resource().as_str(),
-            variant.key().as_str()
+            variant.key().as_str(),
+            "device"
         )))?)
     );
     let template = format!("{:x}", Sha256::digest(version.digest().bytes()));
@@ -108,6 +109,16 @@ pub(crate) async fn prepare_collection_in<'a>(
             )
         })
         .collect::<Result<Vec<_>>>()?;
+    let platform = match variant.platform() {
+        r::Platform::Windows => rss_mdm_inventory::Platform::Windows,
+        r::Platform::MacOS => rss_mdm_inventory::Platform::Macos,
+    };
+    if fields
+        .iter()
+        .any(|field| !field.platforms.contains(&platform))
+    {
+        return Err(crate::Error::Malformed.into());
+    }
     let definition = checked_input(rss_mdm_inventory::CollectionDefinition::new(
         &dataset, template, source, fields,
     ))?;

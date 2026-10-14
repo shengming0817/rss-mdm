@@ -100,10 +100,7 @@ impl AssetService {
                 Some(definition.as_ref().clone())
             }
             FieldChange::Delete {} => {
-                if old.is_none()
-                    || impact.used()
-                    || rss_mdm_inventory::builtin::protected(field)
-                {
+                if old.is_none() || impact.used() || rss_mdm_inventory::builtin::protected(field) {
                     return Err(Error::Conflict.into());
                 }
                 None

@@ -6,8 +6,8 @@
   "coverage": {
     "id": "inventory",
     "version": "fixture-v1",
-    "definition": "74d4d94fa04be57ca8cc16b225dc2db4919347babb38edf7314e3c40d573c3cd",
-    "format": "typed-fields-v2"
+    "definition": "24246aaefed20ba1efd7592096384be902f5dca111faf6c2d047e360e54a9e87",
+    "format": "typed-fields-v3"
   },
   "body": {
     "kind": "snapshot",

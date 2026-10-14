@@ -1001,3 +1001,70 @@ async fn derived_result_authorization(
     }
     Ok(())
 }
+
+#[tokio::test]
+#[ignore = "make t2 MODULE=planning.http"]
+async fn collection_blueprints_instantiate_replay_and_keep_tenant_versions() -> Result<()> {
+    let fixture = authority::Authority::open().await?;
+    let router = app(&fixture.base, authority::reader(&fixture.base).await?).await?;
+    let mut browser = fixture.browser("other")?;
+    let subject = browser_subject(&browser, &router).await?;
+    set_management_grants(&subject, json!(["resource_read", "resource_write"])).await?;
+    let catalog = browser
+        .call(&router, Method::GET, "/api/v1/collection-blueprints", None)
+        .await?;
+    ensure!(catalog.0 == StatusCode::OK && catalog.1["categories"].as_array().unwrap().len() == 6);
+    ensure!(catalog.1["items"].as_array().unwrap().len() == 4);
+    let path = format!("/api/v1/resources/{}", uuid::Uuid::new_v4());
+    let body = json!({"operationId":uuid::Uuid::new_v4(),"expectedRevision":0,"input":{"action":"instantiate","blueprint":"macos.hardware","version":"1"}});
+    let first = settled_write(&mut browser, &router, &path, body.clone()).await?;
+    ensure!(
+        first.0 == StatusCode::OK,
+        "blueprint instantiation: {first:?}"
+    );
+    ensure!(first.1["revision"] == 2 && first.1["origin"]["blueprint"] == "macos.hardware");
+    ensure!(settled_write(&mut browser, &router, &path, body).await? == first);
+    let mut variants = first.1["versions"][0]["variants"].clone();
+    for variant in variants.as_array_mut().unwrap() {
+        let definition = &mut variant["declaration"]["definition"];
+        definition["mappings"]["device.model"]["query"] = json!("ModelName");
+        let parsed: rss_mdm_resource::NativeCollectionDefinition =
+            serde_json::from_value(definition.clone())?;
+        let bytes = parsed.canonical();
+        variant["declaration"]["artifact"]["length"] = json!(bytes.len());
+        variant["declaration"]["artifact"]["sha256"] =
+            json!(rss_mdm_resource::Digest::of(&bytes).bytes());
+    }
+    call(&mut browser, &router, &path, 2, json!({"action":"version","kind":"native_collection","version":"tenant-v2","variants":variants})).await?;
+    let current = browser.call(&router, Method::GET, &path, None).await?;
+    ensure!(current.0 == StatusCode::OK && current.1["versions"].as_array().unwrap().len() == 2);
+    ensure!(current.1["origin"] == first.1["origin"]);
+    let candidate = format!("/api/v1/resources/{}", uuid::Uuid::new_v4());
+    call(
+        &mut browser,
+        &router,
+        &candidate,
+        0,
+        json!({"action":"instantiate","blueprint":"macos.hardware","version":"1"}),
+    )
+    .await?;
+    ensure!(browser.call(&router, Method::GET, &path, None).await? == current);
+    let directory = browser
+        .call(
+            &router,
+            Method::GET,
+            "/api/v1/resources?kind=native_collection",
+            None,
+        )
+        .await?;
+    ensure!(directory.0 == StatusCode::OK && directory.1["items"].as_array().unwrap().len() == 2);
+    set_management_grants(&subject, json!([])).await?;
+    ensure!(
+        browser
+            .call(&router, Method::GET, "/api/v1/collection-blueprints", None)
+            .await?
+            .0
+            == StatusCode::FORBIDDEN
+    );
+    Ok(())
+}

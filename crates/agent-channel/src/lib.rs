@@ -431,32 +431,17 @@ async fn builtin_collections(
     registration: Uuid,
     epoch: Uuid,
 ) -> Result<Vec<wire::CollectionDefinition>, Error> {
-    let mut definitions = Vec::new();
-    for (dataset, keys) in [
-        (
-            rss_mdm_inventory::DATASET,
-            vec![
-                rss_mdm_inventory::builtin::MODEL,
-                rss_mdm_inventory::builtin::OS_VERSION,
-            ],
-        ),
-        (
-            rss_mdm_inventory::builtin::MDM_ENROLLMENT.as_str(),
-            vec![rss_mdm_inventory::builtin::MDM_ENROLLMENT],
-        ),
-    ] {
-        let scope = device::scope_dataset(
-            tenant,
-            registration,
-            InventorySource::AgentBuiltin.as_str(),
-            epoch,
-            dataset,
-        )?;
-        definitions.push(inventory_wire::to_wire(
-            &collection::store::freeze_in(c, &scope, 1, &keys).await?,
-        )?);
-    }
-    Ok(definitions)
+    let key = rss_mdm_inventory::builtin::MDM_ENROLLMENT;
+    let scope = device::scope_dataset(
+        tenant,
+        registration,
+        InventorySource::AgentBuiltin.as_str(),
+        epoch,
+        key.as_str(),
+    )?;
+    Ok(vec![inventory_wire::to_wire(
+        &collection::store::freeze_in(c, &scope, 1, &[key]).await?,
+    )?])
 }
 
 impl From<rss_mdm_execution_service::Error> for AgentError {

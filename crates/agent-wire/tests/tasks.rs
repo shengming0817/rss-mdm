@@ -588,7 +588,7 @@ fn task_results_require_bounded_coherent_diagnostics() {
 #[test]
 fn claims_require_current_unique_executor_profiles() {
     use rss_mdm_agent_wire::runtime::TaskClaimRequest;
-    let base = json!({"wireVersion":1,"executionContext":{"revision":1,"osVersion":[14,0,0,0],"userHelper":true,"systemBroker":true,"interactiveUser":null,"sourceCredentials":[],"msixSideload":false,"msixUnsigned":false},"operationId":Uuid::new_v4(),"profiles":["osquery"]});
+    let base = json!({"wireVersion":1,"executionContext":{"revision":1,"osVersion":[14,0,0,0],"userHelper":true,"systemBroker":true,"interactiveUser":null,"sourceCredentials":[],"msixSideload":false,"msixUnsigned":false},"operationId":Uuid::new_v4(),"environment":{"edition":null,"tools":{}},"profiles":["osquery"]});
     assert!(serde_json::from_value::<TaskClaimRequest>(base.clone()).is_ok());
     for profiles in [json!([]), json!(["posix_sh", "osquery"])] {
         let mut value = base.clone();

@@ -2,7 +2,9 @@
 use super::*;
 pub(crate) enum PreviewInputs {
     Resource,
+    Native(rss_mdm_resource::NativeCollectionDefinition),
     Script {
+        applicability: Option<rss_mdm_resource::Applicability>,
         platform: rss_mdm_policy::Platform,
         architecture: rss_mdm_policy::Architecture,
         profile: rss_mdm_agent_wire::runtime::ExecutorProfile,
@@ -72,7 +74,7 @@ impl Inputs {
                     *parameters,
                     verified.ok_or(Error::Conflict)?,
                 )?;
-                if let resource::ScriptPurpose::Collection { mappings } =
+                if let resource::ScriptPurpose::Collection { mappings, .. } =
                     &prepared.definition().spec().purpose
                 {
                     let source = if prepared.definition().spec().profile
@@ -93,6 +95,12 @@ impl Inputs {
                     .await?;
                 }
                 return Ok(PreviewInputs::Script {
+                    applicability: match &prepared.definition().spec().purpose {
+                        resource::ScriptPurpose::Collection { applicability, .. } => {
+                            Some(applicability.clone())
+                        }
+                        _ => None,
+                    },
                     platform: binding.platform,
                     architecture: binding.architecture,
                     profile: match prepared.definition().spec().profile {
@@ -126,6 +134,7 @@ impl Inputs {
                     definition.spec().mappings.keys(),
                 )
                 .await?;
+                return Ok(PreviewInputs::Native(definition.clone()));
             }
             PublicationInput::Configuration { binding, exit } => {
                 configuration(&version, binding, *exit, verified)?;

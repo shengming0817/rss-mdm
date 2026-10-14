@@ -8,14 +8,24 @@ use axum::{
 use serde_json::Value;
 pub struct HttpState {
     pub catalog: Arc<ResourceCatalog>,
+    pub content: Arc<rss_mdm_content_service::service::Access>,
 }
 pub fn routes() -> Router<Arc<HttpState>> {
     Router::new()
         .route("/resources", get(directory))
+        .route("/collection-blueprints", get(blueprints))
         .route("/resources/{id}", get(read).post(write))
         .layer(axum::extract::DefaultBodyLimit::max(8 * 1024 * 1024))
 }
 
+async fn blueprints(
+    State(s): State<Arc<HttpState>>,
+    Extension(auth): Extension<RequestAuth>,
+    Extension(audit): Extension<RequestAudit>,
+) -> Result<Json<Value>, Error> {
+    audit.set_action("management_read");
+    Ok(Json(s.catalog.blueprints(&auth.proof, &audit).await?))
+}
 async fn directory(
     State(s): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
@@ -79,12 +89,33 @@ async fn write(
     Path(id): Path<String>,
     body: std::result::Result<Json<Operation<Change>>, axum::extract::rejection::JsonRejection>,
 ) -> std::result::Result<Json<wire::Response>, Error> {
-    run(
-        &app,
-        &auth,
-        &audit,
-        id,
-        Some(body.map_err(|_| Error::Malformed)?.0),
-    )
-    .await
+    let op = body.map_err(|_| Error::Malformed)?.0;
+    let blueprint = match &op.input {
+        Change::Instantiate { blueprint, version } => {
+            Some(rss_mdm_resource::blueprints::get(blueprint, version).ok_or(Error::Malformed)?)
+        }
+        _ => None,
+    };
+    let operation = op.operation_id;
+    let result = run(&app, &auth, &audit, id.clone(), Some(op)).await?;
+    if let Some(blueprint) = blueprint {
+        let bytes = blueprint.definition.canonical();
+        rss_mdm_content_service::service::upload(
+            &app.content,
+            &auth.proof,
+            &audit,
+            &id,
+            &rss_mdm_content_service::service::Selection {
+                version: blueprint.label(),
+                variant: "x86_64".into(),
+                platform: blueprint.platform,
+                architecture: rss_mdm_resource::Architecture::X86_64,
+                artifact: Some("collection.json".into()),
+                operation: Some(operation),
+            },
+            bytes.as_slice(),
+        )
+        .await?;
+    }
+    Ok(result)
 }

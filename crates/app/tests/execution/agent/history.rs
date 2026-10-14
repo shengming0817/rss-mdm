@@ -186,7 +186,7 @@ async fn sensitive_collection_run_details_reauthorize_both_read_paths() -> Resul
     let id = Uuid::new_v4();
     let bytes = b"printf '{}'";
     let digest = rss_mdm_resource::Digest::of(bytes).bytes();
-    let definition = json!({"profile":"posix_sh","runAs":"system","encoding":"utf8","parameters":{"type":"object","properties":{},"required":[],"additionalProperties":false},"bindings":{},"output":{"type":"object","properties":{"secret":{"type":"string"}},"required":["secret"],"additionalProperties":false},"purpose":{"kind":"collection","mappings":{key:"/secret"}},"timeoutSeconds":60,"outputBytes":4096,"maxRows":1});
+    let definition = json!({"profile":"posix_sh","runAs":"system","encoding":"utf8","parameters":{"type":"object","properties":{},"required":[],"additionalProperties":false},"bindings":{},"output":{"type":"object","properties":{"secret":{"type":"string"}},"required":["secret"],"additionalProperties":false},"purpose":{"kind":"collection","scope":{"kind":"device"},"applicability":{"minimumOsVersion":null,"minimumBuild":null,"editions":[],"enrollments":[],"tools":{},"capabilities":[]},"mappings":{key:{"pointer":"/secret","conversion":{"kind":"identity"},"columns":{}}}},"timeoutSeconds":60,"outputBytes":4096,"maxRows":1});
     resource(
         &mut f.author,
         &f.router,

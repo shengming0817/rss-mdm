@@ -46,7 +46,6 @@ pub struct Services {
         Arc<dyn rss_mdm_registration_service::enrollment::read::NativeProgress>,
     pub devices: Arc<rss_mdm_registration_service::device::DeviceService>,
     pub collection: Arc<rss_mdm_inventory_service::collection_service::CollectionService>,
-    pub collection_intake: rss_mdm_inventory_service::apple_collection::Service,
     pub windows: bool,
     pub apple: bool,
 }
@@ -73,9 +72,6 @@ pub fn router(state: Services, envelope: crate::boundary::Envelope) -> Router {
     });
     let authorization = Arc::new(crate::authorization::http::HttpState {
         audit_store: state.audit_store.clone(),
-    });
-    let collection = Arc::new(crate::collection::apple::HttpState {
-        service: state.collection_intake,
     });
     let collection_read = Arc::new(CollectionState {
         collection: state.collection,
@@ -113,10 +109,6 @@ pub fn router(state: Services, envelope: crate::boundary::Envelope) -> Router {
         )
         .merge(crate::authorization::routes().with_state(authorization))
         .route(
-            "/devices/{id}/collection-runs",
-            post(crate::collection::apple::create).with_state(collection),
-        )
-        .route(
             "/devices/{id}/collection-runs/{run}",
             get(collection_run).with_state(collection_read),
         )
@@ -130,6 +122,7 @@ pub fn router(state: Services, envelope: crate::boundary::Envelope) -> Router {
     let resources = crate::resource_catalog::http::routes().with_state(Arc::new(
         crate::resource_catalog::http::HttpState {
             catalog: state.catalog,
+            content: state.content.clone(),
         },
     ));
     let operations = Router::new()

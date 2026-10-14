@@ -65,81 +65,103 @@ pub async fn template(
         .map(|v| serde_json::from_value(v).map_err(|_| Error::Malformed))
         .transpose()
 }
-fn text_value(
-    kind: &ValueType,
-    value: &serde_json::Value,
-) -> rss_mdm_inventory::Result<rss_mdm_inventory::Scalar> {
-    use rss_mdm_inventory::Invalid;
-    let value = match (kind, value) {
-        (ValueType::Integer | ValueType::Time, serde_json::Value::String(v)) => {
-            serde_json::json!(v.parse::<i64>().map_err(|_| Invalid::TypeMismatch)?)
+/// Validate projected columns and converted scalar types before publishing a template.
+pub fn validate_mapping(
+    field: &rss_mdm_inventory::FieldDefinition,
+    mapping: &rss_mdm_resource::ValueMapping,
+) -> Result<(), Error> {
+    fn check(ty: &ValueType, mapping: &rss_mdm_resource::ValueMapping) -> Result<(), Error> {
+        use rss_mdm_resource::Conversion;
+        if !mapping.columns.is_empty() {
+            let ty = match ty {
+                ValueType::Array { items, .. } => items.as_ref(),
+                other => other,
+            };
+            let ValueType::Object { properties } = ty else {
+                return Err(Error::Malformed);
+            };
+            if mapping.columns.keys().ne(properties.keys()) {
+                return Err(Error::Malformed);
+            }
+            for (name, column) in &mapping.columns {
+                check(&properties[name], column)?;
+            }
+        } else {
+            let valid = match &mapping.conversion {
+                Conversion::Identity => true,
+                Conversion::Integer | Conversion::Scale { .. } => {
+                    matches!(ty, ValueType::Integer | ValueType::Time)
+                }
+                Conversion::Number => matches!(ty, ValueType::Number),
+                Conversion::Enum { values } => values.values().all(|v| ty.decode_json(v).is_ok()),
+                Conversion::Bitmask { flags } => ty
+                    .decode_json(&serde_json::json!(flags.values().collect::<Vec<_>>()))
+                    .is_ok(),
+            };
+            if !valid {
+                return Err(Error::Malformed);
+            }
         }
-        (ValueType::Number, serde_json::Value::String(v)) => {
-            serde_json::Number::from_f64(v.parse().map_err(|_| Invalid::TypeMismatch)?)
-                .map(serde_json::Value::Number)
-                .ok_or(Invalid::Value)?
-        }
-        (ValueType::Boolean, serde_json::Value::String(v)) => {
-            serde_json::Value::Bool(match v.as_str() {
-                "true" | "1" => true,
-                "false" | "0" => false,
-                _ => return Err(Invalid::TypeMismatch),
-            })
-        }
-        _ => value.clone(),
+        Ok(())
+    }
+    mapping.validate().map_err(|_| Error::Malformed)?;
+    check(&field.value_type, mapping)
+}
+/// Shared mapping boundary for native, SQL and script output. Missing data is never a tombstone.
+pub fn mapped_value(
+    field: &rss_mdm_inventory::FieldDefinition,
+    mapping: &rss_mdm_resource::ValueMapping,
+    raw: &serde_json::Value,
+) -> NativeValue {
+    let Some(raw) = raw.pointer(&mapping.pointer) else {
+        return NativeValue::Missing;
     };
-    kind.decode_json(&value)
+    if let (ValueType::Array { items, .. }, serde_json::Value::Array(rows)) =
+        (&field.value_type, raw)
+    {
+        return NativeValue::list(
+            field,
+            rows.iter()
+                .map(|row| {
+                    let value = mapping
+                        .project(row)
+                        .map_err(|_| rss_mdm_inventory::Invalid::Value)?;
+                    items.decode_json(&value)
+                })
+                .collect(),
+        )
+        .unwrap_or(NativeValue::Invalid);
+    }
+    let Ok(projected) = mapping.project(raw) else {
+        return NativeValue::Invalid;
+    };
+    if projected.is_null() && field.nullable {
+        return NativeValue::Value(CollectedValue::Null);
+    }
+    match field
+        .value_type
+        .decode_json(&projected)
+        .and_then(|v| field.canonical_value(v))
+    {
+        Ok(v) => NativeValue::Value(CollectedValue::Value(v)),
+        Err(_) => NativeValue::Invalid,
+    }
 }
 pub fn value(
     field: &rss_mdm_inventory::FieldDefinition,
     mapping: &rss_mdm_resource::NativeMapping,
     raw: &serde_json::Value,
 ) -> NativeValue {
-    let parsed = if (!mapping.pointer.is_empty() || !mapping.columns.is_empty()) && raw.is_string()
+    let parsed = if (!mapping.mapping.pointer.is_empty() || !mapping.mapping.columns.is_empty())
+        && raw.is_string()
     {
-        serde_json::from_str(raw.as_str().unwrap()).ok()
+        serde_json::from_str(raw.as_str().expect("checked string")).ok()
     } else {
         None
     };
-    let raw = parsed.as_ref().unwrap_or(raw);
-    let Some(raw) = raw.pointer(&mapping.pointer) else {
-        return NativeValue::Missing;
-    };
-    let projected = if mapping.columns.is_empty() {
-        raw.clone()
-    } else {
-        let Some(rows) = raw.as_array() else {
-            return NativeValue::Invalid;
-        };
-        let mut result = Vec::with_capacity(rows.len());
-        for row in rows {
-            let mut item = serde_json::Map::new();
-            for (key, pointer) in &mapping.columns {
-                item.insert(
-                    key.clone(),
-                    row.pointer(pointer)
-                        .cloned()
-                        .unwrap_or(serde_json::Value::Null),
-                );
-            }
-            result.push(serde_json::Value::Object(item));
-        }
-        serde_json::Value::Array(result)
-    };
-    if let (ValueType::Array { items, .. }, serde_json::Value::Array(rows)) =
-        (&field.value_type, &projected)
-    {
-        return NativeValue::list(field, rows.iter().map(|v| items.decode_json(v)).collect())
-            .unwrap_or(NativeValue::Invalid);
-    }
-    if projected.is_null() && field.nullable {
-        return NativeValue::Value(CollectedValue::Null);
-    }
-    match text_value(&field.value_type, &projected).and_then(|v| field.canonical_value(v)) {
-        Ok(v) => NativeValue::Value(CollectedValue::Value(v)),
-        Err(_) => NativeValue::Invalid,
-    }
+    mapped_value(field, &mapping.mapping, parsed.as_ref().unwrap_or(raw))
 }
+
 pub fn result(
     template: &NativeCollectionDefinition,
     definition: CollectionDefinition,

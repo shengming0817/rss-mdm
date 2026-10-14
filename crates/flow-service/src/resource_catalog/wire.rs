@@ -12,7 +12,12 @@ view!(ResourceReceipt {
     request: String,
     storage_revision: u64
 });
-view!(ResourceRead { id: String, revision: u64, kind: String, versions: Vec<ResourceVersion> });
+view!(ResourceRead { origin: Option<BlueprintOrigin>, id: String, revision: u64, kind: String, versions: Vec<ResourceVersion> });
+view!(BlueprintOrigin {
+    blueprint: String,
+    version: String,
+    digest: [u8; 32]
+});
 view!(ResourceVersion { id: String, digest: [u8;32], state: String, variants: Vec<Variant> });
 
 #[derive(Serialize, Deserialize)]

@@ -388,7 +388,7 @@ async fn agent_health_drives_mdm_configuration_assignment() -> anyhow::Result<()
     let coverage = serde_json::to_string(&definition.coverage()?)?;
     let value = serde_json::to_string(&rss_mdm_inventory::Scalar::Boolean(false))?;
     pg(&format!(
-        "INSERT INTO mdm_access.report_sources(tenant_id,registration,source,epoch,enabled) VALUES('{t}','{registration}','agent.script','{epoch}',true);INSERT INTO mdm.inventory(tenant_id,journal,generation,scope,coverage,field,value,batch_id,observed_at,received_at,state,last_known,last_known_batch,last_known_observed,last_known_received,registration,source,epoch,collection_sequence) VALUES('{t}','mdm.observation.v1','inventory-v4','{encoded}','{coverage}','custom.corporate_agent.healthy','{value}','health-fixture',1,2,'known','{value}','health-fixture',1,2,'{registration}','agent.script','{epoch}',0)",
+        "INSERT INTO mdm_access.report_sources(tenant_id,registration,source,epoch,enabled) VALUES('{t}','{registration}','agent.script','{epoch}',true);INSERT INTO mdm.inventory(tenant_id,journal,generation,scope,coverage,field,value,batch_id,observed_at,received_at,state,last_known,last_known_batch,last_known_observed,last_known_received,registration,source,epoch,collection_sequence) VALUES('{t}','mdm.observation.v1','inventory-v5','{encoded}','{coverage}','custom.corporate_agent.healthy','{value}','health-fixture',1,2,'known','{value}','health-fixture',1,2,'{registration}','agent.script','{epoch}',0)",
         t = case_tenant()
     ))?;
     let associations =

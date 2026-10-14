@@ -358,7 +358,7 @@ impl WindowsSession for Session {
                     self.collection_complete = true;
                     return Ok(false);
                 }
-                let scope = crate::device::store::revalidate_source(
+                crate::device::store::revalidate_source(
                     c,
                     p,
                     rss_mdm_inventory::ReportSource::MdmWindows,
@@ -399,18 +399,19 @@ impl WindowsSession for Session {
                 } else {
                     input.clone()
                 };
-                let (run_id, complete) = collect(
-                    c,
-                    (&mut self.facts, &self.audit),
-                    &scope,
-                    &filtered,
-                    (key, self.stored.as_ref(), history, self.authenticated),
-                    response,
-                    dispatch,
-                )
-                .await?;
-                self.run_id = run_id;
-                self.collection_complete = complete;
+                if filtered
+                    .commands
+                    .iter()
+                    .any(|c| matches!(c, Command::Results(_)))
+                {
+                    return Err(if self.authenticated {
+                        Error::Conflict
+                    } else {
+                        Error::Unauthorized
+                    });
+                }
+                self.run_id = None;
+                self.collection_complete = true;
                 let mut pending = pki_pending;
                 if dispatch && self.authenticated {
                     pending |=

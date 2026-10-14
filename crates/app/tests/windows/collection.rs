@@ -115,13 +115,14 @@ async fn template_flow(
     launch.finish();
     let mut owner = Some(owner);
     let template = NativeCollectionDefinition::new(NativeCollectionSpec {
+        scope: rss_mdm_resource::TemplateScope::Device,
+        applicability: Default::default(),
         adapter: NativeAdapter::WindowsCsp,
         mappings: [(
             "device.model".into(),
             NativeMapping {
                 query: "./DevDetail/DevTyp".into(),
-                pointer: String::new(),
-                columns: Default::default(),
+                mapping: rss_mdm_resource::ValueMapping::identity(""),
             },
         )]
         .into(),

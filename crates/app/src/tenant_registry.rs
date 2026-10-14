@@ -440,8 +440,11 @@ async fn apply_on(tx: &mut PgConnection, input: &Mutation<'_>) -> Result<Outcome
             sqlx::query("INSERT INTO rss_transactional_messaging.tenant_epoch(tenant_id,epoch) VALUES($1::uuid,$2)").bind(input.tenant_id).bind(input.initial_epoch).execute(&mut *tx).await.map_err(|_| Reason::Storage)?;
             rss_mdm_inventory_postgres::initialize_fields_in(
                 &mut *tx,
-                rss_request_context::TenantId::parse(input.tenant_id).map_err(|_| Reason::Invalid)?,
-            ).await.map_err(|_| Reason::Storage)?;
+                rss_request_context::TenantId::parse(input.tenant_id)
+                    .map_err(|_| Reason::Invalid)?,
+            )
+            .await
+            .map_err(|_| Reason::Storage)?;
             rss_mdm_registration_service::agent::settings::initialize_on(&mut *tx, input.tenant_id)
                 .await
                 .map_err(|_| Reason::Storage)?;

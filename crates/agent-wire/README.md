@@ -21,3 +21,5 @@ PKI 只导出两个 HTTP 根 schema：Trust 与 Acknowledgement，其引用的 I
 `tests/fixtures/v1-vectors.json` 的规范 JSON、三类签名、采集指纹和报告/软件摘要，以及 `pki-v1-vectors.json` 的 PKI JSON 与安装摘要，来自各自未修改的 develop 基线，来源 SHA 记录在 fixture 中。它们验证当前 HTTP/JSON 编码与规范字节，不构成旧 API 兼容承诺。
 
 详见 [Agent 接入指南](../../docs/guides/agent-integration.md)。
+
+采集定义必须显式携带 scope，当前只允许 device；其它范围不会降级为设备值。TaskClaimRequest 必须携带 environment（edition 可为 null、tools 为版本字典），OS/build 继续从 executionContext.osVersion 取得。旧缺失结构拒绝解码。需由独立 Agent 仓固定本次交付 rev/schema 指纹后实现，服务端测试不代表设备实测完成。

@@ -750,3 +750,15 @@ impl References {
         }
     }
 }
+
+mod mapping;
+pub use mapping::{Conversion, ValueMapping};
+
+/// Immutable official collection starting points.
+pub mod blueprints;
+
+mod collection_scope;
+pub use collection_scope::TemplateScope;
+
+mod applicability;
+pub use applicability::{Applicability, CollectionEnvironment};

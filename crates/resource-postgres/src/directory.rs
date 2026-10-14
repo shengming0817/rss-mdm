@@ -40,6 +40,7 @@ impl ResourceStore {
             Some("software") => Some(0_i32),
             Some("script") => Some(1),
             Some("configuration") => Some(2),
+            Some("native_collection") => Some(3),
             _ => return Ok(Err(Rejection::InvalidInput)),
         };
         let tenant = tx.tenant_id();

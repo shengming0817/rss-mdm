@@ -94,6 +94,10 @@ pub enum Change {
     Create {
         kind: Kind,
     },
+    Instantiate {
+        blueprint: String,
+        version: String,
+    },
     Version {
         version: String,
         kind: Kind,
@@ -169,7 +173,7 @@ impl ResourceCatalog {
             for variant in variants {
                 let binding = match &variant.declaration {
                     Declaration::Script { definition, .. } => match &definition.spec().purpose {
-                        r::ScriptPurpose::Collection { mappings } => Some((
+                        r::ScriptPurpose::Collection { mappings, .. } => Some((
                             if definition.spec().profile == r::ScriptProfile::Osquery {
                                 rss_mdm_inventory::Source::AgentOsquery
                             } else {
@@ -203,31 +207,73 @@ impl ResourceCatalog {
                         {
                             return Err(Error::Malformed.into());
                         }
-                        if let Declaration::NativeCollection { definition, .. } =
-                            &variant.declaration
-                        {
-                            let mapping = &definition.spec().mappings[key];
-                            if !mapping.columns.is_empty() {
-                                let rss_mdm_inventory::ValueType::Array { items, .. } =
-                                    &field.value_type
-                                else {
-                                    return Err(Error::Malformed.into());
-                                };
-                                let rss_mdm_inventory::ValueType::Object { properties } =
-                                    items.as_ref()
-                                else {
-                                    return Err(Error::Malformed.into());
-                                };
-                                if mapping.columns.keys().ne(properties.keys()) {
-                                    return Err(Error::Malformed.into());
+                        let mapping = match &variant.declaration {
+                            Declaration::NativeCollection { definition, .. } => {
+                                Some(&definition.spec().mappings[key].mapping)
+                            }
+                            Declaration::Script { definition, .. } => {
+                                match &definition.spec().purpose {
+                                    r::ScriptPurpose::Collection { mappings, .. } => {
+                                        Some(&mappings[key])
+                                    }
+                                    _ => None,
                                 }
                             }
+                            _ => None,
+                        };
+                        if let Some(mapping) = mapping {
+                            rss_mdm_inventory_service::collection::native::validate_mapping(
+                                field, mapping,
+                            )
+                            .map_err(|_| Error::Malformed)?;
                         }
                     }
                 }
             }
         }
+        if let Change::Instantiate { blueprint, version } = &op.input {
+            if op.expected_revision != 0 {
+                return Err(Error::Conflict.into());
+            }
+            let blueprint = r::blueprints::get(blueprint, version).ok_or(Error::Malformed)?;
+            let initial = checked_input(blueprint.instantiate(self.tenant, rid.clone()))?;
+            for (step, change, revision) in [
+                (
+                    "create",
+                    Change::Create {
+                        kind: Kind::NativeCollection,
+                    },
+                    0,
+                ),
+                (
+                    "version",
+                    Change::Version {
+                        version: blueprint.label(),
+                        kind: Kind::NativeCollection,
+                        variants: initial.variants().iter().map(variant_view).collect(),
+                    },
+                    1,
+                ),
+            ] {
+                use sha2::Digest;
+                let digest = sha2::Sha256::digest(format!("{}:{step}", op.operation_id).as_bytes());
+                let operation_id = uuid::Uuid::from_bytes(digest[..16].try_into().expect("digest"));
+                Box::pin(self.resource_change(
+                    tx,
+                    resource,
+                    &Operation {
+                        operation_id,
+                        expected_revision: revision,
+                        input: change,
+                    },
+                    at,
+                ))
+                .await?;
+            }
+            return self.resource_read(tx, resource).await;
+        }
         let command = match &op.input {
+            Change::Instantiate { .. } => unreachable!("handled above"),
             Change::Create { kind } => pg::Command::Create(kind.core()),
             Change::Version {
                 version,
@@ -281,8 +327,13 @@ impl ResourceCatalog {
             Error::Resource(crate::resource_catalog::error::ResourceError::Missing),
         )?;
         let snapshot = stored.resource.snapshot();
+        let origin = r::blueprints::catalog().into_iter().find_map(|blueprint| {
+            let initial = blueprint.instantiate(self.tenant, id(resource).ok()?).ok()?;
+            snapshot.versions.iter().any(|v| v.version.label() == initial.label() && v.version.digest() == initial.digest())
+                .then(|| json!({"blueprint":blueprint.id,"version":blueprint.version,"digest":initial.digest().bytes()}))
+        });
         Ok(
-            json!({"id":resource,"revision":stored.storage_revision,"kind":resource_kind(snapshot.kind),"versions":snapshot.versions.iter().map(|v|json!({"id":v.version.label().as_str(),"digest":v.version.digest().bytes(),"state":resource_state(v.state),"variants":v.version.variants().iter().map(variant_view).collect::<Vec<_>>()})).collect::<Vec<_>>() }),
+            json!({"id":resource,"origin":origin,"revision":stored.storage_revision,"kind":resource_kind(snapshot.kind),"versions":snapshot.versions.iter().map(|v|json!({"id":v.version.label().as_str(),"digest":v.version.digest().bytes(),"state":resource_state(v.state),"variants":v.version.variants().iter().map(variant_view).collect::<Vec<_>>()})).collect::<Vec<_>>() }),
         )
     }
 }

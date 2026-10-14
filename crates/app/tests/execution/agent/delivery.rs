@@ -14,7 +14,7 @@ async fn registration_capability_and_wire_gate() -> Result<()> {
         Method::POST,
         "/api/v1/agent/runtime/tasks/claim",
         Some(case_inventory_credential()),
-        Some(json!({"wireVersion":1,"executionContext":crate::test_support::software_execution::context(crate::test_support::software_execution::Platform::MacOs),"profiles":["posix_sh","bash","power_shell7","osquery"],"operationId":Uuid::new_v4()})),
+        Some(json!({"wireVersion":1,"executionContext":crate::test_support::software_execution::context(crate::test_support::software_execution::Platform::MacOs),"environment":{"edition":null,"tools":{}},"profiles":["posix_sh","bash","power_shell7","osquery"],"operationId":Uuid::new_v4()})),
     )
     .await?;
     ensure!(
@@ -36,7 +36,7 @@ async fn registration_capability_and_wire_gate() -> Result<()> {
         .await?;
     ensure!(old.status() == StatusCode::NOT_FOUND);
     let operation = Uuid::new_v4();
-    let valid = json!({"wireVersion":1,"operationId":operation,"executionContext":crate::test_support::software_execution::context(crate::test_support::software_execution::Platform::MacOs),"profiles":["posix_sh","bash","power_shell7","osquery"]});
+    let valid = json!({"wireVersion":1,"operationId":operation,"executionContext":crate::test_support::software_execution::context(crate::test_support::software_execution::Platform::MacOs),"environment":{"edition":null,"tools":{}},"profiles":["posix_sh","bash","power_shell7","osquery"]});
     for version in [2, 3, 4, 5, 6, 255] {
         let mut retired = valid.clone();
         retired["wireVersion"] = json!(version);

@@ -136,28 +136,6 @@ pub fn fields() -> Vec<FieldDefinition> {
                 ),
             ],
         ),
-        (
-            "device.software.installed",
-            vec![
-                ("id", string()),
-                ("name", string()),
-                (
-                    "version",
-                    ValueType::String {
-                        max_length: 256,
-                        allow_empty: true,
-                    },
-                ),
-                (
-                    "publisher",
-                    ValueType::String {
-                        max_length: 256,
-                        allow_empty: true,
-                    },
-                ),
-                ("scope", string()),
-            ],
-        ),
     ] {
         let properties: BTreeMap<_, _> =
             properties.into_iter().map(|(k, v)| (k.into(), v)).collect();
@@ -180,6 +158,12 @@ mod standard;
 /// Stable system identities used by enrollment, device association and channel lifecycle.
 /// Other seed definitions have the same lifecycle as tenant-authored extension fields.
 pub fn protected(key: FieldKey) -> bool {
-    matches!(key.as_str(), "device.serial_number" | "device.hardware_uuid" |
-        "device.manufacturer" | "channel.agent.installation" | "channel.mdm.enrollment")
+    matches!(
+        key.as_str(),
+        "device.serial_number"
+            | "device.hardware_uuid"
+            | "device.manufacturer"
+            | "channel.agent.installation"
+            | "channel.mdm.enrollment"
+    )
 }

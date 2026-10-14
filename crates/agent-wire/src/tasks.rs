@@ -510,6 +510,7 @@ struct ClaimInput {
     operation_id: Uuid,
     #[schemars(extend("maxItems" = 4, "uniqueItems" = true, "items" = serde_json::json!({"enum":["power_shell7","posix_sh","bash","osquery"]})))]
     profiles: Vec<ExecutorProfile>,
+    environment: crate::CollectionEnvironment,
     execution_context: SoftwareExecutionContext,
 }
 impl From<TaskClaimRequest> for ClaimInput {
@@ -523,7 +524,7 @@ impl TryFrom<ClaimInput> for TaskClaimRequest {
         if v.wire_version != WIRE_VERSION {
             return Err(WireError::InvalidValue);
         }
-        Self::new(v.operation_id, v.profiles, v.execution_context)
+        Self::new(v.operation_id, v.profiles, v.execution_context)?.with_environment(v.environment)
     }
 }
 impl TaskClaimRequest {
@@ -547,8 +548,22 @@ impl TaskClaimRequest {
             wire_version: WIRE_VERSION,
             operation_id,
             profiles,
+            environment: Default::default(),
             execution_context,
         }))
+    }
+    /// Attach validated current tool and OS evidence to this poll's immutable retry identity.
+    pub fn with_environment(
+        mut self,
+        environment: crate::CollectionEnvironment,
+    ) -> Result<Self, WireError> {
+        environment.validate()?;
+        self.0.environment = environment;
+        Ok(self)
+    }
+    /// Current executor evidence, never inferred from a previous inventory observation.
+    pub fn environment(&self) -> &crate::CollectionEnvironment {
+        &self.0.environment
     }
     /// Currently configured controlled executors; an empty list still receives cancellations.
     pub fn profiles(&self) -> &[ExecutorProfile] {

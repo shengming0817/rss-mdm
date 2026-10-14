@@ -5,7 +5,7 @@ use rss_mdm_inventory::{
 };
 use rss_request_context::TenantId;
 use sqlx::{PgConnection, Row};
-
+use std::collections::BTreeMap;
 
 /// Load the single published catalog at a committed input watermark.
 /// Initialization is explicit; reads never reconstruct retired or absent seed definitions.
@@ -19,13 +19,16 @@ pub async fn catalog_at_in(
     let rows=sqlx::query("SELECT field,definition::text AS definition FROM (SELECT DISTINCT ON(field) field,definition FROM mdm.field_versions WHERE tenant_id=$1::uuid AND revision<=$2 ORDER BY field,version DESC) latest WHERE definition IS NOT NULL ORDER BY field LIMIT 1025")
         .bind(tenant.to_string()).bind(watermark).fetch_all(c).await?;
     ensure!(rows.len() <= 1024, "field catalog capacity");
-    let fields = rows.into_iter().map(|row| {
-        let key = FieldKey::parse(row.try_get("field")?)?;
-        let field: FieldDefinition = serde_json::from_str(row.try_get("definition")?)?;
-        ensure!(field.key == key, "field identity mismatch");
-        field.validate()?;
-        Ok(field)
-    }).collect::<Result<Vec<_>>>()?;
+    let fields = rows
+        .into_iter()
+        .map(|row| {
+            let key = FieldKey::parse(row.try_get("field")?)?;
+            let field: FieldDefinition = serde_json::from_str(row.try_get("definition")?)?;
+            ensure!(field.key == key, "field identity mismatch");
+            field.validate()?;
+            Ok(field)
+        })
+        .collect::<Result<Vec<_>>>()?;
     Ok(Catalog::new(fields)?)
 }
 /// Read current field definitions using the caller's database snapshot.
@@ -71,17 +74,26 @@ pub async fn publish_field_in(
         return Ok(false);
     }
     if builtin::protected(field.key) {
-        let seed = builtin::fields().into_iter().find(|f| f.key == field.key)
+        let seed = builtin::fields()
+            .into_iter()
+            .find(|f| f.key == field.key)
             .expect("protected field seed");
-        ensure!(seed.value_type == field.value_type
-            && seed.nullable == field.nullable && seed.manual == field.manual
-            && seed.item_key == field.item_key && seed.unit == field.unit
-            && seed.sensitivity == field.sensitivity
-            && field.sources.keys().all(|s| seed.sources.contains_key(s)),
-            "core field contract is immutable");
+        ensure!(
+            seed.value_type == field.value_type
+                && seed.nullable == field.nullable
+                && seed.manual == field.manual
+                && seed.item_key == field.item_key
+                && seed.unit == field.unit
+                && seed.sensitivity == field.sensitivity
+                && field.sources.keys().all(|s| seed.sources.contains_key(s)),
+            "core field contract is immutable"
+        );
     } else if old.is_none() {
-        ensure!(field.key.as_str().starts_with("custom.")
-            || builtin::fields().iter().any(|f| f == field), "reserved field namespace");
+        ensure!(
+            field.key.as_str().starts_with("custom.")
+                || builtin::fields().iter().any(|f| f == field),
+            "reserved field namespace"
+        );
     }
     if let Some(old) = old {
         ensure!(
@@ -126,9 +138,7 @@ pub async fn retire_field_in(
 ) -> Result<bool> {
     crate::reader::assert_tenant(c, tenant).await?;
     ensure!(
-        expected > 0
-            && expected < i64::MAX as u64
-            && !builtin::protected(key),
+        expected > 0 && expected < i64::MAX as u64 && !builtin::protected(key),
         "system field cannot be removed"
     );
     sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,2554))")
@@ -247,12 +257,22 @@ pub async fn collection_version_in(
 pub async fn initialize_fields_in(c: &mut PgConnection, tenant: TenantId) -> Result<()> {
     crate::reader::assert_tenant(c, tenant).await?;
     sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,2554))")
-        .bind(format!("{tenant}:field-catalog")).execute(&mut *c).await?;
+        .bind(format!("{tenant}:field-catalog"))
+        .execute(&mut *c)
+        .await?;
     for field in builtin::fields() {
-        let exists: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm.field_versions WHERE tenant_id=$1::uuid AND field=$2)")
-            .bind(tenant.to_string()).bind(field.key.as_str()).fetch_one(&mut *c).await?;
+        let exists: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM mdm.field_versions WHERE tenant_id=$1::uuid AND field=$2)",
+        )
+        .bind(tenant.to_string())
+        .bind(field.key.as_str())
+        .fetch_one(&mut *c)
+        .await?;
         if !exists {
-            ensure!(publish_field_in(c, tenant, 0, &field).await?, "field initialization conflict");
+            ensure!(
+                publish_field_in(c, tenant, 0, &field).await?,
+                "field initialization conflict"
+            );
         }
     }
     Ok(())

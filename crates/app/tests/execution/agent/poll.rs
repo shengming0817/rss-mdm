@@ -37,7 +37,7 @@ async fn cancellation_backlog_does_not_starve_live_offer() -> Result<()> {
             Method::POST,
             "/api/v1/agent/runtime/tasks/claim",
             Some(case_credential()),
-            Some(json!({"wireVersion":1,"executionContext":crate::test_support::software_execution::context(crate::test_support::software_execution::Platform::MacOs),"profiles":["posix_sh","bash","power_shell7","osquery"],"operationId":Uuid::new_v4()})),
+            Some(json!({"wireVersion":1,"executionContext":crate::test_support::software_execution::context(crate::test_support::software_execution::Platform::MacOs),"environment":{"edition":null,"tools":{}},"profiles":["posix_sh","bash","power_shell7","osquery"],"operationId":Uuid::new_v4()})),
         )
         .await?;
         ensure!(response.0 == StatusCode::OK, "poll paging: {response:?}");

@@ -100,7 +100,7 @@ async fn required_available_and_uninstall_delivery() -> Result<()> {
     let repeated = agent(
         &router,
         "/api/v1/agent/runtime/tasks/claim",
-        Some(json!({"wireVersion":1,"executionContext":crate::test_support::software_execution::context(crate::test_support::software_execution::Platform::MacOs),"profiles":["posix_sh","bash","power_shell7","osquery"],"operationId":Uuid::new_v4()})),
+        Some(json!({"wireVersion":1,"executionContext":crate::test_support::software_execution::context(crate::test_support::software_execution::Platform::MacOs),"environment":{"edition":null,"tools":{}},"profiles":["posix_sh","bash","power_shell7","osquery"],"operationId":Uuid::new_v4()})),
     )
     .await?;
     ensure!(
@@ -124,7 +124,7 @@ async fn required_available_and_uninstall_delivery() -> Result<()> {
         json!({"action":"put","enabled":true,"definition":authored("available_install", &first_operation)}),
     )
     .await?;
-    let poll = agent(&router,"/api/v1/agent/runtime/tasks/claim",Some(json!({"wireVersion":1,"executionContext":context(Platform::MacOs),"profiles":["posix_sh"],"operationId":Uuid::new_v4()}))).await?;
+    let poll = agent(&router,"/api/v1/agent/runtime/tasks/claim",Some(json!({"wireVersion":1,"executionContext":context(Platform::MacOs),"environment":{"edition":null,"tools":{}},"profiles":["posix_sh"],"operationId":Uuid::new_v4()}))).await?;
     ensure!(
         poll.0 == StatusCode::OK && poll.1["task"].is_null(),
         "AvailableInstall must never queue before an explicit request"

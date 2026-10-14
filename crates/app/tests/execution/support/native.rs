@@ -60,8 +60,6 @@ pub(crate) async fn begin(
         })
         .collect::<Vec<_>>();
     let mut expected = vec![
-        "./DevInfo/Mod",
-        "./DevDetail/SwV",
         "./DevDetail/SwV",
         "./Vendor/MSFT/DeviceStatus/OS/Edition",
     ];

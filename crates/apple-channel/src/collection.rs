@@ -34,8 +34,9 @@ pub async fn receive(
             .fetch_one(&mut *c)
             .await
             .map_err(db)?;
-        if let Some(template) =
-            rss_mdm_inventory_service::collection::native::template(c, &tenant, id).await?
+        let template = rss_mdm_inventory_service::collection::native::template(c, &tenant, id)
+            .await?
+            .ok_or(Error::Malformed)?;
         {
             let root = if template.spec().adapter
                 == rss_mdm_resource::NativeAdapter::AppleDeviceInformation
@@ -59,42 +60,6 @@ pub async fn receive(
             facts.extend(store::seal(c, &mut run, "complete").await?);
             return Ok(true);
         }
-        let values = if status == wire::Status::Acknowledged {
-            Some(
-                d.get("QueryResponses")
-                    .and_then(plist::Value::as_dictionary)
-                    .ok_or(Error::Malformed)?,
-            )
-        } else {
-            None
-        };
-        use rss_mdm_inventory_service::collection::NativeValue;
-        let values = [
-            (rss_mdm_inventory::builtin::MODEL, "Model"),
-            (rss_mdm_inventory::builtin::OS_VERSION, "OSVersion"),
-        ]
-        .into_iter()
-        .map(|(field, key)| {
-            (
-                field,
-                match values {
-                    None => NativeValue::Failed,
-                    Some(d) => match d.get(key) {
-                        Some(plist::Value::String(s)) => {
-                            NativeValue::Value(rss_mdm_inventory::CollectedValue::Value(
-                                rss_mdm_inventory::Scalar::String(s.clone()),
-                            ))
-                        }
-                        Some(_) => NativeValue::Invalid,
-                        None => NativeValue::Missing,
-                    },
-                },
-            )
-        })
-        .collect();
-        run.attempts = Attempts::native(run.attempts.definition().clone(), values, now)
-            .map_err(|_| Error::Malformed)?;
-        facts.extend(store::seal(c, &mut run, "complete").await?);
     }
     Ok(true)
 }
@@ -130,71 +95,6 @@ pub async fn send(
         .map(|v| v.expose().to_vec());
     }
     Ok(Vec::new())
-}
-
-pub struct Participant {
-    pub protection: std::sync::Arc<rss_mdm_native_protection::Protector>,
-}
-impl rss_mdm_inventory_service::apple_collection::Participant for Participant {
-    fn start<'a>(
-        &'a self,
-        c: &'a mut PgConnection,
-        tenant: &'a str,
-        id: Uuid,
-        registration: Uuid,
-        generation: i64,
-        sequence: i64,
-        deadline: String,
-    ) -> std::pin::Pin<
-        Box<
-            dyn std::future::Future<Output = Result<(), rss_mdm_inventory_service::Error>>
-                + Send
-                + 'a,
-        >,
-    > {
-        Box::pin(async move {
-            let active:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_apple.devices WHERE tenant_id=$1::uuid AND registration=$2::uuid AND state='active' FOR SHARE)").bind(tenant).bind(registration).fetch_one(&mut *c).await.map_err(|_|rss_mdm_inventory_service::Error::Unavailable(rss_mdm_inventory_service::Failure::Database))?;
-            if !active {
-                return Err(rss_mdm_inventory_service::Error::Conflict);
-            }
-            let request = wire::command(
-                id,
-                wire::dictionary([
-                    ("RequestType", "DeviceInformation".into()),
-                    (
-                        "Queries",
-                        plist::Value::Array(vec!["Model".into(), "OSVersion".into()]),
-                    ),
-                ]),
-            )
-            .map_err(|_| {
-                rss_mdm_inventory_service::Error::Unavailable(
-                    rss_mdm_inventory_service::Failure::Protocol,
-                )
-            })?;
-            let request = crate::protection::seal(
-                &self.protection,
-                tenant,
-                registration,
-                generation,
-                id,
-                crate::protection::Part::Request,
-                &request,
-            )
-            .map_err(|_| {
-                rss_mdm_inventory_service::Error::Unavailable(
-                    rss_mdm_inventory_service::Failure::Protocol,
-                )
-            })?;
-            sqlx::query("INSERT INTO mdm_apple.attempts(tenant_id,id,registration,generation,collection,phase,request,state,collection_sequence,deadline) VALUES($1::uuid,$2::uuid,$3::uuid,$4,$2::uuid,'collect',$5,'pending',$6,$7::text::timestamptz)").bind(tenant).bind(id).bind(registration).bind(generation).bind(request).bind(sequence).bind(deadline).execute(&mut *c).await.map_err(|_|rss_mdm_inventory_service::Error::Unavailable(rss_mdm_inventory_service::Failure::Database))?;
-            crate::notify(c, "apple").await.map_err(|_| {
-                rss_mdm_inventory_service::Error::Unavailable(
-                    rss_mdm_inventory_service::Failure::Database,
-                )
-            })?;
-            Ok(())
-        })
-    }
 }
 
 pub async fn prepare_native(

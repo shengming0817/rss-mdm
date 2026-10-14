@@ -123,6 +123,12 @@
           "minItems": 1,
           "type": "array"
         },
+        "scope": {
+          "$ref": "#/$defs/CollectionScope",
+          "const": {
+            "kind": "device"
+          }
+        },
         "source": {
           "$ref": "#/$defs/Source",
           "not": {
@@ -140,9 +146,105 @@
         "dataset",
         "version",
         "source",
+        "scope",
         "fields"
       ],
       "type": "object"
+    },
+    "CollectionScope": {
+      "description": "Exact namespace of collected values. Only device-wide projection is currently executable.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "description": "Complete device-wide namespace.",
+          "properties": {
+            "kind": {
+              "const": "device",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "One explicitly identified user; never merged into device-wide facts.",
+          "properties": {
+            "identity": {
+              "description": "Stable account identity.",
+              "type": "string"
+            },
+            "kind": {
+              "const": "user",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "identity"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "One provider-specific namespace.",
+          "properties": {
+            "identity": {
+              "description": "Stable provider identity.",
+              "type": "string"
+            },
+            "kind": {
+              "const": "source",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "identity"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "One stable volume identity, independent of drive letter.",
+          "properties": {
+            "identity": {
+              "description": "Stable volume identity.",
+              "type": "string"
+            },
+            "kind": {
+              "const": "volume",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "identity"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "One explicit path prefix.",
+          "properties": {
+            "kind": {
+              "const": "prefix",
+              "type": "string"
+            },
+            "path": {
+              "description": "Exact path prefix.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "path"
+          ],
+          "type": "object"
+        }
+      ]
     },
     "FieldDefinition": {
       "additionalProperties": false,

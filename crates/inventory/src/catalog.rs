@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 
 /// Current product dictionary contract; catalog revisions are separate business versions.
-pub const DICTIONARY: &str = "assets-v2";
+pub const DICTIONARY: &str = "assets-v3";
 /// Validated field identity. Admission requires lookup in the tenant's catalog.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct FieldKey {
@@ -416,7 +416,7 @@ pub struct Catalog {
 impl Catalog {
     /// Construct one bounded snapshot. Duplicate definitions cannot shadow one another.
     pub fn new(definitions: Vec<FieldDefinition>) -> Result<Self> {
-        if definitions.is_empty() || definitions.len() > 1024 {
+        if definitions.len() > 1024 {
             return Err(Invalid::Value);
         }
         let mut fields = BTreeMap::new();
