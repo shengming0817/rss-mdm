@@ -72,6 +72,7 @@ pub(super) async fn crash_write<T: rss_request_context::ExecutionTimer>(
 
 async fn process_interruption(pool: &PgPool, ledger: bool) -> Result<()> {
     use tokio::io::AsyncBufReadExt;
+    // Business rows require an installer-admitted product tenant, unlike neutral audit-only facts.
     let tenant = TenantId::parse(if ledger {
         crate::test_support::case::peer()
     } else {

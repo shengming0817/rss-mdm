@@ -1,10 +1,4 @@
 BEGIN;
--- Explicit upgrade; old consent is invalidated before the strict runtime decoder is used.
--- Installation runs as the schema owner; tenant RLS is restored in the same transaction.
-ALTER TABLE mdm_windows.entra_policy DISABLE ROW LEVEL SECURITY;
-UPDATE mdm_windows.entra_policy
-SET document=document || '{"termsText":"","enabled":false}'::jsonb, revision=revision+1;
-ALTER TABLE mdm_windows.entra_policy ENABLE ROW LEVEL SECURITY;
 CREATE TABLE mdm_windows.entra_web_flows (
  tenant_id uuid NOT NULL,
  id uuid NOT NULL,

@@ -1,4 +1,4 @@
-//! Real administrator HTTP, PostgreSQL audit facts and the production projection task.
+//! Real administrator HTTP, PostgreSQL audit facts and request-driven projection.
 #![allow(
     clippy::cognitive_complexity,
     reason = "integration scenarios keep assertions together"
@@ -12,6 +12,7 @@ struct Fixture {
     router: Router,
     admin: Browser,
     timeline: Arc<Timeline>,
+    key: Vec<u8>,
 }
 impl Fixture {
     async fn open() -> Result<Self> {
@@ -41,15 +42,64 @@ impl Fixture {
             router,
             admin,
             timeline,
+            key,
         })
     }
-    async fn catch_up(&self) -> Result<()> {
-        for _ in 0..100 {
-            if self.timeline.catch_up().await? == 0 {
-                return Ok(());
-            }
-        }
-        anyhow::bail!("projection did not drain bounded fixture")
+    async fn append(
+        &self,
+        proof: &crate::authorization::context::AuthorizedPrincipal,
+        operation: Uuid,
+        index: usize,
+        recorded: i64,
+        observed: i64,
+    ) -> Result<()> {
+        use rss_mdm_audit_integration::{Fact, RequestAudit, budget::AuditBudget};
+        let audit = RequestAudit::new(case_tenant().into(), "command_reconcile");
+        proof.bind_audit(&audit)?;
+        audit.operation(operation, "command_reconcile");
+        let fact = Fact::business(
+            &audit,
+            &format!("time-fixture:{operation}:{index}"),
+            b"input",
+            200,
+            "success",
+            None,
+        )?
+        .with_details(
+            json!({"after":{"execution":"unknown"},"privateKey":"private-fixture-secret"}),
+        )?;
+        let event = fact.event(rss_contract::Timepoint::try_from(observed)?)?;
+        let prepared =
+            rss_audit_core::prepare(event, rss_contract::Timepoint::try_from(recorded)?)?;
+        let budget = AuditBudget::new(Duration::from_secs(3));
+        let control = budget.control();
+        let attempt = self
+            .authority
+            .audit
+            .write(
+                TenantId::parse(case_tenant())?,
+                &control,
+                prepared,
+                |prepared, tx| {
+                    Box::pin(async move {
+                        tx.append(prepared)
+                            .await
+                            .map_err(rss_mdm_audit_integration::Error::from)
+                            .map(|_| ())
+                    })
+                },
+            )
+            .await;
+        ensure!(attempt.fold(
+            |_| true,
+            |_| false,
+            |_| false,
+            |_| false,
+            |_| false,
+            |_| false
+        ));
+        audit.finalize(None);
+        Ok(())
     }
     async fn get(&mut self, path: &str) -> Result<Value> {
         let (status, value) = self
@@ -195,7 +245,6 @@ async fn existing_business_facts_are_queryable_over_real_http() -> Result<()> {
         )
         .await?;
     ensure!(status == StatusCode::FORBIDDEN);
-    f.catch_up().await?;
     let page = f.get(&format!("/api/v1/devices/{device}/timeline")).await?;
     let items = page["items"].as_array().unwrap();
     for action in [
@@ -252,14 +301,19 @@ async fn fixed_watermark_pagination_survives_new_events_and_rebuild_rejects_old_
     for _ in 0..6 {
         f.get("/api/v1/audit-events").await?;
     }
-    f.catch_up().await?;
-    let all = f.get("/api/v1/audit-events").await?;
-    let expected = all["items"].as_array().unwrap();
     let first = f.get("/api/v1/audit-events?limit=2").await?;
+    let through = first["coverage"]["indexedThrough"].as_u64().unwrap();
+    let all = f.get("/api/v1/audit-events?limit=200").await?;
+    let expected: Vec<_> = all["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|v| v["position"].as_u64().unwrap() <= through)
+        .cloned()
+        .collect();
     let mut items = first["items"].as_array().unwrap().clone();
     let mut cursor = first["nextCursor"].as_str().map(str::to_owned);
     f.get("/api/v1/audit-events").await?;
-    f.catch_up().await?;
     let stale = cursor.clone().unwrap();
     for _ in 0..50 {
         let Some(token) = cursor.take() else { break };
@@ -270,7 +324,7 @@ async fn fixed_watermark_pagination_survives_new_events_and_rebuild_rejects_old_
         cursor = page["nextCursor"].as_str().map(str::to_owned);
     }
     ensure!(cursor.is_none());
-    ensure!(&items == expected, "fixed window changed");
+    ensure!(items == expected, "fixed window changed");
     ensure!(
         items
             .windows(2)
@@ -294,7 +348,6 @@ async fn fixed_watermark_pagination_survives_new_events_and_rebuild_rejects_old_
         tenant = case_tenant(),
         generation = Uuid::new_v4()
     ))?;
-    f.catch_up().await?;
     ensure!(
         f.admin
             .call(
@@ -313,7 +366,6 @@ async fn fixed_watermark_pagination_survives_new_events_and_rebuild_rejects_old_
 #[ignore = "make t2 MODULE=timeline.http"]
 async fn administrators_use_existing_access_and_tenant_isolation_is_preserved() -> Result<()> {
     let mut f = Fixture::open().await?;
-    f.catch_up().await?;
     let page = f.get("/api/v1/audit-events").await?;
     ensure!(
         page["items"]
@@ -323,6 +375,10 @@ async fn administrators_use_existing_access_and_tenant_isolation_is_preserved() 
             .all(|v| v["actor"] != case::context().admin_for(case::peer()))
     );
     f.get("/api/v1/devices/unknown-device/timeline").await?;
+    let before = pg(&format!(
+        "SELECT position FROM mdm_timeline.checkpoints WHERE tenant_id='{}'",
+        case_tenant()
+    ))?;
     let mut anonymous = Browser::default();
     ensure!(
         anonymous
@@ -338,6 +394,25 @@ async fn administrators_use_existing_access_and_tenant_isolation_is_preserved() 
             .await?
             .0
             == StatusCode::FORBIDDEN
+    );
+    ensure!(
+        f.admin
+            .call(
+                &f.router,
+                Method::GET,
+                "/api/v1/audit-events?limit=201",
+                None
+            )
+            .await?
+            .0
+            == StatusCode::BAD_REQUEST
+    );
+    ensure!(
+        before
+            == pg(&format!(
+                "SELECT position FROM mdm_timeline.checkpoints WHERE tenant_id='{}'",
+                case_tenant()
+            ))?
     );
     let subject = browser_subject(&other, &f.router).await?;
     identity::set_grants(
@@ -376,7 +451,21 @@ async fn projection_commit_is_atomic_concurrent_and_corruption_is_visible() -> R
     pg(
         "CREATE FUNCTION mdm_timeline.fail_fixture() RETURNS trigger LANGUAGE plpgsql AS $$BEGIN RAISE EXCEPTION 'fixture';END$$; CREATE TRIGGER fail_fixture BEFORE INSERT ON mdm_timeline.facts FOR EACH ROW EXECUTE FUNCTION mdm_timeline.fail_fixture()",
     )?;
-    ensure!(f.timeline.catch_up().await.is_err());
+    ensure!(
+        f.admin
+            .call(&f.router, Method::GET, "/api/v1/audit-events", None)
+            .await?
+            .0
+            == StatusCode::SERVICE_UNAVAILABLE
+    );
+    ensure!(
+        pg(&format!(
+            "SELECT count(*) FROM mdm_timeline.facts WHERE tenant_id='{}' AND position>{before}",
+            case_tenant()
+        ))?
+        .trim()
+            == "0"
+    );
     ensure!(
         before
             == pg(&format!(
@@ -387,10 +476,14 @@ async fn projection_commit_is_atomic_concurrent_and_corruption_is_visible() -> R
     pg(
         "DROP TRIGGER fail_fixture ON mdm_timeline.facts;DROP FUNCTION mdm_timeline.fail_fixture()",
     )?;
-    let (a, b) = tokio::join!(f.timeline.catch_up(), f.timeline.catch_up());
-    a?;
-    b?;
-    f.catch_up().await?;
+    f.get("/api/v1/audit-events").await?; // The same service recovers without a health reset.
+    let mut other = f.admin.clone();
+    let (a, b) = tokio::join!(
+        f.admin
+            .call(&f.router, Method::GET, "/api/v1/audit-events", None),
+        other.call(&f.router, Method::GET, "/api/v1/audit-events", None)
+    );
+    ensure!(a?.0 == StatusCode::OK && b?.0 == StatusCode::OK);
     let count = pg(&format!(
         "SELECT count(*)=count(DISTINCT position) FROM mdm_timeline.facts WHERE tenant_id='{}'",
         case_tenant()
@@ -413,58 +506,13 @@ async fn projection_commit_is_atomic_concurrent_and_corruption_is_visible() -> R
 #[tokio::test]
 #[ignore = "make t2 MODULE=timeline.http"]
 async fn source_recording_time_orders_facts_and_unknown_execution_remains_unknown() -> Result<()> {
-    use rss_mdm_audit_integration::{Fact, RequestAudit, budget::AuditBudget};
     let mut f = Fixture::open().await?;
     let proof = crate::device::test_support::admin(case_tenant(), "admin-a").await?;
     let operation = Uuid::new_v4();
     for (index, recorded, observed) in [(0, 200, 300), (1, 100, 400), (2, 200, 50)] {
-        let audit = RequestAudit::new(case_tenant().into(), "command_reconcile");
-        proof.bind_audit(&audit)?;
-        audit.operation(operation, "command_reconcile");
-        let fact = Fact::business(
-            &audit,
-            &format!("time-fixture:{operation}:{index}"),
-            b"input",
-            200,
-            "success",
-            None,
-        )?
-        .with_details(
-            json!({"after":{"execution":"unknown"},"privateKey":"private-fixture-secret"}),
-        )?;
-        let event = fact.event(rss_contract::Timepoint::try_from(observed as i64)?)?;
-        let prepared =
-            rss_audit_core::prepare(event, rss_contract::Timepoint::try_from(recorded as i64)?)?;
-        let budget = AuditBudget::new(Duration::from_secs(3));
-        let control = budget.control();
-        let attempt = f
-            .authority
-            .audit
-            .write(
-                TenantId::parse(case_tenant())?,
-                &control,
-                prepared,
-                |prepared, tx| {
-                    Box::pin(async move {
-                        tx.append(prepared)
-                            .await
-                            .map_err(rss_mdm_audit_integration::Error::from)
-                            .map(|_| ())
-                    })
-                },
-            )
-            .await;
-        ensure!(attempt.fold(
-            |_| true,
-            |_| false,
-            |_| false,
-            |_| false,
-            |_| false,
-            |_| false
-        ));
-        audit.finalize(None);
+        f.append(&proof, operation, index, recorded, observed)
+            .await?;
     }
-    f.catch_up().await?;
     let page = f
         .get(&format!(
             "/api/v1/audit-events?operationId={operation}&limit=2"
@@ -497,42 +545,214 @@ async fn source_recording_time_orders_facts_and_unknown_execution_remains_unknow
 }
 #[tokio::test]
 #[ignore = "make t2 MODULE=timeline.http"]
-async fn managed_projection_restarts_without_duplicate_facts_and_drains_on_shutdown() -> Result<()>
-{
+async fn on_demand_projection_is_bounded_idle_and_resumes_from_durable_checkpoint() -> Result<()> {
     let mut f = Fixture::open().await?;
-    f.get("/api/v1/audit-events").await?;
-    let mut stack = rss_runtime::ShutdownStack::try_new(
-        rss_runtime::TotalDrainBudget::new(Duration::from_secs(15))?,
-        Arc::new(crate::lifecycle::RuntimeTimer),
-    )?;
-    let mut launch = stack.startup()?.commit();
-    launch.stage_deferred_task_with_token(f.timeline.clone().registration().critical());
-    launch.finish();
-    tokio::time::timeout(Duration::from_secs(15), async {
-        loop {
-            let page = f.get("/api/v1/audit-events?action=audit_search").await?;
-            if !page["items"].as_array().unwrap().is_empty() {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(50)).await;
-        }
-        Ok::<_, anyhow::Error>(())
-    })
-    .await??;
-    crate::test_support::stop_worker(Some(stack)).await?;
-    f.catch_up().await?;
-    let count = pg(&format!(
-        "SELECT count(*) FROM mdm_timeline.facts WHERE tenant_id='{}'",
+    let proof = crate::device::test_support::admin(case_tenant(), "admin-a").await?;
+    let operation = Uuid::new_v4();
+    let before = pg(&format!(
+        "SELECT position FROM mdm_timeline.checkpoints WHERE tenant_id='{}'",
         case_tenant()
     ))?;
-    f.timeline.initialize().await?;
-    ensure!(f.timeline.catch_up().await? == 0);
+    for index in 0..130 {
+        f.append(&proof, operation, index, 200, 200).await?;
+    }
+    // Persistent facts alone do not advance the query index.
     ensure!(
-        count
+        before
             == pg(&format!(
-                "SELECT count(*) FROM mdm_timeline.facts WHERE tenant_id='{}'",
+                "SELECT position FROM mdm_timeline.checkpoints WHERE tenant_id='{}'",
                 case_tenant()
             ))?
+    );
+    let first = f
+        .get(&format!(
+            "/api/v1/audit-events?operationId={operation}&limit=200"
+        ))
+        .await?;
+    ensure!(first["coverage"]["complete"] == false);
+    ensure!(
+        !first["items"].as_array().unwrap().is_empty()
+            && first["items"].as_array().unwrap().len() <= 64
+    );
+    let mut indexed = first["coverage"]["indexedThrough"].as_u64().unwrap();
+    let mut complete = false;
+    for _ in 0..8 {
+        let page = f
+            .get(&format!(
+                "/api/v1/audit-events?operationId={operation}&limit=200"
+            ))
+            .await?;
+        let next = page["coverage"]["indexedThrough"].as_u64().unwrap();
+        ensure!(next >= indexed && next - indexed <= 64);
+        indexed = next;
+        if page["coverage"]["complete"] == true {
+            ensure!(page["items"].as_array().unwrap().len() == 130);
+            complete = true;
+            break;
+        }
+    }
+    ensure!(complete, "small bounded backlog did not converge");
+    let restarted = f.authority.access.timeline(
+        f.authority.audit.clone(),
+        TenantId::parse(case_tenant())?,
+        &f.key,
+    )?;
+    restarted.initialize().await?;
+    let query = rss_mdm_timeline_service::Query {
+        operation_id: Some(operation),
+        limit: Some(200),
+        ..Default::default()
+    };
+    let page = restarted.query(&proof, "audit", &query).await?;
+    ensure!(page.items.len() == 130 && page.coverage.indexed_through.unwrap() >= indexed);
+    ensure!(
+        pg(&format!(
+            "SELECT count(*)=count(DISTINCT position) FROM mdm_timeline.facts WHERE tenant_id='{}'",
+            case_tenant()
+        ))?
+        .trim()
+            == "t"
+    );
+    Ok(())
+}
+
+async fn lock_checkpoint() -> Result<sqlx::PgConnection> {
+    use sqlx::Connection;
+    let mut owner = sqlx::PgConnection::connect(&std::env::var("MDM_ADMIN_URL")?).await?;
+    sqlx::raw_sql("BEGIN").execute(&mut owner).await?;
+    sqlx::query(
+        "SELECT position FROM mdm_timeline.checkpoints WHERE tenant_id=$1::uuid FOR UPDATE",
+    )
+    .bind(case_tenant())
+    .fetch_one(&mut owner)
+    .await?;
+    Ok(owner)
+}
+async fn wait_for_projection_lock(owner: &mut sqlx::PgConnection) -> Result<()> {
+    tokio::time::timeout(Duration::from_secs(5),async{
+        loop {
+            // Each poll must observe fresh activity while the checkpoint lock transaction stays open.
+            sqlx::query("SELECT pg_stat_clear_snapshot()").execute(&mut *owner).await?;
+            let waiting:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE datname=current_database() AND pid<>pg_backend_pid() AND wait_event_type='Lock' AND query LIKE '%mdm_timeline.checkpoints%')").fetch_one(&mut *owner).await?;
+            if waiting {return Ok::<_,anyhow::Error>(())}
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    }).await??;
+    Ok(())
+}
+#[tokio::test]
+#[ignore = "make t2 MODULE=timeline.http"]
+async fn query_budget_returns_partial_after_acknowledged_rollback_and_next_query_recovers()
+-> Result<()> {
+    let mut f = Fixture::open().await?;
+    let mut owner = lock_checkpoint().await?;
+    let browser = f.admin.clone();
+    let router = f.router.clone();
+    let query = tokio::spawn(async move {
+        let mut browser = browser;
+        browser
+            .call(&router, Method::GET, "/api/v1/audit-events", None)
+            .await
+    });
+    wait_for_projection_lock(&mut owner).await?;
+    let (status, page) = query.await??;
+    ensure!(
+        status == StatusCode::OK
+            && page["coverage"]["complete"] == false
+            && page["coverage"]["indexedThrough"].is_null()
+    );
+    ensure!(
+        pg(&format!(
+            "SELECT count(*) FROM mdm_timeline.facts WHERE tenant_id='{}'",
+            case_tenant()
+        ))?
+        .trim()
+            == "0"
+    );
+    sqlx::raw_sql("ROLLBACK").execute(&mut owner).await?;
+    let recovered = f.get("/api/v1/audit-events").await?;
+    ensure!(!recovered["items"].as_array().unwrap().is_empty());
+    Ok(())
+}
+#[tokio::test]
+#[ignore = "make t2 MODULE=timeline.http"]
+async fn prepared_batch_cannot_cross_a_rebuilt_generation_at_the_same_position() -> Result<()> {
+    let mut f = Fixture::open().await?;
+    let mut owner = lock_checkpoint().await?;
+    let timeline = f.timeline.clone();
+    let proof = crate::device::test_support::admin(case_tenant(), "admin-a").await?;
+    let query =
+        tokio::spawn(async move { timeline.query(&proof, "audit", &Default::default()).await });
+    wait_for_projection_lock(&mut owner).await?;
+    sqlx::query("UPDATE mdm_timeline.checkpoints SET generation=$2 WHERE tenant_id=$1::uuid")
+        .bind(case_tenant())
+        .bind(Uuid::new_v4())
+        .execute(&mut owner)
+        .await?;
+    sqlx::raw_sql("COMMIT").execute(&mut owner).await?;
+    let page = query.await??;
+    ensure!(
+        page.items.is_empty() && !page.coverage.complete && page.coverage.indexed_through.is_none()
+    );
+    ensure!(
+        pg(&format!(
+            "SELECT position FROM mdm_timeline.checkpoints WHERE tenant_id='{}'",
+            case_tenant()
+        ))?
+        .trim()
+            == "-1"
+    );
+    ensure!(
+        pg(&format!(
+            "SELECT count(*) FROM mdm_timeline.facts WHERE tenant_id='{}'",
+            case_tenant()
+        ))?
+        .trim()
+            == "0"
+    );
+    ensure!(
+        !f.get("/api/v1/audit-events").await?["items"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    Ok(())
+}
+
+#[tokio::test]
+#[ignore = "make t2 MODULE=timeline.http"]
+async fn corrupt_source_is_rejected_without_advancing_the_index() -> Result<()> {
+    let mut f = Fixture::open().await?;
+    let before = pg(&format!(
+        "SELECT position FROM mdm_timeline.checkpoints WHERE tenant_id='{}'",
+        case_tenant()
+    ))?;
+    pg(&format!(
+        "UPDATE rss_audit.records SET canonical=decode('00','hex') WHERE tenant_id='{}' AND position=(SELECT min(position) FROM rss_audit.records WHERE tenant_id='{}')",
+        case_tenant(),
+        case_tenant()
+    ))?;
+    let (status, error) = f
+        .admin
+        .call(&f.router, Method::GET, "/api/v1/audit-events", None)
+        .await?;
+    ensure!(
+        status == StatusCode::INTERNAL_SERVER_ERROR && error["code"] == "audit_integrity_error"
+    );
+    ensure!(
+        before
+            == pg(&format!(
+                "SELECT position FROM mdm_timeline.checkpoints WHERE tenant_id='{}'",
+                case_tenant()
+            ))?
+    );
+    ensure!(
+        pg(&format!(
+            "SELECT count(*) FROM mdm_timeline.facts WHERE tenant_id='{}'",
+            case_tenant()
+        ))?
+        .trim()
+            == "0"
     );
     Ok(())
 }

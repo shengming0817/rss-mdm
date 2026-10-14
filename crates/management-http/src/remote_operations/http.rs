@@ -62,7 +62,7 @@ async fn cancel(
     Path(id): Path<Uuid>,
     body: std::result::Result<Json<Cancel>, axum::extract::rejection::JsonRejection>,
 ) -> std::result::Result<Json<Value>, Error> {
-    let Json(input) = body.map_err(|_| Error::Malformed)?;
+    let Json(input) = body.map_err(Error::from)?;
     super::read::cancel(&s, &a.proof, &audit, id, &input)
         .await
         .map(Json)

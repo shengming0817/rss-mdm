@@ -14,7 +14,7 @@ use rss_mdm_inventory_service::groups::{
 use serde_json::Value;
 type BodyInput<T> = std::result::Result<Json<T>, axum::extract::rejection::JsonRejection>;
 fn body<T>(value: BodyInput<T>) -> std::result::Result<T, Error> {
-    value.map(|v| v.0).map_err(|_| Error::Malformed)
+    value.map(|v| v.0).map_err(Error::from)
 }
 pub fn routes() -> Router<Arc<HttpState>> {
     Router::new()

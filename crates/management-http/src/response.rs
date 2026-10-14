@@ -22,6 +22,7 @@ impl IntoResponse for Error {
                 StatusCode::SERVICE_UNAVAILABLE,
                 "operation_rollback_unconfirmed",
             ),
+            Error::RequestTooLarge => (StatusCode::PAYLOAD_TOO_LARGE, "request_too_large"),
             Error::Malformed => (StatusCode::BAD_REQUEST, "malformed_request"),
             Error::CertificateRequest => (StatusCode::BAD_REQUEST, "invalid_certificate_request"),
             Error::Unauthorized => (StatusCode::UNAUTHORIZED, "invalid_identity"),

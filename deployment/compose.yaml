@@ -35,6 +35,7 @@ services:
     image: ${MDM_NGINX_IMAGE:?}
     labels: *owner
     ports: ["127.0.0.1::8080"]
+    extra_hosts: ["host.docker.internal:host-gateway"]
     volumes: ["${MDM_ENV_ROOT:?}/probe/nginx.conf:/tmp/input.conf:ro"]
     command: [nginx, -e, stderr, -c, /tmp/input.conf, -g, 'daemon off;']
   step-ca:

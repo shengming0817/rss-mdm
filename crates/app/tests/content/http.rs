@@ -92,7 +92,8 @@ pub(super) async fn upload_contract(fixture: Fixture, length: usize) -> Result<(
     let status = response.status();
     let body = response.text().await?;
     ensure!(
-        status == StatusCode::SERVICE_UNAVAILABLE,
+        status == StatusCode::SERVICE_UNAVAILABLE
+            && serde_json::from_str::<Value>(&body)?["code"] == "operation_unknown",
         "lost upload commit: {status} {body}"
     );
     let committed: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_content.bindings WHERE tenant_id=$1::uuid AND operation=$2)")

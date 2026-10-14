@@ -24,3 +24,21 @@ async fn reborrowing_never_renews_budget_and_keeps_host_cancellation() {
     cancel.cancel();
     assert!(budget.cancel.is_cancelled());
 }
+
+#[tokio::test(start_paused = true)]
+async fn stage_cutoffs_only_shorten_and_leave_time_for_final_read() {
+    let budget = AuditBudget::new(Duration::from_secs(5));
+    let total = Deadline::from_timeout(&RuntimeTimer, Duration::from_secs(2)).unwrap();
+    let operation = Deadline::from_timeout(&RuntimeTimer, Duration::from_millis(1500)).unwrap();
+    let stage = budget.control_until(total, operation);
+    tokio::time::advance(Duration::from_millis(1500)).await;
+    assert!(stage.operation_remaining().is_zero());
+    assert_eq!(stage.total_remaining(), Duration::from_millis(500));
+    tokio::time::advance(Duration::from_millis(500)).await;
+    assert_eq!(budget.control().total_remaining(), Duration::from_secs(3));
+    let late = Deadline::from_timeout(&RuntimeTimer, Duration::from_secs(30)).unwrap();
+    assert_eq!(
+        budget.control_until(late, late).total_remaining(),
+        Duration::from_secs(3)
+    );
+}

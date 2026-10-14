@@ -680,6 +680,3 @@ pub const ENTRA_SQL: &str = include_str!("../schema/entra.sql");
 
 /// Durable browser TOU flows and explicit legacy policy upgrade.
 pub const ENTRA_WEB_SQL: &str = include_str!("../schema/entra-web.sql");
-
-/// Full policy document budget, including JSON escaping.
-pub const ENTRA_POLICY_BUDGET_SQL: &str = include_str!("../schema/entra-policy-budget.sql");

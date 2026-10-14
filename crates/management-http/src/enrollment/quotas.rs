@@ -113,7 +113,7 @@ async fn defaults_write(
     input: Result<Json<Change>, axum::extract::rejection::JsonRejection>,
 ) -> Result<Json<Configuration>, Error> {
     let key = write_key(&headers, &audit, "registration_quota_change")?;
-    let input = input.map_err(|_| Error::Malformed)?.0;
+    let input = input.map_err(Error::from)?.0;
     app.service
         .quotas()
         .change(&auth.proof, None, &input, key, &audit)
@@ -130,7 +130,7 @@ async fn overrides_write(
     input: Result<Json<Change>, axum::extract::rejection::JsonRejection>,
 ) -> Result<Json<Configuration>, Error> {
     let key = write_key(&headers, &audit, "registration_quota_change")?;
-    let input = input.map_err(|_| Error::Malformed)?.0;
+    let input = input.map_err(Error::from)?.0;
     app.service
         .quotas()
         .change(
@@ -165,7 +165,7 @@ async fn assign(
     input: Result<Json<ResponsibilityChange>, axum::extract::rejection::JsonRejection>,
 ) -> Result<Json<Responsibility>, Error> {
     let key = write_key(&headers, &audit, "registration_user_change")?;
-    let input = input.map_err(|_| Error::Malformed)?.0;
+    let input = input.map_err(Error::from)?.0;
     app.service
         .quotas()
         .assign(&auth.proof, &device, &input, key, &audit)
@@ -182,7 +182,7 @@ async fn create_self(
     input: Result<Json<super::SelfCreate>, axum::extract::rejection::JsonRejection>,
 ) -> Result<Json<super::SelfReceipt>, Error> {
     let key = write_key(&headers, &audit, "enrollment_create")?;
-    let input = input.map_err(|_| Error::Malformed)?.0;
+    let input = input.map_err(Error::from)?.0;
     match input.source {
         rss_mdm_inventory::ReportSource::MdmWindows => app.windows()?,
         rss_mdm_inventory::ReportSource::MdmApple => app.apple()?,

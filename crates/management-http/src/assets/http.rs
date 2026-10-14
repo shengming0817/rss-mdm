@@ -14,7 +14,7 @@ use serde::Deserialize;
 type BodyInput<T> = std::result::Result<Json<T>, axum::extract::rejection::JsonRejection>;
 type ParamInput<T> = std::result::Result<Params<T>, axum::extract::rejection::QueryRejection>;
 fn body<T>(v: BodyInput<T>) -> std::result::Result<T, Error> {
-    v.map(|v| v.0).map_err(|_| Error::Malformed)
+    v.map(|v| v.0).map_err(Error::from)
 }
 fn params<T>(v: ParamInput<T>) -> std::result::Result<T, Error> {
     v.map(|v| v.0).map_err(|_| Error::Malformed)

@@ -1,25 +1,22 @@
 use crate::{Coverage, Error, FactView, Page, Query, cursor, project};
-use rss_mdm_audit_integration::{AuditStore, budget::AuditBudget};
+use rss_mdm_audit_integration::{
+    AuditStore,
+    budget::{AuditBudget, RuntimeTimer},
+};
 use rss_mdm_authorization_service::{Permission, context::AuthorizedPrincipal};
-use rss_request_context::TenantId;
+use rss_request_context::{Clock, Deadline, TenantId};
 use sha2::{Digest, Sha256};
 use sqlx::{Acquire, PgPool, Row};
-use std::{
-    sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
-    },
-    time::Duration,
-};
+use std::{sync::Arc, time::Duration};
 use uuid::Uuid;
-/// Borrows the App-owned pool. Owns only the product projection and managed task.
+/// Borrows the App-owned pool. Owns only the request-driven product projection.
 pub struct Timeline {
     pool: PgPool,
     audit: Arc<AuditStore>,
     tenant: TenantId,
     key: ring::hmac::Key,
-    healthy: AtomicBool,
 }
+type Prepared = ((i64, i64, Uuid), Vec<Projected>, i64);
 struct Projected {
     view: FactView,
     devices: Vec<String>,
@@ -28,7 +25,6 @@ struct Window {
     indexed: i64,
     source: i64,
     generation: Uuid,
-    healthy: bool,
 }
 impl Timeline {
     pub fn new(
@@ -45,7 +41,6 @@ impl Timeline {
             audit,
             tenant,
             key: ring::hmac::Key::new(ring::hmac::HMAC_SHA256, secret),
-            healthy: AtomicBool::new(true),
         })
     }
     /// Initialize only rebuildable product coordinates. Does not append an Audit fact.
@@ -65,61 +60,120 @@ impl Timeline {
         }
         result
     }
-    pub fn registration(self: Arc<Self>) -> rss_runtime::ManagedTaskRegistration {
-        let (task, _) =
-            rss_runtime::ManagedTask::prepare("device-timeline", Duration::from_secs(20));
-        task.into_registration(move|stop|async move{
-            while !stop.is_cancelled(){
-                let result=self.catch_up().await;
-                self.healthy.store(result.is_ok(),Ordering::Release);
-                match result {
-                    Ok(n) if n>0=>continue,
-                    Err(Error::Integrity)=>return Err(rss_runtime::ShutdownError::new(Error::Integrity)),
-                    Err(_)=>eprintln!("{}",serde_json::json!({"event":"timeline_projection_unavailable"})),
-                    _=>{},
-                }
-                tokio::select!{()=stop.cancelled()=>break,()=tokio::time::sleep(Duration::from_secs(1))=>{}}
-            }
-            Ok(())
-        })
-    }
-    /// Consume one bounded source batch. Concurrent workers serialize only the index commit.
-    pub async fn catch_up(&self) -> Result<usize, Error> {
-        let result = self.catch_up_inner().await;
-        self.healthy.store(result.is_ok(), Ordering::Release);
-        if result.is_err() {
-            let _ = self.mark_unhealthy().await;
+    /// Authorized reads advance at most one source batch before reading a frozen index window.
+    pub async fn query(
+        &self,
+        proof: &AuthorizedPrincipal,
+        family: &str,
+        query: &Query,
+    ) -> Result<Page, Error> {
+        if proof.tenant_id() != self.tenant.to_string() {
+            return Err(Error::Forbidden);
         }
-        result
-    }
-    async fn mark_unhealthy(&self) -> Result<(), Error> {
-        let mut connection = None;
-        let result=tokio::time::timeout(Duration::from_secs(3),async{
-            connection=Some(self.pool.acquire().await?);
-            let mut tx=connection.as_mut().ok_or(Error::Storage)?.begin().await?;
-            sqlx::query("SELECT set_config('rss.tenant_id',$1,true),set_config('statement_timeout','1000',true),set_config('lock_timeout','1000',true)").bind(self.tenant.to_string()).execute(&mut *tx).await?;
-            sqlx::query("UPDATE mdm_timeline.checkpoints SET healthy=false WHERE tenant_id=$1::uuid").bind(self.tenant.to_string()).execute(&mut *tx).await?;
-            tx.commit().await?;Ok::<_,Error>(())
-        }).await.map_err(|_|Error::Deadline).and_then(|v|v);
-        if result.is_err()
-            && let Some(c) = &mut connection
-        {
-            c.close_on_drop()
+        proof
+            .require(Permission::AuthorizationRead, None)
+            .map_err(|_| Error::Forbidden)?;
+        query.validate()?;
+        let token = query
+            .cursor
+            .as_ref()
+            .map(|v| cursor::decode(&self.key, v))
+            .transpose()?;
+        // Reject immutable cursor bindings before any source read or projection write.
+        if let Some(token) = &token {
+            self.validate_cursor(
+                proof,
+                family,
+                query,
+                Some(token),
+                token.generation,
+                token.through,
+            )?;
         }
-        result
-    }
-    async fn catch_up_inner(&self) -> Result<usize, Error> {
-        let (after, last_source, _, healthy) = self.checkpoint().await?;
+        let start = RuntimeTimer.now();
         let budget = AuditBudget::new(Duration::from_secs(5));
+        let total = Deadline::at(start + Duration::from_secs(2));
+        let operation = Deadline::at(start + Duration::from_millis(1500));
+        let control = budget.control_until(total, operation);
+        if let Some((checkpoint, batch, through)) = self
+            .prepare_batch(proof, family, query, token.as_ref(), &control)
+            .await?
+            && (!batch.is_empty() || checkpoint.1 != through)
+        {
+            self.write_batch(checkpoint, &batch, through, total, operation)
+                .await?;
+        }
         let control = budget.control();
-        let attempt=self.audit.read(self.tenant,&control,(self,after),|(service,after),tx|Box::pin(async move{
-            let head=tx.read_page(rss_audit_postgres::Cursor::start(service.tenant),rss_audit_postgres::ReadLimit::new(1,131072).map_err(|_|Error::Integrity)?).await.map_err(audit_error)?;
-            let through=source_through(&head);
-            if through<*after{return Err(Error::Integrity)}
-            if through==*after{return Ok((Vec::new(),through))}
-            let cursor=if *after<0{rss_audit_postgres::Cursor::start(service.tenant)}else{rss_audit_postgres::Cursor::resume(service.tenant,*after as u64,through as u64).map_err(|_|Error::Integrity)?};
-            let page=tx.read_page(cursor,rss_audit_postgres::ReadLimit::new(64,8388608).map_err(|_|Error::Integrity)?).await.map_err(audit_error)?;
-            let through=source_through(&page);let mut batch=Vec::new();
+        self.audit
+            .read(
+                self.tenant,
+                &control,
+                (self, proof, family, query, token),
+                |ctx, tx| {
+                    Box::pin(async move {
+                        let mut indexed = tx
+                            .with_connection_context(ctx, |ctx, c| {
+                                Box::pin(async move {
+                                    ctx.0.read_index(c, ctx.1, ctx.3, ctx.4.as_ref()).await
+                                })
+                            })
+                            .await?;
+                        let head = tx
+                            .read_page(
+                                rss_audit_postgres::Cursor::start(ctx.0.tenant),
+                                rss_audit_postgres::ReadLimit::new(1, 131072)
+                                    .map_err(|_| Error::Integrity)?,
+                            )
+                            .await
+                            .map_err(audit_error)?;
+                        let source = source_through(&head);
+                        if source < indexed.0.source {
+                            return Err(Error::Integrity);
+                        }
+                        indexed.0.source = source;
+                        ctx.0
+                            .page_in(ctx.1, ctx.2, ctx.3, ctx.4.as_ref(), &indexed.0, indexed.1)
+                    })
+                },
+            )
+            .await
+            .fold(
+                |v| Ok(v.into_value()),
+                transaction_error,
+                transaction_error,
+                transaction_error,
+                transaction_error,
+                transaction_error,
+            )
+    }
+    async fn prepare_batch(
+        &self,
+        proof: &AuthorizedPrincipal,
+        family: &str,
+        query: &Query,
+        token: Option<&cursor::Cursor>,
+        control: &rss_audit_postgres::Control<'_, RuntimeTimer>,
+    ) -> Result<Option<Prepared>, Error> {
+        let attempt=self.audit.read(self.tenant,control,(self,proof,family,query,token),|(service,proof,family,query,token),tx|Box::pin(async move{
+            let tenant=service.tenant.to_string();
+            let checkpoint:(i64,i64,Uuid)=tx.with_connection(|c|Box::pin(async move{
+                sqlx::query_as("SELECT position,source_through,generation FROM mdm_timeline.checkpoints WHERE tenant_id=$1::uuid").bind(tenant).fetch_one(c).await
+            })).await?;
+            let after=checkpoint.0;
+            service.validate_cursor(proof,family,query,*token,checkpoint.2,after)?;
+            let page=if after<0 {
+                tx.read_page(rss_audit_postgres::Cursor::start(service.tenant),rss_audit_postgres::ReadLimit::new(64,8388608).map_err(|_|Error::Integrity)?).await.map_err(audit_error)?
+            } else {
+                let head=tx.read_page(rss_audit_postgres::Cursor::start(service.tenant),rss_audit_postgres::ReadLimit::new(1,131072).map_err(|_|Error::Integrity)?).await.map_err(audit_error)?;
+                let through=source_through(&head);
+                if through<after || through<checkpoint.1 {return Err(Error::Integrity)}
+                if through==after {return Ok((checkpoint,Vec::new(),through))}
+                let cursor=rss_audit_postgres::Cursor::resume(service.tenant,after as u64,through as u64).map_err(|_|Error::Integrity)?;
+                tx.read_page(cursor,rss_audit_postgres::ReadLimit::new(64,8388608).map_err(|_|Error::Integrity)?).await.map_err(audit_error)?
+            };
+            let through=source_through(&page);
+            if through<after || through<checkpoint.1 {return Err(Error::Integrity)}
+            let mut batch=Vec::new();
             for record in page.records(){
                 let decoded=rss_audit_core::decode_untrusted(record.prepared().canonical_bytes()).map_err(|_|Error::Integrity)?;
                 let mut view=project(decoded.event())?;
@@ -142,131 +196,122 @@ impl Timeline {
                 })).await?;
                 batch.push(Projected{view:context.1,devices});
             }
-            Ok::<_,Error>((batch,through))
+            Ok::<_,Error>((checkpoint,batch,through))
         })).await;
-        let (batch, through) = attempt.fold(
-            |v| Ok(v.into_value()),
-            |_| Err(Error::Storage),
+        // Only acknowledged, ordinary budget exhaustion permits a partial indexed response.
+        attempt.fold(
+            |v| Ok(Some(v.into_value())),
+            limited_transaction,
+            limited_transaction,
             transaction_error,
-            |_| Err(Error::Storage),
-            |_| Err(Error::Storage),
-            |_| Err(Error::Storage),
-        )?;
-        if batch.is_empty() && last_source == through && healthy {
-            return Ok(0);
-        }
-        self.write_batch(after, &batch, through).await
-    }
-    async fn checkpoint(&self) -> Result<(i64, i64, Uuid, bool), Error> {
-        let budget = AuditBudget::new(Duration::from_secs(3));
-        let control = budget.control();
-        self.audit.read(self.tenant,&control,self,|service,tx|Box::pin(async move{
-            let tenant=service.tenant.to_string();
-            tx.with_connection(|c|Box::pin(async move{
-                sqlx::query_as("SELECT position,source_through,generation,healthy FROM mdm_timeline.checkpoints WHERE tenant_id=$1::uuid")
-                    .bind(tenant).fetch_optional(c).await?.ok_or(Error::Storage)
-            })).await
-        })).await.fold(|v|Ok(v.into_value()),|_|Err(Error::Storage),transaction_error,|_|Err(Error::Storage),|_|Err(Error::Storage),|_|Err(Error::Storage))
+            transaction_error,
+            transaction_error,
+        )
     }
     async fn write_batch(
         &self,
-        after: i64,
+        checkpoint: (i64, i64, Uuid),
         batch: &[Projected],
         through: i64,
-    ) -> Result<usize, Error> {
-        let mut connection = None;
-        let result=tokio::time::timeout(Duration::from_secs(5),async{
-            connection=Some(self.pool.acquire().await?);
-            let mut tx=connection.as_mut().ok_or(Error::Storage)?.begin().await?;
-            sqlx::query("SELECT set_config('rss.tenant_id',$1,true),set_config('statement_timeout','2000',true),set_config('lock_timeout','1000',true)")
-                .bind(self.tenant.to_string()).execute(&mut *tx).await?;
-            sqlx::query("INSERT INTO mdm_timeline.checkpoints(tenant_id,generation) VALUES($1::uuid,$2) ON CONFLICT DO NOTHING")
-                .bind(self.tenant.to_string()).bind(Uuid::new_v4()).execute(&mut *tx).await?;
-            let position:i64=sqlx::query_scalar("SELECT position FROM mdm_timeline.checkpoints WHERE tenant_id=$1::uuid FOR UPDATE")
-                .bind(self.tenant.to_string()).fetch_one(&mut *tx).await?;
-            if position!=after{tx.rollback().await?;return Ok(0)}
-            for row in batch{
+        total: Deadline,
+        operation: Deadline,
+    ) -> Result<(), Error> {
+        if operation.is_expired(RuntimeTimer.now()) {
+            return Ok(());
+        }
+        let mut connection =
+            match tokio::time::timeout_at(operation.instant().into(), self.pool.acquire()).await {
+                Ok(result) => result?,
+                Err(_) => return Ok(()), // No product transaction was started.
+            };
+        let result = self
+            .write_batch_on(
+                &mut connection,
+                checkpoint,
+                batch,
+                through,
+                total,
+                operation,
+            )
+            .await;
+        if result.is_err() {
+            connection.close_on_drop();
+        }
+        result
+    }
+    async fn write_batch_on(
+        &self,
+        connection: &mut sqlx::PgConnection,
+        checkpoint: (i64, i64, Uuid),
+        batch: &[Projected],
+        through: i64,
+        total: Deadline,
+        operation: Deadline,
+    ) -> Result<(), Error> {
+        let mut tx = tokio::time::timeout_at(operation.instant().into(), connection.begin())
+            .await
+            .map_err(|_| Error::Deadline)??;
+        let result=tokio::time::timeout_at(operation.instant().into(),async{
+            let milliseconds=operation.remaining(RuntimeTimer.now()).unwrap_or_default().as_millis().saturating_add(1).to_string();
+            sqlx::query("SELECT set_config('rss.tenant_id',$1,true),set_config('statement_timeout',$2,true),set_config('lock_timeout',$2,true)").bind(self.tenant.to_string()).bind(milliseconds).execute(&mut *tx).await.map_err(|e|projection_error(e,operation))?;
+            let current:(i64,Uuid)=sqlx::query_as("SELECT position,generation FROM mdm_timeline.checkpoints WHERE tenant_id=$1::uuid FOR UPDATE").bind(self.tenant.to_string()).fetch_one(&mut *tx).await.map_err(|e|projection_error(e,operation))?;
+            if current!=(checkpoint.0,checkpoint.2) {return Ok(false)}
+            for row in batch {
                 let doc=serde_json::to_value(&row.view).map_err(|_|Error::Integrity)?;
                 let bytes=serde_json::to_vec(&doc).map_err(|_|Error::Integrity)?;
                 sqlx::query("INSERT INTO mdm_timeline.facts(tenant_id,position,source,event_id,recorded_at,instance_id,operation_id,actor,action,outcome,devices,operations,document,digest) VALUES($1::uuid,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)")
                     .bind(self.tenant.to_string()).bind(row.view.position as i64).bind(&row.view.source).bind(&row.view.event_id)
                     .bind(row.view.recorded_at).bind(row.view.instance_id).bind(row.view.operation_id).bind(&row.view.actor).bind(&row.view.action)
-                    .bind(&row.view.audit_outcome).bind(&row.devices).bind(&row.view.related_operation_ids).bind(doc).bind(Sha256::digest(&bytes).to_vec()).execute(&mut *tx).await?;
+                    .bind(&row.view.audit_outcome).bind(&row.devices).bind(&row.view.related_operation_ids).bind(doc).bind(Sha256::digest(&bytes).to_vec()).execute(&mut *tx).await.map_err(|e|projection_error(e,operation))?;
             }
-            let next=batch.last().map_or(after,|v|v.view.position as i64);
-            sqlx::query("UPDATE mdm_timeline.checkpoints SET position=$2,source_through=$3,healthy=true WHERE tenant_id=$1::uuid")
-                .bind(self.tenant.to_string()).bind(next).bind(through.max(next)).execute(&mut *tx).await?;
-            tx.commit().await?;Ok::<_,Error>(batch.len())
-        }).await.map_err(|_|Error::Deadline).and_then(|v|v);
-        if result.is_err()
-            && let Some(c) = &mut connection
-        {
-            c.close_on_drop()
+            let next=batch.last().map_or(checkpoint.0,|v|v.view.position as i64);
+            sqlx::query("UPDATE mdm_timeline.checkpoints SET position=$2,source_through=$3 WHERE tenant_id=$1::uuid").bind(self.tenant.to_string()).bind(next).bind(through).execute(&mut *tx).await.map_err(|e|projection_error(e,operation))?;
+            Ok::<_,Error>(true)
+        }).await;
+        match result {
+            Ok(Ok(true)) => tokio::time::timeout_at(total.instant().into(), tx.commit())
+                .await
+                .map_err(|_| Error::Deadline)?
+                .map_err(Error::from),
+            other => {
+                let primary = match other {
+                    Ok(Err(error)) => Some(error),
+                    _ => None,
+                };
+                let rollback = tokio::time::timeout_at(total.instant().into(), async {
+                    // ref: SQLx v0.9.0 connection/mod.rs: a dropped query can leave ErrorResponse unread.
+                    loop {
+                        match sqlx::Connection::flush(&mut *tx).await {
+                            Ok(()) => break,
+                            Err(sqlx::Error::Database(_)) => {}
+                            Err(error) => return Err(error),
+                        }
+                    }
+                    tx.rollback().await
+                })
+                .await;
+                if matches!(primary, Some(Error::Integrity)) {
+                    return Err(Error::Integrity);
+                }
+                rollback.map_err(|_| Error::Deadline)??;
+                match primary {
+                    Some(Error::Deadline) | None => Ok(()),
+                    Some(error) => Err(error),
+                }
+            }
         }
-        result
     }
-    /// Use the already loaded administrator proof; no session/rules reload occurs here.
-    pub async fn query(
+    fn validate_cursor(
         &self,
         proof: &AuthorizedPrincipal,
         family: &str,
         query: &Query,
-    ) -> Result<Page, Error> {
-        if proof.tenant_id() != self.tenant.to_string() {
-            return Err(Error::Forbidden);
-        }
-        proof
-            .require(Permission::AuthorizationRead, None)
-            .map_err(|_| Error::Forbidden)?;
-        query.validate()?;
-        if !self.healthy.load(Ordering::Acquire) {
-            return Err(Error::Storage);
-        }
-        let budget = AuditBudget::new(Duration::from_secs(5));
-        let control = budget.control();
-        self.audit.read(self.tenant,&control,(self,proof,family,query),|ctx,tx|Box::pin(async move{
-            let tenant=ctx.0.tenant.to_string();
-            let checkpoint:(i64,Uuid,bool)=tx.with_connection(move|c|Box::pin(async move{
-                sqlx::query_as("SELECT position,generation,healthy FROM mdm_timeline.checkpoints WHERE tenant_id=$1::uuid").bind(tenant).fetch_one(c).await
-            })).await?;
-            // Read the source head after the checkpoint: concurrent appends cannot make a
-            // newer projection appear to exceed an older, previously observed source head.
-            let head=tx.read_page(rss_audit_postgres::Cursor::start(ctx.0.tenant),rss_audit_postgres::ReadLimit::new(1,131072).map_err(|_|Error::Integrity)?).await.map_err(audit_error)?;
-            let mut context=(*ctx,Window{indexed:checkpoint.0,generation:checkpoint.1,healthy:checkpoint.2,source:source_through(&head)});
-            tx.with_connection_context(&mut context,|(ctx,window),c|Box::pin(async move{
-                let (service,proof,family,query)=*ctx;
-                service.page_in(c,proof,family,query,window).await
-            })).await
-        })).await.fold(|v|Ok(v.into_value()),|_|Err(Error::Storage),transaction_error,|_|Err(Error::Storage),|_|Err(Error::Storage),|_|Err(Error::Storage))
-    }
-    async fn page_in(
-        &self,
-        c: &mut sqlx::PgConnection,
-        proof: &AuthorizedPrincipal,
-        family: &str,
-        query: &Query,
-        window: &Window,
-    ) -> Result<Page, Error> {
-        let tenant = self.tenant.to_string();
-        let tenant = tenant.as_str();
-        let Window {
-            indexed,
-            source,
-            generation,
-            healthy,
-        } = *window;
-        if !healthy {
-            return Err(Error::Storage);
-        }
-        if indexed > source {
-            return Err(Error::Integrity);
-        }
-        let mut through = indexed;
-        let mut after = None;
-        let mut after_position = None;
-        if let Some(token) = &query.cursor {
-            let token = cursor::decode(&self.key, token)?;
-            if token.tenant != tenant
+        token: Option<&cursor::Cursor>,
+        generation: Uuid,
+        indexed: i64,
+    ) -> Result<(), Error> {
+        if let Some(token) = token
+            && (token.tenant != self.tenant.to_string()
                 || token.instance != proof.instance_id()
                 || token.family != family
                 || token.query != query.binding()
@@ -275,18 +320,58 @@ impl Timeline {
                 || token.through < 0
                 || token.after_position < 0
                 || token.after_position > token.through
-                || token.after_at < 0
-            {
-                return Err(Error::Conflict);
-            }
-            through = token.through;
-            after = Some(token.after_at);
-            after_position = Some(token.after_position);
+                || token.after_at < 0)
+        {
+            return Err(Error::Conflict);
         }
+        Ok(())
+    }
+    async fn read_index(
+        &self,
+        c: &mut sqlx::PgConnection,
+        proof: &AuthorizedPrincipal,
+        query: &Query,
+        token: Option<&cursor::Cursor>,
+    ) -> Result<(Window, Vec<sqlx::postgres::PgRow>), Error> {
+        // Checkpoint and facts share one READ COMMITTED statement snapshot, including empty pages.
+        let rows=sqlx::query("SELECT cp.position AS indexed,cp.source_through,cp.generation,f.document,f.digest,f.position,f.recorded_at FROM mdm_timeline.checkpoints cp LEFT JOIN LATERAL (SELECT document,digest,position,recorded_at FROM mdm_timeline.facts WHERE tenant_id=cp.tenant_id AND position<=COALESCE($2,cp.position) AND (instance_id=$3::uuid OR (instance_id IS NULL AND document->>'supported'='true' AND document->>'actorKind' IN ('service','device','unidentified'))) AND ($4::text IS NULL OR devices @> ARRAY[$4]) AND ($5::uuid IS NULL OR operation_id=$5 OR operations @> ARRAY[$5]) AND ($6::text IS NULL OR actor=$6) AND ($7::text IS NULL OR action=$7) AND ($8::text IS NULL OR outcome=$8) AND ($9::bigint IS NULL OR recorded_at>=$9) AND ($10::bigint IS NULL OR recorded_at<$10) AND ($11::bigint IS NULL OR (recorded_at,position)<($11,$12)) ORDER BY recorded_at DESC,position DESC LIMIT $13) f ON true WHERE cp.tenant_id=$1::uuid ORDER BY f.recorded_at DESC,f.position DESC")
+            .bind(self.tenant.to_string()).bind(token.map(|v|v.through)).bind(proof.instance_id()).bind(&query.device).bind(query.operation_id)
+            .bind(&query.actor).bind(&query.action).bind(&query.outcome).bind(query.from).bind(query.until).bind(token.map(|v|v.after_at)).bind(token.map(|v|v.after_position)).bind((query.limit.unwrap_or(50)+1) as i64).fetch_all(c).await?;
+        let first = rows.first().ok_or(Error::Storage)?;
+        let window = Window {
+            indexed: first.try_get("indexed")?,
+            source: first.try_get("source_through")?,
+            generation: first.try_get("generation")?,
+        };
+        Ok((window, rows))
+    }
+    fn page_in(
+        &self,
+        proof: &AuthorizedPrincipal,
+        family: &str,
+        query: &Query,
+        token: Option<&cursor::Cursor>,
+        window: &Window,
+        mut rows: Vec<sqlx::postgres::PgRow>,
+    ) -> Result<Page, Error> {
+        let tenant = self.tenant.to_string();
+        let Window {
+            indexed,
+            source,
+            generation,
+        } = *window;
+        self.validate_cursor(proof, family, query, token, generation, indexed)?;
+        if indexed > source {
+            return Err(Error::Integrity);
+        }
+        let through = token.map_or(indexed, |v| v.through);
         let limit = query.limit.unwrap_or(50);
-        let mut rows=sqlx::query("SELECT document,digest,position,recorded_at FROM mdm_timeline.facts WHERE tenant_id=$1::uuid AND position<=$2 AND (instance_id=$3::uuid OR (instance_id IS NULL AND document->>'supported'='true' AND document->>'actorKind' IN ('service','device','unidentified'))) AND ($4::text IS NULL OR devices @> ARRAY[$4]) AND ($5::uuid IS NULL OR operation_id=$5 OR operations @> ARRAY[$5]) AND ($6::text IS NULL OR actor=$6) AND ($7::text IS NULL OR action=$7) AND ($8::text IS NULL OR outcome=$8) AND ($9::bigint IS NULL OR recorded_at>=$9) AND ($10::bigint IS NULL OR recorded_at<$10) AND ($11::bigint IS NULL OR (recorded_at,position)<($11,$12)) ORDER BY recorded_at DESC,position DESC LIMIT $13")
-            .bind(tenant).bind(through).bind(proof.instance_id()).bind(&query.device).bind(query.operation_id)
-            .bind(&query.actor).bind(&query.action).bind(&query.outcome).bind(query.from).bind(query.until).bind(after).bind(after_position).bind((limit+1) as i64).fetch_all(c).await?;
+        if rows
+            .first()
+            .is_some_and(|v| v.try_get::<Option<i64>, _>("position").ok() == Some(None))
+        {
+            rows.clear();
+        }
         let more = rows.len() > limit;
         rows.truncate(limit);
         let mut items = Vec::new();
@@ -311,7 +396,7 @@ impl Timeline {
                     cursor::encode(
                         &self.key,
                         &cursor::Cursor {
-                            tenant: tenant.into(),
+                            tenant: tenant.clone(),
                             instance: proof.instance_id().into(),
                             family: family.into(),
                             query: query.binding(),
@@ -414,21 +499,82 @@ async fn correlate(
     Ok(devices.into_iter().collect())
 }
 
+fn projection_error(error: sqlx::Error, operation: Deadline) -> Error {
+    let timed_out = error
+        .as_database_error()
+        .and_then(|e| e.code())
+        .is_some_and(|code| code == "57014" || code == "55P03");
+    if timed_out && operation.is_expired(RuntimeTimer.now()) {
+        Error::Deadline
+    } else {
+        Error::from(error)
+    }
+}
 fn audit_error(error: rss_audit_postgres::Error) -> Error {
+    if error.is_interrupted() {
+        return Error::Deadline;
+    }
+    use rss_audit_postgres::Error as E;
     match error {
-        rss_audit_postgres::Error::StorageContract
-        | rss_audit_postgres::Error::Protocol(_)
-        | rss_audit_postgres::Error::Conflict => Error::Integrity,
-        rss_audit_postgres::Error::Deadline(_) | rss_audit_postgres::Error::Cancelled(_) => {
-            Error::Deadline
+        E::Storage { .. } | E::Messaging(_) => Error::Storage,
+        E::ReadBudgetExceeded => Error::Deadline,
+        E::Rollback {
+            operation,
+            settlement,
+        } => {
+            let original = audit_error(*operation);
+            let cleanup = audit_error(*settlement);
+            if matches!(original, Error::Integrity) || matches!(cleanup, Error::Integrity) {
+                Error::Integrity
+            } else {
+                Error::Storage
+            }
         }
-        _ => Error::Storage,
+        _ => Error::Integrity,
     }
 }
 fn transaction_error<R>(error: rss_audit_postgres::TransactionError<Error>) -> Result<R, Error> {
+    use rss_audit_postgres::TransactionError as E;
     Err(match error {
-        rss_audit_postgres::TransactionError::Operation(e) => e,
-        rss_audit_postgres::TransactionError::Audit(e) => audit_error(e),
-        _ => Error::Storage,
+        E::Operation(e) => e,
+        E::Audit(e) => audit_error(e),
+        E::Rollback {
+            operation,
+            settlement,
+        } => {
+            let original = transaction_error::<()>(*operation).expect_err("transaction failure");
+            let cleanup = audit_error(settlement);
+            if matches!(original, Error::Integrity) || matches!(cleanup, Error::Integrity) {
+                Error::Integrity
+            } else {
+                Error::Storage
+            }
+        }
     })
+}
+fn limited_transaction<R>(
+    error: rss_audit_postgres::TransactionError<Error>,
+) -> Result<Option<R>, Error> {
+    match transaction_error::<()>(error).expect_err("transaction failure") {
+        Error::Deadline => Ok(None),
+        error => Err(error),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn rollback_failure_cannot_hide_original_integrity_failure() {
+        let error = rss_audit_postgres::TransactionError::Rollback {
+            operation: Box::new(rss_audit_postgres::TransactionError::Operation(
+                Error::Integrity,
+            )),
+            settlement: rss_audit_postgres::Error::from(sqlx::Error::PoolTimedOut),
+        };
+        assert!(matches!(
+            limited_transaction::<()>(error),
+            Err(Error::Integrity)
+        ));
+    }
 }

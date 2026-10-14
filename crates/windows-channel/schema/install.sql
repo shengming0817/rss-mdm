@@ -129,18 +129,7 @@ CREATE TABLE mdm_access.management_sessions (
 
 ALTER TABLE ONLY mdm_access.management_sessions FORCE ROW LEVEL SECURITY;
 
-CREATE TABLE mdm_windows.operations (
-    tenant_id uuid NOT NULL,
-    actor text NOT NULL,
-    instance text NOT NULL,
-    operation_id uuid NOT NULL,
-    digest text NOT NULL,
-    result text NOT NULL,
-    CONSTRAINT operations_digest_check CHECK ((length(digest) = 64)),
-    CONSTRAINT operations_result_check CHECK ((length(result) <= 2048))
-);
 
-ALTER TABLE ONLY mdm_windows.operations FORCE ROW LEVEL SECURITY;
 
 ALTER TABLE ONLY mdm_access.enrollment_certificates
     ADD CONSTRAINT enrollment_certificates_pkey PRIMARY KEY (tenant_id, request_id);
@@ -154,8 +143,6 @@ ALTER TABLE ONLY mdm_access.management_messages
 ALTER TABLE ONLY mdm_access.management_sessions
     ADD CONSTRAINT management_sessions_pkey PRIMARY KEY (tenant_id, registration, session_id);
 
-ALTER TABLE ONLY mdm_windows.operations
-    ADD CONSTRAINT operations_pkey PRIMARY KEY (tenant_id, actor, operation_id);
 
 CREATE INDEX management_retention ON mdm_access.management_sessions USING btree (tenant_id, expires_at, registration, session_id);
 
@@ -183,9 +170,7 @@ CREATE POLICY tenant ON mdm_access.management_messages USING ((tenant_id = (NULL
 
 CREATE POLICY tenant ON mdm_access.management_sessions USING ((tenant_id = (NULLIF(current_setting('rss.tenant_id'::text, true), ''::text))::uuid)) WITH CHECK ((tenant_id = (NULLIF(current_setting('rss.tenant_id'::text, true), ''::text))::uuid));
 
-ALTER TABLE mdm_windows.operations ENABLE ROW LEVEL SECURITY;
 
-CREATE POLICY tenant ON mdm_windows.operations USING ((tenant_id = (NULLIF(current_setting('rss.tenant_id'::text, true), ''::text))::uuid)) WITH CHECK ((tenant_id = (NULLIF(current_setting('rss.tenant_id'::text, true), ''::text))::uuid));
 CREATE TABLE mdm_windows.collections (
  tenant_id uuid NOT NULL,
  id uuid NOT NULL,

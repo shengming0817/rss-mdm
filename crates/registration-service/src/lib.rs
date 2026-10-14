@@ -8,6 +8,8 @@ mod error;
 mod lifecycle;
 mod operations;
 pub mod quotas;
+pub mod windows_entra;
+pub mod windows_receipts;
 pub use database::Store;
 pub use device::{
     ChannelMount, DevicePrincipal, DeviceService, Purpose, VerifiedChannelCredential,
@@ -39,3 +41,8 @@ pub const APPLE_ADE_SQL: &str = include_str!("../schema/apple-ade.sql");
 pub const AGENT_CONFIGURATIONS_SQL: &str = include_str!("../schema/agent-configurations.sql");
 
 pub const WINDOWS_ENTRA_SQL: &str = include_str!("../schema/windows-entra.sql");
+
+/// Windows operation receipts owned by registration; install after the Windows schema namespace.
+pub const WINDOWS_RECEIPTS_SQL: &str = include_str!("../schema/windows-receipts.sql");
+/// Current Entra registration policy, before native consent tables.
+pub const WINDOWS_ENTRA_POLICY_SQL: &str = include_str!("../schema/windows-entra-policy.sql");

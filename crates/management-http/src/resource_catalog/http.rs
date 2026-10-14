@@ -15,7 +15,6 @@ pub fn routes() -> Router<Arc<HttpState>> {
         .route("/resources", get(directory))
         .route("/collection-blueprints", get(blueprints))
         .route("/resources/{id}", get(read).post(write))
-        .layer(axum::extract::DefaultBodyLimit::max(8 * 1024 * 1024))
 }
 
 async fn blueprints(
@@ -89,7 +88,7 @@ async fn write(
     Path(id): Path<String>,
     body: std::result::Result<Json<Operation<Change>>, axum::extract::rejection::JsonRejection>,
 ) -> std::result::Result<Json<wire::Response>, Error> {
-    let op = body.map_err(|_| Error::Malformed)?.0;
+    let op = body.map_err(Error::from)?.0;
     let blueprint = match &op.input {
         Change::Instantiate { blueprint, version } => {
             Some(rss_mdm_resource::blueprints::get(blueprint, version).ok_or(Error::Malformed)?)

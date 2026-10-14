@@ -115,7 +115,9 @@ CAPABILITY_INPUTS = {'identity.local': ('crates/app/src/identity.rs',),
  'execution.agent.recovery': ('crates/execution-service/src/actions/recovery.rs',),
  'execution.commands.admission': ('crates/management-http/src/execution/http.rs',
                                   'crates/execution-service/src/storage.rs',
-                                  'crates/execution-service/src/admission.sql'),
+                                  'crates/execution-service/src/admission.sql',
+                                  'crates/timeline-service/src/*',
+                                  'crates/management-http/src/timeline.rs'),
  'execution.commands.dispatch': ('crates/execution-service/src/recovery.rs',),
  'execution.commands.recovery': ('crates/execution-service/src/recovery.rs',
                                  'crates/execution-service/src/lifecycle.rs'),
@@ -160,7 +162,9 @@ CAPABILITY_INPUTS = {'identity.local': ('crates/app/src/identity.rs',),
      'crates/windows-mdm/src/native/verification.rs',
      'crates/windows-mdm/src/syncml.rs'),
  'windows.issuance': ('crates/windows-channel/src/issuance.rs', 'crates/certificate/src/windows.rs'),
- 'windows.enrollment': ('crates/windows-channel/src/lib.rs',),
+ 'windows.enrollment': ('crates/windows-channel/src/lib.rs',
+                        'crates/timeline-service/src/*',
+                        'crates/management-http/src/timeline.rs'),
  'windows.management': ('crates/windows-channel/src/management.rs',
                         'crates/windows-channel/src/protection.rs'),
  'windows.commands': ('crates/windows-channel/src/management.rs',
@@ -398,7 +402,7 @@ app_family('windows',
            fixtures=('windows',), namespace='windows::t2')
 MODULES['windows.declared'] = replace(MODULES['windows.declared'], support_inputs=(*MODULES['windows.declared'].support_inputs, 'crates/app/tests/windows/support.rs', 'crates/app/tests/device/support.rs', 'crates/app/tests/enrollment/support.rs', 'crates/app/tests/execution/support.rs', 'crates/app/tests/execution/support/native.rs', 'crates/app/tests/execution/support/configuration.rs'), db_mode='fresh', scope='objects')
 add('windows.entra', selectors=('windows::t2::entra::',), profile='product',fixtures=('windows','identity','local_worker'),
-    sources=('crates/windows-channel/src/entra/*','crates/windows-channel/schema/entra.sql','crates/windows-channel/schema/entra-web.sql','crates/windows-channel/schema/entra-policy-budget.sql','crates/registration-service/schema/windows-entra.sql','crates/authorization-service/src/entra.rs','crates/management-http/src/windows_entra.rs'),
+    sources=('crates/windows-channel/src/entra/*','crates/windows-channel/schema/entra.sql','crates/windows-channel/schema/entra-web.sql','crates/registration-service/schema/windows-entra.sql','crates/authorization-service/src/entra.rs','crates/management-http/src/windows_entra.rs'),
     support=('crates/app/tests/windows/support.rs','crates/app/tests/windows/mod.rs'),tests=('crates/app/tests/windows/entra.rs',))
 MODULES['windows.entra']=replace(MODULES['windows.entra'],scope='tenant',policies=(CasePolicy('windows::t2::entra::consent_native_issuance_replay_scope_and_revocation','fresh','objects'),))
 for name in ('windows.issuance','windows.enrollment','windows.management','windows.commands','windows.retention','windows.limits','execution.commands.windows','execution.commands.configuration','execution.commands.onboarding'):
@@ -458,7 +462,7 @@ add('catalog.contract', build=None, python='catalog',
     sources=('crates/*-service/src/*/catalog.sql', 'crates/*-service/src/*/catalog.json',
              'crates/software-service/src/*/catalog.sql', 'crates/software-service/src/*/catalog.json'),
     support=('hack/command_catalog.py', 'hack/t2_modules/catalog.py'))
-add('gateway.admission', build=None, python='gateway', profile='none', fixtures=('gateway',),
+add('gateway.admission', build=None, python='gateway', fixtures=('gateway','identity'),
     sources=('deployment/nginx.conf',), support=('hack/t2_modules/gateway.py',))
 
 
@@ -807,7 +811,7 @@ consume(('crates/certificate/src/*',), 'agent.pki windows.issuance windows.manag
 consume(('crates/apple-mdm/src/*',), 'apple.scep apple.collection apple.profile apple.policy apple.onboarding apple.renewal apple.identity')
 
 
-consume(('crates/management-http/src/boundary.rs', 'crates/management-http/src/api.rs', 'crates/management-http/src/router.rs', 'crates/management-http/src/identity.rs', 'crates/management-http/src/error*.rs'), AUTH_CONSUMERS + ' api.diagnostics')
+consume(('crates/management-http/src/body_policy.rs', 'crates/management-http/src/boundary.rs', 'crates/management-http/src/api.rs', 'crates/management-http/src/router.rs', 'crates/management-http/src/identity.rs', 'crates/management-http/src/error*.rs'), AUTH_CONSUMERS + ' api.diagnostics')
 consume(('crates/authorization-service/src/initialization.rs', 'crates/app/src/authorization_bootstrap.rs'), 'authorization.initialization')
 consume(('crates/audit-integration/src/completion.rs',
          'crates/agent-channel/src/boundary.rs', 'crates/windows-channel/src/boundary.rs',
@@ -1082,6 +1086,7 @@ T1_INPUTS = ('fixtures/snapshot.json', 'crates/content-s3/tests/unit.rs', 'crate
     'crates/app/tests/assets/query_sort_unit.rs',
     'crates/app/tests/assets/unit.rs',
     'crates/app/tests/audit_budget/unit.rs',
+    'crates/audit-integration/tests/budget/unit.rs',
     'crates/app/tests/authorization/unit.rs',
     'crates/app/tests/collection/unit.rs',
     'crates/app/tests/compliance/evaluation_unit.rs',
@@ -1659,7 +1664,7 @@ consume(('crates/registration-service/src/agent/*','crates/registration-service/
 
 consume(('crates/registration-service/src/enrollment/native.rs','crates/registration-service/src/device/store.rs','crates/registration-service/schema/quota-usage.sql','crates/windows-channel/src/issuance.rs','crates/windows-channel/src/lib.rs','crates/windows-mdm/src/soap*','crates/windows-mdm/src/soap/*','crates/app/src/assembly/windows/*','crates/app/src/identity.rs','crates/app/src/api.rs','crates/authorization-service/src/context.rs','crates/authorization-service/src/session.rs','crates/management-http/src/router.rs'), 'windows.entra')
 
-consume(('crates/windows-channel/src/operations.rs',), 'windows.entra windows.issuance windows.declared')
+consume(('crates/windows-channel/src/operations.rs','crates/registration-service/src/windows_receipts.rs','crates/registration-service/schema/windows-receipts.sql'), 'windows.entra windows.issuance windows.declared')
 
 consume(('crates/execution-service/src/device_control.rs',), 'execution.commands.admission execution.commands.dispatch execution.commands.recovery execution.commands.windows apple.commands apple.policy')
 
@@ -1693,3 +1698,22 @@ MODULES['planning.group_scope']=replace(MODULES['planning.group_scope'],support_
 MODULES['execution.commands.configuration'] = replace(MODULES['execution.commands.configuration'], support_inputs=(*MODULES['execution.commands.configuration'].support_inputs, 'crates/app/tests/device/associations.rs', 'crates/app/tests/support/planning_http.rs'))
 
 consume(('crates/execution-service/src/sources/software/stats.rs',), 'planning.software execution.software.offer execution.software.recovery execution.software.content planning.self_service')
+
+# Entra's application owner and HTTP completion are shared with the native ingress.
+consume(('crates/registration-service/src/windows_entra.rs',
+         'crates/registration-service/schema/windows-entra-policy.sql'), 'windows.entra')
+consume(('crates/management-http/src/body_policy.rs',
+         'crates/management-http/src/boundary.rs',
+         'crates/management-http/src/error.rs',
+         'crates/management-http/src/error_projection.rs'), 'windows.entra')
+
+MODULES['windows.entra'] = replace(MODULES['windows.entra'], policies=(*MODULES['windows.entra'].policies, CasePolicy('windows::t2::entra::management_policy_body_replay_and_audit_faults', 'fresh', 'objects')))
+
+MODULES['agent.pki'] = replace(MODULES['agent.pki'], policies=(*MODULES['agent.pki'].policies, CasePolicy('agent_pki_tests::management_crl_publication_accepts_large_signed_material_and_rejects_overflow', 'reuse', 'tenant', ('identity','windows','agent_pki'))))
+
+# Git may select this unchanged receipt owner as a copy source; both endpoints need consumers.
+consume(('crates/inventory-service/src/apple_collection*.rs',), 'apple.collection')
+
+consume(('crates/management-http/src/collection/apple.rs',), 'apple.collection')
+consume(('crates/management-http/src/software_publication/http.rs',),
+        'publication.winget publication.brew publication.mapping publication.withdrawal publication.recovery')
