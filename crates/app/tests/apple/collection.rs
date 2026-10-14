@@ -124,7 +124,7 @@ async fn published_native_template_uses_policy_and_direct_collection_progress() 
         json!({"action":"create","kind":"native_collection"}),
     )
     .await?;
-    resource(&mut f.browser,&f.router,id,1,json!({"action":"version","version":"v1","kind":"native_collection","variants":[{"platform":"macos","architecture":"aarch64","key":"default","declaration":{"kind":"native_collection","artifact":{"reference":"native-template","length":bytes.len(),"sha256":digest},"definition":template}}]})).await?;
+    resource(&mut f.browser,&f.router,id,1,json!({"action":"version","version":"v1","kind":"native_collection","variants":["x86_64", "aarch64"].map(|architecture| json!({"platform":"macos","architecture":architecture,"key":"default","declaration":{"kind":"native_collection","artifact":{"reference":"native-template","length":bytes.len(),"sha256":digest},"definition":template}}))})).await?;
     ensure!(upload(&f.browser, &f.router, id, &bytes).await? == StatusCode::CREATED);
     resource(
         &mut f.browser,

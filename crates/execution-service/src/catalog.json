@@ -1529,7 +1529,7 @@
       "action_polls",
       "action_polls_profiles_check",
       "c",
-      "CHECK (((profiles IS NULL) OR ((jsonb_typeof(profiles) = 'array'::text) AND (jsonb_array_length(profiles) <= 4))))",
+      "CHECK (((profiles IS NULL) OR ((jsonb_typeof(profiles) = 'object'::text) AND (profiles ?& ARRAY['profiles'::text, 'environment'::text]) AND (jsonb_typeof((profiles -> 'profiles'::text)) = 'array'::text) AND (jsonb_array_length((profiles -> 'profiles'::text)) <= 4) AND (jsonb_typeof((profiles -> 'environment'::text)) = 'object'::text) AND (octet_length((profiles)::text) <= 16384))))",
       true
     ],
     [

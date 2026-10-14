@@ -165,7 +165,9 @@ fn registered_paths_feed_group_sets_and_sensitive_conditions_need_an_explicit_gr
     assert_eq!(decision.objects[0].decision, g::Decision::Match);
     restrict_fields(&mut device, &catalog, false);
     assert!(!device.fields.contains_key(&custom.key));
-    assert!(device.fields.contains_key(&root));
+    assert!(!device.fields.contains_key(&root));
+    assert!(filter::require_visible(&catalog, &condition, false).is_err());
+    assert!(filter::require_visible(&catalog, &condition, true).is_ok());
 }
 
 #[test]

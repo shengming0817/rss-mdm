@@ -94,7 +94,7 @@ CREATE TABLE mdm_commands.action_polls (
     registration uuid NOT NULL,
     cancellation_after uuid,
     policy_after uuid,
-    profiles jsonb CHECK (profiles IS NULL OR (jsonb_typeof(profiles)='array' AND jsonb_array_length(profiles)<=4))
+    profiles jsonb CHECK (profiles IS NULL OR (jsonb_typeof(profiles)='object' AND profiles ?& ARRAY['profiles','environment'] AND jsonb_typeof(profiles->'profiles')='array' AND jsonb_array_length(profiles->'profiles')<=4 AND jsonb_typeof(profiles->'environment')='object' AND octet_length(profiles::text)<=16384))
 );
 
 ALTER TABLE ONLY mdm_commands.action_polls FORCE ROW LEVEL SECURITY;

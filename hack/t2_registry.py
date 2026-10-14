@@ -57,7 +57,7 @@ CAPABILITY_INPUTS = {'identity.local': ('crates/app/src/identity.rs',),
  'agent.configurations': ('crates/registration-service/src/agent/configurations.rs','crates/registration-service/src/agent/settings.rs','crates/registration-service/schema/agent-configurations.sql','crates/software-service/src/agent_packages*','crates/management-http/src/agent_enrollment.rs','crates/management-http/src/software_catalog.rs','crates/app/src/agent_configurations.rs','crates/agent-wire/src/enroll/configuration.rs'),
  'agent.registration': ('crates/agent-channel/src/lib.rs',),
  'agent.reports': ('crates/agent-channel/src/lib.rs',),
- 'assets.http': ('crates/management-http/src/assets/http.rs', 'crates/inventory-service/src/assets/store.rs'),
+ 'assets.http': ('crates/management-http/src/assets/http.rs', 'crates/inventory-service/src/assets/store.rs', 'crates/inventory-service/src/assets/fields.rs'),
  'assets.queries': ('crates/inventory-service/src/assets/query*.rs',
                     'crates/inventory-service/src/assets/filter.rs'),
  'assets.sources': ('crates/inventory-service/src/assets/store.rs',
@@ -722,12 +722,12 @@ consume(('crates/execution-service/src/input_preparation.rs',
 consume(('crates/execution-service/src/freeze_inputs.rs', 'crates/flow-service/src/resource_catalog/mod.rs'),
         'planning.agent_policy planning.remote planning.onboarding')
 TASK_CONSUMERS = 'planning.self_service planning.onboarding planning.policy planning.agent_policy planning.frequency planning.remote planning.software execution.agent.delivery execution.agent.poll execution.agent.content execution.agent.history execution.agent.recovery execution.software.offer execution.software.content execution.software.recovery'
-consume(('crates/agent-wire/src/collection.rs', 'crates/agent-channel/src/inventory_wire.rs'),
+consume(('crates/agent-wire/src/collection.rs', 'crates/agent-wire/src/collection_scope.rs', 'crates/agent-channel/src/inventory_wire.rs'),
         TASK_CONSUMERS + ' agent.registration agent.reports')
 for name in ('execution.agent.delivery', 'execution.software.offer'):
     MODULES[name] = replace(MODULES[name], support_inputs=(*MODULES[name].support_inputs,
                            'crates/app/tests/support/task_signature.rs'))
-consume(('crates/agent-wire/src/tasks.rs', 'crates/agent-wire/schema/runtime/task-*.json',
+consume(('crates/agent-wire/src/tasks.rs', 'crates/agent-wire/src/collection_environment.rs', 'crates/agent-wire/schema/runtime/task-*.json',
          'crates/agent-wire/schema/runtime/signed-task-v1.schema.json', 'crates/execution-service/src/task_signing.rs',
          'crates/execution-service/src/actions/mod.rs'), TASK_CONSUMERS)
 # lib.rs owns shared identities, capability, errors, registration and report shapes.
@@ -815,7 +815,9 @@ consume(('crates/agent-channel/src/boundary.rs', 'crates/agent-channel/src/bindi
 consume(('crates/agent-channel/src/content.rs',), 'execution.agent.content execution.software.content')
 consume(('crates/windows-channel/src/collection.rs', 'crates/windows-channel/src/boundary.rs'), 'windows.management windows.retention windows.limits inventory.runtime')
 consume(('crates/app/src/assembly/windows/*',), 'windows.enrollment windows.issuance windows.management windows.retention windows.limits native.tls')
-consume(('crates/inventory-service/src/collection*',), 'agent.reports windows.management windows.retention apple.collection apple.renewal inventory.runtime')
+# Retired intake paths are covered by their template-based successor.
+consume(('crates/management-http/src/collection/*',), 'apple.collection')
+consume(('crates/inventory-service/src/collection*', 'crates/inventory-service/src/apple_collection.rs', 'crates/inventory-service/src/apple_collection_receipts.rs'), 'agent.reports windows.management windows.retention apple.collection apple.renewal inventory.runtime')
 consume(('crates/inventory-service/src/groups/*',), 'planning.http planning.group_scope assets.group_input compliance.group_input')
 consume(('crates/content-service/src/lib.rs', 'crates/content-service/src/bindings.rs', 'crates/content-service/src/service*', 'crates/content-service/src/transaction.rs', 'crates/content-service/src/admission.sql'), 'content.storage content.http content.mirror content.gc execution.agent.content execution.software.content software.http')
 consume(('crates/content-service/src/catalog.sql', 'crates/content-service/src/catalog.json'),
@@ -1030,6 +1032,7 @@ MODULES['planning.http'] = replace(MODULES['planning.http'], production_inputs=(
     'crates/group-postgres/src/directory.rs',
     'crates/resource-postgres/src/directory.rs',
     'crates/flow-service/src/resource_catalog/directory.rs',
+    'crates/flow-service/src/resource_catalog/wire.rs',
     'crates/flow-service/src/planning/directory.rs',
     'crates/management-http/src/enrollment/directory.rs',
     'crates/management-http/src/resource_catalog/http.rs'), support_inputs=(*MODULES['planning.http'].support_inputs, 'crates/app/tests/support/agent_execution.rs'))
@@ -1072,7 +1075,7 @@ TOOL_INPUTS = {
     'hack/candidate_fixture.py': ('test_candidate_smoke', 'test_t2_context'),
     'hack/candidate_smoke.py': ('test_candidate_smoke',),
 }
-T1_INPUTS = ('crates/content-s3/tests/unit.rs',) + ('crates/app/tests/agent_pki/health.rs','crates/certificate/tests/agent.rs','crates/certificate/tests/apple.rs','crates/certificate-archive-service/tests/behavior.rs','crates/authorization-service/tests/unit.rs','crates/inventory-service/tests/runtime.rs','crates/software-service/tests/management/*') + tuple(f'crates/{name}/tests/*' for name in (
+T1_INPUTS = ('fixtures/snapshot.json', 'crates/content-s3/tests/unit.rs', 'crates/inventory-service/tests/assets/unit.rs') + ('crates/app/tests/agent_pki/health.rs','crates/certificate/tests/agent.rs','crates/certificate/tests/apple.rs','crates/certificate-archive-service/tests/behavior.rs','crates/authorization-service/tests/unit.rs','crates/inventory-service/tests/runtime.rs','crates/software-service/tests/management/*') + tuple(f'crates/{name}/tests/*' for name in (
     'inventory', 'group', 'scope', 'policy', 'resource', 'software-release',
     'compliance', 'agent-wire', 'windows-mdm', 'apple-mdm', 'content-service')) + (
     'crates/app/tests/agent/unit.rs',

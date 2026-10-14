@@ -258,6 +258,18 @@ fn structured_paths_are_derived_from_registered_schemas_not_free_json_queries() 
 #[test]
 fn empty_catalog_represents_uninitialized_tenant_without_inventing_fields() {
     let catalog = rss_mdm_inventory::Catalog::new(vec![]).unwrap();
-    assert!(catalog.definition(rss_mdm_inventory::builtin::MODEL).is_err());
-    assert!(rss_mdm_inventory::CollectionDefinition::new("empty", "1", rss_mdm_inventory::Source::AgentBuiltin, vec![]).is_err());
+    assert!(
+        catalog
+            .definition(rss_mdm_inventory::builtin::MODEL)
+            .is_err()
+    );
+    assert!(
+        rss_mdm_inventory::CollectionDefinition::new(
+            "empty",
+            "1",
+            rss_mdm_inventory::Source::AgentBuiltin,
+            vec![]
+        )
+        .is_err()
+    );
 }

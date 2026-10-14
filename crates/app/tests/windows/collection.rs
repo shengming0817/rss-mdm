@@ -116,13 +116,27 @@ async fn template_flow(
     let mut owner = Some(owner);
     let template = NativeCollectionDefinition::new(NativeCollectionSpec {
         scope: rss_mdm_resource::TemplateScope::Device,
-        applicability: Default::default(),
+        applicability: rss_mdm_resource::Applicability {
+            minimum_build: Some(22000),
+            enrollments: ["primary".into()].into(),
+            ..Default::default()
+        },
         adapter: NativeAdapter::WindowsCsp,
         mappings: [(
             "device.model".into(),
             NativeMapping {
                 query: "./DevDetail/DevTyp".into(),
-                mapping: rss_mdm_resource::ValueMapping::identity(""),
+                mapping: rss_mdm_resource::ValueMapping {
+                    pointer: "".into(),
+                    conversion: rss_mdm_resource::Conversion::Enum {
+                        values: [(
+                            "template-workstation".into(),
+                            json!("canonical-workstation"),
+                        )]
+                        .into(),
+                    },
+                    columns: Default::default(),
+                },
             },
         )]
         .into(),
@@ -140,7 +154,7 @@ async fn template_flow(
         json!({"action":"create","kind":"native_collection"}),
     )
     .await?;
-    resource(&mut f.browser,&f.router,id,1,json!({"action":"version","version":"v1","kind":"native_collection","variants":[{"platform":"windows","architecture":"x86_64","key":"default","declaration":{"kind":"native_collection","artifact":{"reference":"native-template","length":bytes.len(),"sha256":digest},"definition":template}}]})).await?;
+    resource(&mut f.browser,&f.router,id,1,json!({"action":"version","version":"v1","kind":"native_collection","variants":["x86_64", "aarch64"].map(|architecture| json!({"platform":"windows","architecture":architecture,"key":"default","declaration":{"kind":"native_collection","artifact":{"reference":"native-template","length":bytes.len(),"sha256":digest},"definition":template}}))})).await?;
     ensure!(
         upload_for(&f.browser, &f.router, id, &bytes, "windows", "x86_64").await?
             == StatusCode::CREATED
@@ -403,6 +417,19 @@ async fn template_flow(
     ensure!(
         result.0 == StatusCode::OK && result.1["asset"]["run"]["result"] == "snapshot",
         "native progress: {result:?}"
+    );
+    let progress: String = sqlx::query_scalar(
+        "SELECT attempts FROM mdm_access.collection_runs WHERE tenant_id=$1::uuid AND id=$2",
+    )
+    .bind(case_tenant())
+    .bind(runs[0])
+    .fetch_one(&mut pg)
+    .await?;
+    let progress: serde_json::Value = serde_json::from_str(&progress)?;
+    ensure!(
+        progress["fields"]["device.model"]["value"]
+            == json!({"kind":"value","value":{"kind":"string","value":"canonical-workstation"}}),
+        "enum mapping did not reach durable collection: {progress}"
     );
     // Restore the durable pre-settlement state while retaining the already sealed response.
     // Recovery happens after its original execution timeout, as after worker downtime.

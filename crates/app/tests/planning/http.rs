@@ -1017,6 +1017,17 @@ async fn collection_blueprints_instantiate_replay_and_keep_tenant_versions() -> 
     ensure!(catalog.1["items"].as_array().unwrap().len() == 4);
     let path = format!("/api/v1/resources/{}", uuid::Uuid::new_v4());
     let body = json!({"operationId":uuid::Uuid::new_v4(),"expectedRevision":0,"input":{"action":"instantiate","blueprint":"macos.hardware","version":"1"}});
+    // Fail after the resource commit, then resume the same operation with content enabled.
+    let mut without_content = fixture.base.clone();
+    without_content["content"] = serde_json::Value::Null;
+    let unavailable = app(&without_content, authority::reader(&fixture.base).await?).await?;
+    let interrupted = settled_write(&mut browser, &unavailable, &path, body.clone()).await?;
+    ensure!(
+        !interrupted.0.is_success(),
+        "missing content falsely completed instantiation"
+    );
+    let committed = browser.call(&router, Method::GET, &path, None).await?;
+    ensure!(committed.0 == StatusCode::OK && committed.1["revision"] == 2);
     let first = settled_write(&mut browser, &router, &path, body.clone()).await?;
     ensure!(
         first.0 == StatusCode::OK,

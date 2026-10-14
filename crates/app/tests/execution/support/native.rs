@@ -59,10 +59,7 @@ pub(crate) async fn begin(
             _ => None,
         })
         .collect::<Vec<_>>();
-    let mut expected = vec![
-        "./DevDetail/SwV",
-        "./Vendor/MSFT/DeviceStatus/OS/Edition",
-    ];
+    let mut expected = vec!["./DevDetail/SwV", "./Vendor/MSFT/DeviceStatus/OS/Edition"];
     expected.extend(task_uri);
     ensure!(
         gets.iter().map(|(_, uri)| uri.as_str()).collect::<Vec<_>>() == expected,

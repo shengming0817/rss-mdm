@@ -73,10 +73,6 @@ pub fn validate_mapping(
     fn check(ty: &ValueType, mapping: &rss_mdm_resource::ValueMapping) -> Result<(), Error> {
         use rss_mdm_resource::Conversion;
         if !mapping.columns.is_empty() {
-            let ty = match ty {
-                ValueType::Array { items, .. } => items.as_ref(),
-                other => other,
-            };
             let ValueType::Object { properties } = ty else {
                 return Err(Error::Malformed);
             };
@@ -105,7 +101,15 @@ pub fn validate_mapping(
         Ok(())
     }
     mapping.validate().map_err(|_| Error::Malformed)?;
-    check(&field.value_type, mapping)
+    let target = match (&field.value_type, &mapping.conversion) {
+        (ValueType::Array { items, .. }, conversion)
+            if !matches!(conversion, rss_mdm_resource::Conversion::Bitmask { .. }) =>
+        {
+            items.as_ref()
+        }
+        (ty, _) => ty,
+    };
+    check(target, mapping)
 }
 /// Shared mapping boundary for native, SQL and script output. Missing data is never a tombstone.
 pub fn mapped_value(
@@ -118,6 +122,10 @@ pub fn mapped_value(
     };
     if let (ValueType::Array { items, .. }, serde_json::Value::Array(rows)) =
         (&field.value_type, raw)
+        && !matches!(
+            mapping.conversion,
+            rss_mdm_resource::Conversion::Bitmask { .. }
+        )
     {
         return NativeValue::list(
             field,
@@ -192,4 +200,100 @@ pub fn result(
         })
         .collect::<Result<_, Error>>()?;
     CollectionProgress::native(definition, values, now).map_err(|_| Error::Malformed)
+}
+
+#[cfg(test)]
+mod mapping_tests {
+    use super::*;
+    use rss_mdm_inventory::{Scalar, builtin};
+    use rss_mdm_resource::{Conversion, ValueMapping};
+    use serde_json::json;
+
+    #[test]
+    fn publication_and_collection_agree_on_array_conversions() {
+        let mut field = builtin::fields()
+            .into_iter()
+            .find(|f| f.key == builtin::MODEL)
+            .unwrap();
+        field.value_type = ValueType::Array {
+            items: Box::new(ValueType::Integer),
+            max_items: 10,
+        };
+        let mut mapping = ValueMapping {
+            pointer: "".into(),
+            conversion: Conversion::Integer,
+            columns: Default::default(),
+        };
+        validate_mapping(&field, &mapping).unwrap();
+        assert!(
+            matches!(mapped_value(&field, &mapping, &json!(["2048"])), NativeValue::Value(CollectedValue::Value(Scalar::Array(v))) if v == vec![Scalar::Integer(2048)])
+        );
+        assert!(matches!(
+            mapped_value(&field, &mapping, &json!(["bad"])),
+            NativeValue::InvalidItems(_)
+        ));
+        field.value_type = ValueType::Array {
+            items: Box::new(ValueType::Enum {
+                values: ["a".into(), "b".into()].into(),
+            }),
+            max_items: 10,
+        };
+        mapping.conversion = Conversion::Bitmask {
+            flags: [("1".into(), "a".into()), ("2".into(), "b".into())].into(),
+        };
+        validate_mapping(&field, &mapping).unwrap();
+        assert!(
+            matches!(mapped_value(&field, &mapping, &json!(3)), NativeValue::Value(CollectedValue::Value(Scalar::Array(v))) if v.len() == 2)
+        );
+        assert!(matches!(
+            mapped_value(&field, &mapping, &json!([3])),
+            NativeValue::Invalid
+        ));
+    }
+
+    #[test]
+    fn unsupported_nested_array_projection_is_rejected_at_publication() {
+        let mut field = builtin::fields()
+            .into_iter()
+            .find(|f| f.key == builtin::MODEL)
+            .unwrap();
+        field.value_type = ValueType::Array {
+            items: Box::new(ValueType::Object {
+                properties: [(
+                    "nested".into(),
+                    ValueType::Array {
+                        items: Box::new(ValueType::Object {
+                            properties: [("x".into(), ValueType::Integer)].into(),
+                        }),
+                        max_items: 10,
+                    },
+                )]
+                .into(),
+            }),
+            max_items: 10,
+        };
+        let mapping = ValueMapping {
+            pointer: "".into(),
+            conversion: Conversion::Identity,
+            columns: [(
+                "nested".into(),
+                ValueMapping {
+                    pointer: "/nested".into(),
+                    conversion: Conversion::Identity,
+                    columns: [(
+                        "x".into(),
+                        ValueMapping {
+                            pointer: "/x".into(),
+                            conversion: Conversion::Integer,
+                            columns: Default::default(),
+                        },
+                    )]
+                    .into(),
+                },
+            )]
+            .into(),
+        };
+        mapping.validate().unwrap();
+        assert!(validate_mapping(&field, &mapping).is_err());
+    }
 }

@@ -97,13 +97,27 @@ async fn write(
         _ => None,
     };
     let operation = op.operation_id;
-    let result = run(&app, &auth, &audit, id.clone(), Some(op)).await?;
-    if let Some(blueprint) = blueprint {
+    // Content settles independently. Copy before the resource transaction commits,
+    // so a later content rollback cannot erase the confirmed resource commit.
+    let content_audit = blueprint.as_ref().map(|_| {
+        audit.require_request_settlement();
+        audit.transaction_copy()
+    });
+    let result = match run(&app, &auth, &audit, id.clone(), Some(op)).await {
+        Ok(result) => result,
+        Err(error) => {
+            if let Some(content_audit) = content_audit {
+                content_audit.finalize(None);
+            }
+            return Err(error);
+        }
+    };
+    if let (Some(blueprint), Some(content_audit)) = (blueprint, content_audit) {
         let bytes = blueprint.definition.canonical();
-        rss_mdm_content_service::service::upload(
+        let uploaded = rss_mdm_content_service::service::upload(
             &app.content,
             &auth.proof,
-            &audit,
+            &content_audit,
             &id,
             &rss_mdm_content_service::service::Selection {
                 version: blueprint.label(),
@@ -115,7 +129,12 @@ async fn write(
             },
             bytes.as_slice(),
         )
-        .await?;
+        .await;
+        content_audit.finalize(uploaded.as_ref().err().and_then(|error| {
+            matches!(error, rss_mdm_content_service::service::Error::Audit(_))
+                .then_some(rss_mdm_audit_integration::FailureReason::Transaction)
+        }));
+        uploaded?;
     }
     Ok(result)
 }

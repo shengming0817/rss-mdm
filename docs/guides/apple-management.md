@@ -55,11 +55,11 @@ GetBootstrapToken/SetBootstrapToken 由已绑定的设备证书认证，只有�
 
 ## 采集
 
-`POST /api/v1/devices/{id}/collection-runs` 请求为 `{"source":"mdm.apple","requestId":"非零 UUID"}`，要求设备级 `inventory_collect`。202 回执包含 `runId` 和 `result:"pending"`；相同 requestId 精确重放。同一事务冻结当前注册、generation、epoch、coverage、批准、十分钟期限和 DeviceInformation 请求。
+Apple 采集通过普通 Resource 的 `native_collection` 模板发布、由 Policy 精确绑定版本。可以从官方蓝图实例化租户模板，再编辑字段和映射；周期执行、启用和显式重执行沿用既有 Policy 路径，见[资产采集](assets.md)。固定的采集 POST 入口已移除。
 
-设备 `/mdm` Idle 获取固定 Model/OSVersion 查询。只有准确关联的 CommandUUID 和当前身份才能封存结果。CollectionRun 不创建 device-command，也不产生 Applied。查询 `GET /api/v1/devices/{id}/collection-runs/{run}?source=mdm.apple` 需要 `inventory_read`，呈现每字段质量、服务端接收时间和真实 Observation 投递状态，Apple 字段没有伪造的 SyncML 数字状态。
+设备 `/mdm` Idle 获取模板声明的 DeviceInformation 或 InstalledApplicationList 查询。只有准确关联的 CommandUUID 和当前身份才能封存结果。查询 `GET /api/v1/devices/{id}/collection-runs/{run}?source=mdm.apple` 需要 `inventory_read`，呈现每字段质量、服务端接收时间和真实 Observation 投递状态，Apple 字段没有伪造的 SyncML 数字状态。
 
-完整 Snapshot 经既有 Observation/Inventory 投影。Partial/Failed 保留最后完整资产，最新质量由 CollectionRun 单独呈现；不拼接旧值伪造新 Snapshot，不引入字段 TTL。纯超时且没有字段结果只记录失败 run，不制造 Observation 报告。
+采集结果经既有 Observation/Inventory 投影；完整快照只影响该定义选中的字段。失败、缺失或非法字段保留最后已知值，合法部分结果可更新对应字段，质量由 CollectionRun 单独呈现；不拼接旧值伪造新 Snapshot，不引入字段 TTL。纯超时且没有字段结果只记录失败 run，不制造 Observation 报告。
 
 ## 原生操作与 Profile
 
