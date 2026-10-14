@@ -38,6 +38,10 @@ fn seal(
         .seal_bytes(&bytes, &crate::protection::collection_aad(&run.scope, id)?)
         .map_err(|_| corrupt())
 }
+#[allow(
+    clippy::too_many_arguments,
+    reason = "native dispatch carries the current authority, transaction, protection and negotiated protocol context explicitly"
+)]
 pub async fn send(
     source: &dyn rss_mdm_execution_service::source_authority::SourceAuthority,
     c: &mut PgConnection,

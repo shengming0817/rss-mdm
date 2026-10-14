@@ -400,15 +400,37 @@ impl State {
                         }
                     }
                 }
-                Purpose::Verify { expected } => {
-                    if children(raw).as_ref() != Ok(expected) {
-                        self.failed.insert(step.field.clone(), 500);
-                    }
+                Purpose::Verify { expected } if children(raw).as_ref() != Ok(expected) => {
+                    self.failed.insert(step.field.clone(), 500);
                 }
                 _ => (),
             }
         }
         self.steps.extend(added);
+        self.verify_completed(plan)?;
+        let limits = CodecLimits::default();
+        if self.steps.len() > limits.session_commands
+            || self
+                .steps
+                .iter()
+                .filter_map(|s| s.value.as_ref())
+                .map(String::len)
+                .sum::<usize>()
+                > output_bytes
+            || serde_json::to_vec(self).map_err(|_| Error::Value)?.len() > limits.object_bytes
+        {
+            // Freeze failure rather than rolling back and repeatedly accepting oversized input.
+            for field in plan.0.keys() {
+                self.failed.insert(field.clone(), 500);
+            }
+            self.steps.retain(|s| s.sent.is_some());
+            for s in &mut self.steps {
+                s.value = None;
+            }
+        }
+        Ok(())
+    }
+    fn verify_completed(&mut self, plan: &Plan) -> Result<(), Error> {
         for (field, read) in &plan.0 {
             if !matches!(read, Read::Inventory { .. })
                 || self.failed.contains_key(field)
@@ -438,26 +460,6 @@ impl State {
                     .collect::<Result<Vec<_>, Error>>()?;
                 self.steps.extend(checks);
                 self.verified.insert(field.clone());
-            }
-        }
-        let limits = CodecLimits::default();
-        if self.steps.len() > limits.session_commands
-            || self
-                .steps
-                .iter()
-                .filter_map(|s| s.value.as_ref())
-                .map(String::len)
-                .sum::<usize>()
-                > output_bytes
-            || serde_json::to_vec(self).map_err(|_| Error::Value)?.len() > limits.object_bytes
-        {
-            // Freeze failure rather than rolling back and repeatedly accepting oversized input.
-            for field in plan.0.keys() {
-                self.failed.insert(field.clone(), 500);
-            }
-            self.steps.retain(|s| s.sent.is_some());
-            for s in &mut self.steps {
-                s.value = None;
             }
         }
         Ok(())

@@ -1714,7 +1714,6 @@ MODULES['agent.pki'] = replace(MODULES['agent.pki'], policies=(*MODULES['agent.p
 # Git may select this unchanged receipt owner as a copy source; both endpoints need consumers.
 consume(('crates/inventory-service/src/apple_collection*.rs',), 'apple.collection')
 
-consume(('crates/management-http/src/collection/apple.rs',), 'apple.collection')
 consume(('crates/management-http/src/software_publication/http.rs',),
         'publication.winget publication.brew publication.mapping publication.withdrawal publication.recovery')
 

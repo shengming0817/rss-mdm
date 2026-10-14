@@ -765,6 +765,10 @@ async fn terminated_template_result(
     Ok(())
 }
 
+#[allow(
+    clippy::cognitive_complexity,
+    reason = "sequential real protocol and durable projection assertions shared by dynamic T2 scenarios"
+)]
 async fn dynamic_result(
     host: &Host,
     f: &mut Client,
@@ -876,23 +880,22 @@ async fn dynamic_result(
         if fragment {
             packet.final_message = false;
             for c in &mut packet.commands {
-                if let s::Command::Results(v) = c {
-                    if v.items[0]
+                if let s::Command::Results(v) = c
+                    && v.items[0]
                         .source
                         .as_deref()
                         .is_some_and(|u| u.ends_with("/Name"))
-                    {
-                        let mut result = v.clone();
-                        result.items[0].data = Some(rss_mdm_windows_mdm::Secret("ple".into()));
-                        tail = Some(s::Command::Results(result));
-                        v.items[0].data = Some(rss_mdm_windows_mdm::Secret("Exam".into()));
-                        v.items[0].more_data = true;
-                        v.items[0].meta = Some(s::Meta {
-                            format: Some("chr".into()),
-                            size: Some(7),
-                            ..Default::default()
-                        });
-                    }
+                {
+                    let mut result = v.clone();
+                    result.items[0].data = Some(rss_mdm_windows_mdm::Secret("ple".into()));
+                    tail = Some(s::Command::Results(result));
+                    v.items[0].data = Some(rss_mdm_windows_mdm::Secret("Exam".into()));
+                    v.items[0].more_data = true;
+                    v.items[0].meta = Some(s::Meta {
+                        format: Some("chr".into()),
+                        size: Some(7),
+                        ..Default::default()
+                    });
                 }
             }
         }

@@ -148,8 +148,8 @@ impl NativeCollectionDefinition {
                     let NativeQuery::Windows(read) = &mapping.query else {
                         return Err(Error::InvalidInput);
                     };
-                    if let WindowsRead::Scalar { uri } = read {
-                        if uri.contains("/DMClient/")
+                    if let WindowsRead::Scalar { uri } = read
+                        && (uri.contains("/DMClient/")
                             || uri.len() > 1024
                             || ![
                                 "./DevInfo/",
@@ -162,10 +162,9 @@ impl NativeCollectionDefinition {
                             || uri.split('/').any(|p| p.is_empty() || p == "..")
                             || !uri.bytes().all(|b| {
                                 b.is_ascii_alphanumeric() || matches!(b, b'.' | b'/' | b'_' | b'-')
-                            })
-                        {
-                            return Err(Error::InvalidInput);
-                        }
+                            }))
+                    {
+                        return Err(Error::InvalidInput);
                     }
                 }
                 NativeAdapter::AppleDeviceInformation => {
