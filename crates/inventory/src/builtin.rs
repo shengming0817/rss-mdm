@@ -172,5 +172,14 @@ pub fn fields() -> Vec<FieldDefinition> {
         definition.item_key = Some("id".into());
         fields.push(definition);
     }
+    fields.extend(standard::fields());
     fields
+}
+
+mod standard;
+/// Stable system identities used by enrollment, device association and channel lifecycle.
+/// Other seed definitions have the same lifecycle as tenant-authored extension fields.
+pub fn protected(key: FieldKey) -> bool {
+    matches!(key.as_str(), "device.serial_number" | "device.hardware_uuid" |
+        "device.manufacturer" | "channel.agent.installation" | "channel.mdm.enrollment")
 }

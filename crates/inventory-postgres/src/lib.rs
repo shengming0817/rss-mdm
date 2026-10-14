@@ -84,7 +84,7 @@ pub async fn verify_watermark_fence(
 mod catalog;
 pub use catalog::{
     catalog_at_in, catalog_in, collection_in, collection_version_in, datasets_in, publish_field_in,
-    register_collection_in, retire_field_in,
+    register_collection_in, retire_field_in, initialize_fields_in,
 };
 /// Single current field/collection format for fresh installations.
 pub const UNIFIED_COLLECTION_SQL: &str = include_str!("../migrations/0007_unified_collection.sql");

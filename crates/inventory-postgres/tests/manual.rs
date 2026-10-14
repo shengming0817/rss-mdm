@@ -195,3 +195,27 @@ async fn field_catalog_cas_history_and_rollback_are_atomic()
     c.close().await?;
     Ok(())
 }
+
+#[tokio::test]
+#[ignore = "make t2 MODULE=inventory.manual: real TLS PostgreSQL"]
+async fn seed_retirement_and_reinitialization_preserve_tenant_catalog() -> Result<(), Box<dyn std::error::Error>> {
+    let config: serde_json::Value = serde_json::from_slice(&std::fs::read(std::env::var("BACKEND_PG_CONFIG")?)?)?;
+    let options = PgConnectOptions::new().host("localhost").port(config["port"].as_u64().unwrap() as u16)
+        .database(config["database"].as_str().unwrap()).username("mdm_flow_runtime").password("runtime-fixture")
+        .ssl_mode(PgSslMode::VerifyFull).ssl_root_cert(config["ca"].as_str().unwrap());
+    let mut c = sqlx::PgConnection::connect_with(&options).await?;
+    let tenant = rss_request_context::TenantId::parse(case::tenant())?;
+    let mut tx = c.begin().await?;
+    sqlx::query("SELECT set_config('rss.tenant_id',$1,true)").bind(tenant.to_string()).execute(&mut *tx).await?;
+    pg::initialize_fields_in(&mut tx, tenant).await?;
+    let key = rss_mdm_inventory::builtin::OFFICE_FLOOR;
+    let before = pg::watermark_in(&mut tx, tenant).await?;
+    assert!(pg::retire_field_in(&mut tx, tenant, key, 1).await?);
+    pg::initialize_fields_in(&mut tx, tenant).await?;
+    assert!(pg::catalog_in(&mut tx, tenant).await?.definition(key).is_err());
+    assert!(pg::catalog_at_in(&mut tx, tenant, before).await?.definition(key).is_ok());
+    let core = rss_mdm_inventory::FieldKey::parse("device.hardware_uuid")?;
+    assert!(pg::retire_field_in(&mut tx, tenant, core, 1).await.is_err());
+    tx.rollback().await?;
+    Ok(())
+}
