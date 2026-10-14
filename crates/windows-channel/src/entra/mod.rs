@@ -94,12 +94,10 @@ fn hash(value: &str) -> String {
 
 mod admission;
 mod consent;
-mod policy;
 mod protocol;
 use admission::admit;
 use consent::consent;
 mod web;
-use policy::settings_in;
-pub use policy::{Management, Policy, Revision, Settings, Update};
 pub(crate) use protocol::enrollment;
+use rss_mdm_registration_service::windows_entra::{Settings, settings_in};
 pub use web::browser_routes;

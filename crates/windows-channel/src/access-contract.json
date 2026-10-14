@@ -38,13 +38,6 @@
     },
     {
       "schema": "mdm_windows",
-      "table": "operations",
-      "read_write": true,
-      "updates": [],
-      "delete_policy": null
-    },
-    {
-      "schema": "mdm_windows",
       "table": "collections",
       "read_write": true,
       "updates": [
@@ -119,16 +112,6 @@
         "confirmed"
       ],
       "delete_policy": "existsselect1frommdm_access.management_sessionsswheres.tenant_id=trust_deliveries.tenant_idands.registration=trust_deliveries.registrationands.session_id=trust_deliveries.session::textands.expires_at<clock_timestamp"
-    },
-    {
-      "schema": "mdm_windows",
-      "table": "entra_policy",
-      "read_write": true,
-      "updates": [
-        "revision",
-        "document"
-      ],
-      "delete_policy": null
     },
     {
       "schema": "mdm_windows",

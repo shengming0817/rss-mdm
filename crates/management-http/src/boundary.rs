@@ -246,4 +246,95 @@ mod tests {
             "collection_start"
         );
     }
+    #[tokio::test]
+    async fn registration_errors_retain_typed_completion_and_secure_projection() {
+        use rss_mdm_audit_integration::Error as A;
+        use rss_mdm_registration_service::Error as R;
+        let audit = |error| R::Audit(Arc::new(error));
+        for (error, status, code, expected) in [
+            (
+                R::Unauthorized,
+                401,
+                "invalid_identity",
+                Some(ResponseFailure::Denied),
+            ),
+            (
+                R::Forbidden,
+                403,
+                "permission_denied",
+                Some(ResponseFailure::Denied),
+            ),
+            (
+                R::CommitUnknown,
+                503,
+                "operation_unknown",
+                Some(ResponseFailure::CommitUnknown),
+            ),
+            (
+                R::RollbackFailed,
+                503,
+                "operation_rollback_unconfirmed",
+                Some(ResponseFailure::RollbackFailed),
+            ),
+            (
+                R::Deadline,
+                503,
+                "service_unavailable",
+                Some(ResponseFailure::Deadline),
+            ),
+            (
+                audit(A::Receipt),
+                500,
+                "audit_integrity_error",
+                Some(ResponseFailure::AuditIntegrity),
+            ),
+            (
+                audit(A::Isolation),
+                500,
+                "audit_contract_error",
+                Some(ResponseFailure::AuditContract),
+            ),
+            (
+                audit(A::Admission),
+                500,
+                "audit_contract_error",
+                Some(ResponseFailure::AuditContract),
+            ),
+            (
+                audit(A::Audit(rss_audit_postgres::Error::InvalidBound)),
+                500,
+                "audit_contract_error",
+                Some(ResponseFailure::AuditContract),
+            ),
+            (
+                audit(A::Audit(rss_audit_postgres::Error::StorageContract)),
+                500,
+                "audit_integrity_error",
+                Some(ResponseFailure::AuditIntegrity),
+            ),
+            (R::Storage, 503, "service_unavailable", None),
+            (R::Malformed, 400, "malformed_request", None),
+            (R::Conflict, 409, "operation_conflict", None),
+        ] {
+            let response = Error::from(error).into_response();
+            assert_eq!(response.status().as_u16(), status);
+            assert_eq!(classify(response.extensions().get::<Error>()), expected);
+            let id = uuid::Uuid::new_v4();
+            let response = secure(response, id);
+            assert_eq!(response.headers()["x-request-id"], id.to_string());
+            assert_eq!(response.headers()[header::CACHE_CONTROL], "no-store");
+            assert_eq!(response.headers()[header::REFERRER_POLICY], "no-referrer");
+            assert_eq!(
+                response.headers()[header::X_CONTENT_TYPE_OPTIONS],
+                "nosniff"
+            );
+            let body = axum::body::to_bytes(response.into_body(), 1024)
+                .await
+                .unwrap();
+            assert_eq!(
+                serde_json::from_slice::<serde_json::Value>(&body).unwrap()["code"],
+                code
+            );
+        }
+    }
 }

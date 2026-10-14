@@ -204,8 +204,12 @@ fn units() -> Vec<(&'static str, &'static str)> {
             rss_mdm_agent_channel::INSTALL_SQL,
         ),
         (
-            "windows-channel-schema-v1",
+            "windows-channel-schema-v2",
             rss_mdm_windows_channel::INSTALL_SQL,
+        ),
+        (
+            "windows-registration-receipts-v1",
+            rss_mdm_registration_service::WINDOWS_RECEIPTS_SQL,
         ),
         (
             "apple-channel-schema-v2",
@@ -244,7 +248,7 @@ fn units() -> Vec<(&'static str, &'static str)> {
             rss_mdm_agent_channel::RELATIONS_SQL,
         ),
         (
-            "windows-channel-relations-v1",
+            "windows-channel-relations-v2",
             rss_mdm_windows_channel::RELATIONS_SQL,
         ),
         (
@@ -306,16 +310,16 @@ fn units() -> Vec<(&'static str, &'static str)> {
             rss_mdm_registration_service::WINDOWS_ENTRA_SQL,
         ),
         (
-            "windows-entra-channel-v1",
+            "windows-entra-policy-v1",
+            rss_mdm_registration_service::WINDOWS_ENTRA_POLICY_SQL,
+        ),
+        (
+            "windows-entra-channel-v2",
             rss_mdm_windows_channel::ENTRA_SQL,
         ),
         (
-            "windows-entra-web-v1",
+            "windows-entra-web-v2",
             rss_mdm_windows_channel::ENTRA_WEB_SQL,
-        ),
-        (
-            "windows-entra-policy-budget-v1",
-            rss_mdm_windows_channel::ENTRA_POLICY_BUDGET_SQL,
         ),
     ]
 }

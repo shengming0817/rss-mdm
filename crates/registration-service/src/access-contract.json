@@ -147,6 +147,23 @@
         "state"
       ],
       "delete_policy": null
+    },
+    {
+      "schema": "mdm_windows",
+      "table": "operations",
+      "read_write": true,
+      "updates": [],
+      "delete_policy": null
+    },
+    {
+      "schema": "mdm_windows",
+      "table": "entra_policy",
+      "read_write": true,
+      "updates": [
+        "revision",
+        "document"
+      ],
+      "delete_policy": null
     }
   ],
   "functions": [],

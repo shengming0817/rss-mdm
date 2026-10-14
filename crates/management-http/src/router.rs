@@ -12,7 +12,7 @@ use serde::Deserialize;
 use std::sync::Arc;
 pub struct Services {
     pub associations: Arc<rss_mdm_device_service::Associations>,
-    pub windows_entra: Option<Arc<rss_mdm_windows_channel::entra::Management>>,
+    pub windows_entra: Option<Arc<rss_mdm_registration_service::windows_entra::Management>>,
     pub pki: Arc<rss_mdm_pki_service::registry::Registry>,
     pub pki_clock: Arc<dyn rss_mdm_registration_service::agent_pki::Clock>,
     pub agent_enrollment: Option<Arc<rss_mdm_registration_service::agent::Service>>,

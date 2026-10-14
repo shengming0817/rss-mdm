@@ -766,3 +766,194 @@ async fn background_policy_does_not_enable_identity_jit() -> anyhow::Result<()> 
     server.abort();
     Ok(())
 }
+
+/// Real Entra management handler, authorization, PG and HTTP audit completion.
+#[tokio::test]
+#[ignore = "make t2 MODULE=windows.entra"]
+async fn management_policy_body_replay_and_audit_faults() -> anyhow::Result<()> {
+    use sha2::{Digest, Sha256};
+    use sqlx::{Connection, Executor};
+    let profile = EntraTokenProfile {
+        tenant: Uuid::new_v4(),
+        app_id: Uuid::new_v4(),
+        authorized_clients: vec![Uuid::new_v4()],
+        required_scopes: vec!["mdm.enroll".into()],
+        device_claim: "deviceid".into(),
+    };
+    // Management never needs to fetch an Entra token; retain the real configured verifier.
+    let verifier = Arc::new(rss_identity_oidc::entra::HttpEntra::for_loopback_test(
+        "http://127.0.0.1:9/keys".into(),
+    )?);
+    let host = Host::with_entra(
+        rss_mdm_windows_channel::entra::Config {
+            provider_id: Uuid::new_v4(),
+            token: profile,
+            native_callbacks: vec!["ms-appx-web://Microsoft.AAD.BrokerPlugin/terms".into()],
+        },
+        verifier,
+        false,
+    )
+    .await?;
+    let mut admin = browser(&host);
+    let mut owner = sqlx::PgConnection::connect_with(&options("postgres")?).await?;
+    let path = "/api/v1/windows/entra-policy";
+    let update = |revision, operation| {
+        json!({"expectedRevision":revision,"operationId":operation,
+        "policy":{"enabled":true,"allUsers":true,"users":[],"termsVersion":"large-terms", "termsText":"t".repeat(20 * 1024),"allowBackground":false}})
+    };
+    let key = Uuid::new_v4();
+    let input = update(0, key);
+    ensure!(serde_json::to_vec(&input)?.len() > 16384);
+    let (status, receipt) = admin
+        .call(&host.browser, Method::PUT, path, Some(input.clone()))
+        .await?;
+    ensure!(
+        status == StatusCode::OK && receipt["revision"] == 1,
+        "large policy: {status} {receipt}"
+    );
+    ensure!(
+        admin
+            .call(&host.browser, Method::PUT, path, Some(input.clone()))
+            .await?
+            .1
+            == receipt
+    );
+    let read = admin.call(&host.browser, Method::GET, path, None).await?.1;
+    ensure!(read["revision"] == 1 && read["policy"]["termsText"] == "t".repeat(20 * 1024));
+    ensure!(
+        admin
+            .call(
+                &host.browser,
+                Method::PUT,
+                path,
+                Some(update(0, Uuid::new_v4()))
+            )
+            .await?
+            .0
+            == StatusCode::CONFLICT
+    );
+
+    // A durable commit with a lost acknowledgement must remain unknown at the ingress.
+    host.app
+        .audit_store
+        .inject_next_fault(rss_audit_postgres::PgFault::CommitUnknownAfterAck);
+    let committed_key = Uuid::new_v4();
+    let committed = update(1, committed_key);
+    let (status, body) = admin
+        .call(&host.browser, Method::PUT, path, Some(committed.clone()))
+        .await?;
+    ensure!(status == StatusCode::SERVICE_UNAVAILABLE && body["code"] == "operation_unknown");
+    ensure!(admin.call(&host.browser, Method::GET, path, None).await?.1["revision"] == 2);
+    ensure!(
+        admin
+            .call(&host.browser, Method::PUT, path, Some(committed))
+            .await?
+            .1["revision"]
+            == 2
+    );
+
+    // A conflict drives rollback; lost rollback acknowledgement must not become a conflict.
+    host.app
+        .audit_store
+        .inject_next_fault(rss_audit_postgres::PgFault::RollbackFailedAfterAck);
+    let (status, body) = admin
+        .call(
+            &host.browser,
+            Method::PUT,
+            path,
+            Some(update(0, Uuid::new_v4())),
+        )
+        .await?;
+    ensure!(
+        status == StatusCode::SERVICE_UNAVAILABLE
+            && body["code"] == "operation_rollback_unconfirmed"
+    );
+    ensure!(admin.call(&host.browser, Method::GET, path, None).await?.1["revision"] == 2);
+
+    // Missing runtime privileges are an audit contract failure, before a policy write starts.
+    owner
+        .execute("REVOKE SELECT ON mdm_audit.receipts FROM mdm_access")
+        .await?;
+    let failure = admin
+        .call(
+            &host.browser,
+            Method::PUT,
+            path,
+            Some(update(2, Uuid::new_v4())),
+        )
+        .await;
+    owner
+        .execute("GRANT SELECT ON mdm_audit.receipts TO mdm_access")
+        .await?;
+    let (status, body) = failure?;
+    ensure!(
+        status == StatusCode::INTERNAL_SERVER_ERROR && body["code"] == "audit_contract_error",
+        "contract: {status} {body}"
+    );
+    ensure!(admin.call(&host.browser, Method::GET, path, None).await?.1["revision"] == 2);
+
+    // Replay must reject a damaged business receipt as integrity, without revising policy.
+    let event = format!(
+        "e-{:x}",
+        Sha256::digest(format!("windows-entra-policy:{key}").as_bytes())
+    );
+    let original: Vec<u8> = sqlx::query_scalar("SELECT canonical FROM mdm_audit.receipts WHERE tenant_id=$1::uuid AND source_id='mdm.business' AND event_id=$2")
+        .bind(case_tenant()).bind(&event).fetch_one(&mut owner).await?;
+    sqlx::query("UPDATE mdm_audit.receipts SET canonical=decode('01','hex') WHERE tenant_id=$1::uuid AND source_id='mdm.business' AND event_id=$2")
+        .bind(case_tenant()).bind(&event).execute(&mut owner).await?;
+    let failure = admin
+        .call(&host.browser, Method::PUT, path, Some(input))
+        .await;
+    sqlx::query("UPDATE mdm_audit.receipts SET canonical=$3 WHERE tenant_id=$1::uuid AND source_id='mdm.business' AND event_id=$2")
+        .bind(case_tenant()).bind(&event).bind(original).execute(&mut owner).await?;
+    let (status, body) = failure?;
+    ensure!(
+        status == StatusCode::INTERNAL_SERVER_ERROR && body["code"] == "audit_integrity_error",
+        "integrity: {status} {body}"
+    );
+    ensure!(admin.call(&host.browser, Method::GET, path, None).await?.1["revision"] == 2);
+
+    // The business commit also makes request-settlement admission fail. Completion must
+    // preserve the original unknown result instead of replacing it with audit_contract_error.
+    owner.execute("CREATE FUNCTION mdm_audit.break_management_settlement() RETURNS trigger LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog AS $$ BEGIN IF NEW.source_id='mdm.business' THEN REVOKE SELECT ON mdm_audit.receipts FROM mdm_access; END IF; RETURN NEW; END $$; CREATE TRIGGER break_management_settlement AFTER INSERT ON mdm_audit.receipts FOR EACH ROW EXECUTE FUNCTION mdm_audit.break_management_settlement()").await?;
+    host.app
+        .audit_store
+        .inject_next_fault(rss_audit_postgres::PgFault::CommitUnknownAfterAck);
+    let unknown = update(2, Uuid::new_v4());
+    let failure = admin
+        .call(&host.browser, Method::PUT, path, Some(unknown.clone()))
+        .await;
+    owner.execute("GRANT SELECT ON mdm_audit.receipts TO mdm_access; DROP TRIGGER break_management_settlement ON mdm_audit.receipts; DROP FUNCTION mdm_audit.break_management_settlement()").await?;
+    let (status, body) = failure?;
+    ensure!(
+        status == StatusCode::SERVICE_UNAVAILABLE && body["code"] == "operation_unknown",
+        "settlement replaced uncertainty: {status} {body}"
+    );
+    ensure!(admin.call(&host.browser, Method::GET, path, None).await?.1["revision"] == 3);
+    ensure!(
+        admin
+            .call(&host.browser, Method::PUT, path, Some(unknown))
+            .await?
+            .1["revision"]
+            == 3
+    );
+
+    // Complete removal of the current management permission is checked by the real use case.
+    let proof = crate::device::test_support::admin(case_tenant(), "admin-a").await?;
+    crate::test_support::identity::set_grants(case_tenant(), proof.principal_id(), vec![]).await?;
+    ensure!(
+        admin
+            .call(
+                &host.browser,
+                Method::PUT,
+                path,
+                Some(update(2, Uuid::new_v4()))
+            )
+            .await?
+            .0
+            == StatusCode::FORBIDDEN
+    );
+    owner.close().await?;
+    host.close().await?;
+    Ok(())
+}

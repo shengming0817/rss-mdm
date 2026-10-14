@@ -7,9 +7,9 @@ use crate::{
         Authorization,
         store::{request, uuid},
     },
-    operations::Operation,
 };
 use rss_mdm_inventory::ReportSource;
+use rss_mdm_registration_service::windows_receipts::{self, Operation};
 use rss_mdm_windows_mdm::provisioning::EnrollmentType;
 use rss_request_context::TenantId;
 use sqlx::Row;
@@ -282,11 +282,7 @@ pub(crate) async fn complete(
     let credential = mount.credential(checked.fingerprint())?;
     let digest =
         crate::enrollment::digest(&("enrollment_issue", d.id, &intent.csr, &intent.configuration));
-    let operation = Operation {
-        actor: crate::operations::Actor::from_coordinates(&d),
-        key: d.operation,
-        digest: &digest,
-    };
+    let operation = Operation::from_coordinates(&d, &digest);
     let budget = rss_mdm_audit_integration::budget::AuditBudget::retirement(None);
     let control = budget.control();
     let attempt = store
@@ -324,7 +320,7 @@ pub(crate) async fn complete(
                             inputs.authority.coordinates().actor,
                             inputs.authority.coordinates().operation
                         ),
-                        inputs.operation.digest.as_bytes(),
+                        inputs.operation.digest().as_bytes(),
                         200,
                         "success",
                         Some(inputs.authority.coordinates().id),
@@ -381,7 +377,7 @@ async fn complete_on(
     let credential = *credential;
     let operation = *operation;
     let audit = *audit;
-    let old = crate::operations::replay(tx, operation).await?;
+    let old = windows_receipts::replay(tx, operation).await?;
     let row = authority.current(tx).await?;
     if old.is_some() {
         crate::enrollment_store::active_windows_enrollment(tx, &d.tenant, d.id).await?;
@@ -458,7 +454,7 @@ async fn complete_on(
     }
     audit.registration(receipt.registration);
     authority.check_live()?;
-    crate::operations::save(
+    windows_receipts::save(
         tx,
         operation,
         &serde_json::to_string(&receipt).expect("closed receipt"),

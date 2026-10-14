@@ -10,7 +10,7 @@
 | Cargo owner | 职责 |
 |---|---|
 | `authorization-service` | 当前管理主体、授权规则、授权证明及初始化 |
-| `registration-service` | 注册世代、来源授权、凭据和设备生命周期 |
+| `registration-service` | 注册世代、来源授权、凭据和设备生命周期；Entra 注册策略与 Windows 注册操作回执 |
 | `inventory-service` | 采集质量与持久接收、资产、分组及合规 |
 | `flow-service` | 目标与 Scope/Policy 协调、任务组合和资源目录；Group/Compliance 管理入口直达 Inventory |
 | `execution-service` | 冻结执行输入、命令、Run、Attempt、一次性远程操作、执行存储与交付恢复；独立 Queries 提供类型化读事实 |
@@ -33,3 +33,8 @@
 Policy 管理直接消费 PolicyStore、资源版本读取和 Inputs，不持有整个 Planning。软件准备只借用目录与原生导出读取能力；已验证的导出描述不携带发布驱动、凭据或仓库写能力。App 单次装配独立 Inputs/Queries 与执行服务，再向各消费者借出对应对象。
 
 各入口直接投影实际 owner 错误，Flow 不承接所有业务错误。Audit 的闭合诊断分类由 audit-integration 持有，事务结算仍由原发起方借用 RSS 完成。共享运行角色的完整越权检查属于 App 启动装配；Planning、Resource 和 Execution 分别核验自身事务所需合同，不扩张中央业务 owner 分类。
+
+Entra 注册策略的管理用例、模型、策略表和 Windows 注册操作回执由 registration-service 唯一持有。
+management-http 与 windows-channel 直接消费该应用边界；Windows 通道持有 token、TOU、consent 和原生协议。
+回执 API 借用原事务 connection，策略更新与原生 issuance 保留各自事务结算；HTTP 错误由管理入口投影。
+当前安装定义按该归属重新组成，只支持空库安装与精确当前 manifest 重放，不提供旧安装兼容路径。

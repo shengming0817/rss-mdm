@@ -50,7 +50,6 @@ GRANT UPDATE(nonce) ON TABLE mdm_access.management_sessions TO mdm_command_runti
 GRANT UPDATE(run_id) ON TABLE mdm_access.management_sessions TO mdm_access;
 GRANT UPDATE(run_id) ON TABLE mdm_access.management_sessions TO mdm_command_runtime;
 
-GRANT SELECT,INSERT ON TABLE mdm_windows.operations TO mdm_access;
 ALTER TABLE mdm_windows.collections ADD CONSTRAINT windows_collection_run FOREIGN KEY(tenant_id,id) REFERENCES mdm_access.collection_runs(tenant_id,id);
 ALTER TABLE mdm_windows.collections ADD CONSTRAINT windows_collection_registration FOREIGN KEY(tenant_id,registration) REFERENCES mdm_access.registrations(tenant_id,id);
 GRANT USAGE ON SCHEMA mdm_windows TO mdm_command_runtime;
