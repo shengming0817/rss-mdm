@@ -21,8 +21,10 @@ pub async fn start(
     deadline: i64,
 ) -> Result<(), Error> {
     let source = match template.spec().adapter {
-        NativeAdapter::WindowsCsp => rss_mdm_inventory::ReportSource::MdmWindows,
-        _ => rss_mdm_inventory::ReportSource::MdmApple,
+        NativeAdapter::WindowsRead => rss_mdm_inventory::ReportSource::MdmWindows,
+        NativeAdapter::AppleDeviceInformation | NativeAdapter::AppleInstalledApplications => {
+            rss_mdm_inventory::ReportSource::MdmApple
+        }
     };
     let target =
         crate::device::store::allocate_collection_in(c, &p.tenant.to_string(), &p.device, source)
@@ -184,10 +186,11 @@ pub fn result(
         .map(|(key, mapping)| {
             let key = FieldKey::parse(key).map_err(|_| Error::Malformed)?;
             let field = definition.field(key).map_err(|_| Error::Malformed)?;
-            let raw = if mapping.query.is_empty() {
+            let query = mapping.query.apple_key().ok_or(Error::Malformed)?;
+            let raw = if query.is_empty() {
                 Some(values)
             } else {
-                values.get(&mapping.query)
+                values.get(query)
             };
             Ok((
                 key,

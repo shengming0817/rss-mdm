@@ -151,7 +151,12 @@ pub async fn prepare_native(
                         .spec()
                         .mappings
                         .values()
-                        .map(|m| m.query.clone())
+                        .map(|m| {
+                            m.query
+                                .apple_key()
+                                .expect("validated Apple query")
+                                .to_owned()
+                        })
                         .collect::<std::collections::BTreeSet<_>>()
                         .into_iter()
                         .map(plist::Value::String)

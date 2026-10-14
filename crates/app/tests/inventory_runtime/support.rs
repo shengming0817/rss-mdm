@@ -135,7 +135,7 @@ async fn report_on(
         rss_mdm_resource::NativeCollectionSpec {
             scope: rss_mdm_resource::TemplateScope::Device,
             applicability: Default::default(),
-            adapter: rss_mdm_resource::NativeAdapter::WindowsCsp,
+            adapter: rss_mdm_resource::NativeAdapter::WindowsRead,
             mappings: keys
                 .iter()
                 .zip(["./DevInfo/Mod", "./DevDetail/SwV"])
@@ -143,7 +143,9 @@ async fn report_on(
                     (
                         key.as_str().into(),
                         rss_mdm_resource::NativeMapping {
-                            query: query.into(),
+                            query: rss_mdm_resource::NativeQuery::Windows(
+                                rss_mdm_resource::WindowsRead::Scalar { uri: query.into() },
+                            ),
                             mapping: rss_mdm_resource::ValueMapping::identity(""),
                         },
                     )

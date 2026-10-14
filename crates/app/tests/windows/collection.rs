@@ -58,9 +58,21 @@ async fn template_nonfinal_message_budget_cannot_publish_a_snapshot() -> anyhow:
     )
     .await
 }
+#[tokio::test]
+#[ignore = "MODULE=windows.management: dynamic inventory through SyncML and projection"]
+async fn dynamic_inventory_reenumerates_and_projects() -> anyhow::Result<()> {
+    template_flow(None, 9, Completion::Inventory).await
+}
+#[tokio::test]
+#[ignore = "MODULE=windows.management: a missing dynamic child cannot publish an empty list"]
+async fn dynamic_inventory_missing_child_is_partial() -> anyhow::Result<()> {
+    template_flow(None, 9, Completion::MissingChild).await
+}
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Completion {
     Snapshot,
+    Inventory,
+    MissingChild,
     Historical,
     SessionAbort,
     MessageBudget,
@@ -82,6 +94,7 @@ async fn template_flow(
         None,
         &[
             "inventory_read",
+            "inventory_sensitive_read",
             "inventory_collect",
             "operation_read",
             "operation_cancel",
@@ -143,11 +156,15 @@ async fn template_flow(
             enrollments: ["primary".into()].into(),
             ..Default::default()
         },
-        adapter: NativeAdapter::WindowsCsp,
+        adapter: NativeAdapter::WindowsRead,
         mappings: [(
             "device.model".into(),
             NativeMapping {
-                query: "./DevDetail/DevTyp".into(),
+                query: rss_mdm_resource::NativeQuery::Windows(
+                    rss_mdm_resource::WindowsRead::Scalar {
+                        uri: "./DevDetail/DevTyp".into(),
+                    },
+                ),
                 mapping: rss_mdm_resource::ValueMapping {
                     pointer: "".into(),
                     conversion: rss_mdm_resource::Conversion::Enum {
@@ -165,6 +182,15 @@ async fn template_flow(
         timeout_seconds: 120,
         output_bytes: 16384,
     })?;
+    let template = if matches!(completion, Completion::Inventory | Completion::MissingChild) {
+        let mut spec = template.spec().clone();
+        let builtin = rss_mdm_resource::blueprints::get("windows.software.win32", "2").unwrap();
+        spec.mappings
+            .extend(builtin.definition.spec().mappings.clone());
+        NativeCollectionDefinition::new(spec)?
+    } else {
+        template
+    };
     let bytes = template.canonical();
     let id = Uuid::new_v4();
     let digest = rss_mdm_resource::Digest::of(&bytes).bytes();
@@ -338,6 +364,12 @@ async fn template_flow(
             == 1,
         "template Get missing: {gets:?}"
     );
+    if matches!(completion, Completion::Inventory | Completion::MissingChild) {
+        dynamic_result(&host, &mut f, &peer, &mut pg, policy, wire, completion).await?;
+        crate::test_support::stop_worker(owner.take()).await?;
+        host.close().await?;
+        return Ok(());
+    }
     if request_message == CodecLimits::default().session_messages as u32 - 1
         && completion == Completion::Snapshot
     {
@@ -658,5 +690,122 @@ async fn terminated_template_result(
         terminal == (true, "failed".into(), reason.into(), true, false),
         "termination published collection evidence for {run}: {terminal:?}"
     );
+    Ok(())
+}
+
+async fn dynamic_result(
+    host: &Host,
+    f: &mut Client,
+    peer: &crate::windows::test_support::Peer,
+    pg: &mut sqlx::PgConnection,
+    policy: Uuid,
+    mut wire: s::Message,
+    completion: Completion,
+) -> anyhow::Result<()> {
+    let run:Uuid=sqlx::query_scalar("SELECT r.id FROM mdm_commands.action_runs r JOIN mdm_policy.versions v ON(v.tenant_id,v.id)=(r.tenant_id,r.policy_version) WHERE r.tenant_id=$1::uuid AND v.policy=$2").bind(case_tenant()).bind(policy).fetch_one(&mut *pg).await?;
+    let mut enumerations = 0;
+    for _ in 0..6 {
+        let gets: Vec<_> = wire
+            .commands
+            .iter()
+            .filter_map(|c| match c {
+                s::Command::Get { id, items, .. } => Some((*id, items[0].target.clone().unwrap())),
+                _ => None,
+            })
+            .collect();
+        if gets.is_empty() {
+            break;
+        }
+        let mut packet = native::report(&peer.message, &gets, "", 200);
+        packet.header.message_id = wire.header.message_id + 1;
+        packet.final_message = true;
+        for c in &mut packet.commands {
+            match c {
+                s::Command::Status(v) => {
+                    v.message_ref = wire.header.message_id;
+                    if completion == Completion::MissingChild
+                        && gets
+                            .iter()
+                            .any(|(id, uri)| *id == v.command_ref && uri.ends_with("/Version"))
+                    {
+                        v.code = 404;
+                    }
+                }
+                s::Command::Results(v) => {
+                    v.message_ref = Some(wire.header.message_id);
+                    for item in &mut v.items {
+                        let uri = item.source.as_deref().unwrap();
+                        let value = if uri.ends_with("/Win32InstalledProgram") {
+                            enumerations += 1;
+                            "program"
+                        } else if uri.ends_with("/Name") {
+                            "Example"
+                        } else if uri.ends_with("/Publisher") {
+                            "Vendor"
+                        } else if uri.ends_with("/Version") {
+                            "1.2"
+                        } else if uri.ends_with("/Source") {
+                            "Registry"
+                        } else if uri.ends_with("/RegKey") {
+                            "HKLM\\Software\\Example"
+                        } else {
+                            "template-workstation"
+                        };
+                        item.data = Some(rss_mdm_windows_mdm::Secret(value.into()));
+                    }
+                }
+                _ => (),
+            }
+        }
+        packet.commands.retain(|c|!matches!(c,s::Command::Results(v) if completion==Completion::MissingChild && v.items.iter().any(|i|i.source.as_deref().is_some_and(|u|u.ends_with("/Version")))));
+        let response = native::post(&peer.mutual, &peer.url, &packet).await?;
+        ensure!(
+            response.status() == StatusCode::OK,
+            "dynamic response: {}",
+            response.status()
+        );
+        let bytes = response.bytes().await?;
+        let replay = native::post(&peer.mutual, &peer.url, &packet).await?;
+        ensure!(replay.status() == StatusCode::OK);
+        ensure!(replay.bytes().await? == bytes);
+        wire = s::decode(&bytes, &CodecLimits::default())?;
+    }
+    let result:(String,String)=sqlx::query_as("SELECT result,attempts FROM mdm_access.collection_runs WHERE tenant_id=$1::uuid AND id=$2 AND sealed_at IS NOT NULL").bind(case_tenant()).bind(run).fetch_one(&mut *pg).await?;
+    let attempts: serde_json::Value = serde_json::from_str(&result.1)?;
+    if completion == Completion::MissingChild {
+        ensure!(result.0 == "partial", "{result:?}");
+        ensure!(
+            attempts["fields"]["device.software.windows.win32"]["value"].is_null(),
+            "{attempts}"
+        );
+    } else {
+        ensure!(
+            result.0 == "snapshot" && enumerations == 2,
+            "{result:?}, enumerations={enumerations}"
+        );
+        let row = &attempts["fields"]["device.software.windows.win32"]["value"]["value"]["value"]
+            [0]["value"];
+        ensure!(
+            row["name"]["value"] == "Example" && row["version"]["value"] == "1.2",
+            "{attempts}"
+        );
+        tokio::time::timeout(Duration::from_secs(15),async {
+            loop {
+                let pending:bool=sqlx::query_scalar("SELECT delivery_pending FROM mdm_access.collection_runs WHERE tenant_id=$1::uuid AND id=$2").bind(case_tenant()).bind(run).fetch_one(&mut *pg).await?;
+                if !pending {break;}
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+            Ok::<_,anyhow::Error>(())
+        }).await??;
+        let page=tokio::time::timeout(Duration::from_secs(15),async {
+            loop {
+                let page=f.browser.call(&f.router,Method::GET,&format!("/api/v1/devices/{}/inventory-lists/device.software.windows.win32?limit=100",case_device()),None).await?;
+                if page.0==StatusCode::OK && page.1["asset"]["total"]==1 {break Ok::<_,anyhow::Error>(page);}
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        }).await??;
+        ensure!(page.1.to_string().contains("Example"), "{page:?}");
+        let _ = host;
+    }
     Ok(())
 }

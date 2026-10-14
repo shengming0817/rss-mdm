@@ -73,22 +73,13 @@ pub const CATEGORIES: [&str; 6] = [
 /// Executable native templates with already implemented protocol adapters.
 pub fn catalog() -> Vec<Blueprint> {
     let mut out = Vec::new();
-    for (platform, name, adapter, os, model) in [
-        (
-            Platform::Windows,
-            "windows",
-            NativeAdapter::WindowsCsp,
-            "./DevDetail/SwV",
-            "./DevInfo/Mod",
-        ),
-        (
-            Platform::MacOS,
-            "macos",
-            NativeAdapter::AppleDeviceInformation,
-            "OSVersion",
-            "Model",
-        ),
-    ] {
+    for (platform, name, adapter, os, model) in [(
+        Platform::MacOS,
+        "macos",
+        NativeAdapter::AppleDeviceInformation,
+        "OSVersion",
+        "Model",
+    )] {
         for (category, field, query) in [
             ("identity", "device.os.version", os),
             ("hardware", "device.model", model),
@@ -105,7 +96,11 @@ pub fn catalog() -> Vec<Blueprint> {
                     mappings: [(
                         field.into(),
                         NativeMapping {
-                            query: query.into(),
+                            query: if platform == Platform::Windows {
+                                NativeQuery::Windows(WindowsRead::Scalar { uri: query.into() })
+                            } else {
+                                NativeQuery::Apple(query.into())
+                            },
                             mapping: ValueMapping::identity(""),
                         },
                     )]
@@ -117,6 +112,7 @@ pub fn catalog() -> Vec<Blueprint> {
             });
         }
     }
+    out.extend(windows::catalog());
     out
 }
 /// Exact lookup; there is no moving latest pointer.
@@ -125,3 +121,5 @@ pub fn get(id: &str, version: &str) -> Option<Blueprint> {
         .into_iter()
         .find(|b| b.id == id && b.version == version)
 }
+
+mod windows;

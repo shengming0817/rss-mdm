@@ -12,7 +12,7 @@ pub async fn native_on(
 ) -> Result<bool, Error> {
     let mut environment = CollectionEnvironment::default();
     let adapter = template.spec().adapter;
-    if adapter == NativeAdapter::WindowsCsp {
+    if adapter == NativeAdapter::WindowsRead {
         let facts: Option<(String, i32)> = sqlx::query_as("SELECT os_version,edition FROM mdm_commands.capabilities WHERE tenant_id=$1::uuid AND registration=$2 AND generation=$3")
             .bind(tenant.to_string()).bind(target.registration).bind(target.generation).fetch_optional(&mut *c).await.map_err(crate::database::db)?;
         if let Some((version, edition)) = facts {
@@ -26,7 +26,7 @@ pub async fn native_on(
     let Some(enrollment) = enrollment else {
         return Ok(false);
     };
-    if adapter == NativeAdapter::WindowsCsp {
+    if adapter == NativeAdapter::WindowsRead {
         let purpose = match enrollment.as_str() {
             "primary" => rss_mdm_registration_service::Purpose::Primary,
             "windows_declared" => rss_mdm_registration_service::Purpose::WindowsDeclared,
@@ -41,17 +41,10 @@ pub async fn native_on(
             rss_mdm_windows_mdm::native::Scope::Device,
             purpose,
         )?;
-        for mapping in template.spec().mappings.values() {
-            let request = rss_mdm_windows_mdm::native::Request::from_uri(
-                &mapping.query,
-                rss_mdm_windows_mdm::native::Verb::Get,
-                None,
-                rss_mdm_windows_mdm::native::Scope::Device,
-            )
+        let plan = crate::input_preparation::windows_collection_plan(template)
             .map_err(|_| Error::Unsupported)?;
-            if request.compile(context, 1).is_err() {
-                return Ok(false);
-            }
+        if plan.applicable(context).is_err() {
+            return Ok(false);
         }
     } else {
         let rights: Option<i32> = sqlx::query_scalar("SELECT access_rights FROM mdm_apple.devices WHERE tenant_id=$1::uuid AND registration=$2 AND state='active'").bind(tenant.to_string()).bind(target.registration).fetch_optional(&mut *c).await.map_err(crate::database::db)?;
@@ -65,7 +58,7 @@ pub async fn native_on(
         }
     }
     let capability = match adapter {
-        NativeAdapter::WindowsCsp => "windows_csp",
+        NativeAdapter::WindowsRead => "windows_read",
         NativeAdapter::AppleDeviceInformation => "apple_device_information",
         NativeAdapter::AppleInstalledApplications => "apple_installed_applications",
     };

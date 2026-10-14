@@ -1,0 +1,180 @@
+use rss_mdm_inventory::{FieldKey, builtin};
+use rss_mdm_resource::{NativeAdapter, blueprints};
+#[test]
+fn every_windows_blueprint_compiles_and_maps_only_published_fields() {
+    let fields = builtin::fields();
+    for blueprint in blueprints::catalog()
+        .into_iter()
+        .filter(|b| b.definition.spec().adapter == NativeAdapter::WindowsRead)
+    {
+        let plan = crate::input_preparation::windows_collection_plan(&blueprint.definition)
+            .unwrap_or_else(|e| panic!("{}: {e:?}", blueprint.id));
+        plan.applicable(rss_mdm_windows_mdm::native::Context {
+            build: Some([10, 0, 22621, 0]),
+            edition: Some(48),
+            scope: rss_mdm_windows_mdm::native::Scope::Device,
+            enrollment: rss_mdm_windows_mdm::native::Enrollment::Primary,
+        })
+        .unwrap_or_else(|e| panic!("{}: {e:?}", blueprint.id));
+        for (name, mapping) in &blueprint.definition.spec().mappings {
+            let key = FieldKey::parse(name).unwrap();
+            let field = fields
+                .iter()
+                .find(|f| f.key == key)
+                .unwrap_or_else(|| panic!("{name}"));
+            rss_mdm_inventory_service::collection::native::validate_mapping(
+                field,
+                &mapping.mapping,
+            )
+            .unwrap_or_else(|e| panic!("{name}: {e:?}"));
+        }
+    }
+}
+#[test]
+fn security_codes_and_capacity_have_exact_native_meanings() {
+    use rss_mdm_inventory::{CollectedValue, NativeValue, Scalar};
+    let fields = builtin::fields();
+    let read = |pack: &str, key: &str, raw: &str| {
+        let b = blueprints::get(pack, "2").unwrap();
+        let field = fields.iter().find(|f| f.key.as_str() == key).unwrap();
+        rss_mdm_inventory_service::collection::native::value(
+            field,
+            &b.definition.spec().mappings[key],
+            &serde_json::json!(raw),
+        )
+    };
+    assert!(
+        matches!(read("windows.security.firewall","device.security.windows.firewall.status","0"),NativeValue::Value(CollectedValue::Value(Scalar::String(v))) if v=="enabled")
+    );
+    assert!(matches!(
+        read(
+            "windows.security.firewall",
+            "device.security.windows.firewall.status",
+            "99"
+        ),
+        NativeValue::Invalid
+    ));
+    assert!(
+        matches!(read("windows.security.bitlocker","device.security.windows.bitlocker.compliance_errors","0"),NativeValue::Value(CollectedValue::Value(Scalar::Array(v))) if v.is_empty())
+    );
+    assert!(
+        matches!(read("windows.security.bitlocker","device.security.windows.bitlocker.compliance_errors","4"),NativeValue::Value(CollectedValue::Value(Scalar::Array(v))) if v.len()==1)
+    );
+    assert!(matches!(
+        read(
+            "windows.security.bitlocker",
+            "device.security.windows.bitlocker.compliance_errors",
+            "262144"
+        ),
+        NativeValue::Invalid
+    ));
+    assert!(matches!(
+        read(
+            "windows.hardware",
+            "device.hardware.windows.available_memory_bytes",
+            "1024"
+        ),
+        NativeValue::Value(CollectedValue::Value(Scalar::Integer(1073741824)))
+    ));
+}
+
+#[test]
+fn every_standard_pack_replays_raw_syncml_and_matches_normalized_fixture() {
+    use rss_mdm_inventory::{CollectedValue, NativeValue, Scalar};
+    use rss_mdm_windows_mdm::{
+        CodecLimits,
+        native::{Context, Enrollment, Scope, collection::Outcome},
+        syncml::{self, Command},
+    };
+    fn plain(value: &Scalar) -> serde_json::Value {
+        match value {
+            Scalar::String(v) => v.clone().into(),
+            Scalar::Integer(v) | Scalar::Time(v) => (*v).into(),
+            Scalar::Boolean(v) => (*v).into(),
+            Scalar::Number(v) => serde_json::json!(v.into_inner()),
+            Scalar::Array(v) => v.iter().map(plain).collect(),
+            Scalar::Object(v) => v.iter().map(|(k, v)| (k.clone(), plain(v))).collect(),
+        }
+    }
+    let root =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/windows-collection");
+    let fields = builtin::fields();
+    for b in blueprints::catalog()
+        .into_iter()
+        .filter(|b| b.definition.spec().adapter == NativeAdapter::WindowsRead)
+    {
+        let id = b.id.strip_prefix("windows.").unwrap();
+        let xml = std::fs::read(root.join(format!("{id}.xml"))).unwrap();
+        let raw = syncml::decode(&xml, &CodecLimits::default()).unwrap();
+        let values: std::collections::BTreeMap<_, _> = raw
+            .commands
+            .into_iter()
+            .filter_map(|c| match c {
+                Command::Results(v) => Some(v.items),
+                _ => None,
+            })
+            .flatten()
+            .map(|i| (i.source.unwrap(), i.data.unwrap().0))
+            .collect();
+        let plan = crate::input_preparation::windows_collection_plan(&b.definition).unwrap();
+        let mut state = plan.start("RSS").unwrap();
+        let context = Context {
+            build: Some([10, 0, 22621, 0]),
+            edition: Some(48),
+            scope: Scope::Device,
+            enrollment: Enrollment::Primary,
+        };
+        let mut outputs = std::collections::BTreeMap::new();
+        for message in 1..=5 {
+            let mut commands = Vec::new();
+            let mut command = 1024;
+            while let Some((step, q)) = state.next().unwrap() {
+                let uri = q.compile(context, command).unwrap().objects[0]
+                    .key()
+                    .to_owned();
+                state.sent(step, message, command).unwrap();
+                commands.push((command, uri));
+                command += 1;
+            }
+            for (command, uri) in commands.into_iter().rev() {
+                state
+                    .value(
+                        message,
+                        command,
+                        &uri,
+                        values
+                            .get(&uri)
+                            .unwrap_or_else(|| panic!("{} missing {uri}", b.id))
+                            .clone(),
+                    )
+                    .unwrap();
+                state.status(message, command, 200).unwrap();
+            }
+            state
+                .advance(&plan, b.definition.spec().output_bytes as usize)
+                .unwrap();
+            outputs.extend(state.outcomes(&plan).unwrap());
+        }
+        let mut normalized = serde_json::Map::new();
+        for (key, outcome) in outputs {
+            let Outcome::Value(raw) = outcome else {
+                panic!("{} failed {key}", b.id)
+            };
+            let field = fields.iter().find(|f| f.key.as_str() == key).unwrap();
+            let NativeValue::Value(CollectedValue::Value(value)) =
+                rss_mdm_inventory_service::collection::native::value(
+                    field,
+                    &b.definition.spec().mappings[&key],
+                    &raw,
+                )
+            else {
+                panic!("{} invalid {key}: {raw}", b.id)
+            };
+            normalized.insert(key, plain(&value));
+        }
+        let expected: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(root.join(format!("{id}.json"))).unwrap())
+                .unwrap();
+        assert_eq!(serde_json::Value::Object(normalized), expected, "{}", b.id);
+    }
+}

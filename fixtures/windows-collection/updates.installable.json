@@ -1,0 +1,10 @@
+{
+  "device.updates.windows.installable": [
+    {
+      "id": "./Vendor/MSFT/Update/InstallableUpdates/item",
+      "origin": "./Vendor/MSFT/Update/InstallableUpdates",
+      "revision": 3,
+      "classification": "security"
+    }
+  ]
+}

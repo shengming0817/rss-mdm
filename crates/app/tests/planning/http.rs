@@ -1014,7 +1014,13 @@ async fn collection_blueprints_instantiate_replay_and_keep_tenant_versions() -> 
         .call(&router, Method::GET, "/api/v1/collection-blueprints", None)
         .await?;
     ensure!(catalog.0 == StatusCode::OK && catalog.1["categories"].as_array().unwrap().len() == 6);
-    ensure!(catalog.1["items"].as_array().unwrap().len() == 4);
+    ensure!(
+        catalog.1["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|b| b["id"] == "windows.software.win32")
+    );
     let path = format!("/api/v1/resources/{}", uuid::Uuid::new_v4());
     let body = json!({"operationId":uuid::Uuid::new_v4(),"expectedRevision":0,"input":{"action":"instantiate","blueprint":"macos.hardware","version":"1"}});
     // Fail after the resource commit, then resume the same operation with content enabled.

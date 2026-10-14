@@ -1,0 +1,18 @@
+{
+  "device.software.windows.system": [
+    {
+      "id": "./Device/Vendor/MSFT/EnterpriseModernAppManagement/AppManagement/System/family/item",
+      "origin": "./Device/Vendor/MSFT/EnterpriseModernAppManagement/AppManagement/System",
+      "name": "Example",
+      "publisher": "CN=Vendor",
+      "version": "1.2.0.0",
+      "architecture": "x64",
+      "is_bundle": false,
+      "is_framework": false,
+      "is_provisioned": true,
+      "package_status": 0,
+      "registered_users_native": "S-1-5-21-1",
+      "collection_scope": "device"
+    }
+  ]
+}

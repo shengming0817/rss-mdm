@@ -37,7 +37,7 @@ pub async fn receive(
     facts: &mut Vec<rss_mdm_audit_integration::Fact>,
 ) -> Result<s::Message, Error> {
     let limits = CodecLimits::default();
-    let rows=sqlx::query("SELECT w.id,w.request,w.request_message,w.first_command,w.channel_state,r.sealed_at FROM mdm_windows.collections w JOIN mdm_access.collection_runs r USING(tenant_id,id) WHERE w.tenant_id=$1::uuid AND w.registration=$2 AND w.session_id=$3 AND w.channel_state IS NOT NULL ORDER BY w.first_command")
+    let rows=sqlx::query("SELECT w.id,w.request,w.request_message,w.first_command,w.channel_state,r.sealed_at FROM mdm_windows.collections w JOIN mdm_access.collection_runs r USING(tenant_id,id) WHERE w.tenant_id=$1::uuid AND w.registration=$2 AND w.session_id=$3 AND w.kind='agent' ORDER BY w.first_command")
         .bind(p.tenant().to_string()).bind(p.registration()).bind(message.header.session_id.to_string()).fetch_all(&mut *c).await.map_err(db)?;
     let mut consumed = std::collections::BTreeSet::new();
     for row in rows {
@@ -184,7 +184,7 @@ pub async fn send(
     if response.header.message_id as usize >= CodecLimits::default().session_messages {
         return Ok(false);
     }
-    let old:Option<Option<i64>>=sqlx::query_scalar("SELECT r.sealed_at FROM mdm_windows.collections w JOIN mdm_access.collection_runs r USING(tenant_id,id) WHERE w.tenant_id=$1::uuid AND w.registration=$2 AND w.session_id=$3 AND w.channel_state IS NOT NULL")
+    let old:Option<Option<i64>>=sqlx::query_scalar("SELECT r.sealed_at FROM mdm_windows.collections w JOIN mdm_access.collection_runs r USING(tenant_id,id) WHERE w.tenant_id=$1::uuid AND w.registration=$2 AND w.session_id=$3 AND w.kind='agent'")
         .bind(p.tenant().to_string()).bind(p.registration()).bind(response.header.session_id.to_string()).fetch_optional(&mut *c).await.map_err(db)?;
     if let Some(sealed) = old {
         return Ok(sealed.is_none());
@@ -228,7 +228,7 @@ pub async fn send(
     let wire = protection
         .seal_bytes(&wire, &crate::protection::collection_aad(&scope, id)?)
         .map_err(|_| protocol())?;
-    sqlx::query("INSERT INTO mdm_windows.collections(tenant_id,id,registration,session_id,request_message,first_command,request,channel_state) VALUES($1::uuid,$2,$3,$4,$5,$6,$7,$8)")
+    sqlx::query("INSERT INTO mdm_windows.collections(tenant_id,id,registration,session_id,request_message,first_command,request,channel_state,kind) VALUES($1::uuid,$2,$3,$4,$5,$6,$7,$8,'agent')")
         .bind(p.tenant().to_string()).bind(id).bind(p.registration()).bind(response.header.session_id.to_string()).bind(i64::from(response.header.message_id)).bind(i64::from(first)).bind(wire).bind(serde_json::to_value(query).map_err(|_|protocol())?).execute(&mut *c).await.map_err(db)?;
     response.commands.extend(request.commands);
     Ok(true)

@@ -97,14 +97,14 @@ async fn published_native_template_uses_policy_and_direct_collection_progress() 
             (
                 "device.model".into(),
                 NativeMapping {
-                    query: "Model".into(),
+                    query: rss_mdm_resource::NativeQuery::Apple("Model".into()),
                 mapping: rss_mdm_resource::ValueMapping::identity(""),
                 },
             ),
             (
                 field.into(),
                 NativeMapping {
-                    query: "EthernetMACs".into(),
+                    query: rss_mdm_resource::NativeQuery::Apple("EthernetMACs".into()),
                 mapping: rss_mdm_resource::ValueMapping::identity(""),
                 },
             ),

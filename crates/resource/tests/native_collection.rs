@@ -7,7 +7,11 @@ fn spec(adapter: NativeAdapter, query: &str) -> NativeCollectionSpec {
         mappings: [(
             "device.model".into(),
             NativeMapping {
-                query: query.into(),
+                query: if adapter == NativeAdapter::WindowsRead {
+                    NativeQuery::Windows(WindowsRead::Scalar { uri: query.into() })
+                } else {
+                    NativeQuery::Apple(query.into())
+                },
                 mapping: rss_mdm_resource::ValueMapping::identity(""),
             },
         )]
@@ -19,11 +23,11 @@ fn spec(adapter: NativeAdapter, query: &str) -> NativeCollectionSpec {
 #[test]
 fn native_templates_are_read_only_bounded_and_platform_specific() {
     let template =
-        NativeCollectionDefinition::new(spec(NativeAdapter::WindowsCsp, "./DevInfo/Mod")).unwrap();
+        NativeCollectionDefinition::new(spec(NativeAdapter::WindowsRead, "./DevInfo/Mod")).unwrap();
     assert!(template.validate_platform(Platform::Windows).is_ok());
     assert!(template.validate_platform(Platform::MacOS).is_err());
     assert!(
-        NativeCollectionDefinition::new(spec(NativeAdapter::WindowsCsp, "https://example.test"))
+        NativeCollectionDefinition::new(spec(NativeAdapter::WindowsRead, "https://example.test"))
             .is_err()
     );
     assert!(
@@ -34,4 +38,17 @@ fn native_templates_are_read_only_bounded_and_platform_specific() {
         NativeCollectionDefinition::new(spec(NativeAdapter::AppleDeviceInformation, "EraseDevice"))
             .is_err()
     );
+}
+
+#[test]
+fn old_windows_strings_and_adapter_are_rejected() {
+    let definition =
+        NativeCollectionDefinition::new(spec(NativeAdapter::WindowsRead, "./DevInfo/Mod")).unwrap();
+    let mut value = serde_json::to_value(&definition).unwrap();
+    value["mappings"]["device.model"]["query"] = serde_json::json!("./DevInfo/Mod");
+    assert!(serde_json::from_value::<NativeCollectionDefinition>(value).is_err());
+    let mut value = serde_json::to_value(&definition).unwrap();
+    value["adapter"] = serde_json::json!("windows_csp");
+    assert!(serde_json::from_value::<NativeCollectionDefinition>(value).is_err());
+    assert!(blueprints::get("windows.os", "1").is_none());
 }

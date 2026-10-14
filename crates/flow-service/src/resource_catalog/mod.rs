@@ -185,8 +185,11 @@ impl ResourceCatalog {
                     },
                     Declaration::NativeCollection { definition, .. } => Some((
                         match definition.spec().adapter {
-                            r::NativeAdapter::WindowsCsp => rss_mdm_inventory::Source::MdmWindows,
-                            _ => rss_mdm_inventory::Source::MdmApple,
+                            r::NativeAdapter::WindowsRead => rss_mdm_inventory::Source::MdmWindows,
+                            rss_mdm_resource::NativeAdapter::AppleDeviceInformation
+                            | rss_mdm_resource::NativeAdapter::AppleInstalledApplications => {
+                                rss_mdm_inventory::Source::MdmApple
+                            }
                         },
                         definition.spec().mappings.keys().collect(),
                     )),

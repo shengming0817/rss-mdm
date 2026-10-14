@@ -151,10 +151,12 @@ pub fn fields() -> Vec<FieldDefinition> {
         fields.push(definition);
     }
     fields.extend(standard::fields());
+    fields.extend(windows::fields());
     fields
 }
 
 mod standard;
+mod windows;
 /// Stable system identities used by enrollment, device association and channel lifecycle.
 /// Other seed definitions have the same lifecycle as tenant-authored extension fields.
 pub fn protected(key: FieldKey) -> bool {

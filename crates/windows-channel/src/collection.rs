@@ -16,7 +16,7 @@ pub async fn terminate_session(
     let ids: Vec<String> = sqlx::query_scalar("SELECT id::text FROM mdm_windows.collections WHERE tenant_id=$1::uuid AND registration=$2::uuid AND session_id=$3 ORDER BY first_command,id")
         .bind(tenant).bind(registration).bind(session).fetch_all(&mut *tx).await.map_err(db)?;
     for id in ids {
-        let native:bool=sqlx::query_scalar("SELECT channel_state IS NOT NULL FROM mdm_windows.collections WHERE tenant_id=$1::uuid AND id=$2::uuid").bind(tenant).bind(&id).fetch_one(&mut *tx).await.map_err(db)?;
+        let native:bool=sqlx::query_scalar("SELECT kind='agent' FROM mdm_windows.collections WHERE tenant_id=$1::uuid AND id=$2::uuid").bind(tenant).bind(&id).fetch_one(&mut *tx).await.map_err(db)?;
         if native || reason == "aborted" {
             facts.extend(
                 rss_mdm_inventory_service::collection::channel::abandon_in(

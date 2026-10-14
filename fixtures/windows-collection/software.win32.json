@@ -1,0 +1,14 @@
+{
+  "device.software.windows.win32": [
+    {
+      "id": "./Device/Vendor/MSFT/Win32AppInventory/Win32InstalledProgram/item",
+      "origin": "./Device/Vendor/MSFT/Win32AppInventory/Win32InstalledProgram",
+      "name": "Example",
+      "publisher": "Vendor",
+      "version": "1.2",
+      "registry_key": "HKLM\\Software\\Example",
+      "discovery_source": "Registry",
+      "installation_scope": "unknown"
+    }
+  ]
+}

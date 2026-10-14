@@ -6,6 +6,7 @@ mod request;
 mod software;
 use crate::authorization::{Permission, context::AuthorizedPrincipal};
 use crate::{Error, Inputs, action_contract::*, freeze_inputs::*, frozen::Frozen, transaction::*};
+pub(crate) use native::windows_collection_plan;
 use native::{configuration, native_collection};
 pub use request::{PublicationAuthority, PublicationInput, ResourcePreparation, ScriptParameters};
 use rss_mdm_content_service::{StorageClass, Verified};
