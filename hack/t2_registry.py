@@ -1717,3 +1717,7 @@ consume(('crates/inventory-service/src/apple_collection*.rs',), 'apple.collectio
 consume(('crates/management-http/src/collection/apple.rs',), 'apple.collection')
 consume(('crates/management-http/src/software_publication/http.rs',),
         'publication.winget publication.brew publication.mapping publication.withdrawal publication.recovery')
+
+consume(('crates/windows-mdm/src/native/collection.rs', 'crates/windows-mdm/schema/collection/*', 'crates/native-schema/src/windows/collection.rs'), 'windows.management')
+consume(('crates/resource/src/blueprints/windows.rs',), 'planning.http windows.management')
+consume(('crates/inventory/src/builtin/windows.rs',), 'windows.management inventory.runtime assets.http')

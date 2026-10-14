@@ -97,11 +97,11 @@ severity 为 low/medium/high/critical，仅用于解释；platform 为 all/windo
 
 ## 发布采集模板并复用策略
 
-原生读取使用 Resource 的 `native_collection` 类型，版本声明包含同名 declaration、canonical JSON artifact 及 definition。definition 指定 `adapter`、`scope`、`applicability`、`mappings`、`timeoutSeconds`、`outputBytes`：`windows_csp` 只构造 CSP Get；`apple_device_information` 使用受限 Queries；`apple_installed_applications` 读取 InstalledApplicationList。Apple Inventory 采集使用 MDM adapter；DDM 状态由 operation 原生证据查询独立呈现，不自动组成 Inventory Snapshot。
+原生读取使用 Resource 的 `native_collection` 类型，版本声明包含同名 declaration、canonical JSON artifact 及 definition。definition 指定 `adapter`、`scope`、`applicability`、`mappings`、`timeoutSeconds`、`outputBytes`：`windows_read` 将类型化标量或固定动态命名空间编译为只读 CSP Get；`apple_device_information` 使用受限 Queries；`apple_installed_applications` 读取 InstalledApplicationList。Apple Inventory 采集使用 MDM adapter；DDM 状态由 operation 原生证据查询独立呈现，不自动组成 Inventory Snapshot。
 
 每个原生 mapping 的键为字段身份，值为 `{query,mapping:{pointer,conversion,columns}}`。脚本 purpose 的 mappings 直接使用 `{pointer,conversion,columns}`。conversion 为 identity、integer、number、enum、scale 或 bitmask；未知枚举、未知位、溢出与不能整除的单位换算均为 invalid。columns 递归声明列表属性，不复制未声明属性。模板的 canonical JSON 是上传 artifact 的原文，发布时校验字段、来源、平台和结构。脚本与 SQL 使用已有 `script` Resource，SQL profile 为 `osquery`，执行只接受固定版本模板及声明参数。
 
-`GET /api/v1/collection-blueprints` 返回六类目录及实际可实例化的官方蓝图。目前 identity/hardware 各提供 Windows、macOS 原生模板；software/security/management/updates 只有目录位置，平台后续工作补齐可执行模板。
+`GET /api/v1/collection-blueprints` 返回六类目录及实际可实例化的官方蓝图。Windows 六类均提供版本 2 原生模板，macOS identity/hardware 保留版本 1；Windows 支持范围、来源和样本见 [Windows 管理](windows-management.md#原生资产采集)。
 
 使用 `POST /api/v1/resources/{id}`，请求 `{"operationId":"<uuid>","expectedRevision":0,"input":{"action":"instantiate","blueprint":"macos.hardware","version":"1"}}`，创建普通租户 Resource 并写入 canonical 内容。初始版本为 `builtin.macos.hardware.1`，revision 为 2、状态 frozen；用正常 activate 操作启用，再绑定 Policy。版本含 x86_64/aarch64 variants。管理员直接修改该 Resource 并发布新版本；官方蓝图只读，升级需创建新候选 Resource，明确调整 Policy，不能自动覆盖或合并租户内容。重复相同 operationId 可恢复实例化/上传，不接受移动的 latest 版本。
 
@@ -127,6 +127,6 @@ Windows Firewall CSP 状态与 WSC health 使用不同字段；BitLocker convers
 
 检查指定软件的版本时，读取授权清单中 id 匹配的同一对象及其 version。不要将独立 id 集合条件与 version 集合条件 AND 后宣称关联到了同一软件；Group 目前没有数组条目关联语法。完整空列表可用于判定未发现目标，Missing、Unsupported、冲突或部分采集须保留未知及质量解释。软件任务结果只证明该次执行的前后检测；后续库存仍由既有采集链路产生，不能从 verified 结果伪造库存快照。
 
-本次为当前格式替换：旧映射字符串、缺少 scope 的采集定义以及旧 claim payload 均拒绝。数据库安装通过 migration digest 拒绝旧基线，不自动清库或双读；升级须显式部署匹配的服务端、schema 与 Agent 候选版本。
+本次为当前格式替换：旧 Windows `windows_csp`、Windows 字符串 query、旧 Windows 蓝图版本 1、NativeCollection 存储版本 4 均拒绝；Apple 字符串 query 保留原协议形状。旧映射字符串、缺少 scope 的采集定义以及旧 claim payload 均拒绝。数据库安装通过 migration digest 拒绝旧基线，不自动清库或双读；升级须显式部署匹配的服务端、schema 与 Agent 候选版本。
 
 原生 MDM 当前没有可信架构证据，因此 `native_collection` 同平台必须同时声明 x86_64 与 aarch64，且声明内容一致；架构专用原生模板会被拒绝。Agent 脚本仍按实际执行环境核对精确架构。
