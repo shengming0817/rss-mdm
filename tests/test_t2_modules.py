@@ -336,7 +336,8 @@ class ModuleImpactTests(unittest.TestCase):
         self.assertNotIn('apple.apns', selected)
         self.assertNotIn('sources.winget', selected)
         self.assertNotIn('publication.artifact', selected)
-        self.assertNotIn('gateway.admission', selected)
+        # Gateway admission now includes a real management write against product PG.
+        self.assertIn('gateway.admission', selected)
 
     def test_python_tests_and_docs_do_not_select_integration(self):
         self.assertEqual(self.selected('tests/test_source_t2.py'), set())

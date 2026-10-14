@@ -83,11 +83,15 @@ def verify(context):
         for method,path,limit in budgets:
             for length in (limit-1,limit,limit+1):
                 expected = 200 if length <= limit else 413
-                if request(path,method=method,body=b'x'*length)[0]!=expected:
-                    raise RuntimeError('management body boundary mismatch: '+path+' '+str(length))
+                status=request(path,method=method,body=b'x'*length)[0]
+                if status!=expected:
+                    raise RuntimeError('management body boundary mismatch: '+path+' '+str(length)+' status='+str(status))
+                # Exercise size independently of the shared 10 requests/second admission.
+                time.sleep(.12)
             chunks=(b'x'*65536 for _ in range(limit//65536+1))
             if request(path,method=method,body=chunks)[0]!=413:
                 raise RuntimeError('chunked management body exceeded: '+path)
+            time.sleep(.12)
         for path in ['/api/v1/devices/device/operations/id/cancel','/api/v1/resources/resource/unrelated',
                      '/api/v1/policies','/api/v1/policies/policy/rerun','/api/v1/pki/crls/unrelated',
                      '/api/v1/pki/signing/recover/unrelated','/api/v1/windows/entra-policy/unrelated',
@@ -96,6 +100,7 @@ def verify(context):
                      '/api/v1/tenant-administration/authorization/rules/rule/unrelated',
                      '/api/v1/agent-packages/package','/api/v1/software/imports/unrelated']:
             if request(path,body=b'x'*16385)[0]!=413:raise RuntimeError('unrelated route inherited management body budget: '+path)
+            time.sleep(.12)
         if request('/api/probe',body='x'*16385)[0]!=413:raise RuntimeError('oversized request was not rejected')
         if request('/api/probe?credential=synthetic-sensitive-value')[0]!=200:raise RuntimeError('gateway probe failed')
         held=[]
