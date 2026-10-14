@@ -122,7 +122,7 @@ async fn collection_result_eligible(
     session: u32,
     reference: &s::Reference,
 ) -> std::result::Result<bool, Error> {
-    let rows=sqlx::query("SELECT w.id,w.kind,w.template_state,r.scope,r.sealed_at IS NULL AND r.deadline>clock_timestamp() AS live,w.kind='agent' AND w.request_message=$4 AND $5 BETWEEN w.first_command AND w.first_command+3 AS agent_match FROM mdm_windows.collections w JOIN mdm_access.collection_runs r USING(tenant_id,id) WHERE w.tenant_id=$1::uuid AND w.registration=$2 AND w.session_id=$3")
+    let rows=sqlx::query("SELECT w.id,w.kind,w.template_state,r.scope,r.sealed_at IS NULL AND CASE w.kind WHEN 'agent' THEN r.deadline IS NULL OR r.deadline>clock_timestamp() WHEN 'template' THEN r.deadline IS NOT NULL AND r.deadline>clock_timestamp() ELSE false END AS live,w.kind='agent' AND w.request_message=$4 AND $5 BETWEEN w.first_command AND w.first_command+3 AS agent_match FROM mdm_windows.collections w JOIN mdm_access.collection_runs r USING(tenant_id,id) WHERE w.tenant_id=$1::uuid AND w.registration=$2 AND w.session_id=$3")
         .bind(p.tenant().to_string()).bind(p.registration()).bind(session.to_string()).bind(i64::from(reference.message_id)).bind(i64::from(reference.command_id)).fetch_all(&mut *c).await.map_err(db)?;
     for row in rows {
         let id = row.try_get("id").map_err(db)?;

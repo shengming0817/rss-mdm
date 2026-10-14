@@ -93,8 +93,14 @@ async fn dynamic_leaf_more_data_completes() -> anyhow::Result<()> {
 async fn dynamic_leaf_replay_and_continuation_revalidate_grants() -> anyhow::Result<()> {
     template_flow(None, 9, Completion::RevokedInventory).await
 }
+#[tokio::test]
+#[ignore = "MODULE=windows.management: expired template cannot continue a large object"]
+async fn expired_template_rejects_more_data() -> anyhow::Result<()> {
+    template_flow(None, 9, Completion::Expired).await
+}
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Completion {
+    Expired,
     Snapshot,
     Inventory,
     MissingChild,
@@ -500,9 +506,18 @@ async fn template_flow(
         host.close().await?;
         return Ok(());
     }
-    if let Some(after_first) = revoke_after_first {
+    if revoke_after_first.is_some() || completion == Completion::Expired {
+        let after_first = revoke_after_first.unwrap_or(false);
         let run:Uuid=sqlx::query_scalar("SELECT r.id FROM mdm_commands.action_runs r JOIN mdm_policy.versions v ON(v.tenant_id,v.id)=(r.tenant_id,r.policy_version) WHERE r.tenant_id=$1::uuid AND v.policy=$2").bind(case_tenant()).bind(policy).fetch_one(&mut pg).await?;
-        revoked_template_result(&peer, &mut pg, packet, run, after_first).await?;
+        revoked_template_result(
+            &peer,
+            &mut pg,
+            packet,
+            run,
+            after_first,
+            completion == Completion::Expired,
+        )
+        .await?;
         crate::test_support::stop_worker(owner.take()).await?;
         host.close().await?;
         return Ok(());
@@ -662,6 +677,7 @@ async fn revoked_template_result(
     mut packet: s::Message,
     run: Uuid,
     after_first: bool,
+    expired: bool,
 ) -> anyhow::Result<()> {
     for command in &mut packet.commands {
         if let s::Command::Results(result) = command {
@@ -681,7 +697,10 @@ async fn revoked_template_result(
             vec![],
         )
     };
-    if !after_first {
+    if expired {
+        sqlx::query("UPDATE mdm_access.collection_runs SET deadline=clock_timestamp()-interval '1 second' WHERE tenant_id=$1::uuid AND id=$2")
+            .bind(case_tenant()).bind(run).execute(&mut *pg).await?;
+    } else if !after_first {
         revoke().await?;
     }
     let mut response = native::post(&peer.mutual, &peer.url, &packet).await?;
