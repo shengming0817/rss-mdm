@@ -19,10 +19,10 @@ def verify(context):
     config=config.replace('server 127.0.0.1:8081;','server 127.0.0.1:8082;')
     locations = ''
     locations += 'location = /api/unsupported-test { default_type application/json; return 404 \'{"code":"not_found"}\'; }'
-    config=config.rsplit('}',1)[0]+'server { listen 127.0.0.1:8082; client_max_body_size 32m; '+locations+' location / { return 200 "$http_x_forwarded_for"; } }}'
+    config=config.rsplit('}',1)[0]+'server { listen 127.0.0.1:8082; client_max_body_size 128m; '+locations+' location / { return 200 "$http_x_forwarded_for"; } }}'
     with context.gateway(config) as (name,port):
         def request(path,forward='',body=None,method='POST'):
-            c=http.client.HTTPConnection('127.0.0.1',port,timeout=3)
+            c=http.client.HTTPConnection('127.0.0.1',port,timeout=15)
             try:
                 c.request(method,path,body=body,headers={'Host':'mdm.example.test','Origin':'https://mdm.example.test','X-Identity-Request':'1','X-Forwarded-For':forward})
                 r=c.getresponse();body=r.read()
@@ -56,11 +56,43 @@ def verify(context):
         if 200 not in statuses or 429 not in statuses or statuses.count(200)>14:raise RuntimeError('caller-controlled source bypassed login admission')
         time.sleep(3.2)
         if request('/api/v1/identity/tenants/11111111-1111-4111-8111-111111111111/login')[0]!=200:raise RuntimeError('login budget did not recover')
-        for path,limit in [('/api/v1/devices/device/operations',16777216),('/api/v1/resources/resource',8388608)]:
-            if request(path,body=b'x'*limit)[0]!=200:raise RuntimeError('native JSON budget rejected exact boundary: '+path)
-            if request(path,body=b'x'*(limit+1))[0]!=413:raise RuntimeError('native JSON budget exceeded: '+path)
-        for path in ['/api/v1/devices/device/operations/id/cancel','/api/v1/resources/resource/unrelated']:
-            if request(path,body=b'x'*16385)[0]!=413:raise RuntimeError('unrelated route inherited native body budget: '+path)
+        # Each exceptional management route must reach upstream at its exact ceiling.
+        # Test real chunked bodies too: a false/missing Content-Length cannot bypass nginx.
+        budgets = [
+            ('POST','/api/v1/devices/device/operations',16*1024*1024),
+            ('POST','/api/v1/resources/resource',8*1024*1024),
+            ('POST','/api/v1/policies/policy',8*1024*1024),
+            ('POST','/api/v1/policies/previews',8*1024*1024),
+            ('POST','/api/v1/pki/rotations',64*1024*1024),
+            ('POST','/api/v1/pki/crls',64*1024*1024),
+            ('POST','/api/v1/pki/signing/recover',256*1024),
+            ('PUT','/api/v1/windows/entra-policy',128*1024),
+            ('POST','/api/v1/certificate-archive/import',2*1024*1024),
+            ('PUT','/api/v1/authorization/rules/rule',2*1024*1024),
+            ('PUT','/api/v1/authorization/user-groups/group',2*1024*1024),
+            ('PUT','/api/v1/tenant-administration/authorization/rules/rule',2*1024*1024),
+            ('POST','/api/v1/agent-packages',1024*1024),
+            ('POST','/api/v1/agent-packages/package/withdraw',1024*1024),
+            ('POST','/api/v1/software/imports',1024*1024),
+            ('POST','/api/v1/software/sources/source/revisions/revision',1024*1024),
+            ('POST','/api/v1/software/resources/resource/versions/version',1024*1024),
+        ]
+        for method,path,limit in budgets:
+            for length in (limit-1,limit,limit+1):
+                expected = 200 if length <= limit else 413
+                if request(path,method=method,body=b'x'*length)[0]!=expected:
+                    raise RuntimeError('management body boundary mismatch: '+path+' '+str(length))
+            chunks=(b'x'*65536 for _ in range(limit//65536+1))
+            if request(path,method=method,body=chunks)[0]!=413:
+                raise RuntimeError('chunked management body exceeded: '+path)
+        for path in ['/api/v1/devices/device/operations/id/cancel','/api/v1/resources/resource/unrelated',
+                     '/api/v1/policies','/api/v1/policies/policy/rerun','/api/v1/pki/crls/unrelated',
+                     '/api/v1/pki/signing/recover/unrelated','/api/v1/windows/entra-policy/unrelated',
+                     '/api/v1/certificate-archive/import/unrelated','/api/v1/authorization/rules',
+                     '/api/v1/authorization/user-groups/group/members',
+                     '/api/v1/tenant-administration/authorization/rules/rule/unrelated',
+                     '/api/v1/agent-packages/package','/api/v1/software/imports/unrelated']:
+            if request(path,body=b'x'*16385)[0]!=413:raise RuntimeError('unrelated route inherited management body budget: '+path)
         if request('/api/probe',body='x'*16385)[0]!=413:raise RuntimeError('oversized request was not rejected')
         if request('/api/probe?credential=synthetic-sensitive-value')[0]!=200:raise RuntimeError('gateway probe failed')
         held=[]
