@@ -652,7 +652,7 @@ async fn management_accepts_large_legal_policy_parameters() -> Result<()> {
         json!({"action":"create","kind":"script"}),
     )
     .await?;
-    let definition = json!({"profile":"posix_sh","runAs":"system","encoding":"utf8", "parameters":{"type":"object","properties":{"text":{"type":"string","maxLength":65536}},"required":["text"],"additionalProperties":false},"bindings":{"text":{"kind":"environment","name":"RSS_POLICY_TEXT"}},"output":{"type":"object","properties":{},"additionalProperties":false},"purpose":{"kind":"action"},"timeoutSeconds":60,"outputBytes":4096,"maxRows":1});
+    let definition = json!({"profile":"posix_sh","runAs":"system","encoding":"utf8", "parameters":{"type":"object","properties":{"text":{"type":"string","maxLength":65536}},"required":["text"],"additionalProperties":false},"bindings":{"text":{"kind":"environment","name":"RSS_PARAM_TEXT"}},"output":{"type":"object","properties":{},"additionalProperties":false},"purpose":{"kind":"action"},"timeoutSeconds":60,"outputBytes":4096,"maxRows":1});
     resource(&mut fixture.author, &fixture.router, id, 1, json!({"action":"version","version":"v1","kind":"script","variants":[{"platform":"macos","architecture":"aarch64","key":"default","declaration":{"kind":"script","artifact":{"reference":"large-policy-script","length":bytes.len(),"sha256":digest},"definition":definition}}]})).await?;
     ensure!(upload(&fixture.author, &fixture.router, id, bytes).await? == StatusCode::CREATED);
     resource(

@@ -915,7 +915,7 @@ async fn management_policy_body_replay_and_audit_faults() -> anyhow::Result<()> 
 
     // The business commit also makes request-settlement admission fail. Completion must
     // preserve the original unknown result instead of replacing it with audit_contract_error.
-    owner.execute("CREATE FUNCTION mdm_audit.break_management_settlement() RETURNS trigger LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog AS $$ BEGIN IF NEW.source_id='mdm.business' THEN REVOKE SELECT ON mdm_audit.receipts FROM mdm_access; END IF; RETURN NEW; END $$; CREATE TRIGGER break_management_settlement AFTER INSERT ON mdm_audit.receipts FOR EACH ROW EXECUTE FUNCTION mdm_audit.break_management_settlement()").await?;
+    owner.execute("CREATE FUNCTION mdm_audit.break_management_settlement() RETURNS trigger LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog AS $$ BEGIN REVOKE SELECT ON mdm_audit.receipts FROM mdm_access; RETURN NEW; END $$; CREATE CONSTRAINT TRIGGER break_management_settlement AFTER UPDATE ON mdm_windows.entra_policy DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION mdm_audit.break_management_settlement()").await?;
     host.app
         .audit_store
         .inject_next_fault(rss_audit_postgres::PgFault::CommitUnknownAfterAck);
@@ -923,7 +923,7 @@ async fn management_policy_body_replay_and_audit_faults() -> anyhow::Result<()> 
     let failure = admin
         .call(&host.browser, Method::PUT, path, Some(unknown.clone()))
         .await;
-    owner.execute("GRANT SELECT ON mdm_audit.receipts TO mdm_access; DROP TRIGGER break_management_settlement ON mdm_audit.receipts; DROP FUNCTION mdm_audit.break_management_settlement()").await?;
+    owner.execute("GRANT SELECT ON mdm_audit.receipts TO mdm_access; DROP TRIGGER break_management_settlement ON mdm_windows.entra_policy; DROP FUNCTION mdm_audit.break_management_settlement()").await?;
     let (status, body) = failure?;
     ensure!(
         status == StatusCode::SERVICE_UNAVAILABLE && body["code"] == "operation_unknown",
