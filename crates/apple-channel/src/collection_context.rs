@@ -25,7 +25,7 @@ pub(crate) fn retained(phase: &str, response: &plist::Dictionary) -> Result<Vec<
     if let Some(body) = response.get(root).and_then(plist::Value::as_dictionary) {
         let mut facts = plist::Dictionary::new();
         for key in keys {
-            if let Some(value) = body.get(*key) {
+            if let Some(value) = body.get(key) {
                 if *key == "ManagementStatus" {
                     if let Some(management) = value.as_dictionary() {
                         let mut filtered = plist::Dictionary::new();

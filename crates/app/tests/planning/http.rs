@@ -1044,7 +1044,7 @@ async fn collection_blueprints_instantiate_replay_and_keep_tenant_versions() -> 
     let mut variants = first.1["versions"][0]["variants"].clone();
     for variant in variants.as_array_mut().unwrap() {
         let definition = &mut variant["declaration"]["definition"];
-        definition["mappings"]["device.model"]["query"] = json!("ModelName");
+        definition["mappings"]["device.hardware.apple.model_name"]["query"] = json!("ModelNumber");
         let parsed: rss_mdm_resource::NativeCollectionDefinition =
             serde_json::from_value(definition.clone())?;
         let bytes = parsed.canonical();

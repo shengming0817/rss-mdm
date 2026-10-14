@@ -106,7 +106,6 @@ GRANT UPDATE(not_after) ON TABLE mdm_apple.scep_attempts TO mdm_access;
 COMMIT;
 
 -- Inventory user views may inspect channel liveness, never push or credential material.
-GRANT USAGE ON SCHEMA mdm_apple TO mdm_api;
-GRANT SELECT(tenant_id,registration,generation,user_key,state) ON mdm_apple.channels TO mdm_flow_runtime,mdm_api;
+GRANT SELECT(tenant_id,registration,generation,user_key,state) ON mdm_apple.channels TO mdm_flow_runtime;
 
 GRANT SELECT(tenant_id,registration,generation,user_key,phase,context,collection_sequence) ON mdm_apple.attempts TO mdm_flow_runtime;

@@ -8,7 +8,7 @@ use sha2::{Digest, Sha256};
 fn fields(d: &Dictionary, names: &[(&str, &str)]) -> Result<Map<String, Json>, Error> {
     names
         .iter()
-        .filter_map(|(native, canonical)| d.get(*native).map(|v| (*canonical, v)))
+        .filter_map(|(native, canonical)| d.get(native).map(|v| (*canonical, v)))
         .map(|(key, value)| Ok((key.into(), scalar(value)?)))
         .collect()
 }

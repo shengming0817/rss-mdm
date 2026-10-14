@@ -246,8 +246,12 @@ async fn template_flow(
     ) {
         let mut spec = template.spec().clone();
         let builtin = rss_mdm_resource::blueprints::get("windows.software.win32", "2").unwrap();
-        spec.mappings
-            .extend(builtin.definition.spec().mappings.clone());
+        let rss_mdm_resource::blueprints::Definition::NativeCollection { template } =
+            builtin.definition
+        else {
+            panic!("Windows software blueprint must be a native collection")
+        };
+        spec.mappings.extend(template.spec().mappings.clone());
         NativeCollectionDefinition::new(spec)?
     } else {
         template
@@ -1110,7 +1114,7 @@ async fn seed_prior_list(
     key: rss_mdm_inventory::FieldKey,
     value: &rss_mdm_inventory::Scalar,
 ) -> anyhow::Result<()> {
-    sqlx::query("INSERT INTO mdm.inventory(tenant_id,journal,generation,scope,coverage,field,value,batch_id,observed_at,received_at,state,last_known,last_known_batch,last_known_observed,last_known_received,registration,source,epoch,collection_sequence) VALUES($1::uuid,'mdm.observation.v1','inventory-v5',$2,$3,$4,$5,'prior-list',1,2,'known',$5,'prior-list',1,2,$6::uuid,$7,$8::uuid,0)")
+    sqlx::query("INSERT INTO mdm.inventory(tenant_id,journal,generation,scope,coverage,field,value,batch_id,observed_at,received_at,state,last_known,last_known_batch,last_known_observed,last_known_received,registration,source,epoch,collection_sequence) VALUES($1::uuid,'mdm.observation.v1','inventory-v6',$2,$3,$4,$5,'prior-list',1,2,'known',$5,'prior-list',1,2,$6::uuid,$7,$8::uuid,0)")
         .bind(scope.tenant().to_string()).bind(scope.encode()?).bind(serde_json::to_string(&definition.coverage()?)?).bind(key.as_str()).bind(serde_json::to_string(value)?).bind(scope.registration().as_str()).bind(scope.source().as_str()).bind(scope.epoch().as_str()).execute(pg).await?;
     Ok(())
 }

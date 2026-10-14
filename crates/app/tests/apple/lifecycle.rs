@@ -190,7 +190,7 @@ impl Peer {
                         ]));
                 if actual == kind
                     && (!collection
-                        || (!prerequisite_device && !(actual == "SecurityInfo" && resolving)))
+                        || !(prerequisite_device || actual == "SecurityInfo" && resolving))
                 {
                     return Ok(bytes);
                 }
