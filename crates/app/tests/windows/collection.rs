@@ -118,18 +118,36 @@ async fn template_flow(
     let mut host = Host::open().await?;
     host.listen().await?;
     let peer = host.peer().await?;
+    let agent_source = if matches!(
+        completion,
+        Completion::Inventory
+            | Completion::MissingChild
+            | Completion::EmptyInventory
+            | Completion::FinalInventoryBudget
+            | Completion::FragmentInventory
+            | Completion::RevokedInventory
+    ) {
+        Some(crate::test_support::inventory::seed_source(
+            case_device(),
+            "agent",
+            "agent.builtin",
+            "Agent model",
+        )?)
+    } else {
+        None
+    };
     let mut f = Client::start(host.browser.clone(), host.app.clone()).await?;
     let mut grants = crate::test_support::identity::device_grants(
         None,
         &[
             "inventory_read",
-            "inventory_sensitive_read",
             "inventory_collect",
             "operation_read",
             "operation_cancel",
         ],
     )?;
     for operation in [
+        Permission::InventorySensitiveRead,
         Permission::ResourceRead,
         Permission::ResourceWrite,
         Permission::PolicyRead,
@@ -410,7 +428,16 @@ async fn template_flow(
             | Completion::FragmentInventory
             | Completion::RevokedInventory
     ) {
-        dynamic_result(&host, &mut f, &peer, &mut pg, policy, wire, completion).await?;
+        dynamic_result(
+            &host,
+            &mut f,
+            &peer,
+            &mut pg,
+            policy,
+            wire,
+            (completion, agent_source.unwrap()),
+        )
+        .await?;
         crate::test_support::stop_worker(owner.take()).await?;
         host.close().await?;
         return Ok(());
@@ -745,14 +772,18 @@ async fn dynamic_result(
     pg: &mut sqlx::PgConnection,
     policy: Uuid,
     mut wire: s::Message,
-    completion: Completion,
+    scenario: (Completion, (Uuid, Uuid)),
 ) -> anyhow::Result<()> {
-    let run:Uuid=sqlx::query_scalar("SELECT r.id FROM mdm_commands.action_runs r JOIN mdm_policy.versions v ON(v.tenant_id,v.id)=(r.tenant_id,r.policy_version) WHERE r.tenant_id=$1::uuid AND v.policy=$2").bind(case_tenant()).bind(policy).fetch_one(&mut *pg).await?;
+    use anyhow::Context;
+    let (completion, (agent, epoch)) = scenario;
+    let run:Uuid=sqlx::query_scalar("SELECT r.id FROM mdm_commands.action_runs r JOIN mdm_policy.versions v ON(v.tenant_id,v.id)=(r.tenant_id,r.policy_version) WHERE r.tenant_id=$1::uuid AND v.policy=$2").bind(case_tenant()).bind(policy).fetch_one(&mut *pg).await.context("dynamic action run")?;
     sqlx::query("SELECT set_config('rss.tenant_id',$1,false)")
         .bind(case_tenant())
         .execute(&mut *pg)
         .await?;
-    let saved = crate::collection::store::load_on(pg, case_tenant(), run).await?;
+    let saved = crate::collection::store::load_on(pg, case_tenant(), run)
+        .await
+        .context("dynamic collection run")?;
     let key = rss_mdm_inventory::FieldKey::parse("device.software.windows.win32")?;
     let fixture: serde_json::Value = serde_json::from_str(include_str!(
         "../../../../fixtures/windows-collection/software.win32.json"
@@ -764,12 +795,6 @@ async fn dynamic_result(
         .value_type
         .decode_json(&fixture[key.as_str()])?;
     seed_prior_list(pg, &saved.scope, saved.attempts.definition(), key, &old).await?;
-    let (agent, epoch) = crate::test_support::inventory::seed_source(
-        case_device(),
-        "agent",
-        "agent.builtin",
-        "Agent model",
-    )?;
     let agent_scope = crate::device::scope(saved.scope.tenant(), agent, "agent.builtin", epoch)?;
     let agent_key = rss_mdm_inventory::FieldKey::parse("device.software.installations")?;
     let field = rss_mdm_inventory::builtin::fields()
@@ -871,6 +896,10 @@ async fn dynamic_result(
                 }
             }
         }
+        // MoreData starts the sole open object; later unrelated results would interrupt it.
+        packet.commands.sort_by_key(
+            |c| matches!(c, s::Command::Results(v) if v.items.iter().any(|i| i.more_data)),
+        );
         let response = native::post(&peer.mutual, &peer.url, &packet).await?;
         ensure!(
             response.status() == StatusCode::OK,
@@ -935,7 +964,7 @@ async fn dynamic_result(
                     ..
                 }
             )));
-            let failed:bool=sqlx::query_scalar("SELECT result='failed' AND batch IS NULL FROM mdm_access.collection_runs WHERE tenant_id=$1::uuid AND id=$2").bind(case_tenant()).bind(run).fetch_one(&mut *pg).await?;
+            let failed:bool=sqlx::query_scalar("SELECT result='failed' AND batch IS NULL FROM mdm_access.collection_runs WHERE tenant_id=$1::uuid AND id=$2").bind(case_tenant()).bind(run).fetch_one(&mut *pg).await.context("dynamic sealed result")?;
             ensure!(failed);
             return Ok(());
         }
@@ -950,21 +979,32 @@ async fn dynamic_result(
                     .any(|c| matches!(c,s::Command::Status(v) if v.code==213))
             );
             packet.header.message_id += 1;
-            packet.commands = vec![tail];
+            packet.commands = vec![
+                s::Command::Status(s::Status {
+                    id: 1,
+                    message_ref: wire.header.message_id,
+                    command_ref: 0,
+                    command: s::CommandName::SyncHdr,
+                    target_refs: vec![],
+                    source_refs: vec![],
+                    code: 200,
+                    items: vec![],
+                    challenge: None,
+                    credential: None,
+                }),
+                tail,
+            ];
             packet.final_message = true;
             let response = native::post(&peer.mutual, &peer.url, &packet).await?;
             ensure!(response.status() == StatusCode::OK);
             wire = s::decode(&response.bytes().await?, &CodecLimits::default())?;
         }
     }
-    let result:(String,String)=sqlx::query_as("SELECT result,attempts FROM mdm_access.collection_runs WHERE tenant_id=$1::uuid AND id=$2 AND sealed_at IS NOT NULL").bind(case_tenant()).bind(run).fetch_one(&mut *pg).await?;
+    let result:(String,String)=sqlx::query_as("SELECT result,attempts FROM mdm_access.collection_runs WHERE tenant_id=$1::uuid AND id=$2 AND sealed_at IS NOT NULL").bind(case_tenant()).bind(run).fetch_one(&mut *pg).await.context("dynamic sealed result")?;
     let attempts: serde_json::Value = serde_json::from_str(&result.1)?;
     if matches!(
         completion,
-        Completion::MissingChild
-            | Completion::FinalInventoryBudget
-            | Completion::FragmentInventory
-            | Completion::RevokedInventory
+        Completion::MissingChild | Completion::FinalInventoryBudget
     ) {
         ensure!(result.0 == "partial", "{result:?}");
         ensure!(
@@ -1020,10 +1060,7 @@ async fn dynamic_result(
     let value:serde_json::Value=sqlx::query_scalar("SELECT value::jsonb FROM mdm.inventory WHERE tenant_id=$1::uuid AND scope=$2 AND field=$3 ORDER BY collection_sequence DESC LIMIT 1").bind(case_tenant()).bind(saved.scope.encode()?).bind(key.as_str()).fetch_one(&mut *pg).await?;
     if matches!(
         completion,
-        Completion::MissingChild
-            | Completion::FinalInventoryBudget
-            | Completion::FragmentInventory
-            | Completion::RevokedInventory
+        Completion::MissingChild | Completion::FinalInventoryBudget
     ) {
         ensure!(value == serde_json::to_value(&old)?);
     }
