@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 #[rustfmt::skip]
 mod generated;
 pub mod admx;
+pub mod collection;
 mod decimal;
 pub mod declared;
 pub mod diagnostic;

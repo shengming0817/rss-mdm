@@ -171,7 +171,7 @@ impl Request {
     ) -> Result<Self, Error> {
         let mut candidates = vec![uri.to_owned()];
         if uri.starts_with("./Vendor/MSFT/") {
-            candidates = vec![uri.replacen(
+            candidates.push(uri.replacen(
                 "./Vendor/",
                 if scope == Scope::User {
                     "./User/Vendor/"
@@ -179,7 +179,9 @@ impl Request {
                     "./Device/Vendor/"
                 },
                 1,
-            )];
+            ));
+        } else if uri.starts_with("./Device/Vendor/") && scope == Scope::Device {
+            candidates.push(uri.replacen("./Device/Vendor/", "./Vendor/", 1));
         }
         let mut selected = None;
         let mut specificity = 0;

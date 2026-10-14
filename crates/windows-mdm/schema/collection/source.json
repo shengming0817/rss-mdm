@@ -1,0 +1,12 @@
+[
+  {
+    "url": "https://learn.microsoft.com/en-us/windows/client-management/mdm/win32appinventory-csp?accept=text/markdown",
+    "sha256": "2909c062a7def1ef1fb632cb135dbbf50344cab89e9ea4582bdf7c1c8cd59a47",
+    "file": "win32appinventory.md"
+  },
+  {
+    "url": "https://learn.microsoft.com/en-us/windows/client-management/mdm/update-csp?accept=text/markdown",
+    "file": "update.md",
+    "sha256": "5b366bf76587ddcf7c84ebd704561e55e5354405b93b4edbc368f182a0f7be80"
+  }
+]
