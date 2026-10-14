@@ -49,7 +49,7 @@ async fn create(
     Path(device): Path<String>,
     input: std::result::Result<Json<Input>, axum::extract::rejection::JsonRejection>,
 ) -> std::result::Result<(StatusCode, Json<Value>), Error> {
-    let input = input.map_err(|_| Error::Malformed)?.0;
+    let input = input.map_err(Error::from)?.0;
     audit.operation(input.operation_id, "command_accept");
     audit.target(&device);
     app.execution
@@ -78,7 +78,7 @@ async fn cancel(
     Path((device, id)): Path<(String, Uuid)>,
     input: std::result::Result<Json<Change>, axum::extract::rejection::JsonRejection>,
 ) -> std::result::Result<Json<Value>, Error> {
-    let change = input.map_err(|_| Error::Malformed)?.0;
+    let change = input.map_err(Error::from)?.0;
     audit.operation(change.request_id, "command_cancel");
     audit.target(&device);
     app.execution
@@ -94,7 +94,7 @@ async fn approve(
     Path((device, id)): Path<(String, Uuid)>,
     input: std::result::Result<Json<Approval>, axum::extract::rejection::JsonRejection>,
 ) -> std::result::Result<Json<Value>, Error> {
-    let change = input.map_err(|_| Error::Malformed)?.0;
+    let change = input.map_err(Error::from)?.0;
     let revision = Change {
         request_id: change.request_id,
         expected_revision: change.expected_revision,

@@ -1160,7 +1160,7 @@ async fn publication_fixture(
     encoded: &str,
     offline: bool,
     at: i64,
-    revoked: Option<Vec<u8>>,
+    revoked: impl IntoIterator<Item = Vec<u8>>,
 ) -> anyhow::Result<String> {
     use x509_cert::{
         crl::{CertificateList, RevokedCert},
@@ -1186,13 +1186,17 @@ async fn publication_fixture(
             )?;
         }
     }
-    list.tbs_cert_list.revoked_certificates = revoked.map(|serial| {
-        vec![RevokedCert {
-            serial_number: SerialNumber::new(&serial).unwrap(),
-            revocation_date: time(at).unwrap(),
-            crl_entry_extensions: None,
-        }]
-    });
+    let revoked = revoked
+        .into_iter()
+        .map(|serial| {
+            Ok(RevokedCert {
+                serial_number: SerialNumber::new(&serial)?,
+                revocation_date: time(at)?,
+                crl_entry_extensions: None,
+            })
+        })
+        .collect::<anyhow::Result<Vec<_>>>()?;
+    list.tbs_cert_list.revoked_certificates = (!revoked.is_empty()).then_some(revoked);
     let scratch = tempfile::tempdir()?;
     let input = scratch.path().join("publication-tbs.der");
     let output = scratch.path().join("signature.der");
@@ -1491,4 +1495,92 @@ async fn authorize_request(
     }
     let request = s.request(g, a).await?;
     s.approve(p, request.grant_id, g.operation_id, a).await
+}
+
+#[tokio::test]
+#[ignore = "make t2 MODULE=agent.pki"]
+async fn management_crl_publication_accepts_large_signed_material_and_rejects_overflow()
+-> anyhow::Result<()> {
+    use crate::test_support::{Body, Browser, Method, Request, StatusCode};
+    use rss_mdm_agent_wire::pki::Purpose;
+    use tower::ServiceExt;
+    let host = crate::windows::test_support::Host::open().await?;
+    let trust = host.app.pki.trust(Purpose::Agent)?;
+    let issuer = &trust.issuers[0];
+    let raw = (1_u64..=80_000).map(|i| i.to_be_bytes().to_vec());
+    let crl = publication_fixture(&root(), &issuer.crl, false, now(), raw).await?;
+    let body = serde_json::json!({"operation":Uuid::new_v4(),"purpose":"agent","publications":[{"issuer":issuer.digest,"crl":crl,"root_crl":issuer.root_crl}]});
+    anyhow::ensure!(serde_json::to_vec(&body)?.len() > 2 * 1024 * 1024);
+    let secret = crate::test_support::identity::login(&host.app.identity, "admin").await?;
+    let mut browser = Browser {
+        cookies: std::collections::BTreeMap::from([(
+            "__Host-identity-session".into(),
+            secret.expose().into(),
+        )]),
+        csrf: Some(secret.csrf()),
+        ..Default::default()
+    };
+    let (status, result) = browser
+        .call(
+            &host.browser,
+            Method::POST,
+            "/api/v1/pki/crls",
+            Some(body.clone()),
+        )
+        .await?;
+    anyhow::ensure!(
+        status == StatusCode::NO_CONTENT,
+        "large CRL: {status} {result}"
+    );
+    anyhow::ensure!(
+        browser
+            .call(&host.browser, Method::POST, "/api/v1/pki/crls", Some(body))
+            .await?
+            .0
+            == StatusCode::NO_CONTENT
+    );
+    let mut connection =
+        <sqlx::PgConnection as sqlx::Connection>::connect_with(&options("mdm_access")?).await?;
+    sqlx::query("SELECT set_config('rss.tenant_id',$1,false)")
+        .bind(case_a())
+        .execute(&mut connection)
+        .await?;
+    let stored: Vec<u8> = sqlx::query_scalar(
+        "SELECT der FROM mdm_pki.crls WHERE tenant_id=$1::uuid AND purpose='agent' AND issuer=$2",
+    )
+    .bind(case_a())
+    .bind(&issuer.digest)
+    .fetch_one(&mut connection)
+    .await?;
+    anyhow::ensure!(stored == STANDARD.decode(&crl)?);
+    <sqlx::PgConnection as sqlx::Connection>::close(connection).await?;
+
+    // Actual chunked HTTP body, bounded before JSON parsing or authorization; no giant fixture file.
+    let chunks = futures::stream::iter(
+        (0..65).map(|i| Ok::<_, std::io::Error>(vec![b' '; if i == 64 { 1 } else { 1024 * 1024 }])),
+    );
+    let response = host
+        .browser
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/api/v1/pki/crls")
+                .header("host", "mdm.example.test")
+                .header("content-type", "application/json")
+                .body(Body::from_stream(chunks))?,
+        )
+        .await?;
+    anyhow::ensure!(response.status() == StatusCode::PAYLOAD_TOO_LARGE);
+    anyhow::ensure!(
+        response.headers().contains_key("x-request-id")
+            && response.headers()["cache-control"] == "no-store"
+            && response.headers()["x-content-type-options"] == "nosniff"
+    );
+    let bytes = axum::body::to_bytes(response.into_body(), 1024).await?;
+    anyhow::ensure!(
+        serde_json::from_slice::<serde_json::Value>(&bytes)?["code"] == "request_too_large"
+    );
+    host.close().await?;
+    Ok(())
 }

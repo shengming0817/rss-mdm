@@ -1,10 +1,5 @@
--- One private customer-tenant policy; absent policy is disabled. No access token storage.
+-- Native consent and admission evidence. No access token storage.
 BEGIN;
-CREATE TABLE mdm_windows.entra_policy (
- tenant_id uuid PRIMARY KEY,
- revision bigint NOT NULL CHECK(revision>0),
- document jsonb NOT NULL CHECK(octet_length(document::text)<=65536)
-);
 CREATE TABLE mdm_windows.entra_consents (
  tenant_id uuid NOT NULL,
  digest text NOT NULL CHECK(digest ~ '^[0-9a-f]{64}$'),
@@ -29,15 +24,11 @@ ALTER TABLE mdm_windows.entra_admissions ENABLE ROW LEVEL SECURITY;
 ALTER TABLE mdm_windows.entra_admissions FORCE ROW LEVEL SECURITY;
 CREATE POLICY tenant ON mdm_windows.entra_admissions USING(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid) WITH CHECK(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid);
 GRANT SELECT,INSERT ON mdm_windows.entra_admissions TO mdm_access;
-ALTER TABLE mdm_windows.entra_policy ENABLE ROW LEVEL SECURITY;
-ALTER TABLE mdm_windows.entra_policy FORCE ROW LEVEL SECURITY;
 ALTER TABLE mdm_windows.entra_consents ENABLE ROW LEVEL SECURITY;
 ALTER TABLE mdm_windows.entra_consents FORCE ROW LEVEL SECURITY;
-CREATE POLICY tenant ON mdm_windows.entra_policy USING(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid) WITH CHECK(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid);
 CREATE POLICY tenant ON mdm_windows.entra_consents USING(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid) WITH CHECK(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid);
 CREATE POLICY expired_only ON mdm_windows.entra_consents AS RESTRICTIVE FOR DELETE USING(expires_at<clock_timestamp());
-GRANT SELECT,INSERT ON mdm_windows.entra_policy,mdm_windows.entra_consents TO mdm_access;
-GRANT UPDATE(revision,document) ON mdm_windows.entra_policy TO mdm_access;
+GRANT SELECT,INSERT ON mdm_windows.entra_consents TO mdm_access;
 GRANT UPDATE(request_id,request_digest) ON mdm_windows.entra_consents TO mdm_access;
 GRANT DELETE ON mdm_windows.entra_consents TO mdm_access;
 COMMIT;

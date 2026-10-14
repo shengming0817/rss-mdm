@@ -3,7 +3,7 @@ use crate::{Error, authorization::context::RequestAuth};
 use axum::{
     Extension, Json, Router,
     body::Body,
-    extract::{DefaultBodyLimit, Path, Query, State},
+    extract::{Path, Query, State},
     http::StatusCode,
     routing::post,
 };
@@ -28,7 +28,6 @@ pub fn routes() -> Router<Arc<HttpState>> {
             post(begin).get(status).patch(append),
         )
         .route("/resources/{id}/uploads/{upload}/complete", post(complete))
-        .layer(DefaultBodyLimit::disable())
 }
 use rss_mdm_content_service::service::{Selection, current};
 async fn begin(

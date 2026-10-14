@@ -1,4 +1,12 @@
-use super::*;
+//! Entra registration policy shared by management and native enrollment.
+use crate::{Error, database::db};
+use rss_mdm_audit_integration::{AuditStore, Fact, RequestAudit};
+use rss_mdm_authorization_service::{Permission, context::AuthorizedPrincipal};
+use rss_request_context::TenantId;
+use serde::{Deserialize, Serialize};
+use sqlx::{PgConnection, Row};
+use std::{sync::Arc, time::Duration};
+use uuid::Uuid;
 #[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Policy {
@@ -37,7 +45,7 @@ impl Policy {
         }
         Ok(())
     }
-    pub(super) fn permits(&self, user: Uuid) -> Result<(), Error> {
+    pub fn permits(&self, user: Uuid) -> Result<(), Error> {
         if !self.enabled || !(self.all_users || self.users.contains(&user)) {
             return Err(Error::Forbidden);
         }
@@ -62,7 +70,7 @@ pub struct Update {
     pub operation_id: Uuid,
     pub policy: Policy,
 }
-pub(super) async fn settings_in(
+pub async fn settings_in(
     c: &mut PgConnection,
     tenant: &str,
     lock: bool,
@@ -99,22 +107,26 @@ pub(super) async fn settings_in(
 pub struct Management {
     store: Arc<crate::Store>,
     audit: Arc<AuditStore>,
-    pub entra: Arc<Entra>,
+    tenant: TenantId,
 }
 impl Management {
-    pub fn new(store: Arc<crate::Store>, audit: Arc<AuditStore>, entra: Arc<Entra>) -> Self {
+    pub fn new(store: Arc<crate::Store>, audit: Arc<AuditStore>, tenant: TenantId) -> Self {
         Self {
             store,
             audit,
-            entra,
+            tenant,
         }
     }
     pub async fn settings(&self, p: &AuthorizedPrincipal) -> Result<Settings, Error> {
         p.manage(Permission::AuthorizationRead)?;
-        if p.tenant_id() != self.entra.tenant.to_string() {
+        if p.tenant_id() != self.tenant.to_string() {
             return Err(Error::Forbidden);
         }
-        let mut tx = self.store.begin_read(p.tenant_id()).await?;
+        let mut tx = self.store.begin(p.tenant_id()).await?;
+        sqlx::query("SET TRANSACTION READ ONLY")
+            .execute(&mut *tx)
+            .await
+            .map_err(db)?;
         let value = settings_in(&mut tx, p.tenant_id(), false).await?;
         p.check_live()?;
         Ok(value)
@@ -126,7 +138,7 @@ impl Management {
         a: &RequestAudit,
     ) -> Result<Revision, Error> {
         p.manage(Permission::AuthorizationWrite)?;
-        if p.tenant_id() != self.entra.tenant.to_string()
+        if p.tenant_id() != self.tenant.to_string()
             || input.operation_id.is_nil()
             || input.expected_revision < 0
             || input.expected_revision == i64::MAX
@@ -139,20 +151,20 @@ impl Management {
         let digest = crate::enrollment::digest(input);
         let budget = rss_mdm_audit_integration::budget::AuditBudget::new(Duration::from_secs(2));
         let control = budget.control();
-        let result=self.audit.write(self.entra.tenant,&control,(self,p,input,a,&digest),|(this,p,input,a,digest),tx|Box::pin(async move {
+        let result=self.audit.write(self.tenant,&control,(self,p,input,a,&digest),|(this,p,input,a,digest),tx|Box::pin(async move {
             let (this,p,input,a,digest)=(*this,*p,*input,*a,*digest);
             let (value,replayed)=tx.with_connection_context(&mut (p,input,digest),|(p,input,digest),c|Box::pin(async move {
                 let (p,input,digest)=(*p,*input,*digest);
                 p.manage(Permission::AuthorizationWrite)?;
                 let old=settings_in(c,p.tenant_id(),true).await?;
-                let op=crate::operations::Operation {actor:crate::operations::Actor::from_authorized(p),key:input.operation_id,digest};
-                if let Some(value)=crate::operations::replay(c,&op).await? {return Ok((serde_json::from_str(&value).map_err(|_|Error::Conflict)?,true));}
+                let op=crate::windows_receipts::Operation::from_authorized(p,input.operation_id,digest);
+                if let Some(value)=crate::windows_receipts::replay(c,&op).await? {return Ok((serde_json::from_str(&value).map_err(|_|Error::Conflict)?,true));}
                 if old.revision!=input.expected_revision || old.policy.terms_text != input.policy.terms_text && old.policy.terms_version == input.policy.terms_version {return Err(Error::Conflict);}
                 let value=Revision {revision:old.revision+1};
                 sqlx::query("INSERT INTO mdm_windows.entra_policy(tenant_id,revision,document) VALUES($1::uuid,$2,$3) ON CONFLICT(tenant_id) DO UPDATE SET revision=excluded.revision,document=excluded.document")
                     .bind(p.tenant_id()).bind(value.revision).bind(serde_json::to_value(&input.policy).map_err(|_|Error::Malformed)?).execute(&mut *c).await.map_err(db)?;
                 p.check_live()?;
-                crate::operations::save(c,&op,&serde_json::to_string(&value).map_err(|_|Error::Malformed)?,a).await?;
+                crate::windows_receipts::save(c,&op,&serde_json::to_string(&value).map_err(|_|Error::Malformed)?,a).await?;
                 Ok::<_,Error>((value,false))
             })).await?;
             let fact=Fact::business(a,&format!("windows-entra-policy:{}",input.operation_id),digest.as_bytes(),200,"success",None).map_err(Error::from)?;

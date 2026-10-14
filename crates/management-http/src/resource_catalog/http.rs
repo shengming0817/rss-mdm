@@ -13,7 +13,6 @@ pub fn routes() -> Router<Arc<HttpState>> {
     Router::new()
         .route("/resources", get(directory))
         .route("/resources/{id}", get(read).post(write))
-        .layer(axum::extract::DefaultBodyLimit::max(8 * 1024 * 1024))
 }
 
 async fn directory(
@@ -79,12 +78,5 @@ async fn write(
     Path(id): Path<String>,
     body: std::result::Result<Json<Operation<Change>>, axum::extract::rejection::JsonRejection>,
 ) -> std::result::Result<Json<wire::Response>, Error> {
-    run(
-        &app,
-        &auth,
-        &audit,
-        id,
-        Some(body.map_err(|_| Error::Malformed)?.0),
-    )
-    .await
+    run(&app, &auth, &audit, id, Some(body.map_err(Error::from)?.0)).await
 }

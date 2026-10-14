@@ -16,7 +16,7 @@ async fn create_enrollment(
     input: Result<Json<Create>, axum::extract::rejection::JsonRejection>,
 ) -> Result<Json<crate::enrollment::Receipt>, Error> {
     let key = write_key(&headers, &audit, "enrollment_create")?;
-    let input = input.map_err(|_| Error::Malformed)?.0;
+    let input = input.map_err(Error::from)?.0;
     match input.source {
         rss_mdm_inventory::ReportSource::MdmWindows => {
             app.windows()?;
@@ -72,7 +72,7 @@ async fn resume_enrollment(
 ) -> Result<Json<crate::enrollment::Receipt>, Error> {
     let Path(id) = path.map_err(|_| Error::Malformed)?;
     let key = write_key(&headers, &audit, "enrollment_resume")?;
-    let input = input.map_err(|_| Error::Malformed)?.0;
+    let input = input.map_err(Error::from)?.0;
     app.service
         .resume(
             &auth.proof,
@@ -97,7 +97,7 @@ async fn cancel_enrollment(
     input: Result<Json<EmptyRequest>, axum::extract::rejection::JsonRejection>,
 ) -> Result<Json<crate::enrollment::Receipt>, Error> {
     let Path(id) = path.map_err(|_| Error::Malformed)?;
-    let Json(EmptyRequest {}) = input.map_err(|_| Error::Malformed)?;
+    let Json(EmptyRequest {}) = input.map_err(Error::from)?;
     let key = write_key(&headers, &audit, "enrollment_cancel")?;
     app.service
         .cancel(&auth.proof, id, key, &audit)
@@ -114,7 +114,7 @@ async fn revoke_registration(
     input: Result<Json<EmptyRequest>, axum::extract::rejection::JsonRejection>,
 ) -> Result<Json<crate::device::RevocationReceipt>, Error> {
     let Path((device, registration)) = path.map_err(|_| Error::Malformed)?;
-    let Json(EmptyRequest {}) = input.map_err(|_| Error::Malformed)?;
+    let Json(EmptyRequest {}) = input.map_err(Error::from)?;
     let key = write_key(&headers, &audit, "credential_revoke")?;
     audit.target(&device);
     app.devices

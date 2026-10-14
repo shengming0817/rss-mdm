@@ -2,6 +2,7 @@
 mod api;
 pub mod assets;
 pub mod authorization;
+mod body_policy;
 pub mod collection;
 pub mod compliance;
 pub mod content;
