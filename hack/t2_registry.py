@@ -57,7 +57,7 @@ CAPABILITY_INPUTS = {'identity.local': ('crates/app/src/identity.rs',),
  'agent.configurations': ('crates/registration-service/src/agent/configurations.rs','crates/registration-service/src/agent/settings.rs','crates/registration-service/schema/agent-configurations.sql','crates/software-service/src/agent_packages*','crates/management-http/src/agent_enrollment.rs','crates/management-http/src/software_catalog.rs','crates/app/src/agent_configurations.rs','crates/agent-wire/src/enroll/configuration.rs'),
  'agent.registration': ('crates/agent-channel/src/lib.rs',),
  'agent.reports': ('crates/agent-channel/src/lib.rs',),
- 'assets.http': ('crates/management-http/src/assets/http.rs', 'crates/inventory-service/src/assets/store.rs', 'crates/inventory-service/src/assets/fields.rs'),
+ 'assets.http': ('crates/management-http/src/assets/http.rs', 'crates/inventory-service/src/assets/store.rs', 'crates/inventory-service/src/assets/fields.rs', 'crates/inventory-service/src/assets/lists.rs'),
  'assets.queries': ('crates/inventory-service/src/assets/query*.rs',
                     'crates/inventory-service/src/assets/filter.rs'),
  'assets.sources': ('crates/inventory-service/src/assets/store.rs',
@@ -1089,6 +1089,8 @@ T1_INPUTS = ('fixtures/snapshot.json', 'crates/content-s3/tests/unit.rs', 'crate
     'crates/audit-integration/tests/budget/unit.rs',
     'crates/app/tests/authorization/unit.rs',
     'crates/app/tests/collection/unit.rs',
+    'crates/inventory-service/tests/collection.rs',
+    'crates/inventory-service/tests/compliance/evaluation_unit.rs',
     'crates/app/tests/compliance/evaluation_unit.rs',
     'crates/app/tests/config/unit.rs',
     'crates/app/tests/device/coordinates_unit.rs',
@@ -1725,3 +1727,5 @@ consume(('crates/native-schema/src/windows.rs', 'crates/native-schema/src/window
 
 consume(('crates/apple-channel/src/collection_context.rs', 'crates/apple-channel/src/collection_values.rs', 'fixtures/apple-collection/*'), 'apple.collection')
 consume(('crates/inventory/src/builtin/apple*.rs', 'crates/resource/src/blueprints/apple.rs', 'crates/inventory-service/src/collection/declarative.rs'), 'apple.collection apple.ddm planning.http')
+consume(('crates/inventory-service/src/assets/model.rs',), 'assets.http assets.queries assets.sources assets.group_input planning.assets apple.collection')
+consume(('crates/inventory-service/src/assets/runs.rs',), 'assets.http assets.sources apple.collection')

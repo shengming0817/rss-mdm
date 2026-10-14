@@ -142,3 +142,41 @@ fn declarative_certificate_projection_has_a_fixed_secret_boundary() {
     );
     assert!(field.value_type.decode_json(&safe).is_ok());
 }
+
+#[test]
+fn declarative_capabilities_preserve_omitted_declaration_categories() {
+    let (_, field) = builtin::apple_status::fields()
+        .into_iter()
+        .find(|(name, _)| *name == "management.client-capabilities")
+        .unwrap();
+    let reported = json!({
+        "supported-features": {},
+        "supported-versions": ["1.0"],
+        "supported-payloads": {
+            "declarations": {"configurations": ["com.apple.configuration.management.status-subscriptions"]},
+            "status-items": ["device.operating-system.version"]
+        }
+    });
+    let safe = builtin::apple_status::sanitized(&field.value_type, &reported);
+    let value = field
+        .canonical_value(field.value_type.decode_json(&safe).unwrap())
+        .unwrap();
+    let catalog = Catalog::new(vec![field.clone()]).unwrap();
+    let omitted = FieldKey::parse(&format!(
+        "{}.supported_payloads.declarations.activations",
+        field.key.as_str()
+    ))
+    .unwrap();
+    assert!(
+        catalog
+            .path(omitted)
+            .unwrap()
+            .values(&value)
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(
+        safe["supported_payloads"]["declarations"]["configurations"],
+        reported["supported-payloads"]["declarations"]["configurations"]
+    );
+}

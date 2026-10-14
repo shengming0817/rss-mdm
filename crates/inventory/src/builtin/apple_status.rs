@@ -205,10 +205,10 @@ pub fn fields() -> Vec<(&'static str, FieldDefinition)> {
                         (
                             "declarations",
                             record(&[
-                                ("activations", array(text()), true),
-                                ("assets", array(text()), true),
-                                ("configurations", array(text()), true),
-                                ("management", array(text()), true),
+                                ("activations", array(text()), false),
+                                ("assets", array(text()), false),
+                                ("configurations", array(text()), false),
+                                ("management", array(text()), false),
                             ]),
                             true,
                         ),
