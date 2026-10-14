@@ -664,7 +664,8 @@ async fn management_accepts_large_legal_policy_parameters() -> Result<()> {
     )
     .await?;
     let mut definition = policy_definition(id, case_task_scope());
-    definition["action"]["parameters"] = json!({"text":"x".repeat(20 * 1024)});
+    definition["action"]["parameters"] =
+        json!({"text":{"kind":"fixed","value":"x".repeat(20 * 1024)}});
     let parsed: rss_mdm_policy::Definition = serde_json::from_value(definition.clone())?;
     parsed.validate()?;
     let policy = Uuid::new_v4();
@@ -680,7 +681,7 @@ async fn management_accepts_large_legal_policy_parameters() -> Result<()> {
         .await?;
     ensure!(
         status == StatusCode::OK
-            && read["definition"]["action"]["parameters"]["text"] == "x".repeat(20 * 1024),
+            && read["definition"]["action"]["parameters"]["text"]["value"] == "x".repeat(20 * 1024),
         "policy read omitted authored parameters: {read}"
     );
     let (status, rejected) = fixture

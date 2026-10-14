@@ -938,16 +938,20 @@ async fn management_policy_body_replay_and_audit_faults() -> anyhow::Result<()> 
             == 3
     );
 
-    // Complete removal of the current management permission is checked by the real use case.
-    let proof = crate::device::test_support::admin(case_tenant(), "admin-a").await?;
-    crate::test_support::identity::set_grants(case_tenant(), proof.principal_id(), vec![]).await?;
+    // A real tenant member without management authority cannot update the policy.
+    let secret = crate::test_support::identity::credential(&host.app.identity, "other")?;
+    let mut member = crate::test_support::Browser {
+        cookies: BTreeMap::from([("__Host-identity-session".into(), secret.expose().into())]),
+        csrf: Some(secret.csrf()),
+        ..Default::default()
+    };
     ensure!(
-        admin
+        member
             .call(
                 &host.browser,
                 Method::PUT,
                 path,
-                Some(update(2, Uuid::new_v4()))
+                Some(update(3, Uuid::new_v4()))
             )
             .await?
             .0

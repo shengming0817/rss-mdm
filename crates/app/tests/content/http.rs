@@ -3,7 +3,9 @@ use crate::test_support::*;
 #[tokio::test]
 #[ignore = "MODULE=content.http: real streamed HTTP, binding transactions and storage"]
 async fn upload_recovery_download_range_and_authorization() -> Result<()> {
-    upload_contract(Fixture::open(false).await?, 16_777_217).await
+    // Exercise streaming beyond the former ingress buffer without tying recovery
+    // fault injection to a large artifact's disk throughput inside the host deadline.
+    upload_contract(Fixture::open(false).await?, 2 * 1024 * 1024 + 1).await
 }
 pub(super) async fn upload_contract(fixture: Fixture, length: usize) -> Result<()> {
     let router = &fixture.router;
@@ -89,7 +91,8 @@ pub(super) async fn upload_contract(fixture: Fixture, length: usize) -> Result<(
     let status = response.status();
     let body = response.text().await?;
     ensure!(
-        status == StatusCode::SERVICE_UNAVAILABLE,
+        status == StatusCode::SERVICE_UNAVAILABLE
+            && serde_json::from_str::<Value>(&body)?["code"] == "operation_unknown",
         "lost upload commit: {status} {body}"
     );
     let recovered = client
