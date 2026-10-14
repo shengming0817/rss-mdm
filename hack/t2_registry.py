@@ -57,7 +57,7 @@ CAPABILITY_INPUTS = {'identity.local': ('crates/app/src/identity.rs',),
  'agent.configurations': ('crates/registration-service/src/agent/configurations.rs','crates/registration-service/src/agent/settings.rs','crates/registration-service/schema/agent-configurations.sql','crates/software-service/src/agent_packages*','crates/management-http/src/agent_enrollment.rs','crates/management-http/src/software_catalog.rs','crates/app/src/agent_configurations.rs','crates/agent-wire/src/enroll/configuration.rs'),
  'agent.registration': ('crates/agent-channel/src/lib.rs',),
  'agent.reports': ('crates/agent-channel/src/lib.rs',),
- 'assets.http': ('crates/management-http/src/assets/http.rs', 'crates/inventory-service/src/assets/store.rs'),
+ 'assets.http': ('crates/management-http/src/assets/http.rs', 'crates/inventory-service/src/assets/store.rs', 'crates/inventory-service/src/assets/fields.rs'),
  'assets.queries': ('crates/inventory-service/src/assets/query*.rs',
                     'crates/inventory-service/src/assets/filter.rs'),
  'assets.sources': ('crates/inventory-service/src/assets/store.rs',
@@ -272,7 +272,7 @@ for name, target in (('manual', 'manual'), ('reader', 'reader')):
         sources=('crates/inventory-postgres/src/*', 'crates/inventory-postgres/migrations/*'),
         tests=(f'crates/inventory-postgres/tests/{target}.rs',),
         support=('crates/inventory-postgres/tests/support/*',))
-MODULES['inventory.manual'] = replace(MODULES['inventory.manual'], policies=(CasePolicy('field_catalog_cas_history_and_rollback_are_atomic','reuse','tenant'),))
+MODULES['inventory.manual'] = replace(MODULES['inventory.manual'], policies=(CasePolicy('field_catalog_cas_history_and_rollback_are_atomic','reuse','tenant'), CasePolicy('seed_retirement_and_reinitialization_preserve_tenant_catalog','reuse','tenant')))
 for name in ('projection', 'recovery', 'process'):
     add('inventory.' + name,
         build=Build('rss-mdm-examples', features=('integration',)),
@@ -283,9 +283,7 @@ for name in ('projection', 'recovery', 'process'):
 add('worker.wake', selectors=('worker_wake::tests::',),
     sources=('crates/app/src/worker_wake.rs',),
     tests=('crates/app/tests/worker_wake/mod.rs',), support=())
-MODULES['worker.wake']=replace(MODULES['worker.wake'],policies=(
-    CasePolicy('worker_wake::tests::committed_hints_reconnect_and_restart_preserve_durable_work','reuse','pair'),
-))
+MODULES['worker.wake'] = replace(MODULES['worker.wake'], policies=(CasePolicy('worker_wake::tests::committed_hints_reconnect_and_restart_preserve_durable_work', 'reuse', 'pair'),))
 add('inventory.runtime', selectors=('inventory_runtime::tests::',), fixtures=('identity',),
     sources=('crates/inventory-service/src/inventory_runtime.rs',),
     tests=('crates/app/tests/inventory_runtime/mod.rs',), support=())
@@ -498,7 +496,7 @@ MODULES['agent.registration'] = replace(MODULES['agent.registration'], policies=
     CasePolicy('agent::t2::registration::registration_recovery_preserves_credential_rotation', 'reuse', 'tenant'),
 ))
 MODULES['agent.reports'] = replace(MODULES['agent.reports'], db_mode='reuse', scope='tenant')
-MODULES['inventory.reader'] = replace(MODULES['inventory.reader'], db_mode='instance', scope='objects', policies=(
+MODULES['inventory.reader'] = replace(MODULES['inventory.reader'], db_mode='instance', scope='pair', policies=(
     CasePolicy('watermark_fence_rejects_unrelated_grantee', 'fresh', 'objects'),
 ))
 MODULES['inventory.projection'] = replace(MODULES['inventory.projection'], db_mode='reuse', scope='pair', policies=(
@@ -690,6 +688,10 @@ def consume(inputs, names):
         MODULES[name] = replace(MODULES[name], production_inputs=MODULES[name].production_inputs + tuple(inputs))
 
 
+consume(('crates/execution-service/src/collection_eligibility.rs',), 'windows.management apple.collection planning.agent_policy planning.http')
+consume(('crates/inventory/src/builtin/standard.rs',), 'inventory.manual inventory.runtime assets.http')
+consume(('crates/resource/src/blueprints.rs',), 'planning.http')
+
 consume(('crates/content-service/src/range.rs',),
         'content.http execution.agent.content execution.software.content')
 consume(('crates/content-service/src/upload.rs', 'crates/content-service/src/bundle.rs'),
@@ -725,12 +727,12 @@ consume(('crates/execution-service/src/input_preparation.rs',
 consume(('crates/execution-service/src/freeze_inputs.rs', 'crates/flow-service/src/resource_catalog/mod.rs'),
         'planning.agent_policy planning.remote planning.onboarding')
 TASK_CONSUMERS = 'planning.self_service planning.onboarding planning.policy planning.agent_policy planning.frequency planning.remote planning.software execution.agent.delivery execution.agent.poll execution.agent.content execution.agent.history execution.agent.recovery execution.software.offer execution.software.content execution.software.recovery'
-consume(('crates/agent-wire/src/collection.rs', 'crates/agent-channel/src/inventory_wire.rs'),
+consume(('crates/agent-wire/src/collection.rs', 'crates/agent-wire/src/collection_scope.rs', 'crates/agent-channel/src/inventory_wire.rs'),
         TASK_CONSUMERS + ' agent.registration agent.reports')
 for name in ('execution.agent.delivery', 'execution.software.offer'):
     MODULES[name] = replace(MODULES[name], support_inputs=(*MODULES[name].support_inputs,
                            'crates/app/tests/support/task_signature.rs'))
-consume(('crates/agent-wire/src/tasks.rs', 'crates/agent-wire/schema/runtime/task-*.json',
+consume(('crates/agent-wire/src/tasks.rs', 'crates/agent-wire/src/collection_environment.rs', 'crates/agent-wire/schema/runtime/task-*.json',
          'crates/agent-wire/schema/runtime/signed-task-v1.schema.json', 'crates/execution-service/src/task_signing.rs',
          'crates/execution-service/src/actions/mod.rs'), TASK_CONSUMERS)
 # lib.rs owns shared identities, capability, errors, registration and report shapes.
@@ -818,7 +820,7 @@ consume(('crates/agent-channel/src/boundary.rs', 'crates/agent-channel/src/bindi
 consume(('crates/agent-channel/src/content.rs',), 'execution.agent.content execution.software.content')
 consume(('crates/windows-channel/src/collection.rs', 'crates/windows-channel/src/boundary.rs'), 'windows.management windows.retention windows.limits inventory.runtime')
 consume(('crates/app/src/assembly/windows/*',), 'windows.enrollment windows.issuance windows.management windows.retention windows.limits native.tls')
-consume(('crates/inventory-service/src/collection*',), 'agent.reports windows.management windows.retention apple.collection apple.renewal inventory.runtime')
+consume(('crates/inventory-service/src/collection*', 'crates/inventory-service/src/apple_collection.rs', 'crates/inventory-service/src/collection/*'), 'agent.reports windows.management windows.retention apple.collection apple.renewal inventory.runtime')
 consume(('crates/inventory-service/src/groups/*',), 'planning.http planning.group_scope assets.group_input compliance.group_input')
 consume(('crates/content-service/src/lib.rs', 'crates/content-service/src/bindings.rs', 'crates/content-service/src/service*', 'crates/content-service/src/transaction.rs', 'crates/content-service/src/admission.sql'), 'content.storage content.http content.mirror content.gc execution.agent.content execution.software.content software.http')
 consume(('crates/content-service/src/catalog.sql', 'crates/content-service/src/catalog.json'),
@@ -1033,6 +1035,7 @@ MODULES['planning.http'] = replace(MODULES['planning.http'], production_inputs=(
     'crates/group-postgres/src/directory.rs',
     'crates/resource-postgres/src/directory.rs',
     'crates/flow-service/src/resource_catalog/directory.rs',
+    'crates/flow-service/src/resource_catalog/wire.rs',
     'crates/flow-service/src/planning/directory.rs',
     'crates/management-http/src/enrollment/directory.rs',
     'crates/management-http/src/resource_catalog/http.rs'), support_inputs=(*MODULES['planning.http'].support_inputs, 'crates/app/tests/support/agent_execution.rs'))
@@ -1075,7 +1078,7 @@ TOOL_INPUTS = {
     'hack/candidate_fixture.py': ('test_candidate_smoke', 'test_t2_context'),
     'hack/candidate_smoke.py': ('test_candidate_smoke',),
 }
-T1_INPUTS = ('crates/content-s3/tests/unit.rs',) + ('crates/app/tests/agent_pki/health.rs','crates/certificate/tests/agent.rs','crates/certificate/tests/apple.rs','crates/certificate-archive-service/tests/behavior.rs','crates/authorization-service/tests/unit.rs','crates/inventory-service/tests/runtime.rs','crates/software-service/tests/management/*') + tuple(f'crates/{name}/tests/*' for name in (
+T1_INPUTS = ('fixtures/snapshot.json', 'crates/content-s3/tests/unit.rs', 'crates/inventory-service/tests/assets/unit.rs') + ('crates/app/tests/agent_pki/health.rs','crates/certificate/tests/agent.rs','crates/certificate/tests/apple.rs','crates/certificate-archive-service/tests/behavior.rs','crates/authorization-service/tests/unit.rs','crates/inventory-service/tests/runtime.rs','crates/software-service/tests/management/*') + tuple(f'crates/{name}/tests/*' for name in (
     'inventory', 'group', 'scope', 'policy', 'resource', 'software-release',
     'compliance', 'agent-wire', 'windows-mdm', 'apple-mdm', 'content-service')) + (
     'crates/app/tests/agent/unit.rs',

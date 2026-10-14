@@ -3,12 +3,10 @@ use lifecycle::Peer;
 use sqlx::Connection;
 impl Fixture {
     pub async fn before_token(&mut self, peer: &Peer) -> Result<()> {
+        self.policy_grants().await?;
         for path in [
             format!("/api/v1/enrollments/{}/profile", Uuid::new_v4()),
-            format!(
-                "/api/v1/devices/{DEVICE}/collection-runs",
-                DEVICE = case_device()
-            ),
+            "/api/v1/policies/previews".into(),
         ] {
             for body in [
                 json!(null),
@@ -55,19 +53,48 @@ impl Fixture {
             )
             .await?;
         ensure!(reply.0 == StatusCode::BAD_REQUEST);
-        let reply = self
-            .browser
-            .call(
-                &self.router,
-                Method::POST,
-                &format!(
-                    "/api/v1/devices/{DEVICE}/collection-runs",
-                    DEVICE = case_device()
-                ),
-                Some(json!({"source":"mdm.apple","requestId":Uuid::new_v4()})),
-            )
-            .await?;
-        ensure!(reply.0 == StatusCode::CONFLICT);
+        let definition = self.collection_template().await?;
+        let owner = self.policy_worker().await?;
+        let preview = tokio::time::timeout(Duration::from_secs(30), async {
+            loop {
+                let response = self
+                    .browser
+                    .call(
+                        &self.router,
+                        Method::POST,
+                        "/api/v1/policies/previews",
+                        Some(json!({"definition":definition})),
+                    )
+                    .await?;
+                if response.0 == StatusCode::OK {
+                    return Ok::<_, anyhow::Error>(response.1);
+                }
+                ensure!(
+                    response.0 == StatusCode::CONFLICT,
+                    "pending-token preview: {response:?}"
+                );
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        })
+        .await;
+        crate::test_support::stop_worker(Some(owner)).await?;
+        let preview = preview??;
+        let items = preview["items"]
+            .as_array()
+            .ok_or_else(|| anyhow::anyhow!("missing preview objects: {preview:?}"))?;
+        ensure!(
+            items.len() == 1 && items[0]["availability"] == "unavailable",
+            "pending token admitted template or omitted its object: {preview:?}"
+        );
+        let mut pg =
+            sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?)
+                .await?;
+        let effects: i64 = sqlx::query_scalar("SELECT (SELECT count(*) FROM mdm_commands.action_runs WHERE tenant_id=$1::uuid)+(SELECT count(*) FROM mdm_access.collection_runs WHERE tenant_id=$1::uuid)").bind(case_tenant()).fetch_one(&mut pg).await?;
+        ensure!(
+            effects == 0,
+            "preview published collection work before TokenUpdate"
+        );
+        pg.close().await?;
         let client = reqwest::Client::builder()
             .no_proxy()
             .timeout(Duration::from_secs(5))
@@ -244,21 +271,13 @@ impl Fixture {
             "stale APNs receipt retired new token"
         );
         ensure!(self.operation(queued).await?["commandStatus"] == "published");
-        self.pending_collections(65).await?;
-        let reply = self
-            .browser
-            .call(
-                &self.router,
-                Method::POST,
-                &format!(
-                    "/api/v1/devices/{DEVICE}/collection-runs",
-                    DEVICE = case_device()
-                ),
-                Some(json!({"source":"mdm.apple","requestId":Uuid::new_v4()})),
-            )
-            .await?;
-        ensure!(reply.0 == StatusCode::ACCEPTED);
-        let run = reply.1["runId"].as_str().unwrap();
+        self.policy_grants().await?;
+        let definition = self.collection_template().await?;
+        let owner = self.policy_worker().await?;
+        let queued = self.pending_collections(&definition, 66).await;
+        crate::test_support::stop_worker(Some(owner)).await?;
+        let runs = queued?;
+        let run = runs[65];
         let mut pending_reader =
             sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?)
                 .await?;

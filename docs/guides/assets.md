@@ -4,7 +4,7 @@ Inventory 是唯一字段目录和来源解析 owner，应用把解析结果送�
 
 ## 字段与状态
 
-字段目录、类型及可用操作以 `/api/v1/asset-fields` 为准；值不隐式转换。Manual 可显式置空，标准字段禁止人工覆盖。
+字段目录、类型及可用操作以 `/api/v1/asset-fields` 为准；值不隐式转换。Manual 可显式置空。UUID、SN、manufacturer 与通道维护字段受保护；其它标准字段与 custom 字段共享目录生命周期，人工写入须由字段的 manual/source 明确允许。租户创建事务一次性写入标准定义；读取只读数据库，初始化不覆盖租户修改，也不复活已退役字段。
 
 known/null/missing/unsupported/deleted/conflict 是明确状态。同级来源相同值合并证据，不同值返回 conflict；一条来源删除不删除另一条来源。来源必须绑定当前有效注册及 epoch。Partial 应用独立成功字段，缺失或失败字段保留此前可信事实；Failed 不清空事实，最新 CollectionRun 质量另行呈现。带 itemKey 的清单按条目身份比较，相同内容的不同返回顺序不产生冲突。
 
@@ -97,22 +97,36 @@ severity 为 low/medium/high/critical，仅用于解释；platform 为 all/windo
 
 ## 发布采集模板并复用策略
 
-原生读取使用 Resource 的 `native_collection` 类型，版本声明包含同名 declaration、canonical JSON artifact 及 definition。definition 指定 `adapter`、`mappings`、`timeoutSeconds`、`outputBytes`：`windows_csp` 只构造 CSP Get；`apple_device_information` 使用受限 Queries；`apple_installed_applications` 读取 InstalledApplicationList。Apple Inventory 采集使用 MDM adapter；DDM 状态由 operation 原生证据查询独立呈现，不自动组成 Inventory Snapshot。
+原生读取使用 Resource 的 `native_collection` 类型，版本声明包含同名 declaration、canonical JSON artifact 及 definition。definition 指定 `adapter`、`scope`、`applicability`、`mappings`、`timeoutSeconds`、`outputBytes`：`windows_csp` 只构造 CSP Get；`apple_device_information` 使用受限 Queries；`apple_installed_applications` 读取 InstalledApplicationList。Apple Inventory 采集使用 MDM adapter；DDM 状态由 operation 原生证据查询独立呈现，不自动组成 Inventory Snapshot。
 
-每个 mapping 的键为字段身份，值为 `{query,pointer,columns}`。columns 为空时直接按字段类型解码；非空时把清单条目投影到声明的结构化属性。模板的 canonical JSON 是上传 artifact 的原文，发布时校验字段、来源、平台和结构。脚本与 SQL 使用已有 `script` Resource，SQL profile 为 `osquery`，执行只接受固定版本模板及声明参数。
+每个原生 mapping 的键为字段身份，值为 `{query,mapping:{pointer,conversion,columns}}`。脚本 purpose 的 mappings 直接使用 `{pointer,conversion,columns}`。conversion 为 identity、integer、number、enum、scale 或 bitmask；未知枚举、未知位、溢出与不能整除的单位换算均为 invalid。columns 递归声明列表属性，不复制未声明属性。模板的 canonical JSON 是上传 artifact 的原文，发布时校验字段、来源、平台和结构。脚本与 SQL 使用已有 `script` Resource，SQL profile 为 `osquery`，执行只接受固定版本模板及声明参数。
 
-持续采集使用 Policy action `native_collection`，绑定精确 Resource、Schedule、Frequency 和 runLifetimeSeconds；脚本/SQL 使用现有 execution action。按需读取使用现有 remote-operation 的 `collect_native` action，脚本/SQL 使用 `execute`，目标为设备集合或 Scope 的冻结结果。有 inventory_collect、resource_write、policy_write 等对应权限的管理员直接启用，无新增审批状态。一次性操作不生成长期 Policy。
+`GET /api/v1/collection-blueprints` 返回六类目录及实际可实例化的官方蓝图。目前 identity/hardware 各提供 Windows、macOS 原生模板；software/security/management/updates 只有目录位置，平台后续工作补齐可执行模板。
+
+使用 `POST /api/v1/resources/{id}`，请求 `{"operationId":"<uuid>","expectedRevision":0,"input":{"action":"instantiate","blueprint":"macos.hardware","version":"1"}}`，创建普通租户 Resource 并写入 canonical 内容。初始版本为 `builtin.macos.hardware.1`，revision 为 2、状态 frozen；用正常 activate 操作启用，再绑定 Policy。版本含 x86_64/aarch64 variants。管理员直接修改该 Resource 并发布新版本；官方蓝图只读，升级需创建新候选 Resource，明确调整 Policy，不能自动覆盖或合并租户内容。重复相同 operationId 可恢复实例化/上传，不接受移动的 latest 版本。
+
+scope 必须显式为 `{"kind":"device"}`。user/source/volume/prefix DTO 已定义，但当前投影与查询不支持范围独立消费，因此发布即拒绝这些范围。完整快照只删除当前模板选中的字段，保留同来源同范围中未选字段及其它来源值；禁用 Policy 不删除最近可信事实。
+
+applicability 包含 minimumOsVersion、minimumBuild、editions、enrollments、tools、capabilities，空集合表示未额外限制；平台与架构由 Resource variant 持有。示例：`{"minimumOsVersion":null,"minimumBuild":null,"editions":[],"enrollments":["agent"],"tools":{"osquery":"5.23.1"},"capabilities":["osquery"]}`。预览与执行使用相同适用性检查；缺少声明所需证据不会默认匹配。Windows 原生沿用当前可信 CSP OS/build/edition 与 enrollment；Apple 原生使用实际 access rights，尚无可信版本信息时不能满足 OS/edition 限制。Agent poll 的 environment 提交 edition/tool 版本，OS/build 复用 executionContext.osVersion。这里只冻结契约，实际 Agent 采集和外部仓升级由对应平台任务交付。
+
+Windows Firewall CSP 状态与 WSC health 使用不同字段；BitLocker conversion、protection、lock 分列。软件安装实例、receipts 与包管理器记录也分别建模。标准 seed 不代表每个平台已有采集器，支持面以可执行模板为准。
+
+持续采集使用 Policy action `native_collection`，绑定精确 Resource、Schedule、Frequency 和 runLifetimeSeconds；脚本/SQL 使用现有 execution action。按需读取使用现有 remote-operation 的 `collect_native` action，脚本/SQL 使用 `execute`，目标为设备集合或 Scope 的冻结结果。有 inventory_collect、resource_write、policy_write 等对应权限的管理员直接启用，无新增审批状态。周期采集选择 EveryTrigger；重采使用显式 rerun。发布 Resource 新版本不会自动改动 Policy 的精确绑定。一次性操作不生成长期 Policy。Agent 注册只冻结通道维护采集，Windows 会话不再自动采集固定 model/OS，Apple 旧 collection-runs 创建入口已删除；注册认证与通道维护仍由原 owner 执行。
 
 `GET /api/v1/devices/{id}/collections/{run}` 返回统一进度、来源、模板版本和逐字段质量。列表字段另有 itemCount/invalidItems，终态 run 可通过 `GET /api/v1/devices/{id}/collections/{run}/fields/{field}/items?offset=0&limit=100` 分页读取逐条质量，最多1000条。无效列表保留旧可信值，质量页不回传不可信原文。
 
 资产详情中的 lists 只返回摘要，各来源摘要自带独立游标，冲突时仍可分页检查每份来源清单。使用 `GET /api/v1/devices/{id}/inventory-lists/{field}?limit=100&cursor=…` 读取选值后的列表。游标绑定字段、设备、租户、授权范围及资产水位；后续变更不混入旧分页。完整空列表与未执行、失败、部分输出分别表达。字段和清单没有 TTL。
 
-本地 `rss-mdm-fixture ingest-fixture` 只接受示例发布的 typed-fields-v2 collector 数据；显式设置 `MDM_COLLECTION_URL` 为有采集结果写权限的数据库身份。示例先提交冻结定义与结果，再用 `DATABASE_URL` 对应的投影运行身份提交 Observation 引用。两者不共享隐式提权或旧格式读取。
+本地 `rss-mdm-fixture ingest-fixture` 只接受示例发布的 typed-fields-v3 collector 数据；显式设置 `MDM_COLLECTION_URL` 为有采集结果写权限的数据库身份。示例先提交冻结定义与结果，再用 `DATABASE_URL` 对应的投影运行身份提交 Observation 引用。两者不共享隐式提权或旧格式读取。
 
 ## 用已安装软件事实安排软件策略
 
-`device.software.installed` 沿用现有对象数组，条目持有 id、name、version、publisher、scope。先按 `device.software.installed.id` 的 `contains_any` 条件形成智能组，再通过 Scope 分配已有 Software Policy：持续必装用 required_install，用户可选用 available_install，明确移除用 explicit_uninstall。软件不走 RemoteOperation；一次性操作入口的范围冻结见 [企业任务](enterprise-tasks.md)。
+`device.software.installations` 沿用现有对象数组，条目持有 id、name、version、publisher、scope。先按 `device.software.installations.id` 的 `contains_any` 条件形成智能组，再通过 Scope 分配已有 Software Policy：持续必装用 required_install，用户可选用 available_install，明确移除用 explicit_uninstall。软件不走 RemoteOperation；一次性操作入口的范围冻结见 [企业任务](enterprise-tasks.md)。
 
 例如，清理已检测到的旧应用可对该 id 的组发布 explicit_uninstall；升级已安装应用可对同一组发布 required_install；全设备必装应对目标 Scope 发布 required_install，让当前任务的独立检测确认是否已经满足。用户已有安装同样可以满足目标，或者由有权限的任务执行升级/卸载，不以历史安装归属作为执行门槛。
 
 检查指定软件的版本时，读取授权清单中 id 匹配的同一对象及其 version。不要将独立 id 集合条件与 version 集合条件 AND 后宣称关联到了同一软件；Group 目前没有数组条目关联语法。完整空列表可用于判定未发现目标，Missing、Unsupported、冲突或部分采集须保留未知及质量解释。软件任务结果只证明该次执行的前后检测；后续库存仍由既有采集链路产生，不能从 verified 结果伪造库存快照。
+
+本次为当前格式替换：旧映射字符串、缺少 scope 的采集定义以及旧 claim payload 均拒绝。数据库安装通过 migration digest 拒绝旧基线，不自动清库或双读；升级须显式部署匹配的服务端、schema 与 Agent 候选版本。
+
+原生 MDM 当前没有可信架构证据，因此 `native_collection` 同平台必须同时声明 x86_64 与 aarch64，且声明内容一致；架构专用原生模板会被拒绝。Agent 脚本仍按实际执行环境核对精确架构。

@@ -86,6 +86,22 @@ pub async fn accept_for_device(
             )
         }
         db::ScheduledPolicy::Native(definition) => {
+            let tenant = tx.tenant_id();
+            let candidate = target.clone();
+            let template = definition.frozen.definition.clone();
+            let allowed = tx
+                .with_connection(move |c| {
+                    Box::pin(async move {
+                        Ok(crate::collection_eligibility::native_on(
+                            c, tenant, &candidate, &template,
+                        )
+                        .await)
+                    })
+                })
+                .await??;
+            if !allowed {
+                return Ok(());
+            }
             let Some(entry) = definition
                 .entry_in(&service.source, tx, &target.device, now)
                 .await?

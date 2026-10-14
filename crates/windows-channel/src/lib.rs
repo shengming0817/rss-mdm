@@ -617,7 +617,6 @@ mod tests;
 
 #[cfg(feature = "integration")]
 pub mod test_support {
-    pub use crate::collection::{accept, create};
     pub use crate::protection::{Secrets, digest};
 }
 #[cfg(feature = "integration")]

@@ -61,7 +61,7 @@ fn request(id: Uuid, policy: &Value, parameters: Value) -> Value {
 const INVOKE: &str = "/api/v1/agent/runtime/self-service/invocations";
 const DIRECTORY: &str = "/api/v1/agent/runtime/self-service?source=ai";
 async fn claim_with_context(router: &Router, context: &Value) -> Result<(StatusCode, Value)> {
-    agent_call(router, Method::POST, "/api/v1/agent/runtime/tasks/claim", Some(case_credential()), Some(json!({"wireVersion":1,"executionContext":context,"profiles":["posix_sh"],"operationId":Uuid::new_v4()}))).await
+    agent_call(router, Method::POST, "/api/v1/agent/runtime/tasks/claim", Some(case_credential()), Some(json!({"wireVersion":1,"executionContext":context,"environment":{"edition":null,"tools":{}},"profiles":["posix_sh"],"operationId":Uuid::new_v4()}))).await
 }
 async fn event_with_context(
     router: &Router,
@@ -472,6 +472,7 @@ async fn device_access_logged_in_user_requires_exact_os_session_and_helper_witho
     .await?;
     let (_, bytes, mut script) = f.resource().await?;
     script["runAs"] = json!("logged_in_user");
+    script["purpose"] = json!({"kind":"action"});
     let resource_id = Uuid::new_v4();
     let digest: [u8; 32] = Sha256::digest(bytes).into();
     resource(
@@ -753,7 +754,7 @@ async fn sensitive_status_rechecks_read_permissions_without_leaking_diagnostics(
     let resource_id = Uuid::new_v4();
     let bytes = b"printf '{}'";
     let digest = rss_mdm_resource::Digest::of(bytes).bytes();
-    let script = json!({"profile":"posix_sh","runAs":"system","encoding":"utf8","parameters":{"type":"object","properties":{},"required":[],"additionalProperties":false},"bindings":{},"output":{"type":"object","properties":{"secret":{"type":"string"}},"required":["secret"],"additionalProperties":false},"purpose":{"kind":"collection","mappings":{key:"/secret"}},"timeoutSeconds":60,"outputBytes":4096,"maxRows":1});
+    let script = json!({"profile":"posix_sh","runAs":"system","encoding":"utf8","parameters":{"type":"object","properties":{},"required":[],"additionalProperties":false},"bindings":{},"output":{"type":"object","properties":{"secret":{"type":"string"}},"required":["secret"],"additionalProperties":false},"purpose":{"kind":"collection","scope":{"kind":"device"},"applicability":{"minimumOsVersion":null,"minimumBuild":null,"editions":[],"enrollments":[],"tools":{},"capabilities":[]},"mappings":{key:{"pointer":"/secret","conversion":{"kind":"identity"},"columns":{}}}},"timeoutSeconds":60,"outputBytes":4096,"maxRows":1});
     resource(
         &mut f.author,
         &f.router,
@@ -1403,7 +1404,7 @@ async fn available_software_requires_request_and_deduplicates_users_policies_and
             && employee_authorization.1["grants"] == json!([]),
         "ordinary employee must retain zero effective management grants: {employee_authorization:?}"
     );
-    let poll=agent_call(&f.router,Method::POST,"/api/v1/agent/runtime/tasks/claim",Some(&f.credential),Some(json!({"wireVersion":1,"executionContext":software::context(software::Platform::MacOs),"profiles":["posix_sh"],"operationId":Uuid::new_v4()}))).await?;
+    let poll=agent_call(&f.router,Method::POST,"/api/v1/agent/runtime/tasks/claim",Some(&f.credential),Some(json!({"wireVersion":1,"executionContext":software::context(software::Platform::MacOs),"environment":{"edition":null,"tools":{}},"profiles":["posix_sh"],"operationId":Uuid::new_v4()}))).await?;
     ensure!(
         poll.0 == StatusCode::OK && poll.1["task"].is_null(),
         "AvailableInstall must not prequeue: {poll:?}"
@@ -1706,7 +1707,7 @@ async fn software_unknown_survives_same_account_relogin_and_keeps_other_accounts
             "/api/v1/agent/runtime/tasks/claim",
             Some(&f.credential),
             Some(
-                json!({"wireVersion":1,"executionContext":context,"profiles":["power_shell7"],"operationId":Uuid::new_v4()}),
+                json!({"wireVersion":1,"executionContext":context,"environment":{"edition":null,"tools":{}},"profiles":["power_shell7"],"operationId":Uuid::new_v4()}),
             ),
         )
     };

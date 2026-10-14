@@ -199,7 +199,7 @@ async fn chain(format: &str, bundle: bool, user: bool) -> Result<()> {
                 "/api/v1/agent/runtime/tasks/claim",
                 Some(&f.credential),
                 Some(
-                    json!({"wireVersion":1,"profiles":[],"executionContext":local,"operationId":Uuid::new_v4()}),
+                    json!({"wireVersion":1,"environment":{"edition":null,"tools":{}},"profiles":[],"executionContext":local,"operationId":Uuid::new_v4()}),
                 ),
             )
             .await?;

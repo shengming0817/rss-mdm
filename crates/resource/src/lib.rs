@@ -364,6 +364,15 @@ impl Version {
             } = &variant.declaration
             {
                 definition.validate_platform(variant.platform)?;
+                // MDM-only targets have no trusted architecture evidence. A native
+                // query must therefore be identical on both supported architectures.
+                if !variants.iter().any(|other| {
+                    other.platform == variant.platform
+                        && other.architecture != variant.architecture
+                        && other.declaration == variant.declaration
+                }) {
+                    return Err(Error::InvalidInput);
+                }
                 let bytes = definition.canonical();
                 if artifact.length() != bytes.len() as u64
                     || artifact.digest() != Digest::of(&bytes)
@@ -750,3 +759,15 @@ impl References {
         }
     }
 }
+
+mod mapping;
+pub use mapping::{Conversion, ValueMapping};
+
+/// Immutable official collection starting points.
+pub mod blueprints;
+
+mod collection_scope;
+pub use collection_scope::TemplateScope;
+
+mod applicability;
+pub use applicability::{Applicability, CollectionEnvironment};

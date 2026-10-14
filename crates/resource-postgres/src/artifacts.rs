@@ -7,7 +7,7 @@ pub(crate) async fn insert(tx: &mut PgTransaction<'_>, version: &Version) -> Res
     let mut fields = BTreeSet::new();
     for variant in version.variants() {
         if let Declaration::Script { definition, .. } = variant.declaration()
-            && let ScriptPurpose::Collection { mappings } = &definition.spec().purpose
+            && let ScriptPurpose::Collection { mappings, .. } = &definition.spec().purpose
         {
             fields.extend(mappings.keys().cloned());
         }

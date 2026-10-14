@@ -8,13 +8,23 @@ use axum::{
 use serde_json::Value;
 pub struct HttpState {
     pub catalog: Arc<ResourceCatalog>,
+    pub content: Arc<rss_mdm_content_service::service::Access>,
 }
 pub fn routes() -> Router<Arc<HttpState>> {
     Router::new()
         .route("/resources", get(directory))
+        .route("/collection-blueprints", get(blueprints))
         .route("/resources/{id}", get(read).post(write))
 }
 
+async fn blueprints(
+    State(s): State<Arc<HttpState>>,
+    Extension(auth): Extension<RequestAuth>,
+    Extension(audit): Extension<RequestAudit>,
+) -> Result<Json<Value>, Error> {
+    audit.set_action("management_read");
+    Ok(Json(s.catalog.blueprints(&auth.proof, &audit).await?))
+}
 async fn directory(
     State(s): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
@@ -78,5 +88,52 @@ async fn write(
     Path(id): Path<String>,
     body: std::result::Result<Json<Operation<Change>>, axum::extract::rejection::JsonRejection>,
 ) -> std::result::Result<Json<wire::Response>, Error> {
-    run(&app, &auth, &audit, id, Some(body.map_err(Error::from)?.0)).await
+    let op = body.map_err(Error::from)?.0;
+    let blueprint = match &op.input {
+        Change::Instantiate { blueprint, version } => {
+            Some(rss_mdm_resource::blueprints::get(blueprint, version).ok_or(Error::Malformed)?)
+        }
+        _ => None,
+    };
+    let operation = op.operation_id;
+    // Content settles independently. Copy before the resource transaction commits,
+    // so a later content rollback cannot erase the confirmed resource commit.
+    let content_audit = blueprint.as_ref().map(|_| {
+        audit.require_request_settlement();
+        audit.transaction_copy()
+    });
+    let result = match run(&app, &auth, &audit, id.clone(), Some(op)).await {
+        Ok(result) => result,
+        Err(error) => {
+            if let Some(content_audit) = content_audit {
+                content_audit.finalize(None);
+            }
+            return Err(error);
+        }
+    };
+    if let (Some(blueprint), Some(content_audit)) = (blueprint, content_audit) {
+        let bytes = blueprint.definition.canonical();
+        let uploaded = rss_mdm_content_service::service::upload(
+            &app.content,
+            &auth.proof,
+            &content_audit,
+            &id,
+            &rss_mdm_content_service::service::Selection {
+                version: blueprint.label(),
+                variant: "x86_64".into(),
+                platform: blueprint.platform,
+                architecture: rss_mdm_resource::Architecture::X86_64,
+                artifact: Some("collection.json".into()),
+                operation: Some(operation),
+            },
+            bytes.as_slice(),
+        )
+        .await;
+        content_audit.finalize(uploaded.as_ref().err().and_then(|error| {
+            matches!(error, rss_mdm_content_service::service::Error::Audit(_))
+                .then_some(rss_mdm_audit_integration::FailureReason::Transaction)
+        }));
+        uploaded?;
+    }
+    Ok(result)
 }

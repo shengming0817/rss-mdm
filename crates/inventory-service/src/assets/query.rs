@@ -185,8 +185,10 @@ impl AssetService {
             for channel in &device.channels {
                 *facets.entry(("channels", channel.clone())).or_default() += 1;
             }
-            if let State::Known(Scalar::String(os)) =
-                &device.fields[&rss_mdm_inventory::builtin::OS_VERSION].state
+            if let Some(State::Known(Scalar::String(os))) = device
+                .fields
+                .get(&rss_mdm_inventory::builtin::OS_VERSION)
+                .map(|field| &field.state)
             {
                 *facets.entry(("os_versions", os.clone())).or_default() += 1;
             }

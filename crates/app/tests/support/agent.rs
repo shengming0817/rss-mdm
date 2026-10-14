@@ -314,7 +314,7 @@ INSERT INTO mdm_access.report_sources(tenant_id,registration,source,epoch,enable
  WHERE r.tenant_id='{TENANT}' AND r.device='{canonical_sql}' AND r.channel='agent' AND r.state='active' AND s.enabled;
 INSERT INTO mdm_agent.bindings(tenant_id,registration,wire_version,capabilities,platform,architecture,execution_context)
  SELECT '{TENANT}',registration,1,'["inventory.collect.v1","task.execute.v1"]','macos','aarch64','{execution_context}'::jsonb FROM task_targets;
-INSERT INTO mdm_commands.action_polls(tenant_id,registration,profiles) SELECT '{TENANT}',registration,'["posix_sh"]'::jsonb FROM task_targets;
+INSERT INTO mdm_commands.action_polls(tenant_id,registration,profiles) SELECT '{TENANT}',registration,'{{"profiles":["posix_sh"],"environment":{{"osVersion":"14.0.0.0","build":0,"edition":null,"tools":{{}}}}}}'::jsonb FROM task_targets;
 DO $$ BEGIN
  IF (SELECT count(*) FROM task_targets t JOIN mdm_access.registrations r ON r.id=t.registration
      JOIN mdm_agent.bindings b ON b.registration=r.id

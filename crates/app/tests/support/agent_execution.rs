@@ -100,7 +100,7 @@ pub(crate) async fn claim_request(router: &Router, operation: Uuid) -> Result<(S
         Method::POST,
         "/api/v1/agent/runtime/tasks/claim",
         Some(case_credential()),
-        Some(json!({"wireVersion":1,"executionContext":crate::test_support::software_execution::context(crate::test_support::software_execution::Platform::MacOs),"profiles":["posix_sh","bash","power_shell7","osquery"],"operationId":operation})),
+        Some(json!({"wireVersion":1,"executionContext":crate::test_support::software_execution::context(crate::test_support::software_execution::Platform::MacOs),"environment":{"edition":null,"tools":{}},"profiles":["posix_sh","bash","power_shell7","osquery"],"operationId":operation})),
     )
     .await
 }
@@ -281,7 +281,7 @@ impl Fixture {
         let id = Uuid::new_v4();
         let bytes = b"#!/bin/sh\nprintf '{\"version\":\"1.2\",\"healthy\":true}\n'\n";
         let digest: [u8; 32] = Sha256::digest(bytes).into();
-        let mut definition = json!({"profile":"posix_sh","runAs":"system","encoding":"utf8","parameters":{"type":"object","properties":{},"required":[],"additionalProperties":false},"bindings":{},"output":{"type":"object","properties":{"version":{"type":"string"},"healthy":{"type":"boolean"},"padding":{"type":"string"}},"required":["version","healthy"],"additionalProperties":false},"purpose":{"kind":"collection","mappings":{"custom.corporate_agent.version":"/version","custom.corporate_agent.healthy":"/healthy"}},"timeoutSeconds":60,"outputBytes":output_bytes,"maxRows":1});
+        let mut definition = json!({"profile":"posix_sh","runAs":"system","encoding":"utf8","parameters":{"type":"object","properties":{},"required":[],"additionalProperties":false},"bindings":{},"output":{"type":"object","properties":{"version":{"type":"string"},"healthy":{"type":"boolean"},"padding":{"type":"string"}},"required":["version","healthy"],"additionalProperties":false},"purpose":{"kind":"collection","scope":{"kind":"device"},"applicability":{"minimumOsVersion":null,"minimumBuild":null,"editions":[],"enrollments":[],"tools":{},"capabilities":[]},"mappings":{"custom.corporate_agent.version":{"pointer":"/version","conversion":{"kind":"identity"},"columns":{}},"custom.corporate_agent.healthy":{"pointer":"/healthy","conversion":{"kind":"identity"},"columns":{}}}},"timeoutSeconds":60,"outputBytes":output_bytes,"maxRows":1});
         if inputs {
             definition["parameters"] = json!({"type":"object","properties":{"name":{"type":"string","maxLength":32},"path":{"type":"string","maxLength":64,"enum":["/Applications","/Library"]}},"required":["name","path"],"additionalProperties":false});
             definition["bindings"] = json!({"name":{"kind":"positional","index":0},"path":{"kind":"environment","name":"RSS_PARAM_PATH"}});

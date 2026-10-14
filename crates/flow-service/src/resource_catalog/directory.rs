@@ -2,6 +2,21 @@ use super::*;
 use crate::authorization::{Permission, context::AuthorizedPrincipal};
 pub use pg::directory::DirectoryQuery;
 impl ResourceCatalog {
+    pub async fn blueprints(
+        &self,
+        proof: &AuthorizedPrincipal,
+        audit: &RequestAudit,
+    ) -> std::result::Result<Value, Error> {
+        proof.manage(Permission::ResourceRead)?;
+        crate::transaction::run(&self.audit_store, &self.runtime, self.tenant, audit, (self, proof, audit), |ctx, tx| Box::pin(async move {
+            let (s, proof, audit) = *ctx;
+            proof.manage(Permission::ResourceRead)?;
+            s.audit_store.append_request_in(tx, audit, 200, "success").await?;
+            proof.check_live()?;
+            Ok(json!({"categories":r::blueprints::CATEGORIES,"items":r::blueprints::catalog()}))
+        }), crate::transaction::TransactionOwner::ResourceCatalog).await
+    }
+
     pub async fn directory(
         &self,
         proof: &AuthorizedPrincipal,

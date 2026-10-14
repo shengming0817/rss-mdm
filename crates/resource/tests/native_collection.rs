@@ -1,14 +1,14 @@
 use rss_mdm_resource::*;
-use std::collections::BTreeMap;
 fn spec(adapter: NativeAdapter, query: &str) -> NativeCollectionSpec {
     NativeCollectionSpec {
+        scope: rss_mdm_resource::TemplateScope::Device,
+        applicability: Default::default(),
         adapter,
         mappings: [(
             "device.model".into(),
             NativeMapping {
                 query: query.into(),
-                pointer: String::new(),
-                columns: BTreeMap::new(),
+                mapping: rss_mdm_resource::ValueMapping::identity(""),
             },
         )]
         .into(),

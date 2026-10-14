@@ -61,10 +61,18 @@ pub async fn preview(
                 let device=&target.device;
                 if let Some(software)=&software {let now=crate::storage::now(tx).await?;Some(software.management_state_in(&s.admission,tx,device,now).await?)}
                 else if let Some(frozen)=onboarding {Some(onboarding::state_in(&s.admission,tx,device,frozen).await?)}
-                else if let PreviewInputs::Script {platform,architecture,profile}=&prepared {
+                else if let PreviewInputs::Script {platform,architecture,profile,applicability}=&prepared {
                     let agents=crate::channels::agent_targets_in(tx,s.agent_store.clone(),vec![device.clone()]).await?;
-                    let state=if let Some(agent)=agents.first() {crate::script_eligibility::check_in(tx,s.agent_store.clone(),&crate::Target{device:device.clone(),registration:agent.registration,generation:agent.generation},*platform,*architecture,*profile).await?}else{crate::script_eligibility::Eligibility::Unknown};
+                    let mut state=if let Some(agent)=agents.first() {crate::script_eligibility::check_in(tx,s.agent_store.clone(),&crate::Target{device:device.clone(),registration:agent.registration,generation:agent.generation},*platform,*architecture,*profile).await?}else{crate::script_eligibility::Eligibility::Unknown};
+                    if state == crate::script_eligibility::Eligibility::Eligible
+                        && let (Some(requirements), Some(agent)) = (applicability, agents.first())
+                        && !crate::script_eligibility::collection_requirements_in(tx, &crate::Target{device:device.clone(),registration:agent.registration,generation:agent.generation}, requirements).await?
+                    { state = crate::script_eligibility::Eligibility::Ineligible; }
                     Some(software::TaskAdmission::new(match state {crate::script_eligibility::Eligibility::Eligible=>software::TaskAdmissionState::Eligible,crate::script_eligibility::Eligibility::Ineligible=>software::TaskAdmissionState::UnsupportedCapability,crate::script_eligibility::Eligibility::Unknown=>software::TaskAdmissionState::ChannelUnknown},None))
+                } else if let PreviewInputs::Native(template) = &prepared {
+                    let template = template.clone(); let candidate = crate::Target { device: target.device.clone(), registration: target.registration_id, generation: target.generation }; let tenant = tx.tenant_id();
+                    let allowed = tx.with_connection(move |c| Box::pin(async move { Ok(crate::collection_eligibility::native_on(c, tenant, &candidate, &template).await) })).await??;
+                    Some(software::TaskAdmission::new(if allowed { software::TaskAdmissionState::Eligible } else { software::TaskAdmissionState::UnsupportedCapability }, None))
                 }else{None}
             }else{None};
             if task_admission.as_ref().is_some_and(|a|!software::TaskAdmission::is_eligible(a)) {object.availability=crate::source_authority::Availability::Unavailable;object.reason=Some("target_unavailable".into());}

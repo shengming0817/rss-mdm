@@ -98,7 +98,7 @@ async fn complete_effect(
 }
 
 async fn assert_no_software_run(router: &Router, policy: Uuid) -> Result<()> {
-    let response = agent(router, "/api/v1/agent/runtime/tasks/claim", Some(json!({"wireVersion":1,"executionContext":context(Platform::MacOs),"profiles":["posix_sh"],"operationId":Uuid::new_v4()}))).await?;
+    let response = agent(router, "/api/v1/agent/runtime/tasks/claim", Some(json!({"wireVersion":1,"executionContext":context(Platform::MacOs),"environment":{"edition":null,"tools":{}},"profiles":["posix_sh"],"operationId":Uuid::new_v4()}))).await?;
     ensure!(
         response.0 == StatusCode::OK && response.1["task"].is_null(),
         "conflicting/satisfied effect was offered: {response:?}"
@@ -236,7 +236,7 @@ async fn unsent_predecessor_software_blocks_conflicts_until_current_offer_binds_
     let queued_policy = Uuid::new_v4();
     write(&mut f.author, &f.router, &format!("/api/v1/policies/{queued_policy}"), 0, json!({"action":"put","enabled":true,"definition":authored(f.resource,f.scope,"required_install",&f.first_operation)})).await?;
     // Without relay, the authenticated check-in creates a real unsent queued Run.
-    let accepted = agent(&f.router, "/api/v1/agent/runtime/tasks/claim", Some(json!({"wireVersion":1,"executionContext":context(Platform::MacOs),"profiles":["posix_sh"],"operationId":Uuid::new_v4()}))).await?;
+    let accepted = agent(&f.router, "/api/v1/agent/runtime/tasks/claim", Some(json!({"wireVersion":1,"executionContext":context(Platform::MacOs),"environment":{"edition":null,"tools":{}},"profiles":["posix_sh"],"operationId":Uuid::new_v4()}))).await?;
     ensure!(accepted.0 == StatusCode::OK && accepted.1["task"].is_null());
     let mut conn =
         sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?)
@@ -252,7 +252,7 @@ async fn unsent_predecessor_software_blocks_conflicts_until_current_offer_binds_
     write(&mut f.author, &f.router, &format!("/api/v1/policies/{conflicting}"), 0, json!({"action":"put","enabled":true,"definition":authored(f.resource,f.scope,"explicit_uninstall",&f.first_operation)})).await?;
     // The shared relay may already have accepted the original Run. A probe must
     // permit that legal Offer while still proving the conflicting policy queues nothing.
-    let probe = agent(&f.router, "/api/v1/agent/runtime/tasks/claim", Some(json!({"wireVersion":1,"executionContext":context(Platform::MacOs),"profiles":["posix_sh"],"operationId":Uuid::new_v4()}))).await?;
+    let probe = agent(&f.router, "/api/v1/agent/runtime/tasks/claim", Some(json!({"wireVersion":1,"executionContext":context(Platform::MacOs),"environment":{"edition":null,"tools":{}},"profiles":["posix_sh"],"operationId":Uuid::new_v4()}))).await?;
     ensure!(probe.0 == StatusCode::OK);
     let conflicting_runs: i64 = sqlx::query_scalar("SELECT count(*) FROM mdm_commands.action_runs r JOIN mdm_policy.versions v ON (v.tenant_id,v.id)=(r.tenant_id,r.policy_version) WHERE r.tenant_id=$1::uuid AND v.policy=$2")
         .bind(case_tenant()).bind(conflicting).fetch_one(&mut conn).await?;
@@ -363,7 +363,7 @@ async fn known_failure_has_bounded_retries() -> Result<()> {
     let exhausted = agent(
         &router,
         "/api/v1/agent/runtime/tasks/claim",
-        Some(json!({"wireVersion":1,"executionContext":crate::test_support::software_execution::context(crate::test_support::software_execution::Platform::MacOs),"profiles":["posix_sh","bash","power_shell7","osquery"],"operationId":Uuid::new_v4()})),
+        Some(json!({"wireVersion":1,"executionContext":crate::test_support::software_execution::context(crate::test_support::software_execution::Platform::MacOs),"environment":{"edition":null,"tools":{}},"profiles":["posix_sh","bash","power_shell7","osquery"],"operationId":Uuid::new_v4()})),
     )
     .await?;
     ensure!(
@@ -435,7 +435,7 @@ async fn reboot_waits_for_detection() -> Result<()> {
     let reboot_retry = agent(
         &router,
         "/api/v1/agent/runtime/tasks/claim",
-        Some(json!({"wireVersion":1,"executionContext":crate::test_support::software_execution::context(crate::test_support::software_execution::Platform::MacOs),"profiles":["posix_sh","bash","power_shell7","osquery"],"operationId":Uuid::new_v4()})),
+        Some(json!({"wireVersion":1,"executionContext":crate::test_support::software_execution::context(crate::test_support::software_execution::Platform::MacOs),"environment":{"edition":null,"tools":{}},"profiles":["posix_sh","bash","power_shell7","osquery"],"operationId":Uuid::new_v4()})),
     )
     .await?;
     ensure!(
@@ -538,7 +538,7 @@ async fn unknown_effect_survives_credential_recovery() -> Result<()> {
         Method::POST,
         "/api/v1/agent/runtime/tasks/claim",
         Some(next_credential),
-        Some(json!({"wireVersion":1,"executionContext":crate::test_support::software_execution::context(crate::test_support::software_execution::Platform::MacOs),"profiles":["posix_sh","bash","power_shell7","osquery"],"operationId":Uuid::new_v4()})),
+        Some(json!({"wireVersion":1,"executionContext":crate::test_support::software_execution::context(crate::test_support::software_execution::Platform::MacOs),"environment":{"edition":null,"tools":{}},"profiles":["posix_sh","bash","power_shell7","osquery"],"operationId":Uuid::new_v4()})),
     )
     .await?;
     ensure!(
@@ -606,7 +606,7 @@ async fn unknown_result_replay_and_late_detection() -> Result<()> {
     let no_retry = agent(
         &router,
         "/api/v1/agent/runtime/tasks/claim",
-        Some(json!({"wireVersion":1,"executionContext":crate::test_support::software_execution::context(crate::test_support::software_execution::Platform::MacOs),"profiles":["posix_sh","bash","power_shell7","osquery"],"operationId":Uuid::new_v4()})),
+        Some(json!({"wireVersion":1,"executionContext":crate::test_support::software_execution::context(crate::test_support::software_execution::Platform::MacOs),"environment":{"edition":null,"tools":{}},"profiles":["posix_sh","bash","power_shell7","osquery"],"operationId":Uuid::new_v4()})),
     )
     .await?;
     ensure!(

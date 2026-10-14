@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 const JOURNAL: &str = "mdm.observation.v1";
 const PROJECTION: &str = "inventory";
-const GENERATION: &str = "inventory-v4";
+const GENERATION: &str = "inventory-v5";
 
 /// The product's canonical journal and read-model generation, shared by writer and reader.
 pub fn projection_scope(tenant: rss_request_context::TenantId) -> ProjectionScope {
@@ -24,7 +24,7 @@ pub fn projection_scope(tenant: rss_request_context::TenantId) -> ProjectionScop
 pub fn definition() -> DefinitionIdentity {
     let mut digest = Sha256::new();
     digest.update(GENERATION);
-    digest.update(":registered-collection:typed-fields-v2:exact-scope:observed-received:");
+    digest.update(":registered-collection:typed-fields-v3:exact-scope:observed-received:");
     digest.update(include_str!("../migrations/0007_unified_collection.sql"));
     digest.update(include_str!("../migrations/0001_inventory.sql"));
     digest.update(include_str!("../migrations/0003_assets.sql"));
@@ -34,8 +34,8 @@ pub fn definition() -> DefinitionIdentity {
 }
 /// Inventory effect consumes a source without exposing its internal handle.
 /// Applies only the canonical tenant projection scope; other datasets are filtered.
-/// Snapshot batches replace rows within the exact tenant/journal/generation/scope/
-/// coverage, while deltas upsert or delete individual fields. Source and model
+/// Snapshot batches replace only fields selected by the frozen definition within
+/// the exact tenant/journal/generation/scope; deltas upsert or delete individual fields. Source and model
 /// validation occur before writes. Writes use the supplied projection transaction;
 /// the owner controls commit/rollback and checkpoint recovery. A callback result
 /// does not prove commit, and cancellation/provider failure does not prove rollback.
@@ -130,10 +130,6 @@ impl<C: rss_observation::Clock> PgEffect for Inventory<C> {
         let source = record.scope().source().as_str().to_owned();
         let epoch = record.scope().epoch().as_str().to_owned();
         tx.with_connection(move |conn| Box::pin(async move {
-            if matches!(body, Body::Snapshot(_)) {
-                sqlx::query("UPDATE mdm.inventory SET state='deleted',value=NULL,batch_id=$5,observed_at=$6,received_at=$7,collection_sequence=$8 WHERE tenant_id=$1::uuid AND journal=$2 AND generation=$3 AND scope=$4 AND collection_sequence<=$8")
-                    .bind(&tenant).bind(&journal).bind(&generation).bind(&scope).bind(&batch).bind(observed).bind(received).bind(sequence).execute(&mut *conn).await?;
-            }
             let mut changes=body.changes().to_vec();
             if matches!(body,Body::Snapshot(_)) {
                 for field in &fields {
@@ -197,7 +193,7 @@ mod tests {
     fn canonical_scope_binds_the_current_definition() {
         let tenant =
             rss_request_context::TenantId::parse("11111111-1111-4111-8111-111111111111").unwrap();
-        assert_eq!(projection_scope(tenant).generation(), "inventory-v4");
+        assert_eq!(projection_scope(tenant).generation(), "inventory-v5");
         assert_ne!(definition().as_bytes(), &[0; 32]);
     }
     #[test]

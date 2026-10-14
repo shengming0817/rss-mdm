@@ -61,8 +61,12 @@ pub enum ScriptPurpose {
     Action,
     /// A typed, explicitly mapped collection output.
     Collection {
+        /// Exact immutable collection namespace.
+        scope: crate::TemplateScope,
+        /// Exact additional endpoint prerequisites.
+        applicability: crate::Applicability,
         /// JSON pointers into the validated output, keyed by published inventory field identities.
-        mappings: BTreeMap<String, String>,
+        mappings: BTreeMap<String, crate::ValueMapping>,
     },
 }
 /// Complete execution interface. Use [`ScriptDefinition::new`] to validate and freeze it.
@@ -295,11 +299,6 @@ impl ScriptDefinition {
         {
             return Err(Error::InvalidInput);
         }
-        if let ScriptPurpose::Collection { mappings } = &self.0.purpose {
-            for pointer in mappings.values() {
-                value.pointer(pointer).ok_or(Error::InvalidInput)?;
-            }
-        }
         Ok(())
     }
     pub(crate) fn canonical(&self) -> Vec<u8> {
@@ -399,11 +398,18 @@ fn bindings(spec: &ScriptSpec) -> Result<(), Error> {
     Ok(())
 }
 fn purpose(spec: &ScriptSpec) -> Result<(), Error> {
-    if let ScriptPurpose::Collection { mappings } = &spec.purpose
-        && (mappings.is_empty()
+    if let ScriptPurpose::Collection {
+        mappings,
+        scope,
+        applicability,
+    } = &spec.purpose
+        && (applicability.validate().is_err()
+            || spec.run_as != RunAs::System
+            || scope.validate_executable().is_err()
+            || mappings.is_empty()
             || mappings.len() > 128
             || mappings.keys().any(|k| !field_identity(k))
-            || mappings.values().any(|p| !pointer(p)))
+            || mappings.values().any(|p| p.validate().is_err()))
     {
         return Err(Error::InvalidInput);
     }
@@ -431,21 +437,7 @@ fn field_identity(key: &str) -> bool {
                     .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_')
         })
 }
-fn pointer(value: &str) -> bool {
-    if value.is_empty() {
-        return true;
-    }
-    if !value.starts_with('/') || value.len() > 256 || value.chars().any(char::is_control) {
-        return false;
-    }
-    let mut bytes = value.bytes();
-    while let Some(b) = bytes.next() {
-        if b == b'~' && !matches!(bytes.next(), Some(b'0' | b'1')) {
-            return false;
-        }
-    }
-    true
-}
+
 fn schema(value: &Value) -> Result<(), Error> {
     if serde_json::to_vec(value)
         .map_err(|_| Error::InvalidInput)?

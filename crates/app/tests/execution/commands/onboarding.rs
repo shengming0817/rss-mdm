@@ -489,7 +489,7 @@ async fn start_fixture_until(
             .iter()
             .filter(|c| matches!(c, s::Command::Get { items, .. } if !items[0].target.as_deref().unwrap().starts_with("./Device/Vendor/MSFT/RootCATrustedCertificates/")))
             .count()
-            == 8
+            == 6
     );
     post(&peer, &reply(&initial, &response, false)).await?;
     let operation = setup::operation(policy).await?;

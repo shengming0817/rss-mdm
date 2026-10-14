@@ -4,6 +4,8 @@ use crate::planning::test_support::*;
 #[ignore = "MODULE=planning.assets: real capability storage and transactions"]
 async fn asset_history_rollback_replay_and_frozen_watermark() {
     let t = tenant();
+    let service = planning(t).await;
+    while service.forward_asset_changes().await.unwrap() > 0 {}
     let device = format!("history-{}", Uuid::new_v4());
     let read = || {
         sql(&format!(
@@ -46,7 +48,6 @@ async fn asset_history_rollback_replay_and_frozen_watermark() {
         )),
         "t"
     );
-    let service = planning(t).await;
     let scope_device = device.clone();
     let frozen = service
         .runtime
@@ -158,7 +159,7 @@ async fn frozen_fields_manual_and_quality_survive_updates_deletes_and_rollback()
     ))
     .unwrap();
     sql(&format!(
-        "INSERT INTO mdm.inventory(tenant_id,journal,generation,scope,coverage,field,value,batch_id,observed_at,received_at,state,registration,source,epoch,collection_sequence) VALUES('{t}','mdm.observation.v1','inventory-v4','{scope}','{coverage}','device.model','{old_value}','old-batch',1,2,'known','{registration}','mdm.windows','{epoch}',0); INSERT INTO mdm_access.collection_runs(tenant_id,id,registration,source,epoch,scope,sequence,started_at,attempts,result) VALUES('{t}','{collection}','{registration}','mdm.windows','{epoch}','{scope}',1,1,'{attempts}','pending')"
+        "INSERT INTO mdm.inventory(tenant_id,journal,generation,scope,coverage,field,value,batch_id,observed_at,received_at,state,registration,source,epoch,collection_sequence) VALUES('{t}','mdm.observation.v1','inventory-v5','{scope}','{coverage}','device.model','{old_value}','old-batch',1,2,'known','{registration}','mdm.windows','{epoch}',0); INSERT INTO mdm_access.collection_runs(tenant_id,id,registration,source,epoch,scope,sequence,started_at,attempts,result) VALUES('{t}','{collection}','{registration}','mdm.windows','{epoch}','{scope}',1,1,'{attempts}','pending')"
     ));
     let service = planning(t).await;
     let manual = |revision, input| assets::Command::Manual {

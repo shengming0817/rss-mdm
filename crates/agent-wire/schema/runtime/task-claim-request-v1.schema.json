@@ -1,5 +1,42 @@
 {
   "$defs": {
+    "CollectionEnvironment": {
+      "additionalProperties": false,
+      "description": "Authenticated, current endpoint evidence, separate from administrator-authored requirements.",
+      "properties": {
+        "edition": {
+          "description": "Exact edition, absent when not observed.",
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[a-zA-Z0-9_.-]+$",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "tools": {
+          "additionalProperties": {
+            "maxLength": 64,
+            "minLength": 1,
+            "pattern": "^[0-9]+(\\.[0-9]+){0,3}$",
+            "type": "string"
+          },
+          "description": "Installed controlled tool versions.",
+          "maxProperties": 16,
+          "propertyNames": {
+            "maxLength": 128,
+            "minLength": 1,
+            "pattern": "^[a-zA-Z0-9_.-]+$"
+          },
+          "type": "object"
+        }
+      },
+      "required": [
+        "edition",
+        "tools"
+      ],
+      "type": "object"
+    },
     "ExecutorProfile": {
       "description": "Fixed executor identity. There is no arbitrary command string.",
       "oneOf": [
@@ -167,6 +204,9 @@
   "additionalProperties": false,
   "description": "Idempotent task poll. The server derives all identity from the credential.",
   "properties": {
+    "environment": {
+      "$ref": "#/$defs/CollectionEnvironment"
+    },
     "executionContext": {
       "$ref": "#/$defs/SoftwareExecutionContext"
     },
@@ -199,6 +239,7 @@
     "wireVersion",
     "operationId",
     "profiles",
+    "environment",
     "executionContext"
   ],
   "title": "TaskClaimRequest",

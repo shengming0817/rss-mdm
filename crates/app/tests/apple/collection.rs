@@ -1,164 +1,23 @@
 use super::*;
-use lifecycle::Peer;
 use sqlx::Connection;
-impl Fixture {
-    pub async fn collection_cycle(&mut self, peer: &Peer) -> Result<()> {
-        for (model, version, result) in [
-            ("Mac14,7", Some("14.7"), "snapshot"),
-            ("Mac14,8", None, "partial"),
-        ] {
-            let request = Uuid::new_v4();
-            let body = json!({"source":"mdm.apple","requestId":request});
-            let path = format!(
-                "/api/v1/devices/{DEVICE}/collection-runs",
-                DEVICE = case_device()
-            );
-            let reply = self
-                .browser
-                .call(&self.router, Method::POST, &path, Some(body.clone()))
-                .await?;
-            ensure!(
-                reply.0 == StatusCode::ACCEPTED,
-                "collection create: {reply:?}"
-            );
-            ensure!(
-                self.browser
-                    .call(&self.router, Method::POST, &path, Some(body))
-                    .await?
-                    == reply
-            );
-            let run = Uuid::parse_str(reply.1["runId"].as_str().unwrap())?;
-            let (id, payload) = peer.next("DeviceInformation").await?;
-            ensure!(
-                id == run
-                    && payload["Queries"].as_array().unwrap()
-                        == &vec![plist::Value::from("Model"), plist::Value::from("OSVersion")]
-            );
-            let mut values = protocol::dictionary([("Model", model.into())]);
-            if let Some(version) = version {
-                values.insert("OSVersion".into(), version.into());
-            }
-            let extra = Some(("QueryResponses", plist::Value::Dictionary(values)));
-            ensure!(
-                peer.manage("Acknowledged", Some(id), extra.clone())
-                    .await?
-                    .is_empty()
-            );
-            ensure!(
-                peer.manage("Acknowledged", Some(id), extra)
-                    .await?
-                    .is_empty()
-            );
-            let read = self
-                .browser
-                .call(
-                    &self.router,
-                    Method::GET,
-                    &format!("{path}/{run}?source=mdm.apple"),
-                    None,
-                )
-                .await?;
-            ensure!(
-                read.0 == StatusCode::OK && read.1["run"]["result"] == result,
-                "collection read {read:?}"
-            );
-            ensure!(
-                read.1["fields"]
-                    .as_array()
-                    .unwrap()
-                    .iter()
-                    .all(|f| f["status"].is_null()),
-                "Apple created SyncML status"
-            );
-            let mut pg = sqlx::PgConnection::connect_with(&crate::device::test_support::options(
-                "postgres",
-            )?)
-            .await?;
-            let count: i64 = sqlx::query_scalar(
-                "SELECT count(*) FROM rss_device_command.commands WHERE command_id=$1",
-            )
-            .bind(run.to_string())
-            .fetch_one(&mut pg)
-            .await?;
-            ensure!(count == 0, "DeviceInformation became a device command");
-            // Read actual Inventory projection, waiting only for the real worker.
-            let mut projected = false;
-            for _ in 0..100 {
-                let rows:Vec<(String,Option<String>)>=sqlx::query_as("SELECT field,value FROM mdm.inventory WHERE tenant_id=$1::uuid AND source='mdm.apple' ORDER BY field").bind(case_tenant()).fetch_all(&mut pg).await?;
-                let delivered: bool = sqlx::query_scalar(
-                    "SELECT NOT delivery_pending FROM mdm_access.collection_runs WHERE id=$1::uuid",
-                )
-                .bind(run.to_string())
-                .fetch_one(&mut pg)
-                .await?;
-                if delivered
-                    && rows
-                        == vec![
-                            (
-                                "device.model".into(),
-                                Some(serde_json::to_string(&rss_mdm_inventory::Scalar::String(
-                                    model.into(),
-                                ))?),
-                            ),
-                            (
-                                "device.os.version".into(),
-                                Some(serde_json::to_string(&rss_mdm_inventory::Scalar::String(
-                                    "14.7".into(),
-                                ))?),
-                            ),
-                        ]
-                {
-                    projected = true;
-                    break;
-                }
-                tokio::time::sleep(Duration::from_millis(100)).await;
-            }
-            if !projected {
-                let read = self
-                    .browser
-                    .call(
-                        &self.router,
-                        Method::GET,
-                        &format!("{path}/{run}?source=mdm.apple"),
-                        None,
-                    )
-                    .await?;
-                let rows:Vec<(String,Option<String>)>=sqlx::query_as("SELECT field,value FROM mdm.inventory WHERE tenant_id=$1::uuid AND source='mdm.apple' ORDER BY field").bind(case_tenant()).fetch_all(&mut pg).await?;
-                anyhow::bail!("Inventory did not preserve partial response: {read:?}; {rows:?}")
-            }
-            pg.close().await?;
-            let asset = self
-                .browser
-                .call(
-                    &self.router,
-                    Method::GET,
-                    &format!("/api/v1/devices/{DEVICE}/inventory", DEVICE = case_device()),
-                    None,
-                )
-                .await?;
-            ensure!(
-                asset.0 == StatusCode::OK,
-                "Apple asset read failed: {asset:?}"
-            );
-            ensure!(
-                asset.1["asset"]["device"]["fields"]["device.model"]["state"]["value"]["value"]
-                    == model
-            );
-            ensure!(
-                asset.1["asset"]["device"]["fields"]["device.os.version"]["state"]["value"]["value"]
-                    == "14.7"
-            );
-        }
-        Ok(())
-    }
-}
-
 #[tokio::test]
 #[ignore = "MODULE=apple.collection: native protocol and durable state"]
 async fn collection_lifecycle() -> Result<()> {
     let mut f = Fixture::start().await?;
-    let (peer, device) = f.ready_local_peer().await?;
-    f.collection_cycle(&peer).await?;
+    let (_peer, device) = f.ready_local_peer().await?;
+    let response = f
+        .browser
+        .call(
+            &f.router,
+            Method::POST,
+            &format!("/api/v1/devices/{}/collection-runs", case_device()),
+            Some(json!({"source":"mdm.apple","requestId":Uuid::new_v4()})),
+        )
+        .await?;
+    ensure!(
+        response.0 == StatusCode::NOT_FOUND,
+        "removed fixed collection endpoint: {response:?}"
+    );
     drop(device);
     f.close().await
 }
@@ -231,22 +90,22 @@ async fn published_native_template_uses_policy_and_direct_collection_progress() 
         "list definition: {published:?}"
     );
     let template = NativeCollectionDefinition::new(NativeCollectionSpec {
+        scope: rss_mdm_resource::TemplateScope::Device,
+        applicability: Default::default(),
         adapter: NativeAdapter::AppleDeviceInformation,
         mappings: [
             (
                 "device.model".into(),
                 NativeMapping {
                     query: "Model".into(),
-                    pointer: String::new(),
-                    columns: Default::default(),
+                mapping: rss_mdm_resource::ValueMapping::identity(""),
                 },
             ),
             (
                 field.into(),
                 NativeMapping {
                     query: "EthernetMACs".into(),
-                    pointer: String::new(),
-                    columns: Default::default(),
+                mapping: rss_mdm_resource::ValueMapping::identity(""),
                 },
             ),
         ]
@@ -265,7 +124,7 @@ async fn published_native_template_uses_policy_and_direct_collection_progress() 
         json!({"action":"create","kind":"native_collection"}),
     )
     .await?;
-    resource(&mut f.browser,&f.router,id,1,json!({"action":"version","version":"v1","kind":"native_collection","variants":[{"platform":"macos","architecture":"aarch64","key":"default","declaration":{"kind":"native_collection","artifact":{"reference":"native-template","length":bytes.len(),"sha256":digest},"definition":template}}]})).await?;
+    resource(&mut f.browser,&f.router,id,1,json!({"action":"version","version":"v1","kind":"native_collection","variants":(["x86_64", "aarch64"].map(|architecture| json!({"platform":"macos","architecture":architecture,"key":"default","declaration":{"kind":"native_collection","artifact":{"reference":"native-template","length":bytes.len(),"sha256":digest},"definition":template}})))})).await?;
     ensure!(upload(&f.browser, &f.router, id, &bytes).await? == StatusCode::CREATED);
     resource(
         &mut f.browser,
@@ -422,4 +281,102 @@ async fn published_native_template_uses_policy_and_direct_collection_progress() 
     result?;
     automation_shutdown?;
     fixture_shutdown
+}
+
+#[tokio::test]
+#[ignore = "MODULE=apple.collection: current grant before native dispatch"]
+async fn template_revocation_prevents_dispatch() -> Result<()> {
+    withdrawn_template(false, "grant").await
+}
+#[tokio::test]
+#[ignore = "MODULE=apple.collection: current grant before native receipt"]
+async fn template_revocation_rejects_first_report() -> Result<()> {
+    withdrawn_template(true, "grant").await
+}
+#[tokio::test]
+#[ignore = "MODULE=apple.collection: current Policy before native receipt"]
+async fn disabled_template_policy_rejects_first_report() -> Result<()> {
+    withdrawn_template(true, "policy").await
+}
+#[tokio::test]
+#[ignore = "MODULE=apple.collection: current applicability before native receipt"]
+async fn template_access_rights_change_rejects_first_report() -> Result<()> {
+    withdrawn_template(true, "rights").await
+}
+
+async fn withdrawn_template(dispatched: bool, withdrawal: &str) -> Result<()> {
+    let mut f = Fixture::start().await?;
+    let (peer, device) = f.ready_local_peer().await?;
+    f.policy_grants().await?;
+    let definition = f.collection_template().await?;
+    let owner = f.policy_worker().await?;
+    let queued = f.queue_collection(&definition).await;
+    crate::test_support::stop_worker(Some(owner)).await?;
+    let (policy, run) = queued?;
+    if dispatched {
+        ensure!(peer.next("DeviceInformation").await?.0 == run);
+    }
+    let mut pg =
+        sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?)
+            .await?;
+    match withdrawal {
+        "grant" => {
+            crate::test_support::identity::set_grants(
+                case_tenant(),
+                crate::test_support::case::admin(),
+                crate::test_support::identity::device_grants(
+                    Some(case_device()),
+                    &["inventory_read"],
+                )?,
+            )
+            .await?
+        }
+        "policy" => {
+            f.policy_post(
+                &format!("/api/v1/policies/{policy}"),
+                1,
+                json!({"action":"put","enabled":false,"definition":definition}),
+            )
+            .await?;
+        }
+        "rights" => {
+            sqlx::query("UPDATE mdm_apple.devices SET access_rights=access_rights & ~16 WHERE tenant_id=$1::uuid AND registration=(SELECT registration FROM mdm_access.collection_runs WHERE tenant_id=$1::uuid AND id=$2)").bind(case_tenant()).bind(run).execute(&mut pg).await?;
+        }
+        _ => unreachable!(),
+    }
+    let response = if dispatched {
+        peer.manage(
+            "Acknowledged",
+            Some(run),
+            Some((
+                "QueryResponses",
+                plist::Value::Dictionary(protocol::dictionary([
+                    ("Model", "unauthorized-model".into()),
+                    ("OSVersion", "99.0".into()),
+                ])),
+            )),
+        )
+        .await?
+    } else {
+        peer.manage("Idle", None, None).await?
+    };
+    ensure!(response.is_empty(), "withdrawn collection dispatched work");
+    let terminal: (bool, bool, String) = sqlx::query_as("SELECT sealed_at IS NOT NULL,batch IS NULL,reason FROM mdm_access.collection_runs WHERE tenant_id=$1::uuid AND id=$2").bind(case_tenant()).bind(run).fetch_one(&mut pg).await?;
+    ensure!(
+        terminal == (true, true, "revoked".into()),
+        "withdrawn receipt reached Inventory: {terminal:?}"
+    );
+    let facts = crate::audit_test_support::read(&mut pg).await?;
+    ensure!(
+        facts
+            .iter()
+            .filter(|fact| fact.action() == "collection_finish"
+                && fact.operation() == Some(run.to_string().as_str()))
+            .count()
+            == 1,
+        "withdrawal lost exactly-once terminal audit"
+    );
+    pg.close().await?;
+    drop(device);
+    f.close().await
 }

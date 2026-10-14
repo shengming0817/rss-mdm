@@ -3,8 +3,8 @@ use crate::test_support::*;
 #[tokio::test]
 #[ignore = "MODULE=content.http: real streamed HTTP, binding transactions and storage"]
 async fn upload_recovery_download_range_and_authorization() -> Result<()> {
-    // Exercise streaming beyond the former ingress buffer without tying recovery
-    // fault injection to a large artifact's disk throughput inside the host deadline.
+    // Exceed the default HTTP body limit while keeping fault recovery within the host budget.
+    // Large storage pieces have independent provider coverage.
     upload_contract(Fixture::open(false).await?, 2 * 1024 * 1024 + 1).await
 }
 pub(super) async fn upload_contract(fixture: Fixture, length: usize) -> Result<()> {
@@ -60,6 +60,7 @@ pub(super) async fn upload_contract(fixture: Fixture, length: usize) -> Result<(
         .max_connections(1)
         .connect_with(crate::device::test_support::options("postgres")?)
         .await?;
+    let settlement_observer = observer.clone();
     let stream = futures::stream::unfold(
         (0usize, fault_runtime, observer),
         move |(position, runtime, observer)| async move {
@@ -95,6 +96,13 @@ pub(super) async fn upload_contract(fixture: Fixture, length: usize) -> Result<(
             && serde_json::from_str::<Value>(&body)?["code"] == "operation_unknown",
         "lost upload commit: {status} {body}"
     );
+    let committed: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_content.bindings WHERE tenant_id=$1::uuid AND operation=$2)")
+        .bind(case_tenant()).bind(operation).fetch_one(&settlement_observer).await?;
+    ensure!(
+        committed,
+        "upload 503 preceded the committed binding; expected commit acknowledgement loss"
+    );
+    settlement_observer.close().await;
     let recovered = client
         .post(&upload_path)
         .header("host", "mdm.example.test")

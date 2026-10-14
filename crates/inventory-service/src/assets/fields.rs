@@ -60,7 +60,7 @@ impl AssetService {
                 checked_input(definition.validate())?;
                 if let Some(seed) = rss_mdm_inventory::builtin::fields()
                     .into_iter()
-                    .find(|f| f.key == field)
+                    .find(|f| f.key == field && rss_mdm_inventory::builtin::protected(field))
                     && (seed.value_type != definition.value_type
                         || seed.nullable != definition.nullable
                         || seed.manual != definition.manual
@@ -100,12 +100,7 @@ impl AssetService {
                 Some(definition.as_ref().clone())
             }
             FieldChange::Delete {} => {
-                if old.is_none()
-                    || impact.used()
-                    || rss_mdm_inventory::builtin::fields()
-                        .iter()
-                        .any(|f| f.key == field)
-                {
+                if old.is_none() || impact.used() || rss_mdm_inventory::builtin::protected(field) {
                     return Err(Error::Conflict.into());
                 }
                 None

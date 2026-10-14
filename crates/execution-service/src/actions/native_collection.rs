@@ -116,6 +116,22 @@ pub async fn advance_run(
         && run.available_at <= now
         && run.deadline > now
     {
+        let tenant_id = tx.tenant_id();
+        let target = run.target.clone();
+        let template = native.frozen.definition.clone();
+        let allowed = tx
+            .with_connection(move |c| {
+                Box::pin(async move {
+                    Ok(
+                        crate::collection_eligibility::native_on(c, tenant_id, &target, &template)
+                            .await,
+                    )
+                })
+            })
+            .await??;
+        if !allowed {
+            return Ok(());
+        }
         let tenant = tx.tenant_id().to_string();
         let id = run.id;
         let accepted:bool=tx.with_connection(move|c|Box::pin(async move{sqlx::query_scalar("SELECT gateway_accepted FROM mdm_commands.action_runs WHERE tenant_id=$1::uuid AND id=$2").bind(tenant).bind(id).fetch_one(c).await})).await?;
@@ -296,6 +312,44 @@ pub async fn sent(
     Ok(())
 }
 
+/// Revalidate every live Apple template before protocol receipt or delivery under device locks.
+/// Recovery's bounded work page is not an authorization boundary for a reported run.
+pub(crate) async fn fence_apple_collections(
+    service: &ExecutionService,
+    tx: &mut PgTransaction<'_>,
+    principal: &crate::device::DevicePrincipal,
+) -> Result<()> {
+    let mut after = None;
+    loop {
+        let tenant = tx.tenant_id().to_string();
+        let registration = principal.registration();
+        let generation = principal.generation();
+        let ids: Vec<Uuid> = tx.with_connection(move |c| Box::pin(async move {
+            sqlx::query_scalar("SELECT c.id FROM mdm_access.collection_runs c JOIN mdm_access.registrations r ON (r.tenant_id,r.id)=(c.tenant_id,c.registration) WHERE c.tenant_id=$1::uuid AND c.registration=$2 AND r.generation=$3 AND c.source='mdm.apple' AND c.evidence ? 'nativeTemplate' AND c.sealed_at IS NULL AND c.deadline>clock_timestamp() AND ($4::uuid IS NULL OR c.id>$4) ORDER BY c.id LIMIT 64")
+                .bind(tenant).bind(registration).bind(generation).bind(after).fetch_all(c).await
+        })).await?;
+        for id in &ids {
+            let source = service.source.clone();
+            let principal = principal.clone();
+            let id = *id;
+            let eligible = tx
+                .with_connection(move |c| {
+                    Box::pin(
+                        async move { Ok(eligible_on(source.as_ref(), c, &principal, id).await) },
+                    )
+                })
+                .await??;
+            if !eligible {
+                super::collection::abandon(service, tx, id, "revoked").await?;
+            }
+        }
+        if ids.len() < 64 {
+            return Ok(());
+        }
+        after = ids.last().copied();
+    }
+}
+
 /// Check current frozen operation grants on the same connection used by the protocol owner.
 /// Called before native dispatch and before accepting a report into Inventory.
 pub async fn eligible_on(
@@ -431,6 +485,9 @@ pub(crate) async fn eligible_target_on(
     let crate::frozen::Frozen::NativeCollection { action, .. } = frozen else {
         return Err(Error::Malformed);
     };
+    if !crate::collection_eligibility::native_on(c, tenant, target, &action.definition).await? {
+        return Ok(false);
+    }
     let Some(grants) = action
         .grants
         .get(target.device.as_str())

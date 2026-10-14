@@ -11,6 +11,7 @@ struct Definition {
     dataset: String,
     version: String,
     source: Source,
+    scope: crate::CollectionScope,
     fields: Vec<FieldDefinition>,
 }
 /// Frozen source and field definitions for one published collector version.
@@ -21,6 +22,7 @@ pub struct CollectionDefinition(Definition);
 impl TryFrom<Definition> for CollectionDefinition {
     type Error = Invalid;
     fn try_from(value: Definition) -> Result<Self> {
+        value.scope.validate_executable()?;
         Self::new(&value.dataset, &value.version, value.source, value.fields)
     }
 }
@@ -57,8 +59,13 @@ impl CollectionDefinition {
             dataset: dataset.into(),
             version,
             source,
+            scope: crate::CollectionScope::Device,
             fields,
         }))
+    }
+    /// Frozen collection namespace; never inferred from returned item values.
+    pub fn collection_scope(&self) -> &crate::CollectionScope {
+        &self.0.scope
     }
     /// Dataset selected by the product stream owner.
     pub fn dataset(&self) -> &str {
@@ -96,7 +103,7 @@ impl CollectionDefinition {
             id(self.dataset())?,
             id(self.version())?,
             id(&self.fingerprint()?)?,
-            id("typed-fields-v2")?,
+            id("typed-fields-v3")?,
         ))
     }
     /// Validate authenticated stream coordinates against this definition.

@@ -35,6 +35,7 @@ CREATE TABLE mdm.collection_definitions (
  source text NOT NULL CHECK(source IN ('mdm.windows','mdm.apple','agent.builtin','agent.script','agent.osquery')),
  fingerprint text NOT NULL CHECK(fingerprint ~ '^[0-9a-f]{64}$'),
  coverage text NOT NULL, definition jsonb NOT NULL CHECK(octet_length(definition::text)<=1048576),
+ CHECK(definition ? 'scope' AND definition->'scope'='{"kind":"device"}'::jsonb),
  PRIMARY KEY(tenant_id,dataset,source,version), UNIQUE(tenant_id,coverage,source)
 );
 CREATE TABLE mdm.collection_results (

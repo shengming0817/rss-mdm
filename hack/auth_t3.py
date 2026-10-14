@@ -19,7 +19,7 @@ SCENARIOS = ('local_ui','account_ui','inventory','permissions','cookie_csrf','re
              'account_disabled','membership_removed','restart','isolation','enterprise','unknown_subject',
              'private_binding','idp_down','pg_down','installation_mismatch','safe_logs')
 PLAYWRIGHT_INTEGRITY='sha512-9bW6zvX/m0lEbgTKJ6YppOKx8H3VOPBMOCFh2irXFOT4BbHgrx5hPjwJYLT40Lu+4qtD36qKc/Hn56StUW57IA=='
-INVENTORY_GENERATION='inventory-v4'
+INVENTORY_GENERATION='inventory-v5'
 
 FAULT_SCENARIOS = {'restart','idp_down','pg_down','installation_mismatch'}
 
@@ -66,13 +66,13 @@ def enterprise(stack):
 
 def seed_inventory(stack):
     registration='99999999-9999-4999-8999-999999999991';epoch='99999999-9999-4999-8999-999999999992'
-    definition=dict(dataset='inventory',version='auth-fixture-v1',source='mdm.windows',fields=[dict(
+    definition=dict(dataset='inventory',version='auth-fixture-v1',source='mdm.windows',scope={'kind':'device'},fields=[dict(
         key='device.model',version=1,valueType=dict(kind='string',maxLength=256,allowEmpty=False),
         nullable=False,manual=False,sources={'mdm.windows':0},platforms=['windows'],
         sensitivity='standard',unit=None,searchable=True,itemKey=None)])
     document=json.dumps(definition,separators=(',',':'))
     fingerprint=hashlib.sha256(document.encode()).hexdigest()
-    coverage=json.dumps(dict(id='inventory',version='auth-fixture-v1',definition=fingerprint,format='typed-fields-v2'),separators=(',',':'))
+    coverage=json.dumps(dict(id='inventory',version='auth-fixture-v1',definition=fingerprint,format='typed-fields-v3'),separators=(',',':'))
     value=json.dumps(dict(kind='string',value='Model-2364'),separators=(',',':'))
     scope=json.dumps(dict(tenant=TENANT,object=registration,registration=registration,source='mdm.windows',dataset='inventory',epoch=epoch),separators=(',',':'))
     stack.sql(f"""

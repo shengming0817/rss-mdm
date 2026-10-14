@@ -172,6 +172,33 @@ fn columns(table: &str) -> Result<&'static [&'static str], Error> {
             "point_to_point",
             "type",
         ],
+        "bitlocker_info" => &[
+            "device_id",
+            "drive_letter",
+            "persistent_volume_id",
+            "conversion_status",
+            "protection_status",
+            "encryption_method",
+            "version",
+            "percentage_encrypted",
+            "lock_status",
+        ],
+        "logical_drives" => &[
+            "device_id",
+            "description",
+            "free_space",
+            "size",
+            "file_system",
+            "boot_partition",
+        ],
+        "windows_security_center" => &[
+            "firewall",
+            "autoupdate",
+            "antivirus",
+            "internet_settings",
+            "windows_security_center_service",
+            "user_account_control",
+        ],
         "programs" => &[
             "name",
             "version",
@@ -196,7 +223,10 @@ fn columns(table: &str) -> Result<&'static [&'static str], Error> {
 fn platform_table(table: &str, platform: Platform) -> Result<(), Error> {
     if matches!(
         (table, platform),
-        ("programs", Platform::MacOS) | ("apps", Platform::Windows)
+        (
+            "programs" | "bitlocker_info" | "logical_drives" | "windows_security_center",
+            Platform::MacOS
+        ) | ("apps", Platform::Windows)
     ) {
         Err(Error::InvalidInput)
     } else {

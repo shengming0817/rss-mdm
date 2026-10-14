@@ -511,6 +511,8 @@ struct Definition {
     version: String,
     #[schemars(extend("not" = serde_json::json!({"const":"manual"})))]
     source: Source,
+    #[schemars(extend("const" = serde_json::json!({"kind":"device"})))]
+    scope: crate::CollectionScope,
     #[schemars(extend("minItems" = 1, "maxItems" = 128))]
     fields: Vec<FieldDefinition>,
 }
@@ -522,6 +524,7 @@ pub struct CollectionDefinition(Definition);
 impl TryFrom<Definition> for CollectionDefinition {
     type Error = WireError;
     fn try_from(value: Definition) -> Result<Self> {
+        value.scope.validate_executable()?;
         Self::new(&value.dataset, &value.version, value.source, value.fields)
     }
 }
@@ -573,6 +576,7 @@ impl CollectionDefinition {
             dataset: dataset.into(),
             version,
             source,
+            scope: crate::CollectionScope::Device,
             fields,
         }))
     }

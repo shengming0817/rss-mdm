@@ -35,10 +35,23 @@ pub fn matches(
 pub async fn announce_in(
     tx: &mut PgTransaction<'_>,
     registration: uuid::Uuid,
-    profiles: &[wire::ExecutorProfile],
+    input: &wire::TaskClaimRequest,
 ) -> Result<()> {
     let tenant = tx.tenant_id().to_string();
-    let profiles = crate::checked_input(serde_json::to_value(profiles))?;
+    let version = input.execution_context().os_version;
+    let environment = rss_mdm_resource::CollectionEnvironment {
+        os_version: Some(
+            version
+                .iter()
+                .map(u16::to_string)
+                .collect::<Vec<_>>()
+                .join("."),
+        ),
+        build: Some(u32::from(version[2])),
+        edition: input.environment().edition.clone(),
+        tools: input.environment().tools.clone(),
+    };
+    let profiles = serde_json::json!({"profiles":input.profiles(),"environment":environment});
     tx.with_connection(move |c| Box::pin(async move {
         sqlx::query("INSERT INTO mdm_commands.action_polls(tenant_id,registration,profiles) VALUES($1::uuid,$2,$3) ON CONFLICT(tenant_id,registration) DO UPDATE SET profiles=excluded.profiles").bind(tenant).bind(registration).bind(profiles).execute(c).await?; Ok(())
     })).await?;
@@ -62,7 +75,7 @@ pub async fn check_in(
     let tenant = tx.tenant_id().to_string();
     let registration = target.registration;
     let profiles: Option<serde_json::Value> = tx.with_connection(move |c| Box::pin(async move {
-        sqlx::query_scalar("SELECT profiles FROM mdm_commands.action_polls WHERE tenant_id=$1::uuid AND registration=$2").bind(tenant).bind(registration).fetch_optional(c).await.map(|row:Option<Option<serde_json::Value>>|row.flatten())
+        sqlx::query_scalar("SELECT profiles->'profiles' FROM mdm_commands.action_polls WHERE tenant_id=$1::uuid AND registration=$2").bind(tenant).bind(registration).fetch_optional(c).await.map(|row:Option<Option<serde_json::Value>>|row.flatten())
     })).await?;
     let Some(profiles) = profiles else {
         return Ok(Eligibility::Unknown);
@@ -76,12 +89,37 @@ pub async fn check_in(
         },
     )
 }
+pub async fn collection_requirements_in(
+    tx: &mut PgTransaction<'_>,
+    target: &Target,
+    requirements: &rss_mdm_resource::Applicability,
+) -> Result<bool> {
+    let tenant = tx.tenant_id().to_string();
+    let registration = target.registration;
+    let poll: Option<serde_json::Value> = tx.with_connection(move |c| Box::pin(async move {
+        sqlx::query_scalar("SELECT profiles FROM mdm_commands.action_polls WHERE tenant_id=$1::uuid AND registration=$2").bind(tenant).bind(registration).fetch_optional(c).await.map(|row:Option<Option<serde_json::Value>>|row.flatten())
+    })).await?;
+    let Some(poll) = poll else {
+        return Ok(false);
+    };
+    let environment: rss_mdm_resource::CollectionEnvironment =
+        crate::stored(serde_json::from_value(poll["environment"].clone()))?;
+    let capabilities: std::collections::BTreeSet<String> =
+        crate::stored(serde_json::from_value(poll["profiles"].clone()))?;
+    Ok(requirements.allows(&environment, "agent", &capabilities))
+}
 pub async fn require_in(
     tx: &mut PgTransaction<'_>,
     store: Arc<dyn channels::Agent>,
     target: &Target,
     frozen: &crate::action_contract::FrozenAction,
 ) -> Result<bool> {
+    if let rss_mdm_resource::ScriptPurpose::Collection { applicability, .. } =
+        &frozen.definition.spec().purpose
+        && !collection_requirements_in(tx, target, applicability).await?
+    {
+        return Ok(false);
+    }
     let Some(binding) = channels::agent_binding_in(tx, store.clone(), target.registration).await?
     else {
         return Ok(false);

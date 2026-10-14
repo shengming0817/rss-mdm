@@ -61,7 +61,7 @@ impl ExecutionService {
         audit: &RequestAudit,
     ) -> std::result::Result<Value, Error> {
         crate::transaction::run(&self.audit_store,&self.runtime,self.tenant,audit,(self,p,input,audit),|ctx,tx|Box::pin(async move{
-            let (service,p,input,audit)=*ctx;storage::lock(tx,p.device()).await?;principal(service,tx,p).await?;crate::script_eligibility::announce_in(tx,p.registration(),input.profiles()).await?;crate::channels::agent_context_in(tx,service.agent_store.clone(),p.registration(),input.execution_context()).await?;
+            let (service,p,input,audit)=*ctx;storage::lock(tx,p.device()).await?;principal(service,tx,p).await?;crate::script_eligibility::announce_in(tx,p.registration(),input).await?;crate::channels::agent_context_in(tx,service.agent_store.clone(),p.registration(),input.execution_context()).await?;
             let actor=format!("agent:{}",p.registration());let hash=fingerprint(input)?;let now=storage::now(tx).await?;
             let event_key = format!("agent:{}:offer:{}",p.registration(),input.operation_id());
             // Old successful polls are replayable only while their exact offer remains authorized.

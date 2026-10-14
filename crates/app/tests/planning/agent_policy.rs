@@ -573,7 +573,7 @@ async fn registered_script_eligibility_gates_preview_and_automatic() -> Result<(
         });
         let profile_sql = profiles
             .as_ref()
-            .map(|p| format!("'{p}'::jsonb"))
+            .map(|p| format!("'{}'::jsonb", json!({"profiles":p,"environment":{"osVersion":"14.0.0.0","build":0,"edition":null,"tools":{}}})))
             .unwrap_or_else(|| "NULL".into());
         pg(&format!(
             "UPDATE mdm_agent.bindings SET platform='{platform}',architecture='{architecture}',execution_context='{execution_context}'::jsonb WHERE tenant_id='{tenant}'; UPDATE mdm_commands.action_polls SET profiles={profile_sql} WHERE tenant_id='{tenant}'",
@@ -597,7 +597,7 @@ async fn registered_script_eligibility_gates_preview_and_automatic() -> Result<(
         // A real check-in announces its current profiles; the absent-profile case
         // announces a mismatched profile, so it still cannot admit an automatic Run.
         let announced = profiles.unwrap_or_else(|| json!(["bash"]));
-        let poll=agent_call(&f.router,Method::POST,"/api/v1/agent/runtime/tasks/claim",Some(case_credential()),Some(json!({"wireVersion":1,"executionContext":execution_context,"profiles":announced,"operationId":Uuid::new_v4()}))).await?;
+        let poll=agent_call(&f.router,Method::POST,"/api/v1/agent/runtime/tasks/claim",Some(case_credential()),Some(json!({"wireVersion":1,"executionContext":execution_context,"environment":{"edition":null,"tools":{}},"profiles":announced,"operationId":Uuid::new_v4()}))).await?;
         ensure!(
             poll.0 == StatusCode::OK && poll.1["task"].is_null(),
             "ineligible check-in: {poll:?}"

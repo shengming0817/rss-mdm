@@ -21,15 +21,17 @@ pub enum NativeAdapter {
 pub struct NativeMapping {
     /// CSP URI or DeviceInformation query key; empty for InstalledApplicationList.
     pub query: String,
-    /// JSON pointer relative to the query result, or command response for application lists.
-    pub pointer: String,
-    /// Empty for direct values; otherwise each selected array item becomes this closed object.
-    pub columns: BTreeMap<String, String>,
+    /// Shared typed extraction and conversion.
+    pub mapping: crate::ValueMapping,
 }
 /// Complete native collection interface, owned by the same Resource version lifecycle.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct NativeCollectionSpec {
+    /// Exact immutable collection namespace.
+    pub scope: crate::TemplateScope,
+    /// Exact additional endpoint prerequisites.
+    pub applicability: crate::Applicability,
     /// Closed native read protocol.
     pub adapter: NativeAdapter,
     /// Inventory field identities and response mappings, frozen at publication.
@@ -54,24 +56,13 @@ impl TryFrom<NativeCollectionSpec> for NativeCollectionDefinition {
         Self::new(v)
     }
 }
-fn pointer(value: &str) -> bool {
-    if value.len() > 4096
-        || (!value.is_empty() && !value.starts_with('/'))
-        || value.chars().any(char::is_control)
-    {
-        return false;
-    }
-    let mut chars = value.chars();
-    while let Some(c) = chars.next() {
-        if c == '~' && !matches!(chars.next(), Some('0' | '1')) {
-            return false;
-        }
-    }
-    true
-}
 impl NativeCollectionDefinition {
     /// Reject unbounded mappings and unsupported native queries before publication.
     pub fn new(spec: NativeCollectionSpec) -> Result<Self, Error> {
+        spec.applicability.validate()?;
+        spec.scope
+            .validate_executable()
+            .map_err(|_| Error::InvalidInput)?;
         if spec.mappings.is_empty()
             || spec.mappings.len() > 64
             || !(1..=3600).contains(&spec.timeout_seconds)
@@ -87,22 +78,10 @@ impl NativeCollectionDefinition {
                 || !field.bytes().all(|b| {
                     b.is_ascii_lowercase() || b.is_ascii_digit() || matches!(b, b'_' | b'.')
                 })
-                || !pointer(&mapping.pointer)
-                || mapping.columns.len() > 64
+                || mapping.mapping.validate().is_err()
+                || mapping.mapping.columns.len() > 64
             {
                 return Err(Error::InvalidInput);
-            }
-            for (key, path) in &mapping.columns {
-                if key.is_empty()
-                    || key.len() > 64
-                    || !key.as_bytes()[0].is_ascii_lowercase()
-                    || !key
-                        .bytes()
-                        .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_')
-                    || !pointer(path)
-                {
-                    return Err(Error::InvalidInput);
-                }
             }
             match spec.adapter {
                 NativeAdapter::WindowsCsp => {
@@ -149,8 +128,8 @@ impl NativeCollectionDefinition {
                 }
                 NativeAdapter::AppleInstalledApplications => {
                     if !mapping.query.is_empty()
-                        || mapping.pointer != "/InstalledApplicationList"
-                        || mapping.columns.is_empty()
+                        || mapping.mapping.pointer != "/InstalledApplicationList"
+                        || mapping.mapping.columns.is_empty()
                     {
                         return Err(Error::InvalidInput);
                     }

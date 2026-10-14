@@ -1,11 +1,7 @@
 use super::*;
 use crate::device::{DeviceService, VerifiedChannelCredential, test_support::options};
-use anyhow::{Result, ensure};
+use anyhow::Result;
 use rss_mdm_audit_integration::RequestAudit;
-use rss_mdm_windows_mdm::{
-    CodecLimits, Secret,
-    syncml::{self, Command, CommandName, Header, Message, Status},
-};
 use uuid::Uuid;
 fn case_a() -> &'static str {
     crate::test_support::case::tenant()
@@ -16,21 +12,6 @@ fn case_a() -> &'static str {
 )]
 pub(super) fn clock() -> Arc<dyn rss_observation::Clock> {
     Arc::new(crate::Monotonic(std::time::Instant::now))
-}
-
-fn status(id: u32, command_ref: u32, command: CommandName, code: u16) -> Command {
-    Command::Status(Status {
-        id,
-        message_ref: 1,
-        command_ref,
-        command,
-        code,
-        target_refs: vec![],
-        source_refs: vec![],
-        items: vec![],
-        challenge: None,
-        credential: None,
-    })
 }
 
 pub(crate) async fn report(
@@ -136,73 +117,75 @@ async fn report_on(
         rss_mdm_inventory::ReportSource::MdmWindows,
     )
     .await?;
-    let mut request = Message {
-        header: Header {
-            session_id: 1,
-            message_id: 1,
-            source: "https://mdm.example/planning".into(),
-            target: principal.device().into(),
-            credential: None,
-            meta: None,
+    let id = Uuid::new_v4();
+    let catalog = rss_mdm_inventory_postgres::catalog_in(tx, principal.tenant()).await?;
+    let keys = [
+        rss_mdm_inventory::builtin::MODEL,
+        rss_mdm_inventory::builtin::OS_VERSION,
+    ];
+    let definition = rss_mdm_inventory::CollectionDefinition::new(
+        "inventory",
+        "fixture-template-v1",
+        rss_mdm_inventory::Source::MdmWindows,
+        keys.iter()
+            .map(|k| catalog.definition(*k).cloned())
+            .collect::<Result<Vec<_>, _>>()?,
+    )?;
+    let template = rss_mdm_resource::NativeCollectionDefinition::new(
+        rss_mdm_resource::NativeCollectionSpec {
+            scope: rss_mdm_resource::TemplateScope::Device,
+            applicability: Default::default(),
+            adapter: rss_mdm_resource::NativeAdapter::WindowsCsp,
+            mappings: keys
+                .iter()
+                .zip(["./DevInfo/Mod", "./DevDetail/SwV"])
+                .map(|(key, query)| {
+                    (
+                        key.as_str().into(),
+                        rss_mdm_resource::NativeMapping {
+                            query: query.into(),
+                            mapping: rss_mdm_resource::ValueMapping::identity(""),
+                        },
+                    )
+                })
+                .collect(),
+            timeout_seconds: 300,
+            output_bytes: 1048576,
         },
-        commands: vec![status(1, 0, CommandName::SyncHdr, 212)],
-        final_message: true,
-    };
-    let protection = crate::test_support::identity::config(&principal.tenant().to_string())?
-        .native_protector()?;
-    let id = rss_mdm_windows_channel::test_support::create(tx, &protection, &scope, &mut request)
-        .await?;
-    let (_, sent) = syncml::encode_request(&request, &CodecLimits::default())?;
-    let previous = syncml::Expected::new(sent, 2, &CodecLimits::default())?;
-    let mut response = Message {
-        header: Header {
-            message_id: 2,
-            source: request.header.target.clone(),
-            target: request.header.source.clone(),
-            ..request.header.clone()
+    )?;
+    let now: i64 =
+        sqlx::query_scalar("SELECT floor(extract(epoch FROM clock_timestamp()))::bigint")
+            .fetch_one(&mut *tx)
+            .await?;
+    rss_mdm_inventory_service::collection::native::start(
+        tx,
+        &rss_mdm_inventory_service::collection::native::Target {
+            tenant: principal.tenant(),
+            device: principal.device().into(),
+            registration: principal.registration(),
+            generation: principal.generation(),
         },
-        commands: vec![status(1, 0, CommandName::SyncHdr, 200)],
-        final_message: true,
-    };
-    for (index, value) in values.iter().enumerate() {
-        let Command::Get { id: get, items, .. } = &request.commands[index + 1] else {
-            panic!()
-        };
-        response.commands.push(status(
-            index as u32 + 2,
-            *get,
-            CommandName::Get,
-            statuses[index],
-        ));
-        if let Some(value) = value {
-            response.commands.push(Command::Results(syncml::Results {
-                id: index as u32 + 10,
-                message_ref: Some(1),
-                command_ref: Some(*get),
-                command: Some(CommandName::Get),
-                meta: None,
-                items: vec![syncml::Item {
-                    more_data: false,
-                    source: items[0].target.clone(),
-                    target: None,
-                    meta: None,
-                    data: Some(Secret((*value).into())),
-                }],
-            }));
+        id,
+        definition,
+        template,
+        now + 300,
+    )
+    .await?;
+    let mut run =
+        crate::collection::store::load_on(tx, &principal.tenant().to_string(), id).await?;
+    for (index, key) in keys.iter().enumerate() {
+        run.attempts.observe_status(*key, statuses[index], now)?;
+        if let Some(value) = values[index] {
+            run.attempts.observe_value(
+                *key,
+                rss_mdm_inventory::CollectedValue::Value(rss_mdm_inventory::Scalar::String(
+                    value.into(),
+                )),
+                now,
+            )?;
         }
     }
-    ensure!(
-        rss_mdm_windows_channel::test_support::accept(
-            tx,
-            &protection,
-            facts,
-            &principal.tenant().to_string(),
-            id,
-            &response,
-            &previous
-        )
-        .await?
-    );
+    facts.extend(crate::collection::store::seal(tx, &mut run, "complete").await?);
     Ok((scope, id))
 }
 

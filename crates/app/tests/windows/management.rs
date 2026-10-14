@@ -1,12 +1,10 @@
 use crate::device::test_support::options;
 use crate::windows::test_support::*;
-use crate::windows::*;
 use anyhow::ensure;
 use axum::http::StatusCode;
 use base64::{Engine, engine::general_purpose::STANDARD};
 use rss_mdm_windows_mdm::syncml::{self, Command, CommandName};
 use rss_mdm_windows_mdm::{CodecLimits, Secret};
-use std::time::Duration;
 use uuid::Uuid;
 #[tokio::test]
 #[ignore = "make t2 MODULE=windows.management"]
@@ -23,8 +21,6 @@ async fn session_replay_nonce_collection_and_revoke() -> anyhow::Result<()> {
         ..
     } = host.peer().await?;
     let app = &host.app;
-    let store = &host.store;
-    let runtime = &host.runtime;
     let reader = rss_mdm_inventory_postgres::InventoryReader::connect(options("mdm_api")?).await?;
     let wire = syncml::encode(&message, &CodecLimits::default())?;
     let post = |bytes: Vec<u8>| {
@@ -144,62 +140,10 @@ async fn session_replay_nonce_collection_and_revoke() -> anyhow::Result<()> {
             _ => None,
         })
         .collect();
-    ensure!(gets.len() == 4 && gets[0].1 == "./DevInfo/Mod" && gets[1].1 == "./DevDetail/SwV");
-    let packet = |message_id, previous, index: usize, value: &str| syncml::Message {
-        header: syncml::Header {
-            message_id,
-            credential: None,
-            ..message.header.clone()
-        },
-        commands: vec![
-            Command::Status(syncml::Status {
-                id: 1,
-                message_ref: previous,
-                command_ref: 0,
-                command: CommandName::SyncHdr,
-                target_refs: vec![],
-                source_refs: vec![],
-                code: 200,
-                items: vec![],
-                challenge: None,
-                credential: None,
-            }),
-            Command::Status(syncml::Status {
-                id: 2,
-                message_ref: 2,
-                command_ref: gets[index].0,
-                command: CommandName::Get,
-                target_refs: vec![],
-                source_refs: vec![],
-                code: 200,
-                items: vec![],
-                challenge: None,
-                credential: None,
-            }),
-            Command::Results(syncml::Results {
-                id: 3,
-                message_ref: Some(2),
-                command_ref: Some(gets[index].0),
-                command: Some(CommandName::Get),
-                meta: None,
-                items: vec![syncml::Item {
-                    more_data: false,
-                    source: Some(gets[index].1.clone()),
-                    target: None,
-                    meta: None,
-                    data: Some(Secret(value.into())),
-                }],
-            }),
-        ],
-        final_message: true,
-    };
-
-    let model = syncml::encode(&packet(3, 2, 0, "Model-TLS"), &CodecLimits::default())?;
-    let first_fragment = post(model.clone()).send().await?;
-    ensure!(first_fragment.status() == StatusCode::OK);
-    let first_fragment = first_fragment.bytes().await?;
-    ensure!(post(model.clone()).send().await?.bytes().await? == first_fragment);
-
+    ensure!(
+        !gets.iter().any(|(_, uri)| uri == "./DevInfo/Mod"),
+        "unconfigured session started fixed inventory collection"
+    );
     let scope = app
         .devices
         .current_scope(
@@ -210,85 +154,11 @@ async fn session_replay_nonce_collection_and_revoke() -> anyhow::Result<()> {
             },
         )
         .await?;
-    let pending = crate::collection::store::collection(&store.inventory(), &scope, None)
-        .await?
-        .unwrap();
-    ensure!(pending.result == crate::collection::RunResult::Pending && pending.batch().is_none());
     ensure!(
         reader
             .read(scope.tenant(), std::slice::from_ref(&scope))
             .await?
-            .is_empty(),
-        "fragment projected before complete collection"
-    );
-    let mut conflicting = packet(4, 3, 0, "changed");
-    ensure!(
-        post(syncml::encode(&conflicting, &CodecLimits::default())?)
-            .send()
-            .await?
-            .status()
-            == StatusCode::CONFLICT
-    );
-    conflicting = packet(4, 3, 1, "10.0.26100");
-    let final_fragment = syncml::encode(&conflicting, &CodecLimits::default())?;
-    #[cfg(feature = "integration")]
-    {
-        app.execution.inject_fault(
-            rss_transactional_messaging_postgres::PgTransactionFault::CommitUnknownAfterAck,
-        );
-        ensure!(
-            post(final_fragment.clone()).send().await?.status() == StatusCode::SERVICE_UNAVAILABLE
-        );
-    }
-    let replay = post(final_fragment.clone()).send().await?;
-    ensure!(replay.status() == StatusCode::OK);
-    let replay = syncml::decode(&replay.bytes().await?, &CodecLimits::default())?;
-    ensure!(
-        replay
-            .commands
-            .iter()
-            .any(|c| matches!(c, Command::Status(s) if s.command == CommandName::Results))
-    );
-    let sealed = crate::collection::store::collection(&store.inventory(), &scope, None)
-        .await?
-        .unwrap();
-    ensure!(sealed.id == pending.id && sealed.result == crate::collection::RunResult::Snapshot);
-    let bytes = sealed.batch().unwrap().encode().to_vec();
-    ensure!(post(final_fragment).send().await?.status() == StatusCode::OK);
-    ensure!(
-        crate::collection::store::collection(&store.inventory(), &scope, None)
-            .await?
-            .unwrap()
-            .batch()
-            .unwrap()
-            .encode()
-            == bytes
-    );
-    tokio::time::timeout(Duration::from_secs(10), async {
-        loop {
-            if runtime.inspect(&sealed).await?.projection
-                == crate::inventory_runtime::ProjectionStatus::Projected
-            {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
-        Ok::<_, Error>(())
-    })
-    .await??;
-    let fields = reader
-        .read(scope.tenant(), std::slice::from_ref(&scope))
-        .await?;
-    ensure!(
-        fields.len() == 2
-            && fields[0].fact.state
-                == rss_mdm_inventory::State::Known(rss_mdm_inventory::Scalar::String(
-                    "Model-TLS".into()
-                ))
-            && fields[1].fact.state
-                == rss_mdm_inventory::State::Known(rss_mdm_inventory::Scalar::String(
-                    "10.0.26100".into()
-                ))
+            .is_empty()
     );
     // The 212 NextNonce is persisted for the next session, while current-session
     // responses and retransmissions continue using the old digest.
@@ -544,80 +414,6 @@ async fn damaged_committed_transcript_fails_closed_without_rewriting_evidence() 
         retained == damaged && count == 2,
         "damaged history was rewritten or advanced"
     );
-    host.close().await
-}
-
-#[cfg(feature = "integration")]
-#[tokio::test]
-#[ignore = "make t2 MODULE=windows.management"]
-async fn abort_and_nonfinal_message_budget_cannot_publish_a_collection_snapshot()
--> anyhow::Result<()> {
-    use crate::execution::test_support::native;
-    use sqlx::Connection;
-    let mut host = Host::open().await?;
-    host.listen().await?;
-    let peer = host.peer().await?;
-    let mut pg = sqlx::PgConnection::connect_with(&options("postgres")?).await?;
-    for (session, abort) in [(1902, true), (1903, false)] {
-        let exchange = native::begin(
-            &peer.mutual,
-            &peer.url,
-            &peer.message,
-            &peer.ack,
-            session,
-            None,
-        )
-        .await?;
-        let mut complete = native::report(&exchange.first, &exchange.gets, "10.0.26100.0", 200);
-        if abort {
-            let id = complete.commands.iter().map(Command::id).max().unwrap() + 1;
-            complete.commands.push(Command::Alert {
-                id,
-                alert: syncml::Alert::SessionAbort,
-            });
-        } else {
-            for message_id in 3..CodecLimits::default().session_messages as u32 {
-                let mut packet = complete.clone();
-                packet.commands.truncate(1);
-                packet.header.message_id = message_id;
-                packet.final_message = false;
-                if let Command::Status(status) = &mut packet.commands[0] {
-                    status.message_ref = message_id - 1;
-                }
-                let response = native::post(&peer.mutual, &peer.url, &packet).await?;
-                ensure!(
-                    response.status() == StatusCode::OK,
-                    "partial packet {message_id}: {}",
-                    response.status()
-                );
-            }
-            complete.header.message_id = CodecLimits::default().session_messages as u32;
-            complete.final_message = false;
-            if let Command::Status(status) = &mut complete.commands[0] {
-                status.message_ref = complete.header.message_id - 1;
-            }
-        }
-        let response = native::post(&peer.mutual, &peer.url, &complete).await?;
-        ensure!(
-            response.status() == StatusCode::OK,
-            "termination response {}",
-            response.status()
-        );
-        let response = syncml::decode(&response.bytes().await?, &CodecLimits::default())?;
-        ensure!(!response.final_message);
-        let rows:Vec<(String,String,Option<Vec<u8>>,bool)> = sqlx::query_as("SELECT r.result,r.reason,r.batch,r.delivery_pending FROM mdm_access.collection_runs r JOIN mdm_windows.collections w ON(w.tenant_id,w.id)=(r.tenant_id,r.id) WHERE w.tenant_id=$1::uuid AND w.registration=$2 AND w.session_id=$3")
-            .bind(case_tenant()).bind(peer.intent.registration).bind(session.to_string()).fetch_all(&mut pg).await?;
-        ensure!(
-            !rows.is_empty()
-                && rows
-                    .iter()
-                    .all(|(result, reason, batch, pending)| result == "failed"
-                        && reason == if abort { "aborted" } else { "message_budget" }
-                        && batch.is_none()
-                        && !pending),
-            "termination published successful collection evidence: {rows:?}"
-        );
-    }
     host.close().await
 }
 

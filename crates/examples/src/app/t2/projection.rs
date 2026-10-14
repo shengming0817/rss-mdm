@@ -314,3 +314,80 @@ async fn empty_and_delete() -> Result<()> {
     a.close().await?;
     Ok(())
 }
+
+#[tokio::test]
+#[ignore = "MODULE=inventory.projection: real PostgreSQL"]
+async fn narrower_snapshot_preserves_unselected_fields_in_the_same_source_scope() -> Result<()> {
+    use sqlx::Connection;
+    let s = scope(1, "narrow-template");
+    let a = app(s.clone()).await?;
+    let producer = JournalFixture(s.clone());
+    a.observation
+        .activate(
+            &rss_observation::LifecycleGrant::verify(&producer, s.clone())?,
+            None,
+            &rss_observation::Policy::new(86400, 3600, 3600)?,
+            a.clock.deadline(),
+        )
+        .await?;
+    let base = crate::fixture::definition();
+    let narrow = model::CollectionDefinition::new(
+        base.dataset(),
+        "narrow-v1",
+        base.source(),
+        vec![base.field(model::builtin::MODEL)?.clone()],
+    )?;
+    let mut c = sqlx::PgConnection::connect_with(&storage::collection_options()?).await?;
+    for (sequence, (id, definition, values)) in [
+        ("wide", &base, facts("first")),
+        ("narrow", &narrow, vec![facts("second").remove(0)]),
+        ("empty-narrow", &narrow, vec![]),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let at = batch(id, sequence as u64, Body::Snapshot(vec![])).observed_at_seconds();
+        let progress =
+            model::CollectionProgress::reported(definition.clone(), &Body::Snapshot(values), at)?;
+        let mut tx = c.begin().await?;
+        sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
+            .bind(s.tenant().to_string())
+            .execute(&mut *tx)
+            .await?;
+        rss_mdm_inventory_postgres::register_collection_in(&mut tx, s.tenant(), definition).await?;
+        let reference = rss_mdm_inventory_postgres::seal_collection_in(
+            &mut tx,
+            rss_mdm_inventory_postgres::CollectionCompletion {
+                scope: &s,
+                run: id,
+                sequence: sequence as u64,
+                observed_at: at,
+                progress: &progress,
+            },
+        )
+        .await?;
+        tx.commit().await?;
+        a.observation
+            .receive(
+                &VerifiedBatch::verify(&producer, s.clone(), reference)?,
+                a.clock.deadline(),
+            )
+            .await?;
+        a.project(&CancellationToken::new()).await?;
+    }
+    let view = inspect(&a, "empty-narrow").await?;
+    let assets = view["assets"].as_array().unwrap();
+    assert!(
+        assets
+            .iter()
+            .any(|v| v["field"] == "device.os.version" && v["fact"]["state"]["kind"] == "known")
+    );
+    assert!(
+        assets
+            .iter()
+            .any(|v| v["field"] == "device.model" && v["fact"]["state"]["kind"] == "deleted")
+    );
+    c.close().await?;
+    a.close().await?;
+    Ok(())
+}

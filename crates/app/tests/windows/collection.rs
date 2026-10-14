@@ -15,17 +15,17 @@ use uuid::Uuid;
 #[tokio::test]
 #[ignore = "MODULE=windows.management: native template over real SyncML mTLS"]
 async fn native_template_policy_uses_correlated_get_and_collection_run() -> anyhow::Result<()> {
-    template_flow(None, 9, false).await
+    template_flow(None, 9, Completion::Snapshot).await
 }
 #[tokio::test]
 #[ignore = "MODULE=windows.management: template authority before first fragment"]
 async fn template_revocation_before_first_fragment_aborts() -> anyhow::Result<()> {
-    template_flow(Some(false), 9, false).await
+    template_flow(Some(false), 9, Completion::Snapshot).await
 }
 #[tokio::test]
 #[ignore = "MODULE=windows.management: template authority between fragments"]
 async fn template_revocation_between_fragments_aborts() -> anyhow::Result<()> {
-    template_flow(Some(true), 9, false).await
+    template_flow(Some(true), 9, Completion::Snapshot).await
 }
 #[tokio::test]
 #[ignore = "MODULE=windows.management: last supported collection dispatch message"]
@@ -33,7 +33,7 @@ async fn template_dispatch_at_last_supported_message() -> anyhow::Result<()> {
     template_flow(
         None,
         CodecLimits::default().session_messages as u32 - 1,
-        false,
+        Completion::Snapshot,
     )
     .await
 }
@@ -41,7 +41,29 @@ async fn template_dispatch_at_last_supported_message() -> anyhow::Result<()> {
 #[ignore = "MODULE=windows.management: original Remote collection receipt without redelivery"]
 async fn historical_remote_template_settles_original_results_without_cache_redelivery()
 -> anyhow::Result<()> {
-    template_flow(None, 9, true).await
+    template_flow(None, 9, Completion::Historical).await
+}
+#[tokio::test]
+#[ignore = "MODULE=windows.management: client abort of a real template run"]
+async fn template_client_abort_cannot_publish_a_snapshot() -> anyhow::Result<()> {
+    template_flow(None, 9, Completion::SessionAbort).await
+}
+#[tokio::test]
+#[ignore = "MODULE=windows.management: non-Final report at the message budget"]
+async fn template_nonfinal_message_budget_cannot_publish_a_snapshot() -> anyhow::Result<()> {
+    template_flow(
+        None,
+        CodecLimits::default().session_messages as u32 - 1,
+        Completion::MessageBudget,
+    )
+    .await
+}
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Completion {
+    Snapshot,
+    Historical,
+    SessionAbort,
+    MessageBudget,
 }
 #[allow(
     clippy::cognitive_complexity,
@@ -50,7 +72,7 @@ async fn historical_remote_template_settles_original_results_without_cache_redel
 async fn template_flow(
     revoke_after_first: Option<bool>,
     request_message: u32,
-    historical: bool,
+    completion: Completion,
 ) -> anyhow::Result<()> {
     let mut host = Host::open().await?;
     host.listen().await?;
@@ -115,13 +137,28 @@ async fn template_flow(
     launch.finish();
     let mut owner = Some(owner);
     let template = NativeCollectionDefinition::new(NativeCollectionSpec {
+        scope: rss_mdm_resource::TemplateScope::Device,
+        applicability: rss_mdm_resource::Applicability {
+            minimum_build: Some(22000),
+            enrollments: ["primary".into()].into(),
+            ..Default::default()
+        },
         adapter: NativeAdapter::WindowsCsp,
         mappings: [(
             "device.model".into(),
             NativeMapping {
                 query: "./DevDetail/DevTyp".into(),
-                pointer: String::new(),
-                columns: Default::default(),
+                mapping: rss_mdm_resource::ValueMapping {
+                    pointer: "".into(),
+                    conversion: rss_mdm_resource::Conversion::Enum {
+                        values: [(
+                            "template-workstation".into(),
+                            json!("canonical-workstation"),
+                        )]
+                        .into(),
+                    },
+                    columns: Default::default(),
+                },
             },
         )]
         .into(),
@@ -139,7 +176,7 @@ async fn template_flow(
         json!({"action":"create","kind":"native_collection"}),
     )
     .await?;
-    resource(&mut f.browser,&f.router,id,1,json!({"action":"version","version":"v1","kind":"native_collection","variants":[{"platform":"windows","architecture":"x86_64","key":"default","declaration":{"kind":"native_collection","artifact":{"reference":"native-template","length":bytes.len(),"sha256":digest},"definition":template}}]})).await?;
+    resource(&mut f.browser,&f.router,id,1,json!({"action":"version","version":"v1","kind":"native_collection","variants":(["x86_64", "aarch64"].map(|architecture| json!({"platform":"windows","architecture":architecture,"key":"default","declaration":{"kind":"native_collection","artifact":{"reference":"native-template","length":bytes.len(),"sha256":digest},"definition":template}})))})).await?;
     ensure!(
         upload_for(&f.browser, &f.router, id, &bytes, "windows", "x86_64").await?
             == StatusCode::CREATED
@@ -183,35 +220,6 @@ async fn template_flow(
         )
         .await?;
     ensure!(invalid.0 == StatusCode::BAD_REQUEST, "{invalid:?}");
-    // The existing outbox accepts the action before its native read can be sent.
-    use sqlx::Connection;
-    let mut pg =
-        sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?)
-            .await?;
-    let pending = tokio::time::timeout(Duration::from_secs(20), async {
-        loop {
-            let ready: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_commands.action_runs WHERE tenant_id=$1::uuid AND gateway_accepted AND state->>'execution'='not_started')")
-                .bind(case_tenant()).fetch_one(&mut pg).await?;
-            if ready { break; }
-            tokio::time::sleep(Duration::from_millis(100)).await;
-        }
-        Ok::<_, anyhow::Error>(())
-    }).await;
-    if pending.is_err() {
-        for query in [
-            "SELECT to_jsonb(t) FROM mdm_planning.scopes t WHERE tenant_id=$1::uuid",
-            "SELECT to_jsonb(t) FROM mdm_policy.policies t WHERE tenant_id=$1::uuid",
-            "SELECT to_jsonb(t) FROM mdm_commands.action_runs t WHERE tenant_id=$1::uuid",
-            "SELECT to_jsonb(t) FROM mdm_access.report_sources t WHERE tenant_id=$1::uuid",
-        ] {
-            let rows: Vec<serde_json::Value> = sqlx::query_scalar(query)
-                .bind(case_tenant())
-                .fetch_all(&mut pg)
-                .await?;
-            eprintln!("native wait {query}: {rows:?}");
-        }
-    }
-    pending??;
     ensure!(
         native::post(&peer.mutual, &peer.url, &peer.message)
             .await?
@@ -259,6 +267,36 @@ async fn template_flow(
     let mut delivery_request = report.clone();
     let mut ready = native::post(&peer.mutual, &peer.url, &report).await?;
     ensure!(ready.status() == StatusCode::OK);
+    // Applicability requires authenticated native capability facts before admission.
+    // The existing outbox accepts the action before its native read can be sent.
+    use sqlx::Connection;
+    let mut pg =
+        sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?)
+            .await?;
+    let pending = tokio::time::timeout(Duration::from_secs(20), async {
+        loop {
+            let ready: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_commands.action_runs WHERE tenant_id=$1::uuid AND gateway_accepted AND state->>'execution'='not_started')")
+                .bind(case_tenant()).fetch_one(&mut pg).await?;
+            if ready { break; }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        Ok::<_, anyhow::Error>(())
+    }).await;
+    if pending.is_err() {
+        for query in [
+            "SELECT to_jsonb(t) FROM mdm_planning.scopes t WHERE tenant_id=$1::uuid",
+            "SELECT to_jsonb(t) FROM mdm_policy.policies t WHERE tenant_id=$1::uuid",
+            "SELECT to_jsonb(t) FROM mdm_commands.action_runs t WHERE tenant_id=$1::uuid",
+            "SELECT to_jsonb(t) FROM mdm_access.report_sources t WHERE tenant_id=$1::uuid",
+        ] {
+            let rows: Vec<serde_json::Value> = sqlx::query_scalar(query)
+                .bind(case_tenant())
+                .fetch_all(&mut pg)
+                .await?;
+            eprintln!("native wait {query}: {rows:?}");
+        }
+    }
+    pending??;
     // Complete capability evidence may precede the package Final by many messages.
     for message_id in 4..=request_message {
         let mut end = report.clone();
@@ -300,7 +338,9 @@ async fn template_flow(
             == 1,
         "template Get missing: {gets:?}"
     );
-    if request_message == CodecLimits::default().session_messages as u32 - 1 {
+    if request_message == CodecLimits::default().session_messages as u32 - 1
+        && completion == Completion::Snapshot
+    {
         let stored:i64=sqlx::query_scalar("SELECT w.request_message FROM mdm_windows.collections w JOIN mdm_access.collection_runs r USING(tenant_id,id) WHERE w.tenant_id=$1::uuid AND r.evidence ? 'nativeTemplate'").bind(case_tenant()).fetch_one(&mut pg).await?;
         ensure!(
             stored == i64::from(request_message),
@@ -310,7 +350,7 @@ async fn template_flow(
         host.close().await?;
         return Ok(());
     }
-    let remote = if historical {
+    let remote = if completion == Completion::Historical {
         let run:Uuid=sqlx::query_scalar("SELECT id FROM mdm_commands.action_runs WHERE tenant_id=$1::uuid AND policy_version IN(SELECT id FROM mdm_policy.versions WHERE tenant_id=$1::uuid AND policy=$2)").bind(case_tenant()).bind(policy).fetch_one(&mut pg).await?;
         let parent = Uuid::new_v4();
         // Stop the precise Policy producer before restoring predecessor ownership.
@@ -340,6 +380,21 @@ async fn template_flow(
             s::Command::Results(result) => result.message_ref = Some(wire.header.message_id),
             _ => {}
         }
+    }
+    if matches!(
+        completion,
+        Completion::SessionAbort | Completion::MessageBudget
+    ) {
+        // fetch_one proves an actual dispatched, unsealed template run in this session.
+        let run: Uuid = sqlx::query_scalar("SELECT r.id FROM mdm_access.collection_runs r JOIN mdm_windows.collections w USING(tenant_id,id) JOIN mdm_commands.action_runs a USING(tenant_id,id) JOIN mdm_policy.versions v ON(v.tenant_id,v.id)=(a.tenant_id,a.policy_version) WHERE r.tenant_id=$1::uuid AND v.policy=$2 AND w.registration=$3 AND w.session_id=$4 AND w.request_message=$5 AND r.sealed_at IS NULL AND r.evidence ? 'nativeTemplate'")
+            .bind(case_tenant()).bind(policy).bind(peer.intent.registration)
+            .bind(wire.header.session_id.to_string()).bind(i64::from(request_message))
+            .fetch_one(&mut pg).await?;
+        crate::test_support::stop_worker(owner.take()).await?;
+        terminated_template_result(&peer, &mut pg, packet, run, completion).await?;
+        pg.close().await?;
+        host.close().await?;
+        return Ok(());
     }
     if let Some(after_first) = revoke_after_first {
         let run:Uuid=sqlx::query_scalar("SELECT r.id FROM mdm_commands.action_runs r JOIN mdm_policy.versions v ON(v.tenant_id,v.id)=(r.tenant_id,r.policy_version) WHERE r.tenant_id=$1::uuid AND v.policy=$2").bind(case_tenant()).bind(policy).fetch_one(&mut pg).await?;
@@ -402,6 +457,19 @@ async fn template_flow(
     ensure!(
         result.0 == StatusCode::OK && result.1["asset"]["run"]["result"] == "snapshot",
         "native progress: {result:?}"
+    );
+    let progress: String = sqlx::query_scalar(
+        "SELECT attempts FROM mdm_access.collection_runs WHERE tenant_id=$1::uuid AND id=$2",
+    )
+    .bind(case_tenant())
+    .bind(runs[0])
+    .fetch_one(&mut pg)
+    .await?;
+    let progress: serde_json::Value = serde_json::from_str(&progress)?;
+    ensure!(
+        progress["fields"]["device.model"]["value"]
+            == json!({"kind":"value","value":{"kind":"string","value":"canonical-workstation"}}),
+        "enum mapping did not reach durable collection: {progress}"
     );
     // Restore the durable pre-settlement state while retaining the already sealed response.
     // Recovery happens after its original execution timeout, as after worker downtime.
@@ -548,5 +616,47 @@ async fn revoked_template_result(
     ));
     let failed:bool=sqlx::query_scalar("SELECT result='failed' AND reason='aborted' AND batch IS NULL AND NOT delivery_pending FROM mdm_access.collection_runs WHERE tenant_id=$1::uuid AND id=$2").bind(case_tenant()).bind(run).fetch_one(&mut *pg).await?;
     ensure!(failed, "revoked template published a result");
+    Ok(())
+}
+
+async fn terminated_template_result(
+    peer: &crate::windows::test_support::Peer,
+    pg: &mut sqlx::PgConnection,
+    mut packet: s::Message,
+    run: Uuid,
+    completion: Completion,
+) -> anyhow::Result<()> {
+    ensure!(
+        packet
+            .commands
+            .iter()
+            .any(|c| matches!(c, s::Command::Results(_)))
+    );
+    let reason = if completion == Completion::SessionAbort {
+        packet.final_message = true;
+        packet.commands.push(s::Command::Alert {
+            id: packet.commands.iter().map(s::Command::id).max().unwrap() + 1,
+            alert: s::Alert::SessionAbort,
+        });
+        "aborted"
+    } else {
+        ensure!(packet.header.message_id as usize == CodecLimits::default().session_messages);
+        ensure!(!packet.final_message);
+        "message_budget"
+    };
+    let response = native::post(&peer.mutual, &peer.url, &packet).await?;
+    ensure!(
+        response.status() == StatusCode::OK,
+        "termination response {}",
+        response.status()
+    );
+    let response = s::decode(&response.bytes().await?, &CodecLimits::default())?;
+    ensure!(!response.final_message);
+    let terminal: (bool, String, String, bool, bool) = sqlx::query_as("SELECT sealed_at IS NOT NULL,result,reason,batch IS NULL,delivery_pending FROM mdm_access.collection_runs WHERE tenant_id=$1::uuid AND id=$2")
+        .bind(case_tenant()).bind(run).fetch_one(pg).await?;
+    ensure!(
+        terminal == (true, "failed".into(), reason.into(), true, false),
+        "termination published collection evidence for {run}: {terminal:?}"
+    );
     Ok(())
 }

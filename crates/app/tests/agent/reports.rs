@@ -91,8 +91,7 @@ async fn durable_reports_and_projection() -> Result<()> {
         "sequence":0,
         "observedAt":1,
         "body":{"kind":"snapshot","values":[
-            {"field":"device.model","value":{"kind":"value","value":{"kind":"string","value":"Agent Model"}}},
-            {"field":"device.os.version","value":{"kind":"value","value":{"kind":"string","value":"1.0"}}}
+            {"field":"channel.mdm.enrollment","value":{"kind":"value","value":{"kind":"string","value":"unenrolled"}}}
         ]}
     });
     for version in [2, 3, 4, 5, 6, 255] {
@@ -227,7 +226,7 @@ async fn durable_reports_and_projection() -> Result<()> {
     let owner = crate::inventory_runtime::test_support::start(runtime.clone()).await?;
     wait_agent_status(router, credential, report_id, "snapshot", "applied").await?;
     ensure!(pg(&format!("SELECT count(*) FROM mdm_access.collection_runs WHERE tenant_id='{TENANT}' AND source='agent.builtin' AND id='{report_id}' AND NOT delivery_pending", TENANT = case_tenant()))?.trim() == "1");
-    ensure!(pg(&format!("SELECT string_agg(field||'='||coalesce(value::jsonb->>'value',''),',' ORDER BY field) FROM mdm.inventory WHERE tenant_id='{TENANT}' AND batch_id='{report_id}'", TENANT = case_tenant()))?.trim() == "device.model=Agent Model,device.os.version=1.0");
+    ensure!(pg(&format!("SELECT string_agg(field||'='||coalesce(value::jsonb->>'value',''),',' ORDER BY field) FROM mdm.inventory WHERE tenant_id='{TENANT}' AND batch_id='{report_id}'", TENANT = case_tenant()))?.trim() == "channel.mdm.enrollment=unenrolled");
     crate::test_support::stop_worker(owner).await?;
     runtime.close_fixture().await?;
 
@@ -238,7 +237,7 @@ async fn durable_reports_and_projection() -> Result<()> {
     let partial_id = uuid::Uuid::new_v4();
     let failed_id = uuid::Uuid::new_v4();
     for body in [
-        json!({"wireVersion":1,"collection":registration["collections"][0],"reportId":partial_id,"sequence":1,"observedAt":2,"body":{"kind":"partial","values":[{"field":"device.model","value":{"kind":"value","value":{"kind":"string","value":"Unconfirmed"}}}]}}),
+        json!({"wireVersion":1,"collection":registration["collections"][0],"reportId":partial_id,"sequence":1,"observedAt":2,"body":{"kind":"partial","values":[{"field":"channel.mdm.enrollment","value":{"kind":"value","value":{"kind":"string","value":"unknown"}}}]}}),
         json!({"wireVersion":1,"collection":registration["collections"][0],"reportId":failed_id,"sequence":2,"observedAt":3,"body":{"kind":"failed","code":"collectionFailed"}}),
     ] {
         ensure!(

@@ -636,6 +636,39 @@ async fn ingress_batches_reuse_published_group_coverage() {
     )
     .await
     .unwrap();
+    // Finish catalog initialization through the real dispatcher before measuring device batches.
+    let timer = automation::Timer::new();
+    let cancel = tokio_util::sync::CancellationToken::new();
+    let control = rss_reconcile::Control::new(&timer, Duration::from_secs(30), &cancel);
+    let scope = rss_reconcile::Scope::new(tenant(), "mdm.assets").unwrap();
+    while service.forward_asset_changes().await.unwrap() > 0 {}
+    for claim in worker
+        .claim_due(&scope, 64, Duration::from_secs(30), &control)
+        .await
+        .unwrap()
+    {
+        for _ in 0..16 {
+            let diff = worker.observe(&claim, &control).await.unwrap();
+            if diff.drift() == rss_reconcile::DriftKind::Converged {
+                break;
+            }
+            worker.apply(&claim, diff, &control).await.unwrap();
+        }
+        assert_eq!(
+            worker.observe(&claim, &control).await.unwrap().drift(),
+            rss_reconcile::DriftKind::Converged
+        );
+        worker
+            .finish(&claim, rss_reconcile::Completion::Converged, &control)
+            .await
+            .unwrap();
+    }
+    let initialized: i64 = sql(&format!(
+        "SELECT coalesce(max(revision),0) FROM mdm.asset_changes WHERE tenant_id='{}'",
+        tenant()
+    ))
+    .parse()
+    .unwrap();
     sql(&format!(
         "INSERT INTO mdm_access.devices SELECT '{}','batch-'||lpad(n::text,4,'0') FROM generate_series(1,1001) n",
         tenant()
@@ -669,10 +702,6 @@ async fn ingress_batches_reuse_published_group_coverage() {
         .await
         .unwrap();
     while service.forward_asset_changes().await.unwrap() > 0 {}
-    let timer = automation::Timer::new();
-    let cancel = tokio_util::sync::CancellationToken::new();
-    let control = rss_reconcile::Control::new(&timer, Duration::from_secs(30), &cancel);
-    let scope = rss_reconcile::Scope::new(tenant(), "mdm.assets").unwrap();
     let mut claims = worker
         .claim_due(&scope, 64, Duration::from_secs(30), &control)
         .await
@@ -728,7 +757,11 @@ async fn ingress_batches_reuse_published_group_coverage() {
                 "SELECT consumed||','||watermark||','||phase FROM mdm_planning.asset_dispatch WHERE tenant_id='{}'",
                 tenant()
             )),
-            format!("{consumed},{watermark},{phase}")
+            format!(
+                "{},{},{phase}",
+                initialized + consumed,
+                initialized + watermark
+            )
         );
         assert_eq!(
             sql(&format!(

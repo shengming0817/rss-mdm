@@ -423,25 +423,7 @@ async fn apply_on(tx: &mut PgConnection, input: &Mutation<'_>) -> Result<Outcome
     }
     scope(&mut *tx, input.tenant_id).await?;
     match input.action {
-        Action::Create => {
-            let duplicate:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM public.mdm_tenants WHERE tenant_id=$1::uuid) OR EXISTS(SELECT 1 FROM rss_transactional_messaging.tenant_epoch WHERE tenant_id=$1::uuid)").bind(input.tenant_id).fetch_one(&mut *tx).await.map_err(|_| Reason::Storage)?;
-            if duplicate {
-                return Err(Reason::Conflict);
-            }
-            let count: i64 =
-                sqlx::query_scalar("SELECT count(*) FROM public.mdm_tenants WHERE NOT deleted AND tenant_id<>(SELECT management_tenant_id FROM public.mdm_installation)")
-                    .fetch_one(&mut *tx)
-                    .await
-                    .map_err(|_| Reason::Storage)?;
-            if count >= TENANT_LIMIT {
-                return Err(Reason::Capacity);
-            }
-            sqlx::query("INSERT INTO public.mdm_tenants(tenant_id,initial_epoch,name,notes) VALUES($1::uuid,$2,$3,$4)").bind(input.tenant_id).bind(input.initial_epoch).bind(input.name).bind(input.notes).execute(&mut *tx).await.map_err(|_| Reason::Storage)?;
-            sqlx::query("INSERT INTO rss_transactional_messaging.tenant_epoch(tenant_id,epoch) VALUES($1::uuid,$2)").bind(input.tenant_id).bind(input.initial_epoch).execute(&mut *tx).await.map_err(|_| Reason::Storage)?;
-            rss_mdm_registration_service::agent::settings::initialize_on(&mut *tx, input.tenant_id)
-                .await
-                .map_err(|_| Reason::Storage)?;
-        }
+        Action::Create => insert_tenant_on(tx, input).await?,
         Action::Update | Action::Delete => {
             let tenant = tenant_on(&mut *tx, input.tenant_id, false).await?;
             if tenant.management {
@@ -467,6 +449,39 @@ async fn apply_on(tx: &mut PgConnection, input: &Mutation<'_>) -> Result<Outcome
     };
     sqlx::query("INSERT INTO public.mdm_tenant_operations(operation_id,tenant_id,action,request,receipt) VALUES($1,$2::uuid,$3,$4,$5)").bind(input.operation_id).bind(input.tenant_id).bind(serde_json::to_value(input.action).map_err(|_| Reason::Storage)?.as_str().ok_or(Reason::Storage)?).bind(request).bind(serde_json::to_value(&receipt).map_err(|_| Reason::Storage)?).execute(&mut *tx).await.map_err(|_| Reason::Storage)?;
     Ok(Outcome::Changed(receipt))
+}
+async fn insert_tenant_on(tx: &mut PgConnection, input: &Mutation<'_>) -> Result<()> {
+    let duplicate:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM public.mdm_tenants WHERE tenant_id=$1::uuid) OR EXISTS(SELECT 1 FROM rss_transactional_messaging.tenant_epoch WHERE tenant_id=$1::uuid)").bind(input.tenant_id).fetch_one(&mut *tx).await.map_err(|_| Reason::Storage)?;
+    if duplicate {
+        return Err(Reason::Conflict);
+    }
+    let count: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM public.mdm_tenants WHERE NOT deleted AND tenant_id<>(SELECT management_tenant_id FROM public.mdm_installation)")
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(|_| Reason::Storage)?;
+    if count >= TENANT_LIMIT {
+        return Err(Reason::Capacity);
+    }
+    sqlx::query("INSERT INTO public.mdm_tenants(tenant_id,initial_epoch,name,notes) VALUES($1::uuid,$2,$3,$4)").bind(input.tenant_id).bind(input.initial_epoch).bind(input.name).bind(input.notes).execute(&mut *tx).await.map_err(|_| Reason::Storage)?;
+    sqlx::query(
+        "INSERT INTO rss_transactional_messaging.tenant_epoch(tenant_id,epoch) VALUES($1::uuid,$2)",
+    )
+    .bind(input.tenant_id)
+    .bind(input.initial_epoch)
+    .execute(&mut *tx)
+    .await
+    .map_err(|_| Reason::Storage)?;
+    rss_mdm_inventory_postgres::initialize_fields_in(
+        &mut *tx,
+        rss_request_context::TenantId::parse(input.tenant_id).map_err(|_| Reason::Invalid)?,
+    )
+    .await
+    .map_err(|_| Reason::Storage)?;
+    rss_mdm_registration_service::agent::settings::initialize_on(&mut *tx, input.tenant_id)
+        .await
+        .map_err(|_| Reason::Storage)?;
+    Ok(())
 }
 async fn scope(conn: &mut PgConnection, tenant: &str) -> Result<()> {
     sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")

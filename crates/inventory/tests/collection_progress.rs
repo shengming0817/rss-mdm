@@ -143,7 +143,7 @@ fn invalid_list_items_are_recorded_without_replacing_previous_list_facts() {
 #[test]
 fn installed_software_empty_snapshot_is_confirmed_not_missing_or_partial() {
     use rss_mdm_inventory::FieldKey;
-    let key = FieldKey::parse("device.software.installed").unwrap();
+    let key = FieldKey::parse("device.software.installations").unwrap();
     let d = CollectionDefinition::new(
         "installed-software",
         1,

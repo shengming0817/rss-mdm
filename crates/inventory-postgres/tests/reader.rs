@@ -1,3 +1,5 @@
+#[path = "../../../tests/support/context.rs"]
+mod case;
 use rss_mdm_inventory_postgres::InventoryReader;
 use sqlx::{
     Connection, Executor, PgConnection,
@@ -23,8 +25,8 @@ fn scope(tenant: &str, source: &str) -> rss_observation::Scope {
 async fn reader_is_exact_tenant_scoped_and_read_only() -> anyhow::Result<()> {
     let mut writer = PgConnection::connect_with(&options("mdm_runtime")?).await?;
     let mut catalog_writer = PgConnection::connect_with(&options("mdm_flow_runtime")?).await?;
-    let a = "77777777-7777-4777-8777-777777777777";
-    let b = "88888888-8888-4888-8888-888888888888";
+    let a = case::tenant();
+    let b = case::peer();
     for (tenant, source, value) in [
         (a, "mdm.windows", "A"),
         (b, "mdm.windows", "B"),

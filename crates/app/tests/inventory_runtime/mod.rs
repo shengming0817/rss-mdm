@@ -366,12 +366,28 @@ async fn durable_report_recovery_and_projection() -> Result<()> {
     );
     crate::test_support::stop_worker(owner).await?;
 
-    // Explicit CmdID exhaustion fails without allocating a new run or wrapping to old IDs.
-    sqlx::query("UPDATE mdm_access.registrations SET next_command=4294967296 WHERE tenant_id=$1::uuid AND id=$2::uuid").bind(case_a()).bind(registration.registration.to_string()).execute(&mut root).await?;
+    let before_exhaustion: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM mdm_access.collection_runs WHERE tenant_id=$1::uuid",
+    )
+    .bind(case_a())
+    .fetch_one(&mut root)
+    .await?;
+    // Source sequence exhaustion fails without allocating a new run or wrapping its ordering.
+    sqlx::query("UPDATE mdm_access.report_sources SET next_sequence=9223372036854775807 WHERE tenant_id=$1::uuid AND registration=$2::uuid AND source='mdm.windows'").bind(case_a()).bind(registration.registration.to_string()).execute(&mut root).await?;
     ensure!(
         report(&service, &access, &newer, [Some("wrap"), Some("13")])
             .await
             .is_err()
+    );
+    let after_exhaustion: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM mdm_access.collection_runs WHERE tenant_id=$1::uuid",
+    )
+    .bind(case_a())
+    .fetch_one(&mut root)
+    .await?;
+    ensure!(
+        after_exhaustion == before_exhaustion,
+        "exhausted source allocated a collection"
     );
     runtime.close_fixture().await?;
     reader.close().await;
