@@ -1,13 +1,9 @@
 //! Product-owned Entra scope, consent and registration authority. Identity owns personnel.
 use crate::{Error, HttpState, database::db};
-use rss_mdm_audit_integration::{AuditStore, Fact, RequestAudit};
-use rss_mdm_authorization_service::{
-    Permission,
-    context::AuthorizedPrincipal,
-    entra::{
-        self as identity, EntraAuthority, EntraTokenProfile, RevalidatedAccount,
-        VerifiedExternalSubject,
-    },
+use rss_mdm_audit_integration::{Fact, RequestAudit};
+use rss_mdm_authorization_service::entra::{
+    self as identity, EntraAuthority, EntraTokenProfile, RevalidatedAccount,
+    VerifiedExternalSubject,
 };
 use rss_mdm_registration_service::enrollment::{
     WindowsProfile,
