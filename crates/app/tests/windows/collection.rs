@@ -954,6 +954,9 @@ async fn dynamic_result(
                     _ => (),
                 }
             }
+            denied.commands.sort_by_key(
+                |c| matches!(c, s::Command::Results(v) if v.items.iter().any(|i| i.more_data)),
+            );
             let response = native::post(&peer.mutual, &peer.url, &denied).await?;
             ensure!(response.status() == StatusCode::OK);
             let response = s::decode(&response.bytes().await?, &CodecLimits::default())?;

@@ -381,10 +381,12 @@ async fn live_checkpoint_restart_fences_old_worker() {
     .await
     .unwrap();
     let task = query_job(&first, 256).await;
-    let stale = claim_job(&old, task, Duration::from_secs(2)).await;
+    // This verifies persisted fencing, not a two-second throughput guarantee for 128 rows.
+    let lease = Duration::from_secs(30);
+    let stale = claim_job(&old, task, lease).await;
     let timer = automation::Timer::new();
     let cancel = tokio_util::sync::CancellationToken::new();
-    let control = rss_reconcile::Control::new(&timer, Duration::from_secs(15), &cancel);
+    let control = rss_reconcile::Control::new(&timer, Duration::from_secs(120), &cancel);
     let diff = || ReconcileDiff::between(DesiredState::present(false), ActualState::present(true));
     old.apply(&stale, diff(), &control).await.unwrap();
     let checkpoint = snapshot(task);
@@ -392,7 +394,7 @@ async fn live_checkpoint_restart_fences_old_worker() {
     rss_runtime::ManagedResource::shutdown(&crate::automation::Resource(old.clone()))
         .await
         .unwrap();
-    tokio::time::sleep(Duration::from_millis(2100)).await;
+    tokio::time::sleep(lease + Duration::from_millis(100)).await;
     let second = Arc::new(planning(tenant()).await);
     let resumed = crate::automation::Automation::connect(
         second.clone(),
@@ -402,7 +404,7 @@ async fn live_checkpoint_restart_fences_old_worker() {
     )
     .await
     .unwrap();
-    let current = claim_job(&resumed, task, Duration::from_secs(6)).await;
+    let current = claim_job(&resumed, task, lease).await;
     assert!(current.epoch() > stale.epoch());
     assert!(old.apply(&stale, diff(), &control).await.is_err());
     assert!(
