@@ -270,7 +270,7 @@ fn read_ring_state(v: &Value) -> Result<RingState, PgError> {
     }
     let a = array(v, 2)?;
     match tag {
-        4 => Ok(RingState::Publication(read_publication(&a[1])?)),
+        4 => Ok(RingState::Publication(Box::new(read_publication(&a[1])?))),
         _ => Err(STORAGE.fault("codec::read_ring_state")),
     }
 }

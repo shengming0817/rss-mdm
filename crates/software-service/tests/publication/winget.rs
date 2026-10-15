@@ -152,9 +152,9 @@ async fn draft_publication_rolls_back_every_write_and_replay_rechecks_access() {
         .unwrap();
     let request = request_for(&service, &input.candidate).await;
     let counts = || {
-        sql(&format!(
-            "SELECT (SELECT count(*) FROM mdm_software.versions),(SELECT count(*) FROM mdm_software.materials),(SELECT count(*) FROM rss_transactional_messaging.outbox),(SELECT count(*) FROM mdm_software_composition.targets),(SELECT count(*) FROM mdm_software_composition.slots WHERE operation IS NOT NULL)"
-        ))
+        sql(
+            "SELECT (SELECT count(*) FROM mdm_software.versions),(SELECT count(*) FROM mdm_software.materials),(SELECT count(*) FROM rss_transactional_messaging.outbox),(SELECT count(*) FROM mdm_software_composition.targets),(SELECT count(*) FROM mdm_software_composition.slots WHERE operation IS NOT NULL)",
+        )
     };
     let before = counts();
     // Reject after catalog writes, once via a SQL error and once via a domain rejection.

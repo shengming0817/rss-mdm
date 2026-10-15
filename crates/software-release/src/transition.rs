@@ -455,7 +455,7 @@ impl Candidate {
             requested_at: request.as_of,
             outcome: PublicationOutcome::Pending,
         };
-        self.0.rings[ring.index()] = RingState::Publication(publication.clone());
+        self.0.rings[ring.index()] = RingState::Publication(Box::new(publication.clone()));
         Ok(Decision::Publish(Box::new(publication)))
     }
     fn retry(

@@ -354,17 +354,15 @@ pub enum RingState {
     /// Awaiting passed validation, including after failed or unknown validation.
     Candidate,
     /// A requested attempt and its pending or reported outcome.
-    Publication(Publication),
+    Publication(Box<Publication>),
 }
 impl RingState {
     /// Reports only confirmed Applied, even if the candidate has since been withdrawn.
     pub fn is_published(&self) -> bool {
         matches!(
             self,
-            Self::Publication(Publication {
-                outcome: PublicationOutcome::Reported(PublicationResult::Applied(_)),
-                ..
-            })
+            Self::Publication(p)
+                if matches!(p.outcome, PublicationOutcome::Reported(PublicationResult::Applied(_)))
         )
     }
 }

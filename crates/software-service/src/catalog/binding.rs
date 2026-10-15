@@ -191,7 +191,6 @@ impl Catalog {
         )
     }
     /// Caller declares this version's publication partition with all other Outbox partitions.
-
     pub async fn enable_for_publication_in(
         &self,
         tx: &mut PgTransaction<'_>,

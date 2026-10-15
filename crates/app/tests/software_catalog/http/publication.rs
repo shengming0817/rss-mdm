@@ -141,6 +141,8 @@ async fn publication_http_authority_receipts_and_public_native_binding() -> Resu
         catalog.1["lifecycle"].is_null(),
         "saving a draft enabled it: {catalog:?}"
     );
+    let saved = f.author.call(&f.router, Method::GET, &path, None).await?;
+    ensure!(saved.0 == StatusCode::OK, "saved candidate: {saved:?}");
     let without_enable = grants
         .iter()
         .filter(|g| g.operation != crate::authorization::Permission::SoftwareWrite)
@@ -164,7 +166,7 @@ async fn publication_http_authority_receipts_and_public_native_binding() -> Resu
     ensure!(still_draft.0 == StatusCode::OK && still_draft.1["lifecycle"].is_null());
     let unchanged = f.author.call(&f.router, Method::GET, &path, None).await?;
     ensure!(
-        unchanged.0 == StatusCode::OK && unchanged.1 == candidate.1,
+        unchanged.0 == StatusCode::OK && unchanged.1 == saved.1,
         "rejected publication mutated candidate: {unchanged:?}"
     );
     crate::test_support::identity::set_grants(case_tenant(), &subject, grants).await?;

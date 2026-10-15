@@ -179,7 +179,7 @@ async fn chain(format: &str, bundle: bool, user: bool) -> Result<()> {
         json!({"action":"activate","version":"v1"}),
     )
     .await?;
-    let admitted = write(
+    write(
         &mut f.author,
         &f.router,
         &format!("/api/v1/software/resources/{resource}/versions/v1"),

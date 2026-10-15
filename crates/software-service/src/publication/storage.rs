@@ -687,7 +687,7 @@ pub(super) fn core_publication(c: &rel::Candidate, t: &Target) -> Result<rel::Pu
     {
         return Err(Error::Conflict);
     }
-    Ok(p.clone())
+    Ok(p.as_ref().clone())
 }
 pub(super) fn record_request(
     c: &rel::Candidate,

@@ -354,7 +354,7 @@ impl PublicationService {
         cutoff: Deadline,
     ) -> Result<rel::Transition> {
         if let Some(replay) = self
-            .replay_service(id, ring, request, "publish", None, access, cutoff)
+            .replay_service(id, ring, request, None, access, cutoff)
             .await?
         {
             return Ok(replay);
@@ -431,7 +431,7 @@ impl PublicationService {
         cutoff: Deadline,
     ) -> Result<rel::Transition> {
         if let Some(replay) = self
-            .replay_service(id, ring, request, "retry", Some(attempt), access, cutoff)
+            .replay_service(id, ring, request, Some(attempt), access, cutoff)
             .await?
         {
             return Ok(replay);
@@ -736,7 +736,6 @@ impl PublicationService {
         id: &rel::CandidateId,
         ring: rel::Ring,
         r: &ServiceRequest,
-        kind: &str,
         attempt: Option<u64>,
         access: &dyn PublishAccess,
         cutoff: Deadline,
@@ -754,17 +753,16 @@ impl PublicationService {
             .original_request(&r.id, budget(cutoff))
             .await?
             .ok_or(Error::Conflict)?;
-        let (actual, actual_ring, actor) = match &original.operation {
-            rel::Operation::Publish { validation, .. } => ("publish", validation.ring, &r.actor),
+        let actual_ring = match &original.operation {
+            rel::Operation::Publish { validation, .. } if attempt.is_none() => validation.ring,
             rel::Operation::Retry {
                 ring, attempt: a, ..
-            } if Some(*a) == attempt => ("retry", *ring, &r.actor),
+            } if Some(*a) == attempt => *ring,
             _ => return Err(Error::Conflict),
         };
         if owner != *id
             || original.id != r.id
-            || original.actor != *actor
-            || actual != kind
+            || original.actor != r.actor
             || actual_ring != ring
             || original.expected_revision != r.expected_revision
             || original.as_of != r.as_of

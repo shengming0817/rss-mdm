@@ -98,7 +98,7 @@ async fn mirror_matrix(
             let persisted = pg(&format!(
                 "SELECT count(*) FROM mdm_content.bindings WHERE operation='{operation}'"
             ))?;
-            write(user, router, &source_path, 3, json!({"action":"enable"})).await?;
+            write(user, router, &source_path, 2, json!({"action":"enable"})).await?;
             ensure!(
                 response.0 == StatusCode::FORBIDDEN && persisted.trim() == "0",
                 "withdrawn origin committed mirror: {response:?}, bindings={persisted}"
