@@ -42,6 +42,7 @@ def exercise(admin, normal, delegate, config, management, business, password, sq
     require(call('DELETE','/tenants/' + removable,dict(expectedRevision=1))[0] == 200, 'delete failed')
     require(call('GET','/tenants/' + removable)[0] == 404, 'tombstone visible')
     require(call('POST','/tenants',dict(tenantId=removable,initialEpoch=1))[0] == 409, 'tombstone reused')
+    require(call('GET','/operations/not-a-uuid') == (400, {'code':'malformed_request'}), 'invalid operation did not use JSON error contract')
     request = dict(login='tenant-admin-one',password=password)
     admin_key = str(uuid.uuid4())
     path = '/tenants/' + tenant + '/administrators'
@@ -54,6 +55,7 @@ def exercise(admin, normal, delegate, config, management, business, password, sq
     require(status == 200 and second['result']['principalId'] != first['result']['principalId'], 'subsequent administrator blocked')
     require(call('DELETE','/tenants/' + tenant,dict(expectedRevision=2))[0] == 409, 'provisioned tenant remained deletable')
     require(call('GET','/operations/' + admin_key) == (200,first), 'administrator operation lookup failed')
+    administrator_rollback(call, path, tenant, password, sql)
     operator = json.loads(sql(f"SELECT operator FROM public.mdm_tenant_operations WHERE operation_id='{admin_key}'"))
     require(operator['tenantId'] == management, 'source actor lost')
     stored = sql(f"SELECT request::text FROM public.mdm_tenant_operations WHERE operation_id='{admin_key}'")
@@ -113,6 +115,40 @@ def exercise(admin, normal, delegate, config, management, business, password, sq
     lost_commit_ack(config,management,password,sql,builds,root,stack,login,tenant)
 
 
+def administrator_rollback(call, path, tenant, password, sql):
+    def counts():
+        return sql(f"SELECT (SELECT count(*) FROM identity_authority.accounts WHERE tenant_id='{tenant}')||':'||(SELECT count(*) FROM identity_authority.local_credentials WHERE tenant_id='{tenant}')||':'||(SELECT count(*) FROM mdm_access.authorization_rules WHERE tenant_id='{tenant}')")
+    operation = str(uuid.uuid4())
+    request = dict(login='rollback-admin',password=password)
+    before = counts()
+    sql(f"CREATE FUNCTION public.reject_admin_receipt() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'injected receipt failure'; END $$; CREATE TRIGGER reject_admin_receipt BEFORE INSERT ON public.mdm_tenant_operations FOR EACH ROW WHEN (NEW.operation_id='{operation}'::uuid) EXECUTE FUNCTION public.reject_admin_receipt();")
+    try:
+        require(call('POST',path,request,operation)[0] == 503, 'receipt fault accepted')
+        require(counts() == before, 'failed receipt left partial administrator')
+        require(sql(f"SELECT count(*) FROM public.mdm_tenant_operations WHERE operation_id='{operation}'") == '0', 'failed operation persisted')
+    finally:
+        sql('DROP TRIGGER reject_admin_receipt ON public.mdm_tenant_operations; DROP FUNCTION public.reject_admin_receipt()')
+    require(call('POST',path,request,operation)[0] == 200, 'rolled back request could not retry')
+    # Fill remaining capacity using valid documents or tombstones, and prove account rollback.
+    original = sql(f"SELECT string_agg(quote_literal(id::text),',') FROM mdm_access.authorization_rules WHERE tenant_id='{tenant}'")
+    for mode in ('rows','bytes'):
+        if mode == 'rows':
+            fill = f"10000-(SELECT count(*) FROM mdm_access.authorization_rules WHERE tenant_id='{tenant}')"
+            document = 'NULL::jsonb'
+        else:
+            fill = f"(8388608-(SELECT coalesce(sum(octet_length(document::text)),0) FROM mdm_access.authorization_rules WHERE tenant_id='{tenant}'))/octet_length(template.document::text)"
+            document = 'template.document'
+        sql(f"INSERT INTO mdm_access.authorization_rules(tenant_id,instance,id,revision,document) SELECT template.tenant_id,template.instance,gen_random_uuid(),1,{document} FROM (SELECT * FROM mdm_access.authorization_rules WHERE tenant_id='{tenant}' AND document IS NOT NULL LIMIT 1) template CROSS JOIN LATERAL generate_series(1,({fill})::int)")
+        operation = str(uuid.uuid4())
+        before = counts()
+        try:
+            require(call('POST',path,dict(request,login='capacity-'+mode),operation)[0] == 409, 'administrator exceeded authorization '+mode+' capacity')
+            require(counts() == before, 'capacity rejection left partial account/rule')
+            require(sql(f"SELECT count(*) FROM public.mdm_tenant_operations WHERE operation_id='{operation}'") == '0', 'capacity rejection saved receipt')
+        finally:
+            sql(f"DELETE FROM mdm_access.authorization_rules WHERE tenant_id='{tenant}' AND id NOT IN ({original})")
+
+
 def lost_commit_ack(config,management,password,sql,builds,root,stack,login,tenant):
     """Drop actual PostgreSQL COMMIT acknowledgements without terminating TLS."""
     from concurrent.futures import ThreadPoolExecutor
@@ -126,6 +162,19 @@ def lost_commit_ack(config,management,password,sql,builds,root,stack,login,tenan
     stack.callback(host.close)
     browser = Browser(host,config['product_origin'])
     login(browser,management)
+    # Black-hole database replies after HTTP authentication; both raw reads must terminate.
+    for method, route, body in (
+        ('GET','/tenants',None),
+        ('POST','/tenants/'+tenant+'/administrators',dict(login='blackhole-admin',password=password)),
+    ):
+        proxy.discard.set()
+        started = time.monotonic()
+        try:
+            status, _ = browser.call(method,BASE+route,body,{'Idempotency-Key':str(uuid.uuid4())})
+            require(status == 503 and time.monotonic()-started < 12, 'registry read deadline missing')
+        finally:
+            proxy.discard.clear()
+        require(browser.call('GET',BASE+'/tenants')[0] == 200, 'cancelled connection poisoned registry pool')
     for kind in ('create','administrator_create'):
         operation = str(uuid.uuid4())
         if kind == 'create':

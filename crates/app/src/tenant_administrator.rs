@@ -70,25 +70,16 @@ impl Service {
             .map(|byte| format!("{byte:02x}"))
             .collect();
         let request = serde_json::json!({"action":"administrator_create","tenantId":tenant,"login":login.as_str(),"fingerprint":digest});
-        let mut connection = self
-            .pool
-            .acquire()
-            .await
-            .map_err(|_| project(Reason::Storage))?;
-        let mut tx = connection
-            .begin()
-            .await
-            .map_err(|_| project(Reason::Storage))?;
-        sqlx::raw_sql("SET LOCAL statement_timeout='3s'; SET LOCAL lock_timeout='3s'")
-            .execute(&mut *tx)
-            .await
-            .map_err(|_| project(Reason::Storage))?;
-        self.authorize(&mut tx, proof, Permission::TenantAdministratorCreate)
-            .await
-            .map_err(project)?;
-        let target = tenant_on(&mut tx, tenant, false).await.map_err(project)?;
-        tx.rollback().await.map_err(|_| Error::RollbackFailed)?;
-        drop(connection);
+        let target = self
+            .registry_read((self, proof, tenant), |(service, proof, tenant), c| {
+                Box::pin(async move {
+                    service
+                        .authorize(c, proof, Permission::TenantAdministratorCreate)
+                        .await?;
+                    tenant_on(c, tenant, false).await
+                })
+            })
+            .await?;
         // Permanent claim precedes provisioning, including failed attempts; deletion can no longer race.
         claim_database_use(
             &self.config.provisioning_database,
@@ -146,19 +137,19 @@ impl Service {
                     let tenant = target_id.to_string();
                     let principal = account.key().principal.as_uuid().to_string();
                     let rule_id = Uuid::new_v4();
-                    let rule = rss_mdm_authorization_service::tenant_administrator_rule(rss_mdm_authorization_service::User {
+                    let user = rss_mdm_authorization_service::User {
                         instance_id: service.installation.instance_id.clone(), tenant_id: tenant.clone(), principal_id: principal.clone(),
-                    });
+                    };
+                    tx.with_connection(move |c| Box::pin(async move {
+                        Ok(rss_mdm_authorization_service::store::grant_tenant_administrator_on(c, user, rule_id).await)
+                    })).await.map_err(pg_error)?.map_err(Error::from)?;
                     let receipt = Receipt { operation_id: operation,action:Action::AdministratorCreate,result:ReceiptResult::Administrator(Administrator {
                         tenant_id:tenant.clone(),principal_id:principal,login:request["login"].as_str().ok_or(Error::Malformed)?.into(),rule_id,rule_revision:1,
                     })};
                     let receipt_json = serde_json::to_value(&receipt).map_err(|_| Error::Malformed)?;
                     let request = request.clone();
                     let operator = operator.clone();
-                    let instance = service.installation.instance_id.clone();
                     tx.with_connection(move |c| Box::pin(async move {
-                        sqlx::query("INSERT INTO mdm_access.authorization_rules(tenant_id,instance,id,revision,document) VALUES($1::uuid,$2::uuid,$3,1,$4)")
-                            .bind(&tenant).bind(instance).bind(rule_id).bind(serde_json::to_value(rule).map_err(|e| sqlx::Error::Protocol(e.to_string()))?).execute(&mut *c).await?;
                         sqlx::query("INSERT INTO public.mdm_tenant_operations(operation_id,tenant_id,action,request,receipt,operator) VALUES($1,$2::uuid,'administrator_create',$3,$4,$5)")
                             .bind(operation).bind(&tenant).bind(request).bind(receipt_json).bind(operator).execute(c).await?;
                         Ok(())

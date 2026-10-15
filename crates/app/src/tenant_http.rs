@@ -123,37 +123,69 @@ impl Service {
         query: Read,
     ) -> std::result::Result<serde_json::Value, Error> {
         proof.require(Permission::TenantRead, None)?;
-        let mut conn = self
-            .pool
-            .acquire()
-            .await
-            .map_err(|_| project(Reason::Storage))?;
-        let mut tx = conn.begin().await.map_err(|_| project(Reason::Storage))?;
-        let result = async {
-            sqlx::raw_sql("SET LOCAL statement_timeout='6s'; SET LOCAL lock_timeout='6s'").execute(&mut *tx).await.map_err(|_| Reason::Storage)?;
-            sqlx::query("SELECT pg_advisory_xact_lock(2346)").execute(&mut *tx).await.map_err(|_| Reason::Storage)?;
-            self.authorize(&mut tx, proof, Permission::TenantRead).await?;
+        self.registry_read((self, proof, query), |(service, proof, query), c| Box::pin(async move {
+            sqlx::query("SELECT pg_advisory_xact_lock(2346)").execute(&mut *c).await.map_err(|_| Reason::Storage)?;
+            service.authorize(c, proof, Permission::TenantRead).await?;
             match query {
                 Read::Tenant(tenant) => {
-                    validate_tenant(&self.installation, &tenant)?;
-                    serde_json::to_value(tenant_on(&mut tx, &tenant, false).await?).map_err(|_| Reason::Storage)
+                    validate_tenant(&service.installation, tenant)?;
+                    serde_json::to_value(tenant_on(c, tenant, false).await?).map_err(|_| Reason::Storage)
                 }
                 Read::Operation(operation) => {
                     if operation.is_nil() { return Err(Reason::Invalid); }
-                    let receipt = receipt_on(&mut tx, operation).await?.ok_or(Reason::NotFound)?.0;
+                    let receipt = receipt_on(c, *operation).await?.ok_or(Reason::NotFound)?.0;
                     serde_json::to_value(receipt).map_err(|_| Reason::Storage)
                 }
                 Read::List => {
                     let ids: Vec<String> = sqlx::query_scalar("SELECT tenant_id::text FROM public.mdm_tenants WHERE NOT deleted ORDER BY tenant_id")
-                        .fetch_all(&mut *tx).await.map_err(|_| Reason::Storage)?;
+                        .fetch_all(&mut *c).await.map_err(|_| Reason::Storage)?;
                     let mut items = Vec::new();
-                    for id in ids { items.push(tenant_on(&mut tx, &id, false).await?); }
+                    for id in ids { items.push(tenant_on(c, &id, false).await?); }
                     Ok(serde_json::json!({"items":items}))
                 }
             }
-        }.await;
-        tx.rollback().await.map_err(|_| Error::RollbackFailed)?;
-        result.map_err(project)
+        })).await
+    }
+    async fn registry_read<C: Send, T: Send>(
+        &self,
+        mut context: C,
+        operation: impl for<'a> FnOnce(
+            &'a mut C,
+            &'a mut PgConnection,
+        ) -> std::pin::Pin<
+            Box<dyn std::future::Future<Output = Result<T>> + Send + 'a>,
+        >,
+    ) -> std::result::Result<T, Error> {
+        let mut connection = None;
+        let outcome = tokio::time::timeout(Duration::from_secs(6), async {
+            connection = Some(
+                self.pool
+                    .acquire()
+                    .await
+                    .map_err(|_| project(Reason::Storage))?,
+            );
+            let mut tx = connection
+                .as_mut()
+                .expect("acquired connection")
+                .begin()
+                .await
+                .map_err(|_| project(Reason::Storage))?;
+            sqlx::raw_sql("SET LOCAL statement_timeout='6s'; SET LOCAL lock_timeout='6s'")
+                .execute(&mut *tx)
+                .await
+                .map_err(|_| project(Reason::Storage))?;
+            let result = operation(&mut context, &mut tx).await;
+            tx.rollback().await.map_err(|_| Error::RollbackFailed)?;
+            result.map_err(project)
+        })
+        .await;
+        if !matches!(outcome, Ok(Ok(_)))
+            && let Some(connection) = &mut connection
+        {
+            // SQLx 0.9 pool/connection.rs: isolate a cancelled or failed protocol stream.
+            connection.close_on_drop();
+        }
+        outcome.unwrap_or(Err(Error::RollbackFailed))
     }
     async fn mutate(
         &self,
@@ -329,10 +361,13 @@ async fn detail(
 async fn receipt(
     State(service): State<Arc<Service>>,
     Extension(auth): Extension<RequestAuth>,
-    Path(operation): Path<Uuid>,
+    path: std::result::Result<Path<Uuid>, axum::extract::rejection::PathRejection>,
 ) -> std::result::Result<Json<serde_json::Value>, HttpFailure> {
     service
-        .read(&auth.proof, Read::Operation(operation))
+        .read(
+            &auth.proof,
+            Read::Operation(path.map_err(|_| HttpFailure(Error::Malformed))?.0),
+        )
         .await
         .map(Json)
         .map_err(HttpFailure)
