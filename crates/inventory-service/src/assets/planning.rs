@@ -334,7 +334,7 @@ impl SnapshotReader {
         filter::require_visible(catalog, &condition.criteria, authorization.sensitive)?;
         let scopes = match &condition.selector {
             ScopeSelector::Device => vec![S::Device],
-            ScopeSelector::Exact { scope } => vec![scope.clone()],
+            ScopeSelector::Exact { scope } => vec![scope.as_ref().clone()],
             ScopeSelector::LocalUser { .. } | ScopeSelector::AllAuthorized => {
                 let tenant = self.tenant.to_string();
                 let selected = ids.clone();

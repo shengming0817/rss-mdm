@@ -135,7 +135,6 @@ pub(crate) async fn prepare_collection_in<'a>(
         template,
         source,
         {
-            let scope = scope;
             let fields: Vec<rss_mdm_inventory::FieldDefinition> = fields;
             fields
                 .into_iter()

@@ -136,12 +136,12 @@ impl AssetService {
                 .condition_inputs_in(
                     tx,
                     crate::assets::planning::ConditionRequest {
-                        watermark: watermark,
+                        watermark,
                         devices: &page.devices,
                         catalog: &page.catalog,
                         authorization: scope,
                         condition: q.criteria.as_ref().expect("condition"),
-                        rule: rule,
+                        rule,
                         associated: None,
                     },
                 )

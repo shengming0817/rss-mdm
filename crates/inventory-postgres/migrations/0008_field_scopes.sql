@@ -1,15 +1,17 @@
 -- #2726: one required namespace per frozen field. No legacy evidence conversion.
 BEGIN;
 SET LOCAL row_security=off;
-DO $$ DECLARE n text; occupied boolean; BEGIN
- IF EXISTS(SELECT 1 FROM mdm.collection_definitions) OR EXISTS(SELECT 1 FROM mdm.collection_results)
- OR EXISTS(SELECT 1 FROM mdm.inventory) OR EXISTS(SELECT 1 FROM mdm.inventory_history) THEN
-  RAISE EXCEPTION 'incompatible collection state; matching fresh installation required';
- END IF;
- FOREACH n IN ARRAY ARRAY['mdm.manual_assignments','mdm.manual_history','mdm_access.collection_runs','mdm_access.collection_history','mdm_policy.versions','mdm_commands.action_attempts','mdm_commands.remote_operations','mdm_assets.saved_queries','mdm_assets.asset_query_runs','mdm_assets.group_fields','mdm_compliance.rules','mdm_group.rules','mdm_group.member_runs','mdm_automation.automation_jobs'] LOOP
+-- The installer owns these tables but has NOBYPASSRLS. Temporarily remove
+-- FORCE within this transaction so the emptiness check sees every tenant;
+-- restore it before continuing, and rollback restores it on rejection.
+DO $$ DECLARE n text; occupied boolean; forced boolean; BEGIN
+ FOREACH n IN ARRAY ARRAY['mdm.collection_definitions','mdm.collection_results','mdm.inventory','mdm.inventory_history','mdm.manual_assignments','mdm.manual_history','mdm_access.collection_runs','mdm_access.collection_history','mdm_policy.versions','mdm_commands.action_attempts','mdm_commands.remote_operations','mdm_assets.saved_queries','mdm_assets.asset_query_runs','mdm_assets.group_fields','mdm_compliance.rules','mdm_group.rules','mdm_group.member_runs','mdm_automation.automation_jobs'] LOOP
   IF to_regclass(n) IS NOT NULL THEN
+   SELECT relforcerowsecurity INTO forced FROM pg_class WHERE oid=to_regclass(n);
+   IF forced THEN EXECUTE format('ALTER TABLE %s NO FORCE ROW LEVEL SECURITY',n); END IF;
    EXECUTE format('SELECT EXISTS(SELECT 1 FROM %s)',n) INTO occupied;
    IF occupied THEN RAISE EXCEPTION 'incompatible state in %; matching fresh installation required',n; END IF;
+   IF forced THEN EXECUTE format('ALTER TABLE %s FORCE ROW LEVEL SECURITY',n); END IF;
   END IF;
  END LOOP;
  FOR n IN SELECT conname FROM pg_constraint WHERE conrelid='mdm.collection_definitions'::regclass

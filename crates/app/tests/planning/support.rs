@@ -360,7 +360,8 @@ pub(crate) async fn query_job(service: &Planning, count: usize) -> Uuid {
                 operation_id: task,
                 expected_revision: 0,
                 input: assets::Query::default(),
-            },
+            }
+            .into(),
             scope: assets::ReadScope {
                 collection_scope: rss_mdm_inventory::CollectionScope::Device,
                 sensitive: true,

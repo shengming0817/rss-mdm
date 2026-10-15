@@ -147,7 +147,16 @@ async fn search(
 ) -> std::result::Result<HttpResponse, Error> {
     let request = body(payload)?;
     let scope = ReadScope::from_proof(&auth.proof)?;
-    run(&app, &auth, &audit, Command::Search { request, scope }).await
+    run(
+        &app,
+        &auth,
+        &audit,
+        Command::Search {
+            request: Box::new(request),
+            scope,
+        },
+    )
+    .await
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]

@@ -31,7 +31,6 @@ fn user_scope_survives_roundtrip_and_is_not_an_agent_scope() {
     assert_eq!(d.fingerprint().unwrap(), decoded.fingerprint().unwrap());
     assert!(
         CollectionDefinition::new("agent", 1, Source::AgentBuiltin, {
-            let scope = scope;
             let fields: Vec<rss_mdm_inventory::FieldDefinition> = vec![field];
             fields
                 .into_iter()

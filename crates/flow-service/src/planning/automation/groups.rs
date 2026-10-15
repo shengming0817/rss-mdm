@@ -353,7 +353,7 @@ impl Planning {
                     .condition_inputs_in(
                         tx,
                         rss_mdm_inventory_service::assets::planning::ConditionRequest {
-                            watermark: watermark,
+                            watermark,
                             devices: &raw,
                             catalog: &catalog,
                             authorization: &assets::ReadScope::all(),
@@ -471,7 +471,7 @@ impl Planning {
                     .condition_inputs_in(
                         tx,
                         rss_mdm_inventory_service::assets::planning::ConditionRequest {
-                            watermark: watermark,
+                            watermark,
                             devices: &page.devices,
                             catalog: &page.catalog,
                             authorization: &assets::ReadScope::all(),

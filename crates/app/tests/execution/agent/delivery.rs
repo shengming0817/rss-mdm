@@ -1,3 +1,4 @@
+use anyhow::Context;
 #[path = "windows_assets.rs"]
 mod windows_assets;
 use crate::test_support::agent_execution::*;
@@ -1004,13 +1005,12 @@ async fn macos_user_applications_and_brew_keep_other_users_after_complete_empty(
     f.grants
         .extend(crate::test_support::identity::device_grants(
             None,
-            &[
-                "inventory_collect",
-                "inventory_read",
-                "inventory_sensitive_read",
-                "operation_read",
-            ],
+            &["inventory_collect", "operation_read"],
         )?);
+    f.grants.push(crate::authorization::Grant {
+        operation: crate::authorization::Permission::InventorySensitiveRead,
+        scope: crate::authorization::Scope::Tenant,
+    });
     crate::test_support::identity::set_grants(case_tenant(), &f.author_id, f.grants.clone())
         .await?;
     let mut context = crate::test_support::software_execution::context(
@@ -1157,6 +1157,36 @@ async fn macos_user_applications_and_brew_keep_other_users_after_complete_empty(
             }
         })
         .await??;
+        for (field, scope) in [
+            (
+                "device.software.installations",
+                json!({"kind":"macos_applications","root":"user","uid":uid.parse::<u32>()?}),
+            ),
+            (
+                "device.software.packages",
+                json!({"kind":"macos_brew","uid":uid.parse::<u32>()?,"prefix":"/opt/homebrew","package":"formula","taps":[]}),
+            ),
+        ] {
+            let parameters = url::form_urlencoded::Serializer::new(String::new())
+                .append_pair("scope", &scope.to_string())
+                .finish();
+            let response = f
+                .author
+                .call(
+                    &f.router,
+                    Method::GET,
+                    &format!(
+                        "/api/v1/devices/{device}/collections/{}/fields/{field}/items?{parameters}",
+                        spec.attempt_id
+                    ),
+                    None,
+                )
+                .await?;
+            ensure!(
+                response.0 == StatusCode::OK,
+                "scoped item pagination: {response:?}"
+            );
+        }
         datasets.push(pg(&format!("SELECT attempts::jsonb#>>'{{definition,dataset}}' FROM mdm_access.collection_runs WHERE tenant_id='{}' AND id='{}'",case_tenant(),spec.attempt_id))?);
     }
     ensure!(datasets[0] == datasets[2] && datasets[0] != datasets[1]);
@@ -1197,7 +1227,8 @@ async fn macos_user_applications_and_brew_keep_other_users_after_complete_empty(
             );
             if uid == 502 {
                 ensure!(
-                    values[0]["owner"] == "502" && values[0]["name"] == "Scoped app",
+                    values[0]["value"]["owner"]["value"] == "502"
+                        && values[0]["value"]["name"]["value"] == "Scoped app",
                     "other user's fact changed: {values:?}"
                 );
             }

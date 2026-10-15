@@ -181,7 +181,8 @@ async fn durable_asset_group_scope_pipeline() {
                         descending: true,
                     }),
                 },
-            ),
+            )
+            .into(),
             scope: query_scope.clone(),
         },
     )

@@ -131,8 +131,8 @@
     "kind": "snapshot"
   },
   "coverage": {
-    "definition": "5831a2433cec0b263e85eeb9f192b98897baced799281577d1a6bf03a1244855",
-    "format": "typed-fields-v3",
+    "definition": "5b8da578528b55afaa271b6ea32e009a6f324a1aecc9cc3dd731068c068e2a91",
+    "format": "typed-fields-v4",
     "id": "inventory",
     "version": "fixture-v1"
   },

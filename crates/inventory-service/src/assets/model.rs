@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 pub enum ScopeSelector {
     Device,
     Exact {
-        scope: rss_mdm_inventory::CollectionScope,
+        scope: Box<rss_mdm_inventory::CollectionScope>,
     },
     LocalUser {
         uid: u32,
@@ -315,7 +315,7 @@ pub enum Command {
         scope: ReadScope,
     },
     Search {
-        request: Operation<Query>,
+        request: Box<Operation<Query>>,
         scope: ReadScope,
     },
     Manual {

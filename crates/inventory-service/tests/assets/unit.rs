@@ -12,7 +12,8 @@ fn asset_fingerprint_binds_explicit_collection_scope() {
             operation_id: id,
             expected_revision: 0,
             input: Query::default(),
-        },
+        }
+        .into(),
         scope: ReadScope {
             collection_scope: rss_mdm_inventory::CollectionScope::Device,
             subject: "operator".into(),

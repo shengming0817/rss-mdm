@@ -190,13 +190,13 @@ async fn historical_users_are_isolated_and_conditions_never_join_their_facts() -
         let coverage = serde_json::to_string(&definition.coverage()?)?;
         let field_scope = selected.canonical()?;
         pg(&format!(
-            "INSERT INTO mdm_access.collection_runs(tenant_id,id,registration,source,epoch,scope,sequence,started_at,attempts,result,reason,sealed_at) VALUES('{tenant}','{run}','{registration}','agent.native','{epoch}','{scope}',1,1,'{attempts}','snapshot','complete',2)"
+            "INSERT INTO mdm_access.collection_runs(tenant_id,id,registration,source,epoch,scope,sequence,started_at,attempts,result,reason,sealed_at) VALUES('{tenant}','{run}','{registration}','agent.native','{epoch}','{scope}',{uid},1,'{attempts}','snapshot','complete',2)"
         ))?;
         for (field, value) in [(builtin::MODEL, model), (builtin::OS_VERSION, os)] {
             let field = field.as_str();
             let value = serde_json::to_string(&Scalar::String(value.into()))?;
             pg(&format!(
-                "INSERT INTO mdm.inventory(tenant_id,journal,generation,scope,coverage,field,field_scope,value,batch_id,observed_at,received_at,state,registration,source,epoch,collection_sequence) VALUES('{tenant}','mdm.observation.v1','inventory-v7','{scope}','{coverage}','{field}','{field_scope}','{value}','{run}',1,2,'known','{registration}','agent.native','{epoch}',1)"
+                "INSERT INTO mdm.inventory(tenant_id,journal,generation,scope,coverage,field,field_scope,value,batch_id,observed_at,received_at,state,registration,source,epoch,collection_sequence) VALUES('{tenant}','mdm.observation.v1','inventory-v7','{scope}','{coverage}','{field}','{field_scope}','{value}','{run}',1,2,'known','{registration}','agent.native','{epoch}',{uid})"
             ))?;
         }
         let query = url::form_urlencoded::Serializer::new(String::new())
@@ -240,7 +240,7 @@ async fn historical_users_are_isolated_and_conditions_never_join_their_facts() -
     ok(&mut browser, &fixture.router, Method::POST, &group, Some(request(0,json!({"action":"create","assetContext":"endpoint","name":"scope isolation","description":"","criteria":condition})))).await?;
     let evidence = preview(&mut browser, &fixture.router, &group).await?;
     ensure!(
-        evidence.members["items"].as_array().unwrap().is_empty(),
+        evidence.members["page"]["items"] == json!([]),
         "cross-user group: {}",
         evidence.members
     );

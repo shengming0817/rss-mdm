@@ -185,81 +185,6 @@ fn apply_missing(
         _ => NativeValue::Invalid,
     }
 }
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn user_field_scope_is_stable_across_sessions_and_disjoint_across_users_and_recipes() {
-        use wire::{ExecutionIdentity, NativeQueryDefinition as Q, SoftwareExecutionTarget as T};
-        let binding = |uid: &str| wire::NativeExecutionBinding {
-            identity: ExecutionIdentity::LoggedInUser,
-            context_revision: 1,
-            target: T::User {
-                identity: uid.into(),
-                session_id: uuid::Uuid::new_v4(),
-            },
-        };
-        let query = Q::MacosApplications {
-            root: wire::MacosApplicationRoot::UserApplications,
-            max_depth: 4,
-        };
-        let first = binding("501");
-        let mut another_session = binding("501");
-        another_session.context_revision = 2;
-        assert_eq!(
-            field_scope(&query, &first).unwrap(),
-            field_scope(&query, &another_session).unwrap()
-        );
-        assert_ne!(
-            field_scope(&query, &first).unwrap(),
-            field_scope(&query, &binding("502")).unwrap()
-        );
-        assert!(field_scope(&query, &binding("0")).is_err());
-        let brew = |prefix: &str, package| Q::MacosBrew {
-            prefix: prefix.into(),
-            package,
-            taps: Default::default(),
-        };
-        let formula = field_scope(
-            &brew("/opt/homebrew", wire::MacosBrewPackage::Formula),
-            &first,
-        )
-        .unwrap();
-        assert_ne!(
-            formula,
-            field_scope(&brew("/usr/local", wire::MacosBrewPackage::Formula), &first).unwrap()
-        );
-        assert_ne!(
-            formula,
-            field_scope(&brew("/opt/homebrew", wire::MacosBrewPackage::Cask), &first).unwrap()
-        );
-        assert_ne!(formula, field_scope(&query, &first).unwrap());
-    }
-    #[test]
-    fn explicit_absence_policy_does_not_promote_errors() {
-        use rss_mdm_resource::NativeMissing as M;
-        assert!(matches!(
-            apply_missing(NativeValue::Missing, M::Delete, false),
-            NativeValue::Value(CollectedValue::Deleted)
-        ));
-        assert!(matches!(
-            apply_missing(NativeValue::Missing, M::Null, true),
-            NativeValue::Value(CollectedValue::Null)
-        ));
-        assert!(matches!(
-            apply_missing(NativeValue::Missing, M::Null, false),
-            NativeValue::Invalid
-        ));
-        assert!(matches!(
-            apply_missing(NativeValue::Failed, M::Delete, false),
-            NativeValue::Failed
-        ));
-        assert!(matches!(
-            apply_missing(NativeValue::Invalid, M::Null, true),
-            NativeValue::Invalid
-        ));
-    }
-}
 
 fn bind_definition(
     frozen: &FrozenAgentCollection,
@@ -377,4 +302,80 @@ fn owners_match(
         .rows
         .iter()
         .all(|row| row.get("owner").and_then(|v| v.as_str()) == Some(identity.as_str()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn user_field_scope_is_stable_across_sessions_and_disjoint_across_users_and_recipes() {
+        use wire::{ExecutionIdentity, NativeQueryDefinition as Q, SoftwareExecutionTarget as T};
+        let binding = |uid: &str| wire::NativeExecutionBinding {
+            identity: ExecutionIdentity::LoggedInUser,
+            context_revision: 1,
+            target: T::User {
+                identity: uid.into(),
+                session_id: uuid::Uuid::new_v4(),
+            },
+        };
+        let query = Q::MacosApplications {
+            root: wire::MacosApplicationRoot::UserApplications,
+            max_depth: 4,
+        };
+        let first = binding("501");
+        let mut another_session = binding("501");
+        another_session.context_revision = 2;
+        assert_eq!(
+            field_scope(&query, &first).unwrap(),
+            field_scope(&query, &another_session).unwrap()
+        );
+        assert_ne!(
+            field_scope(&query, &first).unwrap(),
+            field_scope(&query, &binding("502")).unwrap()
+        );
+        assert!(field_scope(&query, &binding("0")).is_err());
+        let brew = |prefix: &str, package| Q::MacosBrew {
+            prefix: prefix.into(),
+            package,
+            taps: Default::default(),
+        };
+        let formula = field_scope(
+            &brew("/opt/homebrew", wire::MacosBrewPackage::Formula),
+            &first,
+        )
+        .unwrap();
+        assert_ne!(
+            formula,
+            field_scope(&brew("/usr/local", wire::MacosBrewPackage::Formula), &first).unwrap()
+        );
+        assert_ne!(
+            formula,
+            field_scope(&brew("/opt/homebrew", wire::MacosBrewPackage::Cask), &first).unwrap()
+        );
+        assert_ne!(formula, field_scope(&query, &first).unwrap());
+    }
+    #[test]
+    fn explicit_absence_policy_does_not_promote_errors() {
+        use rss_mdm_resource::NativeMissing as M;
+        assert!(matches!(
+            apply_missing(NativeValue::Missing, M::Delete, false),
+            NativeValue::Value(CollectedValue::Deleted)
+        ));
+        assert!(matches!(
+            apply_missing(NativeValue::Missing, M::Null, true),
+            NativeValue::Value(CollectedValue::Null)
+        ));
+        assert!(matches!(
+            apply_missing(NativeValue::Missing, M::Null, false),
+            NativeValue::Invalid
+        ));
+        assert!(matches!(
+            apply_missing(NativeValue::Failed, M::Delete, false),
+            NativeValue::Failed
+        ));
+        assert!(matches!(
+            apply_missing(NativeValue::Invalid, M::Null, true),
+            NativeValue::Invalid
+        ));
+    }
 }
