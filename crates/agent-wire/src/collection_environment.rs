@@ -43,7 +43,10 @@ fn token(value: &str) -> bool {
 impl CollectionEnvironment {
     /// Validate bounded current evidence before persisting it.
     pub fn validate(&self) -> Result<(), WireError> {
-        if self.native_engines.values().any(|v| *v != 1)
+        if self
+            .native_engines
+            .iter()
+            .any(|(engine, version)| *version != engine.contract_version())
             || self.edition.as_ref().is_some_and(|v| !token(v))
             || self.tools.len() > 16
             || self

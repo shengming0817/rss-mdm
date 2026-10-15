@@ -104,8 +104,32 @@ fn macos_publication_is_platform_exact_and_scoped_recipes_are_accepted() {
     ] {
         let mut spec = template.spec().clone();
         let mut plan = spec.plan.spec().clone();
-        plan.queries.get_mut("receipts").unwrap().definition = definition;
+        let q = plan.queries.get_mut("receipts").unwrap();
+        q.version = definition.engine().contract_version();
+        q.definition = definition;
         spec.plan = w::NativeCollectionPlan::new(plan).unwrap();
         assert!(AgentCollectionDefinition::new(spec).is_ok());
+    }
+}
+
+#[test]
+fn brew_blueprints_publish_only_the_data_recipe_revision() {
+    for id in [
+        "macos.agent.brew_arm_formula",
+        "macos.agent.brew_arm_cask",
+        "macos.agent.brew_intel_formula",
+        "macos.agent.brew_intel_cask",
+    ] {
+        assert!(blueprints::get(id, "1").is_none());
+        let blueprints::Definition::AgentCollection { template } =
+            blueprints::get(id, "2").unwrap().definition
+        else {
+            panic!("native blueprint expected")
+        };
+        assert_eq!(
+            template.spec().plan.requirements(),
+            [(w::NativeEngine::MacosBrew, 2)].into()
+        );
+        template.validate_platform(Platform::MacOS).unwrap();
     }
 }

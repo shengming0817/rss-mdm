@@ -40,9 +40,18 @@ pub enum NativeEngine {
     /// PackageInstaller receipt inventory, separate from application presence.
     #[serde(rename = "macos.pkg_receipts")]
     MacosPkgReceipts,
-    /// Non-root installed formula/cask metadata in the JSON v2 tool format.
+    /// Non-root, data-only installed formula/cask metadata; never executes Homebrew.
     #[serde(rename = "macos.brew")]
     MacosBrew,
+}
+impl NativeEngine {
+    /// The only supported recipe version. Older semantics are not executed as a fallback.
+    pub const fn contract_version(self) -> u16 {
+        match self {
+            Self::MacosBrew => 2,
+            _ => 1,
+        }
+    }
 }
 /// Exact supported contract versions, not executable names.
 pub type NativeEngines = BTreeMap<NativeEngine, u16>;
@@ -352,7 +361,13 @@ pub enum NativeQueryDefinition {
     /// Device package receipts, never application-existence evidence.
     MacosPkgReceipts {},
     /// Installed package metadata; the executor must be a bound non-root logged-in user.
-    /// Tool contract is Homebrew info JSON v2; no arbitrary flags or executable path.
+    /// Version 2 reads bounded Cellar/Caskroom installation records and recognized JSON
+    /// metadata beneath the approved prefix. Treat all contents as untrusted data;
+    /// never invoke brew, Ruby, shell commands or evaluate formula/cask definitions.
+    /// Enumerate installed versions, not current catalog versions or linked binaries.
+    /// Resolve tap identity from installation metadata, never by guessing a default tap.
+    /// An unreadable, changed, unsupported or incomplete record is not an empty inventory;
+    /// use the corresponding non-Complete status. Do not follow links outside the prefix.
     MacosBrew {
         /// Approved absolute data prefix, not a command or executable path.
         prefix: String,
@@ -705,7 +720,7 @@ impl NativeQuery {
         self.definition.validate()?;
         self.budget.validate()?;
         let p = self.definition.properties();
-        if self.version != 1
+        if self.version != self.definition.engine().contract_version()
             || self.instance_keys.len() > 8
             || self.instance_keys.iter().collect::<BTreeSet<_>>().len() != self.instance_keys.len()
             || self.instance_keys.iter().any(|k| {

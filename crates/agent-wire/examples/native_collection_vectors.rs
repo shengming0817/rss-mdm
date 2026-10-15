@@ -15,7 +15,7 @@ fn vector(
         max_rows: 100,
     };
     let query = NativeQuery {
-        version: 1,
+        version: definition.engine().contract_version(),
         cardinality: match &definition {
             NativeQueryDefinition::MacosBrew { .. } => NativeCardinality::List,
             _ => NativeCardinality::ExactlyOne,

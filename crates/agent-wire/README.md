@@ -53,8 +53,12 @@ Collection `wireVersion=2`、签名域 `rss-mdm-agent-collection-task-v2-ed25519
 Brew 和 UserApplications 只允许当前 helper 绑定的规范非零 UID；禁止 root、离线切换用户、
 任意程序、脚本、环境覆盖或提权参数。消费方在 Offer/Start 验签后用
 `NativeExecutionBinding::matches_context` 复核本机身份与会话；服务端 Start 同样重建并比较已签 Offer。
-Brew 引擎 v1 使用安装记录 JSON v2；前缀是数据定位，不是可信可执行文件路径，
-Agent 必须自行验证可信工具和批准数据根，缺工具、无权限、超时、截断分别报告现有闭合状态。
+Brew 引擎仅接受 v2：只读批准 prefix 下 Cellar/Caskroom 的安装记录和可识别 JSON 元数据，
+不启动 brew/Ruby/shell、不求值 formula/cask。版本与 tap 取自安装证据，不从当前目录或默认 tap 猜测。
+数据可以由用户拥有，但必须作为不可信输入有界解析；不跟随逃出批准根的链接。
+缺失、无权限、格式不支持、超时、截断或扫描期间变化分别保留失败证据，不能当完整空清单。
+旧 Brew 引擎 v1 和旧内置 Brew 蓝图版本不再接纳；其他引擎版本保持原契约。
+服务端与 Agent 应在旧任务结算后协调升级，保留 journal；不能用旧引擎回退或清除状态绕过升级。
 
 Mac 软件行的 origin 分别为 `application`、`pkg_receipt`、`homebrew`；Brew 行必须匹配声明的
 prefix、tap 与 package_kind，用户 UID 必须非零。签名状态为 signed/unsigned/invalid/unknown。
