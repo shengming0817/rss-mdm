@@ -563,11 +563,13 @@ impl NativeQueryDefinition {
                 .is_some_and(|v| v.as_f64().is_some_and(|v| (0.0..=100.0).contains(&v))),
             Self::WindowsNetwork => true,
             Self::MacosHardware { section } => section.accepts_row(row),
-            // reason: No macOS software result can become a complete snapshot before #2726 supplies
-            // the authoritative namespace and coverage proof. Do not trust row owner strings.
-            Self::MacosApplications { .. } | Self::MacosPkgReceipts {} | Self::MacosBrew { .. } => {
-                false
-            }
+            Self::MacosApplications { root, .. } => macos::application_row(*root, row),
+            Self::MacosPkgReceipts {} => macos::device_software_row(row, "pkg_receipt"),
+            Self::MacosBrew {
+                prefix,
+                package,
+                taps,
+            } => macos::brew_row(prefix, *package, taps, row),
         }
     }
     /// Reject executable syntax and unsupported read recipes.
@@ -775,10 +777,15 @@ impl TryFrom<NativePlanSpec> for NativeCollectionPlan {
     }
 }
 impl NativeCollectionPlan {
-    /// Validate all structural and Windows executable constraints.
+    /// Validate structural query, platform, identity and budget constraints.
     pub fn new(p: NativePlanSpec) -> Result<Self, WireError> {
         p.budget.validate()?;
-        p.scope.validate_executable()?;
+        match &p.scope {
+            crate::CollectionScope::Device => {}
+            crate::CollectionScope::User { identity } if macos::nonroot_uid(identity) => {}
+            crate::CollectionScope::Prefix { path } if macos::absolute_data_root(path) => {}
+            _ => return Err(WireError::InvalidValue),
+        }
         if p.version != 1
             || p.queries.is_empty()
             || p.queries.len() > 64
@@ -788,9 +795,16 @@ impl NativeCollectionPlan {
         }
         for q in p.queries.values() {
             q.validate()?;
-            // #2737 definition preparation is not execution admission. The complete macOS
-            // identity/scope binding must land with #2726 before these plans can be issued.
-            if q.definition.platform() != TaskPlatform::Windows {
+            let first = &p.queries.values().next().expect("nonempty").definition;
+            if q.definition.platform() != first.platform()
+                || q.definition.execution_identity() != first.execution_identity()
+                || (q.definition.platform() == TaskPlatform::Windows
+                    && p.scope != crate::CollectionScope::Device)
+                || matches!(&p.scope, crate::CollectionScope::Prefix { path }
+                    if !matches!(&q.definition, NativeQueryDefinition::MacosBrew { prefix, .. } if prefix == path))
+                || (matches!(&p.scope, crate::CollectionScope::User { .. })
+                    && q.definition.execution_identity() != ExecutionIdentity::LoggedInUser)
+            {
                 return Err(WireError::InvalidValue);
             }
             if q.budget.output_bytes > p.budget.output_bytes
@@ -808,6 +822,26 @@ impl NativeCollectionPlan {
             return Err(WireError::InvalidValue);
         }
         Ok(Self(p))
+    }
+    /// Required operating system, shared by every query.
+    pub fn platform(&self) -> TaskPlatform {
+        self.0
+            .queries
+            .values()
+            .next()
+            .expect("validated plan")
+            .definition
+            .platform()
+    }
+    /// Required execution identity, shared by every query.
+    pub fn execution_identity(&self) -> ExecutionIdentity {
+        self.0
+            .queries
+            .values()
+            .next()
+            .expect("validated plan")
+            .definition
+            .execution_identity()
     }
     /// Immutable construction values.
     pub fn spec(&self) -> &NativePlanSpec {
@@ -833,6 +867,79 @@ impl NativeCollectionPlan {
         self.requirements()
             .iter()
             .all(|(k, v)| engines.get(k) == Some(v))
+    }
+}
+/// Signed privilege and live-session binding; scan declarations are not Inventory authority.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct NativeExecutionBinding {
+    /// Exact required privilege boundary.
+    pub identity: ExecutionIdentity,
+    /// Current reported context generation; changes invalidate an outstanding Offer.
+    pub context_revision: u64,
+    /// Exact device or interactive session. No offline user switching is permitted.
+    pub target: crate::runtime::SoftwareExecutionTarget,
+}
+impl NativeExecutionBinding {
+    /// Bind only an available broker/helper and the current non-root login.
+    pub fn bind(
+        plan: &NativeCollectionPlan,
+        context: &crate::runtime::SoftwareExecutionContext,
+    ) -> Result<Self, WireError> {
+        use crate::runtime::SoftwareExecutionTarget;
+        context.validate_for(plan.platform())?;
+        let identity = plan.execution_identity();
+        let target = match identity {
+            ExecutionIdentity::System if context.system_broker => SoftwareExecutionTarget::Device,
+            ExecutionIdentity::LoggedInUser if context.user_helper => {
+                let user = context
+                    .interactive_user
+                    .as_ref()
+                    .ok_or(WireError::InvalidValue)?;
+                SoftwareExecutionTarget::User {
+                    identity: user.identity.clone(),
+                    session_id: user.session_id,
+                }
+            }
+            _ => return Err(WireError::InvalidValue),
+        };
+        let binding = Self {
+            identity,
+            context_revision: context.revision,
+            target,
+        };
+        binding.validate(plan)?;
+        Ok(binding)
+    }
+    /// Check the signed identity against the immutable plan before local execution.
+    pub fn validate(&self, plan: &NativeCollectionPlan) -> Result<(), WireError> {
+        use crate::runtime::SoftwareExecutionTarget;
+        self.target.validate_for(plan.platform())?;
+        if self.context_revision == 0
+            || self.context_revision > i64::MAX as u64
+            || self.identity != plan.execution_identity()
+        {
+            return Err(WireError::InvalidValue);
+        }
+        match (&self.target, self.identity) {
+            (SoftwareExecutionTarget::Device, ExecutionIdentity::System) => Ok(()),
+            (SoftwareExecutionTarget::User { identity, .. }, ExecutionIdentity::LoggedInUser)
+                if plan.platform() == TaskPlatform::Macos
+                    && macos::nonroot_uid(identity)
+                    && !matches!(&plan.spec().scope, crate::CollectionScope::User { identity: owner } if owner != identity) =>
+            {
+                Ok(())
+            }
+            _ => Err(WireError::InvalidValue),
+        }
+    }
+    /// Recheck local context at Start; neither a new session nor a new revision may reuse an Offer.
+    pub fn matches_context(
+        &self,
+        plan: &NativeCollectionPlan,
+        context: &crate::runtime::SoftwareExecutionContext,
+    ) -> bool {
+        Self::bind(plan, context).is_ok_and(|current| current == *self)
     }
 }
 /// Closed query completion status; it never denotes script exit success.
@@ -899,16 +1006,6 @@ pub struct NativeQueryResult {
 impl NativeQueryResult {
     /// Validate query-level evidence independently; false never discards other queries.
     pub fn complete_for(&self, q: &NativeQuery, now: i64) -> bool {
-        // Software coverage cannot be proven by the current Device/SID-only result contract.
-        // Keep even empty lists non-authoritative until the #2726 namespace seam is integrated.
-        if matches!(
-            q.definition,
-            NativeQueryDefinition::MacosApplications { .. }
-                | NativeQueryDefinition::MacosPkgReceipts {}
-                | NativeQueryDefinition::MacosBrew { .. }
-        ) {
-            return false;
-        }
         if self.query_digest != q.digest()
             || self.collected_at < 1
             || self.collected_at > now

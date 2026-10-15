@@ -179,3 +179,53 @@ pub(super) fn software_properties(extra: &[(&str, NativeType)]) -> BTreeMap<Stri
     .chain(extra.iter().map(|(key, ty)| ((*key).into(), ty.clone())))
     .collect()
 }
+
+/// Canonical non-root macOS account identity.
+pub(super) fn nonroot_uid(identity: &str) -> bool {
+    identity
+        .parse::<u32>()
+        .is_ok_and(|uid| uid > 0 && uid.to_string() == identity)
+}
+fn text<'a>(row: &'a BTreeMap<String, serde_json::Value>, key: &str) -> Option<&'a str> {
+    row.get(key).and_then(|v| v.as_str())
+}
+pub(super) fn device_software_row(row: &BTreeMap<String, serde_json::Value>, origin: &str) -> bool {
+    text(row, "scope") == Some("device")
+        && text(row, "owner") == Some("")
+        && text(row, "origin") == Some(origin)
+}
+pub(super) fn application_row(
+    root: MacosApplicationRoot,
+    row: &BTreeMap<String, serde_json::Value>,
+) -> bool {
+    let owner = match root {
+        MacosApplicationRoot::UserApplications => {
+            text(row, "scope") == Some("user") && text(row, "owner").is_some_and(nonroot_uid)
+        }
+        _ => device_software_row(row, "application"),
+    };
+    owner
+        && text(row, "origin") == Some("application")
+        && matches!(
+            text(row, "signature_status"),
+            Some("signed" | "unsigned" | "invalid" | "unknown")
+        )
+}
+pub(super) fn brew_row(
+    prefix: &str,
+    package: MacosBrewPackage,
+    taps: &std::collections::BTreeSet<String>,
+    row: &BTreeMap<String, serde_json::Value>,
+) -> bool {
+    text(row, "scope") == Some("user")
+        && text(row, "owner").is_some_and(nonroot_uid)
+        && text(row, "origin") == Some("homebrew")
+        && text(row, "prefix") == Some(prefix)
+        && text(row, "tap")
+            .is_some_and(|tap| tap_valid(tap) && (taps.is_empty() || taps.contains(tap)))
+        && text(row, "package_kind")
+            == Some(match package {
+                MacosBrewPackage::Formula => "formula",
+                MacosBrewPackage::Cask => "cask",
+            })
+}

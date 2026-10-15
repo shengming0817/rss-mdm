@@ -238,43 +238,29 @@ fn brew_requires_logged_in_user_and_exact_prefix_tap_selectors() {
 }
 
 #[test]
-fn definition_support_cannot_bypass_unimplemented_execution_or_range_proof() {
-    // The #2726 scope and #2737 signed live-user binding are not integrated yet.
-    // All macOS plans remain rejected, including Device masquerades and empty software lists.
-    for d in [
+fn macos_plans_are_wire_valid_without_granting_inventory_scope_authority() {
+    for definition in [
         hardware(MacosHardwareSection::Memory).definition,
-        NativeQueryDefinition::MacosApplications {
-            root: MacosApplicationRoot::LocalApplications,
-            max_depth: 2,
-        },
         NativeQueryDefinition::MacosPkgReceipts {},
         brew("/opt/homebrew"),
     ] {
-        let q = query(d.clone());
-        q.validate().unwrap();
-        for scope in [
-            CollectionScope::Device,
-            CollectionScope::User {
-                identity: "501".into(),
-            },
-            CollectionScope::Prefix {
-                path: "/opt/homebrew".into(),
-            },
-        ] {
-            let input = NativePlanSpec {
-                version: 1,
-                scope,
-                queries: [("mac".into(), q.clone())].into(),
-                budget: budget(),
-            };
-            let json = serde_json::to_value(&input).unwrap();
-            assert!(NativeCollectionPlan::new(input).is_err());
-            assert!(serde_json::from_value::<NativeCollectionPlan>(json).is_err());
-        }
-        if !matches!(d, NativeQueryDefinition::MacosHardware { .. }) {
-            assert!(!answer(&q, vec![]).complete_for(&q, 10));
-        }
+        let q = query(definition);
+        let plan = NativeCollectionPlan::new(NativePlanSpec {
+            version: 1,
+            scope: CollectionScope::Device,
+            queries: [("mac".into(), q)].into(),
+            budget: budget(),
+        })
+        .unwrap();
+        assert_eq!(plan.platform(), TaskPlatform::Macos);
+        assert_eq!(
+            serde_json::from_value::<NativeCollectionPlan>(serde_json::to_value(&plan).unwrap())
+                .unwrap(),
+            plan
+        );
     }
+    let q = query(NativeQueryDefinition::MacosPkgReceipts {});
+    assert!(answer(&q, vec![]).complete_for(&q, 10));
 }
 
 #[test]
@@ -302,4 +288,168 @@ fn engine_map_is_bounded_by_closed_keys_not_a_stale_windows_count() {
         .insert(NativeEngine::MacosBrew, 2);
     assert!(environment.validate().is_err());
     assert!(serde_json::from_value::<NativeEngines>(json!({"macos.command":1})).is_err());
+}
+
+fn plan(definition: NativeQueryDefinition) -> NativeCollectionPlan {
+    NativeCollectionPlan::new(NativePlanSpec {
+        version: 1,
+        scope: CollectionScope::Device,
+        queries: [("sample".into(), query(definition))].into(),
+        budget: budget(),
+    })
+    .unwrap()
+}
+fn context() -> SoftwareExecutionContext {
+    SoftwareExecutionContext {
+        revision: 1,
+        msix_sideload: false,
+        msix_unsigned: false,
+        os_version: [15, 0, 0, 0],
+        system_broker: true,
+        user_helper: true,
+        interactive_user: Some(SoftwareInteractiveUser {
+            identity: "501".into(),
+            session_id: uuid::Uuid::from_u128(1),
+            administrator: false,
+        }),
+        source_credentials: vec![],
+    }
+}
+#[test]
+fn brew_identity_requires_nonroot_live_session_and_exact_context() {
+    let plan = plan(brew("/opt/homebrew"));
+    let context = context();
+    let binding = NativeExecutionBinding::bind(&plan, &context).unwrap();
+    assert_eq!(binding.identity, ExecutionIdentity::LoggedInUser);
+    for uid in ["0", "00", "0501", "-1", "root", "4294967296"] {
+        let mut changed = context.clone();
+        changed.interactive_user.as_mut().unwrap().identity = uid.into();
+        assert!(
+            NativeExecutionBinding::bind(&plan, &changed).is_err(),
+            "{uid}"
+        );
+    }
+    for change in 0..5 {
+        let mut changed = context.clone();
+        match change {
+            0 => changed.interactive_user = None,
+            1 => changed.user_helper = false,
+            2 => changed.interactive_user.as_mut().unwrap().session_id = uuid::Uuid::from_u128(2),
+            3 => changed.revision += 1,
+            _ => changed.interactive_user.as_mut().unwrap().identity = "502".into(),
+        }
+        assert!(!binding.matches_context(&plan, &changed));
+    }
+    let mut scoped = plan.spec().clone();
+    scoped.scope = CollectionScope::User {
+        identity: "502".into(),
+    };
+    assert!(
+        NativeExecutionBinding::bind(&NativeCollectionPlan::new(scoped).unwrap(), &context)
+            .is_err()
+    );
+}
+#[test]
+fn signed_macos_collection_binds_identity_plan_and_permit_without_old_decode() {
+    use ring::signature::{ED25519, Ed25519KeyPair, KeyPair, UnparsedPublicKey};
+    let plan = plan(brew("/opt/homebrew"));
+    let id = uuid::Uuid::from_u128(1);
+    let task = CollectionTaskSpec {
+        wire_version: COLLECTION_TASK_VERSION,
+        tenant_id: id,
+        device_id: "mac".into(),
+        platform: TaskPlatform::Macos,
+        architecture: TaskArchitecture::Aarch64,
+        registration_id: id,
+        generation: 1,
+        task_id: id,
+        attempt_id: id,
+        permit: TaskPermit::Offer,
+        expires_at: 100,
+        deadline: 200,
+        resource_digest: [1; 32],
+        resource: TaskResource {
+            id: "mac".into(),
+            version: "1".into(),
+            variant: "arm".into(),
+        },
+        authorization: TaskAuthorization::Policy {
+            policy_id: id,
+            policy_version: id,
+        },
+        execution: NativeExecutionBinding::bind(&plan, &context()).unwrap(),
+        plan_digest: plan.digest(),
+        plan,
+    };
+    let key = Ed25519KeyPair::from_seed_unchecked(&[42; 32]).unwrap();
+    let signature = key.sign(&task.signing_bytes("key").unwrap());
+    let verifier = UnparsedPublicKey::new(&ED25519, key.public_key().as_ref());
+    for change in 0..7 {
+        let mut tampered = task.clone();
+        match change {
+            0 => tampered.permit = TaskPermit::Start,
+            1 => tampered.execution.context_revision += 1,
+            2 => {
+                let SoftwareExecutionTarget::User { session_id, .. } =
+                    &mut tampered.execution.target
+                else {
+                    unreachable!()
+                };
+                *session_id = uuid::Uuid::from_u128(2);
+            }
+            3 => tampered.resource_digest[0] ^= 1,
+            4 => tampered.device_id = "other".into(),
+            5 => tampered.architecture = TaskArchitecture::X86_64,
+            _ => {
+                let mut p = tampered.plan.spec().clone();
+                p.budget.timeout_seconds += 1;
+                tampered.plan = NativeCollectionPlan::new(p).unwrap();
+                tampered.plan_digest = tampered.plan.digest();
+            }
+        }
+        assert!(
+            verifier
+                .verify(&tampered.signing_bytes("key").unwrap(), signature.as_ref())
+                .is_err()
+        );
+    }
+    let payload = TaskPayload::Collection(Box::new(task));
+    let mut old = serde_json::to_value(&payload).unwrap();
+    old["task"]["wireVersion"] = json!(1);
+    assert!(serde_json::from_value::<TaskPayload>(old).is_err());
+    let mut missing = serde_json::to_value(&payload).unwrap();
+    missing["task"].as_object_mut().unwrap().remove("execution");
+    assert!(serde_json::from_value::<TaskPayload>(missing).is_err());
+}
+#[test]
+fn macos_software_rows_bind_closed_provenance_and_brew_selectors() {
+    let q = query(brew("/opt/homebrew"));
+    let row = json!({"id":"homebrew/core/jq","scope":"user","owner":"501","origin":"homebrew","prefix":"/opt/homebrew","tap":"homebrew/core","package_kind":"formula"});
+    assert!(answer(&q, vec![row.clone()]).complete_for(&q, 10));
+    for (key, value) in [
+        ("owner", "0"),
+        ("scope", "device"),
+        ("prefix", "/usr/local"),
+        ("tap", "other/core"),
+        ("package_kind", "cask"),
+    ] {
+        let mut bad = row.clone();
+        bad[key] = json!(value);
+        assert!(!answer(&q, vec![bad]).complete_for(&q, 10));
+    }
+    let q = query(NativeQueryDefinition::MacosPkgReceipts {});
+    assert!(
+        answer(
+            &q,
+            vec![json!({"id":"pkg","scope":"device","owner":"","origin":"pkg_receipt"})]
+        )
+        .complete_for(&q, 10)
+    );
+    assert!(
+        !answer(
+            &q,
+            vec![json!({"id":"pkg","scope":"user","owner":"501","origin":"pkg_receipt"})]
+        )
+        .complete_for(&q, 10)
+    );
 }

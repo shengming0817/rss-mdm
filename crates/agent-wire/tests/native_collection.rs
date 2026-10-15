@@ -235,41 +235,44 @@ fn fixed_native_vectors_bind_permit_plan_and_domain() {
     use ring::signature::{ED25519, Ed25519KeyPair, KeyPair, UnparsedPublicKey};
     use sha2::{Digest, Sha256};
     let vectors: serde_json::Value =
-        serde_json::from_str(include_str!("fixtures/native-v1-vectors.json")).unwrap();
-    let key = Ed25519KeyPair::from_seed_unchecked(&[42; 32]).unwrap();
-    let plan: NativeCollectionPlan = serde_json::from_value(vectors["plan"].clone()).unwrap();
-    let result: NativeCollectionResult = serde_json::from_value(vectors["result"].clone()).unwrap();
-    result.validate_for(&plan, 100).unwrap();
-    assert_eq!(json!(result.digest()), vectors["resultDigest"]);
-    for item in vectors["tasks"].as_array().unwrap() {
-        let payload: TaskPayload =
-            serde_json::from_str(item["payloadJson"].as_str().unwrap()).unwrap();
-        let bytes = payload.signing_bytes("vector-key").unwrap();
-        assert_eq!(
-            format!("{:x}", Sha256::digest(&bytes)),
-            item["signingBytesSha256"]
-        );
-        let signature = URL_SAFE_NO_PAD
-            .decode(item["signature"].as_str().unwrap())
-            .unwrap();
-        UnparsedPublicKey::new(&ED25519, key.public_key().as_ref())
-            .verify(&bytes, &signature)
-            .unwrap();
-        let mut changed = payload.clone();
-        let TaskPayload::Collection(spec) = &mut changed else {
-            panic!("wrong family")
-        };
-        spec.permit = if spec.permit == TaskPermit::Offer {
-            TaskPermit::Start
-        } else {
-            TaskPermit::Offer
-        };
-        assert!(
+        serde_json::from_str(include_str!("fixtures/native-v2-vectors.json")).unwrap();
+    for vectors in vectors.as_array().unwrap() {
+        let key = Ed25519KeyPair::from_seed_unchecked(&[42; 32]).unwrap();
+        let plan: NativeCollectionPlan = serde_json::from_value(vectors["plan"].clone()).unwrap();
+        let result: NativeCollectionResult =
+            serde_json::from_value(vectors["result"].clone()).unwrap();
+        result.validate_for(&plan, 100).unwrap();
+        assert_eq!(json!(result.digest()), vectors["resultDigest"]);
+        for item in vectors["tasks"].as_array().unwrap() {
+            let payload: TaskPayload =
+                serde_json::from_str(item["payloadJson"].as_str().unwrap()).unwrap();
+            let bytes = payload.signing_bytes("vector-key").unwrap();
+            assert_eq!(
+                format!("{:x}", Sha256::digest(&bytes)),
+                item["signingBytesSha256"]
+            );
+            let signature = URL_SAFE_NO_PAD
+                .decode(item["signature"].as_str().unwrap())
+                .unwrap();
             UnparsedPublicKey::new(&ED25519, key.public_key().as_ref())
-                .verify(&changed.signing_bytes("vector-key").unwrap(), &signature)
-                .is_err()
-        );
-        let raw = serde_json::to_value(payload).unwrap();
-        assert!(serde_json::from_value::<TaskPayload>(raw["task"].clone()).is_err());
+                .verify(&bytes, &signature)
+                .unwrap();
+            let mut changed = payload.clone();
+            let TaskPayload::Collection(spec) = &mut changed else {
+                panic!("wrong family")
+            };
+            spec.permit = if spec.permit == TaskPermit::Offer {
+                TaskPermit::Start
+            } else {
+                TaskPermit::Offer
+            };
+            assert!(
+                UnparsedPublicKey::new(&ED25519, key.public_key().as_ref())
+                    .verify(&changed.signing_bytes("vector-key").unwrap(), &signature)
+                    .is_err()
+            );
+            let raw = serde_json::to_value(payload).unwrap();
+            assert!(serde_json::from_value::<TaskPayload>(raw["task"].clone()).is_err());
+        }
     }
 }

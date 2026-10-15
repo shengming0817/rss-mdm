@@ -198,6 +198,10 @@
           "pattern": "^[^\\p{Cc}]+$",
           "type": "string"
         },
+        "execution": {
+          "$ref": "#/$defs/NativeExecutionBinding",
+          "description": "Exact privilege and session selected before signing."
+        },
         "expiresAt": {
           "description": "Nonnegative Unix expiry, checked against a trusted clock by the consumer.",
           "format": "int64",
@@ -280,8 +284,12 @@
           "type": "string"
         },
         "wireVersion": {
-          "const": 1,
-          "description": "Exact wire major."
+          "const": 2,
+          "description": "Exact wire major.",
+          "format": "uint8",
+          "maximum": 255,
+          "minimum": 0,
+          "type": "integer"
         }
       },
       "required": [
@@ -301,6 +309,7 @@
         "authorization",
         "deadline",
         "plan",
+        "execution",
         "planDigest"
       ],
       "type": "object"
@@ -705,6 +714,32 @@
           "type": "string"
         }
       ]
+    },
+    "NativeExecutionBinding": {
+      "additionalProperties": false,
+      "description": "Signed privilege and live-session binding; scan declarations are not Inventory authority.",
+      "properties": {
+        "contextRevision": {
+          "description": "Current reported context generation; changes invalidate an outstanding Offer.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "identity": {
+          "$ref": "#/$defs/ExecutionIdentity",
+          "description": "Exact required privilege boundary."
+        },
+        "target": {
+          "$ref": "#/$defs/SoftwareExecutionTarget",
+          "description": "Exact device or interactive session. No offline user switching is permitted."
+        }
+      },
+      "required": [
+        "identity",
+        "contextRevision",
+        "target"
+      ],
+      "type": "object"
     },
     "NativeQuery": {
       "additionalProperties": false,

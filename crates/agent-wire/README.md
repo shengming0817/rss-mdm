@@ -1,6 +1,6 @@
 # Agent 协议
 
-`rss-mdm-agent-wire` 是独立可消费的纯协议 crate，版本 `1.0.0`，最低 Rust `1.96.0`。`enroll` 持有注册生命周期 DTO；`runtime` 持有运行消息、采集定义与值、任务 DTO、静态约束、规范签名字节及内容摘要；`pki` 持有共享设备信任与安装确认 DTO、静态约束及规范安装摘要。当前 HTTP API、wireVersion、capability、PKI 格式和各任务签名域均保持 V1；注册族只维护当前 CSR 必填请求与完整签名配置文件，旧普通请求期限字段及 AuthorizationRequest shape 已退出。V1 标识不代表跨 revision 的结构兼容；采集 scope 与 claim environment 是本次必填契约，相关采集指纹与报告摘要随之改变。PKI 的编码与安装摘要不受本次变更影响。
+`rss-mdm-agent-wire` 是独立可消费的纯协议 crate，版本 `1.0.0`，最低 Rust `1.96.0`。`enroll` 持有注册生命周期 DTO；`runtime` 持有运行消息、采集定义与值、任务 DTO、静态约束、规范签名字节及内容摘要；`pki` 持有共享设备信任与安装确认 DTO、静态约束及规范安装摘要。当前 HTTP API、消息 wireVersion、capability 与 PKI 格式保持 V1；Collection 任务格式及签名域为 V2，其它任务签名域保持 V1；注册族只维护当前 CSR 必填请求与完整签名配置文件，旧普通请求期限字段及 AuthorizationRequest shape 已退出。V1 标识不代表跨 revision 的结构兼容；采集 scope 与 claim environment 是本次必填契约，相关采集指纹与报告摘要随之改变。PKI 的编码与安装摘要不受本次变更影响。
 
 采集 DTO 由本包拥有，服务端在 Agent ingress 转成 Inventory 值。执行资格、当前凭据可用性和软件结果判定由 software-service 持有，上下文 revision 的更新规则由 agent-channel 持有。协议包不依赖 RSS、Identity 或 MDM 业务 crate，不执行设备操作、网络请求或运行时 schema 验证。CI 校验正常、build、可选及平台条件生产依赖；开发测试中的签名验证不进入交付闭包。
 
@@ -26,22 +26,42 @@ PKI 只导出两个 HTTP 根 schema：Trust 与 Acknowledgement，其引用的 I
 
 ## 原生采集契约（#2739）
 
-当前 TaskPayload 统一为显式 `{kind,task}`，类型为 script/software/enrollment/collection；旧无类型包络拒绝。claim environment 必须携带 nativeEngines，空对象表示不支持，不从 tools 或脚本 profile 推断原生能力。当前 Collection 只执行 Windows Device scope；后续平台继续扩展本包的同一 plan/result，不另建任务协议。
+当前 TaskPayload 统一为显式 `{kind,task}`，类型为 script/software/enrollment/collection；旧无类型包络拒绝。claim environment 必须携带 nativeEngines，空对象表示不支持，不从 tools 或脚本 profile 推断原生能力。Collection 使用同一 plan/result 执行 Windows 与 macOS 设备级采集；用户/prefix 的服务端资产接入由 #2726 完成。
 
 `NativeCollectionPlan` 持有有界查询与引擎版本，输出结构由声明派生；Resource 持有资产映射。CPU 汇总须完整枚举处理器，型号不一致时省略 model，核心数不得只取第一颗；电池 charge_percent 为可用能量/完整充电能量的加权百分比，无法可靠计算则报告 Missing/Invalid。软件清单包括设备及所有现有用户的注册表安装记录与 MSIX 安装实例，实例 ID 须保留来源及用户坐标；预期用户集合在采集前后稳定且每个用户完整才可发布设备清单。未知 origin 或真实终端执行边界由后继 Agent 实现明确验证，本仓合成样本不代表实机完成。
 
 Collection 使用独立签名域，Offer 与 Start 均签入 plan、预算、范围及完整任务坐标。结果逐 query 携带身份、时间、闭合状态、枚举结束和覆盖证据；共享 OutputChunk/OutputManifest 仅证明完整传输。原生结果没有 exitCode，查询失败不影响其他完整 query。大整数为带类型声明的规范十进制文本，禁止浮点降精度。
 
-`tests/fixtures/native-v1-vectors.json` 包含 plan/result 指纹及 Collection Offer/Start 签名，`examples/native_collection_vectors.rs` 为可重复生成入口。schema 仍由当前 Rust DTO 统一派生。固定消费使用合入后的完整 Git rev，并核对当前 schema 指纹；不支持旧请求、旧签名形状或持久任务格式的兼容读取，不得清空 journal 或重新注册来跳过未决任务。
+`tests/fixtures/native-v2-vectors.json` 包含 plan/result 指纹及 Collection Offer/Start 签名，`examples/native_collection_vectors.rs` 为可重复生成入口。schema 仍由当前 Rust DTO 统一派生。固定消费使用合入后的完整 Git rev，并核对当前 schema 指纹；不支持旧请求、旧签名形状或持久任务格式的兼容读取，不得清空 journal 或重新注册来跳过未决任务。
 
 服务端保留完整 query 原始证据，范围可能超出映射字段（含未映射 query/property）。因此原生采集的预览、发布/执行和运行详情统一要求现有 InventorySensitiveRead 权限；InventoryCollect、资源/设备范围及 InventoryRead 仍各自校验。字段投影后的读取继续沿用字段敏感配置。正常执行结束并提交合法结果包时任务为 Succeeded，包括 query 全部 Denied/Timeout 的情况；采集失败/部分质量由 CollectionProgress 与 CollectionRun 独立表达。
 
-### macOS 定义准备（尚未开放执行）
+### macOS 原生采集（#2737）
 
-同一 `NativeQueryDefinition` 已包含闭合的 macOS 硬件 section、批准应用根、PKG 收据与 Brew
-formula/cask 定义；参数、输出形状与预算沿用同一公共协议。声明能力不等于可执行准入：
-当前 `NativeCollectionPlan` 仍拒绝 macOS 定义，软件结果（包括完整空列表）不能成为权威快照。
-#2737 必须先集成 #2726 的来源/用户/prefix 范围，以及签名绑定的实际执行身份和会话，再开放
-发布、签发与投影。Brew 定义要求 LoggedInUser，不提供任意程序、参数或 root 执行选项；
-非 root 身份核验属于尚未交付的执行准入，不能由本阶段定义测试代替。
-这些准备代码不是 #2723 可直接执行的最终固定候选，不代表 macOS 已支持。
+`macos.agent.*` 提供设备级硬件与 PKG receipts Resource 蓝图，支持 x86_64/aarch64。
+硬件声明覆盖 identity、OS、CPU、memory、firmware、disks、APFS containers、volumes、network、battery。
+APFS container 容量只计一次；volumes 蓝图保留 container 查询原始证据和卷关联，不把共享容量相加。
+PKG receipts 写入 `device.software.receipts`，收据不证明应用当前存在；不得混入 installations。
+
+Applications 的三个批准根与 Brew prefix/tap/formula/cask 已有闭合声明及结果类型。
+它们可由公共 wire 构造和签名，但当前 Resource 发布明确拒绝 Applications/Brew，
+也拒绝非 Device scope；#2726 负责这些范围的发布、任务准入和资产投影。
+批准根、扫描参数和执行 UID 是采集材料，不自行授予 Inventory 范围权威。
+
+Collection `wireVersion=2`、签名域 `rss-mdm-agent-collection-task-v2-ed25519` 强制携带
+`execution`，绑定 System/LoggedInUser、context revision 与设备或登录会话。
+Brew 和 UserApplications 只允许当前 helper 绑定的规范非零 UID；禁止 root、离线切换用户、
+任意程序、脚本、环境覆盖或提权参数。消费方在 Offer/Start 验签后用
+`NativeExecutionBinding::matches_context` 复核本机身份与会话；服务端 Start 同样重建并比较已签 Offer。
+Brew 引擎 v1 使用安装记录 JSON v2；前缀是数据定位，不是可信可执行文件路径，
+Agent 必须自行验证可信工具和批准数据根，缺工具、无权限、超时、截断分别报告现有闭合状态。
+
+Mac 软件行的 origin 分别为 `application`、`pkg_receipt`、`homebrew`；Brew 行必须匹配声明的
+prefix、tap 与 package_kind，用户 UID 必须非零。签名状态为 signed/unsigned/invalid/unknown。
+完整空收据列表可发布；失败或截断保留旧值。所有原始证据，包括失败和未映射内容，仍要求
+InventoryRead 与 InventorySensitiveRead。设备执行与真机支持矩阵由独立 Agent #2723 验证。
+
+升级前停止签发旧 Collection 任务并等待其终态，保留审计与 journal；再协调切换服务端与固定 rev
+的 Agent。旧 Collection v1 不解码、不执行，不清空 journal 或重新注册绕过未决任务。
+固定候选完整 rev 和 schema 指纹记录在 #2737 的 PR 交接制品；#2723 可以独立消费该候选，
+不等待 #2726 的范围投影集成。
