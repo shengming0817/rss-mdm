@@ -33,7 +33,6 @@
     }
   ],
   "functions": [
-    {"name":"mdm.append_field_version","search_path":"search_path=pg_catalog, pg_temp"},
     {
       "name": "mdm_access.prune_agent_collections",
       "search_path": "search_path=pg_catalog, pg_temp"

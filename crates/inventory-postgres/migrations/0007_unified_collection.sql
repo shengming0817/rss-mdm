@@ -65,5 +65,4 @@ BEGIN
 END;
 $append$;
 REVOKE ALL ON FUNCTION mdm.append_field_version(uuid,text,bigint,jsonb) FROM PUBLIC;
-GRANT EXECUTE ON FUNCTION mdm.append_field_version(uuid,text,bigint,jsonb) TO mdm_access;
 COMMIT;

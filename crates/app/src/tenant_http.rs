@@ -43,22 +43,25 @@ impl Service {
         let Some(options) = &config.tenant_administration else {
             return Ok(None);
         };
-        let invalid = || Error::Configuration(ConfigIssue::IdentityConfiguration);
+        let invalid = |stage| {
+            eprintln!("tenant administration admission rejected: {stage}");
+            Error::Configuration(ConfigIssue::IdentityConfiguration)
+        };
         if options.registry_database.user != "mdm_tenant_registry"
             || options.provisioning_database.user != "mdm_identity_provisioning"
         {
-            return Err(invalid());
+            return Err(invalid("configuration"));
         }
         let key = config::read(&options.fingerprint_key_file, 128, true)?;
         if key.len() != 32 {
-            return Err(invalid());
+            return Err(invalid("configuration"));
         }
         let pool = sqlx::postgres::PgPoolOptions::new()
             .max_connections(8)
             .acquire_timeout(Duration::from_secs(3))
             .connect_with(options.registry_database.options()?)
             .await
-            .map_err(|_| invalid())?;
+            .map_err(|_| invalid("registry connection"))?;
         let installation = Installation {
             instance_id: config.identity.instance_id.clone(),
             target: config.flow.storage.target,
@@ -66,24 +69,24 @@ impl Service {
             audit_mode: config.audit.mode(),
         };
         let service = async {
-            let mut connection = pool.acquire().await.map_err(|_| invalid())?;
-            migration::verify_current_manifest(&mut connection).await.map_err(|_| invalid())?;
-            migration::verify_identity(&mut connection, &installation).await.map_err(|_| invalid())?;
-            let safe: bool = sqlx::query_scalar("SELECT current_user=session_user AND current_user='mdm_tenant_registry' AND NOT rolsuper AND NOT rolbypassrls AND NOT rolcreaterole AND NOT rolcreatedb AND NOT EXISTS(SELECT 1 FROM pg_auth_members WHERE member=pg_roles.oid) AND has_function_privilege(current_user,'public.create_new_tenant(uuid,bigint,text,text)','EXECUTE') AND NOT has_function_privilege(current_user,'mdm.seed_tenant_catalog(uuid)','EXECUTE') AND NOT has_function_privilege(current_user,'mdm_access.seed_tenant_settings(uuid)','EXECUTE') FROM pg_roles WHERE rolname=current_user")
-                .fetch_one(&mut *connection).await.map_err(|_| invalid())?;
-            if !safe { return Err(invalid()); }
+            let mut connection = pool.acquire().await.map_err(|_| invalid("registry acquire"))?;
+            migration::verify_current_manifest(&mut connection).await.map_err(|_| invalid("manifest"))?;
+            migration::verify_identity(&mut connection, &installation).await.map_err(|_| invalid("installation"))?;
+            let safe: bool = sqlx::query_scalar("SELECT current_user=session_user AND current_user='mdm_tenant_registry' AND NOT rolsuper AND NOT rolbypassrls AND NOT rolcreaterole AND NOT rolcreatedb AND NOT EXISTS(SELECT 1 FROM pg_auth_members WHERE member=pg_roles.oid) AND has_function_privilege(current_user,'public.create_new_tenant(uuid,bigint,text,text)','EXECUTE') AND (SELECT count(*)=2 AND bool_and(NOT has_function_privilege(current_user,p.oid,'EXECUTE')) FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace WHERE (n.nspname,p.proname) IN (('mdm','seed_tenant_catalog'),('mdm_access','seed_tenant_settings'))) FROM pg_roles WHERE rolname=current_user")
+                .fetch_one(&mut *connection).await.map_err(|_| invalid("role query"))?;
+            if !safe { return Err(invalid("registry role")); }
             let bounded: bool = sqlx::query_scalar("SELECT NOT EXISTS(SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname NOT IN ('pg_catalog','information_schema') AND c.relkind IN ('r','p','v','m','f') AND n.nspname||'.'||c.relname NOT IN ('public.mdm_tenants','public.mdm_tenant_operations','mdm_audit.receipts') AND (has_table_privilege(current_user,c.oid,'INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER') OR has_any_column_privilege(current_user,c.oid,'INSERT,UPDATE,REFERENCES')))")
-                .fetch_one(&mut *connection).await.map_err(|_| invalid())?;
+                .fetch_one(&mut *connection).await.map_err(|_| invalid("capabilities query"))?;
             let body = include_str!("../schema/tenant-administration.sql").split("$create$").nth(1).expect("create function body");
             let exact: bool = sqlx::query_scalar("SELECT count(*)=1 AND coalesce(bool_and(p.prosecdef AND p.proowner='mdm_owner'::regrole AND p.prosrc=$1 AND p.proconfig=ARRAY['search_path=pg_catalog, pg_temp'] AND NOT EXISTS(SELECT 1 FROM aclexplode(coalesce(p.proacl,acldefault('f',p.proowner))) a WHERE a.grantee=0 OR a.is_grantable OR pg_get_userbyid(a.grantee) NOT IN ('mdm_owner','mdm_tenant_registry'))),false) FROM pg_proc p WHERE p.oid='public.create_new_tenant(uuid,bigint,text,text)'::regprocedure")
-                .bind(body).fetch_one(&mut *connection).await.map_err(|_| invalid())?;
-            if !bounded || !exact { return Err(invalid()); }
+                .bind(body).fetch_one(&mut *connection).await.map_err(|_| invalid("creation function query"))?;
+            if !bounded || !exact { return Err(invalid("registry capabilities")); }
             drop(connection);
             let budget = AuditBudget::new(Duration::from_secs(5));
-            let audit = AuditStore::new(pool.clone(), config.audit.integrity()?, &budget.control()).await.map_err(|_| invalid())?;
+            let audit = AuditStore::new(pool.clone(), config.audit.integrity()?, &budget.control()).await.map_err(|_| invalid("audit"))?;
             let this = Self { pool: pool.clone(), audit, config: options.clone(), installation, management, kdf, policy,
                 fingerprint: ring::hmac::Key::new(ring::hmac::HMAC_SHA256, &key) };
-            let target = TenantId::parse(&config.identity.tenant_id).map_err(|_| invalid())?;
+            let target = TenantId::parse(&config.identity.tenant_id).map_err(|_| invalid("configuration"))?;
             let (runtime, _) = this.provisioner(target, config.flow.storage.epoch).await?;
             runtime.close().await;
             Ok(Arc::new(this))
@@ -156,17 +159,32 @@ impl Service {
             Box<dyn std::future::Future<Output = Result<T>> + Send + 'a>,
         >,
     ) -> std::result::Result<T, Error> {
+        // Keep cancellation safe even when the entire caller future is dropped.
+        struct ReadConnection {
+            inner: sqlx::pool::PoolConnection<sqlx::Postgres>,
+            settled: bool,
+        }
+        impl Drop for ReadConnection {
+            fn drop(&mut self) {
+                if !self.settled {
+                    self.inner.close_on_drop();
+                }
+            }
+        }
         let mut connection = None;
         let outcome = tokio::time::timeout(Duration::from_secs(6), async {
-            connection = Some(
-                self.pool
+            connection = Some(ReadConnection {
+                inner: self
+                    .pool
                     .acquire()
                     .await
                     .map_err(|_| project(Reason::Storage))?,
-            );
+                settled: false,
+            });
             let mut tx = connection
                 .as_mut()
                 .expect("acquired connection")
+                .inner
                 .begin()
                 .await
                 .map_err(|_| project(Reason::Storage))?;
@@ -176,15 +194,10 @@ impl Service {
                 .map_err(|_| project(Reason::Storage))?;
             let result = operation(&mut context, &mut tx).await;
             tx.rollback().await.map_err(|_| Error::RollbackFailed)?;
+            connection.as_mut().expect("acquired connection").settled = true;
             result.map_err(project)
         })
         .await;
-        if !matches!(outcome, Ok(Ok(_)))
-            && let Some(connection) = &mut connection
-        {
-            // SQLx 0.9 pool/connection.rs: isolate a cancelled or failed protocol stream.
-            connection.close_on_drop();
-        }
         outcome.unwrap_or(Err(Error::RollbackFailed))
     }
     async fn mutate(

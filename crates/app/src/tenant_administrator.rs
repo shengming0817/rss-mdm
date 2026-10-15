@@ -100,6 +100,8 @@ impl Service {
         audit.target(tenant);
         audit.require_request_settlement();
         let target_audit = RequestAudit::new(tenant.into(), "tenant_administrator_create");
+        // This context only supplies target fact coordinates; the source request owns settlement.
+        target_audit.finalize(None);
         target_audit.set_principal(proof.principal_id(), proof.instance_id());
         target_audit.operation(operation, "tenant_administrator_create");
         let fact = Fact::business(

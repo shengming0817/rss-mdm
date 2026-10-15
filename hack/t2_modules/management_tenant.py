@@ -96,7 +96,7 @@ def execute(fixture):
     def login(browser, tenant, login_name='admin', secret=password):
         status, _ = browser.call('POST', '/api/v1/identity/tenants/' + tenant + '/login',
                                  dict(login=login_name, password=secret))
-        require(status == 200, 'management local login failed')
+        require(status == 200, 'management local login failed: ' + str(status))
 
     def operations(browser):
         status, value = browser.call('GET', EFFECTIVE)

@@ -58,6 +58,8 @@ class Host:
             self.thread.start()
         except BaseException:
             self.close()
+            # Python scenarios use temporary roots; retain startup diagnostics in test.log.
+            print(self.log_path.read_text()[-16384:], flush=True)
             raise
 
     def monitor(self):
@@ -72,6 +74,9 @@ class Host:
                 f'public T2 host died; this run cannot reuse its environment; see {self.log_path}')
 
     def close(self):
+        if self.failed.is_set():
+            print('Unexpected T2 host exit: ' + str(self.log_path), flush=True)
+            print(self.log_path.read_text()[-16384:], flush=True)
         self.stopping.set()
         if self.thread is not None:
             self.thread.join()

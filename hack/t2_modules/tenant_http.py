@@ -99,20 +99,22 @@ def exercise(admin, normal, delegate, config, management, business, password, sq
     require(call('POST',path,delegated_body,delegated_key) == (200,delegated_receipt), 'new authorized operator cannot query original replay')
     require(json.loads(sql(f"SELECT operator FROM public.mdm_tenant_operations WHERE operation_id='{delegated_key}'"))['principalId'] == delegated_principal,
             'replay rewrote original operator')
-    sql(f"UPDATE identity_authority.sessions SET auth_time=auth_time-301 WHERE tenant_id='{management}' AND principal_id='{operator['principalId']}'")
+    sql(f"UPDATE identity_authority.sessions SET auth_time=auth_time-301,absolute_expires_at=absolute_expires_at-301 WHERE tenant_id='{management}' AND principal_id='{operator['principalId']}'")
     require(call('POST',path,request,admin_key)[0] == 403, 'expired recent authentication allowed replay')
-    login(admin,management)
+    sql(f"UPDATE identity_authority.sessions SET auth_time=auth_time+301,absolute_expires_at=absolute_expires_at+301 WHERE tenant_id='{management}' AND principal_id='{operator['principalId']}'")
     # Optional block controls all registry routes, not a partial startup mode.
-    absent = deepcopy(config)
+    target_host.close()
+    absent = deepcopy(target_config)
     del absent['tenant_administration']
     absent_host = Host(builds,private(root/'without-registry.json',absent),root/'without-registry-host')
     stack.callback(absent_host.close)
     require(Browser(absent_host,config['product_origin']).call('GET',BASE+'/tenants')[0] == 404, 'disabled registry routes were mounted')
+    absent_host.close()
     malformed = deepcopy(config)
     malformed['tenant_administration'] = {}
     malformed['listen'] = '127.0.0.1:0'
     command('serve',malformed,accepted=False)
-    lost_commit_ack(config,management,password,sql,builds,root,stack,login,tenant)
+    lost_commit_ack(target_config,password,sql,builds,root,stack,admin,tenant)
 
 
 def administrator_rollback(call, path, tenant, password, sql):
@@ -149,7 +151,7 @@ def administrator_rollback(call, path, tenant, password, sql):
             sql(f"DELETE FROM mdm_access.authorization_rules WHERE tenant_id='{tenant}' AND id NOT IN ({original})")
 
 
-def lost_commit_ack(config,management,password,sql,builds,root,stack,login,tenant):
+def lost_commit_ack(config,password,sql,builds,root,stack,authenticated,tenant):
     """Drop actual PostgreSQL COMMIT acknowledgements without terminating TLS."""
     from concurrent.futures import ThreadPoolExecutor
     import time
@@ -161,7 +163,8 @@ def lost_commit_ack(config,management,password,sql,builds,root,stack,login,tenan
     host = Host(builds,private(root/'ack-runtime.json',candidate),root/'ack-host')
     stack.callback(host.close)
     browser = Browser(host,config['product_origin'])
-    login(browser,management)
+    # The same-origin management session is valid on either product host.
+    browser.cookie, browser.csrf = authenticated.cookie, authenticated.csrf
     # Black-hole database replies after HTTP authentication; both raw reads must terminate.
     for method, route, body in (
         ('GET','/tenants',None),

@@ -26,9 +26,9 @@ MDM 嵌入 rss-identity 公共组件，由 Identity 持有账户、认证与会�
 
 安装拥有一个默认生成的保留管理租户，账户仍需显式初始化。管理租户与业务租户复用 Identity 的账户、认证、会话和 MDM 规则存储；只有管理租户用户能够获得租户管理资格。业务 grant、IdP 组、部门、本地用户组均不能跨越这一边界。
 
-管理租户规则入口为 `/api/v1/tenant-administration/authorization`、其 `/rules` 与 `/rules/{id}`，请求、分页、CAS、幂等回执和审计沿用既有协议。规则仅支持本租户直接用户与 tenant scope，允许 `tenant_create`、`tenant_read`、`tenant_update`、`tenant_delete` 四项独立权限，以及 `authorization_read/write`。tenant_read 覆盖详情、列表及操作回执读取；本期只交付资格与规则维护，租户 CRUD HTTP handler 由后续任务交付，当前元数据操作仍使用 CLI。
+管理租户规则入口为 `/api/v1/tenant-administration/authorization`、其 `/rules` 与 `/rules/{id}`，请求、分页、CAS、幂等回执和审计沿用既有协议。规则仅支持本租户直接用户与 tenant scope，允许 `tenant_create`、`tenant_read`、`tenant_update`、`tenant_delete`、`tenant_administrator_create`、`identity_accounts_manage` 及 `authorization_read/write` 独立权限。`tenant_read` 覆盖详情、列表及操作回执读取。租户 CRUD 和为业务租户创建管理员的 HTTP 入口、幂等与 CAS 要求见[安装指南](../deployment/installation.md)。
 
-初始管理用户始终保留授权读写；可以给其它管理用户委派其中任意权限。账户维护另外由配置中的 accounts 资格控制，新增账户不自动获得权限。管理用户不能进入任何业务接口，业务用户不能进入管理规则接口；管理租户不接纳联合身份或 provider 管理。每个产品 origin 复用一个 `__Host-identity-session` cookie，切换租户登录会切换当前会话。
+初始管理用户始终保留账户管理与授权读写；可以给其它管理用户委派其中任意权限。账户维护由持久化的 `identity_accounts_manage` 授权控制，普通新增账户不自动获得产品权限；租户管理员创建入口则原子创建账户和完整业务管理员授权。管理用户不能进入任何业务接口，业务用户不能进入管理规则接口；管理租户不接纳联合身份或 provider 管理。每个产品 origin 复用一个 `__Host-identity-session` cookie，切换租户登录会切换当前会话。
 
 ## 管理审计检索
 
