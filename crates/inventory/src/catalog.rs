@@ -399,6 +399,12 @@ impl FieldDefinition {
     /// Validate a value and unique, stable item identities for a declared list.
     pub fn validate_scalar(&self, value: &Scalar) -> Result<()> {
         self.value_type.validate_value(value)?;
+        self.hardware_value(value)?;
+        if let Scalar::Array(items) = value {
+            for item in items {
+                self.validate_item(item)?;
+            }
+        }
         if let (Some(key), Scalar::Array(items)) = (&self.item_key, value) {
             let mut identities = BTreeSet::new();
             for item in items {
@@ -412,8 +418,22 @@ impl FieldDefinition {
         }
         Ok(())
     }
+    /// Validate one list item, including standard asset semantics, before recording row quality.
+    pub fn validate_item(&self, value: &Scalar) -> Result<()> {
+        let ValueType::Array { items, .. } = &self.value_type else {
+            return Err(Invalid::TypeMismatch);
+        };
+        items.validate_value(value)?;
+        if self.key.as_str() == "device.software.installations" {
+            crate::software::validate(value)?;
+        }
+        Ok(())
+    }
     /// Stable identity order for keyed inventories; ordinary arrays remain ordered values.
     pub fn canonical_value(&self, mut value: Scalar) -> Result<Scalar> {
+        if let Some(canonical) = self.hardware_value(&value)? {
+            value = Scalar::String(canonical);
+        }
         self.validate_scalar(&value)?;
         if let (Some(key), Scalar::Array(items)) = (&self.item_key, &mut value) {
             items.sort_by(|a, b| match (a, b) {
@@ -422,6 +442,17 @@ impl FieldDefinition {
             });
         }
         Ok(value)
+    }
+    fn hardware_value(&self, value: &Scalar) -> Result<Option<String>> {
+        let normalize = match self.key.as_str() {
+            "device.serial_number" => crate::normalize_serial_number,
+            "device.hardware_uuid" => crate::normalize_hardware_uuid,
+            _ => return Ok(None),
+        };
+        let Scalar::String(value) = value else {
+            return Err(Invalid::TypeMismatch);
+        };
+        normalize(value).map(Some)
     }
     /// Allowed operators are derived from the type, never a second editable dictionary.
     pub fn operations(&self) -> Vec<Operator> {

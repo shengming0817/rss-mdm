@@ -118,6 +118,10 @@ fn registered_paths_feed_group_sets_and_sensitive_conditions_need_an_explicit_gr
             ("native_id".into(), Scalar::String("".into())),
             ("owner".into(), Scalar::String("".into())),
             ("origin".into(), Scalar::String("fixture".into())),
+            (
+                "installation_state".into(),
+                Scalar::String("installed".into()),
+            ),
             ("location".into(), Scalar::String("".into())),
         ]
         .into(),
@@ -197,6 +201,10 @@ fn installed_id_groups_use_existing_sets_and_preserve_unknown_states() {
                 ("native_id".into(), Scalar::String("".into())),
                 ("owner".into(), Scalar::String("".into())),
                 ("origin".into(), Scalar::String("fixture".into())),
+                (
+                    "installation_state".into(),
+                    Scalar::String("installed".into()),
+                ),
                 ("location".into(), Scalar::String("".into())),
             ]
             .into(),

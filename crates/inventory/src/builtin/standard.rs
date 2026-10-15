@@ -85,24 +85,24 @@ pub(super) fn fields() -> Vec<FieldDefinition> {
         "device.software.receipts",
         "device.software.packages",
     ] {
-        add(
-            key,
-            list(&[
-                ("id", string()),
-                ("native_id", text()),
-                ("name", text()),
-                ("version", text()),
-                ("publisher", text()),
-                ("scope", vocabulary(&["device", "user"])),
-                ("owner", text()),
-                ("origin", string()),
-                ("location", text()),
-            ]),
-            all,
-            both,
-            true,
-            None,
-        );
+        let mut properties = vec![
+            ("id", string()),
+            ("native_id", text()),
+            ("name", text()),
+            ("version", text()),
+            ("publisher", text()),
+            ("scope", vocabulary(&["device", "user"])),
+            ("owner", text()),
+            ("origin", string()),
+            ("location", text()),
+        ];
+        if key == "device.software.installations" {
+            properties.push((
+                "installation_state",
+                vocabulary(&["installed", "registered", "provisioned"]),
+            ));
+        }
+        add(key, list(&properties), all, both, true, None);
     }
     add(
         "device.security.windows.firewall.status",

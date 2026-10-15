@@ -480,7 +480,7 @@ impl CollectionProgress {
 impl NativeValue {
     /// Validate each mapped list row and duplicate identities without accepting a partial snapshot.
     pub fn list(field: &crate::FieldDefinition, rows: Vec<Result<crate::Scalar>>) -> Result<Self> {
-        let crate::ValueType::Array { items, max_items } = &field.value_type else {
+        let crate::ValueType::Array { max_items, .. } = &field.value_type else {
             return Err(Invalid::TypeMismatch);
         };
         if rows.len() > *max_items as usize {
@@ -490,7 +490,7 @@ impl NativeValue {
         let mut values = Vec::with_capacity(rows.len());
         let mut identities = BTreeMap::new();
         for (index, row) in rows.into_iter().enumerate() {
-            let value = row.and_then(|v| items.validate_value(&v).map(|_| v));
+            let value = row.and_then(|v| field.validate_item(&v).map(|_| v));
             quality.push(if value.is_ok() {
                 Quality::Success
             } else {
