@@ -80,7 +80,7 @@ pub(super) fn catalog() -> Vec<Blueprint> {
                 ("device.network.apple.host_name", "HostName"),
                 ("device.network.apple.local_host_name", "LocalHostName"),
                 ("device.network.apple.wifi_mac", "WiFiMAC"),
-                ("device.network.apple.ethernet_macs", "EthernetMACs"),
+                ("device.network.apple.ethernet_mac", "EthernetMAC"),
             ],
         ),
         pack(

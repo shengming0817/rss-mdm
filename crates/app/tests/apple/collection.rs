@@ -82,7 +82,7 @@ async fn published_native_template_uses_policy_and_direct_collection_progress() 
     launch.stage_deferred_task_with_token(automation.registration(f.signals.flow()).critical());
     launch.finish();
     let result = async {
-    let field = "custom.link_addresses";
+    let field = "custom.active_users";
     let definition = json!({"key":field,"version":1,"valueType":{"kind":"array","items":{"kind":"string","maxLength":128,"allowEmpty":false},"maxItems":100},"nullable":false,"manual":false,"sources":{"mdm.apple":0},"platforms":["macos"],"sensitivity":"standard","unit":null,"searchable":true,"itemKey":null});
     let published = f.browser.call(&f.router, Method::PUT, &format!("/api/v1/asset-fields/{field}"), Some(json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"put","definition":definition}}))).await?;
     ensure!(
@@ -104,7 +104,7 @@ async fn published_native_template_uses_policy_and_direct_collection_progress() 
             (
                 field.into(),
                 NativeMapping {
-                    query: rss_mdm_resource::NativeQuery::Apple("EthernetMACs".into()),
+                    query: rss_mdm_resource::NativeQuery::Apple("ActiveManagedUsers".into()),
                 mapping: rss_mdm_resource::ValueMapping::identity(""),
                 },
             ),
@@ -142,7 +142,7 @@ async fn published_native_template_uses_policy_and_direct_collection_progress() 
     ensure!(
         payload["Queries"].as_array().unwrap()
             == &vec![
-                plist::Value::from("EthernetMACs"),
+                plist::Value::from("ActiveManagedUsers"),
                 plist::Value::from("Model")
             ]
     );
@@ -154,10 +154,10 @@ async fn published_native_template_uses_policy_and_direct_collection_progress() 
             plist::Value::Dictionary(protocol::dictionary([
                 ("Model", "native-template-model".into()),
                 (
-                    "EthernetMACs",
+                    "ActiveManagedUsers",
                     plist::Value::Array(vec![
-                        "aa:bb:cc:dd:ee:01".into(),
-                        "aa:bb:cc:dd:ee:02".into(),
+                        "fixture-user-one".into(),
+                        "fixture-user-two".into(),
                     ]),
                 ),
             ])),
@@ -218,10 +218,10 @@ async fn published_native_template_uses_policy_and_direct_collection_progress() 
             plist::Value::Dictionary(protocol::dictionary([
                 ("Model", "refreshed-model".into()),
                 (
-                    "EthernetMACs",
+                    "ActiveManagedUsers",
                     plist::Value::Array(vec![
-                        "aa:bb:cc:dd:ee:03".into(),
-                        plist::Value::Boolean(true),
+                        "fixture-user-three".into(),
+                        plist::Value::String("x".repeat(129)),
                     ]),
                 ),
             ])),
@@ -263,7 +263,7 @@ async fn published_native_template_uses_policy_and_direct_collection_progress() 
                 .await?;
             if list.0 == StatusCode::OK && list.1["asset"]["total"] == 2 {
                 ensure!(
-                    list.1["asset"]["items"][0]["value"] == "aa:bb:cc:dd:ee:01",
+                    list.1["asset"]["items"][0]["value"] == "fixture-user-one",
                     "invalid list replaced trusted snapshot: {list:?}"
                 );
                 break;

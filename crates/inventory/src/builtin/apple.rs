@@ -58,13 +58,7 @@ pub(super) fn fields() -> Vec<FieldDefinition> {
         ("device.network.apple.host_name", text()),
         ("device.network.apple.local_host_name", text()),
         ("device.network.apple.wifi_mac", text()),
-        (
-            "device.network.apple.ethernet_macs",
-            ValueType::Array {
-                items: Box::new(text()),
-                max_items: 1024,
-            },
-        ),
+        ("device.network.apple.ethernet_mac", text()),
         ("device.security.apple.filevault_enabled", B),
         ("device.security.apple.personal_recovery_key_exists", B),
         ("device.security.apple.institutional_recovery_key_exists", B),
