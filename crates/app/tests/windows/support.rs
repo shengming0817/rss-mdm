@@ -750,14 +750,7 @@ impl Host {
                 case_tenant(),
                 request,
                 &std::fs::read(root.join("device.csr"))?,
-                match profile {
-                    rss_mdm_registration_service::enrollment::WindowsProfile::Full => {
-                        rss_mdm_windows_mdm::provisioning::EnrollmentType::Full
-                    }
-                    rss_mdm_registration_service::enrollment::WindowsProfile::Device => {
-                        rss_mdm_windows_mdm::provisioning::EnrollmentType::Device
-                    }
-                },
+                enrollment_type(profile),
                 now(),
             )?;
             let cert = sign_certificate(&app.windows()?.channel.ca, &intent).await?;
@@ -826,17 +819,7 @@ impl Host {
                 &app.windows()?.channel,
                 &auth,
                 &proof,
-                (
-                    &csr,
-                    match profile {
-                        rss_mdm_registration_service::enrollment::WindowsProfile::Full => {
-                            rss_mdm_windows_mdm::provisioning::EnrollmentType::Full
-                        }
-                        rss_mdm_registration_service::enrollment::WindowsProfile::Device => {
-                            rss_mdm_windows_mdm::provisioning::EnrollmentType::Device
-                        }
-                    },
-                ),
+                (&csr, enrollment_type(profile)),
                 now(),
             )
             .await?;
@@ -1186,4 +1169,17 @@ async fn provider(
         crate::identity::deadline(),
     )
     .await?)
+}
+
+fn enrollment_type(
+    profile: rss_mdm_registration_service::enrollment::WindowsProfile,
+) -> rss_mdm_windows_mdm::provisioning::EnrollmentType {
+    match profile {
+        rss_mdm_registration_service::enrollment::WindowsProfile::Full => {
+            rss_mdm_windows_mdm::provisioning::EnrollmentType::Full
+        }
+        rss_mdm_registration_service::enrollment::WindowsProfile::Device => {
+            rss_mdm_windows_mdm::provisioning::EnrollmentType::Device
+        }
+    }
 }
