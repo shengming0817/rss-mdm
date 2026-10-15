@@ -18,9 +18,11 @@ def contexts(run_id, jobs):
         peer = coordinate(run_id, observation + '/peer' if scope == 'pair' else 'foreign')
         namespace = coordinate(run_id, job.id + '/' + str(job.invocation)).replace('-', '')
         result[job.key] = dict(caseId=job.id, invocationId=job.key, namespace=namespace,
-                               tenant=tenant, peer=peer, adminLogin='admin-' + namespace, otherLogin='other-' + namespace,
-                               identityTenants=[tenant, peer] if scope == 'pair' else [tenant],
-                               fixtures=list(job.module.fixtures), admins={})
+                               tenant=tenant, peer=peer,
+                               actors=[dict(tenant=tenant if side == 'tenant' else peer, role=role,
+                                            login=role + '-' + namespace, principal=None)
+                                       for side, role in job.module.actors],
+                               fixtures=list(job.module.fixtures))
         validate(result[job.key])
     return result
 
@@ -38,8 +40,8 @@ def registration_tenants(values):
 
 def validate(value, *, ready=False):
     """Same wire contract as tests/support/context.rs; preparation may have partial admins."""
-    strings = ('caseId', 'invocationId', 'namespace', 'tenant', 'peer', 'adminLogin', 'otherLogin')
-    fields = {*strings, 'identityTenants', 'fixtures', 'admins'}
+    strings = ('caseId', 'invocationId', 'namespace', 'tenant', 'peer')
+    fields = {*strings, 'fixtures', 'actors'}
     if not isinstance(value, dict) or set(value) != fields:
         raise ValueError('invalid case context fields')
     for field in strings:
@@ -54,22 +56,33 @@ def validate(value, *, ready=False):
             raise ValueError('invalid case context: ' + field) from None
     if value['tenant'] == value['peer']:
         raise ValueError('invalid case context: peer')
-    if value['identityTenants'] not in ([value['tenant']], [value['tenant'], value['peer']]):
-        raise ValueError('invalid case context: identityTenants')
     fixtures = value['fixtures']
     if (not isinstance(fixtures, list) or any(not isinstance(item, str) or not item for item in fixtures)
             or len(set(fixtures)) != len(fixtures) or {'shared_worker', 'local_worker'} <= set(fixtures)):
         raise ValueError('invalid case context: fixtures')
-    admins = value['admins']
-    if not isinstance(admins, dict) or not set(admins) <= set(value['identityTenants']):
-        raise ValueError('invalid case context: admins')
-    for principal in admins.values():
+    actors = value['actors']
+    if not isinstance(actors, list):
+        raise ValueError('invalid case context: actors')
+    seen = set()
+    for actor in actors:
+        if (not isinstance(actor, dict) or set(actor) != {'tenant', 'role', 'login', 'principal'}
+                or actor['tenant'] not in (value['tenant'], value['peer'])
+                or actor['role'] not in ('admin', 'other')
+                or not isinstance(actor['login'], str) or not actor['login']):
+            raise ValueError('invalid case context: actor')
+        key = (actor['tenant'], actor['role'])
+        if key in seen:
+            raise ValueError('duplicate case actor')
+        seen.add(key)
+        principal = actor['principal']
+        if principal is None and not ready:
+            continue
         try:
             if not isinstance(principal, str):
                 raise ValueError()
             uuid.UUID(principal)
         except ValueError:
-            raise ValueError('invalid case context: admins') from None
-    if ready and 'identity' in fixtures and set(admins) != set(value['identityTenants']):
-        raise ValueError('invalid case context: admins not prepared')
+            raise ValueError('invalid case context: actor principal') from None
+    if bool(actors) != ('identity' in fixtures):
+        raise ValueError('invalid case context: identity actors')
     return value

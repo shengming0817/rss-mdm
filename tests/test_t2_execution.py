@@ -20,6 +20,21 @@ class ExecutionProof(unittest.TestCase):
             'testcases': {'new_name': {'ignored': True, 'filter-match': {'status': 'matches'}}},
         }}}
 
+    def test_discovery_does_not_prepare_runtime_or_identity_targets(self):
+        from types import SimpleNamespace
+        from unittest.mock import Mock, patch
+        module = MODULES['resource.persistence']
+        with tempfile.TemporaryDirectory() as directory, patch('t2_execution.require_lease'):
+            processes = Mock()
+            processes.run.return_value = SimpleNamespace(stdout='{"packages":[]}', stderr='', returncode=0)
+            builds = Builds(Path(directory), processes)
+            with patch.object(builds, 'prepare_targets') as targets:
+                builds.prepare_discovery([module])
+                targets.assert_called_once_with({module.build})
+            self.assertEqual(processes.run.call_count, 1)
+            self.assertEqual(processes.run.call_args.args[0][:2], ['cargo', 'metadata'])
+            self.assertEqual(builds.executables, {})
+
     def test_discovery_uses_current_names_and_exact_target(self):
         module = MODULES['resource.persistence']
         cases = parse_listing(self.listing(), module)

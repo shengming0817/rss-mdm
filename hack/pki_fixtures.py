@@ -69,7 +69,7 @@ def trust(root, purpose, origin, tenant, provisioner, kid, ca_origin):
 
 
 @contextmanager
-def running(root, env, *, case, windows=False, agent=False, agent_origin=None, agent_template=None, windows_template=None, compose_file=None, providers=None, generation=None, configuration_devices=0):
+def running(root, env, *, case, windows=False, agent=False, agent_origin=None, agent_template=None, windows_template=None, compose_file=None, providers=None, generation=None, configuration_devices=0, materials=()):
     import shutil
     case_root=Path(root).resolve()
     purpose='agent' if agent else 'windows'
@@ -96,7 +96,7 @@ def running(root, env, *, case, windows=False, agent=False, agent_origin=None, a
     private(configuration,config)
     if agent:
         from agent_pki_fixtures import prepare
-        prepare(root,configuration,password,configuration_devices=configuration_devices)
+        prepare(root,configuration,password,configuration_devices=configuration_devices, materials=materials)
     root_certificate=Path(config['root'][0]);root_key=root/'step/secrets/root_ca_key'
     offline=root_crl(root,root_certificate,root_key,password)
     isolate_root(root_key,password,offline)
@@ -109,11 +109,12 @@ def running(root, env, *, case, windows=False, agent=False, agent_origin=None, a
         if agent:
             from agent_pki_fixtures import install
             install(root,cli,admin,origin,template_source=agent_template)
-            provider.owner.verify_ownership()
-            provider.compose('rm','--stop','--force','--volumes','step-ca',timeout=30)
-            from agent_pki_fixtures import restore
-            restore(root)
-            origin=provider.start();provider.wait(origin,'/health',root_certificate)
+            if 'pki-recovery' in materials:
+                provider.owner.verify_ownership()
+                provider.compose('rm','--stop','--force','--volumes','step-ca',timeout=30)
+                from agent_pki_fixtures import restore
+                restore(root)
+                origin=provider.start();provider.wait(origin,'/health',root_certificate)
         if windows:
             # Disposable actual issuer key is exported only outside the CA mount for adversarial leaves.
             issuer_key=root/'windows-issuer-test.pk8'
@@ -156,7 +157,7 @@ def running(root, env, *, case, windows=False, agent=False, agent_origin=None, a
             provisioner_key_file=str(root/(purpose+'-provisioner.pk8'))))
         private(providers_file,authority_entries)
         env['MDM_'+purpose.upper()+'_PKI'+('_CANDIDATE' if generation else '')+'_FIXTURES']=str(root)
-        if agent:
+        if agent and 'pki-recovery' in materials:
             # The same DB and frozen origin survive actual cold standby promotion.
             standby=Provider(root,hashlib.sha256((case+':agent-standby'+(':'+generation if generation else '')).encode()).hexdigest()[:20], compose_file=compose_file, providers=providers, internal_host=provider.internal_host)
             origin=standby.promote_from(provider,origin)

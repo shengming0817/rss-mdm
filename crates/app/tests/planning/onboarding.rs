@@ -192,7 +192,7 @@ async fn uncertain_entry_survives_application_restart_and_policy_disable() -> Re
     .await?;
     stop_worker(workers).await?;
     let access = database(&f.base).await?;
-    let (router, execution, _) = crate::api::application_fixture(
+    let (router, execution, _, _) = crate::api::application_fixture(
         serde_json::from_value(f.base.clone())?,
         Arc::new(crate::clock::SystemClock),
         monotonic(),

@@ -1650,9 +1650,10 @@ for name in PKI_CONSUMERS:
     module = MODULES[name]
     MODULES[name] = replace(module, support_inputs=tuple(dict.fromkeys((*module.support_inputs,'hack/pki_fixtures.py','hack/pki_ca.py'))))
 
-# Case-owned CA identities mutate the tenant/purpose registry, beyond object scope.
+# Native hosts bind case-specific listener origins and SCEP webhooks. These
+# observations require separate tenants; stable Agent trust is environment-owned.
 for name, module in tuple(MODULES.items()):
-    authorities = {'windows', 'agent_pki', 'scep'}
+    authorities = {'windows', 'scep'}
     scope = 'tenant' if module.scope == 'objects' and authorities.intersection(module.fixtures) else module.scope
     policies = tuple(replace(policy, scope='tenant')
         if policy.scope == 'objects' and authorities.intersection(policy.fixtures or module.fixtures)
@@ -1748,3 +1749,73 @@ MODULES['execution.agent.delivery'] = replace(MODULES['execution.agent.delivery'
 consume(("crates/inventory-service/src/compliance/model.rs",), "compliance.http compliance.evaluation compliance.recovery compliance.group_input")
 consume(("crates/management-http/src/assets/mod.rs",), "assets.http assets.queries assets.sources assets.group_input apple.collection")
 consume(('crates/registration-service/src/admission.rs','crates/registration-service/schema/admission.sql','crates/management-http/src/enrollment/channels.rs','crates/app/src/registration_channels.rs'), 'enrollment.quotas agent.registration agent.configurations windows.issuance windows.management apple.scep apple.account_enrollment apple.ade catalog.contract installation.migration')
+
+# Account requirements belong to the existing module description. Cases with no
+# identity dependency resolve to no actors, even when overriding module fixtures.
+_OTHER_ACTORS = frozenset('certificate-archive.http timeline.http identity.local authorization.rules enrollment.http enrollment.quotas device.binding device.revocation agent.configurations agent.registration agent.reports api.identity_context diagnostics.http assets.http assets.queries planning.onboarding planning.group_scope planning.policy planning.http planning.agent_policy planning.frequency planning.remote planning.software planning.self_service compliance.http execution.agent.delivery execution.agent.content execution.agent.history execution.agent.poll execution.agent.recovery execution.software.offer execution.software.content execution.software.recovery software.http execution.commands.admission execution.commands.windows'.split())
+for name, module in tuple(MODULES.items()):
+    if 'identity' not in module.fixtures:
+        continue
+    roles = ('admin', 'other') if name in _OTHER_ACTORS else ('admin',)
+    actors = tuple(('tenant', role) for role in roles)
+    if module.scope == 'pair':
+        actors += (('peer', 'admin'),)
+    policies = tuple(replace(policy, actors=tuple((side, role) for side, role in actors
+        if side != 'peer' or policy.scope == 'pair') + ((('peer', 'admin'),)
+        if policy.scope == 'pair' and module.scope != 'pair' else ())) for policy in module.policies)
+    MODULES[name] = replace(module, actors=actors, policies=policies)
+
+# Exceptional cryptographic material has an actual consuming case.
+for name in ('windows.issuance', 'windows.enrollment', 'windows.entra'):
+    MODULES[name] = replace(MODULES[name], materials=('windows-adversarial', 'windows-renewal'))
+MODULES['windows.declared'] = replace(MODULES['windows.declared'], materials=('windows-renewal',))
+_pki_materials = {
+    'restored_ca_signs_only_live_authorized_agent_csrs_and_tls_preserves_purpose': ('pki-recovery', 'agent-adversarial'),
+    'explicit_development_limit_and_unknown_result_remain_auditable': ('agent-long-lived',),
+    'provisioner_rejects_substituted_csr_and_consumed_token': ('other',),
+}
+module = MODULES['agent.pki']
+policies = list(module.policies)
+for suffix, materials in _pki_materials.items():
+    selector = 'agent_pki_tests::' + suffix
+    matching = next((i for i, p in enumerate(policies) if p.selector == selector), None)
+    if matching is None:
+        policies.append(CasePolicy(selector, module.db_mode, module.scope, actors=module.actors, materials=materials))
+    else:
+        policies[matching] = replace(policies[matching], materials=materials)
+MODULES['agent.pki'] = replace(module, policies=tuple(policies))
+module = MODULES['agent.configurations']
+_counts = {
+    'fixed_packages_and_configurations_activate_beyond_self_quota': (42, ()),
+    'finite_reservations_and_frozen_authority_survive_revoke': (6, ('other',)),
+    'unknown_exchange_and_issuance_do_not_reset_quantity': (2, ()),
+    'expired_reservation_cannot_be_consumed_after_configuration_lock_wait': (2, ()),
+    'backend_settings_are_the_only_grant_lifetime_authority': (2, ('other',)),
+    'expired_unpolled_download_releases_capacity': (0, ()),
+    'configuration_scope_follows_current_candidate_admission': (2, ()),
+}
+MODULES[module.id] = replace(module, policies=tuple(
+    CasePolicy('agent::t2::configurations::' + name, module.db_mode, module.scope,
+               actors=module.actors, configuration_devices=count, materials=materials)
+    for name, (count, materials) in _counts.items()))
+
+# These native protocol cases alone consume a second member actor.
+for name, suffix in (
+    ('windows.enrollment', 'windows::t2::enrollment::self_enrollment_preserves_server_identity_and_terminal_protocol_id'),
+    ('windows.entra', 'windows::t2::entra::management_policy_body_replay_and_audit_faults'),
+    ('apple.scep', 'apple::tests::scep::self_enrollment_uses_current_user_and_one_macos_allocation'),
+):
+    module = MODULES[name]
+    policies = list(module.policies)
+    actors = (('tenant', 'admin'), ('tenant', 'other'))
+    index = next((i for i, policy in enumerate(policies) if policy.selector == suffix), None)
+    if index is None:
+        policies.append(CasePolicy(suffix, module.db_mode, module.scope, actors=actors))
+    else:
+        policies[index] = replace(policies[index], actors=actors)
+    MODULES[name] = replace(module, policies=tuple(policies))
+
+# Current Windows credential seeds are prerequisites only for these downstream consumers.
+for name in ("windows.management", "windows.retention", "windows.commands"):
+    MODULES[name] = replace(MODULES[name], support_inputs=(*MODULES[name].support_inputs,
+        "crates/windows-channel/src/issuance/fixture.rs"))

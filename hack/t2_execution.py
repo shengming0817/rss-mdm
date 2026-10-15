@@ -71,7 +71,10 @@ class Invocation:
     @property
     def policy(self):
         return dict(profile=self.module.profile, dbMode=self.module.db_mode,
-                    scope=self.module.scope, fixtures=list(self.module.fixtures))
+                    scope=self.module.scope, fixtures=list(self.module.fixtures),
+                    actors=[list(actor) for actor in self.module.actors],
+                    configurationDevices=self.module.configuration_devices,
+                    materials=list(self.module.materials))
 
 
 def validate_ownership(document, build, modules):
@@ -153,6 +156,7 @@ class Processes:
         self.cancelled = threading.Event()
         self.lock = threading.RLock()
         self.children = set()
+        self.started = 0
         self.local = threading.local()
 
     def check(self):
@@ -174,6 +178,7 @@ class Processes:
             kwargs['start_new_session'] = True
             child = subprocess.Popen([str(arg) for arg in args], **kwargs)
             self.children.add(child)
+            self.started += 1
             return child
 
     def release(self, child):
@@ -223,6 +228,7 @@ class Processes:
                                      text=True, stdout=output, stderr=subprocess.PIPE if separate_stderr else subprocess.STDOUT,
                                      pass_fds=lease_fds(), start_new_session=True)
             self.children.add(child)
+            self.started += 1
         try:
             while True:
                 try:
@@ -299,7 +305,7 @@ class Builds:
         require(result.returncode == 0, 'build or discovery failed; see ' + str(log))
         return result.stdout
 
-    def prepare(self, modules):
+    def prepare_discovery(self, modules):
         require_lease(ROOT)
         start = time.monotonic()
         # stderr must not contaminate the JSON metadata protocol.
@@ -307,12 +313,14 @@ class Builds:
                                   cwd=ROOT, capture=True, separate_stderr=True)
         (self.output / 'metadata.stderr.log').write_text(metadata.stderr)
         require(metadata.returncode == 0, 'Cargo metadata failed')
-        package_names = {item['id']: item['name'] for item in strict_json(metadata.stdout)['packages']}
+        self.package_names = {item['id']: item['name'] for item in strict_json(metadata.stdout)['packages']}
         self.metadata.write_text(metadata.stdout)
-        builds = {module.build for module in modules if module.build}
-        if any('identity' in module.fixtures for module in modules):
-            builds.add(APP)
-        for index, build in enumerate(sorted(builds)):
+        self.prepare_targets({module.build for module in modules if module.build})
+        self.elapsed = time.monotonic() - start
+
+    def prepare_targets(self, builds):
+        for build in sorted(set(builds) - self.targets.keys()):
+            index = len(self.targets)
             directory = self.output / str(index)
             directory.mkdir()
             result = self.processes.run(['cargo', 'nextest', 'list', *build.cargo_args(),
@@ -322,7 +330,7 @@ class Builds:
             require(result.returncode == 0, 'prebuild failed; see ' + str(directory / 'compile.log'))
             document = strict_json(result.stdout)
             expected = [item for item in document['rust-binaries'].values()
-                        if package_names.get(item['package-id']) == build.package and item['kind'] == build.kind
+                        if self.package_names.get(item['package-id']) == build.package and item['kind'] == build.kind
                         and (not build.target or item['binary-name'] == build.target)]
             require(len(expected) == 1, 'ambiguous or missing prebuilt target')
             target_dir = Path(document['rust-build-meta']['target-directory']).resolve()
@@ -342,6 +350,11 @@ class Builds:
             validate_ownership(self.listings[build], build, [*MODULES.values(), IDENTITY_SETUP])
             self.verify_binary(build)
             (directory / 'tests.json').write_text(listing.stdout)
+    def prepare_runtime(self, modules):
+        require_lease(ROOT)
+        start = time.monotonic()
+        if any('identity' in module.fixtures for module in modules):
+            self.prepare_targets({APP})
         binaries = set()
         if any(module.postgres for module in modules):
             binaries.add(Build('rss-mdm-app', 'bin', 'rss-mdm'))
@@ -362,7 +375,7 @@ class Builds:
                        and build.kind in item['target']['kind']]
             require(len(outputs) == 1, 'ambiguous fixture executable: ' + build.target)
             self.executables[build.target] = outputs[0]
-        self.elapsed = time.monotonic() - start
+        self.elapsed += time.monotonic() - start
 
     def reuse(self, build):
         return ['--cargo-metadata', str(self.metadata), '--binaries-metadata', str(self.targets[build])]

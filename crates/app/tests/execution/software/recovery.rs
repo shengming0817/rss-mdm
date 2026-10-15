@@ -665,7 +665,7 @@ async fn unknown_result_replay_and_late_detection() -> Result<()> {
 async fn withdrawn_software_does_not_poison_claims_for_other_policies_or_outside_scope()
 -> Result<()> {
     let mut f = Fixture::approved(Platform::MacOs).await?;
-    let outside = prepared_scope(&f.base, &mut f.author, &f.router, &[]).await?;
+    let outside = prepared_scope(&f.planning, &[]).await?;
     let dependency = f
         .author
         .call(

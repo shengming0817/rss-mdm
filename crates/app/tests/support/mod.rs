@@ -300,7 +300,7 @@ pub(crate) async fn app_with_access(
 ) -> Result<(Router, Arc<rss_mdm_audit_integration::AuditStore>)> {
     let c: Config = serde_json::from_value(value.clone())?;
     let audit_store = access.audit_store(&c.audit).await?;
-    let (router, _, _) = crate::api::application_fixture(
+    let (router, _, _, _) = crate::api::application_fixture(
         c,
         Arc::new(crate::clock::SystemClock),
         monotonic(),

@@ -183,7 +183,7 @@ def verify_business(context, fixture):
                     case=json.loads(Path(fixture.env['MDM_CASE_CONTEXT']).read_text())
                     tenant=case['tenant'];identity='/api/v1/identity/tenants/'+tenant
                     password=(fixture.root/'account-password').read_text()
-                    require(browser.call('POST',identity+'/login',dict(login=case['adminLogin'],password=password))[0]==200,'gateway business login')
+                    require(browser.call('POST',identity+'/login',dict(login=next(actor['login'] for actor in case['actors'] if actor['tenant'] == case['tenant'] and actor['role'] == 'admin'),password=password))[0]==200,'gateway business login')
                     status,principal=browser.call('GET','/api/v1/authorization')
                     require(status==200,'gateway business authorization')
                     members=[dict(instanceId=principal['instanceId'],tenantId=tenant,principalId=str(uuid.uuid4())) for _ in range(256)]

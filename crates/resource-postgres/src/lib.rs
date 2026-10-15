@@ -38,3 +38,7 @@ pub(crate) const ADMISSION: Admission = Admission {
 
 /// Public Outbox function permissions, installed after the immutable initial product schema.
 pub const OUTBOX_MIGRATION_SQL: &str = include_str!("../migrations/0002_outbox_writer.sql");
+
+/// Minimal validated resources for downstream integration prerequisites.
+#[cfg(feature = "integration")]
+pub mod fixture;

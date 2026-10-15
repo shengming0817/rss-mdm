@@ -36,6 +36,10 @@ class CasePolicy:
     scope: str | None
     fixtures: tuple[str, ...] | None = None
 
+    actors: tuple[tuple[str, str], ...] | None = None
+    configuration_devices: int | None = None
+    materials: tuple[str, ...] | None = None
+
     def matches(self, name):
         return (
             name.startswith(self.selector)
@@ -62,6 +66,10 @@ class Module:
     expected_cases: int | None = None
     dependency_inputs: tuple[DependencyInput, ...] = ()
     replaces: tuple[str, ...] = ()
+
+    actors: tuple[tuple[str, str], ...] = ()
+    configuration_devices: int = 0
+    materials: tuple[str, ...] = ()
 
     @property
     def postgres(self):
@@ -120,7 +128,23 @@ def resolve_cases(module, names):
                 fixtures=module.fixtures
                 if policy.fixtures is None
                 else policy.fixtures,
+                actors=module.actors if policy.actors is None else policy.actors,
+                configuration_devices=module.configuration_devices if policy.configuration_devices is None else policy.configuration_devices,
+                materials=module.materials if policy.materials is None else policy.materials,
             )
+        if 'identity' not in value.fixtures:
+            value = replace(value, actors=())
+        if (len(set(value.actors)) != len(value.actors)
+                or any(side not in {'tenant', 'peer'} or role not in {'admin', 'other'}
+                       or side == 'peer' and value.scope != 'pair' for side, role in value.actors)
+                or type(value.configuration_devices) is not int or value.configuration_devices < 0):
+            raise ValueError('invalid preparation needs: ' + module.id + ': ' + name)
+        allowed_materials = {'windows-adversarial', 'windows-renewal', 'pki-recovery',
+                             'agent-adversarial', 'agent-long-lived', 'other'}
+        if len(set(value.materials)) != len(value.materials) or set(value.materials) - allowed_materials:
+            raise ValueError('invalid cryptographic materials: ' + module.id + ': ' + name)
+        if 'agent_pki' in value.fixtures and value.db_mode == 'reuse' and value.scope == 'objects' and (value.materials or value.configuration_devices):
+            raise ValueError('mutable CA material requires private tenant: ' + module.id + ': ' + name)
         if value.profile == 'none':
             valid = value.db_mode is None and value.scope is None
         else:

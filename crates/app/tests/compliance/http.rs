@@ -76,7 +76,7 @@ async fn history_boundaries(
     let config = crate::test_support::identity::config(tenant)?;
     let access = database(base).await?;
     let audit = access.audit_store(&config.audit).await?;
-    let (other_router, _, _) = crate::api::application_fixture(
+    let (other_router, _, _, _) = crate::api::application_fixture(
         config,
         Arc::new(crate::clock::SystemClock),
         monotonic(),

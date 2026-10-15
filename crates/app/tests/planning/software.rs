@@ -4,9 +4,8 @@ use crate::test_support::*;
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 #[ignore = "make t2 MODULE=planning.software"]
 async fn rollout_time_success_gates_and_stage_evidence() -> Result<()> {
-    let mut fixture = Fixture::approved(Platform::MacOs).await?;
-    let empty_scope =
-        prepared_scope(&fixture.base, &mut fixture.author, &fixture.router, &[]).await?;
+    let fixture = Fixture::approved(Platform::MacOs).await?;
+    let empty_scope = prepared_scope(&fixture.planning, &[]).await?;
     let content = fixture.content.clone();
     let base = fixture.base;
     let router = fixture.router;
@@ -280,7 +279,7 @@ async fn rollout_statistics_checkpoint_excluded_pages_and_reject_stale_inputs() 
         devices.push(device);
     }
     let refs: Vec<&str> = devices.iter().map(String::as_str).collect();
-    let root = prepared_scope(&f.base, &mut f.author, &f.router, &refs).await?;
+    let root = prepared_scope(&f.planning, &refs).await?;
     let stage = Uuid::new_v4();
     let automation = start_automation(&f.base).await?;
     let created=write(&mut f.author,&f.router,&format!("/api/v1/scopes/{stage}"),0,json!({"action":"put","definition":{"targets":devices.iter().map(|d|json!({"kind":"device","id":d})).collect::<Vec<_>>(),"limitations":null,"exclusions":devices[..16].iter().map(|d|json!({"kind":"device","id":d})).collect::<Vec<_>>()}})).await?;

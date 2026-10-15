@@ -73,7 +73,7 @@ async fn sign_xml(xml: String, key: &std::path::Path) -> anyhow::Result<Vec<u8>>
 async fn signed_parent_enrollment_independent_tls_and_retirement() -> anyhow::Result<()> {
     let mut host = Host::open().await?;
     host.listen().await?;
-    let peer = host.peer().await?;
+    let peer = host.enrolled_peer().await?;
     let w = &host.app.windows()?.channel;
     let discovery = format!(
         "{}/EnrollmentConfiguration?api-version=1.0",
@@ -1070,7 +1070,7 @@ async fn renew(
 async fn linked_renewal_and_parent_child_supersession() -> anyhow::Result<()> {
     let mut host = Host::renewal_window().await?;
     host.listen().await?;
-    let parent = host.peer().await?;
+    let parent = host.enrolled_peer().await?;
     let ca = &host.app.windows()?.channel.ca;
     let certificate = sign_certificate(ca, &parent.intent).await?;
     let child = linked_peer(&host, &parent, &certificate, &host.root.join("device.key")).await?;
@@ -1347,7 +1347,7 @@ async fn declared_policy_delete_claims_recover_from_unknown_commit() -> anyhow::
     use serde_json::json;
     let mut host = Host::open().await?;
     host.listen().await?;
-    let parent = host.peer().await?;
+    let parent = host.enrolled_peer().await?;
     let ca = &host.app.windows()?.channel.ca;
     let certificate = sign_certificate(ca, &parent.intent).await?;
     let mut client = Client::start(host.browser.clone(), host.app.clone()).await?;
@@ -1677,7 +1677,7 @@ async fn declared_readiness_has_closed_http_diagnosis_and_primary_remains_availa
     use serde_json::json;
     let mut host = Host::open().await?;
     host.listen().await?;
-    let parent = host.peer().await?;
+    let parent = host.enrolled_peer().await?;
     let mut client = Client::start(host.browser.clone(), host.app.clone()).await?;
     client.set_authorized(true).await?;
     let grants=["windows_mi_execute"].into_iter().map(|operation|json!({"operation":operation,"scope":{"kind":"device","id":crate::test_support::case::name("tls-device")}})).collect::<Vec<_>>();

@@ -168,3 +168,64 @@ impl Planning {
         Ok(())
     }
 }
+
+#[cfg(feature = "integration")]
+impl Planning {
+    /// Prepare a new resolved scope for downstream tests in one tenant transaction.
+    /// Uses current reference validation and resolution codecs without HTTP jobs or workers.
+    pub async fn seed_scope_in(
+        &self,
+        tx: &mut PgTransaction<'_>,
+        id: Uuid,
+        definition: ScopeDefinition,
+    ) -> Result<()> {
+        if tx.tenant_id() != self.tenant || id.is_nil() || definition.references().len() > 1000 {
+            return Err(Error::Malformed.into());
+        }
+        self.validate_scope_references_in(tx, &definition).await?;
+        let tenant = self.tenant.to_string();
+        let document = checked_input(serde_json::to_value(&definition))?;
+        let references = definition.references();
+        let mut kinds = Vec::new();
+        let mut targets = Vec::new();
+        for reference in references {
+            match reference {
+                Reference::Device(value) => {
+                    kinds.push("device");
+                    targets.push(value);
+                }
+                Reference::Group(value) => {
+                    kinds.push("group");
+                    targets.push(value.to_string());
+                }
+            }
+        }
+        tx.with_connection(move |c| Box::pin(async move {
+            sqlx::query("INSERT INTO mdm_planning.scopes(tenant_id,id,revision,deleted) VALUES($1::uuid,$2,1,false)")
+                .bind(&tenant).bind(id).execute(&mut *c).await?;
+            sqlx::query("INSERT INTO mdm_planning.scope_versions VALUES($1::uuid,$2,1,$3)")
+                .bind(&tenant).bind(id).bind(document).execute(&mut *c).await?;
+            sqlx::query("INSERT INTO mdm_planning.scope_sources SELECT $1::uuid,$2,* FROM unnest($3::text[],$4::text[])")
+                .bind(tenant).bind(id).bind(kinds).bind(targets).execute(c).await?;
+            Ok(())
+        })).await?;
+        checked(
+            self.sources
+                .advance_reference_in(tx, &format!("scope-definition.{id}"), 1)
+                .await?,
+        )?;
+        let run = Uuid::new_v4();
+        for _ in 0..256 {
+            self.advance_scope_job_in(tx, run, id, None).await?;
+            let tenant = self.tenant.to_string();
+            let phase: String = tx.with_connection(move |c| Box::pin(async move {
+                sqlx::query_scalar("SELECT phase FROM mdm_planning.scope_runs WHERE tenant_id=$1::uuid AND id=$2")
+                    .bind(tenant).bind(run).fetch_one(c).await
+            })).await?;
+            if phase == "published" {
+                return Ok(());
+            }
+        }
+        Err(Error::Malformed.into())
+    }
+}

@@ -90,7 +90,8 @@ if __name__ == "__main__":
             output=Path(temporary)
             module=MODULES['catalog.contract']
             builds=Builds(output,processes)
-            builds.prepare([module])
+            builds.prepare_discovery([module])
+            builds.prepare_runtime([module])
             with RunFixtures(builds,output,1) as fixtures:
                 job=Invocation(module,None)
                 fixtures.prepare([job])

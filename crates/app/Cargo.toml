@@ -101,6 +101,8 @@ rss-reconcile.workspace = true
 rss-reconcile-postgres.workspace = true
 
 [dev-dependencies]
+rss-mdm-resource-postgres = { workspace = true, features = ["integration"] }
+rss-mdm-software-service = { workspace = true, features = ["integration"] }
 time.workspace = true
 rss-mdm-execution-service = {workspace=true,features=["integration"]}
 rss-mdm-apple-channel={workspace=true,features=["integration"]}
@@ -121,7 +123,7 @@ tower.workspace = true
 
 [features]
 default = []
-integration = ["rss-mdm-execution-service/integration", "rss-mdm-flow-service/integration", "rss-mdm-inventory-service/integration", "rss-transactional-messaging-postgres/integration", "rss-observation-postgres/integration", "rss-projection-postgres/integration", "rss-identity-oidc/test-support"]
+integration = ["rss-mdm-software-service/integration", "rss-mdm-apple-channel/integration", "rss-mdm-registration-service/integration", "rss-mdm-resource-postgres/integration", "rss-mdm-execution-service/integration", "rss-mdm-flow-service/integration", "rss-mdm-inventory-service/integration", "rss-transactional-messaging-postgres/integration", "rss-observation-postgres/integration", "rss-projection-postgres/integration", "rss-identity-oidc/test-support"]
 
 [lints]
 workspace = true

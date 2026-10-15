@@ -52,6 +52,8 @@ class Environment:
         self.identity = project_name(self.worktree)
         self.project = self.identity + '-' + group
         self.root = self.worktree / 'artifacts/dev-environment' / group
+        self.postgres_endpoint = None
+        self.postgres_queries = dict(container=0, port=0)
 
     @contextlib.contextmanager
     def phase(self, name, **details):
@@ -192,6 +194,9 @@ class Environment:
         (directory/'server.key').chmod(0o600)
 
     def container(self):
+        if self.postgres_endpoint is not None:
+            return self.postgres_endpoint[0]
+        self.postgres_queries['container'] += 1
         ident = self.compose('ps','-q','postgres')
         if not ident or '\n' in ident: raise RuntimeError('environment PostgreSQL is not running')
         return ident
@@ -201,6 +206,9 @@ class Environment:
                     '-U','postgres','-d',database], input=statement, capture_output=True, timeout=60).stdout.strip()
 
     def port(self):
+        if self.postgres_endpoint is not None:
+            return self.postgres_endpoint[1]
+        self.postgres_queries['port'] += 1
         return int(self.compose('port','postgres','5432').rsplit(':',1)[1])
 
     def verify_ownership(self):
@@ -229,6 +237,7 @@ class Environment:
         if certificates:self.certificate()
 
     def up(self):
+        self.postgres_endpoint = None
         require_lease(self.worktree)
         reused=bool(self.compose('ps','--all','-q','postgres'))
         with self.phase('prepare',reused=reused):
@@ -237,6 +246,8 @@ class Environment:
             private(self.root/'pg'/'pg-password','local-fixture')
             self.verify_ownership()
             self.compose('up','-d','--wait','--wait-timeout','90','postgres')
+            self.verify_ownership()
+            self.postgres_endpoint = (self.container(), self.port())
         return self
 
     def roles(self):
@@ -275,10 +286,12 @@ class Environment:
             self.sql(f'DROP DATABASE "{name}" WITH (FORCE)')
 
     def stop(self):
+        self.postgres_endpoint = None
         self.verify_ownership()
         self.compose('--profile','*','stop')
 
     def reset(self):
+        self.postgres_endpoint = None
         if self.root.exists() or self.root.is_symlink():
             marker=self.root/'owner.json'
             if self.root.is_symlink() or not marker.exists() or json.loads(marker.read_text())!={'worktree':str(self.worktree),'project':self.project}:
