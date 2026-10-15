@@ -825,11 +825,20 @@ async fn dynamic_result(
         .unwrap();
     let agent_value=field.value_type.decode_json(&json!([{"id":"agent-app","name":"Agent application","version":"9","publisher":"Vendor","scope":"device","native_id":"agent-app","owner":"","origin":"agent","location":"","installation_state":"installed"}]))?;
     let definition = rss_mdm_inventory::CollectionDefinition::new(
-        rss_mdm_inventory::CollectionScope::Device,
         "inventory",
         "prior-software",
         rss_mdm_inventory::Source::AgentBuiltin,
-        vec![field],
+        {
+            let scope = rss_mdm_inventory::CollectionScope::Device;
+            let fields: Vec<rss_mdm_inventory::FieldDefinition> = vec![field];
+            fields
+                .into_iter()
+                .map(|definition| rss_mdm_inventory::CollectionField {
+                    definition,
+                    scope: scope.clone(),
+                })
+                .collect()
+        },
     )?;
     rss_mdm_inventory_postgres::register_collection_in(pg, saved.scope.tenant(), &definition)
         .await?;
@@ -1114,7 +1123,7 @@ async fn seed_prior_list(
     key: rss_mdm_inventory::FieldKey,
     value: &rss_mdm_inventory::Scalar,
 ) -> anyhow::Result<()> {
-    sqlx::query("INSERT INTO mdm.inventory(tenant_id,journal,generation,scope,coverage,field,value,batch_id,observed_at,received_at,state,last_known,last_known_batch,last_known_observed,last_known_received,registration,source,epoch,collection_sequence) VALUES($1::uuid,'mdm.observation.v1','inventory-v6',$2,$3,$4,$5,'prior-list',1,2,'known',$5,'prior-list',1,2,$6::uuid,$7,$8::uuid,0)")
+    sqlx::query("INSERT INTO mdm.inventory(field_scope,tenant_id,journal,generation,scope,coverage,field,value,batch_id,observed_at,received_at,state,last_known,last_known_batch,last_known_observed,last_known_received,registration,source,epoch,collection_sequence) VALUES(replace(jsonb_build_object('kind','device')::text,' ',''),$1::uuid,'mdm.observation.v1','inventory-v7',$2,$3,$4,$5,'prior-list',1,2,'known',$5,'prior-list',1,2,$6::uuid,$7,$8::uuid,0)")
         .bind(scope.tenant().to_string()).bind(scope.encode()?).bind(serde_json::to_string(&definition.coverage()?)?).bind(key.as_str()).bind(serde_json::to_string(value)?).bind(scope.registration().as_str()).bind(scope.source().as_str()).bind(scope.epoch().as_str()).execute(pg).await?;
     Ok(())
 }

@@ -16,6 +16,8 @@ pub enum Error {
     CertificateRequest,
     #[error("operation identity or enrollment/registration state conflict")]
     Conflict,
+    #[error("new registration admission paused")]
+    EnrollmentPaused,
     #[error("Windows declared enrollment is not ready")]
     WindowsDeclaredEnrollmentNotReady,
     #[error("commit outcome unknown; retry the same operation")]

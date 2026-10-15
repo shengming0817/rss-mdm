@@ -3,3 +3,5 @@ pub mod directory;
 pub mod http;
 
 pub mod quotas;
+
+pub mod channels;

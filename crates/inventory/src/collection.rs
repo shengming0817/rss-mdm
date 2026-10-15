@@ -5,14 +5,23 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
 
+/// A frozen field always carries its authoritative asset namespace.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CollectionField {
+    /// Immutable catalog version.
+    pub definition: FieldDefinition,
+    /// Exact namespace; never inferred from a returned value.
+    pub scope: crate::CollectionScope,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct Definition {
     dataset: String,
     version: String,
     source: Source,
-    scope: crate::CollectionScope,
-    fields: Vec<FieldDefinition>,
+    fields: Vec<CollectionField>,
 }
 /// Frozen source and field definitions for one published collector version.
 /// Constructing this value validates structure; the caller still owns tenant/device authorization.
@@ -22,14 +31,7 @@ pub struct CollectionDefinition(Definition);
 impl TryFrom<Definition> for CollectionDefinition {
     type Error = Invalid;
     fn try_from(value: Definition) -> Result<Self> {
-        value.scope.validate_executable()?;
-        Self::new(
-            value.scope,
-            &value.dataset,
-            &value.version,
-            value.source,
-            value.fields,
-        )
+        Self::new(&value.dataset, &value.version, value.source, value.fields)
     }
 }
 impl From<CollectionDefinition> for Definition {
@@ -40,16 +42,11 @@ impl From<CollectionDefinition> for Definition {
 impl CollectionDefinition {
     /// Bind a finite unique field set to one device source and immutable definition version.
     pub fn new(
-        scope: crate::CollectionScope,
         dataset: &str,
         version: impl ToString,
         source: Source,
-        mut fields: Vec<FieldDefinition>,
+        mut fields: Vec<CollectionField>,
     ) -> Result<Self> {
-        scope.validate_executable()?;
-        if !matches!(scope, crate::CollectionScope::Device) && source != Source::MdmApple {
-            return Err(Invalid::SourceNotAllowed);
-        }
         Id::new(dataset).map_err(|_| Invalid::Value)?;
         let version = version.to_string();
         Id::new(&version).map_err(|_| Invalid::Value)?;
@@ -61,22 +58,36 @@ impl CollectionDefinition {
         {
             return Err(Invalid::Value);
         }
-        Catalog::new(fields.clone())?;
-        if fields.iter().any(|f| !f.sources.contains_key(&source)) {
+        Catalog::new(fields.iter().map(|f| f.definition.clone()).collect())?;
+        for field in &fields {
+            field.scope.validate_source(source)?;
+        }
+        if fields
+            .iter()
+            .any(|f| !f.definition.sources.contains_key(&source))
+        {
             return Err(Invalid::SourceNotAllowed);
         }
-        fields.sort_by_key(|f| f.key);
+        fields.sort_by_key(|f| f.definition.key);
         Ok(Self(Definition {
             dataset: dataset.into(),
             version,
             source,
-            scope,
             fields,
         }))
     }
-    /// Frozen collection namespace; never inferred from returned item values.
-    pub fn collection_scope(&self) -> &crate::CollectionScope {
-        &self.0.scope
+    /// Exact namespace for a frozen field; no fallback or inherited scope.
+    pub fn field_scope(&self, key: FieldKey) -> Result<&crate::CollectionScope> {
+        self.0
+            .fields
+            .iter()
+            .find(|f| f.definition.key == key)
+            .map(|f| &f.scope)
+            .ok_or(Invalid::UnknownField)
+    }
+    /// Complete field bindings used by projection and authorized reads.
+    pub fn bindings(&self) -> &[CollectionField] {
+        &self.0.fields
     }
     /// Dataset selected by the product stream owner.
     pub fn dataset(&self) -> &str {
@@ -91,15 +102,16 @@ impl CollectionDefinition {
         &self.0.version
     }
     /// Canonical unique field order, also used for completeness reporting.
-    pub fn fields(&self) -> &[FieldDefinition] {
-        &self.0.fields
+    pub fn fields(&self) -> impl ExactSizeIterator<Item = &FieldDefinition> {
+        self.0.fields.iter().map(|f| &f.definition)
     }
     /// Resolve a field only within this frozen coverage.
     pub fn field(&self, key: FieldKey) -> Result<&FieldDefinition> {
         self.0
             .fields
             .iter()
-            .find(|f| f.key == key)
+            .find(|f| f.definition.key == key)
+            .map(|f| &f.definition)
             .ok_or(Invalid::UnknownField)
     }
     /// Exact content identity includes schemas, sources and all definition constraints.
@@ -114,7 +126,7 @@ impl CollectionDefinition {
             id(self.dataset())?,
             id(self.version())?,
             id(&self.fingerprint()?)?,
-            id("typed-fields-v3")?,
+            id("typed-fields-v4")?,
         ))
     }
     /// Validate authenticated stream coordinates against this definition.

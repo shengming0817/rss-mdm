@@ -63,11 +63,15 @@ async fn durable_asset_group_scope_pipeline() {
                     asset_context: rss_mdm_group_postgres::AssetContext::Endpoint,
                     name: "automation".into(),
                     description: String::new(),
-                    criteria: Some(assets::Criteria::Predicate {
-                        field: rss_mdm_inventory::builtin::IS_LOANER,
-                        op: assets::Operator::Eq,
-                        value: Some(assets::Scalar::Boolean(true)),
-                        values: None,
+                    criteria: Some(assets::InventoryCondition {
+                        selector: assets::ScopeSelector::Device,
+                        quantifier: assets::ScopeQuantifier::One,
+                        criteria: assets::Criteria::Predicate {
+                            field: rss_mdm_inventory::builtin::IS_LOANER,
+                            op: assets::Operator::Eq,
+                            value: Some(assets::Scalar::Boolean(true)),
+                            values: None,
+                        },
                     }),
                 },
             )),
@@ -161,11 +165,15 @@ async fn durable_asset_group_scope_pipeline() {
             request: inventory_operation(
                 0,
                 assets::Query {
-                    criteria: Some(assets::Criteria::Predicate {
-                        field: rss_mdm_inventory::builtin::IS_LOANER,
-                        op: assets::Operator::Eq,
-                        value: Some(assets::Scalar::Boolean(true)),
-                        values: None,
+                    criteria: Some(assets::InventoryCondition {
+                        selector: assets::ScopeSelector::Device,
+                        quantifier: assets::ScopeQuantifier::One,
+                        criteria: assets::Criteria::Predicate {
+                            field: rss_mdm_inventory::builtin::IS_LOANER,
+                            op: assets::Operator::Eq,
+                            value: Some(assets::Scalar::Boolean(true)),
+                            values: None,
+                        },
                     }),
                     select: vec![rss_mdm_inventory::builtin::IS_LOANER],
                     sort: Some(assets::Sort {
@@ -173,7 +181,8 @@ async fn durable_asset_group_scope_pipeline() {
                         descending: true,
                     }),
                 },
-            ),
+            )
+            .into(),
             scope: query_scope.clone(),
         },
     )
@@ -686,11 +695,15 @@ async fn ingress_batches_reuse_published_group_coverage() {
                     asset_context: rss_mdm_group_postgres::AssetContext::Endpoint,
                     name: "bounded-ingress".into(),
                     description: String::new(),
-                    criteria: Some(assets::Criteria::Predicate {
-                        field: rss_mdm_inventory::builtin::IS_LOANER,
-                        op: assets::Operator::Eq,
-                        value: Some(assets::Scalar::Boolean(true)),
-                        values: None,
+                    criteria: Some(assets::InventoryCondition {
+                        selector: assets::ScopeSelector::Device,
+                        quantifier: assets::ScopeQuantifier::One,
+                        criteria: assets::Criteria::Predicate {
+                            field: rss_mdm_inventory::builtin::IS_LOANER,
+                            op: assets::Operator::Eq,
+                            value: Some(assets::Scalar::Boolean(true)),
+                            values: None,
+                        },
                     }),
                 },
             )),
@@ -800,11 +813,15 @@ async fn superseded_group_links_reused_successor() {
                     asset_context: rss_mdm_group_postgres::AssetContext::Endpoint,
                     name: "successor".into(),
                     description: String::new(),
-                    criteria: Some(assets::Criteria::Predicate {
-                        field: rss_mdm_inventory::builtin::IS_LOANER,
-                        op: assets::Operator::Eq,
-                        value: Some(assets::Scalar::Boolean(true)),
-                        values: None,
+                    criteria: Some(assets::InventoryCondition {
+                        selector: assets::ScopeSelector::Device,
+                        quantifier: assets::ScopeQuantifier::One,
+                        criteria: assets::Criteria::Predicate {
+                            field: rss_mdm_inventory::builtin::IS_LOANER,
+                            op: assets::Operator::Eq,
+                            value: Some(assets::Scalar::Boolean(true)),
+                            values: None,
+                        },
                     }),
                 },
             )),

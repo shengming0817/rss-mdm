@@ -25,10 +25,10 @@ pub struct OperationReceipt {
 pub struct HistoricalAttempt {
     /// Opaque continuation identity; pass unchanged to the next history query.
     pub cursor: String,
-    /// Immutable publication attempt, including its original approval and result.
+    /// Immutable publication attempt, including its original publication binding and result.
     pub publication: Publication,
 }
-/// Tenant-bound sole persistence owner of candidates, approvals, attempts and publication results.
+/// Tenant-bound sole persistence owner of candidates, publication bindings, attempts and publication results.
 pub struct ReleaseStore {
     runtime: Arc<PgRuntime>,
     tenant: TenantId,
@@ -171,7 +171,7 @@ impl ReleaseStore {
         }
         let document = codec::snapshot(c)?;
         let request = STORAGE.encode(&json!([
-            "create-v2",
+            "create-v3",
             id.tenant().to_string(),
             id.value(),
             STORAGE.decode::<Value>(&document)?
@@ -549,7 +549,7 @@ fn decode_attempt(
 ) -> Result<HistoricalAttempt, PgError> {
     let bytes = STORAGE.checked(row.try_get("document")?, row.try_get("digest")?)?;
     let publication = codec::read_publication(&STORAGE.decode::<Value>(&bytes)?)?;
-    let candidate = &publication.approval.validation.candidate;
+    let candidate = &publication.binding.validation.candidate;
     if candidate.tenant() != tenant || candidate.value() != owner || publication.attempt == 0 {
         return Err(STORAGE.fault("store::attempt_history"));
     }

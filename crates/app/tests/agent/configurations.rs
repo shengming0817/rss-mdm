@@ -21,7 +21,7 @@ async fn fixture() -> Result<Fixture> {
         "resource_write",
         "software_read",
         "software_write",
-        "software_approve",
+        "release_publish",
         "software_withdraw",
         "agent_enrollment_read",
         "agent_enrollment_write",
@@ -138,7 +138,14 @@ async fn publish_version(
         json!({"action":"activate","version":"v1"}),
     )
     .await?;
-    write(user,&f.router,&format!("/api/v1/software/resources/{id}/versions/v1"),0,json!({"action":"approve","evidence":["fixed installer and embedded candidate build reviewed"]})).await?;
+    write(
+        user,
+        &f.router,
+        &format!("/api/v1/software/resources/{id}/versions/v1"),
+        0,
+        json!({"action":"enable"}),
+    )
+    .await?;
     let input = json!({"operationId":Uuid::new_v4(),"resource":id,"version":"v1","variant":"default","target":{"platform":platform,"architecture":architecture},"channel":"production","manifestArtifact":"candidate"});
     let (status, document) = user
         .call(

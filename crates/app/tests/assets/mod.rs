@@ -9,7 +9,7 @@ fn request(revision: u64, input: Value) -> Value {
     json!({"operationId":Uuid::new_v4(),"expectedRevision":revision,"input":input})
 }
 fn predicate(field: &str, kind: &str, value: Value) -> Value {
-    json!({"kind":"predicate","field":field,"op":"eq","value":{"kind":kind,"value":value}})
+    json!({"selector":{"kind":"device"},"quantifier":"one","criteria":{"kind":"predicate","field":field,"op":"eq","value":{"kind":kind,"value":value}}})
 }
 async fn permissions(subject: &str, device: Option<&str>, write: bool) -> Result<()> {
     let mut grants = crate::test_support::identity::device_grants(

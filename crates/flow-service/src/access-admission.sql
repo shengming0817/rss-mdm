@@ -8,7 +8,7 @@ WITH expected(name) AS (VALUES
  ('mdm_resource.aggregates'),
  ('mdm_resource.immutable'),
  ('mdm_software.sources'),
- ('mdm_software.approvals'),
+ ('mdm_software.versions'),
  ('mdm_agent_packages.releases')
 ), relations AS (
  SELECT c.* FROM expected e JOIN pg_class c ON c.oid=to_regclass(e.name)

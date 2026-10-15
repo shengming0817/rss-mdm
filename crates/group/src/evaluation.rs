@@ -76,9 +76,17 @@ pub struct ObjectEvaluation {
     pub key: ObjectKey,
     /// Combined three-valued rule result.
     pub decision: Decision,
-    /// All leaf outcomes in tree traversal order, even after a decisive branch.
+    /// Independent context evidence, never combined into a synthetic fact map.
+    pub contexts: BTreeMap<String, ContextEvaluation>,
+}
+#[derive(Clone, Debug, PartialEq, Eq)]
+/// Full rule result and provenance for one opaque input context.
+pub struct ContextEvaluation {
+    /// Decision before quantification.
+    pub decision: Decision,
+    /// All leaf outcomes, including branches after a decisive result.
     pub explanations: Vec<Explanation>,
-    /// One provenance record per referenced field actually present in the input.
+    /// Original referenced field provenance.
     pub provenance: BTreeMap<String, Provenance>,
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -156,52 +164,55 @@ impl Rule {
             }
         }
         LimitKind::Objects.check(s.objects.len())?;
-        LimitKind::Visits.product(s.objects.len(), self.criteria.count)?;
-        let mut objects = BTreeMap::new();
+        let mut context_count = 0usize;
+        let leaves = leaf_count(&self.criteria);
+        let mut objects = Vec::with_capacity(s.objects.len());
         for object in s.objects {
             if object.key.tenant() != s.tenant {
                 return Err(Error::TenantMismatch);
             }
             budget.text(object.key.id())?;
-            LimitKind::Fields.check(object.facts.len())?;
-            for (key, fact) in &object.facts {
-                budget.identity(key)?;
-                let field = self.fields.get(key).ok_or(Error::UnknownField)?;
-                if !s.coverage.contains(key) {
-                    return Err(Error::InvalidStructure);
-                }
-                budget.identity(&fact.source)?;
-                budget.identity(&fact.snapshot_id)?;
-                match &fact.state {
-                    FactState::Known(value) => {
-                        value.validate(budget)?;
-                        if value.kind() != field.kind {
-                            return Err(Error::InvalidType);
-                        }
-                    }
-                    FactState::Null if !field.nullable => return Err(Error::InvalidType),
-                    FactState::Denied => return Err(Error::PermissionDenied),
-                    _ => {}
-                }
-            }
-            if !s.coverage.iter().all(|key| object.facts.contains_key(key)) {
-                return Err(Error::IncompleteSnapshot);
-            }
-            if let Some(previous) = objects.insert(&object.key, object)
-                && previous != object
+            if object.quantifier == crate::Quantifier::One
+                && (object.contexts.len() != 1 || !object.complete)
             {
-                return Err(Error::ConflictingObject);
+                return Err(Error::InvalidStructure);
             }
-        }
-        let leaves = leaf_count(&self.criteria);
-        LimitKind::Explanations.product(objects.len(), leaves)?;
-        let objects = objects
-            .values()
-            .map(|object| {
+            context_count = context_count
+                .checked_add(object.contexts.len())
+                .ok_or(Error::LimitExceeded(LimitKind::Visits))?;
+            LimitKind::Visits.product(context_count, self.criteria.count)?;
+            LimitKind::Explanations.product(context_count, leaves)?;
+            let mut contexts = BTreeMap::new();
+            for (id, facts) in &object.contexts {
+                budget.identity(id)?;
+                LimitKind::Fields.check(facts.len())?;
+                for (key, fact) in facts {
+                    budget.identity(key)?;
+                    let field = self.fields.get(key).ok_or(Error::UnknownField)?;
+                    if !s.coverage.contains(key) {
+                        return Err(Error::InvalidStructure);
+                    }
+                    budget.identity(&fact.source)?;
+                    budget.identity(&fact.snapshot_id)?;
+                    match &fact.state {
+                        FactState::Known(value) => {
+                            value.validate(budget)?;
+                            if value.kind() != field.kind {
+                                return Err(Error::InvalidType);
+                            }
+                        }
+                        FactState::Null if !field.nullable => return Err(Error::InvalidType),
+                        FactState::Denied => return Err(Error::PermissionDenied),
+                        _ => {}
+                    }
+                }
+                if !s.coverage.iter().all(|key| facts.contains_key(key)) {
+                    return Err(Error::IncompleteSnapshot);
+                }
                 let mut explanations = Vec::with_capacity(leaves);
                 let decision = evaluate_node(
                     &self.criteria,
-                    &object.facts,
+                    facts,
                     as_of,
                     &mut Vec::new(),
                     &mut explanations,
@@ -210,7 +221,7 @@ impl Rule {
                     .required
                     .iter()
                     .filter_map(|key| {
-                        object.facts.get(key).map(|f| {
+                        facts.get(key).map(|f| {
                             (
                                 key.clone(),
                                 Provenance {
@@ -222,14 +233,40 @@ impl Rule {
                         })
                     })
                     .collect();
-                ObjectEvaluation {
-                    key: object.key.clone(),
-                    decision,
-                    explanations,
-                    provenance,
+                contexts.insert(
+                    id.clone(),
+                    ContextEvaluation {
+                        decision,
+                        explanations,
+                        provenance,
+                    },
+                );
+            }
+            let any = contexts.values().any(|c| c.decision == Decision::Match);
+            let no = contexts.values().any(|c| c.decision == Decision::NoMatch);
+            let unknown = !object.complete
+                || contexts.is_empty()
+                || contexts.values().any(|c| c.decision == Decision::Unknown);
+            let decision = match object.quantifier {
+                crate::Quantifier::One => {
+                    contexts
+                        .values()
+                        .next()
+                        .ok_or(Error::InvalidStructure)?
+                        .decision
                 }
-            })
-            .collect();
+                crate::Quantifier::Any if any => Decision::Match,
+                crate::Quantifier::All if no => Decision::NoMatch,
+                _ if unknown => Decision::Unknown,
+                crate::Quantifier::Any => Decision::NoMatch,
+                crate::Quantifier::All => Decision::Match,
+            };
+            objects.push(ObjectEvaluation {
+                key: object.key.clone(),
+                decision,
+                contexts,
+            });
+        }
         Ok(PageEvaluation {
             coverage: s.coverage.clone(),
             tenant: s.tenant,

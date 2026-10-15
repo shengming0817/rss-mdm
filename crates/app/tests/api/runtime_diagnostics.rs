@@ -79,6 +79,7 @@ impl Fixture {
         let flow = config
             .flow
             .open(
+                inventory.clone(),
                 authority.audit.clone(),
                 authority.identity.tenant,
                 Arc::new(crate::clock::SystemClock),

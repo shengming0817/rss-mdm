@@ -11,7 +11,7 @@ pub enum GroupChange {
     Create {
         name: String,
         description: String,
-        criteria: Option<Criteria>,
+        criteria: Option<assets::InventoryCondition>,
         asset_context: rss_mdm_group_postgres::AssetContext,
     },
     Edit {
@@ -19,7 +19,7 @@ pub enum GroupChange {
         description: String,
     },
     Rule {
-        criteria: Criteria,
+        criteria: assets::InventoryCondition,
     },
     Members {
         add: Vec<crate::objects::ObjectRef>,

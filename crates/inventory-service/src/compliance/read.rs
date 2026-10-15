@@ -69,7 +69,9 @@ impl Compliance {
         .await?;
         let rules = tx
             .with_connection(move |c| {
-                Box::pin(async move { pg::rules::<crate::assets::Criteria>(c, t, None, 101).await })
+                Box::pin(async move {
+                    pg::rules::<crate::assets::InventoryCondition>(c, t, None, 101).await
+                })
             })
             .await?;
         if rules.len() > 100 {

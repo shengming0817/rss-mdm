@@ -23,6 +23,14 @@ use std::sync::Arc;
 use uuid::Uuid;
 
 async fn admitted(c: &mut sqlx::PgConnection, proof: &Admission) -> Result<PgRow, Error> {
+    let d = proof.coordinates();
+    rss_mdm_registration_service::admission::require_request_in(
+        c,
+        &d.tenant,
+        d.id,
+        rss_mdm_registration_service::quotas::Channel::MacosMdm,
+    )
+    .await?;
     let row = proof.current(c).await?;
     if proof.is_account() {
         crate::account_enrollment::require_binding_in(

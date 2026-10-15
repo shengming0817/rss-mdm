@@ -82,9 +82,8 @@ pub async fn write_source<C: ManagementContentPort>(
     op: Operation<SourceChange>,
 ) -> Result<Value, Error> {
     let permission = match &op.input {
-        SourceChange::Register { .. } => Permission::SoftwareWrite,
-        SourceChange::Approve { .. } => Permission::SoftwareApprove,
-        SourceChange::Withdraw { .. } => Permission::SoftwareWithdraw,
+        SourceChange::Register { .. } | SourceChange::Enable => Permission::SoftwareWrite,
+        SourceChange::Disable => Permission::SoftwareWithdraw,
     };
     auth.require(permission, None)?;
     audit.set_action("management_write");
@@ -153,15 +152,15 @@ pub async fn write_version<C: ManagementContentPort>(
     op: Operation<VersionChange>,
 ) -> Result<Value, Error> {
     let permission = match op.input {
-        VersionChange::Approve { .. } => Permission::SoftwareApprove,
-        VersionChange::Withdraw { .. } => Permission::SoftwareWithdraw,
+        VersionChange::Enable => Permission::SoftwareWrite,
+        VersionChange::Withdraw => Permission::SoftwareWithdraw,
     };
     auth.require(permission, None)?;
     audit.set_action("management_write");
     audit.target(&id);
     audit.operation(op.operation_id, "management_write");
     audit.require_request_settlement();
-    let verified = if matches!(op.input, VersionChange::Approve { .. }) {
+    let verified = if matches!(op.input, VersionChange::Enable) {
         let resource = transaction::inspect(
             &app.runtime,
             app.tenant,

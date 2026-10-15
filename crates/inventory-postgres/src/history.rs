@@ -47,16 +47,16 @@ pub async fn read_at_in(
         SELECT sha256(convert_to(jsonb_build_array($2::text,$3::text,s)::text,'UTF8')) AS digest
         FROM unnest($4::text[]) s
       ), latest AS (
-        SELECT DISTINCT ON(h.scope_digest,h.field) h.scope_digest,h.field,h.document
+        SELECT DISTINCT ON(h.scope_digest,h.field,h.field_scope) h.scope_digest,h.field,h.field_scope,h.document
         FROM mdm.inventory_history h JOIN requested q ON q.digest=h.scope_digest
         WHERE h.tenant_id=$1::uuid AND h.revision<=$5 AND h.field=ANY($6)
-        ORDER BY h.scope_digest,h.field,h.revision DESC
+        ORDER BY h.scope_digest,h.field,h.field_scope,h.revision DESC
       )
-      SELECT DISTINCT ON(r.scope,r.field) r.*,d.definition::text AS definition FROM latest h
+      SELECT DISTINCT ON(r.scope,r.field,r.field_scope) r.*,d.definition::text AS definition FROM latest h
       CROSS JOIN LATERAL jsonb_populate_record(NULL::mdm.inventory,h.document) r
       JOIN mdm.collection_definitions d ON(d.tenant_id,d.coverage,d.source)=(r.tenant_id,r.coverage,r.source)
       WHERE h.document IS NOT NULL AND r.journal=$2 AND r.generation=$3 AND r.scope=ANY($4)
-      ORDER BY r.scope,r.field,r.collection_sequence DESC
+      ORDER BY r.scope,r.field,r.field_scope,r.collection_sequence DESC
     "#,
     )
     .bind(tenant.to_string())

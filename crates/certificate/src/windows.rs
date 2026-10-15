@@ -143,12 +143,8 @@ impl WindowsDeviceTrust {
         self.lifetime = lifetime;
         Ok(self)
     }
-    pub fn profile(
-        &self,
-        csr: &Csr,
-        registration: Uuid,
-        now: i64,
-    ) -> Result<IssuanceProfile, Error> {
+    /// Validate the actual configured device certificate window for readiness and issuance.
+    pub fn issuance_end(&self, now: i64) -> Result<i64, Error> {
         let der = self.der()?;
         let certificate = Certificate::from_der(&der).map_err(invalid)?;
         if !valid_at(&certificate.tbs_certificate, now) {
@@ -167,13 +163,22 @@ impl WindowsDeviceTrust {
         {
             return Err(Error::Expired);
         }
+        Ok(end)
+    }
+    pub fn profile(
+        &self,
+        csr: &Csr,
+        registration: Uuid,
+        now: i64,
+    ) -> Result<IssuanceProfile, Error> {
+        let end = self.issuance_end(now)?;
         Ok(IssuanceProfile {
             version: 1,
             registration,
             start: now,
             end,
             spki: Sha256::digest(csr.info.public_key.to_der().map_err(invalid)?).into(),
-            issuer: Sha256::digest(&der).into(),
+            issuer: Sha256::digest(self.der()?).into(),
         })
     }
     /// Validate frozen key, subject, purpose, issuer and validity, independent of CA serial/signature bytes.

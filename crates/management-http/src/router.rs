@@ -1,16 +1,16 @@
 use crate::{Error, authorization::context::RequestAuth};
 use axum::{
     Extension, Json, Router,
-    extract::{Path, Query, State},
+    extract::{Path, State},
     middleware,
     response::Response,
     routing::{get, post},
 };
 use rss_mdm_audit_integration::RequestAudit;
-use rss_mdm_registration_service::device::coordinates::Coordinates;
 use serde::Deserialize;
 use std::sync::Arc;
 pub struct Services {
+    pub registration_channels: Arc<dyn crate::enrollment::channels::Source>,
     pub associations: Arc<rss_mdm_device_service::Associations>,
     pub windows_entra: Option<Arc<rss_mdm_registration_service::windows_entra::Management>>,
     pub pki: Arc<rss_mdm_pki_service::registry::Registry>,
@@ -45,7 +45,6 @@ pub struct Services {
     pub enrollment_progress:
         Arc<dyn rss_mdm_registration_service::enrollment::read::NativeProgress>,
     pub devices: Arc<rss_mdm_registration_service::device::DeviceService>,
-    pub collection: Arc<rss_mdm_inventory_service::collection_service::CollectionService>,
     pub windows: bool,
     pub apple: bool,
 }
@@ -73,9 +72,6 @@ pub fn router(state: Services, envelope: crate::boundary::Envelope) -> Router {
     let authorization = Arc::new(crate::authorization::http::HttpState {
         audit_store: state.audit_store.clone(),
     });
-    let collection_read = Arc::new(CollectionState {
-        collection: state.collection,
-    });
     let authentication_state = Arc::new(crate::authorization::http::AuthenticationState {
         identity: state.identity,
         access: state.authorization.clone(),
@@ -85,6 +81,7 @@ pub fn router(state: Services, envelope: crate::boundary::Envelope) -> Router {
         identity_management: state.identity_management,
     });
     let enrollment = Arc::new(crate::enrollment::http::HttpState {
+        channels: state.registration_channels,
         service: state.enrollment,
         native: state.enrollment_progress,
         devices: state.devices,
@@ -108,10 +105,6 @@ pub fn router(state: Services, envelope: crate::boundary::Envelope) -> Router {
             )),
         )
         .merge(crate::authorization::routes().with_state(authorization))
-        .route(
-            "/devices/{id}/collection-runs/{run}",
-            get(collection_run).with_state(collection_read),
-        )
         .route("/devices/{id}/actions", post(action));
     let planning_routes = Router::new()
         .merge(crate::runtime_diagnostics::routes().with_state(state.diagnostics))
@@ -280,25 +273,6 @@ async fn action(
     Err(Error::Unsupported)
 }
 
-async fn collection_run(
-    State(app): State<Arc<CollectionState>>,
-    Extension(auth): Extension<RequestAuth>,
-    Extension(audit): Extension<RequestAudit>,
-    path: Result<Path<(String, uuid::Uuid)>, axum::extract::rejection::PathRejection>,
-    query: Result<Query<Coordinates>, axum::extract::rejection::QueryRejection>,
-) -> Result<Json<crate::assets::collection::CollectionResponse>, Error> {
-    let Path((device, run)) = path.map_err(|_| Error::Malformed)?;
-    let Query(coordinates) = query.map_err(|_| Error::Malformed)?;
-    audit.target(&device);
-    audit.set_action("collection_read");
-    let grant = crate::assets::collection::InventoryRead::new(&auth.proof, &device, coordinates)?;
-    Ok(Json(app.collection.run(grant, run).await?))
-}
-
 struct IdentityContextState {
     identity_management: Arc<crate::authorization::identity_management::IdentityManagementPolicy>,
-}
-
-struct CollectionState {
-    collection: Arc<crate::assets::collection::CollectionService>,
 }

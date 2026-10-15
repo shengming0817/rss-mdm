@@ -3,7 +3,6 @@ use crate::api::Assembly;
 use crate::enrollment::test_support::audit;
 use crate::{
     Database,
-    assets::collection::CollectionService,
     device::test_support::{admin, options},
     enrollment::{Authorization, Password},
 };
@@ -307,7 +306,7 @@ impl Host {
                 .await?,
         )
         .await?;
-        let (management, timeline) = management(&config, &store).await?;
+        let (management, timeline) = management(&config, &store, runtime.clone()).await?;
         let command_audit = store
             .audit_store(&crate::config::AuditConfig::Plain)
             .await?;
@@ -417,11 +416,6 @@ impl Host {
             credentials: Arc::new(credentials),
             clock,
             identity_management,
-            collection: Arc::new(CollectionService::new(
-                devices.clone(),
-                store.inventory(),
-                runtime.clone(),
-            )),
             inventory: runtime.clone(),
             devices,
             access: store.clone(),
@@ -902,6 +896,7 @@ impl Host {
 async fn management(
     config: &crate::config::Config,
     access: &Database,
+    inventory: Arc<crate::inventory_runtime::InventoryRuntime>,
 ) -> anyhow::Result<(
     Arc<crate::flow::Flow>,
     Arc<rss_mdm_timeline_service::Timeline>,
@@ -910,6 +905,7 @@ async fn management(
     let flow = config
         .flow
         .open(
+            inventory,
             access
                 .audit_store(&crate::config::AuditConfig::Plain)
                 .await?,

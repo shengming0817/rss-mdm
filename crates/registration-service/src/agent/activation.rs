@@ -82,6 +82,13 @@ SELECT * FROM mdm_access.agent_issuances WHERE tenant_id=$1::uuid AND id=$2 FOR 
                         });
                     }
                     service.grant_live(c, &g).await?;
+                    if g.try_get::<Option<Uuid>, _>("target_registration")
+                        .map_err(db)?
+                        .is_none()
+                    {
+                        crate::admission::require_new_in(c, &tenant, crate::quotas::Channel::Agent)
+                            .await?;
+                    }
                     let profile: wire::RuntimeProfile =
                         serde_json::from_value(row.try_get("profile").map_err(db)?)
                             .map_err(|_| Error::Corrupt)?;

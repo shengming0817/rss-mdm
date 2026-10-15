@@ -79,9 +79,7 @@ pub async fn write(
 ) -> std::result::Result<wire::Candidate, Error> {
     let permission = match request.input {
         Change::Candidate { .. } => Permission::ReleaseWrite,
-        Change::Validate { .. } => Permission::ReleaseValidate,
-        Change::Approve { .. } => Permission::ReleaseApprove,
-        Change::Authorize { .. } | Change::Publish { .. } => Permission::ReleasePublish,
+        Change::Publish { .. } => Permission::ReleasePublish,
         Change::Recover { .. } | Change::Retry { .. } => Permission::ReleaseRecover,
         Change::Withdraw { .. } => Permission::ReleaseWithdraw,
     };
@@ -95,18 +93,6 @@ pub async fn write(
     let tenant = directory.tenant;
     let candidate_id = rel::CandidateId::new(tenant, &id).map_err(|_| Error::Malformed)?;
     let operator = actor(tenant, proof.instance_id(), proof.principal_id())?;
-    if let Change::Approve {
-        publisher_subject, ..
-    } = &request.input
-    {
-        proof
-            .authorization()?
-            .publisher(&rss_mdm_authorization_service::User {
-                instance_id: proof.instance_id().into(),
-                tenant_id: proof.tenant_id().into(),
-                principal_id: publisher_subject.clone(),
-            })?;
-    }
     audit.set_action("management_write");
     audit.target(&id);
     audit.operation(request.operation_id, "management_write");
@@ -144,16 +130,6 @@ pub async fn write(
     let current =
         rss_mdm_authorization_service::store::authorization_snapshot(authorization, proof).await?;
     current.require(proof, permission, None)?;
-    if let Change::Approve {
-        publisher_subject, ..
-    } = &request.input
-    {
-        current.publisher(&rss_mdm_authorization_service::User {
-            instance_id: proof.instance_id().into(),
-            tenant_id: proof.tenant_id().into(),
-            principal_id: publisher_subject.clone(),
-        })?;
-    }
     audit.require_request_settlement();
     audit.mark_commit_started();
     let outcome = perform(
@@ -161,7 +137,7 @@ pub async fn write(
         &candidate_id,
         &request.input,
         &call,
-        proof.instance_id(),
+        &crate::publication::ManagementAccess { proof, permission },
     )
     .await;
     // The service persists actual domain outcomes. The envelope separately audits
@@ -195,7 +171,7 @@ async fn perform(
     id: &rel::CandidateId,
     change: &Change,
     request: &service::ServiceRequest,
-    instance: &str,
+    access: &dyn crate::publication::PublishAccess,
 ) -> std::result::Result<Effect, Error> {
     let cutoff = cutoff();
     match change {
@@ -228,50 +204,22 @@ async fn perform(
                 .map_err(failure)?;
             Ok(effect(replayed))
         }
-        Change::Validate { ring } => {
+        Change::Publish { ring } => {
             let result = service
-                .validate(id, ring.core(), request, cutoff)
-                .await
-                .map_err(failure)?;
-            Ok(transition_effect(result))
-        }
-        Change::Approve {
-            ring,
-            publisher_subject,
-        } => {
-            let result = service
-                .approve(
-                    id,
-                    ring.core(),
-                    &actor(id.tenant(), instance, publisher_subject)?,
-                    request,
-                    cutoff,
-                )
-                .await
-                .map_err(failure)?;
-            Ok(transition_effect(result))
-        }
-        Change::Authorize { ring } => {
-            let result = service
-                .authorize(id, ring.core(), request, cutoff)
+                .submit(id, ring.core(), request, access, cutoff)
                 .await
                 .map_err(failure)?;
             Ok(transition_effect(result))
         }
         Change::Retry { ring, attempt } => {
             let result = service
-                .retry(id, ring.core(), *attempt, request, cutoff)
+                .retry(id, ring.core(), *attempt, request, access, cutoff)
                 .await
                 .map_err(failure)?;
             Ok(transition_effect(result))
         }
         Change::Withdraw { ring } => withdraw(service, id, *ring, request, cutoff).await,
-        Change::Publish {
-            ring,
-            publication,
-            attempt,
-        }
-        | Change::Recover {
+        Change::Recover {
             ring,
             publication,
             attempt,
@@ -296,17 +244,10 @@ async fn perform(
                     rel::PublicationResult::Applied(_) | rel::PublicationResult::NotApplied(_)
                 )
             );
-            let result = if matches!(change, Change::Publish { .. }) {
-                service
-                    .publish(p.id(), p.attempt, request.as_of, cutoff)
-                    .await
-                    .map_err(failure)?
-            } else {
-                service
-                    .reconcile(p.id(), p.attempt, request.as_of, cutoff)
-                    .await
-                    .map_err(failure)?
-            };
+            let result = service
+                .reconcile(p.id(), p.attempt, request.as_of, cutoff)
+                .await
+                .map_err(failure)?;
             Ok(match result {
                 rel::PublicationOutcome::Reported(
                     rel::PublicationResult::Applied(_) | rel::PublicationResult::NotApplied(_),
@@ -344,30 +285,18 @@ fn summary(c: &rel::Candidate) -> wire::Candidate {
                             rel::PublicationOutcome::Reported(
                                 rel::PublicationResult::NotApplied(_),
                             ) => "not_applied",
+                            rel::PublicationOutcome::Pending => "pending",
                             _ => "unknown",
                         }
                         .into(),
                     }),
                 ),
-                rel::RingState::Approved(_) => ("approved", None),
-                rel::RingState::Validated(_) => ("validated", None),
                 _ => ("candidate", None),
-            };
-            let approval = match snapshot.ring_state(*ring) {
-                rel::RingState::Approved(a) => Some(a),
-                rel::RingState::Publication(p) => Some(&p.approval),
-                _ => None,
             };
             wire::CandidateRing {
                 ring: ring_name(*ring).into(),
                 state: state.into(),
                 publication,
-                approval: approval.map(|a| wire::Approval {
-                    approver: a.approver.value().into(),
-                    publisher: a.publisher.value().into(),
-                    at: a.at.unix_seconds(),
-                    digest: a.digest().bytes(),
-                }),
             }
         })
         .collect();

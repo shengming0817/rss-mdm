@@ -62,15 +62,9 @@ impl Inputs {
             }
             let definition = agent_collection(&version, binding, verified)?.clone();
             let selected = variant(&version, binding)?;
-            let collection = freeze_collection(
-                tx,
-                self.tenant,
-                &version,
-                selected,
-                rss_mdm_inventory::Source::AgentNative,
-                definition.spec().mappings.keys(),
-            )
-            .await?;
+            let fields =
+                crate::freeze_inputs::prepare_agent_fields(tx, self.tenant, selected, &definition)
+                    .await?;
             return Ok(Frozen::AgentCollection {
                 frequency: *frequency,
                 action: Box::new(FrozenAgentCollection {
@@ -87,7 +81,7 @@ impl Inputs {
                         variant: selected.key().as_str().into(),
                     },
                     definition,
-                    collection,
+                    fields,
                     resource_digest: version.digest().bytes(),
                 }),
             });

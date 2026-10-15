@@ -369,7 +369,11 @@ impl PublicationService {
                             if matches!(table, Table::Publish) {
                                 let subject =
                                     db::subject(tx, &t.candidate).await?.ok_or_else(db::fault)?;
-                                input!(s.exports().resource_usable(tx, &subject).await?);
+                                input!(
+                                    s.exports()
+                                        .resource_usable(tx, &subject, t.lifecycle)
+                                        .await?
+                                );
                             }
                             let id = db::required(
                                 "driver::start_call",
@@ -688,14 +692,8 @@ impl PublicationService {
                                     s.recover_record_in(tx, &c, t, result).await?;
                                     return Ok(Ok(current.outcome));
                                 }
-                                if matches!(observed, Observation::Applied)
-                                    && c.snapshot().disposition == rel::Disposition::Active
-                                {
-                                    let subject = db::subject(tx, &t.candidate)
-                                        .await?
-                                        .ok_or_else(db::fault)?;
-                                    input!(s.exports().resource_usable(tx, &subject).await?);
-                                }
+                                // A completed external effect remains a historical fact even after withdrawal.
+                                // Current lifecycle still gates start_call and every hosted/execution read.
                                 let slot = db::slot(tx, &t.binding, &t.slot).await?;
                                 if slot.operation.as_deref() != Some(&t.key()) {
                                     return Ok(Err(Error::Blocked));

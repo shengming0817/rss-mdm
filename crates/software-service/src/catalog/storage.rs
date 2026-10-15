@@ -29,15 +29,15 @@ pub(super) async fn source(
     tx: &mut PgTransaction<'_>,
     id: &str,
     revision: &str,
-) -> Result<Option<(SourceDefinition, Admission)>> {
+) -> Result<Option<(SourceDefinition, Lifecycle)>> {
     let t = tx.tenant_id().to_string();
     let id = id.to_owned();
     let revision = revision.to_owned();
-    let row=tx.with_connection(move|c|Box::pin(async move{sqlx::query("SELECT definition::text,admission::text FROM mdm_software.sources WHERE tenant_id=$1::uuid AND id=$2 AND revision=$3").bind(t).bind(id).bind(revision).fetch_optional(c).await})).await?;
+    let row=tx.with_connection(move|c|Box::pin(async move{sqlx::query("SELECT definition::text,lifecycle::text FROM mdm_software.sources WHERE tenant_id=$1::uuid AND id=$2 AND revision=$3").bind(t).bind(id).bind(revision).fetch_optional(c).await})).await?;
     row.map(|row| {
         Ok((
             decode(&row.try_get::<String, _>("definition")?)?,
-            decode(&row.try_get::<String, _>("admission")?)?,
+            decode(&row.try_get::<String, _>("lifecycle")?)?,
         ))
     })
     .transpose()
@@ -45,37 +45,37 @@ pub(super) async fn source(
 pub(super) async fn save_source(
     tx: &mut PgTransaction<'_>,
     source: &SourceDefinition,
-    a: &Admission,
+    a: &Lifecycle,
 ) -> Result<()> {
     let t = tx.tenant_id().to_string();
     let s = source.clone();
     let definition = encode(source)?;
-    let admission = encode(a)?;
-    tx.with_connection(move|c|Box::pin(async move{sqlx::query("INSERT INTO mdm_software.sources VALUES($1::uuid,$2,$3,$4::jsonb,$5::jsonb) ON CONFLICT(tenant_id,id,revision) DO UPDATE SET admission=excluded.admission").bind(t).bind(s.id).bind(s.revision).bind(definition).bind(admission).execute(c).await?;Ok(())})).await?;
+    let lifecycle = encode(a)?;
+    tx.with_connection(move|c|Box::pin(async move{sqlx::query("INSERT INTO mdm_software.sources VALUES($1::uuid,$2,$3,$4::jsonb,$5::jsonb) ON CONFLICT(tenant_id,id,revision) DO UPDATE SET lifecycle=excluded.lifecycle").bind(t).bind(s.id).bind(s.revision).bind(definition).bind(lifecycle).execute(c).await?;Ok(())})).await?;
     Ok(())
 }
-pub(super) async fn admission(
+pub(super) async fn lifecycle(
     tx: &mut PgTransaction<'_>,
     id: &str,
     version: &str,
-) -> Result<Option<Admission>> {
+) -> Result<Option<Lifecycle>> {
     let t = tx.tenant_id().to_string();
     let id = id.to_owned();
     let v = version.to_owned();
-    let row:Option<String>=tx.with_connection(move|c|Box::pin(async move{sqlx::query_scalar("SELECT admission::text FROM mdm_software.approvals WHERE tenant_id=$1::uuid AND resource=$2 AND version=$3").bind(t).bind(id).bind(v).fetch_optional(c).await})).await?;
+    let row:Option<String>=tx.with_connection(move|c|Box::pin(async move{sqlx::query_scalar("SELECT lifecycle::text FROM mdm_software.versions WHERE tenant_id=$1::uuid AND resource=$2 AND version=$3").bind(t).bind(id).bind(v).fetch_optional(c).await})).await?;
     row.map(|v| decode(&v)).transpose()
 }
-pub(super) async fn save_admission(
+pub(super) async fn save_lifecycle(
     tx: &mut PgTransaction<'_>,
     id: &str,
     version: &str,
-    a: &Admission,
+    a: &Lifecycle,
 ) -> Result<()> {
     let t = tx.tenant_id().to_string();
     let id = id.to_owned();
     let v = version.to_owned();
     let value = encode(a)?;
-    tx.with_connection(move|c|Box::pin(async move{sqlx::query("INSERT INTO mdm_software.approvals VALUES($1::uuid,$2,$3,$4::jsonb) ON CONFLICT(tenant_id,resource,version) DO UPDATE SET admission=excluded.admission").bind(t).bind(id).bind(v).bind(value).execute(c).await?;Ok(())})).await?;
+    tx.with_connection(move|c|Box::pin(async move{sqlx::query("INSERT INTO mdm_software.versions VALUES($1::uuid,$2,$3,$4::jsonb) ON CONFLICT(tenant_id,resource,version) DO UPDATE SET lifecycle=excluded.lifecycle").bind(t).bind(id).bind(v).bind(value).execute(c).await?;Ok(())})).await?;
     Ok(())
 }
 pub(super) async fn replay(

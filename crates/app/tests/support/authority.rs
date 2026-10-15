@@ -57,6 +57,7 @@ impl Authority {
             "/api/v1",
             crate::enrollment::http::routes().with_state(Arc::new(
                 crate::enrollment::http::HttpState {
+                    channels: Arc::new(crate::test_support::authority::RegistrationChannels),
                     native: Arc::new(crate::enrollment_progress::EnrollmentProgress {
                         sessions: Arc::new(
                             rss_mdm_authorization_service::session::SessionAuthority::new(
@@ -131,4 +132,18 @@ pub(crate) async fn reader(base: &Value) -> Result<Arc<InventoryReader>> {
         )
         .await?,
     ))
+}
+
+pub(crate) struct RegistrationChannels;
+impl rss_mdm_management_http::enrollment::channels::Source for RegistrationChannels {
+    fn status(
+        &self,
+        _: rss_mdm_registration_service::quotas::Channel,
+    ) -> rss_mdm_management_http::enrollment::channels::Status {
+        use rss_mdm_management_http::enrollment::channels::*;
+        Status {
+            availability: Availability::Ready,
+            reason: None,
+        }
+    }
 }

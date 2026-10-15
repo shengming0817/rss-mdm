@@ -140,6 +140,7 @@ pub struct SourceReference {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct FieldEvidence {
+    pub context: String,
     pub field: String,
     pub sources: Vec<FactReference>,
 }
@@ -157,6 +158,7 @@ pub enum Outcome {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Explanation {
+    pub context: String,
     pub path: Vec<usize>,
     pub outcome: Outcome,
 }

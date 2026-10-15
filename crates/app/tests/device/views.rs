@@ -139,6 +139,7 @@ async fn http_lists_manual_conflicts_and_signed_source_pagination() -> anyhow::R
         state: State::Known(value),
         last_known: None,
         evidence: Evidence {
+            scope: rss_mdm_inventory::CollectionScope::Device,
             source: Source::Manual,
             dataset: None,
             registration: None,

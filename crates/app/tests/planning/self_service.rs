@@ -1354,26 +1354,23 @@ async fn available_software_requires_request_and_deduplicates_users_policies_and
             &f.router,
             &path,
             revision,
-            json!({"action":"withdraw","evidence":["transfer-approval-authority"]}),
+            json!({"action":"withdraw"}),
         )
         .await?;
-        let approved = crate::test_support::software::write(
+        crate::test_support::software::write(
             &mut other,
             &f.router,
             &path,
             revision + 1,
-            json!({"action":"approve","evidence":["administrator-approval"]}),
+            json!({"action":"enable"}),
         )
         .await?;
-        if path == format!("/api/v1/software/resources/{}/versions/v1", f.resource) {
-            f.first_operation = approved["admission"]["operation"].clone();
-        }
+        if path == format!("/api/v1/software/resources/{}/versions/v1", f.resource) {}
     }
     let mut policies = Vec::new();
     for _ in 0..2 {
         let id = Uuid::new_v4();
-        let mut definition =
-            software::authored(f.resource, f.scope, "available_install", &f.first_operation);
+        let mut definition = software::authored(f.resource, f.scope, "available_install");
         definition["selfService"] = json!({"access":{"kind":"authenticated_user"},"published":true,"displayName":"Install app","description":"Approved installer","prerequisites":"","sideEffects":"Install","category":"Applications","keywords":[]});
         let published = crate::test_support::software::write(
             &mut other,
@@ -1676,20 +1673,15 @@ async fn software_unknown_survives_same_account_relogin_and_keeps_other_accounts
         json!({"action":"activate","version":"v1"}),
     )
     .await?;
-    let approval = crate::test_support::software::write(
+    crate::test_support::software::write(
         &mut f.author,
         &f.router,
         &format!("/api/v1/software/resources/{resource_id}/versions/v1"),
         0,
-        json!({"action":"approve","evidence":["user-profile"]}),
+        json!({"action":"enable"}),
     )
     .await?;
-    let mut definition = software::authored(
-        resource_id,
-        f.scope,
-        "available_install",
-        &approval["admission"]["operation"],
-    );
+    let mut definition = software::authored(resource_id, f.scope, "available_install");
     definition["action"]["resource"]["variants"] = json!({"windows_x86_64":"default"});
     definition["selfService"] = json!({"access":{"kind":"device"},"published":true,"displayName":"User installation","description":"","prerequisites":"","sideEffects":"Install for current OS account","category":"Apps","keywords":[]});
     let policy = Uuid::new_v4();

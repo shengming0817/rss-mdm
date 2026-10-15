@@ -82,22 +82,10 @@ async fn each_route_requires_its_exact_capability() -> Result<()> {
             ),
         ),
         (
-            "release_validate",
-            Method::POST,
-            release.clone(),
-            op(json!({"action":"validate","ring":"test"})),
-        ),
-        (
-            "release_approve",
-            Method::POST,
-            release.clone(),
-            op(json!({"action":"approve","ring":"test","publisherSubject":case_admin()})),
-        ),
-        (
             "release_publish",
             Method::POST,
             release.clone(),
-            op(json!({"action":"authorize","ring":"test"})),
+            op(json!({"action":"publish","ring":"test"})),
         ),
         (
             "release_withdraw",

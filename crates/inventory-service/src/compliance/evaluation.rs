@@ -142,11 +142,24 @@ impl Compliance {
         let rule = crate::assets::rule(
             self.tenant(),
             input.rule,
-            &input.definition.criteria,
+            &input.definition.criteria.criteria,
             &page.catalog,
         )?;
-        let facts =
-            crate::assets::filter::page(self.tenant(), &page.devices, &page.catalog, &rule)?;
+        let facts = self
+            .asset_reader
+            .condition_inputs_in(
+                tx,
+                crate::assets::planning::ConditionRequest {
+                    watermark: input.watermark,
+                    devices: &page.devices,
+                    catalog: &page.catalog,
+                    authorization: &crate::assets::ReadScope::all(),
+                    condition: &input.definition.criteria,
+                    rule: &rule,
+                    associated: None,
+                },
+            )
+            .await?;
         let id = task.to_string();
         let version = format!("assets:{}", input.watermark);
         let after = cursor
@@ -171,6 +184,7 @@ impl Compliance {
             let document = assessment(
                 input,
                 device,
+                &facts.contexts,
                 e,
                 targets.get(&device.device).cloned().unwrap_or_default(),
                 platforms.get(&device.device).cloned().unwrap_or_default(),
@@ -249,6 +263,7 @@ impl Compliance {
 fn assessment(
     input: &Input,
     device: &crate::assets::DeviceView,
+    contexts: &BTreeMap<(String, String), crate::assets::DeviceView>,
     e: group::core::ObjectEvaluation,
     groups: Vec<GroupEvidence>,
     sources: Vec<SourceReference>,
@@ -259,10 +274,12 @@ fn assessment(
         group::core::Decision::Unknown => Decision::Unknown,
     };
     let explanations = e
-        .explanations
-        .into_iter()
-        .map(|e| Explanation {
-            path: e.path,
+        .contexts
+        .iter()
+        .flat_map(|(context, value)| value.explanations.iter().map(move |e| (context, e)))
+        .map(|(context, e)| Explanation {
+            context: context.clone(),
+            path: e.path.clone(),
             outcome: match e.outcome {
                 group::core::Outcome::Match => Outcome::Match,
                 group::core::Outcome::NoMatch => Outcome::NoMatch,
@@ -277,10 +294,12 @@ fn assessment(
         })
         .collect();
     let evidence = e
-        .provenance
-        .keys()
-        .filter_map(|field| {
-            device
+        .contexts
+        .iter()
+        .flat_map(|(context, value)| value.provenance.keys().map(move |field| (context, field)))
+        .filter_map(|(context, field)| {
+            contexts
+                .get(&(device.device.clone(), context.clone()))?
                 .fields
                 .iter()
                 .find(|(k, _)| {
@@ -290,6 +309,7 @@ fn assessment(
                             .is_some_and(|rest| rest.starts_with('.'))
                 })
                 .map(|(_, v)| FieldEvidence {
+                    context: context.clone(),
                     field: field.clone(),
                     sources: v
                         .sources

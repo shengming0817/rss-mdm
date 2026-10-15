@@ -11,7 +11,7 @@ use uuid::Uuid;
 pub const API_VERSION: u8 = 1;
 /// Canonical enrollment schema manifest.
 pub const SCHEMA_FINGERPRINT: &str =
-    "c13bbb06550f2a78bb554a1951ff9c35463ad232562ddc107f0248454a24a2a1";
+    "d36d12d0bb958b8785f73273c4f8f10acf48cb3f52ea4804670efc79c0f093d4";
 /// Canonical enrollment schema manifest.
 pub const SCHEMA_MANIFEST: &str = include_str!("../schema/enroll/manifest.json");
 /// A bounded runtime profile, frozen when a grant is consumed.
@@ -263,6 +263,8 @@ pub enum ErrorCode {
     GrantRevoked,
     /// Grant expired before activation.
     GrantExpired,
+    /// New enrollment is paused; preserve the original operation and expiry.
+    EnrollmentPaused,
     /// Per-user registration capacity is exhausted.
     RegistrationLimit,
     /// The same operation was reused for different content/key.

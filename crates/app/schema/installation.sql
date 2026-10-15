@@ -36,7 +36,7 @@ ALTER TABLE public.mdm_installation ADD CONSTRAINT management_tenant
  FOREIGN KEY(management_tenant_id) REFERENCES public.mdm_tenants(tenant_id);
 REVOKE ALL ON public.mdm_installation,public.mdm_tenants,public.mdm_tenant_operations FROM PUBLIC;
 -- Transaction-bound authorization reads only the two immutable purpose coordinates.
-GRANT SELECT(instance_id,management_tenant_id) ON public.mdm_installation TO mdm_flow_runtime,mdm_command_runtime;
+GRANT SELECT(instance_id,management_tenant_id) ON public.mdm_installation TO mdm_flow_runtime,mdm_command_runtime,mdm_software_driver;
 GRANT SELECT ON public.mdm_installation,public.mdm_tenants TO mdm_access,mdm_identity_runtime,mdm_identity_maintenance;
 GRANT USAGE ON SCHEMA rss_transactional_messaging TO mdm_access,mdm_identity_runtime,mdm_identity_maintenance;
 GRANT SELECT ON rss_transactional_messaging.tenant_epoch TO mdm_access,mdm_identity_runtime,mdm_identity_maintenance;

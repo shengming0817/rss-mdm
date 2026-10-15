@@ -198,6 +198,7 @@ pub async fn serve(
                             .config
                             .flow
                             .open(
+                                runtime.clone(),
                                 audit_store.clone(),
                                 rss_request_context::TenantId::parse(
                                     &compiled.config.identity.tenant_id,

@@ -8,6 +8,7 @@ impl IntoResponse for Error {
     fn into_response(self) -> Response {
         let (status, code) = match &self {
             Error::Archive(e) => archive_error(e),
+            Error::EnrollmentPaused => (StatusCode::CONFLICT, "enrollment_paused"),
             Error::RegistrationLimit => (StatusCode::TOO_MANY_REQUESTS, "registration_limit"),
             Error::Conflict => (StatusCode::CONFLICT, "operation_conflict"),
             Error::DeviceViewCursorInvalidated => {

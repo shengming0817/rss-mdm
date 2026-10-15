@@ -13,6 +13,7 @@ pub async fn quality_at(
     tenant: String,
     scopes: Vec<String>,
     watermark: i64,
+    field_scope: String,
 ) -> Result<Vec<sqlx::postgres::PgRow>, sqlx::Error> {
     sqlx::query(
         r#"
@@ -21,15 +22,22 @@ pub async fn quality_at(
                   FROM mdm_access.collection_history
                   WHERE tenant_id=$1::uuid AND scope=ANY($2) AND revision<=$3
                   ORDER BY scope,run,revision DESC
-                ) SELECT DISTINCT ON(scope) scope,sequence,run::text AS id,
+                ), fields AS (
+                  SELECT DISTINCT ON(h.scope,f->'definition'->>'key') h.scope,h.sequence,h.run,h.document,f->'definition'->>'key' AS field
+                  FROM latest h CROSS JOIN LATERAL jsonb_array_elements((h.document->>'attempts')::jsonb->'definition'->'fields') f
+                  WHERE h.document IS NOT NULL AND f->'scope'=$4::jsonb
+                  ORDER BY h.scope,f->'definition'->>'key',h.sequence DESC,h.run DESC
+                ) SELECT scope,sequence,run::text AS id,
                     document->>'result' AS result,document->>'attempts' AS attempts,
-                    (document->>'delivery_pending')::boolean AS delivery_pending
-                  FROM latest WHERE document IS NOT NULL ORDER BY scope,sequence DESC,run DESC
+                    (document->>'delivery_pending')::boolean AS delivery_pending,
+                    array_agg(field ORDER BY field) AS selected_fields
+                  FROM fields GROUP BY scope,sequence,run,document ORDER BY scope,sequence,run
             "#,
     )
     .bind(tenant)
     .bind(scopes)
     .bind(watermark)
+    .bind(field_scope)
     .fetch_all(c)
     .await
 }

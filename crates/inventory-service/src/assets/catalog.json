@@ -217,6 +217,42 @@
       ""
     ],
     [
+      "group_selections",
+      "tenant_id",
+      "uuid",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "group_selections",
+      "group_id",
+      "uuid",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "group_selections",
+      "rule_version",
+      "text",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "group_selections",
+      "selection",
+      "jsonb",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
       "operations",
       "tenant_id",
       "uuid",
@@ -465,6 +501,27 @@
       true
     ],
     [
+      "group_selections",
+      "group_selections_pkey",
+      "p",
+      "PRIMARY KEY (tenant_id, group_id, rule_version)",
+      true
+    ],
+    [
+      "group_selections",
+      "group_selections_selection_check",
+      "c",
+      "CHECK ((octet_length((selection)::text) <= 65536))",
+      true
+    ],
+    [
+      "group_selections",
+      "group_selections_tenant_id_group_id_rule_version_fkey",
+      "f",
+      "FOREIGN KEY (tenant_id, group_id, rule_version) REFERENCES mdm_group.rules(tenant_id, group_id, version)",
+      true
+    ],
+    [
       "operations",
       "operations_actor_check",
       "c",
@@ -567,6 +624,14 @@
       "group_operations",
       "group_operations_pkey",
       "CREATE UNIQUE INDEX group_operations_pkey ON mdm_assets.group_operations USING btree (tenant_id, actor, id)",
+      true,
+      true,
+      true
+    ],
+    [
+      "group_selections",
+      "group_selections_pkey",
+      "CREATE UNIQUE INDEX group_selections_pkey ON mdm_assets.group_selections USING btree (tenant_id, group_id, rule_version)",
       true,
       true,
       true

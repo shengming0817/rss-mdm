@@ -29,16 +29,13 @@ impl Inputs {
         match input {
             PublicationInput::AgentInstall {
                 binding,
-                admission,
                 schedule,
                 lifetime,
             } => {
                 return Ok(PreviewInputs::Onboarding(Frozen::AgentInstall {
                     action: Box::new(
-                        self.freeze_agent_in(
-                            tx, proof, snapshot, binding, *admission, schedule, *lifetime,
-                        )
-                        .await?,
+                        self.freeze_agent_in(tx, proof, snapshot, binding, schedule, *lifetime)
+                            .await?,
                     ),
                 }));
             }
@@ -129,13 +126,11 @@ impl Inputs {
                     return Err(Error::Conflict.into());
                 }
                 let definition = agent_collection(&version, binding, verified)?;
-                prepare_collection_in(
+                crate::freeze_inputs::prepare_agent_fields(
                     tx,
                     self.tenant,
-                    &version,
                     variant(&version, binding)?,
-                    rss_mdm_inventory::Source::AgentNative,
-                    definition.spec().mappings.keys(),
+                    definition,
                 )
                 .await?;
                 // Native runs retain complete raw query evidence, beyond mapped fields.

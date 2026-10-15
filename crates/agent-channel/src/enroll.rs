@@ -122,6 +122,7 @@ pub(crate) fn failure_response(code: wire::ErrorCode, id: Option<uuid::Uuid>) ->
         | C::CertificateExpired
         | C::CredentialRevoked
         | C::CredentialRetired => StatusCode::UNAUTHORIZED,
+        C::EnrollmentPaused => StatusCode::CONFLICT,
         C::PermissionDenied | C::GrantRevoked | C::GrantExpired => StatusCode::FORBIDDEN,
         C::RegistrationLimit => StatusCode::TOO_MANY_REQUESTS,
         C::OperationConflict => StatusCode::CONFLICT,

@@ -34,6 +34,7 @@ impl From<Error> for Failure {
         use wire::ErrorCode as C;
         let code = match e {
             Error::Agent(c) => c,
+            Error::EnrollmentPaused => C::EnrollmentPaused,
             Error::Malformed => C::MalformedRequest,
             Error::Unauthorized => C::InvalidIdentity,
             Error::Forbidden => C::PermissionDenied,
@@ -154,13 +155,18 @@ impl Service {
             .write(
                 self.tenant,
                 &control,
-                (&self.audit, a, context, Some(f)),
+                (&self.audit, a, (self.tenant.to_string(), context, Some(f))),
                 |ctx, tx| {
                     Box::pin(async move {
-                        let (store, a, context, f) = ctx;
-                        let f = f.take().ok_or(Error::Corrupt)?;
+                        let (store, a, context) = ctx;
                         let change = tx
-                            .with_connection_context(context, |ctx, c| f(ctx, c))
+                            .with_connection_context(context, |ctx, c| {
+                                Box::pin(async move {
+                                    crate::admission::lock_in(c, &ctx.0).await?;
+                                    let f = ctx.2.take().ok_or(Error::Corrupt)?;
+                                    f(&mut ctx.1, c).await
+                                })
+                            })
                             .await?;
                         let snapshot = a.snapshot();
                         let op = snapshot.operation_id.ok_or(Error::Malformed)?;

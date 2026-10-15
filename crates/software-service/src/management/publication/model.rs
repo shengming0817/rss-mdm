@@ -14,20 +14,8 @@ pub enum Change {
         expected_resource_revision: u64,
         resource_digest: [u8; 32],
     },
-    Validate {
-        ring: Ring,
-    },
-    Approve {
-        ring: Ring,
-        publisher_subject: String,
-    },
-    Authorize {
-        ring: Ring,
-    },
     Publish {
         ring: Ring,
-        publication: [u8; 32],
-        attempt: u64,
     },
     Recover {
         ring: Ring,
@@ -56,5 +44,33 @@ impl Ring {
             Self::Pilot => rel::Ring::Pilot,
             Self::Production => rel::Ring::Production,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+    #[test]
+    fn direct_publication_rejects_retired_actions_and_actor_fields() {
+        for action in ["validate", "approve", "authorize"] {
+            assert!(
+                serde_json::from_value::<Change>(json!({"action":action,"ring":"test"})).is_err()
+            );
+        }
+        for field in [
+            "publisherSubject",
+            "approval",
+            "evidence",
+            "publication",
+            "attempt",
+        ] {
+            let mut value = json!({"action":"publish","ring":"test"});
+            value[field] = json!("retired");
+            assert!(serde_json::from_value::<Change>(value).is_err());
+        }
+        assert!(
+            serde_json::from_value::<Change>(json!({"action":"publish","ring":"test"})).is_ok()
+        );
     }
 }

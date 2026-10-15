@@ -48,6 +48,7 @@ struct Fixture {
     signals: Arc<crate::worker_wake::Signals>,
     root: PathBuf,
     lose_notify: Arc<std::sync::atomic::AtomicBool>,
+    pause_before_notify: Arc<std::sync::atomic::AtomicBool>,
     ade: Arc<rss_mdm_apple_channel::HttpState>,
 }
 impl Fixture {
@@ -135,6 +136,7 @@ impl Fixture {
         let management = config
             .flow
             .open(
+                runtime.clone(),
                 access
                     .audit_store(&crate::config::AuditConfig::Plain)
                     .await?,
@@ -264,11 +266,6 @@ impl Fixture {
             )),
             clock,
             identity_management: compiled.identity_management,
-            collection: Arc::new(crate::assets::collection::CollectionService::new(
-                devices.clone(),
-                access.inventory(),
-                runtime.clone(),
-            )),
             inventory: runtime.clone(),
             devices,
             windows: None,
@@ -305,15 +302,32 @@ impl Fixture {
         .browser;
         let lose_notify = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let failure = lose_notify.clone();
+        let pause_before_notify = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let pause = pause_before_notify.clone();
+        let notify_tenant = case_tenant().to_owned();
         let hooks = hooks.layer(axum::middleware::from_fn(
             move |request: axum::extract::Request, next: axum::middleware::Next| {
                 let failure = failure.clone();
+                let pause = pause.clone();
+                let tenant = notify_tenant.clone();
                 async move {
                     use axum::response::IntoResponse;
                     if request.uri().path() == "/api/v1/apple/scep/notify"
                         && failure.load(std::sync::atomic::Ordering::SeqCst)
                     {
                         return StatusCode::SERVICE_UNAVAILABLE.into_response();
+                    }
+                    if request.uri().path() == "/api/v1/apple/scep/notify"
+                        && pause.swap(false, std::sync::atomic::Ordering::SeqCst)
+                    {
+                        let result = async {
+                            use sqlx::Connection;
+                            let mut pg = sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?).await?;
+                            sqlx::query("INSERT INTO mdm_access.registration_admission(tenant_id,channel,revision,paused) VALUES($1::uuid,'macos_mdm',1,true)")
+                                .bind(&tenant).execute(&mut pg).await?;
+                            anyhow::Ok(())
+                        }.await;
+                        if result.is_err() { return StatusCode::INTERNAL_SERVER_ERROR.into_response(); }
                     }
                     next.run(request).await
                 }
@@ -415,6 +429,7 @@ impl Fixture {
             signals,
             root,
             lose_notify,
+            pause_before_notify,
             ade,
         })
     }

@@ -3,16 +3,20 @@ use rss_mdm_inventory::{
 };
 use rss_observation::Body;
 fn definition() -> CollectionDefinition {
-    CollectionDefinition::new(
-        rss_mdm_inventory::CollectionScope::Device,
-        "native-basic",
-        1,
-        Source::MdmWindows,
-        builtin::fields()
+    CollectionDefinition::new("native-basic", 1, Source::MdmWindows, {
+        let scope = rss_mdm_inventory::CollectionScope::Device;
+        let fields: Vec<rss_mdm_inventory::FieldDefinition> = builtin::fields()
             .into_iter()
             .filter(|f| [builtin::MODEL, builtin::OS_VERSION].contains(&f.key))
-            .collect(),
-    )
+            .collect();
+        fields
+            .into_iter()
+            .map(|definition| rss_mdm_inventory::CollectionField {
+                definition,
+                scope: scope.clone(),
+            })
+            .collect()
+    })
     .unwrap()
 }
 #[test]
@@ -96,7 +100,6 @@ fn partial_coverage_never_becomes_complete_just_because_all_named_values_are_pre
     let d = definition();
     let changes = d
         .fields()
-        .iter()
         .map(|f| {
             rss_observation::Change::upsert(
                 rss_observation::Id::new(f.key.as_str()).unwrap(),
@@ -113,19 +116,23 @@ fn partial_coverage_never_becomes_complete_just_because_all_named_values_are_pre
 #[test]
 fn invalid_list_items_are_recorded_without_replacing_previous_list_facts() {
     use rss_mdm_inventory::{FieldKey, Invalid, NativeValue, ValueType};
-    let mut field = definition().fields()[0].clone();
+    let mut field = definition().fields().next().unwrap().clone();
     field.key = FieldKey::parse("custom.test_items").unwrap();
     field.value_type = ValueType::Array {
         items: Box::new(ValueType::Integer),
         max_items: 10,
     };
-    let def = CollectionDefinition::new(
-        rss_mdm_inventory::CollectionScope::Device,
-        "list",
-        1,
-        Source::MdmWindows,
-        vec![field.clone()],
-    )
+    let def = CollectionDefinition::new("list", 1, Source::MdmWindows, {
+        let scope = rss_mdm_inventory::CollectionScope::Device;
+        let fields: Vec<rss_mdm_inventory::FieldDefinition> = vec![field.clone()];
+        fields
+            .into_iter()
+            .map(|definition| rss_mdm_inventory::CollectionField {
+                definition,
+                scope: scope.clone(),
+            })
+            .collect()
+    })
     .unwrap();
     let outcome = NativeValue::list(
         &field,
@@ -151,16 +158,20 @@ fn invalid_list_items_are_recorded_without_replacing_previous_list_facts() {
 fn installed_software_empty_snapshot_is_confirmed_not_missing_or_partial() {
     use rss_mdm_inventory::FieldKey;
     let key = FieldKey::parse("device.software.installations").unwrap();
-    let d = CollectionDefinition::new(
-        rss_mdm_inventory::CollectionScope::Device,
-        "installed-software",
-        1,
-        Source::MdmWindows,
-        builtin::fields()
+    let d = CollectionDefinition::new("installed-software", 1, Source::MdmWindows, {
+        let scope = rss_mdm_inventory::CollectionScope::Device;
+        let fields: Vec<rss_mdm_inventory::FieldDefinition> = builtin::fields()
             .into_iter()
             .filter(|f| f.key == key)
-            .collect(),
-    )
+            .collect();
+        fields
+            .into_iter()
+            .map(|definition| rss_mdm_inventory::CollectionField {
+                definition,
+                scope: scope.clone(),
+            })
+            .collect()
+    })
     .unwrap();
     let mut empty = CollectionProgress::new(d.clone());
     empty

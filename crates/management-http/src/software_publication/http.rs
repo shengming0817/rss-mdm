@@ -41,8 +41,13 @@ async fn write(
     Extension(audit): Extension<RequestAudit>,
     Path((source, id)): Path<(String, String)>,
     body: Result<Json<Operation<Change>>, axum::extract::rejection::JsonRejection>,
-) -> std::result::Result<Json<wire::Candidate>, Error> {
+) -> std::result::Result<(axum::http::StatusCode, Json<wire::Candidate>), Error> {
     let Json(request) = body.map_err(Error::from)?;
+    let status = if matches!(request.input, Change::Publish { .. }) {
+        axum::http::StatusCode::ACCEPTED
+    } else {
+        axum::http::StatusCode::OK
+    };
     rss_mdm_software_service::management::publication::service::write(
         &app.publications,
         &app.access,
@@ -53,7 +58,7 @@ async fn write(
         request,
     )
     .await
-    .map(Json)
+    .map(|v| (status, Json(v)))
     .map_err(Into::into)
 }
 pub struct HttpState {

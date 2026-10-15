@@ -1,3 +1,4 @@
+use anyhow::Context;
 #[path = "windows_assets.rs"]
 mod windows_assets;
 use crate::test_support::agent_execution::*;
@@ -987,6 +988,251 @@ async fn native_inventory_case(map_software: bool, all_failed: bool, macos: bool
         crate::test_support::identity::set_grants(case_tenant(), &f.author_id, f.grants.clone())
             .await?;
         ensure!(pg(&format!("SELECT count(*) FROM mdm_commands.action_runs r JOIN mdm_policy.versions v ON(v.tenant_id,v.id)=(r.tenant_id,r.policy_version) WHERE r.tenant_id='{}' AND v.action_kind='execution'",case_tenant()))?.trim()=="0");
+    }
+    crate::test_support::stop_worker(inventory).await?;
+    runtime.close_fixture().await?;
+    crate::test_support::stop_worker(worker).await?;
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+#[ignore = "make t2 MODULE=execution.agent.delivery: signed user binding and scoped application/Brew projection"]
+async fn macos_user_applications_and_brew_keep_other_users_after_complete_empty() -> Result<()> {
+    use rss_mdm_agent_wire::runtime as w;
+    use rss_mdm_resource as r;
+    use sha2::{Digest, Sha256};
+    let mut f = Fixture::new().await?;
+    f.grants
+        .extend(crate::test_support::identity::device_grants(
+            None,
+            &["inventory_collect", "operation_read"],
+        )?);
+    f.grants.push(crate::authorization::Grant {
+        operation: crate::authorization::Permission::InventorySensitiveRead,
+        scope: crate::authorization::Scope::Tenant,
+    });
+    crate::test_support::identity::set_grants(case_tenant(), &f.author_id, f.grants.clone())
+        .await?;
+    let mut context = crate::test_support::software_execution::context(
+        crate::test_support::software_execution::Platform::MacOs,
+    );
+    context["interactiveUser"] =
+        json!({"identity":"501","sessionId":Uuid::new_v4(),"administrator":false});
+    let (_, registration) = crate::test_support::agent::enroll_profile(&f.router, &mut f.author, case_credential(), json!({"capabilities":["inventory.collect.v1","inventory.native.v1"],"platform":"macos","architecture":"aarch64","executionContext":context})).await?;
+    let device = registration["deviceId"].as_str().unwrap().to_owned();
+    f.scope(case_task_scope(), json!([{"kind":"device","id":device}]))
+        .await?;
+    let mut specs = Vec::new();
+    for name in [
+        "macos.agent.applications_user",
+        "macos.agent.brew_arm_formula",
+    ] {
+        let r::blueprints::Definition::AgentCollection { template } =
+            r::blueprints::get(name, "1").unwrap().definition
+        else {
+            unreachable!()
+        };
+        specs.push(template.spec().clone());
+    }
+    let mut plan = specs[0].plan.spec().clone();
+    plan.queries.extend(specs[1].plan.spec().queries.clone());
+    let mut mappings = specs[0].mappings.clone();
+    mappings.extend(specs[1].mappings.clone());
+    let definition = r::AgentCollectionDefinition::new(r::AgentCollectionSpec {
+        plan: w::NativeCollectionPlan::new(plan)?,
+        mappings,
+    })?;
+    let resource_id = Uuid::new_v4();
+    let bytes = definition.canonical();
+    let digest: [u8; 32] = Sha256::digest(&bytes).into();
+    resource(
+        &mut f.author,
+        &f.router,
+        resource_id,
+        0,
+        json!({"action":"create","kind":"agent_collection"}),
+    )
+    .await?;
+    resource(&mut f.author,&f.router,resource_id,1,json!({"action":"version","version":"v1","kind":"agent_collection","variants":[{"platform":"macos","architecture":"aarch64","key":"default","declaration":{"kind":"agent_collection","artifact":{"reference":"native.json","length":bytes.len(),"sha256":digest},"definition":definition}}]})).await?;
+    ensure!(
+        upload_for(
+            &f.author,
+            &f.router,
+            resource_id,
+            &bytes,
+            "macos",
+            "aarch64"
+        )
+        .await?
+            == StatusCode::CREATED
+    );
+    resource(
+        &mut f.author,
+        &f.router,
+        resource_id,
+        2,
+        json!({"action":"activate","version":"v1"}),
+    )
+    .await?;
+    let worker = worker(&f.base).await?;
+    let runtime = agent_runtime(&f.base).await?;
+    let inventory = crate::inventory_runtime::test_support::start(runtime.clone()).await?;
+    let mut datasets = Vec::new();
+    for (stage, uid) in [(0, "501"), (1, "502"), (2, "501")] {
+        context["revision"] = json!(stage + 2);
+        context["interactiveUser"] =
+            json!({"identity":uid,"sessionId":Uuid::new_v4(),"administrator":false});
+        let policy = Uuid::new_v4();
+        post(&mut f.author,&f.router,&format!("/api/v1/policies/{policy}"),json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"put","enabled":true,"definition":{"scope":case_task_scope(),"action":{"kind":"agent_collection","resource":{"id":resource_id,"version":"v1","platform":"macos","architecture":"aarch64","variant":"default"},"runLifetimeSeconds":300}}}})).await?;
+        let task = tokio::time::timeout(Duration::from_secs(30), async {
+            loop {
+                let response = agent_call(&f.router,Method::POST,"/api/v1/agent/runtime/tasks/claim",Some(case_credential()),Some(json!({"wireVersion":1,"operationId":Uuid::new_v4(),"profiles":[],"environment":{"edition":null,"tools":{},"nativeEngines":{"macos.applications":1,"macos.brew":1}},"executionContext":context}))).await?;
+                ensure!(response.0 == StatusCode::OK, "scoped claim: {response:?}");
+                if !response.1["task"].is_null() { break Ok::<_,anyhow::Error>(serde_json::from_value::<w::SignedTask>(response.1["task"].clone())?); }
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        }).await??;
+        let w::TaskPayload::Collection(spec) = &task.payload else {
+            anyhow::bail!("wrong task family")
+        };
+        ensure!(
+            matches!(&spec.execution.target, w::SoftwareExecutionTarget::User { identity, .. } if identity == uid)
+        );
+        let path = format!("/api/v1/agent/runtime/tasks/{}/events", spec.task_id);
+        for event in [json!({"kind":"received"}), json!({"kind":"start"})] {
+            let response = agent_call(&f.router,Method::POST,&path,Some(case_credential()),Some(json!({"wireVersion":1,"operationId":Uuid::new_v4(),"attemptId":spec.attempt_id,"executionContext":context,"event":event}))).await?;
+            ensure!(response.0 == StatusCode::OK, "scoped start: {response:?}");
+        }
+        let now = crate::clock::Clock::unix_seconds(&crate::clock::SystemClock)?;
+        let mut queries = std::collections::BTreeMap::new();
+        for (id, query) in &spec.plan.spec().queries {
+            let application = matches!(
+                query.definition,
+                w::NativeQueryDefinition::MacosApplications { .. }
+            );
+            let mut row = json!({"id":"instance","native_id":"native","name":"Scoped app","version":"1","publisher":"Acme","scope":"user","owner":uid,"origin":if application {"application"} else {"homebrew"},"location":"/controlled/fixture"});
+            if application {
+                row["signature_status"] = json!("signed");
+            } else {
+                row["prefix"] = json!("/opt/homebrew");
+                row["tap"] = json!("homebrew/core");
+                row["package_kind"] = json!("formula");
+            }
+            let rows = if stage == 2 {
+                vec![]
+            } else {
+                vec![serde_json::from_value(row)?]
+            };
+            queries.insert(
+                id.clone(),
+                w::NativeQueryResult {
+                    query_digest: query.digest(),
+                    collected_at: now,
+                    status: w::NativeQueryStatus::Complete,
+                    enumeration_complete: true,
+                    row_count: rows.len() as u32,
+                    rows,
+                    users: None,
+                },
+            );
+        }
+        let event = w::TaskEvent::CollectionResult(w::NativeCollectionResult {
+            plan_digest: spec.plan_digest,
+            collected_at: now,
+            queries,
+        });
+        let response = agent_call(&f.router,Method::POST,&path,Some(case_credential()),Some(json!({"wireVersion":1,"operationId":Uuid::new_v4(),"attemptId":spec.attempt_id,"executionContext":context,"event":event}))).await?;
+        ensure!(response.0 == StatusCode::OK, "scoped result: {response:?}");
+        tokio::time::timeout(Duration::from_secs(20), async {
+            loop {
+                let count = pg(&format!(
+                    "SELECT count(*) FROM mdm.inventory WHERE tenant_id='{}' AND batch_id='{}'",
+                    case_tenant(),
+                    spec.attempt_id
+                ))?;
+                if count.trim() == "2" {
+                    break Ok::<_, anyhow::Error>(());
+                }
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        })
+        .await??;
+        for (field, scope) in [
+            (
+                "device.software.installations",
+                json!({"kind":"macos_applications","root":"user","uid":uid.parse::<u32>()?}),
+            ),
+            (
+                "device.software.packages",
+                json!({"kind":"macos_brew","uid":uid.parse::<u32>()?,"prefix":"/opt/homebrew","package":"formula","taps":[]}),
+            ),
+        ] {
+            let parameters = url::form_urlencoded::Serializer::new(String::new())
+                .append_pair("scope", &scope.to_string())
+                .finish();
+            let response = f
+                .author
+                .call(
+                    &f.router,
+                    Method::GET,
+                    &format!(
+                        "/api/v1/devices/{device}/collections/{}/fields/{field}/items?{parameters}",
+                        spec.attempt_id
+                    ),
+                    None,
+                )
+                .await?;
+            ensure!(
+                response.0 == StatusCode::OK,
+                "scoped item pagination: {response:?}"
+            );
+        }
+        datasets.push(pg(&format!("SELECT attempts::jsonb#>>'{{definition,dataset}}' FROM mdm_access.collection_runs WHERE tenant_id='{}' AND id='{}'",case_tenant(),spec.attempt_id))?);
+    }
+    ensure!(datasets[0] == datasets[2] && datasets[0] != datasets[1]);
+    let rows: Value = serde_json::from_str(pg(&format!(
+        "SELECT jsonb_agg(jsonb_build_object('field',field,'scope',field_scope::jsonb,'value',value::jsonb->'value')) FROM mdm.inventory WHERE tenant_id='{}' AND source='agent.native' AND field IN ('device.software.installations','device.software.packages')",
+        case_tenant()
+    ))?.trim())?;
+    let rows = rows.as_array().context("scoped software facts")?;
+    ensure!(
+        rows.len() == 4,
+        "expected both fields for both users: {rows:?}"
+    );
+    for uid in [501, 502] {
+        for (field, scope) in [
+            (
+                "device.software.installations",
+                json!({"kind":"macos_applications","root":"user","uid":uid}),
+            ),
+            (
+                "device.software.packages",
+                json!({"kind":"macos_brew","uid":uid,"prefix":"/opt/homebrew","package":"formula","taps":[]}),
+            ),
+        ] {
+            let matching: Vec<_> = rows
+                .iter()
+                .filter(|row| row["field"] == field && row["scope"] == scope)
+                .collect();
+            ensure!(
+                matching.len() == 1,
+                "missing or duplicate {field}/{scope}: {rows:?}"
+            );
+            let values = matching[0]["value"]
+                .as_array()
+                .context("trusted software list")?;
+            ensure!(
+                values.len() == if uid == 501 { 0 } else { 1 },
+                "incorrect replacement for {field}/{scope}: {values:?}"
+            );
+            if uid == 502 {
+                ensure!(
+                    values[0]["value"]["owner"]["value"] == "502"
+                        && values[0]["value"]["name"]["value"] == "Scoped app",
+                    "other user's fact changed: {values:?}"
+                );
+            }
+        }
     }
     crate::test_support::stop_worker(inventory).await?;
     runtime.close_fixture().await?;

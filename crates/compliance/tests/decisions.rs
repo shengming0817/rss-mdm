@@ -116,6 +116,7 @@ fn validation_errors_are_closed_and_do_not_echo_inputs() {
             applicable,
             vec![],
             vec![FieldEvidence {
+                context: "default".into(),
                 field: "".into(),
                 sources: vec![]
             }]

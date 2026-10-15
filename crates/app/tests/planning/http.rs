@@ -597,7 +597,7 @@ async fn planning_routes_and_derived_result_authorization() -> Result<()> {
     let policy = uuid::Uuid::new_v4();
     let resource = uuid::Uuid::new_v4();
     let group_path = format!("/api/v1/groups/{group}");
-    call(&mut browser,&router,&group_path,0,json!({"action":"create","assetContext":"endpoint","name":"managed","description":"","criteria":{"kind":"predicate","field":"device.model","op":"eq","value":{"kind":"string","value":"Model-A"}}})).await?;
+    call(&mut browser,&router,&group_path,0,json!({"action":"create","assetContext":"endpoint","name":"managed","description":"","criteria":{"selector":{"kind":"device"},"quantifier":"one","criteria":{"kind":"predicate","field":"device.model","op":"eq","value":{"kind":"string","value":"Model-A"}}}})).await?;
     let (_, current) = browser
         .call(&router, Method::GET, &group_path, None)
         .await?;
@@ -931,7 +931,7 @@ async fn derived_result_authorization(
     ensure!(status == StatusCode::OK, "authorized derived page: {page}");
     let cursor = page["nextCursor"].as_str().unwrap();
     paths.push(format!("{}&cursor={cursor}", paths[3]));
-    let criteria = json!({"kind":"predicate","field":"device.model","op":"eq","value":{"kind":"string","value":"Model-A"}});
+    let criteria = json!({"selector":{"kind":"device"},"quantifier":"one","criteria":{"kind":"predicate","field":"device.model","op":"eq","value":{"kind":"string","value":"Model-A"}}});
     for limited in [false, true] {
         let mut grants = permissions
             .as_array()

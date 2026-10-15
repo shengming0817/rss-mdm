@@ -485,7 +485,7 @@ impl ExecutionService {
                         Some(proof) => {
                             let auth = crate::action_admission::current(tx, proof).await?;
                             let basic = auth.require(proof, Permission::InventoryRead, Some(p.device())).is_ok();
-                            let sensitive = script.frozen.collection.as_ref().is_some_and(|c| c.fields().iter().any(|f| f.sensitivity == rss_mdm_inventory::Sensitivity::Sensitive));
+                            let sensitive = script.frozen.collection.as_ref().is_some_and(|c| c.fields().any(|f| f.sensitivity == rss_mdm_inventory::Sensitivity::Sensitive));
                             basic && (!sensitive || auth.require(proof, Permission::InventorySensitiveRead, None).is_ok())
                         }
                         None => false,

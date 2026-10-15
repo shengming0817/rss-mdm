@@ -5,7 +5,7 @@ fn request(revision: u64, input: Value) -> Value {
 }
 
 fn definition(target: Value) -> Value {
-    json!({"name":"loaner policy","severity":"high","enabled":true,"platform":"all","target":target,"criteria":{"kind":"predicate","field":"custom.is_loaner","op":"eq","value":{"kind":"boolean","value":false}}})
+    json!({"name":"loaner policy","severity":"high","enabled":true,"platform":"all","target":target,"criteria":{"selector":{"kind":"device"},"quantifier":"one","criteria":{"kind":"predicate","field":"custom.is_loaner","op":"eq","value":{"kind":"boolean","value":false}}}})
 }
 
 async fn ok(b: &mut Browser, r: &Router, m: Method, p: &str, v: Option<Value>) -> Result<Value> {

@@ -38,7 +38,6 @@ async fn publication_http_authority_receipts_and_public_native_binding() -> Resu
         "resource_write",
         "software_read",
         "software_write",
-        "software_approve",
         "software_withdraw",
         "policy_read",
         "policy_write",
@@ -46,7 +45,6 @@ async fn publication_http_authority_receipts_and_public_native_binding() -> Resu
         "scope_write",
         "release_read",
         "release_write",
-        "release_validate",
         "release_publish",
         "release_recover",
         "release_withdraw",
@@ -56,7 +54,7 @@ async fn publication_http_authority_receipts_and_public_native_binding() -> Resu
             scope: crate::authorization::Scope::Tenant,
         });
     }
-    crate::test_support::identity::set_grants(case_tenant(), &subject, grants).await?;
+    crate::test_support::identity::set_grants(case_tenant(), &subject, grants.clone()).await?;
     let stack = execution::worker_for(&serde_json::from_value(cfg)?, f.execution.clone()).await?;
     let resource = Uuid::new_v4();
     let resource_path = format!("/api/v1/resources/{resource}");
@@ -73,22 +71,6 @@ async fn publication_http_authority_receipts_and_public_native_binding() -> Resu
     .await?;
     write(&mut f.author,&f.router,&resource_path,1,json!({"action":"version","version":"v1","kind":"software","variants":[{"platform":"windows","architecture":"x86_64","key":"default","declaration":{"kind":"software","definition":definition}}]})).await?;
     execution::upload_windows(&f.author, &f.router, resource, bytes).await?;
-    write(
-        &mut f.author,
-        &f.router,
-        &resource_path,
-        2,
-        json!({"action":"activate","version":"v1"}),
-    )
-    .await?;
-    let admitted = write(
-        &mut f.author,
-        &f.router,
-        &format!("/api/v1/software/resources/{resource}/versions/v1"),
-        0,
-        json!({"action":"approve","evidence":["frozen enterprise materials"]}),
-    )
-    .await?;
     let catalog = f
         .author
         .call(
@@ -103,7 +85,7 @@ async fn publication_http_authority_receipts_and_public_native_binding() -> Resu
         server.logical,
         Uuid::new_v4()
     );
-    let input = json!({"action":"candidate","resource":resource,"version":"v1","expectedResourceRevision":3,"resourceDigest":catalog.1["resourceDigest"]});
+    let input = json!({"action":"candidate","resource":resource,"version":"v1","expectedResourceRevision":2,"resourceDigest":catalog.1["resourceDigest"]});
     let operation = Uuid::new_v4();
     let request = json!({"operationId":operation,"expectedRevision":0,"input":input});
     let mut old = request.clone();
@@ -155,44 +137,48 @@ async fn publication_http_authority_receipts_and_public_native_binding() -> Resu
         replay.0 == StatusCode::OK && replay.1 == candidate.1,
         "candidate replay: {replay:?}"
     );
-    let validated = write(
+    ensure!(
+        catalog.1["lifecycle"].is_null(),
+        "saving a draft enabled it: {catalog:?}"
+    );
+    let saved = f.author.call(&f.router, Method::GET, &path, None).await?;
+    ensure!(saved.0 == StatusCode::OK, "saved candidate: {saved:?}");
+    let without_enable = grants
+        .iter()
+        .filter(|g| g.operation != crate::authorization::Permission::SoftwareWrite)
+        .cloned()
+        .collect();
+    crate::test_support::identity::set_grants(case_tenant(), &subject, without_enable).await?;
+    let denied=f.author.call(&f.router,Method::POST,&path,Some(json!({"operationId":Uuid::new_v4(),"expectedRevision":candidate.1["revision"],"input":{"action":"publish","ring":"test"}}))).await?;
+    ensure!(
+        denied.0 == StatusCode::FORBIDDEN,
+        "draft publish without enable permission: {denied:?}"
+    );
+    let still_draft = f
+        .author
+        .call(
+            &f.router,
+            Method::GET,
+            &format!("/api/v1/software/resources/{resource}/versions/v1"),
+            None,
+        )
+        .await?;
+    ensure!(still_draft.0 == StatusCode::OK && still_draft.1["lifecycle"].is_null());
+    let unchanged = f.author.call(&f.router, Method::GET, &path, None).await?;
+    ensure!(
+        unchanged.0 == StatusCode::OK && unchanged.1 == saved.1,
+        "rejected publication mutated candidate: {unchanged:?}"
+    );
+    crate::test_support::identity::set_grants(case_tenant(), &subject, grants).await?;
+    let pending = write(
         &mut f.author,
         &f.router,
         &path,
         candidate.1["revision"].as_u64().unwrap(),
-        json!({"action":"validate","ring":"test"}),
+        json!({"action":"publish","ring":"test"}),
     )
     .await?;
-    let mut approver = Browser::default();
-    ensure!(approver.login(&f.router, "admin").await? == StatusCode::OK);
-    let approver_subject = browser_subject(&approver, &f.router).await?;
-    let grants = ["release_read", "release_approve"]
-        .into_iter()
-        .map(|name| {
-            Ok(crate::authorization::Grant {
-                operation: serde_json::from_value(json!(name))?,
-                scope: crate::authorization::Scope::Tenant,
-            })
-        })
-        .collect::<Result<Vec<_>>>()?;
-    crate::test_support::identity::set_grants(case_tenant(), &approver_subject, grants).await?;
-    let approved = write(
-        &mut approver,
-        &f.router,
-        &path,
-        validated["revision"].as_u64().unwrap(),
-        json!({"action":"approve","ring":"test","publisherSubject":subject}),
-    )
-    .await?;
-    let authorized = write(
-        &mut f.author,
-        &f.router,
-        &path,
-        approved["revision"].as_u64().unwrap(),
-        json!({"action":"authorize","ring":"test"}),
-    )
-    .await?;
-    let publication = &authorized["rings"][0]["publication"];
+    let publication = &pending["rings"][0]["publication"];
     let id = publication["id"]
         .as_array()
         .unwrap()
@@ -224,7 +210,7 @@ async fn publication_http_authority_receipts_and_public_native_binding() -> Resu
             .status()
             == StatusCode::NOT_FOUND
     );
-    let published=write(&mut f.author,&f.router,&path,authorized["revision"].as_u64().unwrap(),json!({"action":"publish","ring":"test","publication":publication["id"],"attempt":publication["attempt"]})).await?;
+    let published=write(&mut f.author,&f.router,&path,pending["revision"].as_u64().unwrap(),json!({"action":"recover","ring":"test","publication":publication["id"],"attempt":publication["attempt"]})).await?;
     let info = f
         .router
         .clone()
@@ -300,7 +286,7 @@ async fn publication_http_authority_receipts_and_public_native_binding() -> Resu
     ensure!(served.into_body().collect().await?.to_bytes() == bytes.as_slice());
     let policy = Uuid::new_v4();
     let policy_path = format!("/api/v1/policies/{policy}");
-    write(&mut f.author,&f.router,&policy_path,0,json!({"action":"put","enabled":true,"definition":{"scope":f.scope,"action":{"kind":"software","resource":{"kind":"software","id":resource,"version":"v1","variants":{"windows_x86_64":"default"}},"intent":"required_install","delivery":{"kind":"native","source":server.logical,"ring":"test"},"admissionOperation":admitted["admission"]["operation"],"runLifetimeSeconds":600,"rollout":{"stages":[{"scope":f.scope,"opensAt":0}]}}}})).await?;
+    write(&mut f.author,&f.router,&policy_path,0,json!({"action":"put","enabled":true,"definition":{"scope":f.scope,"action":{"kind":"software","resource":{"kind":"software","id":resource,"version":"v1","variants":{"windows_x86_64":"default"}},"intent":"required_install","delivery":{"kind":"native","source":server.logical,"ring":"test"},"runLifetimeSeconds":600,"rollout":{"stages":[{"scope":f.scope,"opensAt":0}]}}}})).await?;
     {
         use sqlx::Connection;
         let mut owner =

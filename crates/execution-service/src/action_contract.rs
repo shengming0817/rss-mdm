@@ -43,7 +43,7 @@ pub struct FrozenSoftwareAction {
     pub version: String,
     pub variants: BTreeMap<rss_mdm_policy::SoftwareTarget, String>,
     pub resource_digest: [u8; 32],
-    pub admission_operation: uuid::Uuid,
+    pub lifecycle_binding: [u8; 32],
     pub intent: rss_mdm_policy::SoftwareIntent,
     pub schedule: Schedule,
     pub run_lifetime_seconds: u32,
@@ -98,11 +98,11 @@ impl FrozenNativeCollection {
 /// Frozen native Agent input, independent of script permissions and profiles.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct FrozenAgentCollection {
+    pub fields: Vec<rss_mdm_inventory::FieldDefinition>,
     pub grants: BTreeMap<String, Vec<crate::authorization::UserGrant>>,
     pub input: ExecutionInput,
     pub resource: wire::TaskResource,
     pub definition: r::AgentCollectionDefinition,
-    pub collection: rss_mdm_inventory::CollectionDefinition,
     pub resource_digest: [u8; 32],
 }
 impl ScheduledInput for FrozenAgentCollection {

@@ -32,7 +32,7 @@ Resource.Script 和 Resource.Software 分别持有不可变执行定义。管理
 
 同一 actor/上传 ID 的元数据由 PostgreSQL 持久化已确认 offset。续传从已确认清单恢复，未确认对象由登记意图保留并参与额度计算；多实例的 epoch 防止旧写者推进新 frontier。`POST /api/v1/software/content/cleanup` 需要 ResourceWrite，每轮有界检查过期且无有效引用、无活跃读写的候选。清理查询 ResourceStore 的全部产物引用索引，包括复用已有摘要但未重新上传的资源。归档不抹去批准、发布或执行证据；仍被引用的内容不会清理。删除屏障与新 Resource 引用串行，S3/卷 I/O 在事务外执行。不得手工删除内容控制状态或正在使用的物理对象。
 
-密钥为 Ed25519 PKCS#8，按其他 secret 文件的权限要求部署；活动私钥必须匹配配置中的可信公钥。Agent 公钥集合通过受信任部署提供，不能信任任务自行携带的 keyId 或公钥。签名覆盖 keyId、tenant/device/registration/generation、task/attempt、平台与架构、用途、期限及精确资源输入；脚本包含解释器、参数和预算，软件包含定义、批准身份、安装意图与全部产物摘要。消费方调用 `SignedTask::verify` 时提供本地身份及预期 task/attempt/permit。
+密钥为 Ed25519 PKCS#8，按其他 secret 文件的权限要求部署；活动私钥必须匹配配置中的可信公钥。Agent 公钥集合通过受信任部署提供，不能信任任务自行携带的 keyId 或公钥。签名覆盖 keyId、tenant/device/registration/generation、task/attempt、平台与架构、用途、期限及精确资源输入；脚本包含解释器、参数和预算，软件包含定义、生命周期绑定、安装意图与全部产物摘要。消费方调用 `SignedTask::verify` 时提供本地身份及预期 task/attempt/permit。
 
 Script definition 包含 `profile`（power_shell7、posix_sh、bash、osquery）、`runAs`（system、logged_in_user）、`encoding: utf8`、参数 Schema 与 `bindings`、输出 Schema、`purpose`、timeoutSeconds/outputBytes/maxRows。参数仅支持字符串、整数、布尔，必须显式提供。脚本使用 bindings，SQL 模板使用 sql 中声明的命名参数并保持 bindings 为空；参数作为字面量绑定，不拼接 shell 命令或 SQL 语法。Schema 采用有界闭合子集，拒绝引用、组合器、正则与未知关键字。
 
@@ -57,7 +57,7 @@ Script definition 包含 `profile`（power_shell7、posix_sh、bash、osquery）
 
 默认签入触发、每执行版本一次、没有结束时间。显式设备也通过 Scope 的直接设备来源表达。Scope 引用持续跟随当前结果；发布不复制永久目标名单，也不生成全体 Run。空目标分配有效，未来 Scope 成员自动获得资格。
 
-脚本分配需要 PolicyWrite、ResourceRead、ScopeRead 与设备范围 ScriptExecute；软件分配使用独立的设备范围 SoftwareDeploy，并要求当前企业软件批准。发布受理后归组织持有，不再依赖发布者的登录会话。Agent 注册须声明对应的 `task.execute.v1` 或 对应软件格式/作用域 profile；领取、下载和启动均重新核对凭据、注册世代和当前分配。
+脚本分配需要 PolicyWrite、ResourceRead、ScopeRead 与设备范围 ScriptExecute；软件分配使用独立的设备范围 SoftwareDeploy，并要求当前企业软件生命周期有效。发布受理后归组织持有，不再依赖发布者的登录会话。Agent 注册须声明对应的 `task.execute.v1` 或 对应软件格式/作用域 profile；领取、下载和启动均重新核对凭据、注册世代和当前分配。
 
 `frequency` 为 `once_per_version`、`once_per_entry` 或 `every_trigger`。可选 `schedule` 包含 trigger、notBefore、until、jitterSeconds、window 和 misfire。trigger 支持 manual、once(at)、interval(anchor,seconds)、weekly(zone,weekday,minute)、registration、check_in(minimumSeconds)。`until` 可省略。misfire 为 `{"kind":"coalesce_one"}`（默认）或 `{"kind":"skip","maxLatenessSeconds":30}`；窗口可跨午夜，星期按开始日计算，DST gap 跳过、fold 取较早时刻。
 
@@ -78,7 +78,7 @@ Script definition 包含 `profile`（power_shell7、posix_sh、bash、osquery）
 ## Agent 状态与结果
 
 1. `POST /api/v1/agent/runtime/tasks/claim`：wireVersion=1、operationId、当前 profiles 和 executionContext，返回至多一个签名 offer 及有界取消页。领取候选与取消页独立选择，每个 registration 的取消游标持久化并循环遍历。task=null 的轮询不写永久执行回执，重试可看到新状态；实际 offer 在有效且仍获授权期间精确重放。
-2. 验签后按 task/attempt 下载脚本 `/tasks/{taskId}/content?attempt={attemptId}`；软件按签名产物 key 下载 `/tasks/{taskId}/content?attempt={attemptId}&artifact={urlEncodedKey}`。支持单段 Range、ETag 和 If-Range；每次都检查当前凭据、企业批准及任务权限。客户端最终核对长度/hash。
+2. 验签后按 task/attempt 下载脚本 `/tasks/{taskId}/content?attempt={attemptId}`；软件按签名产物 key 下载 `/tasks/{taskId}/content?attempt={attemptId}&artifact={urlEncodedKey}`。支持单段 Range、ETag 和 If-Range；每次都检查当前凭据、软件生命周期及任务权限。客户端最终核对长度/hash。
 3. 向 `/tasks/{taskId}/events` 提交 received，再提交 start。事件包含 wireVersion=1、operationId、attemptId、event、executionContext。只有独立签名的短期 Start permit 可以授权启动，offer 本身不能启动。
 4. 返回 result（exitCode、quality、output、diagnostics、collectedAt）或 cancelled。diagnostics 的完整字段、闭合分类和预算见 [wire schema](../../crates/agent-wire/schema)。每次重试保留相同 operationId 与内容。已开始而结果未知的任务不自动重新领取；迟到的同 attempt 证据可以解释 Unknown。
 
@@ -99,7 +99,7 @@ Script definition 包含 `profile`（power_shell7、posix_sh、bash、osquery）
 
 ## 软件分配与灰度
 
-同一软件 Policy 用 `resource:{kind:"software",id,version,variants}` 将每个支持的平台/架构映射到精确变体。`action.kind:"software"` 的 `intent` 为 `required_install`、`available_install` 或 `explicit_uninstall`；后者要求软件定义声明卸载。`admissionOperation` 必须是当前企业软件版本批准的 operation；撤销后重新批准，需要管理员以新 operation 更新 Policy，生成新的执行版本，旧版本不会自动复活。管理员在 `rollout.stages` 中按顺序指定 Scope 与 UTC Unix `opensAt`，可选 `minimumVerifiedPercent` 仅约束前一阶段；未设置时到时间自动开放。`disable` 暂停新任务，`enable` 恢复；仅编辑范围和时间不产生新的软件执行版本。动态 Scope 决定后续准入，既有 Run 与核实证据保持原身份。
+同一软件 Policy 用 `resource:{kind:"software",id,version,variants}` 将每个支持的平台/架构映射到精确变体。`action.kind:"software"` 的 `intent` 为 `required_install`、`available_install` 或 `explicit_uninstall`；后者要求软件定义声明卸载。Policy 不接受 `admissionOperation`；后台冻结当前来源、版本和依赖的生命周期绑定。撤回后重新启用，需要管理员重新提交 Policy，生成新的执行版本，旧版本不会自动复活。管理员在 `rollout.stages` 中按顺序指定 Scope 与 UTC Unix `opensAt`，可选 `minimumVerifiedPercent` 仅约束前一阶段；未设置时到时间自动开放。`disable` 暂停新任务，`enable` 恢复；仅编辑范围和时间不产生新的软件执行版本。动态 Scope 决定后续准入，既有 Run 与核实证据保持原身份。
 
 Agent 只收到单次可执行任务与服务端授权坐标，不消费 Policy 定义、Scope、灰度或企业批准模型。后端在发布分配时验证固定依赖可在目标平台解析，并在签发时按依赖优先顺序生成 `steps`；每一步是闭合的本机动作、检测规则、任务产物与必要的包管理器 export identity。任务不携带依赖图或来源准入模型。`definitionDigest` 绑定完整步骤序列；内容键为 `{步骤下标}/{该步骤产物键}`，下载时作为 URL 编码的 `artifact` 查询参数。`startMode:user_initiated` 表示可选任务须经可信本地用户操作后才能请求 Start；显式自助请求的交互可提供该确认，不要求重复点击。`automatic` 表示后台任务可自动开始。Offer 仅用于准备和下载，过期后不能继续取内容；Start permit 才能执行。软件分配使用执行版本下稳定的期望身份；核实成功后不因签入重复安装，明确失败总共至多三次尝试并逐次退避，未启动的自选 Offer 到期后可以重新领取。Agent 软件计划决定本机安装动作并做独立检测；服务端分别保存 installer exit、检测状态、版本与证据摘要。核实成功、明确失败、等待重启、未知效果分开记录；未知或等待重启不盲目重试，设备重新注册也不解除未知阻断。来源 Published、下载成功、exit 0 和任务回执均不能替代核实成功。
 
@@ -109,7 +109,7 @@ Agent 只收到单次可执行任务与服务端授权坐标，不消费 Policy 
 
 MDM 与 Agent 各自持有 DeviceId、注册世代、凭据、采集和策略。MDM 来源字段 `channel.agent.installation` 的 `absent` 才能触发安装；Agent 来源 `channel.mdm.enrollment` 的 `unenrolled` 才能触发标准入口。可以将这些字段用于动态 Group，再通过 Scope 分配策略。当前有效来源的最新完整观察是依据，没有 TTL 或最后连接时间门槛；未知、失败、第三方 MDM 和旧注册观察不会变成缺失。
 
-`action:{kind:"ensure_agent_installed",resource:{kind:"software",id,version,variants},admissionOperation,runLifetimeSeconds}` 仅引用当前批准的固定 Agent 软件。发布需要覆盖未来成员的全设备 SoftwareDeploy 与 Enrollment 授权；它们随策略冻结，后续执行仍核对实际权限。Windows 采用固定 ProductID 的 Add/Exec；macOS 采用固定 PKG Manifest。版本、SHA-256、发布身份、无自定义参数和无依赖均需匹配部署 pin。已有 Agent 不自动升级，Scope 退出阻止尚未派发的新安装；已派发安装可在原期限内完成独立 Agent 注册，但当前策略版本、实际权限、软件批准和来源世代仍须有效。Scope 退出不卸载 Agent。重叠策略和重复报告共享来源注册下的一次安装；结果未知先继续查询，不重新运行安装器。单个操作仍受原始期限、取消及普通命令容量限制。
+`action:{kind:"ensure_agent_installed",resource:{kind:"software",id,version,variants},runLifetimeSeconds}` 仅引用当前启用的固定 Agent 软件。发布需要覆盖未来成员的全设备 SoftwareDeploy 与 Enrollment 授权；它们随策略冻结，后续执行仍核对实际权限。Windows 采用固定 ProductID 的 Add/Exec；macOS 采用固定 PKG Manifest。版本、SHA-256、发布身份、无自定义参数和无依赖均需匹配部署 pin。已有 Agent 不自动升级，Scope 退出阻止尚未派发的新安装；已派发安装可在原期限内完成独立 Agent 注册，但当前策略版本、实际权限、软件生命周期和来源世代仍须有效。Scope 退出不卸载 Agent。重叠策略和重复报告共享来源注册下的一次安装；结果未知先继续查询，不重新运行安装器。单个操作仍受原始期限、取消及普通命令容量限制。
 
 安装配置默认关闭。部署 `agent_installation`：`content_origin` 必须等于独立 Agent TLS origin，固定包由 enroll/v1 引导入口消费；`packages` 按 `windows_x86_64`、`windows_aarch64`、`macos_x86_64`、`macos_aarch64` 选择实际发布组合，每项包含 `identity`、`package`、`version`、`sha256`（32 个字节的 JSON 数组）。Windows identity 为 `{platform:"windows",product:"ProductID UUID",publisher:"签名发布者"}`；macOS 为 `{platform:"macos",receipt:"PKG receipt",bundle:"Agent bundle ID",team:"10 字符 Team ID"}`。这些值必须与普通 Software 目录中审核、上传、激活和批准的 release 相同。同平台不同架构必须使用同一产品身份。
 

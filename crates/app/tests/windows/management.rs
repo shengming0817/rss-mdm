@@ -664,3 +664,49 @@ async fn native_trust_requires_exact_csp_readback_before_confirmation() -> anyho
     }
     anyhow::bail!("exact native Root/CA readback did not confirm installed trust")
 }
+
+#[tokio::test]
+#[ignore = "MODULE=windows.management: issuance is not first authentication"]
+async fn admission_pause_blocks_first_authentication_but_preserves_authenticated_sessions()
+-> anyhow::Result<()> {
+    use sqlx::Connection;
+    let mut host = Host::open().await?;
+    host.listen().await?;
+    let peer = host.peer().await?;
+    let mut pg = sqlx::PgConnection::connect_with(&options("postgres")?).await?;
+    let registration = peer.intent.registration;
+    let initial: (String,bool) = sqlx::query_as("SELECT state, first_authenticated_at IS NOT NULL FROM mdm_access.registrations WHERE tenant_id=$1::uuid AND id=$2")
+        .bind(case_tenant()).bind(registration).fetch_one(&mut pg).await?;
+    ensure!(initial == ("active".into(), false));
+    sqlx::query("INSERT INTO mdm_access.registration_admission(tenant_id,channel,revision,paused) VALUES($1::uuid,'windows_mdm',1,true)")
+        .bind(case_tenant()).execute(&mut pg).await?;
+    let wire = syncml::encode(&peer.message, &CodecLimits::default())?;
+    let post = || {
+        peer.mutual
+            .post(&peer.url)
+            .header("content-type", "application/vnd.syncml.dm+xml")
+            .body(wire.clone())
+    };
+    ensure!(post().send().await?.status() == StatusCode::CONFLICT);
+    let authenticated:bool=sqlx::query_scalar("SELECT first_authenticated_at IS NOT NULL FROM mdm_access.registrations WHERE tenant_id=$1::uuid AND id=$2")
+        .bind(case_tenant()).bind(registration).fetch_one(&mut pg).await?;
+    ensure!(!authenticated);
+    sqlx::query("UPDATE mdm_access.registration_admission SET paused=false,revision=2 WHERE tenant_id=$1::uuid AND channel='windows_mdm'").bind(case_tenant()).execute(&mut pg).await?;
+    let first = post().send().await?;
+    ensure!(first.status() == StatusCode::OK);
+    let bytes = first.bytes().await?;
+    let authenticated = peer
+        .mutual
+        .post(&peer.url)
+        .header("content-type", "application/vnd.syncml.dm+xml")
+        .body(syncml::encode(&peer.ack, &CodecLimits::default())?)
+        .send()
+        .await?;
+    ensure!(authenticated.status() == StatusCode::OK);
+
+    sqlx::query("UPDATE mdm_access.registration_admission SET paused=true,revision=3 WHERE tenant_id=$1::uuid AND channel='windows_mdm'").bind(case_tenant()).execute(&mut pg).await?;
+    let replay = post().send().await?;
+    ensure!(replay.status() == StatusCode::OK && replay.bytes().await? == bytes);
+    host.close().await?;
+    Ok(())
+}

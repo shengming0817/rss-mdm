@@ -1,6 +1,61 @@
 use super::*;
 pub use rss_mdm_inventory::{FieldKey, Operator, Scalar};
 use serde::{Deserialize, Serialize};
+/// Collection selection is part of the rule, independent of caller authorization.
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum ScopeSelector {
+    Device,
+    Exact {
+        scope: Box<rss_mdm_inventory::CollectionScope>,
+    },
+    LocalUser {
+        uid: u32,
+    },
+    AllAuthorized,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ScopeQuantifier {
+    One,
+    Any,
+    All,
+}
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct InventoryCondition {
+    pub selector: ScopeSelector,
+    pub quantifier: ScopeQuantifier,
+    pub criteria: Criteria,
+}
+impl InventoryCondition {
+    pub fn validate(&self) -> Result<()> {
+        match &self.selector {
+            ScopeSelector::Device => {
+                if self.quantifier != ScopeQuantifier::One {
+                    return Err(Error::Malformed.into());
+                }
+            }
+            ScopeSelector::Exact { scope } => {
+                checked_input(scope.validate_executable())?;
+                if self.quantifier != ScopeQuantifier::One {
+                    return Err(Error::Malformed.into());
+                }
+            }
+            ScopeSelector::LocalUser { uid } => {
+                if *uid == 0 || self.quantifier == ScopeQuantifier::One {
+                    return Err(Error::Malformed.into());
+                }
+            }
+            ScopeSelector::AllAuthorized => {
+                if self.quantifier == ScopeQuantifier::One {
+                    return Err(Error::Malformed.into());
+                }
+            }
+        }
+        Ok(())
+    }
+}
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Criteria {
@@ -30,7 +85,7 @@ pub struct Sort {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Query {
     #[serde(default)]
-    pub criteria: Option<Criteria>,
+    pub criteria: Option<InventoryCondition>,
     #[serde(default)]
     pub select: Vec<FieldKey>,
     #[serde(default)]
@@ -260,7 +315,7 @@ pub enum Command {
         scope: ReadScope,
     },
     Search {
-        request: Operation<Query>,
+        request: Box<Operation<Query>>,
         scope: ReadScope,
     },
     Manual {
@@ -306,7 +361,11 @@ impl Command {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct QualityRun {
-    pub collection_scope: rss_mdm_inventory::CollectionScope,
+    pub dataset: String,
+    pub template_version: String,
+    pub fingerprint: String,
+    pub coverage: rss_observation::Coverage,
+    pub complete: bool,
     pub source: rss_mdm_inventory::Source,
     pub channel: rss_mdm_inventory::Channel,
     pub registration: Uuid,
@@ -321,6 +380,8 @@ pub struct QualityRun {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct QualityField {
+    pub reason: Option<String>,
+    pub scope: rss_mdm_inventory::CollectionScope,
     pub item_count: usize,
     pub invalid_items: usize,
     pub field: FieldKey,

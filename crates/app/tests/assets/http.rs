@@ -192,6 +192,7 @@ mod storage {
                 .await
                 .unwrap();
             let service = assets::AssetService::new(
+                crate::planning::test_support::inventory_runtime(tenant).await,
                 audit_store_with_integrity(if ledger {
                     rss_audit_postgres::Integrity::Ledger(Arc::new(
                         rss_ledger::Authenticator::new(
@@ -580,7 +581,7 @@ async fn field_catalog_admin_publish_and_reference_checks_need_no_approval() -> 
         "field publication replay changed"
     );
     let saved = format!("/api/v1/saved-queries/{}", Uuid::new_v4());
-    let value = json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"put","definition":{"name":"field reference","query":{"criteria":{"kind":"predicate","field":key,"op":"eq","value":{"kind":"string","value":"yes"}},"select":[key],"sort":null}}}});
+    let value = json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"put","definition":{"name":"field reference","query":{"criteria":{"selector":{"kind":"device"},"quantifier":"one","criteria":{"kind":"predicate","field":key,"op":"eq","value":{"kind":"string","value":"yes"}}},"select":[key],"sort":null}}}});
     let response = fixture
         .author
         .call(&fixture.router, Method::PUT, &saved, Some(value))

@@ -37,7 +37,8 @@ pub(super) async fn upload_contract(fixture: Fixture, length: usize) -> Result<(
     )
     .await?;
     let admission_path = format!("/api/v1/software/resources/{resource}/versions/v1");
-    let approve = json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"approve","evidence":["package-review"]}});
+    let approve =
+        json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"enable"}});
     ensure!(
         user.call(router, Method::POST, &admission_path, Some(approve.clone()))
             .await?
@@ -180,7 +181,7 @@ async fn approval_contract(
 ) -> Result<Value> {
     let router = &fixture.router;
     // The content owner is independently usable without task-signing configuration.
-    let denied=user.call(router,Method::POST,admission_path,Some(json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"approve","evidence":[]}}))).await?;
+    let denied=user.call(router,Method::POST,admission_path,Some(json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"enable"}}))).await?;
     ensure!(denied.0 == StatusCode::BAD_REQUEST);
     pg("REVOKE INSERT ON mdm_audit.receipts FROM mdm_flow_runtime")?;
     let failed = user
@@ -190,7 +191,7 @@ async fn approval_contract(
     ensure!(failed.0.is_server_error(), "audit failure: {failed:?}");
     let before = user.call(router, Method::GET, admission_path, None).await?;
     ensure!(
-        before.0 == StatusCode::OK && before.1["admission"].is_null(),
+        before.0 == StatusCode::OK && before.1["lifecycle"].is_null(),
         "rollback: {before:?}"
     );
     let approved = user
@@ -277,11 +278,11 @@ async fn download_contract(
         router,
         admission_path,
         1,
-        json!({"action":"withdraw","evidence":["withdrawal"]}),
+        json!({"action":"withdraw"}),
     )
     .await?;
     let read = user.call(router, Method::GET, admission_path, None).await?;
-    ensure!(read.1["admission"]["state"] == "withdrawn");
+    ensure!(read.1["lifecycle"]["state"] == "withdrawn");
     let denied = client
         .get(&download)
         .header("host", "mdm.example.test")

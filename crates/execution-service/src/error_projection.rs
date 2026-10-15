@@ -95,6 +95,7 @@ impl From<rss_mdm_registration_service::Error> for Error {
             R::Corrupt | R::Storage | R::Retirement => Self::Unavailable(crate::Failure::Database),
             R::Deadline => Self::Unavailable(crate::Failure::RequestDeadline),
             R::Conflict => Self::Conflict,
+            R::EnrollmentPaused => Self::EnrollmentPaused,
             R::CommitUnknown => Self::CommitUnknown,
             R::RollbackFailed => Self::RollbackFailed,
             R::NotFound => Self::NotFound,
