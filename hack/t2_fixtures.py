@@ -5,6 +5,8 @@ ref: PostgreSQL src/backend/commands/dbcommands.c@7885b94dd81b98bbab9ed878680d15
 from __future__ import annotations
 from contextlib import contextmanager, ExitStack
 import json
+import hashlib
+import shutil
 import os
 from pathlib import Path
 import sys
@@ -41,8 +43,14 @@ class RunFixtures:
         self.certificates.root = self.root / 'certificates'
         self.lock = threading.RLock()
         self.case_contexts = {}
-        self.shared = {}
+        self.identities = {}
+        self.identity_locks = {}
         self.hosts = {}
+        self.authorities = {}
+        self.authority_locks = {}
+        self.authority_stack = ExitStack()
+        self.materials = {}
+        self.material_locks = {}
         self.s3 = S3Environment()
 
     def __enter__(self):
@@ -67,6 +75,14 @@ class RunFixtures:
             except Exception as error:
                 errors.append(error)
         self.hosts.clear()
+        try:
+            self.authority_stack.close()
+        except BaseException as error:
+            errors.append(error)
+        self.authorities.clear()
+        for pool in (self.normal, self.fault):
+            if pool.ready:
+                pool.sample_connections(list(pool.shared.values()))
         for environment in (self.normal.owner, self.fault.owner, self.gateway_owner):
             try:
                 with measure(self.costs, phase, pg=environment.project):
@@ -102,24 +118,15 @@ class RunFixtures:
         fault = [self.case_contexts[job.key] for job in jobs if job.module.db_mode == 'instance']
         if normal:
             self.normal.installation = installation()
-            self.normal.tenants = registration_tenants(normal)
+            self.costs.increment('plannedNormalTenants', len(registration_tenants(normal)))
         if fault:
             self.fault.installation = installation()
-            self.fault.tenants = registration_tenants(fault)
+            self.costs.increment('plannedFaultTenants', len(registration_tenants(fault)))
         for job in jobs:
             root = self.root / job.key
             root.mkdir()
             private(root / 'case.json', self.case_contexts[job.key])
-        if any(set(job.module.fixtures) & {'tls', 'windows', 'apple', 'apns','agent_pki'} for job in jobs):
-            self.certificates.prepare_inputs()
-        # A compatible profile owns one writable database for the complete run.
-        for profile in sorted({job.module.profile for job in jobs if job.module.db_mode == 'reuse'}):
-            selected = [job for job in jobs if job.module.profile == profile and job.module.db_mode == 'reuse']
-            with self.normal.database(profile, 'reuse') as database:
-                self.shared[profile] = database
-                identity_jobs = [job for job in selected if 'identity' in job.module.fixtures]
-                if identity_jobs:
-                    self.prepare_identity(self.normal, database, identity_jobs, self.output / 'identity' / profile)
+        self.costs.increment('plannedActors', sum(len(value['actors']) for value in self.case_contexts.values()))
 
     def runtime_config(self, pool, root, database, tenant):
         config = json.loads((ROOT / 'fixtures/mdm-config.example.json').read_text())
@@ -139,57 +146,173 @@ class RunFixtures:
         config['native_protection_key_file'] = str(self.native_key)
         return config
 
-    def prepare_identity(self, pool, database, jobs, output):
-        root = self.root / database
-        root.mkdir(exist_ok=True)
-        private(root / 'ca.crt', (pool.owner.root / 'ca.crt').read_text())
-        tenants = sorted({tenant for j in jobs for tenant in self.case_contexts[j.key]['identityTenants']})
-        config = self.runtime_config(pool, root, database, tenants[0])
+    def identity_helper(self, root, manifest, output, database):
         env = dict(os.environ, RUST_MIN_STACK=str(8 * 1024 * 1024),
-                   MDM_TEST_CONFIG=str(private(root / 'runtime.json', config)))
-        maintenance = pool.database_config(root, database, 'mdm_identity_maintenance', 'identity-maintenance-fixture')
-        password = private(root / 'account-password', 'Fixture-only-correct-horse-battery-2026!')
-        for tenant in tenants:
-            path = private(root / 'initialize.json', dict(database=maintenance, installation=pool.installation,
-                           tenant_id=tenant, expected_epoch=1, principal_id=ADMIN, login='bootstrap', password_file=str(password)))
-            with measure(self.costs, 'identity-initialize', database=database, tenant=tenant):
-                run([self.builds.executables['rss-mdm'], 'initialize', '--config', path],
-                    cwd=ROOT, env=env, capture_output=True, timeout=30)
-            self.costs.increment('identityInitializations', 1)
-        manifest = dict(stage='accounts', tenants=tenants, cases=[str(self.root / j.key / 'case.json') for j in jobs])
-        env['MDM_IDENTITY_SETUP'] = str(private(root / 'identity-setup.json', manifest))
+                   MDM_TEST_CONFIG=str(root / 'runtime.json'),
+                   MDM_IDENTITY_SETUP=str(private(root / 'identity-setup.json', manifest)))
         cases = self.builds.discover(IDENTITY_SETUP)
         require(len(cases) == 1, 'identity setup target is ambiguous')
-        with measure(self.costs, 'identity-setup', database=database):
+        with measure(self.costs, 'identity-' + manifest['stage'], database=database):
             self.builds.execute(cases[0], env, output)
+        self.costs.increment('identityHelpers', 1)
         for event in json.loads((root / 'identity-costs.json').read_text()):
             self.costs.append(dict(event, database=database))
             self.costs.increment(event['phase'], event['count'])
-        self.costs.increment('identitySetups', 1)
-        # The helper creates real case accounts and writes their public coordinates.
-        for job in jobs:
-            case_root = self.root / job.key
-            context = validate(json.loads((case_root / 'case.json').read_text()), ready=True)
-            self.case_contexts[job.key] = context
-            value = self.runtime_config(pool, case_root, database, context['tenant'])
-            value['content'] = json.loads((root / 'content.json').read_text())
-            value['task_signing'] = json.loads((root / 'task-signing.json').read_text())
-            private(case_root / 'runtime.json', value)
-            private(case_root / 'account-password', password.read_text())
-            pool.database_config(case_root, database, 'mdm_identity_maintenance', 'identity-maintenance-fixture')
+
+    def identity_environment(self, pool, database, output):
+        key = (pool.owner.project, pool.generation, database)
+        with self.lock:
+            lock = self.identity_locks.setdefault(key, threading.Lock())
+        started = time.monotonic()
+        with lock:
+            self.costs.append(dict(phase='identity-lock-wait', seconds=time.monotonic()-started, database=database))
+            self.builds.processes.check()
+            state = self.identities.get(key)
+            if isinstance(state, BaseException):
+                raise RuntimeError('identity environment preparation previously failed') from state
+            root = self.root / database
+            try:
+                if state is None:
+                    root.mkdir()
+                    private(root / 'ca.crt', (pool.owner.root / 'ca.crt').read_text())
+                    management = pool.owner.sql('SELECT management_tenant_id::text FROM public.mdm_installation', database)
+                    config = self.runtime_config(pool, root, database, management)
+                    private(root / 'runtime.json', config)
+                    password = private(root / 'account-password', 'Fixture-only-correct-horse-battery-2026!')
+                    maintenance = pool.database_config(root, database, 'mdm_identity_maintenance', 'identity-maintenance-fixture')
+                    path = private(root / 'initialize.json', dict(database=maintenance, installation=pool.installation,
+                        tenant_id=management, expected_epoch=1, principal_id=ADMIN, login='bootstrap', password_file=str(password)))
+                    with measure(self.costs, 'identity-initialize', database=database):
+                        run([self.builds.executables['rss-mdm'], 'initialize', '--config', path],
+                            cwd=ROOT, capture_output=True, timeout=30)
+                    self.costs.increment('identityInitializations', 1)
+                    self.identity_helper(root, dict(stage='environment'), output / 'environment', database)
+                    state = dict(management=management, refreshed=time.monotonic())
+                elif time.monotonic() - state['refreshed'] >= 180:
+                    self.identity_helper(root, dict(stage='refresh'), output / 'refresh', database)
+                    state['refreshed'] = time.monotonic()
+                self.identities[key] = state
+                # The caller owns a credential snapshot; a later refresh cannot overwrite it.
+                return root, state['management'], (root / 'source-session').read_text()
+            except BaseException as error:
+                self.identities[key] = error
+                raise
+
+    def prepare_identity(self, pool, database, job, output):
+        shared, management, source = self.identity_environment(pool, database, output)
+        root = self.root / job.key
+        context = self.case_contexts[job.key]
+        config = self.runtime_config(pool, root, database, context['tenant'])
+        config['content'] = json.loads((shared / 'content.json').read_text())
+        config['task_signing'] = json.loads((shared / 'task-signing.json').read_text())
+        private(root / 'runtime.json', config)
+        private(root / 'account-password', (shared / 'account-password').read_text())
+        pool.database_config(root, database, 'mdm_identity_maintenance', 'identity-maintenance-fixture')
+        manifest = dict(stage='accounts', cases=[str(root / 'case.json')], management=management,
+                        source_secret=str(private(root / 'source-session', source)),
+                        provisioning_database=pool.database_config(root, database, 'mdm_identity_provisioning', 'identity-provisioning-fixture'))
+        self.identity_helper(root, manifest, output / 'accounts', database)
+        self.case_contexts[job.key] = validate(json.loads((root / 'case.json').read_text()), ready=True)
 
     def prepare_sessions(self, job, env, database, output):
-        # Credentials age from case admission, not from the start of a long run.
         root = self.root / job.key
-        manifest = dict(stage='sessions', tenants=[], cases=[str(root / 'case.json')])
-        session_env = dict(env, MDM_IDENTITY_SETUP=str(private(root / 'identity-sessions.json', manifest)))
-        cases = self.builds.discover(IDENTITY_SETUP)
-        require(len(cases) == 1, 'identity setup target is ambiguous')
-        with measure(self.costs, 'identity-session-setup', database=database, invocationId=job.key):
-            self.builds.execute(cases[0], session_env, output)
-        for event in json.loads((root / 'identity-costs.json').read_text()):
-            self.costs.append(dict(event, database=database))
-            self.costs.increment(event['phase'], event['count'])
+        self.identity_helper(root, dict(stage='sessions', cases=[str(root / 'case.json')]), output, database)
+
+    def prepare_materials(self, kind, root, materials=()):
+        inputs = {name: (root / name).read_bytes() for name in ('ca.crt', 'server.crt', 'server.key')}
+        digest = hashlib.sha256(b''.join(inputs.values()) + json.dumps([kind, materials]).encode()).hexdigest()
+        with self.lock:
+            lock = self.material_locks.setdefault(digest, threading.Lock())
+        with lock:
+            self.builds.processes.check()
+            source = self.materials.get(digest)
+            if isinstance(source, BaseException):
+                raise RuntimeError('cryptographic material preparation previously failed') from source
+            if source is None:
+                source = self.root / ('materials-' + digest)
+                try:
+                    source.mkdir(mode=0o700)
+                    for name, value in inputs.items():
+                        path = source / name
+                        path.write_bytes(value)
+                        path.chmod(0o600)
+                    with measure(self.costs, 'cryptographic-materials', kind=kind, materials=list(materials)):
+                        if kind == 'windows':
+                            from windows_fixtures import generate
+                            generate(source, source / 'server.crt', source / 'server.key', materials=materials)
+                        elif kind == 'apple':
+                            from apple_fixtures import generate
+                            generate(source, source / 'server.crt', source / 'server.key')
+                        else:
+                            raise ValueError('unknown cryptographic fixture')
+                    self.materials[digest] = source
+                    self.costs.increment('cryptographicMaterialSets', 1)
+                except BaseException as error:
+                    self.materials[digest] = error
+                    raise
+        def relocate(value):
+            if isinstance(value, str) and value.startswith(str(source) + '/'):
+                return str(root) + value[len(str(source)):]
+            if isinstance(value, dict):
+                return {key: relocate(item) for key, item in value.items()}
+            if isinstance(value, list):
+                return [relocate(item) for item in value]
+            return value
+        for path in source.iterdir():
+            require(path.is_file() and not path.is_symlink(), 'invalid cached cryptographic material')
+            if path.suffix == '.json':
+                private(root / path.name, relocate(json.loads(path.read_text())))
+            else:
+                # Independent bytes, never links: permission/corruption probes own their files.
+                shutil.copy2(path, root / path.name)
+
+    def authority(self, stack, job, root, env, pool, database, purpose):
+        from pki_fixtures import running
+        options = dict(case=job.key, agent=purpose == 'agent', windows=purpose == 'windows',
+                       configuration_devices=job.module.configuration_devices, materials=job.module.materials)
+        if job.module.db_mode != 'reuse' or job.module.scope != 'objects':
+            stack.enter_context(running(root, env, **options))
+            self.costs.increment('caStarts', 1)
+            return
+        require(purpose == 'agent' and not job.module.materials and job.module.configuration_devices == 0,
+                'shared CA requires stable agent material')
+        key = (pool.owner.project, pool.generation, database, self.case_contexts[job.key]['tenant'], purpose)
+        with self.lock:
+            lock = self.authority_locks.setdefault(key, threading.Lock())
+        with lock:
+            self.builds.processes.check()
+            state = self.authorities.get(key)
+            if isinstance(state, BaseException):
+                raise RuntimeError('CA environment preparation previously failed') from state
+            if state is None:
+                owned = ExitStack()
+                shared_env = dict(env)
+                try:
+                    provider = owned.enter_context(running(root, shared_env, **options))
+                    config = json.loads((root / (purpose + '-pki.json' if purpose == 'agent' else 'windows.json')).read_text())
+                    entries = [entry for entry in json.loads((root / 'device-pki.json').read_text()) if entry['purpose'] == purpose]
+                    runtime = json.loads((root / 'runtime.json').read_text())
+                    runtime['agent_pki'] = config
+                    runtime['device_pki'] = entries
+                    private(root / 'runtime.json', runtime)
+                    self.identity_helper(root, {'stage': 'agent_trust'},
+                                         self.output / 'ca-admission' / job.key, database)
+                    state = dict(provider=provider, config=config, entries=entries,
+                                 env={name: value for name, value in shared_env.items() if env.get(name) != value})
+                    with self.lock:
+                        self.authority_stack.enter_context(owned.pop_all())
+                    self.authorities[key] = state
+                    self.costs.increment('caStarts', 1)
+                except BaseException as error:
+                    owned.close()
+                    self.authorities[key] = error
+                    raise
+            state['provider'].check()
+            env.update(state['env'])
+            private(root / (purpose + '-pki.json' if purpose == 'agent' else 'windows.json'), state['config'])
+            path = root / 'device-pki.json'
+            entries = json.loads(path.read_text()) if path.exists() else []
+            private(path, [entry for entry in entries if entry['purpose'] != purpose] + state['entries'])
 
     @contextmanager
     def workers(self, job, database, config):
@@ -258,19 +381,19 @@ class RunFixtures:
             if module.postgres:
                 database = stack.enter_context(pool.database(module.profile, module.db_mode))
                 receipt['environment'].update(database=database, pgGeneration=pool.generation)
+                pool.seed_tenants(database, module.profile, registration_tenants([self.case_contexts[job.key]]))
             if module.postgres or set(module.fixtures) & {'tls', 'windows', 'apple', 'apns','agent_pki'}:
                 certificates = owner if module.postgres else self.certificates
-                with self.lock:
-                    certificates.prepare_inputs()
+                if not module.postgres:
+                    with self.lock:
+                        certificates.prepare_inputs()
                 for name in ('ca.crt', 'server.crt', 'server.key'):
                     private(root / name, (certificates.root / name).read_text())
             if 'windows' in module.fixtures:
-                from windows_fixtures import generate
-                generate(root, root / 'server.crt', root / 'server.key')
+                self.prepare_materials('windows', root, tuple(item for item in module.materials if item.startswith('windows-')))
                 env['MDM_WINDOWS_FIXTURES'] = str(root)
             if 'apple' in module.fixtures:
-                from apple_fixtures import generate
-                generate(root, root / 'server.crt', root / 'server.key')
+                self.prepare_materials('apple', root)
                 env['MDM_APPLE_FIXTURES'] = str(root)
             if 'tls' in module.fixtures:
                 from source_fixtures import tls_environment
@@ -293,8 +416,7 @@ class RunFixtures:
                 env.update(BACKEND_PG_CONFIG=str(config), GROUP_PG_CONFIG=str(config))
                 migration_config = pool.installation_config(root, database)
                 if 'identity' in module.fixtures:
-                    if module.db_mode != 'reuse':
-                        self.prepare_identity(pool, database, [job], output / 'identity-setup')
+                    self.prepare_identity(pool, database, job, output / 'identity-setup')
                     value = json.loads((root / 'runtime.json').read_text())
                     if (root / 'windows.json').exists():
                         value['native_protocols']['windows'] = json.loads((root / 'windows.json').read_text())
@@ -304,10 +426,10 @@ class RunFixtures:
                 env['MDM_FIXTURE_BIN'] = self.builds.executables['rss-mdm-fixture']
             if 'windows' in module.fixtures:
                 from pki_fixtures import running as pki
-                stack.enter_context(pki(root,env,case=job.key,windows=True))
+                self.authority(stack, job, root, env, pool, database, 'windows')
             if 'agent_pki' in module.fixtures:
                 from pki_fixtures import running as pki
-                stack.enter_context(pki(root,env,case=job.key,agent=True,configuration_devices=48 if module.id == "agent.configurations" else 0))
+                self.authority(stack, job, root, env, pool, database, 'agent')
             if 'pki_rotation' in module.fixtures:
                 stack.enter_context(pki(root,env,case=job.key,agent=True,generation='next'))
             if 'scep' in module.fixtures:

@@ -13,6 +13,40 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 class EnvironmentTests(unittest.TestCase):
+    def test_postgres_endpoint_belongs_to_one_successful_lifecycle(self):
+        from contextlib import ExitStack
+        with tempfile.TemporaryDirectory() as tmp, ExitStack() as stack:
+            env = Environment(Path(tmp))
+            stack.enter_context(patch('t2_environment.require_lease'))
+            stack.enter_context(patch.object(env, 'prepare_inputs'))
+            stack.enter_context(patch.object(env, 'issue_leaf'))
+            ownership = stack.enter_context(patch.object(env, 'verify_ownership'))
+            generation = [1]
+            def compose(*args, **kwargs):
+                if args == ('ps', '-q', 'postgres'):
+                    return 'container-' + str(generation[0])
+                if args == ('port', 'postgres', '5432'):
+                    return '127.0.0.1:' + str(5400 + generation[0])
+                return ''
+            calls = stack.enter_context(patch.object(env, 'compose', side_effect=compose))
+            env.up()
+            for _ in range(20):
+                self.assertEqual(env.container(), 'container-1')
+                self.assertEqual(env.port(), 5401)
+            self.assertEqual(sum(c.args == ('port', 'postgres', '5432') for c in calls.call_args_list), 1)
+            self.assertEqual(sum(c.args == ('ps', '-q', 'postgres') for c in calls.call_args_list), 1)
+            ownership.side_effect = RuntimeError('foreign')
+            with self.assertRaisesRegex(RuntimeError, 'foreign'):
+                env.reset()
+            self.assertIsNone(env.postgres_endpoint)
+            with self.assertRaisesRegex(RuntimeError, 'foreign'):
+                env.up()
+            self.assertIsNone(env.postgres_endpoint)
+            ownership.side_effect = None
+            generation[0] = 2
+            env.up()
+            self.assertEqual((env.container(), env.port()), ('container-2', 5402))
+
     def test_worktree_identity_is_stable_and_distinct(self):
         with tempfile.TemporaryDirectory() as tmp:
             paths = [Path(tmp) / str(i) / 'same-name' for i in range(4)]

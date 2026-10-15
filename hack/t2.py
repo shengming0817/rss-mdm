@@ -91,6 +91,7 @@ def select_modules(module, selection):
 
 def dispatch(invocations, execute, processes, jobs):
     """Submit only runnable cases: a waiting fault never occupies a worker slot."""
+    queued = time.monotonic()
     pending = list(invocations)
     running = {}
     with ThreadPoolExecutor(max_workers=jobs) as executor:
@@ -113,7 +114,10 @@ def dispatch(invocations, execute, processes, jobs):
             done, _ = wait(running, return_when=FIRST_COMPLETED)
             for future in done:
                 job = running.pop(future)
-                yield job, future.result()
+                outcome = future.result()
+                if isinstance(outcome, dict) and outcome.get("startedMonotonic") is not None:
+                    outcome["queueSeconds"] = round(outcome["startedMonotonic"] - queued, 3)
+                yield job, outcome
 
 
 def reuse_phases(invocations, plan):
@@ -206,6 +210,8 @@ def run_modules(names, output, *, jobs=2, selected_case='', listing=False, reuse
         require(not selected_cases and reuse_plan is None, 'CASE or reuse plan does not belong to any selected module')
         prune_runs(output)
         return results
+    run_started = time.monotonic()
+    observations = []
     run_id = time.strftime('%Y%m%dT%H%M%SZ', time.gmtime()) + '-' + uuid.uuid4().hex[:8]
     directory = output / run_id
     directory.mkdir()
@@ -225,7 +231,7 @@ def run_modules(names, output, *, jobs=2, selected_case='', listing=False, reuse
             missing = [tool for tool in tools if not shutil.which(tool)]
             require(not missing, 'missing dependencies for ' + module.id + ': ' + ', '.join(missing))
         builds = Builds(directory, processes)
-        builds.prepare(modules)
+        builds.prepare_discovery(modules)
         discovered = {module.id: builds.discover(module) if module.build else [] for module in modules}
         owners = {}
         for module in modules:
@@ -257,6 +263,7 @@ def run_modules(names, output, *, jobs=2, selected_case='', listing=False, reuse
             print(json.dumps(inventory, indent=2), flush=True)
             results.update({job.module.id: stage_result('skipped', reason='list-only') for job in invocations})
             return results
+        builds.prepare_runtime([job.module for job in invocations])
         from t2_fixtures import RunFixtures
         from t2_database import measure
         fixtures = RunFixtures(builds, directory, jobs)
@@ -284,6 +291,7 @@ def run_modules(names, output, *, jobs=2, selected_case='', listing=False, reuse
                         completed.setdefault(job.module.id, {})[job.key] = outcome
                         publish(directory / job.module.id / job.key / 'result.json', outcome)
                         outcomes.append(outcome)
+                        observations.append(outcome)
                     if reuse_plan is not None:
                         if anchor is None:
                             anchor = tuple(outcomes[0]['environment'][k] for k in ('pg', 'pgGeneration', 'database'))
@@ -319,6 +327,15 @@ def run_modules(names, output, *, jobs=2, selected_case='', listing=False, reuse
         raise RunFailure(str(error), failure) from error
     finally:
         processes.close()
+        execution_starts = [item['executionStartedMonotonic'] for item in observations
+                            if item.get('executionStartedMonotonic') is not None]
+        publish(directory / 'run.json', dict(
+            runId=run_id, jobs=jobs, listing=listing,
+            wallSeconds=round(time.monotonic() - run_started, 3),
+            firstExecutionSeconds=round(min(execution_starts) - run_started, 3) if execution_starts else None,
+            completedCases=len(observations), managedProcesses=processes.started,
+            caseSecondsSum=round(sum(item.get('setupSeconds', 0) + item.get('testSeconds', 0)
+                                     + item.get('cleanupSeconds', 0) for item in observations), 3)))
         for sig, handler in previous.items():
             signal.signal(sig, handler)
 
@@ -364,6 +381,7 @@ def main(argv=None):
         status = ('failed' if any(item['status'] == 'failed' for item in results.values()) else
                   'skipped' if not names or args.list == '1' else 'passed')
         evidence = {'module': args.module, 'selection': selection, 'status': status, 'modules': results,
+                    'jobs': args.jobs, 'sourceState': source, 'wallSeconds': round(time.monotonic() - started, 3),
                     'toolVerification': {name:'not-run' for name in selection['toolTests']}}
         if not names:
             evidence['reason'] = 'no-modules-selected'
