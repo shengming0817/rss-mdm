@@ -23,6 +23,12 @@ pub fn matches(
                 Architecture::X86_64 => "x86_64",
                 Architecture::Aarch64 => "aarch64",
             }
+        && plan.platform()
+            == match platform {
+                Platform::Windows => wire::TaskPlatform::Windows,
+                Platform::Macos => wire::TaskPlatform::Macos,
+            }
+        && wire::NativeExecutionBinding::bind(plan, &binding.execution_context).is_ok()
         && plan.supported_by(engines)
 }
 pub async fn check_in(

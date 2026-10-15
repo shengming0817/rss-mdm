@@ -140,3 +140,11 @@ Agent 原生采集使用独立的 `agent_collection` Resource 和同名 Policy a
 `agent.native` 与其他来源分别保存事实，字段统一视图继续使用原有来源配置。标准字段中新来源初始优先级为 1、既有来源保持 0；数值越小越优先，可通过现有字段版本接口调整，不设置 TTL。完整查询独立更新，截断或错误列表保留旧值，完整零条列表更新为 `[]`。标量零条默认 Missing，只有冻结映射明确选择且证据完整时才发布 null/本来源删除。软件清单必须完整覆盖预期用户集合；本期不支持 SID 局部替换。
 
 发布及执行要求 InventoryCollect 和相应资源/范围权限；敏感字段还需要既有敏感资产权限。任务领取和 Start 必须具备 `inventory.native.v1` 及 plan 所需引擎版本，无需 ScriptExecute 或 PowerShell。运行详情保存逐查询质量与结果摘要；大结果保留分块引用，不能以执行完成代替字段完整。设备运行、Windows API 正确性与性能由独立 Agent 验收证明。
+
+### macOS Agent 声明式采集
+
+`macos.agent.*` 蓝图提供设备级硬件与 PKG 收据采集，沿用上述 Resource、Policy、
+CollectionRun 和字段质量流程。收据独立写入 `device.software.receipts`，不作为应用存在证据。
+APFS container 原始证据与卷关联保留在受限运行详情中，共享容量不相加。
+Applications 根范围和 Brew 用户/prefix 目前不允许发布；其范围投影由 #2726 接入。
+协议身份、支持边界与 Agent 接入见 [wire 契约](../../crates/agent-wire/README.md#macos-原生采集2737)。

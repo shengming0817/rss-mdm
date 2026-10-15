@@ -52,7 +52,19 @@ impl TryFrom<AgentCollectionSpec> for AgentCollectionDefinition {
 impl AgentCollectionDefinition {
     /// Validate static mappings; field permissions and Inventory types are checked by publication.
     pub fn new(spec: AgentCollectionSpec) -> Result<Self, Error> {
-        if spec.mappings.is_empty() || spec.mappings.len() > 64 {
+        // Scoped application/Brew projection belongs to #2726. A scan declaration must
+        // never be silently published as an authoritative device snapshot.
+        if spec.plan.spec().scope != rss_mdm_agent_wire::CollectionScope::Device
+            || spec.plan.spec().queries.values().any(|q| {
+                matches!(
+                    q.definition,
+                    rss_mdm_agent_wire::runtime::NativeQueryDefinition::MacosApplications { .. }
+                        | rss_mdm_agent_wire::runtime::NativeQueryDefinition::MacosBrew { .. }
+                )
+            })
+            || spec.mappings.is_empty()
+            || spec.mappings.len() > 64
+        {
             return Err(Error::InvalidInput);
         }
         for (field, binding) in &spec.mappings {
@@ -83,9 +95,18 @@ impl AgentCollectionDefinition {
     pub fn spec(&self) -> &AgentCollectionSpec {
         &self.0
     }
-    /// Windows is the only currently implemented platform definition.
+    /// Require the exact operating system declared by the native plan.
     pub fn validate_platform(&self, p: crate::Platform) -> Result<(), Error> {
-        if p == crate::Platform::Windows {
+        if matches!(
+            (p, self.0.plan.platform()),
+            (
+                crate::Platform::Windows,
+                rss_mdm_agent_wire::runtime::TaskPlatform::Windows
+            ) | (
+                crate::Platform::MacOS,
+                rss_mdm_agent_wire::runtime::TaskPlatform::Macos
+            )
+        ) {
             Ok(())
         } else {
             Err(Error::InvalidInput)

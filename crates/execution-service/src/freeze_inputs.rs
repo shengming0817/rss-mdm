@@ -83,6 +83,10 @@ pub(crate) async fn prepare_collection_in<'a>(
             },
             _ => return Err(crate::Error::Malformed.into()),
         },
+        r::Declaration::AgentCollection { definition, .. } => {
+            checked_input(definition.spec().plan.spec().scope.validate_executable())?;
+            rss_mdm_inventory::CollectionScope::Device
+        }
         _ => rss_mdm_inventory::CollectionScope::Device,
     };
     let dataset = format!(

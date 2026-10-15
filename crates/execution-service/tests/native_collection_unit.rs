@@ -338,5 +338,5 @@ fn agent_templates_bind_native_queries_to_existing_field_types() {
             .unwrap_or_else(|e| panic!("{} {name}: {e:?}", blueprint.id));
         }
     }
-    assert_eq!(count, 9);
+    assert_eq!(count, 19);
 }

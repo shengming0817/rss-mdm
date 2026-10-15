@@ -9,6 +9,14 @@ from ci_impact import select_inputs, SelectionError
 
 
 class ModuleImpactTests(unittest.TestCase):
+    def test_macos_native_definitions_select_the_shared_collection_consumers(self):
+        shared = select_inputs(['crates/agent-wire/src/native_collection.rs']).modules
+        selected = select_inputs(['crates/agent-wire/src/native_collection/macos.rs']).modules
+        self.assertEqual(selected, shared)
+        self.assertIn('execution.agent.delivery', selected)
+        self.assertIn('planning.agent_policy', selected)
+        self.assertEqual(select_inputs(['crates/agent-wire/tests/macos_collection.rs']).modules, ())
+
     def test_management_limits_and_moved_entra_owners_select_real_consumers(self):
         for path, expected in {
             'crates/management-http/src/body_policy.rs': {'windows.entra', 'agent.pki', 'planning.agent_policy', 'content.http'},

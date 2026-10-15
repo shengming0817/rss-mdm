@@ -833,12 +833,14 @@ impl TaskSpec {
         Ok(bytes)
     }
 }
+/// Current Collection task format. Version 1 cannot authorize the required identity binding.
+pub const COLLECTION_TASK_VERSION: u8 = 2;
 /// Signed immutable native collection task, never a process invocation.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CollectionTaskSpec {
     /// Exact wire major.
-    #[schemars(schema_with = "crate::runtime::version_schema")]
+    #[schemars(extend("const" = 2))]
     pub wire_version: u8,
     /// Server-selected tenant.
     #[serde(with = "strict_uuid")]
@@ -881,6 +883,8 @@ pub struct CollectionTaskSpec {
     pub deadline: i64,
     /// Frozen native plan (including scope, query versions and budgets).
     pub plan: crate::runtime::NativeCollectionPlan,
+    /// Exact privilege and session selected before signing.
+    pub execution: crate::runtime::NativeExecutionBinding,
     /// Exact plan fingerprint, checked independently of the Resource digest.
     pub plan_digest: [u8; 32],
 }
@@ -888,8 +892,9 @@ impl CollectionTaskSpec {
     /// Check the complete closed contract; authentication remains the consumer's job.
     pub fn validate(&self) -> Result<(), WireError> {
         self.authorization.validate(self.tenant_id)?;
-        if self.wire_version != WIRE_VERSION
-            || self.platform != TaskPlatform::Windows
+        self.execution.validate(&self.plan)?;
+        if self.wire_version != COLLECTION_TASK_VERSION
+            || self.platform != self.plan.platform()
             || [
                 self.tenant_id,
                 self.registration_id,
@@ -936,7 +941,7 @@ impl CollectionTaskSpec {
         {
             return Err(WireError::InvalidValue);
         }
-        let mut bytes = b"rss-mdm-agent-collection-task-v1-ed25519\0".to_vec();
+        let mut bytes = b"rss-mdm-agent-collection-task-v2-ed25519\0".to_vec();
         bytes.extend((key_id.len() as u32).to_be_bytes());
         bytes.extend(key_id.as_bytes());
         bytes.extend(serde_json::to_vec(self).map_err(|_| WireError::InvalidValue)?);

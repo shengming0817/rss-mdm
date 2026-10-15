@@ -1,6 +1,9 @@
 //! Pure native collection contracts. No OS execution or Inventory policy.
 //! ref: microsoft/windows-rs crates/libs/windows/src/Windows/Win32/System/Wmi/mod.rs@0.61.0
-use crate::runtime::{OUTPUT_MAX_BYTES, WireError};
+use crate::runtime::{ExecutionIdentity, OUTPUT_MAX_BYTES, TaskPlatform, WireError};
+#[path = "native_collection/macos.rs"]
+mod macos;
+pub use macos::{MacosApplicationRoot, MacosBrewPackage, MacosHardwareSection};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
@@ -28,6 +31,18 @@ pub enum NativeEngine {
     /// Device battery summary.
     #[serde(rename = "windows.battery")]
     WindowsBattery,
+    /// Fixed macOS hardware sections.
+    #[serde(rename = "macos.hardware")]
+    MacosHardware,
+    /// Bounded approved-root application inventory.
+    #[serde(rename = "macos.applications")]
+    MacosApplications,
+    /// PackageInstaller receipt inventory, separate from application presence.
+    #[serde(rename = "macos.pkg_receipts")]
+    MacosPkgReceipts,
+    /// Non-root installed formula/cask metadata in the JSON v2 tool format.
+    #[serde(rename = "macos.brew")]
+    MacosBrew,
 }
 /// Exact supported contract versions, not executable names.
 pub type NativeEngines = BTreeMap<NativeEngine, u16>;
@@ -322,6 +337,30 @@ pub enum NativeQueryDefinition {
     WindowsNetwork,
     /// Aggregate battery charge (energy-weighted), or Missing when absent.
     WindowsBattery,
+    /// Fixed native macOS hardware section, with no executable parameters.
+    MacosHardware {
+        /// Closed section and its canonical output shape.
+        section: MacosHardwareSection,
+    },
+    /// One approved application root; partial roots cannot replace a device inventory.
+    MacosApplications {
+        /// Fixed root selector, resolved by the trusted Agent.
+        root: MacosApplicationRoot,
+        /// Maximum directory descent (1 through 8); reaching the bound is Truncated.
+        max_depth: u8,
+    },
+    /// Device package receipts, never application-existence evidence.
+    MacosPkgReceipts {},
+    /// Installed package metadata; the executor must be a bound non-root logged-in user.
+    /// Tool contract is Homebrew info JSON v2; no arbitrary flags or executable path.
+    MacosBrew {
+        /// Approved absolute data prefix, not a command or executable path.
+        prefix: String,
+        /// Distinct package evidence kind.
+        package: MacosBrewPackage,
+        /// Exact lowercase owner/tap selectors; empty requests all taps in this prefix.
+        taps: BTreeSet<String>,
+    },
 }
 /// Stable primitive identifier grammar (not a WQL token stream).
 pub fn native_identifier(s: &str) -> bool {
@@ -348,6 +387,48 @@ impl NativeQueryDefinition {
             Self::WindowsSoftware => NativeEngine::WindowsSoftware,
             Self::WindowsNetwork => NativeEngine::WindowsNetwork,
             Self::WindowsBattery => NativeEngine::WindowsBattery,
+            Self::MacosHardware { .. } => NativeEngine::MacosHardware,
+            Self::MacosApplications { .. } => NativeEngine::MacosApplications,
+            Self::MacosPkgReceipts {} => NativeEngine::MacosPkgReceipts,
+            Self::MacosBrew { .. } => NativeEngine::MacosBrew,
+        }
+    }
+    /// Exact native platform; a plan cannot mix definitions from different platforms.
+    pub fn platform(&self) -> TaskPlatform {
+        match self {
+            Self::MacosHardware { .. }
+            | Self::MacosApplications { .. }
+            | Self::MacosPkgReceipts {}
+            | Self::MacosBrew { .. } => TaskPlatform::Macos,
+            Self::WindowsWmi { .. }
+            | Self::WindowsRegistry { .. }
+            | Self::WindowsCpu
+            | Self::WindowsSoftware
+            | Self::WindowsNetwork
+            | Self::WindowsBattery => TaskPlatform::Windows,
+        }
+    }
+    /// Required privilege boundary, never inferred from a script executor profile.
+    pub fn execution_identity(&self) -> ExecutionIdentity {
+        match self {
+            Self::MacosBrew { .. }
+            | Self::MacosApplications {
+                root: MacosApplicationRoot::UserApplications,
+                ..
+            } => ExecutionIdentity::LoggedInUser,
+            Self::WindowsWmi { .. }
+            | Self::WindowsRegistry { .. }
+            | Self::WindowsCpu
+            | Self::WindowsSoftware
+            | Self::WindowsNetwork
+            | Self::WindowsBattery
+            | Self::MacosHardware { .. }
+            | Self::MacosPkgReceipts {}
+            | Self::MacosApplications {
+                root:
+                    MacosApplicationRoot::LocalApplications | MacosApplicationRoot::SystemApplications,
+                ..
+            } => ExecutionIdentity::System,
         }
     }
     /// Canonical row schema; no independently authored output schema exists.
@@ -431,6 +512,18 @@ impl NativeQueryDefinition {
             .map(|(k, v)| (k.into(), v))
             .collect(),
             Self::WindowsBattery => [("charge_percent".into(), Number)].into(),
+            Self::MacosHardware { section } => section.properties(),
+            Self::MacosApplications { .. } => macos::software_properties(&[
+                ("build_version", String),
+                ("signature_status", String),
+                ("team_id", String),
+            ]),
+            Self::MacosPkgReceipts {} => macos::software_properties(&[("install_time", Integer)]),
+            Self::MacosBrew { .. } => macos::software_properties(&[
+                ("prefix", String),
+                ("tap", String),
+                ("package_kind", String),
+            ]),
         }
     }
     /// Validate each present native property against the declared platform type.
@@ -469,6 +562,14 @@ impl NativeQueryDefinition {
                 .get("charge_percent")
                 .is_some_and(|v| v.as_f64().is_some_and(|v| (0.0..=100.0).contains(&v))),
             Self::WindowsNetwork => true,
+            Self::MacosHardware { section } => section.accepts_row(row),
+            Self::MacosApplications { root, .. } => macos::application_row(*root, row),
+            Self::MacosPkgReceipts {} => macos::device_software_row(row, "pkg_receipt"),
+            Self::MacosBrew {
+                prefix,
+                package,
+                taps,
+            } => macos::brew_row(prefix, *package, taps, row),
         }
     }
     /// Reject executable syntax and unsupported read recipes.
@@ -530,6 +631,16 @@ impl NativeQueryDefinition {
                 {
                     return Err(WireError::InvalidValue);
                 }
+            }
+            Self::MacosApplications { max_depth, .. } if !(1..=8).contains(max_depth) => {
+                return Err(WireError::InvalidValue);
+            }
+            Self::MacosBrew { prefix, taps, .. }
+                if !macos::absolute_data_root(prefix)
+                    || taps.len() > 64
+                    || taps.iter().any(|t| !macos::tap_valid(t)) =>
+            {
+                return Err(WireError::InvalidValue);
             }
             _ => (),
         }
@@ -621,6 +732,10 @@ impl NativeQuery {
             NativeQueryDefinition::WindowsSoftware | NativeQueryDefinition::WindowsNetwork => {
                 Some(NativeCardinality::List)
             }
+            NativeQueryDefinition::MacosHardware { section } => Some(section.cardinality()),
+            NativeQueryDefinition::MacosApplications { .. }
+            | NativeQueryDefinition::MacosPkgReceipts {}
+            | NativeQueryDefinition::MacosBrew { .. } => Some(NativeCardinality::List),
             _ => None,
         };
         if required.is_some_and(|r| r != self.cardinality) {
@@ -662,10 +777,15 @@ impl TryFrom<NativePlanSpec> for NativeCollectionPlan {
     }
 }
 impl NativeCollectionPlan {
-    /// Validate all structural and Windows executable constraints.
+    /// Validate structural query, platform, identity and budget constraints.
     pub fn new(p: NativePlanSpec) -> Result<Self, WireError> {
         p.budget.validate()?;
-        p.scope.validate_executable()?;
+        match &p.scope {
+            crate::CollectionScope::Device => {}
+            crate::CollectionScope::User { identity } if macos::nonroot_uid(identity) => {}
+            crate::CollectionScope::Prefix { path } if macos::absolute_data_root(path) => {}
+            _ => return Err(WireError::InvalidValue),
+        }
         if p.version != 1
             || p.queries.is_empty()
             || p.queries.len() > 64
@@ -675,6 +795,18 @@ impl NativeCollectionPlan {
         }
         for q in p.queries.values() {
             q.validate()?;
+            let first = &p.queries.values().next().expect("nonempty").definition;
+            if q.definition.platform() != first.platform()
+                || q.definition.execution_identity() != first.execution_identity()
+                || (q.definition.platform() == TaskPlatform::Windows
+                    && p.scope != crate::CollectionScope::Device)
+                || matches!(&p.scope, crate::CollectionScope::Prefix { path }
+                    if !matches!(&q.definition, NativeQueryDefinition::MacosBrew { prefix, .. } if prefix == path))
+                || (matches!(&p.scope, crate::CollectionScope::User { .. })
+                    && q.definition.execution_identity() != ExecutionIdentity::LoggedInUser)
+            {
+                return Err(WireError::InvalidValue);
+            }
             if q.budget.output_bytes > p.budget.output_bytes
                 || q.budget.timeout_seconds > p.budget.timeout_seconds
                 || q.budget.max_rows > p.budget.max_rows
@@ -690,6 +822,26 @@ impl NativeCollectionPlan {
             return Err(WireError::InvalidValue);
         }
         Ok(Self(p))
+    }
+    /// Required operating system, shared by every query.
+    pub fn platform(&self) -> TaskPlatform {
+        self.0
+            .queries
+            .values()
+            .next()
+            .expect("validated plan")
+            .definition
+            .platform()
+    }
+    /// Required execution identity, shared by every query.
+    pub fn execution_identity(&self) -> ExecutionIdentity {
+        self.0
+            .queries
+            .values()
+            .next()
+            .expect("validated plan")
+            .definition
+            .execution_identity()
     }
     /// Immutable construction values.
     pub fn spec(&self) -> &NativePlanSpec {
@@ -715,6 +867,79 @@ impl NativeCollectionPlan {
         self.requirements()
             .iter()
             .all(|(k, v)| engines.get(k) == Some(v))
+    }
+}
+/// Signed privilege and live-session binding; scan declarations are not Inventory authority.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct NativeExecutionBinding {
+    /// Exact required privilege boundary.
+    pub identity: ExecutionIdentity,
+    /// Current reported context generation; changes invalidate an outstanding Offer.
+    pub context_revision: u64,
+    /// Exact device or interactive session. No offline user switching is permitted.
+    pub target: crate::runtime::SoftwareExecutionTarget,
+}
+impl NativeExecutionBinding {
+    /// Bind only an available broker/helper and the current non-root login.
+    pub fn bind(
+        plan: &NativeCollectionPlan,
+        context: &crate::runtime::SoftwareExecutionContext,
+    ) -> Result<Self, WireError> {
+        use crate::runtime::SoftwareExecutionTarget;
+        context.validate_for(plan.platform())?;
+        let identity = plan.execution_identity();
+        let target = match identity {
+            ExecutionIdentity::System if context.system_broker => SoftwareExecutionTarget::Device,
+            ExecutionIdentity::LoggedInUser if context.user_helper => {
+                let user = context
+                    .interactive_user
+                    .as_ref()
+                    .ok_or(WireError::InvalidValue)?;
+                SoftwareExecutionTarget::User {
+                    identity: user.identity.clone(),
+                    session_id: user.session_id,
+                }
+            }
+            _ => return Err(WireError::InvalidValue),
+        };
+        let binding = Self {
+            identity,
+            context_revision: context.revision,
+            target,
+        };
+        binding.validate(plan)?;
+        Ok(binding)
+    }
+    /// Check the signed identity against the immutable plan before local execution.
+    pub fn validate(&self, plan: &NativeCollectionPlan) -> Result<(), WireError> {
+        use crate::runtime::SoftwareExecutionTarget;
+        self.target.validate_for(plan.platform())?;
+        if self.context_revision == 0
+            || self.context_revision > i64::MAX as u64
+            || self.identity != plan.execution_identity()
+        {
+            return Err(WireError::InvalidValue);
+        }
+        match (&self.target, self.identity) {
+            (SoftwareExecutionTarget::Device, ExecutionIdentity::System) => Ok(()),
+            (SoftwareExecutionTarget::User { identity, .. }, ExecutionIdentity::LoggedInUser)
+                if plan.platform() == TaskPlatform::Macos
+                    && macos::nonroot_uid(identity)
+                    && !matches!(&plan.spec().scope, crate::CollectionScope::User { identity: owner } if owner != identity) =>
+            {
+                Ok(())
+            }
+            _ => Err(WireError::InvalidValue),
+        }
+    }
+    /// Recheck local context at Start; neither a new session nor a new revision may reuse an Offer.
+    pub fn matches_context(
+        &self,
+        plan: &NativeCollectionPlan,
+        context: &crate::runtime::SoftwareExecutionContext,
+    ) -> bool {
+        Self::bind(plan, context).is_ok_and(|current| current == *self)
     }
 }
 /// Closed query completion status; it never denotes script exit success.

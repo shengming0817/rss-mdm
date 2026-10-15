@@ -75,3 +75,37 @@ fn one_query_can_bind_multiple_fields_and_unknown_queries_are_rejected() {
     spec.mappings.get_mut("custom.temperature").unwrap().query = "missing".into();
     assert!(AgentCollectionDefinition::new(spec).is_err());
 }
+
+#[test]
+fn macos_device_publication_is_platform_exact_and_scoped_recipes_are_rejected() {
+    let blueprints::Definition::AgentCollection { template } =
+        blueprints::get("macos.agent.receipts", "1")
+            .unwrap()
+            .definition
+    else {
+        unreachable!()
+    };
+    template.validate_platform(Platform::MacOS).unwrap();
+    assert!(template.validate_platform(Platform::Windows).is_err());
+    for definition in [
+        w::NativeQueryDefinition::MacosApplications {
+            root: w::MacosApplicationRoot::LocalApplications,
+            max_depth: 2,
+        },
+        w::NativeQueryDefinition::MacosApplications {
+            root: w::MacosApplicationRoot::UserApplications,
+            max_depth: 2,
+        },
+        w::NativeQueryDefinition::MacosBrew {
+            prefix: "/opt/homebrew".into(),
+            package: w::MacosBrewPackage::Formula,
+            taps: Default::default(),
+        },
+    ] {
+        let mut spec = template.spec().clone();
+        let mut plan = spec.plan.spec().clone();
+        plan.queries.get_mut("receipts").unwrap().definition = definition;
+        spec.plan = w::NativeCollectionPlan::new(plan).unwrap();
+        assert!(AgentCollectionDefinition::new(spec).is_err());
+    }
+}

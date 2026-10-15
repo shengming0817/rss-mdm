@@ -398,29 +398,47 @@ async fn collection_structure_budget_precedes_partial_field_acceptance() -> Resu
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 #[ignore = "make t2 MODULE=execution.agent.delivery"]
 async fn native_inventory_only_partial_empty_chunked_and_revoked() -> Result<()> {
-    native_inventory_case(true, false).await
+    native_inventory_case(true, false, false).await
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 #[ignore = "make t2 MODULE=execution.agent.delivery"]
 async fn native_unmapped_evidence_requires_sensitive_permission() -> Result<()> {
-    native_inventory_case(false, false).await
+    native_inventory_case(false, false, false).await
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 #[ignore = "make t2 MODULE=execution.agent.delivery"]
 async fn native_all_query_failures_preserve_execution_completion() -> Result<()> {
-    native_inventory_case(false, true).await
+    native_inventory_case(false, true, false).await
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+#[ignore = "make t2 MODULE=execution.agent.delivery"]
+async fn macos_native_inventory_partial_empty_chunked_and_context_changed() -> Result<()> {
+    native_inventory_case(true, false, true).await
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+#[ignore = "make t2 MODULE=execution.agent.delivery"]
+async fn macos_native_unmapped_failed_evidence_requires_sensitive_permission() -> Result<()> {
+    native_inventory_case(false, true, true).await
 }
 
 #[allow(
     clippy::cognitive_complexity,
     reason = "shared HTTP scenario retains distinct authorization, quality and transport assertions"
 )]
-async fn native_inventory_case(map_software: bool, all_failed: bool) -> Result<()> {
+async fn native_inventory_case(map_software: bool, all_failed: bool, macos: bool) -> Result<()> {
     use rss_mdm_agent_wire::runtime as w;
     use rss_mdm_resource as r;
     use sha2::{Digest, Sha256};
+    let platform = if macos { "macos" } else { "windows" };
+    let software_field = if macos {
+        "device.software.receipts"
+    } else {
+        "device.software.installations"
+    };
     let mut f = Fixture::new().await?;
     f.grants
         .retain(|g| g.operation != crate::authorization::Permission::ScriptExecute);
@@ -435,19 +453,29 @@ async fn native_inventory_case(map_software: bool, all_failed: bool) -> Result<(
     });
     crate::test_support::identity::set_grants(case_tenant(), &f.author_id, f.grants.clone())
         .await?;
-    let context = crate::test_support::software_execution::context(
-        crate::test_support::software_execution::Platform::Windows,
-    );
-    let (_,registration)=crate::test_support::agent::enroll_profile(&f.router,&mut f.author,case_credential(),json!({"capabilities":["inventory.collect.v1","inventory.native.v1"],"platform":"windows","architecture":"x86_64","executionContext":context})).await?;
+    let context = crate::test_support::software_execution::context(if macos {
+        crate::test_support::software_execution::Platform::MacOs
+    } else {
+        crate::test_support::software_execution::Platform::Windows
+    });
+    let (_,registration)=crate::test_support::agent::enroll_profile(&f.router,&mut f.author,case_credential(),json!({"capabilities":["inventory.collect.v1","inventory.native.v1"],"platform":platform,"architecture":"x86_64","executionContext":context})).await?;
     let device = registration["deviceId"].as_str().unwrap().to_owned();
     f.scope(case_task_scope(), json!([{"kind":"device","id":device}]))
         .await?;
     let mut specs = Vec::new();
-    for id in [
-        "windows.agent.memory",
-        "windows.agent.network",
-        "windows.agent.software",
-    ] {
+    for id in if macos {
+        [
+            "macos.agent.memory",
+            "macos.agent.network",
+            "macos.agent.receipts",
+        ]
+    } else {
+        [
+            "windows.agent.memory",
+            "windows.agent.network",
+            "windows.agent.software",
+        ]
+    } {
         let r::blueprints::Definition::AgentCollection { template } =
             r::blueprints::get(id, "1").unwrap().definition
         else {
@@ -462,7 +490,7 @@ async fn native_inventory_case(map_software: bool, all_failed: bool) -> Result<(
         mappings.extend(spec.mappings.clone());
     }
     if !map_software {
-        mappings.remove("device.software.installations");
+        mappings.remove(software_field);
     }
     let definition = r::AgentCollectionDefinition::new(r::AgentCollectionSpec {
         plan: w::NativeCollectionPlan::new(ps)?,
@@ -479,14 +507,14 @@ async fn native_inventory_case(map_software: bool, all_failed: bool) -> Result<(
         json!({"action":"create","kind":"agent_collection"}),
     )
     .await?;
-    resource(&mut f.author,&f.router,resource_id,1,json!({"action":"version","version":"v1","kind":"agent_collection","variants":[{"platform":"windows","architecture":"x86_64","key":"default","declaration":{"kind":"agent_collection","artifact":{"reference":"native.json","length":bytes.len(),"sha256":digest},"definition":definition}}]})).await?;
+    resource(&mut f.author,&f.router,resource_id,1,json!({"action":"version","version":"v1","kind":"agent_collection","variants":[{"platform":platform,"architecture":"x86_64","key":"default","declaration":{"kind":"agent_collection","artifact":{"reference":"native.json","length":bytes.len(),"sha256":digest},"definition":definition}}]})).await?;
     ensure!(
         upload_for(
             &f.author,
             &f.router,
             resource_id,
             &bytes,
-            "windows",
+            platform,
             "x86_64"
         )
         .await?
@@ -504,7 +532,7 @@ async fn native_inventory_case(map_software: bool, all_failed: bool) -> Result<(
     let runtime = agent_runtime(&f.base).await?;
     let inventory = crate::inventory_runtime::test_support::start(runtime.clone()).await?;
     let claim_input = |engines: Value| json!({"wireVersion":1,"operationId":Uuid::new_v4(),"profiles":[],"environment":{"edition":null,"tools":{},"nativeEngines":engines},"executionContext":context});
-    let policy_input = || json!({"scope":case_task_scope(),"action":{"kind":"agent_collection","resource":{"id":resource_id,"version":"v1","platform":"windows","architecture":"x86_64","variant":"default"},"runLifetimeSeconds":300}});
+    let policy_input = || json!({"scope":case_task_scope(),"action":{"kind":"agent_collection","resource":{"id":resource_id,"version":"v1","platform":platform,"architecture":"x86_64","variant":"default"},"runLifetimeSeconds":300}});
     let mut prior_network = String::new();
     let mut prior_software = String::new();
     for stage in 0..4 {
@@ -543,9 +571,11 @@ async fn native_inventory_case(map_software: bool, all_failed: bool) -> Result<(
                     Method::POST,
                     "/api/v1/agent/runtime/tasks/claim",
                     Some(case_credential()),
-                    Some(claim_input(
-                        json!({"windows.wmi":1,"windows.network":1,"windows.software":1}),
-                    )),
+                    Some(claim_input(if macos {
+                        json!({"macos.hardware":1,"macos.pkg_receipts":1})
+                    } else {
+                        json!({"windows.wmi":1,"windows.network":1,"windows.software":1})
+                    })),
                 )
                 .await?;
                 ensure!(response.0 == StatusCode::OK, "native claim: {response:?}");
@@ -586,13 +616,21 @@ async fn native_inventory_case(map_software: bool, all_failed: bool) -> Result<(
                 })
                 .cloned()
                 .collect();
-            crate::test_support::identity::set_grants(case_tenant(), &f.author_id, grants).await?;
+            if !macos {
+                crate::test_support::identity::set_grants(case_tenant(), &f.author_id, grants)
+                    .await?;
+            }
+            let mut start = event(Uuid::new_v4(), json!({"kind":"start"}));
+            if macos {
+                start["executionContext"]["revision"] =
+                    json!(context["revision"].as_u64().unwrap() + 1);
+            }
             let denied = agent_call(
                 &f.router,
                 Method::POST,
                 &path,
                 Some(case_credential()),
-                Some(event(Uuid::new_v4(), json!({"kind":"start"}))),
+                Some(start),
             )
             .await?;
             ensure!(
@@ -616,14 +654,19 @@ async fn native_inventory_case(map_software: bool, all_failed: bool) -> Result<(
             let rows = if id == "memory" {
                 vec![
                     [(
-                        "TotalPhysicalMemory".into(),
+                        if macos {
+                            "total_bytes"
+                        } else {
+                            "TotalPhysicalMemory"
+                        }
+                        .into(),
                         json!((8192 + stage).to_string()),
                     )]
                     .into(),
                 ]
             } else if stage == 2 {
                 vec![]
-            } else if id == "software" {
+            } else if id == "software" || id == "receipts" {
                 (0..if stage == 0 { 2 } else { 1 })
                     .map(|i| {
                         [
@@ -639,12 +682,19 @@ async fn native_inventory_case(map_software: bool, all_failed: bool) -> Result<(
                             ),
                             ("version".into(), json!("1.0")),
                             ("publisher".into(), json!("Acme")),
-                            ("scope".into(), json!("user")),
+                            ("scope".into(), json!(if macos { "device" } else { "user" })),
                             (
                                 "owner".into(),
-                                json!(format!("S-1-5-21-1-2-3-{}", 1001 + i)),
+                                json!(if macos {
+                                    String::new()
+                                } else {
+                                    format!("S-1-5-21-1-2-3-{}", 1001 + i)
+                                }),
                             ),
-                            ("origin".into(), json!("registry")),
+                            (
+                                "origin".into(),
+                                json!(if macos { "pkg_receipt" } else { "registry" }),
+                            ),
                             ("location".into(), json!("C:\\Apps")),
                         ]
                         .into()
@@ -682,7 +732,7 @@ async fn native_inventory_case(map_software: bool, all_failed: bool) -> Result<(
                             1 => w::NativeQueryStatus::Timeout,
                             _ => w::NativeQueryStatus::Invalid,
                         }
-                    } else if stage == 1 && id == "network" {
+                    } else if stage == 1 && (id == "network" || id == "receipts") {
                         w::NativeQueryStatus::Truncated
                     } else {
                         w::NativeQueryStatus::Complete
@@ -805,7 +855,7 @@ async fn native_inventory_case(map_software: bool, all_failed: bool) -> Result<(
             }
             if map_software {
                 let software = pg(&format!(
-                    "SELECT value::text FROM mdm.inventory WHERE tenant_id='{}' AND registration='{}' AND source='agent.native' AND field='device.software.installations'",
+                    "SELECT value::text FROM mdm.inventory WHERE tenant_id='{}' AND registration='{}' AND source='agent.native' AND field='{software_field}'",
                     case_tenant(),
                     spec.registration_id
                 ))?;
