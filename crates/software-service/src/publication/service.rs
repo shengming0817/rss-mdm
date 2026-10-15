@@ -354,7 +354,7 @@ impl PublicationService {
         cutoff: Deadline,
     ) -> Result<rel::Transition> {
         if let Some(replay) = self
-            .replay_service(id, ring, request, "publish", None, cutoff)
+            .replay_service(id, ring, request, "publish", None, access, cutoff)
             .await?
         {
             return Ok(replay);
@@ -431,7 +431,7 @@ impl PublicationService {
         cutoff: Deadline,
     ) -> Result<rel::Transition> {
         if let Some(replay) = self
-            .replay_service(id, ring, request, "retry", Some(attempt), cutoff)
+            .replay_service(id, ring, request, "retry", Some(attempt), access, cutoff)
             .await?
         {
             return Ok(replay);
@@ -492,46 +492,131 @@ impl PublicationService {
         )
         .await
         .map_err(|cause| Error::Source.context("service::publish_request", cause))??;
-        settle(
+        let rejection = std::sync::Mutex::new(None);
+        let result = settle(
             self.runtime
                 .local_tx_with_context(
                     self.tenant(),
                     budget(cutoff),
-                    (self, c, subject, r, &target, enabling, access),
-                    |(s, c, subject, r, target, enabling, access), tx| {
+                    (self, c, subject, r, &target, enabling, access, &rejection),
+                    |(s, c, subject, r, target, enabling, access, rejection), tx| {
                         Box::pin(async move {
-                            s.audit_store
-                                .lock_in(tx)
-                                .await
-                                .map_err(rss_transactional_messaging_postgres::PgError::from)?;
-                            let mut partitions =
-                                vec![s.releases.partition(c.snapshot().id.value())?];
-                            if let Some((version, _)) = enabling {
-                                partitions.push(input!(
-                                    s.catalog
-                                        .publication_partition(version)
-                                        .map_err(|_| Error::Content)
-                                ));
-                            }
-                            tx.prepare_outbox_partitions(&partitions).await?;
-                            let allow_draft = input!(access.check(tx).await);
-                            input!(
-                                s.catalog
-                                    .reader()
+                            let outcome: InTransaction<_> = async {
+                                s.audit_store
                                     .lock_in(tx)
                                     .await
-                                    .map_err(|_| Error::Content)
-                            );
-                            if db::required(
-                                "publish replay",
-                                s.releases.operation_in(tx, &r.id).await?,
-                            )?
-                            .is_some()
-                            {
-                                let result = db::required(
+                                    .map_err(rss_transactional_messaging_postgres::PgError::from)?;
+                                let mut partitions =
+                                    vec![s.releases.partition(c.snapshot().id.value())?];
+                                if let Some((version, _)) = enabling {
+                                    partitions.push(input!(
+                                        s.catalog
+                                            .publication_partition(version)
+                                            .map_err(|_| Error::Content)
+                                    ));
+                                }
+                                tx.prepare_outbox_partitions(&partitions).await?;
+                                let allow_draft = input!(access.check(tx).await);
+                                input!(
+                                    s.catalog
+                                        .reader()
+                                        .lock_in(tx)
+                                        .await
+                                        .map_err(|_| Error::Content)
+                                );
+                                if db::required(
                                     "publish replay",
+                                    s.releases.operation_in(tx, &r.id).await?,
+                                )?
+                                .is_some()
+                                {
+                                    let result = db::required(
+                                        "publish replay",
+                                        s.releases.transition_in(tx, &c.snapshot().id, r).await?,
+                                    )?;
+                                    let fact = db::fact(
+                                        tx.tenant_id(),
+                                        &r.actor,
+                                        &target.candidate,
+                                        "software_publish",
+                                        db::transition_fact(r, "software_publish"),
+                                        &db::request_fingerprint(&target.candidate, r)?,
+                                    )?;
+                                    s.audit_store.append_in(tx, &fact, true).await.map_err(
+                                        rss_transactional_messaging_postgres::PgError::from,
+                                    )?;
+                                    return Ok(Ok(result));
+                                }
+                                db::lock(
+                                    tx,
+                                    "source",
+                                    &format!("{}:{}", hex(&target.binding), target.slot),
+                                )
+                                .await?;
+                                let slot = db::slot(tx, &target.binding, &target.slot).await?;
+                                if slot.operation.is_some() || slot.cursor != target.base {
+                                    return Ok(Err(Error::Blocked));
+                                }
+                                let current = input!(
+                                    s.releases
+                                        .lock_candidate_in(tx, &c.snapshot().id)
+                                        .await?
+                                        .map_err(|cause| Error::Conflict
+                                            .context("service::publish_request", cause))
+                                );
+                                input!(current.transition((*r).clone(), None).map_err(|cause| {
+                                    Error::Conflict.context("service::publish_request", cause)
+                                }));
+                                let key = db::software_key(&c.snapshot().content)?;
+                                if db::authority(tx, &key)
+                                    .await?
+                                    .is_none_or(|(owner, _)| owner != target.candidate)
+                                {
+                                    return Ok(Err(Error::Conflict));
+                                }
+                                if let Some((version, pins)) = enabling {
+                                    input!(
+                                        s.catalog
+                                            .reader()
+                                            .publication_binding_in(tx, version, allow_draft)
+                                            .await
+                                            .map_err(|_| Error::Identity)
+                                    );
+                                    let pin = input!(
+                                        pins.iter()
+                                            .find(
+                                                |p| p.resource_digest() == version.digest().bytes()
+                                            )
+                                            .ok_or(Error::Content)
+                                    );
+                                    let operation = input!(
+                                        uuid::Uuid::parse_str(r.id.value())
+                                            .map_err(|_| Error::Input)
+                                    );
+                                    input!(
+                                        s.catalog
+                                            .enable_for_publication_in(
+                                                tx,
+                                                version,
+                                                pin.as_ref(),
+                                                r.actor.value(),
+                                                operation
+                                            )
+                                            .await
+                                            .map_err(|_| Error::Content)
+                                    );
+                                }
+                                input!(
+                                    s.exports()
+                                        .resource_usable(tx, subject, target.lifecycle)
+                                        .await?
+                                );
+                                let result = db::required(
+                                    "service::publish_request",
                                     s.releases.transition_in(tx, &c.snapshot().id, r).await?,
                                 )?;
+                                db::reserve(tx, target, &target.key()).await?;
+                                db::insert_call(tx, db::Table::Publish, target).await?;
                                 let fact = db::fact(
                                     tx.tenant_id(),
                                     &r.actor,
@@ -541,100 +626,35 @@ impl PublicationService {
                                     &db::request_fingerprint(&target.candidate, r)?,
                                 )?;
                                 s.audit_store
-                                    .append_in(tx, &fact, true)
+                                    .append_in(
+                                        tx,
+                                        &fact,
+                                        matches!(result, rel::Transition::Replayed(_)),
+                                    )
                                     .await
                                     .map_err(rss_transactional_messaging_postgres::PgError::from)?;
-                                return Ok(Ok(result));
+                                Ok(Ok(result))
                             }
-                            db::lock(
-                                tx,
-                                "source",
-                                &format!("{}:{}", hex(&target.binding), target.slot),
-                            )
-                            .await?;
-                            let slot = db::slot(tx, &target.binding, &target.slot).await?;
-                            if slot.operation.is_some() || slot.cursor != target.base {
-                                return Ok(Err(Error::Blocked));
+                            .await;
+                            match outcome {
+                                Ok(Err(error)) => {
+                                    *rejection.lock().expect("publication rejection") = Some(error);
+                                    Err(db::fault())
+                                }
+                                other => other,
                             }
-                            if let Some((version, pins)) = enabling {
-                                input!(
-                                    s.catalog
-                                        .reader()
-                                        .publication_binding_in(tx, version, allow_draft)
-                                        .await
-                                        .map_err(|_| Error::Identity)
-                                );
-                                let pin = input!(
-                                    pins.iter()
-                                        .find(|p| p.resource_digest() == version.digest().bytes())
-                                        .ok_or(Error::Content)
-                                );
-                                let operation = input!(
-                                    uuid::Uuid::parse_str(r.id.value()).map_err(|_| Error::Input)
-                                );
-                                input!(
-                                    s.catalog
-                                        .enable_for_publication_in(
-                                            tx,
-                                            version,
-                                            pin.as_ref(),
-                                            r.actor.value(),
-                                            operation
-                                        )
-                                        .await
-                                        .map_err(|_| Error::Content)
-                                );
-                            }
-                            input!(
-                                s.exports()
-                                    .resource_usable(tx, subject, target.lifecycle)
-                                    .await?
-                            );
-                            let current = input!(
-                                s.releases
-                                    .lock_candidate_in(tx, &c.snapshot().id)
-                                    .await?
-                                    .map_err(|cause| Error::Conflict
-                                        .context("service::publish_request", cause))
-                            );
-                            input!(current.transition((*r).clone(), None).map_err(|cause| {
-                                Error::Conflict.context("service::publish_request", cause)
-                            }));
-                            let key = db::software_key(&c.snapshot().content)?;
-                            if db::authority(tx, &key)
-                                .await?
-                                .is_none_or(|(owner, _)| owner != target.candidate)
-                            {
-                                return Ok(Err(Error::Conflict));
-                            }
-                            let result = db::required(
-                                "service::publish_request",
-                                s.releases.transition_in(tx, &c.snapshot().id, r).await?,
-                            )?;
-                            db::reserve(tx, target, &target.key()).await?;
-                            db::insert_call(tx, db::Table::Publish, target).await?;
-                            let fact = db::fact(
-                                tx.tenant_id(),
-                                &r.actor,
-                                &target.candidate,
-                                "software_publish",
-                                db::transition_fact(r, "software_publish"),
-                                &db::request_fingerprint(&target.candidate, r)?,
-                            )?;
-                            s.audit_store
-                                .append_in(
-                                    tx,
-                                    &fact,
-                                    matches!(result, rel::Transition::Replayed(_)),
-                                )
-                                .await
-                                .map_err(rss_transactional_messaging_postgres::PgError::from)?;
-                            Ok(Ok(result))
                         })
                     },
                 )
                 .await,
-        )
+        );
+        match result {
+            Err(Error::RolledBack(cause)) => Err(rejection
+                .into_inner()
+                .expect("publication rejection")
+                .unwrap_or(Error::RolledBack(cause))),
+            other => other,
+        }
     }
     async fn prepare_target(
         &self,
@@ -718,6 +738,7 @@ impl PublicationService {
         r: &ServiceRequest,
         kind: &str,
         attempt: Option<u64>,
+        access: &dyn PublishAccess,
         cutoff: Deadline,
     ) -> Result<Option<rel::Transition>> {
         if self
@@ -756,13 +777,14 @@ impl PublicationService {
                 .local_tx_with_context(
                     self.tenant(),
                     budget(cutoff),
-                    (self, id, &original),
-                    move |(s, id, r), tx| {
+                    (self, id, &original, access),
+                    move |(s, id, r, access), tx| {
                         Box::pin(async move {
                             s.audit_store
                                 .lock_in(tx)
                                 .await
                                 .map_err(rss_transactional_messaging_postgres::PgError::from)?;
+                            input!(access.check(tx).await);
                             input!(
                                 s.catalog
                                     .reader()

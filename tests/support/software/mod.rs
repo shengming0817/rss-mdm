@@ -289,14 +289,29 @@ pub fn request(c: &rel::Candidate) -> ServiceRequest {
         as_of: at(10),
     }
 }
-#[allow(
-    clippy::cognitive_complexity,
-    reason = "typed provider fixtures retain format-specific immutable material and admission setup"
-)]
 pub async fn seed(
     runtime: Arc<rss_transactional_messaging_postgres::PgRuntime>,
     server: &Server,
     document: ExportDocument,
+) -> CandidateInput {
+    seed_version(runtime, server, document, true).await
+}
+pub async fn seed_draft(
+    runtime: Arc<rss_transactional_messaging_postgres::PgRuntime>,
+    server: &Server,
+    document: ExportDocument,
+) -> CandidateInput {
+    seed_version(runtime, server, document, false).await
+}
+#[allow(
+    clippy::cognitive_complexity,
+    reason = "typed provider fixtures retain format-specific immutable material and admission setup"
+)]
+async fn seed_version(
+    runtime: Arc<rss_transactional_messaging_postgres::PgRuntime>,
+    server: &Server,
+    document: ExportDocument,
+    enabled: bool,
 ) -> CandidateInput {
     let store = resource_pg::ResourceStore::new(runtime, tenant(), deadline())
         .await
@@ -542,7 +557,9 @@ pub async fn seed(
             .await
             .unwrap();
     }
-    admit_version(&version).await;
+    if enabled {
+        admit_version(&version).await;
+    }
     CandidateInput {
         actor: rel::ActorId::new(tenant(), "publisher").unwrap(),
         candidate: rel::CandidateId::new(tenant(), unique()).unwrap(),

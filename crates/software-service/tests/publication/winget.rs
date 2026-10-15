@@ -136,3 +136,102 @@ async fn unstarted_publication_recovery_preserves_its_original_identity() {
     assert_eq!(server.state.lock().unwrap().posts, 0);
     runtime.close().await;
 }
+
+#[tokio::test]
+#[ignore = "real PG: make t2 MODULE=publication.winget"]
+async fn draft_publication_rolls_back_every_write_and_replay_rechecks_access() {
+    let server = Server::new().await;
+    let runtime = runtime().await;
+    let service = server.service(runtime.clone(), server.winget()).await;
+    let input = seed_draft(runtime.clone(), &server, server.winget_document()).await;
+    service.create_candidate(&input, cutoff()).await.unwrap();
+    let original = service
+        .candidate(&input.candidate, cutoff())
+        .await
+        .unwrap()
+        .unwrap();
+    let request = request_for(&service, &input.candidate).await;
+    let counts = || {
+        sql(&format!(
+            "SELECT (SELECT count(*) FROM mdm_software.versions),(SELECT count(*) FROM mdm_software.materials),(SELECT count(*) FROM rss_transactional_messaging.outbox),(SELECT count(*) FROM mdm_software_composition.targets),(SELECT count(*) FROM mdm_software_composition.slots WHERE operation IS NOT NULL)"
+        ))
+    };
+    let before = counts();
+    // Reject after catalog writes, once via a SQL error and once via a domain rejection.
+    for body in [
+        "RAISE EXCEPTION 'publication fixture rollback';",
+        "UPDATE mdm_software.versions SET lifecycle=jsonb_set(lifecycle,'{state}','\"withdrawn\"') WHERE tenant_id=NEW.tenant_id AND resource=NEW.resource AND version=NEW.version;",
+    ] {
+        sql(&format!(
+            "CREATE FUNCTION public.reject_draft_publication() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN {body} RETURN NEW; END $$; CREATE TRIGGER reject_draft AFTER INSERT ON mdm_software.versions FOR EACH ROW EXECUTE FUNCTION public.reject_draft_publication();"
+        ));
+        let result = service
+            .submit(
+                &input.candidate,
+                rel::Ring::Test,
+                &request,
+                &TestPublishAccess,
+                cutoff(),
+            )
+            .await;
+        sql(
+            "DROP TRIGGER reject_draft ON mdm_software.versions; DROP FUNCTION public.reject_draft_publication();",
+        );
+        assert!(result.is_err(), "{result:?}");
+        assert_eq!(
+            counts(),
+            before,
+            "failed publication committed partial effects"
+        );
+        assert_eq!(
+            service
+                .candidate(&input.candidate, cutoff())
+                .await
+                .unwrap()
+                .unwrap(),
+            original
+        );
+    }
+    service
+        .submit(
+            &input.candidate,
+            rel::Ring::Test,
+            &request,
+            &TestPublishAccess,
+            cutoff(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        sql(&format!(
+            "SELECT count(*) FROM mdm_software.versions WHERE resource='{}'",
+            input.resource.as_str()
+        )),
+        "1"
+    );
+    struct Revoked;
+    impl PublishAccess for Revoked {
+        fn check<'a, 'c>(
+            &'a self,
+            _tx: &'a mut rss_transactional_messaging_postgres::PgTransaction<'c>,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<bool>> + Send + 'a>>
+        {
+            Box::pin(async { Err(Error::Identity) })
+        }
+    }
+    let after = counts();
+    assert!(matches!(
+        service
+            .submit(
+                &input.candidate,
+                rel::Ring::Test,
+                &request,
+                &Revoked,
+                cutoff()
+            )
+            .await,
+        Err(Error::Identity)
+    ));
+    assert_eq!(counts(), after);
+    runtime.close().await;
+}

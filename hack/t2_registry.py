@@ -838,6 +838,7 @@ consume(('crates/software-service/src/management/catalog.rs', 'crates/software-s
          'crates/software-service/src/management/error.rs', 'crates/software-service/src/management/transaction.rs',
          'crates/software-service/src/management/mod.rs'), 'software.http')
 consume(('crates/software-service/src/management/publication/*',), 'software.http catalog.contract')
+consume(('crates/software-service/src/publication/access.rs',), 'software.http publication.winget publication.brew publication.mapping publication.withdrawal publication.recovery')
 consume(('crates/content-service/src/software.rs',), 'software.http')
 
 # App router assembly and channel registrars select every actual ingress consumer.

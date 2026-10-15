@@ -23,7 +23,7 @@ Windows + macOS｜统一执行、双通道管理与私有软件仓库
 | 能力 | 产品范围 | 主要需求 |
 | --- | --- | --- |
 | macOS 对标 | 提升为正式目标：注册、Profile/DDM、资产、安全托管、更新、原生软件及 Mac Agent。 | WMD-MAC01–15 |
-| WinGet/Brew 私有仓库 | 进入正式二级交付；源/元数据/产物/审批/分配/终端执行/恢复完整管理。 | WMD-S06、WMD-REP01–10、WMD-BRW01–10 |
+| WinGet/Brew 私有仓库 | 进入正式二级交付；源/元数据/产物/启用/分配/终端执行/恢复完整管理。 | WMD-S06、WMD-REP01–10、WMD-BRW01–10 |
 | 虚拟执行层 | 业务接口与逻辑模板跨 OS 共用；适配器按能力解析执行，保留平台专属语义。 | WMD-V01–12 |
 | 策略下发通道 | 仅 Agent/MDM 两类；DDM 是 MDM 子机制，WinGet/Brew 是执行器，推送不是执行证明。 | WMD-CH01–07 |
 | 数据采集与扩展字段 | Agent 内置/osquery/脚本与 MDM 共用字段字典、观测、资产模型；Manual/API 属于赋值来源。 | WMD-X01–05、WMD-COL01–11 |
@@ -113,7 +113,7 @@ RSS MDM 面向企业私有化部署，统一管理 Windows 与 macOS 的设备�
 
 ## J7　私有软件版本发布与撤回
 
-提交内部分发包与元数据 → 在隔离验证环境测试 → 审批并冻结摘要 → 发布 WinGet feed/Brew Tap 快照 → 小组灰度 → 完成后推广。发现风险时阻断新授权并撤回发布引用；设备降级/卸载依赖明确方案，已有离线副本另行处置。
+提交内部分发包与元数据 → 在隔离验证环境测试 → 有权限管理员直接发布、自动校验并冻结摘要 → 发布 WinGet feed/Brew Tap 快照 → 小组灰度 → 完成后推广。发现风险时阻断新授权并撤回发布引用；设备降级/卸载依赖明确方案，已有离线副本另行处置。
 
 ---
 
@@ -137,7 +137,7 @@ MDM 原生通道和 Agent 通道分别承担适用的管理能力，共用产品
 | --- | --- | --- |
 | R0：契约与可信执行底座 | 冻结共享模型、设备/注册关联、能力预检、单一写 owner；补 Windows Agent 真执行/结果与审计；保留现有 Windows 功能。 | 一个真实 Windows 脚本从创建到补传可核实；旧 API/组/Scope/MDM 不退化；混合目标计划和不支持结果可解释。 |
 | R1：双平台管理基线 | macOS 手动 MDM、签名 Agent、Profile 与基础资产；Agent/osquery 与脚本；最小扩展字段字典；跨 OS 一套请求与视图。 | Win/Mac 各自 MDM-only、Agent-only、双通道场景通过；同一采集目标和逻辑配置模板工作，原生差异可见。 |
-| R2：企业软件与管理闭环 | WinGet/Brew 私有源审批发布及完整生命周期；ADE、DDM、FileVault/令牌、更新、字段驱动策略；继承 Windows LAPS/BitLocker、应用、Webhook/合规包。 | 两类私有源都经过真实端消费、撤销/恢复验证；各承诺 macOS/Windows 企业用例均有界面、API、运行与故障证据。 |
+| R2：企业软件与管理闭环 | WinGet/Brew 私有源直接发布及完整生命周期；ADE、DDM、FileVault/令牌、更新、字段驱动策略；继承 Windows LAPS/BitLocker、应用、Webhook/合规包。 | 两类私有源都经过真实端消费、撤销/恢复验证；各承诺 macOS/Windows 企业用例均有界面、API、运行与故障证据。 |
 | R3：可选深化 | 自助、Platform SSO、复杂多用户/源码构建、第三方源连接器、osquery 扩展、远程桌面、MSP 等。 | 单项批准范围、支持矩阵及必要性；不以这些增强阻塞已冻结的 R1/R2。 |
 
 Windows MDM 只读纵切 V1 是 R0/R1 的基础增量，不代替 R0 的 Windows Agent 真执行退出条件。具体依赖按 [实施路线](roadmap.md) 推进；工程先后顺序不降低 macOS、三类采集与 WinGet/Brew 的正式范围。
@@ -348,7 +348,7 @@ AC-C01-02　配置应用与 cleanup 分别在支持的真实 Windows 版本验�
 | WMD-S03<br>MDM 安装 | 完成 MDM 应用安装能力，形成安装命令、状态核实、失败诊断与管理页面闭环。 | 规划<br>一级 |
 | WMD-S04<br>Agent 安装 / 卸载 | 下载与续传 → 哈希/签名验证 → 安装 → 检测 → 结构化结果；支持显式卸载及失败恢复。 | 规划<br>二级 |
 | WMD-S05<br>依赖与分阶段 | 支持依赖校验、顺序执行、分批推进/暂停，逐设备展示 downloading/installing/installed/failed 等状态。 | 规划<br>二级 |
-| WMD-S06<br>WinGet 私有源管理 | 提升为正式二级软件能力：源注册/托管发布、包审批、版本、分配、安装/升级/卸载/固定及验证；由 Agent 的 WinGet 执行器承担。详见 WMD-REP，不再作为第三交付通道。 | 规划升级 <br>二级 |
+| WMD-S06<br>WinGet 私有源管理 | 提升为正式二级软件能力：源注册/托管发布、版本启用与撤回、分配、安装/升级/卸载/固定及验证；由 Agent 的 WinGet 执行器承担。详见 WMD-REP，不再作为第三交付通道。 | 规划升级 <br>二级 |
 
 新增 Homebrew 私有 Tap、Bottle/Cask 产物管理，详见 WMD-BRW。软件管理对象统一，包格式与原生命令不强行统一。
 

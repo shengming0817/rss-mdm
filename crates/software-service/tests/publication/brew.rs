@@ -18,6 +18,12 @@ async fn brew_immutable_tap_recovery_and_version_specific_withdrawal() {
         "DROP TRIGGER reject_result ON mdm_software_release.aggregates; DROP FUNCTION public.reject_brew_result();",
     );
     assert!(failed.is_err());
+    // Re-enabling the source changes its generation while the external result is unknown.
+    sql(&format!(
+        "UPDATE mdm_software.sources SET lifecycle=jsonb_set(lifecycle,'{{revision}}',to_jsonb((lifecycle->>'revision')::bigint+2)) WHERE tenant_id='{}' AND id='{}'",
+        tenant(),
+        server.logical
+    ));
     drop(service);
     let service = server.service(runtime.clone(), config.clone()).await;
     assert!(matches!(
@@ -27,6 +33,12 @@ async fn brew_immutable_tap_recovery_and_version_specific_withdrawal() {
             .unwrap(),
         rel::PublicationOutcome::Reported(rel::PublicationResult::Applied(_))
     ));
+    assert!(
+        service
+            .published(rel::Ring::Test, p1.id().digest().bytes(), cutoff())
+            .await
+            .is_err()
+    );
     let old = git(&config, &["rev-parse", "refs/heads/main"]);
     let other = seed(runtime.clone(), &server, formula(&server)).await;
     service.create_candidate(&other, cutoff()).await.unwrap();
