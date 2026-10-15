@@ -1814,3 +1814,8 @@ for name, suffix in (
     else:
         policies[index] = replace(policies[index], actors=actors)
     MODULES[name] = replace(module, policies=tuple(policies))
+
+# Current Windows credential seeds are prerequisites only for these downstream consumers.
+for name in ("windows.management", "windows.retention", "windows.commands"):
+    MODULES[name] = replace(MODULES[name], support_inputs=(*MODULES[name].support_inputs,
+        "crates/windows-channel/src/issuance/fixture.rs"))
