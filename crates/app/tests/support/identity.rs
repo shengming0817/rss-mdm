@@ -256,7 +256,8 @@ async fn prepare_accounts(
             crate::identity::deadline()).await?;
         let mut costs = vec![serde_json::json!({"phase":"case-reads","count":paths.len()})];
         for (tenant, coordinates) in members {
-            let started = std::time::Instant::now();
+            let timer = super::monotonic();
+            let started = timer.now();
             let mut prepared = Vec::new();
             for &(case, index) in &coordinates {
                 let account = &cases[case].actors()[index];
@@ -292,7 +293,7 @@ async fn prepare_accounts(
             for ((case, index), principal) in coordinates.iter().copied().zip(principals) {
                 cases[case].actors_mut()[index].principal = Some(principal);
             }
-            costs.push(serde_json::json!({"phase":"identity-accounts","count":coordinates.len(),"tenant":tenant,"seconds":started.elapsed().as_secs_f64()}));
+            costs.push(serde_json::json!({"phase":"identity-accounts","count":coordinates.len(),"tenant":tenant,"seconds":timer.now().duration_since(started).as_secs_f64()}));
         }
         for (path, context) in paths.iter().zip(cases) {
             write(path, &serde_json::to_vec(&context)?)?;
@@ -356,7 +357,8 @@ async fn prepare_sessions(paths: &[std::path::PathBuf]) -> Result<Vec<serde_json
                     identity_with(configured(&actor.tenant)?).await?,
                 );
             }
-            let started = std::time::Instant::now();
+            let timer = super::monotonic();
+            let started = timer.now();
             let secret = login_named(&authorities[&actor.tenant], &actor.login)
                 .await
                 .with_context(|| {
@@ -368,7 +370,7 @@ async fn prepare_sessions(paths: &[std::path::PathBuf]) -> Result<Vec<serde_json
                     )
                 })?;
             save(path.parent().unwrap(), &actor.tenant, &actor.role, &secret)?;
-            costs.push(serde_json::json!({"phase":"identity-sessions","count":1,"tenant":actor.tenant,"invocationId":context.invocation_id(),"seconds":started.elapsed().as_secs_f64()}));
+            costs.push(serde_json::json!({"phase":"identity-sessions","count":1,"tenant":actor.tenant,"invocationId":context.invocation_id(),"seconds":timer.now().duration_since(started).as_secs_f64()}));
         }
     }
     Ok(costs)

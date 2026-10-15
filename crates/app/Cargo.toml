@@ -101,6 +101,7 @@ rss-reconcile.workspace = true
 rss-reconcile-postgres.workspace = true
 
 [dev-dependencies]
+rss-mdm-resource-postgres = { workspace = true, features = ["integration"] }
 rss-mdm-software-service = { workspace = true, features = ["integration"] }
 time.workspace = true
 rss-mdm-execution-service = {workspace=true,features=["integration"]}

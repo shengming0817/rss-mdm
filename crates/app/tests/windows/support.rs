@@ -650,6 +650,49 @@ impl Host {
         };
         Ok((proof, password, receipt))
     }
+    fn issue_request(
+        &self,
+        profile: rss_mdm_registration_service::enrollment::WindowsProfile,
+        enrollment: Uuid,
+        plain: &str,
+        path: &str,
+    ) -> anyhow::Result<soap::Message> {
+        let mut issue = soap::decode(
+            include_bytes!("../../../windows-mdm/tests/fixtures/issue-request.xml"),
+            Operation::Issue,
+            &CodecLimits::default(),
+        )?;
+        issue.header.to = Some(path.to_owned());
+        let token = issue
+            .header
+            .security
+            .as_mut()
+            .unwrap()
+            .username
+            .as_mut()
+            .unwrap();
+        token.username = Secret(
+            self.app
+                .windows()?
+                .channel
+                .enrollment_username(enrollment)?,
+        );
+        token.password = Secret(plain.to_owned());
+        let Body::Issue(body) = &mut issue.body else {
+            panic!()
+        };
+        body.request =
+            soap::CertificateRequest::Pkcs10(Secret(std::fs::read(self.root.join("device.csr"))?));
+        for (key, value) in &mut body.additional_context.0 {
+            if key == "EnrollmentType" {
+                *value = profile.as_str().to_owned();
+            }
+            if key == "DeviceID" {
+                *value = crate::test_support::case::name("tls-device").into();
+            }
+        }
+        Ok(issue)
+    }
     async fn peer_with_authority(
         &self,
         profile: rss_mdm_registration_service::enrollment::WindowsProfile,
@@ -713,40 +756,7 @@ impl Host {
             "{}/EnrollmentServer/Enrollment.svc",
             app.windows()?.config.enrollment.origin
         );
-        let mut issue = soap::decode(
-            include_bytes!("../../../windows-mdm/tests/fixtures/issue-request.xml"),
-            Operation::Issue,
-            &CodecLimits::default(),
-        )?;
-        issue.header.to = Some(path.clone());
-        let token = issue
-            .header
-            .security
-            .as_mut()
-            .unwrap()
-            .username
-            .as_mut()
-            .unwrap();
-        token.username = Secret(
-            self.app
-                .windows()?
-                .channel
-                .enrollment_username(receipt.enrollment_id)?,
-        );
-        token.password = Secret(plain.clone());
-        let Body::Issue(body) = &mut issue.body else {
-            panic!()
-        };
-        body.request =
-            soap::CertificateRequest::Pkcs10(Secret(std::fs::read(root.join("device.csr"))?));
-        for (key, value) in &mut body.additional_context.0 {
-            if key == "EnrollmentType" {
-                *value = profile.as_str().to_owned();
-            }
-            if key == "DeviceID" {
-                *value = crate::test_support::case::name("tls-device").into();
-            }
-        }
+        let issue = self.issue_request(profile, receipt.enrollment_id, &plain, &path)?;
         let wire = soap::encode(&issue, &CodecLimits::default())?;
         let (intent, cert, provisioning) = if let Some(seeded) = seeded {
             seeded
