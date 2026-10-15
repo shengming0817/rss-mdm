@@ -1735,7 +1735,7 @@ consume(('crates/inventory-service/src/assets/runs.rs',), 'assets.http assets.so
 
 consume(("crates/execution-service/src/agent_collection_eligibility.rs", "crates/execution-service/src/actions/agent_collection.rs"), "planning.agent_policy execution.agent.delivery execution.agent.history execution.agent.recovery assets.sources assets.queries planning.group_scope compliance.evaluation")
 
-consume(("crates/resource/src/agent_collection.rs", "crates/resource/src/blueprints/agent_windows.rs", "crates/agent-wire/src/native_collection.rs"), "planning.http planning.agent_policy execution.agent.delivery execution.agent.history execution.agent.recovery assets.sources assets.queries")
+consume(("crates/resource/src/agent_collection.rs", "crates/resource/src/blueprints/agent_windows.rs", "crates/agent-wire/src/native_collection.rs", "crates/agent-wire/src/native_collection/*.rs"), "planning.http planning.agent_policy execution.agent.delivery execution.agent.history execution.agent.recovery assets.sources assets.queries")
 consume_dependencies("planning.http planning.agent_policy execution.agent.delivery execution.agent.history execution.agent.recovery assets.sources assets.queries", normal="rss-mdm-agent-wire time")
 
 consume(("crates/examples/examples/fixture_snapshot.rs",), "examples.cli")

@@ -500,6 +500,96 @@
         }
       ]
     },
+    "MacosApplicationRoot": {
+      "description": "Approved application root. Resolve the user's home through the bound live identity.\nNever traverse symlinks outside the root or recurse into discovered .app bundles.",
+      "oneOf": [
+        {
+          "const": "local_applications",
+          "description": "/Applications.",
+          "type": "string"
+        },
+        {
+          "const": "system_applications",
+          "description": "/System/Applications.",
+          "type": "string"
+        },
+        {
+          "const": "user_applications",
+          "description": "Applications below the explicitly bound user's home.",
+          "type": "string"
+        }
+      ]
+    },
+    "MacosBrewPackage": {
+      "description": "Distinct installed Homebrew record kinds; casks do not prove an application exists.",
+      "oneOf": [
+        {
+          "const": "formula",
+          "description": "Installed formula records.",
+          "type": "string"
+        },
+        {
+          "const": "cask",
+          "description": "Installed cask records.",
+          "type": "string"
+        }
+      ]
+    },
+    "MacosHardwareSection": {
+      "description": "One fixed hardware section; never a program name or system_profiler argument.",
+      "oneOf": [
+        {
+          "const": "identity",
+          "description": "Hardware UUID, serial and model.",
+          "type": "string"
+        },
+        {
+          "const": "os",
+          "description": "OS name, version, build and native architecture.",
+          "type": "string"
+        },
+        {
+          "const": "cpu",
+          "description": "Chip model and physical/logical cores.",
+          "type": "string"
+        },
+        {
+          "const": "memory",
+          "description": "Installed memory in bytes.",
+          "type": "string"
+        },
+        {
+          "const": "firmware",
+          "description": "Firmware version; unavailable versions are Missing.",
+          "type": "string"
+        },
+        {
+          "const": "disks",
+          "description": "Physical disks, counted independently of logical volumes.",
+          "type": "string"
+        },
+        {
+          "const": "apfs_containers",
+          "description": "APFS capacity belongs to each container once, not to each sharing volume.",
+          "type": "string"
+        },
+        {
+          "const": "volumes",
+          "description": "Logical volumes and their container association; capacities are not additive.",
+          "type": "string"
+        },
+        {
+          "const": "network",
+          "description": "Network interfaces and addresses; no location or traffic collection.",
+          "type": "string"
+        },
+        {
+          "const": "battery",
+          "description": "Battery charge percentage; no battery is Missing, never a fabricated zero.",
+          "type": "string"
+        }
+      ]
+    },
     "NativeBudget": {
       "additionalProperties": false,
       "description": "Frozen bounds, shared by collection and query scopes.",
@@ -797,6 +887,99 @@
           },
           "required": [
             "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Fixed native macOS hardware section, with no executable parameters.",
+          "properties": {
+            "kind": {
+              "const": "macos_hardware",
+              "type": "string"
+            },
+            "section": {
+              "$ref": "#/$defs/MacosHardwareSection",
+              "description": "Closed section and its canonical output shape."
+            }
+          },
+          "required": [
+            "kind",
+            "section"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "One approved application root; partial roots cannot replace a device inventory.",
+          "properties": {
+            "kind": {
+              "const": "macos_applications",
+              "type": "string"
+            },
+            "maxDepth": {
+              "description": "Maximum directory descent (1 through 8); reaching the bound is Truncated.",
+              "format": "uint8",
+              "maximum": 255,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "root": {
+              "$ref": "#/$defs/MacosApplicationRoot",
+              "description": "Fixed root selector, resolved by the trusted Agent."
+            }
+          },
+          "required": [
+            "kind",
+            "root",
+            "maxDepth"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Device package receipts, never application-existence evidence.",
+          "properties": {
+            "kind": {
+              "const": "macos_pkg_receipts",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Installed package metadata; the executor must be a bound non-root logged-in user.\nTool contract is Homebrew info JSON v2; no arbitrary flags or executable path.",
+          "properties": {
+            "kind": {
+              "const": "macos_brew",
+              "type": "string"
+            },
+            "package": {
+              "$ref": "#/$defs/MacosBrewPackage",
+              "description": "Distinct package evidence kind."
+            },
+            "prefix": {
+              "description": "Approved absolute data prefix, not a command or executable path.",
+              "type": "string"
+            },
+            "taps": {
+              "description": "Exact lowercase owner/tap selectors; empty requests all taps in this prefix.",
+              "items": {
+                "type": "string"
+              },
+              "type": "array",
+              "uniqueItems": true
+            }
+          },
+          "required": [
+            "kind",
+            "prefix",
+            "package",
+            "taps"
           ],
           "type": "object"
         }

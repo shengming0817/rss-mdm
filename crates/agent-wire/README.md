@@ -35,3 +35,13 @@ Collection 使用独立签名域，Offer 与 Start 均签入 plan、预算、范
 `tests/fixtures/native-v1-vectors.json` 包含 plan/result 指纹及 Collection Offer/Start 签名，`examples/native_collection_vectors.rs` 为可重复生成入口。schema 仍由当前 Rust DTO 统一派生。固定消费使用合入后的完整 Git rev，并核对当前 schema 指纹；不支持旧请求、旧签名形状或持久任务格式的兼容读取，不得清空 journal 或重新注册来跳过未决任务。
 
 服务端保留完整 query 原始证据，范围可能超出映射字段（含未映射 query/property）。因此原生采集的预览、发布/执行和运行详情统一要求现有 InventorySensitiveRead 权限；InventoryCollect、资源/设备范围及 InventoryRead 仍各自校验。字段投影后的读取继续沿用字段敏感配置。正常执行结束并提交合法结果包时任务为 Succeeded，包括 query 全部 Denied/Timeout 的情况；采集失败/部分质量由 CollectionProgress 与 CollectionRun 独立表达。
+
+### macOS 定义准备（尚未开放执行）
+
+同一 `NativeQueryDefinition` 已包含闭合的 macOS 硬件 section、批准应用根、PKG 收据与 Brew
+formula/cask 定义；参数、输出形状与预算沿用同一公共协议。声明能力不等于可执行准入：
+当前 `NativeCollectionPlan` 仍拒绝 macOS 定义，软件结果（包括完整空列表）不能成为权威快照。
+#2737 必须先集成 #2726 的来源/用户/prefix 范围，以及签名绑定的实际执行身份和会话，再开放
+发布、签发与投影。Brew 定义要求 LoggedInUser，不提供任意程序、参数或 root 执行选项；
+非 root 身份核验属于尚未交付的执行准入，不能由本阶段定义测试代替。
+这些准备代码不是 #2723 可直接执行的最终固定候选，不代表 macOS 已支持。
