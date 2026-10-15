@@ -6,15 +6,18 @@ use std::sync::Arc;
 
 pub fn router(
     authentication: Arc<AuthenticationState>,
+    registry: Router,
     policy: Arc<crate::authorization::identity_management::IdentityManagementPolicy>,
     envelope: crate::boundary::Envelope,
 ) -> Router {
     let routes = Router::new()
         .nest(
             "/api/v1/tenant-administration",
-            http::rule_routes().with_state(Arc::new(HttpState {
-                audit_store: envelope.audit_store.clone(),
-            })),
+            http::rule_routes()
+                .with_state(Arc::new(HttpState {
+                    audit_store: envelope.audit_store.clone(),
+                }))
+                .merge(registry),
         )
         .route_layer(middleware::from_fn_with_state(
             authentication.clone(),

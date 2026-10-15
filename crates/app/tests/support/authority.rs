@@ -16,10 +16,7 @@ impl Authority {
         let config: Config = serde_json::from_value(base.clone())?;
         let access = database(&base).await?;
         let policy = Arc::new(
-            crate::authorization::identity_management::IdentityManagementPolicy::new(
-                INSTANCE,
-                config.identity_management.clone(),
-            )?,
+            crate::authorization::identity_management::IdentityManagementPolicy::new(INSTANCE)?,
         );
         let identity = Arc::new(crate::identity::Identity::connect(&config, policy, |_| {}).await?);
         let audit = access.audit_store(&config.audit).await?;

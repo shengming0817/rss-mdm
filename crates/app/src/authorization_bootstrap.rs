@@ -144,7 +144,6 @@ async fn initialize_owned(
         let policy = Arc::new(
             crate::authorization::identity_management::IdentityManagementPolicy::new(
                 &config.user.instance_id,
-                vec![],
             )?,
         );
         let authority = Authority::connect_runtime(

@@ -49,7 +49,7 @@ def execute(fixture):
     require(sql('SELECT count(*) FROM identity_authority.accounts') == '0', 'installation seeded credentials')
     require(sql('SELECT count(*) FROM mdm_access.authorization_rules') == '0', 'installation seeded privileges')
     reserved = command('tenant-get', dict(**common, tenant_id=management))
-    require(reserved['management'] and not reserved['deletable'] and reserved['current_epoch'] == 1,
+    require(reserved['management'] and not reserved['deletable'] and reserved['currentEpoch'] == 1,
             'reserved tenant binding invalid')
     command('tenant-create', dict(**common, tenant_id=business, initial_epoch=1, operation_id=str(uuid.uuid4())))
     seeds = {}
@@ -70,8 +70,6 @@ def execute(fixture):
 
     config = RunFixtures.runtime_config(context, pool, root, fixture.database, business)
     config['agent_pki'] = {'mode': 'disabled'}
-    config['identity_management'].append(dict(tenant_id=management, instance_id=INSTANCE,
-                                               principal_id=ADMIN, permissions=['accounts']))
     # Install business federation routes so management denial cannot be a missing-route 404.
     state_key = private(root / 'oidc-state-key', 'ab' * 32)
     credential_key = private(root / 'oidc-credential-key', 'cd' * 32)
@@ -79,14 +77,17 @@ def execute(fixture):
         active_credential_key='current', credential_keys={'current':str(credential_key)},
         return_targets={'home':'https://mdm.example.test/done'}, private_providers=[],
         assurance_profiles=[dict(tenant_id=business,issuer='https://idp.example.invalid',client_id='mdm',keycloak_totp=False)])
+    config['tenant_administration'] = dict(
+        registry_database=pool.database_config(root, fixture.database, 'mdm_tenant_registry', 'tenant-registry-fixture'),
+        provisioning_database=pool.database_config(root, fixture.database, 'mdm_identity_provisioning', 'identity-provisioning-fixture'),
+        fingerprint_key_file=str(private(root / 'tenant-operation-key', 'x' * 32)))
     path = private(root / 'runtime.json', config)
     foreign = json.loads(json.dumps(config))
     foreign['identity']['tenant_id'] = management
-    foreign['identity_management'] = [foreign['identity_management'][-1]]
     foreign['listen'] = '127.0.0.1:0'
     command('serve', foreign, accepted=False)
     mismatch = json.loads(json.dumps(config))
-    mismatch['identity_management'][-1]['principal_id'] = str(uuid.uuid4())
+    mismatch['identity_management'] = []
     mismatch['listen'] = '127.0.0.1:0'
     command('serve', mismatch, accepted=False)
     api = '/api/v1/identity/tenants/' + management
@@ -126,7 +127,7 @@ def execute(fixture):
                 'management identity host context unavailable')
         require(normal.call('GET', '/api/v1/identity-host/tenants/' + management + '/context')[0] == 401,
                 'business session obtained management identity host context')
-        require(operations(admin) == CRUD | {'authorization_read', 'authorization_write'}, 'bootstrap granted unexpected powers')
+        require(operations(admin) == CRUD | {'authorization_read', 'authorization_write', 'identity_accounts_manage', 'tenant_administrator_create'}, 'bootstrap granted unexpected powers')
         for route in ['/api/v1/authorization', '/api/v1/authorization/user-groups', '/api/v1/resources',
                       '/api/v1/devices/device-1/inventory', '/api/v1/runtime/diagnostics']:
             require(admin.call('GET', route)[0] in (401, 403), 'management session entered business route: ' + route)
@@ -158,6 +159,9 @@ def execute(fixture):
         write(admin, str(uuid.uuid4()), 0, bad_subject, 403)
         write(admin, identifier, revision, None)
         require(operations(delegate) == set(), 'revoked grant remained effective')
+        from t2_modules.tenant_http import exercise
+        exercise(admin, normal, delegate, config, management, business, password, sql, command, common,
+                 builds, root, stack, login, write, rule)
         # Membership and account enable state are authoritative on every request.
         for state in ('membership', 'enabled'):
             require(admin.call('POST', api + '/accounts/' + delegate_id + '/' + state, dict(enabled=False))[0] == 200,
@@ -186,11 +190,11 @@ def execute(fixture):
         command('recover-password', recovery)
         require(admin.call('GET', EFFECTIVE)[0] == 401, 'recovery retained old session')
         login(admin, management, secret=new_password)
-        require(operations(admin) == CRUD | {'authorization_read', 'authorization_write'}, 'password recovery changed grants')
+        require(operations(admin) == CRUD | {'authorization_read', 'authorization_write', 'identity_accounts_manage', 'tenant_administrator_create'}, 'password recovery changed grants')
         # Restart preserves persisted identity, grants and active management session.
         host.close()
         host = Host(builds, path, root / 'restarted')
         stack.callback(host.close)
         admin.host = host
-        require(operations(admin) == CRUD | {'authorization_read', 'authorization_write'}, 'restart lost management admission')
+        require(operations(admin) == CRUD | {'authorization_read', 'authorization_write', 'identity_accounts_manage', 'tenant_administrator_create'}, 'restart lost management admission')
     print('management installation/bootstrap/accounts/independent CRUD/isolation/CAS/revocation/recovery/restart passed', flush=True)

@@ -142,7 +142,6 @@ def inputs(root, example, gateway_file, *, database_host="postgres"):
     config["identity"]["audit_worker"]=database(runtime,"mdm_identity_audit")
     config["flow"]["storage"]["database"]=database(runtime,"mdm_flow_runtime")
     config["flow"]["publication"]["database"]=database(runtime,"mdm_software_driver")
-    config["identity_management"]=[dict(tenant_id=TENANT,instance_id=INSTANCE,principal_id=ADMIN,permissions=["accounts"])]
     write(operator,"authorization.json",dict(audit={"mode":"plain"},database=database(operator,"mdm_access"),identityDatabase=database(operator,"mdm_identity_runtime"),installation=installation(),expectedEpoch=1,login="admin",passwordFile="/run/mdm/account-password",operationId=str(uuid.uuid4()),user=dict(instanceId=INSTANCE,tenantId=TENANT,principalId=ADMIN)))
     write(runtime,"config.json",config)
     write(operator,"migrate.json",dict(database=database(operator,"mdm_owner"),installation=installation()))
@@ -400,7 +399,6 @@ class Candidate:
             self.config=json.loads((self.runtime/'config.json').read_text())
             self.config['product_origin']='https://'+self.host
             self.config['identity'].update(instance_id=self.instance,tenant_id=self.tenant)
-            self.config['identity_management'][0].update(instance_id=self.instance,tenant_id=self.tenant)
             self.compose('up','-d','--no-deps','postgres','runtime-netns',stage=Stage.POSTGRES)
             self.pg=self.container('postgres');self.created.append(self.pg)
             self.netns=self.container('runtime-netns');self.created.append(self.netns)
@@ -444,8 +442,6 @@ class Candidate:
             management_auth['user']['tenantId']=self.management_tenant
             management_auth['operationId']=str(uuid.uuid4())
             private(self.operator_root/'management-authorization.json',management_auth)
-            self.config['identity_management'].append(dict(tenant_id=self.management_tenant,instance_id=self.instance,
-                principal_id=ADMIN,permissions=['accounts']))
             private(self.runtime/'config.json',self.config)
             self.copy_runtime()
             self.operator('initialize','management-initialize.json',Stage.INITIALIZE)

@@ -43,7 +43,6 @@
     "ca_file": "/run/mdm/database-ca.pem"
   },
   "trusted_gateway": "127.0.0.1",
-  "identity_management": [],
   "native_protocols": {
     "windows": {
       "enrollment": {

@@ -311,6 +311,7 @@ async fn protect_management_initializer(
     for permission in [
         Permission::AuthorizationRead,
         Permission::AuthorizationWrite,
+        Permission::IdentityAccountsManage,
     ] {
         if !projected
             .rules
@@ -476,6 +477,8 @@ async fn initialize_on(
             Permission::TenantRead,
             Permission::TenantUpdate,
             Permission::TenantDelete,
+            Permission::TenantAdministratorCreate,
+            Permission::IdentityAccountsManage,
         ]
     } else {
         &[
@@ -484,6 +487,8 @@ async fn initialize_on(
             Permission::UserGroupRead,
             Permission::UserGroupWrite,
             Permission::DepartmentRead,
+            Permission::IdentityAccountsManage,
+            Permission::IdentityProvidersManage,
         ]
     };
     let rule = Rule {

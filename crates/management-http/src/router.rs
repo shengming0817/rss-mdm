@@ -150,7 +150,7 @@ pub fn router(state: Services, envelope: crate::boundary::Envelope) -> Router {
         )
         .route_layer(middleware::from_fn_with_state(
             authentication_state.clone(),
-            crate::authorization::http::identity_only,
+            crate::authorization::http::protect,
         ));
     let protected = core
         .merge(planning_routes)
@@ -249,7 +249,7 @@ pub(crate) fn management_identity_context(
         )
         .route_layer(middleware::from_fn_with_state(
             authentication,
-            crate::authorization::http::management_identity_only,
+            crate::authorization::http::protect_management,
         ))
 }
 async fn management_context(

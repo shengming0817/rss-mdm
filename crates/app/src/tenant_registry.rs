@@ -66,8 +66,10 @@ pub enum Action {
     Create,
     Update,
     Delete,
+    AdministratorCreate,
 }
 #[derive(Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Tenant {
     pub tenant_id: String,
     /// Reserved installation tenant; it cannot be updated, deleted or used for business.
@@ -81,10 +83,35 @@ pub struct Tenant {
 }
 /// A durable snapshot; replay never substitutes current tenant state.
 #[derive(Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Receipt {
     pub operation_id: Uuid,
     pub action: Action,
-    pub tenant: Tenant,
+    pub result: ReceiptResult,
+}
+#[derive(Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(untagged)]
+pub enum ReceiptResult {
+    Tenant(Tenant),
+    Administrator(Administrator),
+}
+#[derive(Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct Administrator {
+    pub tenant_id: String,
+    pub principal_id: String,
+    pub login: String,
+    pub rule_id: Uuid,
+    pub rule_revision: u64,
+}
+#[cfg(test)]
+impl Receipt {
+    fn tenant(&self) -> &Tenant {
+        match &self.result {
+            ReceiptResult::Tenant(tenant) => tenant,
+            _ => panic!("expected tenant receipt"),
+        }
+    }
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum Reason {
@@ -134,12 +161,12 @@ impl From<Reason> for RegistryError {
 }
 type Result<T> = std::result::Result<T, Reason>;
 type RegistryResult<T> = std::result::Result<T, RegistryError>;
-enum Outcome {
+pub(crate) enum Outcome {
     Replay(Receipt),
     Changed(Receipt),
 }
 
-struct Mutation<'a> {
+pub(crate) struct Mutation<'a> {
     installation: &'a Installation,
     tenant_id: &'a str,
     operation_id: Uuid,
@@ -413,8 +440,11 @@ async fn mutate_on(conn: &mut PgConnection, input: &Mutation<'_>) -> RegistryRes
         Err(reason) => rollback(tx, Err(reason), operation).await,
     }
 }
+fn request(input: &Mutation<'_>) -> serde_json::Value {
+    serde_json::json!({"installation":input.installation,"action":input.action,"tenant_id":input.tenant_id,"initial_epoch":input.initial_epoch,"expected_revision":input.expected_revision,"name":input.name,"notes":input.notes})
+}
 async fn apply_on(tx: &mut PgConnection, input: &Mutation<'_>) -> Result<Outcome> {
-    let request = serde_json::json!({"installation":input.installation,"action":input.action,"tenant_id":input.tenant_id,"initial_epoch":input.initial_epoch,"expected_revision":input.expected_revision,"name":input.name,"notes":input.notes});
+    let request = request(input);
     if let Some((receipt, original)) = receipt_on(&mut *tx, input.operation_id).await? {
         if original != request {
             return Err(Reason::Conflict);
@@ -423,6 +453,7 @@ async fn apply_on(tx: &mut PgConnection, input: &Mutation<'_>) -> Result<Outcome
     }
     scope(&mut *tx, input.tenant_id).await?;
     match input.action {
+        Action::AdministratorCreate => return Err(Reason::Invalid),
         Action::Create => insert_tenant_on(tx, input).await?,
         Action::Update | Action::Delete => {
             let tenant = tenant_on(&mut *tx, input.tenant_id, false).await?;
@@ -445,9 +476,9 @@ async fn apply_on(tx: &mut PgConnection, input: &Mutation<'_>) -> Result<Outcome
     let receipt = Receipt {
         operation_id: input.operation_id,
         action: input.action,
-        tenant: tenant_on(&mut *tx, input.tenant_id, true).await?,
+        result: ReceiptResult::Tenant(tenant_on(&mut *tx, input.tenant_id, true).await?),
     };
-    sqlx::query("INSERT INTO public.mdm_tenant_operations(operation_id,tenant_id,action,request,receipt) VALUES($1,$2::uuid,$3,$4,$5)").bind(input.operation_id).bind(input.tenant_id).bind(serde_json::to_value(input.action).map_err(|_| Reason::Storage)?.as_str().ok_or(Reason::Storage)?).bind(request).bind(serde_json::to_value(&receipt).map_err(|_| Reason::Storage)?).execute(&mut *tx).await.map_err(|_| Reason::Storage)?;
+    sqlx::query("INSERT INTO public.mdm_tenant_operations(operation_id,tenant_id,action,request,receipt,operator) VALUES($1,$2::uuid,$3,$4,$5,coalesce(nullif(current_setting('mdm.operator',true),'')::jsonb,jsonb_build_object('kind','database','role',session_user)))").bind(input.operation_id).bind(input.tenant_id).bind(serde_json::to_value(input.action).map_err(|_| Reason::Storage)?.as_str().ok_or(Reason::Storage)?).bind(request).bind(serde_json::to_value(&receipt).map_err(|_| Reason::Storage)?).execute(&mut *tx).await.map_err(|_| Reason::Storage)?;
     Ok(Outcome::Changed(receipt))
 }
 async fn insert_tenant_on(tx: &mut PgConnection, input: &Mutation<'_>) -> Result<()> {
@@ -463,22 +494,12 @@ async fn insert_tenant_on(tx: &mut PgConnection, input: &Mutation<'_>) -> Result
     if count >= TENANT_LIMIT {
         return Err(Reason::Capacity);
     }
-    sqlx::query("INSERT INTO public.mdm_tenants(tenant_id,initial_epoch,name,notes) VALUES($1::uuid,$2,$3,$4)").bind(input.tenant_id).bind(input.initial_epoch).bind(input.name).bind(input.notes).execute(&mut *tx).await.map_err(|_| Reason::Storage)?;
-    sqlx::query(
-        "INSERT INTO rss_transactional_messaging.tenant_epoch(tenant_id,epoch) VALUES($1::uuid,$2)",
-    )
-    .bind(input.tenant_id)
-    .bind(input.initial_epoch)
-    .execute(&mut *tx)
-    .await
-    .map_err(|_| Reason::Storage)?;
-    rss_mdm_inventory_postgres::initialize_fields_in(
-        &mut *tx,
-        rss_request_context::TenantId::parse(input.tenant_id).map_err(|_| Reason::Invalid)?,
-    )
-    .await
-    .map_err(|_| Reason::Storage)?;
-    rss_mdm_registration_service::agent::settings::initialize_on(&mut *tx, input.tenant_id)
+    sqlx::query("SELECT public.create_new_tenant($1::uuid,$2,$3,$4)")
+        .bind(input.tenant_id)
+        .bind(input.initial_epoch)
+        .bind(input.name)
+        .bind(input.notes)
+        .execute(tx)
         .await
         .map_err(|_| Reason::Storage)?;
     Ok(())
@@ -532,3 +553,6 @@ pub(crate) use tenant_use::{ACCESS_CONTRACT, claim_database_use, claim_use, veri
 #[cfg(test)]
 #[path = "../tests/tenant_registry/mod.rs"]
 mod tests;
+
+#[path = "tenant_http.rs"]
+pub(crate) mod http;

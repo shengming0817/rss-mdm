@@ -26,7 +26,7 @@ class Browser:
         self.cookie = ''
         self.csrf = None
 
-    def call(self, method, path, body=None):
+    def call(self, method, path, body=None, extra_headers=None):
         headers = {'Host': urlsplit(self.origin).netloc, 'Origin': self.origin,
                    'X-Identity-Request': '1', 'X-Forwarded-For': '203.0.113.7'}
         if self.cookie:
@@ -35,6 +35,7 @@ class Browser:
             headers['X-CSRF-Token'] = self.csrf
         if body is not None:
             headers['Content-Type'] = 'application/json'
+        headers.update(extra_headers or {})
         conn = http.client.HTTPConnection(self.host.address, timeout=10)
         try:
             conn.request(method, path, json.dumps(body) if body is not None else None, headers)
@@ -122,23 +123,23 @@ def execute(fixture):
     c = str(uuid.uuid4())
     created = dict(**common, tenant_id=c, initial_epoch=1, operation_id=str(uuid.uuid4()), name='测试租户', notes='说明')
     first = command('tenant-create', created)
-    require(first['action'] == 'create' and first['tenant']['revision'] == 1 and first['tenant']['deletable'], 'bad create receipt')
-    require(command('tenant-get', dict(**common, tenant_id=c)) == first['tenant'], 'get differs from create')
+    require(first['action'] == 'create' and first['result']['revision'] == 1 and first['result']['deletable'], 'bad create receipt')
+    require(command('tenant-get', dict(**common, tenant_id=c)) == first['result'], 'get differs from create')
     changed = dict(**common, tenant_id=c, expected_revision=1, operation_id=str(uuid.uuid4()), name='新名称')
     second = command('tenant-update', changed)
-    require(second['tenant']['revision'] == 2 and second['tenant']['notes'] is None, 'replacement did not clear omitted notes')
+    require(second['result']['revision'] == 2 and second['result']['notes'] is None, 'replacement did not clear omitted notes')
     command('tenant-update', dict(changed, operation_id=str(uuid.uuid4())), accepted=False, reason='revision conflict')
     cleared = command('tenant-update', dict(**common, tenant_id=c, expected_revision=2, operation_id=str(uuid.uuid4())))
-    require(cleared['tenant']['revision'] == 3 and cleared['tenant']['name'] is None, 'omitted metadata did not clear')
+    require(cleared['result']['revision'] == 3 and cleared['result']['name'] is None, 'omitted metadata did not clear')
     remove = dict(**common, tenant_id=c, expected_revision=3, operation_id=str(uuid.uuid4()))
     removed = command('tenant-delete', remove)
-    require(removed['tenant']['revision'] == 4 and not removed['tenant']['deletable'], 'bad deletion receipt')
+    require(removed['result']['revision'] == 4 and not removed['result']['deletable'], 'bad deletion receipt')
     require(command('tenant-delete', remove) == removed, 'deleted operation did not replay')
     require(command('tenant-create', created) == first, 'creation replay changed after deletion')
     command('tenant-get', dict(**common, tenant_id=c), accepted=False, reason='tenant not found')
     command('tenant-create', dict(created, operation_id=str(uuid.uuid4())), accepted=False, reason='conflict')
     listed = command('tenant-list', common)
-    require([t['tenant_id'] for t in listed] == sorted([a,b,management]), 'list leaked tombstone or changed ordering')
+    require([t['tenantId'] for t in listed] == sorted([a,b,management]), 'list leaked tombstone or changed ordering')
     reserved = command('tenant-get', dict(**common,tenant_id=management))
     require(reserved['management'] and not reserved['deletable'], 'reserved tenant is not marked')
     for verb in ('tenant-update','tenant-delete'):
@@ -196,7 +197,6 @@ def execute(fixture):
             config=json.loads(path.read_text())
             config['listen']='127.0.0.1:0'
             config['identity']['tenant_id']=str(uuid.uuid4())
-            config['identity_management'][0]['tenant_id']=config['identity']['tenant_id']
             command('serve',config,accepted=False)
             config=json.loads(path.read_text());config['listen']='127.0.0.1:0';config['flow']['storage']['epoch']=2
             command('serve',config,accepted=False)

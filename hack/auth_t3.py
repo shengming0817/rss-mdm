@@ -61,7 +61,6 @@ def enterprise(stack):
         'credential_keys':{'current':'/run/mdm/credential'},'return_targets':{'resume':'https://mdm.example.test/auth/resume'},
         'assurance_profiles':[],
         'private_providers':[{'tenant_id':TENANT,'issuer':issuer,'client_id':'mdm','cidrs':[address+'/32']}]}
-    stack.config['identity_management'][0]['permissions']=['accounts','providers']
     stack.issuer=issuer
 
 def seed_inventory(stack):

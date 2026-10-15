@@ -36,9 +36,17 @@ impl InstallationTenants {
         permission: Permission,
     ) -> Result<(), Error> {
         proof.check_live()?;
-        if proof.instance_id() != self.instance
-            || (self.is_management(proof.tenant_id()) && !permission.management_allowed())
-            || (!self.is_management(proof.tenant_id()) && permission.tenant_management())
+        self.require_identity(proof.instance_id(), proof.tenant_id(), permission)
+    }
+    pub(crate) fn require_identity(
+        &self,
+        instance: &str,
+        tenant: &str,
+        permission: Permission,
+    ) -> Result<(), Error> {
+        if instance != self.instance
+            || (self.is_management(tenant) && !permission.management_allowed())
+            || (!self.is_management(tenant) && permission.tenant_management())
         {
             return Err(Error::Forbidden);
         }

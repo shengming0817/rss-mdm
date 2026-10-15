@@ -67,15 +67,37 @@ create/update/delete 的 operation_id 共用一个全局命名空间。同一操
 
 账户初始化输入另含 tenant_id、expected_epoch、principal_id、login、password_file；授权初始化沿用 user.tenantId 并显式提供 expectedEpoch。两者从数据库核验登记及当前 epoch，使用各自受限角色。日常账户与 IdP 管理使用受保护 HTTP 接口。
 
-通过 `tenant-list` 找到 `management=true` 的唯一管理租户。部署方沿用现有 `initialize` 配置，把 tenant_id 填为该 ID、expected_epoch 填 1，显式创建初始账户；随后用同一账户执行 `initialize-authorization`，其 user.tenantId 也填该 ID。初始规则授予四项租户 CRUD 与授权读写，不授予业务权限。
+通过 `tenant-list` 找到 `management=true` 的唯一管理租户。部署方沿用现有 `initialize` 配置，把 tenant_id 填为该 ID、expected_epoch 填 1，显式创建初始账户；随后用同一账户执行 `initialize-authorization`，其 user.tenantId 也填该 ID。初始规则授予租户 CRUD、创建租户管理员、账户管理与授权读写，不授予设备业务权限。
 
-运行配置复用 `identity_management`，追加管理租户的账户管理员资格，例如以下片段（ID 必须替换为该安装与显式初始化的真实坐标）：
+账户、IdP 和业务授权统一保存在 authorization rules 中。旧 `identity_management` 配置已删除，提供该字段会被拒绝。管理租户初始主体持有 `identity_accounts_manage`、`authorization_read/write` 以及租户 CRUD、`tenant_administrator_create`；前三项受防锁死保护，其余可分别委派或撤销。管理租户不支持 IdP/联合登录。业务租户的账户与 IdP 管理分别使用 `identity_accounts_manage`、`identity_providers_manage`，规则变化即时生效。
+
+可选 `tenant_administration` 配置启用租户管理 HTTP API；完全省略时七个入口均不挂载，配置不完整或权限不匹配会拒绝启动：
 
 ~~~json
-{"tenant_id":"管理租户 UUID","instance_id":"安装 UUID","principal_id":"初始账户 UUID","permissions":["accounts"]}
+{
+  "tenant_administration": {
+    "registry_database": {"host":"db","port":5432,"name":"mdm","user":"mdm_tenant_registry","password_file":"/run/mdm/registry-password","ca_file":"/run/mdm/ca.crt"},
+    "provisioning_database": {"host":"db","port":5432,"name":"mdm","user":"mdm_identity_provisioning","password_file":"/run/mdm/provisioning-password","ca_file":"/run/mdm/ca.crt"},
+    "fingerprint_key_file":"/run/mdm/tenant-operation-key"
+  }
+}
 ~~~
 
-运行服务从数据库读取管理租户，使用既有 Identity Authority 同时接纳业务和管理两个租户；无需额外监听、origin、cookie 或数据库高权角色。管理账户通过标准租户 login/accounts/session 接口登录和维护账户；配置里的 accounts 资格与可委派 CRUD 规则相互独立。管理租户不支持 IdP/联合登录。初始管理主体的 authorization_read/write 受事务保护，四项 CRUD 可以分别撤销；密码恢复只轮换密码并撤销会话，不重置授权。管理授权初始化主体必须同时配置 accounts 资格，启动准入强制核验这一约束；配置管理账户资格前须完成授权初始化，错配或未初始化配置拒绝启动。
+密钥文件为安装级固定 32 字节随机密钥，使用与其它秘密相同的文件保护；重启必须保留，用于请求 HMAC 指纹，不保存明文密码或快速密码摘要。两种数据库角色按安装 SQL 创建，仅赋予各自的 registry、provisioning、授权读取和审计权限；不要使用 mdm_owner 或维护凭据替代。管理 API 复用当前 HTTPS、origin、cookie、CSRF 与管理租户登录。
+
+| 方法与路径（前缀 `/api/v1/tenant-administration`） | 请求 / 结果 |
+|---|---|
+| POST `/tenants` | `tenantId`、`initialEpoch`、可选 `name`/`notes` |
+| GET `/tenants` | 未删除租户列表，包含保留管理租户 |
+| GET `/tenants/{tenantId}` | 当前元数据 |
+| PUT `/tenants/{tenantId}` | `expectedRevision` 与替换元数据 |
+| DELETE `/tenants/{tenantId}` | JSON `expectedRevision` |
+| POST `/tenants/{tenantId}/administrators` | `login`、`password` |
+| GET `/operations/{operationId}` | 原始已提交回执；不存在为 404 |
+
+所有写入仅从 `Idempotency-Key` 读取规范 UUID；JSON 拒绝未知字段。成功与重放均为 200，回执统一为 `{operationId,action,result}`；CLI 的回执采用同一格式，字段使用 camelCase。相同操作号请求内容不同返回 409，重放保持最初结果与操作者，后续修改不改变回执。
+
+创建管理员要求管理租户 `tenant_administrator_create` 及 300 秒内认证。服务生成新主体，原子写入账户、目标租户全部业务/设备 AllDevices 与账户/IdP 管理权限、审计和回执；不授予安装级租户管理权限，也不签发目标租户会话。可持续添加多个管理员；重复登录名返回 409，不重置或接管已有账户。重放会复核操作者当前会话与权限，但不重新赋权。开始账户初始化前永久登记首次使用，失败也不恢复可删除性。
 
 每个宿主通过 identity.tenant_id 和 flow.storage.epoch 绑定一个已登记业务租户，启动核验安装身份、audit mode、登记和期望 epoch。同库其它租户使用各自合法绑定宿主；新增登记不自动切换已有宿主。
 

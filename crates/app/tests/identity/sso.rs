@@ -181,10 +181,7 @@ async fn product_callback_link_step_up_and_provider_isolation() -> Result<()> {
         "private_providers":[], "assurance_profiles":[{"tenant_id":case_tenant(),"issuer":issuer,"client_id":"mdm","keycloak_totp":true}]});
     let config: Config = serde_json::from_value(base.clone())?;
     let policy = Arc::new(
-        crate::authorization::identity_management::IdentityManagementPolicy::new(
-            INSTANCE,
-            config.identity_management.clone(),
-        )?,
+        crate::authorization::identity_management::IdentityManagementPolicy::new(INSTANCE)?,
     );
     let identity = crate::identity::Identity::for_oidc_fixture(&config, policy).await?;
     let reader = Arc::new(

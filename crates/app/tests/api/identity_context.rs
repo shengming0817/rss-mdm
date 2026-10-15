@@ -13,19 +13,34 @@ pub(crate) async fn host_context_matrix(
         "/api/v1/identity-host/tenants/{TENANT}/context",
         TENANT = case_tenant()
     );
+    let router = app(base, reader.clone()).await?;
+    let rule_id = uuid::Uuid::new_v4();
     for permissions in [
         json!([]),
         json!(["accounts"]),
         json!(["providers"]),
         json!(["accounts", "providers"]),
     ] {
-        let mut config = base.clone();
-        config["identity_management"] = if permissions.as_array().unwrap().is_empty() {
-            json!([])
-        } else {
-            json!([{"tenant_id":case_tenant(),"instance_id":INSTANCE,"principal_id":subject,"permissions":permissions}])
-        };
-        let router = app(&config, reader.clone()).await?;
+        let grants: Vec<_> = permissions.as_array().unwrap().iter().map(|permission| json!({
+            "operation": if permission == "accounts" { "identity_accounts_manage" } else { "identity_providers_manage" },
+            "scope": {"kind":"tenant"}
+        })).collect();
+        // Change persisted rules under the same running router: no restart/config grant path.
+        pg(&format!(
+            "DELETE FROM mdm_access.authorization_rules WHERE tenant_id='{}' AND id='{}'",
+            case_tenant(),
+            rule_id
+        ))?;
+        if !grants.is_empty() {
+            let rule = json!({"subject":{"kind":"user","user":{"tenantId":case_tenant(),"instanceId":INSTANCE,"principalId":subject}},"grants":grants});
+            pg(&format!(
+                "INSERT INTO mdm_access.authorization_rules(tenant_id,instance,id,revision,document) VALUES('{}','{}','{}',1,'{}'::jsonb)",
+                case_tenant(),
+                INSTANCE,
+                rule_id,
+                rule.to_string().replace('\'', "''")
+            ))?;
+        }
         ensure!(
             Browser::default()
                 .call(&router, Method::GET, &path, None)
@@ -72,7 +87,11 @@ pub(crate) async fn host_context_matrix(
             member.call(&router, Method::GET, &wrong, None).await?.0 == StatusCode::UNAUTHORIZED
         );
     }
-    let router = app(base, reader).await?;
+    pg(&format!(
+        "DELETE FROM mdm_access.authorization_rules WHERE tenant_id='{}' AND id='{}'",
+        case_tenant(),
+        rule_id
+    ))?;
     let (_, context) = browser
         .clone()
         .call(&router, Method::GET, &path, None)

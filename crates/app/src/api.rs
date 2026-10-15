@@ -100,7 +100,7 @@ pub(crate) async fn application_fixture(
     let compiled = config.compile()?;
     access
         .authorization_store()
-        .require_management_initializer(&compiled.identity_management)
+        .require_management_initializer()
         .await?;
     let identity = match identity {
         Some(identity) => identity,
@@ -475,6 +475,7 @@ pub(crate) fn from_state(
                 requests: state.requests.clone(),
             },
         ),
+        crate::tenant_registry::http::routes(state.identity.tenant_administration.clone()),
         state.identity_management.clone(),
         rss_mdm_management_http::boundary::Envelope {
             tenant: state.identity.management_tenant.to_string(),
