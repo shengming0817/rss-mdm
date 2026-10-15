@@ -1022,7 +1022,7 @@ async fn collection_blueprints_instantiate_replay_and_keep_tenant_versions() -> 
             .any(|b| b["id"] == "windows.software.win32")
     );
     let path = format!("/api/v1/resources/{}", uuid::Uuid::new_v4());
-    let body = json!({"operationId":uuid::Uuid::new_v4(),"expectedRevision":0,"input":{"action":"instantiate","blueprint":"macos.hardware","version":"1"}});
+    let body = json!({"operationId":uuid::Uuid::new_v4(),"expectedRevision":0,"input":{"action":"instantiate","blueprint":"macos.hardware","version":"2"}});
     // Fail after the resource commit, then resume the same operation with content enabled.
     let mut without_content = fixture.base.clone();
     without_content["content"] = serde_json::Value::Null;
@@ -1044,7 +1044,7 @@ async fn collection_blueprints_instantiate_replay_and_keep_tenant_versions() -> 
     let mut variants = first.1["versions"][0]["variants"].clone();
     for variant in variants.as_array_mut().unwrap() {
         let definition = &mut variant["declaration"]["definition"];
-        definition["mappings"]["device.model"]["query"] = json!("ModelName");
+        definition["mappings"]["device.hardware.apple.model_name"]["query"] = json!("ModelNumber");
         let parsed: rss_mdm_resource::NativeCollectionDefinition =
             serde_json::from_value(definition.clone())?;
         let bytes = parsed.canonical();
@@ -1062,7 +1062,7 @@ async fn collection_blueprints_instantiate_replay_and_keep_tenant_versions() -> 
         &router,
         &candidate,
         0,
-        json!({"action":"instantiate","blueprint":"macos.hardware","version":"1"}),
+        json!({"action":"instantiate","blueprint":"macos.hardware","version":"2"}),
     )
     .await?;
     ensure!(browser.call(&router, Method::GET, &path, None).await? == current);

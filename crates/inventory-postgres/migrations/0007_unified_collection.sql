@@ -11,7 +11,7 @@ ALTER TABLE mdm.inventory ADD CONSTRAINT inventory_field_check CHECK(length(fiel
 ALTER TABLE mdm.inventory DROP CONSTRAINT inventory_value_check;
 ALTER TABLE mdm.inventory ADD CONSTRAINT inventory_value_check CHECK(octet_length(value) BETWEEN 1 AND 16777216);
 ALTER TABLE mdm.inventory DROP CONSTRAINT inventory_state_check;
-ALTER TABLE mdm.inventory ADD CONSTRAINT inventory_state_check CHECK(state IN ('known','null','deleted','unsupported'));
+ALTER TABLE mdm.inventory ADD CONSTRAINT inventory_state_check CHECK(state IN ('known','null','deleted','unsupported','unknown_conflict','unknown_incomplete','unknown_native','unknown_limit'));
 ALTER TABLE mdm.manual_assignments DROP CONSTRAINT manual_assignments_field_check;
 ALTER TABLE mdm.manual_assignments ADD CONSTRAINT manual_assignments_field_check CHECK(length(field)<=128 AND field ~ '^custom\.[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)*$');
 ALTER TABLE mdm.manual_assignments DROP CONSTRAINT manual_assignments_fact_check;
@@ -35,7 +35,7 @@ CREATE TABLE mdm.collection_definitions (
  source text NOT NULL CHECK(source IN ('mdm.windows','mdm.apple','agent.builtin','agent.script','agent.osquery')),
  fingerprint text NOT NULL CHECK(fingerprint ~ '^[0-9a-f]{64}$'),
  coverage text NOT NULL, definition jsonb NOT NULL CHECK(octet_length(definition::text)<=1048576),
- CHECK(definition ? 'scope' AND definition->'scope'='{"kind":"device"}'::jsonb),
+ CHECK(definition ? 'scope' AND (definition->'scope'='{"kind":"device"}'::jsonb OR (source='mdm.apple' AND definition->'scope'->>'kind'='user' AND definition->'scope'->>'identity' ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'))),
  PRIMARY KEY(tenant_id,dataset,source,version), UNIQUE(tenant_id,coverage,source)
 );
 CREATE TABLE mdm.collection_results (

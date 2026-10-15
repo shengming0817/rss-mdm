@@ -160,7 +160,17 @@ impl Peer {
     pub async fn next(&self, kind: &str) -> Result<(Uuid, plist::Dictionary)> {
         command(&self.next_bytes(kind).await?, kind)
     }
+    pub async fn next_collection(&self) -> Result<(Uuid, plist::Dictionary)> {
+        command(
+            &self.next_bytes_mode("DeviceInformation", true).await?,
+            "DeviceInformation",
+        )
+    }
     pub async fn next_bytes(&self, kind: &str) -> Result<Vec<u8>> {
+        self.next_bytes_mode(kind, false).await
+    }
+    async fn next_bytes_mode(&self, kind: &str, collection: bool) -> Result<Vec<u8>> {
+        let mut resolving = false;
         for _ in 0..100 {
             let mut bytes = self.manage("Idle", None, None).await?;
             for _ in 0..128 {
@@ -171,8 +181,23 @@ impl Peer {
                 let id = Uuid::parse_str(protocol::text(&dictionary, "CommandUUID")?)?;
                 let payload = dictionary["Command"].as_dictionary().unwrap();
                 let actual = protocol::text(payload, "RequestType")?;
-                if actual == kind {
+                let prerequisite_device = actual == "DeviceInformation"
+                    && payload.get("Queries")
+                        == Some(&plist::Value::Array(vec![
+                            "OSVersion".into(),
+                            "IsSupervised".into(),
+                            "IsAppleSilicon".into(),
+                        ]));
+                if actual == kind
+                    && (!collection
+                        || !(prerequisite_device || actual == "SecurityInfo" && resolving))
+                {
                     return Ok(bytes);
+                }
+                if prerequisite_device {
+                    resolving = true;
+                } else if actual == "SecurityInfo" {
+                    resolving = false;
                 }
                 let response = match actual {
                     "DeviceInformation"

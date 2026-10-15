@@ -89,6 +89,14 @@ pub(super) fn required(task: &Task) -> Result<Vec<P>, Error> {
                                     .and_then(|v| v.get("Name"))
                                     .and_then(plist::Value::as_string)
                                     .ok_or(Error::Malformed)?;
+                                if rss_mdm_inventory::builtin::apple_status::fields()
+                                    .iter()
+                                    .any(|(status, _)| *status == name)
+                                {
+                                    permissions.insert(P::InventoryCollect);
+                                    permissions.insert(P::InventoryRead);
+                                    continue;
+                                }
                                 if name != "management.declarations" {
                                     permissions.insert(P::InventoryRead);
                                 }

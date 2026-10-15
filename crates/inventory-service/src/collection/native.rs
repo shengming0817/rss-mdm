@@ -22,9 +22,12 @@ pub async fn start(
 ) -> Result<(), Error> {
     let source = match template.spec().adapter {
         NativeAdapter::WindowsRead => rss_mdm_inventory::ReportSource::MdmWindows,
-        NativeAdapter::AppleDeviceInformation | NativeAdapter::AppleInstalledApplications => {
-            rss_mdm_inventory::ReportSource::MdmApple
-        }
+        NativeAdapter::AppleDeviceInformation
+        | NativeAdapter::AppleInstalledApplications
+        | NativeAdapter::AppleSecurity
+        | NativeAdapter::AppleProfiles
+        | NativeAdapter::AppleCertificates
+        | NativeAdapter::AppleUsers => rss_mdm_inventory::ReportSource::MdmApple,
     };
     let target =
         crate::device::store::allocate_collection_in(c, &p.tenant.to_string(), &p.device, source)
@@ -36,6 +39,26 @@ pub async fn start(
             })?;
     if target.registration != p.registration || target.generation != p.generation {
         return Err(Error::Conflict);
+    }
+    let template_scope = match &template.spec().scope {
+        rss_mdm_resource::TemplateScope::Device => rss_mdm_inventory::CollectionScope::Device,
+        rss_mdm_resource::TemplateScope::User { identity } => {
+            rss_mdm_inventory::CollectionScope::User {
+                identity: identity.clone(),
+            }
+        }
+        _ => return Err(Error::Malformed),
+    };
+    if definition.collection_scope() != &template_scope {
+        return Err(Error::Malformed);
+    }
+    if let rss_mdm_inventory::CollectionScope::User { identity } = &template_scope {
+        let active: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_apple.channels WHERE tenant_id=$1::uuid AND registration=$2 AND generation=$3 AND user_key=$4 AND state='active')")
+            .bind(p.tenant.to_string()).bind(p.registration).bind(p.generation).bind(identity)
+            .fetch_one(&mut *c).await.map_err(db)?;
+        if !active {
+            return Err(Error::Conflict);
+        }
     }
     let scope = crate::device::scope_dataset(
         p.tenant,
@@ -179,6 +202,24 @@ pub fn result(
     now: i64,
     success: bool,
 ) -> Result<CollectionProgress, Error> {
+    result_with_unsupported(
+        template,
+        definition,
+        values,
+        now,
+        success,
+        &Default::default(),
+    )
+}
+/// Unavailable native fields retain explicit Unsupported quality, separate from missing replies.
+pub fn result_with_unsupported(
+    template: &NativeCollectionDefinition,
+    definition: CollectionDefinition,
+    values: &serde_json::Value,
+    now: i64,
+    success: bool,
+    unsupported: &std::collections::BTreeSet<FieldKey>,
+) -> Result<CollectionProgress, Error> {
     let values = template
         .spec()
         .mappings
@@ -194,7 +235,9 @@ pub fn result(
             };
             Ok((
                 key,
-                if !success {
+                if unsupported.contains(&key) {
+                    NativeValue::Value(CollectedValue::Unsupported)
+                } else if !success {
                     NativeValue::Failed
                 } else {
                     raw.map_or(NativeValue::Missing, |v| value(field, mapping, v))

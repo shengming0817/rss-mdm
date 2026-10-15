@@ -361,6 +361,7 @@ pub(crate) async fn query_job(service: &Planning, count: usize) -> Uuid {
                 input: assets::Query::default(),
             },
             scope: assets::ReadScope {
+                collection_scope: rss_mdm_inventory::CollectionScope::Device,
                 sensitive: true,
                 subject: prefix.to_string(),
                 devices: Some(
@@ -422,6 +423,7 @@ pub(crate) async fn frozen_device(service: &Planning, device: &str, watermark: i
                         None,
                         1,
                         &assets::ReadScope {
+                            collection_scope: rss_mdm_inventory::CollectionScope::Device,
                             sensitive: true,
                             subject: "history-evidence".into(),
                             devices: Some([device].into()),

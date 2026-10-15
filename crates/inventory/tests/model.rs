@@ -4,9 +4,14 @@ use rss_observation::{Batch, Body, Change, Id};
 fn typed_collection_rejects_unknown_fields_invalid_values_and_legacy_text() {
     let catalog = Catalog::new(builtin::fields()).unwrap();
     let field = catalog.definition(builtin::MODEL).unwrap();
-    let contract =
-        CollectionDefinition::new("device-basics", 1, Source::MdmWindows, vec![field.clone()])
-            .unwrap();
+    let contract = CollectionDefinition::new(
+        rss_mdm_inventory::CollectionScope::Device,
+        "device-basics",
+        1,
+        Source::MdmWindows,
+        vec![field.clone()],
+    )
+    .unwrap();
     for (key, value) in [
         ("password", b"x".to_vec()),
         ("device.model", vec![]),

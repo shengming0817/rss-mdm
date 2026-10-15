@@ -55,7 +55,8 @@ fn pack(id: &str, category: &str, build: u32, mappings: Vec<(String, NativeMappi
             timeout_seconds: 300,
             output_bytes: 1048576,
         })
-        .expect("official Windows read template"),
+        .expect("official Windows read template")
+        .into(),
     }
 }
 fn inventory(

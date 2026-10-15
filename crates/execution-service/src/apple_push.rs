@@ -267,9 +267,7 @@ async fn pending(
             }
         }
     }
-    if !user_key.is_empty() {
-        return Ok(false);
-    }
+    let user_key = user_key.to_owned();
     let remaining = 64;
     let tenant = tx.tenant_id().to_string();
     let store = service.apple_collections.clone();
@@ -277,7 +275,7 @@ async fn pending(
         .with_connection(move |c| {
             Box::pin(async move {
                 Ok(store
-                    .pending_collections(c, tenant, registration, remaining)
+                    .pending_collections(c, tenant, registration, user_key, remaining)
                     .await)
             })
         })

@@ -391,13 +391,11 @@ async fn send(
             }
         }
     }
-    if !user_key.is_empty() {
-        return Ok(Vec::new());
-    }
+    let user_key = user_key.to_owned();
     let principal = p.clone();
     let reply = tx
         .with_connection(move |c| {
-            Box::pin(async move { Ok(apple.collection(c, &principal).await) })
+            Box::pin(async move { Ok(apple.collection(c, &principal, &user_key).await) })
         })
         .await?
         .map_err(Error::from)?;
@@ -567,6 +565,9 @@ impl ExecutionService {
                         })
                         .await?
                         .map_err(Error::from)?;
+                    for fact in &reply.facts {
+                        service.audit_store.append_in(tx, fact, false).await?;
+                    }
                     for id in &reply.synchronized {
                         let op = storage::load(tx, &service.protection, *id).await?;
                         if eligible(service, tx, p, &op).await? {

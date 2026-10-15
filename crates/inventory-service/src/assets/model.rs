@@ -64,6 +64,7 @@ pub struct Owner {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ReadScope {
+    pub collection_scope: rss_mdm_inventory::CollectionScope,
     pub subject: String,
     pub sensitive: bool,
     pub devices: Option<BTreeSet<String>>,
@@ -71,6 +72,7 @@ pub struct ReadScope {
 impl ReadScope {
     pub fn all() -> Self {
         Self {
+            collection_scope: rss_mdm_inventory::CollectionScope::Device,
             subject: "group".into(),
             sensitive: true,
             devices: None,
@@ -89,6 +91,7 @@ impl ReadScope {
             Err(e) => return Err(e.into()),
         };
         Ok(Self {
+            collection_scope: rss_mdm_inventory::CollectionScope::Device,
             sensitive,
             subject: format!("{}:{}", p.instance_id(), p.principal_id()),
             devices: p.authorization()?.inventory_devices(p)?,
@@ -105,6 +108,7 @@ impl ReadScope {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct DeviceView {
+    pub collection_scope: rss_mdm_inventory::CollectionScope,
     pub device: String,
     pub channels: BTreeSet<String>,
     pub fields: BTreeMap<FieldKey, rss_mdm_inventory::ResolvedField>,
@@ -302,6 +306,7 @@ impl Command {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct QualityRun {
+    pub collection_scope: rss_mdm_inventory::CollectionScope,
     pub source: rss_mdm_inventory::Source,
     pub channel: rss_mdm_inventory::Channel,
     pub registration: Uuid,

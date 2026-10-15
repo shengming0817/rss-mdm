@@ -96,7 +96,16 @@ pub enum Kind {
     /// Declared structured properties.
     Object,
 }
-/// Closed structural schema for one field; every property is explicit and required.
+/// One explicitly typed property in a protocol record.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct Property {
+    /// Exact value type when present.
+    pub value_type: ValueType,
+    /// Whether absence invalidates the record.
+    pub required: bool,
+}
+/// Closed structural schema for one field.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(
     tag = "kind",
@@ -105,6 +114,11 @@ pub enum Kind {
     deny_unknown_fields
 )]
 pub enum ValueType {
+    /// Closed record with explicit per-property presence requirements.
+    Record {
+        /// Unique property declarations; absent optional values remain absent.
+        properties: BTreeMap<String, Property>,
+    },
     /// Bounded text; empty text is a legitimate value when allowed.
     String {
         /// Character budget.
@@ -139,6 +153,24 @@ pub enum ValueType {
     },
 }
 impl ValueType {
+    /// Declared object members, including each presence requirement.
+    pub fn properties(&self) -> impl Iterator<Item = (&str, &ValueType, bool)> {
+        let strict = match self {
+            Self::Object { properties } => Some(properties),
+            _ => None,
+        };
+        let record = match self {
+            Self::Record { properties } => Some(properties),
+            _ => None,
+        };
+        strict
+            .into_iter()
+            .flat_map(|p| p.iter().map(|(k, v)| (k.as_str(), v, true)))
+            .chain(record.into_iter().flat_map(|p| {
+                p.iter()
+                    .map(|(k, v)| (k.as_str(), &v.value_type, v.required))
+            }))
+    }
     /// Primitive/collection discriminant.
     pub fn kind(&self) -> Kind {
         match self {
@@ -148,7 +180,7 @@ impl ValueType {
             Self::Boolean => Kind::Boolean,
             Self::Time => Kind::Time,
             Self::Array { .. } => Kind::Array,
-            Self::Object { .. } => Kind::Object,
+            Self::Object { .. } | Self::Record { .. } => Kind::Object,
         }
     }
     /// Bound both schema depth and its cumulative node count.
@@ -157,7 +189,7 @@ impl ValueType {
     }
     fn check(&self, depth: usize, nodes: &mut usize) -> Result<()> {
         *nodes += 1;
-        if depth > 4 || *nodes > 128 {
+        if depth > 6 || *nodes > 128 {
             return Err(Invalid::Value);
         }
         match self {
@@ -182,11 +214,12 @@ impl ValueType {
                 }
                 items.check(depth + 1, nodes)
             }
-            Self::Object { properties } => {
+            Self::Object { .. } | Self::Record { .. } => {
+                let properties: Vec<_> = self.properties().collect();
                 if properties.is_empty() || properties.len() > 64 {
                     return Err(Invalid::Value);
                 }
-                for (key, value) in properties {
+                for (key, value, _) in properties {
                     if !property(key) {
                         return Err(Invalid::Value);
                     }
@@ -220,12 +253,19 @@ impl ValueType {
             {
                 values.iter().try_for_each(|v| items.validate_value(v))
             }
-            (Self::Object { properties }, Scalar::Object(values))
-                if properties.len() == values.len() =>
-            {
-                properties.iter().try_for_each(|(k, t)| {
-                    t.validate_value(values.get(k).ok_or(Invalid::TypeMismatch)?)
-                })
+            (Self::Object { .. } | Self::Record { .. }, Scalar::Object(values)) => {
+                if values
+                    .keys()
+                    .any(|k| !self.properties().any(|(name, _, _)| name == k))
+                {
+                    return Err(Invalid::TypeMismatch);
+                }
+                self.properties()
+                    .try_for_each(|(key, ty, required)| match values.get(key) {
+                        Some(value) => ty.validate_value(value),
+                        None if !required => Ok(()),
+                        None => Err(Invalid::TypeMismatch),
+                    })
             }
             _ => Err(Invalid::TypeMismatch),
         }
@@ -337,17 +377,19 @@ impl FieldDefinition {
             let ValueType::Array { items, .. } = &self.value_type else {
                 return Err(Invalid::TypeMismatch);
             };
-            let ValueType::Object { properties } = items.as_ref() else {
-                return Err(Invalid::TypeMismatch);
-            };
+            let property = items
+                .properties()
+                .find(|(name, _, required)| *name == key && *required);
             if !matches!(
-                properties.get(key),
-                Some(
+                property,
+                Some((
+                    _,
                     ValueType::String {
                         allow_empty: false,
                         ..
-                    } | ValueType::Integer
-                )
+                    } | ValueType::Integer,
+                    true
+                ))
             ) {
                 return Err(Invalid::TypeMismatch);
             }
@@ -385,14 +427,17 @@ impl FieldDefinition {
     pub fn operations(&self) -> Vec<Operator> {
         use Operator::*;
         if !self.searchable
-            || matches!(&self.value_type, ValueType::Object { .. })
-            || matches!(&self.value_type,ValueType::Array {items,..} if matches!(items.as_ref(),ValueType::Object {..}|ValueType::Array {..}))
+            || matches!(
+                &self.value_type,
+                ValueType::Object { .. } | ValueType::Record { .. }
+            )
+            || matches!(&self.value_type,ValueType::Array {items,..} if matches!(items.as_ref(),ValueType::Object {..}|ValueType::Record {..}|ValueType::Array {..}))
         {
             return Vec::new();
         }
         let mut operations = match self.value_type {
             ValueType::Array { .. } => vec![ContainsAny, ContainsAll],
-            ValueType::Object { .. } => Vec::new(),
+            ValueType::Object { .. } | ValueType::Record { .. } => Vec::new(),
             _ => vec![Eq, Ne, In, NotIn],
         };
         match self.value_type.kind() {
@@ -487,10 +532,11 @@ impl Catalog {
                 many = true;
                 value_type = items;
             }
-            let ValueType::Object { properties } = value_type else {
-                return Err(Invalid::UnknownField);
-            };
-            value_type = properties.get(part).ok_or(Invalid::UnknownField)?;
+            value_type = value_type
+                .properties()
+                .find(|(key, _, _)| *key == part)
+                .map(|(_, ty, _)| ty)
+                .ok_or(Invalid::UnknownField)?;
         }
         while let ValueType::Array { items, .. } = value_type {
             many = true;
@@ -520,7 +566,9 @@ impl FieldPath<'_> {
                 let Scalar::Object(values) = value else {
                     return Err(Invalid::TypeMismatch);
                 };
-                collect(values.get(part).ok_or(Invalid::TypeMismatch)?, rest, out)?;
+                if let Some(value) = values.get(part) {
+                    collect(value, rest, out)?;
+                }
             } else {
                 out.push(value);
             }
@@ -562,21 +610,19 @@ impl ValueType {
                         .collect::<Result<_>>()?,
                 )
             }
-            (Self::Object { properties }, Value::Object(values))
-                if properties.len() == values.len() =>
-            {
-                Scalar::Object(
-                    properties
-                        .iter()
-                        .map(|(key, t)| {
-                            Ok((
-                                key.clone(),
-                                t.decode_json(values.get(key).ok_or(Invalid::TypeMismatch)?)?,
-                            ))
-                        })
-                        .collect::<Result<_>>()?,
-                )
-            }
+            (Self::Object { .. } | Self::Record { .. }, Value::Object(values)) => Scalar::Object(
+                values
+                    .iter()
+                    .map(|(key, value)| {
+                        let ty = self
+                            .properties()
+                            .find(|(name, _, _)| *name == key)
+                            .map(|(_, ty, _)| ty)
+                            .ok_or(Invalid::TypeMismatch)?;
+                        Ok((key.clone(), ty.decode_json(value)?))
+                    })
+                    .collect::<Result<_>>()?,
+            ),
             _ => return Err(Invalid::TypeMismatch),
         };
         self.validate_value(&scalar)?;

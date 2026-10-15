@@ -405,7 +405,7 @@ fn purpose(spec: &ScriptSpec) -> Result<(), Error> {
     } = &spec.purpose
         && (applicability.validate().is_err()
             || spec.run_as != RunAs::System
-            || scope.validate_executable().is_err()
+            || !matches!(scope, crate::TemplateScope::Device)
             || mappings.is_empty()
             || mappings.len() > 128
             || mappings.keys().any(|k| !field_identity(k))

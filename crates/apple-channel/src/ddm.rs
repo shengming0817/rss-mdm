@@ -365,6 +365,7 @@ impl Exchange {
             }
         };
         Ok(channels::AppleDdmReply {
+            facts: Vec::new(),
             status: if value.is_some() { 200 } else { 404 },
             synchronized: Vec::new(),
             bytes: value

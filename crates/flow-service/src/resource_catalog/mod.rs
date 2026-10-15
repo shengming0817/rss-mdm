@@ -187,7 +187,11 @@ impl ResourceCatalog {
                         match definition.spec().adapter {
                             r::NativeAdapter::WindowsRead => rss_mdm_inventory::Source::MdmWindows,
                             rss_mdm_resource::NativeAdapter::AppleDeviceInformation
-                            | rss_mdm_resource::NativeAdapter::AppleInstalledApplications => {
+                            | rss_mdm_resource::NativeAdapter::AppleInstalledApplications
+                            | rss_mdm_resource::NativeAdapter::AppleSecurity
+                            | rss_mdm_resource::NativeAdapter::AppleProfiles
+                            | rss_mdm_resource::NativeAdapter::AppleCertificates
+                            | rss_mdm_resource::NativeAdapter::AppleUsers => {
                                 rss_mdm_inventory::Source::MdmApple
                             }
                         },
@@ -240,39 +244,52 @@ impl ResourceCatalog {
             }
             let blueprint = r::blueprints::get(blueprint, version).ok_or(Error::Malformed)?;
             let initial = checked_input(blueprint.instantiate(self.tenant, rid.clone()))?;
-            for (step, change, revision) in [
-                (
-                    "create",
-                    Change::Create {
-                        kind: Kind::NativeCollection,
-                    },
-                    0,
-                ),
-                (
-                    "version",
-                    Change::Version {
+            use sha2::Digest;
+            let origin = r::BlueprintOrigin {
+                blueprint: blueprint.id.clone(),
+                version: blueprint.version.clone(),
+                digest: initial.digest().bytes(),
+            };
+            let operation_id = |step: &str| {
+                let digest = sha2::Sha256::digest(format!("{}:{step}", op.operation_id).as_bytes());
+                uuid::Uuid::from_bytes(digest[..16].try_into().expect("digest"))
+            };
+            checked(
+                self.resources
+                    .execute_in(
+                        tx,
+                        &pg::Request {
+                            id: id(&operation_id("create").to_string())?,
+                            resource: rid.clone(),
+                            expected_storage_revision: 0,
+                            as_of: at,
+                            command: pg::Command::CreateFromBlueprint {
+                                kind: initial.kind(),
+                                origin,
+                            },
+                        },
+                    )
+                    .await?,
+            )?;
+            Box::pin(self.resource_change(
+                tx,
+                resource,
+                &Operation {
+                    operation_id: operation_id("version"),
+                    expected_revision: 1,
+                    input: Change::Version {
                         version: blueprint.label(),
-                        kind: Kind::NativeCollection,
+                        kind: match initial.kind() {
+                            r::Kind::Configuration => Kind::Configuration,
+                            r::Kind::NativeCollection => Kind::NativeCollection,
+                            _ => return Err(Error::Malformed.into()),
+                        },
                         variants: initial.variants().iter().map(variant_view).collect(),
                     },
-                    1,
-                ),
-            ] {
-                use sha2::Digest;
-                let digest = sha2::Sha256::digest(format!("{}:{step}", op.operation_id).as_bytes());
-                let operation_id = uuid::Uuid::from_bytes(digest[..16].try_into().expect("digest"));
-                Box::pin(self.resource_change(
-                    tx,
-                    resource,
-                    &Operation {
-                        operation_id,
-                        expected_revision: revision,
-                        input: change,
-                    },
-                    at,
-                ))
-                .await?;
-            }
+                },
+                at,
+            ))
+            .await?;
             return self.resource_read(tx, resource).await;
         }
         let command = match &op.input {
@@ -330,11 +347,7 @@ impl ResourceCatalog {
             Error::Resource(crate::resource_catalog::error::ResourceError::Missing),
         )?;
         let snapshot = stored.resource.snapshot();
-        let origin = r::blueprints::catalog().into_iter().find_map(|blueprint| {
-            let initial = blueprint.instantiate(self.tenant, id(resource).ok()?).ok()?;
-            snapshot.versions.iter().any(|v| v.version.label() == initial.label() && v.version.digest() == initial.digest())
-                .then(|| json!({"blueprint":blueprint.id,"version":blueprint.version,"digest":initial.digest().bytes()}))
-        });
+        let origin = &snapshot.origin;
         Ok(
             json!({"id":resource,"origin":origin,"revision":stored.storage_revision,"kind":resource_kind(snapshot.kind),"versions":snapshot.versions.iter().map(|v|json!({"id":v.version.label().as_str(),"digest":v.version.digest().bytes(),"state":resource_state(v.state),"variants":v.version.variants().iter().map(variant_view).collect::<Vec<_>>()})).collect::<Vec<_>>() }),
         )

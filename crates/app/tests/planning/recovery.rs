@@ -61,6 +61,18 @@ async fn management_admission_rejects_schema_and_privilege_drift() {
             "REVOKE SELECT ON mdm_access.credentials FROM mdm_flow_runtime; GRANT SELECT(tenant_id,registration,state) ON mdm_access.credentials TO mdm_flow_runtime",
         ),
         (
+            "GRANT SELECT(material) ON mdm_apple.channels TO mdm_flow_runtime",
+            "REVOKE SELECT(material) ON mdm_apple.channels FROM mdm_flow_runtime",
+        ),
+        (
+            "GRANT SELECT(response) ON mdm_apple.attempts TO mdm_flow_runtime",
+            "REVOKE SELECT(response) ON mdm_apple.attempts FROM mdm_flow_runtime",
+        ),
+        (
+            "GRANT SELECT(context) ON mdm_apple.attempts TO mdm_flow_runtime",
+            "REVOKE SELECT(context) ON mdm_apple.attempts FROM mdm_flow_runtime",
+        ),
+        (
             "ALTER TABLE mdm_planning.scopes DISABLE ROW LEVEL SECURITY",
             "ALTER TABLE mdm_planning.scopes ENABLE ROW LEVEL SECURITY",
         ),

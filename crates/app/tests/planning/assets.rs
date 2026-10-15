@@ -60,6 +60,7 @@ async fn asset_history_rollback_replay_and_frozen_watermark() {
                         None,
                         1,
                         &assets::ReadScope {
+                            collection_scope: rss_mdm_inventory::CollectionScope::Device,
                             sensitive: true,
                             subject: "history".into(),
                             devices: Some([scope_device.clone()].into()),
@@ -159,7 +160,7 @@ async fn frozen_fields_manual_and_quality_survive_updates_deletes_and_rollback()
     ))
     .unwrap();
     sql(&format!(
-        "INSERT INTO mdm.inventory(tenant_id,journal,generation,scope,coverage,field,value,batch_id,observed_at,received_at,state,registration,source,epoch,collection_sequence) VALUES('{t}','mdm.observation.v1','inventory-v5','{scope}','{coverage}','device.model','{old_value}','old-batch',1,2,'known','{registration}','mdm.windows','{epoch}',0); INSERT INTO mdm_access.collection_runs(tenant_id,id,registration,source,epoch,scope,sequence,started_at,attempts,result) VALUES('{t}','{collection}','{registration}','mdm.windows','{epoch}','{scope}',1,1,'{attempts}','pending')"
+        "INSERT INTO mdm.inventory(tenant_id,journal,generation,scope,coverage,field,value,batch_id,observed_at,received_at,state,registration,source,epoch,collection_sequence) VALUES('{t}','mdm.observation.v1','inventory-v6','{scope}','{coverage}','device.model','{old_value}','old-batch',1,2,'known','{registration}','mdm.windows','{epoch}',0); INSERT INTO mdm_access.collection_runs(tenant_id,id,registration,source,epoch,scope,sequence,started_at,attempts,result) VALUES('{t}','{collection}','{registration}','mdm.windows','{epoch}','{scope}',1,1,'{attempts}','pending')"
     ));
     let service = planning(t).await;
     let manual = |revision, input| assets::Command::Manual {

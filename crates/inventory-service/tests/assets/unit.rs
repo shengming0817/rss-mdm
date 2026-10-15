@@ -1,6 +1,6 @@
 use super::*;
 #[test]
-fn persisted_asset_fingerprint_keeps_its_original_encoding() {
+fn asset_fingerprint_binds_explicit_collection_scope() {
     let audit = RequestAudit::new(
         "11111111-1111-4111-8111-111111111111".into(),
         "management_write",
@@ -14,12 +14,13 @@ fn persisted_asset_fingerprint_keeps_its_original_encoding() {
             input: Query::default(),
         },
         scope: ReadScope {
+            collection_scope: rss_mdm_inventory::CollectionScope::Device,
             subject: "operator".into(),
             sensitive: false,
             devices: None,
         },
     };
-    let original=br#"["11111111-1111-4111-8111-111111111111","operator","mdm",{"kind":"Asset","command":{"kind":"search","request":{"operationId":"22222222-2222-4222-8222-222222222222","expectedRevision":0,"input":{"criteria":null,"select":[],"sort":null}},"scope":{"subject":"operator","sensitive":false,"devices":null}}}]"#;
+    let original=br#"["11111111-1111-4111-8111-111111111111","operator","mdm",{"kind":"Asset","command":{"kind":"search","request":{"operationId":"22222222-2222-4222-8222-222222222222","expectedRevision":0,"input":{"criteria":null,"select":[],"sort":null}},"scope":{"collection_scope":{"kind":"device"},"subject":"operator","sensitive":false,"devices":null}}}]"#;
     let (operation, digest) = operation_identity(&command, &audit).unwrap();
     assert_eq!(operation, Some(id));
     assert_eq!(digest, Sha256::digest(original).to_vec());
@@ -122,6 +123,7 @@ fn registered_paths_feed_group_sets_and_sensitive_conditions_need_an_explicit_gr
         .into(),
     )]);
     let mut device = DeviceView {
+        collection_scope: rss_mdm_inventory::CollectionScope::Device,
         lists: BTreeMap::new(),
         device: "device".into(),
         channels: BTreeSet::new(),
@@ -209,6 +211,7 @@ fn installed_id_groups_use_existing_sets_and_preserve_unknown_states() {
         (State::Conflict, g::Decision::Unknown),
     ] {
         let device = DeviceView {
+            collection_scope: rss_mdm_inventory::CollectionScope::Device,
             lists: BTreeMap::new(),
             device: "device".into(),
             channels: BTreeSet::new(),

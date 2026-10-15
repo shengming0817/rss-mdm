@@ -73,7 +73,11 @@ impl Inputs {
                 let source = match definition.spec().adapter {
                     resource::NativeAdapter::WindowsRead => rss_mdm_inventory::Source::MdmWindows,
                     rss_mdm_resource::NativeAdapter::AppleDeviceInformation
-                    | rss_mdm_resource::NativeAdapter::AppleInstalledApplications => {
+                    | rss_mdm_resource::NativeAdapter::AppleInstalledApplications
+                    | rss_mdm_resource::NativeAdapter::AppleSecurity
+                    | rss_mdm_resource::NativeAdapter::AppleProfiles
+                    | rss_mdm_resource::NativeAdapter::AppleCertificates
+                    | rss_mdm_resource::NativeAdapter::AppleUsers => {
                         rss_mdm_inventory::Source::MdmApple
                     }
                 };

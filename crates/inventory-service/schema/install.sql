@@ -75,7 +75,7 @@ CREATE TABLE mdm_access.collection_runs (
     started_at bigint NOT NULL,
     attempts text NOT NULL,
     evidence jsonb,
-    CONSTRAINT collection_evidence_check CHECK (octet_length(evidence::text)<=8192),
+    CONSTRAINT collection_evidence_check CHECK (octet_length(evidence::text)<=131072),
     result text NOT NULL,
     reason text,
     batch bytea,

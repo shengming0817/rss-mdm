@@ -24,10 +24,11 @@ fn to_wire_sensitivity(value: d::Sensitivity) -> w::Sensitivity {
         d::Sensitivity::Sensitive => w::Sensitivity::Sensitive,
     }
 }
-fn to_wire_type(value: &d::ValueType) -> w::ValueType {
+fn to_wire_type(value: &d::ValueType) -> Result<w::ValueType, Error> {
     use d::ValueType as S;
     use w::ValueType as T;
-    match value {
+    Ok(match value {
+        S::Record { .. } => return Err(Error::Malformed),
         S::String {
             max_length,
             allow_empty,
@@ -43,22 +44,22 @@ fn to_wire_type(value: &d::ValueType) -> w::ValueType {
         S::Boolean => T::Boolean,
         S::Time => T::Time,
         S::Array { items, max_items } => T::Array {
-            items: Box::new(to_wire_type(items)),
+            items: Box::new(to_wire_type(items)?),
             max_items: *max_items,
         },
         S::Object { properties } => T::Object {
             properties: properties
                 .iter()
-                .map(|(k, v)| (k.clone(), to_wire_type(v)))
-                .collect(),
+                .map(|(k, v)| Ok((k.clone(), to_wire_type(v)?)))
+                .collect::<Result<_, Error>>()?,
         },
-    }
+    })
 }
 fn to_wire_field(value: &d::FieldDefinition) -> Result<w::FieldDefinition, Error> {
     Ok(w::FieldDefinition {
         key: w::FieldKey::parse(value.key.as_str()).map_err(|_| Error::Malformed)?,
         version: value.version,
-        value_type: to_wire_type(&value.value_type),
+        value_type: to_wire_type(&value.value_type)?,
         nullable: value.nullable,
         manual: value.manual,
         sources: value
@@ -167,6 +168,7 @@ fn to_domain_field(value: &w::FieldDefinition) -> Result<d::FieldDefinition, Err
 }
 pub(crate) fn to_domain(value: &w::CollectionDefinition) -> Result<d::CollectionDefinition, Error> {
     d::CollectionDefinition::new(
+        d::CollectionScope::Device,
         value.dataset(),
         value.version(),
         to_domain_source(value.source()),
@@ -209,9 +211,14 @@ mod tests {
             .into_iter()
             .filter(|field| field.sources.contains_key(&d::Source::AgentBuiltin))
             .collect();
-        let original =
-            d::CollectionDefinition::new("inventory", "1", d::Source::AgentBuiltin, fields)
-                .unwrap();
+        let original = d::CollectionDefinition::new(
+            d::CollectionScope::Device,
+            "inventory",
+            "1",
+            d::Source::AgentBuiltin,
+            fields,
+        )
+        .unwrap();
         let wire = to_wire(&original).unwrap();
         assert_eq!(
             serde_json::to_vec(&original).unwrap(),

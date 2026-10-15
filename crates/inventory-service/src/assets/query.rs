@@ -258,5 +258,6 @@ fn state_name(state: &State) -> &'static str {
         State::Deleted => "deleted",
         State::Conflict => "conflict",
         State::Unsupported => "unsupported",
+        State::Unknown { .. } => "unknown",
     }
 }

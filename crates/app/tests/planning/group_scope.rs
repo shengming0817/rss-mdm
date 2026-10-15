@@ -150,6 +150,7 @@ async fn durable_asset_group_scope_pipeline() {
     ));
     denied_audit.finalize(None);
     let query_scope = assets::ReadScope {
+        collection_scope: rss_mdm_inventory::CollectionScope::Device,
         sensitive: true,
         subject: "query-owner".into(),
         devices: Some([device.clone()].into()),

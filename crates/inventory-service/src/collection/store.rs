@@ -474,6 +474,7 @@ pub async fn freeze_in(
         Sha256::digest(serde_json::to_vec(&fields).map_err(|_| corrupt())?)
     );
     let definition = rss_mdm_inventory::CollectionDefinition::new(
+        rss_mdm_inventory::CollectionScope::Device,
         scope.dataset().as_str(),
         version,
         rss_mdm_inventory::Source::parse(scope.source().as_str()).map_err(|_| Error::Malformed)?,

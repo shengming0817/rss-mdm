@@ -785,12 +785,19 @@ impl Fixture {
 impl Fixture {
     /// Publish ordinary tenant Resource/Scope through the same HTTP owners used by administrators.
     pub(super) async fn collection_template(&mut self) -> Result<serde_json::Value> {
+        self.collection_template_scoped(rss_mdm_resource::TemplateScope::Device)
+            .await
+    }
+    pub(super) async fn collection_template_scoped(
+        &mut self,
+        scope: rss_mdm_resource::TemplateScope,
+    ) -> Result<serde_json::Value> {
         use crate::test_support::agent_execution::{resource, upload};
         use rss_mdm_resource::{
             NativeAdapter, NativeCollectionDefinition, NativeCollectionSpec, NativeMapping,
         };
         let template = NativeCollectionDefinition::new(NativeCollectionSpec {
-            scope: rss_mdm_resource::TemplateScope::Device,
+            scope,
             applicability: Default::default(),
             adapter: NativeAdapter::AppleDeviceInformation,
             mappings: [
@@ -857,7 +864,7 @@ impl Fixture {
         let run = tokio::time::timeout(Duration::from_secs(30), async {
             loop {
                 self.app.execution.settle_native_fixture(case_device()).await?;
-                let run: Option<Uuid> = sqlx::query_scalar("SELECT r.id FROM mdm_commands.action_runs r JOIN mdm_policy.versions v ON(v.tenant_id,v.id)=(r.tenant_id,r.policy_version) JOIN mdm_access.collection_runs c ON(c.tenant_id,c.id)=(r.tenant_id,r.id) JOIN mdm_apple.attempts a ON(a.tenant_id,a.id)=(r.tenant_id,r.id) WHERE r.tenant_id=$1::uuid AND v.policy=$2 AND r.gateway_accepted AND c.sealed_at IS NULL AND a.phase='collect'")
+                let run: Option<Uuid> = sqlx::query_scalar("SELECT r.id FROM mdm_commands.action_runs r JOIN mdm_policy.versions v ON(v.tenant_id,v.id)=(r.tenant_id,r.policy_version) JOIN mdm_access.collection_runs c ON(c.tenant_id,c.id)=(r.tenant_id,r.id) JOIN mdm_apple.attempts a ON(a.tenant_id,a.collection)=(r.tenant_id,r.id) WHERE r.tenant_id=$1::uuid AND v.policy=$2 AND r.gateway_accepted AND c.sealed_at IS NULL AND a.phase='collect_device'")
                     .bind(case_tenant()).bind(policy).fetch_optional(&mut db).await?;
                 if let Some(run) = run { return Ok::<_, anyhow::Error>(run); }
                 tokio::time::sleep(Duration::from_millis(50)).await;

@@ -123,7 +123,7 @@ async fn write(
                 variant: "x86_64".into(),
                 platform: blueprint.platform,
                 architecture: rss_mdm_resource::Architecture::X86_64,
-                artifact: Some("collection.json".into()),
+                artifact: Some(blueprint.definition.reference().into()),
                 operation: Some(operation),
             },
             bytes.as_slice(),

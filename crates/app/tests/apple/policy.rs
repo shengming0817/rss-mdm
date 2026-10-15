@@ -325,7 +325,7 @@ impl Fixture {
         let queued = self.queue_collection(&definition).await;
         crate::test_support::stop_worker(Some(owner)).await?;
         let (_, run) = queued?;
-        ensure!(peer.next("DeviceInformation").await?.0 == run);
+        ensure!(peer.next_collection().await?.0 == run);
         sqlx::query("UPDATE mdm_access.collection_runs SET deadline=clock_timestamp()-interval '1 second' WHERE id=$1::uuid").bind(run).execute(&mut pg).await?;
         let mut terminal = false;
         for _ in 0..100 {

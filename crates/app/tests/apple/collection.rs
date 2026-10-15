@@ -82,7 +82,7 @@ async fn published_native_template_uses_policy_and_direct_collection_progress() 
     launch.stage_deferred_task_with_token(automation.registration(f.signals.flow()).critical());
     launch.finish();
     let result = async {
-    let field = "custom.link_addresses";
+    let field = "custom.active_users";
     let definition = json!({"key":field,"version":1,"valueType":{"kind":"array","items":{"kind":"string","maxLength":128,"allowEmpty":false},"maxItems":100},"nullable":false,"manual":false,"sources":{"mdm.apple":0},"platforms":["macos"],"sensitivity":"standard","unit":null,"searchable":true,"itemKey":null});
     let published = f.browser.call(&f.router, Method::PUT, &format!("/api/v1/asset-fields/{field}"), Some(json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"put","definition":definition}}))).await?;
     ensure!(
@@ -91,7 +91,7 @@ async fn published_native_template_uses_policy_and_direct_collection_progress() 
     );
     let template = NativeCollectionDefinition::new(NativeCollectionSpec {
         scope: rss_mdm_resource::TemplateScope::Device,
-        applicability: Default::default(),
+        applicability: rss_mdm_resource::Applicability { minimum_os_version: Some("15.0".into()), ..Default::default() },
         adapter: NativeAdapter::AppleDeviceInformation,
         mappings: [
             (
@@ -104,7 +104,7 @@ async fn published_native_template_uses_policy_and_direct_collection_progress() 
             (
                 field.into(),
                 NativeMapping {
-                    query: rss_mdm_resource::NativeQuery::Apple("EthernetMACs".into()),
+                    query: rss_mdm_resource::NativeQuery::Apple("ActiveManagedUsers".into()),
                 mapping: rss_mdm_resource::ValueMapping::identity(""),
                 },
             ),
@@ -138,11 +138,11 @@ async fn published_native_template_uses_policy_and_direct_collection_progress() 
     post(&mut f.browser,&f.router,&format!("/api/v1/scopes/{scope}"),json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"put","definition":{"targets":[{"kind":"device","id":case_device()}],"limitations":null,"exclusions":[]}}})).await?;
     let policy = Uuid::new_v4();
     post(&mut f.browser,&f.router,&format!("/api/v1/policies/{policy}"),json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"put","enabled":true,"definition":{"scope":scope,"action":{"kind":"native_collection","resource":{"id":id,"version":"v1","platform":"macos","architecture":"aarch64","variant":"default"},"runLifetimeSeconds":300}}}})).await?;
-    let (run, payload) = peer.next("DeviceInformation").await?;
+    let (run, payload) = peer.next_collection().await?;
     ensure!(
         payload["Queries"].as_array().unwrap()
             == &vec![
-                plist::Value::from("EthernetMACs"),
+                plist::Value::from("ActiveManagedUsers"),
                 plist::Value::from("Model")
             ]
     );
@@ -154,10 +154,10 @@ async fn published_native_template_uses_policy_and_direct_collection_progress() 
             plist::Value::Dictionary(protocol::dictionary([
                 ("Model", "native-template-model".into()),
                 (
-                    "EthernetMACs",
+                    "ActiveManagedUsers",
                     plist::Value::Array(vec![
-                        "aa:bb:cc:dd:ee:01".into(),
-                        "aa:bb:cc:dd:ee:02".into(),
+                        "fixture-user-one".into(),
+                        "fixture-user-two".into(),
                     ]),
                 ),
             ])),
@@ -200,9 +200,44 @@ async fn published_native_template_uses_policy_and_direct_collection_progress() 
             && first.1["asset"]["nextOffset"] == 1,
         "item quality: {first:?}"
     );
+    // A prior run observed macOS 14. The current peer reports 15 in its
+    // prerequisite response; historical evidence must not block that refresh.
+    let mut prior = sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?).await?;
+    let updated = sqlx::query("UPDATE mdm_apple.attempts SET context=jsonb_set(context,'{version}','\"14.0\"'::jsonb) WHERE tenant_id=$1::uuid AND id=$2 AND phase='collect'")
+        .bind(case_tenant()).bind(run).execute(&mut prior).await?;
+    ensure!(updated.rows_affected() == 1);
+    prior.close().await?;
+    let current_definition = json!({"scope":scope,"action":{"kind":"native_collection","resource":{"id":id,"version":"v1","platform":"macos","architecture":"aarch64","variant":"default"},"runLifetimeSeconds":300}});
+    let preview = f.browser.call(&f.router, Method::POST, "/api/v1/policies/previews", Some(json!({"definition":current_definition}))).await?;
+    ensure!(preview.0 == StatusCode::OK && preview.1["items"][0]["taskAdmission"]["state"] == "channel_unknown", "historical evidence became current preview eligibility: {preview:?}");
+    // New evidence below the minimum, or missing its OS version, must not
+    // dispatch business queries even when historical context exists.
+    for version in [Some("14.0"), None] {
+        let (_, unsupported) = f.queue_collection(&current_definition).await?;
+        let (prerequisite, _) = peer.next("DeviceInformation").await?;
+        let mut facts = protocol::dictionary([
+            ("IsSupervised", true.into()), ("IsAppleSilicon", true.into()),
+        ]);
+        if let Some(version) = version { facts.insert("OSVersion".into(), version.into()); }
+        let reply = peer.manage("Acknowledged", Some(prerequisite), Some(("QueryResponses", facts.into()))).await?;
+        let reply = if version.is_some() {
+            let (prerequisite, _) = lifecycle::command(&reply, "SecurityInfo")?;
+            peer.manage("Acknowledged", Some(prerequisite), Some(("SecurityInfo", protocol::dictionary([
+                ("ManagementStatus", protocol::dictionary([
+                    ("IsUserEnrollment", false.into()), ("EnrolledViaDEP", false.into()), ("UserApprovedEnrollment", true.into()),
+                ]).into()),
+            ]).into()))).await?
+        } else { reply };
+        ensure!(reply.is_empty(), "unsupported current version dispatched business collection");
+        let mut check = sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?).await?;
+        let terminal: (bool, bool) = sqlx::query_as("SELECT sealed_at IS NOT NULL,NOT EXISTS(SELECT 1 FROM mdm_apple.attempts a WHERE a.tenant_id=c.tenant_id AND a.collection=c.id AND a.phase='collect') FROM mdm_access.collection_runs c WHERE tenant_id=$1::uuid AND id=$2")
+            .bind(case_tenant()).bind(unsupported).fetch_one(&mut check).await?;
+        ensure!(terminal == (true, true), "version rejection did not seal without dispatch: {terminal:?}");
+        check.close().await?;
+    }
     let refresh_policy = Uuid::new_v4();
     post(&mut f.browser,&f.router,&format!("/api/v1/policies/{refresh_policy}"),json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"put","enabled":true,"definition":{"scope":scope,"action":{"kind":"native_collection","resource":{"id":id,"version":"v1","platform":"macos","architecture":"aarch64","variant":"default"},"runLifetimeSeconds":300}}}})).await?;
-    let (refresh, _) = peer.next("DeviceInformation").await?;
+    let (refresh, _) = peer.next_collection().await?;
     let mut historical = sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?).await?;
     let parent = Uuid::new_v4();
     crate::test_support::agent_execution::historical_remote_run(&mut historical,case_tenant(),refresh,parent).await?;
@@ -218,10 +253,10 @@ async fn published_native_template_uses_policy_and_direct_collection_progress() 
             plist::Value::Dictionary(protocol::dictionary([
                 ("Model", "refreshed-model".into()),
                 (
-                    "EthernetMACs",
+                    "ActiveManagedUsers",
                     plist::Value::Array(vec![
-                        "aa:bb:cc:dd:ee:03".into(),
-                        plist::Value::Boolean(true),
+                        "fixture-user-three".into(),
+                        plist::Value::String("x".repeat(129)),
                     ]),
                 ),
             ])),
@@ -263,7 +298,7 @@ async fn published_native_template_uses_policy_and_direct_collection_progress() 
                 .await?;
             if list.0 == StatusCode::OK && list.1["asset"]["total"] == 2 {
                 ensure!(
-                    list.1["asset"]["items"][0]["value"] == "aa:bb:cc:dd:ee:01",
+                    list.1["asset"]["items"][0]["value"] == "fixture-user-one",
                     "invalid list replaced trusted snapshot: {list:?}"
                 );
                 break;
@@ -314,7 +349,7 @@ async fn withdrawn_template(dispatched: bool, withdrawal: &str) -> Result<()> {
     crate::test_support::stop_worker(Some(owner)).await?;
     let (policy, run) = queued?;
     if dispatched {
-        ensure!(peer.next("DeviceInformation").await?.0 == run);
+        ensure!(peer.next_collection().await?.0 == run);
     }
     let mut pg =
         sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?)
@@ -377,6 +412,135 @@ async fn withdrawn_template(dispatched: bool, withdrawal: &str) -> Result<()> {
         "withdrawal lost exactly-once terminal audit"
     );
     pg.close().await?;
+    drop(device);
+    f.close().await
+}
+
+#[tokio::test]
+#[ignore = "MODULE=apple.collection: exact user scope dispatch receipt and read isolation"]
+async fn user_collection_cannot_cross_device_or_other_user_namespace() -> Result<()> {
+    use lifecycle::command;
+    let mut f = Fixture::start().await?;
+    let (peer, device) = f.ready_local_peer().await?;
+    f.policy_grants().await?;
+    let user = Uuid::new_v4();
+    let other = Uuid::new_v4();
+    peer.user_token(user, 41).await?;
+    peer.user_token(other, 42).await?;
+    let template = f
+        .collection_template_scoped(rss_mdm_resource::TemplateScope::User {
+            identity: user.to_string(),
+        })
+        .await?;
+    let worker = f.policy_worker().await?;
+    let (_, run) = f.queue_collection(&template).await?;
+    let (prerequisite, _) = peer.next("DeviceInformation").await?;
+    let security = peer
+        .manage(
+            "Acknowledged",
+            Some(prerequisite),
+            Some((
+                "QueryResponses",
+                protocol::dictionary([
+                    ("OSVersion", "15.0".into()),
+                    ("IsSupervised", true.into()),
+                    ("IsAppleSilicon", true.into()),
+                ])
+                .into(),
+            )),
+        )
+        .await?;
+    let (prerequisite, _) = command(&security, "SecurityInfo")?;
+    let device_reply = peer
+        .manage(
+            "Acknowledged",
+            Some(prerequisite),
+            Some((
+                "SecurityInfo",
+                protocol::dictionary([(
+                    "ManagementStatus",
+                    protocol::dictionary([
+                        ("IsUserEnrollment", false.into()),
+                        ("EnrolledViaDEP", false.into()),
+                        ("UserApprovedEnrollment", true.into()),
+                    ])
+                    .into(),
+                )])
+                .into(),
+            )),
+        )
+        .await?;
+    ensure!(
+        device_reply.is_empty(),
+        "user payload escaped on device channel"
+    );
+    ensure!(
+        peer.user_manage(other, "Idle", None, None)
+            .await?
+            .1
+            .is_empty()
+    );
+    let (status, payload) = peer.user_manage(user, "Idle", None, None).await?;
+    ensure!(status == StatusCode::OK);
+    let (attempt, payload) = command(&payload, "DeviceInformation")?;
+    ensure!(attempt == run);
+    let mut response = plist::Dictionary::new();
+    for query in payload["Queries"].as_array().unwrap() {
+        let name = query.as_string().unwrap();
+        response.insert(
+            name.into(),
+            match name {
+                "OSVersion" => "15.0".into(),
+                "Model" => "user-model".into(),
+                _ => anyhow::bail!("unexpected query {name}"),
+            },
+        );
+    }
+    let extra = Some(("QueryResponses", plist::Value::Dictionary(response)));
+    ensure!(
+        peer.user_manage(other, "Acknowledged", Some(run), extra.clone())
+            .await?
+            .0
+            != StatusCode::OK
+    );
+    ensure!(
+        peer.user_manage(user, "Acknowledged", Some(run), extra.clone())
+            .await?
+            .0
+            == StatusCode::OK
+    );
+    ensure!(
+        peer.user_manage(user, "Acknowledged", Some(run), extra)
+            .await?
+            .0
+            == StatusCode::OK
+    );
+    let path = format!("/api/v1/devices/{}/collections/{run}", case_device());
+    ensure!(f.browser.call(&f.router, Method::GET, &path, None).await?.0 == StatusCode::NOT_FOUND);
+    ensure!(
+        f.browser
+            .call(
+                &f.router,
+                Method::GET,
+                &format!("{path}?userId={other}"),
+                None
+            )
+            .await?
+            .0
+            == StatusCode::NOT_FOUND
+    );
+    let result = f
+        .browser
+        .call(
+            &f.router,
+            Method::GET,
+            &format!("{path}?userId={user}"),
+            None,
+        )
+        .await?;
+    ensure!(result.0 == StatusCode::OK, "scoped result {result:?}");
+    ensure!(result.1["asset"]["run"]["scope"] == json!({"kind":"user","identity":user}));
+    crate::test_support::stop_worker(Some(worker)).await?;
     drop(device);
     f.close().await
 }

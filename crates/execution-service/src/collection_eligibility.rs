@@ -1,9 +1,9 @@
-//! The same current native prerequisites are used by preview, admission and dispatch.
+//! Admission permits Apple prerequisite refresh; execution uses the new run context.
 use crate::{Error, Target};
 use rss_mdm_resource::{CollectionEnvironment, NativeAdapter, NativeCollectionDefinition};
 use rss_request_context::TenantId;
 use sqlx::PgConnection;
-/// Unknown native evidence cannot satisfy a declared prerequisite.
+/// Apple admission checks current authority, never historical endpoint evidence.
 pub async fn native_on(
     c: &mut PgConnection,
     tenant: TenantId,
@@ -48,20 +48,32 @@ pub async fn native_on(
         }
     } else {
         let rights: Option<i32> = sqlx::query_scalar("SELECT access_rights FROM mdm_apple.devices WHERE tenant_id=$1::uuid AND registration=$2 AND state='active'").bind(tenant.to_string()).bind(target.registration).fetch_optional(&mut *c).await.map_err(crate::database::db)?;
-        let required = if adapter == NativeAdapter::AppleDeviceInformation {
-            16
-        } else {
-            256
-        };
+        let required = adapter.apple_rights().ok_or(Error::Unsupported)? | 1040;
         if rights.is_none_or(|rights| rights & required != required) {
             return Ok(false);
         }
+        let user = match &template.spec().scope {
+            rss_mdm_resource::TemplateScope::Device => "",
+            rss_mdm_resource::TemplateScope::User { identity } => identity,
+            _ => return Ok(false),
+        };
+        let active: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_apple.channels WHERE tenant_id=$1::uuid AND registration=$2 AND generation=$3 AND user_key=$4 AND state='active')")
+            .bind(tenant.to_string()).bind(target.registration).bind(target.generation).bind(user).fetch_one(&mut *c).await.map_err(crate::database::db)?;
+        if !active {
+            return Ok(false);
+        }
+        // Only the device's response for this run may decide its OS version.
+        // Keep all control-plane constraints; defer this endpoint constraint until
+        // apple-channel compiles the business command with the resolved Context.
+        let mut prerequisites = template.spec().applicability.clone();
+        prerequisites.minimum_os_version = None;
+        return Ok(prerequisites.allows(
+            &environment,
+            &enrollment,
+            &[adapter.capability().into()].into(),
+        ));
     }
-    let capability = match adapter {
-        NativeAdapter::WindowsRead => "windows_read",
-        NativeAdapter::AppleDeviceInformation => "apple_device_information",
-        NativeAdapter::AppleInstalledApplications => "apple_installed_applications",
-    };
+    let capability = adapter.capability();
     Ok(template
         .spec()
         .applicability

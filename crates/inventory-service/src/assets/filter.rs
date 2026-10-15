@@ -242,7 +242,9 @@ fn object(
                 g::FactState::Known(value)
             }
             rss_mdm_inventory::State::Null => g::FactState::Null,
-            rss_mdm_inventory::State::Missing => g::FactState::Missing,
+            rss_mdm_inventory::State::Unknown { .. } | rss_mdm_inventory::State::Missing => {
+                g::FactState::Missing
+            }
             rss_mdm_inventory::State::Unsupported => g::FactState::Unsupported,
             rss_mdm_inventory::State::Deleted => g::FactState::Deleted,
             rss_mdm_inventory::State::Conflict => g::FactState::Conflict,

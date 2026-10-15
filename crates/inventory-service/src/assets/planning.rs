@@ -73,7 +73,7 @@ impl SnapshotReader {
         let next = more.then(|| ids.last().expect("nonempty lookahead page").clone());
         let catalog = catalog_in(tx, self.tenant, watermark).await?;
         let mut devices = self
-            .asset_devices_at_in(tx, watermark, &ids, &catalog)
+            .asset_devices_at_in(tx, watermark, &ids, &catalog, &scope.collection_scope)
             .await?;
         for device in &mut devices {
             restrict_fields(device, &catalog, scope.sensitive);
@@ -91,14 +91,20 @@ impl SnapshotReader {
         watermark: i64,
         ids: &[String],
         catalog: &rss_mdm_inventory::Catalog,
+        collection_scope: &rss_mdm_inventory::CollectionScope,
     ) -> Result<Vec<DeviceView>> {
         let reader = SnapshotReader {
             tenant: self.tenant,
         };
         let ids = ids.to_vec();
         let catalog = catalog.clone();
+        let collection_scope = collection_scope.clone();
         tx.with_connection(move |c| {
-            Box::pin(async move { Ok(reader.devices_on(c, watermark, &ids, &catalog, true).await) })
+            Box::pin(async move {
+                Ok(reader
+                    .scoped_devices_on(c, watermark, &ids, &catalog, true, &collection_scope)
+                    .await)
+            })
         })
         .await?
     }
@@ -113,6 +119,26 @@ impl SnapshotReader {
         catalog: &rss_mdm_inventory::Catalog,
         sensitive: bool,
     ) -> Result<Vec<DeviceView>> {
+        self.scoped_devices_on(
+            c,
+            watermark,
+            ids,
+            catalog,
+            sensitive,
+            &rss_mdm_inventory::CollectionScope::Device,
+        )
+        .await
+    }
+
+    async fn scoped_devices_on(
+        &self,
+        c: &mut sqlx::PgConnection,
+        watermark: i64,
+        ids: &[String],
+        catalog: &rss_mdm_inventory::Catalog,
+        sensitive: bool,
+        collection_scope: &rss_mdm_inventory::CollectionScope,
+    ) -> Result<Vec<DeviceView>> {
         if ids.len() > 1000 {
             return Err(Error::Unavailable(Failure::AssetSourceLimit).into());
         }
@@ -122,6 +148,7 @@ impl SnapshotReader {
                 (
                     id.clone(),
                     DeviceView {
+                        collection_scope: collection_scope.clone(),
                         device: id.clone(),
                         channels: BTreeSet::new(),
                         fields: BTreeMap::new(),
@@ -138,7 +165,7 @@ impl SnapshotReader {
         if rows.len() > 2000 {
             return Err(Error::Unavailable(Failure::AssetSourceLimit).into());
         }
-        let datasets = rss_mdm_inventory_postgres::datasets_in(c, self.tenant)
+        let datasets = rss_mdm_inventory_postgres::datasets_in(c, self.tenant, collection_scope)
             .await
             .map_err(|_| Error::Unavailable(Failure::AssetsStorage))?;
         let mut scopes = Vec::new();
@@ -149,6 +176,16 @@ impl SnapshotReader {
             let channel: &str = row.try_get("channel")?;
             if channel != source.channel().ok_or(Error::Malformed)?.as_str() {
                 return Err(Error::Unavailable(Failure::InventoryQuery).into());
+            }
+            if let rss_mdm_inventory::CollectionScope::User { identity } = collection_scope {
+                if source != rss_mdm_inventory::Source::MdmApple {
+                    continue;
+                }
+                let active: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_apple.channels ch JOIN mdm_access.registrations r ON(r.tenant_id,r.id,r.generation)=(ch.tenant_id,ch.registration,ch.generation) WHERE ch.tenant_id=$1::uuid AND ch.registration=$2::uuid AND ch.user_key=$3 AND ch.state='active' AND r.state='active')")
+                    .bind(self.tenant.to_string()).bind(row.try_get::<&str,_>("registration")?).bind(identity).fetch_one(&mut *c).await?;
+                if !active {
+                    return Err(Error::NotFound.into());
+                }
             }
             for dataset in datasets.get(&source).into_iter().flatten() {
                 let scope = crate::device::scope_dataset(
@@ -175,9 +212,13 @@ impl SnapshotReader {
             rss_mdm_inventory_postgres::read_at_in(c, tenant, &scopes, watermark, &fields)
                 .await
                 .map_err(|_| Error::Unavailable(Failure::AssetsStorage))?;
-        let manual = rss_mdm_inventory_postgres::manual_at_in(c, tenant, &selected, watermark)
-            .await
-            .map_err(|_| Error::Unavailable(Failure::AssetsStorage))?;
+        let manual = if matches!(collection_scope, rss_mdm_inventory::CollectionScope::Device) {
+            rss_mdm_inventory_postgres::manual_at_in(c, tenant, &selected, watermark)
+                .await
+                .map_err(|_| Error::Unavailable(Failure::AssetsStorage))?
+        } else {
+            Vec::new()
+        };
         let mut facts: BTreeMap<(String, FieldKey), Vec<SourceFact>> = BTreeMap::new();
         for mut row in observed {
             let (device, generation) = subjects

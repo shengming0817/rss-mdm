@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>SecurityInfo</key>
+	<dict>
+		<key>FDE_Enabled</key>
+		<true/>
+		<key>FDE_HasPersonalRecoveryKey</key>
+		<true/>
+		<key>SystemIntegrityProtectionEnabled</key>
+		<true/>
+		<key>FirewallSettings</key>
+		<dict>
+			<key>FirewallEnabled</key>
+			<true/>
+			<key>BlockAllIncoming</key>
+			<false/>
+			<key>StealthMode</key>
+			<true/>
+		</dict>
+		<key>ManagementStatus</key>
+		<dict>
+			<key>IsUserEnrollment</key>
+			<false/>
+			<key>EnrolledViaDEP</key>
+			<true/>
+			<key>UserApprovedEnrollment</key>
+			<true/>
+		</dict>
+		<key>FDE_PersonalRecoveryKeyCMS</key>
+		<data>
+		Zml4dHVyZS1vbmx5LW5vdC1hLXJlYWwtcmVjb3Zlcnkta2V5
+		</data>
+		<key>IsRecoveryLockEnabled</key>
+		<true/>
+		<key>SecureBoot</key>
+		<dict>
+			<key>SecureBootLevel</key>
+			<string>full</string>
+			<key>ReducedSecurity</key>
+			<array/>
+		</dict>
+	</dict>
+</dict>
+</plist>

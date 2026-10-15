@@ -19,7 +19,7 @@ SCENARIOS = ('local_ui','account_ui','inventory','permissions','cookie_csrf','re
              'account_disabled','membership_removed','restart','isolation','enterprise','unknown_subject',
              'private_binding','idp_down','pg_down','installation_mismatch','safe_logs')
 PLAYWRIGHT_INTEGRITY='sha512-9bW6zvX/m0lEbgTKJ6YppOKx8H3VOPBMOCFh2irXFOT4BbHgrx5hPjwJYLT40Lu+4qtD36qKc/Hn56StUW57IA=='
-INVENTORY_GENERATION='inventory-v5'
+INVENTORY_GENERATION='inventory-v6'
 
 FAULT_SCENARIOS = {'restart','idp_down','pg_down','installation_mismatch'}
 

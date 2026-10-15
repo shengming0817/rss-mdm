@@ -395,6 +395,7 @@ impl Planning {
                         build.cursor.clone(),
                         limit,
                         &assets::ReadScope {
+                            collection_scope: rss_mdm_inventory::CollectionScope::Device,
                             subject: "group".into(),
                             sensitive: true,
                             devices: build

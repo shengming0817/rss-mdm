@@ -209,7 +209,7 @@ fn read_state(v: &Value) -> Result<State, PgError> {
 pub(crate) fn header(r: &Resource) -> Result<Vec<u8>, PgError> {
     let s = r.snapshot();
     STORAGE.encode(&json!([
-        1,
+        2,
         s.tenant.to_string(),
         s.key.as_str(),
         kind(s.kind),
@@ -217,7 +217,8 @@ pub(crate) fn header(r: &Resource) -> Result<Vec<u8>, PgError> {
         s.versions
             .iter()
             .map(|v| json!([v.version.label().as_str(), state(v.state)]))
-            .collect::<Vec<_>>()
+            .collect::<Vec<_>>(),
+        s.origin
     ]))
 }
 pub(crate) fn restore(
@@ -225,8 +226,8 @@ pub(crate) fn restore(
     mut versions: std::collections::BTreeMap<String, Version>,
 ) -> Result<Resource, PgError> {
     let v: Value = STORAGE.decode(bytes)?;
-    let a = array(&v, 6)?;
-    if n(&a[0])? != 1 {
+    let a = array(&v, 7)?;
+    if n(&a[0])? != 2 {
         return Err(STORAGE.fault("codec::restore"));
     }
     let states = a[5]
@@ -263,6 +264,7 @@ pub(crate) fn restore(
     crate::error::decode_domain(
         "codec::restore",
         Resource::restore(ResourceSnapshot {
+            origin: STORAGE.json("codec::origin", serde_json::from_value(a[6].clone()))?,
             tenant: STORAGE.invalid("codec::restore", TenantId::parse(s(&a[1])?))?,
             key: id(&a[2])?,
             kind: read_kind(&a[3])?,
@@ -279,8 +281,8 @@ pub(crate) fn active_header(
     version: &Id,
 ) -> Result<bool, PgError> {
     let value: Value = STORAGE.decode(bytes)?;
-    let a = array(&value, 6)?;
-    if n(&a[0])? != 1
+    let a = array(&value, 7)?;
+    if n(&a[0])? != 2
         || s(&a[1])? != tenant.to_string()
         || s(&a[2])? != resource.as_str()
         || read_kind(&a[3])? != Kind::Software
@@ -314,8 +316,8 @@ pub(crate) fn directory_header(
     revision: i64,
 ) -> Result<Value, PgError> {
     let value: Value = STORAGE.decode(bytes)?;
-    let a = array(&value, 6)?;
-    if n(&a[0])? != 1
+    let a = array(&value, 7)?;
+    if n(&a[0])? != 2
         || s(&a[1])? != tenant.to_string()
         || id(&a[2])?.as_str() != resource
         || revision < 0
@@ -383,12 +385,13 @@ mod directory_tests {
     fn selector_uses_validated_header_without_version_material() {
         let tenant = TenantId::parse("11111111-1111-4111-8111-111111111111").unwrap();
         let header = serde_json::to_vec(&json!([
-            1,
+            2,
             tenant.to_string(),
             "script",
             1,
             null,
-            [["old", 2], ["current", 1], ["next", 0]]
+            [["old", 2], ["current", 1], ["next", 0]],
+            null
         ]))
         .unwrap();
         assert_eq!(
@@ -397,12 +400,13 @@ mod directory_tests {
         );
         assert!(directory_header(&header, tenant, "other", 3).is_err());
         let conflicting = serde_json::to_vec(&json!([
-            1,
+            2,
             tenant.to_string(),
             "script",
             1,
             null,
-            [["one", 1], ["two", 1]]
+            [["one", 1], ["two", 1]],
+            null
         ]))
         .unwrap();
         assert!(directory_header(&conflicting, tenant, "script", 3).is_err());

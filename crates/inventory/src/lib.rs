@@ -12,7 +12,7 @@ mod channels;
 pub use channels::{AgentInstallation, MdmEnrollment};
 mod assets;
 mod collected;
-pub use collected::CollectedValue;
+pub use collected::{CollectedValue, UnknownReason};
 /// Immutable seed definitions for the one product catalog.
 pub mod builtin;
 mod catalog;
@@ -24,7 +24,7 @@ pub use assets::{
     SourceFact, State, resolve, resolve_device,
 };
 pub use catalog::{
-    Catalog, DICTIONARY, FieldDefinition, FieldKey, FieldPath, Kind, Operator, Platform,
+    Catalog, DICTIONARY, FieldDefinition, FieldKey, FieldPath, Kind, Operator, Platform, Property,
     Sensitivity, ValueType,
 };
 pub use source::{Channel, ReportSource, Source};

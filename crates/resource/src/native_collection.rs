@@ -14,6 +14,14 @@ pub enum NativeAdapter {
     AppleDeviceInformation,
     /// Apple InstalledApplicationList with typed item projection.
     AppleInstalledApplications,
+    /// Read-only security facts, with secrets removed at the protocol boundary.
+    AppleSecurity,
+    /// Profile metadata in the exact managed-only namespace.
+    AppleProfiles,
+    /// Certificate metadata in the exact managed-only namespace.
+    AppleCertificates,
+    /// Active account metadata; supported only on supervised device channels.
+    AppleUsers,
 }
 /// Platform-owned query. Apple keys retain their protocol meaning.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -130,6 +138,14 @@ impl NativeCollectionDefinition {
         {
             return Err(Error::InvalidInput);
         }
+        if matches!(spec.scope, crate::TemplateScope::User { .. })
+            && matches!(
+                spec.adapter,
+                NativeAdapter::WindowsRead | NativeAdapter::AppleUsers
+            )
+        {
+            return Err(Error::InvalidInput);
+        }
         for (field, mapping) in &spec.mappings {
             if field.len() > 128
                 || !["device.", "custom.", "channel."]
@@ -182,7 +198,8 @@ impl NativeCollectionDefinition {
                             | "DeviceCapacity"
                             | "AvailableDeviceCapacity"
                             | "WiFiMAC"
-                            | "EthernetMACs"
+                            | "EthernetMAC"
+                            | "ActiveManagedUsers"
                             | "HostName"
                             | "LocalHostName"
                             | "SystemIntegrityProtectionEnabled"
@@ -192,14 +209,40 @@ impl NativeCollectionDefinition {
                             | "IsSupervised"
                             | "IsMDMLostModeEnabled"
                             | "AwaitingConfiguration"
+                            | "SupplementalBuildVersion"
+                            | "SupplementalOSVersionExtra"
                     ) {
                         return Err(Error::InvalidInput);
                     }
                 }
-                NativeAdapter::AppleInstalledApplications => {
+                NativeAdapter::AppleSecurity => {
+                    if !matches!(
+                        mapping.query.apple_key(),
+                        Some(
+                            "FDE_Enabled"
+                                | "FDE_HasPersonalRecoveryKey"
+                                | "FDE_HasInstitutionalRecoveryKey"
+                                | "SystemIntegrityProtectionEnabled"
+                                | "FirewallSettings"
+                                | "SecureBoot"
+                                | "ManagementStatus"
+                                | "FirmwarePasswordStatus"
+                                | "IsRecoveryLockEnabled"
+                                | "BootstrapTokenAllowedForAuthentication"
+                                | "BootstrapTokenRequiredForSoftwareUpdate"
+                                | "BootstrapTokenRequiredForKernelExtensionApproval"
+                        )
+                    ) {
+                        return Err(Error::InvalidInput);
+                    }
+                }
+                NativeAdapter::AppleInstalledApplications
+                | NativeAdapter::AppleProfiles
+                | NativeAdapter::AppleCertificates
+                | NativeAdapter::AppleUsers => {
                     if mapping.query.apple_key() != Some("")
-                        || mapping.mapping.pointer != "/InstalledApplicationList"
-                        || mapping.mapping.columns.is_empty()
+                        || mapping.mapping.pointer != "/items"
+                        || !mapping.mapping.columns.is_empty()
                     {
                         return Err(Error::InvalidInput);
                     }
@@ -226,7 +269,11 @@ impl NativeCollectionDefinition {
             (NativeAdapter::WindowsRead, Platform::Windows)
                 | (
                     NativeAdapter::AppleDeviceInformation
-                        | NativeAdapter::AppleInstalledApplications,
+                        | NativeAdapter::AppleInstalledApplications
+                        | NativeAdapter::AppleSecurity
+                        | NativeAdapter::AppleProfiles
+                        | NativeAdapter::AppleCertificates
+                        | NativeAdapter::AppleUsers,
                     Platform::MacOS
                 )
         ) {
@@ -238,5 +285,43 @@ impl NativeCollectionDefinition {
     /// Canonical artifact content for immutable template publication.
     pub fn canonical(&self) -> Vec<u8> {
         serde_json::to_vec(&self.0).expect("closed template")
+    }
+}
+
+impl NativeAdapter {
+    /// Exact native command identity; arbitrary commands cannot enter collection templates.
+    pub fn apple_command(self) -> Option<&'static str> {
+        Some(match self {
+            Self::WindowsRead => return None,
+            Self::AppleDeviceInformation => "DeviceInformation",
+            Self::AppleInstalledApplications => "InstalledApplicationList",
+            Self::AppleSecurity => "SecurityInfo",
+            Self::AppleProfiles => "ProfileList",
+            Self::AppleCertificates => "CertificateList",
+            Self::AppleUsers => "UserList",
+        })
+    }
+    /// Envelope rights; query-specific and field conditions are also checked by native schema.
+    pub fn apple_rights(self) -> Option<i32> {
+        Some(match self {
+            Self::WindowsRead => return None,
+            Self::AppleDeviceInformation => 16,
+            Self::AppleInstalledApplications => 256,
+            Self::AppleSecurity => 1024,
+            Self::AppleProfiles | Self::AppleCertificates => 1,
+            Self::AppleUsers => 0,
+        })
+    }
+    /// Stable capability exposed to template applicability.
+    pub fn capability(self) -> &'static str {
+        match self {
+            Self::WindowsRead => "windows_read",
+            Self::AppleDeviceInformation => "apple_device_information",
+            Self::AppleInstalledApplications => "apple_installed_applications",
+            Self::AppleSecurity => "apple_security",
+            Self::AppleProfiles => "apple_profiles",
+            Self::AppleCertificates => "apple_certificates",
+            Self::AppleUsers => "apple_users",
+        }
     }
 }

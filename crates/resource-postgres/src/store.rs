@@ -15,6 +15,13 @@ use std::{collections::BTreeMap, sync::Arc};
 pub enum Command {
     /// Create an initially empty aggregate.
     Create(Kind),
+    /// Create a resource with immutable official blueprint provenance.
+    CreateFromBlueprint {
+        /// Resource declaration family.
+        kind: Kind,
+        /// Frozen origin, not reconstructed from the live catalog.
+        origin: BlueprintOrigin,
+    },
     /// Insert a new immutable resource version.
     Insert(Version),
     /// Make a frozen version active according to the core lifecycle.
@@ -212,12 +219,23 @@ impl ResourceStore {
             return Ok(Ok(STORAGE.decode(&b)?));
         }
         let old = input!(self.get_in(tx, &r.resource).await?);
-        let create = matches!(r.command, Command::Create(_));
+        let create = matches!(
+            r.command,
+            Command::Create(_) | Command::CreateFromBlueprint { .. }
+        );
         if create && old.is_some() {
             return Ok(Err(Rejection::Conflict));
         }
         let (mut resource, revision) = if let Command::Create(kind) = r.command {
             (Resource::new(self.tenant, r.resource.clone(), kind), 0)
+        } else if let Command::CreateFromBlueprint { kind, origin } = &r.command {
+            let mut resource = Resource::new(self.tenant, r.resource.clone(), *kind);
+            input!(
+                resource
+                    .set_origin(origin.clone())
+                    .map_err(|_| Rejection::InvalidInput)
+            );
+            (resource, 0)
         } else {
             let old = input!(old.ok_or(Rejection::NotFound));
             (old.resource, old.storage_revision)
@@ -227,7 +245,7 @@ impl ResourceStore {
         }
         let before = codec::header(&resource)?;
         let result = match &r.command {
-            Command::Create(_) => Ok(()),
+            Command::Create(_) | Command::CreateFromBlueprint { .. } => Ok(()),
             Command::Insert(v) => resource.insert(v.clone(), r.as_of).map(|_| ()),
             Command::Activate(v) => resource.activate(v, r.as_of),
             Command::Deprecate(v) => resource.deprecate(v, r.as_of),
@@ -388,6 +406,7 @@ impl ResourceStore {
 fn request_document(t: TenantId, r: &Request) -> Result<Vec<u8>, PgError> {
     let command = match &r.command {
         Command::Create(k) => json!([0, codec::kind(*k)]),
+        Command::CreateFromBlueprint { kind, origin } => json!([5, codec::kind(*kind), origin]),
         Command::Insert(v) => json!([1, STORAGE.decode::<Value>(&codec::version(v)?)?]),
         Command::Activate(v) => json!([2, v.as_str()]),
         Command::Deprecate(v) => json!([3, v.as_str()]),

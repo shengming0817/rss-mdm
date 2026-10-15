@@ -89,6 +89,18 @@ pub(crate) fn decode_rows(rows: Vec<sqlx::postgres::PgRow>) -> Result<Vec<Invent
                 "null" => State::Null,
                 "deleted" => State::Deleted,
                 "unsupported" => State::Unsupported,
+                "unknown_conflict" => State::Unknown {
+                    reason: rss_mdm_inventory::UnknownReason::UnorderedConflict,
+                },
+                "unknown_incomplete" => State::Unknown {
+                    reason: rss_mdm_inventory::UnknownReason::Incomplete,
+                },
+                "unknown_native" => State::Unknown {
+                    reason: rss_mdm_inventory::UnknownReason::NativeStatus,
+                },
+                "unknown_limit" => State::Unknown {
+                    reason: rss_mdm_inventory::UnknownReason::EvidenceLimit,
+                },
                 _ => anyhow::bail!("invalid asset state"),
             };
             let evidence = Evidence {

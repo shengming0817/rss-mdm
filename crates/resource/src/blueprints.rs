@@ -16,7 +16,52 @@ pub struct Blueprint {
     /// Native platform.
     pub platform: Platform,
     /// Actual executable template, not an empty coverage placeholder.
-    pub definition: NativeCollectionDefinition,
+    pub definition: Definition,
+}
+/// Executable content owned by its existing Resource family.
+#[derive(Clone, Debug, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum Definition {
+    /// Native read-only collection template.
+    NativeCollection {
+        /// Validated immutable read template.
+        template: NativeCollectionDefinition,
+    },
+    /// Native desired-state configuration artifact.
+    Configuration {
+        /// Canonical configuration document, validated by the execution owner at publication.
+        content: serde_json::Value,
+    },
+}
+impl From<NativeCollectionDefinition> for Definition {
+    fn from(template: NativeCollectionDefinition) -> Self {
+        Self::NativeCollection { template }
+    }
+}
+impl Definition {
+    /// Exact Resource family.
+    pub fn kind(&self) -> Kind {
+        match self {
+            Self::NativeCollection { .. } => Kind::NativeCollection,
+            Self::Configuration { .. } => Kind::Configuration,
+        }
+    }
+    /// Stable artifact identity.
+    pub fn reference(&self) -> &'static str {
+        match self {
+            Self::NativeCollection { .. } => "collection.json",
+            Self::Configuration { .. } => "configuration.json",
+        }
+    }
+    /// Exact bytes uploaded by the content owner.
+    pub fn canonical(&self) -> Vec<u8> {
+        match self {
+            Self::NativeCollection { template } => template.canonical(),
+            Self::Configuration { content } => {
+                serde_json::to_vec(content).expect("closed blueprint")
+            }
+        }
+    }
 }
 impl Blueprint {
     /// Create the exact initial tenant version. Subsequent versions use normal Resource APIs.
@@ -27,7 +72,7 @@ impl Blueprint {
     ) -> Result<Version, Error> {
         let content = self.definition.canonical();
         let artifact = Artifact::new(
-            Id::new("collection.json")?,
+            Id::new(self.definition.reference())?,
             content.len() as u64,
             Digest::of(&content),
         )?;
@@ -35,7 +80,7 @@ impl Blueprint {
             tenant,
             resource,
             Id::new(self.label())?,
-            Kind::NativeCollection,
+            self.definition.kind(),
             [Architecture::X86_64, Architecture::Aarch64]
                 .into_iter()
                 .map(|architecture| {
@@ -47,9 +92,16 @@ impl Blueprint {
                             Architecture::Aarch64 => "aarch64",
                         })
                         .expect("constant"),
-                        Declaration::NativeCollection {
-                            artifact: artifact.clone(),
-                            definition: self.definition.clone(),
+                        match &self.definition {
+                            Definition::NativeCollection { template } => {
+                                Declaration::NativeCollection {
+                                    artifact: artifact.clone(),
+                                    definition: template.clone(),
+                                }
+                            }
+                            Definition::Configuration { .. } => Declaration::Configuration {
+                                artifact: artifact.clone(),
+                            },
                         },
                     )
                 })
@@ -72,47 +124,9 @@ pub const CATEGORIES: [&str; 6] = [
 ];
 /// Executable native templates with already implemented protocol adapters.
 pub fn catalog() -> Vec<Blueprint> {
-    let mut out = Vec::new();
-    for (platform, name, adapter, os, model) in [(
-        Platform::MacOS,
-        "macos",
-        NativeAdapter::AppleDeviceInformation,
-        "OSVersion",
-        "Model",
-    )] {
-        for (category, field, query) in [
-            ("identity", "device.os.version", os),
-            ("hardware", "device.model", model),
-        ] {
-            out.push(Blueprint {
-                id: format!("{name}.{category}"),
-                version: "1".into(),
-                category: category.into(),
-                platform,
-                definition: NativeCollectionDefinition::new(NativeCollectionSpec {
-                    scope: crate::TemplateScope::Device,
-                    applicability: Default::default(),
-                    adapter,
-                    mappings: [(
-                        field.into(),
-                        NativeMapping {
-                            query: if platform == Platform::Windows {
-                                NativeQuery::Windows(WindowsRead::Scalar { uri: query.into() })
-                            } else {
-                                NativeQuery::Apple(query.into())
-                            },
-                            mapping: ValueMapping::identity(""),
-                        },
-                    )]
-                    .into(),
-                    timeout_seconds: 300,
-                    output_bytes: 1048576,
-                })
-                .expect("official template"),
-            });
-        }
-    }
+    let mut out = apple::catalog();
     out.extend(windows::catalog());
+    out.extend(apple::status_catalog());
     out
 }
 /// Exact lookup; there is no moving latest pointer.
@@ -122,4 +136,5 @@ pub fn get(id: &str, version: &str) -> Option<Blueprint> {
         .find(|b| b.id == id && b.version == version)
 }
 
+mod apple;
 mod windows;

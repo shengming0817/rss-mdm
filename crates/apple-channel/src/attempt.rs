@@ -4,6 +4,7 @@ use crate::{Error, database::db, device::DevicePrincipal};
 use sqlx::{PgConnection, Row};
 use uuid::Uuid;
 
+#[derive(Clone, Copy)]
 pub enum Owner {
     Collection,
     Command,
@@ -23,6 +24,7 @@ pub struct Attempt {
     bytes: Vec<u8>,
     digest: Vec<u8>,
     pub operation: Option<Uuid>,
+    pub collection: Option<Uuid>,
     pub phase: String,
     pub declaration_guards: Vec<Uuid>,
 }
@@ -38,7 +40,7 @@ pub async fn lock(
     let scope = crate::protocol::user(&crate::protocol::decode(bytes)?)?
         .map(|id| id.to_string())
         .unwrap_or_default();
-    let row = sqlx::query("SELECT operation::text,phase,state,response_digest,request,context,declaration_guards,(operation IS NULL OR ordinal=(SELECT max(b.ordinal) FROM mdm_apple.attempts b WHERE b.tenant_id=a.tenant_id AND b.operation=a.operation AND b.phase=a.phase)) AS latest FROM mdm_apple.attempts a WHERE tenant_id=$1::uuid AND id=$2::uuid AND registration=$3::uuid AND generation=$4 AND user_key=$6 AND CASE $5 WHEN 0 THEN collection IS NOT NULL WHEN 1 THEN operation IS NOT NULL WHEN 2 THEN certificate IS NOT NULL ELSE trust IS NOT NULL END FOR UPDATE")
+    let row = sqlx::query("SELECT operation::text,collection,phase,state,response_digest,request,context,declaration_guards,(operation IS NULL OR ordinal=(SELECT max(b.ordinal) FROM mdm_apple.attempts b WHERE b.tenant_id=a.tenant_id AND b.operation=a.operation AND b.phase=a.phase)) AS latest FROM mdm_apple.attempts a WHERE tenant_id=$1::uuid AND id=$2::uuid AND registration=$3::uuid AND generation=$4 AND user_key=$6 AND CASE $5 WHEN 0 THEN collection IS NOT NULL WHEN 1 THEN operation IS NOT NULL WHEN 2 THEN certificate IS NOT NULL ELSE trust IS NOT NULL END FOR UPDATE")
         .bind(&tenant).bind(id.to_string()).bind(p.registration().to_string()).bind(p.generation()).bind(match owner { Owner::Collection=>0i32, Owner::Command=>1, Owner::Certificate=>2,Owner::Trust=>3 }).bind(scope).fetch_optional(&mut *c).await.map_err(db)?;
     let Some(row) = row else { return Ok(None) };
     let state: String = row.try_get("state").map_err(db)?;
@@ -158,6 +160,25 @@ pub async fn lock(
             None,
         )
     };
+    let retained = if matches!(owner, Owner::Collection) && phase == "collect" {
+        let template = rss_mdm_inventory_service::collection::native::template(c, &tenant, id)
+            .await?
+            .ok_or(Error::Malformed)?;
+        let value = crate::collection_values::normalize(template.spec().adapter, &response)
+            .unwrap_or(serde_json::Value::Null);
+        Some(
+            serde_json::to_vec(
+                &serde_json::json!({"status": format!("{status:?}"), "values": value}),
+            )
+            .map_err(|_| Error::Malformed)?,
+        )
+    } else if matches!(owner, Owner::Collection)
+        && matches!(phase.as_str(), "collect_device" | "collect_security")
+    {
+        Some(crate::collection_context::retained(&phase, &response)?)
+    } else {
+        None
+    };
     Ok(Some(Reception::Ready(Attempt {
         latest: row.try_get("latest").map_err(db)?,
         valid,
@@ -171,10 +192,11 @@ pub async fn lock(
             p.generation(),
             id,
             crate::protection::Part::Response,
-            bytes,
+            retained.as_deref().unwrap_or(bytes),
         )?,
         digest,
         operation,
+        collection: row.try_get("collection").map_err(db)?,
         phase: row.try_get("phase").map_err(db)?,
         declaration_guards: row.try_get("declaration_guards").map_err(db)?,
     })))

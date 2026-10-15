@@ -95,6 +95,7 @@ impl AssetService {
                 }
                 let watermark = self.list_watermark(tx).await?;
                 let restricted = ReadScope {
+                    collection_scope: scope.collection_scope.clone(),
                     subject: scope.subject.clone(),
                     sensitive: scope.sensitive,
                     devices: Some([device.clone()].into()),

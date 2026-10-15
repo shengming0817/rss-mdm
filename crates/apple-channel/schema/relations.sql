@@ -104,3 +104,6 @@ GRANT UPDATE(not_before) ON TABLE mdm_apple.scep_attempts TO mdm_access;
 
 GRANT UPDATE(not_after) ON TABLE mdm_apple.scep_attempts TO mdm_access;
 COMMIT;
+
+-- Inventory user views may inspect channel liveness, never push or credential material.
+GRANT SELECT(tenant_id,registration,generation,user_key,state) ON mdm_apple.channels TO mdm_flow_runtime;

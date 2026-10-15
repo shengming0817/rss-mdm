@@ -523,9 +523,22 @@ struct Entry {
     version: Version,
     state: State,
 }
+/// Immutable provenance captured when a blueprint creates a tenant resource.
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BlueprintOrigin {
+    /// Official blueprint identity.
+    pub blueprint: String,
+    /// Exact immutable revision.
+    pub version: String,
+    /// Digest of the original tenant version.
+    pub digest: [u8; 32],
+}
 /// Trusted storage input. Only Resource::restore validates aggregate consistency.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ResourceSnapshot {
+    /// Original blueprint provenance, independent of the live catalog.
+    pub origin: Option<BlueprintOrigin>,
     /// Tenant to which every stored version must belong.
     pub tenant: TenantId,
     /// Resource identity to which every stored version must belong.
@@ -548,6 +561,7 @@ pub struct StoredVersion {
 /// In-memory decision aggregate. Persistence/locking remains the adapter's responsibility.
 #[derive(Clone, Debug)]
 pub struct Resource {
+    origin: Option<BlueprintOrigin>,
     tenant: TenantId,
     key: Id,
     kind: Kind,
@@ -561,13 +575,29 @@ impl Resource {
             tenant,
             key,
             kind,
+            origin: None,
             versions: BTreeMap::new(),
             changed_at: None,
         }
     }
+    /// Set provenance only on an empty resource before its first version is inserted.
+    pub fn set_origin(&mut self, origin: BlueprintOrigin) -> Result<(), Error> {
+        if self.origin.is_some()
+            || !self.versions.is_empty()
+            || origin.blueprint.is_empty()
+            || origin.blueprint.len() > 128
+            || origin.version.is_empty()
+            || origin.version.len() > 128
+        {
+            return Err(Error::InvalidInput);
+        }
+        self.origin = Some(origin);
+        Ok(())
+    }
     /// Copy current state in version-label order for caller-owned persistence.
     pub fn snapshot(&self) -> ResourceSnapshot {
         ResourceSnapshot {
+            origin: self.origin.clone(),
             tenant: self.tenant,
             key: self.key.clone(),
             kind: self.kind,
@@ -617,6 +647,21 @@ impl Resource {
                     state: item.state,
                 },
             );
+        }
+        if let Some(origin) = snapshot.origin {
+            if origin.blueprint.is_empty()
+                || origin.blueprint.len() > 128
+                || origin.version.is_empty()
+                || origin.version.len() > 128
+                || (!resource.versions.is_empty()
+                    && !resource
+                        .versions
+                        .values()
+                        .any(|v| v.version.digest().bytes() == origin.digest))
+            {
+                return Err(Error::InvalidInput);
+            }
+            resource.origin = Some(origin);
         }
         resource.changed_at = snapshot.changed_at;
         Ok(resource)
