@@ -90,13 +90,15 @@ docker run --name rss-mdm --network host --mount type=bind,src=/private/mdm-runt
 
 IMAGE 替换为 candidate.json 固定镜像身份。秘密和配置文件由 UID 10001 持有且权限 0600。安装目录与运行目录分开准备；镜像不嵌入配置或私钥。
 
-## 桌面与 Agent 入口及服务器证书信任
+## 客户端入口与服务器证书交付
 
 网关加载部署方配置的服务器证书链与私钥。使用私有 CA 时，把签发该服务器证书的 CA 公共证书通过可信部署渠道分发到设备；CA 私钥留在部署端，不放入 Agent 配置、客户端安装包或前端静态资源。数据库连接的 `ca_file` 属于 PostgreSQL 信任，不复用为组织网关 CA。
 
-桌面客户端的组织连接和私有 CA 部署输入放在构建/部署所用 `.env`：`RSS_MDM_ORIGIN` 对应本服务的 HTTPS `product_origin`，`RSS_MDM_TENANT_ID` 对应 `identity.tenant_id`，可选 `RSS_MDM_CA_FILE` 指向签发网关证书的单个 PEM CA 公共证书绝对路径。桌面构建时嵌入公共证书，仅对该 origin/tenant 生效，不读取系统执行服务的配置。Agent 的 `execution.json.origin` 必须使用 `agent_pki.endpoint.origin`，tenant 对应 `identity.tenant_id`；`ca_file` 信任该 Agent TLS 入口服务器证书的签发 CA，并把公共 CA 文件放到受保护的设备路径。桌面网关和 Agent 入口由同一 CA 签发时可以分发同一公共证书；分别签发时各自配置对应信任。Agent 的 `RSS_AGENT_ORIGIN` 与 `RSS_AGENT_CA_FILE` 分别配置该独立端点和 HTTPS CA；`RSS_AGENT_DEVICE_TRUST_FILE` 指向受保护的设备 purpose trust JSON。生成器要求 deployment V4，存量设备通信库先运行系统服务的 `--upgrade-device-pki` 显式升级，不能重建执行 journal 或重新注册设备。
+服务端向桌面客户端部署方提供 HTTPS `product_origin`、绑定的 `identity.tenant_id` 和签发网关证书的 CA 公共证书。桌面构建与组织信任配置由 [rss-mdm-agent 桌面开发指南](https://dev.azure.com/shengming0923/rss/_git/rss-mdm-agent?path=/docs/guides/desktop-development.md&version=GBdevelop) 维护。
 
-服务端网关继续配置服务器证书链和私钥；它们不通过客户端 CA 环境变量传入。客户端 CA 留空时使用默认信任。CA 更新后桌面重新构建、Agent 重新加载配置，不修改系统证书库，也不跳过证书链或主机名校验。其它组织和个人 AI 连接不继承此 CA。
+服务端向 Agent 部署方提供独立的 HTTPS `agent_pki.endpoint.origin`、绑定的 `identity.tenant_id`、签发该 TLS 入口服务器证书的 CA 公共证书，以及受保护渠道交付的设备 purpose trust。桌面网关和 Agent 入口分别核对对应的服务器证书信任；由同一 CA 签发时可以分发同一公共证书。HTTPS 信任与设备 purpose trust 分别校验，不能相互替代，也不跳过证书链或主机名校验。Agent 的配置生成、安装、升级与恢复由 [rss-mdm-agent 服务部署指南](https://dev.azure.com/shengming0923/rss/_git/rss-mdm-agent?path=/docs/guides/local-service-lab.md&version=GBdevelop) 唯一维护。
+
+服务端网关配置服务器证书链和私钥；向客户端交付的信任材料只含公共证书。
 
 本仓开发环境生成的组织 CA 位于 `artifacts/dev-environment/development/ca.crt`；分发此公共文件即可，不分发同目录的 `ca.key`。浏览器控制台的信任仍由浏览器管理，客户端的应用内信任不会修改浏览器。
 
@@ -122,7 +124,7 @@ docker run --rm --network host --mount type=bind,src=/private/mdm-operator,dst=/
 
 Linux host 网络使回环浏览器监听与同机 HTTPS 网关配合；Windows 协议由产品直接终止 TLS/mTLS。采用 `deployment/nginx.conf`，替换产品域名和证书路径；覆盖 X-Forwarded-For 为真实 peer，清空 Forwarded，限制真实 peer 的登录频率、连接数、正文与读取时间。后端只在真实 TCP peer 匹配 trusted_gateway 后采用覆盖后的单一来源地址。不能把浏览器监听直接暴露或接到未受控转发器。
 
-资源/计划/执行使用当前全新安装结构。产品配置中的 `flow.storage` 持有数据库连接及 target/lineage/epoch，`flow.publication` 持有发布数据库与 sources，`execution.database` 持有执行数据库连接；具体字段以[配置示例](../../fixtures/mdm-config.example.json)为准。旧综合 `management` 和混合 `tasks` 配置不再接受。`content.storage` 显式选择 `volume` 或启用版本控制的 HTTPS `s3`（[S3 配置示例](../../fixtures/mdm-content-s3.example.json)）；PostgreSQL 持有内容控制状态，`content` 配置共享内容仓，`task_signing` 单独配置任务签名；脚本任务要求两者齐备，软件入库/批准不需要任务私钥，原生协议的 `management` 监听配置保持独立。本版本按全新安装交付，安装清单只持有当前完整 schema。
+资源/计划/执行使用当前全新安装结构。产品配置中的 `flow.storage` 持有数据库连接及 target/lineage/epoch，`flow.publication` 持有发布数据库与 sources，`execution.database` 持有执行数据库连接；具体字段以[配置示例](../../fixtures/mdm-config.example.json)为准。旧综合 `management` 和混合 `tasks` 配置不再接受。`content.storage` 显式选择 `volume` 或启用版本控制的 HTTPS `s3`（[S3 配置示例](../../fixtures/mdm-content-s3.example.json)）；PostgreSQL 持有内容控制状态，`content` 配置共享内容仓，`task_signing` 单独配置任务签名；脚本任务要求两者齐备，软件入库/启用不需要任务私钥，原生协议的 `management` 监听配置保持独立。本版本按全新安装交付，安装清单只持有当前完整 schema。
 
 内容与网关的大小及时间预算必须一致配置。随附 nginx 配置仅为精确上传路由关闭 request buffering，示例正文上限 8GiB；普通请求继续保留 16KiB。管理专属路由的网关上限对应 `management-http/src/body_policy.rs`：Policy/Resource 8MiB、设备 operations 16MiB、PKI rotation/CRL 64MiB、signing recovery 256KiB、Entra policy 128KiB、证书导入及授权规则/用户组 2MiB、软件目录及 Agent 包写入口 1MiB；应用继续按方法执行精确预算与 DTO 校验。内容目录须以可写持久卷提供给服务，签名秘密仍使用独立只读挂载。
 
@@ -166,7 +168,7 @@ step ca provisioner add rss-agent --type JWK --public-key agent-provisioner.pub.
 
 模板唯一使用已验签 token 的 `.SANs`，固定 CN、非 CA、digitalSignature 和 clientAuth；不得换成 `.Insecure.CR` 或增加 serverAuth/其它目的。默认叶证书为 365 天。根 CA 可以设为十年；直接签发者须覆盖**完整**叶证书窗口，剩余不足拒绝签发，不截短期限。开发部署可显式改为 `{"mode":"development","days":3650}` 并将此 Agent provisioner 的 max/default 同步改至 87600h；上限 3650 天，直接签发者及根必须留出完整窗口。此设置不修改 Windows/Apple provisioner 的期限，也不启用自动 renewal。
 
-服务端已经提供持久 Agent 授权、候选签发、真实 mTLS 激活、在线撤销及人工恢复；旧 Bearer 注册与业务入口退出。Agent 系统服务通过公开 HTTP API 消费设备信任与 PKI 生命周期；客户端机器 CA 存储和持久续期由独立客户端实施项交付，真实设备、安装方式和平台支持仍由独立 T3 验收。
+服务端已经提供持久 Agent 授权、候选签发、真实 mTLS 激活、在线撤销及人工恢复；旧 Bearer 注册与业务入口退出。Agent 通过公开 HTTP API 消费设备信任与 PKI 生命周期，设备侧部署操作见上文链接的 rss-mdm-agent 服务部署指南；真实设备、安装方式和平台支持由独立 T3 验收。
 
 Agent 注册与运行共用独立 Rust TLS 监听器，匿名 bootstrap 可无客户端证书，激活和运行必须有真实 TLS 客户端证书。不得经终止 TLS 的 HTTP 代理转发，不能信任证书头。浏览器 nginx 明确拒绝 `/api/v1/agent/`；Agent 直接访问配置的 endpoint origin。
 

@@ -68,10 +68,18 @@ fn targets_and_enablement_do_not_create_execution_versions() {
             enabled: true,
         },
         Uuid::new_v4(),
+        None,
     )
     .unwrap();
-    let disabled =
-        Policy::apply(id, Some(&first.policy), 1, &Change::Disable, Uuid::new_v4()).unwrap();
+    let disabled = Policy::apply(
+        id,
+        Some(&first.policy),
+        1,
+        &Change::Disable,
+        Uuid::new_v4(),
+        None,
+    )
+    .unwrap();
     assert_eq!(disabled.policy.version, first.policy.version);
     assert!(!disabled.semantic_changed);
     assert_eq!(disabled.policy.revision, 2);
@@ -86,6 +94,7 @@ fn targets_and_enablement_do_not_create_execution_versions() {
             enabled: true,
         },
         Uuid::new_v4(),
+        None,
     )
     .unwrap();
     assert_eq!(second.policy.number, 1);
@@ -96,7 +105,8 @@ fn targets_and_enablement_do_not_create_execution_versions() {
             Some(&second.policy),
             2,
             &Change::Disable,
-            Uuid::new_v4()
+            Uuid::new_v4(),
+            None
         ),
         Err(Error::Conflict)
     ));
@@ -113,6 +123,7 @@ fn invalid_restored_aggregate_cannot_produce_checked_change() {
         (1, 2, Uuid::new_v4()),
     ] {
         let old = Policy {
+            execution_binding: None,
             id,
             revision,
             number,
@@ -126,7 +137,8 @@ fn invalid_restored_aggregate_cannot_produce_checked_change() {
                 Some(&old),
                 revision as u64,
                 &Change::Enable,
-                Uuid::new_v4()
+                Uuid::new_v4(),
+                None
             ),
             Err(Error::Malformed)
         ));
@@ -135,7 +147,7 @@ fn invalid_restored_aggregate_cannot_produce_checked_change() {
 #[test]
 fn native_delivery_source_and_ring_are_execution_semantics() {
     let id = uuid::Uuid::new_v4();
-    let mut value = serde_json::json!({"scope":id,"action":{"kind":"software","resource":{"kind":"software","id":"acme","version":"1","variants":{"windows_x86_64":"default"}},"delivery":{"kind":"direct"},"intent":"required_install","admissionOperation":id,"runLifetimeSeconds":600,"rollout":{"stages":[{"scope":id,"opensAt":0}]}}});
+    let mut value = serde_json::json!({"scope":id,"action":{"kind":"software","resource":{"kind":"software","id":"acme","version":"1","variants":{"windows_x86_64":"default"}},"delivery":{"kind":"direct"},"intent":"required_install","runLifetimeSeconds":600,"rollout":{"stages":[{"scope":id,"opensAt":0}]}}});
     let direct: rss_mdm_policy::Definition = serde_json::from_value(value.clone()).unwrap();
     value["action"]["delivery"] =
         serde_json::json!({"kind":"native","source":"enterprise","ring":"test"});
@@ -162,6 +174,7 @@ fn parameter_sources_and_self_service_have_independent_versions() {
                 enabled: true,
             },
             Uuid::new_v4(),
+            None,
         )
         .unwrap()
     };
@@ -293,7 +306,7 @@ fn self_service_requires_explicit_bounded_access_and_supports_only_available_sof
         "explicit_uninstall",
     ] {
         let mut software = base.clone();
-        software["action"] = json!({"kind":"software","resource":{"kind":"software","id":"acme","version":"1","variants":{"macos_aarch64":"default"}},"delivery":{"kind":"direct"},"intent":intent,"admissionOperation":id,"runLifetimeSeconds":600,"rollout":{"stages":[{"scope":id,"opensAt":0}]}});
+        software["action"] = json!({"kind":"software","resource":{"kind":"software","id":"acme","version":"1","variants":{"macos_aarch64":"default"}},"delivery":{"kind":"direct"},"intent":intent,"runLifetimeSeconds":600,"rollout":{"stages":[{"scope":id,"opensAt":0}]}});
         assert_eq!(
             serde_json::from_value::<Definition>(software.clone())
                 .unwrap()
@@ -309,4 +322,42 @@ fn self_service_requires_explicit_bounded_access_and_supports_only_available_sof
                 .is_err()
         );
     }
+}
+
+#[test]
+fn software_lifecycle_generation_requires_a_new_execution_version() {
+    let fixtures: Value =
+        serde_json::from_str(include_str!("fixtures/semantic-identities.json")).unwrap();
+    let definition: Definition = serde_json::from_value(fixtures[3]["definition"].clone()).unwrap();
+    let change = Change::Put {
+        definition: Box::new(definition.clone()),
+        enabled: true,
+    };
+    let id = Uuid::new_v4();
+    assert!(Policy::apply(id, None, 0, &change, Uuid::new_v4(), None).is_err());
+    let initial = Policy::apply(id, None, 0, &change, Uuid::new_v4(), Some([1; 32])).unwrap();
+    let unchanged = Policy::apply(
+        id,
+        Some(&initial.policy),
+        1,
+        &change,
+        Uuid::new_v4(),
+        Some([1; 32]),
+    )
+    .unwrap();
+    assert_eq!(initial.policy.version, unchanged.policy.version);
+    let renewed = Policy::apply(
+        id,
+        Some(&unchanged.policy),
+        2,
+        &change,
+        Uuid::new_v4(),
+        Some([2; 32]),
+    )
+    .unwrap();
+    assert_ne!(initial.policy.version, renewed.policy.version);
+    assert_eq!(renewed.policy.number, 2);
+    let mut retired = serde_json::to_value(definition).unwrap();
+    retired["action"]["admissionOperation"] = json!(Uuid::new_v4());
+    assert!(serde_json::from_value::<Definition>(retired).is_err());
 }

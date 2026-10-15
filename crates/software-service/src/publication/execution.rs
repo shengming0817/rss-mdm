@@ -1,4 +1,4 @@
-//! Native execution reads the same frozen publication and approval authorities as hosted clients.
+//! Native execution reads the same frozen publication and lifecycle authorities as hosted clients.
 use super::read::current_published;
 use super::storage::Subject;
 use super::{self as publication, spec, storage as db, *};
@@ -20,7 +20,7 @@ pub enum NativeExportProtocol {
         credential_reference: String,
     },
 }
-/// Derived read identity for an already approved and published Resource version.
+/// Derived read identity for an enabled and published Resource version.
 pub struct NativeExport {
     pub source: String,
     pub tenant: TenantId,
@@ -238,7 +238,7 @@ impl ExportReader {
             let subject = db::subject(tx, &target.candidate)
                 .await?
                 .ok_or_else(db::fault)?;
-            input!(self.resource_usable(tx, &subject).await?);
+            input!(self.resource_usable(tx, &subject, target.lifecycle).await?);
             let (version, _) = input!(
                 rss_mdm_resource_postgres::lock_reference_in(
                     tx,
@@ -257,6 +257,7 @@ impl ExportReader {
         &self,
         tx: &mut PgTransaction<'_>,
         subject: &Subject,
+        lifecycle: [u8; 32],
     ) -> InTransaction<()> {
         let id = db::required(
             "service::resource_usable",
@@ -277,17 +278,18 @@ impl ExportReader {
                 .await?
                 .map_err(|cause| Error::Content.context("service::resource_usable", cause))
         );
-        if v.digest().bytes() != subject.resource_digest
-            || !matches!(state, resource::State::Frozen | resource::State::Active)
-        {
+        if v.digest().bytes() != subject.resource_digest || state == resource::State::Archived {
             return Ok(Err(Error::Content));
         }
-        input!(
+        let current = input!(
             self.catalog
-                .publication_admitted_in(tx, &v)
+                .binding_in(tx, &v)
                 .await
-                .map_err(|cause| Error::Content.context("service::resource_usable", cause))
+                .map_err(|_| Error::Content)
         );
+        if current != lifecycle {
+            return Ok(Err(Error::Content));
+        }
         Ok(Ok(()))
     }
 }

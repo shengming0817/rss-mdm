@@ -19,7 +19,7 @@
     "mdm_resource.aggregates",
     "mdm_resource.immutable",
     "mdm_software.sources",
-    "mdm_software.approvals",
+    "mdm_software.versions",
     "mdm_planning.policy_source_grants"
   ],
   "verified_schemas": []

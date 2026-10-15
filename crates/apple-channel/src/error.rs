@@ -10,6 +10,8 @@ pub enum Error {
     CertificateRequest,
     #[error("operation conflict")]
     Conflict,
+    #[error("new registration admission paused")]
+    EnrollmentPaused,
     #[error("commit outcome unknown")]
     CommitUnknown,
     #[error("rollback unconfirmed")]
@@ -85,6 +87,7 @@ impl From<rss_mdm_registration_service::Error> for Error {
             R::Corrupt | R::Storage | R::Retirement | R::Configuration => {
                 Self::Unavailable(Failure::Database)
             }
+            R::EnrollmentPaused => Self::EnrollmentPaused,
             R::Capacity | R::RegistrationLimit => Self::Unavailable(Failure::Capacity),
             R::Runtime => Self::Unavailable(Failure::Runtime),
         }
@@ -159,6 +162,7 @@ impl From<rss_mdm_execution_service::Error> for Error {
         use rss_mdm_execution_service::Error as E;
         match e { E::Malformed => Self::Malformed, E::CertificateRequest => Self::CertificateRequest,
             E::Unauthorized => Self::Unauthorized, E::Forbidden => Self::Forbidden, E::Conflict | E::WindowsDeclaredEnrollmentNotReady => Self::Conflict,
+            E::EnrollmentPaused => Self::EnrollmentPaused,
             E::CommitUnknown => Self::CommitUnknown, E::RollbackFailed => Self::RollbackFailed, E::Unsupported => Self::Unsupported,
             E::NotFound => Self::NotFound, E::Resource(_) => Self::Missing(Missing::Resource),
             E::Execution(e) => Self::Missing(match e { rss_mdm_execution_service::missing::ExecutionError::MissingOperation => Missing::Operation, rss_mdm_execution_service::missing::ExecutionError::MissingTask => Missing::Task }),
@@ -229,6 +233,7 @@ impl axum::response::IntoResponse for Error {
             Self::Unauthorized => (StatusCode::UNAUTHORIZED, "invalid_identity"),
             Self::Forbidden => (StatusCode::FORBIDDEN, "permission_denied"),
             Self::Conflict => (StatusCode::CONFLICT, "operation_conflict"),
+            Self::EnrollmentPaused => (StatusCode::CONFLICT, "enrollment_paused"),
             Self::CommitUnknown => (StatusCode::SERVICE_UNAVAILABLE, "operation_unknown"),
             Self::RollbackFailed => (
                 StatusCode::SERVICE_UNAVAILABLE,
@@ -248,6 +253,14 @@ impl axum::response::IntoResponse for Error {
             }
         };
         let mut response = (status, Json(serde_json::json!({"code":code}))).into_response();
+        if matches!(self, Self::EnrollmentPaused) {
+            response
+                .extensions_mut()
+                .insert(rss_mdm_agent_wire::enroll::ErrorBody {
+                    code: rss_mdm_agent_wire::enroll::ErrorCode::EnrollmentPaused,
+                    issuance_id: None,
+                });
+        }
         response.extensions_mut().insert(self);
         response
     }

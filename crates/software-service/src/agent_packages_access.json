@@ -4,7 +4,7 @@
   "external_relations": [
     "mdm_agent_packages.releases",
     "mdm_software.sources",
-    "mdm_software.approvals"
+    "mdm_software.versions"
   ],
   "verified_schemas": []
 }

@@ -42,7 +42,7 @@ impl PublicationService {
         matches!(self.sources.binding(ring).driver, Driver::Winget { .. })
     }
 
-    /// A frozen read does not adopt a newer source approval, target or release identity.
+    /// A frozen read does not adopt a newer source lifecycle, target or release identity.
     pub async fn published(
         &self,
         ring: rel::Ring,
@@ -177,7 +177,7 @@ impl PublicationService {
         }
         Ok(values)
     }
-    /// Execute upload-pack while current publication and approval locks remain held.
+    /// Execute upload-pack while current publication and lifecycle locks remain held.
     pub async fn upload_pack(
         &self,
         ring: rel::Ring,

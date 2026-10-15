@@ -69,6 +69,14 @@ SELECT * FROM mdm_access.agent_issuances WHERE tenant_id=$1::uuid AND grant_id=$
                         });
                     }
                     service.grant_live(c, &grant).await?;
+                    if grant
+                        .try_get::<Option<Uuid>, _>("target_registration")
+                        .map_err(db)?
+                        .is_none()
+                    {
+                        crate::admission::require_new_in(c, &tenant, crate::quotas::Channel::Agent)
+                            .await?;
+                    }
                     if let Some(authority) = grant
                         .try_get::<Option<serde_json::Value>, _>("native_authority")
                         .map_err(db)?

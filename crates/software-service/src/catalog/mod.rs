@@ -1,4 +1,6 @@
-//! Borrowed-transaction enterprise admission; external publication is a separate capability.
+mod binding;
+pub use binding::{admitted_on, binding_on};
+// Borrowed-transaction software lifecycle; external publication is a separate capability.
 mod imports;
 mod model;
 pub use model::*;
@@ -14,7 +16,7 @@ use sha2::{Digest, Sha256};
 use std::sync::Arc;
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
-    #[error("invalid software definition or evidence")]
+    #[error("invalid software definition")]
     Input,
     #[error("software source behavior unsupported")]
     Unsupported,
@@ -46,7 +48,7 @@ pub struct Catalog {
     audit: Arc<dyn AuditPort>,
     writer: PgOutboxWriter,
 }
-/// Borrowed-transaction reads and admission rules; no runtime, audit writer or commit capability.
+/// Borrowed-transaction reads and lifecycle rules; no runtime, audit writer or commit capability.
 #[derive(Clone, Copy)]
 pub struct Reader {
     tenant: TenantId,
@@ -55,7 +57,7 @@ impl Reader {
     pub fn new(tenant: TenantId) -> Self {
         Self { tenant }
     }
-    /// Shared software admission lock, acquired before Resource locks by companions.
+    /// Shared software lifecycle lock, acquired before Resource locks by companions.
     pub async fn lock_in(&self, tx: &mut PgTransaction<'_>) -> Result<()> {
         self.tenant(tx)?;
         storage::lock(tx).await
@@ -67,10 +69,10 @@ impl Reader {
         revision: &str,
     ) -> Result<Value> {
         self.tenant(tx)?;
-        let (definition, admission) = storage::source(tx, id, revision)
+        let (definition, lifecycle) = storage::source(tx, id, revision)
             .await?
             .ok_or(Error::Missing)?;
-        Ok(json!({"snapshot":definition.snapshot()?,"source":definition,"admission":admission}))
+        Ok(json!({"snapshot":definition.snapshot()?,"source":definition,"lifecycle":lifecycle}))
     }
     fn tenant(&self, tx: &PgTransaction<'_>) -> Result<()> {
         if tx.tenant_id() != self.tenant {
@@ -143,7 +145,7 @@ impl Reader {
         }
         Ok(())
     }
-    /// Native publication borrows the same source/version/dependency approval locks.
+    /// Native publication borrows the same source/version/dependency lifecycle locks.
     /// This grants no mutation capability to the publication runtime.
     pub async fn publication_admitted_in(
         &self,
@@ -155,20 +157,20 @@ impl Reader {
         let current = self
             .version_in(tx, version.resource().as_str(), version.label().as_str())
             .await?;
-        let admission =
-            storage::admission(tx, version.resource().as_str(), version.label().as_str())
+        let lifecycle =
+            storage::lifecycle(tx, version.resource().as_str(), version.label().as_str())
                 .await?
                 .ok_or(Error::NotAdmitted)?;
         if current.digest() != version.digest()
-            || admission.digest != version.digest().bytes()
-            || !matches!(admission.state, AdmissionState::Approved)
+            || lifecycle.digest != version.digest().bytes()
+            || !matches!(lifecycle.state, LifecycleState::Enabled)
         {
             return Err(Error::NotAdmitted);
         }
         self.check_sources(tx, version).await?;
         self.dependencies(tx, version).await
     }
-    /// Hold current source admission stable through the caller's final transaction.
+    /// Hold current source lifecycle stable through the caller's final transaction.
     pub async fn source_admitted_in(
         &self,
         tx: &mut PgTransaction<'_>,
@@ -176,10 +178,10 @@ impl Reader {
     ) -> Result<()> {
         self.tenant(tx)?;
         storage::lock(tx).await?;
-        let (stored, admission) = storage::source(tx, &source.id, &source.revision)
+        let (stored, lifecycle) = storage::source(tx, &source.id, &source.revision)
             .await?
             .ok_or(Error::NotAdmitted)?;
-        if !matches!(admission.state, AdmissionState::Approved) || stored.snapshot()? != *source {
+        if !matches!(lifecycle.state, LifecycleState::Enabled) || stored.snapshot()? != *source {
             return Err(Error::NotAdmitted);
         }
         Ok(())
@@ -238,12 +240,12 @@ impl Reader {
             let version = self
                 .version_in(tx, &dependency.resource, &dependency.version)
                 .await?;
-            let admission = storage::admission(tx, &dependency.resource, &dependency.version)
+            let lifecycle = storage::lifecycle(tx, &dependency.resource, &dependency.version)
                 .await?
                 .ok_or(Error::NotAdmitted)?;
             if version.digest().bytes() != dependency.sha256
-                || admission.digest != dependency.sha256
-                || !matches!(admission.state, AdmissionState::Approved)
+                || lifecycle.digest != dependency.sha256
+                || !matches!(lifecycle.state, LifecycleState::Enabled)
             {
                 return Err(Error::NotAdmitted);
             }
@@ -263,12 +265,12 @@ impl Reader {
     ) -> Result<Value> {
         self.tenant(tx)?;
         let version = self.version_in(tx, resource, label).await?;
-        let admission = storage::admission(tx, resource, label).await?;
+        let lifecycle = storage::lifecycle(tx, resource, label).await?;
         Ok(
-            json!({"resource":resource,"version":label,"resourceDigest":version.digest().bytes(),"admission":admission}),
+            json!({"resource":resource,"version":label,"resourceDigest":version.digest().bytes(),"lifecycle":lifecycle}),
         )
     }
-    /// An existing plan must match its original approval, never silently adopt a newer approval.
+    /// An existing plan must match its original lifecycle binding, never silently adopt a newer generation.
     pub async fn recheck_admitted_in(
         &self,
         tx: &mut PgTransaction<'_>,
@@ -284,14 +286,14 @@ impl Reader {
                 &expected.variant,
             )
             .await?;
-        if current.admission.operation != expected.admission.operation
+        if current.binding != expected.binding
             || current.version.digest() != expected.version.digest()
         {
             return Err(Error::NotAdmitted);
         }
         Ok(())
     }
-    /// Recheck current admission and exact variant under the caller's execution transaction.
+    /// Recheck current lifecycle and exact variant under the caller's execution transaction.
     pub async fn resolve_admitted_in(
         &self,
         tx: &mut PgTransaction<'_>,
@@ -304,11 +306,11 @@ impl Reader {
         self.tenant(tx)?;
         storage::lock(tx).await?;
         let version = self.version_in(tx, resource, label).await?;
-        let admission = storage::admission(tx, resource, label)
+        let lifecycle = storage::lifecycle(tx, resource, label)
             .await?
             .ok_or(Error::NotAdmitted)?;
-        if !matches!(admission.state, AdmissionState::Approved)
-            || admission.digest != version.digest().bytes()
+        if !matches!(lifecycle.state, LifecycleState::Enabled)
+            || lifecycle.digest != version.digest().bytes()
         {
             return Err(Error::NotAdmitted);
         }
@@ -327,13 +329,15 @@ impl Reader {
         )
         .await?
         .ok_or(Error::NotAdmitted)?;
+        let binding = self.binding_in(tx, &version).await?;
         Ok(FrozenSoftware {
+            binding,
             source,
             version,
             variant: variant.clone(),
             platform,
             architecture,
-            admission,
+            lifecycle,
         })
     }
 }
@@ -402,43 +406,40 @@ impl Catalog {
         if old.as_ref().map_or(0, |(_, a)| a.revision) != op.expected_revision {
             return Err(Error::Conflict);
         }
-        let (definition, state, evidence) = match &op.input {
+        let (definition, state) = match &op.input {
             SourceChange::Register { definition } => {
                 if old.is_some() || definition.id != id || definition.revision != revision {
                     return Err(Error::Conflict);
                 }
                 definition.snapshot()?;
-                (definition.clone(), AdmissionState::Registered, vec![])
+                (definition.clone(), LifecycleState::Enabled)
             }
-            SourceChange::Approve { evidence } => {
-                model::evidence(evidence)?;
+            SourceChange::Enable => {
                 let (d, a) = old.ok_or(Error::Missing)?;
-                if matches!(a.state, AdmissionState::Approved) {
+                if matches!(a.state, LifecycleState::Enabled) {
                     return Err(Error::Conflict);
                 }
-                (d, AdmissionState::Approved, evidence.clone())
+                (d, LifecycleState::Enabled)
             }
-            SourceChange::Withdraw { evidence } => {
-                model::evidence(evidence)?;
+            SourceChange::Disable => {
                 let (d, a) = old.ok_or(Error::Missing)?;
-                if !matches!(a.state, AdmissionState::Approved) {
+                if !matches!(a.state, LifecycleState::Enabled) {
                     return Err(Error::Conflict);
                 }
-                (d, AdmissionState::Withdrawn, evidence.clone())
+                (d, LifecycleState::Disabled)
             }
         };
         let snapshot = definition.snapshot()?;
-        let admission = Admission {
+        let lifecycle = Lifecycle {
             revision: op.expected_revision + 1,
             state,
             operation: op.operation_id,
             actor,
-            evidence,
             at: storage::now(tx).await?,
             digest: snapshot.sha256,
         };
-        storage::save_source(tx, &definition, &admission).await?;
-        let value = json!({"source":definition,"snapshot":snapshot,"admission":admission});
+        storage::save_source(tx, &definition, &lifecycle).await?;
+        let value = json!({"source":definition,"snapshot":snapshot,"lifecycle":lifecycle});
         self.record(tx, audit, (&key, op.operation_id, &hash), &value, false)
             .await?;
         Ok(value)
@@ -464,16 +465,15 @@ impl Catalog {
             return Ok(value);
         }
         let version = self.reader().version_in(tx, resource, label).await?;
-        let old = storage::admission(tx, resource, label).await?;
+        let old = storage::lifecycle(tx, resource, label).await?;
         if old.as_ref().map_or(0, |a| a.revision) != op.expected_revision {
             return Err(Error::Conflict);
         }
-        let (state, evidence) = match &op.input {
-            VersionChange::Approve { evidence } => {
-                model::evidence(evidence)?;
+        let state = match &op.input {
+            VersionChange::Enable => {
                 if old
                     .as_ref()
-                    .is_some_and(|a| matches!(a.state, AdmissionState::Approved))
+                    .is_some_and(|a| matches!(a.state, LifecycleState::Enabled))
                 {
                     return Err(Error::Conflict);
                 }
@@ -483,30 +483,28 @@ impl Catalog {
                 self.reader().check_sources(tx, &version).await?;
                 self.reader().dependencies(tx, &version).await?;
                 storage::freeze_materials(tx, &version).await?;
-                (AdmissionState::Approved, evidence.clone())
+                LifecycleState::Enabled
             }
-            VersionChange::Withdraw { evidence } => {
-                model::evidence(evidence)?;
+            VersionChange::Withdraw => {
                 if old
                     .as_ref()
-                    .is_none_or(|a| !matches!(a.state, AdmissionState::Approved))
+                    .is_none_or(|a| !matches!(a.state, LifecycleState::Enabled))
                 {
                     return Err(Error::Conflict);
                 }
-                (AdmissionState::Withdrawn, evidence.clone())
+                LifecycleState::Withdrawn
             }
         };
-        let admission = Admission {
+        let lifecycle = Lifecycle {
             revision: op.expected_revision + 1,
             state,
             operation: op.operation_id,
             actor,
-            evidence,
             at: storage::now(tx).await?,
             digest: version.digest().bytes(),
         };
-        storage::save_admission(tx, resource, label, &admission).await?;
-        let value = json!({"resource":resource,"version":label,"admission":admission});
+        storage::save_lifecycle(tx, resource, label, &lifecycle).await?;
+        let value = json!({"resource":resource,"version":label,"lifecycle":lifecycle});
         self.record(tx, audit, (&key, op.operation_id, &hash), &value, false)
             .await?;
         Ok(value)
@@ -565,66 +563,6 @@ pub async fn reference_count_in(
     let tenant = tx.tenant_id().to_string();
     let resource = resource.to_owned();
     let version = version.to_owned();
-    let count:i64=tx.with_connection(move|c|Box::pin(async move{sqlx::query_scalar("SELECT count(*) FROM mdm_software.approvals WHERE tenant_id=$1::uuid AND resource=$2 AND version=$3").bind(tenant).bind(resource).bind(version).fetch_one(c).await})).await?;
+    let count:i64=tx.with_connection(move|c|Box::pin(async move{sqlx::query_scalar("SELECT count(*) FROM mdm_software.versions WHERE tenant_id=$1::uuid AND resource=$2 AND version=$3").bind(tenant).bind(resource).bind(version).fetch_one(c).await})).await?;
     u64::try_from(count).map_err(|_| Error::Integrity)
-}
-
-/// Recheck native execution's exact release and source approval on its existing transaction.
-/// No caller session is retained, and the connection cannot commit through this function.
-pub async fn admitted_on(
-    c: &mut sqlx::PgConnection,
-    tenant: TenantId,
-    resource: &str,
-    version: &str,
-    digest: [u8; 32],
-    operation: uuid::Uuid,
-    sources: &[r::SoftwareSource],
-) -> Result<bool> {
-    use sqlx::Row;
-    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,0))")
-        .bind(format!("mdm-software:{tenant}"))
-        .execute(&mut *c)
-        .await?;
-    if !rss_mdm_resource_postgres::active_version_on(
-        c,
-        tenant,
-        &r::Id::new(resource).map_err(|_| Error::Input)?,
-        &r::Id::new(version).map_err(|_| Error::Input)?,
-        digest,
-    )
-    .await?
-    {
-        return Ok(false);
-    }
-    let raw:Option<String>=sqlx::query_scalar("SELECT admission::text FROM mdm_software.approvals WHERE tenant_id=$1::uuid AND resource=$2 AND version=$3").bind(tenant.to_string()).bind(resource).bind(version).fetch_optional(&mut *c).await?;
-    let Some(raw) = raw else {
-        return Ok(false);
-    };
-    let approval: Admission = serde_json::from_str(&raw).map_err(|_| Error::Integrity)?;
-    if !matches!(approval.state, AdmissionState::Approved)
-        || approval.operation != operation
-        || approval.digest != digest
-    {
-        return Ok(false);
-    }
-    for expected in sources {
-        let row=sqlx::query("SELECT definition::text,admission::text FROM mdm_software.sources WHERE tenant_id=$1::uuid AND id=$2 AND revision=$3").bind(tenant.to_string()).bind(&expected.id).bind(&expected.revision).fetch_optional(&mut *c).await?;
-        let Some(row) = row else {
-            return Ok(false);
-        };
-        let source: SourceDefinition =
-            serde_json::from_str(row.try_get("definition")?).map_err(|_| Error::Integrity)?;
-        let raw: Option<String> = row.try_get("admission")?;
-        let Some(raw) = raw else {
-            return Ok(false);
-        };
-        let approval: Admission = serde_json::from_str(&raw).map_err(|_| Error::Integrity)?;
-        if source.snapshot()?.sha256 != expected.sha256
-            || !matches!(approval.state, AdmissionState::Approved)
-            || approval.digest != expected.sha256
-        {
-            return Ok(false);
-        }
-    }
-    Ok(true)
 }

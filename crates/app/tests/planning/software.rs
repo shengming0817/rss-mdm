@@ -13,11 +13,11 @@ async fn rollout_time_success_gates_and_stage_evidence() -> Result<()> {
     let mut author = fixture.author;
     let resource = fixture.resource;
     let scope = fixture.scope;
-    let first_operation = fixture.first_operation;
+
     let future = Uuid::new_v4();
     let future_path = format!("/api/v1/policies/{future}");
     let now = crate::clock::Clock::unix_seconds(&crate::clock::SystemClock)?;
-    let future_definition = |opens_at: i64, minimum: Option<u8>| json!({"scope":scope,"action": {"resource": {"kind":"software","id":resource,"version":"v1","variants":{"macos_aarch64":"default"}},"kind":"software","intent":"required_install","delivery":{"kind":"direct"},"admissionOperation":first_operation,"runLifetimeSeconds":600,"rollout":{"stages":[{"scope":empty_scope,"opensAt":0},{"scope":scope,"opensAt":opens_at,"minimumVerifiedPercent":minimum}]}}});
+    let future_definition = |opens_at: i64, minimum: Option<u8>| json!({"scope":scope,"action": {"resource": {"kind":"software","id":resource,"version":"v1","variants":{"macos_aarch64":"default"}},"kind":"software","intent":"required_install","delivery":{"kind":"direct"},"runLifetimeSeconds":600,"rollout":{"stages":[{"scope":empty_scope,"opensAt":0},{"scope":scope,"opensAt":opens_at,"minimumVerifiedPercent":minimum}]}}});
     let future_policy = write(
         &mut author,
         &router,
@@ -170,7 +170,7 @@ async fn rollout_time_success_gates_and_stage_evidence() -> Result<()> {
     );
     let reordered=write(&mut author,&router,&future_path,5,json!({"action":"put","enabled":true,
         "definition":{"scope":scope,
-        "action": {"resource": {"kind":"software","id":resource,"version":"v1","variants":{"macos_aarch64":"default"}},"kind":"software","intent":"required_install","delivery":{"kind":"direct"},"admissionOperation":first_operation,"runLifetimeSeconds":600,
+        "action": {"resource": {"kind":"software","id":resource,"version":"v1","variants":{"macos_aarch64":"default"}},"kind":"software","intent":"required_install","delivery":{"kind":"direct"},"runLifetimeSeconds":600,
         "rollout":{"stages":[{"scope":scope,"opensAt":0},{"scope":empty_scope,"opensAt":1}]}}}})).await?;
     ensure!(reordered["versionId"] == frozen_version);
     let reordered_status = tokio::time::timeout(Duration::from_secs(45), async {
@@ -211,9 +211,9 @@ async fn new_approval_changes_execution_version() -> Result<()> {
     let router = fixture.router;
     let mut author = fixture.author;
     let resource = fixture.resource;
-    let first_operation = fixture.first_operation;
+
     let scope = fixture.scope;
-    let authored = |intent: &str, operation: &Value| authored(resource, scope, intent, operation);
+    let authored = |intent: &str| authored(resource, scope, intent);
     let policy = Uuid::new_v4();
     let policy_path = format!("/api/v1/policies/{policy}");
     let published = write(
@@ -221,7 +221,7 @@ async fn new_approval_changes_execution_version() -> Result<()> {
         &router,
         &policy_path,
         0,
-        json!({"action":"put","enabled":true,"definition":authored("required_install", &first_operation)}),
+        json!({"action":"put","enabled":true,"definition":authored("required_install")}),
     )
     .await?;
     ensure!(published["version"] == 1, "publish: {published}");
@@ -238,24 +238,24 @@ async fn new_approval_changes_execution_version() -> Result<()> {
         &router,
         &format!("/api/v1/software/resources/{resource}/versions/v1"),
         1,
-        json!({"action":"withdraw","evidence":["version-identity"]}),
+        json!({"action":"withdraw"}),
     )
     .await?;
-    let reapproved = write(
+    write(
         &mut author,
         &router,
         &format!("/api/v1/software/resources/{resource}/versions/v1"),
         2,
-        json!({"action":"approve","evidence":["reapproved-for-future-task"]}),
+        json!({"action":"enable"}),
     )
     .await?;
-    let second_operation = reapproved["admission"]["operation"].clone();
+
     let rebound = write(
         &mut author,
         &router,
         &policy_path,
         2,
-        json!({"action":"put","enabled":false,"definition":authored("required_install", &second_operation)}),
+        json!({"action":"put","enabled":false,"definition":authored("required_install")}),
     )
     .await?;
     ensure!(
@@ -295,7 +295,7 @@ async fn rollout_statistics_checkpoint_excluded_pages_and_reject_stale_inputs() 
     .await?;
     crate::test_support::stop_worker(automation).await?;
     let policy = Uuid::new_v4();
-    let mut definition = authored(f.resource, root, "required_install", &f.first_operation);
+    let mut definition = authored(f.resource, root, "required_install");
     definition["action"]["rollout"] = json!({"stages":[{"scope":stage,"opensAt":0}]});
     let published = write(
         &mut f.author,

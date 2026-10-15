@@ -45,6 +45,7 @@ async fn prepare(
     bytes: &[u8],
     audit: &RequestAudit,
 ) -> Result<WindowsReception, Error> {
+    rss_mdm_registration_service::admission::require_windows_in(c, p).await?;
     let tenant = p.tenant().to_string();
     let registration = p.registration().to_string();
     let binding = (

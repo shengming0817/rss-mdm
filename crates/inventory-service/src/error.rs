@@ -80,7 +80,7 @@ impl From<rss_mdm_registration_service::Error> for Error {
             R::Malformed => Self::Malformed,
             R::Unauthorized => Self::Unauthorized,
             R::Forbidden => Self::Forbidden,
-            R::Conflict => Self::Conflict,
+            R::Conflict | R::EnrollmentPaused => Self::Conflict,
             R::NotFound => Self::NotFound,
             R::CommitUnknown => Self::CommitUnknown,
             R::RollbackFailed => Self::RollbackFailed,

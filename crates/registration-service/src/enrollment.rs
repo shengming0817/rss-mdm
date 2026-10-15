@@ -180,6 +180,9 @@ pub struct ResumeCommand<'a> {
     pub operation: Uuid,
 }
 impl EnrollmentService {
+    pub fn admission(&self) -> crate::admission::Admission {
+        crate::admission::Admission::new(self.access.clone(), self.audit_store.clone())
+    }
     pub fn quotas(&self) -> crate::quotas::Quotas {
         crate::quotas::Quotas::new(self.access.clone(), self.audit_store.clone())
     }

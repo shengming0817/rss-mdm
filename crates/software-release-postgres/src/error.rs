@@ -82,7 +82,6 @@ pub(crate) fn decode_domain<T>(
             crate::core::Error::ContentConflict => "ContentConflict",
             crate::core::Error::StaleEvidence => "StaleEvidence",
             crate::core::Error::ValidationRequired => "ValidationRequired",
-            crate::core::Error::ActorConstraint => "ActorConstraint",
             crate::core::Error::PublicationClosed => "PublicationClosed",
             crate::core::Error::ReconciliationRequired => "ReconciliationRequired",
             crate::core::Error::ResultConflict => "ResultConflict",

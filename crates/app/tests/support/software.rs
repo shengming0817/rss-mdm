@@ -130,7 +130,6 @@ impl Fixture {
             "resource_write",
             "software_read",
             "software_write",
-            "software_approve",
             "software_withdraw",
         ]
         .into_iter()
@@ -148,14 +147,6 @@ impl Fixture {
         );
         let source_path = format!("/api/v1/software/sources/{source}/revisions/1");
         let registered=write(&mut user,&router,&source_path,0,json!({"action":"register","definition":{"id":source,"revision":"1","protocol":{"kind":"private"}}})).await?;
-        write(
-            &mut user,
-            &router,
-            &source_path,
-            1,
-            json!({"action":"approve","evidence":["source-review"]}),
-        )
-        .await?;
         Ok(Self {
             directory,
             router,
@@ -180,9 +171,14 @@ pub(crate) async fn write(
     revision: u64,
     input: Value,
 ) -> Result<Value> {
+    let expected = if input["action"] == "publish" {
+        StatusCode::ACCEPTED
+    } else {
+        StatusCode::OK
+    };
     let body = json!({"operationId":Uuid::new_v4(),"expectedRevision":revision,"input":input});
     let response = browser.call(router, Method::POST, path, Some(body)).await?;
-    ensure!(response.0 == StatusCode::OK, "{path}: {response:?}");
+    ensure!(response.0 == expected, "{path}: {response:?}");
     Ok(response.1)
 }
 

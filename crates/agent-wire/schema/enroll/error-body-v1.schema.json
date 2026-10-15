@@ -29,6 +29,11 @@
           "type": "string"
         },
         {
+          "const": "enrollment_paused",
+          "description": "New enrollment is paused; preserve the original operation and expiry.",
+          "type": "string"
+        },
+        {
           "const": "registration_limit",
           "description": "Per-user registration capacity is exhausted.",
           "type": "string"

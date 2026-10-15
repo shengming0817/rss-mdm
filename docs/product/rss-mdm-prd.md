@@ -23,7 +23,7 @@ Windows + macOS｜统一执行、双通道管理与私有软件仓库
 | 能力 | 产品范围 | 主要需求 |
 | --- | --- | --- |
 | macOS 对标 | 提升为正式目标：注册、Profile/DDM、资产、安全托管、更新、原生软件及 Mac Agent。 | WMD-MAC01–15 |
-| WinGet/Brew 私有仓库 | 进入正式二级交付；源/元数据/产物/审批/分配/终端执行/恢复完整管理。 | WMD-S06、WMD-REP01–10、WMD-BRW01–10 |
+| WinGet/Brew 私有仓库 | 进入正式二级交付；源/元数据/产物/启用/分配/终端执行/恢复完整管理。 | WMD-S06、WMD-REP01–10、WMD-BRW01–10 |
 | 虚拟执行层 | 业务接口与逻辑模板跨 OS 共用；适配器按能力解析执行，保留平台专属语义。 | WMD-V01–12 |
 | 策略下发通道 | 仅 Agent/MDM 两类；DDM 是 MDM 子机制，WinGet/Brew 是执行器，推送不是执行证明。 | WMD-CH01–07 |
 | 数据采集与扩展字段 | Agent 内置/osquery/脚本与 MDM 共用字段字典、观测、资产模型；Manual/API 属于赋值来源。 | WMD-X01–05、WMD-COL01–11 |
@@ -113,7 +113,7 @@ RSS MDM 面向企业私有化部署，统一管理 Windows 与 macOS 的设备�
 
 ## J7　私有软件版本发布与撤回
 
-提交内部分发包与元数据 → 在隔离验证环境测试 → 审批并冻结摘要 → 发布 WinGet feed/Brew Tap 快照 → 小组灰度 → 完成后推广。发现风险时阻断新授权并撤回发布引用；设备降级/卸载依赖明确方案，已有离线副本另行处置。
+提交内部分发包与元数据 → 在隔离验证环境测试 → 有权限管理员直接发布、自动校验并冻结摘要 → 发布 WinGet feed/Brew Tap 快照 → 小组灰度 → 完成后推广。发现风险时阻断新授权并撤回发布引用；设备降级/卸载依赖明确方案，已有离线副本另行处置。
 
 ---
 
@@ -137,7 +137,7 @@ MDM 原生通道和 Agent 通道分别承担适用的管理能力，共用产品
 | --- | --- | --- |
 | R0：契约与可信执行底座 | 冻结共享模型、设备/注册关联、能力预检、单一写 owner；补 Windows Agent 真执行/结果与审计；保留现有 Windows 功能。 | 一个真实 Windows 脚本从创建到补传可核实；旧 API/组/Scope/MDM 不退化；混合目标计划和不支持结果可解释。 |
 | R1：双平台管理基线 | macOS 手动 MDM、签名 Agent、Profile 与基础资产；Agent/osquery 与脚本；最小扩展字段字典；跨 OS 一套请求与视图。 | Win/Mac 各自 MDM-only、Agent-only、双通道场景通过；同一采集目标和逻辑配置模板工作，原生差异可见。 |
-| R2：企业软件与管理闭环 | WinGet/Brew 私有源审批发布及完整生命周期；ADE、DDM、FileVault/令牌、更新、字段驱动策略；继承 Windows LAPS/BitLocker、应用、Webhook/合规包。 | 两类私有源都经过真实端消费、撤销/恢复验证；各承诺 macOS/Windows 企业用例均有界面、API、运行与故障证据。 |
+| R2：企业软件与管理闭环 | WinGet/Brew 私有源直接发布及完整生命周期；ADE、DDM、FileVault/令牌、更新、字段驱动策略；继承 Windows LAPS/BitLocker、应用、Webhook/合规包。 | 两类私有源都经过真实端消费、撤销/恢复验证；各承诺 macOS/Windows 企业用例均有界面、API、运行与故障证据。 |
 | R3：可选深化 | 自助、Platform SSO、复杂多用户/源码构建、第三方源连接器、osquery 扩展、远程桌面、MSP 等。 | 单项批准范围、支持矩阵及必要性；不以这些增强阻塞已冻结的 R1/R2。 |
 
 Windows MDM 只读纵切 V1 是 R0/R1 的基础增量，不代替 R0 的 Windows Agent 真执行退出条件。具体依赖按 [实施路线](roadmap.md) 推进；工程先后顺序不降低 macOS、三类采集与 WinGet/Brew 的正式范围。
@@ -348,7 +348,7 @@ AC-C01-02　配置应用与 cleanup 分别在支持的真实 Windows 版本验�
 | WMD-S03<br>MDM 安装 | 完成 MDM 应用安装能力，形成安装命令、状态核实、失败诊断与管理页面闭环。 | 规划<br>一级 |
 | WMD-S04<br>Agent 安装 / 卸载 | 下载与续传 → 哈希/签名验证 → 安装 → 检测 → 结构化结果；支持显式卸载及失败恢复。 | 规划<br>二级 |
 | WMD-S05<br>依赖与分阶段 | 支持依赖校验、顺序执行、分批推进/暂停，逐设备展示 downloading/installing/installed/failed 等状态。 | 规划<br>二级 |
-| WMD-S06<br>WinGet 私有源管理 | 提升为正式二级软件能力：源注册/托管发布、包审批、版本、分配、安装/升级/卸载/固定及验证；由 Agent 的 WinGet 执行器承担。详见 WMD-REP，不再作为第三交付通道。 | 规划升级 <br>二级 |
+| WMD-S06<br>WinGet 私有源管理 | 提升为正式二级软件能力：源注册/托管发布、版本启用与撤回、分配、安装/升级/卸载/固定及验证；由 Agent 的 WinGet 执行器承担。详见 WMD-REP，不再作为第三交付通道。 | 规划升级 <br>二级 |
 
 新增 Homebrew 私有 Tap、Bottle/Cask 产物管理，详见 WMD-BRW。软件管理对象统一，包格式与原生命令不强行统一。
 
@@ -743,26 +743,26 @@ AC-06-18-03　演练 FileVault PRK、APNs 更新、Bootstrap Token 缺失、危�
 | WMD-REP02<br>接入与托管发布 | 支持接入现有私有源，并提供产品内受控包发布工作流：WinGet 生成/提交兼容 manifest/feed；Brew 发布至专用私有 Tap 和产物存储。不自研通用 Git 服务或二进制仓库。 | 新增目标<br>二级 |
 | WMD-REP03<br>精确软件身份 | 软件实现绑定 source_id + package_id + version + architecture + installer/variant；Brew 使用完整 Tap 与 Formula/Cask 标识。禁止因同名公共包或模糊匹配改变来源。 | 新增目标<br>一级 |
 | WMD-REP04<br>包提交与供应链校验 | 提交 manifest、安装物、哈希/签名、OS/架构、安装/检测/卸载定义与来源授权信息；元数据验证和实际安装验证分开，外部 URL 抓取受域名/大小/协议限制。 | 新增目标<br>二级 |
-| WMD-REP05<br>审批、快照与分环发布 | 候选→验证→批准→发布→弃用/隔离；审批锁定源快照、manifest 摘要和产物摘要。Test/Pilot/Production 只提升已验证版本，不可原地覆盖同版本字节。 | 新增目标<br>二级 |
+| WMD-REP05<br>直接操作、快照与分环发布 | 草稿保存不分发；有权限管理员启用或发布，后台技术校验并冻结源、版本、依赖的生命周期代次及材料摘要，不设人工审批或指定发布人。Test/Pilot/Production 只提升已验证版本，不可原地覆盖同版本字节。 | 新增目标<br>二级 |
 | WMD-REP06<br>WinGet 执行器 | 通过 Agent 执行明确源和精确包的查询、安装、升级、卸载、版本固定及状态查询；记录客户端版本、installer、用户/机器 scope、退出码和独立检测证据。 | 新增目标<br>二级 |
 | WMD-REP07<br>无人值守与源认证 | 将源元数据认证、安装物下载认证、执行身份分开；按实际 WinGet 客户端和 REST Source 能力匹配。禁止默认共享管理员 token 或假定任意 OAuth 可无交互完成。 | 新增目标<br>一级 |
 | WMD-REP08<br>源分配与公共源控制 | 按 Scope 配置允许的源/包、是否允许公共回退、可修改权限与漂移处理；默认托管任务必须使用明确来源。删除源前显示受影响应用和未完成执行。 | 新增目标<br>二级 |
 | WMD-REP09<br>回退、下架与缓存撤销 | 发布引用可回退到保留快照；终端降级/卸载必须有专用方案。包隔离后阻断新授权和新下载，并处理缓存/短期凭据窗口，不能宣称瞬时撤销所有离线副本。 | 新增目标<br>二级 |
-| WMD-REP10<br>运行与审计 | 记录源配置、发布者/审批者、安装对象、摘要、凭据版本及错误阶段；监测同步/下载/安装延迟与积压，源备份和软件产物保留纳入恢复方案。 | 新增目标<br>二级 |
+| WMD-REP10<br>运行与审计 | 记录源配置、操作者、安装对象、摘要、凭据版本及错误阶段；监测同步/下载/安装延迟与积压，源备份和软件产物保留纳入恢复方案。 | 新增目标<br>二级 |
 
 ## 关键规则与边界
 
-私有仓库管理包含两个平面：控制面负责目录、审批、Scope、发布、回收与审计；数据面复用 WinGet REST Source、Git Tap、对象存储/现有制品服务。只运行 winget source add 或 brew tap 不构成完成。
+私有仓库管理包含两个平面：控制面负责目录、生命周期、Scope、发布、回收与审计；数据面复用 WinGet REST Source、Git Tap、对象存储/现有制品服务。只运行 winget source add 或 brew tap 不构成完成。
 
 微软提供 REST Source 参考实现，但示例依赖 Azure/CosmosDB；本地部署不能被隐式绑定 Azure。首批应选择已验证、可本地部署的兼容服务，或者实现有原生客户端互操作测试的最小 REST Source 适配，不另造软件包协议。服务的具体选型在技术设计中冻结，不改变本 PRD 的私有化与兼容目标。[E21](../reference/external-sources.md#e21)
 
 安装上下文不等于执行进程身份。--scope machine 不能证明 WinGet 可在任意 LocalSystem 会话中使用；必须按获准客户端版本、包类型和安装策略实测。Source API 的认证成功也不能推导安装物 URL 可匿名或使用相同 token 下载。[E19](../reference/external-sources.md#e19)
 
-首版最低闭环：一条完全受控 WinGet 私有源、一条私有 Brew Tap、内部可用产物地址、版本审批与目标分配、真实终端安装/核实/卸载、凭据撤销及审计。公共源同步、复杂外部仓库连接器可以逐步增加；两类私有源不能降为仅远期候选。
+首版最低闭环：一条完全受控 WinGet 私有源、一条私有 Brew Tap、内部可用产物地址、版本启用与目标分配、真实终端安装/核实/卸载、凭据撤销及审计。公共源同步、复杂外部仓库连接器可以逐步增加；两类私有源不能降为仅远期候选。
 
 ## 验收场景
 
-AC-06-19-01　提交内部应用 → 校验与审批 → 发布私有源 → 组分配 → Windows 无人值守安装 → 资产核实 → 升级/卸载。
+AC-06-19-01　保存内部应用草稿 → 一次发布并自动校验/启用 → 私有源可读 → 组分配 → Windows 无人值守安装 → 资产核实 → 升级/卸载。
 
 AC-06-19-02　同名依赖污染、包被替换、下载凭据失效、源下线、客户端不支持、安装状态不明分别验证。
 
@@ -770,7 +770,7 @@ AC-06-19-03　禁止公共回退的设备无法借错误源解析安装公共同
 
 ---
 
-当前后端以单一 Resource.Software 闭合行为提供 MSI/PKG/Bundle/WinGet/Brew/EXE/DMG/MSIX，导入保留固定来源原始证据与转换器版本，原生输出从批准的完整定义派生。WinGet 输出由 rss-mdm 公开只读托管，Brew 输出使用来源范围只读凭据与固定系统 Git upload-pack；只有批准并发布的材料可读取。目录批准不表示 OS 信任认证，MSIX 用户注册与设备 provisioning 分别核实。接口与操作矩阵见[软件指南](../guides/resources-and-software.md)。终端执行由 #2587、可信接线由 #2564 承接；Windows 原生 WinGet 消费与真实安装证据未齐备前，不宣称对应产品组合已验收。
+当前后端以单一 Resource.Software 闭合行为提供 MSI/PKG/Bundle/WinGet/Brew/EXE/DMG/MSIX，导入保留固定来源原始证据与转换器版本，原生输出从启用的完整定义派生。WinGet 输出由 rss-mdm 公开只读托管，Brew 输出使用来源范围只读凭据与固定系统 Git upload-pack；只有启用并发布的材料可读取。目录启用不表示 OS 信任认证，MSIX 用户注册与设备 provisioning 分别核实。接口与操作矩阵见[软件指南](../guides/resources-and-software.md)。终端执行由 #2587、可信接线由 #2564 承接；Windows 原生 WinGet 消费与真实安装证据未齐备前，不宣称对应产品组合已验收。
 
 # 06.20　WMD-BRW：Homebrew 私有仓库与执行器
 
@@ -782,12 +782,12 @@ AC-06-19-03　禁止公共回退的设备无法借错误源解析安装公共同
 | WMD-BRW02<br>元数据与产物分别托管 | 分开管理 Tap 元数据、Bottle、Cask 下载物及所需依赖；地址、认证、摘要、保留和镜像策略分别配置。私有 Git 访问成功不代表产物可以获取。 | 新增目标<br>二级 |
 | WMD-BRW03<br>架构、前缀与实例 | 发现 Apple Silicon/Intel、实际 brew 路径、版本、prefix、owner 与已有安装实例；默认使用受支持原生实例，不根据单个固定路径判断安装。 | 新增目标<br>一级 |
 | WMD-BRW04<br>非 root 执行身份 | Agent 可拥有系统服务权限，实际 Brew 包操作必须切到已批准的非 root 用户；检测受支持的 as-console-user 或等价受控执行机制。无适用用户时等待，不创建隐式高权账户。 | 新增目标<br>一级 |
-| WMD-BRW05<br>Bottle 与依赖闭包 | 校验 Bottle 对应 OS/架构/前缀、完整性与依赖可达性；生产默认优先批准二进制。缺 Bottle 不静默转源码构建或下载未批准工具链。 | 新增目标<br>二级 |
+| WMD-BRW05<br>Bottle 与依赖闭包 | 校验 Bottle 对应 OS/架构/前缀、完整性与依赖可达性；生产默认使用明确启用的二进制。缺 Bottle 不静默转源码构建或下载未声明工具链。 | 新增目标<br>二级 |
 | WMD-BRW06<br>安装、升级与固定 | 管理 Formula/Cask 安装、升级、卸载和受支持 pin；结合 Tap 快照与产物保留约束版本。Homebrew 6.0 已有 Cask pin，旧客户端必须能力检测。 | 新增目标<br>二级 |
-| WMD-BRW07<br>Tap 代码信任与审核 | Formula/Cask 代码及钩子须审批；按客户端版本管理显式 Tap trust，并绑定批准的远端与快照。预览不在带密钥的生产控制面执行任意 Ruby；来源变更须重新审核。 | 新增目标<br>一级 |
+| WMD-BRW07<br>Tap 代码信任与校验 | Formula/Cask 代码及钩子受支持子集与技术校验约束；按客户端版本管理显式 Tap trust，并绑定启用的远端与快照。预览不在带密钥的生产控制面执行任意 Ruby；来源变更须重新校验。 | 新增目标<br>一级 |
 | WMD-BRW08<br>私有源凭据 | Git 与产物下载凭据分域、最小权限和有界有效期；不把长期 token 嵌入 Tap、URL、shell 参数或可读日志，执行后清理临时配置。 | 新增目标<br>一级 |
 | WMD-BRW09<br>既有安装与卸载保护 | 已授权的可信任务可按匹配的包身份、版本、目标与执行用户处理既有安装，不以历史安装来源作为通用门槛，不另设接管审批；目标已满足可无修改完成，但不据此宣称本次安装或原生托管。保护共享依赖，不全局 autoremove，不把 cask zap 作为普通卸载默认行为。 | 新增目标<br>二级 |
-| WMD-BRW10<br>隔离网络与版本恢复 | 内部镜像覆盖 Tap、批准的 Bottle/Cask 及依赖；允许网络目的地受控。回退要求历史元数据和产物均保留，并区分配置回退与不可保证的数据降级。 | 新增目标<br>二级 |
+| WMD-BRW10<br>隔离网络与版本恢复 | 内部镜像覆盖 Tap、启用的 Bottle/Cask 及依赖；允许网络目的地受控。回退要求历史元数据和产物均保留，并区分配置回退与不可保证的数据降级。 | 新增目标<br>二级 |
 
 ## 关键规则与边界
 
@@ -891,7 +891,7 @@ AC-06-22-03　两个策略管理同一软件、一项配置从 Profile 转 DDM�
 | 设备中心 | Windows/Mac 混合列表；物理设备与 enrollment 关联；Agent/MDM 状态、管理授权、能力与缺少前提；标准/原生/自定义字段及时间/来源。 |
 | 策略中心 | 逻辑意图、平台模板、Scope、通道模式、步骤依赖、资源 owner；发布预览按“可执行/阻塞/不支持”分组；无隐形双发。 |
 | 执行中心 | 计划版本、设备/用户对象、通道、执行器、原生码、等待原因、结果证据、重试/取消权限；展开 MDM/DDM/Agent 各自步骤。 |
-| 软件与仓库 | 逻辑应用及平台实现；WinGet 源、Brew Tap/产物源；提交/验证/审批/快照/发布/隔离；凭据只显示引用/到期，不显示明文。 |
+| 软件与仓库 | 逻辑应用及平台实现；WinGet 源、Brew Tap/产物源；草稿/启用/技术校验/快照/发布/撤回；凭据只显示引用/到期，不显示明文。 |
 | 采集与字段 | 内置/MDM/osquery/脚本模板；平台适用性、权限、试运行、调度预算；字段字典、引用、类型变更影响、观测与当前选值。 |
 | Apple 管理 | APNs/身份 CA/SCEP/ADE/应用许可状态与到期；Profile/DDM；Bootstrap Token、FileVault、Recovery Lock 采用独立访问流程。 |
 | 组/合规/更新 | 复用标准字段和条件编辑；混合 OS 组计数一致；未知/冲突可解释；更新状态保留平台特有前提。 |
@@ -932,14 +932,14 @@ AC-06-22-03　两个策略管理同一软件、一项配置从 Profile 转 DDM�
 | --- | --- |
 | Device / Enrollment / CapabilitySnapshot | 统一业务设备、独立通道注册/认证、可执行能力及计算依据。Apple 用户通道保留用户主体。 |
 | Policy / Operation / Run / Attempt | Policy 是持续分配，分为执行型与配置型；已退役的 Remote Operation 仅保留原固定快照、期限与历史；新设备 Operation 只持有重启、锁定或擦除，Run/Attempt 持有设备执行、通道及注册世代；期望状态与执行历史分开。 |
-| Application / PlatformVariant / Source / Release | 逻辑软件与平台版本；元数据源/产物源及不可变批准快照；禁止 packageId 单独作为跨源唯一身份。 |
+| Application / PlatformVariant / Source / Release | 逻辑软件与平台版本；元数据源/产物源及不可变生命周期快照；禁止 packageId 单独作为跨源唯一身份。 |
 | FieldDefinition / CollectorBinding / Observation | 字段语义、如何采集、逐来源证据；形成 ResolvedAsset 后供查询/分组/合规统一消费。 |
 | AppleDeclaration / NativeConfiguration | Apple 声明与传统 profile 各自的 ID、版本、状态与删除语义；不将声明集合强行塞入单条同步命令。 |
 | SecretRecord / CredentialReference | PRK、Bootstrap Token、Recovery Lock、仓库和 APNs 等材料分域存储及授权；不进入普通字段字典。 |
 
 执行目标状态：accepted → planned → queued/waiting_device → executing/processing → awaiting_verification → verified 或 failed；中间可有 waiting_user、waiting_reboot、blocked；结果丢失为 outcome_unknown；已被新版本取代为 superseded。具体枚举在 schema 设计时冻结，但这些可观察差异不能被合并丢失。
 
-源快照状态：draft → validating → approved → published → deprecated/quarantined；published 引用不可原地换字节。状态回退不代表端上应用数据可降级。
+来源注册即 enabled，可 disable/enable；软件版本为 draft/enabled/withdrawn，发布状态单独表达 Pending/Applied/NotApplied/Unknown。Publish 原子校验并启用草稿；withdrawn 必须显式 Enable，恢复可用性不会复活旧执行绑定。已发布引用不可原地换字节。状态回退不代表端上应用数据可降级。
 
 观测质量使用独立维度，不能同时混在“值”与“设备在线状态”中：known、unknown、unsupported、permission_denied、collection_failed、stale、not_collected，加合法 null 与明确 tombstone。source_authenticity/assurance 与 freshness 也分开：新鲜的脚本值并不自动可信。
 
@@ -982,7 +982,7 @@ AC-06-22-03　两个策略管理同一软件、一项配置从 Profile 转 DDM�
 
 预算须分为 Agent 本体、osquery 子进程、脚本与软件安装四类；各类预算分别测量，总进程树开销也需满足发布约束。为每个采集模板配置执行超时、并发、结果字节/行数、频率与留存；大型全量清单必须分页/分块并记录完整性。
 
-脚本、采集 SQL、Tap 代码、包发布和高危 MDM 命令须分级授权、可审计，生产审批与执行主体隔离。持久任务/审计失败应拒绝或明确降级，不静默接受；签名仅证明来源和完整性，不能证明脚本安全。
+脚本、采集 SQL、Tap 代码、包发布和高危 MDM 命令须分级授权、可审计，软件包发布由当前权限直接授权并自动校验，不强制审批人与执行人分离。持久任务/审计失败应拒绝或明确降级，不静默接受；签名仅证明来源和完整性，不能证明脚本安全。
 
 时效 SLO 分为服务端排队、通知、设备在线响应、用户批准、安装执行、状态核实和投影刷新；受 Apple 服务、终端离线或用户交互影响的阶段不混成一个保证“几秒完成”的指标。所有统计分母分开显示 eligible、unsupported、blocked、waiting 与 confirmed。[E17](../reference/external-sources.md#e17)
 
@@ -1008,7 +1008,7 @@ Mac Agent 安装/升级要验证签名、公证、权限与服务恢复；软件
 | T3-10 macOS 三种接入组合 | MDM-only、Agent-only、双通道各自可用；注册关联、非法证书、退役与重注册正确。 | MAC01/02/11/14、V01/V08 |
 | T3-11 跨 OS 统一接口 | 同一采集和配置/软件意图面向混合组，不要求调用端按 OS 改业务结构；不支持目标明确列出。 | V01–06、CH01/02 |
 | T3-12 Profile/DDM 状态收敛 | 真实 profile 与 DDM 的安装/更新/移除、重复/乱序状态、所有权冲突和用户通道分别成立。 | MAC04/05、V09、CH03/05 |
-| T3-13 WinGet 私有源闭环 | 内部包审批发布、精确源安装、升级/卸载、无人值守、摘要错误、凭据撤销和公共同名包防混淆。 | REP01–10、S06 |
+| T3-13 WinGet 私有源闭环 | 内部包直接发布、精确源安装、升级/卸载、无人值守、摘要错误、凭据撤销和公共同名包防混淆。 | REP01–10、S06 |
 | T3-14 Brew 私有源闭环 | 私有 Tap 与私有产物、Formula/Cask、非 root 身份、架构/前缀、pin、缺依赖、无人登录和安全卸载。 | BRW01–10 |
 | T3-15 三类采集与扩展字段 | Agent/osquery、Agent/script、MDM 分别产出字段，进入同一搜索/组/策略；类型、时间和来源可追溯。 | COL01–09、X01–05 |
 | T3-16 不可靠结果与冲突 | 断网旧结果晚到、部分快照、失败/空值、时钟偏差、MDM/Agent 矛盾不会造成误覆盖、误删或自动高危修复。 | COL07/08、V07/09、CH04/07 |

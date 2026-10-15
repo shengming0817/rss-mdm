@@ -1,4 +1,4 @@
-//! Source conversion joins the existing Resource, admission, audit and receipt transaction.
+//! Source conversion joins the existing Resource, lifecycle, audit and receipt transaction.
 use super::*;
 use crate::imports::{ImportRequest, PreparedImport, SourceDocuments};
 use rss_contract::Timepoint;

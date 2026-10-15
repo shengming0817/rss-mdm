@@ -29,16 +29,13 @@ impl Inputs {
         match input {
             PublicationInput::AgentInstall {
                 binding,
-                admission,
                 schedule,
                 lifetime,
             } => {
                 return Ok(PreviewInputs::Onboarding(Frozen::AgentInstall {
                     action: Box::new(
-                        self.freeze_agent_in(
-                            tx, proof, snapshot, binding, *admission, schedule, *lifetime,
-                        )
-                        .await?,
+                        self.freeze_agent_in(tx, proof, snapshot, binding, schedule, *lifetime)
+                            .await?,
                     ),
                 }));
             }

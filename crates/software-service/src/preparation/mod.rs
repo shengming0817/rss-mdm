@@ -34,7 +34,7 @@ pub struct Selection<'a> {
     pub resource: &'a str,
     pub version: &'a str,
     pub digest: [u8; 32],
-    pub admission: Uuid,
+    pub lifecycle: [u8; 32],
     pub variant: &'a str,
     pub uninstall: bool,
 }
@@ -42,7 +42,6 @@ pub struct FreezeRequest<'a> {
     pub resource: &'a str,
     pub version: &'a str,
     pub digest: [u8; 32],
-    pub admission: Uuid,
     pub uninstall: bool,
     pub targets: &'a [(Target, String)],
 }
@@ -51,32 +50,44 @@ pub struct Preparation {
     exports: BTreeMap<String, Arc<ExportReader>>,
 }
 impl Preparation {
+    pub async fn lock_in(&self, tx: &mut PgTransaction<'_>) -> Result<()> {
+        self.catalog.lock_in(tx).await
+    }
+    pub async fn binding_in(
+        &self,
+        tx: &mut PgTransaction<'_>,
+        version: &r::Version,
+    ) -> Result<[u8; 32]> {
+        self.catalog.binding_in(tx, version).await
+    }
     pub fn new(catalog: Reader, exports: BTreeMap<String, Arc<ExportReader>>) -> Self {
         Self { catalog, exports }
     }
-    /// Validate every explicitly selected variant against one original approval and budget.
+    /// Resolve and freeze every selected variant against the current lifecycle closure.
     pub async fn freeze_in(
         &self,
         tx: &mut PgTransaction<'_>,
         request: FreezeRequest<'_>,
-    ) -> Result<()> {
+    ) -> Result<[u8; 32]> {
         let FreezeRequest {
             resource,
             version,
             digest,
-            admission,
             uninstall,
             targets,
         } = request;
         if targets.is_empty() {
             return Err(Error::Conflict);
         }
+        self.catalog.lock_in(tx).await?;
+        let version_value = self.catalog.version_in(tx, resource, version).await?;
+        let lifecycle = self.catalog.binding_in(tx, &version_value).await?;
         for (target, variant) in targets {
             let binding = Selection {
                 resource,
                 version,
                 digest,
-                admission,
+                lifecycle,
                 variant,
                 uninstall,
             };
@@ -90,7 +101,7 @@ impl Preparation {
                 .ok_or(Error::NotAdmitted)?;
             check_definition_budget(&steps)?;
         }
-        Ok(())
+        Ok(lifecycle)
     }
     /// Resolve an authored binding strictly, preserving rejection and identity mismatch errors.
     pub async fn resolve_in(
@@ -111,13 +122,13 @@ impl Preparation {
             )
             .await?;
         if selected.version().digest().bytes() != binding.digest
-            || selected.admission().operation != binding.admission
+            || selected.binding() != binding.lifecycle
         {
             return Err(Error::Conflict);
         }
         Ok(selected)
     }
-    /// Missing, withdrawn or superseded approval is local execution ineligibility.
+    /// Missing, withdrawn or superseded lifecycle is local execution ineligibility.
     pub async fn recheck_in(
         &self,
         tx: &mut PgTransaction<'_>,
@@ -256,7 +267,7 @@ impl Preparation {
                 Err(Error::Missing | Error::NotAdmitted) => return Ok(None),
                 Err(e) => return Err(e),
             };
-            if root && selected.admission().operation != binding.admission {
+            if root && selected.binding() != binding.lifecycle {
                 return Ok(None);
             }
             let dependencies = if root && binding.uninstall {

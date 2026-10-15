@@ -112,6 +112,13 @@ impl rss_mdm_registration_service::agent_pki::Clock for PkiClock {
     }
 }
 impl AgentPki {
+    pub(crate) fn issuance_ready(&self, now: i64) -> bool {
+        !matches!(
+            health(self.issuer.trust().expires(), now, self.required_seconds),
+            "expired" | "issuance_unavailable"
+        )
+    }
+
     pub(crate) fn registration(self: Arc<Self>) -> rss_runtime::ManagedTaskRegistration {
         let (task, _) =
             rss_runtime::ManagedTask::prepare("agent-pki-expiry", Duration::from_secs(2));

@@ -44,7 +44,7 @@ SELECT
  WHERE n.nspname NOT IN ('pg_catalog','information_schema') AND n.nspname NOT LIKE 'pg_toast%'
  AND c.relkind IN ('r','v','m','f')
  AND n.nspname NOT IN ('mdm_resource','mdm_software_release','mdm_software_composition')
- AND (n.nspname,c.relname) NOT IN (('rss_audit','heads'),('rss_audit','records'),('rss_ledger','heads'),('rss_ledger','entries'),('mdm_audit','receipts'),('mdm_software','sources'),('mdm_software','approvals'),('mdm_content','manifests'),('rss_transactional_messaging','policy'),('rss_transactional_messaging','outbox'))
+ AND (n.nspname,c.relname) NOT IN (('rss_audit','heads'),('rss_audit','records'),('rss_ledger','heads'),('rss_ledger','entries'),('mdm_audit','receipts'),('mdm_software','sources'),('mdm_software','versions'),('mdm_software','materials'),('mdm_access','authorization_rules'),('mdm_access','user_groups'),('public','mdm_installation'),('mdm_content','manifests'),('rss_transactional_messaging','policy'),('rss_transactional_messaging','outbox'))
  AND (has_table_privilege(current_user,c.oid,'SELECT,INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER') OR has_any_column_privilege(current_user,c.oid,'SELECT,INSERT,UPDATE,REFERENCES')))
  AND NOT EXISTS(SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
  WHERE c.relkind='S' AND n.nspname NOT IN ('pg_catalog','information_schema')
@@ -67,9 +67,11 @@ SELECT
  AND has_schema_privilege(current_user,'mdm_software','USAGE')
  AND NOT EXISTS(SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
  WHERE n.nspname='mdm_software' AND c.relkind='r'
- AND (has_table_privilege(current_user,c.oid,'SELECT')<>(c.relname IN('sources','approvals'))
- OR has_table_privilege(current_user,c.oid,'INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER')
- OR has_any_column_privilege(current_user,c.oid,'INSERT,UPDATE,REFERENCES')
+ AND (has_table_privilege(current_user,c.oid,'SELECT')<>(c.relname IN('sources','versions','materials'))
+ OR has_table_privilege(current_user,c.oid,'INSERT')<>(c.relname IN('versions','materials'))
+ OR has_table_privilege(current_user,c.oid,'UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER')
+ OR has_any_column_privilege(current_user,c.oid,'REFERENCES')
+ OR EXISTS(SELECT 1 FROM pg_attribute a WHERE a.attrelid=c.oid AND a.attnum>0 AND NOT a.attisdropped AND has_column_privilege(current_user,c.oid,a.attnum,'UPDATE')<>(c.relname='versions' AND a.attname='lifecycle'))
  OR NOT c.relrowsecurity OR NOT c.relforcerowsecurity OR c.relowner IN(SELECT oid FROM reachable)))
 
  -- Resource reference insertion executes the content deletion guard under this role.
@@ -80,3 +82,10 @@ SELECT
  AND NOT has_any_column_privilege(current_user,'mdm_content.manifests','INSERT,UPDATE,REFERENCES')
  AND (SELECT relrowsecurity AND relforcerowsecurity AND relowner NOT IN(SELECT oid FROM reachable)
       FROM pg_class WHERE oid='mdm_content.manifests'::regclass)
+
+ -- Publication can read current authorization, but cannot write rules or installation identity.
+ AND NOT EXISTS(SELECT 1 FROM pg_class c WHERE c.oid IN('mdm_access.authorization_rules'::regclass,'mdm_access.user_groups'::regclass)
+ AND (NOT has_table_privilege(current_user,c.oid,'SELECT') OR has_table_privilege(current_user,c.oid,'INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER') OR has_any_column_privilege(current_user,c.oid,'INSERT,UPDATE,REFERENCES')))
+ AND NOT EXISTS(SELECT 1 FROM pg_attribute a WHERE a.attrelid='public.mdm_installation'::regclass AND a.attnum>0 AND NOT a.attisdropped AND has_column_privilege(current_user,a.attrelid,a.attnum,'SELECT')<>(a.attname IN('instance_id','management_tenant_id')))
+ AND NOT has_table_privilege(current_user,'public.mdm_installation','INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER')
+ AND NOT has_any_column_privilege(current_user,'public.mdm_installation','INSERT,UPDATE,REFERENCES')

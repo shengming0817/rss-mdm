@@ -106,14 +106,14 @@ impl SourceDefinition {
 )]
 pub enum SourceChange {
     Register { definition: SourceDefinition },
-    Approve { evidence: Vec<String> },
-    Withdraw { evidence: Vec<String> },
+    Enable,
+    Disable,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "action", rename_all = "snake_case", deny_unknown_fields)]
 pub enum VersionChange {
-    Approve { evidence: Vec<String> },
-    Withdraw { evidence: Vec<String> },
+    Enable,
+    Withdraw,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -122,7 +122,7 @@ pub struct Operation<T> {
     pub expected_revision: u64,
     pub input: T,
 }
-/// Held until the admission transaction completes. The host must pin every verified artifact.
+/// Held until the lifecycle transaction completes. The host must pin every verified artifact.
 pub trait VerifiedContent: Send + Sync {
     fn resource_digest(&self) -> [u8; 32];
 }
@@ -136,30 +136,30 @@ pub trait ContentPort: Send + Sync {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum AdmissionState {
-    Registered,
-    Approved,
+pub enum LifecycleState {
+    Enabled,
+    Disabled,
     Withdrawn,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct Admission {
+pub struct Lifecycle {
     pub revision: u64,
-    pub state: AdmissionState,
+    pub state: LifecycleState,
     pub operation: uuid::Uuid,
     pub actor: String,
-    pub evidence: Vec<String>,
     pub at: i64,
     pub digest: [u8; 32],
 }
-/// A current approved variant, retaining its complete Resource-owned definition.
+/// A current enabled variant, retaining its complete Resource-owned definition.
 pub struct FrozenSoftware {
     pub(super) source: SourceDefinition,
     pub(super) version: Version,
     pub(super) variant: rss_mdm_resource::Id,
     pub(super) platform: rss_mdm_resource::Platform,
     pub(super) architecture: rss_mdm_resource::Architecture,
-    pub(super) admission: Admission,
+    pub(super) lifecycle: Lifecycle,
+    pub(super) binding: [u8; 32],
 }
 impl FrozenSoftware {
     pub fn source(&self) -> &SourceDefinition {
@@ -177,19 +177,10 @@ impl FrozenSoftware {
     pub fn architecture(&self) -> rss_mdm_resource::Architecture {
         self.architecture
     }
-    pub fn admission(&self) -> &Admission {
-        &self.admission
+    pub fn binding(&self) -> [u8; 32] {
+        self.binding
     }
-}
-pub(super) fn evidence(values: &[String]) -> Result<()> {
-    if values.is_empty()
-        || values.len() > 32
-        || values
-            .iter()
-            .any(|v| v.is_empty() || v.len() > 1024 || v.chars().any(char::is_control))
-    {
-        Err(Error::Input)
-    } else {
-        Ok(())
+    pub fn lifecycle(&self) -> &Lifecycle {
+        &self.lifecycle
     }
 }

@@ -966,15 +966,15 @@ async fn policy_freeze_distinguishes_superseded_identity_from_withdrawn_approval
         )
         .await?;
     ensure!(
-        rejected.0 == StatusCode::CONFLICT && rejected.1["code"] == "operation_conflict",
-        "wrong approval identity: {rejected:?}"
+        rejected.0 == StatusCode::BAD_REQUEST && rejected.1["code"] == "malformed_request",
+        "retired approval identity: {rejected:?}"
     );
     crate::test_support::software::write(
         &mut client.browser,
         &client.router,
         &format!("/api/v1/software/resources/{resource}/versions/v1"),
         1,
-        json!({"action":"withdraw","evidence":["freeze-rejection-contract"]}),
+        json!({"action":"withdraw"}),
     )
     .await?;
     let rejected = client

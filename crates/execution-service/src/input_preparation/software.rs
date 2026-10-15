@@ -10,7 +10,6 @@ impl Inputs {
             binding: selection,
             delivery,
             intent,
-            admission: admission_operation,
             schedule,
             lifetime: run_lifetime_seconds,
         } = input
@@ -32,14 +31,14 @@ impl Inputs {
                 )
             })
             .collect::<Vec<_>>();
-        self.software
+        let lifecycle_binding = self
+            .software
             .freeze_in(
                 tx,
                 rss_mdm_software_service::preparation::FreezeRequest {
                     resource: binding.id(),
                     version: binding.version(),
                     digest: version.digest().bytes(),
-                    admission: *admission_operation,
                     uninstall: matches!(intent, SoftwareIntent::ExplicitUninstall),
                     targets: &targets,
                 },
@@ -51,7 +50,7 @@ impl Inputs {
             resource: binding.id().to_owned(),
             version: binding.version().to_owned(),
             variants: selection.variants.clone(),
-            admission_operation: *admission_operation,
+            lifecycle_binding,
             intent: *intent,
             schedule: (*schedule).clone(),
             run_lifetime_seconds: *run_lifetime_seconds,

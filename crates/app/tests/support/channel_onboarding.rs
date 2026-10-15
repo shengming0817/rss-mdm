@@ -31,7 +31,7 @@ pub(crate) async fn grants(user: &Browser, router: &Router) -> Result<()> {
         "resource_write",
         "software_read",
         "software_write",
-        "software_approve",
+        "release_publish",
         "software_withdraw",
         "policy_read",
         "policy_write",
@@ -68,14 +68,6 @@ pub(crate) async fn publish_until(
     let source = Uuid::new_v4();
     let source_path = format!("/api/v1/software/sources/{source}/revisions/1");
     let registered=write(user,router,&source_path,0,json!({"action":"register","definition":{"id":source,"revision":"1","protocol":{"kind":"private"}}})).await?;
-    write(
-        user,
-        router,
-        &source_path,
-        1,
-        json!({"action":"approve","evidence":["controlled-source"]}),
-    )
-    .await?;
     let resource = Uuid::new_v4();
     let path = format!("/api/v1/resources/{resource}");
     write(
@@ -115,12 +107,12 @@ pub(crate) async fn publish_until(
         json!({"action":"activate","version":"v1"}),
     )
     .await?;
-    let approved = write(
+    write(
         user,
         router,
         &format!("/api/v1/software/resources/{resource}/versions/v1"),
         0,
-        json!({"action":"approve","evidence":["controlled-agent"]}),
+        json!({"action":"enable"}),
     )
     .await?;
     let group = Uuid::new_v4();
@@ -128,7 +120,7 @@ pub(crate) async fn publish_until(
     let scope = Uuid::new_v4();
     write(user,router,&format!("/api/v1/scopes/{scope}"),0,json!({"action":"put","definition":{"targets":[{"kind":"group","id":group}],"limitations":null,"exclusions":[]}})).await?;
     let policy = Uuid::new_v4();
-    let mut input = json!({"action":"put","enabled":true,"definition":{"scope":scope,"action":{"kind":"ensure_agent_installed","resource":{"kind":"software","id":resource,"version":"v1","variants":{if windows{"windows_x86_64"}else{"macos_aarch64"}:"default"}},"admissionOperation":approved["admission"]["operation"],"runLifetimeSeconds":600}}});
+    let mut input = json!({"action":"put","enabled":true,"definition":{"scope":scope,"action":{"kind":"ensure_agent_installed","resource":{"kind":"software","id":resource,"version":"v1","variants":{if windows{"windows_x86_64"}else{"macos_aarch64"}:"default"}},"runLifetimeSeconds":600}}});
     if let Some(until) = until {
         input["definition"]["action"]["schedule"] = json!({"trigger":{"kind":"check_in","minimumSeconds":60},"notBefore":0,"until":until,"jitterSeconds":0,"window":null,"misfire":{"kind":"coalesce_one"}});
     }
