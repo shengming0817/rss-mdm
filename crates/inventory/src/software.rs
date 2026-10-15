@@ -1,4 +1,5 @@
 //! Installation facts are distinct from receipts and future-user provisioning.
+//! ref: Microsoft Learn Windows.Management.Deployment.PackageManager.FindProvisionedPackages.
 use crate::{Invalid, Result, Scalar};
 use std::collections::BTreeMap;
 

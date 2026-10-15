@@ -1740,3 +1740,5 @@ consume(("crates/resource/src/agent_collection.rs", "crates/resource/src/bluepri
 consume_dependencies("planning.http planning.agent_policy execution.agent.delivery execution.agent.history execution.agent.recovery assets.sources assets.queries", normal="rss-mdm-agent-wire time")
 
 consume(("crates/examples/examples/fixture_snapshot.rs",), "examples.cli")
+
+MODULES['execution.agent.delivery'] = replace(MODULES['execution.agent.delivery'], support_inputs=(*MODULES['execution.agent.delivery'].support_inputs, 'crates/app/tests/execution/agent/windows_assets.rs'))

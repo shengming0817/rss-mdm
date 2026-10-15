@@ -133,13 +133,38 @@ Windows Firewall CSP 状态与 WSC health 使用不同字段；BitLocker convers
 
 ## Windows Agent 声明式采集
 
-Agent 原生采集使用独立的 `agent_collection` Resource 和同名 Policy action。官方 `windows.agent.*` 版本 1 模板覆盖身份/OS、CPU、内存、固件、磁盘、卷、网络、电池和软件，经现有蓝图接口实例化为普通 Resource；选择后发布、激活并绑定精确 Policy 版本。按需使用 Policy rerun，周期使用既有 Schedule/Frequency。能力不足不派发，失败不会改派 PowerShell；MDM CSP 模板、企业显式脚本和 osquery 各自保留。
+Agent 原生采集使用独立的 `agent_collection` Resource 和同名 Policy action。官方 `windows.agent.*` 模板覆盖身份/OS、CPU、内存、固件、磁盘、卷、网络、电池和软件；identity/software 当前为修订 2，其余为修订 1，经现有蓝图接口实例化为普通 Resource；选择后发布、激活并绑定精确 Policy 版本。按需使用 Policy rerun，周期使用既有 Schedule/Frequency。能力不足不派发，失败不会改派 PowerShell；MDM CSP 模板、企业显式脚本和 osquery 各自保留。
 
 定义包含唯一 wire plan 和服务端字段映射。WMI 只查询本机已有 namespace/class 的明确属性和结构化过滤条件；不能执行方法、远程查询或 Win32_Product。注册表明确 HKLM/HKU-SID、32/64 位视图、路径、值名和类型，只读取指定值或枚举直接子键；不使用 System HKCU，不加载离线 hive，EXPAND_SZ 不展开。UInt64/QWORD 按精确十进制文本传输，可映为字符串或受检整数；不能转换成浮点。`cim_time` 只转换日期与 UTC offset 完整的 CIM 时间。
 
 `agent.native` 与其他来源分别保存事实，字段统一视图继续使用原有来源配置。标准字段中新来源初始优先级为 1、既有来源保持 0；数值越小越优先，可通过现有字段版本接口调整，不设置 TTL。完整查询独立更新，截断或错误列表保留旧值，完整零条列表更新为 `[]`。标量零条默认 Missing，只有冻结映射明确选择且证据完整时才发布 null/本来源删除。软件清单必须完整覆盖预期用户集合；本期不支持 SID 局部替换。
 
 发布及执行要求 InventoryCollect 和相应资源/范围权限；敏感字段还需要既有敏感资产权限。任务领取和 Start 必须具备 `inventory.native.v1` 及 plan 所需引擎版本，无需 ScriptExecute 或 PowerShell。运行详情保存逐查询质量与结果摘要；大结果保留分块引用，不能以执行完成代替字段完整。设备运行、Windows API 正确性与性能由独立 Agent 验收证明。
+
+### Windows 标准资产语义
+
+identity 从 Win32_ComputerSystem 读取型号/制造商，从 ComputerSystemProduct 读取 UUID，
+从 BIOS 读取序列号。edition 使用机器级 CurrentVersion/EditionID；architecture 使用机器级
+Session Manager/Environment/PROCESSOR_ARCHITECTURE，映射 AMD64/ARM64 为 x86_64/aarch64，
+不读取可能受仿真影响的进程环境。注册表来源参考[微软 WSL 实现](https://github.com/microsoft/WSL/blob/6747ae808acd3895ed1b23ffdb8aa9d4b6978066/tools/deploy/deploy-to-host.ps1#L13-L17)。
+
+Inventory 统一验证序列号/UUID，占位值、非法 UUID 为 Invalid，缺属性为 Missing；
+两者均不生成删除或替代身份。规则同样适用于自定义映射，设备关联复用相同判定。
+合法序列号修剪空白并统一为大写，UUID 使用规范小写格式；原始结果和摘要保持不变。
+
+软件 installations 每项必须包含 installation_state：Win32 卸载记录为 installed，
+MSIX 用户注册为 registered，设备预配为 provisioned。用户记录保留 owner SID，设备记录 owner 为空；
+预配只说明未来用户注册的准备状态，不证明现有用户已安装。origin、native_id 和实例 id 保留原始来源坐标，
+同包跨用户以及注册/预配分别成项。状态与来源或范围矛盾、未知 Windows 来源、非法行或覆盖不足
+均不能发布部分清单；完整零条才能更新为空。receipts/packages 不增加该状态属性。
+
+磁盘 id 使用 Win32_DiskDrive.DeviceID，表示当前本机磁盘实例，不承诺跨重启永久身份，
+不与旧 PNPDeviceID 派生值自动关联。卷使用 DeviceID 标识、Name 展示。CPU 完整汇总核心数，
+型号不一致时省略 model；多电池使用能量加权百分比，无法可靠计算时保留对应质量，不能退回首包值。
+
+当前字段基线直接替换旧 installations 结构，缺少 installation_state 的旧数据不被补默认值。
+identity/software 修订 1 蓝图退出；没有旧部署迁移或兼容读取，已有字段类型不可变规则仍然适用。
+服务端接缝测试与 Windows 真机证据分别记录，x64/ARM64 实机支持须由产品 T3 验证。
 
 ### macOS Agent 声明式采集
 
