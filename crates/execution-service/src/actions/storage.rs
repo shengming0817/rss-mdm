@@ -119,7 +119,7 @@ pub async fn audit_details(
 
 pub enum ScheduledPolicy {
     AgentCollection(ExecutionPolicy<crate::action_contract::FrozenAgentCollection>),
-    Script(ExecutionPolicy),
+    Script(Box<ExecutionPolicy>),
     Native(ExecutionPolicy<crate::action_contract::FrozenNativeCollection>),
     Software(SoftwareExecutionPolicy),
     Enrollment(crate::sources::enrollment::EnrollmentPolicy),
@@ -548,9 +548,9 @@ pub async fn load_policy_version(
         crate::frozen::Frozen::NativeCollection { .. } => Ok(ScheduledPolicy::Native(
             crate::sources::admission::native_in(reader, tx, id).await?,
         )),
-        crate::frozen::Frozen::Execution { .. } => Ok(ScheduledPolicy::Script(
+        crate::frozen::Frozen::Execution { .. } => Ok(ScheduledPolicy::Script(Box::new(
             crate::sources::admission::read_in(reader, tx, id).await?,
-        )),
+        ))),
         crate::frozen::Frozen::Software { .. } => Ok(ScheduledPolicy::Software(
             crate::sources::software::read_in(reader, tx, id).await?,
         )),

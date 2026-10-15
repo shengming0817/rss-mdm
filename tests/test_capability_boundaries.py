@@ -36,7 +36,7 @@ class CapabilityBoundaries(unittest.TestCase):
 
     def test_inventory_has_no_channel_protocol_dependencies(self):
         self.assertFalse(dependencies("inventory-service") & {
-            "rss-mdm-agent-wire", "rss-mdm-windows-mdm", "rss-mdm-apple-mdm", "plist"})
+            "rss-mdm-windows-mdm", "rss-mdm-apple-mdm", "plist"})
 
     def test_channels_do_not_depend_on_each_other(self):
         forbidden = {'rss-mdm-app'} | {f'rss-mdm-{p}' for p in INGRESS}

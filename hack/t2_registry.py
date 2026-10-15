@@ -1044,7 +1044,6 @@ TOOL_INPUTS = {
     'hack/t2_hosts.py': ('test_t2_hosts',),
     'hack/t2_modules/installation.py': ('test_t2_guards',),
     'hack/t2_python.py': ('test_t2_execution', 'test_t2_runner'),
-    'hack/rust_test_layout.py': ('test_audit_surface',),
     'hack/t2_model.py': ('test_t2_policy', 'test_t2_modules', 'test_t2_execution', 'test_t2_runner'),
     'hack/ci_impact.py': ('test_ci_impact', 'test_ci_selection', 'test_t2_modules'),
     'hack/t2_registry.py': ('test_app_test_layout', 'test_t2_policy', 'test_t2_modules', 'test_t2_runner', 'test_ci_selection', 'test_ci_impact'),
