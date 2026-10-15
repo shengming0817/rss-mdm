@@ -1,6 +1,5 @@
 //! Group mutation and immutable membership views; Flow supplies scheduling and references.
 use crate::{Error, Failure, assets, operation::Operation, transaction::*};
-use assets::Criteria;
 use rss_contract::Timepoint;
 use rss_request_context::TenantId;
 use rss_transactional_messaging_postgres::PgTransaction;
@@ -88,3 +87,28 @@ mod service;
 pub use service::Command;
 
 pub mod response;
+
+/// Selection metadata is frozen alongside the core rule, in the same mutation transaction.
+pub async fn condition_in(
+    tx: &mut PgTransaction<'_>,
+    tenant: TenantId,
+    group: rss_mdm_group_postgres::GroupId,
+    version: &str,
+    rule: &rss_mdm_group_postgres::core::Rule,
+) -> Result<assets::InventoryCondition> {
+    let tenant = tenant.to_string();
+    let group = group.to_string();
+    let version = version.to_owned();
+    let body: String = tx.with_connection(move |c| Box::pin(async move {
+        sqlx::query_scalar("SELECT selection::text FROM mdm_assets.group_selections WHERE tenant_id=$1::uuid AND group_id=$2::uuid AND rule_version=$3")
+            .bind(tenant).bind(group).bind(version).fetch_one(c).await
+    })).await?;
+    let (selector, quantifier) = stored(serde_json::from_str(&body))?;
+    let condition = assets::InventoryCondition {
+        selector,
+        quantifier,
+        criteria: assets::criteria_view(rule.view().criteria)?,
+    };
+    condition.validate()?;
+    Ok(condition)
+}

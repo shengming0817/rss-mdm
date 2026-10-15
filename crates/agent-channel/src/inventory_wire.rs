@@ -80,13 +80,19 @@ fn to_wire_field(value: &d::FieldDefinition) -> Result<w::FieldDefinition, Error
     })
 }
 pub(crate) fn to_wire(value: &d::CollectionDefinition) -> Result<w::CollectionDefinition, Error> {
+    if value
+        .bindings()
+        .iter()
+        .any(|f| f.scope != d::CollectionScope::Device)
+    {
+        return Err(Error::Malformed);
+    }
     w::CollectionDefinition::new(
         value.dataset(),
         value.version(),
         to_wire_source(value.source()),
         value
             .fields()
-            .iter()
             .map(to_wire_field)
             .collect::<Result<Vec<_>, _>>()?,
     )
@@ -170,14 +176,18 @@ fn to_domain_field(value: &w::FieldDefinition) -> Result<d::FieldDefinition, Err
 }
 pub(crate) fn to_domain(value: &w::CollectionDefinition) -> Result<d::CollectionDefinition, Error> {
     d::CollectionDefinition::new(
-        d::CollectionScope::Device,
         value.dataset(),
         value.version(),
         to_domain_source(value.source()),
         value
             .fields()
             .iter()
-            .map(to_domain_field)
+            .map(|f| {
+                to_domain_field(f).map(|definition| d::CollectionField {
+                    definition,
+                    scope: d::CollectionScope::Device,
+                })
+            })
             .collect::<Result<Vec<_>, _>>()?,
     )
     .map_err(|_| Error::Malformed)
@@ -213,20 +223,20 @@ mod tests {
             .into_iter()
             .filter(|field| field.sources.contains_key(&d::Source::AgentBuiltin))
             .collect();
-        let original = d::CollectionDefinition::new(
-            d::CollectionScope::Device,
-            "inventory",
-            "1",
-            d::Source::AgentBuiltin,
-            fields,
-        )
+        let original = d::CollectionDefinition::new("inventory", "1", d::Source::AgentBuiltin, {
+            let scope = d::CollectionScope::Device;
+            let fields: Vec<rss_mdm_inventory::FieldDefinition> = fields;
+            fields
+                .into_iter()
+                .map(|definition| rss_mdm_inventory::CollectionField {
+                    definition,
+                    scope: scope.clone(),
+                })
+                .collect()
+        })
         .unwrap();
         let wire = to_wire(&original).unwrap();
-        assert_eq!(
-            serde_json::to_vec(&original).unwrap(),
-            serde_json::to_vec(&wire).unwrap()
-        );
-        assert_eq!(original.fingerprint().unwrap(), wire.fingerprint().unwrap());
+        assert_ne!(original.fingerprint().unwrap(), wire.fingerprint().unwrap());
         let restored = to_domain(&wire).unwrap();
         assert_eq!(original, restored);
         assert_eq!(original.coverage().unwrap(), restored.coverage().unwrap());

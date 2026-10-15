@@ -337,7 +337,32 @@ impl Planning {
                         .await?,
                 )?
                 .ok_or(Error::Conflict)?;
-                let data = assets::filter::associated_page(tenant, &inputs, &raw, &catalog, &rule)?;
+                let condition = rss_mdm_inventory_service::groups::condition_in(
+                    tx,
+                    tenant,
+                    build.request.group,
+                    build
+                        .request
+                        .rule_version
+                        .as_deref()
+                        .ok_or(Error::Conflict)?,
+                    &rule,
+                )
+                .await?;
+                let data = assets::planning::SnapshotReader { tenant }
+                    .condition_inputs_in(
+                        tx,
+                        rss_mdm_inventory_service::assets::planning::ConditionRequest {
+                            watermark: watermark,
+                            devices: &raw,
+                            catalog: &catalog,
+                            authorization: &assets::ReadScope::all(),
+                            condition: &condition,
+                            rule: &rule,
+                            associated: Some(&inputs),
+                        },
+                    )
+                    .await?;
                 let after = build
                     .cursor
                     .as_ref()
@@ -433,12 +458,29 @@ impl Planning {
                         .await?,
                 )?
                 .ok_or(Error::Unavailable(Failure::Runtime))?;
-                let data = stored(assets::filter::page(
+                let condition = rss_mdm_inventory_service::groups::condition_in(
+                    tx,
                     self.tenant,
-                    &page.devices,
-                    &page.catalog,
+                    build.request.group,
+                    version,
                     &rule,
-                ))?;
+                )
+                .await?;
+                let data = self
+                    .asset_reader
+                    .condition_inputs_in(
+                        tx,
+                        rss_mdm_inventory_service::assets::planning::ConditionRequest {
+                            watermark: watermark,
+                            devices: &page.devices,
+                            catalog: &page.catalog,
+                            authorization: &assets::ReadScope::all(),
+                            condition: &condition,
+                            rule: &rule,
+                            associated: None,
+                        },
+                    )
+                    .await?;
                 if !data.objects.is_empty() {
                     let page_input = g::core::PageInput {
                         tenant: self.tenant,

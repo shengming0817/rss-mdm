@@ -55,6 +55,7 @@ impl Config {
     }
     pub(crate) async fn open(
         &self,
+        inventory: Arc<crate::inventory_runtime::InventoryRuntime>,
         audit_store: Arc<rss_mdm_audit_integration::AuditStore>,
         tenant: TenantId,
         clock: Arc<dyn crate::clock::Clock>,
@@ -119,6 +120,7 @@ impl Config {
         {
             Ok(service) => {
                 let assets = Arc::new(crate::assets::AssetService::new(
+                    inventory,
                     audit_store.clone(),
                     runtime.clone(),
                     tenant,

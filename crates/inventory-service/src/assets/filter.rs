@@ -259,10 +259,10 @@ fn object(
             },
         );
     }
-    Ok(g::ObjectSnapshot {
-        key: checked_input(g::ObjectKey::new(tenant, key))?,
+    Ok(g::ObjectSnapshot::single(
+        checked_input(g::ObjectKey::new(tenant, key))?,
         facts,
-    })
+    ))
 }
 pub fn page(
     tenant: TenantId,
@@ -288,6 +288,7 @@ pub fn page(
         })
         .collect::<Result<_>>()?;
     Ok(FactPage {
+        contexts: BTreeMap::new(),
         coverage: rule.view().fields.keys().cloned().collect(),
         objects,
     })
@@ -356,12 +357,14 @@ pub fn associated_page(
         })?);
     }
     Ok(FactPage {
+        contexts: BTreeMap::new(),
         coverage: rule.view().fields.keys().cloned().collect(),
         objects,
     })
 }
 
 pub struct FactPage {
+    pub contexts: BTreeMap<(String, String), DeviceView>,
     pub coverage: BTreeSet<String>,
     pub objects: Vec<g::ObjectSnapshot>,
 }

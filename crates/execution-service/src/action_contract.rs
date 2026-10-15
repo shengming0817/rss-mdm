@@ -98,11 +98,11 @@ impl FrozenNativeCollection {
 /// Frozen native Agent input, independent of script permissions and profiles.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct FrozenAgentCollection {
+    pub fields: Vec<rss_mdm_inventory::FieldDefinition>,
     pub grants: BTreeMap<String, Vec<crate::authorization::UserGrant>>,
     pub input: ExecutionInput,
     pub resource: wire::TaskResource,
     pub definition: r::AgentCollectionDefinition,
-    pub collection: rss_mdm_inventory::CollectionDefinition,
     pub resource_digest: [u8; 32],
 }
 impl ScheduledInput for FrozenAgentCollection {

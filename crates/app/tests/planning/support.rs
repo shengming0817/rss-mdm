@@ -322,6 +322,7 @@ pub(crate) async fn assets(service: &Planning) -> Arc<assets::AssetService> {
         .await
         .unwrap();
     Arc::new(assets::AssetService::new(
+        inventory_runtime(service.tenant).await,
         service.audit_store.clone(),
         service.runtime.clone(),
         service.tenant,
@@ -541,4 +542,22 @@ pub(crate) async fn scope_admission(
             |_| panic!("unknown"),
             |e| panic!("{e:?}"),
         )
+}
+
+pub(crate) async fn inventory_runtime(
+    tenant: TenantId,
+) -> Arc<crate::inventory_runtime::InventoryRuntime> {
+    let options = crate::device::test_support::options;
+    let access = crate::Database::connect(options("mdm_access").unwrap())
+        .await
+        .unwrap();
+    crate::inventory_runtime::InventoryRuntime::fixture(
+        options("mdm_runtime").unwrap(),
+        access.inventory(),
+        tenant,
+        crate::test_support::monotonic(),
+        audit_store_with_integrity(rss_audit_postgres::Integrity::Plain).await,
+    )
+    .await
+    .unwrap()
 }

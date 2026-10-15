@@ -157,10 +157,10 @@ async fn detail(
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
     Path(device): Path<String>,
-    parameters: ParamInput<UserScope>,
+    parameters: ParamInput<CollectionSelector>,
 ) -> std::result::Result<HttpResponse, Error> {
     let selector = params(parameters)?;
-    let scope = read_scope(&auth, selector.user_id)?;
+    let scope = read_scope(&auth, selector.scope)?;
     run(&app, &auth, &audit, Command::Detail { device, scope }).await
 }
 async fn manual(
@@ -364,27 +364,23 @@ async fn field_references(
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct UserScope {
-    user_id: Option<String>,
+struct CollectionSelector {
+    scope: Option<String>,
 }
-fn read_scope(
-    auth: &RequestAuth,
-    user_id: Option<String>,
-) -> std::result::Result<ReadScope, Error> {
-    let mut scope = ReadScope::from_proof(&auth.proof)?;
-    if let Some(identity) = user_id {
-        scope.collection_scope = rss_mdm_inventory::CollectionScope::User { identity };
-        scope
-            .collection_scope
+fn read_scope(auth: &RequestAuth, scope: Option<String>) -> std::result::Result<ReadScope, Error> {
+    let mut read = ReadScope::from_proof(&auth.proof)?;
+    if let Some(scope) = scope {
+        read.collection_scope = serde_json::from_str(&scope).map_err(|_| Error::Malformed)?;
+        read.collection_scope
             .validate_executable()
             .map_err(|_| Error::Malformed)?;
     }
-    Ok(scope)
+    Ok(read)
 }
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct ListPage {
-    user_id: Option<String>,
+    scope: Option<String>,
     cursor: Option<String>,
     limit: Option<usize>,
 }
@@ -393,10 +389,10 @@ async fn collection_run(
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
     Path((device, id)): Path<(String, Uuid)>,
-    parameters: ParamInput<UserScope>,
+    parameters: ParamInput<CollectionSelector>,
 ) -> std::result::Result<HttpResponse, Error> {
     let selector = params(parameters)?;
-    let scope = read_scope(&auth, selector.user_id)?;
+    let scope = read_scope(&auth, selector.scope)?;
     run(
         &app,
         &auth,
@@ -419,7 +415,7 @@ async fn list_items(
 ) -> std::result::Result<HttpResponse, Error> {
     let page = params(parameters)?;
     let field = FieldKey::parse(&key).map_err(|_| Error::Malformed)?;
-    let scope = read_scope(&auth, page.user_id)?;
+    let scope = read_scope(&auth, page.scope)?;
     run(
         &app,
         &auth,
@@ -439,7 +435,7 @@ async fn list_items(
 #[serde(deny_unknown_fields)]
 struct ItemPage {
     #[serde(rename = "userId")]
-    user_id: Option<String>,
+    scope: Option<String>,
     offset: Option<usize>,
     limit: Option<usize>,
 }
@@ -452,7 +448,7 @@ async fn collection_items(
 ) -> std::result::Result<HttpResponse, Error> {
     let page = params(parameters)?;
     let field = FieldKey::parse(&key).map_err(|_| Error::Malformed)?;
-    let scope = read_scope(&auth, page.user_id)?;
+    let scope = read_scope(&auth, page.scope)?;
     run(
         &app,
         &auth,

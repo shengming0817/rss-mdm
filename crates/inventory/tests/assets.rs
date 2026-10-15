@@ -18,6 +18,7 @@ fn fact(value: &str, source: &str) -> SourceFact {
         state: State::Known(Scalar::String(value.into())),
         last_known: None,
         evidence: Evidence {
+            scope: rss_mdm_inventory::CollectionScope::Device,
             source: rss_mdm_inventory::Source::parse(source).unwrap(),
             dataset: Some("collector".into()),
             registration: Some("registration".into()),

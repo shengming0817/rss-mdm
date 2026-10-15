@@ -26,7 +26,7 @@ PKI 只导出两个 HTTP 根 schema：Trust 与 Acknowledgement，其引用的 I
 
 ## 原生采集契约（#2739）
 
-当前 TaskPayload 统一为显式 `{kind,task}`，类型为 script/software/enrollment/collection；旧无类型包络拒绝。claim environment 必须携带 nativeEngines，空对象表示不支持，不从 tools 或脚本 profile 推断原生能力。Collection 使用同一 plan/result 执行 Windows 与 macOS 设备级采集；用户/prefix 的服务端资产接入由 #2726 完成。
+当前 TaskPayload 统一为显式 `{kind,task}`，类型为 script/software/enrollment/collection；旧无类型包络拒绝。claim environment 必须携带 nativeEngines，空对象表示不支持，不从 tools 或脚本 profile 推断原生能力。Collection 使用同一 plan/result 执行 Windows 与 macOS 设备级采集；用户应用与 Brew 范围接入同一采集链路，见 [资产指南](../../docs/guides/assets.md)。
 
 `NativeCollectionPlan` 持有有界查询与引擎版本，输出结构由声明派生；Resource 持有资产映射。CPU 汇总须完整枚举处理器，型号不一致时省略 model，核心数不得只取第一颗；电池 charge_percent 为可用能量/完整充电能量的加权百分比，无法可靠计算则报告 Missing/Invalid。软件清单包括设备及所有现有用户的注册表安装记录与 MSIX 安装实例，实例 ID 须保留来源及用户坐标；预期用户集合在采集前后稳定且每个用户完整才可发布设备清单。未知 origin 或真实终端执行边界由后继 Agent 实现明确验证，本仓合成样本不代表实机完成。
 
@@ -44,8 +44,8 @@ APFS container 容量只计一次；volumes 蓝图保留 container 查询原始�
 PKG receipts 写入 `device.software.receipts`，收据不证明应用当前存在；不得混入 installations。
 
 Applications 的三个批准根与 Brew prefix/tap/formula/cask 已有闭合声明及结果类型。
-它们可由公共 wire 构造和签名，但当前 Resource 发布明确拒绝 Applications/Brew，
-也拒绝非 Device scope；#2726 负责这些范围的发布、任务准入和资产投影。
+Resource 可发布这些声明；服务端从同一 signed execution binding 冻结逐字段 scope，
+按实际 UID、批准根或 prefix/tap/package 分开投影，完整空列表只替换该字段范围。
 批准根、扫描参数和执行 UID 是采集材料，不自行授予 Inventory 范围权威。
 
 Collection `wireVersion=2`、签名域 `rss-mdm-agent-collection-task-v2-ed25519` 强制携带

@@ -242,16 +242,6 @@ pub(crate) async fn register(router: &Router, browser: &mut Browser) -> Result<A
 pub(crate) async fn router(fixture: &authority::Authority) -> Result<Router> {
     let service = service(fixture).await?;
     let runtime = agent_runtime(&fixture.base).await?;
-    let devices = Arc::new(crate::device::DeviceService::new(
-        fixture.access.registration(),
-        case_tenant().into(),
-        fixture.audit.clone(),
-    ));
-    let collection = Arc::new(crate::assets::collection::CollectionService::new(
-        devices,
-        fixture.access.inventory(),
-        runtime,
-    ));
     let envelope = rss_mdm_agent_channel::boundary::Envelope {
         admission: Arc::new(tokio::sync::Semaphore::new(32)),
         host: "mdm.example.test:9445".into(),
@@ -268,7 +258,7 @@ pub(crate) async fn router(fixture: &authority::Authority) -> Result<Router> {
                     enrollment: service.clone(),
                     audit_store: fixture.audit.clone(),
                     access: Arc::new(fixture.access.agent_store()),
-                    collection,
+                    inventory: runtime,
                 }),
                 envelope.clone(),
             ),

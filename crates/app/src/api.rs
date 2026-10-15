@@ -12,7 +12,6 @@ use axum::{
     response::{IntoResponse, Response},
     routing::get,
 };
-use rss_mdm_inventory_service::collection_service::CollectionService;
 #[cfg(test)]
 use serde_json::Value;
 use serde_json::json;
@@ -37,7 +36,6 @@ pub(crate) struct Assembly {
     pub(crate) credentials: Arc<Credentials>,
     pub(crate) clock: Arc<dyn Clock>,
     pub(crate) identity_management: Arc<IdentityManagementPolicy>,
-    pub(crate) collection: Arc<CollectionService>,
     pub(crate) inventory: Arc<crate::inventory_runtime::InventoryRuntime>,
     pub(crate) devices: Arc<crate::device::DeviceService>,
     pub(crate) apple: Option<Arc<crate::apple::Apple>>,
@@ -89,6 +87,7 @@ pub(crate) async fn application_fixture(
     let planning = config
         .flow
         .open(
+            runtime.clone(),
             audit_store.clone(),
             rss_request_context::TenantId::parse(&config.identity.tenant_id)
                 .map_err(|_| Error::Malformed)?,
@@ -354,11 +353,6 @@ pub(crate) async fn from_compiled(
         credentials: Arc::new(Credentials::new(monotonic.clone(), 10000)),
         clock,
         identity_management,
-        collection: Arc::new(CollectionService::new(
-            devices.clone(),
-            access.inventory(),
-            runtime.clone(),
-        )),
         inventory: runtime.clone(),
         devices,
         requests: Arc::new(tokio::sync::Semaphore::new(4)),
@@ -547,7 +541,6 @@ pub(crate) fn from_state(
                 ),
             ),
             devices: state.devices.clone(),
-            collection: state.collection.clone(),
             windows: state.windows.is_some(),
             apple: state.apple.is_some(),
         },
@@ -584,7 +577,7 @@ pub(crate) fn from_state(
                 enrollment: service.clone(),
                 audit_store: state.audit_store.clone(),
                 access: Arc::new(state.access.agent_store()),
-                collection: state.collection.clone(),
+                inventory: state.inventory.clone(),
             }),
             envelope.clone(),
         )

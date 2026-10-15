@@ -45,7 +45,7 @@ async fn collected_facts(b: &mut Browser, router: &Router, base: &Value) -> Resu
     let path = format!("/api/v1/compliance-rules/{id}");
     let mut def = definition(json!({"kind":"all"}));
     def["platform"] = json!("windows");
-    def["criteria"] = json!({"kind":"predicate","field":"device.model","op":"eq","value":{"kind":"string","value":"Collected"}});
+    def["criteria"]["criteria"] = json!({"kind":"predicate","field":"device.model","op":"eq","value":{"kind":"string","value":"Collected"}});
     ok(b, router, Method::PUT, &path, Some(request(0, def.clone()))).await?;
     for (model, expected) in [("Collected", "compliant"), ("Changed", "non_compliant")] {
         let run = report(&service, &access, &proof, [Some(model), Some("11")]).await?;

@@ -20,7 +20,7 @@ pub use collected::{CollectedValue, UnknownReason};
 pub mod builtin;
 mod catalog;
 mod collection;
-pub use collection::{CollectionDefinition, CollectionReference};
+pub use collection::{CollectionDefinition, CollectionField, CollectionReference};
 mod source;
 pub use assets::{
     EndpointSourceFact, Evidence, KnownValue, ResolvedDeviceField, ResolvedField, Scalar,
@@ -86,4 +86,4 @@ mod progress;
 pub use progress::{CollectionProgress, FieldAttempt, NativeValue, Quality};
 
 mod collection_scope;
-pub use collection_scope::CollectionScope;
+pub use collection_scope::{ApplicationRoot, BrewPackage, CollectionScope};

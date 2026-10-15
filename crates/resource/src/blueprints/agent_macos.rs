@@ -1,4 +1,6 @@
-//! Device-wide macOS Agent templates; scoped application/Brew publication belongs to #2726.
+//! Closed macOS Agent recipes. Field scopes are bound from the signed execution offer.
+//! ref: osquery/osquery osquery/tables/system/darwin/apps.mm@5.23.1
+//! ref: Homebrew/brew Library/Homebrew/cmd/info.rb@7cce6eac8d897b0b8440e16f33dbcb21770da7cf
 //! ref: osquery/osquery specs/darwin/package_receipts.table@5.23.1
 use super::*;
 use rss_mdm_agent_wire::{CollectionScope, runtime as w};
@@ -64,7 +66,7 @@ fn pack(
     Blueprint {
         id: format!("macos.agent.{id}"),
         version: "1".into(),
-        category: if id == "receipts" {
+        category: if id == "receipts" || id.starts_with("applications") || id.starts_with("brew") {
             "software"
         } else {
             "hardware"
@@ -101,7 +103,7 @@ fn pack(
 pub(super) fn catalog() -> Vec<Blueprint> {
     use Conversion::{Identity as I, Integer as N};
     use w::{MacosHardwareSection as H, NativeQueryDefinition::MacosHardware};
-    vec![
+    let mut catalog = vec![
         pack(
             "identity",
             MacosHardware {
@@ -214,5 +216,65 @@ pub(super) fn catalog() -> Vec<Blueprint> {
                 ]),
             )],
         ),
-    ]
+    ];
+    let software = || {
+        columns(&[
+            ("id", "/id", I),
+            ("native_id", "/native_id", I),
+            ("name", "/name", I),
+            ("version", "/version", I),
+            ("publisher", "/publisher", I),
+            ("scope", "/scope", I),
+            ("owner", "/owner", I),
+            ("origin", "/origin", I),
+            ("location", "/location", I),
+        ])
+    };
+    for (id, root) in [
+        (
+            "applications_local",
+            w::MacosApplicationRoot::LocalApplications,
+        ),
+        (
+            "applications_system",
+            w::MacosApplicationRoot::SystemApplications,
+        ),
+        (
+            "applications_user",
+            w::MacosApplicationRoot::UserApplications,
+        ),
+    ] {
+        let mut mapping = software();
+        mapping.columns.insert(
+            "installation_state".into(),
+            scalar(
+                "/origin",
+                Conversion::Enum {
+                    values: [("application".into(), serde_json::json!("installed"))].into(),
+                },
+            ),
+        );
+        catalog.push(pack(
+            id,
+            w::NativeQueryDefinition::MacosApplications { root, max_depth: 4 },
+            vec![("device.software.installations", mapping)],
+        ));
+    }
+    for (prefix_name, prefix) in [("arm", "/opt/homebrew"), ("intel", "/usr/local")] {
+        for (kind, package) in [
+            ("formula", w::MacosBrewPackage::Formula),
+            ("cask", w::MacosBrewPackage::Cask),
+        ] {
+            catalog.push(pack(
+                &format!("brew_{prefix_name}_{kind}"),
+                w::NativeQueryDefinition::MacosBrew {
+                    prefix: prefix.into(),
+                    package,
+                    taps: Default::default(),
+                },
+                vec![("device.software.packages", software())],
+            ));
+        }
+    }
+    catalog
 }

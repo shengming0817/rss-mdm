@@ -25,6 +25,7 @@ async fn public_manual_cas_rollback_and_tenant_isolation() -> Result<(), Box<dyn
     let tenant = rss_request_context::TenantId::parse(case::tenant())?;
     let foreign = rss_request_context::TenantId::parse(case::peer())?;
     let evidence = Evidence {
+        scope: rss_mdm_inventory::CollectionScope::Device,
         source: Source::Manual,
         dataset: None,
         registration: None,

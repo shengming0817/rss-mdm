@@ -78,15 +78,12 @@ pub(crate) async fn prepare_collection_in<'a>(
     let scope = match variant.declaration() {
         r::Declaration::NativeCollection { definition, .. } => match &definition.spec().scope {
             r::TemplateScope::Device => rss_mdm_inventory::CollectionScope::Device,
-            r::TemplateScope::User { identity } => rss_mdm_inventory::CollectionScope::User {
+            r::TemplateScope::User { identity } => rss_mdm_inventory::CollectionScope::AppleUser {
                 identity: identity.clone(),
             },
             _ => return Err(crate::Error::Malformed.into()),
         },
-        r::Declaration::AgentCollection { definition, .. } => {
-            checked_input(definition.spec().plan.spec().scope.validate_executable())?;
-            rss_mdm_inventory::CollectionScope::Device
-        }
+        r::Declaration::AgentCollection { .. } => return Err(crate::Error::Malformed.into()),
         _ => rss_mdm_inventory::CollectionScope::Device,
     };
     let dataset = format!(
@@ -134,7 +131,20 @@ pub(crate) async fn prepare_collection_in<'a>(
         return Err(crate::Error::Malformed.into());
     }
     let definition = checked_input(rss_mdm_inventory::CollectionDefinition::new(
-        scope, &dataset, template, source, fields,
+        &dataset,
+        template,
+        source,
+        {
+            let scope = scope;
+            let fields: Vec<rss_mdm_inventory::FieldDefinition> = fields;
+            fields
+                .into_iter()
+                .map(|definition| rss_mdm_inventory::CollectionField {
+                    definition,
+                    scope: scope.clone(),
+                })
+                .collect()
+        },
     ))?;
     Ok((definition, false))
 }
@@ -162,4 +172,41 @@ pub(crate) async fn freeze_collection<'a>(
     })
     .await?;
     Ok(definition)
+}
+
+/// Validate publication fields without inventing an execution user's asset namespace.
+pub(crate) async fn prepare_agent_fields(
+    tx: &mut PgTransaction<'_>,
+    tenant: rss_request_context::TenantId,
+    variant: &r::Variant,
+    definition: &r::AgentCollectionDefinition,
+) -> crate::transaction::Result<Vec<rss_mdm_inventory::FieldDefinition>> {
+    use crate::transaction::checked_input;
+    let catalog = crate::assets::catalog_in(tx, tenant, i64::MAX).await?;
+    let platform = match variant.platform() {
+        r::Platform::Windows => rss_mdm_inventory::Platform::Windows,
+        r::Platform::MacOS => rss_mdm_inventory::Platform::Macos,
+    };
+    definition
+        .spec()
+        .mappings
+        .iter()
+        .map(|(name, binding)| {
+            let key = checked_input(rss_mdm_inventory::FieldKey::parse(name))?;
+            let field = checked_input(catalog.definition(key))?;
+            if !field.platforms.contains(&platform)
+                || !field
+                    .sources
+                    .contains_key(&rss_mdm_inventory::Source::AgentNative)
+            {
+                return Err(crate::Error::Malformed.into());
+            }
+            checked_input(
+                rss_mdm_inventory_service::collection::native::validate_agent_mapping(
+                    field, definition, binding,
+                ),
+            )?;
+            Ok(field.clone())
+        })
+        .collect()
 }

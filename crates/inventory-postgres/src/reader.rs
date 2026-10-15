@@ -72,7 +72,7 @@ pub async fn read_in(
         .map(Scope::encode)
         .collect::<std::result::Result<Vec<_>, _>>()?;
     let projection = super::projection_scope(tenant);
-    let rows=sqlx::query("SELECT DISTINCT ON(i.scope,i.field) i.*,d.definition::text AS definition FROM mdm.inventory i JOIN mdm.collection_definitions d ON(d.tenant_id,d.coverage,d.source)=(i.tenant_id,i.coverage,i.source) WHERE i.tenant_id=$1::uuid AND i.journal=$2 AND i.generation=$3 AND i.scope=ANY($4) ORDER BY i.scope,i.field,i.collection_sequence DESC")
+    let rows=sqlx::query("SELECT DISTINCT ON(i.scope,i.field,i.field_scope) i.*,d.definition::text AS definition FROM mdm.inventory i JOIN mdm.collection_definitions d ON(d.tenant_id,d.coverage,d.source)=(i.tenant_id,i.coverage,i.source) WHERE i.tenant_id=$1::uuid AND i.journal=$2 AND i.generation=$3 AND i.scope=ANY($4) ORDER BY i.scope,i.field,i.field_scope,i.collection_sequence DESC")
         .bind(tenant.to_string()).bind(projection.source().source()).bind(projection.generation()).bind(keys).fetch_all(connection).await?;
     decode_rows(rows)
 }
@@ -84,6 +84,11 @@ pub(crate) fn decode_rows(rows: Vec<sqlx::postgres::PgRow>) -> Result<Vec<Invent
             let definition: rss_mdm_inventory::CollectionDefinition =
                 serde_json::from_str(r.try_get("definition")?)?;
             let field_definition = definition.field(field)?;
+            ensure!(
+                definition.field_scope(field)?.canonical()?
+                    == r.try_get::<String, _>("field_scope")?,
+                "inventory field scope mismatch"
+            );
             let state = match r.try_get::<&str, _>("state")? {
                 "known" => State::Known(decode_value(field_definition, r.try_get("value")?)?),
                 "null" => State::Null,
@@ -104,6 +109,7 @@ pub(crate) fn decode_rows(rows: Vec<sqlx::postgres::PgRow>) -> Result<Vec<Invent
                 _ => anyhow::bail!("invalid asset state"),
             };
             let evidence = Evidence {
+                scope: definition.field_scope(field)?.clone(),
                 source: rss_mdm_inventory::Source::parse(r.try_get("source")?)?,
                 dataset: Some(definition.dataset().to_owned()),
                 registration: Some(r.try_get("registration")?),

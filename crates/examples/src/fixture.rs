@@ -35,15 +35,19 @@ impl Authority for FixtureAuthority {
 
 /// This fixture publishes an explicit collector just as a production collection owner does.
 pub fn definition() -> CollectionDefinition {
-    CollectionDefinition::new(
-        rss_mdm_inventory::CollectionScope::Device,
-        DATASET,
-        "fixture-v1",
-        Source::AgentBuiltin,
-        builtin::fields()
+    CollectionDefinition::new(DATASET, "fixture-v1", Source::AgentBuiltin, {
+        let scope = rss_mdm_inventory::CollectionScope::Device;
+        let fields: Vec<rss_mdm_inventory::FieldDefinition> = builtin::fields()
             .into_iter()
             .filter(|f| [builtin::MODEL, builtin::OS_VERSION].contains(&f.key))
-            .collect(),
-    )
+            .collect();
+        fields
+            .into_iter()
+            .map(|definition| rss_mdm_inventory::CollectionField {
+                definition,
+                scope: scope.clone(),
+            })
+            .collect()
+    })
     .expect("fixture definition")
 }

@@ -15,9 +15,22 @@ pub async fn current(c: &mut PgConnection, tenant: &str, id: Uuid) -> Result<boo
     .await?;
     let progress: rss_mdm_inventory::CollectionProgress =
         serde_json::from_str(row.try_get("attempts").map_err(db)?).map_err(|_| Error::Malformed)?;
-    let user = match progress.definition().collection_scope() {
+    let first = progress
+        .definition()
+        .bindings()
+        .first()
+        .ok_or(Error::Malformed)?;
+    if progress
+        .definition()
+        .bindings()
+        .iter()
+        .any(|f| f.scope != first.scope)
+    {
+        return Err(Error::Malformed);
+    }
+    let user = match &first.scope {
         rss_mdm_inventory::CollectionScope::Device => "",
-        rss_mdm_inventory::CollectionScope::User { identity } => identity.as_str(),
+        rss_mdm_inventory::CollectionScope::AppleUser { identity } => identity.as_str(),
         _ => return Ok(false),
     };
     let active: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_apple.channels ch JOIN mdm_access.registrations r ON(r.tenant_id,r.id,r.generation)=(ch.tenant_id,ch.registration,ch.generation) WHERE ch.tenant_id=$1::uuid AND ch.registration=$2 AND ch.user_key=$3 AND ch.state='active' AND r.state='active')")

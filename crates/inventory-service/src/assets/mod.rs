@@ -189,6 +189,7 @@ mod tests;
 
 /// Asset algorithms and resources, independently constructible from planning workflows.
 pub struct AssetService {
+    inventory: Arc<crate::inventory_runtime::InventoryRuntime>,
     tasks: Arc<dyn crate::tasks::Tasks>,
     audit_store: Arc<rss_mdm_audit_integration::AuditStore>,
     runtime: Arc<rss_transactional_messaging_postgres::PgRuntime>,
@@ -198,6 +199,7 @@ pub struct AssetService {
 }
 impl AssetService {
     pub fn new(
+        inventory: Arc<crate::inventory_runtime::InventoryRuntime>,
         audit_store: Arc<rss_mdm_audit_integration::AuditStore>,
         runtime: Arc<rss_transactional_messaging_postgres::PgRuntime>,
         tenant: TenantId,
@@ -206,6 +208,7 @@ impl AssetService {
         tasks: Arc<dyn crate::tasks::Tasks>,
     ) -> Self {
         Self {
+            inventory,
             tasks,
             audit_store,
             runtime,

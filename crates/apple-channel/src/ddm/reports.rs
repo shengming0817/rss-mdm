@@ -171,7 +171,7 @@ impl Exchange {
                     },
                     id,
                     scope: if self.user.is_empty() { rss_mdm_inventory::CollectionScope::Device }
-                        else { rss_mdm_inventory::CollectionScope::User { identity:self.user.clone() } },
+                        else { rss_mdm_inventory::CollectionScope::AppleUser { identity:self.user.clone() } },
                     subscribed:evidence.subscriptions.clone(),values,unknown,received_at,
                     evidence:serde_json::json!({
                         "report":id,"digest":digest.as_slice(),"user":self.user,

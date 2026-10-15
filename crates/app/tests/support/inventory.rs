@@ -51,7 +51,7 @@ pub(crate) fn seed_source(
     };
     let origin_id = if channel == "agent" { grant } else { request };
     pg(&format!(
-        "INSERT INTO mdm_access.devices(tenant_id,id) VALUES('{TENANT}','{device}') ON CONFLICT DO NOTHING; {origin}; INSERT INTO mdm_access.registrations(tenant_id,id,device,channel,generation,{origin_column},state,purpose,epoch) VALUES('{TENANT}','{registration}','{device}','{channel}',1,'{origin_id}','active','primary',gen_random_uuid()); INSERT INTO mdm_access.credentials VALUES('{TENANT}','{credential}','{registration}','{channel}',md5('{credential}')||md5('{registration}'),'active'); INSERT INTO mdm_access.report_sources(tenant_id,registration,source,epoch,enabled) VALUES('{TENANT}','{registration}','{source}','{epoch}',true); INSERT INTO mdm.collection_definitions(tenant_id,dataset,version,source,fingerprint,coverage,definition) VALUES('{TENANT}','inventory','fixture','{source}','{fingerprint}','{coverage}','{document}') ON CONFLICT DO NOTHING; INSERT INTO mdm.inventory(tenant_id,journal,generation,scope,coverage,field,value,batch_id,observed_at,received_at,state,last_known,last_known_batch,last_known_observed,last_known_received,registration,source,epoch,collection_sequence) VALUES('{TENANT}','mdm.observation.v1','inventory-v6','{encoded}','{coverage}','device.model','{value}','fixture',1,2,'known','{value}','fixture',1,2,'{registration}','{source}','{epoch}',0);",
+        "INSERT INTO mdm_access.devices(tenant_id,id) VALUES('{TENANT}','{device}') ON CONFLICT DO NOTHING; {origin}; INSERT INTO mdm_access.registrations(tenant_id,id,device,channel,generation,{origin_column},state,purpose,epoch) VALUES('{TENANT}','{registration}','{device}','{channel}',1,'{origin_id}','active','primary',gen_random_uuid()); INSERT INTO mdm_access.credentials VALUES('{TENANT}','{credential}','{registration}','{channel}',md5('{credential}')||md5('{registration}'),'active'); INSERT INTO mdm_access.report_sources(tenant_id,registration,source,epoch,enabled) VALUES('{TENANT}','{registration}','{source}','{epoch}',true); INSERT INTO mdm.collection_definitions(tenant_id,dataset,version,source,fingerprint,coverage,definition) VALUES('{TENANT}','inventory','fixture','{source}','{fingerprint}','{coverage}','{document}') ON CONFLICT DO NOTHING; INSERT INTO mdm.inventory(field_scope,tenant_id,journal,generation,scope,coverage,field,value,batch_id,observed_at,received_at,state,last_known,last_known_batch,last_known_observed,last_known_received,registration,source,epoch,collection_sequence) VALUES(replace(jsonb_build_object('kind','device')::text,' ',''),'{TENANT}','mdm.observation.v1','inventory-v7','{encoded}','{coverage}','device.model','{value}','fixture',1,2,'known','{value}','fixture',1,2,'{registration}','{source}','{epoch}',0);",
         TENANT = case_tenant()
     ))?;
     Ok((registration, epoch))
@@ -96,13 +96,23 @@ pub(crate) fn definition(
 ) -> rss_mdm_inventory::CollectionDefinition {
     let catalog = rss_mdm_inventory::Catalog::new(rss_mdm_inventory::builtin::fields()).unwrap();
     rss_mdm_inventory::CollectionDefinition::new(
-        rss_mdm_inventory::CollectionScope::Device,
         dataset,
         "fixture",
         rss_mdm_inventory::Source::parse(source).unwrap(),
-        keys.iter()
-            .map(|key| catalog.definition(*key).unwrap().clone())
-            .collect(),
+        {
+            let scope = rss_mdm_inventory::CollectionScope::Device;
+            let fields: Vec<rss_mdm_inventory::FieldDefinition> = keys
+                .iter()
+                .map(|key| catalog.definition(*key).unwrap().clone())
+                .collect();
+            fields
+                .into_iter()
+                .map(|definition| rss_mdm_inventory::CollectionField {
+                    definition,
+                    scope: scope.clone(),
+                })
+                .collect()
+        },
     )
     .unwrap()
 }

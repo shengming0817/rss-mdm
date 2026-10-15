@@ -135,7 +135,7 @@ impl Browser {
             tokio::spawn(app.clone().oneshot(request)).await??
         };
         let status = response.status();
-        if method == Method::GET && path.contains("/collection-runs/") {
+        if method == Method::GET && path.contains("/collections/") {
             ensure!(
                 !response.headers().contains_key("idempotency-key"),
                 "ordinary collection GET claimed an idempotent operation"
@@ -339,6 +339,7 @@ pub(crate) async fn start_automation(value: &Value) -> Result<Option<rss_runtime
     let service = config
         .flow
         .open(
+            agent_runtime(value).await?,
             audit_store,
             rss_request_context::TenantId::parse(case_tenant())?,
             Arc::new(crate::clock::SystemClock),

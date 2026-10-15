@@ -56,7 +56,7 @@ impl Compliance {
     async fn rule(&self, tx: &mut PgTransaction<'_>, id: Uuid) -> Result<Rule> {
         let t = self.tenant();
         tx.with_connection(move |c| {
-            Box::pin(async move { pg::rule::<crate::assets::Criteria>(c, t, id).await })
+            Box::pin(async move { pg::rule::<crate::assets::InventoryCondition>(c, t, id).await })
         })
         .await?
         .ok_or_else(|| Error::NotFound.into())
@@ -158,7 +158,7 @@ impl Compliance {
                 let mut rows: Vec<Rule> = tx
                     .with_connection(move |c| {
                         Box::pin(async move {
-                            pg::rules::<crate::assets::Criteria>(c, t, after, 51).await
+                            pg::rules::<crate::assets::InventoryCondition>(c, t, after, 51).await
                         })
                     })
                     .await?;
@@ -182,7 +182,8 @@ impl Compliance {
                 let row = tx
                     .with_connection(move |c| {
                         Box::pin(async move {
-                            pg::version::<crate::assets::Criteria>(c, t, id, revision).await
+                            pg::version::<crate::assets::InventoryCondition>(c, t, id, revision)
+                                .await
                         })
                     })
                     .await?
@@ -227,7 +228,7 @@ impl Compliance {
         }
         crate::assets::filter::require_visible(
             &crate::assets::catalog_in(tx, t, i64::MAX).await?,
-            &request.input.criteria,
+            &request.input.criteria.criteria,
             sensitive,
         )?;
         let fields = validate_definition(
@@ -239,7 +240,9 @@ impl Compliance {
         let target = id;
         let old = tx
             .with_connection(move |c| {
-                Box::pin(async move { pg::rule::<crate::assets::Criteria>(c, t, target).await })
+                Box::pin(async move {
+                    pg::rule::<crate::assets::InventoryCondition>(c, t, target).await
+                })
             })
             .await?;
         if old.as_ref().map_or(0, |r| r.revision as u64) != request.expected_revision {
@@ -248,9 +251,9 @@ impl Compliance {
         if old.is_none() {
             let rules = tx
                 .with_connection(move |c| {
-                    Box::pin(
-                        async move { pg::rules::<crate::assets::Criteria>(c, t, None, 101).await },
-                    )
+                    Box::pin(async move {
+                        pg::rules::<crate::assets::InventoryCondition>(c, t, None, 101).await
+                    })
                 })
                 .await?;
             if rules.len() >= 100 {

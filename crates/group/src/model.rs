@@ -234,13 +234,38 @@ pub struct Fact {
     /// Observation timestamp for provenance; never a validity window.
     pub observed_at: Timepoint,
 }
+/// Quantification over independently evaluated contexts of one object.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Quantifier {
+    /// Exactly one explicitly selected context.
+    One,
+    /// At least one context must match.
+    Any,
+    /// All contexts must match; empty or incomplete enumeration is Unknown.
+    All,
+}
 #[derive(Clone, Debug, PartialEq, Eq)]
-/// Facts for one complete tenant/device key. Each covered field must be present explicitly.
+/// One device with distinct, bounded fact contexts. A rule never mixes their facts.
 pub struct ObjectSnapshot {
-    /// Complete tenant/object key, which must match the snapshot tenant.
+    /// Complete tenant/object identity.
     pub key: ObjectKey,
-    /// Explicit facts for every covered field, including missing-value markers.
-    pub facts: BTreeMap<String, Fact>,
+    /// Explicit context quantifier.
+    pub quantifier: Quantifier,
+    /// Whether the selected context universe was fully enumerated.
+    pub complete: bool,
+    /// Stable opaque context IDs and explicit facts for all covered fields.
+    pub contexts: BTreeMap<String, BTreeMap<String, Fact>>,
+}
+impl ObjectSnapshot {
+    /// Construct a complete single-context object.
+    pub fn single(key: ObjectKey, facts: BTreeMap<String, Fact>) -> Self {
+        Self {
+            key,
+            quantifier: Quantifier::One,
+            complete: true,
+            contexts: [("default".into(), facts)].into(),
+        }
+    }
 }
 /// One bounded range of a frozen input. A page never asserts universe completeness.
 /// The persistence owner binds all pages to the same input identity and seals the

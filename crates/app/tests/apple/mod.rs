@@ -135,6 +135,7 @@ impl Fixture {
         let management = config
             .flow
             .open(
+                runtime.clone(),
                 access
                     .audit_store(&crate::config::AuditConfig::Plain)
                     .await?,
@@ -264,11 +265,6 @@ impl Fixture {
             )),
             clock,
             identity_management: compiled.identity_management,
-            collection: Arc::new(crate::assets::collection::CollectionService::new(
-                devices.clone(),
-                access.inventory(),
-                runtime.clone(),
-            )),
             inventory: runtime.clone(),
             devices,
             windows: None,

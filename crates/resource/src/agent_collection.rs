@@ -52,19 +52,7 @@ impl TryFrom<AgentCollectionSpec> for AgentCollectionDefinition {
 impl AgentCollectionDefinition {
     /// Validate static mappings; field permissions and Inventory types are checked by publication.
     pub fn new(spec: AgentCollectionSpec) -> Result<Self, Error> {
-        // Scoped application/Brew projection belongs to #2726. A scan declaration must
-        // never be silently published as an authoritative device snapshot.
-        if spec.plan.spec().scope != rss_mdm_agent_wire::CollectionScope::Device
-            || spec.plan.spec().queries.values().any(|q| {
-                matches!(
-                    q.definition,
-                    rss_mdm_agent_wire::runtime::NativeQueryDefinition::MacosApplications { .. }
-                        | rss_mdm_agent_wire::runtime::NativeQueryDefinition::MacosBrew { .. }
-                )
-            })
-            || spec.mappings.is_empty()
-            || spec.mappings.len() > 64
-        {
+        if spec.mappings.is_empty() || spec.mappings.len() > 64 {
             return Err(Error::InvalidInput);
         }
         for (field, binding) in &spec.mappings {

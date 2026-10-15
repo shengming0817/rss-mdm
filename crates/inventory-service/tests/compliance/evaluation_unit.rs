@@ -1,7 +1,7 @@
 use super::*;
 use rss_mdm_compliance::Platform;
 fn input() -> Input {
-    Input{rule:Uuid::new_v4(),revision:1,definition:serde_json::from_value(json!({"name":"rule","severity":"high","enabled":true,"platform":"all","target":{"kind":"all"},"criteria":{"kind":"predicate","field":"custom.is_loaner","op":"eq","value":{"kind":"boolean","value":false}}})).unwrap(),watermark:1,evaluated_at:1,groups:vec![]}
+    Input{rule:Uuid::new_v4(),revision:1,definition:serde_json::from_value(json!({"name":"rule","severity":"high","enabled":true,"platform":"all","target":{"kind":"all"},"criteria":{"selector":{"kind":"device"},"quantifier":"one","criteria":{"kind":"predicate","field":"custom.is_loaner","op":"eq","value":{"kind":"boolean","value":false}}}})).unwrap(),watermark:1,evaluated_at:1,groups:vec![]}
 }
 #[test]
 fn unknown_causes_and_absent_platform_are_not_compliance() {
@@ -19,8 +19,15 @@ fn unknown_causes_and_absent_platform_are_not_compliance() {
     let mut result = group::core::ObjectEvaluation {
         key: group::core::ObjectKey::new(tenant, "device").unwrap(),
         decision: group::core::Decision::Unknown,
-        explanations: vec![],
-        provenance: Default::default(),
+        contexts: [(
+            "scope".into(),
+            group::core::ContextEvaluation {
+                decision: group::core::Decision::Unknown,
+                explanations: vec![],
+                provenance: Default::default(),
+            },
+        )]
+        .into(),
     };
     for cause in [
         group::core::UnknownReason::Null,
@@ -29,14 +36,21 @@ fn unknown_causes_and_absent_platform_are_not_compliance() {
         group::core::UnknownReason::Unsupported,
         group::core::UnknownReason::Conflict,
     ] {
-        result.explanations = vec![group::core::Explanation {
+        result.contexts.get_mut("scope").unwrap().explanations = vec![group::core::Explanation {
             path: vec![],
             outcome: group::core::Outcome::Unknown(cause),
         }];
         assert_eq!(
-            assessment(&input, &device, result.clone(), vec![], vec![])
-                .unwrap()
-                .status,
+            assessment(
+                &input,
+                &device,
+                &BTreeMap::new(),
+                result.clone(),
+                vec![],
+                vec![]
+            )
+            .unwrap()
+            .status,
             rss_mdm_compliance::Status::Unknown
         );
     }
@@ -48,11 +62,20 @@ fn unknown_causes_and_absent_platform_are_not_compliance() {
         generation: "1".into(),
         epoch: "epoch".into(),
     };
-    let value = assessment(&input, &device, result.clone(), vec![], vec![]).unwrap();
+    let value = assessment(
+        &input,
+        &device,
+        &BTreeMap::new(),
+        result.clone(),
+        vec![],
+        vec![],
+    )
+    .unwrap();
     assert_eq!(value.reason, rss_mdm_compliance::Reason::PlatformUnknown);
     let value = assessment(
         &input,
         &device,
+        &BTreeMap::new(),
         result.clone(),
         vec![],
         vec![source("mdm.apple")],
@@ -64,9 +87,16 @@ fn unknown_causes_and_absent_platform_are_not_compliance() {
     );
     assert_eq!(value.applicability.sources[0].source, "mdm.apple");
     assert_eq!(
-        assessment(&input, &device, result, vec![], vec![source("mdm.windows")])
-            .unwrap()
-            .status,
+        assessment(
+            &input,
+            &device,
+            &BTreeMap::new(),
+            result,
+            vec![],
+            vec![source("mdm.windows")]
+        )
+        .unwrap()
+        .status,
         rss_mdm_compliance::Status::Compliant
     );
 }
@@ -79,7 +109,7 @@ fn rules_have_no_timer_or_legacy_field_surface() {
         assert!(serde_json::from_value::<Definition>(value).is_err());
     }
     let mut value = definition;
-    value["criteria"]["value"] = json!({"kind":"string","value":"false"});
+    value["criteria"]["criteria"]["value"] = json!({"kind":"string","value":"false"});
     let rule: Definition = serde_json::from_value(value).unwrap();
     assert!(
         validate_definition(

@@ -1,5 +1,5 @@
 use super::*;
-use crate::assets::{criteria_view, rule};
+use crate::assets::rule;
 use rss_mdm_group_postgres as pg;
 use serde_json::json;
 impl Groups {
@@ -17,7 +17,7 @@ impl Groups {
             if rule.view().dictionary_version != rss_mdm_inventory::DICTIONARY {
                 return Err(Error::Conflict.into());
             }
-            Some(criteria_view(rule.view().criteria)?)
+            Some(super::condition_in(tx, self.tenant, id, version, &rule).await?)
         } else {
             None
         };
@@ -47,7 +47,8 @@ impl Groups {
                 criteria: Some(c), ..
             }
             | GroupChange::Rule { criteria: c } => {
-                assets::filter::require_visible(&catalog, c, sensitive)?
+                c.validate()?;
+                assets::filter::require_visible(&catalog, &c.criteria, sensitive)?
             }
             _ => (),
         }
@@ -71,7 +72,7 @@ impl Groups {
                         Some(c) => pg::Definition::Dynamic(Box::new(rule(
                             self.tenant,
                             op.operation_id,
-                            c,
+                            &c.criteria,
                             &catalog,
                         )?)),
                     },
@@ -86,7 +87,7 @@ impl Groups {
             GroupChange::Rule { criteria } => pg::Command::SetRule {
                 group,
                 expected: expected()?,
-                rule: rule(self.tenant, op.operation_id, criteria, &catalog)?,
+                rule: rule(self.tenant, op.operation_id, &criteria.criteria, &catalog)?,
             },
             GroupChange::Members { add, remove } => {
                 if add.len() + remove.len() > 1000 {
@@ -176,7 +177,25 @@ impl Groups {
         };
         let mut response = json(&receipt)?;
         if let Some(criteria) = criteria {
-            self.register_fields_in(tx, id, criteria).await?;
+            self.register_fields_in(tx, id, criteria.map(|c| &c.criteria))
+                .await?;
+            if let Some(condition) = criteria {
+                let version = receipt
+                    .group
+                    .rule_version
+                    .as_ref()
+                    .ok_or(Error::Conflict)?
+                    .clone();
+                let selection = checked_input(serde_json::to_string(&(
+                    condition.selector.clone(),
+                    condition.quantifier,
+                )))?;
+                let tenant = self.tenant.to_string();
+                tx.with_connection(move |c| Box::pin(async move {
+                    sqlx::query("INSERT INTO mdm_assets.group_selections(tenant_id,group_id,rule_version,selection) VALUES($1::uuid,$2,$3,$4::jsonb) ON CONFLICT DO NOTHING")
+                        .bind(tenant).bind(id).bind(version).bind(selection).execute(c).await?; Ok(())
+                })).await?;
+            }
             flow.changed(tx, id, receipt.group.revision.get() as u64)
                 .await?;
             if criteria.is_some() {

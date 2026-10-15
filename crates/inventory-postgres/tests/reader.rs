@@ -33,14 +33,24 @@ async fn reader_is_exact_tenant_scoped_and_read_only() -> anyhow::Result<()> {
         (a, "agent.builtin", "C"),
     ] {
         let definition = rss_mdm_inventory::CollectionDefinition::new(
-            rss_mdm_inventory::CollectionScope::Device,
             "inventory",
             1,
             rss_mdm_inventory::Source::parse(source)?,
-            rss_mdm_inventory::builtin::fields()
-                .into_iter()
-                .filter(|f| f.key == rss_mdm_inventory::builtin::MODEL)
-                .collect(),
+            {
+                let scope = rss_mdm_inventory::CollectionScope::Device;
+                let fields: Vec<rss_mdm_inventory::FieldDefinition> =
+                    rss_mdm_inventory::builtin::fields()
+                        .into_iter()
+                        .filter(|f| f.key == rss_mdm_inventory::builtin::MODEL)
+                        .collect();
+                fields
+                    .into_iter()
+                    .map(|definition| rss_mdm_inventory::CollectionField {
+                        definition,
+                        scope: scope.clone(),
+                    })
+                    .collect()
+            },
         )?;
         let mut catalog_tx = catalog_writer.begin().await?;
         sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
@@ -61,7 +71,7 @@ async fn reader_is_exact_tenant_scoped_and_read_only() -> anyhow::Result<()> {
             .await?;
         let projection =
             rss_mdm_inventory_postgres::projection_scope(scope(tenant, source).tenant());
-        sqlx::query("INSERT INTO mdm.inventory(tenant_id,journal,generation,scope,coverage,field,value,batch_id,observed_at,received_at,state,registration,source,epoch,collection_sequence) VALUES($1::uuid,$5,$6,$2,$4,'device.model',$3,'read-test',1,2,'known','reg',$7,'one',0) ON CONFLICT DO NOTHING")
+        sqlx::query("INSERT INTO mdm.inventory(field_scope,tenant_id,journal,generation,scope,coverage,field,value,batch_id,observed_at,received_at,state,registration,source,epoch,collection_sequence) VALUES(replace(jsonb_build_object('kind','device')::text,' ',''),$1::uuid,$5,$6,$2,$4,'device.model',$3,'read-test',1,2,'known','reg',$7,'one',0) ON CONFLICT DO NOTHING")
             .bind(tenant).bind(scope(tenant,source).encode()?).bind(serde_json::to_string(&rss_mdm_inventory::Scalar::String(value.into()))?).bind(serde_json::to_string(&definition.coverage()?)?).bind(projection.source().source()).bind(projection.generation()).bind(source).execute(&mut *tx).await?;
         tx.commit().await?;
     }
