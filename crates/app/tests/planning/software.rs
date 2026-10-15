@@ -67,6 +67,7 @@ async fn rollout_time_success_gates_and_stage_evidence() -> Result<()> {
         .await?;
     ensure!(
         pending.0 == StatusCode::OK
+            && pending.1["stages"].as_array().unwrap().len() == 2
             && pending.1["stages"]
                 .as_array()
                 .unwrap()
@@ -182,6 +183,9 @@ async fn rollout_time_success_gates_and_stage_evidence() -> Result<()> {
                     None,
                 )
                 .await?;
+            ensure!(
+                status.0 == StatusCode::OK && status.1["stages"].as_array().unwrap().len() == 2
+            );
             if status.1["stages"]
                 .as_array()
                 .unwrap()

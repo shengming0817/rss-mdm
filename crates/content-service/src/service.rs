@@ -322,21 +322,12 @@ pub async fn reclaim_in(
     if !candidate.lock_in(tx).await? {
         return Ok(false);
     }
-    let referenced = if candidate.class == crate::StorageClass::NativeDiagnostic {
-        let tenant = tx.tenant_id().to_string();
-        let digest = candidate.digest;
-        tx.with_connection(move |c| Box::pin(async move {
-            sqlx::query_scalar::<_,bool>("SELECT EXISTS(SELECT 1 FROM mdm_content.diagnostic_artifacts WHERE tenant_id=$1::uuid AND sha256=$2 AND expires_at>extract(epoch FROM clock_timestamp()))")
-                .bind(tenant).bind(digest.as_slice()).fetch_one(c).await
-        })).await.map_err(transaction::storage_error)?
-    } else {
-        rss_mdm_resource_postgres::artifact_referenced_in(
-            tx,
-            r::Digest::from_bytes(candidate.digest),
-        )
-        .await
-        .map_err(transaction::storage_error)?
-    };
+    let referenced = rss_mdm_resource_postgres::artifact_referenced_in(
+        tx,
+        r::Digest::from_bytes(candidate.digest),
+    )
+    .await
+    .map_err(transaction::storage_error)?;
     authorize()?;
     if !referenced {
         candidate.deleting_in(tx).await.map_err(Error::from)?;

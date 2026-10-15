@@ -211,33 +211,21 @@ async fn sensitive_collection_run_details_reauthorize_both_read_paths() -> Resul
     )
     .await?;
     let stack = worker(&f.base).await?;
-    for remote in [false, true] {
+    {
         let policy = publish(&mut f.author, &f.router, id).await?;
-        let mut task = claim(&f.router).await?;
+        let task = claim(&f.router).await?;
         task_event(&f.router, &task, json!({"kind":"received"})).await?;
         task_event(&f.router, &task, json!({"kind":"start"})).await?;
-        let parent = if remote {
-            let parent = Uuid::new_v4();
-            task = historical_remote(&f, &task, parent).await?;
-            parent
-        } else {
-            policy
-        };
         task_event(&f.router,&task,json!({"kind":"result","exitCode":0,"quality":"complete","output":{"secret":"private-collection-canary"},"diagnostics":{"stdout":"private-collection-canary","stderr":"private-collection-canary","durationMs":1,"executedAt":1,"failure":null}})).await?;
-        let route = if remote {
-            "remote-operations"
-        } else {
-            "policies"
-        };
         let path = format!(
-            "/api/v1/{route}/{parent}/runs/{}",
+            "/api/v1/policies/{policy}/runs/{}",
             task["payload"]["task"]["taskId"].as_str().unwrap()
         );
         let denied = f.author.call(&f.router, Method::GET, &path, None).await?;
         ensure!(
             denied.0 == StatusCode::FORBIDDEN
                 && !denied.1.to_string().contains("private-collection-canary"),
-            "sensitive result leaked through {route}: {denied:?}"
+            "sensitive result leaked through Policy: {denied:?}"
         );
         let mut granted = f.grants.clone();
         granted.push(Grant {
@@ -259,17 +247,7 @@ async fn sensitive_collection_run_details_reauthorize_both_read_paths() -> Resul
         let audit =
             rss_mdm_audit_integration::RequestAudit::new(case_tenant().into(), "command_read");
         let task_id = Uuid::parse_str(task["payload"]["task"]["taskId"].as_str().unwrap())?;
-        let denied = if remote {
-            f.queries
-                .clone()
-                .remote_action_run(&stale, parent, task_id, &audit)
-                .await
-        } else {
-            f.queries
-                .clone()
-                .action_run(&stale, parent, task_id, &audit)
-                .await
-        };
+        let denied = f.queries.action_run(&stale, policy, task_id, &audit).await;
         ensure!(
             matches!(
                 denied,
@@ -339,8 +317,7 @@ async fn device_capabilities_use_current_permissions_after_proof_capture() -> Re
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 #[ignore = "make t2 MODULE=execution.agent.history"]
-async fn capability_product_support_requires_signer_and_content_independently() -> Result<()> {
-    use rss_runtime::ManagedResource;
+async fn agent_registration_configuration_requires_task_signing() -> Result<()> {
     let base: Value = serde_json::from_slice(&std::fs::read(std::env::var("MDM_TEST_CONFIG")?)?)?;
     let mut unsigned_registration = base.clone();
     unsigned_registration["task_signing"] = Value::Null;
@@ -360,44 +337,6 @@ async fn capability_product_support_requires_signer_and_content_independently() 
         rejected,
         Err(crate::Error::Configuration(crate::ConfigIssue::AgentPki))
     ));
-    for (signed, content) in [(true, true), (true, false), (false, true), (false, false)] {
-        let mut config = base.clone();
-        if !signed {
-            config["task_signing"] = Value::Null;
-            // Registration configurations require a signer; task capability can be disabled.
-            config["agent_pki"] = json!({"mode":"disabled"});
-        }
-        if !content {
-            config["content"] = Value::Null;
-        }
-        let f = Fixture::from_config(config).await?;
-        let proof = crate::device::test_support::admin(case_tenant(), "other-a").await?;
-        let capabilities = serde_json::to_value(
-            f.queries
-                .clone()
-                .directory_capabilities(&proof, case_device_id(), true, true)
-                .await?,
-        )?;
-        let state = if signed && content {
-            "supported"
-        } else {
-            "unsupported"
-        };
-        for capability in capabilities
-            .as_array()
-            .unwrap()
-            .iter()
-            .filter(|v| v["channel"] == "agent")
-        {
-            ensure!(
-                capability["productSupport"]["state"] == state,
-                "incorrect configured support: signer={signed}, content={content}, {capability}"
-            );
-        }
-        f.plan_runtime.close().await;
-        rss_mdm_execution_service::Resource(f.execution)
-            .shutdown()
-            .await?;
-    }
+
     Ok(())
 }

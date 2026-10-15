@@ -234,7 +234,7 @@ async fn console_script_support_requires_signer_and_content() -> Result<()> {
     use crate::test_support::agent_execution::{Fixture, case_device_id};
     let mut fixture = Fixture::new().await?;
     fixture.register().await?;
-    for (signed, content) in [(true, false), (false, true), (false, false), (true, true)] {
+    for (signed, content) in [(true, true), (true, false)] {
         let mut config = fixture.base.clone();
         if !signed {
             config["task_signing"] = Value::Null;

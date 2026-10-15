@@ -126,7 +126,7 @@ async fn s3_chunk_frontier_and_native_restart() -> Result<()> {
     );
     ensure!(
         store
-            .verify_class(&a, StorageClass::NativeDiagnostic)
+            .verify_class(&a, StorageClass::Artifact)
             .await
             .is_err()
     );

@@ -8,7 +8,6 @@ mod cleanup;
 mod journal;
 mod native;
 pub use cleanup::Garbage;
-pub mod diagnostic;
 mod protected;
 mod reader;
 mod upload;
@@ -50,14 +49,12 @@ pub enum StorageClass {
     #[default]
     Artifact,
     NativeConfiguration,
-    NativeDiagnostic,
 }
 impl StorageClass {
     fn protection_domain(self) -> &'static str {
         match self {
             Self::Artifact => "content.artifact",
             Self::NativeConfiguration => "content.native-configuration",
-            Self::NativeDiagnostic => "content.native_diagnostic",
         }
     }
     fn protected(self) -> bool {

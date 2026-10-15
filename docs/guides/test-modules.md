@@ -47,7 +47,7 @@ make ci-full
 | `assets.{http,queries,sources,group_input}` | 资产授权/事务、查询分页、来源质量、资产成为设备 Group 输入；不重复 Group 完整生命周期。 |
 | `group.{persistence,generations}`、`policy.{persistence,recovery}` | 原能力 PG targets 保留，验证各自持久化合同；模型真值表仍是 T1。 |
 | `planning.{assets,scope,group_scope,policy,recovery,http}` | 资产时钟与 Group/Scope 发布、引用竞争、assignment、worker 和真实 HTTP 接缝。 |
-| `planning.{agent_policy,frequency,remote}` | Agent 策略预览/发布、实际 occurrence 与入离组触发；Remote 当前验证创建入口退出与存量历史结算，不再提供新建远程任务矩阵。 |
+| `planning.{agent_policy,frequency}` | Agent 策略预览/发布、实际 occurrence 与入离组触发。 |
 | `compliance.{storage,http,evaluation,recovery,group_input}` | adapter 合同归 Compliance PG；App 负责真实授权、评估、原子发布和 Group applicability 接缝。 |
 | `execution.agent.{delivery,content,history,poll,recovery}` | Offer/Start/Result、内容许可、历史分页、取消队列公平性和执行恢复。 |
 | `execution.commands.{admission,dispatch,recovery,windows,onboarding}` | 命令授权/事务、outbox/relay、恢复诊断、原生结果关联与 Agent onboarding；普通命令模块不启动 TLS listener。 |

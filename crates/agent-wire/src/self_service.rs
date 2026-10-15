@@ -62,11 +62,6 @@ pub enum TaskAuthorization {
         /// Immutable execution version.
         policy_version: Uuid,
     },
-    /// Existing Remote Operation execution.
-    RemoteOperation {
-        /// Operation identity.
-        operation_id: Uuid,
-    },
     /// Targeted Policy self-service invocation.
     SelfService {
         /// Idempotency identity of the call.
@@ -99,7 +94,6 @@ impl TaskAuthorization {
                 policy_id,
                 policy_version,
             } => !policy_id.is_nil() && !policy_version.is_nil(),
-            Self::RemoteOperation { operation_id } => !operation_id.is_nil(),
             Self::SelfService {
                 request_id,
                 subject,

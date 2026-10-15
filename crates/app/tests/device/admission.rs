@@ -22,7 +22,12 @@ async fn runtime_role_cannot_mutate_history_or_bypass_tenants() -> anyhow::Resul
         "UPDATE mdm_access.credentials SET locator=repeat('0',64)",
         "UPDATE mdm_audit.receipts SET canonical=canonical",
     ] {
-        assert!(runtime.execute(statement).await.is_err());
+        let error = runtime.execute(statement).await.unwrap_err();
+        assert_eq!(
+            error.as_database_error().and_then(|e| e.code()).as_deref(),
+            Some("42501"),
+            "{statement}: {error}"
+        );
     }
     runtime.close().await?;
     root.close().await?;

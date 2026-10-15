@@ -2,7 +2,7 @@ use crate::test_support::planning_http::*;
 use crate::test_support::*;
 #[tokio::test]
 #[ignore = "make t2 MODULE=planning.policy"]
-async fn large_assignment_uses_published_scope_without_eager_execution() -> Result<()> {
+async fn assignment_pagination_uses_published_scope_without_eager_execution() -> Result<()> {
     let fixture = authority::Authority::open().await?;
     let reader = authority::reader(&fixture.base).await?;
     let router = app(&fixture.base, reader.clone()).await?;
@@ -54,9 +54,9 @@ async fn large_assignment_uses_published_scope_without_eager_execution() -> Resu
     let browser = &mut browser;
     let router = &router;
     let prefix = uuid::Uuid::new_v4();
-    // Retain the real backlog: all registration changes precede one ingress wait.
+    // Cross the production assignment page of 64 with the smallest second page.
     pg(&format!(
-        "CREATE TEMP TABLE scale_devices AS SELECT '{prefix}-'||n::text AS device,gen_random_uuid() AS grant_id,gen_random_uuid() AS request,gen_random_uuid() AS registration FROM generate_series(1,1001) n;INSERT INTO mdm_access.grants(tenant_id,id,actor,instance,device,purpose,state,expires_at) SELECT '{TENANT}',grant_id,'fixture','{INSTANCE}',device,'enrollment','consumed',clock_timestamp()+interval '200 seconds' FROM scale_devices;INSERT INTO mdm_access.requests(tenant_id,id,grant_id,source,windows_profile) SELECT '{TENANT}',request,grant_id,'mdm.windows','Device' FROM scale_devices;INSERT INTO mdm_access.devices SELECT '{TENANT}',device FROM scale_devices;INSERT INTO mdm_access.registrations(tenant_id,id,device,channel,generation,request_id,state,purpose,epoch) SELECT '{TENANT}',registration,device,'mdm',1,request,'active','primary',gen_random_uuid() FROM scale_devices; INSERT INTO mdm_access.credentials SELECT '{TENANT}',gen_random_uuid(),registration,'mdm',md5(registration::text)||md5(registration::text),'active' FROM scale_devices; INSERT INTO mdm_access.report_sources(tenant_id,registration,source,epoch,enabled) SELECT '{TENANT}',registration,'mdm.windows','77777777-7777-4777-8777-777777777777',true FROM scale_devices;",
+        "CREATE TEMP TABLE scale_devices AS SELECT '{prefix}-'||n::text AS device,gen_random_uuid() AS grant_id,gen_random_uuid() AS request,gen_random_uuid() AS registration FROM generate_series(1,65) n;INSERT INTO mdm_access.grants(tenant_id,id,actor,instance,device,purpose,state,expires_at) SELECT '{TENANT}',grant_id,'fixture','{INSTANCE}',device,'enrollment','consumed',clock_timestamp()+interval '200 seconds' FROM scale_devices;INSERT INTO mdm_access.requests(tenant_id,id,grant_id,source,windows_profile) SELECT '{TENANT}',request,grant_id,'mdm.windows','Device' FROM scale_devices;INSERT INTO mdm_access.devices SELECT '{TENANT}',device FROM scale_devices;INSERT INTO mdm_access.registrations(tenant_id,id,device,channel,generation,request_id,state,purpose,epoch) SELECT '{TENANT}',registration,device,'mdm',1,request,'active','primary',gen_random_uuid() FROM scale_devices; INSERT INTO mdm_access.credentials SELECT '{TENANT}',gen_random_uuid(),registration,'mdm',md5(registration::text)||md5(registration::text),'active' FROM scale_devices; INSERT INTO mdm_access.report_sources(tenant_id,registration,source,epoch,enabled) SELECT '{TENANT}',registration,'mdm.windows','77777777-7777-4777-8777-777777777777',true FROM scale_devices;",
         TENANT = case_tenant()
     ))?;
     await_ingress().await?;
@@ -71,7 +71,7 @@ async fn large_assignment_uses_published_scope_without_eager_execution() -> Resu
         json!({"action":"create","assetContext":"endpoint","name":"scale","description":"","criteria":null}),
     )
     .await?;
-    let devices = (1..=1001)
+    let devices = (1..=65)
         .map(|n| format!("{prefix}-{n}"))
         .collect::<Vec<_>>();
     for (index, batch) in devices.chunks(100).enumerate() {
@@ -123,7 +123,7 @@ async fn large_assignment_uses_published_scope_without_eager_execution() -> Resu
     )
     .await?;
     let mut cursor = None;
-    let mut count = 0;
+    let mut seen = std::collections::BTreeSet::new();
     loop {
         let path = match &cursor {
             Some(after) => format!("{policy}/assignments?after={after}"),
@@ -133,13 +133,24 @@ async fn large_assignment_uses_published_scope_without_eager_execution() -> Resu
         ensure!(status == StatusCode::OK, "assignment page {page}");
         let items = page["items"].as_array().unwrap();
         ensure!(items.len() <= 64);
-        count += items.len();
+        for item in items {
+            let device = item["target"]["device"]
+                .as_str()
+                .ok_or_else(|| anyhow::anyhow!("missing assignment target: {item}"))?;
+            ensure!(
+                seen.insert(device.to_owned()),
+                "duplicate assignment: {device}"
+            );
+        }
         cursor = page["nextCursor"].as_str().map(str::to_owned);
         if cursor.is_none() {
             break;
         }
     }
-    ensure!(count == 1001);
+    ensure!(
+        seen == devices.into_iter().collect(),
+        "assignment pagination lost or added devices"
+    );
     ensure!(
         pg(&format!(
             "SELECT count(*) FROM mdm_commands.action_runs WHERE tenant_id='{}'",

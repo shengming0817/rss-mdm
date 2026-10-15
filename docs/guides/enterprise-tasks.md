@@ -65,13 +65,11 @@ Script definition 包含 `profile`（power_shell7、posix_sh、bash、osquery）
 
 `GET /api/v1/policies` 按 `after` UUID 分页；`/{id}` 返回定义、编辑 revision 和执行 version；`/{id}/devices` 按设备 `after` 分页返回当前分配资格、诊断及原生 Operation 关联。执行历史 `/{id}/runs` 用 afterAt/afterId 分页，摘要不含输出；`/{id}/runs/{taskId}` 返回完整执行证据并检查 OperationRead；采集结果另需 InventoryRead，冻结映射含敏感字段时还需 InventorySensitiveRead。
 
-## Remote 历史与设备动作
+## 设备动作与退出边界
 
 [#2623](https://dev.azure.com/shengming0923/rss/_workitems/edit/2623) 已退出 Remote 创建和资源分发：`POST /api/v1/remote-operations` 不再存在，不保留 execute、collect_native、apply_configuration 或软件动作，也不转换成临时 Policy。脚本、原生采集、配置和软件由各自的 Resource/Policy/Scope 生命周期提供。
 
-`GET /api/v1/remote-operations`、`/{id}`、`/{id}/runs/{task}` 和 `POST /{id}/cancel` 保留历史读取、诊断和撤销。返回 `sourceRetired:true`；未完成展开的快照另有 `targetExpansionStopped:true`，阶段为 retired 或已有交付的结算阶段。原 snapshot、cursor、staged、Run/Attempt、签名和授权来源不变，未展开目标永不补发。
-
-升级后尚未启动的旧 Remote 和通用直接命令失去执行资格并由恢复取消。已启动或已有原生 execute 证据的记录，只接受原 attempt 的回执与结算，不再领取、Start、重批、重发或创建新的执行 attempt。取消不表示已有副作用回滚；未知结果保持 Unknown。注册替换、撤权和 deadline 继续沿原来源检查。
+#2755 已确认不存在旧 Remote / 通用 direct 部署与升级义务，历史读取、撤销、结算、存储和诊断下载链路完整退出。不改写旧记录或转换为 Policy；旧安装账本不属于当前 fresh install 支持范围。
 
 设备创建只有 restart、lock、wipe，严格动作参数、确认、平台注册前提和权限见[设备操作](device-operations.md)。资源级配置与软件不借用设备动作入口。
 
@@ -91,7 +89,6 @@ Script definition 包含 `profile`（power_shell7、posix_sh、bash、osquery）
 
 ### 一次性结果与恢复阶段
 
-`GET /api/v1/remote-operations/{id}` 的结果摘要省略 output/stdout/stderr；`GET /api/v1/remote-operations/{id}/runs/{task}` 先检查设备 OperationRead；采集结果另需 InventoryRead，冻结字段含敏感项还需 InventorySensitiveRead，才读取完整结果和诊断。Policy 与历史 Remote 使用同一 Run 结果过滤与详情投影。
 
 `cancellationRequested` 与 `deadlineElapsed` 是意图/时间事实。仍有交付待结算时，phase 为 settling、cancelling 或 expiring；未完成目标展开且无活动交付时为 retired，表示展开已停止；全部既有交付收敛后为 completed，存在无法确认的执行则为 unknown。completed 表示处理收敛，不表示每个设备执行成功，更不证明脚本效果回滚；各设备结果仍独立展示。取消返回 cancellationRequested，不把写入取消意图称为设备取消完成。
 
@@ -129,7 +126,7 @@ Apple 新注册 profile 在启用该能力时申请已安装应用查询与企�
 
 管理员继续使用既有 Policy/Resource/Software 管理权限；普通员工无需 ScriptExecute 或 SoftwareDeploy。系统服务的执行权限不由员工管理员身份决定。Resource 的 System/LoggedInUser 保持原意；后者必须绑定确切 SID/UID、OS 登录世代和该会话的 helper，缺失或换人时阻止新 Start。
 
-自助描述与 AI 开关由 selfService 持有。首次省略 allowAi/riskLevel 归一化为 true/2，编辑省略保留原值。脚本 riskLevel 仅允许 1、2；软件 riskLevel 只接受 2（省略时归一化为 2），AI 安装必须确认。关闭 allowAi 或撤回 published 只阻止自助调用，普通自动 Policy 独立判断；Remote 仅保留历史结算。
+自助描述与 AI 开关由 selfService 持有。首次省略 allowAi/riskLevel 归一化为 true/2，编辑省略保留原值。脚本 riskLevel 仅允许 1、2；软件 riskLevel 只接受 2（省略时归一化为 2），AI 安装必须确认。关闭 allowAi 或撤回 published 只阻止自助调用，普通自动 Policy 独立判断。
 
 Resource.Script 持有参数 schema，Policy 使用 Fixed/Input 选择来源。调用必须提交全部且仅提交 Input 键，不能覆盖 Fixed；后端合并后完整校验并冻结到 Run。存在 Input 时 trigger 必须为 manual。参数来源或固定值变化产生执行版本；访问和描述变化只推进配置 revision。软件调用 parameters 必须为空。
 
@@ -141,7 +138,7 @@ Resource.Script 持有参数 schema，Policy 使用 Fixed/Input 选择来源。�
 
 状态查询核对当前读者、当前注册与 Policy 访问资格及设备 Scope，不要求原企业会话或 OS/helper 仍可执行；这不签发新的执行许可。
 
-Run 保存服务端选择的访问依据，用户模式只保存 Identity 签发的非凭据 SessionReference。领取及 Start 服务端复核原会话、账户和成员有效性、可信来源与快照期限、静态用户组、Policy revision/version、自助配置、有效设备 Scope 和确切 OS/helper。企业身份与 OS 账号分别绑定。签名覆盖通用 TaskAuthorization、精确输入和执行目标；客户端不能伪装成自动 Policy 或 RemoteOperation。
+Run 保存服务端选择的访问依据，用户模式只保存 Identity 签发的非凭据 SessionReference。领取及 Start 服务端复核原会话、账户和成员有效性、可信来源与快照期限、静态用户组、Policy revision/version、自助配置、有效设备 Scope 和确切 OS/helper。企业身份与 OS 账号分别绑定。签名覆盖通用 TaskAuthorization、精确输入和执行目标；客户端不能伪装成自动 Policy。
 
 访问撤回阻止未启动任务。已启动执行按原 attempt 和不可变材料记录完成证据，企业退出登录不产生新的执行许可。执行状态与可信 Inventory 投影分别判断。安装使用当前初始化 schema；当前版本内的任务恢复消费原 attempt 与不可变材料。
 

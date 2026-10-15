@@ -1417,10 +1417,8 @@ async fn declared_policy_delete_claims_recover_from_unknown_commit() -> anyhow::
     )
     .await?;
     wait_diagnosis(&mut client, first, "windows_declared_enrollment_not_ready").await?;
-    remote_not_ready(&mut client, &resource).await?;
     let child = linked_peer(&host, &parent, &certificate, &host.root.join("device.key")).await?;
     wait_diagnosis(&mut client, first, "windows_declared_enrollment_not_ready").await?;
-    remote_not_ready(&mut client, &resource).await?;
     authenticate_child(&child.mutual, &child.url, &child.message, &parent.ack).await?;
     let apply = published(&mut client, first)
         .await
@@ -1648,22 +1646,6 @@ async fn declared_policy_delete_claims_recover_from_unknown_commit() -> anyhow::
     ensure!(commands.shutdown().join().await?.is_clean());
     ensure!(worker.shutdown().join().await?.is_clean());
     host.close().await?;
-    Ok(())
-}
-
-#[cfg(feature = "integration")]
-async fn remote_not_ready(
-    client: &mut crate::execution::test_support::Client,
-    resource: &str,
-) -> anyhow::Result<()> {
-    use axum::http::Method;
-    use serde_json::json;
-    let operation = Uuid::new_v4();
-    let response=client.browser.call(&client.router,Method::POST,"/api/v1/remote-operations",Some(json!({"operationId":operation,"resource":{"id":resource,"version":"1","platform":"windows","architecture":"x86_64","variant":"native"},"targets":{"kind":"devices","devices":[crate::test_support::case::name("tls-device")]},"action":{"kind":"apply_configuration"},"deadline":now()+600}))).await?;
-    ensure!(
-        response.0 == StatusCode::METHOD_NOT_ALLOWED,
-        "retired Remote: {response:?}"
-    );
     Ok(())
 }
 

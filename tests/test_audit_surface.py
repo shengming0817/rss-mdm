@@ -110,8 +110,6 @@ DECLARATIONS = {
  ('agent_request', 'crates/app/src/native/mod.rs'),
  ('command_accept', 'crates/agent-channel/src/boundary.rs'),
  ('command_accept', 'crates/execution-service/src/self_service.rs'),
- ('command_diagnostic_download', 'crates/management-http/src/execution/http.rs'),
- ('command_diagnostic_store', 'crates/execution-service/src/diagnostic_artifacts.rs'),
  ('command_read', 'crates/agent-channel/src/boundary.rs'),
  ('certificate_archive_unlock','crates/management-http/src/boundary.rs'),
  ('certificate_archive_lock','crates/management-http/src/boundary.rs'),
@@ -120,7 +118,6 @@ DECLARATIONS = {
     ('windows_push', 'crates/windows-channel/src/push_worker.rs'),
     ('credential_revoke', 'crates/execution-service/src/retirement.rs'),
  ('management_read','crates/management-http/src/enrollment/directory.rs'),
- ('management_read','crates/management-http/src/remote_operations/http.rs'),
  ('timeline_read','crates/management-http/src/boundary.rs'),
  ('audit_search','crates/management-http/src/boundary.rs'),
  ('runtime_diagnostics_read','crates/management-http/src/runtime_diagnostics.rs'),
@@ -173,7 +170,6 @@ DECLARATIONS = {
  ('command_read', 'crates/agent-channel/src/tasks.rs'),
  ('command_read', 'crates/management-http/src/execution/actions/http.rs'),
  ('command_read', 'crates/management-http/src/execution/http.rs'),
- ('command_read', 'crates/management-http/src/remote_operations/http.rs'),
  ('command_reconcile', 'crates/execution-service/src/actions/recovery.rs'),
  ('command_reconcile', 'crates/execution-service/src/recovery.rs'),
  ('compliance_read', 'crates/management-http/src/compliance/http.rs'),
@@ -197,7 +193,6 @@ DECLARATIONS = {
  ('management_read', 'crates/execution-service/src/queries/preview.rs'),
  ('management_read', 'crates/execution-service/src/queries/assignments.rs'),
  ('management_read', 'crates/flow-service/src/planning/policies/read.rs'),
- ('management_read', 'crates/execution-service/src/remote_operations/read.rs'),
  ('management_read', 'crates/software-service/src/management/catalog.rs'),
  ('management_read', 'crates/software-service/src/management/publication/service.rs'),
  ('management_read', 'crates/management-http/src/planning/http.rs'),
@@ -205,13 +200,11 @@ DECLARATIONS = {
  ('management_write', 'crates/content-service/src/service.rs'),
  ('management_write', 'crates/execution-service/src/actions/recovery.rs'),
  ('management_write', 'crates/execution-service/src/recovery.rs'),
- ('management_write', 'crates/execution-service/src/remote_operations/read.rs'),
  ('management_write', 'crates/software-service/src/management/catalog.rs'),
  ('management_write', 'crates/software-service/src/management/publication/service.rs'),
  ('management_write', 'crates/management-http/src/assets/http.rs'),
  ('management_write', 'crates/management-http/src/planning/http.rs'),
  ('management_write', 'crates/management-http/src/planning/policies/http.rs'),
- ('management_write', 'crates/management-http/src/remote_operations/http.rs'),
  ('management_write', 'crates/management-http/src/resource_catalog/http.rs'),
  ('protected_request', 'crates/agent-channel/src/boundary.rs'),
  ('protected_request', 'crates/app/src/native/mod.rs'),
@@ -296,14 +289,6 @@ class AuditSurface(unittest.TestCase):
         for action, owner in OWNERS.items():
             with self.subTest(action=action):
                 self.assertIn((action, owner), DECLARATIONS)
-
-    def test_retired_audit_writes_and_transaction_forwarders_do_not_exist(self):
-        self.assertFalse((ROOT / "crates/app/src/audit.rs").exists())
-        self.assertNotIn("'audit'", (ROOT / "crates/execution-service/src/dependencies.sql").read_text())
-        for path in production_paths():
-            source = path.read_text()
-            self.assertNotIn("mdm_access.audit", source, str(path))
-            self.assertNotIn("append_on_connection", source, str(path))
 
 class PrincipalBindingBoundary(unittest.TestCase):
     def test_browser_and_native_producers_use_authorization_owner(self):

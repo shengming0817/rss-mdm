@@ -142,11 +142,6 @@ pub enum Execution {
         /// Validated native operation tree.
         request: Request,
     },
-    /// Collect a complete native DiagnosticLog file through its numbered blocks.
-    DiagnosticLog {
-        /// Frozen native diagnostic input.
-        request: super::diagnostic::Input,
-    },
     /// An admitted native software job. Product distribution remains separately authorized.
     Msi {
         /// Immutable native installer input.

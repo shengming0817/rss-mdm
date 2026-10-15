@@ -256,12 +256,7 @@ pub async fn queue_run_in(
         deadline,
         now,
     } = input;
-    if !matches!(source, db::Source::Policy { .. }) {
-        return Err(Error::Unsupported.into());
-    }
-    let db::Source::Policy { version } = source else {
-        return Err(Error::Unsupported.into());
-    };
+    let db::Source::Policy { version } = source;
     let (policy, _) =
         crate::sources::storage::version_in(&service.policy_reader, tx, version).await?;
     let reader = service.source.clone();
@@ -295,11 +290,11 @@ pub async fn queue_run_in(
     let registration = target.registration;
     let target = target.clone();
     let digest = fingerprint.clone();
-    let (kind, version, remote) = source.columns();
+    let (kind, version) = source.columns();
     let state = checked_input(serde_json::to_value(RunState::new(deadline, now)?))?;
     tx.with_connection(move|c|Box::pin(async move {
-        sqlx::query("INSERT INTO mdm_commands.action_runs(tenant_id,id,source_kind,policy_version,remote_operation,device,registration,generation,occurrence,available_at,deadline,state,dispatch_fingerprint,created_at,source_objects) VALUES($1::uuid,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)")
-            .bind(tenant).bind(id).bind(kind).bind(version).bind(remote).bind(target.device).bind(target.registration).bind(target.generation).bind(occurrence).bind(available).bind(deadline).bind(state).bind(digest).bind(now).bind(evidence).execute(c).await?;Ok(())
+        sqlx::query("INSERT INTO mdm_commands.action_runs(tenant_id,id,source_kind,policy_version,device,registration,generation,occurrence,available_at,deadline,state,dispatch_fingerprint,created_at,source_objects) VALUES($1::uuid,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)")
+            .bind(tenant).bind(id).bind(kind).bind(version).bind(target.device).bind(target.registration).bind(target.generation).bind(occurrence).bind(available).bind(deadline).bind(state).bind(digest).bind(now).bind(evidence).execute(c).await?;Ok(())
     })).await?;
     let audit =
         rss_mdm_audit_integration::RequestAudit::new(tx.tenant_id().to_string(), "command_accept");

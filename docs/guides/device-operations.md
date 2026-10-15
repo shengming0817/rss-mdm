@@ -21,7 +21,7 @@ Intel/T2 状态未知或不满足条件时不开放 Mac 擦除。平台事实必
 
 创建返回 202 和稳定 operation/command 身份；同请求 UUID、主体与内容重放原回执，异内容返回 409。PIN 进入现有加密原生输入，不出现在授权 JSON、查询、审计或 Debug 中。
 
-读取使用 `GET /operations/{id}`（operation_read）。取消使用 `POST /operations/{id}/cancel`，正文 requestId、expectedRevision（operation_cancel）。批准使用 `POST /operations/{id}/approve`，正文 requestId、expectedRevision；lock/wipe 另须 `confirmation:{confirmed:true,expectedRegistrationId,expectedGeneration}`。批准只刷新原动作权限，不修改动作、PIN、注册或 deadline；历史通用命令不能重批。Policy 和 Remote 子命令由其 owner 取消，不接受此设备取消入口。
+读取使用 `GET /operations/{id}`（operation_read）。取消使用 `POST /operations/{id}/cancel`，正文 requestId、expectedRevision（operation_cancel）。批准使用 `POST /operations/{id}/approve`，正文 requestId、expectedRevision；lock/wipe 另须 `confirmation:{confirmed:true,expectedRegistrationId,expectedGeneration}`。批准只刷新原动作权限，不修改动作、PIN、注册或 deadline。Policy 子命令由其 owner 取消，不接受此设备取消入口。
 
 ## 结果与恢复
 
@@ -29,17 +29,17 @@ queued 是持久受理，published 是 Outbox 网关接纳，received 是关联�
 
 503 operation_unknown 表示提交可能完成：保留原请求和 UUID，先查询并以原内容重试；404 不能证明回滚。命令、Outbox、回执和审计继续共用原事务及现有 reconcile/device-command 恢复设施，重启不产生替代 operation。
 
-旧通用直接命令和 Remote 尚未启动时由恢复取消；已有 execute 证据只结算原 attempt，保留授权来源、期限、签名和历史。Remote 目录和历史详情返回 sourceRetired；未完成目标展开返回 targetExpansionStopped，禁止补发。
+Remote 与旧通用直接命令无部署升级义务，已完整退出。当前安装 schema 不接受旧安装账本；不提供历史执行导入或兼容查询。
 
-`GET /api/v1/operations` 保留设备、Policy、历史 Remote、状态筛选和 kind/id 复合游标。摘要移除原始输出与诊断流，完整证据沿 detailUrl 检查当前设备范围权限。脚本、原生采集、配置和软件继续走各自 Policy owner，见[企业任务](enterprise-tasks.md)。
+`GET /api/v1/operations` 保留设备、Policy、状态筛选和 kind/id 复合游标。摘要移除原始输出与诊断流，完整证据沿 detailUrl 检查当前设备范围权限。脚本、原生采集、配置和软件继续走各自 Policy owner，见[企业任务](enterprise-tasks.md)。
 
-命令连接 execution.database 使用 mdm_command_runtime。完整运行配置见 fixtures/mdm-config.example.json；恢复、升级和历史处置见[运维](../deployment/operations.md)。
+命令连接 execution.database 使用 mdm_command_runtime。完整运行配置见 fixtures/mdm-config.example.json；恢复和安装要求见[运维](../deployment/operations.md)。
 
 ## Windows 原生操作
 
 Windows 使用固定 DDF/CSP/ADMX 来源和 Node/Atomic/Sequence 类型化操作树，通过现有 Resource/Policy/Scope 和受保护执行路径管理对象。动态身份、设备/用户 scope、build/edition 和实际操作权限分别校验；客户端不提供可信平台或权限事实。
 
-Resource 元数据入口为 `/api/v1/resources/{id}`，配置内容通过既有 `/api/v1/resources/{id}/content` 上传并保护。Policy 与设备动作使用 `/api/v1`；Remote 仅提供历史读取和取消。配置内容示例：
+Resource 元数据入口为 `/api/v1/resources/{id}`，配置内容通过既有 `/api/v1/resources/{id}/content` 上传并保护。Policy 与设备动作使用 `/api/v1`；配置内容示例：
 
 ```json
 {"target":{"kind":"device"},"apply":{"platform":"windows","request":{"kind":"sync_ml","request":{"kind":"node","node":"./Device/Vendor/MSFT/Policy/Config/Experience/AllowCortana","instance":[],"operation":"replace","value":{"type":"integer","value":"1"}}}},"remove":null}
@@ -53,9 +53,6 @@ Policy 引用精确资源版本/variant；它消费完整操作权限和多对�
 
 安装、升级和后台诊断见[运维](../deployment/operations.md)。ActionRun 与状态型任务分离，脚本退出码不转成变更效果；见[企业任务](enterprise-tasks.md)。
 
-## 历史原生诊断文件
-
-设备创建已退出原生诊断载荷。历史命令的加密输入、回执、诊断制品和审计仍按原来源与权限查询；既有 `GET /api/v1/devices/{device}/operations/{operation}/diagnostic-artifact` 不改变身份、注册世代、授权和保留期检查。退役入口不生成新的日志 trigger、取块或传输执行。已完成的转存事实仍保留，取消不表示设备输出或已下载文件被回滚。
 
 ## 设备时间线
 

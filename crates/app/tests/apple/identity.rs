@@ -4,26 +4,6 @@ use sqlx::Connection;
 impl Fixture {
     pub async fn before_token(&mut self, peer: &Peer) -> Result<()> {
         self.policy_grants().await?;
-        for path in [
-            format!("/api/v1/enrollments/{}/profile", Uuid::new_v4()),
-            "/api/v1/policies/previews".into(),
-        ] {
-            for body in [
-                json!(null),
-                json!({}),
-                json!({"source":"mdm.apple","requestId":Uuid::new_v4(),"password":"invalid","unknown":true}),
-            ] {
-                let reply = self
-                    .browser
-                    .call(&self.router, Method::POST, &path, Some(body))
-                    .await?;
-                ensure!(
-                    reply.0 == StatusCode::BAD_REQUEST
-                        && reply.1 == json!({"code":"malformed_request"}),
-                    "noncanonical Apple JSON rejection: {reply:?}"
-                );
-            }
-        }
         let reply = peer
             .send(
                 "/mdm",

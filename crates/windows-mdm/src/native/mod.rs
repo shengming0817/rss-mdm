@@ -12,7 +12,6 @@ pub mod admx;
 pub mod collection;
 mod decimal;
 pub mod declared;
-pub mod diagnostic;
 mod request;
 mod resolved;
 pub use resolved::{AuthorizationTarget, Prepared, Resolved};

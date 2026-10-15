@@ -9,17 +9,6 @@ async fn native_controls_are_closed_and_never_claim_effects() -> Result<()> {
         .await?;
     let (peer, device) = f.ready_local_peer().await?;
     let path = format!("/api/v1/devices/{}/operations", case_device());
-    for task in [
-        json!({"platform":"macos","request":{"kind":"command","command":{"requestType":"InstalledApplicationList","fields":{}}}}),
-        json!({"platform":"macos","request":{"kind":"command","command":{"requestType":"EraseDevice","fields":{}}}}),
-        json!({"platform":"windows","request":{"kind":"sync_ml","request":{"kind":"node","node":"./Device/Vendor/MSFT/Reboot/RebootNow","instance":[],"operation":"exec","value":null}}}),
-    ] {
-        let response=f.browser.call(&f.router,Method::POST,&path,Some(json!({"operationId":Uuid::new_v4(),"deadline":f.app.clock.unix_seconds()?+300,"task":task}))).await?;
-        ensure!(
-            response.0 == StatusCode::BAD_REQUEST,
-            "generic input accepted: {response:?}"
-        );
-    }
     let unknown=f.browser.call(&f.router,Method::POST,&path,Some(json!({"operationId":Uuid::new_v4(),"deadline":f.app.clock.unix_seconds()?+300,"action":{"kind":"restart"}}))).await?;
     ensure!(
         !unknown.0.is_success(),

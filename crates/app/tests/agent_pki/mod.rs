@@ -325,15 +325,9 @@ async fn renewal_grant_lookup_survives_expired_identity_without_writing_authorit
 #[ignore = "make t2 MODULE=agent.pki"]
 async fn restored_ca_signs_only_live_authorized_agent_csrs_and_tls_preserves_purpose()
 -> anyhow::Result<()> {
-    assert!(root().join("agent-backup-restored").exists());
     let s = service(deployment()).await?;
     let p = admin(case_a(), "admin-a").await?;
     let foreign = admin(case_b(), "admin-b").await?;
-    for name in ["weak", "sha1", "ec", "subject", "san", "ca", "server"] {
-        assert!(
-            VerifiedAgentCsr::verify(&std::fs::read(root().join(format!("{name}.der")))?).is_err()
-        )
-    }
     let g = grant()?;
     assert!(authorize_request(&s, &foreign, &g, &audit()).await.is_err());
     let receipt = authorize_request(&s, &p, &g, &audit()).await?;
@@ -342,6 +336,28 @@ async fn restored_ca_signs_only_live_authorized_agent_csrs_and_tls_preserves_pur
     wrong.secret = runtime::Secret::parse(&crate::enrollment::random())?;
     assert!(s.issue(&wrong, &audit()).await.is_err());
     let candidate = s.issue(&input, &audit()).await?;
+    std::fs::write(root().join("agent-recovery-request"), b"issuance persisted")?;
+    tokio::time::timeout(std::time::Duration::from_secs(180), async {
+        loop {
+            anyhow::ensure!(
+                !root().join("agent-recovery-failed").exists(),
+                "CA recovery failed"
+            );
+            if root().join("agent-recovery-complete").exists() {
+                return Ok::<_, anyhow::Error>(());
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+    })
+    .await??;
+    assert!(root().join("agent-backup-restored").exists());
+    let next = grant()?;
+    let next_receipt = authorize_request(&s, &p, &next, &audit()).await?;
+    let next_candidate = s
+        .issue(&signing(&next, next_receipt.grant_id)?, &audit())
+        .await?;
+    assert_ne!(next_candidate.issuance_id, candidate.issuance_id);
+
     let replay = s.issue(&input, &audit()).await?;
     assert_eq!(
         serde_json::to_value(&candidate)?,

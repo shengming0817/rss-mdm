@@ -504,7 +504,11 @@ async fn concurrent_inputs_rule_changes_and_kind_boundaries() {
         builds::begin(&runtime, &s, &request),
         builds::begin(&runtime, &s, &request)
     );
-    assert!(a.is_ok() || b.is_ok());
+    for build in [a.unwrap(), b.unwrap()] {
+        assert_eq!(build.request.id, request.id);
+        assert_eq!(build.objects, 0);
+        assert!(!build.input_sealed && !build.ready && build.receipt.is_none());
+    }
     assert_eq!(
         builds::begin(&runtime, &s, &request).await.unwrap().objects,
         0

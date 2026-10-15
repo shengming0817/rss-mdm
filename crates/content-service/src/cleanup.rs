@@ -18,8 +18,6 @@ impl Garbage {
         let digest = self.digest;
         let c = journal::class(self.class);
         let length = self.length;
-        let diagnostic = self.class == StorageClass::NativeDiagnostic;
-        let tenant_id = tx.tenant_id();
         let artifact = Artifact::new(
             rss_mdm_resource::Id::new("gc").map_err(|_| invariant())?,
             length,
@@ -32,7 +30,6 @@ impl Garbage {
         )?;
 
         tx.with_connection(move|conn|Box::pin(async move{
-   if diagnostic { crate::diagnostic::association_lock(conn, tenant_id, digest, length).await?; }
    let state:Option<String>=sqlx::query_scalar("SELECT state FROM mdm_content.manifests WHERE tenant_id=$1::uuid AND class=$2 AND sha256=$3 AND length=$4 AND document=$5 FOR UPDATE").bind(&tenant).bind(c).bind(digest.as_slice()).bind(length as i64).bind(document).fetch_optional(&mut *conn).await?;
    if state.as_deref()==Some("deleted") || state.is_none(){return Ok(false)}
    let busy:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_content.pins WHERE tenant_id=$1::uuid AND class=$2 AND sha256=$3 AND length=$4 AND expires>extract(epoch FROM clock_timestamp())) OR EXISTS(SELECT 1 FROM mdm_content.uploads WHERE tenant_id=$1::uuid AND expires>extract(epoch FROM clock_timestamp()) AND document->'value'->'upload'->'binding'->'sha256'=$5)")

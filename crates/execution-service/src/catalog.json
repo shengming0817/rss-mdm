@@ -218,15 +218,6 @@
     ],
     [
       "action_runs",
-      "remote_operation",
-      "uuid",
-      false,
-      null,
-      "",
-      ""
-    ],
-    [
-      "action_runs",
       "device",
       "text",
       true,
@@ -920,15 +911,6 @@
     ],
     [
       "operations",
-      "diagnostic_progress",
-      "jsonb",
-      false,
-      null,
-      "",
-      ""
-    ],
-    [
-      "operations",
       "tenant_id",
       "uuid",
       true,
@@ -1074,15 +1056,6 @@
     [
       "operations",
       "policy_version",
-      "uuid",
-      false,
-      null,
-      "",
-      ""
-    ],
-    [
-      "operations",
-      "remote_operation",
       "uuid",
       false,
       null,
@@ -1571,7 +1544,7 @@
       "action_runs",
       "action_runs_check",
       "c",
-      "CHECK ((((source_kind = 'policy'::text) AND (policy_version IS NOT NULL) AND (remote_operation IS NULL)) OR ((source_kind = 'remote_operation'::text) AND (policy_version IS NULL) AND (remote_operation IS NOT NULL))))",
+      "CHECK (((source_kind = 'policy'::text) AND (policy_version IS NOT NULL)))",
       true
     ],
     [
@@ -1684,20 +1657,6 @@
       "action_runs_tenant_id_registration_fkey",
       "f",
       "FOREIGN KEY (tenant_id, registration) REFERENCES mdm_access.registrations(tenant_id, id)",
-      true
-    ],
-    [
-      "action_runs",
-      "action_runs_tenant_id_remote_operation_device_fkey",
-      "f",
-      "FOREIGN KEY (tenant_id, remote_operation, device) REFERENCES mdm_planning.remote_operation_targets(tenant_id, operation, device)",
-      true
-    ],
-    [
-      "action_runs",
-      "action_runs_tenant_id_remote_operation_device_key",
-      "u",
-      "UNIQUE (tenant_id, remote_operation, device)",
       true
     ],
     [
@@ -1956,14 +1915,14 @@
       "operations",
       "operation_authority_source",
       "c",
-      "CHECK (COALESCE(\nCASE source_kind\n    WHEN 'direct'::text THEN ((approval ->> 'kind'::text) = ANY (ARRAY['user'::text, 'device_control'::text]))\n    WHEN 'policy'::text THEN (((approval ->> 'kind'::text) = ANY (ARRAY['policy'::text, 'agent_install'::text])) AND ((approval ->> 'tenant'::text) = (tenant_id)::text) AND ((approval ->> 'device'::text) = device) AND ((approval ->> 'version'::text) = (policy_version)::text))\n    WHEN 'remote_operation'::text THEN (((approval ->> 'kind'::text) = 'remote_operation'::text) AND ((approval ->> 'tenant'::text) = (tenant_id)::text) AND ((approval ->> 'device'::text) = device) AND ((approval ->> 'operation'::text) = (remote_operation)::text))\n    ELSE NULL::boolean\nEND, false))",
+      "CHECK (COALESCE(\nCASE source_kind\n    WHEN 'direct'::text THEN ((approval ->> 'kind'::text) = 'device_control'::text)\n    WHEN 'policy'::text THEN (((approval ->> 'kind'::text) = ANY (ARRAY['policy'::text, 'agent_install'::text])) AND ((approval ->> 'tenant'::text) = (tenant_id)::text) AND ((approval ->> 'device'::text) = device) AND ((approval ->> 'version'::text) = (policy_version)::text))\n    ELSE NULL::boolean\nEND, false))",
       true
     ],
     [
       "operations",
       "operation_source",
       "c",
-      "CHECK ((((source_kind = 'direct'::text) AND (policy_version IS NULL) AND (remote_operation IS NULL)) OR ((source_kind = 'policy'::text) AND (policy_version IS NOT NULL) AND (remote_operation IS NULL)) OR ((source_kind = 'remote_operation'::text) AND (policy_version IS NULL) AND (remote_operation IS NOT NULL))))",
+      "CHECK ((((source_kind = 'direct'::text) AND (policy_version IS NULL)) OR ((source_kind = 'policy'::text) AND (policy_version IS NOT NULL))))",
       true
     ],
     [
@@ -1971,13 +1930,6 @@
       "operations_approval_check",
       "c",
       "CHECK ((octet_length((approval)::text) <= 1048576))",
-      true
-    ],
-    [
-      "operations",
-      "operations_diagnostic_progress_check",
-      "c",
-      "CHECK (((diagnostic_progress IS NULL) OR (octet_length((diagnostic_progress)::text) <= 4096)))",
       true
     ],
     [
@@ -2054,7 +2006,7 @@
       "operations",
       "operations_source_kind_check",
       "c",
-      "CHECK ((source_kind = ANY (ARRAY['direct'::text, 'policy'::text, 'remote_operation'::text])))",
+      "CHECK ((source_kind = ANY (ARRAY['direct'::text, 'policy'::text])))",
       true
     ],
     [
@@ -2069,13 +2021,6 @@
       "operations_tenant_id_policy_version_fkey",
       "f",
       "FOREIGN KEY (tenant_id, policy_version) REFERENCES mdm_policy.versions(tenant_id, id)",
-      true
-    ],
-    [
-      "operations",
-      "operations_tenant_id_remote_operation_device_fkey",
-      "f",
-      "FOREIGN KEY (tenant_id, remote_operation, device) REFERENCES mdm_planning.remote_operation_targets(tenant_id, operation, device)",
       true
     ],
     [
@@ -2327,14 +2272,6 @@
     ],
     [
       "action_runs",
-      "action_runs_tenant_id_remote_operation_device_key",
-      "CREATE UNIQUE INDEX action_runs_tenant_id_remote_operation_device_key ON mdm_commands.action_runs USING btree (tenant_id, remote_operation, device)",
-      true,
-      true,
-      true
-    ],
-    [
-      "action_runs",
       "action_software_effect",
       "CREATE INDEX action_software_effect ON mdm_commands.action_runs USING btree (tenant_id, device) WHERE (software_effect IS NOT NULL)",
       true,
@@ -2417,14 +2354,6 @@
       "operations",
       "operations_pkey",
       "CREATE UNIQUE INDEX operations_pkey ON mdm_commands.operations USING btree (tenant_id, id)",
-      true,
-      true,
-      true
-    ],
-    [
-      "operations",
-      "remote_native_once",
-      "CREATE UNIQUE INDEX remote_native_once ON mdm_commands.operations USING btree (tenant_id, remote_operation, device) WHERE (remote_operation IS NOT NULL)",
       true,
       true,
       true

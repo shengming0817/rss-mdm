@@ -441,6 +441,15 @@ async fn channel_admission_is_independent_audited_and_replayable() -> Result<()>
     const CHANNELS: &str = "/api/v1/registration-channels";
     const ADMISSION: &str = "/api/v1/registration-channels/windows_mdm/admission";
     let initial = call(&mut other, &router, Method::GET, CHANNELS, None).await?;
+    let channels = initial["channels"].as_array().unwrap();
+    ensure!(channels.len() == 3);
+    ensure!(
+        channels
+            .iter()
+            .map(|c| c["channel"].as_str().unwrap())
+            .collect::<std::collections::BTreeSet<_>>()
+            == std::collections::BTreeSet::from(["agent", "windows_mdm", "macos_mdm"])
+    );
     ensure!(
         initial["channels"]
             .as_array()

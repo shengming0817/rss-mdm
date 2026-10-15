@@ -14,7 +14,6 @@ mod policy;
 mod scep;
 #[path = "support/scep.rs"]
 mod scep_client;
-mod status;
 mod users;
 use super::*;
 use crate::{

@@ -20,9 +20,6 @@ ALTER TABLE ONLY mdm_commands.action_runs
 ALTER TABLE ONLY mdm_commands.action_runs
     ADD CONSTRAINT action_runs_tenant_id_registration_fkey FOREIGN KEY (tenant_id, registration) REFERENCES mdm_access.registrations(tenant_id, id);
 
-ALTER TABLE ONLY mdm_commands.action_runs
-    ADD CONSTRAINT action_runs_tenant_id_remote_operation_device_fkey FOREIGN KEY (tenant_id, remote_operation, device) REFERENCES mdm_planning.remote_operation_targets(tenant_id, operation, device);
-
 ALTER TABLE ONLY mdm_commands.attempts
     ADD CONSTRAINT attempts_tenant_id_credential_fkey FOREIGN KEY (tenant_id, credential) REFERENCES mdm_access.credentials(tenant_id, id);
 
@@ -50,9 +47,6 @@ ALTER TABLE ONLY mdm_commands.operations
 ALTER TABLE ONLY mdm_commands.operations
     ADD CONSTRAINT operations_tenant_id_policy_version_fkey FOREIGN KEY (tenant_id, policy_version) REFERENCES mdm_policy.versions(tenant_id, id);
 
-ALTER TABLE ONLY mdm_commands.operations
-    ADD CONSTRAINT operations_tenant_id_remote_operation_device_fkey FOREIGN KEY (tenant_id, remote_operation, device) REFERENCES mdm_planning.remote_operation_targets(tenant_id, operation, device);
-
 ALTER TABLE ONLY mdm_commands.policy_recovery
     ADD CONSTRAINT policy_recovery_tenant_id_policy_fkey FOREIGN KEY (tenant_id, policy) REFERENCES mdm_policy.policies(tenant_id, id);
 
@@ -64,9 +58,6 @@ ALTER TABLE ONLY mdm_planning.configuration_claims
 
 ALTER TABLE ONLY mdm_planning.configuration_claims
     ADD CONSTRAINT configuration_claims_tenant_id_version_fkey FOREIGN KEY (tenant_id, version) REFERENCES mdm_policy.versions(tenant_id, id);
-
-ALTER TABLE ONLY mdm_planning.remote_operation_targets
-    ADD CONSTRAINT remote_operation_targets_tenant_id_operation_fkey FOREIGN KEY (tenant_id, operation) REFERENCES mdm_planning.remote_operations(tenant_id, id);
 
 GRANT USAGE ON SCHEMA mdm_commands TO mdm_command_runtime;
 
@@ -150,7 +141,7 @@ GRANT UPDATE(approval) ON TABLE mdm_commands.operations TO mdm_command_runtime;
 
 GRANT UPDATE(revision) ON TABLE mdm_commands.operations TO mdm_command_runtime;
 
-GRANT UPDATE(gateway_accepted,dispatch_failure,diagnostic_progress) ON TABLE mdm_commands.operations TO mdm_command_runtime;
+GRANT UPDATE(gateway_accepted,dispatch_failure) ON TABLE mdm_commands.operations TO mdm_command_runtime;
 
 GRANT SELECT,INSERT ON TABLE mdm_commands.policy_recovery TO mdm_command_runtime;
 
@@ -185,18 +176,6 @@ GRANT UPDATE(diagnosis) ON TABLE mdm_planning.configuration_objects TO mdm_comma
 GRANT SELECT ON TABLE mdm_planning.configuration_objects TO mdm_flow_runtime;
 
 GRANT SELECT,INSERT ON TABLE mdm_planning.configuration_objects TO mdm_command_runtime;
-
-GRANT SELECT ON TABLE mdm_planning.remote_operation_targets TO mdm_command_runtime;
-
-GRANT SELECT ON TABLE mdm_planning.remote_operation_targets TO mdm_flow_runtime;
-
-GRANT SELECT ON TABLE mdm_planning.remote_operations TO mdm_flow_runtime;
-
-GRANT SELECT ON TABLE mdm_planning.remote_operations TO mdm_command_runtime;
-
-GRANT UPDATE(cancelled) ON TABLE mdm_planning.remote_operations TO mdm_command_runtime;
-
-GRANT UPDATE(run_after) ON TABLE mdm_planning.remote_operations TO mdm_command_runtime;
 
 GRANT USAGE ON SCHEMA mdm_commands TO mdm_access;
 

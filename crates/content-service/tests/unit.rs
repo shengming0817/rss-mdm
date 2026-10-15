@@ -354,12 +354,7 @@ async fn native_ciphertext_binds_class_tenant_digest_and_record_frontier() {
     );
     assert!(
         store
-            .plaintext(
-                &sealed,
-                &a,
-                StorageClass::NativeDiagnostic,
-                bytes.len() as u64
-            )
+            .plaintext(&sealed, &a, StorageClass::Artifact, bytes.len() as u64)
             .is_err()
     );
     assert!(
@@ -435,7 +430,6 @@ fn piece_and_native_limits_are_arithmetic_boundaries() {
             r.storage_class = StorageClass::NativeConfiguration;
             Purpose::Resource(r)
         }
-        _ => unreachable!(),
     };
     b.length = protected::NATIVE_LIMIT;
     assert!(protected::reservation(&b).unwrap() > b.length);

@@ -490,7 +490,6 @@ async fn authorized_declarations(
         let live = progress == dc::Status::Applied
             || (!progress.is_terminal() && now < op.request.deadline);
         if live
-            && !op.approval.retired()
             && op.registration == p.registration()
             && op.registration_generation == p.generation()
             && op.request.target.user_key() == user

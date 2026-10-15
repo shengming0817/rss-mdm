@@ -147,7 +147,7 @@ pub async fn send(
     user_key: &str,
 ) -> Result<Vec<u8>, Error> {
     let tenant = p.tenant().to_string();
-    let rows=sqlx::query("SELECT id::text,collection,request FROM mdm_apple.attempts WHERE tenant_id=$1::uuid AND registration=$2::uuid AND generation=$3 AND NOT EXISTS(SELECT 1 FROM mdm_commands.action_runs r WHERE r.tenant_id=mdm_apple.attempts.tenant_id AND r.id=mdm_apple.attempts.collection AND r.source_kind='remote_operation') AND user_key=$4 AND phase IN ('collect','collect_device','collect_security') AND state IN ('pending','sent','not_now') AND next_attempt<=clock_timestamp() AND deadline>clock_timestamp() ORDER BY collection_sequence LIMIT 32 FOR UPDATE")
+    let rows=sqlx::query("SELECT id::text,collection,request FROM mdm_apple.attempts WHERE tenant_id=$1::uuid AND registration=$2::uuid AND generation=$3 AND user_key=$4 AND phase IN ('collect','collect_device','collect_security') AND state IN ('pending','sent','not_now') AND next_attempt<=clock_timestamp() AND deadline>clock_timestamp() ORDER BY collection_sequence LIMIT 32 FOR UPDATE")
         .bind(&tenant).bind(p.registration().to_string()).bind(p.generation()).bind(user_key).fetch_all(&mut *c).await.map_err(db)?;
     for row in rows {
         let id = uuid(&row, "id")?;

@@ -335,7 +335,6 @@ impl Reconciler<rss_reconcile_postgres::PgClaim> for ExecutionService {
             let audit = RequestAudit::new(self.tenant.to_string(), "management_read");
             let active=crate::transaction::run(&self.audit_store,&self.runtime,self.tenant,&audit,(self,claim.target().entity()),|ctx,tx|Box::pin(async move {
             let (service,entity) = *ctx;
-            if let Some(id)=remote_execution::operation_id(entity){return remote_execution::active(tx,id).await;}
             if let Some(id)=actions::recovery::policy_id(entity){return actions::recovery::active(tx,id).await;}
             if let Some(digest)=entity.strip_prefix("configuration:") {
                 let Some(device)=configuration_device(tx,digest).await? else {return Ok(false)};
@@ -349,11 +348,6 @@ impl Reconciler<rss_reconcile_postgres::PgClaim> for ExecutionService {
                 if ids.is_empty(){return Ok(false);}
                 for id in ids {
                     after=stored(Uuid::parse_str(&id))?;let op=storage::load(tx,&service.protection,after).await?;
-                    if crate::native::diagnostic::input(&op.request.task).is_some() {
-                        let tenant=service.tenant;let id=op.id;
-                        let pending=tx.with_connection(move|c|Box::pin(async move {Ok(crate::native::diagnostic::load(c,tenant,id).await)})).await??;
-                        if pending.pending() {return Ok(true);}
-                    }
                     if service.required_command(tx,&op).await?.status().is_terminal(){continue;}
                     return Ok(true);
                 }
@@ -388,7 +382,6 @@ impl Reconciler<rss_reconcile_postgres::PgClaim> for ExecutionService {
             let (service,entity,audit,failure) = *ctx;
             let result:Result<()>=async {
                 storage::admit(tx).await?;
-                if let Some(id)=remote_execution::operation_id(entity){return service.advance_remote_in(tx,id).await;}
                 if let Some(id)=actions::recovery::policy_id(entity){return actions::recovery::recover(service,tx,id).await;}
                 if let Some(digest)=entity.strip_prefix("configuration:") {
                     let Some(device)=configuration_device(tx,digest).await? else {return Ok(())};
@@ -412,7 +405,7 @@ impl Reconciler<rss_reconcile_postgres::PgClaim> for ExecutionService {
                     if !command.status().is_terminal(){
                         let operation=storage::load(tx,&service.protection,stored(Uuid::parse_str(command.spec().id().as_str()))?).await?;
                         let now=storage::now(tx).await?;
-                        if ((operation.approval.retired() && !storage::execution_started(tx, operation.id).await?) || !storage::approval_valid(&service.source, &service.protection,tx,&operation,now).await?) && service.store.cancel(tx,scope,command.spec().id(),command.spec().coordinate()).await?.outcome==dc::Outcome::OutOfOrder {return Err(Error::Conflict.into());}
+                        if !storage::approval_valid(&service.source, &service.protection,tx,&operation,now).await? && service.store.cancel(tx,scope,command.spec().id(),command.spec().coordinate()).await?.outcome==dc::Outcome::OutOfOrder {return Err(Error::Conflict.into());}
 
                     }
                 }
@@ -443,10 +436,7 @@ impl Reconciler<rss_reconcile_postgres::PgClaim> for ExecutionService {
                     .err()
                     .map(|_| rss_mdm_audit_integration::FailureReason::Transaction),
             );
-            result.map_err(failure)?;
-            self.materialize_diagnostics(claim, control)
-                .await
-                .map_err(failure)
+            result.map_err(failure)
         })
     }
 }

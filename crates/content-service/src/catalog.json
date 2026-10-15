@@ -82,87 +82,6 @@
       ""
     ],
     [
-      "diagnostic_artifacts",
-      "tenant_id",
-      "uuid",
-      true,
-      null,
-      "",
-      ""
-    ],
-    [
-      "diagnostic_artifacts",
-      "operation",
-      "uuid",
-      true,
-      null,
-      "",
-      ""
-    ],
-    [
-      "diagnostic_artifacts",
-      "registration",
-      "uuid",
-      true,
-      null,
-      "",
-      ""
-    ],
-    [
-      "diagnostic_artifacts",
-      "generation",
-      "bigint",
-      true,
-      null,
-      "",
-      ""
-    ],
-    [
-      "diagnostic_artifacts",
-      "identity",
-      "jsonb",
-      true,
-      null,
-      "",
-      ""
-    ],
-    [
-      "diagnostic_artifacts",
-      "reference",
-      "text",
-      true,
-      null,
-      "",
-      ""
-    ],
-    [
-      "diagnostic_artifacts",
-      "length",
-      "bigint",
-      true,
-      null,
-      "",
-      ""
-    ],
-    [
-      "diagnostic_artifacts",
-      "sha256",
-      "bytea",
-      true,
-      null,
-      "",
-      ""
-    ],
-    [
-      "diagnostic_artifacts",
-      "expires_at",
-      "bigint",
-      true,
-      null,
-      "",
-      ""
-    ],
-    [
       "manifests",
       "tenant_id",
       "uuid",
@@ -481,48 +400,6 @@
       true
     ],
     [
-      "diagnostic_artifacts",
-      "diagnostic_artifacts_expires_at_check",
-      "c",
-      "CHECK ((expires_at > 0))",
-      true
-    ],
-    [
-      "diagnostic_artifacts",
-      "diagnostic_artifacts_generation_check",
-      "c",
-      "CHECK ((generation > 0))",
-      true
-    ],
-    [
-      "diagnostic_artifacts",
-      "diagnostic_artifacts_length_check",
-      "c",
-      "CHECK (((length >= 1) AND (length <= 16777216)))",
-      true
-    ],
-    [
-      "diagnostic_artifacts",
-      "diagnostic_artifacts_pkey",
-      "p",
-      "PRIMARY KEY (tenant_id, operation)",
-      true
-    ],
-    [
-      "diagnostic_artifacts",
-      "diagnostic_artifacts_sha256_check",
-      "c",
-      "CHECK ((octet_length(sha256) = 32))",
-      true
-    ],
-    [
-      "diagnostic_artifacts",
-      "diagnostic_artifacts_tenant_id_reference_key",
-      "u",
-      "UNIQUE (tenant_id, reference)",
-      true
-    ],
-    [
       "manifests",
       "manifests_length_check",
       "c",
@@ -605,22 +482,6 @@
       "bindings",
       "bindings_pkey",
       "CREATE UNIQUE INDEX bindings_pkey ON mdm_content.bindings USING btree (tenant_id, actor, operation)",
-      true,
-      true,
-      true
-    ],
-    [
-      "diagnostic_artifacts",
-      "diagnostic_artifacts_pkey",
-      "CREATE UNIQUE INDEX diagnostic_artifacts_pkey ON mdm_content.diagnostic_artifacts USING btree (tenant_id, operation)",
-      true,
-      true,
-      true
-    ],
-    [
-      "diagnostic_artifacts",
-      "diagnostic_artifacts_tenant_id_reference_key",
-      "CREATE UNIQUE INDEX diagnostic_artifacts_tenant_id_reference_key ON mdm_content.diagnostic_artifacts USING btree (tenant_id, reference)",
       true,
       true,
       true
