@@ -333,6 +333,122 @@ mod mapping_tests {
     use serde_json::json;
 
     #[test]
+    fn windows_identity_and_software_blueprints_project_current_asset_semantics() {
+        use rss_mdm_resource::blueprints;
+        for name in ["windows.agent.identity", "windows.agent.software"] {
+            assert!(blueprints::get(name, "1").is_none());
+            let blueprints::Definition::AgentCollection { template } =
+                blueprints::get(name, "2").unwrap().definition
+            else {
+                unreachable!()
+            };
+            for (key, binding) in &template.spec().mappings {
+                let field = builtin::fields()
+                    .into_iter()
+                    .find(|f| f.key.as_str() == key)
+                    .unwrap();
+                validate_agent_mapping(&field, &template, binding).unwrap();
+            }
+            let cases = if name.ends_with("identity") {
+                vec![
+                    (
+                        "device.os.edition",
+                        json!({"EditionID":"Professional"}),
+                        json!("Professional"),
+                    ),
+                    (
+                        "device.architecture",
+                        json!({"PROCESSOR_ARCHITECTURE":"AMD64"}),
+                        json!("x86_64"),
+                    ),
+                    (
+                        "device.architecture",
+                        json!({"PROCESSOR_ARCHITECTURE":"ARM64"}),
+                        json!("aarch64"),
+                    ),
+                    (
+                        "device.serial_number",
+                        json!({"SerialNumber":" ab-12 "}),
+                        json!("AB-12"),
+                    ),
+                ]
+            } else {
+                vec![]
+            };
+            for (key, raw, expected) in cases {
+                let field = builtin::fields()
+                    .into_iter()
+                    .find(|f| f.key.as_str() == key)
+                    .unwrap();
+                let NativeValue::Value(CollectedValue::Value(value)) =
+                    mapped_value(&field, &template.spec().mappings[key].mapping, &raw)
+                else {
+                    panic!("{key}")
+                };
+                assert_eq!(value, field.value_type.decode_json(&expected).unwrap());
+            }
+            if name.ends_with("identity") {
+                for (key, raw) in [
+                    (
+                        "device.serial_number",
+                        json!({"SerialNumber":"To Be Filled By O.E.M."}),
+                    ),
+                    (
+                        "device.hardware_uuid",
+                        json!({"UUID":"00000000-0000-0000-0000-000000000000"}),
+                    ),
+                    (
+                        "device.architecture",
+                        json!({"PROCESSOR_ARCHITECTURE":"unknown"}),
+                    ),
+                ] {
+                    let field = builtin::fields()
+                        .into_iter()
+                        .find(|f| f.key.as_str() == key)
+                        .unwrap();
+                    let mapping = &template.spec().mappings[key].mapping;
+                    assert!(matches!(
+                        mapped_value(&field, mapping, &raw),
+                        NativeValue::Invalid
+                    ));
+                    assert!(matches!(
+                        mapped_value(&field, mapping, &json!({})),
+                        NativeValue::Missing
+                    ));
+                }
+            } else {
+                let field = builtin::fields()
+                    .into_iter()
+                    .find(|f| f.key.as_str() == "device.software.installations")
+                    .unwrap();
+                let mapping = &template.spec().mappings[field.key.as_str()].mapping;
+                for (origin, state, scope, owner) in [
+                    ("win32.uninstall.32", "installed", "device", ""),
+                    ("win32.uninstall.64", "installed", "device", ""),
+                    (
+                        "msix.registered",
+                        "registered",
+                        "user",
+                        "S-1-5-21-1-2-3-1001",
+                    ),
+                    ("msix.provisioned", "provisioned", "device", ""),
+                ] {
+                    let row = json!({"id":origin,"native_id":"same","name":"App","version":"1","publisher":"V","scope":scope,"owner":owner,"origin":origin,"location":""});
+                    let NativeValue::Value(CollectedValue::Value(Scalar::Array(rows))) =
+                        mapped_value(&field, mapping, &json!([row]))
+                    else {
+                        panic!("{origin}")
+                    };
+                    let Scalar::Object(row) = &rows[0] else {
+                        unreachable!()
+                    };
+                    assert_eq!(row["installation_state"], Scalar::String(state.into()));
+                }
+            }
+        }
+    }
+
+    #[test]
     fn native_conversion_checks_whole_target_shape_and_preserves_bitmask_arrays() {
         use rss_mdm_agent_wire::runtime as w;
         use rss_mdm_resource::{AgentCollectionDefinition, blueprints};
@@ -398,7 +514,7 @@ mod mapping_tests {
     fn standard_software_requires_whole_device_coverage_but_custom_subsets_remain_valid() {
         use rss_mdm_agent_wire::runtime as w;
         use rss_mdm_resource::{AgentCollectionDefinition, blueprints};
-        let blueprint = blueprints::get("windows.agent.software", "1").unwrap();
+        let blueprint = blueprints::get("windows.agent.software", "2").unwrap();
         let blueprints::Definition::AgentCollection { template } = blueprint.definition else {
             panic!("native software template");
         };

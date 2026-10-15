@@ -9,7 +9,10 @@
 pub const DATASET: &str = "inventory";
 
 mod channels;
+mod hardware;
+mod software;
 pub use channels::{AgentInstallation, MdmEnrollment};
+pub use hardware::{normalize_hardware_uuid, normalize_serial_number};
 mod assets;
 mod collected;
 pub use collected::{CollectedValue, UnknownReason};

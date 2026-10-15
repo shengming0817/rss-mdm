@@ -50,7 +50,7 @@ impl Hardware {
             .any(|(a, b)| !a.is_empty() && !b.is_empty() && a != b)
     }
 }
-fn normalized(value: &str, uuid: bool) -> Option<String> {
+fn normalized_manufacturer(value: &str) -> Option<String> {
     let value = value.trim().to_uppercase();
     if value.is_empty()
         || value.len() > 256
@@ -73,15 +73,13 @@ fn normalized(value: &str, uuid: bool) -> Option<String> {
     {
         return None;
     }
+    Some(value)
+}
+fn normalized(value: &str, uuid: bool) -> Option<String> {
     if uuid {
-        let id = uuid::Uuid::parse_str(&value).ok()?;
-        if id.is_nil() || id.as_u128() == u128::MAX {
-            None
-        } else {
-            Some(id.to_string())
-        }
+        rss_mdm_inventory::normalize_hardware_uuid(value).ok()
     } else {
-        Some(value)
+        rss_mdm_inventory::normalize_serial_number(value).ok()
     }
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -317,7 +315,11 @@ pub(crate) async fn endpoint_page(
                         continue;
                     }
                     if let FieldState::Known(Scalar::String(value)) = &fact.state
-                        && let Some(value) = normalized(value, name == "device.hardware_uuid")
+                        && let Some(value) = if name == "device.manufacturer" {
+                            normalized_manufacturer(value)
+                        } else {
+                            normalized(value, name == "device.hardware_uuid")
+                        }
                     {
                         match name {
                             "device.serial_number" => {

@@ -50,6 +50,35 @@ fn wmi(
         keys,
     )
 }
+// ref: microsoft/WSL tools/deploy/deploy-to-host.ps1@6747ae808acd3895ed1b23ffdb8aa9d4b6978066
+fn registry(path: &str, name: &str) -> w::NativeQuery {
+    query(
+        w::NativeQueryDefinition::WindowsRegistry {
+            hive: w::RegistryHive::LocalMachine,
+            view: w::RegistryView::Registry64,
+            path: path.into(),
+            enumerate_subkeys: false,
+            values: [(
+                name.into(),
+                w::RegistryValue {
+                    name: name.into(),
+                    value_type: w::RegistryType::Sz,
+                },
+            )]
+            .into(),
+        },
+        false,
+        &[],
+    )
+}
+fn codes(values: &[(&str, &str)]) -> Conversion {
+    Conversion::Enum {
+        values: values
+            .iter()
+            .map(|(from, to)| ((*from).into(), serde_json::Value::from(*to)))
+            .collect(),
+    }
+}
 fn mapping(query: &str, pointer: &str, conversion: Conversion) -> AgentCollectionMapping {
     AgentCollectionMapping {
         query: query.into(),
@@ -69,7 +98,12 @@ fn pack(
 ) -> Blueprint {
     Blueprint {
         id: format!("windows.agent.{id}"),
-        version: "1".into(),
+        version: if matches!(id, "identity" | "software") {
+            "2"
+        } else {
+            "1"
+        }
+        .into(),
         category: category.into(),
         platform: Platform::Windows,
         definition: Definition::AgentCollection {
@@ -153,6 +187,17 @@ pub(super) fn catalog() -> Vec<Blueprint> {
                         &[],
                     ),
                 ),
+                (
+                    "edition",
+                    registry(r"SOFTWARE\Microsoft\Windows NT\CurrentVersion", "EditionID"),
+                ),
+                (
+                    "architecture",
+                    registry(
+                        r"SYSTEM\CurrentControlSet\Control\Session Manager\Environment",
+                        "PROCESSOR_ARCHITECTURE",
+                    ),
+                ),
             ],
             vec![
                 ("device.model", mapping("system", "/Model", I)),
@@ -162,6 +207,15 @@ pub(super) fn catalog() -> Vec<Blueprint> {
                 ("device.os.name", mapping("os", "/Caption", I)),
                 ("device.os.version", mapping("os", "/Version", I)),
                 ("device.os.build", mapping("os", "/BuildNumber", I)),
+                ("device.os.edition", mapping("edition", "/EditionID", I)),
+                (
+                    "device.architecture",
+                    mapping(
+                        "architecture",
+                        "/PROCESSOR_ARCHITECTURE",
+                        codes(&[("AMD64", "x86_64"), ("ARM64", "aarch64")]),
+                    ),
+                ),
             ],
         ),
         pack(
@@ -321,6 +375,16 @@ pub(super) fn catalog() -> Vec<Blueprint> {
                         ("scope", "/scope", I),
                         ("owner", "/owner", I),
                         ("origin", "/origin", I),
+                        (
+                            "installation_state",
+                            "/origin",
+                            codes(&[
+                                ("win32.uninstall.32", "installed"),
+                                ("win32.uninstall.64", "installed"),
+                                ("msix.registered", "registered"),
+                                ("msix.provisioned", "provisioned"),
+                            ]),
+                        ),
                         ("location", "/location", I),
                     ],
                 ),

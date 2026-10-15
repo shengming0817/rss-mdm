@@ -1,3 +1,5 @@
+#[path = "windows_assets.rs"]
+mod windows_assets;
 use crate::test_support::agent_execution::*;
 use crate::test_support::*;
 use ring::signature::KeyPair;
@@ -476,8 +478,26 @@ async fn native_inventory_case(map_software: bool, all_failed: bool, macos: bool
             "windows.agent.software",
         ]
     } {
+        let r::blueprints::Definition::AgentCollection { template } = r::blueprints::get(
+            id,
+            if id == "windows.agent.software" {
+                "2"
+            } else {
+                "1"
+            },
+        )
+        .unwrap()
+        .definition
+        else {
+            unreachable!()
+        };
+        specs.push(template.spec().clone());
+    }
+    if !macos {
         let r::blueprints::Definition::AgentCollection { template } =
-            r::blueprints::get(id, "1").unwrap().definition
+            r::blueprints::get("windows.agent.identity", "2")
+                .unwrap()
+                .definition
         else {
             unreachable!()
         };
@@ -535,7 +555,11 @@ async fn native_inventory_case(map_software: bool, all_failed: bool, macos: bool
     let policy_input = || json!({"scope":case_task_scope(),"action":{"kind":"agent_collection","resource":{"id":resource_id,"version":"v1","platform":platform,"architecture":"x86_64","variant":"default"},"runLifetimeSeconds":300}});
     let mut prior_network = String::new();
     let mut prior_software = String::new();
-    for stage in 0..4 {
+    for stage in if !macos && map_software && !all_failed {
+        vec![0, 1, 4, 5, 2, 3]
+    } else {
+        vec![0, 1, 2, 3]
+    } {
         let policy = Uuid::new_v4();
         let ordinary = f
             .grants
@@ -574,7 +598,7 @@ async fn native_inventory_case(map_software: bool, all_failed: bool, macos: bool
                     Some(claim_input(if macos {
                         json!({"macos.hardware":1,"macos.pkg_receipts":1})
                     } else {
-                        json!({"windows.wmi":1,"windows.network":1,"windows.software":1})
+                        json!({"windows.wmi":1,"windows.registry":1,"windows.network":1,"windows.software":1})
                     })),
                 )
                 .await?;
@@ -651,7 +675,9 @@ async fn native_inventory_case(map_software: bool, all_failed: bool, macos: bool
         let now = crate::clock::Clock::unix_seconds(&crate::clock::SystemClock)?;
         let mut queries = std::collections::BTreeMap::new();
         for (id, q) in &spec.plan.spec().queries {
-            let rows = if id == "memory" {
+            let rows = if !macos && let Some(rows) = windows_assets::rows(id, stage) {
+                rows
+            } else if id == "memory" {
                 vec![
                     [(
                         if macos {
@@ -664,7 +690,7 @@ async fn native_inventory_case(map_software: bool, all_failed: bool, macos: bool
                     )]
                     .into(),
                 ]
-            } else if stage == 2 {
+            } else if stage == 2 || stage >= 4 {
                 vec![]
             } else if id == "software" || id == "receipts" {
                 (0..if stage == 0 { 2 } else { 1 })
@@ -853,6 +879,24 @@ async fn native_inventory_case(map_software: bool, all_failed: bool, macos: bool
                 let v: Value = serde_json::from_str(network.trim())?;
                 ensure!(v["value"] == json!([]));
             }
+            if !macos {
+                windows_assets::verify_identity(spec.registration_id, spec.attempt_id, stage)?;
+                let response = f
+                    .author
+                    .call(
+                        &f.router,
+                        Method::GET,
+                        &format!("/api/v1/devices/{device}/inventory"),
+                        None,
+                    )
+                    .await?;
+                ensure!(response.0 == StatusCode::OK, "asset query: {response:?}");
+                ensure!(
+                    response.1["asset"]["device"]["fields"]["device.os.edition"]["state"]["value"]
+                        ["value"]
+                        == "Professional"
+                );
+            }
             if map_software {
                 let software = pg(&format!(
                     "SELECT value::text FROM mdm.inventory WHERE tenant_id='{}' AND registration='{}' AND source='agent.native' AND field='{software_field}'",
@@ -861,13 +905,17 @@ async fn native_inventory_case(map_software: bool, all_failed: bool, macos: bool
                 ))?;
                 if stage == 0 {
                     let value: Value = serde_json::from_str(software.trim())?;
-                    ensure!(
-                        value["value"]
-                            .as_array()
-                            .is_some_and(|rows| rows.len() == 2)
-                    );
+                    if macos {
+                        ensure!(
+                            value["value"]
+                                .as_array()
+                                .is_some_and(|rows| rows.len() == 2)
+                        );
+                    } else {
+                        windows_assets::verify_software(&value)?;
+                    }
                     prior_software = software;
-                } else if stage == 1 {
+                } else if stage == 1 || stage >= 4 {
                     ensure!(
                         software == prior_software,
                         "incomplete user coverage replaced the whole software list"

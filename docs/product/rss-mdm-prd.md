@@ -845,6 +845,9 @@ AC-06-21-02　验证脚本失败、权限不足、空结果、显式删除、部
 
 AC-06-21-03　大结果、慢查询、敏感字段、错误 schema、未批准自定义扩展都不能绕过预算与访问控制。
 
+AC-06-21-04　Windows 原生标准模板须经 Resource 发布、任务执行、结果接收与 Inventory 查询验证 edition/architecture、占位身份拒绝、软件 installed/registered/provisioned 区分及同包多用户实例保留。完整空清单与非法/截断/用户覆盖不足的结果分别验收，后者不得清空旧值。字段解释见[资产指南](../guides/assets.md#windows-标准资产语义)；服务端合成输入不代替 Windows x64/ARM64 真机采集与 CPU/电池聚合证据。
+
+
 ---
 
 # 06.22　WMD-CH：策略通道选择、冲突与恢复
