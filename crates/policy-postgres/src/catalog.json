@@ -47,6 +47,15 @@
     ],
     [
       "policies",
+      "execution_binding",
+      "bytea",
+      false,
+      null,
+      "",
+      ""
+    ],
+    [
+      "policies",
       "enabled",
       "boolean",
       true,
@@ -250,6 +259,13 @@
       "policies_definition_check",
       "c",
       "CHECK ((octet_length((definition)::text) <= 4194304))",
+      true
+    ],
+    [
+      "policies",
+      "policies_execution_binding_check",
+      "c",
+      "CHECK (((execution_binding IS NULL) OR (octet_length(execution_binding) = 32)))",
       true
     ],
     [

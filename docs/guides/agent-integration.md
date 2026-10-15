@@ -74,7 +74,7 @@ snapshot、partial、failed 分别表达完整快照、部分结果和失败。�
 
 ## 固定安装包发布与匿名下载
 
-服务器消费外部构建、签名和 notarization 完成的 Windows NSIS EXE / macOS PKG，不在 Linux 构建或签名。固定包及候选 manifest 通过现有 Software Resource 和 Content 上传，再分别完成 Source / Version 审批；候选 manifest 是独立、摘要校验的 Resource artifact。它冻结 wireVersion、tenantId、原生 target、version、HTTPS origin、signingKeys，以及 `packaging` 的 nsis_exe（publisher、signature_evidence）或 macos_pkg（team、notarization_evidence）外部证据。Windows EXE 的 Resource layout 仅声明固定 EXE 与该 manifest；PKG 同样拥有两份材料。公开下载只返回 EXE / PKG。
+服务器消费外部构建、签名和 notarization 完成的 Windows NSIS EXE / macOS PKG，不在 Linux 构建或签名。固定包及候选 manifest 通过现有 Software Resource 和 Content 上传，来源注册即启用，版本由启用或安装包发布完成技术校验；候选 manifest 是独立、摘要校验的 Resource artifact。它冻结 wireVersion、tenantId、原生 target、version、HTTPS origin、signingKeys，以及 `packaging` 的 nsis_exe（publisher、signature_evidence）或 macos_pkg（team、notarization_evidence）外部证据。Windows EXE 的 Resource layout 仅声明固定 EXE 与该 manifest；PKG 同样拥有两份材料。公开下载只返回 EXE / PKG。
 
 `POST /api/v1/agent-packages` 要求 release_publish；草稿自动启用还要求 software_write，输入 operationId、resource、version、variant、target、channel、manifestArtifact。服务端验证两份材料的长度和摘要、完整当前软件生命周期与依赖闭包及系统安装范围，冻结 installerSha256 与独立 candidateSha256；服务器按 target 生成固定文件名，不接收包含秘密的名称或安装 argv。`POST /api/v1/agent-packages/{id}/withdraw` 要求 software_withdraw，阻止该候选的新交换和下载。外部打包及真实签名、notarization、导入、服务安装效果由产品 T3 验收；这些声明和受控服务端测试不代替平台证据。
 
