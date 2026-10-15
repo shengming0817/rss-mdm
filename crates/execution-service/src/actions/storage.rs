@@ -350,13 +350,25 @@ impl ScheduledPolicy {
                 use rss_mdm_agent_wire::runtime as wire;
                 let run = load_run(tx, issue.run).await?;
                 let plan = v.frozen.definition.spec().plan.clone();
+                let binding = crate::channels::agent_binding_in(
+                    tx,
+                    service.agent_store.clone(),
+                    target.registration,
+                )
+                .await?
+                .ok_or(Error::Forbidden)?;
+                let execution = checked_input(wire::NativeExecutionBinding::bind(
+                    &plan,
+                    &binding.execution_context,
+                ))?;
                 let spec = wire::CollectionTaskSpec {
-                    wire_version: wire::WIRE_VERSION,
+                    wire_version: wire::COLLECTION_TASK_VERSION,
+                    execution,
                     tenant_id: checked_input(Uuid::parse_str(&tx.tenant_id().to_string()))?,
                     device_id: target.device.clone(),
                     registration_id: target.registration,
                     generation: target.generation.try_into().map_err(|_| Error::Malformed)?,
-                    platform: wire::TaskPlatform::Windows,
+                    platform: plan.platform(),
                     architecture: match v.frozen.input.architecture {
                         rss_mdm_policy::Architecture::X86_64 => wire::TaskArchitecture::X86_64,
                         rss_mdm_policy::Architecture::Aarch64 => wire::TaskArchitecture::Aarch64,
