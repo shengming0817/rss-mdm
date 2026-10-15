@@ -693,6 +693,41 @@ impl Host {
         }
         Ok(issue)
     }
+    fn initial_message(
+        url: &str,
+        registration: Uuid,
+        secrets: &rss_mdm_windows_channel::test_support::Secrets,
+    ) -> anyhow::Result<syncml::Message> {
+        let mut message = syncml::decode(
+            include_bytes!("../../../windows-mdm/tests/fixtures/initialization.xml"),
+            &CodecLimits::default(),
+        )?;
+        message.header.target = url.to_owned();
+        message.header.source = crate::test_support::case::name("tls-device").into();
+        message.header.credential = Some(syncml::Credential {
+            meta: syncml::Meta {
+                format: Some("b64".into()),
+                media_type: Some("syncml:auth-basic".into()),
+                ..Default::default()
+            },
+            data: Secret(STANDARD.encode(format!(
+                "{}:{}",
+                registration,
+                secrets.client_password.as_str()
+            ))),
+        });
+        for command in &mut message.commands {
+            if let Command::DevInfo { items, .. } = command {
+                for item in items {
+                    if item.source.as_deref() == Some("./DevInfo/DevId") {
+                        item.data =
+                            Some(Secret(crate::test_support::case::name("tls-device").into()));
+                    }
+                }
+            }
+        }
+        Ok(message)
+    }
     async fn peer_with_authority(
         &self,
         profile: rss_mdm_registration_service::enrollment::WindowsProfile,
@@ -827,39 +862,12 @@ impl Host {
             .windows()?
             .channel
             .management_url(rss_mdm_registration_service::Purpose::Primary);
-        let mut message = syncml::decode(
-            include_bytes!("../../../windows-mdm/tests/fixtures/initialization.xml"),
-            &CodecLimits::default(),
-        )?;
-        message.header.target = url.clone();
-        message.header.source = crate::test_support::case::name("tls-device").into();
         let secrets = app.windows()?.channel.open_secrets_fixture(
             case_tenant(),
             receipt.enrollment_id,
             &intent.sealed,
         )?;
-        message.header.credential = Some(syncml::Credential {
-            meta: syncml::Meta {
-                format: Some("b64".into()),
-                media_type: Some("syncml:auth-basic".into()),
-                ..Default::default()
-            },
-            data: Secret(STANDARD.encode(format!(
-                "{}:{}",
-                intent.registration,
-                secrets.client_password.as_str()
-            ))),
-        });
-        for command in &mut message.commands {
-            if let Command::DevInfo { items, .. } = command {
-                for item in items {
-                    if item.source.as_deref() == Some("./DevInfo/DevId") {
-                        item.data =
-                            Some(Secret(crate::test_support::case::name("tls-device").into()));
-                    }
-                }
-            }
-        }
+        let message = Self::initial_message(&url, intent.registration, &secrets)?;
         let next_nonce = [7u8; 16];
         let followup = syncml::Message {
             header: syncml::Header {
