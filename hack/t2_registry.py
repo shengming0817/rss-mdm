@@ -1810,8 +1810,8 @@ for name in ("windows.management", "windows.retention", "windows.commands"):
 # Material and actor exceptions follow the actual case, not the whole namespace.
 for module_id, selector, materials, actors in (
     ('windows.issuance', 'windows::t2::issuance::native_renewal_preserves_registration_and_activates_only_after_new_tls_proof', ('windows-renewal',), None),
-    ('windows.enrollment', 'windows::t2::enrollment::discovery_wstep_replay_and_tls_identity', ('windows-adversarial',), None),
-    ('windows.entra', 'windows::t2::entra::consent_native_issuance_replay_scope_and_revocation', ('windows-adversarial', 'windows-renewal'), None),
+    ('windows.enrollment', 'windows::t2::enrollment::discovery_wstep_replay_and_tls_identity', ('windows-rogue-client',), None),
+    ('windows.entra', 'windows::t2::entra::consent_native_issuance_replay_scope_and_revocation', ('windows-weak-csr', 'windows-renewal'), None),
     ('execution.agent.history', 'execution::t2::agent::history::agent_registration_configuration_requires_task_signing', (), (('tenant', 'admin'),)),
 ):
     module = MODULES[module_id]

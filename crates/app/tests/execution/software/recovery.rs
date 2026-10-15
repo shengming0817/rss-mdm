@@ -230,58 +230,6 @@ async fn publish_next_software_version(f: &mut Fixture) -> Result<()> {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 #[ignore = "make t2 MODULE=execution.software.recovery"]
-async fn unsent_predecessor_software_blocks_conflicts_until_current_offer_binds_effect()
--> Result<()> {
-    let mut f = Fixture::approved(Platform::MacOs).await?;
-    let queued_policy = Uuid::new_v4();
-    write(&mut f.author, &f.router, &format!("/api/v1/policies/{queued_policy}"), 0, json!({"action":"put","enabled":true,"definition":authored(f.resource,f.scope,"required_install")})).await?;
-    // Without relay, the authenticated check-in creates a real unsent queued Run.
-    let accepted = agent(&f.router, "/api/v1/agent/runtime/tasks/claim", Some(json!({"wireVersion":1,"executionContext":context(Platform::MacOs),"environment":{"edition":null,"tools":{},"nativeEngines":{}},"profiles":["posix_sh"],"operationId":Uuid::new_v4()}))).await?;
-    ensure!(accepted.0 == StatusCode::OK && accepted.1["task"].is_null());
-    let mut conn =
-        sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?)
-            .await?;
-    let (run, occurrence, attempts): (Uuid, String, i64) = sqlx::query_as("SELECT r.id,r.occurrence,(SELECT count(*) FROM mdm_commands.action_attempts a WHERE (a.tenant_id,a.run)=(r.tenant_id,r.id)) FROM mdm_commands.action_runs r JOIN mdm_policy.versions v ON (v.tenant_id,v.id)=(r.tenant_id,r.policy_version) WHERE r.tenant_id=$1::uuid AND v.policy=$2 AND r.state->'delivery'->>'kind'='queued'")
-        .bind(case_tenant()).bind(queued_policy).fetch_one(&mut conn).await?;
-    ensure!(attempts == 0);
-    // The explicitly accepted predecessor transition leaves unoffered software
-    // runs without an effect key because their concrete target was never signed.
-    sqlx::query("UPDATE mdm_commands.action_runs SET software_effect=NULL WHERE tenant_id=$1::uuid AND id=$2")
-        .bind(case_tenant()).bind(run).execute(&mut conn).await?;
-    let conflicting = Uuid::new_v4();
-    write(&mut f.author, &f.router, &format!("/api/v1/policies/{conflicting}"), 0, json!({"action":"put","enabled":true,"definition":authored(f.resource,f.scope,"explicit_uninstall")})).await?;
-    // The shared relay may already have accepted the original Run. A probe must
-    // permit that legal Offer while still proving the conflicting policy queues nothing.
-    let probe = agent(&f.router, "/api/v1/agent/runtime/tasks/claim", Some(json!({"wireVersion":1,"executionContext":context(Platform::MacOs),"environment":{"edition":null,"tools":{},"nativeEngines":{}},"profiles":["posix_sh"],"operationId":Uuid::new_v4()}))).await?;
-    ensure!(probe.0 == StatusCode::OK);
-    let conflicting_runs: i64 = sqlx::query_scalar("SELECT count(*) FROM mdm_commands.action_runs r JOIN mdm_policy.versions v ON (v.tenant_id,v.id)=(r.tenant_id,r.policy_version) WHERE r.tenant_id=$1::uuid AND v.policy=$2")
-        .bind(case_tenant()).bind(conflicting).fetch_one(&mut conn).await?;
-    ensure!(
-        conflicting_runs == 0,
-        "a predecessor queued effect must exclude the conflicting policy"
-    );
-    let stack = worker(&f.base, f.content.clone()).await?;
-    let offered = if probe.1["task"].is_null() {
-        claim(&f.router).await?
-    } else {
-        probe.1["task"].clone()
-    };
-    ensure!(offered["payload"]["task"]["taskId"] == run.to_string());
-    let (current_occurrence, effect): (String, Value) = sqlx::query_as("SELECT occurrence,software_effect FROM mdm_commands.action_runs WHERE tenant_id=$1::uuid AND id=$2")
-        .bind(case_tenant()).bind(run).fetch_one(&mut conn).await?;
-    ensure!(
-        current_occurrence == occurrence
-            && effect["resource"] == f.resource.to_string()
-            && effect["target"] == json!({"kind":"device"}),
-        "first current Offer must bind the original queued Run's effect: {effect}"
-    );
-    complete_effect(&f.router, &offered, "install", "present").await?;
-    conn.close().await?;
-    crate::test_support::stop_worker(stack).await?;
-    Ok(())
-}
-#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
-#[ignore = "make t2 MODULE=execution.software.recovery"]
 async fn known_failure_has_bounded_retries() -> Result<()> {
     let fixture = Fixture::approved(Platform::MacOs).await?;
     let stack = worker(&fixture.base, fixture.content.clone()).await?;

@@ -26,8 +26,6 @@ OWNERS = {
  'agent_recovery_grant':'crates/registration-service/src/agent/grants.rs',
  'agent_renewal_grant':'crates/registration-service/src/agent/grants.rs',
  'agent_request':'crates/app/src/native/mod.rs',
- 'command_diagnostic_download':'crates/management-http/src/execution/http.rs',
- 'command_diagnostic_store':'crates/execution-service/src/diagnostic_artifacts.rs',
  'certificate_archive_unlock':'crates/management-http/src/boundary.rs',
  'certificate_archive_lock':'crates/management-http/src/boundary.rs',
 
@@ -161,7 +159,6 @@ DECLARATIONS = {
  ('command_accept', 'crates/agent-channel/src/tasks.rs'),
  ('command_accept', 'crates/execution-service/src/actions/production.rs'),
  ('command_accept', 'crates/execution-service/src/native_configuration.rs'),
- ('command_accept', 'crates/execution-service/src/remote_execution.rs'),
  ('command_accept', 'crates/management-http/src/execution/http.rs'),
  ('command_approve', 'crates/management-http/src/execution/http.rs'),
  ('command_cancel', 'crates/management-http/src/execution/http.rs'),

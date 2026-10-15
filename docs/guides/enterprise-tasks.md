@@ -87,11 +87,6 @@ Script definition 包含 `profile`（power_shell7、posix_sh、bash、osquery）
 
 归档只能通过管理端 Resource 入口，任务、策略和软件发布的历史引用统一阻止归档。发布、取消和执行事件的审计保留策略或执行版本关联；执行事件 target 为 task，registrationId 可反查设备，同一 operationId 可关联执行回执。
 
-### 一次性结果与恢复阶段
-
-
-`cancellationRequested` 与 `deadlineElapsed` 是意图/时间事实。仍有交付待结算时，phase 为 settling、cancelling 或 expiring；未完成目标展开且无活动交付时为 retired，表示展开已停止；全部既有交付收敛后为 completed，存在无法确认的执行则为 unknown。completed 表示处理收敛，不表示每个设备执行成功，更不证明脚本效果回滚；各设备结果仍独立展示。取消返回 cancellationRequested，不把写入取消意图称为设备取消完成。
-
 服务端的软件变体选择使用当前 Agent 注册声明的平台和架构，终端必须再用本机真实 OS/架构核验签名任务。注册声明不等于受检硬件事实；统一 applicability 的受检事实仍由 [PBI #2572](https://dev.azure.com/shengming0923/rss/_workitems/edit/2572) 跟踪。
 
 ## 软件分配与灰度
