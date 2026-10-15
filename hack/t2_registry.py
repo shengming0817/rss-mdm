@@ -1742,3 +1742,7 @@ consume_dependencies("planning.http planning.agent_policy execution.agent.delive
 consume(("crates/examples/examples/fixture_snapshot.rs",), "examples.cli")
 
 MODULES['execution.agent.delivery'] = replace(MODULES['execution.agent.delivery'], support_inputs=(*MODULES['execution.agent.delivery'].support_inputs, 'crates/app/tests/execution/agent/windows_assets.rs'))
+
+# Shared condition DTO and HTTP asset command dispatch are consumed by these seams.
+consume(("crates/inventory-service/src/compliance/model.rs",), "compliance.http compliance.evaluation compliance.recovery compliance.group_input")
+consume(("crates/management-http/src/assets/mod.rs",), "assets.http assets.queries assets.sources assets.group_input apple.collection")

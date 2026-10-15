@@ -434,7 +434,6 @@ async fn list_items(
 #[derive(Deserialize, Default)]
 #[serde(deny_unknown_fields)]
 struct ItemPage {
-    #[serde(rename = "userId")]
     scope: Option<String>,
     offset: Option<usize>,
     limit: Option<usize>,

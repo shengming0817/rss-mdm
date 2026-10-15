@@ -127,7 +127,7 @@ Windows Firewall CSP 状态与 WSC health 使用不同字段；BitLocker convers
 
 检查指定软件的版本时，读取授权清单中 id 匹配的同一对象及其 version。不要将独立 id 集合条件与 version 集合条件 AND 后宣称关联到了同一软件；Group 目前没有数组条目关联语法。完整空列表可用于判定未发现目标，Missing、Unsupported、冲突或部分采集须保留未知及质量解释。软件任务结果只证明该次执行的前后检测；后续库存仍由既有采集链路产生，不能从 verified 结果伪造库存快照。
 
-本次为当前格式替换：旧 Windows `windows_csp`、Windows 字符串 query、旧 Windows 蓝图版本 1、NativeCollection 存储版本 4 均拒绝；Apple 字符串 query 保留原协议形状。旧映射字符串、缺少 scope 的采集定义以及旧 claim payload 均拒绝。数据库安装通过 migration digest 拒绝旧基线，不自动清库或双读；升级须显式部署匹配的服务端、schema 与 Agent 候选版本。
+本次为当前格式替换：旧 Windows `windows_csp`、Windows 字符串 query、旧 Windows 蓝图版本 1、NativeCollection 存储版本 4 均拒绝；Apple 字符串 query 保留原协议形状。旧映射字符串、缺少 scope 的采集定义以及旧 claim payload 均拒绝。数据库新增迁移检查并拒绝不兼容的既有业务状态，不改写历史 migration digest、不自动清库或双读；升级须显式部署匹配的服务端、schema 与 Agent 候选版本。
 
 原生 MDM 当前没有可信架构证据，因此 `native_collection` 同平台必须同时声明 x86_64 与 aarch64，且声明内容一致；架构专用原生模板会被拒绝。Agent 脚本仍按实际执行环境核对精确架构。
 

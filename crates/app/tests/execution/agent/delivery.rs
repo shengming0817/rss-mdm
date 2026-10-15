@@ -1160,11 +1160,49 @@ async fn macos_user_applications_and_brew_keep_other_users_after_complete_empty(
         datasets.push(pg(&format!("SELECT attempts::jsonb#>>'{{definition,dataset}}' FROM mdm_access.collection_runs WHERE tenant_id='{}' AND id='{}'",case_tenant(),spec.attempt_id))?);
     }
     ensure!(datasets[0] == datasets[2] && datasets[0] != datasets[1]);
-    let rows: Value = serde_json::from_str(pg(&format!("SELECT jsonb_object_agg(field_scope::jsonb->>'uid',n) FROM (SELECT field_scope,jsonb_array_length(value::jsonb->'value') n FROM mdm.inventory WHERE tenant_id='{}' AND source='agent.native' AND field='device.software.installations') s",case_tenant()))?.trim())?;
+    let rows: Value = serde_json::from_str(pg(&format!(
+        "SELECT jsonb_agg(jsonb_build_object('field',field,'scope',field_scope::jsonb,'value',value::jsonb->'value')) FROM mdm.inventory WHERE tenant_id='{}' AND source='agent.native' AND field IN ('device.software.installations','device.software.packages')",
+        case_tenant()
+    ))?.trim())?;
+    let rows = rows.as_array().context("scoped software facts")?;
     ensure!(
-        rows["501"] == 0 && rows["502"] == 1,
-        "empty replacement crossed user scopes: {rows}"
+        rows.len() == 4,
+        "expected both fields for both users: {rows:?}"
     );
+    for uid in [501, 502] {
+        for (field, scope) in [
+            (
+                "device.software.installations",
+                json!({"kind":"macos_applications","root":"user","uid":uid}),
+            ),
+            (
+                "device.software.packages",
+                json!({"kind":"macos_brew","uid":uid,"prefix":"/opt/homebrew","package":"formula","taps":[]}),
+            ),
+        ] {
+            let matching: Vec<_> = rows
+                .iter()
+                .filter(|row| row["field"] == field && row["scope"] == scope)
+                .collect();
+            ensure!(
+                matching.len() == 1,
+                "missing or duplicate {field}/{scope}: {rows:?}"
+            );
+            let values = matching[0]["value"]
+                .as_array()
+                .context("trusted software list")?;
+            ensure!(
+                values.len() == if uid == 501 { 0 } else { 1 },
+                "incorrect replacement for {field}/{scope}: {values:?}"
+            );
+            if uid == 502 {
+                ensure!(
+                    values[0]["owner"] == "502" && values[0]["name"] == "Scoped app",
+                    "other user's fact changed: {values:?}"
+                );
+            }
+        }
+    }
     crate::test_support::stop_worker(inventory).await?;
     runtime.close_fixture().await?;
     crate::test_support::stop_worker(worker).await?;
