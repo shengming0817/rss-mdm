@@ -30,14 +30,16 @@ async fn expiry_dependency_paths_and_withdrawal_fence() -> Result<()> {
     let mut owner =
         sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?)
             .await?;
-    sqlx::query("UPDATE mdm_commands.action_attempts SET offer=jsonb_set(offer,'{payload,expiresAt}','0'::jsonb) WHERE id=$1::uuid")
-        .bind(task["payload"]["attemptId"].as_str().unwrap()).execute(&mut owner).await?;
+    sqlx::query("UPDATE mdm_commands.action_attempts SET offer=jsonb_set(offer,'{payload,task,expiresAt}','0'::jsonb) WHERE id=$1::uuid")
+        .bind(task["payload"]["task"]["attemptId"].as_str().unwrap()).execute(&mut owner).await?;
+    let expires:i64=sqlx::query_scalar("SELECT (offer#>>'{payload,task,expiresAt}')::bigint FROM mdm_commands.action_attempts WHERE id=$1::uuid").bind(task["payload"]["task"]["attemptId"].as_str().unwrap()).fetch_one(&mut owner).await?;
+    ensure!(expires == 0);
     let expired = Request::builder()
         .method(Method::GET)
         .uri(format!(
             "/api/v1/agent/runtime/tasks/{}/content?attempt={}&artifact=1%2Fpackage",
-            task["payload"]["taskId"].as_str().unwrap(),
-            task["payload"]["attemptId"].as_str().unwrap()
+            task["payload"]["task"]["taskId"].as_str().unwrap(),
+            task["payload"]["task"]["attemptId"].as_str().unwrap()
         ))
         .header("host", "mdm.example.test:9445")
         .extension(
@@ -45,16 +47,16 @@ async fn expiry_dependency_paths_and_withdrawal_fence() -> Result<()> {
         )
         .body(Body::empty())?;
     ensure!(router.clone().oneshot(expired).await?.status() == StatusCode::FORBIDDEN);
-    sqlx::query("UPDATE mdm_commands.action_attempts SET offer=jsonb_set(offer,'{payload,expiresAt}',to_jsonb($2::bigint)) WHERE id=$1::uuid")
-        .bind(task["payload"]["attemptId"].as_str().unwrap())
-        .bind(task["payload"]["expiresAt"].as_i64().unwrap()).execute(&mut owner).await?;
+    sqlx::query("UPDATE mdm_commands.action_attempts SET offer=jsonb_set(offer,'{payload,task,expiresAt}',to_jsonb($2::bigint)) WHERE id=$1::uuid")
+        .bind(task["payload"]["task"]["attemptId"].as_str().unwrap())
+        .bind(task["payload"]["task"]["expiresAt"].as_i64().unwrap()).execute(&mut owner).await?;
     owner.close().await?;
     let content = Request::builder()
         .method(Method::GET)
         .uri(format!(
             "/api/v1/agent/runtime/tasks/{}/content?attempt={}&artifact=1%2Fpackage",
-            task["payload"]["taskId"].as_str().unwrap(),
-            task["payload"]["attemptId"].as_str().unwrap()
+            task["payload"]["task"]["taskId"].as_str().unwrap(),
+            task["payload"]["task"]["attemptId"].as_str().unwrap()
         ))
         .header("host", "mdm.example.test:9445")
         .extension(
@@ -72,8 +74,8 @@ async fn expiry_dependency_paths_and_withdrawal_fence() -> Result<()> {
         .method(Method::GET)
         .uri(format!(
             "/api/v1/agent/runtime/tasks/{}/content?attempt={}&artifact=0%2Fscripts%2Finstall.sh",
-            task["payload"]["taskId"].as_str().unwrap(),
-            task["payload"]["attemptId"].as_str().unwrap()
+            task["payload"]["task"]["taskId"].as_str().unwrap(),
+            task["payload"]["task"]["attemptId"].as_str().unwrap()
         ))
         .header("host", "mdm.example.test:9445")
         .extension(
@@ -96,8 +98,8 @@ async fn expiry_dependency_paths_and_withdrawal_fence() -> Result<()> {
         .method(Method::GET)
         .uri(format!(
             "/api/v1/agent/runtime/tasks/{}/content?attempt={}&artifact=1%2Fpackage",
-            task["payload"]["taskId"].as_str().unwrap(),
-            task["payload"]["attemptId"].as_str().unwrap()
+            task["payload"]["task"]["taskId"].as_str().unwrap(),
+            task["payload"]["task"]["attemptId"].as_str().unwrap()
         ))
         .header("host", "mdm.example.test:9445")
         .extension(
@@ -132,16 +134,18 @@ async fn uninstall_content_permission() -> Result<()> {
     .await?;
     let removal_task = claim(&router).await?;
     ensure!(
-        removal_task["payload"]["intent"] == "uninstall"
-            && removal_task["payload"]["startMode"] == "automatic",
+        removal_task["payload"]["task"]["intent"] == "uninstall"
+            && removal_task["payload"]["task"]["startMode"] == "automatic",
         "uninstall: {removal_task}"
     );
     let content = Request::builder()
         .method(Method::GET)
         .uri(format!(
             "/api/v1/agent/runtime/tasks/{}/content?attempt={}&artifact=0%2Fremove",
-            removal_task["payload"]["taskId"].as_str().unwrap(),
-            removal_task["payload"]["attemptId"].as_str().unwrap()
+            removal_task["payload"]["task"]["taskId"].as_str().unwrap(),
+            removal_task["payload"]["task"]["attemptId"]
+                .as_str()
+                .unwrap()
         ))
         .header("host", "mdm.example.test:9445")
         .extension(
@@ -189,19 +193,21 @@ async fn windows_variant_content() -> Result<()> {
     );
     let windows_task = claim_with(&router, &windows_credential, Platform::Windows).await?;
     ensure!(
-        windows_task["payload"]["platform"] == "windows"
-            && windows_task["payload"]["architecture"] == "x86_64"
-            && windows_task["payload"]["steps"][0]["action"]["package"]
+        windows_task["payload"]["task"]["platform"] == "windows"
+            && windows_task["payload"]["task"]["architecture"] == "x86_64"
+            && windows_task["payload"]["task"]["steps"][0]["action"]["package"]
                 == "Private.WindowsDependency"
-            && windows_task["payload"]["steps"][1]["action"]["behavior"]["kind"] == "msi",
+            && windows_task["payload"]["task"]["steps"][1]["action"]["behavior"]["kind"] == "msi",
         "windows variant: {windows_task}"
     );
     let windows_content = Request::builder()
         .method(Method::GET)
         .uri(format!(
             "/api/v1/agent/runtime/tasks/{}/content?attempt={}&artifact=1%2Fpackage",
-            windows_task["payload"]["taskId"].as_str().unwrap(),
-            windows_task["payload"]["attemptId"].as_str().unwrap()
+            windows_task["payload"]["task"]["taskId"].as_str().unwrap(),
+            windows_task["payload"]["task"]["attemptId"]
+                .as_str()
+                .unwrap()
         ))
         .header("host", "mdm.example.test:9445")
         .extension(

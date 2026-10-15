@@ -4,10 +4,13 @@ use rss_mdm_resource::blueprints;
 fn every_windows_blueprint_compiles_and_maps_only_published_fields() {
     let fields = builtin::fields();
     rss_mdm_inventory::Catalog::new(fields.clone()).unwrap();
-    for blueprint in blueprints::catalog()
-        .into_iter()
-        .filter(|b| b.platform == rss_mdm_resource::Platform::Windows)
-    {
+    for blueprint in blueprints::catalog().into_iter().filter(|b| {
+        b.platform == rss_mdm_resource::Platform::Windows
+            && matches!(
+                b.definition,
+                blueprints::Definition::NativeCollection { .. }
+            )
+    }) {
         let rss_mdm_resource::blueprints::Definition::NativeCollection { template } =
             &blueprint.definition
         else {
@@ -110,10 +113,13 @@ fn every_standard_pack_replays_raw_syncml_and_matches_normalized_fixture() {
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/windows-collection");
     let fields = builtin::fields();
     rss_mdm_inventory::Catalog::new(fields.clone()).unwrap();
-    for b in blueprints::catalog()
-        .into_iter()
-        .filter(|b| b.platform == rss_mdm_resource::Platform::Windows)
-    {
+    for b in blueprints::catalog().into_iter().filter(|b| {
+        b.platform == rss_mdm_resource::Platform::Windows
+            && matches!(
+                b.definition,
+                blueprints::Definition::NativeCollection { .. }
+            )
+    }) {
         let id = b.id.strip_prefix("windows.").unwrap();
         let xml = std::fs::read(root.join(format!("{id}.xml"))).unwrap();
         let raw = syncml::decode(&xml, &CodecLimits::default()).unwrap();
@@ -306,4 +312,31 @@ fn apple_status_blueprints_are_real_native_configurations() {
             .unwrap_or_else(|e| panic!("{}: {e:?}", blueprint.id));
         DeclarationSet::new("fixture", compiled).unwrap();
     }
+}
+
+#[test]
+fn agent_templates_bind_native_queries_to_existing_field_types() {
+    let fields = builtin::fields();
+    let mut count = 0;
+    for blueprint in blueprints::catalog() {
+        let blueprints::Definition::AgentCollection { template } = &blueprint.definition else {
+            continue;
+        };
+        count += 1;
+        for (name, mapping) in &template.spec().mappings {
+            let field = fields
+                .iter()
+                .find(|f| f.key.as_str() == name)
+                .expect("existing field");
+            assert_eq!(
+                field.sources.get(&rss_mdm_inventory::Source::AgentNative),
+                Some(&1)
+            );
+            rss_mdm_inventory_service::collection::native::validate_agent_mapping(
+                field, template, mapping,
+            )
+            .unwrap_or_else(|e| panic!("{} {name}: {e:?}", blueprint.id));
+        }
+    }
+    assert_eq!(count, 9);
 }

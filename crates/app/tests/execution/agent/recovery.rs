@@ -30,7 +30,7 @@ async fn started_execution_becomes_unknown_and_disabled_policy_cancels() -> Resu
     crate::test_support::identity::set_management_grants(case_tenant(), &author_id, vec![]).await?;
     task_event(&router, &pending, json!({"kind":"received"})).await?;
     task_event(&router, &pending, json!({"kind":"start"})).await?;
-    let task_id = pending["payload"]["taskId"].as_str().unwrap();
+    let task_id = pending["payload"]["task"]["taskId"].as_str().unwrap();
     pg(&format!(
         "UPDATE mdm_commands.action_runs SET state=jsonb_set(state,'{{startedAt}}',to_jsonb(floor(extract(epoch FROM clock_timestamp()))::bigint-61)) WHERE id='{task_id}'"
     ))?;

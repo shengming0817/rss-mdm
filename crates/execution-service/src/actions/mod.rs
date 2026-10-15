@@ -7,6 +7,7 @@ pub mod recovery;
 pub mod state;
 pub mod storage;
 
+mod agent_collection;
 mod collection;
 pub mod native_collection;
 mod output;

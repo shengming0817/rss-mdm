@@ -46,7 +46,11 @@ fn enrollment_schema_and_signing_agree_on_text_and_expiry_boundaries() {
         let mut value_json = base.clone();
         value_json[field] = value;
         let task: EnrollmentTaskSpec = serde_json::from_value(value_json.clone()).unwrap();
-        assert_eq!(validator.is_valid(&value_json), expected, "schema: {field}");
+        assert_eq!(
+            validator.is_valid(&json!({"kind":"enrollment","task":value_json})),
+            expected,
+            "schema: {field}"
+        );
         assert_eq!(
             task.signing_bytes("key").is_ok(),
             expected,

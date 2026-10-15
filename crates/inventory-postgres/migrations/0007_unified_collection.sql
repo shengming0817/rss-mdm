@@ -32,7 +32,7 @@ CREATE TABLE mdm.field_versions (
 CREATE INDEX field_versions_watermark ON mdm.field_versions(tenant_id,revision,field);
 CREATE TABLE mdm.collection_definitions (
  tenant_id uuid NOT NULL, dataset text NOT NULL, version text NOT NULL CHECK(length(version) BETWEEN 1 AND 128),
- source text NOT NULL CHECK(source IN ('mdm.windows','mdm.apple','agent.builtin','agent.script','agent.osquery')),
+ source text NOT NULL CHECK(source IN ('mdm.windows','mdm.apple','agent.builtin','agent.script','agent.osquery','agent.native')),
  fingerprint text NOT NULL CHECK(fingerprint ~ '^[0-9a-f]{64}$'),
  coverage text NOT NULL, definition jsonb NOT NULL CHECK(octet_length(definition::text)<=1048576),
  CHECK(definition ? 'scope' AND (definition->'scope'='{"kind":"device"}'::jsonb OR (source='mdm.apple' AND definition->'scope'->>'kind'='user' AND definition->'scope'->>'identity' ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'))),

@@ -7,9 +7,12 @@
 #[path = "onboarding.rs"]
 mod onboarding;
 pub use onboarding::*;
+#[path = "native_collection.rs"]
+mod native_collection;
 #[path = "tasks.rs"]
 mod tasks;
 pub use crate::self_service::*;
+pub use native_collection::*;
 pub use tasks::*;
 
 use base64::Engine;
@@ -27,7 +30,7 @@ pub const MAX_REQUEST_BYTES: usize = 1024 * 1024;
 pub const SCHEMA_MANIFEST: &str = include_str!("../schema/runtime/agent-v1.schema-manifest.json");
 /// SHA-256 of the ordered schema payloads named by [`SCHEMA_MANIFEST`].
 pub const SCHEMA_FINGERPRINT: &str =
-    "a50744c17b32ae5d1f8391c69909e03c267e4c8d7af076d9c86cd98a96e4bd0d";
+    "051484e9e768c284b43f54d76d175819f95fd0c89cb1a67ed8ce36c06a510af0";
 
 /// Closed validation failure without retaining input values.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -168,13 +171,19 @@ pub enum Capability {
     /// Open the standard MDM enrollment entry with OS/user approval.
     #[serde(rename = "mdm.enrollment.v1")]
     MdmEnrollmentV1,
+    /// Execute signed declarative native inventory tasks.
+    #[serde(rename = "inventory.native.v1")]
+    InventoryNativeV1,
 }
 impl Capability {
     /// Software support always refers to one concrete native/script scope profile.
     pub fn is_software(self) -> bool {
         !matches!(
             self,
-            Self::InventoryCollectionV1 | Self::TaskExecuteV1 | Self::MdmEnrollmentV1
+            Self::InventoryCollectionV1
+                | Self::TaskExecuteV1
+                | Self::MdmEnrollmentV1
+                | Self::InventoryNativeV1
         )
     }
     /// Canonical persisted and queryable capability identity.
@@ -200,13 +209,14 @@ impl Capability {
             Self::SoftwareMsixRegistrationUserV1 => "software.msix.registration.user.v1",
             Self::SoftwareMsixProvisioningSystemV1 => "software.msix.provisioning.system.v1",
             Self::MdmEnrollmentV1 => "mdm.enrollment.v1",
+            Self::InventoryNativeV1 => "inventory.native.v1",
         }
     }
 }
 /// The only supported ordered capability sets for Agent V1.
 pub fn supported_capabilities(value: &[Capability]) -> bool {
     value.first() == Some(&Capability::InventoryCollectionV1)
-        && value.len() <= 20
+        && value.len() <= 21
         && value.windows(2).all(|pair| pair[0] < pair[1])
 }
 
@@ -250,7 +260,7 @@ pub struct BindingProfile {
     #[schemars(schema_with = "crate::runtime::uuid_schema")]
     pub epoch: Uuid,
     /// Exact accepted capability set.
-    #[schemars(extend("minItems" = 1, "maxItems" = 20, "uniqueItems" = true))]
+    #[schemars(extend("minItems" = 1, "maxItems" = 21, "uniqueItems" = true))]
     #[serde(deserialize_with = "profile_capabilities")]
     pub capabilities: Vec<Capability>,
     /// Server-selected built-in collector versions for this registration.

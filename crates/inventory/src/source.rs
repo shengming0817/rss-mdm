@@ -64,6 +64,9 @@ pub enum Source {
     /// Controlled collection script evidence.
     #[serde(rename = "agent.script")]
     AgentScript,
+    /// Signed native collection task source.
+    #[serde(rename = "agent.native")]
+    AgentNative,
     /// Published SQL template evidence.
     #[serde(rename = "agent.osquery")]
     AgentOsquery,
@@ -86,6 +89,7 @@ impl Source {
         match self {
             Self::Manual => "manual",
             Self::AgentScript => "agent.script",
+            Self::AgentNative => "agent.native",
             Self::AgentOsquery => "agent.osquery",
             Self::MdmApple => ReportSource::MdmApple.as_str(),
             Self::MdmWindows => ReportSource::MdmWindows.as_str(),
@@ -97,7 +101,9 @@ impl Source {
         match self {
             Self::Manual => None,
             Self::MdmWindows | Self::MdmApple => Some(Channel::Mdm),
-            Self::AgentBuiltin | Self::AgentScript | Self::AgentOsquery => Some(Channel::Agent),
+            Self::AgentBuiltin | Self::AgentScript | Self::AgentOsquery | Self::AgentNative => {
+                Some(Channel::Agent)
+            }
         }
     }
     /// Parse stored evidence through the same report vocabulary.
@@ -105,6 +111,7 @@ impl Source {
         match s {
             "manual" => Ok(Self::Manual),
             "agent.script" => Ok(Self::AgentScript),
+            "agent.native" => Ok(Self::AgentNative),
             "agent.osquery" => Ok(Self::AgentOsquery),
             _ => ReportSource::parse(s).map(Into::into),
         }

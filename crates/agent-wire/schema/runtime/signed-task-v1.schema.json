@@ -1,5 +1,310 @@
 {
   "$defs": {
+    "CimType": {
+      "description": "WMI property CIM type, with native widths preserved in the declaration.",
+      "oneOf": [
+        {
+          "const": "string",
+          "description": "CIM_STRING.",
+          "type": "string"
+        },
+        {
+          "const": "boolean",
+          "description": "CIM_BOOLEAN.",
+          "type": "string"
+        },
+        {
+          "const": "sint8",
+          "description": "CIM_SINT8.",
+          "type": "string"
+        },
+        {
+          "const": "sint16",
+          "description": "CIM_SINT16.",
+          "type": "string"
+        },
+        {
+          "const": "sint32",
+          "description": "CIM_SINT32.",
+          "type": "string"
+        },
+        {
+          "const": "sint64",
+          "description": "CIM_SINT64.",
+          "type": "string"
+        },
+        {
+          "const": "uint8",
+          "description": "CIM_UINT8.",
+          "type": "string"
+        },
+        {
+          "const": "uint16",
+          "description": "CIM_UINT16.",
+          "type": "string"
+        },
+        {
+          "const": "uint32",
+          "description": "CIM_UINT32.",
+          "type": "string"
+        },
+        {
+          "const": "uint64",
+          "description": "CIM_UINT64.",
+          "type": "string"
+        },
+        {
+          "const": "real32",
+          "description": "CIM_REAL32.",
+          "type": "string"
+        },
+        {
+          "const": "real64",
+          "description": "CIM_REAL64.",
+          "type": "string"
+        },
+        {
+          "const": "datetime",
+          "description": "CIM_DATETIME.",
+          "type": "string"
+        }
+      ]
+    },
+    "CollectionScope": {
+      "description": "Exact namespace of collected values. Only device-wide projection is currently executable.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "description": "Complete device-wide namespace.",
+          "properties": {
+            "kind": {
+              "const": "device",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "One explicitly identified user; never merged into device-wide facts.",
+          "properties": {
+            "identity": {
+              "description": "Stable account identity.",
+              "type": "string"
+            },
+            "kind": {
+              "const": "user",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "identity"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "One provider-specific namespace.",
+          "properties": {
+            "identity": {
+              "description": "Stable provider identity.",
+              "type": "string"
+            },
+            "kind": {
+              "const": "source",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "identity"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "One stable volume identity, independent of drive letter.",
+          "properties": {
+            "identity": {
+              "description": "Stable volume identity.",
+              "type": "string"
+            },
+            "kind": {
+              "const": "volume",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "identity"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "One explicit path prefix.",
+          "properties": {
+            "kind": {
+              "const": "prefix",
+              "type": "string"
+            },
+            "path": {
+              "description": "Exact path prefix.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "path"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "CollectionTaskSpec": {
+      "additionalProperties": false,
+      "description": "Signed immutable native collection task, never a process invocation.",
+      "properties": {
+        "architecture": {
+          "$ref": "#/$defs/TaskArchitecture",
+          "description": "Selected artifact architecture."
+        },
+        "attemptId": {
+          "description": "Exact execution attempt.",
+          "format": "uuid",
+          "not": {
+            "const": "00000000-0000-0000-0000-000000000000"
+          },
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+          "type": "string"
+        },
+        "authorization": {
+          "$ref": "#/$defs/TaskAuthorization",
+          "description": "Trusted server authorization decision."
+        },
+        "deadline": {
+          "description": "Absolute run deadline.",
+          "format": "int64",
+          "type": "integer"
+        },
+        "deviceId": {
+          "description": "Server-selected device identity.",
+          "maxLength": 1024,
+          "minLength": 1,
+          "pattern": "^[^\\p{Cc}]+$",
+          "type": "string"
+        },
+        "expiresAt": {
+          "description": "Nonnegative Unix expiry, checked against a trusted clock by the consumer.",
+          "format": "int64",
+          "maximum": 9223372036854775807,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "generation": {
+          "description": "Registration generation.",
+          "format": "uint64",
+          "maximum": 9223372036854775807,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "permit": {
+          "$ref": "#/$defs/TaskPermit",
+          "description": "Signature purpose."
+        },
+        "plan": {
+          "$ref": "#/$defs/NativeCollectionPlan",
+          "description": "Frozen native plan (including scope, query versions and budgets)."
+        },
+        "planDigest": {
+          "description": "Exact plan fingerprint, checked independently of the Resource digest.",
+          "items": {
+            "format": "uint8",
+            "maximum": 255,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "maxItems": 32,
+          "minItems": 32,
+          "type": "array"
+        },
+        "platform": {
+          "$ref": "#/$defs/TaskPlatform",
+          "description": "Selected artifact operating system."
+        },
+        "registrationId": {
+          "description": "Current registration at approval/claim.",
+          "format": "uuid",
+          "not": {
+            "const": "00000000-0000-0000-0000-000000000000"
+          },
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+          "type": "string"
+        },
+        "resource": {
+          "$ref": "#/$defs/TaskResource",
+          "description": "Exact selected Resource coordinates."
+        },
+        "resourceDigest": {
+          "description": "Exact Resource version digest, including its full execution interface.",
+          "items": {
+            "format": "uint8",
+            "maximum": 255,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "maxItems": 32,
+          "minItems": 32,
+          "type": "array"
+        },
+        "taskId": {
+          "description": "Immutable run identity.",
+          "format": "uuid",
+          "not": {
+            "const": "00000000-0000-0000-0000-000000000000"
+          },
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+          "type": "string"
+        },
+        "tenantId": {
+          "description": "Server-selected tenant.",
+          "format": "uuid",
+          "not": {
+            "const": "00000000-0000-0000-0000-000000000000"
+          },
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+          "type": "string"
+        },
+        "wireVersion": {
+          "const": 1,
+          "description": "Exact wire major."
+        }
+      },
+      "required": [
+        "wireVersion",
+        "tenantId",
+        "deviceId",
+        "platform",
+        "architecture",
+        "registrationId",
+        "generation",
+        "taskId",
+        "attemptId",
+        "permit",
+        "expiresAt",
+        "resourceDigest",
+        "resource",
+        "authorization",
+        "deadline",
+        "plan",
+        "planDigest"
+      ],
+      "type": "object"
+    },
     "EnrollmentEntry": {
       "description": "Platform-owned enrollment entry; opening it never proves enrollment completed.",
       "oneOf": [
@@ -191,6 +496,410 @@
         {
           "const": "osquery",
           "description": "Bound query from a published read-only SQL template.",
+          "type": "string"
+        }
+      ]
+    },
+    "NativeBudget": {
+      "additionalProperties": false,
+      "description": "Frozen bounds, shared by collection and query scopes.",
+      "properties": {
+        "maxRows": {
+          "description": "Maximum rows.",
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "outputBytes": {
+          "description": "Canonical result byte bound.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "timeoutSeconds": {
+          "description": "Wall-clock bound.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "timeoutSeconds",
+        "outputBytes",
+        "maxRows"
+      ],
+      "type": "object"
+    },
+    "NativeCardinality": {
+      "description": "Query row cardinality.",
+      "oneOf": [
+        {
+          "const": "exactly_one",
+          "description": "Exactly one row; zero is Missing.",
+          "type": "string"
+        },
+        {
+          "const": "list",
+          "description": "Complete bounded list, including zero rows.",
+          "type": "string"
+        }
+      ]
+    },
+    "NativeCollectionPlan": {
+      "additionalProperties": false,
+      "description": "Validated immutable plan. Field names and priorities remain server-owned.",
+      "properties": {
+        "budget": {
+          "$ref": "#/$defs/NativeBudget",
+          "description": "Cumulative execution bounds."
+        },
+        "queries": {
+          "additionalProperties": {
+            "$ref": "#/$defs/NativeQuery"
+          },
+          "description": "Stable query IDs, executed once each.",
+          "type": "object"
+        },
+        "scope": {
+          "$ref": "#/$defs/CollectionScope",
+          "description": "Namespace of facts, independent of Policy target scope."
+        },
+        "version": {
+          "description": "Exact native plan format.",
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "version",
+        "scope",
+        "queries",
+        "budget"
+      ],
+      "type": "object"
+    },
+    "NativeComparison": {
+      "description": "Closed comparison operators.",
+      "oneOf": [
+        {
+          "const": "eq",
+          "description": "Equal.",
+          "type": "string"
+        },
+        {
+          "const": "ne",
+          "description": "Not equal.",
+          "type": "string"
+        },
+        {
+          "const": "lt",
+          "description": "Less than.",
+          "type": "string"
+        },
+        {
+          "const": "le",
+          "description": "Less than or equal.",
+          "type": "string"
+        },
+        {
+          "const": "gt",
+          "description": "Greater than.",
+          "type": "string"
+        },
+        {
+          "const": "ge",
+          "description": "Greater than or equal.",
+          "type": "string"
+        }
+      ]
+    },
+    "NativeQuery": {
+      "additionalProperties": false,
+      "description": "One frozen query, reusable by several server-side field mappings.",
+      "properties": {
+        "budget": {
+          "$ref": "#/$defs/NativeBudget",
+          "description": "Query-local bounds."
+        },
+        "cardinality": {
+          "$ref": "#/$defs/NativeCardinality",
+          "description": "Row semantics."
+        },
+        "definition": {
+          "$ref": "#/$defs/NativeQueryDefinition",
+          "description": "Read recipe."
+        },
+        "instanceKeys": {
+          "description": "Stable row properties identifying instances.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "version": {
+          "description": "Exact engine contract version.",
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "version",
+        "definition",
+        "cardinality",
+        "instanceKeys",
+        "budget"
+      ],
+      "type": "object"
+    },
+    "NativeQueryDefinition": {
+      "description": "Closed read recipes. Output properties are derived from this declaration.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "description": "Read local WMI instances.",
+          "properties": {
+            "class": {
+              "description": "Existing class, never created by collection.",
+              "type": "string"
+            },
+            "filter": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/WmiFilter"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Optional structured predicate."
+            },
+            "kind": {
+              "const": "windows_wmi",
+              "type": "string"
+            },
+            "namespace": {
+              "description": "Local namespace, for example root\\\\cimv2.",
+              "type": "string"
+            },
+            "properties": {
+              "additionalProperties": {
+                "$ref": "#/$defs/WmiProperty"
+              },
+              "description": "Explicit properties; SELECT * is impossible.",
+              "type": "object"
+            }
+          },
+          "required": [
+            "kind",
+            "namespace",
+            "class",
+            "properties"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Read one key or enumerate its immediate children once.",
+          "properties": {
+            "enumerateSubkeys": {
+              "description": "True enumerates only immediate subkeys; row key is `key`.",
+              "type": "boolean"
+            },
+            "hive": {
+              "$ref": "#/$defs/RegistryHive",
+              "description": "Local hive identity."
+            },
+            "kind": {
+              "const": "windows_registry",
+              "type": "string"
+            },
+            "path": {
+              "description": "Fixed relative key path.",
+              "type": "string"
+            },
+            "values": {
+              "additionalProperties": {
+                "$ref": "#/$defs/RegistryValue"
+              },
+              "description": "Output property to exact value read.",
+              "type": "object"
+            },
+            "view": {
+              "$ref": "#/$defs/RegistryView",
+              "description": "Explicit registry view."
+            }
+          },
+          "required": [
+            "kind",
+            "hive",
+            "view",
+            "path",
+            "enumerateSubkeys",
+            "values"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Native multi-CPU summary; model is present only when all processors agree.",
+          "properties": {
+            "kind": {
+              "const": "windows_cpu",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Complete installation list over device and all existing user profiles.",
+          "properties": {
+            "kind": {
+              "const": "windows_software",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Complete interface enumeration.",
+          "properties": {
+            "kind": {
+              "const": "windows_network",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Aggregate battery charge (energy-weighted), or Missing when absent.",
+          "properties": {
+            "kind": {
+              "const": "windows_battery",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "RegistryHive": {
+      "description": "Exact local hive; HKCU is intentionally absent.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "description": "HKEY_LOCAL_MACHINE.",
+          "properties": {
+            "kind": {
+              "const": "local_machine",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Already loaded HKEY_USERS SID; never mount an offline hive.",
+          "properties": {
+            "kind": {
+              "const": "users",
+              "type": "string"
+            },
+            "sid": {
+              "description": "Canonical Windows SID.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "sid"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "RegistryType": {
+      "description": "Native registry value type.",
+      "oneOf": [
+        {
+          "const": "sz",
+          "description": "REG_SZ.",
+          "type": "string"
+        },
+        {
+          "const": "expand_sz",
+          "description": "REG_EXPAND_SZ, without environment expansion.",
+          "type": "string"
+        },
+        {
+          "const": "dword",
+          "description": "REG_DWORD.",
+          "type": "string"
+        },
+        {
+          "const": "qword",
+          "description": "REG_QWORD.",
+          "type": "string"
+        },
+        {
+          "const": "multi_sz",
+          "description": "REG_MULTI_SZ.",
+          "type": "string"
+        }
+      ]
+    },
+    "RegistryValue": {
+      "additionalProperties": false,
+      "description": "One registry value projected under a stable property identifier.",
+      "properties": {
+        "name": {
+          "description": "Literal value name; empty means the default value.",
+          "type": "string"
+        },
+        "valueType": {
+          "$ref": "#/$defs/RegistryType",
+          "description": "Exact expected registry type."
+        }
+      },
+      "required": [
+        "name",
+        "valueType"
+      ],
+      "type": "object"
+    },
+    "RegistryView": {
+      "description": "Explicit view independent of executor bitness.",
+      "oneOf": [
+        {
+          "const": "registry32",
+          "description": "KEY_WOW64_32KEY.",
+          "type": "string"
+        },
+        {
+          "const": "registry64",
+          "description": "KEY_WOW64_64KEY.",
           "type": "string"
         }
       ]
@@ -2893,19 +3602,78 @@
       "type": "object"
     },
     "TaskPayload": {
-      "anyOf": [
+      "description": "Validated immutable script or software task payload.",
+      "oneOf": [
         {
-          "$ref": "#/$defs/TaskSpec"
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "collection",
+              "type": "string"
+            },
+            "task": {
+              "$ref": "#/$defs/CollectionTaskSpec"
+            }
+          },
+          "required": [
+            "kind",
+            "task"
+          ],
+          "type": "object"
         },
         {
-          "$ref": "#/$defs/SoftwareTaskSpec"
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "script",
+              "type": "string"
+            },
+            "task": {
+              "$ref": "#/$defs/TaskSpec"
+            }
+          },
+          "required": [
+            "kind",
+            "task"
+          ],
+          "type": "object"
         },
         {
-          "$ref": "#/$defs/EnrollmentTaskSpec",
-          "description": "Standard MDM enrollment entry."
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "software",
+              "type": "string"
+            },
+            "task": {
+              "$ref": "#/$defs/SoftwareTaskSpec"
+            }
+          },
+          "required": [
+            "kind",
+            "task"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Standard MDM enrollment entry.",
+          "properties": {
+            "kind": {
+              "const": "enrollment",
+              "type": "string"
+            },
+            "task": {
+              "$ref": "#/$defs/EnrollmentTaskSpec"
+            }
+          },
+          "required": [
+            "kind",
+            "task"
+          ],
+          "type": "object"
         }
-      ],
-      "description": "Validated immutable script or software task payload."
+      ]
     },
     "TaskPermit": {
       "description": "Signed message purpose prevents reusing a received offer as execution permission.",
@@ -3252,6 +4020,102 @@
         "timeoutSeconds",
         "outputBytes",
         "maxRows"
+      ],
+      "type": "object"
+    },
+    "WmiFilter": {
+      "description": "Bounded structural filter; property names are never query expressions.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "description": "Compare one declared non-array property to a typed literal.",
+          "properties": {
+            "kind": {
+              "const": "compare",
+              "type": "string"
+            },
+            "operator": {
+              "$ref": "#/$defs/NativeComparison",
+              "description": "Operator."
+            },
+            "property": {
+              "description": "Selected property.",
+              "type": "string"
+            },
+            "value": {
+              "description": "Literal interpreted by the property's CIM type."
+            }
+          },
+          "required": [
+            "kind",
+            "property",
+            "operator",
+            "value"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "All predicates must hold.",
+          "properties": {
+            "kind": {
+              "const": "and",
+              "type": "string"
+            },
+            "terms": {
+              "description": "Nonempty bounded operands.",
+              "items": {
+                "$ref": "#/$defs/WmiFilter"
+              },
+              "type": "array"
+            }
+          },
+          "required": [
+            "kind",
+            "terms"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "At least one predicate must hold.",
+          "properties": {
+            "kind": {
+              "const": "or",
+              "type": "string"
+            },
+            "terms": {
+              "description": "Nonempty bounded operands.",
+              "items": {
+                "$ref": "#/$defs/WmiFilter"
+              },
+              "type": "array"
+            }
+          },
+          "required": [
+            "kind",
+            "terms"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "WmiProperty": {
+      "additionalProperties": false,
+      "description": "Selected property with explicit array shape.",
+      "properties": {
+        "array": {
+          "description": "Whether CIM_FLAG_ARRAY is required.",
+          "type": "boolean"
+        },
+        "cimType": {
+          "$ref": "#/$defs/CimType",
+          "description": "Exact CIM primitive."
+        }
+      },
+      "required": [
+        "cimType",
+        "array"
       ],
       "type": "object"
     }

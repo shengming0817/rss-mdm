@@ -59,6 +59,9 @@ pub enum ResourcePreparation<'a> {
         binding: &'a ExactResourceBinding,
         parameters: ScriptParameters<'a>,
     },
+    AgentCollection {
+        binding: &'a ExactResourceBinding,
+    },
     NativeCollection {
         binding: &'a ExactResourceBinding,
     },
@@ -73,6 +76,7 @@ impl ResourcePreparation<'_> {
     pub(super) fn identity(&self) -> rss_mdm_policy::ResourceIdentity<'_> {
         match self {
             Self::Script { binding, .. }
+            | Self::AgentCollection { binding }
             | Self::NativeCollection { binding }
             | Self::Configuration { binding } => binding.identity(),
             Self::Software { binding } => binding.identity(),
@@ -85,6 +89,12 @@ pub enum PublicationInput<'a> {
     Script {
         binding: &'a ExactResourceBinding,
         parameters: ScriptParameters<'a>,
+        schedule: &'a Schedule,
+        frequency: Frequency,
+        lifetime: u32,
+    },
+    AgentCollection {
+        binding: &'a ExactResourceBinding,
         schedule: &'a Schedule,
         frequency: Frequency,
         lifetime: u32,
@@ -131,6 +141,9 @@ impl<'a> PublicationInput<'a> {
                 binding,
                 parameters: *parameters,
             },
+            Self::AgentCollection { binding, .. } => {
+                ResourcePreparation::AgentCollection { binding }
+            }
             Self::NativeCollection { binding, .. } => {
                 ResourcePreparation::NativeCollection { binding }
             }
@@ -154,6 +167,17 @@ impl<'a> From<&'a Action> for PublicationInput<'a> {
             } => Self::Script {
                 binding: resource,
                 parameters: ScriptParameters::Sources(parameters),
+                schedule,
+                frequency: *frequency,
+                lifetime: *run_lifetime_seconds,
+            },
+            Action::AgentCollection {
+                resource,
+                schedule,
+                frequency,
+                run_lifetime_seconds,
+            } => Self::AgentCollection {
+                binding: resource,
                 schedule,
                 frequency: *frequency,
                 lifetime: *run_lifetime_seconds,

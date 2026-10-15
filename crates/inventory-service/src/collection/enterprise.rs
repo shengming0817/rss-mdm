@@ -30,7 +30,9 @@ pub async fn accept_in(
     let source = definition.source();
     if !matches!(
         source,
-        rss_mdm_inventory::Source::AgentScript | rss_mdm_inventory::Source::AgentOsquery
+        rss_mdm_inventory::Source::AgentScript
+            | rss_mdm_inventory::Source::AgentOsquery
+            | rss_mdm_inventory::Source::AgentNative
     ) {
         return Err(sqlx::Error::Protocol(
             "invalid task collector source".into(),

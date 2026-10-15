@@ -90,7 +90,7 @@ async fn explicit_source_absence_drives_one_standard_entry_without_creating_mdm_
         channel_onboarding::diagnosis(&mut f.author, &f.router, id, case_device_id()).await?;
     ensure!(state["taskAdmission"]["state"] == "eligible", "{state}");
     let task = claim(&f.router).await?;
-    ensure!(task["payload"]["entry"]["kind"] == "macos");
+    ensure!(task["payload"]["task"]["entry"]["kind"] == "macos");
     ensure!(task["payload"].get("resourceDigest").is_none());
     task_event(&f.router, &task, json!({"kind":"received"})).await?;
     task_event(&f.router, &task, json!({"kind":"start"})).await?;
@@ -113,7 +113,7 @@ async fn explicit_source_absence_drives_one_standard_entry_without_creating_mdm_
     let accepted = post(&mut f.author, &f.router, &path, request.clone()).await?;
     ensure!(post(&mut f.author, &f.router, &path, request).await? == accepted);
     let explicit = claim(&f.router).await?;
-    ensure!(explicit["payload"]["taskId"] != task["payload"]["taskId"]);
+    ensure!(explicit["payload"]["task"]["taskId"] != task["payload"]["task"]["taskId"]);
     ensure!(pg(&format!("SELECT count(*) FROM mdm_commands.action_runs WHERE tenant_id='{}' AND occurrence='explicit:{rerun}'", case_tenant()))?.trim() == "1");
     task_event(&f.router, &explicit, json!({"kind":"received"})).await?;
     task_event(&f.router, &explicit, json!({"kind":"start"})).await?;
@@ -220,7 +220,7 @@ async fn uncertain_entry_survives_application_restart_and_policy_disable() -> Re
     execution.recover_action_fixture(id).await?;
     let state = pg(&format!(
         "SELECT state FROM mdm_commands.action_runs WHERE id='{}'",
-        task["payload"]["taskId"].as_str().unwrap()
+        task["payload"]["task"]["taskId"].as_str().unwrap()
     ))?;
     let state: Value = serde_json::from_str(state.trim())?;
     ensure!(

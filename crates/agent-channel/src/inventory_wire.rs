@@ -5,6 +5,7 @@ use rss_mdm_inventory as d;
 fn to_wire_source(value: d::Source) -> w::Source {
     match value {
         d::Source::AgentScript => w::Source::AgentScript,
+        d::Source::AgentNative => w::Source::AgentNative,
         d::Source::AgentOsquery => w::Source::AgentOsquery,
         d::Source::MdmApple => w::Source::MdmApple,
         d::Source::AgentBuiltin => w::Source::AgentBuiltin,
@@ -94,6 +95,7 @@ pub(crate) fn to_wire(value: &d::CollectionDefinition) -> Result<w::CollectionDe
 fn to_domain_source(value: w::Source) -> d::Source {
     match value {
         w::Source::AgentScript => d::Source::AgentScript,
+        w::Source::AgentNative => d::Source::AgentNative,
         w::Source::AgentOsquery => d::Source::AgentOsquery,
         w::Source::MdmApple => d::Source::MdmApple,
         w::Source::AgentBuiltin => d::Source::AgentBuiltin,

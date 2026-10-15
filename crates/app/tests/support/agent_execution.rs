@@ -92,7 +92,7 @@ pub(crate) async fn task_event_request(
         };
         kind["diagnostics"] = json!({"stdout":"captured stdout","stderr":"captured stderr","durationMs":1,"executedAt":1,"failure":failure});
     }
-    agent_call(router,Method::POST,&format!("/api/v1/agent/runtime/tasks/{}/events",task["payload"]["taskId"].as_str().unwrap()),Some(case_credential()),Some(json!({"wireVersion":1,"executionContext":crate::test_support::software_execution::context(crate::test_support::software_execution::Platform::MacOs),"operationId":operation,"attemptId":task["payload"]["attemptId"],"event":kind}))).await
+    agent_call(router,Method::POST,&format!("/api/v1/agent/runtime/tasks/{}/events",task["payload"]["task"]["taskId"].as_str().unwrap()),Some(case_credential()),Some(json!({"wireVersion":1,"executionContext":crate::test_support::software_execution::context(crate::test_support::software_execution::Platform::MacOs),"operationId":operation,"attemptId":task["payload"]["task"]["attemptId"],"event":kind}))).await
 }
 pub(crate) async fn claim_request(router: &Router, operation: Uuid) -> Result<(StatusCode, Value)> {
     agent_call(
@@ -100,7 +100,7 @@ pub(crate) async fn claim_request(router: &Router, operation: Uuid) -> Result<(S
         Method::POST,
         "/api/v1/agent/runtime/tasks/claim",
         Some(case_credential()),
-        Some(json!({"wireVersion":1,"executionContext":crate::test_support::software_execution::context(crate::test_support::software_execution::Platform::MacOs),"environment":{"edition":null,"tools":{}},"profiles":["posix_sh","bash","power_shell7","osquery"],"operationId":operation})),
+        Some(json!({"wireVersion":1,"executionContext":crate::test_support::software_execution::context(crate::test_support::software_execution::Platform::MacOs),"environment":{"edition":null,"tools":{},"nativeEngines":{}},"profiles":["posix_sh","bash","power_shell7","osquery"],"operationId":operation})),
     )
     .await
 }
@@ -382,7 +382,7 @@ pub(crate) async fn historical_remote_run(
 /// This fixture writes historical coordinates directly; no current execution entrance invokes it.
 pub(crate) async fn historical_remote(f: &Fixture, task: &Value, parent: Uuid) -> Result<Value> {
     use sqlx::Connection;
-    let run = Uuid::parse_str(task["payload"]["taskId"].as_str().unwrap())?;
+    let run = Uuid::parse_str(task["payload"]["task"]["taskId"].as_str().unwrap())?;
     let mut c =
         sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?)
             .await?;
@@ -392,7 +392,8 @@ pub(crate) async fn historical_remote(f: &Fixture, task: &Value, parent: Uuid) -
     let signer = crate::task_signing::open(&config)?;
     let sign = |value: Value| -> Result<Value> {
         let mut value = value;
-        value["payload"]["authorization"] = json!({"kind":"remote_operation","operationId":parent});
+        value["payload"]["task"]["authorization"] =
+            json!({"kind":"remote_operation","operationId":parent});
         Ok(serde_json::to_value(signer.sign(
             serde_json::from_value(value["payload"].clone())?,
         )?)?)

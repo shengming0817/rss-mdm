@@ -11,6 +11,10 @@ use uuid::Uuid;
     deny_unknown_fields
 )]
 pub enum Material {
+    Collection {
+        plan: wire::NativeCollectionPlan,
+        resource_digest: [u8; 32],
+    },
     Script {
         target: wire::SoftwareExecutionTarget,
     },
@@ -24,6 +28,10 @@ pub enum Material {
 impl Material {
     pub fn from_payload(payload: &wire::TaskPayload) -> Option<Self> {
         match payload {
+            wire::TaskPayload::Collection(spec) => Some(Self::Collection {
+                plan: spec.plan.clone(),
+                resource_digest: spec.resource_digest,
+            }),
             wire::TaskPayload::Script(spec) => Some(Self::Script {
                 target: spec.execution_target.clone(),
             }),

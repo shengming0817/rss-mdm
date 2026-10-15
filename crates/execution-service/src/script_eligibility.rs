@@ -51,7 +51,7 @@ pub async fn announce_in(
         edition: input.environment().edition.clone(),
         tools: input.environment().tools.clone(),
     };
-    let profiles = serde_json::json!({"profiles":input.profiles(),"environment":environment});
+    let profiles = serde_json::json!({"profiles":input.profiles(),"environment":environment,"nativeEngines":input.environment().native_engines});
     tx.with_connection(move |c| Box::pin(async move {
         sqlx::query("INSERT INTO mdm_commands.action_polls(tenant_id,registration,profiles) VALUES($1::uuid,$2,$3) ON CONFLICT(tenant_id,registration) DO UPDATE SET profiles=excluded.profiles").bind(tenant).bind(registration).bind(profiles).execute(c).await?; Ok(())
     })).await?;

@@ -114,6 +114,7 @@ impl<'de> Deserialize<'de> for SummaryResult {
             match v {
                 Value::Object(fields) => {
                     fields.remove("output");
+                    fields.remove("native");
                     fields.remove("stdout");
                     fields.remove("stderr");
                     for v in fields.values_mut() {
@@ -440,3 +441,16 @@ pub(crate) fn decode<T: serde::de::DeserializeOwned>(v: Value) -> crate::transac
 #[cfg(test)]
 #[path = "../../tests/query_records.rs"]
 mod tests;
+
+#[cfg(test)]
+mod native_summary_tests {
+    use super::*;
+    #[test]
+    fn summaries_never_serialize_native_values_or_nested_evidence() {
+        let value:SummaryResult=serde_json::from_value(serde_json::json!({"native":{"queries":{"software":{"rows":[{"owner":"private-user"}]}}},"nested":[{"native":{"secret":"value"}}],"queries":{"software":{"status":"complete","rowCount":1}},"outputReference":{"bytes":5,"sha256":"digest"}})).unwrap();
+        let output = serde_json::to_value(value).unwrap();
+        assert!(output.get("native").is_none());
+        assert!(output["nested"][0].get("native").is_none());
+        assert_eq!(output["queries"]["software"]["rowCount"], 1);
+    }
+}

@@ -199,7 +199,7 @@ async fn chain(format: &str, bundle: bool, user: bool) -> Result<()> {
                 "/api/v1/agent/runtime/tasks/claim",
                 Some(&f.credential),
                 Some(
-                    json!({"wireVersion":1,"environment":{"edition":null,"tools":{}},"profiles":[],"executionContext":local,"operationId":Uuid::new_v4()}),
+                    json!({"wireVersion":1,"environment":{"edition":null,"tools":{},"nativeEngines":{}},"profiles":[],"executionContext":local,"operationId":Uuid::new_v4()}),
                 ),
             )
             .await?;
@@ -212,7 +212,7 @@ async fn chain(format: &str, bundle: bool, user: bool) -> Result<()> {
     })
     .await??;
     let spec: rss_mdm_agent_wire::runtime::SoftwareTaskSpec =
-        serde_json::from_value(task["payload"].clone())?;
+        serde_json::from_value(task["payload"]["task"].clone())?;
     use ring::signature::KeyPair;
     let key_file = f.base["task_signing"]["private_key_file"].as_str().unwrap();
     let key = ring::signature::Ed25519KeyPair::from_pkcs8(&std::fs::read(key_file)?).unwrap();
@@ -266,8 +266,8 @@ async fn chain(format: &str, bundle: bool, user: bool) -> Result<()> {
         .method(Method::GET)
         .uri(format!(
             "/api/v1/agent/runtime/tasks/{}/content?attempt={}&artifact={}%2Fpackage",
-            task["payload"]["taskId"].as_str().unwrap(),
-            task["payload"]["attemptId"].as_str().unwrap(),
+            task["payload"]["task"]["taskId"].as_str().unwrap(),
+            task["payload"]["task"]["attemptId"].as_str().unwrap(),
             spec.steps.len() - 1
         ))
         .header("host", "mdm.example.test:9445")

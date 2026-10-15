@@ -14,7 +14,7 @@ async fn registration_capability_and_wire_gate() -> Result<()> {
         Method::POST,
         "/api/v1/agent/runtime/tasks/claim",
         Some(case_inventory_credential()),
-        Some(json!({"wireVersion":1,"executionContext":crate::test_support::software_execution::context(crate::test_support::software_execution::Platform::MacOs),"environment":{"edition":null,"tools":{}},"profiles":["posix_sh","bash","power_shell7","osquery"],"operationId":Uuid::new_v4()})),
+        Some(json!({"wireVersion":1,"executionContext":crate::test_support::software_execution::context(crate::test_support::software_execution::Platform::MacOs),"environment":{"edition":null,"tools":{},"nativeEngines":{}},"profiles":["posix_sh","bash","power_shell7","osquery"],"operationId":Uuid::new_v4()})),
     )
     .await?;
     ensure!(
@@ -36,7 +36,7 @@ async fn registration_capability_and_wire_gate() -> Result<()> {
         .await?;
     ensure!(old.status() == StatusCode::NOT_FOUND);
     let operation = Uuid::new_v4();
-    let valid = json!({"wireVersion":1,"operationId":operation,"executionContext":crate::test_support::software_execution::context(crate::test_support::software_execution::Platform::MacOs),"environment":{"edition":null,"tools":{}},"profiles":["posix_sh","bash","power_shell7","osquery"]});
+    let valid = json!({"wireVersion":1,"operationId":operation,"executionContext":crate::test_support::software_execution::context(crate::test_support::software_execution::Platform::MacOs),"environment":{"edition":null,"tools":{},"nativeEngines":{}},"profiles":["posix_sh","bash","power_shell7","osquery"]});
     for version in [2, 3, 4, 5, 6, 255] {
         let mut retired = valid.clone();
         retired["wireVersion"] = json!(version);
@@ -96,7 +96,9 @@ async fn offer_start_result_replay_and_inventory_projection() -> Result<()> {
         pg(&format!(
             "UPDATE mdm_commands.action_runs SET state=jsonb_set(state,'{{delivery,leaseUntil}}','0') WHERE tenant_id='{}' AND id='{}'",
             case_tenant(),
-            first.1["task"]["payload"]["taskId"].as_str().unwrap()
+            first.1["task"]["payload"]["task"]["taskId"]
+                .as_str()
+                .unwrap()
         ))?;
     }
     let claim_operation = Uuid::new_v4();
@@ -139,14 +141,14 @@ async fn offer_start_result_replay_and_inventory_projection() -> Result<()> {
     );
     let event_operation = Uuid::new_v4();
     for version in [2, 3, 4, 5, 6, 255] {
-        let retired = json!({"wireVersion":version,"operationId":event_operation,"attemptId":task["payload"]["attemptId"],"executionContext":crate::test_support::software_execution::context(crate::test_support::software_execution::Platform::MacOs),"event":{"kind":"received"}});
+        let retired = json!({"wireVersion":version,"operationId":event_operation,"attemptId":task["payload"]["task"]["attemptId"],"executionContext":crate::test_support::software_execution::context(crate::test_support::software_execution::Platform::MacOs),"event":{"kind":"received"}});
         ensure!(
             agent_call(
                 &router,
                 Method::POST,
                 &format!(
                     "/api/v1/agent/runtime/tasks/{}/events",
-                    task["payload"]["taskId"].as_str().unwrap()
+                    task["payload"]["task"]["taskId"].as_str().unwrap()
                 ),
                 Some(case_credential()),
                 Some(retired)
@@ -312,7 +314,7 @@ async fn chunked_results_require_complete_output_and_preserve_attempt_identity()
     )
     .await?;
     task_event(&fixture.router, &task, final_event).await?;
-    let attempt = task["payload"]["attemptId"].as_str().unwrap();
+    let attempt = task["payload"]["task"]["attemptId"].as_str().unwrap();
     ensure!(pg(&format!("SELECT count(*) FROM mdm_access.collection_runs WHERE tenant_id='{}' AND id='{attempt}' AND result='snapshot'",case_tenant()))?.trim()=="1");
     ensure!(pg(&format!("SELECT count(*) FROM mdm_commands.output_chunks WHERE tenant_id='{}' AND attempt='{attempt}'",case_tenant()))?.trim()=="2");
     crate::test_support::stop_worker(stack).await?;
@@ -375,7 +377,7 @@ async fn collection_structure_budget_precedes_partial_field_acceptance() -> Resu
         // A budget violation is a terminal failed collection, never a trusted partial
         // snapshot or an endlessly retried transport rejection.
         task_event(&fixture.router, &task, serde_json::to_value(event)?).await?;
-        let attempt = task["payload"]["attemptId"].as_str().unwrap();
+        let attempt = task["payload"]["task"]["attemptId"].as_str().unwrap();
         let expected = if mode == "partial" {
             "partial"
         } else {
@@ -383,11 +385,513 @@ async fn collection_structure_budget_precedes_partial_field_acceptance() -> Resu
         };
         ensure!(pg(&format!("SELECT result FROM mdm_access.collection_runs WHERE tenant_id='{}' AND id='{attempt}'",case_tenant()))?.trim()==expected,"invalid collection outcome: {mode}");
         if mode != "partial" {
-            let id = task["payload"]["taskId"].as_str().unwrap();
+            let id = task["payload"]["task"]["taskId"].as_str().unwrap();
             ensure!(pg(&format!("SELECT state->>'execution' FROM mdm_commands.action_runs WHERE tenant_id='{}' AND id='{id}'",case_tenant()))?.trim()=="failed");
             ensure!(pg(&format!("SELECT result->>'trusted' FROM mdm_commands.action_runs WHERE tenant_id='{}' AND id='{id}'",case_tenant()))?.trim()=="false");
         }
     }
     crate::test_support::stop_worker(stack).await?;
+    Ok(())
+}
+
+/// Synthetic protocol fixture: proves server HTTP/PG semantics, not Windows execution.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+#[ignore = "make t2 MODULE=execution.agent.delivery"]
+async fn native_inventory_only_partial_empty_chunked_and_revoked() -> Result<()> {
+    native_inventory_case(true, false).await
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+#[ignore = "make t2 MODULE=execution.agent.delivery"]
+async fn native_unmapped_evidence_requires_sensitive_permission() -> Result<()> {
+    native_inventory_case(false, false).await
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+#[ignore = "make t2 MODULE=execution.agent.delivery"]
+async fn native_all_query_failures_preserve_execution_completion() -> Result<()> {
+    native_inventory_case(false, true).await
+}
+
+#[allow(
+    clippy::cognitive_complexity,
+    reason = "shared HTTP scenario retains distinct authorization, quality and transport assertions"
+)]
+async fn native_inventory_case(map_software: bool, all_failed: bool) -> Result<()> {
+    use rss_mdm_agent_wire::runtime as w;
+    use rss_mdm_resource as r;
+    use sha2::{Digest, Sha256};
+    let mut f = Fixture::new().await?;
+    f.grants
+        .retain(|g| g.operation != crate::authorization::Permission::ScriptExecute);
+    f.grants
+        .extend(crate::test_support::identity::device_grants(
+            None,
+            &["inventory_collect", "operation_read"],
+        )?);
+    f.grants.push(crate::authorization::Grant {
+        operation: crate::authorization::Permission::InventorySensitiveRead,
+        scope: crate::authorization::Scope::Tenant,
+    });
+    crate::test_support::identity::set_grants(case_tenant(), &f.author_id, f.grants.clone())
+        .await?;
+    let context = crate::test_support::software_execution::context(
+        crate::test_support::software_execution::Platform::Windows,
+    );
+    let (_,registration)=crate::test_support::agent::enroll_profile(&f.router,&mut f.author,case_credential(),json!({"capabilities":["inventory.collect.v1","inventory.native.v1"],"platform":"windows","architecture":"x86_64","executionContext":context})).await?;
+    let device = registration["deviceId"].as_str().unwrap().to_owned();
+    f.scope(case_task_scope(), json!([{"kind":"device","id":device}]))
+        .await?;
+    let mut specs = Vec::new();
+    for id in [
+        "windows.agent.memory",
+        "windows.agent.network",
+        "windows.agent.software",
+    ] {
+        let r::blueprints::Definition::AgentCollection { template } =
+            r::blueprints::get(id, "1").unwrap().definition
+        else {
+            unreachable!()
+        };
+        specs.push(template.spec().clone());
+    }
+    let mut ps = specs[0].plan.spec().clone();
+    let mut mappings = specs[0].mappings.clone();
+    for spec in &specs[1..] {
+        ps.queries.extend(spec.plan.spec().queries.clone());
+        mappings.extend(spec.mappings.clone());
+    }
+    if !map_software {
+        mappings.remove("device.software.installations");
+    }
+    let definition = r::AgentCollectionDefinition::new(r::AgentCollectionSpec {
+        plan: w::NativeCollectionPlan::new(ps)?,
+        mappings,
+    })?;
+    let resource_id = Uuid::new_v4();
+    let bytes = definition.canonical();
+    let digest: [u8; 32] = Sha256::digest(&bytes).into();
+    resource(
+        &mut f.author,
+        &f.router,
+        resource_id,
+        0,
+        json!({"action":"create","kind":"agent_collection"}),
+    )
+    .await?;
+    resource(&mut f.author,&f.router,resource_id,1,json!({"action":"version","version":"v1","kind":"agent_collection","variants":[{"platform":"windows","architecture":"x86_64","key":"default","declaration":{"kind":"agent_collection","artifact":{"reference":"native.json","length":bytes.len(),"sha256":digest},"definition":definition}}]})).await?;
+    ensure!(
+        upload_for(
+            &f.author,
+            &f.router,
+            resource_id,
+            &bytes,
+            "windows",
+            "x86_64"
+        )
+        .await?
+            == StatusCode::CREATED
+    );
+    resource(
+        &mut f.author,
+        &f.router,
+        resource_id,
+        2,
+        json!({"action":"activate","version":"v1"}),
+    )
+    .await?;
+    let worker = worker(&f.base).await?;
+    let runtime = agent_runtime(&f.base).await?;
+    let inventory = crate::inventory_runtime::test_support::start(runtime.clone()).await?;
+    let claim_input = |engines: Value| json!({"wireVersion":1,"operationId":Uuid::new_v4(),"profiles":[],"environment":{"edition":null,"tools":{},"nativeEngines":engines},"executionContext":context});
+    let policy_input = || json!({"scope":case_task_scope(),"action":{"kind":"agent_collection","resource":{"id":resource_id,"version":"v1","platform":"windows","architecture":"x86_64","variant":"default"},"runLifetimeSeconds":300}});
+    let mut prior_network = String::new();
+    let mut prior_software = String::new();
+    for stage in 0..4 {
+        let policy = Uuid::new_v4();
+        let ordinary = f
+            .grants
+            .iter()
+            .filter(|g| g.operation != crate::authorization::Permission::InventorySensitiveRead)
+            .cloned()
+            .collect();
+        crate::test_support::identity::set_grants(case_tenant(), &f.author_id, ordinary).await?;
+        let denied = f.author.call(&f.router, Method::POST, &format!("/api/v1/policies/{policy}"), Some(json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"put","enabled":true,"definition":policy_input()}}))).await?;
+        ensure!(
+            denied.0 == StatusCode::FORBIDDEN,
+            "raw evidence publication bypass: {denied:?}"
+        );
+        crate::test_support::identity::set_grants(case_tenant(), &f.author_id, f.grants.clone())
+            .await?;
+        post(&mut f.author,&f.router,&format!("/api/v1/policies/{policy}"),json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"put","enabled":true,"definition":policy_input()}})).await?;
+        let unsupported = agent_call(
+            &f.router,
+            Method::POST,
+            "/api/v1/agent/runtime/tasks/claim",
+            Some(case_credential()),
+            Some(claim_input(json!({}))),
+        )
+        .await?;
+        ensure!(
+            unsupported.0 == StatusCode::OK && unsupported.1["task"].is_null(),
+            "unsupported native claim: {unsupported:?}"
+        );
+        let task = tokio::time::timeout(Duration::from_secs(30), async {
+            loop {
+                let response = agent_call(
+                    &f.router,
+                    Method::POST,
+                    "/api/v1/agent/runtime/tasks/claim",
+                    Some(case_credential()),
+                    Some(claim_input(
+                        json!({"windows.wmi":1,"windows.network":1,"windows.software":1}),
+                    )),
+                )
+                .await?;
+                ensure!(response.0 == StatusCode::OK, "native claim: {response:?}");
+                if !response.1["task"].is_null() {
+                    break Ok::<_, anyhow::Error>(serde_json::from_value::<w::SignedTask>(
+                        response.1["task"].clone(),
+                    )?);
+                }
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        })
+        .await??;
+        let w::TaskPayload::Collection(spec) = &task.payload else {
+            anyhow::bail!("native policy issued another task family");
+        };
+        let path = format!("/api/v1/agent/runtime/tasks/{}/events", spec.task_id);
+        let event = |operation, event: Value| json!({"wireVersion":1,"operationId":operation,"attemptId":spec.attempt_id,"executionContext":context,"event":event});
+        let received = agent_call(
+            &f.router,
+            Method::POST,
+            &path,
+            Some(case_credential()),
+            Some(event(Uuid::new_v4(), json!({"kind":"received"}))),
+        )
+        .await?;
+        ensure!(received.0 == StatusCode::OK);
+        if stage == 3 {
+            let grants = f
+                .grants
+                .iter()
+                .filter(|g| {
+                    g.operation
+                        != if map_software {
+                            crate::authorization::Permission::InventoryCollect
+                        } else {
+                            crate::authorization::Permission::InventorySensitiveRead
+                        }
+                })
+                .cloned()
+                .collect();
+            crate::test_support::identity::set_grants(case_tenant(), &f.author_id, grants).await?;
+            let denied = agent_call(
+                &f.router,
+                Method::POST,
+                &path,
+                Some(case_credential()),
+                Some(event(Uuid::new_v4(), json!({"kind":"start"}))),
+            )
+            .await?;
+            ensure!(
+                denied.0 == StatusCode::FORBIDDEN,
+                "revoked native Start: {denied:?}"
+            );
+            break;
+        }
+        let started = agent_call(
+            &f.router,
+            Method::POST,
+            &path,
+            Some(case_credential()),
+            Some(event(Uuid::new_v4(), json!({"kind":"start"}))),
+        )
+        .await?;
+        ensure!(started.0 == StatusCode::OK, "native Start: {started:?}");
+        let now = crate::clock::Clock::unix_seconds(&crate::clock::SystemClock)?;
+        let mut queries = std::collections::BTreeMap::new();
+        for (id, q) in &spec.plan.spec().queries {
+            let rows = if id == "memory" {
+                vec![
+                    [(
+                        "TotalPhysicalMemory".into(),
+                        json!((8192 + stage).to_string()),
+                    )]
+                    .into(),
+                ]
+            } else if stage == 2 {
+                vec![]
+            } else if id == "software" {
+                (0..if stage == 0 { 2 } else { 1 })
+                    .map(|i| {
+                        [
+                            ("id".into(), json!(format!("app-{i}"))),
+                            ("native_id".into(), json!(format!("native-{i}"))),
+                            (
+                                "name".into(),
+                                json!(if stage == 0 {
+                                    "private-software"
+                                } else {
+                                    "partial-software"
+                                }),
+                            ),
+                            ("version".into(), json!("1.0")),
+                            ("publisher".into(), json!("Acme")),
+                            ("scope".into(), json!("user")),
+                            (
+                                "owner".into(),
+                                json!(format!("S-1-5-21-1-2-3-{}", 1001 + i)),
+                            ),
+                            ("origin".into(), json!("registry")),
+                            ("location".into(), json!("C:\\Apps")),
+                        ]
+                        .into()
+                    })
+                    .collect()
+            } else if stage == 0 {
+                (0..24)
+                    .map(|i| {
+                        [
+                            ("id".into(), json!(format!("nic{i}"))),
+                            ("name".into(), json!("private-native-evidence")),
+                            ("addresses".into(), json!(vec!["x".repeat(220); 64])),
+                        ]
+                        .into()
+                    })
+                    .collect()
+            } else {
+                vec![
+                    [
+                        ("id".into(), json!("nic0")),
+                        ("name".into(), json!("changed-truncated")),
+                        ("addresses".into(), json!(["192.0.2.99"])),
+                    ]
+                    .into(),
+                ]
+            };
+            queries.insert(
+                id.clone(),
+                w::NativeQueryResult {
+                    query_digest: q.digest(),
+                    collected_at: now,
+                    status: if all_failed {
+                        match stage {
+                            0 => w::NativeQueryStatus::Denied,
+                            1 => w::NativeQueryStatus::Timeout,
+                            _ => w::NativeQueryStatus::Invalid,
+                        }
+                    } else if stage == 1 && id == "network" {
+                        w::NativeQueryStatus::Truncated
+                    } else {
+                        w::NativeQueryStatus::Complete
+                    },
+                    enumeration_complete: !(stage == 1 && id == "network"),
+                    row_count: rows.len() as u32,
+                    rows,
+                    users: (id == "software").then(|| {
+                        let expected: std::collections::BTreeSet<_> = [
+                            "S-1-5-21-1-2-3-1001".to_owned(),
+                            "S-1-5-21-1-2-3-1002".to_owned(),
+                        ]
+                        .into();
+                        w::NativeUserCoverage {
+                            enumeration_complete: true,
+                            observed: expected.clone(),
+                            completed: if stage == 1 {
+                                ["S-1-5-21-1-2-3-1001".to_owned()].into()
+                            } else {
+                                expected.clone()
+                            },
+                            expected,
+                        }
+                    }),
+                },
+            );
+        }
+        let result = w::NativeCollectionResult {
+            plan_digest: spec.plan_digest,
+            collected_at: now,
+            queries,
+        };
+        let body = serde_json::to_vec(&result)?;
+        let manifest = w::OutputManifest::new(body.len() as u32, Sha256::digest(&body).into())?;
+        let terminal = serde_json::to_value(w::TaskEvent::ChunkedCollectionResult {
+            manifest: manifest.clone(),
+        })?;
+        let missing = agent_call(
+            &f.router,
+            Method::POST,
+            &path,
+            Some(case_credential()),
+            Some(event(Uuid::new_v4(), terminal.clone())),
+        )
+        .await?;
+        ensure!(
+            missing.0 == StatusCode::BAD_REQUEST,
+            "missing native chunks: {missing:?}"
+        );
+        if stage != 0 {
+            for (i, chunk) in body.chunks(w::OUTPUT_CHUNK_BYTES).enumerate() {
+                let chunk = serde_json::to_value(w::TaskEvent::OutputChunk(w::OutputChunk::new(
+                    manifest.clone(),
+                    i as u16,
+                    chunk,
+                )?))?;
+                let response = agent_call(
+                    &f.router,
+                    Method::POST,
+                    &path,
+                    Some(case_credential()),
+                    Some(event(Uuid::new_v4(), chunk)),
+                )
+                .await?;
+                ensure!(response.0 == StatusCode::OK);
+            }
+        }
+        let terminal = if stage == 0 {
+            ensure!(body.len() > 256 * 1024);
+            serde_json::to_value(w::TaskEvent::CollectionResult(result.clone()))?
+        } else {
+            terminal
+        };
+        let operation = Uuid::new_v4();
+        let input = event(operation, terminal);
+        let accepted = agent_call(
+            &f.router,
+            Method::POST,
+            &path,
+            Some(case_credential()),
+            Some(input.clone()),
+        )
+        .await?;
+        ensure!(accepted.0 == StatusCode::OK, "native result: {accepted:?}");
+        ensure!(
+            accepted
+                == agent_call(
+                    &f.router,
+                    Method::POST,
+                    &path,
+                    Some(case_credential()),
+                    Some(input)
+                )
+                .await?
+        );
+        ensure!(pg(&format!("SELECT state->>'execution' FROM mdm_commands.action_runs WHERE tenant_id='{}' AND id='{}'", case_tenant(), spec.task_id))?.trim() == "succeeded", "legal finished package did not complete execution");
+        if all_failed {
+            ensure!(pg(&format!("SELECT result FROM mdm_access.collection_runs WHERE tenant_id='{}' AND id='{}'", case_tenant(), spec.attempt_id))?.trim() == "failed");
+            ensure!(pg(&format!("SELECT count(*) FROM mdm.inventory WHERE tenant_id='{}' AND registration='{}' AND source='agent.native'", case_tenant(), spec.registration_id))?.trim() == "0");
+        } else {
+            tokio::time::timeout(Duration::from_secs(20),async{
+            loop{let rows=pg(&format!("SELECT count(*) FROM mdm.inventory WHERE tenant_id='{}' AND registration='{}' AND source='agent.native' AND field='device.memory.bytes' AND value::jsonb->>'value'='{}'",case_tenant(),spec.registration_id,8192+stage))?;if rows.trim()=="1"{break Ok::<_,anyhow::Error>(());}tokio::time::sleep(Duration::from_millis(50)).await;}
+        }).await??;
+            let network = pg(&format!(
+                "SELECT value::text FROM mdm.inventory WHERE tenant_id='{}' AND registration='{}' AND source='agent.native' AND field='device.network.interfaces'",
+                case_tenant(),
+                spec.registration_id
+            ))?;
+            if stage == 0 {
+                prior_network = network.clone();
+            } else if stage == 1 {
+                ensure!(
+                    network == prior_network,
+                    "truncated result replaced complete inventory"
+                );
+                ensure!(pg(&format!("SELECT attempts::jsonb#>>'{{fields,device.network.interfaces,quality}}' FROM mdm_access.collection_runs WHERE tenant_id='{}' AND id='{}'",case_tenant(),spec.attempt_id))?.trim()=="failed");
+            } else {
+                let v: Value = serde_json::from_str(network.trim())?;
+                ensure!(v["value"] == json!([]));
+            }
+            if map_software {
+                let software = pg(&format!(
+                    "SELECT value::text FROM mdm.inventory WHERE tenant_id='{}' AND registration='{}' AND source='agent.native' AND field='device.software.installations'",
+                    case_tenant(),
+                    spec.registration_id
+                ))?;
+                if stage == 0 {
+                    let value: Value = serde_json::from_str(software.trim())?;
+                    ensure!(
+                        value["value"]
+                            .as_array()
+                            .is_some_and(|rows| rows.len() == 2)
+                    );
+                    prior_software = software;
+                } else if stage == 1 {
+                    ensure!(
+                        software == prior_software,
+                        "incomplete user coverage replaced the whole software list"
+                    );
+                } else {
+                    let value: Value = serde_json::from_str(software.trim())?;
+                    ensure!(
+                        value["value"] == json!([]),
+                        "complete empty software list was not published"
+                    );
+                }
+            }
+        }
+        let detail_path = format!("/api/v1/policies/{policy}/runs/{}", spec.task_id);
+        let detail = f
+            .author
+            .call(&f.router, Method::GET, &detail_path, None)
+            .await?;
+        ensure!(
+            detail.0 == StatusCode::OK
+                && detail.1["result"]["native"] == serde_json::to_value(&result)?,
+            "native evidence recovery failed: {}",
+            detail.0
+        );
+        let ordinary = f
+            .grants
+            .iter()
+            .filter(|g| g.operation != crate::authorization::Permission::InventorySensitiveRead)
+            .cloned()
+            .collect();
+        crate::test_support::identity::set_grants(case_tenant(), &f.author_id, ordinary).await?;
+        let denied = f
+            .author
+            .call(&f.router, Method::GET, &detail_path, None)
+            .await?;
+        ensure!(
+            denied.0 == StatusCode::FORBIDDEN && !denied.1.to_string().contains("private-software"),
+            "raw evidence read bypass: {denied:?}"
+        );
+        let limited = f
+            .grants
+            .iter()
+            .filter(|g| g.operation != crate::authorization::Permission::InventoryRead)
+            .cloned()
+            .collect();
+        crate::test_support::identity::set_grants(case_tenant(), &f.author_id, limited).await?;
+        ensure!(
+            f.author
+                .call(&f.router, Method::GET, &detail_path, None)
+                .await?
+                .0
+                == StatusCode::FORBIDDEN
+        );
+        let summary = f
+            .author
+            .call(
+                &f.router,
+                Method::GET,
+                &format!("/api/v1/policies/{policy}/runs"),
+                None,
+            )
+            .await?;
+        ensure!(summary.0 == StatusCode::OK, "native summary: {summary:?}");
+        ensure!(
+            summary.1["items"][0]["result"].get("native").is_none()
+                && !summary.1.to_string().contains("private-native-evidence")
+                && !summary.1.to_string().contains("changed-truncated")
+        );
+        crate::test_support::identity::set_grants(case_tenant(), &f.author_id, f.grants.clone())
+            .await?;
+        ensure!(pg(&format!("SELECT count(*) FROM mdm_commands.action_runs r JOIN mdm_policy.versions v ON(v.tenant_id,v.id)=(r.tenant_id,r.policy_version) WHERE r.tenant_id='{}' AND v.action_kind='execution'",case_tenant()))?.trim()=="0");
+    }
+    crate::test_support::stop_worker(inventory).await?;
+    runtime.close_fixture().await?;
+    crate::test_support::stop_worker(worker).await?;
     Ok(())
 }

@@ -6,7 +6,9 @@
 //! caller authorization or device effects. [`Artifact::verify`] checks supplied bytes.
 //! Persist snapshots and reference checks atomically in the consuming adapter; a
 //! returned decision does not prove a database commit or execution on a device.
+mod agent_collection;
 mod native_collection;
+pub use agent_collection::*;
 mod script;
 pub use native_collection::*;
 mod sql;
@@ -131,6 +133,8 @@ pub enum Kind {
     Configuration,
     /// A published native MDM read template.
     NativeCollection,
+    /// Agent-native declarative inventory collection.
+    AgentCollection,
 }
 #[derive(
     Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, serde::Serialize, serde::Deserialize,
@@ -218,6 +222,13 @@ pub enum Declaration {
         /// Closed query adapter, output mappings and execution budget.
         definition: NativeCollectionDefinition,
     },
+    /// Agent-native plan and server-owned mapping artifact.
+    AgentCollection {
+        /// Exact canonical definition bytes.
+        artifact: Artifact,
+        /// Validated immutable plan and mappings.
+        definition: AgentCollectionDefinition,
+    },
     /// Configuration metadata; construction does not apply it.
     Configuration {
         /// Expected immutable artifact; construction does not load its bytes.
@@ -232,6 +243,7 @@ impl Declaration {
             Self::Script { .. } => Kind::Script,
             Self::Configuration { .. } => Kind::Configuration,
             Self::NativeCollection { .. } => Kind::NativeCollection,
+            Self::AgentCollection { .. } => Kind::AgentCollection,
         }
     }
     /// Borrow the expected artifact shared by every declaration family.
@@ -240,7 +252,8 @@ impl Declaration {
             Self::Software { definition } => definition.primary(),
             Self::Script { artifact, .. }
             | Self::Configuration { artifact, .. }
-            | Self::NativeCollection { artifact, .. } => artifact,
+            | Self::NativeCollection { artifact, .. }
+            | Self::AgentCollection { artifact, .. } => artifact,
         }
     }
 }
@@ -358,6 +371,14 @@ impl Version {
             if let Declaration::Script { definition, .. } = &variant.declaration {
                 definition.validate_platform(variant.platform)?;
             }
+            if let Declaration::AgentCollection {
+                artifact,
+                definition,
+            } = &variant.declaration
+            {
+                definition.validate_platform(variant.platform)?;
+                artifact.verify(&definition.canonical())?;
+            }
             if let Declaration::NativeCollection {
                 artifact,
                 definition,
@@ -448,6 +469,8 @@ impl Version {
             b"rss-mdm-resource-software-v4\0".to_vec()
         } else if self.kind == Kind::Script {
             b"rss-mdm-resource-script-v2\0".to_vec()
+        } else if self.kind == Kind::AgentCollection {
+            b"rss-mdm-resource-agent-collection-v1\0".to_vec()
         } else if self.kind == Kind::NativeCollection {
             b"rss-mdm-resource-native-collection-v1\0".to_vec()
         } else {
@@ -461,6 +484,7 @@ impl Version {
             Kind::Script => 2,
             Kind::Configuration => 3,
             Kind::NativeCollection => 4,
+            Kind::AgentCollection => 5,
         });
         e.0.extend((self.variants.len() as u32).to_be_bytes());
         for v in &self.variants {
@@ -489,6 +513,11 @@ impl Version {
                     e.0.extend(bytes);
                 }
                 Declaration::NativeCollection { definition, .. } => {
+                    let bytes = definition.canonical();
+                    e.0.extend((bytes.len() as u32).to_be_bytes());
+                    e.0.extend(bytes);
+                }
+                Declaration::AgentCollection { definition, .. } => {
                     let bytes = definition.canonical();
                     e.0.extend((bytes.len() as u32).to_be_bytes());
                     e.0.extend(bytes);

@@ -80,3 +80,50 @@ fn list_columns_are_explicit_typed_and_bounded() {
     assert!(ValueMapping::identity("/bad~2escape").validate().is_err());
     assert!(serde_json::from_value::<ValueMapping>(json!("/old-format")).is_err());
 }
+
+#[test]
+fn cim_time_requires_full_date_and_offset_and_normalizes_to_utc() {
+    assert_eq!(
+        Conversion::CimTime
+            .apply(&json!("20261015120000.000000+060"))
+            .unwrap(),
+        json!(1792062000i64)
+    );
+    for v in [
+        "20261015120000.000000+***",
+        "20261315120000.000000+000",
+        "00000001000000.000000:000",
+        "20261015120000.000000",
+    ] {
+        assert!(Conversion::CimTime.apply(&json!(v)).is_err());
+    }
+}
+
+#[test]
+fn unsigned_scaling_checks_the_output_range_without_losing_input_precision() {
+    assert_eq!(
+        Conversion::Scale {
+            numerator: 1,
+            denominator: 3
+        }
+        .apply(&json!(u64::MAX.to_string()))
+        .unwrap(),
+        json!(6148914691236517205i64)
+    );
+    assert!(
+        Conversion::Scale {
+            numerator: 1,
+            denominator: 2
+        }
+        .apply(&json!(u64::MAX.to_string()))
+        .is_err()
+    );
+    assert!(
+        Conversion::Scale {
+            numerator: 1,
+            denominator: 1
+        }
+        .apply(&json!(u64::MAX.to_string()))
+        .is_err()
+    );
+}

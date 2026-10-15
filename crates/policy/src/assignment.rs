@@ -147,6 +147,19 @@ pub enum Action {
         /// Maximum lifetime of each admitted run, from 60 seconds through seven days.
         run_lifetime_seconds: u32,
     },
+    /// A native Agent read template using the same schedule and membership frequency.
+    AgentCollection {
+        /// Exact immutable native template.
+        resource: ExactResourceBinding,
+        #[serde(default = "default_schedule")]
+        /// Calendar and check-in trigger.
+        schedule: Schedule,
+        #[serde(default)]
+        /// Existing Policy execution frequency.
+        frequency: Frequency,
+        /// Lifetime of the accepted collection.
+        run_lifetime_seconds: u32,
+    },
     /// A native MDM read template using the same schedule and membership frequency.
     NativeCollection {
         /// Exact immutable native template.
@@ -389,6 +402,7 @@ impl Action {
         match self {
             Self::Execution { .. } => crate::ActionKind::Execution,
             Self::NativeCollection { .. } => crate::ActionKind::NativeCollection,
+            Self::AgentCollection { .. } => crate::ActionKind::AgentCollection,
             Self::Configuration { .. } => crate::ActionKind::Configuration,
             Self::Software { .. } => crate::ActionKind::Software,
             Self::EnsureAgentInstalled { .. } => crate::ActionKind::EnsureAgentInstalled,
@@ -399,7 +413,8 @@ impl Action {
     /// Borrow resource coordinates only for actions that actually consume a resource.
     pub fn resource(&self) -> Option<ResourceIdentity<'_>> {
         match self {
-            Self::NativeCollection { resource, .. }
+            Self::AgentCollection { resource, .. }
+            | Self::NativeCollection { resource, .. }
             | Self::Execution { resource, .. }
             | Self::Configuration { resource, .. } => Some(resource.identity()),
             Self::Software { resource, .. } | Self::EnsureAgentInstalled { resource, .. } => {
@@ -412,6 +427,7 @@ impl Action {
     pub fn validate(&self) -> Result<(), Error> {
         match self {
             Self::Execution { resource, .. }
+            | Self::AgentCollection { resource, .. }
             | Self::NativeCollection { resource, .. }
             | Self::Configuration { resource, .. } => resource.validate()?,
             Self::Software { resource, .. } | Self::EnsureAgentInstalled { resource, .. } => {
@@ -432,6 +448,11 @@ impl Action {
         }
         match self {
             Action::Execution {
+                schedule,
+                run_lifetime_seconds,
+                ..
+            }
+            | Action::AgentCollection {
                 schedule,
                 run_lifetime_seconds,
                 ..

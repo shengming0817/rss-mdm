@@ -19,7 +19,7 @@ async fn cancellation_backlog_does_not_starve_live_offer() -> Result<()> {
     let author = &mut fixture.author;
     let _policy = publish(author, router, resource).await?;
     let pending = claim(router).await?;
-    let id = pending["payload"]["taskId"].as_str().unwrap();
+    let id = pending["payload"]["task"]["taskId"].as_str().unwrap();
     pg(&format!(
         "INSERT INTO mdm_commands.action_runs(tenant_id,id,policy_version,device,registration,generation,occurrence,created_at,available_at,deadline,state,gateway_accepted,dispatch_fingerprint,source_objects) SELECT tenant_id,gen_random_uuid(),policy_version,device,registration,generation,'starvation-fixture:'||n,created_at,0,1,jsonb_set(jsonb_set(state,'{{execution}}','\"unknown\"'),'{{cancellation}}','\"requested\"'),true,dispatch_fingerprint,source_objects FROM mdm_commands.action_runs CROSS JOIN generate_series(1,129) n WHERE id='{id}'; UPDATE mdm_commands.action_runs SET state=jsonb_set(state,'{{delivery,leaseUntil}}','0') WHERE id='{id}'"
     ))?;
@@ -37,7 +37,7 @@ async fn cancellation_backlog_does_not_starve_live_offer() -> Result<()> {
             Method::POST,
             "/api/v1/agent/runtime/tasks/claim",
             Some(case_credential()),
-            Some(json!({"wireVersion":1,"executionContext":crate::test_support::software_execution::context(crate::test_support::software_execution::Platform::MacOs),"environment":{"edition":null,"tools":{}},"profiles":["posix_sh","bash","power_shell7","osquery"],"operationId":Uuid::new_v4()})),
+            Some(json!({"wireVersion":1,"executionContext":crate::test_support::software_execution::context(crate::test_support::software_execution::Platform::MacOs),"environment":{"edition":null,"tools":{},"nativeEngines":{}},"profiles":["posix_sh","bash","power_shell7","osquery"],"operationId":Uuid::new_v4()})),
         )
         .await?;
         ensure!(response.0 == StatusCode::OK, "poll paging: {response:?}");
@@ -50,7 +50,7 @@ async fn cancellation_backlog_does_not_starve_live_offer() -> Result<()> {
         }
     }
     let offered = offered.context("cancel backlog starved the live task")?;
-    ensure!(offered["payload"]["taskId"] == pending["payload"]["taskId"]);
+    ensure!(offered["payload"]["task"]["taskId"] == pending["payload"]["task"]["taskId"]);
     ensure!(
         seen.len() == 129,
         "cancellation cursor did not traverse backlog: {}",

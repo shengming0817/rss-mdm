@@ -350,7 +350,7 @@ async fn publication_http_authority_receipts_and_public_native_binding() -> Resu
                 "/api/v1/agent/runtime/tasks/claim",
                 Some(&f.credential),
                 Some(
-                    json!({"wireVersion":1,"executionContext":local,"environment":{"edition":null,"tools":{}},"profiles":[],"operationId":Uuid::new_v4()}),
+                    json!({"wireVersion":1,"executionContext":local,"environment":{"edition":null,"tools":{},"nativeEngines":{}},"profiles":[],"operationId":Uuid::new_v4()}),
                 ),
             )
             .await?;
@@ -363,8 +363,8 @@ async fn publication_http_authority_receipts_and_public_native_binding() -> Resu
     })
     .await??;
     ensure!(
-        task["payload"]["steps"][0]["export"]["kind"] == "winget"
-            && task["payload"]["steps"][0]["export"]["uri"]
+        task["payload"]["task"]["steps"][0]["export"]["kind"] == "winget"
+            && task["payload"]["task"]["steps"][0]["export"]["uri"]
                 .as_str()
                 .unwrap()
                 .contains(&id),

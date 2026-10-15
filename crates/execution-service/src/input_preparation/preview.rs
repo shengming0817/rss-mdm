@@ -2,6 +2,11 @@
 use super::*;
 pub(crate) enum PreviewInputs {
     Resource,
+    AgentCollection {
+        definition: rss_mdm_resource::AgentCollectionDefinition,
+        platform: Platform,
+        architecture: Architecture,
+    },
     Native(rss_mdm_resource::NativeCollectionDefinition),
     Script {
         applicability: Option<rss_mdm_resource::Applicability>,
@@ -117,6 +122,28 @@ impl Inputs {
                             rss_mdm_agent_wire::runtime::ExecutorProfile::Osquery
                         }
                     },
+                });
+            }
+            PublicationInput::AgentCollection { binding, .. } => {
+                if !self.signing_enabled {
+                    return Err(Error::Conflict.into());
+                }
+                let definition = agent_collection(&version, binding, verified)?;
+                prepare_collection_in(
+                    tx,
+                    self.tenant,
+                    &version,
+                    variant(&version, binding)?,
+                    rss_mdm_inventory::Source::AgentNative,
+                    definition.spec().mappings.keys(),
+                )
+                .await?;
+                // Native runs retain complete raw query evidence, beyond mapped fields.
+                snapshot.require(proof, Permission::InventorySensitiveRead, None)?;
+                return Ok(PreviewInputs::AgentCollection {
+                    definition: definition.clone(),
+                    platform: binding.platform,
+                    architecture: binding.architecture,
                 });
             }
             PublicationInput::NativeCollection { binding, .. } => {

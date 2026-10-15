@@ -17,6 +17,8 @@ pub struct CollectionEnvironment {
     /// Installed controlled tool versions.
     #[schemars(extend("maxProperties" = 16, "propertyNames" = serde_json::json!({"minLength":1,"maxLength":128,"pattern":"^[a-zA-Z0-9_.-]+$"}), "additionalProperties" = serde_json::json!({"type":"string","minLength":1,"maxLength":64,"pattern":"^[0-9]+(\\.[0-9]+){0,3}$"})))]
     pub tools: BTreeMap<String, String>,
+    /// Explicit native engine contracts; empty means no native execution support.
+    pub native_engines: crate::runtime::NativeEngines,
 }
 fn numeric(value: &str) -> Option<[u32; 4]> {
     let mut out = [0; 4];
@@ -41,7 +43,9 @@ fn token(value: &str) -> bool {
 impl CollectionEnvironment {
     /// Validate bounded current evidence before persisting it.
     pub fn validate(&self) -> Result<(), WireError> {
-        if self.edition.as_ref().is_some_and(|v| !token(v))
+        if self.native_engines.len() > 6
+            || self.native_engines.values().any(|v| *v != 1)
+            || self.edition.as_ref().is_some_and(|v| !token(v))
             || self.tools.len() > 16
             || self
                 .tools

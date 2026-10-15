@@ -27,7 +27,7 @@ async fn console_mixed_kind_cursor_and_device_visibility() -> anyhow::Result<()>
     agent::publish(&mut fixture.author, &fixture.router, resource).await?;
     let task = agent::claim(&fixture.router).await?;
     agent::complete(&fixture.router, &task).await?;
-    let id = Uuid::parse_str(task["payload"]["taskId"].as_str().unwrap())?;
+    let id = Uuid::parse_str(task["payload"]["task"]["taskId"].as_str().unwrap())?;
     crate::test_support::stop_worker(worker).await?;
     let mut host = crate::windows::test_support::Host::open().await?;
     host.listen().await?;

@@ -19,6 +19,9 @@ pub enum Source {
     /// Controlled collection script evidence.
     #[serde(rename = "agent.script")]
     AgentScript,
+    /// Signed declarative native task evidence.
+    #[serde(rename = "agent.native")]
+    AgentNative,
     /// Published SQL template evidence.
     #[serde(rename = "agent.osquery")]
     AgentOsquery,

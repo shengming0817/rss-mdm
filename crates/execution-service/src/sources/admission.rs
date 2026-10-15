@@ -177,3 +177,22 @@ pub async fn remote_native_in(
         authority: Authority::Remote(remote),
     })
 }
+
+pub async fn agent_collection_in(
+    reader: &rss_mdm_policy_postgres::PolicyReader,
+    tx: &mut PgTransaction<'_>,
+    id: Uuid,
+) -> Result<ExecutionPolicy<crate::action_contract::FrozenAgentCollection>> {
+    let (policy, frozen) = storage::version_in(reader, tx, id).await?;
+    let Frozen::AgentCollection { action, frequency } = frozen else {
+        return Err(Error::Unsupported.into());
+    };
+    Ok(ExecutionPolicy {
+        id,
+        owner: policy.id,
+        frozen: *action,
+        frequency,
+        active: policy.enabled && policy.version == id,
+        authority: Authority::Policy(Box::new(policy)),
+    })
+}

@@ -285,7 +285,7 @@ async fn policy_scan_reaches_late_match() -> Result<()> {
     let task = claim(router)
         .await
         .map_err(|e| anyhow::anyhow!("policy pagination: {e}"))?;
-    let task_id = task["payload"]["taskId"].as_str().unwrap();
+    let task_id = task["payload"]["task"]["taskId"].as_str().unwrap();
     ensure!(pg(&format!("SELECT v.policy FROM mdm_commands.action_runs r JOIN mdm_policy.versions v ON v.id=r.policy_version WHERE r.id='{task_id}'"))?.trim()==id.to_string(),"later policy starved");
     task_event(router, &task, json!({"kind":"received"})).await?;
     task_event(router, &task, json!({"kind":"start"})).await?;
@@ -597,7 +597,7 @@ async fn registered_script_eligibility_gates_preview_and_automatic() -> Result<(
         // A real check-in announces its current profiles; the absent-profile case
         // announces a mismatched profile, so it still cannot admit an automatic Run.
         let announced = profiles.unwrap_or_else(|| json!(["bash"]));
-        let poll=agent_call(&f.router,Method::POST,"/api/v1/agent/runtime/tasks/claim",Some(case_credential()),Some(json!({"wireVersion":1,"executionContext":execution_context,"environment":{"edition":null,"tools":{}},"profiles":announced,"operationId":Uuid::new_v4()}))).await?;
+        let poll=agent_call(&f.router,Method::POST,"/api/v1/agent/runtime/tasks/claim",Some(case_credential()),Some(json!({"wireVersion":1,"executionContext":execution_context,"environment":{"edition":null,"tools":{},"nativeEngines":{}},"profiles":announced,"operationId":Uuid::new_v4()}))).await?;
         ensure!(
             poll.0 == StatusCode::OK && poll.1["task"].is_null(),
             "ineligible check-in: {poll:?}"

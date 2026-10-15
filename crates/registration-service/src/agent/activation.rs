@@ -195,7 +195,12 @@ VALUES($1::uuid,$2,$3,'agent',1,$4,'active','primary',$5)
                         .execute(&mut *c)
                         .await
                         .map_err(db)?;
-                        for source in ["agent.builtin", "agent.script", "agent.osquery"] {
+                        for source in [
+                            "agent.builtin",
+                            "agent.script",
+                            "agent.osquery",
+                            "agent.native",
+                        ] {
                             sqlx::query(
                                 r#"
 INSERT INTO mdm_access.report_sources(tenant_id,registration,source,epoch,enabled)

@@ -670,6 +670,9 @@ MODULES['content.http'] = replace(MODULES['content.http'], policies=(
 ))
 
 case_fixtures('execution.agent.delivery', 'execution::t2::agent::delivery::offer_start_result_replay_and_inventory_projection', 'local_worker')
+case_fixtures('execution.agent.delivery', 'execution::t2::agent::delivery::native_inventory_only_partial_empty_chunked_and_revoked', 'local_worker')
+case_fixtures('execution.agent.delivery', 'execution::t2::agent::delivery::native_unmapped_evidence_requires_sensitive_permission', 'local_worker')
+case_fixtures('execution.agent.delivery', 'execution::t2::agent::delivery::native_all_query_failures_preserve_execution_completion', 'local_worker')
 for name in ('agent.reports', 'inventory.runtime', 'planning.assets', 'planning.scope',
              'planning.group_scope', 'planning.recovery', 'execution.commands.dispatch',
              'execution.commands.recovery', 'execution.commands.configuration', 'execution.commands.windows', 'execution.commands.onboarding', 'windows.retention',
@@ -1729,3 +1732,10 @@ consume(('crates/apple-channel/src/collection_context.rs', 'crates/apple-channel
 consume(('crates/inventory/src/builtin/apple*.rs', 'crates/resource/src/blueprints/apple.rs', 'crates/inventory-service/src/collection/declarative.rs'), 'apple.collection apple.ddm planning.http')
 consume(('crates/inventory-service/src/assets/model.rs',), 'assets.http assets.queries assets.sources assets.group_input planning.assets apple.collection')
 consume(('crates/inventory-service/src/assets/runs.rs',), 'assets.http assets.sources apple.collection')
+
+consume(("crates/execution-service/src/agent_collection_eligibility.rs", "crates/execution-service/src/actions/agent_collection.rs"), "planning.agent_policy execution.agent.delivery execution.agent.history execution.agent.recovery assets.sources assets.queries planning.group_scope compliance.evaluation")
+
+consume(("crates/resource/src/agent_collection.rs", "crates/resource/src/blueprints/agent_windows.rs", "crates/agent-wire/src/native_collection.rs"), "planning.http planning.agent_policy execution.agent.delivery execution.agent.history execution.agent.recovery assets.sources assets.queries")
+consume_dependencies("planning.http planning.agent_policy execution.agent.delivery execution.agent.history execution.agent.recovery assets.sources assets.queries", normal="rss-mdm-agent-wire time")
+
+consume(("crates/examples/examples/fixture_snapshot.rs",), "examples.cli")

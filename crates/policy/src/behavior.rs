@@ -9,6 +9,8 @@ pub enum ActionKind {
     Execution,
     /// Native MDM collection.
     NativeCollection,
+    /// Declarative native reads over the Agent channel.
+    AgentCollection,
     /// Persistent native configuration.
     Configuration,
     /// Software assignment.
@@ -30,9 +32,10 @@ pub enum AssignmentBehavior {
 }
 impl ActionKind {
     /// Complete closed set for deriving database predicates.
-    pub const ALL: [Self; 6] = [
+    pub const ALL: [Self; 7] = [
         Self::Execution,
         Self::NativeCollection,
+        Self::AgentCollection,
         Self::Configuration,
         Self::Software,
         Self::EnsureAgentInstalled,
@@ -41,7 +44,10 @@ impl ActionKind {
     /// Original endpoint channel selected by this action; no peer broadcast is permitted.
     pub const fn target_channel(self) -> &'static str {
         match self {
-            Self::Execution | Self::Software | Self::RequestMdmEnrollment => "agent",
+            Self::AgentCollection
+            | Self::Execution
+            | Self::Software
+            | Self::RequestMdmEnrollment => "agent",
             Self::NativeCollection | Self::Configuration | Self::EnsureAgentInstalled => "mdm",
         }
     }
@@ -50,6 +56,7 @@ impl ActionKind {
         match self {
             Self::Execution => "execution",
             Self::NativeCollection => "native_collection",
+            Self::AgentCollection => "agent_collection",
             Self::Configuration => "configuration",
             Self::Software => "software",
             Self::EnsureAgentInstalled => "ensure_agent_installed",
@@ -59,16 +66,20 @@ impl ActionKind {
     /// Select the existing assignment driver.
     pub const fn assignment_behavior(self) -> AssignmentBehavior {
         match self {
-            Self::Execution | Self::Software | Self::RequestMdmEnrollment => {
-                AssignmentBehavior::AgentCheckIn
-            }
+            Self::AgentCollection
+            | Self::Execution
+            | Self::Software
+            | Self::RequestMdmEnrollment => AssignmentBehavior::AgentCheckIn,
             Self::NativeCollection => AssignmentBehavior::NativeCollectionRecovery,
             Self::Configuration | Self::EnsureAgentInstalled => AssignmentBehavior::NativeDesired,
         }
     }
     /// Whether the existing Agent execution path consumes explicit Policy triggers.
     pub const fn supports_rerun(self) -> bool {
-        matches!(self, Self::Execution | Self::RequestMdmEnrollment)
+        matches!(
+            self,
+            Self::AgentCollection | Self::Execution | Self::RequestMdmEnrollment
+        )
     }
 }
 impl AssignmentBehavior {

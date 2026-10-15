@@ -14,6 +14,16 @@
             "null"
           ]
         },
+        "nativeEngines": {
+          "additionalProperties": {
+            "format": "uint16",
+            "maximum": 65535,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "description": "Explicit native engine contracts; empty means no native execution support.",
+          "type": "object"
+        },
         "tools": {
           "additionalProperties": {
             "maxLength": 64,
@@ -33,7 +43,8 @@
       },
       "required": [
         "edition",
-        "tools"
+        "tools",
+        "nativeEngines"
       ],
       "type": "object"
     },

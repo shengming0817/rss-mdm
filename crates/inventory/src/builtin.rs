@@ -42,7 +42,10 @@ fn field(key: FieldKey, value_type: ValueType, sources: &[Source]) -> FieldDefin
         value_type,
         nullable: manual,
         manual,
-        sources: sources.iter().map(|s| (*s, 0)).collect(),
+        sources: sources
+            .iter()
+            .map(|s| (*s, if *s == Source::AgentNative { 1 } else { 0 }))
+            .collect(),
         platforms: [Platform::Windows, Platform::Macos].into(),
         sensitivity: Sensitivity::Standard,
         unit: None,
@@ -58,6 +61,7 @@ pub fn fields() -> Vec<FieldDefinition> {
         MdmApple,
         AgentBuiltin,
         AgentScript,
+        AgentNative,
         AgentOsquery,
     ];
     let mut fields = vec![

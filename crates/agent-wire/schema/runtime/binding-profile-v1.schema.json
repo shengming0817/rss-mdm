@@ -102,6 +102,11 @@
           "const": "mdm.enrollment.v1",
           "description": "Open the standard MDM enrollment entry with OS/user approval.",
           "type": "string"
+        },
+        {
+          "const": "inventory.native.v1",
+          "description": "Execute signed declarative native inventory tasks.",
+          "type": "string"
         }
       ]
     },
@@ -396,6 +401,11 @@
           "type": "string"
         },
         {
+          "const": "agent.native",
+          "description": "Signed declarative native task evidence.",
+          "type": "string"
+        },
+        {
           "const": "agent.osquery",
           "description": "Published SQL template evidence.",
           "type": "string"
@@ -603,7 +613,7 @@
       "items": {
         "$ref": "#/$defs/Capability"
       },
-      "maxItems": 20,
+      "maxItems": 21,
       "minItems": 1,
       "type": "array",
       "uniqueItems": true

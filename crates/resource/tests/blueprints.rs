@@ -20,6 +20,10 @@ fn official_templates_are_nonempty_exact_versions_and_tenant_resources() {
         assert_eq!(a.variants().len(), 2);
         assert_ne!(a.resource(), b.resource());
         match &blueprint.definition {
+            blueprints::Definition::AgentCollection { template } => {
+                assert!(!template.spec().mappings.is_empty());
+                template.validate_platform(blueprint.platform).unwrap();
+            }
             blueprints::Definition::NativeCollection { template } => {
                 assert!(!template.spec().mappings.is_empty());
                 template.validate_platform(blueprint.platform).unwrap();

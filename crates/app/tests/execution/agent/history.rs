@@ -231,7 +231,7 @@ async fn sensitive_collection_run_details_reauthorize_both_read_paths() -> Resul
         };
         let path = format!(
             "/api/v1/{route}/{parent}/runs/{}",
-            task["payload"]["taskId"].as_str().unwrap()
+            task["payload"]["task"]["taskId"].as_str().unwrap()
         );
         let denied = f.author.call(&f.router, Method::GET, &path, None).await?;
         ensure!(
@@ -258,7 +258,7 @@ async fn sensitive_collection_run_details_reauthorize_both_read_paths() -> Resul
             .await?;
         let audit =
             rss_mdm_audit_integration::RequestAudit::new(case_tenant().into(), "command_read");
-        let task_id = Uuid::parse_str(task["payload"]["taskId"].as_str().unwrap())?;
+        let task_id = Uuid::parse_str(task["payload"]["task"]["taskId"].as_str().unwrap())?;
         let denied = if remote {
             f.queries
                 .clone()

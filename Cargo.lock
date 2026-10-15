@@ -4010,6 +4010,7 @@ dependencies = [
  "ring",
  "rss-audit-postgres",
  "rss-contract",
+ "rss-mdm-agent-wire",
  "rss-mdm-audit-integration",
  "rss-mdm-authorization-service",
  "rss-mdm-compliance",
@@ -4211,11 +4212,13 @@ version = "0.1.0"
 dependencies = [
  "jsonschema",
  "rss-contract",
+ "rss-mdm-agent-wire",
  "rss-request-context",
  "serde",
  "serde_json",
  "sha2 0.10.9",
  "sqlparser",
+ "time",
 ]
 
 [[package]]

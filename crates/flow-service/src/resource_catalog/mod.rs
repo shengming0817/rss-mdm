@@ -22,6 +22,7 @@ pub enum Kind {
     Script,
     Configuration,
     NativeCollection,
+    AgentCollection,
 }
 impl Kind {
     fn core(&self) -> r::Kind {
@@ -30,6 +31,7 @@ impl Kind {
             Self::Script => r::Kind::Script,
             Self::Configuration => r::Kind::Configuration,
             Self::NativeCollection => r::Kind::NativeCollection,
+            Self::AgentCollection => r::Kind::AgentCollection,
         }
     }
 }
@@ -66,6 +68,10 @@ enum Declaration {
     Script {
         artifact: Artifact,
         definition: r::ScriptDefinition,
+    },
+    AgentCollection {
+        artifact: Artifact,
+        definition: r::AgentCollectionDefinition,
     },
     NativeCollection {
         artifact: Artifact,
@@ -135,6 +141,13 @@ fn variant(v: &Variant) -> Result<r::Variant> {
             artifact: artifact(a)?,
             definition: definition.clone(),
         },
+        Declaration::AgentCollection {
+            artifact: a,
+            definition,
+        } => r::Declaration::AgentCollection {
+            artifact: artifact(a)?,
+            definition: definition.clone(),
+        },
         Declaration::NativeCollection {
             artifact: a,
             definition,
@@ -183,6 +196,10 @@ impl ResourceCatalog {
                         )),
                         _ => None,
                     },
+                    Declaration::AgentCollection { definition, .. } => Some((
+                        rss_mdm_inventory::Source::AgentNative,
+                        definition.spec().mappings.keys().collect(),
+                    )),
                     Declaration::NativeCollection { definition, .. } => Some((
                         match definition.spec().adapter {
                             r::NativeAdapter::WindowsRead => rss_mdm_inventory::Source::MdmWindows,
@@ -214,7 +231,20 @@ impl ResourceCatalog {
                         {
                             return Err(Error::Malformed.into());
                         }
+                        if let Declaration::AgentCollection { definition, .. } =
+                            &variant.declaration
+                        {
+                            rss_mdm_inventory_service::collection::native::validate_agent_mapping(
+                                field,
+                                definition,
+                                &definition.spec().mappings[key],
+                            )
+                            .map_err(|_| Error::Malformed)?;
+                        }
                         let mapping = match &variant.declaration {
+                            Declaration::AgentCollection { definition, .. } => {
+                                Some(&definition.spec().mappings[key].mapping)
+                            }
                             Declaration::NativeCollection { definition, .. } => {
                                 Some(&definition.spec().mappings[key].mapping)
                             }
@@ -282,6 +312,7 @@ impl ResourceCatalog {
                         kind: match initial.kind() {
                             r::Kind::Configuration => Kind::Configuration,
                             r::Kind::NativeCollection => Kind::NativeCollection,
+                            r::Kind::AgentCollection => Kind::AgentCollection,
                             _ => return Err(Error::Malformed.into()),
                         },
                         variants: initial.variants().iter().map(variant_view).collect(),
@@ -374,6 +405,13 @@ fn variant_view(v: &r::Variant) -> Variant {
             artifact: artifact_view(artifact),
             definition: definition.clone(),
         },
+        r::Declaration::AgentCollection {
+            artifact,
+            definition,
+        } => Declaration::AgentCollection {
+            artifact: artifact_view(artifact),
+            definition: definition.clone(),
+        },
         r::Declaration::NativeCollection {
             artifact,
             definition,
@@ -404,6 +442,7 @@ fn resource_kind(k: r::Kind) -> &'static str {
         r::Kind::Software => "software",
         r::Kind::Script => "script",
         r::Kind::NativeCollection => "native_collection",
+        r::Kind::AgentCollection => "agent_collection",
         r::Kind::Configuration => "configuration",
     }
 }

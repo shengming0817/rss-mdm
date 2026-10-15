@@ -50,7 +50,7 @@ async fn no_repeat(router: &Router, id: Uuid, expected: i64) -> Result<()> {
     Ok(())
 }
 fn belongs_to(task: &Value, id: Uuid) -> Result<()> {
-    let task = task["payload"]["taskId"].as_str().unwrap();
+    let task = task["payload"]["task"]["taskId"].as_str().unwrap();
     ensure!(pg(&format!("SELECT policy FROM mdm_policy.versions WHERE id=(SELECT policy_version FROM mdm_commands.action_runs WHERE id='{task}')"))?.trim()==id.to_string());
     Ok(())
 }

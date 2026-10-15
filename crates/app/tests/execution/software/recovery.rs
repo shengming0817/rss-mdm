@@ -38,7 +38,7 @@ async fn successful_removal_invalidates_prior_installation_across_policies() -> 
     .await?;
     write(&mut f.author, &f.router, &removal_path, 0, json!({"action":"put","enabled":true,"definition":authored(f.resource,f.scope,"explicit_uninstall",&f.first_operation)})).await?;
     let removed = claim(&f.router).await?;
-    ensure!(removed["payload"]["authorization"]["policyId"] == removal.to_string());
+    ensure!(removed["payload"]["task"]["authorization"]["policyId"] == removal.to_string());
     complete_effect(&f.router, &removed, "uninstall", "absent").await?;
     write(
         &mut f.author,
@@ -58,7 +58,7 @@ async fn successful_removal_invalidates_prior_installation_across_policies() -> 
     .await?;
     let reinstalled = claim(&f.router).await?;
     ensure!(
-        reinstalled["payload"]["authorization"]["policyId"] == duplicate.to_string(),
+        reinstalled["payload"]["task"]["authorization"]["policyId"] == duplicate.to_string(),
         "successful removal must permit the same version to be installed again: {reinstalled}"
     );
     complete_effect(&f.router, &reinstalled, "install", "present").await?;
@@ -98,7 +98,7 @@ async fn complete_effect(
 }
 
 async fn assert_no_software_run(router: &Router, policy: Uuid) -> Result<()> {
-    let response = agent(router, "/api/v1/agent/runtime/tasks/claim", Some(json!({"wireVersion":1,"executionContext":context(Platform::MacOs),"environment":{"edition":null,"tools":{}},"profiles":["posix_sh"],"operationId":Uuid::new_v4()}))).await?;
+    let response = agent(router, "/api/v1/agent/runtime/tasks/claim", Some(json!({"wireVersion":1,"executionContext":context(Platform::MacOs),"environment":{"edition":null,"tools":{},"nativeEngines":{}},"profiles":["posix_sh"],"operationId":Uuid::new_v4()}))).await?;
     ensure!(
         response.0 == StatusCode::OK && response.1["task"].is_null(),
         "conflicting/satisfied effect was offered: {response:?}"
@@ -236,7 +236,7 @@ async fn unsent_predecessor_software_blocks_conflicts_until_current_offer_binds_
     let queued_policy = Uuid::new_v4();
     write(&mut f.author, &f.router, &format!("/api/v1/policies/{queued_policy}"), 0, json!({"action":"put","enabled":true,"definition":authored(f.resource,f.scope,"required_install",&f.first_operation)})).await?;
     // Without relay, the authenticated check-in creates a real unsent queued Run.
-    let accepted = agent(&f.router, "/api/v1/agent/runtime/tasks/claim", Some(json!({"wireVersion":1,"executionContext":context(Platform::MacOs),"environment":{"edition":null,"tools":{}},"profiles":["posix_sh"],"operationId":Uuid::new_v4()}))).await?;
+    let accepted = agent(&f.router, "/api/v1/agent/runtime/tasks/claim", Some(json!({"wireVersion":1,"executionContext":context(Platform::MacOs),"environment":{"edition":null,"tools":{},"nativeEngines":{}},"profiles":["posix_sh"],"operationId":Uuid::new_v4()}))).await?;
     ensure!(accepted.0 == StatusCode::OK && accepted.1["task"].is_null());
     let mut conn =
         sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?)
@@ -252,7 +252,7 @@ async fn unsent_predecessor_software_blocks_conflicts_until_current_offer_binds_
     write(&mut f.author, &f.router, &format!("/api/v1/policies/{conflicting}"), 0, json!({"action":"put","enabled":true,"definition":authored(f.resource,f.scope,"explicit_uninstall",&f.first_operation)})).await?;
     // The shared relay may already have accepted the original Run. A probe must
     // permit that legal Offer while still proving the conflicting policy queues nothing.
-    let probe = agent(&f.router, "/api/v1/agent/runtime/tasks/claim", Some(json!({"wireVersion":1,"executionContext":context(Platform::MacOs),"environment":{"edition":null,"tools":{}},"profiles":["posix_sh"],"operationId":Uuid::new_v4()}))).await?;
+    let probe = agent(&f.router, "/api/v1/agent/runtime/tasks/claim", Some(json!({"wireVersion":1,"executionContext":context(Platform::MacOs),"environment":{"edition":null,"tools":{},"nativeEngines":{}},"profiles":["posix_sh"],"operationId":Uuid::new_v4()}))).await?;
     ensure!(probe.0 == StatusCode::OK);
     let conflicting_runs: i64 = sqlx::query_scalar("SELECT count(*) FROM mdm_commands.action_runs r JOIN mdm_policy.versions v ON (v.tenant_id,v.id)=(r.tenant_id,r.policy_version) WHERE r.tenant_id=$1::uuid AND v.policy=$2")
         .bind(case_tenant()).bind(conflicting).fetch_one(&mut conn).await?;
@@ -266,7 +266,7 @@ async fn unsent_predecessor_software_blocks_conflicts_until_current_offer_binds_
     } else {
         probe.1["task"].clone()
     };
-    ensure!(offered["payload"]["taskId"] == run.to_string());
+    ensure!(offered["payload"]["task"]["taskId"] == run.to_string());
     let (current_occurrence, effect): (String, Value) = sqlx::query_as("SELECT occurrence,software_effect FROM mdm_commands.action_runs WHERE tenant_id=$1::uuid AND id=$2")
         .bind(case_tenant()).bind(run).fetch_one(&mut conn).await?;
     ensure!(
@@ -322,7 +322,7 @@ async fn known_failure_has_bounded_retries() -> Result<()> {
             Method::GET,
             &format!(
                 "/api/v1/policies/{failed_policy}/runs/{}",
-                failed_task["payload"]["taskId"].as_str().unwrap()
+                failed_task["payload"]["task"]["taskId"].as_str().unwrap()
             ),
             None,
         )
@@ -331,7 +331,7 @@ async fn known_failure_has_bounded_retries() -> Result<()> {
         failed_detail.1["effect"] == "failed",
         "known detector failure: {failed_detail:?}"
     );
-    let mut previous_failure = failed_task["payload"]["taskId"]
+    let mut previous_failure = failed_task["payload"]["task"]["taskId"]
         .as_str()
         .unwrap()
         .to_owned();
@@ -358,12 +358,15 @@ async fn known_failure_has_bounded_retries() -> Result<()> {
             .await?
             .0 == StatusCode::OK
         );
-        previous_failure = retry["payload"]["taskId"].as_str().unwrap().to_owned();
+        previous_failure = retry["payload"]["task"]["taskId"]
+            .as_str()
+            .unwrap()
+            .to_owned();
     }
     let exhausted = agent(
         &router,
         "/api/v1/agent/runtime/tasks/claim",
-        Some(json!({"wireVersion":1,"executionContext":crate::test_support::software_execution::context(crate::test_support::software_execution::Platform::MacOs),"environment":{"edition":null,"tools":{}},"profiles":["posix_sh","bash","power_shell7","osquery"],"operationId":Uuid::new_v4()})),
+        Some(json!({"wireVersion":1,"executionContext":crate::test_support::software_execution::context(crate::test_support::software_execution::Platform::MacOs),"environment":{"edition":null,"tools":{},"nativeEngines":{}},"profiles":["posix_sh","bash","power_shell7","osquery"],"operationId":Uuid::new_v4()})),
     )
     .await?;
     ensure!(
@@ -423,7 +426,7 @@ async fn reboot_waits_for_detection() -> Result<()> {
             Method::GET,
             &format!(
                 "/api/v1/policies/{reboot_policy}/runs/{}",
-                reboot_task["payload"]["taskId"].as_str().unwrap()
+                reboot_task["payload"]["task"]["taskId"].as_str().unwrap()
             ),
             None,
         )
@@ -435,7 +438,7 @@ async fn reboot_waits_for_detection() -> Result<()> {
     let reboot_retry = agent(
         &router,
         "/api/v1/agent/runtime/tasks/claim",
-        Some(json!({"wireVersion":1,"executionContext":crate::test_support::software_execution::context(crate::test_support::software_execution::Platform::MacOs),"environment":{"edition":null,"tools":{}},"profiles":["posix_sh","bash","power_shell7","osquery"],"operationId":Uuid::new_v4()})),
+        Some(json!({"wireVersion":1,"executionContext":crate::test_support::software_execution::context(crate::test_support::software_execution::Platform::MacOs),"environment":{"edition":null,"tools":{},"nativeEngines":{}},"profiles":["posix_sh","bash","power_shell7","osquery"],"operationId":Uuid::new_v4()})),
     )
     .await?;
     ensure!(
@@ -538,7 +541,7 @@ async fn unknown_effect_survives_credential_recovery() -> Result<()> {
         Method::POST,
         "/api/v1/agent/runtime/tasks/claim",
         Some(next_credential),
-        Some(json!({"wireVersion":1,"executionContext":crate::test_support::software_execution::context(crate::test_support::software_execution::Platform::MacOs),"environment":{"edition":null,"tools":{}},"profiles":["posix_sh","bash","power_shell7","osquery"],"operationId":Uuid::new_v4()})),
+        Some(json!({"wireVersion":1,"executionContext":crate::test_support::software_execution::context(crate::test_support::software_execution::Platform::MacOs),"environment":{"edition":null,"tools":{},"nativeEngines":{}},"profiles":["posix_sh","bash","power_shell7","osquery"],"operationId":Uuid::new_v4()})),
     )
     .await?;
     ensure!(
@@ -575,12 +578,12 @@ async fn unknown_result_replay_and_late_detection() -> Result<()> {
     ensure!(event(&router, &task, json!({"kind":"received"})).await?.0 == StatusCode::OK);
     ensure!(event(&router, &task, json!({"kind":"start"})).await?.0 == StatusCode::OK);
     let unknown_operation = Uuid::new_v4();
-    let unknown_request = json!({"wireVersion":1,"executionContext":task["payload"]["executionContext"],"operationId":unknown_operation,"attemptId":task["payload"]["attemptId"],"event":result_event(&task,"install",Some(0),"unknown",false)?});
+    let unknown_request = json!({"wireVersion":1,"executionContext":task["payload"]["task"]["executionContext"],"operationId":unknown_operation,"attemptId":task["payload"]["task"]["attemptId"],"event":result_event(&task,"install",Some(0),"unknown",false)?});
     let result = agent(
         &router,
         &format!(
             "/api/v1/agent/runtime/tasks/{}/events",
-            task["payload"]["taskId"].as_str().unwrap()
+            task["payload"]["task"]["taskId"].as_str().unwrap()
         ),
         Some(unknown_request.clone()),
     )
@@ -590,7 +593,7 @@ async fn unknown_result_replay_and_late_detection() -> Result<()> {
         &router,
         &format!(
             "/api/v1/agent/runtime/tasks/{}/events",
-            task["payload"]["taskId"].as_str().unwrap()
+            task["payload"]["task"]["taskId"].as_str().unwrap()
         ),
         Some(unknown_request),
     )
@@ -606,7 +609,7 @@ async fn unknown_result_replay_and_late_detection() -> Result<()> {
     let no_retry = agent(
         &router,
         "/api/v1/agent/runtime/tasks/claim",
-        Some(json!({"wireVersion":1,"executionContext":crate::test_support::software_execution::context(crate::test_support::software_execution::Platform::MacOs),"environment":{"edition":null,"tools":{}},"profiles":["posix_sh","bash","power_shell7","osquery"],"operationId":Uuid::new_v4()})),
+        Some(json!({"wireVersion":1,"executionContext":crate::test_support::software_execution::context(crate::test_support::software_execution::Platform::MacOs),"environment":{"edition":null,"tools":{},"nativeEngines":{}},"profiles":["posix_sh","bash","power_shell7","osquery"],"operationId":Uuid::new_v4()})),
     )
     .await?;
     ensure!(
@@ -666,7 +669,7 @@ async fn withdrawn_software_does_not_poison_claims_for_other_policies_or_outside
     let stack = worker(&f.base, f.content.clone()).await?;
     let task = claim(&f.router).await?;
     ensure!(
-        task["payload"]["steps"].as_array().is_some_and(
+        task["payload"]["task"]["steps"].as_array().is_some_and(
             |steps| steps.len() == 1 && steps[0]["action"]["package"] == "Private.Dependency"
         ),
         "withdrawal blocked unrelated valid policy: {task}"

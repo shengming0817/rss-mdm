@@ -32,18 +32,18 @@ async fn required_available_and_uninstall_delivery() -> Result<()> {
     ensure!(published["version"] == 1, "publish: {published}");
     let task = claim(&router).await?;
     ensure!(
-        task["payload"]["steps"][0]["action"]["package"] == "Private.Dependency"
-            && task["payload"]["steps"][1]["action"]["package"] == "Private.Controlled"
-            && task["payload"]["softwareResource"].is_null()
-            && task["payload"]["admissionOperation"].is_null()
-            && task["payload"]["startMode"] == "automatic",
+        task["payload"]["task"]["steps"][0]["action"]["package"] == "Private.Dependency"
+            && task["payload"]["task"]["steps"][1]["action"]["package"] == "Private.Controlled"
+            && task["payload"]["task"]["softwareResource"].is_null()
+            && task["payload"]["task"]["admissionOperation"].is_null()
+            && task["payload"]["task"]["startMode"] == "automatic",
         "offer: {task}"
     );
-    ensure!(task["payload"]["steps"][1]["artifacts"][0]["length"] == bytes.len());
+    ensure!(task["payload"]["task"]["steps"][1]["artifacts"][0]["length"] == bytes.len());
     ensure!(event(&router, &task, json!({"kind":"received"})).await?.0 == StatusCode::OK);
     let start = event(&router, &task, json!({"kind":"start"})).await?;
     ensure!(
-        start.0 == StatusCode::OK && start.1["permit"]["payload"]["permit"] == "start",
+        start.0 == StatusCode::OK && start.1["permit"]["payload"]["task"]["permit"] == "start",
         "start: {start:?}"
     );
     let result = event(
@@ -80,7 +80,7 @@ async fn required_available_and_uninstall_delivery() -> Result<()> {
             Method::GET,
             &format!(
                 "/api/v1/policies/{policy}/runs/{}",
-                task["payload"]["taskId"].as_str().unwrap()
+                task["payload"]["task"]["taskId"].as_str().unwrap()
             ),
             None,
         )
@@ -93,14 +93,14 @@ async fn required_available_and_uninstall_delivery() -> Result<()> {
         sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?)
             .await?;
     sqlx::query("UPDATE mdm_commands.action_runs SET created_at=created_at-120 WHERE id=$1::uuid")
-        .bind(task["payload"]["taskId"].as_str().unwrap())
+        .bind(task["payload"]["task"]["taskId"].as_str().unwrap())
         .execute(&mut owner)
         .await?;
     owner.close().await?;
     let repeated = agent(
         &router,
         "/api/v1/agent/runtime/tasks/claim",
-        Some(json!({"wireVersion":1,"executionContext":crate::test_support::software_execution::context(crate::test_support::software_execution::Platform::MacOs),"environment":{"edition":null,"tools":{}},"profiles":["posix_sh","bash","power_shell7","osquery"],"operationId":Uuid::new_v4()})),
+        Some(json!({"wireVersion":1,"executionContext":crate::test_support::software_execution::context(crate::test_support::software_execution::Platform::MacOs),"environment":{"edition":null,"tools":{},"nativeEngines":{}},"profiles":["posix_sh","bash","power_shell7","osquery"],"operationId":Uuid::new_v4()})),
     )
     .await?;
     ensure!(
@@ -124,7 +124,7 @@ async fn required_available_and_uninstall_delivery() -> Result<()> {
         json!({"action":"put","enabled":true,"definition":authored("available_install", &first_operation)}),
     )
     .await?;
-    let poll = agent(&router,"/api/v1/agent/runtime/tasks/claim",Some(json!({"wireVersion":1,"executionContext":context(Platform::MacOs),"environment":{"edition":null,"tools":{}},"profiles":["posix_sh"],"operationId":Uuid::new_v4()}))).await?;
+    let poll = agent(&router,"/api/v1/agent/runtime/tasks/claim",Some(json!({"wireVersion":1,"executionContext":context(Platform::MacOs),"environment":{"edition":null,"tools":{},"nativeEngines":{}},"profiles":["posix_sh"],"operationId":Uuid::new_v4()}))).await?;
     ensure!(
         poll.0 == StatusCode::OK && poll.1["task"].is_null(),
         "AvailableInstall must never queue before an explicit request"
@@ -155,8 +155,8 @@ async fn required_available_and_uninstall_delivery() -> Result<()> {
     .await?;
     let removal_task = claim(&router).await?;
     ensure!(
-        removal_task["payload"]["intent"] == "uninstall"
-            && removal_task["payload"]["startMode"] == "automatic",
+        removal_task["payload"]["task"]["intent"] == "uninstall"
+            && removal_task["payload"]["task"]["startMode"] == "automatic",
         "uninstall: {removal_task}"
     );
     ensure!(
@@ -228,11 +228,11 @@ async fn windows_variant_delivery_and_detection() -> Result<()> {
     );
     let windows_task = claim_with(&router, &windows_credential, Platform::Windows).await?;
     ensure!(
-        windows_task["payload"]["platform"] == "windows"
-            && windows_task["payload"]["architecture"] == "x86_64"
-            && windows_task["payload"]["steps"][0]["action"]["package"]
+        windows_task["payload"]["task"]["platform"] == "windows"
+            && windows_task["payload"]["task"]["architecture"] == "x86_64"
+            && windows_task["payload"]["task"]["steps"][0]["action"]["package"]
                 == "Private.WindowsDependency"
-            && windows_task["payload"]["steps"][1]["action"]["behavior"]["kind"] == "msi",
+            && windows_task["payload"]["task"]["steps"][1]["action"]["behavior"]["kind"] == "msi",
         "windows variant: {windows_task}"
     );
     ensure!(

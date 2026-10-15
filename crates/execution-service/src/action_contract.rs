@@ -94,3 +94,71 @@ impl FrozenNativeCollection {
         Ok(permissions)
     }
 }
+
+/// Frozen native Agent input, independent of script permissions and profiles.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct FrozenAgentCollection {
+    pub grants: BTreeMap<String, Vec<crate::authorization::UserGrant>>,
+    pub input: ExecutionInput,
+    pub resource: wire::TaskResource,
+    pub definition: r::AgentCollectionDefinition,
+    pub collection: rss_mdm_inventory::CollectionDefinition,
+    pub resource_digest: [u8; 32],
+}
+impl ScheduledInput for FrozenAgentCollection {
+    fn execution_input(&self) -> &ExecutionInput {
+        &self.input
+    }
+}
+
+impl FrozenAgentCollection {
+    pub fn permissions(&self) -> Vec<crate::authorization::Permission> {
+        use crate::authorization::Permission as P;
+        // Full query evidence includes unmapped properties and queries; mapped field
+        // sensitivity cannot authorize collecting or disclosing that wider result.
+        vec![P::InventoryCollect, P::InventorySensitiveRead]
+    }
+    pub async fn authorized_in(
+        &self,
+        tx: &mut rss_transactional_messaging_postgres::PgTransaction<'_>,
+        target: &crate::Target,
+        now: i64,
+    ) -> crate::transaction::Result<bool> {
+        let Some(grants) = self
+            .grants
+            .get(&target.device)
+            .or_else(|| self.grants.get("*"))
+        else {
+            return Ok(false);
+        };
+        let tenant = tx.tenant_id().to_string();
+        let registration = target.registration;
+        let enabled:bool=tx.with_connection(move|c|Box::pin(async move{sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_access.report_sources WHERE tenant_id=$1::uuid AND registration=$2 AND source='agent.native' AND enabled)").bind(tenant).bind(registration).fetch_one(c).await})).await?;
+        if !enabled {
+            return Ok(false);
+        }
+        let grants = grants.clone();
+        let permissions = self.permissions();
+        tx.with_connection(move |c| {
+            Box::pin(async move {
+                for permission in permissions {
+                    let mut allowed = false;
+                    for grant in &grants {
+                        if grant.valid(c, permission, now).await.map_err(|_| {
+                            sqlx::Error::Protocol("native collection authority".into())
+                        })? {
+                            allowed = true;
+                            break;
+                        }
+                    }
+                    if !allowed {
+                        return Ok(false);
+                    }
+                }
+                Ok(true)
+            })
+        })
+        .await
+        .map_err(Into::into)
+    }
+}

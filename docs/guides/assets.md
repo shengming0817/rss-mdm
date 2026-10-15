@@ -130,3 +130,13 @@ Windows Firewall CSP 状态与 WSC health 使用不同字段；BitLocker convers
 本次为当前格式替换：旧 Windows `windows_csp`、Windows 字符串 query、旧 Windows 蓝图版本 1、NativeCollection 存储版本 4 均拒绝；Apple 字符串 query 保留原协议形状。旧映射字符串、缺少 scope 的采集定义以及旧 claim payload 均拒绝。数据库安装通过 migration digest 拒绝旧基线，不自动清库或双读；升级须显式部署匹配的服务端、schema 与 Agent 候选版本。
 
 原生 MDM 当前没有可信架构证据，因此 `native_collection` 同平台必须同时声明 x86_64 与 aarch64，且声明内容一致；架构专用原生模板会被拒绝。Agent 脚本仍按实际执行环境核对精确架构。
+
+## Windows Agent 声明式采集
+
+Agent 原生采集使用独立的 `agent_collection` Resource 和同名 Policy action。官方 `windows.agent.*` 版本 1 模板覆盖身份/OS、CPU、内存、固件、磁盘、卷、网络、电池和软件，经现有蓝图接口实例化为普通 Resource；选择后发布、激活并绑定精确 Policy 版本。按需使用 Policy rerun，周期使用既有 Schedule/Frequency。能力不足不派发，失败不会改派 PowerShell；MDM CSP 模板、企业显式脚本和 osquery 各自保留。
+
+定义包含唯一 wire plan 和服务端字段映射。WMI 只查询本机已有 namespace/class 的明确属性和结构化过滤条件；不能执行方法、远程查询或 Win32_Product。注册表明确 HKLM/HKU-SID、32/64 位视图、路径、值名和类型，只读取指定值或枚举直接子键；不使用 System HKCU，不加载离线 hive，EXPAND_SZ 不展开。UInt64/QWORD 按精确十进制文本传输，可映为字符串或受检整数；不能转换成浮点。`cim_time` 只转换日期与 UTC offset 完整的 CIM 时间。
+
+`agent.native` 与其他来源分别保存事实，字段统一视图继续使用原有来源配置。标准字段中新来源初始优先级为 1、既有来源保持 0；数值越小越优先，可通过现有字段版本接口调整，不设置 TTL。完整查询独立更新，截断或错误列表保留旧值，完整零条列表更新为 `[]`。标量零条默认 Missing，只有冻结映射明确选择且证据完整时才发布 null/本来源删除。软件清单必须完整覆盖预期用户集合；本期不支持 SID 局部替换。
+
+发布及执行要求 InventoryCollect 和相应资源/范围权限；敏感字段还需要既有敏感资产权限。任务领取和 Start 必须具备 `inventory.native.v1` 及 plan 所需引擎版本，无需 ScriptExecute 或 PowerShell。运行详情保存逐查询质量与结果摘要；大结果保留分块引用，不能以执行完成代替字段完整。设备运行、Windows API 正确性与性能由独立 Agent 验收证明。

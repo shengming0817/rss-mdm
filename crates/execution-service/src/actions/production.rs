@@ -85,6 +85,26 @@ pub async fn accept_for_device(
                 definition.entry_source(),
             )
         }
+        db::ScheduledPolicy::AgentCollection(definition) => {
+            if !policy.authorized_in(service, tx, target, now).await? {
+                return Ok(());
+            }
+            let Some(entry) = definition
+                .entry_in(&service.source, tx, &target.device, now)
+                .await?
+            else {
+                return Ok(());
+            };
+            (
+                definition.id,
+                definition.owner,
+                &definition.frozen.input.schedule,
+                definition.frozen.input.run_lifetime_seconds,
+                definition.frequency,
+                entry,
+                definition.entry_source(),
+            )
+        }
         db::ScheduledPolicy::Native(definition) => {
             let tenant = tx.tenant_id();
             let candidate = target.clone();

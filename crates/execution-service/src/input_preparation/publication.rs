@@ -50,6 +50,48 @@ impl Inputs {
                 frequency: *frequency,
             });
         }
+        if let PublicationInput::AgentCollection {
+            binding,
+            schedule,
+            frequency,
+            lifetime,
+        } = action
+        {
+            if !self.signing_enabled {
+                return Err(Error::Conflict.into());
+            }
+            let definition = agent_collection(&version, binding, verified)?.clone();
+            let selected = variant(&version, binding)?;
+            let collection = freeze_collection(
+                tx,
+                self.tenant,
+                &version,
+                selected,
+                rss_mdm_inventory::Source::AgentNative,
+                definition.spec().mappings.keys(),
+            )
+            .await?;
+            return Ok(Frozen::AgentCollection {
+                frequency: *frequency,
+                action: Box::new(FrozenAgentCollection {
+                    grants: Default::default(),
+                    input: ExecutionInput {
+                        platform: binding.platform,
+                        architecture: binding.architecture,
+                        schedule: (*schedule).clone(),
+                        run_lifetime_seconds: *lifetime,
+                    },
+                    resource: rss_mdm_agent_wire::runtime::TaskResource {
+                        id: version.resource().as_str().into(),
+                        version: version.label().as_str().into(),
+                        variant: selected.key().as_str().into(),
+                    },
+                    definition,
+                    collection,
+                    resource_digest: version.digest().bytes(),
+                }),
+            });
+        }
         let exact = match action {
             PublicationInput::NativeCollection { binding, .. }
             | PublicationInput::Configuration { binding, .. } => *binding,

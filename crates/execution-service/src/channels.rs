@@ -402,8 +402,12 @@ impl AgentBinding {
         self.capabilities
             .contains(&rss_mdm_agent_wire::runtime::Capability::MdmEnrollmentV1)
     }
+    pub fn native_collection(&self) -> bool {
+        self.capabilities
+            .contains(&rss_mdm_agent_wire::runtime::Capability::InventoryNativeV1)
+    }
     pub fn task(&self) -> bool {
-        self.script() || self.software() || self.enrollment()
+        self.script() || self.software() || self.enrollment() || self.native_collection()
     }
 }
 pub trait Agent: Send + Sync {

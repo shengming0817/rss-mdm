@@ -55,7 +55,7 @@ async fn creation_is_removed_and_existing_remote_history_still_settles() -> Resu
     let started_parent = Uuid::new_v4();
     let pending = historical_remote(&f, &pending, pending_parent).await?;
     let started = historical_remote(&f, &started, started_parent).await?;
-    let run = Uuid::parse_str(started["payload"]["taskId"].as_str().unwrap())?;
+    let run = Uuid::parse_str(started["payload"]["task"]["taskId"].as_str().unwrap())?;
     let mut c =
         sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?)
             .await?;

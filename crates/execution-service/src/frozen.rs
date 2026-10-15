@@ -5,6 +5,10 @@ use serde::{Deserialize, Serialize};
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Frozen {
+    AgentCollection {
+        action: Box<FrozenAgentCollection>,
+        frequency: Frequency,
+    },
     NativeCollection {
         action: Box<FrozenNativeCollection>,
         frequency: Frequency,
@@ -53,6 +57,7 @@ impl Frozen {
                 (permissions, grants)
             }
             Self::NativeCollection { action, .. } => (action.permissions()?, &mut action.grants),
+            Self::AgentCollection { action, .. } => (action.permissions(), &mut action.grants),
             _ => return Ok(()),
         };
         permissions.sort();

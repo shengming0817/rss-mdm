@@ -25,6 +25,7 @@ pub(super) fn fields() -> Vec<FieldDefinition> {
         MdmApple,
         AgentBuiltin,
         AgentScript,
+        AgentNative,
         AgentOsquery,
     ];
     let windows = &[MdmWindows, AgentBuiltin, AgentScript, AgentOsquery];

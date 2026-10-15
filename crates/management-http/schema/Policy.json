@@ -58,6 +58,54 @@
         },
         {
           "additionalProperties": false,
+          "description": "A native Agent read template using the same schedule and membership frequency.",
+          "properties": {
+            "frequency": {
+              "$ref": "#/$defs/Frequency",
+              "default": "once_per_version",
+              "description": "Existing Policy execution frequency."
+            },
+            "kind": {
+              "const": "agent_collection",
+              "type": "string"
+            },
+            "resource": {
+              "$ref": "#/$defs/ExactResourceBinding",
+              "description": "Exact immutable native template."
+            },
+            "runLifetimeSeconds": {
+              "description": "Lifetime of the accepted collection.",
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "schedule": {
+              "$ref": "#/$defs/Schedule",
+              "default": {
+                "jitterSeconds": 0,
+                "misfire": {
+                  "kind": "coalesce_one"
+                },
+                "notBefore": 0,
+                "trigger": {
+                  "kind": "check_in",
+                  "minimumSeconds": 60
+                },
+                "until": null,
+                "window": null
+              },
+              "description": "Calendar and check-in trigger."
+            }
+          },
+          "required": [
+            "kind",
+            "resource",
+            "runLifetimeSeconds"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
           "description": "A native MDM read template using the same schedule and membership frequency.",
           "properties": {
             "frequency": {

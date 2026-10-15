@@ -6,10 +6,14 @@ use rss_mdm_agent_wire::runtime as wire;
 use rss_transactional_messaging_postgres::PgTransaction;
 use sqlx::Row;
 fn collection(plan: &ScheduledPolicy, bytes: u32) -> Result<()> {
-    let ScheduledPolicy::Script(script) = plan else {
-        return Err(Error::Malformed.into());
+    let limit = match plan {
+        ScheduledPolicy::Script(v) => v.frozen.definition.spec().output_bytes,
+        ScheduledPolicy::AgentCollection(v) => {
+            v.frozen.definition.spec().plan.spec().budget.output_bytes
+        }
+        _ => return Err(Error::Malformed.into()),
     };
-    if bytes > script.frozen.definition.spec().output_bytes {
+    if bytes > limit {
         return Err(Error::Malformed.into());
     }
     Ok(())
@@ -21,6 +25,13 @@ pub async fn append(
     chunk: &wire::OutputChunk,
 ) -> Result<()> {
     collection(plan, chunk.manifest().bytes())?;
+    append_checked(tx, run, chunk).await
+}
+async fn append_checked(
+    tx: &mut PgTransaction<'_>,
+    run: &Run,
+    chunk: &wire::OutputChunk,
+) -> Result<()> {
     if !matches!(
         run.state.execution,
         super::state::Execution::Running | super::state::Execution::Unknown
@@ -54,6 +65,11 @@ pub async fn assemble(
     result: &wire::ChunkedTaskResult,
 ) -> Result<wire::TaskResult> {
     collection(plan, result.manifest().bytes())?;
+    let chunks = load_chunks(tx, run).await?;
+    checked_input(result.assemble(chunks))
+}
+
+async fn load_chunks(tx: &mut PgTransaction<'_>, run: &Run) -> Result<Vec<wire::OutputChunk>> {
     let tenant = tx.tenant_id().to_string();
     let attempt = run.state.attempt().ok_or(Error::Conflict)?;
     let rows=tx.with_connection(move|c|Box::pin(async move{sqlx::query("SELECT manifest,chunk_index,bytes FROM mdm_commands.output_chunks WHERE tenant_id=$1::uuid AND attempt=$2 ORDER BY chunk_index LIMIT 65").bind(tenant).bind(attempt).fetch_all(c).await})).await?;
@@ -69,5 +85,74 @@ pub async fn assemble(
             ))
         })
         .collect::<Result<Vec<_>>>()?;
-    checked_input(result.assemble(chunks))
+    Ok(chunks)
+}
+pub async fn assemble_native(
+    tx: &mut PgTransaction<'_>,
+    plan: &ScheduledPolicy,
+    run: &Run,
+    manifest: &wire::OutputManifest,
+) -> Result<wire::NativeCollectionResult> {
+    collection(plan, manifest.bytes())?;
+    let bytes = checked_input(manifest.assemble(load_chunks(tx, run).await?))?;
+    let result: wire::NativeCollectionResult = checked_input(serde_json::from_slice(&bytes))?;
+    if checked_input(serde_json::to_vec(&result))? != bytes {
+        return Err(Error::Malformed.into());
+    }
+    Ok(result)
+}
+
+pub async fn retain_native(
+    tx: &mut PgTransaction<'_>,
+    run: &Run,
+    result: &wire::NativeCollectionResult,
+) -> Result<()> {
+    use sha2::{Digest, Sha256};
+    let bytes = checked_input(serde_json::to_vec(result))?;
+    if bytes.len() <= 256 * 1024 {
+        return Ok(());
+    }
+    let manifest = checked_input(wire::OutputManifest::new(
+        bytes.len().try_into().map_err(|_| Error::Malformed)?,
+        Sha256::digest(&bytes).into(),
+    ))?;
+    for (index, bytes) in bytes.chunks(wire::OUTPUT_CHUNK_BYTES).enumerate() {
+        append_checked(
+            tx,
+            run,
+            &checked_input(wire::OutputChunk::new(
+                manifest.clone(),
+                index as u16,
+                bytes,
+            ))?,
+        )
+        .await?;
+    }
+    Ok(())
+}
+/// Called only after full run-detail Inventory authorization, never from summary queries.
+pub async fn restore_native(
+    tx: &mut PgTransaction<'_>,
+    plan: &ScheduledPolicy,
+    run: &Run,
+) -> Result<Option<wire::NativeCollectionResult>> {
+    if !matches!(plan, ScheduledPolicy::AgentCollection(_)) {
+        return Ok(None);
+    }
+    let Some(value) = &run.result else {
+        return Ok(None);
+    };
+    if !value["native"].is_null() {
+        return Ok(None);
+    }
+    let reference = &value["outputReference"];
+    let bytes: u32 = reference["bytes"]
+        .as_u64()
+        .and_then(|v| v.try_into().ok())
+        .ok_or(Error::Malformed)?;
+    let digest = stored(rss_mdm_resource::Digest::parse(
+        reference["sha256"].as_str().ok_or(Error::Malformed)?,
+    ))?;
+    let manifest = stored(wire::OutputManifest::new(bytes, digest.bytes()))?;
+    Ok(Some(assemble_native(tx, plan, run, &manifest).await?))
 }

@@ -599,6 +599,11 @@
           "type": "string"
         },
         {
+          "const": "agent.native",
+          "description": "Signed declarative native task evidence.",
+          "type": "string"
+        },
+        {
           "const": "agent.osquery",
           "description": "Published SQL template evidence.",
           "type": "string"

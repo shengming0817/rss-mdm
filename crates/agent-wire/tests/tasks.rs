@@ -132,7 +132,7 @@ fn signatures_bind_attempt_artifact_and_permission_and_fail_closed() {
         assert!(support::verify_signature(&bad, key.public_key().as_ref()).is_err());
     }
     let mut bad = serde_json::to_value(signed.payload).unwrap();
-    bad["outputBytes"] = json!(0);
+    bad["task"]["outputBytes"] = json!(0);
     assert!(serde_json::from_value::<TaskPayload>(bad).is_err());
 }
 
@@ -236,8 +236,8 @@ fn software_task_binds_approved_definition_and_artifacts_without_script_fallback
         },
         |v: &mut serde_json::Value| v["steps"][0]["action"]["ownership"] = json!(null),
     ] {
-        let mut bad = serde_json::to_value(&spec).unwrap();
-        change(&mut bad);
+        let mut bad = serde_json::to_value(&payload).unwrap();
+        change(&mut bad["task"]);
         assert!(!validator.is_valid(&bad), "schema accepted {bad}");
         assert!(serde_json::from_value::<TaskPayload>(bad).is_err());
     }
@@ -588,7 +588,7 @@ fn task_results_require_bounded_coherent_diagnostics() {
 #[test]
 fn claims_require_current_unique_executor_profiles() {
     use rss_mdm_agent_wire::runtime::TaskClaimRequest;
-    let base = json!({"wireVersion":1,"executionContext":{"revision":1,"osVersion":[14,0,0,0],"userHelper":true,"systemBroker":true,"interactiveUser":null,"sourceCredentials":[],"msixSideload":false,"msixUnsigned":false},"operationId":Uuid::new_v4(),"environment":{"edition":null,"tools":{}},"profiles":["osquery"]});
+    let base = json!({"wireVersion":1,"executionContext":{"revision":1,"osVersion":[14,0,0,0],"userHelper":true,"systemBroker":true,"interactiveUser":null,"sourceCredentials":[],"msixSideload":false,"msixUnsigned":false},"operationId":Uuid::new_v4(),"environment":{"edition":null,"tools":{},"nativeEngines":{}},"profiles":["osquery"]});
     assert!(serde_json::from_value::<TaskClaimRequest>(base.clone()).is_ok());
     for profiles in [json!([]), json!(["posix_sh", "osquery"])] {
         let mut value = base.clone();

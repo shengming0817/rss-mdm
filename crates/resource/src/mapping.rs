@@ -16,6 +16,8 @@ use std::collections::BTreeMap;
 pub enum Conversion {
     /// Preserve the native JSON type, including explicit null.
     Identity,
+    /// Convert a fully specified CIM datetime with explicit offset to UTC Unix seconds.
+    CimTime,
     /// Parse an exact decimal integer string.
     Integer,
     /// Parse a finite JSON number or decimal number string.
@@ -155,6 +157,42 @@ impl Conversion {
         };
         match self {
             Self::Identity => Ok(raw.clone()),
+            Self::CimTime => {
+                let s = raw.as_str().ok_or(Error::InvalidInput)?;
+                if s.len() != 25
+                    || !s.is_ascii()
+                    || s.as_bytes()[14] != b'.'
+                    || !matches!(s.as_bytes()[21], b'+' | b'-')
+                    || !s[..14]
+                        .bytes()
+                        .chain(s[15..21].bytes())
+                        .chain(s[22..].bytes())
+                        .all(|b| b.is_ascii_digit())
+                {
+                    return Err(Error::InvalidInput);
+                }
+                let n =
+                    |a: usize, b: usize| s[a..b].parse::<i32>().map_err(|_| Error::InvalidInput);
+                let month =
+                    time::Month::try_from(n(4, 6)? as u8).map_err(|_| Error::InvalidInput)?;
+                let date = time::Date::from_calendar_date(n(0, 4)?, month, n(6, 8)? as u8)
+                    .map_err(|_| Error::InvalidInput)?;
+                let clock = time::Time::from_hms_micro(
+                    n(8, 10)? as u8,
+                    n(10, 12)? as u8,
+                    n(12, 14)? as u8,
+                    n(15, 21)? as u32,
+                )
+                .map_err(|_| Error::InvalidInput)?;
+                let seconds = n(22, 25)? * 60 * if s.as_bytes()[21] == b'-' { -1 } else { 1 };
+                let offset = time::UtcOffset::from_whole_seconds(seconds)
+                    .map_err(|_| Error::InvalidInput)?;
+                Ok(Value::from(
+                    time::PrimitiveDateTime::new(date, clock)
+                        .assume_offset(offset)
+                        .unix_timestamp(),
+                ))
+            }
             Self::Integer => Ok(Value::from(integer()?)),
             Self::Number => {
                 let n = match raw {
@@ -177,8 +215,13 @@ impl Conversion {
                 numerator,
                 denominator,
             } => {
-                let n = u128::try_from(integer()?).map_err(|_| Error::InvalidInput)?
-                    * u128::from(*numerator);
+                let input = match raw {
+                    Value::String(s) => s.parse::<u64>().map_err(|_| Error::InvalidInput)?,
+                    v => v.as_u64().ok_or(Error::InvalidInput)?,
+                };
+                let n = u128::from(input)
+                    .checked_mul(u128::from(*numerator))
+                    .ok_or(Error::InvalidInput)?;
                 let d = u128::from(*denominator);
                 if n % d != 0 {
                     return Err(Error::InvalidInput);

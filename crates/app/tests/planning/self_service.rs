@@ -61,7 +61,7 @@ fn request(id: Uuid, policy: &Value, parameters: Value) -> Value {
 const INVOKE: &str = "/api/v1/agent/runtime/self-service/invocations";
 const DIRECTORY: &str = "/api/v1/agent/runtime/self-service?source=ai";
 async fn claim_with_context(router: &Router, context: &Value) -> Result<(StatusCode, Value)> {
-    agent_call(router, Method::POST, "/api/v1/agent/runtime/tasks/claim", Some(case_credential()), Some(json!({"wireVersion":1,"executionContext":context,"environment":{"edition":null,"tools":{}},"profiles":["posix_sh"],"operationId":Uuid::new_v4()}))).await
+    agent_call(router, Method::POST, "/api/v1/agent/runtime/tasks/claim", Some(case_credential()), Some(json!({"wireVersion":1,"executionContext":context,"environment":{"edition":null,"tools":{},"nativeEngines":{}},"profiles":["posix_sh"],"operationId":Uuid::new_v4()}))).await
 }
 async fn event_with_context(
     router: &Router,
@@ -69,7 +69,7 @@ async fn event_with_context(
     context: &Value,
     event: Value,
 ) -> Result<(StatusCode, Value)> {
-    agent_call(router, Method::POST, &format!("/api/v1/agent/runtime/tasks/{}/events", task["payload"]["taskId"].as_str().unwrap()), Some(case_credential()), Some(json!({"wireVersion":1,"executionContext":context,"operationId":Uuid::new_v4(),"attemptId":task["payload"]["attemptId"],"event":event}))).await
+    agent_call(router, Method::POST, &format!("/api/v1/agent/runtime/tasks/{}/events", task["payload"]["task"]["taskId"].as_str().unwrap()), Some(case_credential()), Some(json!({"wireVersion":1,"executionContext":context,"operationId":Uuid::new_v4(),"attemptId":task["payload"]["task"]["attemptId"],"event":event}))).await
 }
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 #[ignore = "make t2 MODULE=planning.self_service"]
@@ -183,14 +183,15 @@ async fn targeted_invocation_binds_parameters_identity_frequency_and_result() ->
     );
     let stack = worker(&f.base).await?;
     let task = claim(&f.router).await?;
-    ensure!(task["payload"]["taskId"] == accepted.1["runId"]);
-    ensure!(task["payload"]["parameters"] == json!({"name":"Acme","path":"/Applications"}));
-    ensure!(task["payload"]["arguments"] == json!(["Acme"]));
-    ensure!(task["payload"]["environment"]["RSS_PARAM_PATH"] == "/Applications");
+    ensure!(task["payload"]["task"]["taskId"] == accepted.1["runId"]);
+    ensure!(task["payload"]["task"]["parameters"] == json!({"name":"Acme","path":"/Applications"}));
+    ensure!(task["payload"]["task"]["arguments"] == json!(["Acme"]));
+    ensure!(task["payload"]["task"]["environment"]["RSS_PARAM_PATH"] == "/Applications");
     ensure!(
-        task["payload"]["authorization"]["requestId"] == input["operationId"]
-            && task["payload"]["authorization"]["subject"]["user"]["principalId"] == f.author_id
-            && task["payload"]["authorization"]["source"] == "ai"
+        task["payload"]["task"]["authorization"]["requestId"] == input["operationId"]
+            && task["payload"]["task"]["authorization"]["subject"]["user"]["principalId"]
+                == f.author_id
+            && task["payload"]["task"]["authorization"]["source"] == "ai"
     );
     complete(&f.router, &task).await?;
     let status = call(
@@ -205,7 +206,7 @@ async fn targeted_invocation_binds_parameters_identity_frequency_and_result() ->
     ensure!(
         status.0 == StatusCode::OK
             && status.1["runId"] == accepted.1["runId"]
-            && status.1["attemptId"] == task["payload"]["attemptId"]
+            && status.1["attemptId"] == task["payload"]["task"]["attemptId"]
     );
     ensure!(
         status.1["result"]["evidence"]["quality"] == "complete"
@@ -308,7 +309,7 @@ async fn self_service_rechecks_config_and_capability_before_start() -> Result<()
             .0
             == StatusCode::FORBIDDEN
     );
-    ensure!(pg(&format!("SELECT count(*) FROM mdm_commands.action_attempts WHERE run='{}' AND permit IS NOT NULL",task["payload"]["taskId"].as_str().unwrap()))?.trim()=="0");
+    ensure!(pg(&format!("SELECT count(*) FROM mdm_commands.action_attempts WHERE run='{}' AND permit IS NOT NULL",task["payload"]["task"]["taskId"].as_str().unwrap()))?.trim()=="0");
     crate::test_support::stop_worker(stack).await?;
     Ok(())
 }
@@ -419,8 +420,8 @@ async fn grants_and_scope_are_rechecked_and_ai_switch_does_not_change_automation
     let (automatic, published) = publish_definition(&mut f, value.clone()).await?;
     let normal = claim(&f.router).await?;
     ensure!(
-        normal["payload"]["authorization"]["kind"] == "policy"
-            && normal["payload"]["authorization"]["policyId"] == automatic.to_string(),
+        normal["payload"]["task"]["authorization"]["kind"] == "policy"
+            && normal["payload"]["task"]["authorization"]["policyId"] == automatic.to_string(),
         "allowAi and nonmatching employee access must not disable automation"
     );
     value["selfService"]["published"] = json!(false);
@@ -453,7 +454,7 @@ async fn grants_and_scope_are_rechecked_and_ai_switch_does_not_change_automation
         call(&f, Method::GET, DIRECTORY, None, true, true).await?.0 == StatusCode::UNAUTHORIZED
     );
     complete(&f.router, &normal).await?;
-    ensure!(pg(&format!("SELECT state->>'execution' FROM mdm_commands.action_runs WHERE tenant_id='{}' AND id='{}'", case_tenant(), normal["payload"]["taskId"].as_str().unwrap()))?.trim() == "succeeded", "self-service withdrawal, management grant removal and enterprise logout must not withdraw ordinary Policy execution");
+    ensure!(pg(&format!("SELECT state->>'execution' FROM mdm_commands.action_runs WHERE tenant_id='{}' AND id='{}'", case_tenant(), normal["payload"]["task"]["taskId"].as_str().unwrap()))?.trim() == "succeeded", "self-service withdrawal, management grant removal and enterprise logout must not withdraw ordinary Policy execution");
     crate::test_support::stop_worker(stack).await?;
     Ok(())
 }
@@ -590,10 +591,10 @@ async fn device_access_logged_in_user_requires_exact_os_session_and_helper_witho
         .await??;
         let target = json!({"kind":"user","identity":"501","sessionId":os_session});
         ensure!(
-            task["payload"]["taskId"] == accepted.1["runId"]
-                && task["payload"]["executionTarget"] == target
-                && task["payload"]["runAs"] == "logged_in_user"
-                && task["payload"]["authorization"]["subject"]["kind"] == "device"
+            task["payload"]["task"]["taskId"] == accepted.1["runId"]
+                && task["payload"]["task"]["executionTarget"] == target
+                && task["payload"]["task"]["runAs"] == "logged_in_user"
+                && task["payload"]["task"]["authorization"]["subject"]["kind"] == "device"
         );
         ensure!(
             event_with_context(&f.router, &task, &local, json!({"kind":"received"}))
@@ -619,8 +620,8 @@ async fn device_access_logged_in_user_requires_exact_os_session_and_helper_witho
         let started = event_with_context(&f.router, &task, &local, json!({"kind":"start"})).await?;
         ensure!(
             started.0 == StatusCode::OK
-                && started.1["permit"]["payload"]["executionTarget"] == target
-                && started.1["permit"]["payload"]["runAs"] == "logged_in_user",
+                && started.1["permit"]["payload"]["task"]["executionTarget"] == target
+                && started.1["permit"]["payload"]["task"]["runAs"] == "logged_in_user",
             "only the original OS session may start: {started:?}"
         );
         let result = event_with_context(&f.router, &task, &local, json!({"kind":"result","exitCode":0,"quality":"complete","collectedAt":2,"output":{"version":"1.2","healthy":true},"diagnostics":{"stdout":"","stderr":"","durationMs":1,"executedAt":1,"failure":null}})).await?;
@@ -632,7 +633,7 @@ async fn device_access_logged_in_user_requires_exact_os_session_and_helper_witho
             Method::GET,
             &format!(
                 "{INVOKE}/{}",
-                task["payload"]["authorization"]["requestId"]
+                task["payload"]["task"]["authorization"]["requestId"]
                     .as_str()
                     .unwrap()
             ),
@@ -669,7 +670,7 @@ async fn check_in_interval_is_shared_by_automatic_and_targeted_calls() -> Result
     let (id, policy) = publish_definition(&mut f, value).await?;
     let stack = worker(&f.base).await?;
     let automatic = claim(&f.router).await?;
-    ensure!(automatic["payload"]["authorization"]["kind"] == "policy");
+    ensure!(automatic["payload"]["task"]["authorization"]["kind"] == "policy");
     complete(&f.router, &automatic).await?;
     ensure!(
         call(
@@ -691,7 +692,7 @@ async fn check_in_interval_is_shared_by_automatic_and_targeted_calls() -> Result
     ensure!(run_count(id)?.trim() == "1");
     pg(&format!(
         "UPDATE mdm_commands.action_runs SET created_at=created_at-3601 WHERE id='{}'",
-        automatic["payload"]["taskId"].as_str().unwrap()
+        automatic["payload"]["task"]["taskId"].as_str().unwrap()
     ))?;
     ensure!(
         call(&f, Method::GET, DIRECTORY, None, true, true).await?.1["items"]
@@ -712,7 +713,7 @@ async fn check_in_interval_is_shared_by_automatic_and_targeted_calls() -> Result
     .await?;
     ensure!(accepted.0 == StatusCode::ACCEPTED);
     let targeted = claim(&f.router).await?;
-    ensure!(targeted["payload"]["taskId"] == accepted.1["runId"]);
+    ensure!(targeted["payload"]["task"]["taskId"] == accepted.1["runId"]);
     complete(&f.router, &targeted).await?;
     ensure!(
         call(
@@ -958,11 +959,11 @@ async fn employee_request_ids_are_independent_and_unknown_is_hidden() -> Result<
     let task = claim(&f.router).await?;
     task_event(&f.router, &task, json!({"kind":"received"})).await?;
     task_event(&f.router, &task, json!({"kind":"start"})).await?;
-    let run = task["payload"]["taskId"].as_str().unwrap();
+    let run = task["payload"]["task"]["taskId"].as_str().unwrap();
     pg(&format!(
         "UPDATE mdm_commands.action_runs SET state=jsonb_set(state,'{{startedAt}}',to_jsonb(floor(extract(epoch FROM clock_timestamp()))::bigint-61)) WHERE id='{run}'"
     ))?;
-    let policy = task["payload"]["authorization"]["policyId"]
+    let policy = task["payload"]["task"]["authorization"]["policyId"]
         .as_str()
         .unwrap();
     for _ in 0..2 {
@@ -1100,11 +1101,11 @@ async fn explicit_access_uses_live_identity_membership_and_device_subjects_witho
     ensure!(accepted.0 == StatusCode::ACCEPTED);
     let device_task = claim(&f.router).await?;
     ensure!(
-        device_task["payload"]["authorization"]["subject"]["kind"] == "device"
-            && device_task["payload"]["runAs"] == "system"
+        device_task["payload"]["task"]["authorization"]["subject"]["kind"] == "device"
+            && device_task["payload"]["task"]["runAs"] == "system"
     );
     ensure!(
-        device_task["payload"]["authorization"]["subject"]
+        device_task["payload"]["task"]["authorization"]["subject"]
             == device_directory.1["items"][0]["subject"]
     );
     complete(&f.router, &device_task).await?;
@@ -1135,7 +1136,7 @@ async fn explicit_access_uses_live_identity_membership_and_device_subjects_witho
         .0 == StatusCode::ACCEPTED
     );
     let grouped = claim(&f.router).await?;
-    ensure!(grouped["payload"]["authorization"]["subject"] == expected_user);
+    ensure!(grouped["payload"]["task"]["authorization"]["subject"] == expected_user);
     let mut disabled = group_value.clone();
     disabled["enabled"] = json!(false);
     ensure!(
@@ -1215,7 +1216,7 @@ async fn explicit_access_uses_live_identity_membership_and_device_subjects_witho
     let execution = pg(&format!(
         "SELECT state->>'execution' FROM mdm_commands.action_runs WHERE tenant_id='{}' AND id='{}'",
         case_tenant(),
-        one["payload"]["taskId"].as_str().unwrap()
+        one["payload"]["task"]["taskId"].as_str().unwrap()
     ))?;
     ensure!(
         execution.trim() == "succeeded",
@@ -1237,7 +1238,7 @@ async fn explicit_access_uses_live_identity_membership_and_device_subjects_witho
         Method::GET,
         &format!(
             "{INVOKE}/{}",
-            one["payload"]["authorization"]["requestId"]
+            one["payload"]["task"]["authorization"]["requestId"]
                 .as_str()
                 .unwrap()
         ),
@@ -1404,7 +1405,7 @@ async fn available_software_requires_request_and_deduplicates_users_policies_and
             && employee_authorization.1["grants"] == json!([]),
         "ordinary employee must retain zero effective management grants: {employee_authorization:?}"
     );
-    let poll=agent_call(&f.router,Method::POST,"/api/v1/agent/runtime/tasks/claim",Some(&f.credential),Some(json!({"wireVersion":1,"executionContext":software::context(software::Platform::MacOs),"environment":{"edition":null,"tools":{}},"profiles":["posix_sh"],"operationId":Uuid::new_v4()}))).await?;
+    let poll=agent_call(&f.router,Method::POST,"/api/v1/agent/runtime/tasks/claim",Some(&f.credential),Some(json!({"wireVersion":1,"executionContext":software::context(software::Platform::MacOs),"environment":{"edition":null,"tools":{},"nativeEngines":{}},"profiles":["posix_sh"],"operationId":Uuid::new_v4()}))).await?;
     ensure!(
         poll.0 == StatusCode::OK && poll.1["task"].is_null(),
         "AvailableInstall must not prequeue: {poll:?}"
@@ -1540,12 +1541,12 @@ async fn available_software_requires_request_and_deduplicates_users_policies_and
         .1 == accepted.1
     );
     let task = software::claim(&f.router).await?;
-    ensure!(task["payload"]["authorization"]["subject"] == expected_subject);
+    ensure!(task["payload"]["task"]["authorization"]["subject"] == expected_subject);
     ensure!(
-        task["payload"]["taskId"] == accepted.1["runId"]
-            && task["payload"]["authorization"]["kind"] == "self_service"
-            && task["payload"]["authorization"]["subject"]["kind"] == "user"
-            && task["payload"]["authorization"]["subject"]["user"]["principalId"]
+        task["payload"]["task"]["taskId"] == accepted.1["runId"]
+            && task["payload"]["task"]["authorization"]["kind"] == "self_service"
+            && task["payload"]["task"]["authorization"]["subject"]["kind"] == "user"
+            && task["payload"]["task"]["authorization"]["subject"]["user"]["principalId"]
                 == current["principalId"]
     );
     ensure!(
@@ -1707,7 +1708,7 @@ async fn software_unknown_survives_same_account_relogin_and_keeps_other_accounts
             "/api/v1/agent/runtime/tasks/claim",
             Some(&f.credential),
             Some(
-                json!({"wireVersion":1,"executionContext":context,"environment":{"edition":null,"tools":{}},"profiles":["power_shell7"],"operationId":Uuid::new_v4()}),
+                json!({"wireVersion":1,"executionContext":context,"environment":{"edition":null,"tools":{},"nativeEngines":{}},"profiles":["power_shell7"],"operationId":Uuid::new_v4()}),
             ),
         )
     };
@@ -1738,7 +1739,7 @@ async fn software_unknown_survives_same_account_relogin_and_keeps_other_accounts
     })
     .await??;
     ensure!(
-        task["payload"]["steps"][0]["target"]
+        task["payload"]["task"]["steps"][0]["target"]
             == json!({"kind":"user","identity":sid,"sessionId":session})
     );
     for event in [

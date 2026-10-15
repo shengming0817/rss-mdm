@@ -6,7 +6,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use uuid::Uuid;
 
-pub const RESULT_SUMMARY_SQL: &str = "CASE WHEN r.result IS NULL THEN NULL WHEN r.result->'evidence' IS NOT NULL THEN jsonb_set(r.result,'{evidence,steps}',(SELECT jsonb_agg(value || jsonb_build_object('diagnostics',(value->'diagnostics')-'stdout'-'stderr') ORDER BY position) FROM jsonb_array_elements(r.result#>'{evidence,steps}') WITH ORDINALITY AS item(value,position))) ELSE (r.result-'output') || jsonb_build_object('diagnostics',(r.result->'diagnostics')-'stdout'-'stderr') END";
+pub const RESULT_SUMMARY_SQL: &str = "CASE WHEN r.result IS NULL THEN NULL WHEN r.result->'evidence' IS NOT NULL THEN jsonb_set(r.result,'{evidence,steps}',(SELECT jsonb_agg(value || jsonb_build_object('diagnostics',(value->'diagnostics')-'stdout'-'stderr') ORDER BY position) FROM jsonb_array_elements(r.result#>'{evidence,steps}') WITH ORDINALITY AS item(value,position))) ELSE (r.result-'output'-'native') || jsonb_build_object('diagnostics',(r.result->'diagnostics')-'stdout'-'stderr') END";
 
 #[derive(Clone, Copy)]
 enum RunOwner {
@@ -113,7 +113,7 @@ impl Queries {
     ) -> Result<crate::queries::records::RunDetail, crate::queries::QueryError> {
         crate::transaction::run(&self.audit_store,&self.runtime,self.tenant,audit,(&self.audit_store,&self.policy_reader,proof,owner,id,audit),|ctx,tx|Box::pin(async move {
             let (store,reader,proof,owner,id,audit)=*ctx;
-            let run=db::load_run(tx,id).await?;
+            let mut run=db::load_run(tx,id).await?;
             let plan=db::load_source(reader,tx,run.source).await?;
             let (field,parent)=match (owner,run.source) {
                 (RunOwner::Policy(policy),db::Source::Policy {..}) if plan.owner()==policy=>("policyId",policy),
@@ -121,13 +121,17 @@ impl Queries {
                 _=>return Err(Error::Execution(crate::missing::ExecutionError::MissingTask).into()),
             };
             storage::authorized(tx,proof,&run.target.device,Permission::OperationRead).await?;
-            if let db::ScheduledPolicy::Script(script)=&plan && let Some(collection)=&script.frozen.collection {
+            let collection=match &plan {db::ScheduledPolicy::Script(script)=>script.frozen.collection.as_ref(),db::ScheduledPolicy::AgentCollection(v)=>Some(&v.frozen.collection),_=>None};
+            if let Some(collection)=collection {
                 storage::authorized(tx,proof,&run.target.device,Permission::InventoryRead).await?;
-                if collection.fields().iter().any(|f|f.sensitivity==rss_mdm_inventory::Sensitivity::Sensitive) {
+                if matches!(&plan,db::ScheduledPolicy::AgentCollection(_)) || collection.fields().iter().any(|f|f.sensitivity==rss_mdm_inventory::Sensitivity::Sensitive) {
                     crate::action_admission::current(tx,proof).await?.require(proof,Permission::InventorySensitiveRead,None)?;
                 }
             }
 
+            if let Some(native)=super::output::restore_native(tx,&plan,&run).await? {
+                run.result.as_mut().ok_or(Error::Malformed)?["native"]=crate::stored(serde_json::to_value(native))?;
+            }
             store.append_request_in(tx,audit,200,"success").await?;
             let effect=run.result.as_ref().and_then(|r|r["effect"].as_str()).unwrap_or("unverified").to_owned();
             let user_action=if matches!(plan,db::ScheduledPolicy::Software(ref software) if matches!(software.assignment.intent(),rss_mdm_policy::SoftwareIntent::AvailableInstall)) && run.state.awaits_user(storage::now(tx).await?) {Some("waiting_user")}else{None};

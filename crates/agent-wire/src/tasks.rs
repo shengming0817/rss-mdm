@@ -188,6 +188,13 @@ pub enum TaskEvent {
     Cancelled,
     /// Process evidence. Successful exit alone does not prove the requested side effect.
     Result(TaskResult),
+    /// Independently qualified native query results.
+    CollectionResult(crate::runtime::NativeCollectionResult),
+    /// Native result bytes assembled through the shared output transport.
+    ChunkedCollectionResult {
+        /// Exact canonical NativeCollectionResult document.
+        manifest: crate::runtime::OutputManifest,
+    },
     /// A bounded fragment of a collection output; never a terminal snapshot.
     OutputChunk(crate::runtime::OutputChunk),
     /// Terminal evidence whose output must be fully assembled and verified.
@@ -826,6 +833,119 @@ impl TaskSpec {
         Ok(bytes)
     }
 }
+/// Signed immutable native collection task, never a process invocation.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CollectionTaskSpec {
+    /// Exact wire major.
+    #[schemars(schema_with = "crate::runtime::version_schema")]
+    pub wire_version: u8,
+    /// Server-selected tenant.
+    #[serde(with = "strict_uuid")]
+    #[schemars(schema_with = "crate::runtime::uuid_schema")]
+    pub tenant_id: Uuid,
+    /// Server-selected device identity.
+    #[schemars(extend("minLength" = 1, "maxLength" = 1024, "pattern" = "^[^\\p{Cc}]+$"))]
+    pub device_id: String,
+    /// Selected artifact operating system.
+    pub platform: TaskPlatform,
+    /// Selected artifact architecture.
+    pub architecture: TaskArchitecture,
+    /// Current registration at approval/claim.
+    #[serde(with = "strict_uuid")]
+    #[schemars(schema_with = "crate::runtime::uuid_schema")]
+    pub registration_id: Uuid,
+    /// Registration generation.
+    #[schemars(extend("minimum" = 1, "maximum" = 9223372036854775807u64))]
+    pub generation: u64,
+    /// Immutable run identity.
+    #[serde(with = "strict_uuid")]
+    #[schemars(schema_with = "crate::runtime::uuid_schema")]
+    pub task_id: Uuid,
+    /// Exact execution attempt.
+    #[serde(with = "strict_uuid")]
+    #[schemars(schema_with = "crate::runtime::uuid_schema")]
+    pub attempt_id: Uuid,
+    /// Signature purpose.
+    pub permit: TaskPermit,
+    /// Nonnegative Unix expiry, checked against a trusted clock by the consumer.
+    #[schemars(extend("minimum" = 0, "maximum" = 9223372036854775807u64))]
+    pub expires_at: i64,
+    /// Exact Resource version digest, including its full execution interface.
+    pub resource_digest: [u8; 32],
+    /// Exact selected Resource coordinates.
+    pub resource: super::TaskResource,
+    /// Trusted server authorization decision.
+    pub authorization: super::TaskAuthorization,
+    /// Absolute run deadline.
+    pub deadline: i64,
+    /// Frozen native plan (including scope, query versions and budgets).
+    pub plan: crate::runtime::NativeCollectionPlan,
+    /// Exact plan fingerprint, checked independently of the Resource digest.
+    pub plan_digest: [u8; 32],
+}
+impl CollectionTaskSpec {
+    /// Check the complete closed contract; authentication remains the consumer's job.
+    pub fn validate(&self) -> Result<(), WireError> {
+        self.authorization.validate(self.tenant_id)?;
+        if self.wire_version != WIRE_VERSION
+            || self.platform != TaskPlatform::Windows
+            || [
+                self.tenant_id,
+                self.registration_id,
+                self.task_id,
+                self.attempt_id,
+            ]
+            .iter()
+            .any(Uuid::is_nil)
+            || self.generation == 0
+            || self.generation > i64::MAX as u64
+            || self.device_id.is_empty()
+            || self.device_id.len() > 1024
+            || self.device_id.chars().any(char::is_control)
+            || self.expires_at < 0
+            || self.deadline < self.expires_at
+            || self.plan_digest != self.plan.digest()
+            || [
+                &self.resource.id,
+                &self.resource.version,
+                &self.resource.variant,
+            ]
+            .iter()
+            .any(|s| {
+                s.is_empty()
+                    || s.len() > 128
+                    || !s
+                        .bytes()
+                        .all(|b| b.is_ascii_alphanumeric() || b"._-/".contains(&b))
+                    || s.split('/').any(|p| p.is_empty() || p == "." || p == "..")
+            })
+        {
+            return Err(WireError::InvalidValue);
+        }
+        Ok(())
+    }
+    /// Collection-only signing domain; no Script signature can authorize a native query.
+    pub fn signing_bytes(&self, key_id: &str) -> Result<Vec<u8>, WireError> {
+        self.validate()?;
+        if key_id.is_empty()
+            || key_id.len() > 128
+            || !key_id
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b"._-".contains(&b))
+        {
+            return Err(WireError::InvalidValue);
+        }
+        let mut bytes = b"rss-mdm-agent-collection-task-v1-ed25519\0".to_vec();
+        bytes.extend((key_id.len() as u32).to_be_bytes());
+        bytes.extend(key_id.as_bytes());
+        bytes.extend(serde_json::to_vec(self).map_err(|_| WireError::InvalidValue)?);
+        if bytes.len() > 131072 {
+            return Err(WireError::InvalidValue);
+        }
+        Ok(bytes)
+    }
+}
 /// Software operation selected by the server; detection remains independent evidence.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
@@ -1158,8 +1278,14 @@ impl SoftwareTaskSpec {
     }
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
-#[serde(untagged)]
+#[serde(
+    tag = "kind",
+    content = "task",
+    rename_all = "snake_case",
+    deny_unknown_fields
+)]
 enum RawTaskPayload {
+    Collection(Box<CollectionTaskSpec>),
     Script(Box<TaskSpec>),
     Software(Box<SoftwareTaskSpec>),
     /// Standard MDM enrollment entry.
@@ -1169,6 +1295,8 @@ enum RawTaskPayload {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(try_from = "RawTaskPayload", into = "RawTaskPayload")]
 pub enum TaskPayload {
+    /// Declarative native collection, without script execution authority.
+    Collection(Box<CollectionTaskSpec>),
     /// Existing script task, upgraded to the current wire major.
     Script(Box<TaskSpec>),
     /// Approved software task.
@@ -1180,6 +1308,10 @@ impl TryFrom<RawTaskPayload> for TaskPayload {
     type Error = WireError;
     fn try_from(value: RawTaskPayload) -> Result<Self, Self::Error> {
         match value {
+            RawTaskPayload::Collection(v) => {
+                v.validate()?;
+                Ok(Self::Collection(v))
+            }
             RawTaskPayload::Script(v) => {
                 v.signing_bytes("validation")?;
                 Ok(Self::Script(v))
@@ -1198,6 +1330,7 @@ impl TryFrom<RawTaskPayload> for TaskPayload {
 impl From<TaskPayload> for RawTaskPayload {
     fn from(value: TaskPayload) -> Self {
         match value {
+            TaskPayload::Collection(v) => Self::Collection(v),
             TaskPayload::Script(v) => Self::Script(v),
             TaskPayload::Software(v) => Self::Software(v),
             TaskPayload::Enrollment(v) => Self::Enrollment(v),
@@ -1229,6 +1362,7 @@ impl TaskPayload {
     /// Exact task identity.
     pub fn task_id(&self) -> Uuid {
         match self {
+            Self::Collection(v) => v.task_id,
             Self::Script(v) => v.task_id,
             Self::Software(v) => v.task_id,
             Self::Enrollment(v) => v.task_id,
@@ -1237,6 +1371,7 @@ impl TaskPayload {
     /// Exact attempt identity.
     pub fn attempt_id(&self) -> Uuid {
         match self {
+            Self::Collection(v) => v.attempt_id,
             Self::Script(v) => v.attempt_id,
             Self::Software(v) => v.attempt_id,
             Self::Enrollment(v) => v.attempt_id,
@@ -1245,6 +1380,7 @@ impl TaskPayload {
     /// Signed expiry.
     pub fn expires_at(&self) -> i64 {
         match self {
+            Self::Collection(v) => v.expires_at,
             Self::Script(v) => v.expires_at,
             Self::Software(v) => v.expires_at,
             Self::Enrollment(v) => v.expires_at,
@@ -1253,6 +1389,7 @@ impl TaskPayload {
     /// Selected permission.
     pub fn permit(&self) -> TaskPermit {
         match self {
+            Self::Collection(v) => v.permit,
             Self::Script(v) => v.permit,
             Self::Software(v) => v.permit,
             Self::Enrollment(v) => v.permit,
@@ -1261,6 +1398,7 @@ impl TaskPayload {
     /// Exact operating system.
     pub fn platform(&self) -> TaskPlatform {
         match self {
+            Self::Collection(v) => v.platform,
             Self::Script(v) => v.platform,
             Self::Software(v) => v.platform,
             Self::Enrollment(v) => v.platform,
@@ -1269,6 +1407,7 @@ impl TaskPayload {
     /// Exact architecture.
     pub fn architecture(&self) -> TaskArchitecture {
         match self {
+            Self::Collection(v) => v.architecture,
             Self::Script(v) => v.architecture,
             Self::Software(v) => v.architecture,
             Self::Enrollment(v) => v.architecture,
@@ -1277,6 +1416,7 @@ impl TaskPayload {
     /// Sign validated bytes for this task family.
     pub fn signing_bytes(&self, key_id: &str) -> Result<Vec<u8>, WireError> {
         match self {
+            Self::Collection(v) => v.signing_bytes(key_id),
             Self::Script(v) => v.signing_bytes(key_id),
             Self::Software(v) => v.signing_bytes(key_id),
             Self::Enrollment(v) => v.signing_bytes(key_id),

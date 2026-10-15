@@ -67,9 +67,9 @@ impl ExecutionService {
             // Old successful polls are replayable only while their exact offer remains authorized.
             if let Some(response)=db::replay(tx,&actor,input.operation_id(),&hash).await?{
                 if let Some(task)=response.get("task").filter(|v|!v.is_null()) {
-                    let id=stored(Uuid::parse_str(task["payload"]["taskId"].as_str().ok_or(Error::Conflict)?))?;
+                    let id=stored(Uuid::parse_str(task["payload"]["task"]["taskId"].as_str().ok_or(Error::Conflict)?))?;
                     let run=db::load_run(tx,id).await?;belongs(&run,p)?;run.source.audit(audit);audit.target(&run.id.to_string());
-                    let replay_attempt=task["payload"]["attemptId"].as_str().and_then(|v|Uuid::parse_str(v).ok());
+                    let replay_attempt=task["payload"]["task"]["attemptId"].as_str().and_then(|v|Uuid::parse_str(v).ok());
                     if run.state.cancellation!=Cancellation::None || run.state.execution!=Execution::NotStarted || run.state.attempt()!=replay_attempt || replay_attempt.is_none(){return Err(Error::Conflict.into());}
                     let signed:wire::SignedTask=stored(serde_json::from_value(task.clone()))?;
                     let plan=db::load_source(&service.policy_reader,tx,run.source).await?;
@@ -86,6 +86,7 @@ impl ExecutionService {
                 let policy=db::load_policy_version(&service.policy_reader,tx,id).await?;
                 let target=crate::Target {device:p.device().into(),registration:p.registration(),generation:p.generation()};
                 match &policy {
+                    db::ScheduledPolicy::AgentCollection(v) if crate::agent_collection_eligibility::matches(&binding,v.frozen.input.platform,v.frozen.input.architecture,&v.frozen.definition.spec().plan,&input.environment().native_engines) => super::production::accept_for_device(service,tx,&policy,&target,input.operation_id(),now).await?,
                     db::ScheduledPolicy::Enrollment(_) if enrollment_capable => super::production::accept_for_device(service,tx,&policy,&target,input.operation_id(),now).await?,
                     db::ScheduledPolicy::Script(script) if crate::script_eligibility::matches(&binding,script.frozen.input.platform,script.frozen.input.architecture,script.frozen.executor_profile(),input.profiles()) => super::production::accept_for_device(service,tx,&policy,&target,input.operation_id(),now).await?,
                     db::ScheduledPolicy::Software(software) if software_capable => super::software::accept_for_device(service,tx,software,&target,now).await?,
@@ -98,7 +99,7 @@ impl ExecutionService {
                 let mut run=db::load_run(tx,stored(Uuid::parse_str(&id))?).await?;belongs(&run,p)?;let plan=db::load_source(&service.policy_reader,tx,run.source).await?;
                 let previous=run.state.clone();
                 run.state.expire(now,plan.timeout_seconds());
-                let capable=match &plan { db::ScheduledPolicy::Native(_) => false, db::ScheduledPolicy::Script(script) => crate::script_eligibility::matches(&binding,script.frozen.input.platform,script.frozen.input.architecture,script.frozen.executor_profile(),input.profiles()), db::ScheduledPolicy::Software(software) => software.assignment.supported_in(&service.admission(),tx,&binding).await?, db::ScheduledPolicy::Enrollment(_) => enrollment_capable };
+                let capable=match &plan { db::ScheduledPolicy::Native(_) => false, db::ScheduledPolicy::AgentCollection(v) => crate::agent_collection_eligibility::matches(&binding,v.frozen.input.platform,v.frozen.input.architecture,&v.frozen.definition.spec().plan,&input.environment().native_engines), db::ScheduledPolicy::Script(script) => crate::script_eligibility::matches(&binding,script.frozen.input.platform,script.frozen.input.architecture,script.frozen.executor_profile(),input.profiles()), db::ScheduledPolicy::Software(software) => software.assignment.supported_in(&service.admission(),tx,&binding).await?, db::ScheduledPolicy::Enrollment(_) => enrollment_capable };
                 let allowed=capable && plan.authorized_run_in(service,tx,&run,now).await?;
                 if (!allowed && run.invocation.is_some()) || plan.withdrawn_in(service,tx,&run.target,now).await?{run.state.cancel();}
                 super::recovery::audit_recovery(service,tx,&run,&previous).await?;
@@ -108,6 +109,7 @@ impl ExecutionService {
                     if run.state.claim(attempt,now).is_ok(){
                         if let Some(old)=previous_attempt {super::collection::abandon(service,tx,old,"superseded").await?;}
                         if let db::ScheduledPolicy::Script(script)=&plan {super::collection::reserve(tx,&script.frozen,&run,now).await?;}
+                        if let db::ScheduledPolicy::AgentCollection(v)=&plan {super::agent_collection::reserve(tx,&v.frozen,&run,now).await?;}
                         let signer=service.signer.as_ref().ok_or(Error::Unsupported)?;
                         let signed=signer.sign(plan.task(service,tx,&run.target,db::TaskIssue { run:run.id,attempt,permit:wire::TaskPermit::Offer,expiry:(now+60).min(run.deadline) }).await?)?;
                         let tenant=tx.tenant_id().to_string();let run_id=run.id.to_string();let reg=p.registration().to_string();let value=checked_input(serde_json::to_value(&signed))?;
@@ -151,7 +153,7 @@ impl ExecutionService {
             let actor=format!("agent:{}",p.registration());let hash=fingerprint(&(id,input))?;
             let event_key = format!("agent:{}:task:{id}:event:{}",p.registration(),input.operation_id());
             if let Some(response)=db::replay(tx,&actor,input.operation_id(),&hash).await?{
-                if response.get("permit").filter(|p|!p.is_null()).and_then(|p|p["payload"]["expiresAt"].as_i64()).is_some_and(|expiry|expiry<=now){return Err(Error::Conflict.into());}
+                if response.get("permit").filter(|p|!p.is_null()).and_then(|p|p["payload"]["task"]["expiresAt"].as_i64()).is_some_and(|expiry|expiry<=now){return Err(Error::Conflict.into());}
                 audit.management_result(rss_mdm_audit_integration::ManagementResult::Replayed);
                 let fact=Fact::business(audit,&event_key,&hash,200,"success",None)?;
                 let fact=if let Some(details)=db::audit_details(tx,&actor,input.operation_id()).await? {fact.with_details(details)?}else{fact};
@@ -171,7 +173,7 @@ impl ExecutionService {
                 wire::TaskEvent::Received=>run.state.received(input.attempt_id(),now)?,
                 wire::TaskEvent::Start=>{
                     if run.state.execution!=Execution::NotStarted{return Err(Error::Conflict.into());}
-                    if matches!(&plan,db::ScheduledPolicy::Script(_)) {
+                    if matches!(&plan,db::ScheduledPolicy::Script(_) | db::ScheduledPolicy::AgentCollection(_)) {
                         let tenant=tx.tenant_id().to_string();let attempt=input.attempt_id();let run_id=id;
                         let offer:Value=tx.with_connection(move|c|Box::pin(async move{sqlx::query_scalar("SELECT offer FROM mdm_commands.action_attempts WHERE tenant_id=$1::uuid AND id=$2 AND run=$3").bind(tenant).bind(attempt).bind(run_id).fetch_one(c).await})).await?;
                         let offered:wire::SignedTask=stored(serde_json::from_value(offer))?;
@@ -199,6 +201,15 @@ impl ExecutionService {
                 wire::TaskEvent::Result(result)=>{
                     let db::ScheduledPolicy::Script(script)=&plan else {return Err(Error::Malformed.into());};
                     super::collection::finish(tx,&script.frozen,&mut run,result,allowed,effect_allowed,now).await?;
+                },
+                wire::TaskEvent::CollectionResult(result)=>{
+                    let db::ScheduledPolicy::AgentCollection(v)=&plan else{return Err(Error::Malformed.into());};
+                    super::agent_collection::finish(tx,&v.frozen,&mut run,result,effect_allowed,now).await?;
+                },
+                wire::TaskEvent::ChunkedCollectionResult{manifest}=>{
+                    let db::ScheduledPolicy::AgentCollection(v)=&plan else{return Err(Error::Malformed.into());};
+                    let result=super::output::assemble_native(tx,&plan,&run,manifest).await?;
+                    super::agent_collection::finish(tx,&v.frozen,&mut run,&result,effect_allowed,now).await?;
                 },
                 wire::TaskEvent::OutputChunk(chunk)=>super::output::append(tx,&plan,&run,chunk).await?,
                 wire::TaskEvent::ChunkedResult(reference)=>{
@@ -286,11 +297,11 @@ impl ExecutionService {
             if run.state.attempt()!=Some(attempt) || run.deadline<=now || run.state.cancellation!=Cancellation::None
                 || !matches!(run.state.execution, Execution::NotStarted | Execution::Running)
                 || !allowed {return Err(Error::Forbidden.into());}
-            let tenant=tx.tenant_id().to_string();let expiry=tx.with_connection(move|c|Box::pin(async move{sqlx::query_scalar::<_,i64>("SELECT (offer->'payload'->>'expiresAt')::bigint FROM mdm_commands.action_attempts WHERE tenant_id=$1::uuid AND id=$2::uuid AND run=$3::uuid").bind(tenant).bind(attempt.to_string()).bind(id.to_string()).fetch_one(c).await})).await?;
+            let tenant=tx.tenant_id().to_string();let expiry=tx.with_connection(move|c|Box::pin(async move{sqlx::query_scalar::<_,i64>("SELECT (offer->'payload'->'task'->>'expiresAt')::bigint FROM mdm_commands.action_attempts WHERE tenant_id=$1::uuid AND id=$2::uuid AND run=$3::uuid").bind(tenant).bind(attempt.to_string()).bind(id.to_string()).fetch_one(c).await})).await?;
             if now>=expiry { return Err(Error::Forbidden.into()); }
             match plan {
                 db::ScheduledPolicy::Enrollment(_) => Err(Error::NotFound.into()),
-                db::ScheduledPolicy::Native(_) => Err(Error::Forbidden.into()),
+                db::ScheduledPolicy::Native(_) | db::ScheduledPolicy::AgentCollection(_) => Err(Error::Forbidden.into()),
                 db::ScheduledPolicy::Script(script) => {
                     if key.is_some() { return Err(Error::Malformed.into()); }
                     script.frozen.artifact().map_err(Into::into)

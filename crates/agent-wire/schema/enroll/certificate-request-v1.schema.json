@@ -102,6 +102,11 @@
           "const": "mdm.enrollment.v1",
           "description": "Open the standard MDM enrollment entry with OS/user approval.",
           "type": "string"
+        },
+        {
+          "const": "inventory.native.v1",
+          "description": "Execute signed declarative native inventory tasks.",
+          "type": "string"
         }
       ]
     },

@@ -9,7 +9,7 @@
           "items": {
             "$ref": "#/$defs/Capability"
           },
-          "maxItems": 20,
+          "maxItems": 21,
           "minItems": 1,
           "type": "array",
           "uniqueItems": true
@@ -188,6 +188,11 @@
         {
           "const": "mdm.enrollment.v1",
           "description": "Open the standard MDM enrollment entry with OS/user approval.",
+          "type": "string"
+        },
+        {
+          "const": "inventory.native.v1",
+          "description": "Execute signed declarative native inventory tasks.",
           "type": "string"
         }
       ]
@@ -480,6 +485,11 @@
         {
           "const": "agent.script",
           "description": "Controlled collection script evidence.",
+          "type": "string"
+        },
+        {
+          "const": "agent.native",
+          "description": "Signed declarative native task evidence.",
           "type": "string"
         },
         {

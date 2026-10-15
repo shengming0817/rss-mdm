@@ -87,7 +87,7 @@ pub async fn abandon(
 ) -> Result<()> {
     let tenant = tx.tenant_id().to_string();
     let fact=tx.with_connection(move|c|Box::pin(async move {
-        let exists:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_access.collection_runs WHERE tenant_id=$1::uuid AND id=$2 AND sealed_at IS NULL AND (source IN('agent.script','agent.osquery') OR evidence ? 'nativeTemplate'))")
+        let exists:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_access.collection_runs WHERE tenant_id=$1::uuid AND id=$2 AND sealed_at IS NULL AND (source IN('agent.script','agent.osquery','agent.native') OR evidence ? 'nativeTemplate'))")
             .bind(&tenant).bind(attempt).fetch_one(&mut *c).await?;
         if !exists {return Ok(None);}
         let mut run=crate::collection::store::load_on(c,&tenant,attempt).await.map_err(|_|sqlx::Error::Protocol("invalid pending collection".into()))?;

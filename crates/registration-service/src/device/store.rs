@@ -692,7 +692,9 @@ pub async fn allocate_task_report_in(
 ) -> Result<(String, i64), sqlx::Error> {
     if !matches!(
         source,
-        rss_mdm_inventory::Source::AgentScript | rss_mdm_inventory::Source::AgentOsquery
+        rss_mdm_inventory::Source::AgentScript
+            | rss_mdm_inventory::Source::AgentOsquery
+            | rss_mdm_inventory::Source::AgentNative
     ) {
         return Err(sqlx::Error::Protocol(
             "invalid enterprise report source".into(),

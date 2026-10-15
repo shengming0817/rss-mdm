@@ -35,6 +35,152 @@
         }
       ]
     },
+    "NativeQueryResult": {
+      "additionalProperties": false,
+      "description": "Evidence and typed native rows for one query.",
+      "properties": {
+        "collectedAt": {
+          "description": "Collection Unix time.",
+          "format": "int64",
+          "type": "integer"
+        },
+        "enumerationComplete": {
+          "description": "Iterator reached its natural end.",
+          "type": "boolean"
+        },
+        "queryDigest": {
+          "description": "Exact frozen query fingerprint.",
+          "items": {
+            "format": "uint8",
+            "maximum": 255,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "maxItems": 32,
+          "minItems": 32,
+          "type": "array"
+        },
+        "rowCount": {
+          "description": "Reported row count, checked against rows.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "rows": {
+          "description": "Values checked against the query-derived native schema.",
+          "items": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "status": {
+          "$ref": "#/$defs/NativeQueryStatus",
+          "description": "Query outcome."
+        },
+        "users": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/NativeUserCoverage"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Required for all-user software collection."
+        }
+      },
+      "required": [
+        "queryDigest",
+        "collectedAt",
+        "status",
+        "enumerationComplete",
+        "rowCount",
+        "rows"
+      ],
+      "type": "object"
+    },
+    "NativeQueryStatus": {
+      "description": "Closed query completion status; it never denotes script exit success.",
+      "oneOf": [
+        {
+          "const": "complete",
+          "description": "Complete enumeration.",
+          "type": "string"
+        },
+        {
+          "const": "unsupported",
+          "description": "Engine or data unavailable.",
+          "type": "string"
+        },
+        {
+          "const": "denied",
+          "description": "Access denied.",
+          "type": "string"
+        },
+        {
+          "const": "timeout",
+          "description": "Execution budget elapsed.",
+          "type": "string"
+        },
+        {
+          "const": "truncated",
+          "description": "Output or row budget reached.",
+          "type": "string"
+        },
+        {
+          "const": "missing",
+          "description": "Complete absence evidence.",
+          "type": "string"
+        },
+        {
+          "const": "invalid",
+          "description": "Invalid native value or instance identity.",
+          "type": "string"
+        }
+      ]
+    },
+    "NativeUserCoverage": {
+      "additionalProperties": false,
+      "description": "Evidence for all-user device software inventory; no SID-local replacement.",
+      "properties": {
+        "completed": {
+          "description": "Profiles whose entire requested inventory completed.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array",
+          "uniqueItems": true
+        },
+        "enumerationComplete": {
+          "description": "User discovery reached its end.",
+          "type": "boolean"
+        },
+        "expected": {
+          "description": "Profiles before collection.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array",
+          "uniqueItems": true
+        },
+        "observed": {
+          "description": "Profiles after collection.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array",
+          "uniqueItems": true
+        }
+      },
+      "required": [
+        "enumerationComplete",
+        "expected",
+        "observed",
+        "completed"
+      ],
+      "type": "object"
+    },
     "OutputManifest": {
       "additionalProperties": false,
       "description": "Immutable output identity; chunk count is derived from byte length.",
@@ -1164,6 +1310,66 @@
             "output",
             "diagnostics",
             "collectedAt"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Independently qualified native query results.",
+          "properties": {
+            "collectedAt": {
+              "description": "Result capture time.",
+              "format": "int64",
+              "type": "integer"
+            },
+            "kind": {
+              "const": "collection_result",
+              "type": "string"
+            },
+            "planDigest": {
+              "description": "Frozen plan identity.",
+              "items": {
+                "format": "uint8",
+                "maximum": 255,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "maxItems": 32,
+              "minItems": 32,
+              "type": "array"
+            },
+            "queries": {
+              "additionalProperties": {
+                "$ref": "#/$defs/NativeQueryResult"
+              },
+              "description": "One result for every planned query, including failures.",
+              "type": "object"
+            }
+          },
+          "required": [
+            "kind",
+            "planDigest",
+            "collectedAt",
+            "queries"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Native result bytes assembled through the shared output transport.",
+          "properties": {
+            "kind": {
+              "const": "chunked_collection_result",
+              "type": "string"
+            },
+            "manifest": {
+              "$ref": "#/$defs/OutputManifest",
+              "description": "Exact canonical NativeCollectionResult document."
+            }
+          },
+          "required": [
+            "kind",
+            "manifest"
           ],
           "type": "object"
         },

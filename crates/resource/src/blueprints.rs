@@ -22,6 +22,11 @@ pub struct Blueprint {
 #[derive(Clone, Debug, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Definition {
+    /// Declarative native Agent template.
+    AgentCollection {
+        /// Validated plan and server-side field mapping.
+        template: AgentCollectionDefinition,
+    },
     /// Native read-only collection template.
     NativeCollection {
         /// Validated immutable read template.
@@ -43,6 +48,7 @@ impl Definition {
     pub fn kind(&self) -> Kind {
         match self {
             Self::NativeCollection { .. } => Kind::NativeCollection,
+            Self::AgentCollection { .. } => Kind::AgentCollection,
             Self::Configuration { .. } => Kind::Configuration,
         }
     }
@@ -50,6 +56,7 @@ impl Definition {
     pub fn reference(&self) -> &'static str {
         match self {
             Self::NativeCollection { .. } => "collection.json",
+            Self::AgentCollection { .. } => "agent-collection.json",
             Self::Configuration { .. } => "configuration.json",
         }
     }
@@ -57,6 +64,7 @@ impl Definition {
     pub fn canonical(&self) -> Vec<u8> {
         match self {
             Self::NativeCollection { template } => template.canonical(),
+            Self::AgentCollection { template } => template.canonical(),
             Self::Configuration { content } => {
                 serde_json::to_vec(content).expect("closed blueprint")
             }
@@ -93,6 +101,12 @@ impl Blueprint {
                         })
                         .expect("constant"),
                         match &self.definition {
+                            Definition::AgentCollection { template } => {
+                                Declaration::AgentCollection {
+                                    artifact: artifact.clone(),
+                                    definition: template.clone(),
+                                }
+                            }
                             Definition::NativeCollection { template } => {
                                 Declaration::NativeCollection {
                                     artifact: artifact.clone(),
@@ -126,6 +140,7 @@ pub const CATEGORIES: [&str; 6] = [
 pub fn catalog() -> Vec<Blueprint> {
     let mut out = apple::catalog();
     out.extend(windows::catalog());
+    out.extend(agent_windows::catalog());
     out.extend(apple::status_catalog());
     out
 }
@@ -138,3 +153,5 @@ pub fn get(id: &str, version: &str) -> Option<Blueprint> {
 
 mod apple;
 mod windows;
+
+mod agent_windows;

@@ -41,6 +41,7 @@ impl ResourceStore {
             Some("script") => Some(1),
             Some("configuration") => Some(2),
             Some("native_collection") => Some(3),
+            Some("agent_collection") => Some(4),
             _ => return Ok(Err(Rejection::InvalidInput)),
         };
         let tenant = tx.tenant_id();

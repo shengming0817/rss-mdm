@@ -23,7 +23,11 @@ impl Inputs {
         let Some(input) = input else {
             return Ok(None);
         };
-        if matches!(input, ResourcePreparation::Script { .. }) && !self.signing_enabled {
+        if matches!(
+            input,
+            ResourcePreparation::Script { .. } | ResourcePreparation::AgentCollection { .. }
+        ) && !self.signing_enabled
+        {
             return Err(Error::Conflict);
         }
         let artifact = inspect(&self.runtime, self.tenant, (self, input), |ctx, tx| {
@@ -194,6 +198,14 @@ fn resource_artifact(
                 _ => return Err(Error::Malformed.into()),
             }
         }
+        ResourcePreparation::AgentCollection { binding } => {
+            match variant(version, binding)?.declaration() {
+                r::Declaration::AgentCollection { artifact, .. } => {
+                    (artifact.clone(), StorageClass::Artifact)
+                }
+                _ => return Err(Error::Malformed.into()),
+            }
+        }
         ResourcePreparation::NativeCollection { binding } => {
             match variant(version, binding)?.declaration() {
                 r::Declaration::NativeCollection { artifact, .. } => {
@@ -218,7 +230,9 @@ pub fn authorize_policy_snapshot(
 ) -> std::result::Result<(), crate::Error> {
     let permission = match definition.action {
         Action::Execution { .. } => Permission::ScriptExecute,
-        Action::NativeCollection { .. } => Permission::InventoryCollect,
+        Action::NativeCollection { .. } | Action::AgentCollection { .. } => {
+            Permission::InventoryCollect
+        }
         Action::Configuration { .. } => Permission::ConfigurationWrite,
         Action::Software { .. } | Action::EnsureAgentInstalled { .. } => Permission::SoftwareDeploy,
         Action::RequestMdmEnrollment { .. } => Permission::Enrollment,
@@ -230,4 +244,23 @@ pub fn authorize_policy_snapshot(
     snapshot.require_all_devices(proof, Permission::InventoryRead)?;
     snapshot.require_all_devices(proof, permission)?;
     Ok(())
+}
+
+fn agent_collection<'a>(
+    version: &'a r::Version,
+    binding: &ExactResourceBinding,
+    verified: Option<&Verified>,
+) -> Result<&'a r::AgentCollectionDefinition> {
+    let v = variant(version, binding)?;
+    let r::Declaration::AgentCollection {
+        definition,
+        artifact,
+    } = v.declaration()
+    else {
+        return Err(Error::Malformed.into());
+    };
+    if !verified.is_some_and(|v| v.matches(artifact)) {
+        return Err(Error::Conflict.into());
+    }
+    Ok(definition)
 }

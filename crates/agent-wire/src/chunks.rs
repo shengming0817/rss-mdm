@@ -180,23 +180,8 @@ impl ChunkedTaskResult {
         &self.0.manifest
     }
     /// Verify every position and the full digest before accepting a terminal output.
-    pub fn assemble(&self, mut chunks: Vec<OutputChunk>) -> Result<TaskResult, WireError> {
-        if chunks.len() != self.0.manifest.count() {
-            return Err(WireError::InvalidValue);
-        }
-        chunks.sort_by_key(OutputChunk::index);
-        let mut bytes = Vec::with_capacity(self.0.manifest.bytes() as usize);
-        for (index, chunk) in chunks.into_iter().enumerate() {
-            if usize::from(chunk.index()) != index || chunk.manifest() != &self.0.manifest {
-                return Err(WireError::InvalidValue);
-            }
-            bytes.extend(chunk.bytes());
-        }
-        if bytes.len() != self.0.manifest.bytes() as usize
-            || <[u8; 32]>::from(Sha256::digest(&bytes)) != self.0.manifest.sha256()
-        {
-            return Err(WireError::InvalidValue);
-        }
+    pub fn assemble(&self, chunks: Vec<OutputChunk>) -> Result<TaskResult, WireError> {
+        let bytes = self.0.manifest.assemble(chunks)?;
         let output: serde_json::Value =
             serde_json::from_slice(&bytes).map_err(|_| WireError::InvalidValue)?;
         if serde_json::to_vec(&output).map_err(|_| WireError::InvalidValue)? != bytes {
@@ -209,5 +194,28 @@ impl ChunkedTaskResult {
             self.0.diagnostics.clone(),
             self.0.collected_at,
         )
+    }
+}
+
+impl OutputManifest {
+    /// Verify and assemble exact bytes independently of result semantics.
+    pub fn assemble(&self, mut chunks: Vec<OutputChunk>) -> Result<Vec<u8>, WireError> {
+        if chunks.len() != self.count() {
+            return Err(WireError::InvalidValue);
+        }
+        chunks.sort_by_key(OutputChunk::index);
+        let mut bytes = Vec::with_capacity(self.bytes() as usize);
+        for (index, chunk) in chunks.into_iter().enumerate() {
+            if usize::from(chunk.index()) != index || chunk.manifest() != self {
+                return Err(WireError::InvalidValue);
+            }
+            bytes.extend(chunk.bytes());
+        }
+        if bytes.len() != self.bytes() as usize
+            || <[u8; 32]>::from(Sha256::digest(&bytes)) != self.sha256()
+        {
+            return Err(WireError::InvalidValue);
+        }
+        Ok(bytes)
     }
 }
