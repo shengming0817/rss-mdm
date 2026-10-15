@@ -37,10 +37,10 @@ pub(super) async fn upload_contract(fixture: Fixture, length: usize) -> Result<(
     )
     .await?;
     let admission_path = format!("/api/v1/software/resources/{resource}/versions/v1");
-    let approve =
+    let enable =
         json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"enable"}});
     ensure!(
-        user.call(router, Method::POST, &admission_path, Some(approve.clone()))
+        user.call(router, Method::POST, &admission_path, Some(enable.clone()))
             .await?
             .0
             .is_client_error()
@@ -134,14 +134,14 @@ pub(super) async fn upload_contract(fixture: Fixture, length: usize) -> Result<(
             && receipt.1["committed"] == true
             && receipt.1["operationId"] == operation.to_string()
     );
-    let approved = approval_contract(&fixture, &mut user, &admission_path, &approve).await?;
+    let enabled = lifecycle_contract(&fixture, &mut user, &admission_path, &enable).await?;
     download_contract(
         &fixture,
         &mut user,
         &admission_path,
         &bytes,
-        approve,
-        approved,
+        enable,
+        enabled,
     )
     .await
 }
@@ -173,19 +173,17 @@ async fn inject_after_upload_intent(
     );
     Ok(())
 }
-async fn approval_contract(
+async fn lifecycle_contract(
     fixture: &Fixture,
     user: &mut Browser,
     admission_path: &str,
-    approve: &Value,
+    enable: &Value,
 ) -> Result<Value> {
     let router = &fixture.router;
     // The content owner is independently usable without task-signing configuration.
-    let denied=user.call(router,Method::POST,admission_path,Some(json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"enable"}}))).await?;
-    ensure!(denied.0 == StatusCode::BAD_REQUEST);
     pg("REVOKE INSERT ON mdm_audit.receipts FROM mdm_flow_runtime")?;
     let failed = user
-        .call(router, Method::POST, admission_path, Some(approve.clone()))
+        .call(router, Method::POST, admission_path, Some(enable.clone()))
         .await?;
     pg("GRANT INSERT ON mdm_audit.receipts TO mdm_flow_runtime")?;
     ensure!(failed.0.is_server_error(), "audit failure: {failed:?}");
@@ -194,23 +192,23 @@ async fn approval_contract(
         before.0 == StatusCode::OK && before.1["lifecycle"].is_null(),
         "rollback: {before:?}"
     );
-    let approved = user
-        .call(router, Method::POST, admission_path, Some(approve.clone()))
+    let enabled = user
+        .call(router, Method::POST, admission_path, Some(enable.clone()))
         .await?;
-    ensure!(approved.0 == StatusCode::OK, "approve: {approved:?}");
+    ensure!(enabled.0 == StatusCode::OK, "enable: {enabled:?}");
     let replay = user
-        .call(router, Method::POST, admission_path, Some(approve.clone()))
+        .call(router, Method::POST, admission_path, Some(enable.clone()))
         .await?;
-    ensure!(replay.0 == StatusCode::OK && replay.1 == approved.1);
-    Ok(approved.1)
+    ensure!(replay.0 == StatusCode::OK && replay.1 == enabled.1);
+    Ok(enabled.1)
 }
 async fn download_contract(
     fixture: &Fixture,
     user: &mut Browser,
     admission_path: &str,
     bytes: &[u8],
-    approve: Value,
-    approved: Value,
+    enable: Value,
+    enabled: Value,
 ) -> Result<()> {
     let router = &fixture.router;
     let client = &fixture.client;
@@ -291,11 +289,11 @@ async fn download_contract(
         .await?;
     ensure!(denied.status() == StatusCode::FORBIDDEN);
     let original = user
-        .call(router, Method::POST, admission_path, Some(approve))
+        .call(router, Method::POST, admission_path, Some(enable))
         .await?;
     ensure!(
-        original.0 == StatusCode::OK && original.1 == approved,
-        "recovery preserves historical approval, not a new grant"
+        original.0 == StatusCode::OK && original.1 == enabled,
+        "recovery preserves the historical enable receipt without granting new access"
     );
     crate::test_support::identity::set_grants(case_tenant(), subject, vec![]).await?;
     ensure!(

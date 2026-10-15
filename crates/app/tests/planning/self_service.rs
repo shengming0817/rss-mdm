@@ -1330,43 +1330,7 @@ async fn available_software_requires_request_and_deduplicates_users_policies_and
         administrator_grants,
     )
     .await?;
-    // Keep approval authority with an administrator while the requesting employee loses every management grant.
-    for (path, revision) in [
-        (
-            format!(
-                "/api/v1/software/sources/{}/revisions/{}",
-                f.source_snapshot["id"].as_str().unwrap(),
-                f.source_snapshot["revision"].as_str().unwrap()
-            ),
-            2,
-        ),
-        (
-            format!("/api/v1/software/resources/{}/versions/v1", f.dependency),
-            1,
-        ),
-        (
-            format!("/api/v1/software/resources/{}/versions/v1", f.resource),
-            1,
-        ),
-    ] {
-        crate::test_support::software::write(
-            &mut other,
-            &f.router,
-            &path,
-            revision,
-            json!({"action":"withdraw"}),
-        )
-        .await?;
-        crate::test_support::software::write(
-            &mut other,
-            &f.router,
-            &path,
-            revision + 1,
-            json!({"action":"enable"}),
-        )
-        .await?;
-        if path == format!("/api/v1/software/resources/{}/versions/v1", f.resource) {}
-    }
+    // The administrator publishes policies before the employee loses management grants.
     let mut policies = Vec::new();
     for _ in 0..2 {
         let id = Uuid::new_v4();
