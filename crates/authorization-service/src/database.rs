@@ -13,10 +13,7 @@ impl Store {
         self.pool.acquire().await.map_err(db)
     }
     /// Startup validates the persisted recovery principal using the existing restricted pool.
-    pub async fn require_management_initializer(
-        &self,
-        policy: &crate::identity_management::IdentityManagementPolicy,
-    ) -> Result<(), Error> {
+    pub async fn require_management_initializer(&self) -> Result<(), Error> {
         let mut connection = None;
         let result = tokio::time::timeout(std::time::Duration::from_secs(3), async {
             connection = Some(self.acquire().await?);
@@ -26,7 +23,16 @@ impl Store {
             Self::configure_transaction(&mut tx, binding.management_tenant()).await?;
             let principal: Option<String> = sqlx::query_scalar("SELECT a.principal::text FROM mdm_access.authorization_initializations a JOIN public.mdm_installation i ON a.instance=i.instance_id AND a.tenant_id=i.management_tenant_id WHERE i.singleton")
                 .fetch_optional(&mut *tx).await.map_err(db)?;
-            let validation = policy.validate_initializer(binding.management_tenant(), principal.as_deref());
+            let validation = if let Some(principal) = principal {
+                let instance: String = sqlx::query_scalar("SELECT instance_id::text FROM public.mdm_installation WHERE singleton")
+                    .fetch_one(&mut *tx).await.map_err(db)?;
+                let snapshot = crate::snapshot_on(&mut tx, binding.management_tenant(), &instance).await?;
+                let valid = [crate::Permission::AuthorizationRead, crate::Permission::AuthorizationWrite, crate::Permission::IdentityAccountsManage]
+                    .into_iter().all(|permission| snapshot.rules.iter().filter_map(|r| r.value.as_ref()).any(|rule|
+                        matches!(&rule.subject, crate::Subject::User { user } if user.principal_id == principal)
+                            && rule.grants.iter().any(|g| g.covers(permission, None))));
+                if valid { Ok(()) } else { Err(Error::Configuration) }
+            } else { Ok(()) };
             tx.rollback().await.map_err(db)?;
             validation
         }).await;

@@ -84,7 +84,6 @@ fn static_business_permissions_are_rejected() {
     value["bindings"] = serde_json::json!([]);
     assert!(serde_json::from_value::<Config>(value.clone()).is_err());
     value.as_object_mut().unwrap().remove("bindings");
-    value["identity_management"] = serde_json::json!([]);
     assert!(
         serde_json::from_value::<Config>(value.clone())
             .unwrap()

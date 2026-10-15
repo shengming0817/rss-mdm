@@ -417,7 +417,7 @@ async fn crud_replays_original_snapshots_and_never_reuses_deleted_ids() -> anyho
     );
     edit.operation_id = Uuid::new_v4();
     let edited = mutate_on(&mut conn, &edit).await?;
-    ensure!(edited.tenant.revision == 2 && edited.tenant.name.as_deref() == Some("租户"));
+    ensure!(edited.tenant().revision == 2 && edited.tenant().name.as_deref() == Some("租户"));
     ensure!(mutate_on(&mut conn, &edit).await? == edited);
     edit.operation_id = Uuid::new_v4();
     ensure!(
@@ -428,12 +428,12 @@ async fn crud_replays_original_snapshots_and_never_reuses_deleted_ids() -> anyho
     );
     edit.expected_revision = Some(2);
     let same_value = mutate_on(&mut conn, &edit).await?;
-    ensure!(same_value.tenant.revision == 3);
+    ensure!(same_value.tenant().revision == 3);
     edit.expected_revision = Some(3);
     edit.operation_id = Uuid::new_v4();
     edit.name = None;
     edit.notes = None;
-    ensure!(mutate_on(&mut conn, &edit).await?.tenant.name.is_none());
+    ensure!(mutate_on(&mut conn, &edit).await?.tenant().name.is_none());
     let removed = Mutation {
         action: Action::Delete,
         expected_revision: Some(4),
@@ -441,7 +441,7 @@ async fn crud_replays_original_snapshots_and_never_reuses_deleted_ids() -> anyho
         ..edit
     };
     let deleted = mutate_on(&mut conn, &removed).await?;
-    ensure!(deleted.tenant.revision == 5 && !deleted.tenant.deletable);
+    ensure!(deleted.tenant().revision == 5 && !deleted.tenant().deletable);
     ensure!(mutate_on(&mut conn, &removed).await? == deleted);
     let fresh_delete = Mutation {
         operation_id: Uuid::new_v4(),
@@ -510,7 +510,7 @@ async fn crud_replays_original_snapshots_and_never_reuses_deleted_ids() -> anyho
         name: Some("still live"),
         ..delete_b
     };
-    ensure!(mutate_on(&mut conn, &edit_b).await?.tenant.revision == 2);
+    ensure!(mutate_on(&mut conn, &edit_b).await?.tenant().revision == 2);
     sqlx::query("UPDATE public.mdm_tenants SET revision=$2 WHERE tenant_id=$1::uuid")
         .bind(&b.tenant_id)
         .bind(i64::MAX)
@@ -560,7 +560,7 @@ async fn receipt_failure_never_partially_changes_metadata_or_deletes() -> anyhow
         );
         ensure!(receipt_on(&mut conn, change.operation_id).await?.is_none());
         let mut tx = operator_transaction(&mut conn, &a.installation).await?;
-        ensure!(tenant_on(&mut tx, &a.tenant_id, false).await? == original.tenant);
+        ensure!(tenant_on(&mut tx, &a.tenant_id, false).await? == *original.tenant());
         tx.rollback().await?;
     }
     conn.close().await?;

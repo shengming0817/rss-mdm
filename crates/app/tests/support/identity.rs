@@ -11,13 +11,12 @@ pub(crate) const INSTANCE: &str = "33333333-3333-4333-8333-333333333333";
 const BOOTSTRAP: &str = "44444444-4444-4444-8444-444444444444";
 pub(crate) const PASSWORD: &str = "Fixture-only-correct-horse-battery-2026!";
 pub(crate) fn config(tenant: &str) -> Result<Config> {
-    configured(tenant, super::case::context().admin_for(tenant))
+    configured(tenant)
 }
-fn configured(tenant: &str, principal: &str) -> Result<Config> {
+fn configured(tenant: &str) -> Result<Config> {
     let mut value: serde_json::Value =
         serde_json::from_slice(&std::fs::read(std::env::var("MDM_TEST_CONFIG")?)?)?;
     value["identity"]["tenant_id"] = tenant.into();
-    value["identity_management"] = serde_json::json!([{"tenant_id":tenant,"instance_id":INSTANCE,"principal_id":principal,"permissions":["accounts","providers"]}]);
     Ok(serde_json::from_value(value)?)
 }
 pub(crate) async fn identity(tenant: &str) -> Result<Identity> {
@@ -25,10 +24,7 @@ pub(crate) async fn identity(tenant: &str) -> Result<Identity> {
 }
 async fn identity_with(config: Config) -> Result<Identity> {
     let policy = Arc::new(
-        crate::authorization::identity_management::IdentityManagementPolicy::new(
-            INSTANCE,
-            config.identity_management.clone(),
-        )?,
+        crate::authorization::identity_management::IdentityManagementPolicy::new(INSTANCE)?,
     );
     Ok(Identity::connect(&config, policy, |_| {}).await?)
 }
@@ -124,7 +120,7 @@ async fn prepare_identity() -> Result<()> {
     for tenant in &manifest.tenants {
         let mut phase = "configuration";
         let prepared: Result<_> = async {
-            let config = configured(tenant, BOOTSTRAP)?;
+            let config = configured(tenant)?;
             phase = "access-connect";
             let access = crate::Database::connect(config.access_database.options()?).await?;
             phase = "audit-connect";
@@ -255,7 +251,7 @@ async fn prepare_sessions(cases: &[std::path::PathBuf], root: &std::path::Path) 
     for path in cases {
         let context = CaseContext::read(path, Phase::Ready)?;
         for tenant in context.identity_tenants() {
-            let identity = identity_with(configured(tenant, context.admin_for(tenant))?).await?;
+            let identity = identity_with(configured(tenant)?).await?;
             for kind in ["admin", "other"] {
                 let started = rss_request_context::Clock::now(&crate::lifecycle::RuntimeTimer);
                 let secret = login_named(&identity, context.account_login(kind))
@@ -447,7 +443,6 @@ pub(crate) async fn session_authority(
     let policy = Arc::new(
         crate::authorization::identity_management::IdentityManagementPolicy::new(
             &config.identity.instance_id,
-            config.identity_management.clone(),
         )?,
     );
     let identity = Identity::connect(config, policy, |_| {}).await?;

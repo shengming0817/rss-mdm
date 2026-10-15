@@ -21,4 +21,6 @@ GRANT SELECT ON TABLE mdm_access.user_groups TO mdm_flow_runtime,mdm_software_dr
 GRANT UPDATE(revision) ON TABLE mdm_access.user_groups TO mdm_access;
 
 GRANT UPDATE(document) ON TABLE mdm_access.user_groups TO mdm_access;
+GRANT USAGE ON SCHEMA mdm_access TO mdm_identity_runtime;
+GRANT SELECT ON mdm_access.authorization_rules,mdm_access.user_groups,mdm_access.authorization_initializations TO mdm_identity_runtime;
 COMMIT;

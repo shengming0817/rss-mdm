@@ -80,6 +80,14 @@ pub async fn initialize_on(c: &mut PgConnection, tenant: &str) -> Result<(), Err
         .execute(c).await.map_err(db)?;
     Ok(())
 }
+/// Fresh-install seed SQL shares the persisted default value definition.
+pub fn tenant_seed_sql() -> &'static str {
+    static SQL: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    SQL.get_or_init(|| {
+        let body = serde_json::to_string(&Values::default()).expect("default settings serialization").replace('\'', "''");
+        format!("CREATE FUNCTION mdm_access.seed_tenant_settings(t uuid) RETURNS void LANGUAGE sql SET search_path=pg_catalog,pg_temp AS $seed$ INSERT INTO mdm_access.agent_enrollment_settings(tenant_id,revision,document) VALUES(t,1,'{body}'::jsonb); $seed$; REVOKE ALL ON FUNCTION mdm_access.seed_tenant_settings(uuid) FROM PUBLIC;")
+    })
+}
 pub async fn read_on(c: &mut PgConnection, tenant: &str) -> Result<Settings, Error> {
     let row = sqlx::query("SELECT revision,document FROM mdm_access.agent_enrollment_settings WHERE tenant_id=$1::uuid")
         .bind(tenant).fetch_one(c).await.map_err(db)?;

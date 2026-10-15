@@ -44,6 +44,7 @@ pub(crate) struct Identity {
     pub(crate) authority: Authority,
     pub(crate) tenant: TenantId,
     pub(crate) management_tenant: TenantId,
+    pub(crate) tenant_administration: Option<Arc<crate::tenant_registry::http::Service>>,
     pub(crate) audit_readiness: Arc<crate::identity_audit::Readiness>,
     routes: Router,
     http: rss_identity_http_axum::HttpConfig,
@@ -85,7 +86,6 @@ impl Identity {
         let tenant = TenantId::parse(&config.identity.tenant_id).map_err(|_| invalid())?;
         let instance = InstanceId::parse(&config.identity.instance_id).map_err(|_| invalid())?;
         let management_tenant = management_tenant(&config.identity.database, instance).await?;
-        policy.validate_admission(&config.identity.tenant_id, &management_tenant.to_string())?;
         let runtime = open_runtime(
             &config.identity.database,
             &config.flow.storage.target,
@@ -108,13 +108,21 @@ impl Identity {
         )));
         let authority = Authority::connect_runtime(
             runtime,
-            kdf,
+            kdf.clone(),
             authority_config(instance, vec![tenant, management_tenant])?,
-            policy,
+            policy.clone(),
             deadline(),
         )
         .await
         .map_err(failure)?;
+        let tenant_administration =
+            crate::tenant_registry::http::Service::connect(config, management_tenant, kdf, policy)
+                .await?;
+        if let Some(service) = &tenant_administration {
+            acquire(rss_runtime::DynManagedResource::new_box(
+                crate::tenant_registry::http::Resource(service.clone()),
+            ));
+        }
         let http = rss_identity_http_axum::HttpConfig::new(
             &config.product_origin,
             Duration::from_secs(10),
@@ -145,6 +153,7 @@ impl Identity {
             authority,
             tenant,
             management_tenant,
+            tenant_administration,
             audit_readiness: Arc::default(),
             routes,
             http,

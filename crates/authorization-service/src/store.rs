@@ -220,19 +220,9 @@ async fn change_authorization_on<T: serde::Serialize + Sync>(
         return Err(Error::Conflict);
     }
     if revision == 0 {
-        let count: i64 = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
-            "SELECT count(*) FROM mdm_access.{} WHERE tenant_id=$1::uuid AND instance=$2::uuid",
-            table.name()
-        )))
-        .bind(proof.tenant_id())
-        .bind(proof.instance_id())
-        .fetch_one(&mut *tx)
-        .await
-        .map_err(db)?;
-        if count >= 10000 {
-            return Err(Error::Conflict);
-        }
+        require_insert_capacity(tx, table, proof.tenant_id(), proof.instance_id()).await?;
     }
+
     let query = format!(
         "INSERT INTO mdm_access.{}(tenant_id,instance,id,revision,document) VALUES($1::uuid,$2::uuid,$3::uuid,$4,$5::jsonb) ON CONFLICT(tenant_id,instance,id) DO UPDATE SET revision=excluded.revision,document=excluded.document",
         table.name()
@@ -246,10 +236,7 @@ async fn change_authorization_on<T: serde::Serialize + Sync>(
         .execute(&mut *tx)
         .await
         .map_err(db)?;
-    let bounded: bool = sqlx::query_scalar("SELECT (SELECT coalesce(sum(octet_length(document::text)),0) FROM mdm_access.authorization_rules WHERE tenant_id=$1::uuid AND instance=$2::uuid)+(SELECT coalesce(sum(octet_length(document::text)),0) FROM mdm_access.user_groups WHERE tenant_id=$1::uuid AND instance=$2::uuid)<=8388608").bind(proof.tenant_id()).bind(proof.instance_id()).fetch_one(&mut *tx).await.map_err(db)?;
-    if !bounded {
-        return Err(Error::Conflict);
-    }
+    require_document_capacity(tx, proof.tenant_id(), proof.instance_id()).await?;
     if current
         .installation
         .as_ref()
@@ -271,6 +258,67 @@ async fn change_authorization_on<T: serde::Serialize + Sync>(
     )
     .await?;
     Ok((receipt, false))
+}
+
+/// Add a complete business administrator inside the caller's target transaction.
+/// The host owns source authentication and must roll back on any error.
+pub async fn grant_tenant_administrator_on(
+    tx: &mut sqlx::PgConnection,
+    user: User,
+    id: Uuid,
+) -> Result<Receipt, Error> {
+    if id.is_nil() {
+        return Err(Error::Malformed);
+    }
+    let tenant = user.tenant_id.clone();
+    let instance = user.instance_id.clone();
+    let rule = tenant_administrator_rule(user);
+    rule.validate(&tenant, &instance)?;
+    let installation = crate::tenancy::InstallationTenants::load(tx).await?;
+    installation.require_identity(&instance, &tenant, Permission::InventoryRead)?;
+    installation.validate_rule(&tenant, &rule)?;
+    lock(tx, &tenant, &instance).await?;
+    require_insert_capacity(tx, Table::Rules, &tenant, &instance).await?;
+    sqlx::query("INSERT INTO mdm_access.authorization_rules(tenant_id,instance,id,revision,document) VALUES($1::uuid,$2::uuid,$3,1,$4)")
+        .bind(&tenant).bind(&instance).bind(id).bind(serde_json::to_value(rule).map_err(|_| Error::Malformed)?)
+        .execute(&mut *tx).await.map_err(db)?;
+    require_document_capacity(tx, &tenant, &instance).await?;
+    Ok(Receipt {
+        id,
+        revision: 1,
+        deleted: false,
+    })
+}
+async fn require_insert_capacity(
+    tx: &mut sqlx::PgConnection,
+    table: Table,
+    tenant: &str,
+    instance: &str,
+) -> Result<(), Error> {
+    let count: i64 = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
+        "SELECT count(*) FROM mdm_access.{} WHERE tenant_id=$1::uuid AND instance=$2::uuid",
+        table.name()
+    )))
+    .bind(tenant)
+    .bind(instance)
+    .fetch_one(tx)
+    .await
+    .map_err(db)?;
+    if count >= 10000 {
+        return Err(Error::Conflict);
+    }
+    Ok(())
+}
+async fn require_document_capacity(
+    tx: &mut sqlx::PgConnection,
+    tenant: &str,
+    instance: &str,
+) -> Result<(), Error> {
+    let bounded: bool = sqlx::query_scalar("SELECT (SELECT coalesce(sum(octet_length(document::text)),0) FROM mdm_access.authorization_rules WHERE tenant_id=$1::uuid AND instance=$2::uuid)+(SELECT coalesce(sum(octet_length(document::text)),0) FROM mdm_access.user_groups WHERE tenant_id=$1::uuid AND instance=$2::uuid)<=8388608").bind(tenant).bind(instance).fetch_one(&mut *tx).await.map_err(db)?;
+    if !bounded {
+        return Err(Error::Conflict);
+    }
+    Ok(())
 }
 
 async fn read_snapshot(
@@ -311,6 +359,7 @@ async fn protect_management_initializer(
     for permission in [
         Permission::AuthorizationRead,
         Permission::AuthorizationWrite,
+        Permission::IdentityAccountsManage,
     ] {
         if !projected
             .rules
@@ -476,6 +525,8 @@ async fn initialize_on(
             Permission::TenantRead,
             Permission::TenantUpdate,
             Permission::TenantDelete,
+            Permission::TenantAdministratorCreate,
+            Permission::IdentityAccountsManage,
         ]
     } else {
         &[
@@ -484,6 +535,8 @@ async fn initialize_on(
             Permission::UserGroupRead,
             Permission::UserGroupWrite,
             Permission::DepartmentRead,
+            Permission::IdentityAccountsManage,
+            Permission::IdentityProvidersManage,
         ]
     };
     let rule = Rule {

@@ -268,6 +268,7 @@ END $$;
 GRANT USAGE ON SCHEMA mdm TO mdm_access,mdm_command_runtime;
 GRANT SELECT ON mdm.field_versions TO mdm_access,mdm_command_runtime;
 GRANT SELECT,INSERT ON mdm.field_versions TO mdm_flow_runtime;
+GRANT EXECUTE ON FUNCTION mdm.append_field_version(uuid,text,bigint,jsonb) TO mdm_flow_runtime;
 GRANT SELECT,INSERT ON mdm.collection_definitions TO mdm_access,mdm_command_runtime,mdm_flow_runtime;
 GRANT SELECT,INSERT ON mdm.collection_results TO mdm_access,mdm_command_runtime;
 GRANT EXECUTE ON FUNCTION mdm.record_asset_change(uuid,text,jsonb,text[]) TO mdm_flow_runtime;

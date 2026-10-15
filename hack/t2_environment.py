@@ -257,7 +257,7 @@ class Environment:
         for role in ('mdm_policy_runtime','mdm_resource_runtime','mdm_software_release_runtime','mdm_group_runtime',
                      'mdm_flow_runtime','mdm_command_runtime','mdm_software_driver'):
             sql += f"ALTER ROLE {role} LOGIN PASSWORD 'runtime-fixture';"
-        for role, password in [('mdm_identity_runtime','identity-runtime-fixture'),('mdm_identity_maintenance','identity-maintenance-fixture'),('mdm_identity_audit','identity-audit-fixture')]:
+        for role, password in [('mdm_identity_runtime','identity-runtime-fixture'),('mdm_identity_maintenance','identity-maintenance-fixture'),('mdm_identity_audit','identity-audit-fixture'),('mdm_tenant_registry','tenant-registry-fixture'),('mdm_identity_provisioning','identity-provisioning-fixture')]:
             sql += f"ALTER ROLE {role} LOGIN PASSWORD '{password}';"
         sql += 'CREATE ROLE mdm_group_owner NOLOGIN NOSUPERUSER NOBYPASSRLS; GRANT rss_tmsg_relay TO mdm_group_owner;'
         self.sql('BEGIN;'+sql+' COMMIT;')
@@ -377,7 +377,6 @@ class Environment:
         config['identity']['database']=database(runtime,'mdm_identity_runtime');config['identity']['audit_worker']=database(runtime,'mdm_identity_audit')
         config['execution']['database']=database(runtime,'mdm_command_runtime')
         config['flow']['storage']['database']=database(runtime,'mdm_flow_runtime');config['flow']['publication']['database']=database(runtime,'mdm_software_driver')
-        config['identity_management']=[dict(tenant_id=TENANTS[0],instance_id=INSTANCE,principal_id=ADMIN,permissions=['accounts','providers'])]
         private(runtime/'runtime.json',config)
         password=self.root/'account-password'
         if not password.exists():private(password,secrets.token_urlsafe(32))

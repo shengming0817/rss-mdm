@@ -273,16 +273,11 @@ impl Host {
             value["native_protocols"]["windows"]["additional_management"] =
                 serde_json::json!([endpoint]);
         }
-        let mut config: crate::config::Config = serde_json::from_value(value)?;
-        if entra.is_some() {
-            config.identity_management =
-                crate::test_support::identity::config(case_tenant())?.identity_management;
-        }
+        let config: crate::config::Config = serde_json::from_value(value)?;
         let clock = Arc::new(crate::clock::SystemClock);
         let identity_management = Arc::new(
             crate::authorization::identity_management::IdentityManagementPolicy::new(
                 crate::test_support::identity::INSTANCE,
-                config.identity_management.clone(),
             )?,
         );
         let identity =

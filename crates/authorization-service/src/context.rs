@@ -25,6 +25,9 @@ impl AuthorizedPrincipal {
         audit.set_principal(self.principal_id(), self.instance_id());
         Ok(())
     }
+    pub fn shared_session(&self) -> Arc<AuthenticatedSession> {
+        self.identity.session.clone()
+    }
     pub fn session(&self) -> &AuthenticatedSession {
         self.identity.session()
     }
@@ -139,7 +142,7 @@ pub struct RequestAuth {
 
 /// A single private projection, created only from a request's authoritative component result.
 pub struct Principal {
-    session: AuthenticatedSession,
+    session: Arc<AuthenticatedSession>,
     instance: String,
     tenant: String,
     principal: String,
@@ -151,7 +154,7 @@ impl Principal {
             instance: session.instance().to_string(),
             tenant: session.account().tenant.to_string(),
             principal: session.account().principal.as_uuid().to_string(),
-            session,
+            session: Arc::new(session),
         })
     }
     pub fn session(&self) -> &AuthenticatedSession {

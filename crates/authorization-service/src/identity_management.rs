@@ -1,84 +1,16 @@
-use crate::Error;
-use crate::context::AuthorizedPrincipal;
-use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, BTreeSet};
-#[derive(Clone, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct IdentityManagementGrant {
-    pub tenant_id: String,
-    pub instance_id: String,
-    pub principal_id: String,
-    pub permissions: BTreeSet<IdentityPermission>,
-}
+//! Identity management consumes the same persisted product grants as business authorization.
+use crate::{Error, Permission, context::AuthorizedPrincipal};
+use serde::Serialize;
+
 pub struct IdentityManagementPolicy {
     instance: String,
-    grants: BTreeMap<(String, String), IdentityManagementGrant>,
 }
 impl IdentityManagementPolicy {
-    pub fn new(instance: &str, grants: Vec<IdentityManagementGrant>) -> Result<Self, Error> {
-        let invalid = || Error::Configuration;
-        crate::canonical_uuid(instance).map_err(|_| invalid())?;
-        if grants.len() > 10000 {
-            return Err(invalid());
-        }
-        let mut entries = BTreeMap::new();
-        for grant in grants {
-            crate::canonical_uuid(&grant.tenant_id).map_err(|_| invalid())?;
-            crate::canonical_uuid(&grant.principal_id).map_err(|_| invalid())?;
-            if grant.instance_id != instance
-                || grant.permissions.is_empty()
-                || entries
-                    .insert((grant.tenant_id.clone(), grant.principal_id.clone()), grant)
-                    .is_some()
-            {
-                return Err(invalid());
-            }
-        }
+    pub fn new(instance: &str) -> Result<Self, Error> {
+        crate::canonical_uuid(instance).map_err(|_| Error::Configuration)?;
         Ok(Self {
             instance: instance.into(),
-            grants: entries,
         })
-    }
-    /// Runtime accepts exactly the business and installation management tenant.
-    pub fn validate_admission(&self, business: &str, management: &str) -> Result<(), Error> {
-        if business == management
-            || self.grants.values().any(|grant| {
-                (grant.tenant_id != business && grant.tenant_id != management)
-                    || (grant.tenant_id == management
-                        && grant.permissions.contains(&IdentityPermission::Providers))
-            })
-        {
-            return Err(Error::Configuration);
-        }
-        Ok(())
-    }
-    /// Every configured management account administrator requires a protected initializer.
-    pub(crate) fn validate_initializer(
-        &self,
-        management: &str,
-        principal: Option<&str>,
-    ) -> Result<(), Error> {
-        let accounts = |grant: &IdentityManagementGrant| {
-            grant.permissions.contains(&IdentityPermission::Accounts)
-        };
-        match principal {
-            Some(principal)
-                if self
-                    .grants
-                    .get(&(management.into(), principal.into()))
-                    .is_some_and(accounts) =>
-            {
-                Ok(())
-            }
-            None if !self
-                .grants
-                .values()
-                .any(|grant| grant.tenant_id == management && accounts(grant)) =>
-            {
-                Ok(())
-            }
-            _ => Err(Error::Configuration),
-        }
     }
     pub fn identity_navigation(
         &self,
@@ -88,14 +20,15 @@ impl IdentityManagementPolicy {
         if proof.instance_id() != self.instance {
             return Err(Error::Unauthorized);
         }
-        let grant = self
-            .grants
-            .get(&(proof.tenant_id().into(), proof.principal_id().into()));
+        // Require the loaded snapshot even when neither capability is granted.
+        proof.authorization()?;
         Ok(IdentityNavigation {
-            manage_accounts: grant
-                .is_some_and(|g| g.permissions.contains(&IdentityPermission::Accounts)),
-            manage_providers: grant
-                .is_some_and(|g| g.permissions.contains(&IdentityPermission::Providers)),
+            manage_accounts: proof
+                .require(Permission::IdentityAccountsManage, None)
+                .is_ok(),
+            manage_providers: proof
+                .require(Permission::IdentityProvidersManage, None)
+                .is_ok(),
         })
     }
 }
@@ -105,70 +38,88 @@ pub struct IdentityNavigation {
     pub manage_accounts: bool,
     pub manage_providers: bool,
 }
-/// Product-owned grants for the embedded account and provider planning interfaces.
-#[derive(Clone, Copy, Debug, Deserialize, Serialize, Eq, PartialEq, Ord, PartialOrd)]
-#[serde(rename_all = "snake_case")]
-pub enum IdentityPermission {
-    Accounts,
-    Providers,
-}
 impl rss_identity_postgres::ManagementPolicy for IdentityManagementPolicy {
-    fn authorize(
-        &self,
-        context: &rss_identity_postgres::ManagementContext<'_>,
-    ) -> Result<
-        rss_identity_postgres::ReauthenticationRequirement,
-        rss_identity_postgres::ManagementDenied,
+    fn authorize<'a>(
+        &'a self,
+        context: &'a rss_identity_postgres::ManagementContext<'a>,
+        connection: &'a mut sqlx::PgConnection,
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<
+                    Output = Result<
+                        rss_identity_postgres::ReauthenticationRequirement,
+                        rss_identity_postgres::ManagementDenied,
+                    >,
+                > + Send
+                + 'a,
+        >,
     > {
-        use rss_identity_postgres::{
-            ManagementDenied, ManagementOperation as Op, ReauthenticationRequirement as Auth,
-        };
-        if context.instance().to_string() != self.instance
-            || context
-                .target()
-                .is_some_and(|target| target.tenant != context.actor().tenant)
-        {
-            return Err(ManagementDenied);
-        }
-        if context.operation() == Op::ChangeOwnPassword {
-            return if context.target() == Some(context.actor()) {
-                Ok(Auth::Recent(std::time::Duration::from_secs(300)))
-            } else {
-                Err(ManagementDenied)
+        Box::pin(async move {
+            use rss_identity_postgres::{
+                ManagementDenied, ManagementOperation as Op, ReauthenticationRequirement as Auth,
             };
-        }
-        let actor = self
-            .grants
-            .get(&(
-                context.actor().tenant.to_string(),
-                context.actor().principal.as_uuid().to_string(),
-            ))
-            .ok_or(ManagementDenied)?;
-        let permission = match context.operation() {
-            Op::ListProviders
-            | Op::CreateProvider
-            | Op::UpdateProvider(_)
-            | Op::SetProviderEnabled(_, _)
-            | Op::TestProvider(_) => IdentityPermission::Providers,
-            _ => IdentityPermission::Accounts,
-        };
-        if !actor.permissions.contains(&permission) {
-            return Err(ManagementDenied);
-        }
-        // Protect every restart-owned account manager from disabling/removing membership.
-        if matches!(
-            context.operation(),
-            Op::SetAccountEnabled(false) | Op::SetMembership(false)
-        ) && context.target().is_some_and(|key| {
-            self.grants
-                .get(&(key.tenant.to_string(), key.principal.as_uuid().to_string()))
-                .is_some_and(|binding| binding.permissions.contains(&IdentityPermission::Accounts))
-        }) {
-            return Err(ManagementDenied);
-        }
-        Ok(match context.operation() {
-            Op::ListAccounts | Op::ListProviders => Auth::None,
-            _ => Auth::Recent(std::time::Duration::from_secs(300)),
+            context.check_live()?;
+            if context.instance().to_string() != self.instance
+                || context
+                    .target()
+                    .is_some_and(|target| target.tenant != context.actor().tenant)
+            {
+                return Err(ManagementDenied);
+            }
+            if context.operation() == Op::ChangeOwnPassword {
+                return if context.target() == Some(context.actor()) {
+                    Ok(Auth::Recent(std::time::Duration::from_secs(300)))
+                } else {
+                    Err(ManagementDenied)
+                };
+            }
+            let tenant = context.actor().tenant.to_string();
+            crate::store::lock(connection, &tenant, &self.instance)
+                .await
+                .map_err(|_| ManagementDenied)?;
+            let snapshot = crate::snapshot_on(connection, &tenant, &self.instance)
+                .await
+                .map_err(|_| ManagementDenied)?;
+            let permission = match context.operation() {
+                Op::ProvisionAccount(target) => {
+                    let installation = snapshot.installation.as_ref().ok_or(ManagementDenied)?;
+                    if installation.is_management(&target.to_string()) {
+                        return Err(ManagementDenied);
+                    }
+                    Permission::TenantAdministratorCreate
+                }
+                Op::ListProviders
+                | Op::CreateProvider
+                | Op::UpdateProvider(_)
+                | Op::SetProviderEnabled(_, _)
+                | Op::TestProvider(_) => Permission::IdentityProvidersManage,
+                _ => Permission::IdentityAccountsManage,
+            };
+            snapshot
+                .require_management(context, permission)
+                .map_err(|_| ManagementDenied)?;
+            if matches!(
+                context.operation(),
+                Op::SetAccountEnabled(false) | Op::SetMembership(false)
+            ) && snapshot
+                .installation
+                .as_ref()
+                .ok_or(ManagementDenied)?
+                .is_management(&tenant)
+                && let Some(target) = context.target()
+            {
+                let protected: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_access.authorization_initializations WHERE tenant_id=$1::uuid AND instance=$2::uuid AND principal=$3::uuid)")
+                        .bind(&tenant).bind(&self.instance).bind(target.principal.as_uuid().to_string())
+                        .fetch_one(connection).await.map_err(|_| ManagementDenied)?;
+                if protected {
+                    return Err(ManagementDenied);
+                }
+            }
+            context.check_live()?;
+            Ok(match context.operation() {
+                Op::ListAccounts | Op::ListProviders => Auth::None,
+                _ => Auth::Recent(std::time::Duration::from_secs(300)),
+            })
         })
     }
 }

@@ -113,6 +113,28 @@ impl Snapshot {
         }
         Err(AuthorizationError::Forbidden)
     }
+    pub(crate) fn require_management(
+        &self,
+        context: &rss_identity_postgres::ManagementContext<'_>,
+        operation: Permission,
+    ) -> Result<(), AuthorizationError> {
+        let facts = SubjectFacts::Management(context);
+        facts.check_live()?;
+        let user = facts.user();
+        self.installation
+            .as_ref()
+            .ok_or(AuthorizationError::Corrupt)?
+            .require_identity(&user.instance_id, &user.tenant_id, operation)
+            .map_err(|_| AuthorizationError::Forbidden)?;
+        for rule in self.rules.iter().filter_map(|r| r.value.as_ref()) {
+            if rule.grants.iter().any(|g| g.covers(operation, None))
+                && self.matches_facts(&facts, &rule.subject)?.is_some()
+            {
+                return facts.check_live();
+            }
+        }
+        Err(AuthorizationError::Forbidden)
+    }
     pub fn inventory_devices(
         &self,
         proof: &AuthorizedPrincipal,
@@ -316,19 +338,28 @@ impl Snapshot {
 pub enum SubjectFacts<'a> {
     Authenticated(&'a rss_identity_postgres::AuthenticatedSession),
     Revalidated(&'a rss_identity_postgres::RevalidatedSession),
+    Management(&'a rss_identity_postgres::ManagementContext<'a>),
 }
 impl SubjectFacts<'_> {
     fn check_live(&self) -> Result<(), AuthorizationError> {
-        let result = match self {
-            Self::Authenticated(proof) => proof.assurance().map(|_| ()),
-            Self::Revalidated(proof) => proof.check_live(),
-        };
-        result.map_err(|_| AuthorizationError::Unauthorized)
+        match self {
+            Self::Authenticated(proof) => proof
+                .assurance()
+                .map(|_| ())
+                .map_err(|_| AuthorizationError::Unauthorized),
+            Self::Revalidated(proof) => proof
+                .check_live()
+                .map_err(|_| AuthorizationError::Unauthorized),
+            Self::Management(proof) => proof
+                .check_live()
+                .map_err(|_| AuthorizationError::Unauthorized),
+        }
     }
     pub fn user(&self) -> User {
         let (instance, account) = match self {
             Self::Authenticated(proof) => (proof.instance(), proof.account()),
             Self::Revalidated(proof) => (proof.instance(), proof.account()),
+            Self::Management(proof) => (proof.instance(), proof.actor()),
         };
         User {
             instance_id: instance.to_string(),
@@ -340,12 +371,14 @@ impl SubjectFacts<'_> {
         match self {
             Self::Authenticated(proof) => proof.groups(),
             Self::Revalidated(proof) => proof.groups(),
+            Self::Management(proof) => proof.groups(),
         }
     }
     fn department_snapshot(&self) -> Result<VerifiedDepartmentSnapshot<'_>, DepartmentAccessError> {
         match self {
             Self::Authenticated(proof) => proof.department_snapshot(),
             Self::Revalidated(proof) => proof.department_snapshot(),
+            Self::Management(proof) => proof.department_snapshot(),
         }
     }
 }

@@ -1,6 +1,6 @@
 //! Configuration is read once; all changes require a process restart.
 use crate::ConfigIssue;
-use crate::{Error, authorization::identity_management::IdentityManagementGrant};
+use crate::Error;
 use serde::Deserialize;
 use sqlx::postgres::{PgConnectOptions, PgSslMode};
 use std::{
@@ -40,7 +40,7 @@ impl AuditConfig {
     }
 }
 
-#[derive(Deserialize, serde::Serialize)]
+#[derive(Clone, Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Database {
     pub host: String,
@@ -121,8 +121,8 @@ pub struct Config {
     pub(crate) content: Option<rss_mdm_content_service::Config>,
     pub(crate) task_signing: Option<crate::task_signing::Config>,
     pub(crate) flow: crate::flow::Config,
-    pub identity_management: Vec<IdentityManagementGrant>,
     pub native_protocols: NativeProtocols,
+    pub tenant_administration: Option<crate::tenant_registry::http::Config>,
 }
 pub(crate) struct Compiled {
     pub config: Config,
@@ -138,7 +138,7 @@ impl Config {
             .map(Arc::new)
             .map_err(|_| Error::Configuration(ConfigIssue::NativeProtection))
     }
-    pub(crate) fn compile(mut self) -> Result<Compiled, Error> {
+    pub(crate) fn compile(self) -> Result<Compiled, Error> {
         if !self.listen.ip().is_loopback() {
             return Err(Error::Configuration(ConfigIssue::Listen));
         }
@@ -238,7 +238,6 @@ impl Config {
         let identity_management =
             crate::authorization::identity_management::IdentityManagementPolicy::new(
                 &self.identity.instance_id,
-                std::mem::take(&mut self.identity_management),
             )?;
         let worker = &self.identity.audit_worker;
         let runtime = &self.identity.database;

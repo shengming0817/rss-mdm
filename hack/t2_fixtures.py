@@ -137,8 +137,6 @@ class RunFixtures:
         config['native_protocols'] = {}
         config['device_pki'] = []
         config['native_protection_key_file'] = str(self.native_key)
-        config['identity_management'] = [dict(tenant_id=tenant, instance_id=INSTANCE, principal_id=ADMIN,
-                                               permissions=['accounts', 'providers'])]
         return config
 
     def prepare_identity(self, pool, database, jobs, output):
@@ -174,7 +172,6 @@ class RunFixtures:
             context = validate(json.loads((case_root / 'case.json').read_text()), ready=True)
             self.case_contexts[job.key] = context
             value = self.runtime_config(pool, case_root, database, context['tenant'])
-            value['identity_management'][0]['principal_id'] = context['admins'][context['tenant']]
             value['content'] = json.loads((root / 'content.json').read_text())
             value['task_signing'] = json.loads((root / 'task-signing.json').read_text())
             private(case_root / 'runtime.json', value)

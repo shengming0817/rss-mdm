@@ -10,6 +10,9 @@ pub enum Permission {
     TenantRead,
     TenantUpdate,
     TenantDelete,
+    TenantAdministratorCreate,
+    IdentityAccountsManage,
+    IdentityProvidersManage,
     CertificateArchiveRead,
     CertificateArchiveWrite,
     CertificateArchiveUnlock,
@@ -70,12 +73,19 @@ impl Permission {
     pub fn tenant_management(self) -> bool {
         matches!(
             self,
-            Self::TenantCreate | Self::TenantRead | Self::TenantUpdate | Self::TenantDelete
+            Self::TenantCreate
+                | Self::TenantRead
+                | Self::TenantUpdate
+                | Self::TenantDelete
+                | Self::TenantAdministratorCreate
         )
     }
     pub(crate) fn management_allowed(self) -> bool {
         self.tenant_management()
-            || matches!(self, Self::AuthorizationRead | Self::AuthorizationWrite)
+            || matches!(
+                self,
+                Self::AuthorizationRead | Self::AuthorizationWrite | Self::IdentityAccountsManage
+            )
     }
     /// Whether this permission is granted for devices rather than the tenant.
     pub fn device(self) -> bool {
@@ -103,6 +113,9 @@ impl Permission {
             | Self::TenantRead
             | Self::TenantUpdate
             | Self::TenantDelete
+            | Self::TenantAdministratorCreate
+            | Self::IdentityAccountsManage
+            | Self::IdentityProvidersManage
             | Self::AgentEnrollmentRead
             | Self::AgentEnrollmentWrite
             | Self::CertificateArchiveRead
@@ -351,4 +364,79 @@ pub fn canonical_uuid(value: &str) -> Result<(), AuthorizationError> {
         return Err(AuthorizationError::Malformed);
     }
     Ok(())
+}
+
+/// Complete business-tenant administration; installation registry permissions are excluded.
+pub fn tenant_administrator_rule(user: User) -> Rule {
+    let operations = [
+        Permission::IdentityAccountsManage,
+        Permission::IdentityProvidersManage,
+        Permission::CertificateArchiveRead,
+        Permission::CertificateArchiveWrite,
+        Permission::CertificateArchiveUnlock,
+        Permission::CertificateArchiveExport,
+        Permission::RuntimeDiagnosticsRead,
+        Permission::InventoryRead,
+        Permission::InventorySensitiveRead,
+        Permission::InventoryFieldsWrite,
+        Permission::ComplianceRead,
+        Permission::ComplianceRuleRead,
+        Permission::ComplianceWrite,
+        Permission::ComplianceRecompute,
+        Permission::InventoryCollect,
+        Permission::InventoryAssign,
+        Permission::Enrollment,
+        Permission::AgentEnrollmentRead,
+        Permission::AgentEnrollmentWrite,
+        Permission::Credentials,
+        Permission::DeviceWipe,
+        Permission::ConfigurationWrite,
+        Permission::WindowsMiExecute,
+        Permission::DeviceControl,
+        Permission::DeviceUpdate,
+        Permission::DeviceAssociationWrite,
+        Permission::AccountWrite,
+        Permission::SecurityOperate,
+        Permission::DeviceDiagnostics,
+        Permission::ScriptExecute,
+        Permission::SoftwareDeploy,
+        Permission::OperationRead,
+        Permission::OperationCancel,
+        Permission::AuthorizationRead,
+        Permission::AuthorizationWrite,
+        Permission::UserGroupRead,
+        Permission::UserGroupWrite,
+        Permission::DepartmentRead,
+        Permission::GroupRead,
+        Permission::GroupWrite,
+        Permission::GroupRecompute,
+        Permission::ScopeRead,
+        Permission::ScopeWrite,
+        Permission::PolicyRead,
+        Permission::PolicyWrite,
+        Permission::ResourceRead,
+        Permission::ResourceWrite,
+        Permission::SoftwareRead,
+        Permission::SoftwareWrite,
+        Permission::SoftwareWithdraw,
+        Permission::ReleaseRead,
+        Permission::ReleaseWrite,
+        Permission::ReleasePublish,
+        Permission::ReleaseWithdraw,
+        Permission::ReleaseRecover,
+    ];
+    Rule {
+        subject: Subject::User { user },
+        grants: operations
+            .into_iter()
+            .map(|operation| Grant {
+                operation,
+                scope: if operation.device() {
+                    Scope::AllDevices
+                } else {
+                    Scope::Tenant
+                },
+            })
+            .collect(),
+    }
 }

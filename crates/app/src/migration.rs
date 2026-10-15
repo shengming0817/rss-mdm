@@ -333,6 +333,18 @@ fn units() -> Vec<(&'static str, &'static str)> {
             "asset-condition-scopes-v1",
             rss_mdm_inventory_service::FIELD_SCOPES_SQL,
         ),
+        (
+            "inventory-tenant-seed-v1",
+            rss_mdm_inventory_postgres::tenant_seed_sql(),
+        ),
+        (
+            "registration-tenant-seed-v1",
+            rss_mdm_registration_service::agent::settings::tenant_seed_sql(),
+        ),
+        (
+            "tenant-administration-v1",
+            include_str!("../schema/tenant-administration.sql"),
+        ),
     ]
 }
 
@@ -582,6 +594,12 @@ async fn install_identity(
             &mut tx,
             "mdm_identity_maintenance",
             rss_identity_postgres::AuthorityProfile::Maintenance,
+        )
+        .await?;
+        rss_identity_postgres::grant_profile(
+            &mut tx,
+            "mdm_identity_provisioning",
+            rss_identity_postgres::AuthorityProfile::Provisioning,
         )
         .await?;
         rss_identity_postgres::audit::grant_worker(&mut tx, crate::identity_audit::ROLE)

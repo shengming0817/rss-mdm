@@ -21,9 +21,10 @@ CREATE TABLE public.mdm_tenants (
 CREATE TABLE public.mdm_tenant_operations (
  operation_id uuid PRIMARY KEY CHECK(operation_id<>'00000000-0000-0000-0000-000000000000'),
  tenant_id uuid NOT NULL REFERENCES public.mdm_tenants(tenant_id),
- action text NOT NULL CHECK(action IN ('create','update','delete')),
+ action text NOT NULL CHECK(action IN ('create','update','delete','administrator_create')),
  request jsonb NOT NULL CHECK(jsonb_typeof(request)='object'),
  receipt jsonb NOT NULL CHECK(jsonb_typeof(receipt)='object'),
+ operator jsonb NOT NULL CHECK(jsonb_typeof(operator)='object'),
  performed_by name NOT NULL DEFAULT session_user,
  performed_at timestamptz NOT NULL DEFAULT clock_timestamp()
 );

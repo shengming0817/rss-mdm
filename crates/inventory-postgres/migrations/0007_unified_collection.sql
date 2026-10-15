@@ -55,4 +55,14 @@ DO $$ DECLARE t text; BEGIN
 END $$;
 GRANT SELECT ON mdm.field_versions,mdm.collection_definitions,mdm.collection_results TO mdm_runtime;
 GRANT SELECT ON mdm.field_versions,mdm.collection_definitions TO mdm_api;
+-- Shared append primitive: publishing and owner-only initial seeds retain identical history.
+CREATE FUNCTION mdm.append_field_version(t uuid, f text, v bigint, d jsonb) RETURNS void
+LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $append$
+DECLARE r bigint;
+BEGIN
+ r=mdm.record_asset_change(t,'catalog',jsonb_build_object('field',f),ARRAY[f]);
+ INSERT INTO mdm.field_versions(tenant_id,field,version,revision,definition) VALUES(t,f,v,r,d);
+END;
+$append$;
+REVOKE ALL ON FUNCTION mdm.append_field_version(uuid,text,bigint,jsonb) FROM PUBLIC;
 COMMIT;

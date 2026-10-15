@@ -114,7 +114,7 @@ pub async fn serve(
                             .map_err(|error| ProcessError::at("startup.tenant_binding", error))?;
                         access
                             .authorization_store()
-                            .require_management_initializer(&compiled.identity_management)
+                            .require_management_initializer()
                             .await
                             .map_err(|error| {
                                 ProcessError::at("startup.identity_management", error.into())

@@ -117,13 +117,10 @@ pub async fn publish_field_in(
     Catalog::new(candidates)?;
     let body = serde_json::to_string(field)?;
     ensure!(body.len() <= 65536, "field definition capacity");
-    let revision:i64=sqlx::query_scalar("SELECT mdm.record_asset_change($1::uuid,'catalog',jsonb_build_object('field',$2::text),ARRAY[$2::text])")
-        .bind(tenant.to_string()).bind(field.key.as_str()).fetch_one(&mut *c).await?;
-    sqlx::query("INSERT INTO mdm.field_versions VALUES($1::uuid,$2,$3,$4,$5::jsonb)")
+    sqlx::query("SELECT mdm.append_field_version($1::uuid,$2,$3,$4::jsonb)")
         .bind(tenant.to_string())
         .bind(field.key.as_str())
         .bind(field.version as i64)
-        .bind(revision)
         .bind(body)
         .execute(c)
         .await?;
@@ -277,4 +274,16 @@ pub async fn initialize_fields_in(c: &mut PgConnection, tenant: TenantId) -> Res
         }
     }
     Ok(())
+}
+
+/// Installation SQL generated from the canonical builtin definitions; only the owner may seed.
+pub fn tenant_seed_sql() -> &'static str {
+    static SQL: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    SQL.get_or_init(|| {
+        let statements = builtin::fields().into_iter().map(|field| {
+            let body = serde_json::to_string(&field).expect("builtin field serialization").replace('\'', "''");
+            format!("PERFORM mdm.append_field_version(t,'{}',{},'{}'::jsonb);", field.key.as_str(), field.version, body)
+        }).collect::<Vec<_>>().join("\n");
+        format!("CREATE FUNCTION mdm.seed_tenant_catalog(t uuid) RETURNS void LANGUAGE plpgsql SET search_path=pg_catalog,pg_temp AS $seed$ BEGIN {statements} END; $seed$; REVOKE ALL ON FUNCTION mdm.seed_tenant_catalog(uuid) FROM PUBLIC;")
+    })
 }
