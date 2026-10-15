@@ -179,7 +179,7 @@ APFS container 原始证据与卷关联保留在受限运行详情中，共享�
 
 详情、清单和运行详情通过 `scope=<URL 编码的 scope JSON>` 显式选择范围，省略则 Device。运行详情提供 frozen fingerprint/coverage、逐字段 scope/reason、完整性，以及实时 Observation receipt/projection 状态。固定水位质量记录不会被实时状态改写；quality.runId 是最近尝试，sources.evidence.snapshotId 是当前可信事实的原始 run，lastKnown 继续保留原始证据。失败和部分尝试不清空此前 Known；显式 Unknown 不通过规则。
 
-查询、保存查询、智能组及合规的 criteria 使用同一 `{selector,quantifier,criteria}`。selector 为 `{"kind":"device"}`、`{"kind":"exact","scope":…}`、`{"kind":"local_user","uid":501}` 或 `{"kind":"all_authorized"}`。前两种 quantifier 必须 one，多范围必须 any/all。整个内层条件先在每个 scope 独立求值，再归约成设备结果；不拼接不同用户事实。空集合为 Unknown，集合不完整时 all 不能通过，字节、访问和解释预算跨所有上下文累计。授权仍独立限制设备和敏感字段。Group scope 元数据与核心 rule_version 同事务冻结，核心继续拥有条件和实际分页求值。
+查询、保存查询、智能组及合规的 criteria 使用同一 `{selector,quantifier,criteria}`。selector 为 `{"kind":"device"}`、`{"kind":"exact","scope":…}`、`{"kind":"local_user","uid":501}` 或 `{"kind":"all_authorized"}`。前两种 quantifier 必须 one，多范围必须 any/all。多范围集合只包含固定水位下已冻结、且调用者有权读取的资产范围；all_authorized 不表示已枚举设备上的所有真实用户。整个内层条件先在每个 scope 独立求值，再归约成设备结果；不拼接不同用户事实。空集合为 Unknown，集合不完整时 all 不能通过，字节、访问和解释预算跨所有上下文累计。授权仍独立限制设备和敏感字段。Group scope 元数据与核心 rule_version 同事务冻结，核心继续拥有条件和实际分页求值。
 
 旧定义、结果、事实历史、冻结策略或待执行旧任务存在时，新增安装迁移拒绝继续；不转换旧格式、清库或改写历史 migration digest。新的投影 generation 只重放新格式。
 协议身份、支持边界与 Agent 接入见 [wire 契约](../../crates/agent-wire/README.md#macos-原生采集2737)。
