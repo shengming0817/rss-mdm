@@ -91,7 +91,7 @@ async fn published_native_template_uses_policy_and_direct_collection_progress() 
     );
     let template = NativeCollectionDefinition::new(NativeCollectionSpec {
         scope: rss_mdm_resource::TemplateScope::Device,
-        applicability: Default::default(),
+        applicability: rss_mdm_resource::Applicability { minimum_os_version: Some("15.0".into()), ..Default::default() },
         adapter: NativeAdapter::AppleDeviceInformation,
         mappings: [
             (
@@ -200,6 +200,41 @@ async fn published_native_template_uses_policy_and_direct_collection_progress() 
             && first.1["asset"]["nextOffset"] == 1,
         "item quality: {first:?}"
     );
+    // A prior run observed macOS 14. The current peer reports 15 in its
+    // prerequisite response; historical evidence must not block that refresh.
+    let mut prior = sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?).await?;
+    let updated = sqlx::query("UPDATE mdm_apple.attempts SET context=jsonb_set(context,'{version}','\"14.0\"'::jsonb) WHERE tenant_id=$1::uuid AND id=$2 AND phase='collect'")
+        .bind(case_tenant()).bind(run).execute(&mut prior).await?;
+    ensure!(updated.rows_affected() == 1);
+    prior.close().await?;
+    let current_definition = json!({"scope":scope,"action":{"kind":"native_collection","resource":{"id":id,"version":"v1","platform":"macos","architecture":"aarch64","variant":"default"},"runLifetimeSeconds":300}});
+    let preview = f.browser.call(&f.router, Method::POST, "/api/v1/policies/previews", Some(json!({"definition":current_definition}))).await?;
+    ensure!(preview.0 == StatusCode::OK && preview.1["items"][0]["taskAdmission"]["state"] == "channel_unknown", "historical evidence became current preview eligibility: {preview:?}");
+    // New evidence below the minimum, or missing its OS version, must not
+    // dispatch business queries even when historical context exists.
+    for version in [Some("14.0"), None] {
+        let (_, unsupported) = f.queue_collection(&current_definition).await?;
+        let (prerequisite, _) = peer.next("DeviceInformation").await?;
+        let mut facts = protocol::dictionary([
+            ("IsSupervised", true.into()), ("IsAppleSilicon", true.into()),
+        ]);
+        if let Some(version) = version { facts.insert("OSVersion".into(), version.into()); }
+        let reply = peer.manage("Acknowledged", Some(prerequisite), Some(("QueryResponses", facts.into()))).await?;
+        let reply = if version.is_some() {
+            let (prerequisite, _) = lifecycle::command(&reply, "SecurityInfo")?;
+            peer.manage("Acknowledged", Some(prerequisite), Some(("SecurityInfo", protocol::dictionary([
+                ("ManagementStatus", protocol::dictionary([
+                    ("IsUserEnrollment", false.into()), ("EnrolledViaDEP", false.into()), ("UserApprovedEnrollment", true.into()),
+                ]).into()),
+            ]).into()))).await?
+        } else { reply };
+        ensure!(reply.is_empty(), "unsupported current version dispatched business collection");
+        let mut check = sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?).await?;
+        let terminal: (bool, bool) = sqlx::query_as("SELECT sealed_at IS NOT NULL,NOT EXISTS(SELECT 1 FROM mdm_apple.attempts a WHERE a.tenant_id=c.tenant_id AND a.collection=c.id AND a.phase='collect') FROM mdm_access.collection_runs c WHERE tenant_id=$1::uuid AND id=$2")
+            .bind(case_tenant()).bind(unsupported).fetch_one(&mut check).await?;
+        ensure!(terminal == (true, true), "version rejection did not seal without dispatch: {terminal:?}");
+        check.close().await?;
+    }
     let refresh_policy = Uuid::new_v4();
     post(&mut f.browser,&f.router,&format!("/api/v1/policies/{refresh_policy}"),json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"put","enabled":true,"definition":{"scope":scope,"action":{"kind":"native_collection","resource":{"id":id,"version":"v1","platform":"macos","architecture":"aarch64","variant":"default"},"runLifetimeSeconds":300}}}})).await?;
     let (refresh, _) = peer.next_collection().await?;

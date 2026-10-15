@@ -69,8 +69,8 @@ async fn management_admission_rejects_schema_and_privilege_drift() {
             "REVOKE SELECT(response) ON mdm_apple.attempts FROM mdm_flow_runtime",
         ),
         (
-            "REVOKE SELECT(context) ON mdm_apple.attempts FROM mdm_flow_runtime",
             "GRANT SELECT(context) ON mdm_apple.attempts TO mdm_flow_runtime",
+            "REVOKE SELECT(context) ON mdm_apple.attempts FROM mdm_flow_runtime",
         ),
         (
             "ALTER TABLE mdm_planning.scopes DISABLE ROW LEVEL SECURITY",

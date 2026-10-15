@@ -70,9 +70,10 @@ pub async fn preview(
                     { state = crate::script_eligibility::Eligibility::Ineligible; }
                     Some(software::TaskAdmission::new(match state {crate::script_eligibility::Eligibility::Eligible=>software::TaskAdmissionState::Eligible,crate::script_eligibility::Eligibility::Ineligible=>software::TaskAdmissionState::UnsupportedCapability,crate::script_eligibility::Eligibility::Unknown=>software::TaskAdmissionState::ChannelUnknown},None))
                 } else if let PreviewInputs::Native(template) = &prepared {
+                    let needs_context = template.spec().adapter != rss_mdm_resource::NativeAdapter::WindowsRead;
                     let template = template.clone(); let candidate = crate::Target { device: target.device.clone(), registration: target.registration_id, generation: target.generation }; let tenant = tx.tenant_id();
                     let allowed = tx.with_connection(move |c| Box::pin(async move { Ok(crate::collection_eligibility::native_on(c, tenant, &candidate, &template).await) })).await??;
-                    Some(software::TaskAdmission::new(if allowed { software::TaskAdmissionState::Eligible } else { software::TaskAdmissionState::UnsupportedCapability }, None))
+                    Some(software::TaskAdmission::new(if !allowed { software::TaskAdmissionState::UnsupportedCapability } else if needs_context { software::TaskAdmissionState::ChannelUnknown } else { software::TaskAdmissionState::Eligible }, None))
                 }else{None}
             }else{None};
             if task_admission.as_ref().is_some_and(|a|!software::TaskAdmission::is_eligible(a)) {object.availability=crate::source_authority::Availability::Unavailable;object.reason=Some("target_unavailable".into());}

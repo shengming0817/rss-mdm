@@ -1,9 +1,9 @@
-//! The same current native prerequisites are used by preview, admission and dispatch.
+//! Admission permits Apple prerequisite refresh; execution uses the new run context.
 use crate::{Error, Target};
 use rss_mdm_resource::{CollectionEnvironment, NativeAdapter, NativeCollectionDefinition};
 use rss_request_context::TenantId;
 use sqlx::PgConnection;
-/// Unknown native evidence cannot satisfy a declared prerequisite.
+/// Apple admission checks current authority, never historical endpoint evidence.
 pub async fn native_on(
     c: &mut PgConnection,
     tenant: TenantId,
@@ -62,13 +62,16 @@ pub async fn native_on(
         if !active {
             return Ok(false);
         }
-        let context: Option<serde_json::Value> = sqlx::query_scalar("SELECT context FROM mdm_apple.attempts WHERE tenant_id=$1::uuid AND registration=$2 AND generation=$3 AND user_key=$4 AND phase='collect' AND context IS NOT NULL ORDER BY collection_sequence DESC LIMIT 1")
-            .bind(tenant.to_string()).bind(target.registration).bind(target.generation).bind(user).fetch_optional(&mut *c).await.map_err(crate::database::db)?;
-        if let Some(context) = context {
-            let context: rss_mdm_apple_mdm::applicability::Context =
-                serde_json::from_value(context).map_err(|_| Error::Malformed)?;
-            environment.os_version = context.version.map(String::from);
-        }
+        // Only the device's response for this run may decide its OS version.
+        // Keep all control-plane constraints; defer this endpoint constraint until
+        // apple-channel compiles the business command with the resolved Context.
+        let mut prerequisites = template.spec().applicability.clone();
+        prerequisites.minimum_os_version = None;
+        return Ok(prerequisites.allows(
+            &environment,
+            &enrollment,
+            &[adapter.capability().into()].into(),
+        ));
     }
     let capability = adapter.capability();
     Ok(template
