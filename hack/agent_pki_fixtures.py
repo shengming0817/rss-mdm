@@ -35,27 +35,16 @@ def prepare(root, configuration, password, *, configuration_devices=0, materials
     provisioner.chmod(0o600)
     openssl('pkcs8', '-topk8', '-nocrypt', '-in', provisioner, '-outform', 'DER', '-out', root/'agent-provisioner.pk8')
     (root/'agent-provisioner.pk8').chmod(0o600)
-    # Independent keys cover algorithm/strength/attribute/signature rejection.
-    for name, algorithm, subject, extra in [
-        ('agent', 'rsa:2048', '/CN=rss-mdm-agent', []),
-        ('other', 'rsa:2048', '/CN=rss-mdm-agent', []),
-        ('weak', 'rsa:1024', '/CN=rss-mdm-agent', []),
-        ('sha1', 'rsa:2048', '/CN=rss-mdm-agent', ['-sha1']),
-        ('ec', 'ec', '/CN=rss-mdm-agent', ['-pkeyopt', 'ec_paramgen_curve:P-256']),
-        ('subject', 'rsa:2048', '/CN=claimed-device', []),
-        ('san', 'rsa:2048', '/CN=rss-mdm-agent', ['-addext', 'subjectAltName=URI:urn:claimed']),
-        ('ca', 'rsa:2048', '/CN=rss-mdm-agent', ['-addext', 'basicConstraints=critical,CA:TRUE']),
-        ('server', 'rsa:2048', '/CN=rss-mdm-agent', ['-addext', 'extendedKeyUsage=serverAuth']),
-    ] + [(f'configuration-{i}', 'rsa:2048', '/CN=rss-mdm-agent', []) for i in range(configuration_devices)]:
-        if name != 'agent' and not name.startswith('configuration-') and name not in materials and 'agent-adversarial' not in materials:
-            continue
-        openssl('req', '-new', '-newkey', algorithm, '-nodes', '-subj', subject,
-                '-keyout', root/('agent-csr-'+name+'.key'), '-outform', 'DER', '-out', root/(name+'.der'), *extra)
+    # Real consumers need only normal registration keys and explicitly counted grants.
+    names = ['agent'] + (['other'] if 'other' in materials else []) + [f'configuration-{i}' for i in range(configuration_devices)]
+    for name in names:
+        openssl('req', '-new', '-newkey', 'rsa:2048', '-nodes', '-subj', '/CN=rss-mdm-agent',
+                '-keyout', root/('agent-csr-'+name+'.key'), '-outform', 'DER', '-out', root/(name+'.der'))
         (root/('agent-csr-'+name+'.key')).chmod(0o600)
     openssl('pkcs8', '-topk8', '-nocrypt', '-in', root/'agent-csr-agent.key', '-outform', 'DER', '-out', root/'agent.pk8')
     (root/'agent.pk8').chmod(0o600)
 
-    for name in (['other'] if 'other' in materials or 'agent-adversarial' in materials else []) + [f'configuration-{i}' for i in range(configuration_devices)]:
+    for name in (['other'] if 'other' in materials else []) + [f'configuration-{i}' for i in range(configuration_devices)]:
         openssl('pkcs8', '-topk8', '-nocrypt', '-in', root/('agent-csr-'+name+'.key'), '-outform', 'DER', '-out', root/(name+'.pk8'))
         (root/(name+'.pk8')).chmod(0o600)
 

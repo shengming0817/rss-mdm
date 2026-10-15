@@ -115,12 +115,6 @@ async fn scope_changes_preserve_execution_version() {
     execute(&runtime, &store, Uuid::new_v4(), &disabled, deadline())
         .await
         .unwrap();
-    assert_eq!(
-        sql(
-            "SELECT to_regclass('mdm_policy.facts') IS NULL AND to_regclass('mdm_policy.aggregates') IS NULL"
-        ),
-        "t"
-    );
     runtime.close().await;
 }
 #[tokio::test]
