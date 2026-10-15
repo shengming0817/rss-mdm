@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 const JOURNAL: &str = "mdm.observation.v1";
 const PROJECTION: &str = "inventory";
-const GENERATION: &str = "inventory-v6";
+const GENERATION: &str = "inventory-v7";
 
 /// The product's canonical journal and read-model generation, shared by writer and reader.
 pub fn projection_scope(tenant: rss_request_context::TenantId) -> ProjectionScope {
@@ -24,8 +24,9 @@ pub fn projection_scope(tenant: rss_request_context::TenantId) -> ProjectionScop
 pub fn definition() -> DefinitionIdentity {
     let mut digest = Sha256::new();
     digest.update(GENERATION);
-    digest.update(":registered-collection:typed-fields-v3:exact-scope:observed-received:");
+    digest.update(":registered-collection:typed-fields-v4:exact-scope:observed-received:");
     digest.update(include_str!("../migrations/0007_unified_collection.sql"));
+    digest.update(include_str!("../migrations/0008_field_scopes.sql"));
     digest.update(include_str!("../migrations/0001_inventory.sql"));
     digest.update(include_str!("../migrations/0003_assets.sql"));
     digest.update(include_str!("../migrations/0004_history.sql"));
@@ -121,7 +122,7 @@ impl<C: rss_observation::Clock> PgEffect for Inventory<C> {
             .map_err(|error| rejected(event.position(), error))?;
         let sequence = i64::try_from(record.batch().sequence())
             .map_err(|error| rejected(event.position(), error))?;
-        let fields: Vec<_> = expected.fields().iter().map(|f| f.key).collect();
+        let fields: Vec<_> = expected.fields().map(|f| f.key).collect();
         let body = progress
             .body()
             .map_err(|e| rejected(event.position(), e))?
@@ -138,10 +139,11 @@ impl<C: rss_observation::Clock> PgEffect for Inventory<C> {
             }
             for change in &changes {
                 let field=model::FieldKey::parse(change.key().as_str()).expect("validated field");
+                let field_scope=expected.field_scope(field).expect("validated field").canonical().map_err(|_|sqlx::Error::Protocol("invalid field scope".into()))?;
                 let outcome=change.value().map(|v|model::CollectedValue::decode(expected.field(field).expect("validated field"),v).expect("validated collected outcome"));
                 let (state,value)=match &outcome {Some(model::CollectedValue::Value(v))=>{let canonical=expected.field(field).expect("validated field").canonical_value(v.clone()).map_err(|_|sqlx::Error::Protocol("invalid asset value".into()))?;("known",Some(serde_json::to_string(&canonical).expect("scalar encoding")))},Some(model::CollectedValue::Unknown { reason })=>(match reason { model::UnknownReason::UnorderedConflict=>"unknown_conflict", model::UnknownReason::Incomplete=>"unknown_incomplete", model::UnknownReason::NativeStatus=>"unknown_native", model::UnknownReason::EvidenceLimit=>"unknown_limit" },None),Some(model::CollectedValue::Null)=>("null",None),Some(model::CollectedValue::Deleted)=>("deleted",None),Some(model::CollectedValue::Unsupported)=>("unsupported",None),None=>("deleted",None)};
-                sqlx::query("INSERT INTO mdm.inventory(tenant_id,journal,generation,scope,coverage,field,value,batch_id,observed_at,received_at,state,last_known,last_known_batch,last_known_observed,last_known_received,registration,source,epoch,collection_sequence) VALUES($1::uuid,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$7,CASE WHEN $7 IS NOT NULL THEN $8 END,CASE WHEN $7 IS NOT NULL THEN $9 END,CASE WHEN $7 IS NOT NULL THEN $10 END,$12,$13,$14,$15) ON CONFLICT(tenant_id,journal,generation,scope,field) DO UPDATE SET coverage=excluded.coverage,collection_sequence=excluded.collection_sequence,value=excluded.value,state=excluded.state,batch_id=excluded.batch_id,observed_at=excluded.observed_at,received_at=excluded.received_at,last_known=coalesce(excluded.value,mdm.inventory.last_known),last_known_batch=CASE WHEN excluded.value IS NOT NULL THEN excluded.batch_id ELSE mdm.inventory.last_known_batch END,last_known_observed=CASE WHEN excluded.value IS NOT NULL THEN excluded.observed_at ELSE mdm.inventory.last_known_observed END,last_known_received=CASE WHEN excluded.value IS NOT NULL THEN excluded.received_at ELSE mdm.inventory.last_known_received END WHERE mdm.inventory.collection_sequence<=excluded.collection_sequence")
-                    .bind(&tenant).bind(&journal).bind(&generation).bind(&scope).bind(&coverage).bind(change.key().as_str()).bind(value).bind(&batch).bind(observed).bind(received).bind(state).bind(&registration).bind(&source).bind(&epoch).bind(sequence).execute(&mut *conn).await?;
+                sqlx::query("INSERT INTO mdm.inventory(tenant_id,journal,generation,scope,coverage,field,value,batch_id,observed_at,received_at,state,last_known,last_known_batch,last_known_observed,last_known_received,registration,source,epoch,collection_sequence,field_scope) VALUES($1::uuid,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$7,CASE WHEN $7 IS NOT NULL THEN $8 END,CASE WHEN $7 IS NOT NULL THEN $9 END,CASE WHEN $7 IS NOT NULL THEN $10 END,$12,$13,$14,$15,$16) ON CONFLICT(tenant_id,journal,generation,scope,field,field_scope) DO UPDATE SET coverage=excluded.coverage,collection_sequence=excluded.collection_sequence,value=excluded.value,state=excluded.state,batch_id=excluded.batch_id,observed_at=excluded.observed_at,received_at=excluded.received_at,last_known=coalesce(excluded.value,mdm.inventory.last_known),last_known_batch=CASE WHEN excluded.value IS NOT NULL THEN excluded.batch_id ELSE mdm.inventory.last_known_batch END,last_known_observed=CASE WHEN excluded.value IS NOT NULL THEN excluded.observed_at ELSE mdm.inventory.last_known_observed END,last_known_received=CASE WHEN excluded.value IS NOT NULL THEN excluded.received_at ELSE mdm.inventory.last_known_received END WHERE mdm.inventory.collection_sequence<=excluded.collection_sequence")
+                    .bind(&tenant).bind(&journal).bind(&generation).bind(&scope).bind(&coverage).bind(change.key().as_str()).bind(value).bind(&batch).bind(observed).bind(received).bind(state).bind(&registration).bind(&source).bind(&epoch).bind(sequence).bind(&field_scope).execute(&mut *conn).await?;
             }
             Ok(())
         })).await?;
@@ -193,7 +195,7 @@ mod tests {
     fn canonical_scope_binds_the_current_definition() {
         let tenant =
             rss_request_context::TenantId::parse("11111111-1111-4111-8111-111111111111").unwrap();
-        assert_eq!(projection_scope(tenant).generation(), "inventory-v6");
+        assert_eq!(projection_scope(tenant).generation(), "inventory-v7");
         assert_ne!(definition().as_bytes(), &[0; 32]);
     }
     #[test]

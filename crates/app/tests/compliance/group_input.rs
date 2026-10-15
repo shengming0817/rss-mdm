@@ -2,7 +2,7 @@ use super::*;
 async fn waiting_group_does_not_spin(b: &mut Browser, router: &Router, base: &Value) -> Result<()> {
     let group = Uuid::new_v4();
     let gp = format!("/api/v1/groups/{group}");
-    let created=ok(b,router,Method::POST,&gp,Some(request(0,json!({"action":"create","assetContext":"endpoint","name":"held group","description":"","criteria":{"kind":"predicate","field":"custom.office_floor","op":"ge","value":{"kind":"integer","value":0}}})))).await?;
+    let created=ok(b,router,Method::POST,&gp,Some(request(0,json!({"action":"create","assetContext":"endpoint","name":"held group","description":"","criteria":{"selector":{"kind":"device"},"quantifier":"one","criteria":{"kind":"predicate","field":"custom.office_floor","op":"ge","value":{"kind":"integer","value":0}}}})))).await?;
     let group_task = created["task"].as_str().unwrap();
     // Hold only the external group input. No claim was created while the worker was stopped.
     pg(&format!(
@@ -71,7 +71,7 @@ async fn group_applicability_membership_versions_and_stale_input() -> Result<()>
     status(&mut browser, router, "compliance-a", "non_compliant").await?;
     let group = Uuid::new_v4();
     let gp = format!("/api/v1/groups/{group}");
-    let group_rule = json!({"kind":"predicate","field":"custom.office_floor","op":"ge","value":{"kind":"integer","value":3}});
+    let group_rule = json!({"selector":{"kind":"device"},"quantifier":"one","criteria":{"kind":"predicate","field":"custom.office_floor","op":"ge","value":{"kind":"integer","value":3}}});
     crate::test_support::http::ok(&mut browser,router,Method::POST,&gp,Some(request(0,json!({"action":"create","assetContext":"endpoint","name":"compliance target","description":"","criteria":group_rule})))).await?;
     let def = definition(json!({"kind":"groups","ids":[group]}));
     ok(
@@ -141,7 +141,7 @@ async fn group_applicability_membership_versions_and_stale_input() -> Result<()>
     )
     .await?;
     let g = crate::test_support::http::ok(&mut browser, router, Method::GET, &gp, None).await?;
-    let (accepted, _) = browser.call(router,Method::POST,&gp,Some(request(g["group"]["revision"].as_u64().unwrap(),json!({"action":"rule","criteria":{"kind":"predicate","field":"custom.office_floor","op":"ge","value":{"kind":"integer","value":0}}})))).await?;
+    let (accepted, _) = browser.call(router,Method::POST,&gp,Some(request(g["group"]["revision"].as_u64().unwrap(),json!({"action":"rule","criteria":{"selector":{"kind":"device"},"quantifier":"one","criteria":{"kind":"predicate","field":"custom.office_floor","op":"ge","value":{"kind":"integer","value":0}}}})))).await?;
     ensure!(accepted == StatusCode::OK);
     let restarted = start_automation(base)
         .await

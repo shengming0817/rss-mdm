@@ -153,9 +153,9 @@ fn snapshot(state: FactState) -> FixturePage {
         version: "revision-1".into(),
         dictionary_version: "dictionary-1".into(),
         coverage: BTreeSet::from(["device.model".into()]),
-        objects: vec![ObjectSnapshot {
-            key: ObjectKey::new(tenant(), "device-a").unwrap(),
-            facts: BTreeMap::from([(
+        objects: vec![ObjectSnapshot::single(
+            ObjectKey::new(tenant(), "device-a").unwrap(),
+            BTreeMap::from([(
                 "device.model".into(),
                 Fact {
                     state,
@@ -164,7 +164,7 @@ fn snapshot(state: FactState) -> FixturePage {
                     observed_at: time(10),
                 },
             )]),
-        }],
+        )],
     }
 }
 fn evaluate(rule: &Rule, snapshot: &FixturePage, t: i64) -> ObjectEvaluation {
@@ -191,7 +191,10 @@ fn unavailable_values_never_become_negative_matches() {
         for at in [0, 10, 2_000_000_000] {
             let e = evaluate(&r, &snapshot(state.clone()), at);
             assert_eq!(e.decision, Decision::Unknown);
-            assert_eq!(e.explanations[0].outcome, Outcome::Unknown(expected));
+            assert_eq!(
+                e.contexts["default"].explanations[0].outcome,
+                Outcome::Unknown(expected)
+            );
         }
     }
     for op in [Op::IsNull, Op::IsNotNull] {
@@ -408,14 +411,19 @@ fn nested_logic_collects_stable_explanations_and_checks_every_branch() {
                 Rule::new(tenant(), "1", "dictionary-1", vec![f.clone(), g.clone()], c).unwrap();
             let mut s = snapshot(FactState::Known(string("yes")));
             s.coverage.insert("unknown".into());
-            let mut missing = s.objects[0].facts["device.model"].clone();
+            let mut missing =
+                s.objects[0].contexts.get_mut("default").unwrap()["device.model"].clone();
             missing.state = FactState::Missing;
-            s.objects[0].facts.insert("unknown".into(), missing);
+            s.objects[0]
+                .contexts
+                .get_mut("default")
+                .unwrap()
+                .insert("unknown".into(), missing);
             let e = evaluate(&r, &s, 10);
             assert_eq!(e.decision, expected);
-            assert_eq!(e.explanations.len(), 2);
-            assert_eq!(e.explanations[0].path, vec![0]);
-            assert_eq!(e.explanations[1].path, vec![1]);
+            assert_eq!(e.contexts["default"].explanations.len(), 2);
+            assert_eq!(e.contexts["default"].explanations[0].path, vec![0]);
+            assert_eq!(e.contexts["default"].explanations[1].path, vec![1]);
         }
     }
     f.operations.insert(Op::Contains);
@@ -605,10 +613,14 @@ fn dictionary_limits_duplicates_and_unused_denied_fields_are_checked() {
     assert_eq!(r.predicate_at(&[]).unwrap().field, "device.model");
     assert!(r.predicate_at(&[0]).is_none());
     let mut s = snapshot(FactState::Known(string("x")));
-    let mut denied = s.objects[0].facts["device.model"].clone();
+    let mut denied = s.objects[0].contexts.get_mut("default").unwrap()["device.model"].clone();
     denied.state = FactState::Denied;
     s.coverage.insert("field-1".into());
-    s.objects[0].facts.insert("field-1".into(), denied);
+    s.objects[0]
+        .contexts
+        .get_mut("default")
+        .unwrap()
+        .insert("field-1".into(), denied);
     assert_eq!(
         r.evaluate_page(&s.input(), time(10)),
         Err(Error::PermissionDenied)
@@ -660,22 +672,25 @@ fn historical_nested_criteria_has_one_literal_interpretation() {
     )
     .unwrap();
     let mut s = snapshot(FactState::Known(string("DESKTOP-001")));
-    let mut os_fact = s.objects[0].facts["device.model"].clone();
+    let mut os_fact = s.objects[0].contexts.get_mut("default").unwrap()["device.model"].clone();
     os_fact.state = FactState::Known(string("10.0.26100"));
     s.coverage.insert("device.os.version".into());
     s.objects[0]
-        .facts
+        .contexts
+        .get_mut("default")
+        .unwrap()
         .insert("device.os.version".into(), os_fact);
     let e = evaluate(&r, &s, 10);
     assert_eq!(e.decision, Decision::Match);
     assert_eq!(
-        e.explanations
+        e.contexts["default"]
+            .explanations
             .iter()
             .map(|e| e.path.clone())
             .collect::<Vec<_>>(),
         vec![vec![0], vec![1, 0], vec![1, 1]]
     );
-    for explanation in e.explanations {
+    for explanation in &e.contexts["default"].explanations {
         assert!(r.predicate_at(&explanation.path).is_some());
     }
     assert!(r.predicate_at(&[1]).is_none());
@@ -700,15 +715,27 @@ fn historical_nested_criteria_has_one_literal_interpretation() {
         ),
     ] {
         s.objects[0]
-            .facts
+            .contexts
+            .get_mut("default")
+            .unwrap()
             .get_mut("device.os.version")
             .unwrap()
             .state = FactState::Known(string(os));
-        s.objects[0].facts.get_mut("device.model").unwrap().state = FactState::Known(string(model));
+        s.objects[0]
+            .contexts
+            .get_mut("default")
+            .unwrap()
+            .get_mut("device.model")
+            .unwrap()
+            .state = FactState::Known(string(model));
         let e = evaluate(&r, &s, 10);
         assert_eq!(e.decision, expected);
         assert_eq!(
-            e.explanations.iter().map(|e| e.outcome).collect::<Vec<_>>(),
+            e.contexts["default"]
+                .explanations
+                .iter()
+                .map(|e| e.outcome)
+                .collect::<Vec<_>>(),
             outcomes
         );
     }
@@ -763,8 +790,8 @@ fn explanation_materialization_is_bounded_before_output_allocation() {
     let mut fields = Vec::new();
     let mut criteria = Vec::new();
     let mut s = snapshot(FactState::Known(string("x")));
-    let fact = s.objects[0].facts["device.model"].clone();
-    s.objects[0].facts.clear();
+    let fact = s.objects[0].contexts.get_mut("default").unwrap()["device.model"].clone();
+    s.objects[0].contexts.get_mut("default").unwrap().clear();
     s.coverage.clear();
     for i in 0..128 {
         let key = format!("field-{i}");
@@ -783,7 +810,11 @@ fn explanation_materialization_is_bounded_before_output_allocation() {
             .unwrap(),
         );
         s.coverage.insert(key.clone());
-        s.objects[0].facts.insert(key, fact.clone());
+        s.objects[0]
+            .contexts
+            .get_mut("default")
+            .unwrap()
+            .insert(key, fact.clone());
     }
     let r = Rule::new(
         tenant(),
@@ -806,7 +837,7 @@ fn explanation_materialization_is_bounded_before_output_allocation() {
         result
             .objects
             .iter()
-            .map(|o| o.explanations.len())
+            .map(|o| o.contexts["default"].explanations.len())
             .sum::<usize>(),
         65_536
     );
@@ -814,7 +845,7 @@ fn explanation_materialization_is_bounded_before_output_allocation() {
         result
             .objects
             .iter()
-            .map(|o| o.provenance.len())
+            .map(|o| o.contexts["default"].provenance.len())
             .sum::<usize>(),
         65_536
     );
@@ -849,9 +880,9 @@ fn batch_scalar_items_are_bounded_across_objects_and_unused_fields() {
             fields.push(f);
         }
         let mut s = snapshot(FactState::Known(value.clone()));
-        let fact = s.objects[0].facts["device.model"].clone();
+        let fact = s.objects[0].contexts.get_mut("default").unwrap()["device.model"].clone();
         s.coverage = fields.iter().map(|f| f.key.clone()).collect();
-        s.objects[0].facts = fields
+        *s.objects[0].contexts.get_mut("default").unwrap() = fields
             .iter()
             .map(|f| (f.key.clone(), fact.clone()))
             .collect();
@@ -876,7 +907,9 @@ fn batch_scalar_items_are_bounded_across_objects_and_unused_fields() {
             .objects
             .last_mut()
             .unwrap()
-            .facts
+            .contexts
+            .get_mut("default")
+            .unwrap()
             .iter_mut()
             .next_back()
             .unwrap()
@@ -1041,4 +1074,75 @@ fn inventory_sets_can_exceed_condition_operand_budget_without_truncation() {
         r.evaluate_page(&input.input(), time(1)).unwrap().objects[0].decision,
         Decision::Match
     );
+}
+
+#[test]
+fn quantified_contexts_evaluate_the_whole_rule_without_cross_user_matches() {
+    let first = field(FieldType::Scalar(ScalarType::String), &[Op::Eq]);
+    let mut second = first.clone();
+    second.key = "device.version".into();
+    let criteria = Criteria::and(vec![
+        leaf(Op::Eq, Some(string("a"))),
+        Criteria::predicate(Predicate {
+            field: second.key.clone(),
+            op: Op::Eq,
+            operand: Some(Operand {
+                value: string("b"),
+                unit: None,
+            }),
+        })
+        .unwrap(),
+    ])
+    .unwrap();
+    let r = Rule::new(tenant(), "r", "dictionary-1", vec![first, second], criteria).unwrap();
+    let mut s = snapshot(FactState::Known(string("a")));
+    s.coverage.insert("device.version".into());
+    let object = &mut s.objects[0];
+    let mut a = object.contexts.remove("default").unwrap();
+    let mut b = a.clone();
+    a.insert(
+        "device.version".into(),
+        Fact {
+            state: FactState::Known(string("wrong")),
+            source: "collector".into(),
+            snapshot_id: "a".into(),
+            observed_at: time(1),
+        },
+    );
+    b.get_mut("device.model").unwrap().state = FactState::Known(string("wrong"));
+    b.insert(
+        "device.version".into(),
+        Fact {
+            state: FactState::Known(string("b")),
+            source: "collector".into(),
+            snapshot_id: "b".into(),
+            observed_at: time(1),
+        },
+    );
+    object.contexts = BTreeMap::from([("user-a".into(), a), ("user-b".into(), b)]);
+    object.quantifier = Quantifier::Any;
+    assert_eq!(evaluate(&r, &s, 1).decision, Decision::NoMatch);
+    s.objects[0]
+        .contexts
+        .get_mut("user-a")
+        .unwrap()
+        .get_mut("device.version")
+        .unwrap()
+        .state = FactState::Known(string("b"));
+    let result = evaluate(&r, &s, 1);
+    assert_eq!(result.decision, Decision::Match);
+    assert_eq!(result.contexts.len(), 2);
+    assert_eq!(result.contexts["user-a"].decision, Decision::Match);
+    assert_eq!(result.contexts["user-b"].decision, Decision::NoMatch);
+    s.objects[0].quantifier = Quantifier::All;
+    assert_eq!(evaluate(&r, &s, 1).decision, Decision::NoMatch);
+    s.objects[0].contexts.remove("user-b");
+    assert_eq!(evaluate(&r, &s, 1).decision, Decision::Match);
+    s.objects[0].complete = false;
+    assert_eq!(evaluate(&r, &s, 1).decision, Decision::Unknown);
+    s.objects[0].complete = true;
+    s.objects[0].contexts.clear();
+    assert_eq!(evaluate(&r, &s, 1).decision, Decision::Unknown);
+    s.objects[0].quantifier = Quantifier::Any;
+    assert_eq!(evaluate(&r, &s, 1).decision, Decision::Unknown);
 }

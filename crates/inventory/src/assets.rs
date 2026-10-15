@@ -106,6 +106,8 @@ pub enum State {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Evidence {
+    /// Exact asset namespace, independent of the report stream.
+    pub scope: crate::CollectionScope,
     /// Closed source selected by the product adapter.
     pub source: crate::Source,
     /// Collector dataset identity; absent only for management assignments.
@@ -251,7 +253,15 @@ fn resolve_state(definition: &FieldDefinition, sources: &[&SourceFact]) -> Resul
         return Err(Invalid::SourceLimit);
     }
     definition.validate()?;
+    if sources.first().is_some_and(|first| {
+        sources
+            .iter()
+            .any(|fact| fact.evidence.scope != first.evidence.scope)
+    }) {
+        return Err(Invalid::Evidence);
+    }
     for fact in sources {
+        fact.evidence.scope.validate_executable()?;
         validate_evidence(definition, &fact.evidence)?;
         match &fact.state {
             State::Known(v) => definition.validate_scalar(v)?,
@@ -269,12 +279,14 @@ fn resolve_state(definition: &FieldDefinition, sources: &[&SourceFact]) -> Resul
             let old = &v.evidence;
             // The historical actor and operation must remain the original ones.
             if (
+                &e.scope,
                 e.source.as_str(),
                 &e.registration,
                 e.registration_generation,
                 &e.epoch,
                 &e.dataset,
             ) != (
+                &old.scope,
                 old.source.as_str(),
                 &old.registration,
                 old.registration_generation,
@@ -335,6 +347,13 @@ fn resolve_state(definition: &FieldDefinition, sources: &[&SourceFact]) -> Resul
 }
 
 fn validate_evidence(definition: &FieldDefinition, e: &Evidence) -> Result<()> {
+    if e.source == crate::Source::Manual {
+        if e.scope != crate::CollectionScope::Device {
+            return Err(Invalid::Evidence);
+        }
+    } else {
+        e.scope.validate_source(e.source)?;
+    }
     let bounded = |s: &str| !s.is_empty() && s.len() <= 256 && !s.chars().any(char::is_control);
     if !definition.sources.contains_key(&e.source) {
         return Err(Invalid::SourceNotAllowed);

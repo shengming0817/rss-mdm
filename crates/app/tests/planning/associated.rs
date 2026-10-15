@@ -99,11 +99,15 @@ async fn associated_context_maps_before_exclusions_and_missing_channels_recover(
                     asset_context: AssetContext::AssociatedDevice,
                     name: "one physical object".into(),
                     description: String::new(),
-                    criteria: Some(assets::Criteria::Predicate {
-                        field: rss_mdm_inventory::FieldKey::parse("device.model").unwrap(),
-                        op: assets::Operator::Eq,
-                        value: Some(assets::Scalar::String("model".into())),
-                        values: None,
+                    criteria: Some(assets::InventoryCondition {
+                        selector: assets::ScopeSelector::Device,
+                        quantifier: assets::ScopeQuantifier::One,
+                        criteria: assets::Criteria::Predicate {
+                            field: rss_mdm_inventory::FieldKey::parse("device.model").unwrap(),
+                            op: assets::Operator::Eq,
+                            value: Some(assets::Scalar::String("model".into())),
+                            values: None,
+                        },
                     }),
                 },
             )),
@@ -388,7 +392,7 @@ async fn agent_health_drives_mdm_configuration_assignment() -> anyhow::Result<()
     let coverage = serde_json::to_string(&definition.coverage()?)?;
     let value = serde_json::to_string(&rss_mdm_inventory::Scalar::Boolean(false))?;
     pg(&format!(
-        "INSERT INTO mdm_access.report_sources(tenant_id,registration,source,epoch,enabled) VALUES('{t}','{registration}','agent.script','{epoch}',true);INSERT INTO mdm.inventory(tenant_id,journal,generation,scope,coverage,field,value,batch_id,observed_at,received_at,state,last_known,last_known_batch,last_known_observed,last_known_received,registration,source,epoch,collection_sequence) VALUES('{t}','mdm.observation.v1','inventory-v6','{encoded}','{coverage}','custom.corporate_agent.healthy','{value}','health-fixture',1,2,'known','{value}','health-fixture',1,2,'{registration}','agent.script','{epoch}',0)",
+        "INSERT INTO mdm_access.report_sources(tenant_id,registration,source,epoch,enabled) VALUES('{t}','{registration}','agent.script','{epoch}',true);INSERT INTO mdm.inventory(field_scope,tenant_id,journal,generation,scope,coverage,field,value,batch_id,observed_at,received_at,state,last_known,last_known_batch,last_known_observed,last_known_received,registration,source,epoch,collection_sequence) VALUES(replace(jsonb_build_object('kind','device')::text,' ',''),'{t}','mdm.observation.v1','inventory-v7','{encoded}','{coverage}','custom.corporate_agent.healthy','{value}','health-fixture',1,2,'known','{value}','health-fixture',1,2,'{registration}','agent.script','{epoch}',0)",
         t = case_tenant()
     ))?;
     let associations =
@@ -420,7 +424,7 @@ async fn agent_health_drives_mdm_configuration_assignment() -> anyhow::Result<()
     let scope = Uuid::new_v4();
     let policy = Uuid::new_v4();
     let resource = Uuid::new_v4();
-    let receipt=call(&mut browser,&router,&format!("/api/v1/groups/{group}"),0,json!({"action":"create","assetContext":"associated_device","name":"unhealthy Agent","description":"","criteria":{"kind":"predicate","field":"custom.corporate_agent.healthy","op":"eq","value":{"kind":"boolean","value":false}}})).await?;
+    let receipt=call(&mut browser,&router,&format!("/api/v1/groups/{group}"),0,json!({"action":"create","assetContext":"associated_device","name":"unhealthy Agent","description":"","criteria":{"selector":{"kind":"device"},"quantifier":"one","criteria":{"kind":"predicate","field":"custom.corporate_agent.healthy","op":"eq","value":{"kind":"boolean","value":false}}}})).await?;
     let (_, decisions) = browser
         .call(
             &router,

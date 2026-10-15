@@ -6,27 +6,41 @@ use serde_json::json;
 
 #[test]
 fn user_scope_survives_roundtrip_and_is_not_an_agent_scope() {
-    let scope = CollectionScope::User {
+    let scope = CollectionScope::AppleUser {
         identity: "4f2ea789-557a-48b1-b571-c6a0915d0e23".into(),
     };
     let field = builtin::fields()
         .into_iter()
         .find(|f| f.key == builtin::MODEL)
         .unwrap();
-    let d = CollectionDefinition::new(
-        scope.clone(),
-        "apple.user",
-        1,
-        Source::MdmApple,
-        vec![field.clone()],
-    )
+    let d = CollectionDefinition::new("apple.user", 1, Source::MdmApple, {
+        let scope = scope.clone();
+        let fields: Vec<rss_mdm_inventory::FieldDefinition> = vec![field.clone()];
+        fields
+            .into_iter()
+            .map(|definition| rss_mdm_inventory::CollectionField {
+                definition,
+                scope: scope.clone(),
+            })
+            .collect()
+    })
     .unwrap();
     let decoded: CollectionDefinition =
         serde_json::from_slice(&serde_json::to_vec(&d).unwrap()).unwrap();
-    assert_eq!(decoded.collection_scope(), &scope);
+    assert_eq!(decoded.field_scope(field.key).unwrap(), &scope);
     assert_eq!(d.fingerprint().unwrap(), decoded.fingerprint().unwrap());
     assert!(
-        CollectionDefinition::new(scope, "agent", 1, Source::AgentBuiltin, vec![field]).is_err()
+        CollectionDefinition::new("agent", 1, Source::AgentBuiltin, {
+            let fields: Vec<rss_mdm_inventory::FieldDefinition> = vec![field];
+            fields
+                .into_iter()
+                .map(|definition| rss_mdm_inventory::CollectionField {
+                    definition,
+                    scope: scope.clone(),
+                })
+                .collect()
+        })
+        .is_err()
     );
 }
 
@@ -99,13 +113,17 @@ fn explicit_unknown_is_delivered_as_partial_not_a_failed_attempt_or_tombstone() 
         .into_iter()
         .find(|f| f.key == builtin::MODEL)
         .unwrap();
-    let d = CollectionDefinition::new(
-        CollectionScope::Device,
-        "ddm",
-        1,
-        Source::MdmApple,
-        vec![f.clone()],
-    )
+    let d = CollectionDefinition::new("ddm", 1, Source::MdmApple, {
+        let scope = CollectionScope::Device;
+        let fields: Vec<rss_mdm_inventory::FieldDefinition> = vec![f.clone()];
+        fields
+            .into_iter()
+            .map(|definition| rss_mdm_inventory::CollectionField {
+                definition,
+                scope: scope.clone(),
+            })
+            .collect()
+    })
     .unwrap();
     let unknown = CollectedValue::Unknown {
         reason: UnknownReason::UnorderedConflict,

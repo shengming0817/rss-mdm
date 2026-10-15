@@ -32,6 +32,8 @@ pub enum Quality {
 pub struct FieldAttempt {
     /// Optional native protocol response status.
     pub status: Option<u16>,
+    /// Closed collector reason code; no untrusted diagnostics or values.
+    pub reason: Option<String>,
     /// Current quality, independently checked during restoration.
     pub quality: Quality,
     /// Last server receipt time, never a TTL.
@@ -52,6 +54,7 @@ impl Default for FieldAttempt {
     fn default() -> Self {
         Self {
             status: None,
+            reason: None,
             quality: Quality::Pending,
             received_at: None,
             value: None,
@@ -87,6 +90,23 @@ impl TryFrom<Document> for CollectionProgress {
         }
         for (key, f) in &v.fields {
             let definition = v.definition.field(*key)?;
+            if f.reason.as_deref().is_some_and(|r| {
+                ![
+                    "complete",
+                    "unsupported",
+                    "denied",
+                    "timeout",
+                    "truncated",
+                    "missing",
+                    "invalid",
+                    "untrusted",
+                    "owner_mismatch",
+                    "incomplete",
+                ]
+                .contains(&r)
+            }) {
+                return Err(Invalid::Evidence);
+            }
             if matches!(&f.value,Some(CollectedValue::Value(crate::Scalar::Array(values))) if values.len()!=f.items.len())
             {
                 return Err(Invalid::Evidence);
@@ -168,7 +188,6 @@ impl CollectionProgress {
     pub fn new(definition: CollectionDefinition) -> Self {
         let fields = definition
             .fields()
-            .iter()
             .map(|f| (f.key, FieldAttempt::default()))
             .collect();
         Self(Document {
@@ -249,6 +268,31 @@ impl CollectionProgress {
         f.quality = quality(f, false);
         Ok(())
     }
+    /// Attach a closed native reason without changing acceptance or value quality.
+    pub fn reason(&mut self, field: FieldKey, reason: &str) -> Result<()> {
+        if ![
+            "complete",
+            "unsupported",
+            "denied",
+            "timeout",
+            "truncated",
+            "missing",
+            "invalid",
+            "untrusted",
+            "owner_mismatch",
+            "incomplete",
+        ]
+        .contains(&reason)
+        {
+            return Err(Invalid::Evidence);
+        }
+        self.0
+            .fields
+            .get_mut(&field)
+            .ok_or(Invalid::Evidence)?
+            .reason = Some(reason.into());
+        Ok(())
+    }
     /// Whether all expected fields have a definitive result.
     pub fn complete(&self) -> bool {
         self.0
@@ -319,6 +363,17 @@ impl CollectionProgress {
             })
     }
     /// Emit only confirmed outcomes. Failure or missing values cannot create a full snapshot.
+    pub fn coverage_complete(&self) -> bool {
+        self.0.finished
+            && self.0.complete_coverage
+            && self.0.fields.values().all(|f| {
+                matches!(
+                    f.quality,
+                    Quality::Success | Quality::Unsupported | Quality::Deleted
+                )
+            })
+    }
+    /// Emit only confirmed outcomes in the frozen namespace.
     pub fn body(&self) -> Result<Option<Body>> {
         if self.0.fields.values().all(|f| f.received_at.is_none()) {
             return Ok(None);
@@ -452,7 +507,6 @@ impl CollectionProgress {
         if matches!(body, Body::Failed { .. }) {
             values = definition
                 .fields()
-                .iter()
                 .map(|f| (f.key, NativeValue::Failed))
                 .collect();
         }

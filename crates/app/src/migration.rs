@@ -177,6 +177,10 @@ fn units() -> Vec<(&'static str, &'static str)> {
             "inventory-unified-v2",
             rss_mdm_inventory_postgres::UNIFIED_COLLECTION_SQL,
         ),
+        (
+            "inventory-field-scopes-v1",
+            rss_mdm_inventory_postgres::FIELD_SCOPES_SQL,
+        ),
         ("compliance-v1", rss_mdm_compliance_postgres::MIGRATION_SQL),
         (
             "authorization-service-schema-v1",
@@ -324,6 +328,10 @@ fn units() -> Vec<(&'static str, &'static str)> {
         (
             "windows-entra-web-v2",
             rss_mdm_windows_channel::ENTRA_WEB_SQL,
+        ),
+        (
+            "asset-condition-scopes-v1",
+            rss_mdm_inventory_service::FIELD_SCOPES_SQL,
         ),
     ]
 }

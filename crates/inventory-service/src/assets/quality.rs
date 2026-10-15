@@ -14,6 +14,12 @@ pub(super) fn decode(row: &sqlx::postgres::PgRow, generation: u64) -> Result<Qua
         .fields()
         .iter()
         .map(|(field, a)| QualityField {
+            reason: a.reason.clone(),
+            scope: attempts
+                .definition()
+                .field_scope(*field)
+                .expect("frozen field")
+                .clone(),
             item_count: a.items().len(),
             invalid_items: a
                 .items()
@@ -27,7 +33,11 @@ pub(super) fn decode(row: &sqlx::postgres::PgRow, generation: u64) -> Result<Qua
         })
         .collect();
     Ok(QualityRun {
-        collection_scope: attempts.definition().collection_scope().clone(),
+        dataset: attempts.definition().dataset().into(),
+        template_version: attempts.definition().version().into(),
+        fingerprint: stored(attempts.definition().fingerprint())?,
+        coverage: stored(attempts.definition().coverage())?,
+        complete: attempts.coverage_complete(),
         source,
         channel: source.channel().ok_or(Error::Malformed)?,
         registration: stored(Uuid::parse_str(coordinate.registration().as_str()))?,

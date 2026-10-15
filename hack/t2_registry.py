@@ -211,7 +211,7 @@ MODULES['agent.pki'] = replace(MODULES['agent.pki'], scope='tenant', policies=(
     CasePolicy('agent_pki_tests::unknown_original_ca_result_blocks_retirement_after_rotation', 'reuse', 'tenant',('identity','agent_pki','pki_rotation')),
 ))
 
-add('installation.migration', selectors=('migration::tests::fresh_installation_replay_and_mismatch_rejection','tenant_registry::tests::'), profile='empty',
+add('installation.migration', selectors=('migration::tests::fresh_installation_replay_and_mismatch_rejection','migration::tests::field_scope_migration_rejects_hidden_state_and_restores_rls','tenant_registry::tests::'), profile='empty',
     sources=('crates/app/src/migration.rs','crates/app/src/tenant_registry.rs','crates/app/src/tenant_use.rs','crates/app/schema/installation.sql'), tests=('crates/app/tests/migration/mod.rs','crates/app/tests/tenant_registry/mod.rs',),
     python='installation', support=('hack/t2_modules/installation.py',))
 add('installation.tenants', build=None, profile='empty', python='tenants',
@@ -1744,4 +1744,7 @@ consume(("crates/examples/examples/fixture_snapshot.rs",), "examples.cli")
 
 MODULES['execution.agent.delivery'] = replace(MODULES['execution.agent.delivery'], support_inputs=(*MODULES['execution.agent.delivery'].support_inputs, 'crates/app/tests/execution/agent/windows_assets.rs'))
 
+# Shared condition DTO and HTTP asset command dispatch are consumed by these seams.
+consume(("crates/inventory-service/src/compliance/model.rs",), "compliance.http compliance.evaluation compliance.recovery compliance.group_input")
+consume(("crates/management-http/src/assets/mod.rs",), "assets.http assets.queries assets.sources assets.group_input apple.collection")
 consume(('crates/registration-service/src/admission.rs','crates/registration-service/schema/admission.sql','crates/management-http/src/enrollment/channels.rs','crates/app/src/registration_channels.rs'), 'enrollment.quotas agent.registration agent.configurations windows.issuance windows.management apple.scep apple.account_enrollment apple.ade catalog.contract installation.migration')

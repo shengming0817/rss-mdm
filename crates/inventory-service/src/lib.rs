@@ -1,6 +1,5 @@
 //! Inventory application ownership: durable intake, observations, assets and assessments.
 pub mod collection;
-pub mod collection_service;
 mod database;
 mod error;
 pub mod inventory_runtime;
@@ -42,3 +41,5 @@ pub async fn admit_storage_in(
 
 /// This capability's closed privileges in the shared access connection.
 pub const ACCESS_CONTRACT: &str = include_str!("access-contract.json");
+
+pub const FIELD_SCOPES_SQL: &str = include_str!("../schema/field-scopes.sql");

@@ -44,7 +44,9 @@ impl Compliance {
         let after = cursor.map(|s| stored(Uuid::parse_str(&s))).transpose()?;
         let rows = tx
             .with_connection(move |c| {
-                Box::pin(async move { pg::rules::<crate::assets::Criteria>(c, t, after, 2).await })
+                Box::pin(async move {
+                    pg::rules::<crate::assets::InventoryCondition>(c, t, after, 2).await
+                })
             })
             .await?;
         if let Some(rule) = rows.first()

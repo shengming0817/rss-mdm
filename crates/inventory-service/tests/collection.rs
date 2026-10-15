@@ -1,16 +1,20 @@
 use super::*;
 use rss_mdm_inventory::{CollectedValue, CollectionDefinition, Scalar, Source, builtin};
 fn definition() -> CollectionDefinition {
-    CollectionDefinition::new(
-        rss_mdm_inventory::CollectionScope::Device,
-        "inventory",
-        1,
-        Source::MdmWindows,
-        builtin::fields()
+    CollectionDefinition::new("inventory", 1, Source::MdmWindows, {
+        let scope = rss_mdm_inventory::CollectionScope::Device;
+        let fields: Vec<rss_mdm_inventory::FieldDefinition> = builtin::fields()
             .into_iter()
             .filter(|f| [builtin::MODEL, builtin::OS_VERSION].contains(&f.key))
-            .collect(),
-    )
+            .collect();
+        fields
+            .into_iter()
+            .map(|definition| rss_mdm_inventory::CollectionField {
+                definition,
+                scope: scope.clone(),
+            })
+            .collect()
+    })
     .unwrap()
 }
 #[test]

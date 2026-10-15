@@ -1,9 +1,9 @@
 use super::*;
 pub use rss_mdm_compliance::GroupInput;
 use serde::{Deserialize, Serialize};
-pub type Definition = rss_mdm_compliance::Definition<crate::assets::Criteria>;
-pub type Input = rss_mdm_compliance::Input<crate::assets::Criteria>;
-pub(super) type Rule = pg::Rule<crate::assets::Criteria>;
+pub type Definition = rss_mdm_compliance::Definition<crate::assets::InventoryCondition>;
+pub type Input = rss_mdm_compliance::Input<crate::assets::InventoryCondition>;
+pub(super) type Rule = pg::Rule<crate::assets::InventoryCondition>;
 pub(super) fn validate_definition(
     definition: &Definition,
     t: TenantId,
@@ -14,7 +14,8 @@ pub(super) fn validate_definition(
     if checked_input(serde_json::to_vec(definition))?.len() > 65536 {
         return Err(Error::Malformed.into());
     }
-    let rule = crate::assets::rule(t, id, &definition.criteria, catalog)?;
+    definition.criteria.validate()?;
+    let rule = crate::assets::rule(t, id, &definition.criteria.criteria, catalog)?;
     fn fields(
         c: &rss_mdm_group_postgres::core::Criteria,
         out: &mut std::collections::BTreeSet<String>,

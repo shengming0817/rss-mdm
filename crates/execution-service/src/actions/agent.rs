@@ -109,9 +109,10 @@ impl ExecutionService {
                     if run.state.claim(attempt,now).is_ok(){
                         if let Some(old)=previous_attempt {super::collection::abandon(service,tx,old,"superseded").await?;}
                         if let db::ScheduledPolicy::Script(script)=&plan {super::collection::reserve(tx,&script.frozen,&run,now).await?;}
-                        if let db::ScheduledPolicy::AgentCollection(v)=&plan {super::agent_collection::reserve(tx,&v.frozen,&run,now).await?;}
+                        let payload=plan.task(service,tx,&run.target,db::TaskIssue { run:run.id,attempt,permit:wire::TaskPermit::Offer,expiry:(now+60).min(run.deadline) }).await?;
+                        if let (db::ScheduledPolicy::AgentCollection(v), wire::TaskPayload::Collection(spec))=(&plan,&payload) {super::agent_collection::reserve(tx,&v.frozen,&run,spec,now).await?;}
                         let signer=service.signer.as_ref().ok_or(Error::Unsupported)?;
-                        let signed=signer.sign(plan.task(service,tx,&run.target,db::TaskIssue { run:run.id,attempt,permit:wire::TaskPermit::Offer,expiry:(now+60).min(run.deadline) }).await?)?;
+                        let signed=signer.sign(payload)?;
                         let tenant=tx.tenant_id().to_string();let run_id=run.id.to_string();let reg=p.registration().to_string();let value=checked_input(serde_json::to_value(&signed))?;
                         tx.with_connection(move|c|Box::pin(async move{sqlx::query("INSERT INTO mdm_commands.action_attempts(tenant_id,id,run,registration,claimed_at,offer) VALUES($1::uuid,$2::uuid,$3::uuid,$4::uuid,$5,$6)").bind(tenant).bind(attempt.to_string()).bind(run_id).bind(reg).bind(now).bind(value).execute(c).await?;Ok(())})).await?;
                         if let (db::ScheduledPolicy::Software(policy),wire::TaskPayload::Software(spec))=(&plan,&signed.payload) {

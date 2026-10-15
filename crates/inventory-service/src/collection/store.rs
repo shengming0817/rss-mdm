@@ -320,6 +320,18 @@ pub async fn load_on(c: &mut sqlx::PgConnection, tenant: &str, id: Uuid) -> Resu
     )
 }
 
+/// Restore immutable evidence for an authorized read without taking a mutation lock.
+pub async fn read_on(c: &mut sqlx::PgConnection, tenant: &str, id: Uuid) -> Result<Run, Error> {
+    Run::from_row(
+        sqlx::query(selection!("tenant_id=$1::uuid AND id=$2::uuid"))
+            .bind(tenant)
+            .bind(id.to_string())
+            .fetch_one(c)
+            .await
+            .map_err(db)?,
+    )
+}
+
 /// The durable delivery queue consumed by the Inventory worker.
 pub struct Delivery {
     audit_store: std::sync::Arc<rss_mdm_audit_integration::AuditStore>,
@@ -474,11 +486,20 @@ pub async fn freeze_in(
         Sha256::digest(serde_json::to_vec(&fields).map_err(|_| corrupt())?)
     );
     let definition = rss_mdm_inventory::CollectionDefinition::new(
-        rss_mdm_inventory::CollectionScope::Device,
         scope.dataset().as_str(),
         version,
         rss_mdm_inventory::Source::parse(scope.source().as_str()).map_err(|_| Error::Malformed)?,
-        fields,
+        {
+            let scope = rss_mdm_inventory::CollectionScope::Device;
+            let fields: Vec<rss_mdm_inventory::FieldDefinition> = fields;
+            fields
+                .into_iter()
+                .map(|definition| rss_mdm_inventory::CollectionField {
+                    definition,
+                    scope: scope.clone(),
+                })
+                .collect()
+        },
     )
     .map_err(|_| Error::Malformed)?;
     rss_mdm_inventory_postgres::register_collection_in(c, scope.tenant(), &definition)

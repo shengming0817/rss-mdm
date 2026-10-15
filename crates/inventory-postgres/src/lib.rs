@@ -91,3 +91,6 @@ pub const UNIFIED_COLLECTION_SQL: &str = include_str!("../migrations/0007_unifie
 
 mod results;
 pub use results::{CollectionCompletion, collection_result_in, seal_collection_in};
+
+/// Required per-field namespace installation; rejects incompatible stored evidence.
+pub const FIELD_SCOPES_SQL: &str = include_str!("../migrations/0008_field_scopes.sql");

@@ -77,7 +77,7 @@ fn one_query_can_bind_multiple_fields_and_unknown_queries_are_rejected() {
 }
 
 #[test]
-fn macos_device_publication_is_platform_exact_and_scoped_recipes_are_rejected() {
+fn macos_publication_is_platform_exact_and_scoped_recipes_are_accepted() {
     let blueprints::Definition::AgentCollection { template } =
         blueprints::get("macos.agent.receipts", "1")
             .unwrap()
@@ -106,6 +106,6 @@ fn macos_device_publication_is_platform_exact_and_scoped_recipes_are_rejected() 
         let mut plan = spec.plan.spec().clone();
         plan.queries.get_mut("receipts").unwrap().definition = definition;
         spec.plan = w::NativeCollectionPlan::new(plan).unwrap();
-        assert!(AgentCollectionDefinition::new(spec).is_err());
+        assert!(AgentCollectionDefinition::new(spec).is_ok());
     }
 }

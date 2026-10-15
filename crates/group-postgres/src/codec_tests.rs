@@ -35,9 +35,9 @@ fn inputs() -> (Rule, FixturePage, Timepoint) {
         version: "v1".into(),
         dictionary_version: "d1".into(),
         coverage: BTreeSet::from(["model".into()]),
-        objects: vec![ObjectSnapshot {
-            key: ObjectKey::new(t, "device").unwrap(),
-            facts: BTreeMap::from([(
+        objects: vec![ObjectSnapshot::single(
+            ObjectKey::new(t, "device").unwrap(),
+            BTreeMap::from([(
                 "model".into(),
                 Fact {
                     state: FactState::Missing,
@@ -46,7 +46,7 @@ fn inputs() -> (Rule, FixturePage, Timepoint) {
                     observed_at: now,
                 },
             )]),
-        }],
+        )],
     };
     (rule, snapshot, now)
 }
@@ -61,7 +61,13 @@ fn rule_round_trip_and_bounded_page_encoding_preserve_decisions() {
     let encoded = codec::encode_page(&page.input()).unwrap();
     assert_eq!(encoded, codec::encode_page(&page.input()).unwrap());
     let mut changed = page.clone();
-    changed.objects[0].facts.get_mut("model").unwrap().state = FactState::Null;
+    changed.objects[0]
+        .contexts
+        .get_mut("default")
+        .unwrap()
+        .get_mut("model")
+        .unwrap()
+        .state = FactState::Null;
     assert_ne!(encoded, codec::encode_page(&changed.input()).unwrap());
 }
 #[test]
@@ -134,7 +140,13 @@ fn nested_typed_rules_and_all_fact_states_keep_their_meaning() {
                 FactState::Unsupported,
                 FactState::Denied,
             ] {
-                s.objects[0].facts.get_mut("model").unwrap().state = state;
+                s.objects[0]
+                    .contexts
+                    .get_mut("default")
+                    .unwrap()
+                    .get_mut("model")
+                    .unwrap()
+                    .state = state;
                 assert_eq!(
                     r.evaluate_page(&s.input(), t),
                     decoded.evaluate_page(&s.input(), t)

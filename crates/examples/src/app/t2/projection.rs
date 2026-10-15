@@ -331,13 +331,18 @@ async fn narrower_snapshot_preserves_unselected_fields_in_the_same_source_scope(
         )
         .await?;
     let base = crate::fixture::definition();
-    let narrow = model::CollectionDefinition::new(
-        rss_mdm_inventory::CollectionScope::Device,
-        base.dataset(),
-        "narrow-v1",
-        base.source(),
-        vec![base.field(model::builtin::MODEL)?.clone()],
-    )?;
+    let narrow = model::CollectionDefinition::new(base.dataset(), "narrow-v1", base.source(), {
+        let scope = rss_mdm_inventory::CollectionScope::Device;
+        let fields: Vec<rss_mdm_inventory::FieldDefinition> =
+            vec![base.field(model::builtin::MODEL)?.clone()];
+        fields
+            .into_iter()
+            .map(|definition| rss_mdm_inventory::CollectionField {
+                definition,
+                scope: scope.clone(),
+            })
+            .collect()
+    })?;
     let mut c = sqlx::PgConnection::connect_with(&storage::collection_options()?).await?;
     for (sequence, (id, definition, values)) in [
         ("wide", &base, facts("first")),

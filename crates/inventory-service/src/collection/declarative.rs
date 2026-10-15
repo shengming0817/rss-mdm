@@ -53,13 +53,17 @@ pub async fn receive(
             serde_json::to_vec(&("apple-ddm-v1", &definitions)).map_err(|_| Error::Malformed)?
         )
     );
-    let definition = CollectionDefinition::new(
-        report.scope,
-        &dataset,
-        &version,
-        Source::MdmApple,
-        definitions,
-    )
+    let definition = CollectionDefinition::new(&dataset, &version, Source::MdmApple, {
+        let scope = report.scope;
+        let fields: Vec<rss_mdm_inventory::FieldDefinition> = definitions;
+        fields
+            .into_iter()
+            .map(|definition| rss_mdm_inventory::CollectionField {
+                definition,
+                scope: scope.clone(),
+            })
+            .collect()
+    })
     .map_err(|_| Error::Malformed)?;
     let values = fields
         .iter()

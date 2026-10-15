@@ -43,16 +43,20 @@ pub async fn start(
     let template_scope = match &template.spec().scope {
         rss_mdm_resource::TemplateScope::Device => rss_mdm_inventory::CollectionScope::Device,
         rss_mdm_resource::TemplateScope::User { identity } => {
-            rss_mdm_inventory::CollectionScope::User {
+            rss_mdm_inventory::CollectionScope::AppleUser {
                 identity: identity.clone(),
             }
         }
         _ => return Err(Error::Malformed),
     };
-    if definition.collection_scope() != &template_scope {
+    if definition
+        .bindings()
+        .iter()
+        .any(|f| f.scope != template_scope)
+    {
         return Err(Error::Malformed);
     }
-    if let rss_mdm_inventory::CollectionScope::User { identity } = &template_scope {
+    if let rss_mdm_inventory::CollectionScope::AppleUser { identity } = &template_scope {
         let active: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_apple.channels WHERE tenant_id=$1::uuid AND registration=$2 AND generation=$3 AND user_key=$4 AND state='active')")
             .bind(p.tenant.to_string()).bind(p.registration).bind(p.generation).bind(identity)
             .fetch_one(&mut *c).await.map_err(db)?;
@@ -262,13 +266,27 @@ pub fn validate_agent_mapping(
         return Err(Error::Malformed);
     }
     let query = &definition.spec().plan.spec().queries[&binding.query];
-    // The standard software field represents the whole device, including every user.
-    // Generic queries can describe subsets only through custom fields.
+    // Standard installations require a closed installation recipe. Its exact namespace
+    // is frozen per field before the Offer, independently of the execution identity.
     if field.key.as_str() == "device.software.installations"
         && !matches!(
             query.definition,
             rss_mdm_agent_wire::runtime::NativeQueryDefinition::WindowsSoftware
+                | rss_mdm_agent_wire::runtime::NativeQueryDefinition::MacosApplications { .. }
         )
+    {
+        return Err(Error::Malformed);
+    }
+    if (field.key.as_str() == "device.software.receipts"
+        && !matches!(
+            query.definition,
+            rss_mdm_agent_wire::runtime::NativeQueryDefinition::MacosPkgReceipts { .. }
+        ))
+        || (field.key.as_str() == "device.software.packages"
+            && !matches!(
+                query.definition,
+                rss_mdm_agent_wire::runtime::NativeQueryDefinition::MacosBrew { .. }
+            ))
     {
         return Err(Error::Malformed);
     }

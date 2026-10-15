@@ -45,7 +45,7 @@ known/null/missing/unsupported/deleted/conflict 是明确状态。同级来源�
 搜索 input 与 Group 使用相同条件；搜索外层为 operationId、expectedRevision=0、input：
 
 ```json
-{"criteria":{"kind":"predicate","field":"custom.office_floor","op":"ge","value":{"kind":"integer","value":3}},"select":["custom.asset_tag","custom.office_floor"],"sort":{"field":"custom.office_floor","descending":false}}
+{"criteria":{"selector":{"kind":"device"},"quantifier":"one","criteria":{"kind":"predicate","field":"custom.office_floor","op":"ge","value":{"kind":"integer","value":3}}},"select":["custom.asset_tag","custom.office_floor"],"sort":{"field":"custom.office_floor","descending":false}}
 ```
 
 AND/OR 为 `{kind:"and|or",children:[…]}`；in/not_in 使用同类型 `values` 数组；is_null/is_not_null 不带操作数。Group create/rule 直接使用该 criteria；preview 异步生成成员与类型化解释页，旧同步接口和 assets 元组已移除。
@@ -83,7 +83,7 @@ inventory_fields_write 管理目录；有权限管理员直接发布字段及启
 规则 input 示例：
 
 ```json
-{"name":"企业 Agent 健康","severity":"high","enabled":true,"platform":"all","target":{"kind":"all"},"criteria":{"kind":"predicate","field":"custom.corporate_agent.healthy","op":"eq","value":{"kind":"boolean","value":true}}}
+{"name":"企业 Agent 健康","severity":"high","enabled":true,"platform":"all","target":{"kind":"all"},"criteria":{"selector":{"kind":"device"},"quantifier":"one","criteria":{"kind":"predicate","field":"custom.corporate_agent.healthy","op":"eq","value":{"kind":"boolean","value":true}}}}
 ```
 
 severity 为 low/medium/high/critical，仅用于解释；platform 为 all/windows/macos。平台选择使用冻结资产来源中的原生 Windows/Apple 注册证据，只有 Agent 或来源矛盾时为 unknown，不能按型号/版本字符串猜测平台。target 可为 `{ "kind":"groups", "ids":["组 UUID"] }`，取多个智能组的并集。每租户最多 100 条规则，每条最多 16 个组；条件沿用 Group 预算。规则停用保留历史；启用规则引用的组必须先解除分配才能删除。
@@ -105,7 +105,7 @@ severity 为 low/medium/high/critical，仅用于解释；platform 为 all/windo
 
 使用 `POST /api/v1/resources/{id}`，请求 `{"operationId":"<uuid>","expectedRevision":0,"input":{"action":"instantiate","blueprint":"macos.hardware","version":"1"}}`，创建普通租户 Resource 并写入 canonical 内容。初始版本为 `builtin.macos.hardware.1`，revision 为 2、状态 frozen；用正常 activate 操作启用，再绑定 Policy。版本含 x86_64/aarch64 variants。管理员直接修改该 Resource 并发布新版本；官方蓝图只读，升级需创建新候选 Resource，明确调整 Policy，不能自动覆盖或合并租户内容。重复相同 operationId 可恢复实例化/上传，不接受移动的 latest 版本。
 
-scope 必须显式为 `{"kind":"device"}`。user/source/volume/prefix DTO 已定义，但当前投影与查询不支持范围独立消费，因此发布即拒绝这些范围。完整快照只删除当前模板选中的字段，保留同来源同范围中未选字段及其它来源值；禁用 Policy 不删除最近可信事实。
+冻结 CollectionDefinition 的每个字段必须包含 `{definition,scope}`，不再接受顶层 scope 或隐式继承。Device 为默认读取范围；Apple user 使用规范 UUID，macOS 应用根与 Brew 使用下述独立命名空间。完整快照只删除当前模板选中的字段，保留同来源同范围中未选字段及其它来源值；禁用 Policy 不删除最近可信事实。
 
 applicability 包含 minimumOsVersion、minimumBuild、editions、enrollments、tools、capabilities，空集合表示未额外限制；平台与架构由 Resource variant 持有。示例：`{"minimumOsVersion":null,"minimumBuild":null,"editions":[],"enrollments":["agent"],"tools":{"osquery":"5.23.1"},"capabilities":["osquery"]}`。预览与执行使用相同适用性检查；缺少声明所需证据不会默认匹配。Windows 原生沿用当前可信 CSP OS/build/edition 与 enrollment；Apple 原生使用实际 access rights，尚无可信版本信息时不能满足 OS/edition 限制。Agent poll 的 environment 提交 edition/tool 版本，OS/build 复用 executionContext.osVersion。这里只冻结契约，实际 Agent 采集和外部仓升级由对应平台任务交付。
 
@@ -117,7 +117,7 @@ Windows Firewall CSP 状态与 WSC health 使用不同字段；BitLocker convers
 
 资产详情中的 lists 只返回摘要，各来源摘要自带独立游标，冲突时仍可分页检查每份来源清单。使用 `GET /api/v1/devices/{id}/inventory-lists/{field}?limit=100&cursor=…` 读取选值后的列表。游标绑定字段、设备、租户、授权范围及资产水位；后续变更不混入旧分页。完整空列表与未执行、失败、部分输出分别表达。字段和清单没有 TTL。
 
-本地 `rss-mdm-fixture ingest-fixture` 只接受示例发布的 typed-fields-v3 collector 数据；显式设置 `MDM_COLLECTION_URL` 为有采集结果写权限的数据库身份。示例先提交冻结定义与结果，再用 `DATABASE_URL` 对应的投影运行身份提交 Observation 引用。两者不共享隐式提权或旧格式读取。
+本地 `rss-mdm-fixture ingest-fixture` 只接受示例发布的 typed-fields-v4 collector 数据；显式设置 `MDM_COLLECTION_URL` 为有采集结果写权限的数据库身份。示例先提交冻结定义与结果，再用 `DATABASE_URL` 对应的投影运行身份提交 Observation 引用。两者不共享隐式提权或旧格式读取。
 
 ## 用已安装软件事实安排软件策略
 
@@ -127,7 +127,7 @@ Windows Firewall CSP 状态与 WSC health 使用不同字段；BitLocker convers
 
 检查指定软件的版本时，读取授权清单中 id 匹配的同一对象及其 version。不要将独立 id 集合条件与 version 集合条件 AND 后宣称关联到了同一软件；Group 目前没有数组条目关联语法。完整空列表可用于判定未发现目标，Missing、Unsupported、冲突或部分采集须保留未知及质量解释。软件任务结果只证明该次执行的前后检测；后续库存仍由既有采集链路产生，不能从 verified 结果伪造库存快照。
 
-本次为当前格式替换：旧 Windows `windows_csp`、Windows 字符串 query、旧 Windows 蓝图版本 1、NativeCollection 存储版本 4 均拒绝；Apple 字符串 query 保留原协议形状。旧映射字符串、缺少 scope 的采集定义以及旧 claim payload 均拒绝。数据库安装通过 migration digest 拒绝旧基线，不自动清库或双读；升级须显式部署匹配的服务端、schema 与 Agent 候选版本。
+本次为当前格式替换：旧 Windows `windows_csp`、Windows 字符串 query、旧 Windows 蓝图版本 1、NativeCollection 存储版本 4 均拒绝；Apple 字符串 query 保留原协议形状。旧映射字符串、缺少 scope 的采集定义以及旧 claim payload 均拒绝。数据库新增迁移检查并拒绝不兼容的既有业务状态，不改写历史 migration digest、不自动清库或双读；升级须显式部署匹配的服务端、schema 与 Agent 候选版本。
 
 原生 MDM 当前没有可信架构证据，因此 `native_collection` 同平台必须同时声明 x86_64 与 aarch64，且声明内容一致；架构专用原生模板会被拒绝。Agent 脚本仍按实际执行环境核对精确架构。
 
@@ -171,5 +171,15 @@ identity/software 修订 1 蓝图退出；没有旧部署迁移或兼容读取�
 `macos.agent.*` 蓝图提供设备级硬件与 PKG 收据采集，沿用上述 Resource、Policy、
 CollectionRun 和字段质量流程。收据独立写入 `device.software.receipts`，不作为应用存在证据。
 APFS container 原始证据与卷关联保留在受限运行详情中，共享容量不相加。
-Applications 根范围和 Brew 用户/prefix 目前不允许发布；其范围投影由 #2726 接入。
+`applications_local`、`applications_system`、`applications_user` 分别采集 /Applications、/System/Applications 和当前绑定用户的 Applications；完整清单只替换该根范围。`brew_arm_formula`、`brew_arm_cask` 使用 /opt/homebrew，`brew_intel_formula`、`brew_intel_cask` 使用 /usr/local；formula/cask 写入 `device.software.packages`，与 receipts、installations 分开。
+
+用户应用与 Brew 只在可信执行上下文的当前非 root 登录用户下派发；固定 UID 等待该用户匹配。历史用户的事实仍可按 scope 查询、用于规则，读取不要求该用户现在登录。Offer 只构建一次 payload，从同一执行绑定冻结 UID/字段 scope、预留 CollectionRun，再签名；发布阶段不注册未绑定用户的完整采集定义。
+
+字段 scope 支持 `device`、`apple_user`、`macos_applications`、`macos_brew`。应用 scope 包含 root（local/system/user）和 uid（仅 user 非空）；Brew 包含 uid、prefix、package（formula/cask）、taps。dataset 绑定 Resource/variant/实际 UID，不包含版本、会话或预算；变更某字段 root/prefix/taps 只创建该字段的新范围，不自动删除旧范围。
+
+详情、清单和运行详情通过 `scope=<URL 编码的 scope JSON>` 显式选择范围，省略则 Device。运行详情提供 frozen fingerprint/coverage、逐字段 scope/reason、完整性，以及实时 Observation receipt/projection 状态。固定水位质量记录不会被实时状态改写；quality.runId 是最近尝试，sources.evidence.snapshotId 是当前可信事实的原始 run，lastKnown 继续保留原始证据。失败和部分尝试不清空此前 Known；显式 Unknown 不通过规则。
+
+查询、保存查询、智能组及合规的 criteria 使用同一 `{selector,quantifier,criteria}`。selector 为 `{"kind":"device"}`、`{"kind":"exact","scope":…}`、`{"kind":"local_user","uid":501}` 或 `{"kind":"all_authorized"}`。前两种 quantifier 必须 one，多范围必须 any/all。多范围集合只包含固定水位下已冻结、且调用者有权读取的资产范围；all_authorized 不表示已枚举设备上的所有真实用户。整个内层条件先在每个 scope 独立求值，再归约成设备结果；不拼接不同用户事实。空集合为 Unknown，集合不完整时 all 不能通过，字节、访问和解释预算跨所有上下文累计。授权仍独立限制设备和敏感字段。Group scope 元数据与核心 rule_version 同事务冻结，核心继续拥有条件和实际分页求值。
+
+旧定义、结果、事实历史、冻结策略或待执行旧任务存在时，新增安装迁移拒绝继续；不转换旧格式、清库或改写历史 migration digest。新的投影 generation 只重放新格式。
 协议身份、支持边界与 Agent 接入见 [wire 契约](../../crates/agent-wire/README.md#macos-原生采集2737)。

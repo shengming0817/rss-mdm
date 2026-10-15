@@ -262,7 +262,10 @@ async fn status_inner(
         .await?
         .ok_or(AgentError::Wire(wire::ErrorCode::ReportNotFound))?;
     tx.commit().await.map_err(db)?;
-    let delivery = app.collection.inspect_agent(&report).await?;
+    let delivery = app
+        .inventory
+        .inspect_report(report.scope(), report.batch())
+        .await?;
     let observation = match delivery.receipt.as_ref().map(|r| r.decision.outcome()) {
         None => wire::ObservationStatus::Pending,
         Some(rss_observation::SyncOutcome::Snapshot) => wire::ObservationStatus::Snapshot,
@@ -384,7 +387,7 @@ pub struct HttpState {
     pub enrollment: Arc<rss_mdm_registration_service::agent::Service>,
     pub audit_store: Arc<rss_mdm_audit_integration::AuditStore>,
     pub access: Arc<crate::database::Store>,
-    pub collection: Arc<rss_mdm_inventory_service::collection_service::CollectionService>,
+    pub inventory: Arc<rss_mdm_inventory_service::inventory_runtime::InventoryRuntime>,
 }
 
 impl From<crate::enrollment::EnrollmentError> for AgentError {

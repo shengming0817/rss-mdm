@@ -252,11 +252,20 @@ fn authorization_targets_do_not_inherit_single_message_budget() {
         grants: Default::default(),
         resource_digest: [0; 32],
         collection: rss_mdm_inventory::CollectionDefinition::new(
-            rss_mdm_inventory::CollectionScope::Device,
             "inventory",
             "many-fields",
             rss_mdm_inventory::Source::MdmWindows,
-            fields,
+            {
+                let scope = rss_mdm_inventory::CollectionScope::Device;
+                let fields: Vec<rss_mdm_inventory::FieldDefinition> = fields;
+                fields
+                    .into_iter()
+                    .map(|definition| rss_mdm_inventory::CollectionField {
+                        definition,
+                        scope: scope.clone(),
+                    })
+                    .collect()
+            },
         )
         .unwrap(),
     };
@@ -338,5 +347,5 @@ fn agent_templates_bind_native_queries_to_existing_field_types() {
             .unwrap_or_else(|e| panic!("{} {name}: {e:?}", blueprint.id));
         }
     }
-    assert_eq!(count, 19);
+    assert_eq!(count, 26);
 }

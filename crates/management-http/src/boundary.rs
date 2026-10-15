@@ -221,8 +221,8 @@ fn route_action(route: &str) -> &'static str {
         "/api/v1/enrollments/{id}/cancel" => "enrollment_cancel",
         "/api/v1/devices/{device}/registrations/{registration}/revoke" => "credential_revoke",
         "/api/v1/devices/{id}/inventory" => "inventory_read",
-        "/api/v1/devices/{id}/collection-runs" => "collection_start",
-        "/api/v1/devices/{id}/collection-runs/{run}" => "collection_read",
+        "/api/v1/devices/{id}/collections/{run}"
+        | "/api/v1/devices/{id}/collections/{run}/fields/{field}/items" => "collection_read",
         "/api/v1/devices/{id}/actions" => "device_action",
         _ => "protected_request",
     }
@@ -242,8 +242,8 @@ mod tests {
             "credential_revoke"
         );
         assert_eq!(
-            route_action("/api/v1/devices/{id}/collection-runs"),
-            "collection_start"
+            route_action("/api/v1/devices/{id}/collections/{run}"),
+            "collection_read"
         );
     }
     #[tokio::test]

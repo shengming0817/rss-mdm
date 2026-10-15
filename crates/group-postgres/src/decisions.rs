@@ -40,6 +40,8 @@ pub enum DecisionValue {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PredicateDecision {
+    /// Context that supplied this complete rule evaluation.
+    pub context: String,
     /// Canonical AST path.
     pub path: Vec<usize>,
     /// Predicate outcome, retaining the reason for Unknown.
@@ -49,6 +51,8 @@ pub struct PredicateDecision {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct FieldEvidence {
+    /// Opaque context identity within the evaluated device.
+    pub context: String,
     /// Referenced dictionary field.
     pub field: String,
     /// Product-resolved source.
@@ -92,10 +96,12 @@ pub(crate) fn evaluated(object: core::ObjectEvaluation) -> DecisionRecord {
             core::Decision::Unknown => DecisionValue::Unknown,
         },
         explanations: object
-            .explanations
-            .into_iter()
-            .map(|e| PredicateDecision {
-                path: e.path,
+            .contexts
+            .iter()
+            .flat_map(|(context, result)| result.explanations.iter().map(move |e| (context, e)))
+            .map(|(context, e)| PredicateDecision {
+                context: context.clone(),
+                path: e.path.clone(),
                 outcome: match e.outcome {
                     core::Outcome::Match => DecisionValue::Match,
                     core::Outcome::NoMatch => DecisionValue::NoMatch,
@@ -110,9 +116,16 @@ pub(crate) fn evaluated(object: core::ObjectEvaluation) -> DecisionRecord {
             })
             .collect(),
         provenance: object
-            .provenance
+            .contexts
             .into_iter()
-            .map(|(field, p)| FieldEvidence {
+            .flat_map(|(context, result)| {
+                result
+                    .provenance
+                    .into_iter()
+                    .map(move |(field, p)| (context.clone(), field, p))
+            })
+            .map(|(context, field, p)| FieldEvidence {
+                context,
                 field,
                 source: p.source,
                 snapshot_id: p.snapshot_id,

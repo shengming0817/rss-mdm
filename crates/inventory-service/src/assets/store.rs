@@ -49,6 +49,7 @@ impl AssetService {
             ManualChange::Delete {} => State::Deleted,
         };
         let evidence = Evidence {
+            scope: rss_mdm_inventory::CollectionScope::Device,
             source: rss_mdm_inventory::Source::Manual,
             dataset: None,
             registration: None,

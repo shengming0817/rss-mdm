@@ -57,7 +57,7 @@ GetBootstrapToken/SetBootstrapToken 由已绑定的设备证书认证，只有�
 
 Apple 采集通过普通 Resource 的 `native_collection` 模板发布、由 Policy 精确绑定版本。可以从官方蓝图实例化租户模板，再编辑字段和映射；周期执行、启用和显式重执行沿用既有 Policy 路径，见[资产采集](assets.md)。固定的采集 POST 入口已移除。
 
-设备 `/mdm` Idle 获取模板声明的 DeviceInformation 或 InstalledApplicationList 查询。只有准确关联的 CommandUUID 和当前身份才能封存结果。查询 `GET /api/v1/devices/{id}/collection-runs/{run}?source=mdm.apple` 需要 `inventory_read`，呈现每字段质量、服务端接收时间和真实 Observation 投递状态，Apple 字段没有伪造的 SyncML 数字状态。
+设备 `/mdm` Idle 获取模板声明的 DeviceInformation 或 InstalledApplicationList 查询。只有准确关联的 CommandUUID 和当前身份才能封存结果。查询 `GET /api/v1/devices/{id}/collections/{run}` 需要 `inventory_read`，呈现每字段质量、服务端接收时间和真实 Observation 投递状态，Apple 字段没有伪造的 SyncML 数字状态。省略 `scope` 时读取设备范围；用户范围传入 URL 编码的 scope JSON，例如 `{"kind":"apple_user","identity":"规范小写非零 UUID"}`。历史用户范围读取不要求通道当前有效，仍检查当前读取权限；范围选择与规则契约见[资产采集](assets.md#macos-agent-声明式采集)。
 
 采集结果经既有 Observation/Inventory 投影；完整快照只影响该定义选中的字段。失败、缺失或非法字段保留最后已知值，合法部分结果可更新对应字段，质量由 CollectionRun 单独呈现；不拼接旧值伪造新 Snapshot，不引入字段 TTL。纯超时且没有字段结果只记录失败 run，不制造 Observation 报告。
 

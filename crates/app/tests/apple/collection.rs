@@ -522,7 +522,9 @@ async fn user_collection_cannot_cross_device_or_other_user_namespace() -> Result
             .call(
                 &f.router,
                 Method::GET,
-                &format!("{path}?userId={other}"),
+                &format!(
+                    "{path}?scope=%7B%22kind%22:%22apple_user%22,%22identity%22:%22{other}%22%7D"
+                ),
                 None
             )
             .await?
@@ -534,12 +536,15 @@ async fn user_collection_cannot_cross_device_or_other_user_namespace() -> Result
         .call(
             &f.router,
             Method::GET,
-            &format!("{path}?userId={user}"),
+            &format!("{path}?scope=%7B%22kind%22:%22apple_user%22,%22identity%22:%22{user}%22%7D"),
             None,
         )
         .await?;
     ensure!(result.0 == StatusCode::OK, "scoped result {result:?}");
-    ensure!(result.1["asset"]["run"]["scope"] == json!({"kind":"user","identity":user}));
+    ensure!(
+        result.1["asset"]["run"]["fields"][0]["scope"]
+            == json!({"kind":"apple_user","identity":user})
+    );
     crate::test_support::stop_worker(Some(worker)).await?;
     drop(device);
     f.close().await

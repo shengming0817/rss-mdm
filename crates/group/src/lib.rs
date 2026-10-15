@@ -9,11 +9,12 @@ mod evaluation;
 mod model;
 mod rule;
 pub use evaluation::{
-    Decision, Explanation, ObjectEvaluation, Outcome, PageEvaluation, Provenance, UnknownReason,
+    ContextEvaluation, Decision, Explanation, ObjectEvaluation, Outcome, PageEvaluation,
+    Provenance, UnknownReason,
 };
 pub use model::{
     Fact, FactState, Field, FieldType, ObjectKey, ObjectSnapshot, Op, Operand, PageInput,
-    Predicate, Scalar, ScalarType, Value,
+    Predicate, Quantifier, Scalar, ScalarType, Value,
 };
 pub use rule::{Criteria, CriteriaView, Rule, RuleView};
 

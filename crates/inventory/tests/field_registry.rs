@@ -74,13 +74,17 @@ fn frozen_collection_rejects_unregistered_source_wrong_coverage_and_duplicate_fi
     use rss_mdm_inventory::*;
     use rss_observation::{Batch, Body, Change, Id};
     let field = definition();
-    let contract = CollectionDefinition::new(
-        rss_mdm_inventory::CollectionScope::Device,
-        "security-health",
-        1,
-        Source::AgentScript,
-        vec![field.clone()],
-    )
+    let contract = CollectionDefinition::new("security-health", 1, Source::AgentScript, {
+        let scope = rss_mdm_inventory::CollectionScope::Device;
+        let fields: Vec<rss_mdm_inventory::FieldDefinition> = vec![field.clone()];
+        fields
+            .into_iter()
+            .map(|definition| rss_mdm_inventory::CollectionField {
+                definition,
+                scope: scope.clone(),
+            })
+            .collect()
+    })
     .unwrap();
     let batch = |body| {
         Batch::new(
@@ -104,13 +108,17 @@ fn frozen_collection_rejects_unregistered_source_wrong_coverage_and_duplicate_fi
             .is_ok()
     );
     assert!(
-        CollectionDefinition::new(
-            rss_mdm_inventory::CollectionScope::Device,
-            "security-health",
-            1,
-            Source::AgentBuiltin,
-            vec![field.clone()]
-        )
+        CollectionDefinition::new("security-health", 1, Source::AgentBuiltin, {
+            let scope = rss_mdm_inventory::CollectionScope::Device;
+            let fields: Vec<rss_mdm_inventory::FieldDefinition> = vec![field.clone()];
+            fields
+                .into_iter()
+                .map(|definition| rss_mdm_inventory::CollectionField {
+                    definition,
+                    scope: scope.clone(),
+                })
+                .collect()
+        })
         .is_err()
     );
     assert!(
@@ -122,22 +130,30 @@ fn frozen_collection_rejects_unregistered_source_wrong_coverage_and_duplicate_fi
             .is_err()
     );
     assert!(
-        CollectionDefinition::new(
-            rss_mdm_inventory::CollectionScope::Device,
-            "security-health",
-            1,
-            Source::AgentScript,
-            vec![field.clone(), field]
-        )
+        CollectionDefinition::new("security-health", 1, Source::AgentScript, {
+            let scope = rss_mdm_inventory::CollectionScope::Device;
+            let fields: Vec<rss_mdm_inventory::FieldDefinition> = vec![field.clone(), field];
+            fields
+                .into_iter()
+                .map(|definition| rss_mdm_inventory::CollectionField {
+                    definition,
+                    scope: scope.clone(),
+                })
+                .collect()
+        })
         .is_err()
     );
-    let wrong = CollectionDefinition::new(
-        rss_mdm_inventory::CollectionScope::Device,
-        "different",
-        1,
-        Source::AgentScript,
-        vec![definition()],
-    )
+    let wrong = CollectionDefinition::new("different", 1, Source::AgentScript, {
+        let scope = rss_mdm_inventory::CollectionScope::Device;
+        let fields: Vec<rss_mdm_inventory::FieldDefinition> = vec![definition()];
+        fields
+            .into_iter()
+            .map(|definition| rss_mdm_inventory::CollectionField {
+                definition,
+                scope: scope.clone(),
+            })
+            .collect()
+    })
     .unwrap();
     assert!(wrong.validate(&batch(Body::Snapshot(vec![]))).is_err());
     assert!(contract.validate(&batch(Body::Snapshot(vec![]))).is_ok());
@@ -193,6 +209,7 @@ fn source_precedence_is_explicit_and_deletion_preserves_other_facts() {
         state: State::Known(Scalar::Boolean(value)),
         last_known: None,
         evidence: Evidence {
+            scope: CollectionScope::Device,
             source,
             dataset: Some("collector".into()),
             registration: Some("reg".into()),
@@ -274,11 +291,20 @@ fn empty_catalog_represents_uninitialized_tenant_without_inventing_fields() {
     );
     assert!(
         rss_mdm_inventory::CollectionDefinition::new(
-            rss_mdm_inventory::CollectionScope::Device,
             "empty",
             "1",
             rss_mdm_inventory::Source::AgentBuiltin,
-            vec![]
+            {
+                let scope = rss_mdm_inventory::CollectionScope::Device;
+                let fields: Vec<rss_mdm_inventory::FieldDefinition> = vec![];
+                fields
+                    .into_iter()
+                    .map(|definition| rss_mdm_inventory::CollectionField {
+                        definition,
+                        scope: scope.clone(),
+                    })
+                    .collect()
+            }
         )
         .is_err()
     );

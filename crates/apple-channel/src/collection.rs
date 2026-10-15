@@ -209,7 +209,6 @@ pub async fn prepare_native(
             .attempts
             .definition()
             .fields()
-            .iter()
             .map(|f| {
                 (
                     f.key,
@@ -348,7 +347,6 @@ pub async fn prepare_native(
                 .attempts
                 .definition()
                 .fields()
-                .iter()
                 .map(|f| {
                     (
                         f.key,

@@ -355,7 +355,9 @@ struct FactDoc {
 #[serde(deny_unknown_fields)]
 struct ObjectDoc {
     id: String,
-    facts: BTreeMap<String, FactDoc>,
+    quantifier: String,
+    complete: bool,
+    contexts: BTreeMap<String, BTreeMap<String, FactDoc>>,
 }
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -379,34 +381,49 @@ pub(crate) fn encode_page(s: &PageInput<'_>) -> Result<Vec<u8>> {
         .values()
         .map(|o| ObjectDoc {
             id: o.key.id().into(),
-            facts: o
-                .facts
+            quantifier: match o.quantifier {
+                crate::core::Quantifier::One => "one",
+                crate::core::Quantifier::Any => "any",
+                crate::core::Quantifier::All => "all",
+            }
+            .into(),
+            complete: o.complete,
+            contexts: o
+                .contexts
                 .iter()
-                .map(|(k, f)| {
-                    let state = match &f.state {
-                        FactState::Known(v) => State::Known(val(v)),
-                        FactState::Null => State::Null,
-                        FactState::Missing => State::Missing,
-                        FactState::Unsupported => State::Unsupported,
-                        FactState::Denied => State::Denied,
-                        FactState::Deleted => State::Deleted,
-                        FactState::Conflict => State::Conflict,
-                    };
+                .map(|(id, facts)| {
                     (
-                        k.clone(),
-                        FactDoc {
-                            state,
-                            source: f.source.clone(),
-                            snapshot_id: f.snapshot_id.clone(),
-                            observed_at: f.observed_at.unix_seconds(),
-                        },
+                        id.clone(),
+                        facts
+                            .iter()
+                            .map(|(k, f)| {
+                                let state = match &f.state {
+                                    FactState::Known(v) => State::Known(val(v)),
+                                    FactState::Null => State::Null,
+                                    FactState::Missing => State::Missing,
+                                    FactState::Unsupported => State::Unsupported,
+                                    FactState::Denied => State::Denied,
+                                    FactState::Deleted => State::Deleted,
+                                    FactState::Conflict => State::Conflict,
+                                };
+                                (
+                                    k.clone(),
+                                    FactDoc {
+                                        state,
+                                        source: f.source.clone(),
+                                        snapshot_id: f.snapshot_id.clone(),
+                                        observed_at: f.observed_at.unix_seconds(),
+                                    },
+                                )
+                            })
+                            .collect(),
                     )
                 })
                 .collect(),
         })
         .collect();
     encode(&PageDoc {
-        v: 2,
+        v: 3,
         tenant: s.tenant.to_string(),
         id: s.id.to_owned(),
         version: s.version.to_owned(),

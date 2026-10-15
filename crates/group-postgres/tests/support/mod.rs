@@ -108,9 +108,9 @@ pub fn inputs() -> (Rule, FixturePage) {
     .unwrap();
     let snapshot = FixturePage {
         coverage: BTreeSet::from(["model".into()]),
-        objects: vec![ObjectSnapshot {
-            key: ObjectKey::new(tenant(), "device-1").unwrap(),
-            facts: BTreeMap::from([(
+        objects: vec![ObjectSnapshot::single(
+            ObjectKey::new(tenant(), "device-1").unwrap(),
+            BTreeMap::from([(
                 "model".into(),
                 Fact {
                     state: FactState::Known(Value::Scalar(Scalar::String("laptop".into()))),
@@ -119,7 +119,7 @@ pub fn inputs() -> (Rule, FixturePage) {
                     observed_at: at(),
                 },
             )]),
-        }],
+        )],
     };
     (rule, snapshot)
 }

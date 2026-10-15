@@ -28,7 +28,7 @@ Legacy Profile 只从受保护的不可变 Resource 下载，使用已验证的 
 
 操作、外部 CA 与恢复见 [Apple 指南](../guides/apple-management.md)。参考 [Apple 证书管理](https://developer.apple.com/documentation/devicemanagement/managing-certificates-for-device-management-services-and-devices)、[APNs 响应](https://developer.apple.com/documentation/usernotifications/handling-notification-responses-from-apns)，协议来源固定于 [Apple fixtures](../../fixtures/apple-tools.lock.json)。
 
-资产采集使用六类固定只读 adapter：DeviceInformation、InstalledApplicationList、SecurityInfo、ProfileList、CertificateList、UserList。每次运行先以自身的设备通道前置查询取得真实 OS、监督、硬件与登记事实，再冻结原生编译上下文；返回时重新检查当前权限。用户模板必须提供规范化 Apple UserID，派发、APNs、回执、dataset、结果与分页游标均绑定此 scope。设备搜索、分组和合规只解析设备 dataset；用户详情和列表通过 userId 选择，通道失效后拒绝读取。UserList 仍为监督设备通道能力。
+资产采集使用六类固定只读 adapter：DeviceInformation、InstalledApplicationList、SecurityInfo、ProfileList、CertificateList、UserList。每次运行先以自身的设备通道前置查询取得真实 OS、监督、硬件与登记事实，再冻结原生编译上下文；返回时重新检查当前权限。用户模板必须提供规范化 Apple UserID，派发、APNs、回执、dataset、结果与分页游标均绑定此 scope。设备搜索、分组和合规按显式范围选择器独立求值，再按量词归约，不拼接不同用户事实。用户详情、列表与运行详情通过 `scope` JSON 选择；历史用户范围读取不要求通道当前有效，仍检查当前读取权限。详细范围与规则契约见[资产采集](../guides/assets.md#macos-agent-声明式采集)。UserList 仍为监督设备通道能力。
 
 原生可选属性使用有类型的 Record，缺席保持缺席；完整空列表与未返回列表分别处理。Profiles/Certificates 标准包明确为 ManagedOnly；证书在内存解析，仅保留指纹、序列号及有效期等元数据。普通采集响应在原始字节完成认证与重放 MAC 后，只留存固定白名单投影。FileVault 恢复材料、Profile PayloadContent、证书 DER 和未声明扩展键不进入普通资产结果。
 

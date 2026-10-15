@@ -177,16 +177,6 @@ impl SnapshotReader {
             if channel != source.channel().ok_or(Error::Malformed)?.as_str() {
                 return Err(Error::Unavailable(Failure::InventoryQuery).into());
             }
-            if let rss_mdm_inventory::CollectionScope::User { identity } = collection_scope {
-                if source != rss_mdm_inventory::Source::MdmApple {
-                    continue;
-                }
-                let active: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_apple.channels ch JOIN mdm_access.registrations r ON(r.tenant_id,r.id,r.generation)=(ch.tenant_id,ch.registration,ch.generation) WHERE ch.tenant_id=$1::uuid AND ch.registration=$2::uuid AND ch.user_key=$3 AND ch.state='active' AND r.state='active')")
-                    .bind(self.tenant.to_string()).bind(row.try_get::<&str,_>("registration")?).bind(identity).fetch_one(&mut *c).await?;
-                if !active {
-                    return Err(Error::NotFound.into());
-                }
-            }
             for dataset in datasets.get(&source).into_iter().flatten() {
                 let scope = crate::device::scope_dataset(
                     self.tenant,
@@ -221,6 +211,9 @@ impl SnapshotReader {
         };
         let mut facts: BTreeMap<(String, FieldKey), Vec<SourceFact>> = BTreeMap::new();
         for mut row in observed {
+            if &row.fact.evidence.scope != collection_scope {
+                continue;
+            }
             let (device, generation) = subjects
                 .get(&row.scope)
                 .ok_or(Error::Unavailable(Failure::AssetsStorage))?;
@@ -246,7 +239,14 @@ impl SnapshotReader {
         }
         let tenant = self.tenant.to_string();
         let keys: Vec<_> = subjects.keys().cloned().collect();
-        let quality = crate::collection::read::quality_at(c, tenant, keys, watermark).await?;
+        let quality = crate::collection::read::quality_at(
+            c,
+            tenant,
+            keys,
+            watermark,
+            stored(serde_json::to_string(collection_scope))?,
+        )
+        .await?;
         for row in quality {
             let scope: String = row.try_get("scope")?;
             let (device, generation) = subjects
@@ -256,7 +256,15 @@ impl SnapshotReader {
                 .get_mut(device)
                 .ok_or(Error::Unavailable(Failure::AssetsStorage))?
                 .quality
-                .push(quality::decode(&row, *generation)?);
+                .push({
+                    let mut quality = quality::decode(&row, *generation)?;
+                    let selected: Vec<String> = row.try_get("selected_fields")?;
+                    quality.fields.retain(|f| {
+                        &f.scope == collection_scope
+                            && selected.iter().any(|key| key == f.field.as_str())
+                    });
+                    quality
+                });
         }
         for (id, device) in &mut devices {
             for definition in catalog.fields().filter(|f| fields::visible(f, sensitive)) {
@@ -283,5 +291,155 @@ impl SnapshotReader {
             return Err(Error::Unavailable(Failure::AssetBytesLimit).into());
         }
         Ok(result)
+    }
+}
+
+/// Frozen rule input and caller authorization for one bounded asset page.
+pub struct ConditionRequest<'a> {
+    pub watermark: i64,
+    pub devices: &'a [DeviceView],
+    pub catalog: &'a rss_mdm_inventory::Catalog,
+    pub authorization: &'a ReadScope,
+    pub condition: &'a InventoryCondition,
+    pub rule: &'a rss_mdm_group_postgres::core::Rule,
+    pub associated: Option<&'a [crate::objects::DeviceObject]>,
+}
+impl SnapshotReader {
+    /// Supply isolated contexts; the Group core owns complete predicate evaluation.
+    pub async fn condition_inputs_in(
+        &self,
+        tx: &mut PgTransaction<'_>,
+        request: ConditionRequest<'_>,
+    ) -> Result<filter::FactPage> {
+        let ConditionRequest {
+            watermark,
+            devices,
+            catalog,
+            authorization,
+            condition,
+            rule,
+            associated,
+        } = request;
+        use rss_mdm_group_postgres::core as g;
+        use rss_mdm_inventory::CollectionScope as S;
+        condition.validate()?;
+        let ids: Vec<_> = devices.iter().map(|d| d.device.clone()).collect();
+        if authorization
+            .devices
+            .as_ref()
+            .is_some_and(|allowed| ids.iter().any(|id| !allowed.contains(id)))
+        {
+            return Err(Error::Forbidden.into());
+        }
+        filter::require_visible(catalog, &condition.criteria, authorization.sensitive)?;
+        let scopes = match &condition.selector {
+            ScopeSelector::Device => vec![S::Device],
+            ScopeSelector::Exact { scope } => vec![scope.as_ref().clone()],
+            ScopeSelector::LocalUser { .. } | ScopeSelector::AllAuthorized => {
+                let tenant = self.tenant.to_string();
+                let selected = ids.clone();
+                let uid = match &condition.selector {
+                    ScopeSelector::LocalUser { uid } => Some(uid.to_string()),
+                    _ => None,
+                };
+                let mut scopes = if uid.is_none() {
+                    vec![S::Device]
+                } else {
+                    Vec::new()
+                };
+                let raw: Vec<String> = tx.with_connection(move |c| Box::pin(async move {
+                    let sources = crate::device::read::sources_at(c, tenant.clone(), selected, watermark).await?;
+                    let registrations: Vec<String> = sources.iter().map(|r| r.try_get("registration")).collect::<std::result::Result<_,sqlx::Error>>()?;
+                    sqlx::query_scalar("SELECT DISTINCT (f->'scope')::text AS scope FROM mdm_access.collection_history h CROSS JOIN LATERAL jsonb_array_elements((h.document->>'attempts')::jsonb->'definition'->'fields') f WHERE tenant_id=$1::uuid AND revision<=$2 AND h.scope::jsonb->>'registration'=ANY($3) AND ($4::text IS NULL OR (f->'scope'->>'kind' IN ('macos_applications','macos_brew') AND f->'scope'->>'uid'=$4)) LIMIT 129")
+                        .bind(tenant).bind(watermark).bind(registrations).bind(uid).fetch_all(c).await
+                })).await?;
+                if raw.len() > 128 {
+                    return Err(Error::Unavailable(Failure::AssetSourceLimit).into());
+                }
+                for raw in raw {
+                    let scope: S = stored(serde_json::from_str(&raw))?;
+                    if !scopes.contains(&scope) {
+                        scopes.push(scope);
+                    }
+                }
+                scopes
+            }
+        };
+        let quantifier = match condition.quantifier {
+            ScopeQuantifier::One => g::Quantifier::One,
+            ScopeQuantifier::Any => g::Quantifier::Any,
+            ScopeQuantifier::All => g::Quantifier::All,
+        };
+        let keys: Vec<_> = associated.map_or_else(
+            || devices.iter().map(|d| d.device.clone()).collect(),
+            |inputs| inputs.iter().map(|i| i.object.key()).collect(),
+        );
+        let mut objects = keys
+            .iter()
+            .map(|key| {
+                Ok(g::ObjectSnapshot {
+                    key: checked_input(g::ObjectKey::new(self.tenant, key))?,
+                    quantifier,
+                    complete: true,
+                    contexts: BTreeMap::new(),
+                })
+            })
+            .collect::<Result<Vec<_>>>()?;
+        let mut contexts = BTreeMap::new();
+        let mut bytes = 0usize;
+        for scope in scopes {
+            let mut scoped = self
+                .asset_devices_at_in(tx, watermark, &ids, catalog, &scope)
+                .await?;
+            for device in &mut scoped {
+                restrict_fields(device, catalog, authorization.sensitive);
+            }
+            bytes = bytes
+                .checked_add(stored(serde_json::to_vec(&scoped))?.len())
+                .ok_or(Error::Unavailable(Failure::AssetBytesLimit))?;
+            if bytes > 64 * 1024 * 1024 {
+                return Err(Error::Unavailable(Failure::AssetBytesLimit).into());
+            }
+            let facts = if let Some(inputs) = associated {
+                filter::associated_page(self.tenant, inputs, &scoped, catalog, rule)?
+            } else {
+                filter::page(self.tenant, &scoped, catalog, rule)?
+            };
+            for (index, (object, input)) in objects.iter_mut().zip(facts.objects).enumerate() {
+                // Multi-scope universes contain only namespaces observed for this endpoint.
+                // Exact selection retains an empty context, producing Unknown for missing facts.
+                let observed = |device: &DeviceView| {
+                    !device.quality.is_empty()
+                        || device.fields.values().any(|f| !f.sources.is_empty())
+                };
+                let exists = associated.map_or_else(
+                    || observed(&scoped[index]),
+                    |inputs| {
+                        scoped
+                            .iter()
+                            .filter(|d| inputs[index].members.iter().any(|m| m.device == d.device))
+                            .any(observed)
+                    },
+                );
+                if quantifier != g::Quantifier::One && !exists {
+                    continue;
+                }
+                if associated.is_none() {
+                    contexts.insert(
+                        (scoped[index].device.clone(), digest(&scope)?),
+                        scoped[index].clone(),
+                    );
+                }
+                object.contexts.insert(
+                    digest(&scope)?,
+                    input.contexts.into_values().next().expect("single context"),
+                );
+            }
+        }
+        Ok(filter::FactPage {
+            contexts,
+            coverage: rule.view().fields.keys().cloned().collect(),
+            objects,
+        })
     }
 }

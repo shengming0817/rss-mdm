@@ -28,7 +28,8 @@ impl AssetService {
             }
         }
         if let Some(criteria) = &q.criteria {
-            rule(self.tenant, Uuid::nil(), criteria, catalog)?;
+            criteria.validate()?;
+            rule(self.tenant, Uuid::nil(), &criteria.criteria, catalog)?;
         }
         Ok(())
     }
@@ -43,7 +44,7 @@ impl AssetService {
         let catalog = catalog_in(tx, self.tenant, i64::MAX).await?;
         self.validate_query(q, &catalog)?;
         if let Some(criteria) = &q.criteria {
-            filter::require_visible(&catalog, criteria, scope.sensitive)?;
+            filter::require_visible(&catalog, &criteria.criteria, scope.sensitive)?;
         }
         for key in q.select.iter().chain(q.sort.iter().map(|s| &s.field)) {
             if !scope.sensitive
@@ -106,7 +107,7 @@ impl AssetService {
         let rule = q
             .criteria
             .as_ref()
-            .map(|c| stored(rule(self.tenant, task, c, &catalog)))
+            .map(|c| stored(rule(self.tenant, task, &c.criteria, &catalog)))
             .transpose()?;
         let mut limit = 128;
         let (page, decisions) = loop {
@@ -129,12 +130,22 @@ impl AssetService {
                 .map(|s| stored(g::ObjectKey::new(self.tenant, s)))
                 .transpose()?;
             let decisions = if let Some(rule) = &rule {
-                let snapshot = stored(filter::page(
-                    self.tenant,
-                    &page.devices,
-                    &page.catalog,
-                    rule,
-                ))?;
+                let snapshot = super::planning::SnapshotReader {
+                    tenant: self.tenant,
+                }
+                .condition_inputs_in(
+                    tx,
+                    crate::assets::planning::ConditionRequest {
+                        watermark,
+                        devices: &page.devices,
+                        catalog: &page.catalog,
+                        authorization: scope,
+                        condition: q.criteria.as_ref().expect("condition"),
+                        rule,
+                        associated: None,
+                    },
+                )
+                .await?;
                 match rule.evaluate_page(
                     &g::PageInput {
                         tenant: self.tenant,
