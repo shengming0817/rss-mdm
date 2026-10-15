@@ -18,6 +18,7 @@ pub fn publication(id: Uuid, old: Option<&Policy>, change: Change) -> Publicatio
         old.map_or(0, |p| p.revision as u64),
         &change,
         Uuid::new_v4(),
+        None,
     )
     .unwrap();
     Publication {

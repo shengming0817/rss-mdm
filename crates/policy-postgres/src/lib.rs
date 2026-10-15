@@ -22,6 +22,7 @@ const ADMISSION: Admission = Admission {
         "policies.definition",
         "policies.author",
         "policies.updated_at",
+        "policies.execution_binding",
     ],
     catalog: include_str!("catalog.json"),
 };

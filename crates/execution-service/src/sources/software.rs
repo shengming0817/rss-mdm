@@ -276,7 +276,7 @@ impl SoftwareAssignment {
             resource: &self.frozen.resource,
             version: &self.frozen.version,
             digest: self.frozen.resource_digest,
-            admission: self.frozen.admission_operation,
+            lifecycle: self.frozen.lifecycle_binding,
             variant: self.variant(platform, architecture)?,
             uninstall: matches!(self.intent(), SoftwareIntent::ExplicitUninstall),
         })

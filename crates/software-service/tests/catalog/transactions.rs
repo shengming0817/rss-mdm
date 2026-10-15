@@ -198,29 +198,15 @@ fn register() -> Operation<SourceChange> {
         "id":pg::case::name("private-fixture"),"revision":"1","protocol":{"kind":"private"}
     }}})).unwrap()
 }
-fn approve(revision: u64) -> Operation<VersionChange> {
+fn enable(revision: u64) -> Operation<VersionChange> {
     Operation {
         operation_id: Uuid::new_v4(),
         expected_revision: revision,
-        input: VersionChange::Approve {
-            evidence: vec!["review".into()],
-        },
+        input: VersionChange::Enable,
     }
 }
-async fn approved_source(fixture: &Fixture) -> Result<Value> {
+async fn enabled_source(fixture: &Fixture) -> Result<Value> {
     let registered = fixture.source(&register(), false).await?;
-    fixture
-        .source(
-            &Operation {
-                operation_id: Uuid::new_v4(),
-                expected_revision: 1,
-                input: SourceChange::Approve {
-                    evidence: vec!["review".into()],
-                },
-            },
-            false,
-        )
-        .await?;
     Ok(registered["snapshot"].clone())
 }
 
@@ -262,15 +248,24 @@ async fn source_receipts_follow_the_borrowed_transaction() -> Result<()> {
     ensure!(replayed == original);
     ensure!(pg::sql(&audit_sql) == first_audit);
     let snapshot: r::SoftwareSource = serde_json::from_value(replayed["snapshot"].clone())?;
+    fixture.source_allowed(snapshot.clone()).await?;
+    fixture
+        .source(
+            &Operation {
+                operation_id: Uuid::new_v4(),
+                expected_revision: 1,
+                input: SourceChange::Disable,
+            },
+            false,
+        )
+        .await?;
     ensure!(fixture.source_allowed(snapshot.clone()).await.is_err());
-    let approval = Operation {
+    let enablement = Operation {
         operation_id: Uuid::new_v4(),
-        expected_revision: 1,
-        input: SourceChange::Approve {
-            evidence: vec!["review".into()],
-        },
+        expected_revision: 2,
+        input: SourceChange::Enable,
     };
-    let approved = fixture.source(&approval, false).await?;
+    let enabled = fixture.source(&enablement, false).await?;
     fixture.source_allowed(snapshot.clone()).await?;
     let mut wrong = snapshot.clone();
     wrong.sha256 = [0; 32];
@@ -279,25 +274,23 @@ async fn source_receipts_follow_the_borrowed_transaction() -> Result<()> {
         .source(
             &Operation {
                 operation_id: Uuid::new_v4(),
-                expected_revision: 2,
-                input: SourceChange::Withdraw {
-                    evidence: vec!["withdrawal".into()],
-                },
+                expected_revision: 3,
+                input: SourceChange::Disable,
             },
             false,
         )
         .await?;
-    ensure!(fixture.source(&approval, false).await? == approved);
+    ensure!(fixture.source(&enablement, false).await? == enabled);
     ensure!(fixture.source_allowed(snapshot).await.is_err());
     fixture.runtime.close().await;
     Ok(())
 }
 
 #[tokio::test]
-#[ignore = "MODULE=software.catalog: exact content and dependency approvals, withdrawal recheck"]
-async fn dependency_admission_uses_exact_current_approval() -> Result<()> {
+#[ignore = "MODULE=software.catalog: exact content and dependency enablements, withdrawal recheck"]
+async fn dependency_admission_uses_exact_current_enablement() -> Result<()> {
     let fixture = Fixture::open().await;
-    let source = approved_source(&fixture).await?;
+    let source = enabled_source(&fixture).await?;
     let definition = materials::private_definition(source, b"abc");
     let dependency = fixture
         .version(definition.clone())
@@ -309,10 +302,10 @@ async fn dependency_admission_uses_exact_current_approval() -> Result<()> {
         .version(dependent_definition.clone())
         .await
         .context("dependent version")?;
-    let approval = approve(0);
+    let enablement = enable(0);
     ensure!(
         fixture
-            .change(&dependent, &approval, dependent.digest().bytes())
+            .change(&dependent, &enablement, dependent.digest().bytes())
             .await
             .is_err()
     );
@@ -320,44 +313,44 @@ async fn dependency_admission_uses_exact_current_approval() -> Result<()> {
         pg::sql(&format!(
             "SELECT count(*) FROM mdm_software.operations WHERE tenant_id='{}' AND id='{}'",
             pg::tenant(),
-            approval.operation_id
+            enablement.operation_id
         )) == "0"
     );
     ensure!(
         pg::sql(&format!(
-            "SELECT count(*) FROM mdm_software.approvals WHERE tenant_id='{}' AND resource='{}'",
+            "SELECT count(*) FROM mdm_software.versions WHERE tenant_id='{}' AND resource='{}'",
             pg::tenant(),
             dependent.resource().as_str()
         )) == "0"
     );
     ensure!(
         fixture
-            .change(&dependency, &approve(0), [0; 32])
+            .change(&dependency, &enable(0), [0; 32])
             .await
             .is_err()
     );
     fixture
-        .change(&dependency, &approve(0), dependency.digest().bytes())
+        .change(&dependency, &enable(0), dependency.digest().bytes())
         .await
-        .context("dependency approval")?;
+        .context("dependency enablement")?;
     fixture
-        .change(&dependent, &approval, dependent.digest().bytes())
+        .change(&dependent, &enablement, dependent.digest().bytes())
         .await
-        .context("dependent approval")?;
+        .context("dependent enablement")?;
     fixture
         .resolve(&dependent)
         .await
-        .context("resolve approved dependency")?;
+        .context("resolve enabled dependency")?;
     let preparation = Preparation::new(catalog::Reader::new(pg::tenant()), Default::default());
     let target = Target {
         platform: r::Platform::Windows,
         architecture: r::Architecture::X86_64,
     };
-    let binding = Selection {
+    let mut binding = Selection {
         resource: dependent.resource().as_str(),
         version: "v1",
         digest: dependent.digest().bytes(),
-        admission: approval.operation_id,
+        lifecycle: [0; 32],
         variant: "default",
         uninstall: false,
     };
@@ -372,33 +365,27 @@ async fn dependency_admission_uses_exact_current_approval() -> Result<()> {
         interactive_user: None,
         source_credentials: vec![],
     };
-    transaction(
+    binding.lifecycle = transaction(
         &fixture.runtime,
         (&preparation, &binding, &targets, &context, &dependency),
         |ctx, tx| {
             Box::pin(async move {
                 let (preparation, binding, targets, context, dependency) = *ctx;
-                let request = |admission, uninstall| FreezeRequest {
+                let request = |uninstall| FreezeRequest {
                     resource: binding.resource,
                     version: binding.version,
                     digest: binding.digest,
-                    admission,
                     uninstall,
                     targets,
                 };
-                preparation
-                    .freeze_in(tx, request(binding.admission, false))
-                    .await?;
+                let lifecycle = preparation.freeze_in(tx, request(false)).await?;
+                ensure_catalog(preparation.resolve_in(tx, binding, target).await.is_err())?;
+                let binding = &Selection {
+                    lifecycle,
+                    ..*binding
+                };
                 ensure_catalog(matches!(
-                    preparation
-                        .freeze_in(tx, request(Uuid::new_v4(), false))
-                        .await,
-                    Err(catalog::Error::Conflict)
-                ))?;
-                ensure_catalog(matches!(
-                    preparation
-                        .freeze_in(tx, request(binding.admission, true))
-                        .await,
+                    preparation.freeze_in(tx, request(true)).await,
                     Err(catalog::Error::Unsupported)
                 ))?;
                 let steps = preparation
@@ -416,7 +403,7 @@ async fn dependency_admission_uses_exact_current_approval() -> Result<()> {
                     .await?
                     .ok_or(catalog::Error::Missing)?;
                 ensure_catalog(artifact.length() == 3)?;
-                Ok(())
+                Ok(lifecycle)
             })
         },
     )
@@ -427,16 +414,14 @@ async fn dependency_admission_uses_exact_current_approval() -> Result<()> {
     let wrong = fixture.version(wrong).await?;
     ensure!(
         fixture
-            .change(&wrong, &approve(0), wrong.digest().bytes())
+            .change(&wrong, &enable(0), wrong.digest().bytes())
             .await
             .is_err()
     );
     let withdrawal = Operation {
         operation_id: Uuid::new_v4(),
         expected_revision: 1,
-        input: VersionChange::Withdraw {
-            evidence: vec!["withdrawn".into()],
-        },
+        input: VersionChange::Withdraw,
     };
     fixture
         .change(&dependency, &withdrawal, dependency.digest().bytes())
@@ -469,10 +454,32 @@ async fn dependency_admission_uses_exact_current_approval() -> Result<()> {
     let after = fixture.version(dependent_definition).await?;
     ensure!(
         fixture
-            .change(&after, &approve(0), after.digest().bytes())
+            .change(&after, &enable(0), after.digest().bytes())
             .await
             .is_err()
     );
+    fixture
+        .change(&dependency, &enable(2), dependency.digest().bytes())
+        .await?;
+    transaction(
+        &fixture.runtime,
+        (&preparation, &binding, &dependent),
+        |ctx, tx| {
+            Box::pin(async move {
+                let (preparation, binding, dependent) = *ctx;
+                let current = preparation.binding_in(tx, dependent).await?;
+                ensure_catalog(current != binding.lifecycle)?;
+                ensure_catalog(preparation.recheck_in(tx, binding, target).await?.is_none())?;
+                let fresh = Selection {
+                    lifecycle: current,
+                    ..*binding
+                };
+                preparation.resolve_in(tx, &fresh, target).await?;
+                Ok(())
+            })
+        },
+    )
+    .await?;
     fixture.runtime.close().await;
     Ok(())
 }
@@ -491,18 +498,6 @@ async fn import_receipt_survives_unknown_commit_and_source_withdrawal() -> Resul
                 expected_revision: 0,
                 input: SourceChange::Register {
                     definition: source.clone(),
-                },
-            },
-            false,
-        )
-        .await?;
-    fixture
-        .source(
-            &Operation {
-                operation_id: Uuid::new_v4(),
-                expected_revision: 1,
-                input: SourceChange::Approve {
-                    evidence: vec!["reviewed fixed community snapshot".into()],
                 },
             },
             false,
@@ -549,10 +544,8 @@ async fn import_receipt_survives_unknown_commit_and_source_withdrawal() -> Resul
         .source(
             &Operation {
                 operation_id: Uuid::new_v4(),
-                expected_revision: 2,
-                input: SourceChange::Withdraw {
-                    evidence: vec!["source withdrawn".into()],
-                },
+                expected_revision: 1,
+                input: SourceChange::Disable,
             },
             false,
         )

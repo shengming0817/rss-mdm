@@ -205,7 +205,7 @@ impl Package {
 pub struct FrozenInstall {
     pub resource: SoftwareResourceBinding,
     pub resource_digest: [u8; 32],
-    pub admission_operation: Uuid,
+    pub lifecycle_binding: [u8; 32],
     pub schedule: Schedule,
     pub run_lifetime_seconds: u32,
     pub packages: BTreeMap<SoftwareTarget, Package>,
@@ -365,12 +365,7 @@ pub(crate) async fn authorized_on(
         action.resource.id.as_str(),
         action.resource.version.as_str(),
         action.resource_digest,
-        action.admission_operation,
-        &action
-            .packages
-            .values()
-            .map(|p| p.source.clone())
-            .collect::<Vec<_>>(),
+        action.lifecycle_binding,
     )
     .await
     .map_err(|e| match crate::transaction::Fault::from(e) {

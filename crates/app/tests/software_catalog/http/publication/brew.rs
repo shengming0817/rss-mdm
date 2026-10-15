@@ -29,7 +29,7 @@ async fn immutable_native_tap_is_consumed_by_git_and_homebrew_and_withdrawn() ->
     let service = Arc::new(peer.service(runtime.clone(), config).await);
     let input = p::seed(runtime.clone(), &peer, p::formula(&peer)).await;
     service.create_candidate(&input, p::pg::cutoff()).await?;
-    let publication = p::authorize(&service, &input.candidate, release::Ring::Test).await;
+    let publication = p::submit_publication(&service, &input.candidate, release::Ring::Test).await;
     service
         .publish(publication.id(), 1, p::pg::at(10), p::pg::cutoff())
         .await?;

@@ -189,7 +189,6 @@ pub(crate) struct Fixture {
     pub(crate) removal: Vec<u8>,
     pub(crate) windows_bytes: Vec<u8>,
     pub(crate) credential: String,
-    pub(crate) first_operation: Value,
 }
 impl Fixture {
     pub(crate) async fn approved(platform: Platform) -> Result<Self> {
@@ -249,7 +248,6 @@ impl Fixture {
             "resource_write",
             "software_read",
             "software_write",
-            "software_approve",
             "software_withdraw",
             "policy_read",
             "policy_write",
@@ -284,14 +282,6 @@ impl Fixture {
         let source = Uuid::new_v4().to_string();
         let source_path = format!("/api/v1/software/sources/{source}/revisions/1");
         let registered=write(&mut author,&router,&source_path,0,json!({"action":"register","definition":{"id":source,"revision":"1","protocol":{"kind":"private"}}})).await?;
-        write(
-            &mut author,
-            &router,
-            &source_path,
-            1,
-            json!({"action":"approve","evidence":["enterprise-source"]}),
-        )
-        .await?;
         let dependency = Uuid::new_v4();
         let dependency_path = format!("/api/v1/resources/{dependency}");
         write(
@@ -333,7 +323,7 @@ impl Fixture {
             &router,
             &format!("/api/v1/software/resources/{dependency}/versions/v1"),
             0,
-            json!({"action":"approve","evidence":["fixed-prerequisite"]}),
+            json!({"action":"enable"}),
         )
         .await?;
         let dependency_version = author
@@ -388,15 +378,15 @@ impl Fixture {
             json!({"action":"activate","version":"v1"}),
         )
         .await?;
-        let first_approval = write(
+        write(
             &mut author,
             &router,
             &format!("/api/v1/software/resources/{resource}/versions/v1"),
             0,
-            json!({"action":"approve","evidence":["enterprise-version"]}),
+            json!({"action":"enable"}),
         )
         .await?;
-        let first_operation = first_approval["admission"]["operation"].clone();
+
         Ok(Self {
             source_snapshot: registered["snapshot"].clone(),
             dependency,
@@ -414,7 +404,6 @@ impl Fixture {
             removal,
             windows_bytes,
             credential,
-            first_operation,
         })
     }
 }
@@ -501,8 +490,8 @@ pub(crate) async fn worker_for(
     launch.finish();
     Ok(Some(stack))
 }
-pub(crate) fn authored(resource: Uuid, scope: Uuid, intent: &str, operation: &Value) -> Value {
-    json!({"scope":scope,"action": {"resource": {"kind":"software","id":resource,"version":"v1","variants":{"macos_aarch64":"default"}},"kind":"software","intent":intent,"delivery":{"kind":"direct"},"admissionOperation":operation,"runLifetimeSeconds":600,"rollout":{"stages":[{"scope":scope,"opensAt":0}]}}})
+pub(crate) fn authored(resource: Uuid, scope: Uuid, intent: &str) -> Value {
+    json!({"scope":scope,"action": {"resource": {"kind":"software","id":resource,"version":"v1","variants":{"macos_aarch64":"default"}},"kind":"software","intent":intent,"delivery":{"kind":"direct"},"runLifetimeSeconds":600,"rollout":{"stages":[{"scope":scope,"opensAt":0}]}}})
 }
 
 // Statistics are published by policy recovery. Await readiness, then preserve each

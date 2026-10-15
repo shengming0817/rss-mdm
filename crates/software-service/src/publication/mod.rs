@@ -1,4 +1,6 @@
 //! Controlled backend use cases. Planning HTTP identity/authorization belongs to N12.
+mod access;
+pub use access::{ManagementAccess, PublishAccess};
 mod artifact;
 mod config;
 mod derive;

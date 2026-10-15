@@ -12,9 +12,9 @@ async fn expiry_dependency_paths_and_withdrawal_fence() -> Result<()> {
     let resource = fixture.resource;
     let dependency_bytes = fixture.dependency_bytes;
     let bytes = fixture.bytes;
-    let first_operation = fixture.first_operation;
+
     let scope = fixture.scope;
-    let authored = |intent: &str, operation: &Value| authored(resource, scope, intent, operation);
+    let authored = |intent: &str| authored(resource, scope, intent);
     let policy = Uuid::new_v4();
     let policy_path = format!("/api/v1/policies/{policy}");
     let published = write(
@@ -22,7 +22,7 @@ async fn expiry_dependency_paths_and_withdrawal_fence() -> Result<()> {
         &router,
         &policy_path,
         0,
-        json!({"action":"put","enabled":true,"definition":authored("required_install", &first_operation)}),
+        json!({"action":"put","enabled":true,"definition":authored("required_install")}),
     )
     .await?;
     ensure!(published["version"] == 1, "publish: {published}");
@@ -91,7 +91,7 @@ async fn expiry_dependency_paths_and_withdrawal_fence() -> Result<()> {
         &router,
         &format!("/api/v1/software/resources/{resource}/versions/v1"),
         1,
-        json!({"action":"withdraw","evidence":["deployment-revocation"]}),
+        json!({"action":"withdraw"}),
     )
     .await?;
     let denied = Request::builder()
@@ -119,17 +119,17 @@ async fn uninstall_content_permission() -> Result<()> {
     let router = fixture.router;
     let mut author = fixture.author;
     let removal = fixture.removal;
-    let first_operation = fixture.first_operation;
+
     let resource = fixture.resource;
     let scope = fixture.scope;
-    let authored = |intent: &str, operation: &Value| authored(resource, scope, intent, operation);
+    let authored = |intent: &str| authored(resource, scope, intent);
     let uninstall = Uuid::new_v4();
     write(
         &mut author,
         &router,
         &format!("/api/v1/policies/{uninstall}"),
         0,
-        json!({"action":"put","enabled":true,"definition":authored("explicit_uninstall", &first_operation)}),
+        json!({"action":"put","enabled":true,"definition":authored("explicit_uninstall")}),
     )
     .await?;
     let removal_task = claim(&router).await?;
@@ -173,11 +173,11 @@ async fn windows_variant_content() -> Result<()> {
     let windows_scope = fixture.scope;
     let windows_bytes = fixture.windows_bytes;
     let windows_credential = fixture.credential;
-    let first_operation = fixture.first_operation;
+
     let windows_policy = Uuid::new_v4();
     write(&mut author,&router,&format!("/api/v1/policies/{windows_policy}"),0,json!({"action":"put","enabled":true,
         "definition":{"scope":windows_scope,
-        "action": {"resource": {"kind":"software","id":resource,"version":"v1","variants":{"windows_x86_64":"default"}},"kind":"software","intent":"required_install","delivery":{"kind":"direct"},"admissionOperation":first_operation,"runLifetimeSeconds":600,
+        "action": {"resource": {"kind":"software","id":resource,"version":"v1","variants":{"windows_x86_64":"default"}},"kind":"software","intent":"required_install","delivery":{"kind":"direct"},"runLifetimeSeconds":600,
         "rollout":{"stages":[{"scope":windows_scope,"opensAt":0}]}}}})).await?;
     let windows_page = author
         .call(

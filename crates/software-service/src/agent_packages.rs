@@ -62,8 +62,7 @@ struct Binding {
     resource: String,
     version: String,
     digest: [u8; 32],
-    approval: Uuid,
-    sources: Vec<r::SoftwareSource>,
+    lifecycle: [u8; 32],
     installer: r::SoftwareArtifact,
 }
 pub struct PublicationMaterials<D> {
@@ -202,6 +201,7 @@ struct Prepared<D> {
     package: w::Package,
     binding: Binding,
     _materials: PublicationMaterials<D>,
+    verified: Box<dyn crate::catalog::VerifiedContent>,
 }
 fn filename(target: w::Target) -> &'static str {
     match (target.platform, target.architecture) {
@@ -240,9 +240,8 @@ async fn prepare<C: Materials>(
         |ctx, tx| {
             Box::pin(async move {
                 let (app, p, i) = *ctx;
-                transaction::current(tx, p)
-                    .await?
-                    .require(p, Permission::SoftwareApprove, None)?;
+                let current = transaction::current(tx, p).await?;
+                current.require(p, Permission::ReleasePublish, None)?;
                 app.catalog.reader().lock_in(tx).await?;
                 Ok(app
                     .catalog
@@ -254,6 +253,13 @@ async fn prepare<C: Materials>(
         TransactionOwner::SoftwareCatalog,
     )
     .await?;
+    let verified = app
+        .content
+        .as_ref()
+        .ok_or(Error::Unsupported)?
+        .verify(&version)
+        .await
+        .map_err(|_| invalid())?;
     let def = definition(&version, i)?;
     let candidate = def
         .spec()
@@ -290,8 +296,7 @@ async fn prepare<C: Materials>(
         resource: i.resource.clone(),
         version: i.version.clone(),
         digest: version.digest().bytes(),
-        approval: Uuid::nil(),
-        sources: vec![def.spec().source.clone()],
+        lifecycle: [0; 32],
         installer: r::SoftwareArtifact {
             reference: def.primary().reference().as_str().into(),
             origin: None,
@@ -304,6 +309,7 @@ async fn prepare<C: Materials>(
         package,
         binding,
         _materials: materials,
+        verified,
     })
 }
 async fn insert_in(
@@ -319,10 +325,7 @@ async fn insert_in(
     let package = package.clone();
     let mut binding = binding.clone();
     let admitted=tx.with_connection(move|c|Box::pin(async move {
-  let admission:serde_json::Value=sqlx::query_scalar("SELECT admission FROM mdm_software.approvals WHERE tenant_id=$1::uuid AND resource=$2 AND version=$3").bind(tenant.to_string()).bind(&binding.resource).bind(&binding.version).fetch_one(&mut *c).await?;
-  binding.approval=serde_json::from_value(admission["operation"].clone()).map_err(|_|sqlx::Error::Protocol("approval identity".into()))?;
-  let current=crate::catalog::admitted_on(c,tenant,&binding.resource,&binding.version,binding.digest,binding.approval,&binding.sources).await;
-  match current {Ok(true)=>{},Ok(false)=>return Ok(Ok(false)),Err(e)=>return Ok(Err(e))}
+  binding.lifecycle=match crate::catalog::binding_on(c,tenant,&binding.resource,&binding.version,binding.digest).await { Ok(Some(value))=>value,Ok(None)=>return Ok(Ok(false)),Err(e)=>return Ok(Err(e)) };
   sqlx::query("INSERT INTO mdm_agent_packages.releases VALUES($1::uuid,$2,$3,$4,$5,$6,'published')").bind(tenant.to_string()).bind(package.release_id).bind(op).bind(hash).bind(serde_json::to_value(&package).map_err(|_|sqlx::Error::Protocol("package metadata".into()))?).bind(serde_json::to_value(&binding).map_err(|_|sqlx::Error::Protocol("package binding".into()))?).execute(c).await?;
   Ok(Ok(true))
  })).await??;
@@ -337,7 +340,7 @@ pub async fn publish<C: Materials>(
     i: &Publish,
     a: &RequestAudit,
 ) -> Result<w::Package, Error> {
-    p.manage(Permission::SoftwareApprove)?;
+    p.manage(Permission::ReleasePublish)?;
     p.bind_audit(a)?;
     if p.tenant_id() != app.tenant.to_string() || i.operation_id.is_nil() {
         return Err(invalid());
@@ -352,9 +355,8 @@ pub async fn publish<C: Materials>(
         |ctx, tx| {
             Box::pin(async move {
                 let (app, p, i, hash) = *ctx;
-                transaction::current(tx, p)
-                    .await?
-                    .require(p, Permission::SoftwareApprove, None)?;
+                let current = transaction::current(tx, p).await?;
+                current.require(p, Permission::ReleasePublish, None)?;
                 app.catalog.reader().lock_in(tx).await?;
                 replay_in(tx, i.operation_id, hash).await
             })
@@ -376,9 +378,14 @@ pub async fn publish<C: Materials>(
         |ctx, tx| {
             Box::pin(async move {
                 let (app, p, i, a, hash, prepared) = ctx;
-                transaction::current(tx, p)
-                    .await?
-                    .require(p, Permission::SoftwareApprove, None)?;
+                let current = transaction::current(tx, p).await?;
+                current.require(p, Permission::ReleasePublish, None)?;
+                if let Some(prepared) = prepared.as_ref() {
+                    tx.prepare_outbox_partitions(&[app
+                        .catalog
+                        .publication_partition(&prepared.version)?])
+                        .await?;
+                }
                 app.catalog.reader().lock_in(tx).await?;
                 let old = replay_in(tx, i.operation_id, hash).await?;
                 let replayed = old.is_some();
@@ -386,9 +393,27 @@ pub async fn publish<C: Materials>(
                     old
                 } else {
                     let prepared = prepared.as_mut().ok_or(Error::Conflict)?;
-                    app.catalog
+                    let enabled = match app
+                        .catalog
                         .reader()
-                        .publication_admitted_in(tx, &prepared.version)
+                        .publication_binding_in(tx, &prepared.version, false)
+                        .await
+                    {
+                        Ok(_) => true,
+                        Err(crate::catalog::Error::NotAdmitted) => false,
+                        Err(e) => return Err(e.into()),
+                    };
+                    if !enabled {
+                        current.require(p, Permission::SoftwareWrite, None)?;
+                    }
+                    app.catalog
+                        .enable_for_publication_in(
+                            tx,
+                            &prepared.version,
+                            prepared.verified.as_ref(),
+                            p.principal_id(),
+                            i.operation_id,
+                        )
                         .await?;
                     insert_in(tx, i, hash, &prepared.package, &prepared.binding).await?;
                     prepared.package.clone()
@@ -410,7 +435,7 @@ pub async fn publish<C: Materials>(
     )
     .await
 }
-/// Current publication admission in the registration owner's borrowed connection.
+/// Current publication lifecycle in the registration owner's borrowed connection.
 /// Lock order is configuration -> software -> resource; publication never takes configuration locks.
 pub async fn admitted_on(
     c: &mut sqlx::PgConnection,
@@ -436,8 +461,7 @@ pub async fn admitted_on(
             &binding.resource,
             &binding.version,
             binding.digest,
-            binding.approval,
-            &binding.sources,
+            binding.lifecycle,
         )
         .await
         .map_err(|_| storage())?

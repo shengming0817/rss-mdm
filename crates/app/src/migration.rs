@@ -94,10 +94,10 @@ fn units() -> Vec<(&'static str, &'static str)> {
             rss_transactional_messaging_postgres::MIGRATION_SQL,
         ),
         ("group-v1", rss_mdm_group_postgres::MIGRATION_SQL),
-        ("policy-v1", rss_mdm_policy_postgres::MIGRATION_SQL),
+        ("policy-v2", rss_mdm_policy_postgres::MIGRATION_SQL),
         ("resource-v1", rss_mdm_resource_postgres::MIGRATION_SQL),
         (
-            "software-release-v1",
+            "software-release-v2",
             rss_mdm_software_release_postgres::MIGRATION_SQL,
         ),
         (
@@ -105,7 +105,7 @@ fn units() -> Vec<(&'static str, &'static str)> {
             rss_mdm_registration_service::INSTALL_SQL,
         ),
         (
-            "software-publication-v1",
+            "software-publication-v2",
             rss_mdm_software_service::publication::MIGRATION_SQL,
         ),
         (
@@ -133,7 +133,7 @@ fn units() -> Vec<(&'static str, &'static str)> {
             include_str!("../schema/identity-audit-runtime.sql"),
         ),
         (
-            "installation-binding-v1",
+            "installation-binding-v2",
             include_str!("../schema/installation.sql"),
         ),
         (
@@ -166,7 +166,7 @@ fn units() -> Vec<(&'static str, &'static str)> {
             rss_mdm_inventory_postgres::ENTERPRISE_MIGRATION_SQL,
         ),
         (
-            "software-catalog-v1",
+            "software-catalog-v2",
             rss_mdm_software_service::catalog::INSTALL_SQL,
         ),
         (
@@ -192,7 +192,7 @@ fn units() -> Vec<(&'static str, &'static str)> {
         ),
         ("flow-service-schema-v1", rss_mdm_flow_service::INSTALL_SQL),
         (
-            "execution-service-schema-v2",
+            "execution-service-schema-v3",
             rss_mdm_execution_service::INSTALL_SQL,
         ),
         (
@@ -220,7 +220,7 @@ fn units() -> Vec<(&'static str, &'static str)> {
             rss_mdm_registration_service::RELATIONS_SQL,
         ),
         (
-            "authorization-service-relations-v1",
+            "authorization-service-relations-v2",
             rss_mdm_authorization_service::RELATIONS_SQL,
         ),
         (
@@ -240,7 +240,7 @@ fn units() -> Vec<(&'static str, &'static str)> {
             rss_mdm_audit_integration::OPERATION_RECEIPT_RELATIONS_SQL,
         ),
         (
-            "flow-service-relations-v1",
+            "flow-service-relations-v2",
             rss_mdm_flow_service::RELATIONS_SQL,
         ),
         (

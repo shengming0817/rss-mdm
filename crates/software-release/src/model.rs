@@ -161,11 +161,11 @@ impl Content {
     pub fn software(&self) -> &SoftwareIdentity {
         &self.software
     }
-    /// Approved description digest.
+    /// Frozen description digest.
     pub fn description(&self) -> Digest {
         self.description
     }
-    /// Approved source/configuration snapshot digest.
+    /// Frozen source/configuration snapshot digest.
     pub fn source_snapshot(&self) -> Digest {
         self.source_snapshot
     }
@@ -199,7 +199,7 @@ impl Content {
         e.finish()
     }
 }
-/// Fixed promotion order; each ring requires its own validation and approval.
+/// Fixed promotion order; each ring requires its own validation and publication binding.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Ring {
     /// First ring; validation must not predate the current content.
@@ -220,19 +220,10 @@ impl Ring {
         }
     }
 }
-/// Caller-selected separation constraint bound into the approval fingerprint.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub enum ActorPolicy {
-    /// Requires distinct publisher and approver identities; the default.
-    #[default]
-    Separate,
-    /// Explicitly permits one actor to publish and approve.
-    AllowSameActor,
-}
 /// Candidate-wide publication permission, independent of recorded backend facts.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Disposition {
-    /// New validations, approvals and publication decisions remain possible.
+    /// New validations, publication bindings and publication decisions remain possible.
     Active,
     /// Closed by quarantine; no reopening, but late results remain recordable.
     Quarantined,
@@ -244,9 +235,9 @@ pub enum Disposition {
 pub enum Verdict {
     /// The bound content passed the caller's required checks.
     Passed,
-    /// Validation failed; any existing approval is invalidated.
+    /// Validation failed; any existing publication binding is invalidated.
     Failed,
-    /// Validation is inconclusive; it cannot support an approval.
+    /// Validation is inconclusive; it cannot support an publication binding.
     Unknown,
 }
 
@@ -271,38 +262,35 @@ pub struct Validation {
     pub ring: Ring,
     /// Evidence no earlier than current content or predecessor success, and not from the future.
     pub evidence: Evidence,
-    /// Conclusion that determines whether this validation can support approval.
+    /// Conclusion that determines whether this validation can support publication binding.
     pub verdict: Verdict,
 }
-/// Immutable authority snapshot admitted by [`crate::Candidate`] after validation.
-/// Public fields are storage input, not proof of authorization on their own.
+/// Immutable technical binding captured by the single publish operation.
+/// Actor and time record provenance; they never restrict later operators or derive identity.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct Approval {
-    /// Passed validation binding candidate, content, ring and evidence.
+pub struct PublicationBinding {
+    /// Automatically verified exact content and target ring.
     pub validation: Validation,
-    /// Only this actor may authorize or retry the publication.
-    pub publisher: ActorId,
-    /// Actor that issued the approval request.
-    pub approver: ActorId,
-    /// Explicit separation rule checked against publisher and approver.
-    pub policy: ActorPolicy,
-    /// UTC approval time, no earlier than validation evidence.
+    /// Current source/version/dependency lifecycle fingerprint.
+    pub lifecycle: Digest,
+    /// Original authenticated operator, retained for audit.
+    pub actor: ActorId,
+    /// Time of the original publication decision.
     pub at: Timepoint,
-    /// Confirmed previous ring's publication identity; `None` only for Test.
+    /// Confirmed predecessor publication, absent for Test.
     pub predecessor: Option<PublicationId>,
 }
-impl Approval {
-    /// Hashes the complete authority snapshot under the V2 approval domain.
-    pub fn digest(&self) -> Digest {
-        let mut e = Encoding::new(b"rss-mdm-software-release/approval/v2");
-        encode_validation(&mut e, &self.validation);
-        e.object(self.publisher.tenant(), self.publisher.value());
-        e.object(self.approver.tenant(), self.approver.value());
-        e.number(match self.policy {
-            ActorPolicy::Separate => 0,
-            ActorPolicy::AllowSameActor => 1,
-        });
-        encode_time(&mut e, self.at);
+impl PublicationBinding {
+    /// Identity binds immutable content (including source), tenant/candidate and target ring.
+    /// Validation evidence, actor, time, lifecycle generation and attempts are not identity inputs.
+    pub fn publication_id(&self) -> PublicationId {
+        let mut e = Encoding::new(b"rss-mdm-software-release/publication/v3");
+        e.object(
+            self.validation.candidate.tenant(),
+            self.validation.candidate.value(),
+        );
+        e.digest(self.validation.content);
+        e.number(self.validation.ring.index() as u64);
         match self.predecessor {
             Some(id) => {
                 e.number(1);
@@ -310,12 +298,6 @@ impl Approval {
             }
             None => e.number(0),
         }
-        e.finish()
-    }
-    /// Derives a stable publication identity from this approval, excluding attempts and requests.
-    pub fn publication_id(&self) -> PublicationId {
-        let mut e = Encoding::new(b"rss-mdm-software-release/publication/v2");
-        e.digest(self.digest());
         PublicationId(e.finish())
     }
 }
@@ -335,7 +317,7 @@ pub enum PublicationResult {
     /// This attempt did not apply and can no longer apply; permits an explicit retry.
     /// A temporarily missing backend record does not establish this conclusion.
     NotApplied(Evidence),
-    /// Backend content was verified against the approval; contradictory results are rejected.
+    /// Backend content was verified against the publication binding; contradictory results are rejected.
     Applied(Evidence),
 }
 impl PublicationResult {
@@ -346,22 +328,22 @@ impl PublicationResult {
         }
     }
 }
-/// Current external attempt, retaining its original approval even after withdrawal.
+/// Current external attempt, retaining its original publication binding even after withdrawal.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Publication {
     /// Original authority snapshot, unchanged across retries.
-    pub approval: Approval,
+    pub binding: PublicationBinding,
     /// Nonzero attempt number, incremented only after confirmed NotApplied.
     pub attempt: u64,
-    /// UTC time this attempt was authorized; result evidence cannot predate it.
-    pub authorized_at: Timepoint,
+    /// UTC time this attempt was requested; result evidence cannot predate it.
+    pub requested_at: Timepoint,
     /// Current attempt's pending state or retained backend report.
     pub outcome: PublicationOutcome,
 }
 impl Publication {
-    /// Returns the approval-derived identity, stable across attempts.
+    /// Returns the publication binding-derived identity, stable across attempts.
     pub fn id(&self) -> PublicationId {
-        self.approval.publication_id()
+        self.binding.publication_id()
     }
 }
 /// Public storage input; only [`crate::Candidate::restore`] admits it as a valid aggregate.
@@ -371,22 +353,16 @@ pub enum RingState {
     NotStarted,
     /// Awaiting passed validation, including after failed or unknown validation.
     Candidate,
-    /// Passed evidence for the current content; not yet approved.
-    Validated(Validation),
-    /// Approved authority snapshot; no publication attempt yet.
-    Approved(Approval),
-    /// An authorized attempt and its pending or reported outcome.
-    Publication(Publication),
+    /// A requested attempt and its pending or reported outcome.
+    Publication(Box<Publication>),
 }
 impl RingState {
     /// Reports only confirmed Applied, even if the candidate has since been withdrawn.
     pub fn is_published(&self) -> bool {
         matches!(
             self,
-            Self::Publication(Publication {
-                outcome: PublicationOutcome::Reported(PublicationResult::Applied(_)),
-                ..
-            })
+            Self::Publication(p)
+                if matches!(p.outcome, PublicationOutcome::Reported(PublicationResult::Applied(_)))
         )
     }
 }

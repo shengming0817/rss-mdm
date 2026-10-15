@@ -129,12 +129,7 @@ pub async fn state_in(
                             action.resource.id.as_str(),
                             action.resource.version.as_str(),
                             action.resource_digest,
-                            action.admission_operation,
-                            &action
-                                .packages
-                                .values()
-                                .map(|p| p.source.clone())
-                                .collect::<Vec<_>>(),
+                            action.lifecycle_binding,
                         )
                         .await)
                     })

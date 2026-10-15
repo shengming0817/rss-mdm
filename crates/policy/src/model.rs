@@ -56,6 +56,8 @@ pub struct Policy {
     pub enabled: bool,
     /// Complete authored definition.
     pub definition: Definition,
+    /// Backend-resolved software lifecycle, never authored by an administrator.
+    pub execution_binding: Option<[u8; 32]>,
 }
 /// A checked configuration change and whether immutable execution content changed.
 pub struct Changed {
@@ -74,6 +76,7 @@ impl Policy {
         expected: u64,
         input: &Change,
         next_version: Uuid,
+        execution_binding: Option<[u8; 32]>,
     ) -> Result<Changed, Error> {
         if id.is_nil() || next_version.is_nil() {
             return Err(Error::Malformed);
@@ -108,8 +111,24 @@ impl Policy {
             config.normalize(old.and_then(|p| p.definition.self_service.as_ref()));
         }
         definition.validate()?;
-        let semantic = definition.semantic()?;
-        let changed = old.map(|p| p.definition.semantic()).transpose()?.as_ref() != Some(&semantic);
+        let execution_binding = if matches!(input, Change::Put { .. }) {
+            execution_binding
+        } else {
+            old.and_then(|p| p.execution_binding)
+        };
+        if matches!(
+            definition.action,
+            crate::Action::Software { .. } | crate::Action::EnsureAgentInstalled { .. }
+        ) != execution_binding.is_some()
+        {
+            return Err(Error::Malformed);
+        }
+        let semantic = bound_semantic(&definition, execution_binding)?;
+        let changed = old
+            .map(|p| bound_semantic(&p.definition, p.execution_binding))
+            .transpose()?
+            .as_ref()
+            != Some(&semantic);
         if changed && old.is_some_and(|p| p.version == next_version) {
             return Err(Error::Malformed);
         }
@@ -132,6 +151,7 @@ impl Policy {
                 number,
                 enabled,
                 definition,
+                execution_binding,
             },
             semantic_changed: changed,
             semantic,
@@ -151,7 +171,6 @@ impl crate::Action {
                 resource,
                 delivery,
                 intent,
-                admission_operation,
                 schedule,
                 run_lifetime_seconds,
                 ..
@@ -159,7 +178,6 @@ impl crate::Action {
                 Some(resource),
                 delivery,
                 intent,
-                admission_operation,
                 schedule,
                 run_lifetime_seconds,
             )),
@@ -196,4 +214,16 @@ impl From<&Policy> for View {
             definition: policy.definition.clone(),
         }
     }
+}
+
+fn bound_semantic(definition: &Definition, binding: Option<[u8; 32]>) -> Result<[u8; 32], Error> {
+    let semantic = definition.semantic()?;
+    let Some(binding) = binding else {
+        return Ok(semantic);
+    };
+    let mut hash = Sha256::new();
+    hash.update(b"software-policy-lifecycle/v1");
+    hash.update(semantic);
+    hash.update(binding);
+    Ok(hash.finalize().into())
 }

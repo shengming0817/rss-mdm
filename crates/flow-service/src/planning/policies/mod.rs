@@ -101,12 +101,14 @@ impl Policies {
                         authorize_policy_snapshot(&authorization, p, &previous.definition).map_err(Error::from)?;
                     }
                     let now = crate::action_admission::now(tx).await?;
+                    let execution_binding=match &op.input { Change::Put {definition,..}=>s.inputs.software_binding_in(tx,&definition.action).await?,_=>old.as_ref().and_then(|p|p.execution_binding) };
                     let changed_policy = Policy::apply(
                         id,
                         old.as_ref(),
                         op.expected_revision,
                         &op.input,
                         Uuid::new_v4(),
+                        execution_binding,
                     )?;
                     let changed = changed_policy.semantic_changed;
                     let policy = changed_policy.policy;

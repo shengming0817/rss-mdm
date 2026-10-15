@@ -59,12 +59,9 @@ pub enum Permission {
     ResourceWrite,
     SoftwareRead,
     SoftwareWrite,
-    SoftwareApprove,
     SoftwareWithdraw,
     ReleaseRead,
     ReleaseWrite,
-    ReleaseValidate,
-    ReleaseApprove,
     ReleasePublish,
     ReleaseWithdraw,
     ReleaseRecover,
@@ -134,12 +131,9 @@ impl Permission {
             | Self::ResourceWrite
             | Self::SoftwareRead
             | Self::SoftwareWrite
-            | Self::SoftwareApprove
             | Self::SoftwareWithdraw
             | Self::ReleaseRead
             | Self::ReleaseWrite
-            | Self::ReleaseValidate
-            | Self::ReleaseApprove
             | Self::ReleasePublish
             | Self::ReleaseWithdraw
             | Self::ReleaseRecover => false,

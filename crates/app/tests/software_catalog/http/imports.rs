@@ -117,14 +117,6 @@ async fn exact_rest_community_and_brew_imports_preserve_evidence_and_replay() ->
         let source_id = format!("{id}-{revision}");
         let source_path = format!("/api/v1/software/sources/{source_id}/revisions/{revision}");
         let registered=write(&mut f.user,&f.router,&source_path,0,json!({"action":"register","definition":{"id":source_id,"revision":revision,"protocol":protocol}})).await?;
-        write(
-            &mut f.user,
-            &f.router,
-            &source_path,
-            1,
-            json!({"action":"approve","evidence":["fixed source snapshot review"]}),
-        )
-        .await?;
         let resource = Uuid::new_v4();
         let operation = Uuid::new_v4();
         let request = json!({"operationId":operation,"expectedRevision":0,"input":{"asOfUnixSeconds":1700000000,"source":registered["snapshot"],"resource":resource,"resourceVersion":"v1","package":package,"packageVersion":"1.2","platform":platform,"architecture":"x86_64","variant":"default","selection":selection,"behavior":behavior,"installerLength":3,"additionalArtifacts":{},"dependencies":[],"signatures":[],"reboot":"report","downgrade":"deny","nativeExport":true}});
@@ -239,15 +231,15 @@ async fn exact_rest_community_and_brew_imports_preserve_evidence_and_replay() ->
             &f.router,
             &format!("/api/v1/software/resources/{resource}/versions/v1"),
             0,
-            json!({"action":"approve","evidence":["complete hash-only materials"]}),
+            json!({"action":"enable"}),
         )
         .await?;
         write(
             &mut f.user,
             &f.router,
             &source_path,
-            2,
-            json!({"action":"withdraw","evidence":["withdraw source after committed import"]}),
+            1,
+            json!({"action":"disable"}),
         )
         .await?;
         f.peer
