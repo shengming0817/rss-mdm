@@ -454,7 +454,7 @@ async fn native_inventory_case(map_software: bool, all_failed: bool, macos: bool
     crate::test_support::identity::set_grants(case_tenant(), &f.author_id, f.grants.clone())
         .await?;
     let context = crate::test_support::software_execution::context(if macos {
-        crate::test_support::software_execution::Platform::Macos
+        crate::test_support::software_execution::Platform::MacOs
     } else {
         crate::test_support::software_execution::Platform::Windows
     });
