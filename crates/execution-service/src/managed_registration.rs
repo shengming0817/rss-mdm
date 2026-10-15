@@ -98,6 +98,7 @@ impl ExecutionService {
         source: rss_mdm_inventory::ReportSource,
         input: &enroll::NativeGrantRequest,
     ) -> std::result::Result<(enroll::GrantReceipt, bool), Error> {
+        rss_mdm_registration_service::admission::lock_in(c, &p.tenant().to_string()).await?;
         let grant = self
             .authorize_managed_on(c, p, source, input.installation_operation, &input.runtime)
             .await?;

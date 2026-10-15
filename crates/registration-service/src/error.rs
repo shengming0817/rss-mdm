@@ -24,6 +24,8 @@ pub enum Error {
     NotFound,
     #[error("self-service registration quota reached")]
     RegistrationLimit,
+    #[error("new registration is paused")]
+    EnrollmentPaused,
     #[error("credential handoff capacity reached")]
     Capacity,
     #[error("credential handoff unavailable")]

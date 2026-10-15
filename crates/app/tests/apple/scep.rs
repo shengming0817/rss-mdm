@@ -290,3 +290,41 @@ async fn self_enrollment_uses_current_user_and_one_macos_allocation() -> Result<
     ensure!(control.shutdown().join().await?.is_clean());
     f.close().await
 }
+
+#[tokio::test]
+#[ignore = "MODULE=apple.scep: pause after CA acceptance preserves completion and gates first activation"]
+async fn pause_during_signing_preserves_result_and_managed_continuity() -> Result<()> {
+    let mut f = Fixture::start().await?;
+    let (enrollment, attempt, password) = f.enrollment().await?;
+    let device = scep_client::Device::new(enrollment, attempt, &password)?;
+    let request = device.request(
+        &f.root.join("apple-issuer.pem"),
+        &Uuid::new_v4().to_string(),
+        f.app.clock.unix_seconds()?,
+    )?;
+    f.pause_before_notify
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    let der = device
+        .enroll(
+            &f.client()?,
+            &f.app.apple()?.channel.scep_fixture()?.0,
+            &request,
+        )
+        .await?;
+    let mut pg =
+        sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?)
+            .await?;
+    let paused: bool = sqlx::query_scalar("SELECT paused FROM mdm_access.registration_admission WHERE tenant_id=$1::uuid AND channel='macos_mdm'").bind(case_tenant()).fetch_one(&mut pg).await?;
+    ensure!(paused, "notify hook must pause after CA acceptance");
+    ensure!(
+        f.authenticate_peer(&device, &der).await.is_err(),
+        "first activation must be paused"
+    );
+    sqlx::query("UPDATE mdm_access.registration_admission SET paused=false,revision=2 WHERE tenant_id=$1::uuid AND channel='macos_mdm'").bind(case_tenant()).execute(&mut pg).await?;
+    let peer = f.authenticate_peer(&device, &der).await?;
+    peer.token().await?;
+    sqlx::query("UPDATE mdm_access.registration_admission SET paused=true,revision=3 WHERE tenant_id=$1::uuid AND channel='macos_mdm'").bind(case_tenant()).execute(&mut pg).await?;
+    f.authenticate_peer(&device, &der).await?;
+    peer.token().await?;
+    f.close().await
+}

@@ -164,15 +164,19 @@ async fn create_enrollment_on(
     let source = *source;
     let session = *session;
     let key = *key;
-    if permission.self_service() {
-        crate::quotas::lock_on(tx, proof.tenant_id()).await?;
-    }
+    crate::admission::lock_in(tx, proof.tenant_id()).await?;
     if let Some(old) = crate::operations::replay(tx, op).await? {
         permission.check()?;
         return serde_json::from_str(&old)
             .map(|receipt| (receipt, true))
             .map_err(|_| Error::Storage);
     }
+    crate::admission::require_new_in(
+        tx,
+        proof.tenant_id(),
+        crate::quotas::Channel::source(source),
+    )
+    .await?;
     if permission.self_service() {
         let expected = format!(
             "self:{}:{}:{}",
@@ -335,9 +339,7 @@ async fn change_enrollment_on(
     let proof = permission.proof();
     let id = *id;
     let key = *key;
-    if permission.self_service() {
-        crate::quotas::lock_on(tx, proof.tenant_id()).await?;
-    }
+    crate::admission::lock_in(tx, proof.tenant_id()).await?;
     if let Some(old) = crate::operations::replay(tx, op).await? {
         permission.check()?;
         return serde_json::from_str(&old)
@@ -354,6 +356,17 @@ async fn change_enrollment_on(
     }
     if row.try_get::<String, _>("device").map_err(db)? != permission.device() {
         return Err(Error::Forbidden);
+    }
+    if resume.is_some() {
+        let source = ReportSource::parse(&row.try_get::<String, _>("source").map_err(db)?)
+            .map_err(|_| Error::Corrupt)?;
+        crate::admission::require_request_in(
+            tx,
+            proof.tenant_id(),
+            id,
+            crate::quotas::Channel::source(source),
+        )
+        .await?;
     }
     let state: String = row.try_get("state").map_err(db)?;
     if state == "cancelled" || state == "bound" && resume.is_none() {

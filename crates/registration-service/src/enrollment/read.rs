@@ -362,6 +362,7 @@ pub async fn record_authenticated_in(
     c: &mut sqlx::PgConnection,
     principal: &crate::DevicePrincipal,
 ) -> Result<(), Error> {
+    crate::admission::require_windows_in(c, principal).await?;
     crate::device::store::revalidate_management(c, principal).await?;
     sqlx::query("UPDATE mdm_access.registrations SET first_authenticated_at=clock_timestamp() WHERE tenant_id=$1::uuid AND id=$2 AND generation=$3 AND state='active' AND first_authenticated_at IS NULL")
         .bind(principal.tenant().to_string()).bind(principal.registration()).bind(principal.generation())

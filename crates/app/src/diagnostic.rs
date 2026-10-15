@@ -285,6 +285,7 @@ impl From<rss_mdm_execution_service::Error> for OwnerDiagnostic {
         match e {
             E::Malformed | E::CertificateRequest => Self::Malformed,
             E::Conflict => Self::Conflict,
+            E::EnrollmentPaused => Self::Conflict,
             E::WindowsDeclaredEnrollmentNotReady => Self::WindowsDeclaredEnrollmentNotReady,
             E::Unauthorized => Self::Unauthorized,
             E::Forbidden => Self::Forbidden,
@@ -331,6 +332,7 @@ impl From<rss_mdm_registration_service::Error> for OwnerDiagnostic {
             E::Corrupt => Self::Corrupt,
             E::Storage => Self::Storage,
             E::Audit(e) => Self::Audit(e.class()),
+            E::EnrollmentPaused => Self::Conflict,
             E::Capacity | E::RegistrationLimit => Self::Capacity,
             E::Runtime => Self::Runtime,
             E::Retirement => Self::Retirement,

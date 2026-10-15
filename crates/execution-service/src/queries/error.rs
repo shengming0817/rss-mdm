@@ -56,7 +56,7 @@ impl From<crate::Error> for QueryError {
             Error::Publication(PublicationError::MissingCandidate) => {
                 Self::Missing(Missing::SoftwareCandidate)
             }
-            Error::Configuration(_) | Error::CertificateRequest => {
+            Error::EnrollmentPaused | Error::Configuration(_) | Error::CertificateRequest => {
                 Self::Unavailable(crate::Failure::CommandInvariant)
             }
         }
