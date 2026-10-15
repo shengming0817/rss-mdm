@@ -11,6 +11,7 @@ pub async fn create_in(
     input.validate().map_err(|_| Error::Malformed)?;
     let p = authority.principal();
     let tenant = p.tenant().to_string();
+    crate::admission::lock_in(c, &tenant).await?;
     if authority.installation() != input.installation_operation {
         return Err(Error::Forbidden);
     }
@@ -46,6 +47,7 @@ native_authority->>'installation'= $2
         check_secret(&tenant, &row, &input.secret)?;
         return Ok((receipt(&row)?, true));
     }
+    crate::admission::require_new_in(c, &tenant, crate::quotas::Channel::Agent).await?;
     let policy = settings::admit_on(c, &tenant, input.runtime.platform).await?;
     let id = Uuid::new_v4();
     let device = Uuid::new_v4().to_string();

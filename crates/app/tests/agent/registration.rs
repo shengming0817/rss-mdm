@@ -1,5 +1,6 @@
 //! Persistent grants, candidate possession, activation ACK recovery and same-identity rotation.
 use crate::test_support::*;
+use base64::{Engine as _, engine::general_purpose::STANDARD};
 use rss_mdm_agent_wire::enroll as wire;
 use rss_mdm_audit_integration::RequestAudit;
 #[tokio::test]
@@ -335,5 +336,137 @@ async fn browser_approval_quota_expiry_and_restart_are_durable() -> Result<()> {
     ensure!(
         restart.issue(&expired, &a()).await.err().unwrap().code == wire::ErrorCode::GrantExpired
     );
+    Ok(())
+}
+
+#[tokio::test]
+#[ignore = "MODULE=agent.registration: paused first activation and retained candidate"]
+async fn admission_pause_preserves_candidate_and_existing_identity() -> Result<()> {
+    let f = authority::Authority::open().await?;
+    let router = crate::test_support::agent::router(&f).await?;
+    let service = crate::test_support::agent::service(&f).await?;
+    let mut admin = f.browser("admin")?;
+    let mut owner = f.browser("other")?;
+    let secret = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+    let csr = crate::test_support::agent::csr()?;
+    let request = json!({"wireVersion":1,"operationId":Uuid::new_v4(),"secret":secret,"platform":"macos","csr":csr});
+    let (status, grant) = agent_call(
+        &router,
+        Method::POST,
+        "/api/v1/agent/enroll/requests",
+        None,
+        Some(request.clone()),
+    )
+    .await?;
+    ensure!(status.is_success());
+    owner.operation = Some(Uuid::new_v4());
+    let (status, _) = owner
+        .call(
+            &router,
+            Method::POST,
+            &format!(
+                "/api/v1/agent-requests/{}/authorize",
+                grant["grantId"].as_str().unwrap()
+            ),
+            Some(json!({"operationId":Uuid::new_v4()})),
+        )
+        .await?;
+    ensure!(status.is_success());
+    let issue = json!({"wireVersion":1,"operationId":Uuid::new_v4(),"grantId":grant["grantId"],"secret":secret,"csr":csr,"runtime":{"capabilities":["inventory.collect.v1"],"platform":"macos","architecture":"aarch64","executionContext":software_execution::context(software_execution::Platform::MacOs)}});
+    let (status, candidate) = agent_call(
+        &router,
+        Method::POST,
+        "/api/v1/agent/enroll/certificates",
+        None,
+        Some(issue.clone()),
+    )
+    .await?;
+    ensure!(status.is_success());
+    let channel = "/api/v1/registration-channels/agent/admission";
+    admin.operation = Some(Uuid::new_v4());
+    let (status, _) = admin
+        .call(
+            &router,
+            Method::PUT,
+            channel,
+            Some(json!({"expectedRevision":0,"admission":"paused"})),
+        )
+        .await?;
+    ensure!(status.is_success());
+    let (_, replayed) = agent_call(
+        &router,
+        Method::POST,
+        "/api/v1/agent/enroll/certificates",
+        None,
+        Some(issue.clone()),
+    )
+    .await?;
+    ensure!(candidate == replayed);
+    let mut fresh = request;
+    fresh["operationId"] = json!(Uuid::new_v4());
+    let (status, error) = agent_call(
+        &router,
+        Method::POST,
+        "/api/v1/agent/enroll/requests",
+        None,
+        Some(fresh),
+    )
+    .await?;
+    ensure!(status == StatusCode::CONFLICT);
+    ensure!(
+        serde_json::from_value::<wire::ErrorBody>(error)?.code == wire::ErrorCode::EnrollmentPaused
+    );
+    let chain = candidate["certificateChain"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| STANDARD.decode(v.as_str().unwrap()))
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    let peer = crate::test_support::agent_tls::peer(
+        service.trust(),
+        &chain,
+        &std::path::PathBuf::from(std::env::var("MDM_AGENT_PKI_FIXTURES")?),
+    )
+    .await?;
+    let activation = wire::ActivationRequest {
+        wire_version: 1,
+        issuance_id: serde_json::from_value(candidate["issuanceId"].clone())?,
+        operation_id: Uuid::new_v4(),
+    };
+    let audit = || RequestAudit::new(case_tenant().into(), "agent_certificate_activate");
+    ensure!(
+        service
+            .activate(&peer, &activation, &audit())
+            .await
+            .unwrap_err()
+            .code
+            == wire::ErrorCode::EnrollmentPaused
+    );
+    admin.operation = Some(Uuid::new_v4());
+    let (status, _) = admin
+        .call(
+            &router,
+            Method::PUT,
+            channel,
+            Some(json!({"expectedRevision":1,"admission":"allowed"})),
+        )
+        .await?;
+    ensure!(status.is_success());
+    let receipt = service.activate(&peer, &activation, &audit()).await?;
+    admin.operation = Some(Uuid::new_v4());
+    let (status, _) = admin
+        .call(
+            &router,
+            Method::PUT,
+            channel,
+            Some(json!({"expectedRevision":2,"admission":"paused"})),
+        )
+        .await?;
+    ensure!(status.is_success());
+    ensure!(
+        serde_json::to_value(service.activate(&peer, &activation, &audit()).await?)?
+            == serde_json::to_value(receipt)?
+    );
+    service.authenticate(&peer).await?;
     Ok(())
 }

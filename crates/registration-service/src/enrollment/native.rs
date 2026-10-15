@@ -186,6 +186,7 @@ impl Admission {
     /// Binding and exact certificate replay share current authority checks.
     pub async fn current_request(&self, c: &mut PgConnection) -> Result<PgRow, Error> {
         self.check_live()?;
+        crate::admission::lock_in(c, &self.data.tenant).await?;
         if self.is_account() {
             self.revalidate_account_in(c).await?;
         }
@@ -342,6 +343,7 @@ pub async fn issue_in(
     challenge: &str,
     audit: &RequestAudit,
 ) -> Result<(Receipt, bool), Error> {
+    crate::admission::lock_in(c, proof.tenant_id()).await?;
     lock_account_issuance(c, proof, id).await?;
     authority.authorize_issue(c, proof, id, operation).await?;
     let reference = proof
@@ -361,6 +363,13 @@ pub async fn issue_in(
             .map(|r| (r, true))
             .map_err(|_| Error::Corrupt);
     }
+    crate::admission::require_request_in(
+        c,
+        proof.tenant_id(),
+        id,
+        crate::quotas::Channel::MacosMdm,
+    )
+    .await?;
     let existing=sqlx::query("SELECT q.state,q.authority_kind,q.expires_at>clock_timestamp() AS live,g.actor,g.instance FROM mdm_access.requests q JOIN mdm_access.grants g ON(g.tenant_id,g.id)=(q.tenant_id,q.grant_id) WHERE q.tenant_id=$1::uuid AND q.id=$2 FOR UPDATE OF q")
         .bind(proof.tenant_id()).bind(id).fetch_optional(&mut *c).await.map_err(db)?;
     let registration;
@@ -458,6 +467,7 @@ pub async fn issue_organization_in(
     if id.is_nil() || organization.is_nil() || profile.is_nil() {
         return Err(Error::Malformed);
     }
+    crate::admission::require_new_in(c, tenant, crate::quotas::Channel::MacosMdm).await?;
     let device = format!("ade:{organization}:{id}");
     crate::device::store::lock_channel(c, tenant, &device, rss_mdm_inventory::Channel::Mdm).await?;
     authority
@@ -544,6 +554,7 @@ pub async fn entra_in(
     if id.is_nil() || policy_version <= 0 {
         return Err(Error::Malformed);
     }
+    crate::admission::lock_in(c, &tenant).await?;
     // Organization authority uses the shared lifecycle without personal quota locks.
     crate::device::store::lock_channel(c, &tenant, &device, rss_mdm_inventory::Channel::Mdm)
         .await?;
@@ -568,6 +579,7 @@ pub async fn entra_in(
             row.try_get::<i64, _>("expected_generation").map_err(db)?,
         )
     } else {
+        crate::admission::require_new_in(c, &tenant, crate::quotas::Channel::WindowsMdm).await?;
         // Active enrollments use certificate renewal; a new native token cannot replace another owner.
         let generation: i64 = sqlx::query_scalar("SELECT coalesce(max(generation),0) FROM mdm_access.registrations WHERE tenant_id=$1::uuid AND device=$2 AND channel='mdm' AND purpose='primary'")
             .bind(&tenant).bind(&device).fetch_one(&mut *c).await.map_err(db)?;

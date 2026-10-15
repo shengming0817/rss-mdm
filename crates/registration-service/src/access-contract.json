@@ -164,6 +164,16 @@
         "document"
       ],
       "delete_policy": null
+    },
+    {
+      "schema": "mdm_access",
+      "table": "registration_admission",
+      "read_write": true,
+      "updates": [
+        "revision",
+        "paused"
+      ],
+      "delete_policy": null
     }
   ],
   "functions": [],

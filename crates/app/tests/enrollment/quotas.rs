@@ -160,7 +160,7 @@ async fn concurrent_self_enrollment_replays_and_preserves_live_reservations() ->
     ensure!(
         windows(&low)["used"] == 1
             && windows(&low)["overLimit"] == 1
-            && windows(&low)["canEnroll"] == false
+            && windows(&low).get("canEnroll").is_none()
     );
     let id = receipt["enrollmentId"].as_str().unwrap();
     // The public lifecycle read must reject a forged self-service target too,
@@ -429,5 +429,91 @@ async fn browser_consumer(admin: &Browser, user: &Browser) -> Result<()> {
     )
     .await?;
     println!("rss-web browser client consumed real registration HTTP and PostgreSQL");
+    Ok(())
+}
+
+#[tokio::test]
+#[ignore = "MODULE=enrollment.quotas: dynamic admission, CAS, authority and retained receipts"]
+async fn channel_admission_is_independent_audited_and_replayable() -> Result<()> {
+    let f = authority::Authority::open().await?;
+    let (router, mut admin, mut other, _server) = hosted(&f).await?;
+    browser_consumer(&admin, &other).await?;
+    const CHANNELS: &str = "/api/v1/registration-channels";
+    const ADMISSION: &str = "/api/v1/registration-channels/windows_mdm/admission";
+    let initial = call(&mut other, &router, Method::GET, CHANNELS, None).await?;
+    ensure!(
+        initial["channels"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|c| c["admission"] == "allowed" && c["revision"] == 0)
+    );
+    other.operation = Some(Uuid::new_v4());
+    let (status, _) = other
+        .call(
+            &router,
+            Method::PUT,
+            ADMISSION,
+            Some(json!({"expectedRevision":0,"admission":"paused"})),
+        )
+        .await?;
+    ensure!(status == StatusCode::FORBIDDEN);
+    let mut pending = other.clone();
+    let receipt = write(&mut pending, &router, Method::POST, SELF, native()).await?;
+    let paused = write(
+        &mut admin,
+        &router,
+        Method::PUT,
+        ADMISSION,
+        json!({"expectedRevision":0,"admission":"paused"}),
+    )
+    .await?;
+    ensure!(paused["revision"] == 1 && paused["admission"] == "paused");
+    ensure!(
+        call(
+            &mut admin,
+            &router,
+            Method::PUT,
+            ADMISSION,
+            Some(json!({"expectedRevision":0,"admission":"paused"}))
+        )
+        .await?
+            == paused
+    );
+    // A completed operation's exact receipt remains recoverable, with its original deadline.
+    ensure!(call(&mut pending, &router, Method::POST, SELF, Some(native())).await? == receipt);
+    other.operation = Some(Uuid::new_v4());
+    let (status, body) = other
+        .call(&router, Method::POST, SELF, Some(native()))
+        .await?;
+    ensure!(status == StatusCode::CONFLICT && body["code"] == "enrollment_paused");
+    let current = call(&mut other, &router, Method::GET, CHANNELS, None).await?;
+    ensure!(
+        current["channels"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|c| c["channel"] != "windows_mdm")
+            .all(|c| c["admission"] == "allowed" && c["revision"] == 0)
+    );
+    admin.operation = Some(Uuid::new_v4());
+    let (status, _) = admin
+        .call(
+            &router,
+            Method::PUT,
+            ADMISSION,
+            Some(json!({"expectedRevision":0,"admission":"allowed"})),
+        )
+        .await?;
+    ensure!(status == StatusCode::CONFLICT);
+    write(
+        &mut admin,
+        &router,
+        Method::PUT,
+        ADMISSION,
+        json!({"expectedRevision":1,"admission":"allowed"}),
+    )
+    .await?;
+    call(&mut other, &router, Method::POST, SELF, Some(native())).await?;
     Ok(())
 }

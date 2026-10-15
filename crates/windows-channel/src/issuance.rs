@@ -40,6 +40,7 @@ impl IssuanceAuthority<'_> {
         }
     }
     async fn current(&self, c: &mut sqlx::PgConnection) -> Result<sqlx::postgres::PgRow, Error> {
+        rss_mdm_registration_service::admission::lock_in(c, &self.coordinates().tenant).await?;
         match self {
             Self::Native(p) => {
                 let d = p.coordinates();
@@ -165,6 +166,13 @@ pub(crate) async fn issue_intent(
         }
         return Ok(old);
     }
+    rss_mdm_registration_service::admission::require_request_in(
+        &mut tx,
+        &d.tenant,
+        d.id,
+        rss_mdm_registration_service::quotas::Channel::WindowsMdm,
+    )
+    .await?;
     if row.try_get::<bool, _>("self_service").map_err(db)? && protocol_device.is_none() {
         return Err(Error::Malformed);
     }

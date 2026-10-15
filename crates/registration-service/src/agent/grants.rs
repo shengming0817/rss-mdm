@@ -21,6 +21,7 @@ impl Service {
                 check_secret(&tenant,&row,&input.secret)?;
                 return Ok(Change{value:receipt(&row)?,replay:true,digest:d.clone()});
             }
+            crate::admission::require_new_in(c, &tenant, crate::quotas::Channel::Agent).await?;
             let values=settings::admit_on(c,&tenant,input.platform).await?;
             sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,2630))").bind(format!("{tenant}:pending")).execute(&mut *c).await.map_err(db)?;
             let pending:i64=sqlx::query_scalar("SELECT count(*) FROM mdm_access.agent_grants WHERE tenant_id=$1::uuid AND state='pending' AND expires_at>clock_timestamp()")
@@ -88,6 +89,8 @@ impl Service {
                     if row.try_get::<i64, _>("expiry").map_err(db)? <= now(c).await? {
                         return Err(Error::Agent(wire::ErrorCode::GrantExpired));
                     }
+                    crate::admission::require_new_in(c, &tenant, crate::quotas::Channel::Agent)
+                        .await?;
                     settings::admit_on(c, &tenant, row_platform(&row)?).await?;
                     crate::quotas::admit_on(
                         c,

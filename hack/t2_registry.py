@@ -1742,3 +1742,5 @@ consume_dependencies("planning.http planning.agent_policy execution.agent.delive
 consume(("crates/examples/examples/fixture_snapshot.rs",), "examples.cli")
 
 MODULES['execution.agent.delivery'] = replace(MODULES['execution.agent.delivery'], support_inputs=(*MODULES['execution.agent.delivery'].support_inputs, 'crates/app/tests/execution/agent/windows_assets.rs'))
+
+consume(('crates/registration-service/src/admission.rs','crates/registration-service/schema/admission.sql','crates/management-http/src/enrollment/channels.rs','crates/app/src/registration_channels.rs'), 'enrollment.quotas agent.registration agent.configurations windows.issuance windows.management apple.scep apple.account_enrollment apple.ade catalog.contract installation.migration')

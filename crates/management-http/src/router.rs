@@ -11,6 +11,7 @@ use rss_mdm_registration_service::device::coordinates::Coordinates;
 use serde::Deserialize;
 use std::sync::Arc;
 pub struct Services {
+    pub registration_channels: Arc<dyn crate::enrollment::channels::Source>,
     pub associations: Arc<rss_mdm_device_service::Associations>,
     pub windows_entra: Option<Arc<rss_mdm_registration_service::windows_entra::Management>>,
     pub pki: Arc<rss_mdm_pki_service::registry::Registry>,
@@ -85,6 +86,7 @@ pub fn router(state: Services, envelope: crate::boundary::Envelope) -> Router {
         identity_management: state.identity_management,
     });
     let enrollment = Arc::new(crate::enrollment::http::HttpState {
+        channels: state.registration_channels,
         service: state.enrollment,
         native: state.enrollment_progress,
         devices: state.devices,

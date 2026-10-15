@@ -1,4 +1,5 @@
 //! Channel-neutral registration identity, credential binding and retirement.
+pub mod admission;
 pub mod agent;
 pub mod agent_pki;
 mod database;
@@ -46,3 +47,6 @@ pub const WINDOWS_ENTRA_SQL: &str = include_str!("../schema/windows-entra.sql");
 pub const WINDOWS_RECEIPTS_SQL: &str = include_str!("../schema/windows-receipts.sql");
 /// Current Entra registration policy, before native consent tables.
 pub const WINDOWS_ENTRA_POLICY_SQL: &str = include_str!("../schema/windows-entra-policy.sql");
+
+/// Dynamic new-registration admission schema.
+pub const ADMISSION_SQL: &str = include_str!("../schema/admission.sql");

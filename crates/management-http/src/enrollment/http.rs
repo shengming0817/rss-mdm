@@ -124,6 +124,7 @@ async fn revoke_registration(
         .map_err(Error::from)
 }
 pub struct HttpState {
+    pub channels: Arc<dyn super::channels::Source>,
     pub service: Arc<super::EnrollmentService>,
     pub native: Arc<dyn super::read::NativeProgress>,
     pub devices: Arc<crate::device::DeviceService>,
@@ -147,6 +148,7 @@ pub fn routes() -> axum::Router<Arc<HttpState>> {
     use axum::routing::{get, post};
     axum::Router::new()
         .merge(super::quotas::routes())
+        .merge(super::channels::routes())
         .route("/enrollments", post(create_enrollment))
         .route("/enrollments/{id}", get(enrollment_status))
         .route("/devices/{device}/registrations", get(registrations))

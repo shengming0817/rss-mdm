@@ -483,6 +483,13 @@ pub(crate) fn from_state(
     );
     let management = rss_mdm_management_http::router(
         rss_mdm_management_http::Services {
+            registration_channels: Arc::new(crate::registration_channels::Channels {
+                windows: state.windows.is_some(),
+                agent: state.agent_enrollment.is_some(),
+                apple: state.apple.clone(),
+                pki: state.pki.clone(),
+                clock: state.clock.clone(),
+            }),
             windows_entra: state
                 .windows
                 .as_ref()

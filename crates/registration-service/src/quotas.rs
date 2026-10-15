@@ -87,7 +87,6 @@ pub struct ChannelUsage {
     pub reserved: u64,
     pub used: u64,
     pub over_limit: u64,
-    pub can_enroll: bool,
 }
 pub struct Quotas {
     store: Arc<Store>,
@@ -149,7 +148,6 @@ impl Quotas {
                     reserved,
                     used,
                     over_limit: used.saturating_sub(u64::from(limit)),
-                    can_enroll: used < u64::from(limit),
                 }
             })
             .collect();

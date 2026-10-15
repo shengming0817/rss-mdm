@@ -104,7 +104,9 @@ impl From<rss_mdm_execution_service::Error> for Error {
             E::Malformed => Self::Malformed,
             E::Unauthorized => Self::Unauthorized,
             E::Forbidden => Self::Forbidden,
-            E::Conflict | E::WindowsDeclaredEnrollmentNotReady => Self::Conflict,
+            E::Conflict | E::EnrollmentPaused | E::WindowsDeclaredEnrollmentNotReady => {
+                Self::Conflict
+            }
             E::CommitUnknown => Self::CommitUnknown,
             E::RollbackFailed => Self::RollbackFailed,
             E::Unsupported => Self::Unsupported,

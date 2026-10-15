@@ -260,6 +260,10 @@ fn units() -> Vec<(&'static str, &'static str)> {
             rss_mdm_registration_service::QUOTAS_SQL,
         ),
         (
+            "registration-admission-v1",
+            rss_mdm_registration_service::ADMISSION_SQL,
+        ),
+        (
             "timeline-service-schema-v2",
             rss_mdm_timeline_service::INSTALL_SQL,
         ),

@@ -149,6 +149,7 @@ impl IntoResponse for HttpFailure {
             | C::CredentialRevoked
             | C::CredentialRetired => StatusCode::UNAUTHORIZED,
             C::PermissionDenied | C::GrantRevoked | C::GrantExpired => StatusCode::FORBIDDEN,
+            C::EnrollmentPaused => StatusCode::CONFLICT,
             C::RegistrationLimit => StatusCode::TOO_MANY_REQUESTS,
             C::OperationConflict => StatusCode::CONFLICT,
             _ => StatusCode::SERVICE_UNAVAILABLE,

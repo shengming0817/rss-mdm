@@ -238,6 +238,7 @@ impl Service {
                 if old.try_get::<String,_>("request_digest").map_err(db)?!=*d || old.try_get::<String,_>("creator").map_err(db)?!=p.principal_id() || old.try_get::<String,_>("instance").map_err(db)?!=p.instance_id(){return Err(Error::Conflict);}
                 return Ok(Change{value:(document(&old)?,old.try_get::<String,_>("signature").map_err(db)?),replay:true,digest:d.clone()});
             }
+            crate::admission::require_new_in(c, &tenant, crate::quotas::Channel::Agent).await?;
             let mut defaults=None;
             for target in &input.targets {defaults=Some(settings::admit_on(c,&tenant,target.platform).await?);}
             let seconds=input.lifetime_seconds.unwrap_or(defaults.ok_or(Error::Malformed)?.configuration_default_seconds);
@@ -354,6 +355,7 @@ impl Service {
             }
             if config.try_get::<String,_>("state").map_err(db)?!="available"{return Err(Error::Agent(wire::ErrorCode::GrantRevoked));}
             if cfg.expires_at<=now(c).await?{return Err(Error::Agent(wire::ErrorCode::GrantExpired));}
+            crate::admission::require_new_in(c, &tenant, crate::quotas::Channel::Agent).await?;
             let values=settings::admit_on(c,&tenant,input.runtime.platform).await?;
             let package=service.installations.verify(c,&tenant,&input.installation).await?;
             let target=wire_config::Target{platform:input.runtime.platform,architecture:input.runtime.architecture};
