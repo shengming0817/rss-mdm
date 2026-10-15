@@ -67,5 +67,5 @@ InventoryRead 与 InventorySensitiveRead。设备执行与真机支持矩阵由�
 
 升级前停止签发旧 Collection 任务并等待其终态，保留审计与 journal；再协调切换服务端与固定 rev
 的 Agent。旧 Collection v1 不解码、不执行，不清空 journal 或重新注册绕过未决任务。
-固定候选完整 rev 和 schema 指纹记录在 #2737 的 PR 交接制品；#2723 可以独立消费该候选，
-不等待 #2726 的范围投影集成。
+固定候选完整 rev 和 schema 指纹以当前契约 PR 的交接制品为准；独立 Agent 应固定同一候选，
+不能继续沿用旧 Brew 命令契约的源码或签名向量。
