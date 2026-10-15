@@ -78,21 +78,18 @@ pub enum Error {
     #[error("previous ring is not confirmed published")]
     PromotionBlocked,
     /// A publication attempt prevents content replacement or revalidation.
-    #[error("approved content cannot be changed after publication authorization")]
+    #[error("published content cannot be changed after publication authorization")]
     ContentFrozen,
     /// Replacement would change the candidate’s exact software identity.
     #[error("candidate software identity cannot change")]
     ContentConflict,
-    /// Validation, approval or predecessor binding differs from current content/state.
-    #[error("validation or approval does not match the current subject")]
+    /// Validation or predecessor binding differs from current content/state.
+    #[error("validation does not match the current subject")]
     StaleEvidence,
-    /// Current passed validation or a usable approval is absent.
+    /// Current passed validation is absent.
     #[error("validation has not passed")]
     ValidationRequired,
-    /// Publisher identity or the declared publisher/approver separation is violated.
-    #[error("actor constraint is not satisfied")]
-    ActorConstraint,
-    /// Quarantine or deprecation forbids a new validation, approval, authorization or retry.
+    /// Quarantine or deprecation forbids a new publication or retry.
     #[error("candidate is withdrawn or deprecated")]
     PublicationClosed,
     /// Ordinary authorization cannot resubmit a confirmed NotApplied attempt.

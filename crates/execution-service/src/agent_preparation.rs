@@ -19,7 +19,6 @@ impl Inputs {
         proof: &AuthorizedPrincipal,
         snapshot: &authorization::Snapshot,
         binding: &SoftwareResourceBinding,
-        admission: Uuid,
         schedule: &Schedule,
         lifetime: u32,
     ) -> Result<FrozenInstall> {
@@ -29,6 +28,7 @@ impl Inputs {
         let version = self
             .active_version_in(tx, binding.id.as_str(), binding.version.as_str())
             .await?;
+        let lifecycle = self.software.binding_in(tx, &version).await?;
         let mut packages = BTreeMap::new();
         for (target, key) in &selection.variants {
             let pin = config.packages.get(target).ok_or(Error::Unsupported)?;
@@ -41,7 +41,7 @@ impl Inputs {
                         resource: binding.id.as_str(),
                         version: binding.version.as_str(),
                         digest: version.digest().bytes(),
-                        admission,
+                        lifecycle,
                         variant: key,
                         uninstall: false,
                     },
@@ -124,7 +124,7 @@ impl Inputs {
         Ok(FrozenInstall {
             resource: binding.clone(),
             resource_digest: version.digest().bytes(),
-            admission_operation: admission,
+            lifecycle_binding: lifecycle,
             schedule: schedule.clone(),
             run_lifetime_seconds: lifetime,
             packages,

@@ -180,11 +180,6 @@
           "additionalProperties": false,
           "description": "Enterprise software installed or removed through the Agent.",
           "properties": {
-            "admissionOperation": {
-              "description": "Exact enterprise approval to freeze into this execution version.",
-              "format": "uuid",
-              "type": "string"
-            },
             "delivery": {
               "$ref": "#/$defs/SoftwareDelivery",
               "description": "Explicit content or frozen native-source delivery authority."
@@ -234,7 +229,6 @@
             "delivery",
             "resource",
             "intent",
-            "admissionOperation",
             "runLifetimeSeconds",
             "rollout"
           ],
@@ -244,11 +238,6 @@
           "additionalProperties": false,
           "description": "Install only the product's approved Agent through the source MDM channel.",
           "properties": {
-            "admissionOperation": {
-              "description": "Exact approval operation, rechecked before any side effect.",
-              "format": "uuid",
-              "type": "string"
-            },
             "kind": {
               "const": "ensure_agent_installed",
               "type": "string"
@@ -284,7 +273,6 @@
           "required": [
             "kind",
             "resource",
-            "admissionOperation",
             "runLifetimeSeconds"
           ],
           "type": "object"

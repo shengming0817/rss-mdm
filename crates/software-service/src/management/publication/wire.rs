@@ -6,18 +6,12 @@ macro_rules! view {
         pub struct $name { $(pub $field: $ty),* }
     };
 }
-view!(Approval {
-    approver: String,
-    publisher: String,
-    at: i64,
-    digest: [u8; 32]
-});
 view!(Publication {
     id: [u8; 32],
     attempt: u64,
     outcome: String
 });
-view!(CandidateRing { ring: String, state: String, publication: Option<Publication>, approval: Option<Approval> });
+view!(CandidateRing { ring: String, state: String, publication: Option<Publication> });
 #[derive(Deserialize, Serialize)]
 #[serde(rename_all(serialize = "camelCase"), deny_unknown_fields)]
 pub struct Candidate {

@@ -87,7 +87,6 @@
   {
     "definition": {
       "action": {
-        "admissionOperation": "11111111-1111-4111-8111-111111111111",
         "delivery": {
           "kind": "direct"
         },
@@ -127,12 +126,11 @@
       },
       "scope": "11111111-1111-4111-8111-111111111111"
     },
-    "digest": "efa38aa779fbf09df97004fe09a0c80aa846d5faf7f6ca402987fd4ac6bc192f"
+    "digest": "425383bfc03a451ff32510491763d91f50de3bd930eef735c66a43461ffe1b54"
   },
   {
     "definition": {
       "action": {
-        "admissionOperation": "11111111-1111-4111-8111-111111111111",
         "kind": "ensure_agent_installed",
         "resource": {
           "id": "resource",
@@ -159,7 +157,7 @@
       },
       "scope": "11111111-1111-4111-8111-111111111111"
     },
-    "digest": "83a6569b68250f499ff4354e40baccad506980addd4f48397a98be6bea083a8e"
+    "digest": "425732e6de54d9f2f101b79d3b3854b0a8fe5635cec9c83b853a470ad1c433ef"
   },
   {
     "definition": {

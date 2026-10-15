@@ -9,7 +9,7 @@ async fn publication_result_commit_unknown_recovers_one_projection_and_audit() {
     let service = server.service(runtime.clone(), server.winget()).await;
     let input = seed(runtime.clone(), &server, server.winget_document()).await;
     service.create_candidate(&input, cutoff()).await.unwrap();
-    let p = authorize(&service, &input.candidate, rel::Ring::Test).await;
+    let p = submit_publication(&service, &input.candidate, rel::Ring::Test).await;
     let gate = ack::CommitGate::start(input.candidate.value()).await;
     let cutoff =
         rss_request_context::Deadline::from_timeout(&Timer, std::time::Duration::from_secs(7))

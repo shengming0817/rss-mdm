@@ -160,18 +160,7 @@ impl Snapshot {
             Ok(Some(devices))
         }
     }
-    pub fn publisher(&self, user: &User) -> Result<(), AuthorizationError> {
-        if self.rules.iter().filter_map(|r| r.value.as_ref()).any(|r| {
-            matches!(&r.subject, Subject::User { user: candidate } if candidate == user)
-                && r.grants
-                    .iter()
-                    .any(|g| g.covers(Permission::ReleasePublish, None))
-        }) {
-            Ok(())
-        } else {
-            Err(AuthorizationError::Forbidden)
-        }
-    }
+
     /// Match trusted identity facts without granting a management permission.
     pub fn matches_subjects(
         &self,

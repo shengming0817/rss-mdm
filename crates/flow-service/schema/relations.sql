@@ -401,11 +401,11 @@ GRANT SELECT,INSERT ON TABLE mdm_resource.requests TO mdm_resource_runtime;
 
 GRANT SELECT,INSERT ON TABLE mdm_resource_catalog.operations TO mdm_flow_runtime;
 
-GRANT SELECT,INSERT ON TABLE mdm_software.approvals TO mdm_flow_runtime;
+GRANT SELECT,INSERT ON TABLE mdm_software.versions TO mdm_flow_runtime;
 
-GRANT SELECT ON TABLE mdm_software.approvals TO mdm_command_runtime;
+GRANT SELECT ON TABLE mdm_software.versions TO mdm_command_runtime;
 
-GRANT UPDATE(admission) ON TABLE mdm_software.approvals TO mdm_flow_runtime;
+GRANT UPDATE(lifecycle) ON TABLE mdm_software.versions TO mdm_flow_runtime;
 
 GRANT SELECT,INSERT ON TABLE mdm_software.materials TO mdm_flow_runtime;
 
@@ -417,7 +417,7 @@ GRANT SELECT,INSERT ON TABLE mdm_software.sources TO mdm_flow_runtime;
 
 GRANT SELECT ON TABLE mdm_software.sources TO mdm_command_runtime;
 
-GRANT UPDATE(admission) ON TABLE mdm_software.sources TO mdm_flow_runtime;
+GRANT UPDATE(lifecycle) ON TABLE mdm_software.sources TO mdm_flow_runtime;
 
 GRANT SELECT,INSERT ON TABLE mdm_software_composition.authorities TO mdm_software_driver;
 
@@ -521,7 +521,7 @@ GRANT SELECT,UPDATE ON TABLE rss_transactional_messaging.tenant_epoch TO rss_tms
 
 GRANT USAGE ON SCHEMA mdm_policy, mdm_resource, mdm_software, mdm_planning TO mdm_access;
 
-GRANT SELECT ON TABLE mdm_policy.policies, mdm_policy.versions, mdm_resource.aggregates, mdm_resource.immutable, mdm_software.sources, mdm_software.approvals, mdm_planning.remote_operations TO mdm_access;
+GRANT SELECT ON TABLE mdm_policy.policies, mdm_policy.versions, mdm_resource.aggregates, mdm_resource.immutable, mdm_software.sources, mdm_software.versions, mdm_planning.remote_operations TO mdm_access;
 
 GRANT EXECUTE ON FUNCTION mdm_planning.scope_admission(uuid,text) TO mdm_access;
 

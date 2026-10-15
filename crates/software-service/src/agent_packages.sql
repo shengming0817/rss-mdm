@@ -17,5 +17,5 @@ GRANT SELECT ON mdm_agent_packages.releases TO mdm_access;
 GRANT SELECT,INSERT ON mdm_agent_packages.releases TO mdm_flow_runtime;
 GRANT UPDATE(state) ON mdm_agent_packages.releases TO mdm_flow_runtime;
 GRANT USAGE ON SCHEMA mdm_software TO mdm_access;
-GRANT SELECT ON mdm_software.sources,mdm_software.approvals TO mdm_access;
+GRANT SELECT ON mdm_software.sources,mdm_software.versions TO mdm_access;
 COMMIT;

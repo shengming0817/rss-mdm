@@ -184,13 +184,13 @@ async fn chain(format: &str, bundle: bool, user: bool) -> Result<()> {
         &f.router,
         &format!("/api/v1/software/resources/{resource}/versions/v1"),
         0,
-        json!({"action":"approve","evidence":["hash-only enterprise review"]}),
+        json!({"action":"enable"}),
     )
     .await?;
     drop(content_setup);
     let policy = Uuid::new_v4();
     let policy_path = format!("/api/v1/policies/{policy}");
-    write(&mut f.author,&f.router,&policy_path,0,json!({"action":"put","enabled":true,"definition":{"scope":f.scope,"action":{"kind":"software","resource":{"kind":"software","id":resource,"version":"v1","variants":{selector:"default"}},"intent":"required_install","delivery":{"kind":"direct"},"admissionOperation":admitted["admission"]["operation"],"runLifetimeSeconds":600,"rollout":{"stages":[{"scope":f.scope,"opensAt":0}]}}}})).await?;
+    write(&mut f.author,&f.router,&policy_path,0,json!({"action":"put","enabled":true,"definition":{"scope":f.scope,"action":{"kind":"software","resource":{"kind":"software","id":resource,"version":"v1","variants":{selector:"default"}},"intent":"required_install","delivery":{"kind":"direct"},"runLifetimeSeconds":600,"rollout":{"stages":[{"scope":f.scope,"opensAt":0}]}}}})).await?;
     let task = tokio::time::timeout(Duration::from_secs(30), async {
         loop {
             let r = agent_call(

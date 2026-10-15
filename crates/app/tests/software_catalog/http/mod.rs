@@ -142,10 +142,10 @@ async fn private_formats(
             router,
             &format!("/api/v1/software/resources/{id}/versions/v1"),
             0,
-            json!({"action":"approve","evidence":["private-format-review"]}),
+            json!({"action":"enable"}),
         )
         .await?;
-        ensure!(approved["admission"]["state"] == "approved");
+        ensure!(approved["lifecycle"]["state"] == "enabled");
     }
     Ok(())
 }
@@ -160,7 +160,7 @@ async fn dependency_denial_over_http(
     input["dependencies"] = json!([{"resource":dependency,"version":"v1","sha256":digest}]);
     let (dependent, _) = create_software_version(user, router, input).await?;
     let response = user.call(router, Method::POST, &format!("/api/v1/software/resources/{dependent}/versions/v1"),
-        Some(json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"approve","evidence":["review"]}}))).await?;
+        Some(json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"enable"}}))).await?;
     ensure!(
         response.0 == StatusCode::FORBIDDEN,
         "dependency admission HTTP mapping: {response:?}"

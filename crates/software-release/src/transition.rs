@@ -6,34 +6,21 @@ use rss_contract::Timepoint;
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Operation {
     /// Replaces content before any publication attempt, preserving software identity.
-    /// Changed content invalidates all validation and approval; identical content retains them.
+    /// Changed content invalidates all validation; identical content retains them.
     Replace(Content),
-    /// Records ring-specific evidence no earlier than current content or predecessor success.
-    /// Failed/Unknown invalidates approval; any existing publication freezes this ring.
-    Validate(Validation),
-    /// Approves passed validation, binding the requesting actor as approver.
-    Approve {
-        /// Ring with current passed validation; its predecessor must be confirmed published.
-        ring: Ring,
-        /// Actor allowed to authorize and retry the resulting publication.
-        publisher: ActorId,
-        /// Required separation between publisher and requesting approver.
-        policy: ActorPolicy,
-    },
-    /// Authorizes an exact approval for its bound publisher.
-    /// Pending/Unknown reconciles; Applied only acknowledges; NotApplied requires [`Self::Retry`].
-    Authorize {
-        /// Ring whose approval is being authorized.
-        ring: Ring,
-        /// Exact current [`Approval::digest`], preventing stale authority reuse.
-        approval: Digest,
+    /// Publish verified content in one transition, without an intermediate authorization state.
+    Publish {
+        /// Automatic validation bound to current content and ring.
+        validation: Validation,
+        /// Current product-owned source/version/dependency lifecycle fingerprint.
+        lifecycle: Digest,
     },
     /// Retries only confirmed NotApplied, preserving identity and incrementing attempt.
-    /// Requires the bound publisher and an active candidate.
+    /// Requires an active candidate; the adapter checks current operator permissions.
     Retry {
         /// Ring holding the confirmed NotApplied attempt.
         ring: Ring,
-        /// Stable identity of that attempt's original approval.
+        /// Stable identity of that attempt's original binding.
         publication: PublicationId,
         /// Current attempt number to replace, not the next attempt number.
         attempt: u64,
@@ -50,7 +37,7 @@ pub enum Operation {
         /// Attested outcome; Pending is not a reportable result.
         outcome: PublicationResult,
     },
-    /// Closes all new validations, approvals, authorizations and retries without undoing facts.
+    /// Closes all new publications and retries without undoing facts.
     /// Repeated quarantine is allowed; reopening or conversion from Deprecated is not.
     Quarantine,
     /// Permanently deprecates an active candidate, retaining late backend facts.
@@ -94,13 +81,11 @@ pub struct Receipt {
 pub enum Decision {
     /// State was acknowledged or changed without authorizing an external publication.
     Updated,
-    /// Failed/Unknown validation cleared approval; no publication is authorized.
-    ValidationRejected(Verdict),
     /// Authorizes exactly this attempt, only after the transaction and required audit commit.
     Publish(Box<Publication>),
     /// Inspect the original backend identity; do not submit a replacement or blind retry.
     Reconcile {
-        /// Stable identity to reconcile against the approved backend content.
+        /// Stable identity to reconcile against the frozen backend content.
         publication: PublicationId,
         /// Current attempt whose outcome remains unconfirmed.
         attempt: u64,
@@ -176,8 +161,8 @@ impl Candidate {
     /// the storage source and must preserve history, uniqueness and CAS across requests.
     ///
     /// # Errors
-    /// Rejects inconsistent tenant/content identities, ring order, actor constraints,
-    /// validation/approval/outcome evidence and time order. It cannot detect forged storage history.
+    /// Rejects inconsistent tenant/content identities, ring order,
+    /// validation/binding/outcome evidence and time order. It cannot detect forged storage history.
     pub fn restore(snapshot: Snapshot) -> Result<Self, Error> {
         let candidate = Self(snapshot);
         candidate.check_snapshot()?;
@@ -305,20 +290,21 @@ impl Candidate {
             at,
         )
     }
-    fn approval(&self, approval: &Approval, ring: Ring, at: Timepoint) -> Result<(), Error> {
-        self.validation(&approval.validation, ring, approval.at)?;
-        if approval.validation.verdict != Verdict::Passed {
+    fn binding(
+        &self,
+        binding: &PublicationBinding,
+        ring: Ring,
+        at: Timepoint,
+    ) -> Result<(), Error> {
+        self.validation(&binding.validation, ring, binding.at)?;
+        if binding.validation.verdict != Verdict::Passed {
             return Err(Error::ValidationRequired);
         }
-        self.tenant(approval.publisher.tenant())?;
-        self.tenant(approval.approver.tenant())?;
-        if approval.policy == ActorPolicy::Separate && approval.publisher == approval.approver {
-            return Err(Error::ActorConstraint);
-        }
-        if approval.at > at {
+        self.tenant(binding.actor.tenant())?;
+        if binding.at > at {
             return Err(Error::InvalidTime);
         }
-        if approval.predecessor != self.predecessor(ring)?.map(Publication::id) {
+        if binding.predecessor != self.predecessor(ring)?.map(Publication::id) {
             return Err(Error::StaleEvidence);
         }
         Ok(())
@@ -346,23 +332,16 @@ impl Candidate {
                 RingState::Candidate => {
                     self.predecessor(ring)?;
                 }
-                RingState::Validated(v) => {
-                    self.validation(v, ring, self.0.at)?;
-                    if v.verdict != Verdict::Passed {
-                        return Err(Error::ValidationRequired);
-                    }
-                }
-                RingState::Approved(a) => self.approval(a, ring, self.0.at)?,
                 RingState::Publication(p) => {
-                    self.approval(&p.approval, ring, p.authorized_at)?;
+                    self.binding(&p.binding, ring, p.requested_at)?;
                     if p.attempt == 0 {
                         return Err(Error::InvalidSnapshot);
                     }
-                    if p.authorized_at > self.0.at {
+                    if p.requested_at > self.0.at {
                         return Err(Error::InvalidTime);
                     }
                     if let Some(e) = outcome_evidence(&p.outcome) {
-                        self.evidence(e, Some(p.authorized_at), self.0.at)?;
+                        self.evidence(e, Some(p.requested_at), self.0.at)?;
                     }
                 }
             }
@@ -402,53 +381,10 @@ impl Candidate {
                 }
                 Ok(Decision::Updated)
             }
-            Operation::Validate(v) => {
-                self.validation(v, v.ring, request.as_of)?;
-                let state = &mut self.0.rings[v.ring.index()];
-                if matches!(state, RingState::Publication(_)) {
-                    return Err(Error::ContentFrozen);
-                }
-                if v.verdict == Verdict::Passed {
-                    // An exact re-observation does not invalidate an approval.
-                    let same = match state {
-                        RingState::Validated(old) => old == v,
-                        RingState::Approved(a) => a.validation == *v,
-                        _ => false,
-                    };
-                    if !same {
-                        *state = RingState::Validated(v.clone());
-                    }
-                    Ok(Decision::Updated)
-                } else {
-                    *state = RingState::Candidate;
-                    Ok(Decision::ValidationRejected(v.verdict))
-                }
-            }
-            Operation::Approve {
-                ring,
-                publisher,
-                policy,
-            } => {
-                self.tenant(publisher.tenant())?;
-                self.predecessor(*ring)?;
-                let validation = match &self.0.rings[ring.index()] {
-                    RingState::Validated(v) => v.clone(),
-                    RingState::Approved(a) => a.validation.clone(),
-                    _ => return Err(Error::ValidationRequired),
-                };
-                let approval = Approval {
-                    validation,
-                    publisher: publisher.clone(),
-                    approver: request.actor.clone(),
-                    policy: *policy,
-                    at: request.as_of,
-                    predecessor: self.predecessor(*ring)?.map(Publication::id),
-                };
-                self.approval(&approval, *ring, request.as_of)?;
-                self.0.rings[ring.index()] = RingState::Approved(approval);
-                Ok(Decision::Updated)
-            }
-            Operation::Authorize { ring, approval } => self.authorize(*ring, *approval, request),
+            Operation::Publish {
+                validation,
+                lifecycle,
+            } => self.publish(validation, *lifecycle, request),
             Operation::Retry {
                 ring,
                 publication,
@@ -476,25 +412,21 @@ impl Candidate {
             }
         }
     }
-    fn authorize(
+    fn publish(
         &mut self,
-        ring: Ring,
-        digest: Digest,
+        validation: &Validation,
+        lifecycle: Digest,
         request: &Request,
     ) -> Result<Decision, Error> {
-        self.predecessor(ring)?;
-        let approval = match &self.0.rings[ring.index()] {
-            RingState::Approved(a) => a,
-            RingState::Publication(p) => &p.approval,
-            _ => return Err(Error::ValidationRequired),
-        };
-        if approval.digest() != digest {
-            return Err(Error::StaleEvidence);
-        }
-        if approval.publisher != request.actor {
-            return Err(Error::ActorConstraint);
+        let ring = validation.ring;
+        self.validation(validation, ring, request.as_of)?;
+        if validation.verdict != Verdict::Passed {
+            return Err(Error::ValidationRequired);
         }
         if let RingState::Publication(p) = &self.0.rings[ring.index()] {
+            if p.binding.lifecycle != lifecycle {
+                return Err(Error::StaleEvidence);
+            }
             return match p.outcome {
                 PublicationOutcome::Pending
                 | PublicationOutcome::Reported(PublicationResult::Unknown(_)) => {
@@ -512,9 +444,15 @@ impl Candidate {
             };
         }
         let publication = Publication {
-            approval: approval.clone(),
+            binding: PublicationBinding {
+                validation: validation.clone(),
+                lifecycle,
+                actor: request.actor.clone(),
+                at: request.as_of,
+                predecessor: self.predecessor(ring)?.map(Publication::id),
+            },
             attempt: 1,
-            authorized_at: request.as_of,
+            requested_at: request.as_of,
             outcome: PublicationOutcome::Pending,
         };
         self.0.rings[ring.index()] = RingState::Publication(publication.clone());
@@ -528,9 +466,6 @@ impl Candidate {
         request: &Request,
     ) -> Result<Decision, Error> {
         let publication = self.publication_mut(ring, id, attempt)?;
-        if publication.approval.publisher != request.actor {
-            return Err(Error::ActorConstraint);
-        }
         if !matches!(
             publication.outcome,
             PublicationOutcome::Reported(PublicationResult::NotApplied(_))
@@ -538,7 +473,7 @@ impl Candidate {
             return Err(Error::ReconciliationRequired);
         }
         publication.attempt = publication.attempt.checked_add(1).ok_or(Error::Overflow)?;
-        publication.authorized_at = request.as_of;
+        publication.requested_at = request.as_of;
         publication.outcome = PublicationOutcome::Pending;
         Ok(Decision::Publish(Box::new(publication.clone())))
     }
@@ -564,7 +499,7 @@ impl Candidate {
         let evidence = outcome.evidence();
         self.evidence(evidence, None, at)?;
         let publication = self.publication_mut(ring, id, attempt)?;
-        if evidence.at < publication.authorized_at
+        if evidence.at < publication.requested_at
             || outcome_evidence(&publication.outcome).is_some_and(|e| evidence.at < e.at)
         {
             return Err(Error::InvalidTime);

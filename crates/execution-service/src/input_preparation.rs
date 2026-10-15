@@ -57,7 +57,6 @@ impl Inputs {
         let mut frozen = match input {
             PublicationInput::AgentInstall {
                 binding,
-                admission,
                 schedule,
                 lifetime,
             } => Frozen::AgentInstall {
@@ -67,7 +66,6 @@ impl Inputs {
                         authority.proof,
                         authority.snapshot,
                         binding,
-                        *admission,
                         schedule,
                         *lifetime,
                     )
@@ -119,7 +117,9 @@ impl Inputs {
             )
             .await?,
         )?;
-        if state != r::State::Active {
+        if (version.kind() == r::Kind::Software && state == r::State::Archived)
+            || (version.kind() != r::Kind::Software && state != r::State::Active)
+        {
             return Err(Error::Conflict.into());
         }
         Ok(version)
@@ -263,4 +263,24 @@ fn agent_collection<'a>(
         return Err(Error::Conflict.into());
     }
     Ok(definition)
+}
+
+impl Inputs {
+    /// Resolve only backend-owned software lifecycle; caller retains Policy authorization and locks.
+    pub async fn software_binding_in(
+        &self,
+        tx: &mut PgTransaction<'_>,
+        action: &rss_mdm_policy::Action,
+    ) -> Result<Option<[u8; 32]>> {
+        let binding = match action {
+            rss_mdm_policy::Action::Software { resource, .. }
+            | rss_mdm_policy::Action::EnsureAgentInstalled { resource, .. } => resource,
+            _ => return Ok(None),
+        };
+        self.software.lock_in(tx).await?;
+        let version = self
+            .active_version_in(tx, binding.id.as_str(), binding.version.as_str())
+            .await?;
+        Ok(Some(self.software.binding_in(tx, &version).await?))
+    }
 }

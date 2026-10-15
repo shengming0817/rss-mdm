@@ -189,8 +189,6 @@ pub enum Action {
         resource: SoftwareResourceBinding,
         /// Required, self-service, or explicit removal semantics.
         intent: SoftwareIntent,
-        /// Exact enterprise approval to freeze into this execution version.
-        admission_operation: Uuid,
         /// Device execution schedule and maintenance window.
         #[serde(default = "default_schedule")]
         schedule: Schedule,
@@ -203,8 +201,6 @@ pub enum Action {
     EnsureAgentInstalled {
         /// Exact approved Agent release; product identity is checked at publication.
         resource: SoftwareResourceBinding,
-        /// Exact approval operation, rechecked before any side effect.
-        admission_operation: Uuid,
         /// Source-channel scheduling and cooldown.
         #[serde(default = "default_schedule")]
         schedule: Schedule,
@@ -468,7 +464,6 @@ impl Action {
                 }
             }
             Action::Software {
-                admission_operation,
                 schedule,
                 run_lifetime_seconds,
                 rollout,
@@ -485,8 +480,7 @@ impl Action {
                 {
                     return Err(Error::Malformed);
                 }
-                if admission_operation.is_nil()
-                    || !(60..=604800).contains(run_lifetime_seconds)
+                if !(60..=604800).contains(run_lifetime_seconds)
                     || rollout.stages.is_empty()
                     || rollout.stages.len() > 32
                 {
@@ -511,13 +505,12 @@ impl Action {
             }
             Action::Configuration { .. } => {}
             Action::EnsureAgentInstalled {
-                admission_operation,
                 schedule,
                 run_lifetime_seconds,
                 ..
             } => {
                 schedule.validate()?;
-                if admission_operation.is_nil() || !(60..=604800).contains(run_lifetime_seconds) {
+                if !(60..=604800).contains(run_lifetime_seconds) {
                     return Err(Error::Malformed);
                 }
             }
@@ -598,7 +591,6 @@ mod tests {
                 "intent": "required_install",
                 "delivery": {"kind":"direct"},
                 "runLifetimeSeconds": 3600,
-                "admissionOperation": "22222222-2222-4222-8222-222222222222",
                 "rollout": {"stages": [{"scope": "11111111-1111-1111-1111-111111111111", "opensAt": 0}]}
             }
         });

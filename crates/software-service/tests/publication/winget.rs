@@ -8,7 +8,7 @@ async fn full_version_publication_recovery_and_public_artifact_boundary() {
     let service = server.service(runtime.clone(), server.winget()).await;
     let input = seed(runtime.clone(), &server, server.winget_document()).await;
     service.create_candidate(&input, cutoff()).await.unwrap();
-    let p = authorize(&service, &input.candidate, rel::Ring::Test).await;
+    let p = submit_publication(&service, &input.candidate, rel::Ring::Test).await;
     assert!(
         service
             .published(rel::Ring::Test, p.id().digest().bytes(), cutoff())
@@ -99,7 +99,7 @@ async fn unstarted_publication_recovery_preserves_its_original_identity() {
     let service = server.service(runtime.clone(), server.winget()).await;
     let input = seed(runtime.clone(), &server, server.winget_document()).await;
     service.create_candidate(&input, cutoff()).await.unwrap();
-    let p = authorize(&service, &input.candidate, rel::Ring::Test).await;
+    let p = submit_publication(&service, &input.candidate, rel::Ring::Test).await;
     let page = service.reconciliation_page("", 32, cutoff()).await.unwrap();
     let work = page
         .work

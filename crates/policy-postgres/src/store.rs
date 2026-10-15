@@ -92,7 +92,8 @@ impl PolicyStore {
                     definition: Box::new(p.definition.clone()),
                     enabled: p.enabled
                 },
-                p.version
+                p.version,
+                p.execution_binding
             )
             .map_err(|e| match e {
                 crate::core::Error::Malformed => Rejection::InvalidInput,
@@ -114,7 +115,7 @@ impl PolicyStore {
         let hash = checked.semantic.to_vec();
         let definition = STORAGE.json("publish.definition", serde_json::to_value(&p.definition))?;
         tx.with_connection(move|c|Box::pin(async move {
-   sqlx::query("INSERT INTO mdm_policy.policies(tenant_id,id,revision,current_version,version_number,enabled,definition,author,updated_at) VALUES($1::uuid,$2,$3,$4,$5,$6,$7,$8,$9) ON CONFLICT(tenant_id,id) DO UPDATE SET revision=excluded.revision,current_version=excluded.current_version,version_number=excluded.version_number,enabled=excluded.enabled,definition=excluded.definition,author=excluded.author,updated_at=excluded.updated_at").bind(&tenant).bind(p.id).bind(p.revision).bind(p.version).bind(p.number).bind(p.enabled).bind(definition).bind(author).bind(at).execute(&mut *c).await?;
+   sqlx::query("INSERT INTO mdm_policy.policies(tenant_id,id,revision,current_version,version_number,enabled,definition,author,updated_at,execution_binding) VALUES($1::uuid,$2,$3,$4,$5,$6,$7,$8,$9,$10) ON CONFLICT(tenant_id,id) DO UPDATE SET revision=excluded.revision,current_version=excluded.current_version,version_number=excluded.version_number,enabled=excluded.enabled,definition=excluded.definition,author=excluded.author,updated_at=excluded.updated_at,execution_binding=excluded.execution_binding").bind(&tenant).bind(p.id).bind(p.revision).bind(p.version).bind(p.number).bind(p.enabled).bind(definition).bind(author).bind(at).bind(p.execution_binding.map(|v|v.to_vec())).execute(&mut *c).await?;
     if let Some(frozen)=frozen {sqlx::query("INSERT INTO mdm_policy.versions(tenant_id,id,policy,number,resource,resource_version,frozen,fingerprint,action_kind) VALUES($1::uuid,$2,$3,$4,$5,$6,$7,$8,$9)").bind(tenant).bind(p.version).bind(p.id).bind(p.number).bind(p.definition.action.resource().map(|r| r.id())).bind(p.definition.action.resource().map(|r| r.version())).bind(frozen).bind(hash).bind(p.definition.action.kind().as_str()).execute(c).await?;}
    Ok(())
   })).await?;
@@ -220,7 +221,7 @@ impl PolicyStore {
 /// Mutating consumers must serialize via their owner lock before trusting this snapshot.
 async fn read_snapshot(tx: &mut PgTransaction<'_>, id: Uuid) -> Result<Option<Policy>, PgError> {
     let tenant = tx.tenant_id().to_string();
-    let row=tx.with_connection(move|c|Box::pin(async move {sqlx::query("SELECT revision,current_version,version_number,enabled,definition FROM mdm_policy.policies WHERE tenant_id=$1::uuid AND id=$2").bind(tenant).bind(id).fetch_optional(c).await})).await?;
+    let row=tx.with_connection(move|c|Box::pin(async move {sqlx::query("SELECT revision,current_version,version_number,enabled,definition,execution_binding FROM mdm_policy.policies WHERE tenant_id=$1::uuid AND id=$2").bind(tenant).bind(id).fetch_optional(c).await})).await?;
     row.map(|r| {
         Ok(Policy {
             id,
@@ -228,6 +229,10 @@ async fn read_snapshot(tx: &mut PgTransaction<'_>, id: Uuid) -> Result<Option<Po
             version: r.try_get("current_version")?,
             number: r.try_get("version_number")?,
             enabled: r.try_get("enabled")?,
+            execution_binding: r
+                .try_get::<Option<Vec<u8>>, _>("execution_binding")?
+                .map(|v| v.try_into().map_err(|_| STORAGE.fault("lifecycle binding")))
+                .transpose()?,
             definition: STORAGE.json(
                 "read.definition",
                 serde_json::from_value(r.try_get("definition")?),

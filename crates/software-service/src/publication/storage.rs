@@ -27,6 +27,7 @@ pub(super) struct Target {
     pub format: u8,
     pub candidate: String,
     pub publication: [u8; 32],
+    pub lifecycle: [u8; 32],
     pub attempt: u64,
     pub ring: u8,
     pub binding: Vec<u8>,
@@ -166,35 +167,19 @@ pub(super) fn request_fingerprint(
         |e: &rel::Evidence| json!([actor(&e.actor), e.digest.bytes(), e.at.unix_seconds()]);
     let operation = match &r.operation {
         rel::Operation::Replace(c) => json!(["replace", c.digest().bytes()]),
-        rel::Operation::Validate(v) => json!([
-            "validate",
+        rel::Operation::Publish {
+            validation: v,
+            lifecycle,
+        } => json!([
+            "publish",
             v.candidate.tenant().to_string(),
             v.candidate.value(),
             v.content.bytes(),
             v.ring as u8,
             evidence(&v.evidence),
-            match v.verdict {
-                rel::Verdict::Passed => "passed",
-                rel::Verdict::Failed => "failed",
-                rel::Verdict::Unknown => "unknown",
-            }
+            format!("{:?}", v.verdict),
+            lifecycle.bytes()
         ]),
-        rel::Operation::Approve {
-            ring,
-            publisher,
-            policy,
-        } => json!([
-            "approve",
-            *ring as u8,
-            actor(publisher),
-            match policy {
-                rel::ActorPolicy::Separate => "separate",
-                rel::ActorPolicy::AllowSameActor => "allow-same",
-            }
-        ]),
-        rel::Operation::Authorize { ring, approval } => {
-            json!(["authorize", *ring as u8, approval.bytes()])
-        }
         rel::Operation::Retry {
             ring,
             publication,
@@ -217,7 +202,7 @@ pub(super) fn request_fingerprint(
         rel::Operation::Deprecate => json!(["deprecate"]),
     };
     encode(&json!([
-        "mdm.software.audit.request/v1",
+        "mdm.software.audit.request/v2",
         candidate,
         r.id.tenant().to_string(),
         r.id.value(),
@@ -697,7 +682,8 @@ pub(super) fn core_publication(c: &rel::Candidate, t: &Target) -> Result<rel::Pu
     };
     if p.id() != t.publication_id()
         || p.attempt != t.attempt
-        || p.authorized_at.unix_seconds() != t.at
+        || p.binding.lifecycle.bytes() != t.lifecycle
+        || p.requested_at.unix_seconds() != t.at
     {
         return Err(Error::Conflict);
     }
@@ -896,10 +882,7 @@ pub(super) fn transition_fact(
     stage: &'static str,
 ) -> rss_mdm_audit_integration::SoftwareFact {
     let ring = match &r.operation {
-        rel::Operation::Validate(v) => Some(v.ring),
-        rel::Operation::Approve { ring, .. } | rel::Operation::Authorize { ring, .. } => {
-            Some(*ring)
-        }
+        rel::Operation::Publish { validation, .. } => Some(validation.ring),
         _ => None,
     };
     request_fact(r.id.value(), ring, stage)
@@ -930,6 +913,7 @@ mod audit_tests {
     }
     fn target() -> Target {
         Target {
+            lifecycle: [0; 32],
             format: 1,
             candidate: "candidate".into(),
             publication: [1; 32],

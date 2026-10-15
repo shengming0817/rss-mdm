@@ -8,12 +8,12 @@ async fn quarantine_denies_all_reads_and_ring_cleanup_preserves_other_projection
     let service = server.service(runtime.clone(), server.winget()).await;
     let input = seed(runtime.clone(), &server, server.winget_document()).await;
     service.create_candidate(&input, cutoff()).await.unwrap();
-    let test = authorize(&service, &input.candidate, rel::Ring::Test).await;
+    let test = submit_publication(&service, &input.candidate, rel::Ring::Test).await;
     service
         .publish(test.id(), 1, at(10), cutoff())
         .await
         .unwrap();
-    let pilot = authorize(&service, &input.candidate, rel::Ring::Pilot).await;
+    let pilot = submit_publication(&service, &input.candidate, rel::Ring::Pilot).await;
     service
         .publish(pilot.id(), 1, at(10), cutoff())
         .await
@@ -109,7 +109,7 @@ async fn unstarted_withdrawal_cancels_original_attempt_without_publishing() {
     let service = server.service(runtime.clone(), server.winget()).await;
     let input = seed(runtime.clone(), &server, server.winget_document()).await;
     service.create_candidate(&input, cutoff()).await.unwrap();
-    let p = authorize(&service, &input.candidate, rel::Ring::Test).await;
+    let p = submit_publication(&service, &input.candidate, rel::Ring::Test).await;
     let request = request_for(&service, &input.candidate).await;
     assert_eq!(
         service

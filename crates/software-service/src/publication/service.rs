@@ -302,17 +302,10 @@ impl PublicationService {
                 .map_err(|cause| Error::Content.context("service::create_in", cause))
         );
         if (v.digest().bytes(), revision) != (subject.resource_digest, i.expected_resource_revision)
-            || !matches!(state, resource::State::Frozen | resource::State::Active)
+            || state == resource::State::Archived
         {
             return Ok(Err(Error::Conflict));
         }
-        input!(
-            self.catalog
-                .reader()
-                .publication_admitted_in(tx, &v)
-                .await
-                .map_err(|cause| Error::Content.context("service::create_in", cause))
-        );
         Ok(Ok(v))
     }
     async fn retired_owner(&self, tx: &mut PgTransaction<'_>, owner: &str) -> InTransaction<()> {
@@ -351,123 +344,82 @@ impl PublicationService {
         }
         Ok(Ok(()))
     }
-    pub async fn validate(
+    /// Validate, enable a draft when permitted, and durably schedule one publication.
+    pub async fn submit(
         &self,
         id: &rel::CandidateId,
         ring: rel::Ring,
         request: &ServiceRequest,
+        access: &dyn PublishAccess,
         cutoff: Deadline,
     ) -> Result<rel::Transition> {
         if let Some(replay) = self
-            .replay_service(id, ring, request, "validate", None, cutoff)
+            .replay_service(id, ring, request, "publish", None, cutoff)
             .await?
         {
             return Ok(replay);
         }
-
         let (c, subject, prepared) = self.context(id, cutoff).await?;
-        if self
-            .releases
-            .operation(&request.id, budget(cutoff))
-            .await?
-            .is_none()
-        {
-            self.verify(&prepared, cutoff).await?;
-        }
-        let at = request.as_of;
-        let evidence = rel::Evidence {
-            actor: request.actor.clone(),
-            digest: rel::Digest::of(
-                &db::encode(&serde_json::json!([
-                    c.snapshot().content.digest().bytes(),
-                    prepared
-                        .artifacts
-                        .iter()
-                        .map(|a| serde_json::json!([a.key, a.length, a.sha256]))
-                        .collect::<Vec<_>>()
-                ]))
-                .map_err(Error::RolledBack)?,
-            ),
-            at,
+        let pins = self.verify(&prepared, cutoff).await?;
+        let root = prepared
+            .resources
+            .iter()
+            .find(|v| {
+                v.resource().as_str() == subject.resource && v.label().as_str() == subject.version
+            })
+            .ok_or(Error::Content)?;
+        let lifecycle = settle(
+            self.runtime
+                .local_tx_with_context(
+                    self.tenant(),
+                    budget(cutoff),
+                    (self, root),
+                    |(s, root), tx| {
+                        Box::pin(async move {
+                            let binding = input!(
+                                s.catalog
+                                    .reader()
+                                    .publication_binding_in(tx, root, true)
+                                    .await
+                                    .map_err(|_| Error::Content)
+                            );
+                            Ok(Ok(binding))
+                        })
+                    },
+                )
+                .await,
+        )?;
+        let validation = rel::Validation {
+            candidate: id.clone(),
+            content: c.snapshot().content.digest(),
+            ring,
+            evidence: rel::Evidence {
+                actor: request.actor.clone(),
+                digest: rel::Digest::of(
+                    &db::encode(&serde_json::json!([
+                        c.snapshot().content.digest().bytes(),
+                        lifecycle,
+                        prepared
+                            .artifacts
+                            .iter()
+                            .map(|a| (&a.key, a.length, a.sha256))
+                            .collect::<Vec<_>>()
+                    ]))
+                    .map_err(Error::RolledBack)?,
+                ),
+                at: request.as_of,
+            },
+            verdict: rel::Verdict::Passed,
         };
         let r = request.core(
             &request.actor,
-            rel::Operation::Validate(rel::Validation {
-                candidate: id.clone(),
-                content: c.snapshot().content.digest(),
-                ring,
-                evidence,
-                verdict: rel::Verdict::Passed,
-            }),
-        );
-        self.transition_audited(&c, &subject, &r, "software_validate", cutoff)
-            .await
-    }
-    pub async fn approve(
-        &self,
-        id: &rel::CandidateId,
-        ring: rel::Ring,
-        publisher: &rel::ActorId,
-        request: &ServiceRequest,
-        cutoff: Deadline,
-    ) -> Result<rel::Transition> {
-        if let Some((owner, original)) = self
-            .releases
-            .original_request(&request.id, budget(cutoff))
-            .await?
-            && (owner != *id
-                || !matches!(&original.operation,rel::Operation::Approve {publisher:prior,..} if prior==publisher))
-        {
-            return Err(Error::Conflict);
-        }
-        if let Some(replay) = self
-            .replay_service(id, ring, request, "approve", None, cutoff)
-            .await?
-        {
-            return Ok(replay);
-        }
-        let (c, subject, _) = self.context(id, cutoff).await?;
-        let r = request.core(
-            &request.actor,
-            rel::Operation::Approve {
-                ring,
-                publisher: publisher.clone(),
-                policy: rel::ActorPolicy::Separate,
+            rel::Operation::Publish {
+                validation,
+                lifecycle: rel::Digest::from_bytes(lifecycle),
             },
         );
-        self.transition_audited(&c, &subject, &r, "software_approve", cutoff)
+        self.commit_publication(&c, &subject, &r, Some((root, &pins)), access, cutoff)
             .await
-    }
-    pub async fn authorize(
-        &self,
-        id: &rel::CandidateId,
-        ring: rel::Ring,
-        request: &ServiceRequest,
-        cutoff: Deadline,
-    ) -> Result<rel::Transition> {
-        if let Some(replay) = self
-            .replay_service(id, ring, request, "authorize", None, cutoff)
-            .await?
-        {
-            return Ok(replay);
-        }
-
-        let (c, subject, prepared) = self.context(id, cutoff).await?;
-        if self
-            .releases
-            .operation(&request.id, budget(cutoff))
-            .await?
-            .is_none()
-        {
-            self.verify(&prepared, cutoff).await?;
-        }
-        let approval = match c.snapshot().ring_state(ring) {
-            rel::RingState::Approved(a) => a.digest(),
-            rel::RingState::Publication(p) => p.approval.digest(),
-            _ => return Err(Error::Conflict),
-        };
-        let r = request.core(&request.actor, rel::Operation::Authorize { ring, approval });
-        self.authorize_request(&c, &subject, &r, cutoff).await
     }
     pub async fn retry(
         &self,
@@ -475,6 +427,7 @@ impl PublicationService {
         ring: rel::Ring,
         attempt: u64,
         request: &ServiceRequest,
+        access: &dyn PublishAccess,
         cutoff: Deadline,
     ) -> Result<rel::Transition> {
         if let Some(replay) = self
@@ -484,14 +437,16 @@ impl PublicationService {
             return Ok(replay);
         }
         let (c, subject, prepared) = self.context(id, cutoff).await?;
-        if self
+        let _pins = if self
             .releases
             .operation(&request.id, budget(cutoff))
             .await?
             .is_none()
         {
-            self.verify(&prepared, cutoff).await?;
-        }
+            self.verify(&prepared, cutoff).await?
+        } else {
+            Vec::new()
+        };
         let rel::RingState::Publication(p) = c.snapshot().ring_state(ring) else {
             return Err(Error::Conflict);
         };
@@ -503,26 +458,32 @@ impl PublicationService {
                 attempt,
             },
         );
-        self.authorize_request(&c, &subject, &r, cutoff).await
+        self.commit_publication(&c, &subject, &r, None, access, cutoff)
+            .await
     }
-    async fn authorize_request(
+    async fn commit_publication(
         &self,
         c: &rel::Candidate,
         subject: &Subject,
         r: &rel::Request,
+        enabling: Option<(
+            &resource::Version,
+            &[Box<dyn crate::catalog::VerifiedContent>],
+        )>,
+        access: &dyn PublishAccess,
         cutoff: Deadline,
     ) -> Result<rel::Transition> {
         let old = self.releases.operation(&r.id, budget(cutoff)).await?;
         let preview = c
             .transition(r.clone(), old.as_ref().and_then(|r| r.transition.as_ref()))
-            .map_err(|cause| Error::Conflict.context("service::authorize_request", cause))?;
+            .map_err(|cause| Error::Conflict.context("service::publish_request", cause))?;
         let rel::Transition::Applied {
             decision: rel::Decision::Publish(p),
             ..
         } = &preview
         else {
             return self
-                .transition_audited(c, subject, r, "software_authorize", cutoff)
+                .transition_audited(c, subject, r, "software_publish", access, cutoff)
                 .await;
         };
         let target = tokio::time::timeout_at(
@@ -530,19 +491,30 @@ impl PublicationService {
             self.prepare_target(subject, p, cutoff),
         )
         .await
-        .map_err(|cause| Error::Source.context("service::authorize_request", cause))??;
+        .map_err(|cause| Error::Source.context("service::publish_request", cause))??;
         settle(
             self.runtime
                 .local_tx_with_context(
                     self.tenant(),
                     budget(cutoff),
-                    (self, c, subject, r, &target),
-                    |(s, c, subject, r, target), tx| {
+                    (self, c, subject, r, &target, enabling, access),
+                    |(s, c, subject, r, target, enabling, access), tx| {
                         Box::pin(async move {
                             s.audit_store
                                 .lock_in(tx)
                                 .await
                                 .map_err(rss_transactional_messaging_postgres::PgError::from)?;
+                            let mut partitions =
+                                vec![s.releases.partition(c.snapshot().id.value())?];
+                            if let Some((version, _)) = enabling {
+                                partitions.push(input!(
+                                    s.catalog
+                                        .publication_partition(version)
+                                        .map_err(|_| Error::Content)
+                                ));
+                            }
+                            tx.prepare_outbox_partitions(&partitions).await?;
+                            let allow_draft = input!(access.check(tx).await);
                             input!(
                                 s.catalog
                                     .reader()
@@ -550,26 +522,22 @@ impl PublicationService {
                                     .await
                                     .map_err(|_| Error::Content)
                             );
-                            tx.prepare_outbox_partitions(&[s
-                                .releases
-                                .partition(c.snapshot().id.value())?])
-                                .await?;
                             if db::required(
-                                "authorize replay",
+                                "publish replay",
                                 s.releases.operation_in(tx, &r.id).await?,
                             )?
                             .is_some()
                             {
                                 let result = db::required(
-                                    "authorize replay",
+                                    "publish replay",
                                     s.releases.transition_in(tx, &c.snapshot().id, r).await?,
                                 )?;
                                 let fact = db::fact(
                                     tx.tenant_id(),
                                     &r.actor,
                                     &target.candidate,
-                                    "software_authorize",
-                                    db::transition_fact(r, "software_authorize"),
+                                    "software_publish",
+                                    db::transition_fact(r, "software_publish"),
                                     &db::request_fingerprint(&target.candidate, r)?,
                                 )?;
                                 s.audit_store
@@ -588,16 +556,49 @@ impl PublicationService {
                             if slot.operation.is_some() || slot.cursor != target.base {
                                 return Ok(Err(Error::Blocked));
                             }
-                            input!(s.exports().resource_usable(tx, subject).await?);
+                            if let Some((version, pins)) = enabling {
+                                input!(
+                                    s.catalog
+                                        .reader()
+                                        .publication_binding_in(tx, version, allow_draft)
+                                        .await
+                                        .map_err(|_| Error::Identity)
+                                );
+                                let pin = input!(
+                                    pins.iter()
+                                        .find(|p| p.resource_digest() == version.digest().bytes())
+                                        .ok_or(Error::Content)
+                                );
+                                let operation = input!(
+                                    uuid::Uuid::parse_str(r.id.value()).map_err(|_| Error::Input)
+                                );
+                                input!(
+                                    s.catalog
+                                        .enable_for_publication_in(
+                                            tx,
+                                            version,
+                                            pin.as_ref(),
+                                            r.actor.value(),
+                                            operation
+                                        )
+                                        .await
+                                        .map_err(|_| Error::Content)
+                                );
+                            }
+                            input!(
+                                s.exports()
+                                    .resource_usable(tx, subject, target.lifecycle)
+                                    .await?
+                            );
                             let current = input!(
                                 s.releases
                                     .lock_candidate_in(tx, &c.snapshot().id)
                                     .await?
                                     .map_err(|cause| Error::Conflict
-                                        .context("service::authorize_request", cause))
+                                        .context("service::publish_request", cause))
                             );
                             input!(current.transition((*r).clone(), None).map_err(|cause| {
-                                Error::Conflict.context("service::authorize_request", cause)
+                                Error::Conflict.context("service::publish_request", cause)
                             }));
                             let key = db::software_key(&c.snapshot().content)?;
                             if db::authority(tx, &key)
@@ -607,7 +608,7 @@ impl PublicationService {
                                 return Ok(Err(Error::Conflict));
                             }
                             let result = db::required(
-                                "service::authorize_request",
+                                "service::publish_request",
                                 s.releases.transition_in(tx, &c.snapshot().id, r).await?,
                             )?;
                             db::reserve(tx, target, &target.key()).await?;
@@ -616,8 +617,8 @@ impl PublicationService {
                                 tx.tenant_id(),
                                 &r.actor,
                                 &target.candidate,
-                                "software_authorize",
-                                db::transition_fact(r, "software_authorize"),
+                                "software_publish",
+                                db::transition_fact(r, "software_publish"),
                                 &db::request_fingerprint(&target.candidate, r)?,
                             )?;
                             s.audit_store
@@ -641,7 +642,7 @@ impl PublicationService {
         p: &rel::Publication,
         cutoff: Deadline,
     ) -> Result<Target> {
-        let ring = p.approval.validation.ring;
+        let ring = p.binding.validation.ring;
         let binding = self.sources.binding(ring);
         let slot = match &binding.driver {
             Driver::Winget { .. } => subject.coordinate.clone(),
@@ -661,8 +662,9 @@ impl PublicationService {
             return Err(Error::Blocked);
         }
         let mut target = Target {
+            lifecycle: p.binding.lifecycle.bytes(),
             format: 1,
-            candidate: p.approval.validation.candidate.value().into(),
+            candidate: p.binding.validation.candidate.value().into(),
             publication: p.id().digest().bytes(),
             attempt: p.attempt,
             ring: config::index(ring) as u8,
@@ -672,8 +674,8 @@ impl PublicationService {
             base: state.cursor,
             commit: None,
             snapshot: None,
-            at: p.authorized_at.unix_seconds(),
-            commit_at: p.authorized_at.unix_seconds(),
+            at: p.requested_at.unix_seconds(),
+            commit_at: p.requested_at.unix_seconds(),
         };
         if let Driver::Brew { repo, tap, .. } = &binding.driver {
             let ExportDocument::Brew { recipe } = &subject.document else {
@@ -700,7 +702,7 @@ impl PublicationService {
                     base,
                     recipe.documents(self.tenant(), tap)?,
                     &operation(&target),
-                    p.authorized_at,
+                    p.requested_at,
                 )
                 .await
                 .map_err(|cause| Error::Source.context("service::prepare_target", cause))?;
@@ -732,9 +734,7 @@ impl PublicationService {
             .await?
             .ok_or(Error::Conflict)?;
         let (actual, actual_ring, actor) = match &original.operation {
-            rel::Operation::Validate(v) => ("validate", v.ring, &r.actor),
-            rel::Operation::Approve { ring, .. } => ("approve", *ring, &r.actor),
-            rel::Operation::Authorize { ring, .. } => ("authorize", *ring, &r.actor),
+            rel::Operation::Publish { validation, .. } => ("publish", validation.ring, &r.actor),
             rel::Operation::Retry {
                 ring, attempt: a, ..
             } if Some(*a) == attempt => ("retry", *ring, &r.actor),
@@ -750,11 +750,7 @@ impl PublicationService {
         {
             return Err(Error::Conflict);
         }
-        let action = match kind {
-            "validate" => "software_validate",
-            "approve" => "software_approve",
-            _ => "software_authorize",
-        };
+        let action = "software_publish";
         let result = settle(
             self.runtime
                 .local_tx_with_context(
@@ -905,15 +901,22 @@ impl PublicationService {
         }
         Ok(seen.into_values().collect())
     }
-    pub(super) async fn verify(&self, p: &PreparedContent, cutoff: Deadline) -> Result<()> {
+    pub(super) async fn verify(
+        &self,
+        p: &PreparedContent,
+        cutoff: Deadline,
+    ) -> Result<Vec<Box<dyn crate::catalog::VerifiedContent>>> {
         tokio::time::timeout_at(cutoff.instant().into(), async {
+            let mut pins = Vec::new();
             for resource in &p.resources {
-                self.content
-                    .verify(resource)
-                    .await
-                    .map_err(|_| Error::Content)?;
+                pins.push(
+                    self.content
+                        .verify(resource)
+                        .await
+                        .map_err(|_| Error::Content)?,
+                );
             }
-            Ok(())
+            Ok(pins)
         })
         .await
         .map_err(|cause| Error::ArtifactTimeout.context("service::verify", cause))?
@@ -925,6 +928,7 @@ impl PublicationService {
         subject: &Subject,
         r: &rel::Request,
         action: &'static str,
+        access: &dyn PublishAccess,
         cutoff: Deadline,
     ) -> Result<rel::Transition> {
         settle(
@@ -932,13 +936,14 @@ impl PublicationService {
                 .local_tx_with_context(
                     self.tenant(),
                     budget(cutoff),
-                    (self, c, subject, r),
-                    move |(s, c, subject, r), tx| {
+                    (self, c, subject, r, access),
+                    move |(s, c, subject, r, access), tx| {
                         Box::pin(async move {
                             s.audit_store
                                 .lock_in(tx)
                                 .await
                                 .map_err(rss_transactional_messaging_postgres::PgError::from)?;
+                            input!(access.check(tx).await);
                             input!(
                                 s.catalog
                                     .reader()
@@ -956,7 +961,19 @@ impl PublicationService {
                             )?
                             .is_some();
                             if !replay {
-                                input!(s.exports().resource_usable(tx, subject).await?);
+                                let lifecycle = match &r.operation {
+                                    rel::Operation::Publish { lifecycle, .. } => lifecycle.bytes(),
+                                    rel::Operation::Retry { ring, .. } => {
+                                        match c.snapshot().ring_state(*ring) {
+                                            rel::RingState::Publication(p) => {
+                                                p.binding.lifecycle.bytes()
+                                            }
+                                            _ => return Ok(Err(Error::Conflict)),
+                                        }
+                                    }
+                                    _ => return Ok(Err(Error::Conflict)),
+                                };
+                                input!(s.exports().resource_usable(tx, subject, lifecycle).await?);
                             }
                             let result = input!(
                                 s.releases

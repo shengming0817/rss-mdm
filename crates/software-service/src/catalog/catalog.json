@@ -1,7 +1,7 @@
 {
   "columns": [
     [
-      "approvals",
+      "versions",
       "tenant_id",
       "uuid",
       true,
@@ -10,7 +10,7 @@
       ""
     ],
     [
-      "approvals",
+      "versions",
       "resource",
       "text",
       true,
@@ -19,7 +19,7 @@
       ""
     ],
     [
-      "approvals",
+      "versions",
       "version",
       "text",
       true,
@@ -28,8 +28,8 @@
       ""
     ],
     [
-      "approvals",
-      "admission",
+      "versions",
+      "lifecycle",
       "jsonb",
       true,
       null,
@@ -137,7 +137,7 @@
     ],
     [
       "sources",
-      "admission",
+      "lifecycle",
       "jsonb",
       true,
       null,
@@ -147,14 +147,14 @@
   ],
   "constraints": [
     [
-      "approvals",
+      "versions",
       "approvals_admission_check",
       "c",
-      "CHECK ((octet_length((admission)::text) <= 65536))",
+      "CHECK ((octet_length((lifecycle)::text) <= 65536))",
       true
     ],
     [
-      "approvals",
+      "versions",
       "approvals_pkey",
       "p",
       "PRIMARY KEY (tenant_id, resource, version)",
@@ -206,7 +206,7 @@
       "sources",
       "sources_admission_check",
       "c",
-      "CHECK ((octet_length((admission)::text) <= 65536))",
+      "CHECK ((octet_length((lifecycle)::text) <= 65536))",
       true
     ],
     [
@@ -226,9 +226,9 @@
   ],
   "indexes": [
     [
-      "approvals",
+      "versions",
       "approvals_pkey",
-      "CREATE UNIQUE INDEX approvals_pkey ON mdm_software.approvals USING btree (tenant_id, resource, version)",
+      "CREATE UNIQUE INDEX approvals_pkey ON mdm_software.versions USING btree (tenant_id, resource, version)",
       true,
       true,
       true

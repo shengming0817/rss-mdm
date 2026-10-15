@@ -9,7 +9,7 @@ async fn brew_immutable_tap_recovery_and_version_specific_withdrawal() {
     let service = server.service(runtime.clone(), config.clone()).await;
     let first = seed(runtime.clone(), &server, cask(&server, "app", "1")).await;
     service.create_candidate(&first, cutoff()).await.unwrap();
-    let p1 = authorize(&service, &first.candidate, rel::Ring::Test).await;
+    let p1 = submit_publication(&service, &first.candidate, rel::Ring::Test).await;
     sql(
         "CREATE FUNCTION public.reject_brew_result() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'fixture result failure'; END $$; CREATE TRIGGER reject_result BEFORE UPDATE ON mdm_software_release.aggregates FOR EACH ROW EXECUTE FUNCTION public.reject_brew_result();",
     );
@@ -30,11 +30,11 @@ async fn brew_immutable_tap_recovery_and_version_specific_withdrawal() {
     let old = git(&config, &["rev-parse", "refs/heads/main"]);
     let other = seed(runtime.clone(), &server, formula(&server)).await;
     service.create_candidate(&other, cutoff()).await.unwrap();
-    let p2 = authorize(&service, &other.candidate, rel::Ring::Test).await;
+    let p2 = submit_publication(&service, &other.candidate, rel::Ring::Test).await;
     service.publish(p2.id(), 1, at(10), cutoff()).await.unwrap();
     let second = seed(runtime.clone(), &server, cask(&server, "app", "2")).await;
     service.create_candidate(&second, cutoff()).await.unwrap();
-    let p3 = authorize(&service, &second.candidate, rel::Ring::Test).await;
+    let p3 = submit_publication(&service, &second.candidate, rel::Ring::Test).await;
     service.publish(p3.id(), 1, at(10), cutoff()).await.unwrap();
     let current = git(&config, &["rev-parse", "refs/heads/main"]);
     assert_eq!(
@@ -129,7 +129,7 @@ async fn attempted_publication_withdrawal_recovers_original_git_snapshot_after_r
     let service = server.service(runtime.clone(), config.clone()).await;
     let input = seed(runtime.clone(), &server, cask(&server, "app", "1")).await;
     service.create_candidate(&input, cutoff()).await.unwrap();
-    let p = authorize(&service, &input.candidate, rel::Ring::Test).await;
+    let p = submit_publication(&service, &input.candidate, rel::Ring::Test).await;
     sql(
         "CREATE FUNCTION public.reject_brew_result() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'fixture result failure'; END $$; CREATE TRIGGER reject_result BEFORE UPDATE ON mdm_software_release.aggregates FOR EACH ROW EXECUTE FUNCTION public.reject_brew_result();",
     );
@@ -197,14 +197,14 @@ async fn unknown_withdrawal_only_settles_absence_after_original_cas_is_fenced() 
     let service = server.service(runtime.clone(), config.clone()).await;
     let first = seed(runtime.clone(), &server, cask(&server, "app", "1")).await;
     service.create_candidate(&first, cutoff()).await.unwrap();
-    let initial = authorize(&service, &first.candidate, rel::Ring::Test).await;
+    let initial = submit_publication(&service, &first.candidate, rel::Ring::Test).await;
     service
         .publish(initial.id(), initial.attempt, at(10), cutoff())
         .await
         .unwrap();
     let second = seed(runtime.clone(), &server, cask(&server, "app", "2")).await;
     service.create_candidate(&second, cutoff()).await.unwrap();
-    let p = authorize(&service, &second.candidate, rel::Ring::Test).await;
+    let p = submit_publication(&service, &second.candidate, rel::Ring::Test).await;
     let SourceConfig::Brew(source) = &config.test else {
         panic!("Brew");
     };

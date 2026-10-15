@@ -283,19 +283,8 @@ pub fn id(s: &str) -> resource::Id {
 }
 pub fn request(c: &rel::Candidate) -> ServiceRequest {
     ServiceRequest {
-        actor: rel::ActorId::new(
-            tenant(),
-            if rel::Ring::ALL
-                .iter()
-                .any(|r| matches!(c.snapshot().ring_state(*r), rel::RingState::Validated(_)))
-            {
-                "approver"
-            } else {
-                "publisher"
-            },
-        )
-        .unwrap(),
-        id: rel::RequestId::new(tenant(), unique()).unwrap(),
+        actor: rel::ActorId::new(tenant(), "publisher").unwrap(),
+        id: rel::RequestId::new(tenant(), uuid::Uuid::new_v4().to_string()).unwrap(),
         expected_revision: c.snapshot().revision,
         as_of: at(10),
     }
@@ -565,32 +554,22 @@ pub async fn seed(
         as_of: at(1),
     }
 }
-pub async fn authorize(
+pub async fn submit_publication(
     service: &PublicationService,
     id: &rel::CandidateId,
     ring: rel::Ring,
 ) -> rel::Publication {
     let c = service.candidate(id, cutoff()).await.unwrap().unwrap();
-    service
-        .validate(id, ring, &request(&c), cutoff())
-        .await
-        .unwrap();
-    let c = service.candidate(id, cutoff()).await.unwrap().unwrap();
-    service
-        .approve(
-            id,
-            ring,
-            &rel::ActorId::new(tenant(), "publisher").unwrap(),
-            &request(&c),
-            cutoff(),
-        )
-        .await
-        .unwrap();
-    let c = service.candidate(id, cutoff()).await.unwrap().unwrap();
     let r = request(&c);
-    let result = service.authorize(id, ring, &r, cutoff()).await.unwrap();
+    let result = service
+        .submit(id, ring, &r, &TestPublishAccess, cutoff())
+        .await
+        .unwrap();
     assert!(matches!(
-        service.authorize(id, ring, &r, cutoff()).await.unwrap(),
+        service
+            .submit(id, ring, &r, &TestPublishAccess, cutoff())
+            .await
+            .unwrap(),
         rel::Transition::Replayed(_)
     ));
     let rel::Transition::Applied {
@@ -857,15 +836,7 @@ async fn admit_private_source(source: &str) -> resource::SoftwareSource {
         protocol: c::SourceProtocol::Private,
     };
     let snapshot = definition.snapshot().unwrap();
-    for (expected_revision, input) in [
-        (0, c::SourceChange::Register { definition }),
-        (
-            1,
-            c::SourceChange::Approve {
-                evidence: vec!["controlled fixture source".into()],
-            },
-        ),
-    ] {
+    for (expected_revision, input) in [(0, c::SourceChange::Register { definition })] {
         let request = rss_mdm_audit_integration::RequestAudit::new(
             tenant().to_string(),
             "software_source_write",
@@ -884,7 +855,7 @@ async fn admit_private_source(source: &str) -> resource::SoftwareSource {
                 |(catalog, request, op, source), tx| {
                     Box::pin(async move {
                         if let Ok(value) = catalog.reader().source_read_in(tx, source, "1").await
-                            && value["admission"]["state"] == "approved"
+                            && value["lifecycle"]["state"] == "enabled"
                         {
                             return Ok(Ok(()));
                         }
@@ -893,7 +864,7 @@ async fn admit_private_source(source: &str) -> resource::SoftwareSource {
                             .await
                             .map(|_| Ok(()))
                             .map_err(|_| {
-                                sqlx::Error::Protocol("fixture source approval".into()).into()
+                                sqlx::Error::Protocol("fixture source lifecycle".into()).into()
                             })
                     })
                 },
@@ -919,9 +890,7 @@ async fn admit_version(version: &resource::Version) {
     let op = c::Operation {
         operation_id: uuid::Uuid::new_v4(),
         expected_revision: 0,
-        input: c::VersionChange::Approve {
-            evidence: vec!["complete fixture bytes and definition".into()],
-        },
+        input: c::VersionChange::Enable,
     };
     let request = rss_mdm_audit_integration::RequestAudit::new(
         tenant().to_string(),
@@ -947,7 +916,7 @@ async fn admit_version(version: &resource::Version) {
                         .await
                         .map(|_| Ok(()))
                         .map_err(|_| {
-                            sqlx::Error::Protocol("fixture version approval".into()).into()
+                            sqlx::Error::Protocol("fixture version lifecycle".into()).into()
                         })
                 })
             },
@@ -974,9 +943,7 @@ pub async fn withdraw_version_admission(input: &CandidateInput) {
     let op = c::Operation {
         operation_id: uuid::Uuid::new_v4(),
         expected_revision: 1,
-        input: c::VersionChange::Withdraw {
-            evidence: vec!["fixture admission withdrawal".into()],
-        },
+        input: c::VersionChange::Withdraw,
     };
     runtime
         .local_tx_with_context(
@@ -1007,4 +974,20 @@ pub async fn withdraw_version_admission(input: &CandidateInput) {
         .unwrap();
     request.finalize(None);
     runtime.close().await;
+}
+
+pub struct TestPublishAccess;
+impl PublishAccess for TestPublishAccess {
+    fn check<'a, 'c>(
+        &'a self,
+        _tx: &'a mut rss_transactional_messaging_postgres::PgTransaction<'c>,
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<Output = rss_mdm_software_service::publication::Result<bool>>
+                + Send
+                + 'a,
+        >,
+    > {
+        Box::pin(async { Ok(true) })
+    }
 }

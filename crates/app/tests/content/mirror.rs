@@ -86,14 +86,7 @@ async fn mirror_matrix(
         tokio::time::timeout(Duration::from_secs(10), started.notified()).await?;
         let source_path = format!("/api/v1/software/sources/{}/revisions/1", server.logical);
         if revoke {
-            write(
-                user,
-                router,
-                &source_path,
-                2,
-                json!({"action":"withdraw","evidence":["revoked-during-download"]}),
-            )
-            .await?;
+            write(user, router, &source_path, 1, json!({"action":"disable"})).await?;
         } else {
             runtime.inject_next_transaction_fault(
                 rss_transactional_messaging_postgres::PgTransactionFault::CommitUnknownAfterAck,
@@ -105,14 +98,7 @@ async fn mirror_matrix(
             let persisted = pg(&format!(
                 "SELECT count(*) FROM mdm_content.bindings WHERE operation='{operation}'"
             ))?;
-            write(
-                user,
-                router,
-                &source_path,
-                3,
-                json!({"action":"approve","evidence":["source-restored"]}),
-            )
-            .await?;
+            write(user, router, &source_path, 3, json!({"action":"enable"})).await?;
             ensure!(
                 response.0 == StatusCode::FORBIDDEN && persisted.trim() == "0",
                 "withdrawn origin committed mirror: {response:?}, bindings={persisted}"

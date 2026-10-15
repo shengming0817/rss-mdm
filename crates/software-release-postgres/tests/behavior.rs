@@ -79,24 +79,9 @@ async fn authorize(s: &ReleaseStore, c: &mut r::Candidate) -> r::Publication {
         },
         verdict: r::Verdict::Passed,
     };
-    apply(s, c, "publisher", r::Operation::Validate(validation)).await;
-    apply(
-        s,
-        c,
-        "approver",
-        r::Operation::Approve {
-            ring: r::Ring::Test,
-            publisher: actor("publisher"),
-            policy: r::ActorPolicy::Separate,
-        },
-    )
-    .await;
-    let r::RingState::Approved(a) = &c.snapshot().rings[0] else {
-        panic!()
-    };
-    let op = r::Operation::Authorize {
-        ring: r::Ring::Test,
-        approval: a.digest(),
+    let op = r::Operation::Publish {
+        validation,
+        lifecycle: r::Digest::from_bytes([7; 32]),
     };
     let r::Decision::Publish(p) = apply(s, c, "publisher", op).await else {
         panic!()
@@ -105,7 +90,7 @@ async fn authorize(s: &ReleaseStore, c: &mut r::Candidate) -> r::Publication {
 }
 #[tokio::test]
 #[ignore = "real PostgreSQL: make t2 MODULE=software_release.persistence"]
-async fn release_approval_unknown_retry_history_and_late_results() {
+async fn release_publication_unknown_retry_history_and_late_results() {
     let runtime = runtime().await;
     let s = ReleaseStore::new(runtime.clone(), tenant(), deadline())
         .await
