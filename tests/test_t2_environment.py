@@ -35,6 +35,7 @@ class EnvironmentTests(unittest.TestCase):
                 self.assertEqual(env.port(), 5401)
             self.assertEqual(sum(c.args == ('port', 'postgres', '5432') for c in calls.call_args_list), 1)
             self.assertEqual(sum(c.args == ('ps', '-q', 'postgres') for c in calls.call_args_list), 1)
+            self.assertEqual(env.postgres_queries, dict(container=1, port=1))
             ownership.side_effect = RuntimeError('foreign')
             with self.assertRaisesRegex(RuntimeError, 'foreign'):
                 env.reset()
@@ -46,6 +47,7 @@ class EnvironmentTests(unittest.TestCase):
             generation[0] = 2
             env.up()
             self.assertEqual((env.container(), env.port()), ('container-2', 5402))
+            self.assertEqual(env.postgres_queries, dict(container=2, port=2))
 
     def test_worktree_identity_is_stable_and_distinct(self):
         with tempfile.TemporaryDirectory() as tmp:

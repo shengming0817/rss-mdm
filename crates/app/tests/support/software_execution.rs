@@ -3,7 +3,6 @@
     reason = "test scenarios retain distinct authorization, failure and recovery assertions"
 )]
 //! Real enterprise software Policy through Agent Offer, content, Start and detection.
-use crate::test_support::software::write;
 use crate::test_support::*;
 use sha2::{Digest, Sha256};
 
@@ -281,18 +280,36 @@ impl Fixture {
             .await
             .map_err(|e| anyhow::anyhow!("software fixture scope: {e:#}"))?;
         let source = Uuid::new_v4().to_string();
-        let source_path = format!("/api/v1/software/sources/{source}/revisions/1");
-        let registered=write(&mut author,&router,&source_path,0,json!({"action":"register","definition":{"id":source,"revision":"1","protocol":{"kind":"private"}}})).await?;
+        let tenant = rss_request_context::TenantId::parse(case_tenant())?;
+        let source_definition = rss_mdm_software_service::catalog::SourceDefinition {
+            id: source,
+            revision: "1".into(),
+            protocol: rss_mdm_software_service::catalog::SourceProtocol::Private,
+        };
+        let snapshot = planning
+            .runtime
+            .local_tx(tenant, crate::identity::deadline(), move |tx| {
+                Box::pin(async move {
+                    rss_mdm_software_service::catalog::fixture::source_in(tx, source_definition)
+                        .await
+                        .map_err(|e| {
+                            rss_transactional_messaging_postgres::PgError::from(
+                                sqlx::Error::Protocol(e.to_string()),
+                            )
+                        })
+                })
+            })
+            .await
+            .fold(
+                Ok,
+                |e| Err(anyhow::anyhow!(e)),
+                |e| Err(anyhow::anyhow!(e)),
+                |_| Err(anyhow::anyhow!("software source rollback unconfirmed")),
+                |_| Err(anyhow::anyhow!("software source commit unconfirmed")),
+                |e| Err(anyhow::anyhow!(e)),
+            )?;
+        let registered = json!({"snapshot": snapshot});
         let dependency = Uuid::new_v4();
-        let dependency_path = format!("/api/v1/resources/{dependency}");
-        write(
-            &mut author,
-            &router,
-            &dependency_path,
-            0,
-            json!({"action":"create","kind":"software"}),
-        )
-        .await?;
         let dependency_bytes = format!("controlled dependency package {dependency}").into_bytes();
         let dependency_digest: [u8; 32] = Sha256::digest(&dependency_bytes).into();
         let dependency_definition = json!({"source":registered["snapshot"],"package":"Private.Dependency","version":"1","artifacts":{"scripts/install.sh":{"reference":"dep-installer","length":dependency_bytes.len(),"sha256":dependency_digest}},"reboot":"report","downgrade":"deny","dependencies":[],"behavior":{"kind":"pkg","installer":"scripts/install.sh","scope":"system","install":{"runAs":"system","arguments":[],"environment":{},"timeoutSeconds":60,"outputBytes":4096,"exitCodes":{"success":[0],"reboot":[]}},"upgrade":"in_place","uninstall":null,"detect":{"kind":"pkg_receipt","receipt":"com.private.dependency","version":"1"},"upgradeInvocation":{"runAs":"system","arguments":[],"environment":{},"timeoutSeconds":60,"outputBytes":4096,"exitCodes":{"success":[0],"reboot":[]}}},"signatures":[],"provenance":{"kind":"private"},"export":{"kind":"disabled"}});
@@ -300,7 +317,18 @@ impl Fixture {
             format!("controlled windows dependency msi {dependency}").into_bytes();
         let windows_dependency_digest: [u8; 32] = Sha256::digest(&windows_dependency_bytes).into();
         let windows_dependency_definition = json!({"source":registered["snapshot"],"package":"Private.WindowsDependency","version":"1","artifacts":{"package":{"reference":"dep-win-installer","length":windows_dependency_bytes.len(),"sha256":windows_dependency_digest}},"reboot":"report","downgrade":"deny","dependencies":[],"behavior":{"kind":"msi","installer":"package","scope":"system","install":{"runAs":"system","arguments":[],"environment":{},"timeoutSeconds":60,"outputBytes":4096,"exitCodes":{"success":[0],"reboot":[]}},"upgrade":"in_place","uninstall":null,"detect":{"kind":"msi_product","productCode":"{AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE}","version":"1"},"upgradeInvocation":{"runAs":"system","arguments":[],"environment":{},"timeoutSeconds":60,"outputBytes":4096,"exitCodes":{"success":[0],"reboot":[]}}},"signatures":[],"provenance":{"kind":"private"},"export":{"kind":"disabled"}});
-        write(&mut author,&router,&dependency_path,1,json!({"action":"version","version":"v1","kind":"software","variants":[{"platform":platform_name,"architecture":architecture,"key":"default","declaration":{"kind":"software","definition":if platform == Platform::MacOs { dependency_definition } else { windows_dependency_definition }}}]})).await?;
+        let dependency_resource = seed_resource(
+            &planning,
+            dependency,
+            platform_name,
+            architecture,
+            if platform == Platform::MacOs {
+                dependency_definition
+            } else {
+                windows_dependency_definition
+            },
+        )
+        .await?;
         if platform == Platform::MacOs {
             let request=Request::builder().method(Method::POST).uri(format!("/api/v1/resources/{dependency}/content?version=v1&variant=default&platform=macos&architecture=aarch64&operation={}",Uuid::new_v4()))
         .header("host","mdm.example.test").header("origin","https://mdm.example.test").header("x-identity-request","1")
@@ -311,50 +339,37 @@ impl Fixture {
         } else {
             upload_windows(&author, &router, dependency, &windows_dependency_bytes).await?;
         }
-        write(
-            &mut author,
-            &router,
-            &dependency_path,
-            2,
-            json!({"action":"activate","version":"v1"}),
+        seed_enabled(
+            &planning,
+            execution
+                .content
+                .as_deref()
+                .ok_or_else(|| anyhow::anyhow!("software fixture requires content"))?,
+            &dependency_resource,
         )
         .await?;
-        write(
-            &mut author,
-            &router,
-            &format!("/api/v1/software/resources/{dependency}/versions/v1"),
-            0,
-            json!({"action":"enable"}),
-        )
-        .await?;
-        let dependency_version = author
-            .call(
-                &router,
-                Method::GET,
-                &format!("/api/v1/software/resources/{dependency}/versions/v1"),
-                None,
-            )
-            .await?;
-        ensure!(dependency_version.0 == StatusCode::OK);
+        let dependency_version = json!({"resourceDigest": dependency_resource.digest().bytes()});
         let resource = Uuid::new_v4();
-        let path = format!("/api/v1/resources/{resource}");
-        write(
-            &mut author,
-            &router,
-            &path,
-            0,
-            json!({"action":"create","kind":"software"}),
-        )
-        .await?;
         let bytes = format!("controlled software package {resource}").into_bytes();
         let digest: [u8; 32] = Sha256::digest(&bytes).into();
         let removal = format!("#!/bin/sh\n# {resource}\nexit 0\n").into_bytes();
         let removal_digest: [u8; 32] = Sha256::digest(&removal).into();
-        let definition = json!({"source":registered["snapshot"],"package":"Private.Controlled","version":"1","artifacts":{"package":{"reference":"installer","length":bytes.len(),"sha256":digest},"remove":{"reference":"remover","length":removal.len(),"sha256":removal_digest}},"reboot":"report","downgrade":"deny","dependencies":[{"resource":dependency,"version":"v1","sha256":dependency_version.1["resourceDigest"]}],"behavior":{"kind":"pkg","installer":"package","scope":"system","install":{"runAs":"system","arguments":[],"environment":{},"timeoutSeconds":60,"outputBytes":4096,"exitCodes":{"success":[0],"reboot":[]}},"upgrade":"in_place","uninstall":{"installer":"remove","invocation":{"runAs":"system","arguments":[],"environment":{},"timeoutSeconds":60,"outputBytes":4096,"exitCodes":{"success":[0],"reboot":[]}}},"detect":{"kind":"pkg_receipt","receipt":"com.private.controlled","version":"1"},"upgradeInvocation":{"runAs":"system","arguments":[],"environment":{},"timeoutSeconds":60,"outputBytes":4096,"exitCodes":{"success":[0],"reboot":[]}}},"signatures":[],"provenance":{"kind":"private"},"export":{"kind":"disabled"}});
+        let definition = json!({"source":registered["snapshot"],"package":"Private.Controlled","version":"1","artifacts":{"package":{"reference":"installer","length":bytes.len(),"sha256":digest},"remove":{"reference":"remover","length":removal.len(),"sha256":removal_digest}},"reboot":"report","downgrade":"deny","dependencies":[{"resource":dependency,"version":"v1","sha256":dependency_version["resourceDigest"]}],"behavior":{"kind":"pkg","installer":"package","scope":"system","install":{"runAs":"system","arguments":[],"environment":{},"timeoutSeconds":60,"outputBytes":4096,"exitCodes":{"success":[0],"reboot":[]}},"upgrade":"in_place","uninstall":{"installer":"remove","invocation":{"runAs":"system","arguments":[],"environment":{},"timeoutSeconds":60,"outputBytes":4096,"exitCodes":{"success":[0],"reboot":[]}}},"detect":{"kind":"pkg_receipt","receipt":"com.private.controlled","version":"1"},"upgradeInvocation":{"runAs":"system","arguments":[],"environment":{},"timeoutSeconds":60,"outputBytes":4096,"exitCodes":{"success":[0],"reboot":[]}}},"signatures":[],"provenance":{"kind":"private"},"export":{"kind":"disabled"}});
         let windows_bytes = format!("controlled windows root msi {resource}").into_bytes();
         let windows_digest: [u8; 32] = Sha256::digest(&windows_bytes).into();
-        let windows_definition = json!({"source":registered["snapshot"],"package":"Private.WindowsControlled","version":"1","artifacts":{"package":{"reference":"win-installer","length":windows_bytes.len(),"sha256":windows_digest}},"reboot":"report","downgrade":"deny","dependencies":[{"resource":dependency,"version":"v1","sha256":dependency_version.1["resourceDigest"]}],"behavior":{"kind":"msi","installer":"package","scope":"system","install":{"runAs":"system","arguments":[],"environment":{},"timeoutSeconds":60,"outputBytes":4096,"exitCodes":{"success":[0],"reboot":[]}},"upgrade":"in_place","uninstall":null,"detect":{"kind":"msi_product","productCode":"{BBBBBBBB-CCCC-DDDD-EEEE-FFFFFFFFFFFF}","version":"1"},"upgradeInvocation":{"runAs":"system","arguments":[],"environment":{},"timeoutSeconds":60,"outputBytes":4096,"exitCodes":{"success":[0],"reboot":[]}}},"signatures":[],"provenance":{"kind":"private"},"export":{"kind":"disabled"}});
-        write(&mut author,&router,&path,1,json!({"action":"version","version":"v1","kind":"software","variants":[{"platform":platform_name,"architecture":architecture,"key":"default","declaration":{"kind":"software","definition":if platform == Platform::MacOs { definition } else { windows_definition }}}]})).await?;
+        let windows_definition = json!({"source":registered["snapshot"],"package":"Private.WindowsControlled","version":"1","artifacts":{"package":{"reference":"win-installer","length":windows_bytes.len(),"sha256":windows_digest}},"reboot":"report","downgrade":"deny","dependencies":[{"resource":dependency,"version":"v1","sha256":dependency_version["resourceDigest"]}],"behavior":{"kind":"msi","installer":"package","scope":"system","install":{"runAs":"system","arguments":[],"environment":{},"timeoutSeconds":60,"outputBytes":4096,"exitCodes":{"success":[0],"reboot":[]}},"upgrade":"in_place","uninstall":null,"detect":{"kind":"msi_product","productCode":"{BBBBBBBB-CCCC-DDDD-EEEE-FFFFFFFFFFFF}","version":"1"},"upgradeInvocation":{"runAs":"system","arguments":[],"environment":{},"timeoutSeconds":60,"outputBytes":4096,"exitCodes":{"success":[0],"reboot":[]}}},"signatures":[],"provenance":{"kind":"private"},"export":{"kind":"disabled"}});
+        let root_resource = seed_resource(
+            &planning,
+            resource,
+            platform_name,
+            architecture,
+            if platform == Platform::MacOs {
+                definition
+            } else {
+                windows_definition
+            },
+        )
+        .await?;
         if platform == Platform::MacOs {
             let request=Request::builder().method(Method::POST).uri(format!("/api/v1/resources/{resource}/content?version=v1&variant=default&platform=macos&architecture=aarch64&operation={}",Uuid::new_v4()))
         .header("host","mdm.example.test").header("origin","https://mdm.example.test").header("x-identity-request","1")
@@ -371,27 +386,20 @@ impl Fixture {
         } else {
             upload_windows(&author, &router, resource, &windows_bytes).await?;
         }
-        write(
-            &mut author,
-            &router,
-            &path,
-            2,
-            json!({"action":"activate","version":"v1"}),
-        )
-        .await?;
-        write(
-            &mut author,
-            &router,
-            &format!("/api/v1/software/resources/{resource}/versions/v1"),
-            0,
-            json!({"action":"enable"}),
+        seed_enabled(
+            &planning,
+            execution
+                .content
+                .as_deref()
+                .ok_or_else(|| anyhow::anyhow!("software fixture requires content"))?,
+            &root_resource,
         )
         .await?;
 
         Ok(Self {
             source_snapshot: registered["snapshot"].clone(),
             dependency,
-            dependency_digest: dependency_version.1["resourceDigest"].clone(),
+            dependency_digest: dependency_version["resourceDigest"].clone(),
             base,
             queries: execution.queries,
             content: execution.content,
@@ -509,4 +517,87 @@ pub(crate) async fn ready_rollout(
     })
     .await
     .map_err(|_| anyhow::anyhow!("rollout statistics did not become ready for {policy}"))?
+}
+
+async fn seed_resource(
+    planning: &rss_mdm_flow_service::planning::Planning,
+    id: Uuid,
+    platform: &str,
+    architecture: &str,
+    definition: Value,
+) -> Result<rss_mdm_resource::Version> {
+    use rss_mdm_resource::{Declaration, Id, Kind, Variant, Version};
+    let tenant = rss_request_context::TenantId::parse(case_tenant())?;
+    let version = Version::new(
+        tenant,
+        Id::new(id.to_string())?,
+        Id::new("v1")?,
+        Kind::Software,
+        vec![Variant::new(
+            serde_json::from_value(json!(platform))?,
+            serde_json::from_value(json!(architecture))?,
+            Id::new("default")?,
+            Declaration::Software {
+                definition: serde_json::from_value(definition)?,
+            },
+        )],
+    )?;
+    let stored = version.clone();
+    planning
+        .runtime
+        .local_tx(tenant, crate::identity::deadline(), move |tx| {
+            Box::pin(async move {
+                rss_mdm_resource_postgres::fixture::active_version_in(
+                    tx,
+                    stored,
+                    rss_contract::Timepoint::try_from(1_i64).expect("fixture time"),
+                )
+                .await
+            })
+        })
+        .await
+        .fold(
+            Ok,
+            |e| Err(anyhow::anyhow!(e)),
+            |e| Err(anyhow::anyhow!(e)),
+            |_| Err(anyhow::anyhow!("software resource rollback unconfirmed")),
+            |_| Err(anyhow::anyhow!("software resource commit unconfirmed")),
+            |e| Err(anyhow::anyhow!(e)),
+        )?;
+    Ok(version)
+}
+async fn seed_enabled(
+    planning: &rss_mdm_flow_service::planning::Planning,
+    content: &rss_mdm_content_service::Store,
+    version: &rss_mdm_resource::Version,
+) -> Result<()> {
+    use rss_mdm_software_service::catalog::ContentPort;
+    let verified = content.verify(version).await?;
+    let version = version.clone();
+    planning
+        .runtime
+        .local_tx(version.tenant(), crate::identity::deadline(), move |tx| {
+            Box::pin(async move {
+                rss_mdm_software_service::catalog::fixture::enabled_in(
+                    tx,
+                    &version,
+                    verified.as_ref(),
+                )
+                .await
+                .map_err(|e| {
+                    rss_transactional_messaging_postgres::PgError::from(sqlx::Error::Protocol(
+                        e.to_string(),
+                    ))
+                })
+            })
+        })
+        .await
+        .fold(
+            Ok,
+            |e| Err(anyhow::anyhow!(e)),
+            |e| Err(anyhow::anyhow!(e)),
+            |_| Err(anyhow::anyhow!("software lifecycle rollback unconfirmed")),
+            |_| Err(anyhow::anyhow!("software lifecycle commit unconfirmed")),
+            |e| Err(anyhow::anyhow!(e)),
+        )
 }

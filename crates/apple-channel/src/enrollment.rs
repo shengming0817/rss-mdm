@@ -655,39 +655,62 @@ pub async fn progress_in(
     })
 }
 
-/// Prepare issued material for downstream integration tests using the current verifier and codec.
-/// The caller owns a tenant transaction and an already prepared enrollment attempt.
+/// Current Apple credentials for downstream integration consumers; no profile or SCEP operations.
 #[cfg(feature = "integration")]
-pub async fn seed_issued_leaf_in(
+pub struct CurrentPeer<'a> {
+    pub device: &'a str,
+    pub udid: &'a str,
+    pub csr: &'a [u8],
+    pub certificate: &'a [u8],
+    pub now: i64,
+}
+#[cfg(feature = "integration")]
+pub async fn seed_current_peer_in(
     c: &mut sqlx::PgConnection,
-    tenant: &str,
     apple: &Apple,
-    csr_bytes: &[u8],
-    certificate: &[u8],
-    now: i64,
+    proof: &rss_mdm_authorization_service::context::AuthorizedPrincipal,
+    seed: CurrentPeer<'_>,
 ) -> Result<(), Error> {
-    let current: Option<String> =
-        sqlx::query_scalar("SELECT nullif(current_setting('rss.tenant_id',true),'')")
-            .fetch_one(&mut *c)
-            .await
-            .map_err(db)?;
-    if current.as_deref() != Some(tenant) {
-        return Err(Error::Forbidden);
-    }
-    let csr = certificate::csr(csr_bytes)?;
-    let leaf = apple.authority.verify(&[certificate.into()], now)?;
+    let tenant = proof.tenant_id();
+    let csr = certificate::csr(seed.csr)?;
+    let leaf = apple
+        .authority
+        .verify(&[seed.certificate.into()], seed.now)?;
     if leaf.enrollment() != csr.enrollment()
         || leaf.attempt() != csr.attempt()
         || leaf.spki() != csr.spki()
     {
         return Err(Error::Malformed);
     }
-    let changed = sqlx::query("UPDATE mdm_apple.scep_attempts SET state='consumed',transaction_id=$4,csr_digest=$5,spki=$6 WHERE tenant_id=$1::uuid AND id=$2 AND enrollment=$3 AND state='prepared' AND configuration=$7 AND expires_at>clock_timestamp()")
-        .bind(tenant).bind(csr.attempt()).bind(csr.enrollment()).bind(Uuid::new_v4().to_string())
-        .bind(csr.digest().as_slice()).bind(csr.spki().as_slice()).bind(apple.configuration.as_slice())
-        .execute(&mut *c).await.map_err(db)?.rows_affected();
-    if changed != 1 {
+    let mount = rss_mdm_registration_service::ChannelMount::new(
+        rss_request_context::TenantId::parse(tenant).map_err(|_| Error::Malformed)?,
+        rss_mdm_inventory::ReportSource::MdmApple,
+        rss_mdm_registration_service::Purpose::Primary,
+    );
+    let credential = mount.credential(leaf.fingerprint())?;
+    let registration = Uuid::new_v4();
+    rss_mdm_registration_service::device::fixture::native_in(
+        c,
+        proof,
+        &credential,
+        rss_mdm_registration_service::device::fixture::NativeSeed {
+            device: seed.device,
+            request: csr.enrollment(),
+            ids: [registration, Uuid::new_v4(), Uuid::new_v4()],
+            windows_profile: None,
+        },
+    )
+    .await?;
+    let (issuer, scep_url, scep_provisioner) = apple.active_scep(c, tenant).await?;
+    if issuer != leaf.issuer() {
         return Err(Error::Conflict);
     }
-    persist_leaf(c, tenant, &leaf).await
+    sqlx::query("INSERT INTO mdm_apple.scep_attempts(tenant_id,id,enrollment,authorization_version,configuration,state,issuer,expires_at,access_rights,scep_url,scep_provisioner,transaction_id,csr_digest,spki,registration) VALUES($1::uuid,$2,$3,1,$4,'bound',$5,clock_timestamp()+interval '1 hour',$6,$7,$8,$9,$10,$11,$12)")
+        .bind(tenant).bind(csr.attempt()).bind(csr.enrollment()).bind(apple.configuration.as_slice()).bind(issuer)
+        .bind(apple.access_rights()).bind(scep_url).bind(scep_provisioner).bind(Uuid::new_v4().to_string())
+        .bind(csr.digest().as_slice()).bind(csr.spki().as_slice()).bind(registration).execute(&mut *c).await.map_err(db)?;
+    persist_leaf(c, tenant, &leaf).await?;
+    sqlx::query("INSERT INTO mdm_apple.devices(tenant_id,registration,udid,state,access_rights) VALUES($1::uuid,$2,$3,'pending_token',$4)")
+        .bind(tenant).bind(registration).bind(seed.udid).bind(apple.access_rights()).execute(c).await.map_err(db)?;
+    Ok(())
 }

@@ -53,6 +53,7 @@ class Environment:
         self.project = self.identity + '-' + group
         self.root = self.worktree / 'artifacts/dev-environment' / group
         self.postgres_endpoint = None
+        self.postgres_queries = dict(container=0, port=0)
 
     @contextlib.contextmanager
     def phase(self, name, **details):
@@ -195,6 +196,7 @@ class Environment:
     def container(self):
         if self.postgres_endpoint is not None:
             return self.postgres_endpoint[0]
+        self.postgres_queries['container'] += 1
         ident = self.compose('ps','-q','postgres')
         if not ident or '\n' in ident: raise RuntimeError('environment PostgreSQL is not running')
         return ident
@@ -206,6 +208,7 @@ class Environment:
     def port(self):
         if self.postgres_endpoint is not None:
             return self.postgres_endpoint[1]
+        self.postgres_queries['port'] += 1
         return int(self.compose('port','postgres','5432').rsplit(':',1)[1])
 
     def verify_ownership(self):

@@ -89,6 +89,9 @@ class RunFixtures:
                     environment.reset()
             except Exception as error:
                 errors.append(error)
+            finally:
+                self.costs.append(dict(phase='postgres-endpoint-queries', pg=environment.project,
+                                       queries=dict(environment.postgres_queries)))
         try:
             self.s3.reset()
         except Exception as error:

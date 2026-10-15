@@ -107,6 +107,8 @@ class PreparationTests(unittest.TestCase):
         fixture.fault.ready = False
         fixture.gateway_owner = Mock()
         fixture.gateway_owner.project = 'gateway'
+        for owner in (fixture.normal.owner, fixture.fault.owner, fixture.gateway_owner):
+            owner.postgres_queries = dict(container=0, port=0)
         fixture.builds.processes.cleanup.return_value = nullcontext()
         return fixture
 

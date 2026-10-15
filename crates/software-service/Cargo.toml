@@ -51,3 +51,6 @@ rss-mdm-audit-integration = { workspace = true, features = ["integration"] }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "net"] }
 anyhow.workspace = true
 rss-transactional-messaging-postgres = { workspace = true, features = ["integration"] }
+
+[features]
+integration = []

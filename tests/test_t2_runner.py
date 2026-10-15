@@ -76,6 +76,9 @@ class Execution(unittest.TestCase):
             builds.prepare_runtime.assert_not_called()
             fixture_type.assert_not_called()
             self.assertEqual(result['agent.registration']['reason'], 'list-only')
+            import json
+            run = json.loads(next(root.glob('*/run.json')).read_text())
+            self.assertEqual(set(run['buildSeconds']), {'discovery'})
 
     def test_missing_dependencies_fail_before_build_and_service_start(self):
         with self.harness() as (root, builds, fixture_type, _), patch.object(t2.shutil, 'which', return_value=None):
@@ -378,6 +381,8 @@ class Execution(unittest.TestCase):
             self.assertTrue(pending['invocationId'])
             costs = json.loads((directory / 'resources.json').read_text())
             self.assertEqual(costs['operations'][-1]['phase'], 'run-cleanup')
+            run = json.loads((directory / 'run.json').read_text())
+            self.assertEqual(set(run['buildSeconds']), {'discovery', 'runtime'})
 
     def test_cases_from_one_module_overlap(self):
         barrier = threading.Barrier(2)
@@ -453,6 +458,9 @@ with patch.object(t2, 'ROOT', Path(sys.argv[1])), patch.object(t2, 'require_leas
                     t2.main(['--module', 'agent.registration'])
             result = json.loads((root / 'artifacts/local-t2/result.json').read_text())
             self.assertEqual(result['execution'], failure)
+            self.assertRegex(result['sourceRevision'], r'^[a-f0-9]{40}$')
+            self.assertEqual(result['sourceState'], 'stable')
+            self.assertEqual(result['jobs'], 2)
 
     def test_changed_source_cannot_publish_success(self):
         import ci
