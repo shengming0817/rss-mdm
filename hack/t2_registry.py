@@ -919,7 +919,6 @@ for name, selector in AGENT_FIXTURE_CASES.items():
     MODULES[name] = replace(module, policies=tuple(policies), support_inputs=tuple(dict.fromkeys((*module.support_inputs, *AGENT_FIXTURE_INPUTS))))
 
 for name, module in tuple(MODULES.items()):
-    fixtures = set(module.fixtures).union(*(policy.fixtures or () for policy in module.policies))
     support = tuple(path for path in module.support_inputs if path != 'tests/support/software/*')
     if name in ('software.catalog','software.http','authorization.rules','content.http','content.mirror','content.gc','planning.resource_archive') or name.startswith('publication.'):
         support += ('tests/support/software/mod.rs',)
@@ -927,16 +926,6 @@ for name, module in tuple(MODULES.items()):
         support += ('tests/support/software/pg.rs',)
     if name == 'publication.recovery':
         support += ('tests/support/software/ack.rs',)
-    if 'windows' in fixtures:
-        support += ('hack/windows_fixtures.py',)
-    if 'apple' in fixtures:
-        support += ('hack/apple_fixtures.py',)
-    if fixtures & {'scep','oracle'}:
-        support += ('hack/fixture_tools.py','fixtures/apple-tools.lock.json')
-    if 'scep' in fixtures:
-        support += ('hack/apple_ca.py','deployment/compose.yaml')
-    if 'idp' in fixtures:
-        support += ('hack/enterprise_idp.py',)
     if name in ('apple.cms','apple.apns','native.tls'):
         support = tuple(path for path in support if not path.startswith('crates/app/tests/support/'))
     MODULES[name] = replace(module, support_inputs=support)
@@ -1074,7 +1063,7 @@ TOOL_INPUTS = {
     'hack/candidate_smoke.py': ('test_candidate_smoke',),
 }
 T1_INPUTS = (
-    'crates/app/tests/windows/unit.rs','fixtures/snapshot.json', 'crates/content-s3/tests/unit.rs', 'crates/inventory-service/tests/assets/unit.rs') + ('crates/app/tests/agent_pki/health.rs','crates/certificate/tests/agent.rs','crates/certificate/tests/apple.rs','crates/certificate-archive-service/tests/behavior.rs','crates/authorization-service/tests/unit.rs','crates/inventory-service/tests/runtime.rs','crates/software-service/tests/management/*') + tuple(f'crates/{name}/tests/*' for name in (
+    'crates/app/tests/windows/unit.rs','fixtures/snapshot.json', 'crates/content-s3/tests/unit.rs', 'crates/inventory-service/tests/assets/unit.rs') + ('crates/app/tests/agent_pki/health.rs','crates/certificate/tests/agent.rs','crates/certificate/tests/apple.rs','crates/certificate/tests/windows.rs','crates/certificate-archive-service/tests/behavior.rs','crates/authorization-service/tests/unit.rs','crates/inventory-service/tests/runtime.rs','crates/software-service/tests/management/*') + tuple(f'crates/{name}/tests/*' for name in (
     'inventory', 'group', 'scope', 'policy', 'resource', 'software-release',
     'compliance', 'agent-wire', 'windows-mdm', 'apple-mdm', 'content-service')) + (
     'crates/app/tests/agent/unit.rs',
@@ -1649,7 +1638,6 @@ for name, module in tuple(MODULES.items()):
         else policy for policy in module.policies)
     MODULES[name] = replace(module, scope=scope, policies=policies)
 
-consume(('deployment/windows-leaf.tpl',), ' '.join(name for name, module in MODULES.items() if 'windows' in module.fixtures))
 
 consume(('crates/app/src/enrollment_progress.rs',), 'enrollment.http windows.enrollment windows.management apple.scep apple.identity')
 consume(('crates/registration-service/schema/enrollment-progress.sql',), 'installation.migration catalog.contract enrollment.http windows.enrollment windows.management')
@@ -1837,3 +1825,21 @@ for suffix in ('console_pending_directory_and_permission_changes', 'console_dire
     else:
         policies[index] = policy
 MODULES[module.id] = replace(module, policies=tuple(policies))
+
+# Derive input consumers only after all module and case fixture declarations are complete.
+for name, module in tuple(MODULES.items()):
+    fixtures = set(module.fixtures).union(*(policy.fixtures or () for policy in module.policies))
+    support = module.support_inputs
+    if 'windows' in fixtures:
+        support += ('hack/windows_fixtures.py',)
+    if 'apple' in fixtures:
+        support += ('hack/apple_fixtures.py',)
+    if fixtures & {'scep','oracle'}:
+        support += ('hack/fixture_tools.py','fixtures/apple-tools.lock.json')
+    if 'scep' in fixtures:
+        support += ('hack/apple_ca.py','deployment/compose.yaml')
+    if 'idp' in fixtures:
+        support += ('hack/enterprise_idp.py',)
+    MODULES[name] = replace(module, support_inputs=tuple(dict.fromkeys(support)))
+    if 'windows' in fixtures:
+        consume(('deployment/windows-leaf.tpl',), name)

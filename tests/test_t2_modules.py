@@ -328,6 +328,17 @@ class ModuleImpactTests(unittest.TestCase):
         self.assertEqual(self.selected('crates/app/tests/support/agent.rs'),
                          {'agent.configurations','planning.self_service','agent.registration','agent.reports','execution.agent.poll','execution.agent.recovery','planning.onboarding','execution.commands.onboarding','execution.agent.delivery','execution.software.recovery','planning.agent_policy','execution.software.offer','execution.agent.history','assets.http','execution.agent.content','apple.onboarding','planning.software','planning.http','execution.software.content','planning.frequency','execution.commands.windows','software.http'})
 
+    def test_case_only_windows_inputs_select_directory_consumers(self):
+        for path in ('hack/windows_fixtures.py', 'deployment/windows-leaf.tpl'):
+            with self.subTest(path=path):
+                selected = self.selected(path)
+                self.assertIn('planning.http', selected)
+                self.assertNotIn('planning.self_service', selected)
+
+    def test_windows_csr_unit_input_does_not_select_t2(self):
+        selected = select_inputs(['crates/certificate/tests/windows.rs'])
+        self.assertEqual(selected.modules, ())
+
     def test_content_range_selects_real_download_consumers(self):
         self.assertEqual(self.selected('crates/content-service/src/range.rs'),
                          {'content.http', 'execution.agent.content', 'execution.software.content'})
