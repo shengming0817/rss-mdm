@@ -160,11 +160,17 @@ async fn field_scope_migration_rejects_hidden_state_and_restores_rls() -> Result
     owner
         .execute("SELECT set_config('rss.tenant_id','',false)")
         .await?;
+    let error = sqlx::raw_sql(rss_mdm_inventory_postgres::FIELD_SCOPES_SQL)
+        .execute(&mut owner)
+        .await
+        .expect_err("occupied legacy state must reject the field-scope migration");
+    let database_error = error
+        .as_database_error()
+        .expect("migration rejection must be a database error");
+    ensure!(database_error.code().as_deref() == Some("P0001"));
     ensure!(
-        sqlx::raw_sql(rss_mdm_inventory_postgres::FIELD_SCOPES_SQL)
-            .execute(&mut owner)
-            .await
-            .is_err()
+        database_error.message()
+            == "incompatible state in mdm.manual_assignments; matching fresh installation required"
     );
     owner.execute("ROLLBACK").await?;
     ensure!(
