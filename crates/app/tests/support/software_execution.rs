@@ -184,6 +184,7 @@ pub(crate) struct Fixture {
     pub(crate) author: Browser,
     pub(crate) resource: Uuid,
     pub(crate) scope: Uuid,
+    pub(crate) planning: Arc<rss_mdm_flow_service::planning::Planning>,
     pub(crate) dependency_bytes: Vec<u8>,
     pub(crate) bytes: Vec<u8>,
     pub(crate) removal: Vec<u8>,
@@ -214,7 +215,7 @@ impl Fixture {
         base: Value,
     ) -> Result<Self> {
         let setup_guard = super::software::content_setup_guard().await?;
-        let (router, execution, _) = crate::api::application_fixture(
+        let (router, execution, _, planning) = crate::api::application_fixture(
             serde_json::from_value(base.clone())?,
             Arc::new(crate::clock::SystemClock),
             monotonic(),
@@ -274,9 +275,9 @@ impl Fixture {
                 crate::test_support::credential("windows-software"),
             ),
         };
-        let (_,registration)=crate::test_support::agent::enroll_profile(&router,&mut author,&credential,json!({"capabilities":capabilities,"platform":platform_name,"architecture":architecture,"executionContext":execution_context})).await?;
+        let registration=crate::test_support::agent::seed_profile(&base,execution.service.clone(),&credential,_device,json!({"capabilities":capabilities,"platform":platform_name,"architecture":architecture,"executionContext":execution_context})).await?;
         let device = registration["deviceId"].as_str().unwrap();
-        let scope = prepared_scope(&base, &mut author, &router, &[device])
+        let scope = prepared_scope(&planning, &[device])
             .await
             .map_err(|e| anyhow::anyhow!("software fixture scope: {e:#}"))?;
         let source = Uuid::new_v4().to_string();
@@ -399,6 +400,7 @@ impl Fixture {
             author,
             resource,
             scope,
+            planning,
             dependency_bytes,
             bytes,
             removal,
@@ -408,35 +410,15 @@ impl Fixture {
     }
 }
 pub(crate) async fn prepared_scope(
-    base: &Value,
-    author: &mut Browser,
-    router: &Router,
+    planning: &rss_mdm_flow_service::planning::Planning,
     devices: &[&str],
 ) -> Result<Uuid> {
     let scope = Uuid::new_v4();
-    let automation = start_automation(base).await?;
     let targets = devices
         .iter()
         .map(|device| json!({"kind":"device","id":device}))
         .collect::<Vec<_>>();
-    let created = write(
-        author,
-        router,
-        &format!("/api/v1/scopes/{scope}"),
-        0,
-        json!({"action":"put","definition":{"targets":targets,"limitations":null,"exclusions":[]}}),
-    )
-    .await?;
-    await_task(
-        author,
-        router,
-        &format!(
-            "/api/v1/scopes/{scope}/tasks/{}",
-            created["task"].as_str().unwrap()
-        ),
-    )
-    .await?;
-    crate::test_support::stop_worker(automation).await?;
+    super::agent_execution::seed_scope(planning, scope, json!(targets)).await?;
     Ok(scope)
 }
 

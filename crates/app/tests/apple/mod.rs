@@ -784,7 +784,26 @@ impl Fixture {
         Ok(peer)
     }
     async fn ready_local_peer(&mut self) -> Result<(lifecycle::Peer, scep_client::Device)> {
-        let (device, der) = self.scep_leaf().await?;
+        let (enrollment, attempt, password) = self.enrollment().await?;
+        let device = scep_client::Device::new(enrollment, attempt, &password)?;
+        let der = device.local_leaf(&std::path::PathBuf::from(std::env::var(
+            "MDM_APPLE_PKI_FIXTURES",
+        )?))?;
+        let mut tx = self.app.access.archive_pool().begin().await?;
+        sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
+            .bind(case_tenant())
+            .execute(&mut *tx)
+            .await?;
+        rss_mdm_apple_channel::enrollment::seed_issued_leaf_in(
+            &mut tx,
+            case_tenant(),
+            &self.app.apple()?.channel,
+            &device.csr,
+            &der,
+            self.app.clock.unix_seconds()?,
+        )
+        .await?;
+        tx.commit().await?;
         let peer = self.authenticate_peer(&device, &der).await?;
         peer.token().await?;
         Ok((peer, device))

@@ -67,6 +67,7 @@ pub(crate) async fn application_fixture(
         Router,
         crate::execution_assembly::Assembly,
         Arc<rss_transactional_messaging_postgres::PgRuntime>,
+        Arc<rss_mdm_flow_service::planning::Planning>,
     ),
     Error,
 > {
@@ -141,6 +142,7 @@ pub(crate) async fn application_fixture(
         .await
         .map_err(|_| Error::Unavailable(crate::Failure::Database))?;
     let plan_runtime = planning.runtime.clone();
+    let fixture_planning = planning.planning.clone();
     let execution_service = execution.clone();
     let mut fixture_routers = from_compiled(
         compiled,
@@ -169,7 +171,12 @@ pub(crate) async fn application_fixture(
             fixture_routers.browser = fixture_routers.browser.merge(tls.router)
         }
     }
-    Ok((fixture_routers.browser, execution_service, plan_runtime))
+    Ok((
+        fixture_routers.browser,
+        execution_service,
+        plan_runtime,
+        fixture_planning,
+    ))
 }
 pub(crate) struct AssemblyDependencies {
     pub(crate) certificate_archive: Arc<rss_mdm_certificate_archive_service::Archive>,

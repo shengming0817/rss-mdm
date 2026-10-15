@@ -30,7 +30,7 @@ async fn discovery_wstep_replay_and_tls_identity() -> anyhow::Result<()> {
             == "127.0.0.1",
         "TLS requests lost the RSS-owned accepted peer"
     );
-    let peer = host.peer().await?;
+    let peer = host.enrolled_peer().await?;
     let token = peer
         .issue
         .header

@@ -720,7 +720,7 @@ async fn native_renewal_preserves_registration_and_activates_only_after_new_tls_
     use x509_cert::der::{EncodePem, pem::LineEnding};
     let mut host = Host::renewal_window().await?;
     host.listen().await?;
-    let peer = host.peer().await?;
+    let peer = host.enrolled_peer().await?;
     let ca = &host.app.windows()?.channel.ca;
     let certificate = sign_certificate(ca, &peer.intent).await?;
     let temporary = tempfile::tempdir()?;

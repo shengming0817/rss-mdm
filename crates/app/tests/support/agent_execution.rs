@@ -129,6 +129,7 @@ pub(crate) struct Fixture {
     pub(crate) execution: Arc<rss_mdm_execution_service::ExecutionService>,
     pub(crate) queries: Arc<rss_mdm_execution_service::queries::Queries>,
     pub(crate) content: Option<Arc<rss_mdm_content_service::Store>>,
+    pub(crate) planning: Arc<rss_mdm_flow_service::planning::Planning>,
     pub(crate) plan_runtime: Arc<rss_transactional_messaging_postgres::PgRuntime>,
     pub(crate) author: Browser,
     pub(crate) author_id: String,
@@ -151,7 +152,7 @@ impl Fixture {
         let key = ring::signature::Ed25519KeyPair::from_pkcs8(&std::fs::read(key_file)?).unwrap();
         // Store startup recovery and fixture uploads share the content directory.
         let content_setup = super::software::content_setup_guard().await?;
-        let (router, execution, plan_runtime) = crate::api::application_fixture(
+        let (router, execution, plan_runtime, planning) = crate::api::application_fixture(
             serde_json::from_value(base.clone())?,
             Arc::new(crate::clock::SystemClock),
             monotonic(),
@@ -215,6 +216,7 @@ impl Fixture {
             content: execution.content,
             execution: execution.service,
             plan_runtime,
+            planning,
             author,
             author_id,
             grants,
@@ -227,7 +229,8 @@ impl Fixture {
     }
     pub(crate) async fn register_profile(&mut self, capabilities: Value) -> Result<Value> {
         let old_device = case_device_id();
-        let (_,registration)=crate::test_support::agent::enroll_profile(&self.router,&mut self.author,case_credential(),json!({"capabilities":capabilities,"platform":"macos","architecture":"aarch64","executionContext":crate::test_support::software_execution::context(crate::test_support::software_execution::Platform::MacOs)})).await?;
+        let registration = crate::test_support::agent::seed_profile(&self.base, self.execution.clone(),
+            case_credential(), old_device, json!({"capabilities":capabilities,"platform":"macos","architecture":"aarch64","executionContext":crate::test_support::software_execution::context(crate::test_support::software_execution::Platform::MacOs)})).await?;
         for grant in &mut self.grants {
             if let crate::authorization::Scope::Device { id } = &mut grant.scope
                 && id == old_device
@@ -245,22 +248,7 @@ impl Fixture {
         Ok(registration)
     }
     pub(crate) async fn scope(&mut self, scope: Uuid, targets: Value) -> Result<()> {
-        let base = &self.base;
-        let router = &self.router;
-        let author = &mut self.author;
-        let setup_automation = start_automation(base).await?;
-        let created=post(author,router,&format!("/api/v1/scopes/{scope}"),json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"put","definition":{"targets":targets,"limitations":null,"exclusions":[]}}})).await?;
-        await_task(
-            author,
-            router,
-            &format!(
-                "/api/v1/scopes/{scope}/tasks/{}",
-                created["task"].as_str().unwrap()
-            ),
-        )
-        .await?;
-        crate::test_support::stop_worker(setup_automation).await?;
-        Ok(())
+        seed_scope(&self.planning, scope, targets).await
     }
     pub(crate) async fn resource(&mut self) -> Result<(Uuid, &'static [u8], Value)> {
         self.resource_with_output_limit(4096).await
@@ -286,24 +274,46 @@ impl Fixture {
             definition["parameters"] = json!({"type":"object","properties":{"name":{"type":"string","maxLength":32},"path":{"type":"string","maxLength":64,"enum":["/Applications","/Library"]}},"required":["name","path"],"additionalProperties":false});
             definition["bindings"] = json!({"name":{"kind":"positional","index":0},"path":{"kind":"environment","name":"RSS_PARAM_PATH"}});
         }
-        resource(
-            author,
-            router,
-            id,
-            0,
-            json!({"action":"create","kind":"script"}),
-        )
-        .await?;
-        resource(author,router,id,1,json!({"action":"version","version":"v1","kind":"script","variants":[{"platform":"macos","architecture":"aarch64","key":"default","declaration":{"kind":"script","artifact":{"reference":"fixture-script","length":bytes.len(),"sha256":digest},"definition":definition}}]})).await?;
+        use rss_mdm_resource::{
+            Architecture, Artifact, Declaration, Digest, Id, Kind, Platform, Variant, Version,
+        };
+        let tenant = rss_request_context::TenantId::parse(case_tenant())?;
+        let version = Version::new(
+            tenant,
+            Id::new(id.to_string())?,
+            Id::new("v1")?,
+            Kind::Script,
+            vec![Variant::new(
+                Platform::MacOS,
+                Architecture::Aarch64,
+                Id::new("default")?,
+                Declaration::Script {
+                    artifact: Artifact::new(
+                        Id::new("fixture-script")?,
+                        bytes.len() as u64,
+                        Digest::from_bytes(digest),
+                    )?,
+                    definition: serde_json::from_value(definition.clone())?,
+                },
+            )],
+        )?;
+        let at = rss_contract::Timepoint::try_from(1_i64)?;
+        self.plan_runtime
+            .local_tx(tenant, crate::identity::deadline(), move |tx| {
+                Box::pin(async move {
+                    rss_mdm_resource_postgres::fixture::active_version_in(tx, version, at).await
+                })
+            })
+            .await
+            .fold(
+                Ok,
+                |e| Err(anyhow::anyhow!(e)),
+                |e| Err(anyhow::anyhow!(e)),
+                |_| Err(anyhow::anyhow!("resource fixture rollback unconfirmed")),
+                |_| Err(anyhow::anyhow!("resource fixture commit unconfirmed")),
+                |e| Err(anyhow::anyhow!(e)),
+            )?;
         ensure!(upload(author, router, id, bytes).await? == StatusCode::CREATED);
-        resource(
-            author,
-            router,
-            id,
-            2,
-            json!({"action":"activate","version":"v1"}),
-        )
-        .await?;
         Ok((id, bytes, definition))
     }
 }
@@ -404,4 +414,41 @@ pub(crate) async fn historical_remote(f: &Fixture, task: &Value, parent: Uuid) -
     }
     c.close().await?;
     sign(task.clone())
+}
+
+pub(crate) async fn seed_scope(
+    planning: &rss_mdm_flow_service::planning::Planning,
+    scope: Uuid,
+    targets: Value,
+) -> Result<()> {
+    let definition =
+        serde_json::from_value(json!({"targets":targets,"limitations":null,"exclusions":[]}))?;
+    planning
+        .runtime
+        .local_tx_with_context(
+            planning.tenant,
+            crate::identity::deadline(),
+            planning,
+            |planning, tx| {
+                Box::pin(async move {
+                    planning
+                        .seed_scope_in(tx, scope, definition)
+                        .await
+                        .map_err(|error| {
+                            rss_transactional_messaging_postgres::PgError::from(
+                                sqlx::Error::Protocol(error.to_string()),
+                            )
+                        })
+                })
+            },
+        )
+        .await
+        .fold(
+            Ok,
+            |e| Err(anyhow::anyhow!(e)),
+            |e| Err(anyhow::anyhow!(e)),
+            |_| Err(anyhow::anyhow!("scope fixture rollback unconfirmed")),
+            |_| Err(anyhow::anyhow!("scope fixture commit unconfirmed")),
+            |e| Err(anyhow::anyhow!(e)),
+        )
 }

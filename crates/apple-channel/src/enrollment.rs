@@ -654,3 +654,40 @@ pub async fn progress_in(
         channel_ready: state.as_deref() == Some("active"),
     })
 }
+
+/// Prepare issued material for downstream integration tests using the current verifier and codec.
+/// The caller owns a tenant transaction and an already prepared enrollment attempt.
+#[cfg(feature = "integration")]
+pub async fn seed_issued_leaf_in(
+    c: &mut sqlx::PgConnection,
+    tenant: &str,
+    apple: &Apple,
+    csr_bytes: &[u8],
+    certificate: &[u8],
+    now: i64,
+) -> Result<(), Error> {
+    let current: Option<String> =
+        sqlx::query_scalar("SELECT nullif(current_setting('rss.tenant_id',true),'')")
+            .fetch_one(&mut *c)
+            .await
+            .map_err(db)?;
+    if current.as_deref() != Some(tenant) {
+        return Err(Error::Forbidden);
+    }
+    let csr = certificate::csr(csr_bytes)?;
+    let leaf = apple.authority.verify(&[certificate.into()], now)?;
+    if leaf.enrollment() != csr.enrollment()
+        || leaf.attempt() != csr.attempt()
+        || leaf.spki() != csr.spki()
+    {
+        return Err(Error::Malformed);
+    }
+    let changed = sqlx::query("UPDATE mdm_apple.scep_attempts SET state='consumed',transaction_id=$4,csr_digest=$5,spki=$6 WHERE tenant_id=$1::uuid AND id=$2 AND enrollment=$3 AND state='prepared' AND configuration=$7 AND expires_at>clock_timestamp()")
+        .bind(tenant).bind(csr.attempt()).bind(csr.enrollment()).bind(Uuid::new_v4().to_string())
+        .bind(csr.digest().as_slice()).bind(csr.spki().as_slice()).bind(apple.configuration.as_slice())
+        .execute(&mut *c).await.map_err(db)?.rows_affected();
+    if changed != 1 {
+        return Err(Error::Conflict);
+    }
+    persist_leaf(c, tenant, &leaf).await
+}

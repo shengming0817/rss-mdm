@@ -585,6 +585,7 @@ impl Host {
         self.peer_with_authority(
             rss_mdm_registration_service::enrollment::WindowsProfile::Device,
             true,
+            PeerPreparation::EnrollmentProtocol,
         )
         .await
     }
@@ -592,7 +593,16 @@ impl Host {
         &self,
         profile: rss_mdm_registration_service::enrollment::WindowsProfile,
     ) -> anyhow::Result<Peer> {
-        self.peer_with_authority(profile, false).await
+        self.peer_with_authority(profile, false, PeerPreparation::CurrentCredential)
+            .await
+    }
+    pub(crate) async fn enrolled_peer(&self) -> anyhow::Result<Peer> {
+        self.peer_with_authority(
+            rss_mdm_registration_service::enrollment::WindowsProfile::Device,
+            false,
+            PeerPreparation::EnrollmentProtocol,
+        )
+        .await
     }
     async fn enrollment_receipt(
         &self,
@@ -644,6 +654,7 @@ impl Host {
         &self,
         profile: rss_mdm_registration_service::enrollment::WindowsProfile,
         self_service: bool,
+        preparation: PeerPreparation,
     ) -> anyhow::Result<Peer> {
         use x509_cert::der::{EncodePem, pem::LineEnding};
         let root = &self.root;
@@ -694,23 +705,28 @@ impl Host {
             }
         }
         let wire = soap::encode(&issue, &CodecLimits::default())?;
-        let response = client
-            .post(&path)
-            .header("content-type", "application/soap+xml")
-            .body(wire.clone())
-            .send()
-            .await?;
-        ensure!(
-            response.status() == StatusCode::OK,
-            "WSTEP failed: {:?}",
-            response.status()
-        );
-        let first = response.bytes().await?;
-        let decoded = soap::decode_response(&issue, &first, &CodecLimits::default())?;
-        let Body::IssueResponse(result) = decoded.body else {
-            panic!()
+        let protocol_provisioning = if matches!(preparation, PeerPreparation::EnrollmentProtocol) {
+            let response = client
+                .post(&path)
+                .header("content-type", "application/soap+xml")
+                .body(wire.clone())
+                .send()
+                .await?;
+            ensure!(
+                response.status() == StatusCode::OK,
+                "WSTEP failed: {:?}",
+                response.status()
+            );
+            let decoded =
+                soap::decode_response(&issue, &response.bytes().await?, &CodecLimits::default())?;
+            let Body::IssueResponse(result) = decoded.body else {
+                anyhow::bail!("missing issuance response")
+            };
+            ensure!(String::from_utf8_lossy(&result.provisioning.0).contains("AAUTHLEVEL"));
+            Some(result.provisioning.0)
+        } else {
+            None
         };
-        ensure!(String::from_utf8_lossy(&result.provisioning.0).contains("AAUTHLEVEL"));
         let auth = crate::enrollment::store::enrollment_authorization(
             &store.registration(),
             case_tenant(),
@@ -739,6 +755,42 @@ impl Host {
         )
         .await?;
         let cert = sign_certificate(&app.windows()?.channel.ca, &intent).await?;
+        let provisioning = if let Some(provisioning) = protocol_provisioning {
+            provisioning
+        } else {
+            let audit = rss_mdm_audit_integration::RequestAudit::new(
+                case_tenant().into(),
+                "enrollment_issue",
+            );
+            audit.operation(auth.operation, "enrollment_issue");
+            proof.bind_audit(&audit)?;
+            let mount = crate::device::ChannelMount::new(
+                rss_request_context::TenantId::parse(case_tenant())?,
+                rss_mdm_inventory::ReportSource::MdmWindows,
+                rss_mdm_registration_service::Purpose::Primary,
+            );
+            issuance::complete_issuance(
+                &app.audit_store,
+                &app.windows()?.channel,
+                &auth,
+                &proof,
+                &intent,
+                &cert,
+                &audit,
+                now(),
+                &mount,
+                app.devices.retirement(),
+            )
+            .await?;
+            issuance::provision(
+                &app.windows()?.channel,
+                &intent,
+                &cert,
+                &auth,
+                case_tenant(),
+            )?
+        };
+
         let cert_pem = x509_cert::Certificate::from_der(&cert)?.to_pem(LineEnding::LF)?;
         let identity = reqwest::Identity::from_pem(
             &[
@@ -822,13 +874,17 @@ impl Host {
             issue,
             path,
             wire,
-            provisioning: result.provisioning.0,
+            provisioning,
             mutual,
             url,
             message,
             ack: followup,
         })
     }
+}
+enum PeerPreparation {
+    CurrentCredential,
+    EnrollmentProtocol,
 }
 pub(crate) struct Peer {
     profile: rss_mdm_registration_service::enrollment::WindowsProfile,

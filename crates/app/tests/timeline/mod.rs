@@ -18,7 +18,7 @@ impl Fixture {
     async fn open() -> Result<Self> {
         let authority = authority::Authority::open().await?;
         let config: Config = serde_json::from_value(authority.base.clone())?;
-        let (router, _, runtime) = crate::api::application_fixture(
+        let (router, _, runtime, _) = crate::api::application_fixture(
             config,
             Arc::new(crate::clock::SystemClock),
             monotonic(),

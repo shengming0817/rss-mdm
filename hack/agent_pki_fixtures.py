@@ -18,8 +18,6 @@ def prepare(root, configuration, password, *, configuration_devices=0, materials
     config = json.loads(configuration.read_text())
     ca_root, intermediate, key = Path(config['root'][0]), Path(config['crt']), Path(config['key'])
     root_key = configuration.parent.parent/'secrets/root_ca_key'
-    extensions = root/'agent-ca.ext'
-    extensions.write_text('basicConstraints=critical,CA:TRUE,pathlen:0\nkeyUsage=critical,keyCertSign,cRLSign\nsubjectKeyIdentifier=hash\nauthorityKeyIdentifier=keyid,issuer\n')
     if 'agent-long-lived' in materials:
         for certificate, signing_key, name in [(ca_root, root_key, 'root'), (intermediate, key, 'issuer')]:
             openssl('x509', '-x509toreq', '-in', certificate, '-signkey', signing_key,
@@ -61,17 +59,6 @@ def prepare(root, configuration, password, *, configuration_devices=0, materials
         openssl('pkcs8', '-topk8', '-nocrypt', '-in', root/('agent-csr-'+name+'.key'), '-outform', 'DER', '-out', root/(name+'.pk8'))
         (root/(name+'.pk8')).chmod(0o600)
 
-    if 'agent-subordinate' in materials:
-        # A same-DN subordinate is a valid WebPKI path under this direct issuer,
-        # but must never become another Agent signer through chain delegation.
-        openssl('genpkey', '-algorithm', 'RSA', '-pkeyopt', 'rsa_keygen_bits:2048', '-out', root/'agent-subordinate.key')
-        (root/'agent-subordinate.key').chmod(0o600)
-        openssl('x509', '-x509toreq', '-in', intermediate, '-signkey', root/'agent-subordinate.key', '-out', root/'agent-subordinate.csr')
-        openssl('x509', '-req', '-in', root/'agent-subordinate.csr', '-CA', intermediate, '-CAkey', key,
-                '-passin', 'file:'+str(password), '-days', '3651', '-set_serial', str(secrets.randbits(120)),
-                '-extfile', extensions, '-out', root/'agent-subordinate.crt')
-        openssl('pkcs8', '-topk8', '-nocrypt', '-in', root/'agent-subordinate.key', '-outform', 'DER', '-out', root/'agent-subordinate.pk8')
-        (root/'agent-subordinate.pk8').chmod(0o600)
 
 
 def install(root, cli, admin, origin, *, template_source=None):
