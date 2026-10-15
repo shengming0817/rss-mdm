@@ -15,11 +15,27 @@ make ci-full
 
 旧 `SUITE`、`SUITES`、`--suite` 和 `t2Suites` 已删除；不接受旧名称、别名或 fallback。`make ci` 始终只执行快速检查并推荐模块。`CI_FULL=1` 只扩大快速检查，显式 `MODULE=all` 或 CI 入口的 `CI_T2=all` 才选择全部 T2；`ci-full` 同时选择二者。CI 入口仅接受 `CI_T2=none|all`，非法值立即失败。
 
+## 从被测动作选择前置
+
+先按[验证规则的设计顺序](../rules/verification-scope.md#测试设计)明确风险、动作与层级，再选前置和隔离。以下是边界示例，不是永久用例名册；实际模块、依赖和当前可执行策略仍以 registry 与 runner 为准。
+
+| 被测动作 | 最小前置与必须保留的证明 |
+|---|---|
+| 普通查询、分页 | 用兼容 baseline 加最少可辨识记录，直接预置合法设备/资产，无需逐条注册或重跑发布流程。经过实际查询角色与接口，检查非空必需结果、分页内容及不可见的异租户哨兵。 |
+| 注册专项 | 准备合法租户、主体与必需凭据，走真实注册入口；核对凭据绑定、拒绝路径及落库/回执副作用。只有属于该流程的初始化或签发接缝才随之执行，不捎带其它业务矩阵。 |
+| CA 恢复 | 普通签名消费者复用正常可用 CA 与有效材料，保留真实签名验证；恢复专项显式准备冷备、触发提升/故障并验证恢复后的签发及信任连续性，不让所有消费者隐式跑恢复。 |
+| 事务 / RLS | 可用受控 SQL 预置合法行；被测动作使用实际运行角色、认证上下文与事务，核对原子提交/回滚和跨租户拒绝及无副作用。管理员造数不能替代最小权限断言，租户设置不能使超级用户受 RLS 约束。 |
+| 需求退出 | 根据已接受的产品退出决定，核对是否仍有公开兼容或存量消费承诺；清理失效用例与登记，只为仍有效风险保留证明，不为凑后继迁成等量 T1。当前模块删除的执行器限制见下节 affected 说明。 |
+
+前置中的租户容量、外键、状态/世代、凭据来源及签名字节必须满足真实消费者不变量。复用前核对兼容性；涉及权限修改、密钥轮换、精确消费或损坏材料时扩大必要隔离。辅助准备失败应直接暴露，不能靠绕过认证、RLS 或把目标动作预先执行完来缩短测试。
+
 ## 代码职责与复用
+
+下表概述当前能力归属，不规定固定用例数量或历史模块排列；完整模块集合和执行入口查询 registry。
 
 | 模块 | 测试职责与代码归属 |
 |---|---|
-| `installation.migration` | App 正式安装、重放、损坏账本拒绝和 CLI 并发安装；每项使用空库，删除重复双库排列。 |
+| `installation.migration` | App 正式安装、重放、损坏账本拒绝和 CLI 并发安装；安装使用空库。 |
 | `audit.{receipts,integrity,recovery,budget}` | App 通用 Audit 组合、Plain/Ledger、ACK、进程中断和预算；业务模块保留自己事务的原子性证明。 |
 | `identity.{local,sso,audit}` | 身份生命周期、联合登录、Identity outbox→Audit worker；不承载资产或任务矩阵。 |
 | `authorization.{rules,membership,capacity,initialization,admission}` | 规则与产品用户组、CAS/撤权、真实容量、初始化恢复和准入；路由权限交叉矩阵只在 rules 执行。 |
@@ -31,22 +47,22 @@ make ci-full
 | `assets.{http,queries,sources,group_input}` | 资产授权/事务、查询分页、来源质量、资产成为设备 Group 输入；不重复 Group 完整生命周期。 |
 | `group.{persistence,generations}`、`policy.{persistence,recovery}` | 原能力 PG targets 保留，验证各自持久化合同；模型真值表仍是 T1。 |
 | `planning.{assets,scope,group_scope,policy,recovery,http}` | 资产时钟与 Group/Scope 发布、引用竞争、assignment、worker 和真实 HTTP 接缝。 |
-| `planning.{agent_policy,frequency,remote}` | Agent 策略预览/发布、实际 occurrence、入离组触发、远程冻结目标、分页重启和取消；批量目标只准备合法设备前置。 |
+| `planning.{agent_policy,frequency,remote}` | Agent 策略预览/发布、实际 occurrence 与入离组触发；Remote 当前验证创建入口退出与存量历史结算，不再提供新建远程任务矩阵。 |
 | `compliance.{storage,http,evaluation,recovery,group_input}` | adapter 合同归 Compliance PG；App 负责真实授权、评估、原子发布和 Group applicability 接缝。 |
 | `execution.agent.{delivery,content,history,poll,recovery}` | Offer/Start/Result、内容许可、历史分页、取消队列公平性和执行恢复。 |
-| `execution.commands.{admission,dispatch,recovery,windows,firewall}` | 命令授权/事务、outbox/relay、恢复诊断、原生结果关联、防火墙配置；普通命令模块不启动 TLS listener。 |
-| `resource.{persistence,recovery}`、`software_release.{persistence,recovery}` | 原能力 PG targets 保留，各自验证不可变版本、引用/审批、CAS、回执与 ACK 恢复。 |
-| `software.{catalog,http}` | Catalog 借用事务和精确批准归 Software Service target；App 保留 DTO、授权及发布 HTTP 回执接缝。 |
+| `execution.commands.{admission,dispatch,recovery,windows,onboarding}` | 命令授权/事务、outbox/relay、恢复诊断、原生结果关联与 Agent onboarding；普通命令模块不启动 TLS listener。 |
+| `resource.{persistence,recovery}`、`software_release.{persistence,recovery}` | 原能力 PG targets 保留，各自验证不可变版本、引用、CAS、回执与 ACK 恢复。 |
+| `software.{catalog,http}` | Catalog 借用事务与版本状态归 Software Service target；App 保留 DTO、授权、直接启用与发布 HTTP 回执接缝，不保留已退出的软件审批流程要求。 |
 | `content.{http,mirror,gc}` | HTTP 流/Range/文件绑定、受控 HTTPS mirror、引用和 GC 同对象竞争；纯 ZIP/文件逻辑继续是 T1。 |
 | `planning.software`、`execution.software.{offer,content,recovery}` | rollout 时间/成功率门与执行版本归 Planning；安装/卸载交付、内容许可、检测、未知/重启/重试归 Execution。 |
 | `publication.{winget,brew,mapping,withdrawal,recovery,artifact}` | Software Service 验证自托管发布、ring、持久意图和未知结果恢复；artifact-only 不启动 PG。 |
 | `planning.resource_archive` | 产品引用和 Resource archive 的同对象竞争，保留 App owner。 |
 | `sources.{winget,brew_git,brew_recovery}` | Sources 自有真实 HTTPS/TLS/凭据及 Git/ref/ACK 协议，无产品 PG/Identity。 |
-| `native.tls`、`windows.{issuance,enrollment,management,commands,retention,limits}` | TLS 生命周期、签发/注册、会话/nonce、轻量注册→命令、保留期和限流；删除两条完整 native 矩阵。 |
+| `native.tls`、`windows.{issuance,enrollment,management,commands,retention,limits}` | TLS 生命周期、签发/注册、会话/nonce、轻量注册→命令、保留期和限流。 |
 | `apple.{cms,apns,scep,collection,profile,policy,renewal,identity,push,fairness,host,commands,users,ddm,status}` | 各协议与持久化接缝独立。CMS/APNs 无 PG/Identity；普通原生前置不启动外部 SCEP。 |
 | `catalog.contract`、`gateway.admission` | 正式迁移后的全部 SQL catalog 在一个环境核对；真实 nginx 来源/限流/安全头单独验证。 |
 
-App 的测试实现统一放在 `crates/app/tests/`，按业务 owner 分目录；`src/` 只保留 `cfg(test)` 接入和必要测试钩子。现有 Rust 命名空间与 MODULE ID 保持独立，不要求物理路径包含 `t2`。单叶目录压平，`assets.http` 合并文件但保留独立测试函数。
+App 的测试实现统一放在 `crates/app/tests/`，按业务 owner 分目录；`src/` 只保留 `cfg(test)` 接入和必要测试钩子。现有 Rust 命名空间与 MODULE ID 保持独立，不要求物理路径包含 `t2`。目录按当前 owner 维护，不由历史拆分方式决定测试保留数量。
 
 App 的 `tests/support` 仅在测试编译中可见，复用 Browser、真实身份与授权、合法设备与事实、已发布成员前置、只读审计查询和协议客户端。准备函数不运行另一模块的业务矩阵。Planning、InventoryRuntime 和 Assets 的专用准备代码归各自测试目录；仅实际跨 owner 消费的素材放公共 support。软件 artifact peer、definition 和 Git 素材单源位于 `tests/support/software`；组件测试不依赖 App，不为测试扩大生产公开 API。
 
@@ -55,6 +71,8 @@ Identity 用户组与设备 Group 各自归属。Assets 验证资产输入，Pla
 ## affected 与执行证据
 
 选择器对 merge-base、已提交差异、工作区修改、未跟踪和删除输入取并集。独立 T1 文件只贡献 Cargo 检查；独立 T2 文件只选择自身；helper 变化只选择实际消费者；生产变化按登记的输入与消费接缝选择。模块被选中不会继续递归扩大。登记描述与选择机制分离，基线完整版本树仅导出描述，不运行历史 selector；执行描述和业务输入变化选模块，依赖归属注释等机制变化由工具行为测试证明，实际依赖变化合并旧新消费者。混合职责的生产文件按整个文件选择，不做 Rust 语义 diff。发现、调度、日志和汇总由工具测试持有；真实执行、隔离或故障变化在同一 registry 的 `REPRESENTATIVE_INPUTS` 声明最小现有模块集合，共享 fixture/profile 输入按真实消费者选择。可识别 rename/copy 合并两端输入。未知输入、不可用基线、异常或非法选择结果必须失败，由实现者修复归属或分析问题；不通过隐式全量、静默跳过或手工 MODULE 掩盖。
+
+模块职责迁移时，当前 registry 用 `replaces` 登记后继，选择器输出 `removedModules` 并选择后继证明。需求退出不应制造替代测试，但当前 `hack/ci_impact.py` 对所有模块删除仍要求后继；#2756 承接选择语义调整。在实现支持前如实报告此失败，不伪造 `replaces`、静默跳过或声称退出已获验证。准备依赖只提供环境和合法状态，不递归运行前置流程的完整验收。
 
 Cargo 反向依赖决定编译/Clippy/T1/rustdoc 范围，T2 不继承整个 Cargo 闭包。成功输出包含 `status=selected`、`cargo.mode/packages`、`t2.mode/modules`、`toolTests`、`reasons` 和 `removedModules`；失败输出为 `status=failed` 与 `error`，进程非零退出。Resource `behavior.rs` 只选 `resource.persistence`；Content T1 和 Scope 模型测试不推荐 T2；Content Range 生产输入选择 HTTP 和两类 Agent task-content 消费接缝。相应 must-select/must-not-select 由工具行为测试固定。
 
@@ -69,7 +87,9 @@ Cargo 反向依赖决定编译/Clippy/T1/rustdoc 范围，T2 不继承整个 Car
 
 模块默认策略与少量 case 例外一起解析；过期例外、重叠策略、非法生命周期和冲突的消费者归属在服务启动前失败。`LIST=1` 输出发现的完整测试 ID 和实际策略。
 
-安装只建立稳定身份，准备环境随后通过正式 CLI 登记本轮租户集合，遵守产品 1024 租户上限；Rust 测试必须消费 `MDM_CASE_CONTEXT`，不回退到固定租户。重复调用保留数据库；对象范围用例继续共享同一租户，全租户观察用例的每次独立调用预登记专用租户。每次调用使用独立对象命名空间、账户及会话。稳定 bootstrap、身份初始化、账户、内容仓和签名材料在兼容环境内准备一次；会话在各用例进入执行前签发，避免整批排队消耗产品会话时限。修改权限、密码或会话的测试只操作自己的主体。上传前置通过共享内容目录中的测试专属文件锁协调，正文带资源身份以隔离后续读取；业务用例直接调用 API 的并发竞争不受该准备锁影响。
+准备数据按前述设计流程选择最小合法状态；不要求全体租户经正式 CLI 或每次固定创建独立账户/会话。对象命名空间、主体和租户隔离由读写范围决定；修改权限、密码或会话的测试只操作自己的主体。稳定 bootstrap、身份、内容仓及签名材料在兼容环境内复用，会话按有效期与场景需要签发。上传前置使用现有共享内容目录中的测试专属文件锁协调，正文带资源身份以隔离读取；业务 API 的并发竞争不受准备锁影响。
+
+**当前执行器边界**：现有准备仍通过正式 CLI 登记本轮租户集合，受产品租户容量约束；Rust 测试消费 `MDM_CASE_CONTEXT`，不回退到固定租户。当前 context 按调用分配对象/主体，全租户观察分配专用租户，身份 fixture 准备账户并在执行前签发会话。这些是现有实现的操作事实，不是新增用例必须复制的设计要求；最小预置与按需准备的实现收敛由 #2754/#2755 承接，本文不宣布其完成。
 
 普通后台任务由现有 `rss-mdm serve` 持有，测试等待自己对象的结果；对象范围的公共宿主存活至运行结束。需要精确 claim、故障注入或停启时机的组件测试持有专用租户与本地消费者。测试不得停止公共 worker，不得跨域修改数据或文件。管理员 SQL 必须显式限定归属；租户设置不能使超级用户受 RLS 约束。负面授权测试继续保留跨租户哨兵和副作用检查。
 
