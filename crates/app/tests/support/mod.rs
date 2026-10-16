@@ -613,8 +613,8 @@ pub(crate) mod agent_http;
 #[must_use = "fixture resources must be explicitly shut down"]
 pub(crate) struct Resources(pub(super) Vec<Box<rss_runtime::DynManagedResource<'static>>>);
 impl Resources {
-    pub(crate) fn extend(&mut self, other: Self) {
-        self.0.extend(other.0);
+    pub(crate) fn extend(&mut self, mut other: Self) {
+        self.0.append(&mut other.0);
     }
     pub(crate) fn acquire(&mut self, resource: Box<rss_runtime::DynManagedResource<'static>>) {
         self.0.push(resource);
@@ -622,26 +622,84 @@ impl Resources {
     pub(crate) fn resource(&mut self, resource: impl rss_runtime::ManagedResource + 'static) {
         self.acquire(rss_runtime::DynManagedResource::new_box(resource));
     }
-    pub(crate) async fn finish<T>(
-        self,
-        operation: impl std::future::Future<Output = Result<T>>,
-    ) -> Result<T> {
+    pub(crate) async fn build<T>(
+        initialize: impl for<'a> FnOnce(&'a mut Self) -> futures::future::BoxFuture<'a, Result<T>>,
+    ) -> Result<(Self, T)> {
         use futures::FutureExt;
-        let result = std::panic::AssertUnwindSafe(operation).catch_unwind().await;
+        let mut resources = Self::default();
+        let result = std::panic::AssertUnwindSafe(async { initialize(&mut resources).await })
+            .catch_unwind()
+            .await;
+        match result {
+            Ok(Ok(value)) => Ok((resources, value)),
+            failure => resources
+                .settle(failure)
+                .await
+                .map(|value| (Self::default(), value)),
+        }
+    }
+
+    fn take_owner(&mut self) -> Result<rss_runtime::ShutdownStack> {
         let mut owner = rss_runtime::ShutdownStack::try_new(
             rss_runtime::TotalDrainBudget::new(Duration::from_secs(40))?,
             Arc::new(crate::lifecycle::RuntimeTimer),
         )?;
         let mut startup = owner.startup()?;
-        for resource in self.0 {
+        for resource in std::mem::take(&mut self.0) {
             startup.stage_resource(resource);
         }
         startup.commit().finish();
-        let shutdown = owner.shutdown().join().await?;
-        ensure!(shutdown.is_clean(), "fixture resource shutdown incomplete");
+        Ok(owner)
+    }
+
+    pub(crate) async fn finish<T>(
+        self,
+        operation: impl std::future::Future<Output = Result<T>>,
+    ) -> Result<T> {
+        use futures::FutureExt;
+        self.settle(std::panic::AssertUnwindSafe(operation).catch_unwind().await)
+            .await
+    }
+
+    async fn settle<T>(mut self, result: std::thread::Result<Result<T>>) -> Result<T> {
+        let cleanup = async {
+            let receipt = self.take_owner()?.shutdown().join().await?;
+            ensure!(
+                receipt.is_clean(),
+                "fixture resource shutdown incomplete: {receipt:?}"
+            );
+            Ok::<_, anyhow::Error>(())
+        }
+        .await;
         match result {
-            Ok(result) => result,
-            Err(panic) => std::panic::resume_unwind(panic),
+            Ok(Ok(value)) => {
+                cleanup?;
+                Ok(value)
+            }
+            Ok(Err(error)) => match cleanup {
+                Ok(()) => Err(error),
+                Err(cleanup) => {
+                    Err(error.context(format!("fixture cleanup also failed: {cleanup:#}")))
+                }
+            },
+            Err(panic) => {
+                if let Err(error) = cleanup {
+                    eprintln!("fixture cleanup failed after panic: {error:#}");
+                }
+                std::panic::resume_unwind(panic)
+            }
+        }
+    }
+}
+
+impl Drop for Resources {
+    fn drop(&mut self) {
+        if self.0.is_empty() {
+            return;
+        }
+        // Cancellation cannot await: hand the same resources to RSS's existing drop drain.
+        if let Err(error) = self.take_owner() {
+            eprintln!("fixture resource drop cleanup unavailable: {error:#}");
         }
     }
 }
@@ -660,34 +718,79 @@ impl rss_runtime::ManagedResource for InventoryFixtureResource {
 }
 
 #[tokio::test]
-async fn fixture_resources_close_after_error_and_panic() {
+async fn fixture_resources_preserve_failures_and_close_during_initialization() {
     use futures::FutureExt;
     use std::sync::atomic::{AtomicUsize, Ordering};
-    struct Resource(Arc<AtomicUsize>);
+    struct Resource(Arc<AtomicUsize>, bool);
     impl rss_runtime::ManagedResource for Resource {
         fn name(&self) -> &str {
             "fixture-cleanup-probe"
         }
         async fn shutdown(&self) -> std::result::Result<(), rss_runtime::ShutdownError> {
             self.0.fetch_add(1, Ordering::SeqCst);
+            if self.1 {
+                return Err(rss_runtime::ShutdownError::new(std::io::Error::other(
+                    "injected cleanup failure",
+                )));
+            }
             Ok(())
         }
     }
     let closed = Arc::new(AtomicUsize::new(0));
+    for cleanup_failure in [false, true] {
+        for panic in [false, true] {
+            let mut resources = Resources::default();
+            resources.resource(Resource(closed.clone(), cleanup_failure));
+            let outcome = std::panic::AssertUnwindSafe(resources.finish::<()>(async {
+                assert!(!panic, "test fixture assertion failure");
+                anyhow::bail!("test fixture operation failure")
+            }))
+            .catch_unwind()
+            .await;
+            if panic {
+                let payload = outcome.expect_err("original panic must survive cleanup");
+                assert_eq!(
+                    payload.downcast_ref::<&str>(),
+                    Some(&"test fixture assertion failure")
+                );
+            } else {
+                let error = outcome
+                    .expect("operation returns an error")
+                    .expect_err("operation failed");
+                assert!(format!("{error:#}").contains("test fixture operation failure"));
+                if cleanup_failure {
+                    assert!(format!("{error:#}").contains("fixture-cleanup-probe"));
+                }
+            }
+        }
+    }
+    assert_eq!(closed.load(Ordering::SeqCst), 4);
     for panic in [false, true] {
-        let mut resources = Resources::default();
-        resources.resource(Resource(closed.clone()));
-        let outcome = std::panic::AssertUnwindSafe(resources.finish::<()>(async {
-            assert!(!panic, "test fixture assertion failure");
-            anyhow::bail!("test fixture operation failure")
+        let count = closed.clone();
+        let outcome = std::panic::AssertUnwindSafe(Resources::build::<()>(move |resources| {
+            Box::pin(async move {
+                resources.resource(Resource(count, false));
+                assert!(!panic, "injected initialization panic");
+                anyhow::bail!("injected initialization failure")
+            })
         }))
         .catch_unwind()
         .await;
-        if panic {
-            assert!(outcome.is_err());
+        assert!(if panic {
+            outcome.is_err()
         } else {
-            assert!(outcome.unwrap().is_err());
-        }
+            outcome.unwrap().is_err()
+        });
     }
-    assert_eq!(closed.load(Ordering::SeqCst), 2);
+    assert_eq!(closed.load(Ordering::SeqCst), 6);
+    let mut resources = Resources::default();
+    resources.resource(Resource(closed.clone(), false));
+    drop(resources);
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while closed.load(Ordering::SeqCst) != 7 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("RSS drop drain closes the abandoned fixture");
 }

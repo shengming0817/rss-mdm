@@ -430,7 +430,7 @@ async fn script_preparation_is_shared_without_preview_effects() -> Result<()> {
     use sha2::{Digest, Sha256};
     let mut fixture = Fixture::new().await?;
     let resources = std::mem::take(&mut fixture.resources);
-    let result = async {
+    resources.finish(async {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
     let address = listener.local_addr()?;
     let _server =
@@ -537,8 +537,7 @@ async fn script_preparation_is_shared_without_preview_effects() -> Result<()> {
     );
     Ok(())
     }).await
-    }.await;
-    resources.finish(async { result }).await
+    }).await
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]

@@ -259,11 +259,16 @@ async fn verify(router: &Router, admin: &mut Browser, member: &mut Browser) -> R
 #[ignore = "MODULE=authorization.capacity: real authorization contract"]
 async fn sql_capacity_membership_pagination_and_atomicity() -> Result<()> {
     let Fixture {
+        resources,
         router,
         mut admin,
         mut member,
         ..
     } = fixture().await?;
-    verify(&router, &mut admin, &mut member).await?;
-    Ok(())
+    resources
+        .finish(async {
+            verify(&router, &mut admin, &mut member).await?;
+            Ok(())
+        })
+        .await
 }

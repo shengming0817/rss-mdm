@@ -4,11 +4,13 @@ use super::*;
 #[ignore = "MODULE=authorization.initialization: real authorization contract"]
 async fn initialization_receipt_atomicity_and_recovery() -> Result<()> {
     let Fixture {
+        resources,
         base,
         subject,
         audit_store,
         ..
     } = fixture().await?;
+    resources.finish(async {
     crate::authorization::store::initialize_authorization(
         &audit_store,
         crate::test_support::identity::user(case_tenant(), case_admin()),
@@ -120,6 +122,7 @@ async fn initialization_receipt_atomicity_and_recovery() -> Result<()> {
     );
 
     Ok(())
+    }).await
 }
 
 #[tokio::test]

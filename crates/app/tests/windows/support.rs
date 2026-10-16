@@ -198,6 +198,9 @@ impl Host {
             bool,
         )>,
     ) -> anyhow::Result<Self> {
+        let ca = ca.map(str::to_owned);
+        let (resources, mut fixture) = crate::test_support::Resources::build(move |resources| Box::pin(async move {
+        let ca = ca.as_deref();
         let root = root()?;
         let enroll =
             tokio::net::TcpListener::bind(addresses.map(|a| a.0).unwrap_or("127.0.0.1:0".parse()?))
@@ -281,7 +284,6 @@ impl Host {
                 crate::test_support::identity::INSTANCE,
             )?,
         );
-        let mut resources = crate::test_support::Resources::default();
         let identity =
             crate::identity::Identity::connect(&config, identity_management.clone(), |resource| {
                 resources.acquire(resource)
@@ -293,6 +295,7 @@ impl Host {
             secret.expose().into(),
         )?)?;
         let store = Arc::new(Database::connect(options("mdm_access")?).await?);
+        resources.resource(crate::lifecycle::AccessResource(store.clone()));
         let devices = Arc::new(crate::device::DeviceService::new(
             store.registration(),
             case_tenant().into(),
@@ -310,8 +313,9 @@ impl Host {
                 .await?,
         )
         .await?;
+        resources.resource(crate::test_support::InventoryFixtureResource(runtime.clone()));
         let (management, timeline) =
-            management(&config, &store, runtime.clone(), &mut resources).await?;
+            management(&config, &store, runtime.clone(), resources).await?;
         let command_audit = store
             .audit_store(&crate::config::AuditConfig::Plain)
             .await?;
@@ -460,7 +464,7 @@ impl Host {
             .timeout(Duration::from_secs(12))
             .build()?;
         Ok(Self {
-            resources,
+            resources: Default::default(),
             root,
             app,
             command_audit,
@@ -482,6 +486,10 @@ impl Host {
             additional_manage,
             running: None,
         })
+
+        })).await?;
+        fixture.resources = resources;
+        Ok(fixture)
     }
     pub(crate) async fn listen(&mut self) -> anyhow::Result<()> {
         let (_, management) = self.listeners.remove(1);
@@ -586,13 +594,15 @@ impl Host {
         Ok(next)
     }
     pub(crate) async fn close(mut self) -> anyhow::Result<()> {
-        if let Some(owner) = self.running.take() {
-            ensure!(owner.shutdown().join().await?.is_clean());
-        }
-        self.resources.finish(async { Ok(()) }).await?;
-        self.runtime.close_fixture().await?;
-        self.store.close().await;
-        Ok(())
+        let resources = std::mem::take(&mut self.resources);
+        resources
+            .finish(async {
+                if let Some(owner) = self.running.take() {
+                    ensure!(owner.shutdown().join().await?.is_clean());
+                }
+                Ok(())
+            })
+            .await
     }
     pub(crate) async fn peer(&self) -> anyhow::Result<Peer> {
         self.peer_profile(rss_mdm_registration_service::enrollment::WindowsProfile::Device)

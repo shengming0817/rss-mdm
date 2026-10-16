@@ -444,7 +444,7 @@ async fn reboot_waits_for_detection() -> Result<()> {
 async fn unknown_effect_survives_credential_recovery() -> Result<()> {
     let mut fixture = Fixture::approved(Platform::MacOs).await?;
     let resources = std::mem::take(&mut fixture.resources);
-    let result = async {
+    resources.finish(async {
     let stack = worker(&fixture.base, fixture.content.clone()).await?;
     let router = fixture.router;
     let mut author = fixture.author;
@@ -522,6 +522,7 @@ async fn unknown_effect_survives_credential_recovery() -> Result<()> {
     signing["runtime"] = json!({"platform":"macos","architecture":"aarch64","capabilities":["inventory.collect.v1","software.pkg.system.v1"],"executionContext":context(Platform::MacOs)});
     let mut authority = authority::Authority::open().await?;
     let authority_resources = std::mem::take(&mut authority.resources);
+    authority_resources.finish(async {
     let service = crate::test_support::agent::service(&authority).await?;
     let next_credential = &credential("replacement");
     let next_registration =
@@ -541,11 +542,12 @@ async fn unknown_effect_survives_credential_recovery() -> Result<()> {
         "unknown side effect retried after registration replacement: {after_reenroll:?}"
     );
     ensure!(pg(&format!("SELECT count(*) FROM mdm_commands.action_runs r JOIN mdm_policy.versions v ON (v.tenant_id,v.id)=(r.tenant_id,r.policy_version) WHERE r.tenant_id='{}' AND v.policy='{opposing}'",case_tenant()))?.trim() == "0", "opposing intent bypassed Unknown after credential generation changed");
-    authority_resources.finish(async { Ok(()) }).await?;
+
+    Ok(())
+    }).await?;
     crate::test_support::stop_worker(stack).await?;
     Ok(())
-    }.await;
-    resources.finish(async { result }).await
+    }).await
 }
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 #[ignore = "make t2 MODULE=execution.software.recovery"]

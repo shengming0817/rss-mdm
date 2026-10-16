@@ -74,6 +74,7 @@ impl Fixture {
         max_uploads: Option<u64>,
         storage: Option<Value>,
     ) -> Result<Self> {
+        let (resources, mut fixture) = crate::test_support::Resources::build(move |resources| Box::pin(async move {
         let mut base: Value =
             serde_json::from_slice(&std::fs::read(std::env::var("MDM_TEST_CONFIG")?)?)?;
         let directory =
@@ -99,7 +100,7 @@ impl Fixture {
         let audit = access
             .audit_store(&crate::config::AuditConfig::Plain)
             .await?;
-        let (router, execution, runtime, _, resources) = crate::api::application_fixture(
+        let (router, execution, runtime, _, application_resources) = crate::api::application_fixture(
             serde_json::from_value(base.clone())?,
             Arc::new(crate::clock::SystemClock),
             monotonic(),
@@ -108,6 +109,7 @@ impl Fixture {
             audit,
         )
         .await?;
+        resources.extend(application_resources);
         let router = router.layer(axum::Extension(rss_identity_http_axum::ClientAddress(
             "127.0.0.1".parse()?,
         )));
@@ -150,7 +152,7 @@ impl Fixture {
         let source_path = format!("/api/v1/software/sources/{source}/revisions/1");
         let registered=write(&mut user,&router,&source_path,0,json!({"action":"register","definition":{"id":source,"revision":"1","protocol":{"kind":"private"}}})).await?;
         Ok(Self {
-            resources,
+            resources: Default::default(),
             directory,
             router,
             queries: execution.queries,
@@ -165,6 +167,10 @@ impl Fixture {
             peer,
             _server: server,
         })
+
+        })).await?;
+        fixture.resources = resources;
+        Ok(fixture)
     }
 }
 pub(crate) async fn write(

@@ -17,31 +17,39 @@ impl Authority {
         Self::from_config(base).await
     }
     pub(crate) async fn from_config(base: Value) -> Result<Self> {
-        let config: Config = serde_json::from_value(base.clone())?;
-        let access = database(&base).await?;
-        let policy = Arc::new(
-            crate::authorization::identity_management::IdentityManagementPolicy::new(INSTANCE)?,
-        );
-        let mut resources = super::Resources::default();
-        resources.resource(crate::lifecycle::AccessResource(access.clone()));
-        let identity = Arc::new(
-            crate::identity::Identity::connect(&config, policy, |resource| {
-                resources.acquire(resource)
+        let (resources, mut fixture) = crate::test_support::Resources::build(move |resources| {
+            Box::pin(async move {
+                let config: Config = serde_json::from_value(base.clone())?;
+                let access = database(&base).await?;
+                let policy = Arc::new(
+                    crate::authorization::identity_management::IdentityManagementPolicy::new(
+                        INSTANCE,
+                    )?,
+                );
+                resources.resource(crate::lifecycle::AccessResource(access.clone()));
+                let identity = Arc::new(
+                    crate::identity::Identity::connect(&config, policy, |resource| {
+                        resources.acquire(resource)
+                    })
+                    .await?,
+                );
+                let audit = access.audit_store(&config.audit).await?;
+                Ok(Self {
+                    resources: Default::default(),
+                    base,
+                    access,
+                    identity,
+                    audit,
+                    credentials: Arc::new(crate::enrollment::credentials::Credentials::new(
+                        monotonic(),
+                        16,
+                    )),
+                })
             })
-            .await?,
-        );
-        let audit = access.audit_store(&config.audit).await?;
-        Ok(Self {
-            resources,
-            base,
-            access,
-            identity,
-            audit,
-            credentials: Arc::new(crate::enrollment::credentials::Credentials::new(
-                monotonic(),
-                16,
-            )),
         })
+        .await?;
+        fixture.resources = resources;
+        Ok(fixture)
     }
 
     pub(crate) async fn prepared_browser(login: &str) -> Result<Browser> {

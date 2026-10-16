@@ -4,8 +4,8 @@ use super::*;
 #[ignore = "MODULE=authorization.rules: real authorization contract"]
 async fn rules_cas_replay_revocation_and_escalation() -> Result<()> {
     let Fixture {
+        resources,
         base,
-        reader,
         router,
         mut admin,
         mut member,
@@ -13,6 +13,7 @@ async fn rules_cas_replay_revocation_and_escalation() -> Result<()> {
         store,
         ..
     } = fixture().await?;
+    resources.finish(async {
     ensure!(
         member
             .call(&router, Method::GET, "/api/v1/authorization/rules", None)
@@ -124,7 +125,7 @@ async fn rules_cas_replay_revocation_and_escalation() -> Result<()> {
             .0
             == StatusCode::CONFLICT
     );
-    let (restarted, app_resources) = app(&base, reader.clone()).await?;
+    let (restarted, _, app_resources) = app_with_access(&base, database(&base).await?).await?;
     app_resources.finish(async {
     ensure!(
         member
@@ -244,6 +245,7 @@ async fn rules_cas_replay_revocation_and_escalation() -> Result<()> {
     );
 
     Ok(())
+    }).await
     }).await
     }).await
 }

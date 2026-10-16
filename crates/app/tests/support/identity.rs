@@ -21,12 +21,11 @@ fn configured(tenant: &str) -> Result<Config> {
     Ok(serde_json::from_value(value)?)
 }
 pub(crate) async fn identity(tenant: &str) -> Result<(Identity, super::Resources)> {
-    let mut resources = super::Resources::default();
-    let result = identity_with(config(tenant)?, &mut resources).await;
-    match result {
-        Ok(identity) => Ok((identity, resources)),
-        Err(error) => resources.finish(async { Err(error) }).await,
-    }
+    let config = config(tenant)?;
+    let (resources, identity) =
+        super::Resources::build(move |resources| Box::pin(identity_with(config, resources)))
+            .await?;
+    Ok((identity, resources))
 }
 async fn identity_with(config: Config, resources: &mut super::Resources) -> Result<Identity> {
     let policy = Arc::new(
@@ -178,15 +177,18 @@ async fn prepare_environment(root: &std::path::Path) -> Result<()> {
 }
 
 async fn refresh_management(root: &std::path::Path) -> Result<()> {
-    let value: Config = serde_json::from_slice(&std::fs::read(root.join("runtime.json"))?)?;
-    let mut resources = super::Resources::default();
-    let authority = identity_with(value, &mut resources).await?;
-    resources
-        .finish(async {
+    let root = root.to_path_buf();
+    let (resources, ()) = super::Resources::build(move |resources| {
+        Box::pin(async move {
+            let value: Config = serde_json::from_slice(&std::fs::read(root.join("runtime.json"))?)?;
+            let authority = identity_with(value, resources).await?;
+
             let secret = login_named(&authority, "bootstrap").await?;
             write(&root.join("source-session"), secret.expose().as_bytes())
         })
-        .await
+    })
+    .await?;
+    resources.finish(async { Ok(()) }).await
 }
 
 async fn prepare_accounts(
@@ -352,12 +354,11 @@ fn fixture_rule(tenant: &str, principal: &str) -> Result<serde_json::Value> {
 async fn prepare_sessions(paths: &[std::path::PathBuf]) -> Result<Vec<serde_json::Value>> {
     use super::case::{CaseContext, Phase};
     use std::collections::BTreeMap;
-    let mut resources = super::Resources::default();
-    let result = async {
-    let mut costs = Vec::new();
+    let paths = paths.to_vec();
+    let (resources, costs) = super::Resources::build(move |resources| Box::pin(async move {    let mut costs = Vec::new();
     let mut authorities = BTreeMap::new();
     let mut sessions = BTreeMap::new();
-    for path in paths {
+    for path in &paths {
         let context = CaseContext::read(path, Phase::Ready)?;
         for actor in context.actors() {
             let root = path.parent().unwrap();
@@ -372,7 +373,7 @@ async fn prepare_sessions(paths: &[std::path::PathBuf]) -> Result<Vec<serde_json
                 if let std::collections::btree_map::Entry::Vacant(entry) =
                     authorities.entry(actor.tenant.clone())
                 {
-                    entry.insert(identity_with(configured(&actor.tenant)?, &mut resources).await?);
+                    entry.insert(identity_with(configured(&actor.tenant)?, resources).await?);
                 }
                 let timer = super::monotonic();
                 let started = timer.now();
@@ -405,8 +406,9 @@ async fn prepare_sessions(paths: &[std::path::PathBuf]) -> Result<Vec<serde_json
         }
     }
     Ok(costs)
-    }.await;
-    resources.finish(async { result }).await
+
+    })).await?;
+    resources.finish(async { Ok(costs) }).await
 }
 
 fn preparation_coordinate(tenant: &str, invocation: &str, kind: &str, phase: &str) -> String {

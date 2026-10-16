@@ -18,37 +18,45 @@ struct Fixture {
 }
 impl Fixture {
     async fn open() -> Result<Self> {
-        let mut authority = authority::Authority::open().await?;
-        let config: Config = serde_json::from_value(authority.base.clone())?;
-        let (router, _, runtime, _, application_resources) = crate::api::application_fixture(
-            config,
-            Arc::new(crate::clock::SystemClock),
-            monotonic(),
-            authority.access.clone(),
-            None,
-            authority.audit.clone(),
-        )
-        .await?;
-        let mut resources = std::mem::take(&mut authority.resources);
-        resources.extend(application_resources);
-        let tenant = TenantId::parse(case_tenant())?;
-        let key = rss_mdm_flow_service::storage::cursor_key(&runtime, tenant).await?;
-        let timeline = authority
-            .access
-            .timeline(authority.audit.clone(), tenant, &key)?;
-        timeline.initialize().await?;
-        let admin = authority.browser("admin")?;
-        let router = router.layer(axum::Extension(rss_identity_http_axum::ClientAddress(
-            "127.0.0.1".parse()?,
-        )));
-        Ok(Self {
-            resources,
-            authority,
-            router,
-            admin,
-            timeline,
-            key,
+        let (resources, mut fixture) = Resources::build(|resources| {
+            Box::pin(async move {
+                let mut authority = authority::Authority::open().await?;
+                resources.extend(std::mem::take(&mut authority.resources));
+                let config: Config = serde_json::from_value(authority.base.clone())?;
+                let (router, _, runtime, _, application_resources) =
+                    crate::api::application_fixture(
+                        config,
+                        Arc::new(crate::clock::SystemClock),
+                        monotonic(),
+                        authority.access.clone(),
+                        None,
+                        authority.audit.clone(),
+                    )
+                    .await?;
+                resources.extend(application_resources);
+                let tenant = TenantId::parse(case_tenant())?;
+                let key = rss_mdm_flow_service::storage::cursor_key(&runtime, tenant).await?;
+                let timeline = authority
+                    .access
+                    .timeline(authority.audit.clone(), tenant, &key)?;
+                timeline.initialize().await?;
+                let admin = authority.browser("admin")?;
+                let router = router.layer(axum::Extension(rss_identity_http_axum::ClientAddress(
+                    "127.0.0.1".parse()?,
+                )));
+                Ok(Self {
+                    resources: Default::default(),
+                    authority,
+                    router,
+                    admin,
+                    timeline,
+                    key,
+                })
+            })
         })
+        .await?;
+        fixture.resources = resources;
+        Ok(fixture)
     }
     async fn append(
         &self,

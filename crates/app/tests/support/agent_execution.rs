@@ -144,88 +144,101 @@ impl Fixture {
         Self::from_config(base).await
     }
     pub(crate) async fn from_config(base: Value) -> Result<Self> {
-        let fixture_config: Value =
-            serde_json::from_slice(&std::fs::read(std::env::var("MDM_TEST_CONFIG")?)?)?;
-        let key_file = base["task_signing"]["private_key_file"]
-            .as_str()
-            .or_else(|| fixture_config["task_signing"]["private_key_file"].as_str())
-            .ok_or_else(|| anyhow::anyhow!("fixture task key missing"))?;
-        let key = ring::signature::Ed25519KeyPair::from_pkcs8(&std::fs::read(key_file)?).unwrap();
-        // Store startup recovery and fixture uploads share the content directory.
-        let content_setup = super::software::content_setup_guard().await?;
-        let access = database(&base).await?;
-        let audit = access
-            .audit_store(&crate::config::AuditConfig::Plain)
-            .await?;
-        let (router, execution, plan_runtime, planning, resources) =
-            crate::api::application_fixture(
-                serde_json::from_value(base.clone())?,
-                Arc::new(crate::clock::SystemClock),
-                monotonic(),
-                access,
-                None,
-                audit,
-            )
-            .await
-            .map_err(|error| anyhow::anyhow!("application fixture rejected: {error:?}"))?;
-        drop(content_setup);
-        let router = router.layer(axum::Extension(rss_identity_http_axum::ClientAddress(
-            "127.0.0.1".parse()?,
-        )));
-        let mut author = Browser::default();
-        ensure!(author.login(&router, "other").await? == StatusCode::OK);
-        let author_id = browser_subject(&author, &router).await?;
-        let mut grants = crate::test_support::identity::device_grants(
-            Some(case_device_id()),
-            &[
-                "enrollment",
-                "inventory_read",
-                "script_execute",
-                "operation_read",
-                "operation_cancel",
-            ],
-        )?;
-        for operation in [
-            crate::authorization::Permission::PolicyWrite,
-            crate::authorization::Permission::PolicyRead,
-            crate::authorization::Permission::ResourceWrite,
-            crate::authorization::Permission::ResourceRead,
-            crate::authorization::Permission::GroupRead,
-            crate::authorization::Permission::GroupWrite,
-            crate::authorization::Permission::GroupRecompute,
-            crate::authorization::Permission::ScopeRead,
-            crate::authorization::Permission::ScopeWrite,
-        ] {
-            grants.push(crate::authorization::Grant {
-                operation,
-                scope: crate::authorization::Scope::Tenant,
-            });
-        }
-        grants.push(crate::authorization::Grant {
-            operation: crate::authorization::Permission::InventoryRead,
-            scope: crate::authorization::Scope::AllDevices,
-        });
-        grants.extend(crate::test_support::identity::device_grants(
-            None,
-            &["script_execute"],
-        )?);
-        crate::test_support::identity::set_grants(case_tenant(), &author_id, grants.clone())
-            .await?;
-        Ok(Self {
-            resources,
-            builtin_collections: Vec::new(),
-            base,
-            router,
-            queries: execution.queries,
-            content: execution.content,
-            execution: execution.service,
-            plan_runtime,
-            planning,
-            author,
-            author_id,
-            grants,
-            key,
+        let (resources, mut fixture) = crate::test_support::Resources::build(move |resources| {
+            Box::pin(async move {
+                let fixture_config: Value =
+                    serde_json::from_slice(&std::fs::read(std::env::var("MDM_TEST_CONFIG")?)?)?;
+                let key_file = base["task_signing"]["private_key_file"]
+                    .as_str()
+                    .or_else(|| fixture_config["task_signing"]["private_key_file"].as_str())
+                    .ok_or_else(|| anyhow::anyhow!("fixture task key missing"))?;
+                let key =
+                    ring::signature::Ed25519KeyPair::from_pkcs8(&std::fs::read(key_file)?).unwrap();
+                // Store startup recovery and fixture uploads share the content directory.
+                let content_setup = super::software::content_setup_guard().await?;
+                let access = database(&base).await?;
+                let audit = access
+                    .audit_store(&crate::config::AuditConfig::Plain)
+                    .await?;
+                let (router, execution, plan_runtime, planning, application_resources) =
+                    crate::api::application_fixture(
+                        serde_json::from_value(base.clone())?,
+                        Arc::new(crate::clock::SystemClock),
+                        monotonic(),
+                        access,
+                        None,
+                        audit,
+                    )
+                    .await
+                    .map_err(|error| anyhow::anyhow!("application fixture rejected: {error:?}"))?;
+                resources.extend(application_resources);
+                drop(content_setup);
+                let router = router.layer(axum::Extension(rss_identity_http_axum::ClientAddress(
+                    "127.0.0.1".parse()?,
+                )));
+                let mut author = Browser::default();
+                ensure!(author.login(&router, "other").await? == StatusCode::OK);
+                let author_id = browser_subject(&author, &router).await?;
+                let mut grants = crate::test_support::identity::device_grants(
+                    Some(case_device_id()),
+                    &[
+                        "enrollment",
+                        "inventory_read",
+                        "script_execute",
+                        "operation_read",
+                        "operation_cancel",
+                    ],
+                )?;
+                for operation in [
+                    crate::authorization::Permission::PolicyWrite,
+                    crate::authorization::Permission::PolicyRead,
+                    crate::authorization::Permission::ResourceWrite,
+                    crate::authorization::Permission::ResourceRead,
+                    crate::authorization::Permission::GroupRead,
+                    crate::authorization::Permission::GroupWrite,
+                    crate::authorization::Permission::GroupRecompute,
+                    crate::authorization::Permission::ScopeRead,
+                    crate::authorization::Permission::ScopeWrite,
+                ] {
+                    grants.push(crate::authorization::Grant {
+                        operation,
+                        scope: crate::authorization::Scope::Tenant,
+                    });
+                }
+                grants.push(crate::authorization::Grant {
+                    operation: crate::authorization::Permission::InventoryRead,
+                    scope: crate::authorization::Scope::AllDevices,
+                });
+                grants.extend(crate::test_support::identity::device_grants(
+                    None,
+                    &["script_execute"],
+                )?);
+                crate::test_support::identity::set_grants(
+                    case_tenant(),
+                    &author_id,
+                    grants.clone(),
+                )
+                .await?;
+                Ok(Self {
+                    resources: Default::default(),
+                    builtin_collections: Vec::new(),
+                    base,
+                    router,
+                    queries: execution.queries,
+                    content: execution.content,
+                    execution: execution.service,
+                    plan_runtime,
+                    planning,
+                    author,
+                    author_id,
+                    grants,
+                    key,
+                })
+            })
         })
+        .await?;
+        fixture.resources = resources;
+        Ok(fixture)
     }
     pub(crate) async fn register(&mut self) -> Result<Value> {
         self.register_profile(json!(["inventory.collect.v1", "task.execute.v1"]))

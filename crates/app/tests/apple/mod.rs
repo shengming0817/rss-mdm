@@ -71,6 +71,7 @@ impl Fixture {
         preserve_authorization: bool,
         ade: Option<rss_mdm_apple_channel::ade::Fixture>,
     ) -> Result<Self> {
+        let (resources, mut fixture) = crate::test_support::Resources::build(move |resources| Box::pin(async move {
         let root = PathBuf::from(std::env::var("MDM_APPLE_FIXTURES")?);
         let manage =
             tokio::net::TcpListener::bind(address.unwrap_or("127.0.0.1:0".parse()?)).await?;
@@ -110,7 +111,6 @@ impl Fixture {
         let config = &compiled.config;
         let clock = Arc::new(crate::clock::SystemClock);
         let monotonic: Arc<dyn rss_observation::Clock> = fixture_clock();
-        let mut resources = crate::test_support::Resources::default();
         let access = Arc::new(crate::Database::connect(config.access_database.options()?).await?);
         resources.resource(crate::lifecycle::AccessResource(access.clone()));
         let devices = Arc::new(
@@ -433,7 +433,7 @@ impl Fixture {
         )));
         let browser = crate::test_support::authority::Authority::prepared_browser("admin").await?;
         Ok(Self {
-            resources,
+            resources: Default::default(),
             app,
             browser,
             router,
@@ -444,6 +444,10 @@ impl Fixture {
             pause_before_notify,
             ade,
         })
+
+        })).await?;
+        fixture.resources = resources;
+        Ok(fixture)
     }
     async fn profile_query_due(&self, operation: Uuid) -> Result<()> {
         use sqlx::Connection;
@@ -711,33 +715,41 @@ mod renewal;
 
 impl Fixture {
     async fn close(self) -> Result<()> {
-        let report = self.owner.shutdown().join().await?;
-        if !report.is_clean() {
-            let diagnostics = self
-                .app
-                .inventory
-                .diagnostics(fixture_clock().now() + Duration::from_secs(1))
-                .await;
-            if let Some(rss_projection::ObservationStatus::Stopped(projection)) =
-                diagnostics.projection
-                && let rss_projection::Stop::Failed(error) = projection.stop
-            {
-                let detail = error.diagnostic();
-                eprintln!(
-                    "{}",
-                    json!({
-                        "event": "apple_fixture_inventory_projection_failure",
-                        "kind": format!("{:?}", error.kind()),
-                        "providerPhase": detail.map(|d| format!("{:?}", d.phase())),
-                        "sqlstate": detail.and_then(|d| d.sqlstate()),
-                        "position": detail.and_then(|d| d.position()).map(|p| p.get()),
-                    })
-                );
-            }
-        }
-        self.resources.finish(async { Ok(()) }).await?;
-        ensure!(report.is_clean(), "Apple fixture shutdown: {report:?}");
-        Ok(())
+        let Self {
+            resources,
+            owner,
+            app,
+            ..
+        } = self;
+        resources
+            .finish(async move {
+                let report = owner.shutdown().join().await?;
+                if !report.is_clean() {
+                    let diagnostics = app
+                        .inventory
+                        .diagnostics(fixture_clock().now() + Duration::from_secs(1))
+                        .await;
+                    if let Some(rss_projection::ObservationStatus::Stopped(projection)) =
+                        diagnostics.projection
+                        && let rss_projection::Stop::Failed(error) = projection.stop
+                    {
+                        let detail = error.diagnostic();
+                        eprintln!(
+                            "{}",
+                            json!({
+                                "event": "apple_fixture_inventory_projection_failure",
+                                "kind": format!("{:?}", error.kind()),
+                                "providerPhase": detail.map(|d| format!("{:?}", d.phase())),
+                                "sqlstate": detail.and_then(|d| d.sqlstate()),
+                                "position": detail.and_then(|d| d.position()).map(|p| p.get()),
+                            })
+                        );
+                    }
+                }
+                ensure!(report.is_clean(), "Apple fixture shutdown: {report:?}");
+                Ok(())
+            })
+            .await
     }
     async fn scep_leaf(&mut self) -> Result<(scep_client::Device, Vec<u8>)> {
         let (enrollment, attempt, password) = self.enrollment().await?;

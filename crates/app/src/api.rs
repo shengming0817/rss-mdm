@@ -205,7 +205,9 @@ pub(crate) async fn application_fixture(
         }
         Err(error) => {
             let cleanup = resources.finish(async { Ok(()) }).await;
-            cleanup.map_err(|_| Error::Unavailable(crate::Failure::Runtime))?;
+            if let Err(cleanup_error) = cleanup {
+                eprintln!("application fixture cleanup also failed: {cleanup_error:#}");
+            }
             Err(error)
         }
     }

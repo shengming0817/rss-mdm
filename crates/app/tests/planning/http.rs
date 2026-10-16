@@ -257,91 +257,97 @@ async fn console_directory_pages_registered_revoked_and_pending() -> Result<()> 
 async fn console_script_support_requires_signer_and_content() -> Result<()> {
     use crate::test_support::agent_execution::{Fixture, case_device_id};
     let mut fixture = Fixture::new().await?;
-    fixture.register().await?;
-    for (signed, content) in [(true, true), (true, false)] {
-        let mut config = fixture.base.clone();
-        if !signed {
-            config["task_signing"] = Value::Null;
-            config["agent_pki"] = json!({"mode":"disabled"});
-        }
-        if !content {
-            config["content"] = Value::Null;
-        }
-        let (router, app_resources) = app(&config, authority::reader(&config).await?).await?;
-        app_resources
-            .finish(async {
-                let (status, detail) = fixture
-                    .author
-                    .call(
-                        &router,
-                        Method::GET,
-                        &format!("/api/v1/devices/{}", case_device_id()),
-                        None,
-                    )
+    let resources = std::mem::take(&mut fixture.resources);
+    resources
+        .finish(async {
+            fixture.register().await?;
+            for (signed, content) in [(true, true), (true, false)] {
+                let mut config = fixture.base.clone();
+                if !signed {
+                    config["task_signing"] = Value::Null;
+                    config["agent_pki"] = json!({"mode":"disabled"});
+                }
+                if !content {
+                    config["content"] = Value::Null;
+                }
+                let (router, app_resources) =
+                    app(&config, authority::reader(&config).await?).await?;
+                app_resources
+                    .finish(async {
+                        let (status, detail) = fixture
+                            .author
+                            .call(
+                                &router,
+                                Method::GET,
+                                &format!("/api/v1/devices/{}", case_device_id()),
+                                None,
+                            )
+                            .await?;
+                        ensure!(
+                            status == StatusCode::OK,
+                            "capability detail signed={signed} content={content}: {status} {detail}"
+                        );
+                        let capability = detail["capabilities"]
+                            .as_array()
+                            .unwrap()
+                            .iter()
+                            .find(|v| v["action"] == "script")
+                            .unwrap();
+                        let supported = signed && content;
+                        ensure!(
+                            capability["productSupport"]["state"]
+                                == if supported {
+                                    "supported"
+                                } else {
+                                    "unsupported"
+                                },
+                            "script support signed={signed} content={content}: {capability}"
+                        );
+                        ensure!(
+                            capability["productSupport"]["reason"]
+                                == if supported {
+                                    Value::Null
+                                } else {
+                                    json!("product_not_configured")
+                                }
+                        );
+                        ensure!(
+                            capability["devicePrerequisite"]["state"] == "ready"
+                                && capability["permission"]["allowed"] == true,
+                            "configuration merged device or permission facts: {capability}"
+                        );
+                        Ok(())
+                    })
                     .await?;
-                ensure!(
-                    status == StatusCode::OK,
-                    "capability detail signed={signed} content={content}: {status} {detail}"
-                );
-                let capability = detail["capabilities"]
-                    .as_array()
-                    .unwrap()
-                    .iter()
-                    .find(|v| v["action"] == "script")
-                    .unwrap();
-                let supported = signed && content;
-                ensure!(
-                    capability["productSupport"]["state"]
-                        == if supported {
-                            "supported"
-                        } else {
-                            "unsupported"
-                        },
-                    "script support signed={signed} content={content}: {capability}"
-                );
-                ensure!(
-                    capability["productSupport"]["reason"]
-                        == if supported {
-                            Value::Null
-                        } else {
-                            json!("product_not_configured")
-                        }
-                );
-                ensure!(
-                    capability["devicePrerequisite"]["state"] == "ready"
-                        && capability["permission"]["allowed"] == true,
-                    "configuration merged device or permission facts: {capability}"
-                );
-                Ok(())
-            })
-            .await?;
-    }
-    let grants = fixture
-        .grants
-        .iter()
-        .filter(|grant| grant.operation != crate::authorization::Permission::ScriptExecute)
-        .cloned()
-        .collect();
-    identity::set_grants(case_tenant(), &fixture.author_id, grants).await?;
-    let (status, detail) = fixture
-        .author
-        .call(
-            &fixture.router,
-            Method::GET,
-            &format!("/api/v1/devices/{}", case_device_id()),
-            None,
-        )
-        .await?;
-    ensure!(status == StatusCode::OK);
-    let capability = &detail["capabilities"][0];
-    ensure!(
-        capability["action"] == "script"
-            && capability["productSupport"]["state"] == "supported"
-            && capability["devicePrerequisite"]["state"] == "ready"
-            && capability["permission"]["allowed"] == false,
-        "revocation merged capability facts: {capability}"
-    );
-    Ok(())
+            }
+            let grants = fixture
+                .grants
+                .iter()
+                .filter(|grant| grant.operation != crate::authorization::Permission::ScriptExecute)
+                .cloned()
+                .collect();
+            identity::set_grants(case_tenant(), &fixture.author_id, grants).await?;
+            let (status, detail) = fixture
+                .author
+                .call(
+                    &fixture.router,
+                    Method::GET,
+                    &format!("/api/v1/devices/{}", case_device_id()),
+                    None,
+                )
+                .await?;
+            ensure!(status == StatusCode::OK);
+            let capability = &detail["capabilities"][0];
+            ensure!(
+                capability["action"] == "script"
+                    && capability["productSupport"]["state"] == "supported"
+                    && capability["devicePrerequisite"]["state"] == "ready"
+                    && capability["permission"]["allowed"] == false,
+                "revocation merged capability facts: {capability}"
+            );
+            Ok(())
+        })
+        .await
 }
 
 #[tokio::test]
@@ -583,7 +589,7 @@ async fn planning_routes_and_derived_result_authorization() -> Result<()> {
     let automation = start_automation(base).await?;
     await_ingress().await?;
     let (initial, app_resources) = app(base, reader.clone()).await?;
-    let result = async {
+    app_resources.finish(async {
     let member = browser_subject(session, &initial).await?;
     set_management_grants(
         &member,
@@ -897,8 +903,7 @@ async fn planning_routes_and_derived_result_authorization() -> Result<()> {
     reader.close().await;
     Ok(())
     }).await
-    }.await;
-    app_resources.finish(async { result }).await
+    }).await
 
     }).await
 }
@@ -1059,7 +1064,7 @@ async fn collection_blueprints_instantiate_replay_and_keep_tenant_versions() -> 
     let fixture_resources = std::mem::take(&mut fixture.resources);
     fixture_resources.finish(async {
     let (router, app_resources) = app(&fixture.base, authority::reader(&fixture.base).await?).await?;
-    let result = async {
+    app_resources.finish(async {
     let mut browser = fixture.browser("other")?;
     let subject = browser_subject(&browser, &router).await?;
     set_management_grants(&subject, json!(["resource_read", "resource_write"])).await?;
@@ -1139,8 +1144,7 @@ async fn collection_blueprints_instantiate_replay_and_keep_tenant_versions() -> 
     );
     Ok(())
     }).await
-    }.await;
-    app_resources.finish(async { result }).await
+    }).await
 
     }).await
 }

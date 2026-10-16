@@ -29,7 +29,7 @@ fn grant(operation: &str, scope: Value) -> Value {
 struct Fixture {
     base: Value,
     config: Config,
-    reader: Arc<InventoryReader>,
+    resources: Resources,
     router: Router,
     admin: Browser,
     member: Browser,
@@ -38,34 +38,25 @@ struct Fixture {
     audit_store: Arc<rss_mdm_audit_integration::AuditStore>,
 }
 async fn fixture() -> Result<Fixture> {
-    let base: Value = serde_json::from_slice(&std::fs::read(std::env::var("MDM_TEST_CONFIG")?)?)?;
-    let config: Config = serde_json::from_value(base.clone())?;
-    let reader = Arc::new(
-        InventoryReader::connect(
-            config
-                .access_database
-                .options()?
-                .username("mdm_api")
-                .password("api-fixture"),
-        )
-        .await?,
-    );
-    let (router, app_resources) = app(&base, reader.clone()).await?;
-    app_resources
-        .finish(async {
+    let (resources, mut fixture) = Resources::build(|resources| {
+        Box::pin(async move {
+            let base: Value =
+                serde_json::from_slice(&std::fs::read(std::env::var("MDM_TEST_CONFIG")?)?)?;
+            let config: Config = serde_json::from_value(base.clone())?;
+            let store = database(&base).await?;
+            resources.resource(crate::lifecycle::AccessResource(store.clone()));
+            let (router, audit_store, application_resources) =
+                app_with_access(&base, store.clone()).await?;
+            resources.extend(application_resources);
             let mut admin = Browser::default();
             ensure!(admin.login(&router, "admin").await? == StatusCode::OK);
             let mut member = Browser::default();
             ensure!(member.login(&router, "other").await? == StatusCode::OK);
             let subject = browser_subject(&member, &router).await?;
-            let store = database(&base).await?;
-            let audit_store = store
-                .audit_store(&crate::config::AuditConfig::Plain)
-                .await?;
             Ok(Fixture {
+                resources: Default::default(),
                 base,
                 config,
-                reader,
                 router,
                 admin,
                 member,
@@ -74,8 +65,12 @@ async fn fixture() -> Result<Fixture> {
                 audit_store,
             })
         })
-        .await
+    })
+    .await?;
+    fixture.resources = resources;
+    Ok(fixture)
 }
+
 mod admission;
 mod capacity;
 mod initialization;

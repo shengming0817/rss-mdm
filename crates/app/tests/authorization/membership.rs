@@ -4,12 +4,14 @@ use super::*;
 #[ignore = "MODULE=authorization.membership: real authorization contract"]
 async fn membership_activation_removal_and_replay() -> Result<()> {
     let Fixture {
+        resources,
         router,
         mut admin,
         mut member,
         subject,
         ..
     } = fixture().await?;
+    resources.finish(async {
     let group_id = Uuid::new_v4();
     let group_path = format!("/api/v1/authorization/user-groups/{group_id}");
     let group_key = Uuid::new_v4();
@@ -144,4 +146,5 @@ async fn membership_activation_removal_and_replay() -> Result<()> {
     );
 
     Ok(())
+    }).await
 }

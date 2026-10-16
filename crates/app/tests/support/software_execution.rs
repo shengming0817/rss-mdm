@@ -214,12 +214,13 @@ impl Fixture {
         execution_context: Value,
         base: Value,
     ) -> Result<Self> {
+        let (resources, mut fixture) = crate::test_support::Resources::build(move |resources| Box::pin(async move {
         let setup_guard = super::software::content_setup_guard().await?;
         let access = database(&base).await?;
         let audit = access
             .audit_store(&crate::config::AuditConfig::Plain)
             .await?;
-        let (router, execution, _, planning, resources) = crate::api::application_fixture(
+        let (router, execution, _, planning, application_resources) = crate::api::application_fixture(
             serde_json::from_value(base.clone())?,
             Arc::new(crate::clock::SystemClock),
             monotonic(),
@@ -229,6 +230,7 @@ impl Fixture {
         )
         .await
         .map_err(|e| anyhow::anyhow!("software fixture application: {e:?}"))?;
+        resources.extend(application_resources);
         drop(setup_guard);
         let router = router.layer(axum::Extension(rss_identity_http_axum::ClientAddress(
             "127.0.0.1".parse()?,
@@ -399,7 +401,7 @@ impl Fixture {
         .await?;
 
         Ok(Self {
-            resources,
+            resources: Default::default(),
             source_snapshot: registered["snapshot"].clone(),
             dependency,
             dependency_digest: dependency_version["resourceDigest"].clone(),
@@ -418,6 +420,10 @@ impl Fixture {
             windows_bytes,
             credential,
         })
+
+        })).await?;
+        fixture.resources = resources;
+        Ok(fixture)
     }
 }
 pub(crate) async fn prepared_scope(
@@ -440,43 +446,54 @@ pub(crate) async fn worker(
     if !crate::test_support::case::owns_worker() {
         return Ok(None);
     }
-    let config: Config = serde_json::from_value(base.clone())?;
-    let mut authority = authority::Authority::from_config(base.clone()).await?;
-    let mut resources = std::mem::take(&mut authority.resources);
-    let content = match content {
-        Some(content) => Some(content),
-        None => {
-            let content =
-                crate::execution_assembly::open_content(&config, config.native_protector()?)
+
+    let base = base.clone();
+    let (resources, (config, worker)) = super::Resources::build(move |resources| {
+        Box::pin(async move {
+            let config: Config = serde_json::from_value(base.clone())?;
+            let mut authority = authority::Authority::from_config(base.clone()).await?;
+            resources.extend(std::mem::take(&mut authority.resources));
+            let content = match content {
+                Some(content) => Some(content),
+                None => {
+                    let content = crate::execution_assembly::open_content(
+                        &config,
+                        config.native_protector()?,
+                    )
                     .await?;
-            if let Some(content) = &content {
-                resources.resource(crate::execution_assembly::ContentResource(content.clone()));
-            }
-            content
-        }
-    };
-    let worker = crate::execution_assembly::open(
-        &config,
-        config.native_protector()?,
-        authority.audit.clone(),
-        content,
-        std::collections::BTreeMap::new(),
-        rss_device_command_postgres::CommandClock::Postgres,
-        Arc::new(
-            rss_mdm_authorization_service::session::SessionAuthority::new(
-                authority.identity.authority.clone(),
-                authority.identity.tenant,
-            ),
-        ),
-    )
-    .await?
-    .service;
+                    if let Some(content) = &content {
+                        resources
+                            .resource(crate::execution_assembly::ContentResource(content.clone()));
+                    }
+                    content
+                }
+            };
+            let worker = crate::execution_assembly::open(
+                &config,
+                config.native_protector()?,
+                authority.audit.clone(),
+                content,
+                std::collections::BTreeMap::new(),
+                rss_device_command_postgres::CommandClock::Postgres,
+                Arc::new(
+                    rss_mdm_authorization_service::session::SessionAuthority::new(
+                        authority.identity.authority.clone(),
+                        authority.identity.tenant,
+                    ),
+                ),
+            )
+            .await?
+            .service;
+            Ok((config, worker))
+        })
+    })
+    .await?;
     worker_for(&config, worker, resources).await
 }
 pub(crate) async fn worker_for(
     config: &Config,
     worker: Arc<rss_mdm_execution_service::ExecutionService>,
-    resources: super::Resources,
+    mut resources: super::Resources,
 ) -> Result<Option<rss_runtime::ShutdownStack>> {
     if !crate::test_support::case::owns_worker() {
         return Ok(None);
@@ -486,7 +503,7 @@ pub(crate) async fn worker_for(
         Arc::new(crate::lifecycle::RuntimeTimer),
     )?;
     let mut startup = stack.startup()?;
-    for resource in resources.0 {
+    for resource in resources.0.drain(..) {
         startup.stage_resource(resource);
     }
     startup.stage_resource(rss_runtime::DynManagedResource::new_box(
