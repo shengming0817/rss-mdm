@@ -77,7 +77,7 @@ impl Fixture {
             std::env::var("MDM_APPLE_WEBHOOK_LISTEN").unwrap_or_else(|_| "127.0.0.1:0".into()),
         )
         .await?;
-        if std::env::var_os("MDM_STEP_CA_URL").is_some() {
+        if std::env::var_os("MDM_APPLE_WEBHOOK_LISTEN").is_some() {
             publish_webhooks(webhook.local_addr()?).await?;
         }
         let mut config = crate::test_support::identity::config(case_tenant())?;
@@ -223,11 +223,7 @@ impl Fixture {
             trusts,
             crate::device_pki::providers(&config.device_pki)?,
         ));
-        pki.admit(
-            rss_request_context::TenantId::parse(case_tenant())?,
-            crate::clock::SystemClock.unix_seconds()?,
-        )
-        .await?;
+        crate::test_support::pki::seed_trust(&access.archive_pool(), pki.bindings()).await?;
         let associations = Arc::new(rss_mdm_device_service::Associations::new(
             access
                 .audit_store(&crate::config::AuditConfig::Plain)
@@ -782,7 +778,7 @@ impl Fixture {
         );
         Ok(peer)
     }
-    async fn ready_local_peer(&mut self) -> Result<(lifecycle::Peer, scep_client::Device)> {
+    async fn seed_local_identity(&self) -> Result<(scep_client::Device, Vec<u8>)> {
         let device =
             scep_client::Device::new(Uuid::new_v4(), Uuid::new_v4(), &crate::enrollment::random())?;
         let der = device.local_leaf(&std::path::PathBuf::from(std::env::var(
@@ -808,6 +804,10 @@ impl Fixture {
         )
         .await?;
         tx.commit().await?;
+        Ok((device, der))
+    }
+    async fn ready_local_peer(&mut self) -> Result<(lifecycle::Peer, scep_client::Device)> {
+        let (device, der) = self.seed_local_identity().await?;
         let peer = self.authenticate_peer(&device, &der).await?;
         peer.token().await?;
         Ok((peer, device))

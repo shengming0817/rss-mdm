@@ -182,7 +182,9 @@ class RunningTests(unittest.TestCase):
                 (apple_root/'step/config').mkdir(parents=True)
                 (apple_root/'step/secrets').mkdir()
                 (apple_root/'step/certs').mkdir()
-                (apple_root/'step/config/ca.json').write_text('{"authority":{}}')
+                (apple_root/'step/config/ca.json').write_text(json.dumps(dict(
+                    authority={}, crt=str(apple_root/'step/certs/intermediate_ca.crt'),
+                    key=str(apple_root/'step/secrets/intermediate_ca_key'))))
             elif fail_at == 'cli':
                 raise RuntimeError('injected CLI failure')
             if '-out' in command:

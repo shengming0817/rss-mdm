@@ -175,8 +175,10 @@ class DatabasePool:
                 if profile == 'product':
                     sql = ''.join(f"SELECT public.create_new_tenant({literal(tenant)}::uuid,1,NULL,NULL);" for tenant in missing)
                 else:
-                    sql = 'INSERT INTO rss_transactional_messaging.tenant_epoch VALUES' + ','.join(
-                        f'({literal(tenant)},1)' for tenant in missing) + ';'
+                    sql = ''.join(
+                        f"SELECT set_config('rss.tenant_id',{literal(tenant)},true);"
+                        f"INSERT INTO rss_transactional_messaging.tenant_epoch VALUES({literal(tenant)},1);"
+                        for tenant in missing)
                 role = 'mdm_group_owner' if profile == 'group' else 'mdm_owner'
                 self.owner.sql(f'BEGIN; SET ROLE {role}; ' + sql + ' COMMIT;', database)
             prepared.update(missing)

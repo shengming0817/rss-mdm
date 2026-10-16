@@ -10,6 +10,8 @@ impl Service {
         device: &str,
         profile: wire::RuntimeProfile,
         csr_bytes: Vec<u8>,
+        chain: Vec<Vec<u8>>,
+        validity: std::ops::Range<i64>,
     ) -> Result<
         (
             IssuedAgentCertificate,
@@ -24,39 +26,19 @@ impl Service {
             .map_err(|_| Error::Malformed)?;
         let identity = rss_mdm_certificate::agent::identity(tenant_uuid, device)
             .map_err(|_| Error::Malformed)?;
-        let start = self.now()?;
-        let end = self.issuer.end(start)?;
+        let now = self.now()?;
+        let start = validity.start;
+        let end = validity.end;
         let grant = Uuid::new_v4();
         let attempt = Uuid::new_v4();
         let operation = Uuid::new_v4();
         let issuer = self.trust().issuer_digest();
         let issuer_hex = hex(issuer);
         let authority = self.issuer.authority_digest(issuer)?;
-        let spec = issuance::Signing {
-            attempt,
-            issuer,
-            grant,
-            csr: csr_bytes.clone(),
-            identity: identity.clone(),
-            deadline: start + 60,
-            start,
-            end,
-        };
-        let mut tx = self.store.begin(&tenant).await?;
-        self.issuer
-            .authorize_in(&mut tx, tenant_uuid, &spec)
-            .await?;
-        tx.commit().await.map_err(db)?;
         let issued = self
-            .issuer
-            .issue(
-                self.issuer.persisted_intent(spec)?,
-                &rss_mdm_pki_service::signing::SigningStore::new(self.audit.clone()),
-                tenant_uuid,
-            )
-            .await
-            .map_err(|_| Error::Storage)?
-            .certificate;
+            .trust()
+            .validate_issued_for(issuer, chain, &csr, &identity, validity, now)
+            .map_err(|_| Error::Malformed)?;
         let fingerprint = hex(issued.metadata.fingerprint);
         let registration = Uuid::new_v4();
         let credential = Uuid::new_v4();

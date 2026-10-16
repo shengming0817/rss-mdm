@@ -1,4 +1,4 @@
-//! Fixture peers always originate in a real TLS handshake with a certificate from pinned step-ca.
+//! Fixture peers use real signed certificates and a real TLS handshake.
 use super::*;
 use base64::{Engine, engine::general_purpose::STANDARD};
 use rss_mdm_certificate::HandshakePeer;
@@ -57,13 +57,7 @@ pub(crate) async fn service(fixture: &authority::Authority) -> Result<Arc<Servic
         vec![pki.issuer.trust().trust.clone()],
         providers,
     );
-    use crate::clock::Clock;
-    registry
-        .admit(
-            fixture.identity.tenant,
-            crate::clock::SystemClock.unix_seconds()?,
-        )
-        .await?;
+    super::pki::seed_trust(&fixture.access.archive_pool(), registry.bindings()).await?;
     Ok(Arc::new(Service::new(Assembly {
         tenant: fixture.identity.tenant,
         store: fixture.access.registration(),
@@ -151,7 +145,7 @@ pub(crate) fn csr() -> Result<String> {
         std::path::PathBuf::from(std::env::var("MDM_AGENT_PKI_FIXTURES")?).join("agent.der"),
     )?))
 }
-/// Prepare current credential state while keeping the real CA, TLS, and request verifier.
+/// Seed current credentials while preserving certificate, TLS, and request verification.
 pub(crate) async fn seed_profile(
     base: &Value,
     execution: Arc<rss_mdm_execution_service::ExecutionService>,
@@ -175,23 +169,40 @@ pub(crate) async fn seed_profile(
             )?
             .ok_or_else(|| anyhow::anyhow!("agent fixture PKI missing"))?;
         let service = application_service(&pki, &access, audit, execution)?;
-        let root = std::path::PathBuf::from(std::env::var("MDM_AGENT_PKI_FIXTURES")?);
-        let (issued, runtime) = service
-            .seed_peer(
-                device,
-                serde_json::from_value(profile)?,
-                std::fs::read(root.join("agent.der"))?,
-            )
-            .await?;
-        let peer =
-            crate::test_support::agent_tls::peer(pki.issuer.trust(), &issued.chain, &root).await?;
-        service.authenticate(&peer).await?;
-        remember(label, peer, runtime.device_id.clone());
-        Ok(serde_json::to_value(runtime)?)
+        seed_service(&service, label, device, profile).await
     }
     .await;
     access.close().await;
     result
+}
+
+pub(crate) async fn seed_service(
+    service: &Service,
+    label: &str,
+    device: &str,
+    profile: Value,
+) -> Result<Value> {
+    let root = std::path::PathBuf::from(std::env::var("MDM_AGENT_PKI_FIXTURES")?);
+    use crate::clock::Clock;
+    let now = crate::clock::SystemClock.unix_seconds()?;
+    let csr = std::fs::read(root.join("agent.der"))?;
+    let identity =
+        rss_mdm_certificate::agent::identity(uuid::Uuid::parse_str(case_tenant())?, device)?;
+    let chain = super::pki::leaf(&root, &csr, "rss-mdm-agent", &[identity], now, now + 86400)?;
+    let validity = super::pki::validity(&chain[0])?;
+    let (issued, runtime) = service
+        .seed_peer(
+            device,
+            serde_json::from_value(profile)?,
+            csr,
+            chain,
+            validity,
+        )
+        .await?;
+    let peer = crate::test_support::agent_tls::peer(service.trust(), &issued.chain, &root).await?;
+    service.authenticate(&peer).await?;
+    remember(label, peer, runtime.device_id.clone());
+    Ok(serde_json::to_value(runtime)?)
 }
 
 /// Enrollment and credential-lifecycle specialties retain the complete public operation chain.

@@ -331,6 +331,16 @@ pub async fn serve(
                         )
                         .await
                         .map_err(assembly_error)?;
+                        app.pki
+                            .admit(
+                                rss_request_context::TenantId::parse(&tenant).map_err(|_| {
+                                    assembly_error(Error::Configuration(crate::ConfigIssue::Tenant))
+                                })?,
+                                crate::clock::Clock::unix_seconds(&crate::clock::SystemClock)
+                                    .map_err(assembly_error)?,
+                            )
+                            .await
+                            .map_err(|_| assembly_error(Error::Unavailable(Failure::Database)))?;
                         app.browser = app.browser.layer(axum::middleware::from_fn_with_state(
                             gateway,
                             crate::identity::ingress,

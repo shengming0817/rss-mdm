@@ -158,13 +158,16 @@ pub(crate) async fn application_fixture(
             execution,
             clock,
             monotonic,
-            access,
+            access: access.clone(),
             runtime,
             flow: planning,
             identity,
         },
     )
     .await?;
+    crate::test_support::pki::seed_trust(&access.archive_pool(), fixture_routers.pki.bindings())
+        .await
+        .map_err(|_| Error::Unavailable(crate::Failure::Database))?;
     // Test carrier projects real, completed TLS evidence; the production browser router stays separate.
     for (kind, tls) in fixture_routers.listeners {
         if kind == crate::native::NativeListenerKind::Agent {
@@ -308,9 +311,6 @@ pub(crate) async fn from_compiled(
         trusts,
         providers,
     ));
-    pki.admit(identity.tenant, clock.unix_seconds()?)
-        .await
-        .map_err(|_| Error::Unavailable(crate::Failure::Database))?;
     let agent_enrollment = agent_pki
         .as_ref()
         .map(|pki| {

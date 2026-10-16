@@ -53,6 +53,7 @@ def running(root, env, *, case):
     shutil.copyfile(root/'ca.crt',step_path/'certs/control_ca.crt')
     ca_config['root'] = [str(step_path/'certs/root_ca.crt'), str(step_path/'certs/control_ca.crt')]
     private(configuration, ca_config)
+    private(root/'leaf-issuer.json', dict(certificate=ca_config['crt'], key=ca_config['key'], password=str(password)))
     ca_root = step_path/'certs/root_ca.crt'
     from pki_fixtures import root_crl, trust, isolate_root
     offline=root_crl(root,ca_root,step_path/'secrets/root_ca_key',password)

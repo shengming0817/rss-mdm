@@ -343,7 +343,7 @@ async fn replacement_token_fencing_and_retirement() -> Result<()> {
 #[ignore = "MODULE=apple.identity: pending token and native authority admission"]
 async fn token_is_required_before_management() -> Result<()> {
     let mut f = Fixture::start().await?;
-    let (device, der) = f.scep_leaf().await?;
+    let (device, der) = f.seed_local_identity().await?;
     let peer = f.authenticate_peer(&device, &der).await?;
     f.before_token(&peer).await?;
     peer.token().await?;

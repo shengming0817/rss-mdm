@@ -5,7 +5,7 @@ use crate::test_support::{channel_onboarding as setup, credential, pg};
 #[ignore = "MODULE=apple.onboarding: real native peer and durable Policy"]
 async fn absent_agent_group_installs_fixed_package_and_registers_independently() -> Result<()> {
     let mut f = Fixture::with_agent(Some(setup::pin(false))).await?;
-    let (peer, device) = f.ready_scep_peer().await?;
+    let (peer, device) = f.ready_local_peer().await?;
     let mut owner = rss_runtime::ShutdownStack::try_new(
         rss_runtime::TotalDrainBudget::new(Duration::from_secs(30))?,
         Arc::new(crate::lifecycle::RuntimeTimer),
@@ -252,8 +252,8 @@ async fn absent_agent_group_installs_fixed_package_and_registers_independently()
 #[ignore = "MODULE=apple.onboarding: actual issued peer survives optional feature changes"]
 async fn enabling_agent_installation_preserves_existing_native_identity_and_rights() -> Result<()> {
     use sqlx::{Connection, Row};
-    let mut f = Fixture::start().await?;
-    let (device, der) = f.scep_leaf().await?;
+    let f = Fixture::start().await?;
+    let (device, der) = f.seed_local_identity().await?;
     let peer = f.authenticate_peer(&device, &der).await?;
     peer.token().await?;
     let mut config: config::Config =
@@ -329,7 +329,7 @@ async fn next_after_cooldown(
 #[ignore = "MODULE=apple.onboarding: native bundle evidence never verifies the publisher"]
 async fn collected_bundle_presence_remains_unknown() -> Result<()> {
     let mut f = Fixture::with_agent(Some(setup::pin(false))).await?;
-    let (peer, device) = f.ready_scep_peer().await?;
+    let (peer, device) = f.ready_local_peer().await?;
     let (platform, _) = peer.next("DeviceInformation").await?;
     let bytes = peer
         .manage(

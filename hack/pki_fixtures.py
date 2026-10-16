@@ -68,6 +68,71 @@ def trust(root, purpose, origin, tenant, provisioner, kid, ca_origin):
     return private(root/(purpose+'-trust.json'),value)
 
 
+def offline_materials(root, purpose):
+    """Real signing material for current-state seeds; no provider process."""
+    from agent_pki_fixtures import openssl
+    openssl('req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-sha256', '-days', '7300',
+            '-subj', '/CN=RSS T2 Root', '-addext', 'basicConstraints=critical,CA:TRUE',
+            '-addext', 'keyUsage=critical,keyCertSign,cRLSign',
+            '-keyout', root/'root.key', '-out', root/'root.pem')
+    openssl('req', '-new', '-newkey', 'rsa:2048', '-nodes', '-subj', '/CN=RSS T2 Issuer',
+            '-keyout', root/'issuer.key', '-out', root/'issuer.csr')
+    private(root/'issuer.ext', 'basicConstraints=critical,CA:TRUE,pathlen:0\nkeyUsage=critical,keyCertSign,cRLSign\nsubjectKeyIdentifier=hash\nauthorityKeyIdentifier=keyid,issuer\n')
+    openssl('x509', '-req', '-in', root/'issuer.csr', '-CA', root/'root.pem',
+            '-CAkey', root/'root.key', '-set_serial', str(secrets.randbits(120)),
+            '-days', '3652', '-extfile', root/'issuer.ext', '-out', root/'issuer.pem')
+    for name in ('root', 'issuer'):
+        private(root/(name+'.index'), '')
+        private(root/(name+'.number'), '01\n')
+        conf = private(root/(name+'.conf'), f'[ca]\ndefault_ca=CA\n[CA]\ndatabase={root}/{name}.index\ncrlnumber={root}/{name}.number\ncertificate={root}/{name}.pem\nprivate_key={root}/{name}.key\ndefault_md=sha256\ndefault_crl_days=30\n')
+        openssl('ca', '-config', conf, '-gencrl', '-out', root/(name+'.crl'))
+        openssl('crl', '-in', root/(name+'.crl'), '-outform', 'DER', '-out', root/(name+'.crl.der'))
+    openssl('genpkey', '-algorithm', 'RSA', '-pkeyopt', 'rsa_keygen_bits:2048', '-out', root/'provisioner.key')
+    openssl('pkcs8', '-topk8', '-nocrypt', '-in', root/'provisioner.key', '-outform', 'DER', '-out', root/'provisioner.pk8')
+    openssl('pkcs8', '-topk8', '-nocrypt', '-in', root/'server.key', '-outform', 'DER', '-out', root/'agent-tls.pk8')
+    if purpose == 'agent':
+        openssl('req', '-new', '-newkey', 'rsa:2048', '-nodes', '-subj', '/CN=rss-mdm-agent',
+                '-keyout', root/'agent.key', '-outform', 'DER', '-out', root/'agent.der')
+        openssl('pkcs8', '-topk8', '-nocrypt', '-in', root/'agent.key', '-outform', 'DER', '-out', root/'agent.pk8')
+    private(root/'leaf-issuer.json', dict(certificate=str(root/'issuer.pem'), key=str(root/'issuer.key'), password=None))
+    for path in root.iterdir():
+        path.chmod(0o600)
+
+
+def offline(root, case_root, env, purpose):
+    """Bind shared immutable issuer material to the case's tenant and protocol."""
+    if purpose == 'agent':
+        config = dict(mode='step_ca', endpoint=dict(listen='127.0.0.1:0', origin='https://mdm.example.test:9445',
+            certificate_file=str(root/'server.crt'), private_key_file=str(root/'agent-tls.pk8')), lifetime=dict(mode='standard'))
+        origin = config['endpoint']['origin']
+    else:
+        config = json.loads((case_root/(purpose+'.json')).read_text())
+        config.pop('ca_certificate_file', None)
+        config.pop('ca_private_key_file', None)
+        origin = config['management']['origin']
+    tenant = json.loads((case_root/'case.json').read_text())['tenant']
+    issuer = certificate_der(root/'issuer.pem')
+    digest = hashlib.sha256(issuer).hexdigest()
+    encode = lambda data: base64.b64encode(data).decode()
+    provisioner = 'rss' if purpose == 'apple' else 'rss-'+purpose
+    trust_value = dict(version=1, origin=origin, tenant=tenant, purpose=purpose, revision=1, issuers=[dict(
+        digest=digest, mode='active', certificate=encode(issuer), root=encode(certificate_der(root/'root.pem')),
+        crl=encode((root/'issuer.crl.der').read_bytes()), root_crl=encode((root/'root.crl.der').read_bytes()),
+        provisioner=provisioner, kid='' if purpose == 'apple' else purpose+'-t2-key')])
+    config['trust_file'] = str(private(root/(purpose+'-trust.json'), trust_value))
+    private(case_root/('agent-pki.json' if purpose == 'agent' else purpose+'.json'), config)
+    # Construction metadata only: ordinary seeds never contact a signing provider.
+    provider = dict(purpose=purpose, issuer=digest, origin='https://localhost:1',
+        tls_root_file=str(root/'root.pem'), provisioner='rss-'+purpose, kid=purpose+'-t2-key',
+        provisioner_key_file=str(root/'provisioner.pk8'))
+    if purpose == 'apple':
+        provider['scep_url'] = 'https://localhost:1/scep/rss'
+    path = case_root/'device-pki.json'
+    providers = json.loads(path.read_text()) if path.exists() else []
+    private(path, [p for p in providers if p['purpose'] != purpose] + [provider])
+    env['MDM_'+purpose.upper()+'_PKI_FIXTURES'] = str(root)
+
+
 @contextmanager
 def running(root, env, *, case, windows=False, agent=False, agent_origin=None, agent_template=None, windows_template=None, compose_file=None, providers=None, generation=None, configuration_devices=0, materials=()):
     import shutil
@@ -97,6 +162,7 @@ def running(root, env, *, case, windows=False, agent=False, agent_origin=None, a
     if agent:
         from agent_pki_fixtures import prepare
         prepare(root,configuration,password,configuration_devices=configuration_devices, materials=materials)
+    private(root/'leaf-issuer.json', dict(certificate=config['crt'], key=config['key'], password=str(password)))
     root_certificate=Path(config['root'][0]);root_key=root/'step/secrets/root_ca_key'
     offline=root_crl(root,root_certificate,root_key,password)
     isolate_root(root_key,password,offline)

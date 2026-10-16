@@ -409,7 +409,7 @@ for name in ('enrollment.recovery','windows.issuance','windows.enrollment','wind
 for part in ('cms', 'apns', 'scep', 'collection', 'profile', 'policy', 'onboarding', 'renewal', 'identity', 'push', 'fairness', 'host', 'commands', 'users', 'ddm'):
     no_pg = part in ('cms', 'apns')
     fixtures = ('apple',) + (() if no_pg else ('identity', 'oracle'))
-    if not no_pg:
+    if part in ('scep', 'renewal', 'identity', 'host'):
         fixtures += ('scep',)
     if part in ('apns', 'push', 'host'):
         fixtures += ('apns',)
@@ -1624,17 +1624,6 @@ for name in PKI_CONSUMERS:
     module = MODULES[name]
     MODULES[name] = replace(module, support_inputs=tuple(dict.fromkeys((*module.support_inputs,'hack/pki_fixtures.py','hack/pki_ca.py'))))
 
-# Native hosts bind case-specific listener origins and SCEP webhooks. These
-# observations require separate tenants; stable Agent trust is environment-owned.
-for name, module in tuple(MODULES.items()):
-    authorities = {'windows', 'scep'}
-    scope = 'tenant' if module.scope == 'objects' and authorities.intersection(module.fixtures) else module.scope
-    policies = tuple(replace(policy, scope='tenant')
-        if policy.scope == 'objects' and authorities.intersection(policy.fixtures or module.fixtures)
-        else policy for policy in module.policies)
-    MODULES[name] = replace(module, scope=scope, policies=policies)
-
-
 consume(('crates/app/src/enrollment_progress.rs',), 'enrollment.http windows.enrollment windows.management apple.scep apple.identity')
 consume(('crates/registration-service/schema/enrollment-progress.sql',), 'installation.migration catalog.contract enrollment.http windows.enrollment windows.management')
 consume(('crates/registration-service/src/database.rs',), 'enrollment.http enrollment.recovery enrollment.quotas device.binding device.revocation device.recovery agent.registration agent.pki')
@@ -1724,7 +1713,7 @@ consume(('crates/registration-service/src/admission.rs','crates/registration-ser
 
 # Account requirements belong to the existing module description. Cases with no
 # identity dependency resolve to no actors, even when overriding module fixtures.
-_OTHER_ACTORS = frozenset('certificate-archive.http timeline.http identity.local authorization.rules enrollment.http enrollment.quotas device.binding device.revocation agent.configurations agent.registration agent.reports api.identity_context diagnostics.http assets.http assets.queries planning.onboarding planning.group_scope planning.policy planning.http planning.agent_policy planning.frequency planning.software planning.self_service compliance.http execution.agent.delivery execution.agent.content execution.agent.history execution.agent.poll execution.agent.recovery execution.software.offer execution.software.content execution.software.recovery software.http execution.commands.admission execution.commands.windows'.split())
+_OTHER_ACTORS = frozenset('certificate-archive.http timeline.http identity.local authorization.rules authorization.membership authorization.capacity authorization.initialization authorization.admission enrollment.http enrollment.quotas device.binding device.revocation agent.configurations agent.registration agent.reports api.identity_context diagnostics.http assets.http assets.queries planning.onboarding planning.group_scope planning.policy planning.http planning.agent_policy planning.frequency planning.software planning.self_service compliance.http execution.agent.delivery execution.agent.content execution.agent.history execution.agent.poll execution.agent.recovery execution.software.offer execution.software.content execution.software.recovery software.http execution.commands.admission execution.commands.windows'.split())
 for name, module in tuple(MODULES.items()):
     if 'identity' not in module.fixtures:
         continue
@@ -1837,6 +1826,60 @@ MODULES['agent.pki-recovery'] = replace(module, id='agent.pki-recovery',
 MODULES['agent.pki'] = replace(module,
     policies=tuple(p for p in module.policies if p.selector != recovery_selector),
     support_inputs=(*module.support_inputs, 'crates/app/tests/support/agent_http.rs'))
+
+# These consumers mutate their business actor (other), not their provisioning admin.
+for name in ('execution.agent.delivery', 'execution.agent.poll', 'execution.agent.content',
+             'execution.agent.history', 'execution.agent.recovery', 'execution.software.offer',
+             'execution.software.content', 'execution.software.recovery', 'planning.agent_policy',
+             'planning.frequency', 'planning.software'):
+    module = MODULES[name]
+    MODULES[name] = replace(module, fixtures=(*module.fixtures, 'stable_admin'),
+        policies=tuple(replace(p, fixtures=(*p.fixtures, 'stable_admin')) if p.fixtures is not None else p for p in module.policies))
+
+# Only issuance/lifecycle consumers require a live signing authority.
+for name, additions in {
+    'agent.pki': ('ca_agent',), 'agent.pki-recovery': ('ca_agent',),
+    'agent.registration': ('ca_agent',), 'agent.configurations': ('ca_agent',),
+    'windows.issuance': ('ca_windows',), 'windows.enrollment': ('ca_windows',),
+    'windows.entra': ('ca_windows',), 'windows.declared': ('ca_windows',),
+}.items():
+    module = MODULES[name]
+    MODULES[name] = replace(module, fixtures=(*module.fixtures, *additions),
+        policies=tuple(replace(p, fixtures=(*p.fixtures, *additions)) if p.fixtures is not None else p for p in module.policies))
+# These hosts own tenant-wide trust/origins or mutate issuer lifecycle state.
+# Scope follows that state, not the presence of Windows/Apple fixture material.
+for name in ('agent.registration', 'windows.declared', 'windows.issuance', 'windows.enrollment',
+             'windows.entra', 'windows.commands', 'windows.retention', 'execution.commands.recovery',
+             'apple.host', 'apple.account_enrollment'):
+    module = MODULES[name]
+    MODULES[name] = replace(module, scope='tenant',
+        policies=tuple(replace(p, scope='tenant') if p.scope == 'objects' else p for p in module.policies))
+
+# Actual credential lifecycle actions, not their downstream prerequisite peers.
+for module_id, selector, fixture in (
+    ('apple.onboarding', 'apple::tests::onboarding::absent_agent_group_installs_fixed_package_and_registers_independently', 'ca_agent'),
+    ('execution.commands.onboarding', 'execution::t2::commands::onboarding::windows_policy_install_register_and_replay_use_independent_identity', 'ca_agent'),
+    ('execution.commands.onboarding', 'execution::t2::commands::onboarding::windows_policy_install_register_and_replay_use_independent_identity', 'ca_windows'),
+    ('execution.commands.configuration', 'execution::t2::commands::configuration::native_object_sets_share_a_device_and_withdraw_only_their_own_objects', 'ca_windows'),
+    ('execution.commands.onboarding', 'execution::t2::commands::onboarding::scope_exit_preserves_dispatched_installation_authority_until_its_deadline', 'ca_agent'),
+    ('execution.software.recovery', 'execution::t2::software::recovery::unknown_effect_survives_credential_recovery', 'ca_agent'),
+    ('windows.management', 'windows::t2::management::session_replay_nonce_collection_and_revoke', 'ca_windows'),
+):
+    module = MODULES[module_id]
+    previous = next((p for p in module.policies if p.selector == selector),
+                    CasePolicy(selector, module.db_mode, module.scope))
+    fixtures = previous.fixtures if previous.fixtures is not None else module.fixtures
+    policy = replace(previous, fixtures=(*fixtures, fixture))
+    if module_id == 'execution.software.recovery':
+        policy = replace(policy, scope='tenant')
+    MODULES[module_id] = replace(module, policies=(*[p for p in module.policies if p.selector != selector], policy))
+module = MODULES['apple.identity']
+MODULES[module.id] = replace(module, policies=tuple(replace(p, fixtures=tuple(f for f in module.fixtures if f != 'scep'))
+    if p.selector.endswith('token_is_required_before_management') else p for p in module.policies))
+
+for name, module in tuple(MODULES.items()):
+    if any(path in module.support_inputs for path in ('crates/app/tests/support/agent.rs', 'crates/app/tests/windows/support.rs', 'crates/app/tests/apple/mod.rs', 'crates/app/tests/support/mod.rs')):
+        MODULES[name] = replace(module, support_inputs=(*module.support_inputs, 'crates/app/tests/support/pki.rs'))
 
 # Derive input consumers only after all module and case fixture declarations are complete.
 for name, module in tuple(MODULES.items()):

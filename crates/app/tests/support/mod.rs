@@ -11,6 +11,7 @@ pub(crate) mod authority;
 pub(crate) mod task_signature;
 pub(crate) use crate::publication_support::pg::case;
 pub(crate) mod identity;
+pub(crate) mod pki;
 pub(crate) use crate::config::Config;
 pub(crate) use crate::publication_support;
 pub(crate) use anyhow::{Result, ensure};
@@ -182,8 +183,7 @@ impl Browser {
     }
     pub(crate) async fn login(&mut self, app: &Router, login: &str) -> Result<StatusCode> {
         if matches!(login, "admin" | "other") {
-            let identity = identity::identity(case_tenant()).await?;
-            let secret = identity::credential(&identity, login)?;
+            let secret = identity::credential_for(case_tenant(), login)?;
             self.cookies
                 .insert("__Host-identity-session".into(), secret.expose().into());
             self.csrf = Some(secret.csrf());

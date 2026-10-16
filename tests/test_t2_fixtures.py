@@ -347,3 +347,77 @@ class CryptographicNeedsTests(unittest.TestCase):
                 self.assertFalse((root / 'weak.der').exists())
                 self.assertFalse((root / 'agent-subordinate.key').exists())
                 self.assertFalse(any('x509' in command for command in commands))
+
+class PreparationBatchTests(unittest.TestCase):
+    def test_admitted_actors_are_batched_and_stable_admin_reuses_credentials(self):
+        import threading
+        import time
+        import uuid
+        from concurrent.futures import ThreadPoolExecutor
+        from t2_environment import private
+        with tempfile.TemporaryDirectory() as tmp:
+            fixture = RunFixtures(Mock(), Path(tmp), 2)
+            self.addCleanup(fixture.cert_directory.cleanup)
+            module = replace(MODULES['execution.agent.content'], actors=(('tenant', 'admin'),))
+            jobs = [Invocation(module, Case(module.build, 'test', '/test', str(i))) for i in range(3)]
+            fixture.prepare(jobs)
+            shared = fixture.root / 'shared'
+            shared.mkdir()
+            fixture.identity_environment = Mock(return_value=(shared, 'management', 'source'))
+            pool = SimpleNamespace(owner=SimpleNamespace(project='pg'), generation=1,
+                                   database_config=lambda *args: {})
+            calls = []
+            def helper(root, manifest, output, database):
+                calls.append(manifest)
+                for name in manifest['cases']:
+                    path = Path(name)
+                    context = json.loads(path.read_text())
+                    for actor in context['actors']:
+                        actor['principal'] = str(uuid.uuid5(uuid.NAMESPACE_URL, actor['login']))
+                        private(path.parent / f"credential-{actor['tenant']}-{actor['role']}", 'real-issued-test-double')
+                        private(path.parent / f"credential-meta-{actor['tenant']}-{actor['role']}", time.time() + 300)
+                    private(path, context)
+            fixture.identity_helper = helper
+            gate = threading.Barrier(2)
+            def prepare(job):
+                gate.wait(timeout=3)
+                fixture.prepare_identity(pool, 'db', job, Path(tmp) / job.key)
+            with ThreadPoolExecutor(max_workers=2) as executor:
+                list(executor.map(prepare, jobs[:2]))
+            self.assertEqual(len(calls), 1)
+            self.assertEqual(len(calls[0]['cases']), 2)
+            fixture.prepare_identity(pool, 'db', jobs[2], Path(tmp) / jobs[2].key)
+            self.assertEqual(len(calls), 1)
+            self.assertEqual(len({fixture.case_contexts[j.key]['actors'][0]['principal'] for j in jobs}), 1)
+
+    def test_host_start_does_not_hold_global_resource_lock_and_failure_is_shared(self):
+        import threading
+        from concurrent.futures import ThreadPoolExecutor
+        with tempfile.TemporaryDirectory() as tmp:
+            fixture = RunFixtures(Mock(), Path(tmp), 2)
+            self.addCleanup(fixture.cert_directory.cleanup)
+            module = MODULES['execution.agent.content']
+            jobs = [Invocation(module, Case(module.build, 'test', '/test', str(i))) for i in range(2)]
+            fixture.prepare(jobs)
+            entered = threading.Event()
+            release = threading.Event()
+            def start(*args):
+                entered.set()
+                if not release.wait(3):
+                    raise TimeoutError('test stalled')
+                raise RuntimeError('original host failure')
+            def run(job):
+                with fixture.workers(job, 'db', 'config'):
+                    self.fail('failed host was published')
+            with patch('t2_fixtures.compatibility', return_value='same'), patch('t2_fixtures.Host', side_effect=start) as host:
+                with ThreadPoolExecutor(max_workers=2) as executor:
+                    first = executor.submit(run, jobs[0])
+                    self.assertTrue(entered.wait(3))
+                    self.assertTrue(fixture.lock.acquire(timeout=1))
+                    fixture.lock.release()
+                    second = executor.submit(run, jobs[1])
+                    release.set()
+                    for result in (first, second):
+                        with self.assertRaises(RuntimeError):
+                            result.result(timeout=3)
+                self.assertEqual(host.call_count, 1)

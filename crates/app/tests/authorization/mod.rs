@@ -52,30 +52,9 @@ async fn fixture() -> Result<Fixture> {
     );
     let router = app(&base, reader.clone()).await?;
     let mut admin = Browser::default();
-    identity::age_prepared_admin_session()?;
-    ensure!(admin.login_password(&router, "admin", PASSWORD).await? == StatusCode::OK);
+    ensure!(admin.login(&router, "admin").await? == StatusCode::OK);
     let mut member = Browser::default();
-    ensure!(
-        admin
-            .call(
-                &router,
-                Method::POST,
-                &format!("/api/v1/identity/tenants/{TENANT}/accounts", TENANT = case_tenant()),
-                Some(json!({"login":crate::test_support::case::name("authorization-member"),"password":PASSWORD}))
-            )
-            .await?
-            .0
-            == StatusCode::CREATED
-    );
-    ensure!(
-        member
-            .login(
-                &router,
-                crate::test_support::case::name("authorization-member")
-            )
-            .await?
-            == StatusCode::OK
-    );
+    ensure!(member.login(&router, "other").await? == StatusCode::OK);
     let subject = browser_subject(&member, &router).await?;
     let store = database(&base).await?;
     let audit_store = store

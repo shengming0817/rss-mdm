@@ -97,7 +97,7 @@ async fn initialization_receipt_atomicity_and_recovery() -> Result<()> {
     let mut init = json!({"database":base["access_database"],"identityDatabase":base["identity"]["database"],
         "expectedEpoch":base["flow"]["storage"]["epoch"],
         "installation":{"audit_mode":"plain","instance_id":INSTANCE,"target":base["flow"]["storage"]["target"],"lineage":base["flow"]["storage"]["lineage"]},
-        "audit":{"mode":"plain"},"login":crate::test_support::case::name("authorization-member"),"passwordFile":std::path::Path::new(&std::env::var("MDM_TEST_CONFIG")?).parent().unwrap().join("account-password"),
+        "audit":{"mode":"plain"},"login":crate::test_support::case::login("other"),"passwordFile":std::path::Path::new(&std::env::var("MDM_TEST_CONFIG")?).parent().unwrap().join("account-password"),
         "operationId":wrong_key,"user":{"instanceId":INSTANCE,"tenantId":case_tenant(),"principalId":Uuid::new_v4()}});
     ensure!(matches!(
         crate::authorization::initialize(serde_json::from_value(init.clone())?).await,

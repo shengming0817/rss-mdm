@@ -381,8 +381,7 @@ impl Host {
             trusts,
             crate::device_pki::providers(&config.device_pki)?,
         ));
-        pki.admit(rss_request_context::TenantId::parse(case_tenant())?, now())
-            .await?;
+        crate::test_support::pki::seed_trust(&store.archive_pool(), pki.bindings()).await?;
         let associations = Arc::new(rss_mdm_device_service::Associations::new(
             store
                 .audit_store(&crate::config::AuditConfig::Plain)
@@ -753,7 +752,16 @@ impl Host {
                 enrollment_type(profile),
                 now(),
             )?;
-            let cert = sign_certificate(&app.windows()?.channel.ca, &intent).await?;
+            let profile = certificate::IssuanceProfile::decode(&intent.profile)?;
+            let cert = crate::test_support::pki::leaf(
+                &PathBuf::from(std::env::var("MDM_WINDOWS_PKI_FIXTURES")?),
+                &intent.csr,
+                &intent.registration.to_string(),
+                &[],
+                profile.start,
+                profile.end,
+            )?
+            .remove(0);
             let mut tx = store.archive_pool().begin().await?;
             sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
                 .bind(case_tenant())
