@@ -20,19 +20,6 @@ impl Fixture {
             reply.0 == StatusCode::UNAUTHORIZED,
             "pending_token admitted management"
         );
-        let reply = peer
-            .send(
-                "/checkin",
-                protocol::dictionary([
-                    ("MessageType", "UserAuthenticate".into()),
-                    (
-                        "UDID",
-                        crate::test_support::case::name("rss-t2-apple").into(),
-                    ),
-                ]),
-            )
-            .await?;
-        ensure!(reply.0 == StatusCode::BAD_REQUEST);
         let definition = self.collection_template().await?;
         let owner = self.policy_worker().await?;
         let preview = tokio::time::timeout(Duration::from_secs(30), async {

@@ -109,13 +109,17 @@ impl Client {
         );
         let other_key = rss_mdm_native_protection::Protector::new(&[93; 32])?;
         ensure!(
-            rss_mdm_execution_service::storage::bind_native_key(
-                &self.app.flow.planning.runtime,
-                self.app.identity.tenant,
-                other_key.id()
-            )
-            .await
-            .is_err(),
+            matches!(
+                rss_mdm_execution_service::storage::bind_native_key(
+                    &self.app.flow.planning.runtime,
+                    self.app.identity.tenant,
+                    other_key.id()
+                )
+                .await,
+                Err(rss_mdm_execution_service::Error::Unavailable(
+                    rss_mdm_execution_service::Failure::NativeProtection
+                ))
+            ),
             "changed native key was silently accepted"
         );
         rss_mdm_execution_service::storage::bind_native_key(
