@@ -1,6 +1,6 @@
 //! Closed macOS read recipes; execution and OS APIs belong to the independent Agent.
 //! ref: osquery/osquery specs/darwin/{apps,package_receipts}.table@5.23.1
-//! ref: Homebrew/brew Library/Homebrew/cmd/info.rb@7cce6eac8d897b0b8440e16f33dbcb21770da7cf
+//! ref: osquery/osquery osquery/tables/system/darwin/homebrew_packages.cpp@5.23.1
 use super::{NativeCardinality, NativeType};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;

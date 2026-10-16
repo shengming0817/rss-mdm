@@ -14,7 +14,7 @@ fn query(definition: NativeQueryDefinition) -> NativeQuery {
         _ => NativeCardinality::List,
     };
     NativeQuery {
-        version: 1,
+        version: definition.engine().contract_version(),
         definition,
         cardinality,
         instance_keys: if cardinality == NativeCardinality::List {
@@ -280,12 +280,15 @@ fn engine_map_is_bounded_by_closed_keys_not_a_stale_windows_count() {
     let mut environment = CollectionEnvironment {
         edition: None,
         tools: Default::default(),
-        native_engines: engines.into_iter().map(|e| (e, 1)).collect(),
+        native_engines: engines
+            .into_iter()
+            .map(|e| (e, e.contract_version()))
+            .collect(),
     };
     environment.validate().unwrap();
     environment
         .native_engines
-        .insert(NativeEngine::MacosBrew, 2);
+        .insert(NativeEngine::MacosBrew, 1);
     assert!(environment.validate().is_err());
     assert!(serde_json::from_value::<NativeEngines>(json!({"macos.command":1})).is_err());
 }
@@ -452,4 +455,25 @@ fn macos_software_rows_bind_closed_provenance_and_brew_selectors() {
         )
         .complete_for(&q, 10)
     );
+}
+
+#[test]
+fn brew_data_recipe_rejects_old_versions_and_negotiates_exactly() {
+    let current = query(brew("/opt/homebrew"));
+    assert_eq!(current.version, 2);
+    current.validate().unwrap();
+    let plan = plan(current.definition.clone());
+    assert!(plan.supported_by(&[(NativeEngine::MacosBrew, 2)].into()));
+    for version in [0, 1, 3] {
+        assert!(!plan.supported_by(&[(NativeEngine::MacosBrew, version)].into()));
+        let mut unsupported = current.clone();
+        unsupported.version = version;
+        assert!(unsupported.validate().is_err());
+        let mut spec = plan.spec().clone();
+        spec.queries.insert("sample".into(), unsupported);
+        assert!(
+            serde_json::from_value::<NativeCollectionPlan>(serde_json::to_value(spec).unwrap())
+                .is_err()
+        );
+    }
 }

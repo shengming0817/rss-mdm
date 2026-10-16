@@ -1,6 +1,6 @@
 //! Closed macOS Agent recipes. Field scopes are bound from the signed execution offer.
 //! ref: osquery/osquery osquery/tables/system/darwin/apps.mm@5.23.1
-//! ref: Homebrew/brew Library/Homebrew/cmd/info.rb@7cce6eac8d897b0b8440e16f33dbcb21770da7cf
+//! ref: osquery/osquery osquery/tables/system/darwin/homebrew_packages.cpp@5.23.1
 //! ref: osquery/osquery specs/darwin/package_receipts.table@5.23.1
 use super::*;
 use rss_mdm_agent_wire::{CollectionScope, runtime as w};
@@ -38,7 +38,7 @@ fn pack(
         _ => w::NativeCardinality::List,
     };
     let query = w::NativeQuery {
-        version: 1,
+        version: definition.engine().contract_version(),
         definition,
         cardinality,
         instance_keys: if cardinality == w::NativeCardinality::List {
@@ -65,7 +65,7 @@ fn pack(
     }
     Blueprint {
         id: format!("macos.agent.{id}"),
-        version: "1".into(),
+        version: if id.starts_with("brew_") { "2" } else { "1" }.into(),
         category: if id == "receipts" || id.starts_with("applications") || id.starts_with("brew") {
             "software"
         } else {
