@@ -64,18 +64,22 @@ async fn fixed_controls_preserve_uncertainty() -> anyhow::Result<()> {
     );
     let registration = &device.1["primaryMdmRegistration"];
     let confirmation = json!({"confirmed":true,"expectedRegistrationId":registration["registrationId"],"expectedGeneration":registration["generation"]});
-    for action in [
+    for (index, action) in [
         json!({"kind":"restart","fields":{}}),
         json!({"kind":"lock","confirmed":true,"expectedRegistrationId":registration["registrationId"],"expectedGeneration":registration["generation"],"pin":"123456"}),
         json!({"kind":"wipe","confirmed":false,"expectedRegistrationId":registration["registrationId"],"expectedGeneration":registration["generation"]}),
         json!({"kind":"wipe","confirmed":true,"expectedRegistrationId":registration["registrationId"],"expectedGeneration":registration["generation"].as_i64().unwrap()+1}),
-    ] {
+    ].into_iter().enumerate() {
         let id = Uuid::new_v4();
         let response=client.call(Method::POST,"",Some(json!({"operationId":id,"deadline":host.app.clock.unix_seconds()?+300,"action":action}))).await?;
-        ensure!(
-            !response.0.is_success(),
-            "unsupported/invalid control accepted: {response:?}"
-        );
+        let expected = [
+            (StatusCode::BAD_REQUEST, "malformed_request"),
+            (StatusCode::NOT_IMPLEMENTED, "action_not_supported"),
+            (StatusCode::BAD_REQUEST, "malformed_request"),
+            (StatusCode::CONFLICT, "operation_conflict"),
+        ][index];
+        ensure!(response.0 == expected.0 && response.1["code"] == expected.1,
+            "wrong control rejection: {response:?}");
         ensure!(
             client.call(Method::GET, &format!("/{id}"), None).await?.0 == StatusCode::NOT_FOUND
         );

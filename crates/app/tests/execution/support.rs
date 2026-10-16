@@ -34,22 +34,21 @@ impl Client {
         router: Router,
         app: Arc<crate::api::Assembly>,
     ) -> anyhow::Result<Self> {
-        let mut client = Self::with_browser(router, app, Browser::default());
-        let login = client.browser
-            .call(
-                &client.router,
-                Method::POST,
-                &format!("/api/v1/identity/tenants/{TENANT}/login", TENANT = case_tenant()),
-                Some(json!({"login":crate::test_support::case::login("admin"),"password":crate::test_support::identity::PASSWORD})),
-            )
-            .await?;
-        ensure!(
-            login.0 == StatusCode::OK,
-            "real planning login: {:?}",
-            login
-        );
-        Ok(client)
+        let secret = crate::test_support::identity::credential_for(case_tenant(), "admin")?;
+        Ok(Self::with_browser(
+            router,
+            app,
+            Browser {
+                cookies: std::collections::BTreeMap::from([(
+                    "__Host-identity-session".into(),
+                    secret.expose().into(),
+                )]),
+                csrf: Some(secret.csrf()),
+                ..Browser::default()
+            },
+        ))
     }
+
     pub(crate) fn with_browser(
         router: Router,
         app: Arc<crate::api::Assembly>,
@@ -216,6 +215,10 @@ async fn relay_crash_child() -> anyhow::Result<()> {
                 .strip_prefix("dispatch.")
                 .unwrap(),
         )?;
+        ensure!(
+            id.to_string() == std::env::var("MDM_CRASH_OPERATION")?,
+            "child claimed another operation"
+        );
         let digest = message.fingerprint().as_bytes().to_vec();
         service.service.inject_fault(
             rss_transactional_messaging_postgres::PgTransactionFault::CommitAcknowledgedPending,

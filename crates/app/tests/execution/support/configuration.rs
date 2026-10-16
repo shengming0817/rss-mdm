@@ -81,20 +81,28 @@ pub(crate) async fn resource_input(
         .volume_directory()
         .unwrap()
         .join(case_tenant());
-    for entry in std::fs::read_dir(content_root)? {
-        let entry = entry?;
-        if entry.file_type()?.is_file() {
-            let stored = std::fs::read(entry.path())?;
-            for node in secrets {
-                ensure!(
-                    !stored
-                        .windows(node.len())
-                        .any(|part| part == node.as_bytes()),
-                    "native configuration content remained plaintext"
-                );
-            }
+    use sqlx::Connection;
+    let mut pg =
+        sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?)
+            .await?;
+    let pieces: Vec<Uuid> = sqlx::query_scalar("SELECT (piece->>'id')::uuid FROM mdm_content.manifests m CROSS JOIN LATERAL jsonb_array_elements(m.document->'value'->'pieces') piece WHERE m.tenant_id=$1::uuid AND m.class='native_configuration' AND m.sha256=$2 AND m.state='ready'")
+        .bind(case_tenant()).bind(sha.as_slice()).fetch_all(&mut pg).await?;
+    ensure!(
+        !pieces.is_empty(),
+        "current configuration has no stored content pieces"
+    );
+    for piece in pieces {
+        let stored = std::fs::read(content_root.join(piece.to_string()))?;
+        for node in secrets {
+            ensure!(
+                !stored
+                    .windows(node.len())
+                    .any(|part| part == node.as_bytes()),
+                "native configuration content remained plaintext"
+            );
         }
     }
+    pg.close().await?;
     change(client, &path, 2, json!({"action":"activate","version":"1"})).await?;
     Ok(id)
 }

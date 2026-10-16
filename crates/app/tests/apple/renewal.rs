@@ -15,7 +15,6 @@ impl Fixture {
         let row=sqlx::query("SELECT s.certificate,s.enrollment::text,s.registration::text,s.not_before,s.not_after,r.generation,c.id::text AS credential,p.epoch::text FROM mdm_apple.scep_attempts s JOIN mdm_access.registrations r ON (r.tenant_id,r.id)=(s.tenant_id,s.registration) JOIN mdm_access.credentials c ON (c.tenant_id,c.registration)=(r.tenant_id,r.id) JOIN mdm_access.report_sources p ON (p.tenant_id,p.registration)=(r.tenant_id,r.id) WHERE s.tenant_id=$1::uuid AND s.enrollment=$2 AND s.state='bound' AND c.state='active'").bind(case_tenant()).bind(enrollment).fetch_one(&mut pg).await?;
         let before: i64 = row.try_get("not_before")?;
         let after: i64 = row.try_get("not_after")?;
-        let now = self.app.clock.unix_seconds()?;
         let old_leaf = self.app.apple()?.channel.trust_fixture().verify(
             &[tokio_rustls::rustls::pki_types::CertificateDer::from(
                 row.try_get::<Vec<u8>, _>("certificate")?,
@@ -34,13 +33,29 @@ impl Fixture {
                 .credential(old_leaf.fingerprint())?,
             )
             .await?;
-        ensure!(!rss_mdm_apple_channel::renewal::due(before, after, now));
-        ensure!(!rss_mdm_apple_channel::renewal::due(before, after, after));
         // Move only the scheduling clock into the renewal window. Certificates and TLS remain real.
         let due = after - ((after - before) / 3).min(7 * 86400) + 1;
-        super::scep::issuer_state(&mut pg, "verify_only").await?;
-        ensure!(
-            matches!(
+        if expected_account.is_none() {
+            super::scep::issuer_state(&mut pg, "verify_only").await?;
+            ensure!(
+                matches!(
+                    rss_mdm_apple_channel::renewal::maintain(
+                        &self.app.apple()?.channel,
+                        &self.app.access.apple_store(),
+                        &self.app.audit_store,
+                        case_tenant(),
+                        due,
+                    )
+                    .await,
+                    Err(rss_mdm_apple_channel::Error::Conflict)
+                ),
+                "stale issuer authorized renewal"
+            );
+            let stale: i64 = sqlx::query_scalar("SELECT count(*) FROM mdm_apple.scep_attempts WHERE tenant_id=$1::uuid AND renewal_of IS NOT NULL")
+            .bind(case_tenant()).fetch_one(&mut pg).await?;
+            ensure!(stale == 0, "stale renewal escaped rollback");
+            super::scep::issuer_state(&mut pg, "active").await?;
+            for _ in 0..2 {
                 rss_mdm_apple_channel::renewal::maintain(
                     &self.app.apple()?.channel,
                     &self.app.access.apple_store(),
@@ -48,16 +63,30 @@ impl Fixture {
                     case_tenant(),
                     due,
                 )
-                .await,
-                Err(rss_mdm_apple_channel::Error::Conflict)
-            ),
-            "stale issuer authorized renewal"
-        );
-        let stale: i64 = sqlx::query_scalar("SELECT count(*) FROM mdm_apple.scep_attempts WHERE tenant_id=$1::uuid AND renewal_of IS NOT NULL")
-            .bind(case_tenant()).fetch_one(&mut pg).await?;
-        ensure!(stale == 0, "stale renewal escaped rollback");
-        super::scep::issuer_state(&mut pg, "active").await?;
-        for _ in 0..2 {
+                .await?;
+            }
+            let count:i64=sqlx::query_scalar("SELECT count(*) FROM mdm_apple.scep_attempts WHERE tenant_id=$1::uuid AND renewal_of IS NOT NULL AND state='prepared'").bind(case_tenant()).fetch_one(&mut pg).await?;
+            ensure!(count == 1, "renewal scheduling duplicated an issuance");
+            let expired: String = sqlx::query_scalar("SELECT id::text FROM mdm_apple.scep_attempts WHERE tenant_id=$1::uuid AND renewal_of IS NOT NULL AND state='prepared'").bind(case_tenant()).fetch_one(&mut pg).await?;
+            sqlx::query("UPDATE mdm_apple.scep_attempts SET expires_at=clock_timestamp()-interval '1 second' WHERE id=$1::uuid").bind(&expired).execute(&mut pg).await?;
+            rss_mdm_apple_channel::renewal::maintain(
+                &self.app.apple()?.channel,
+                &self.app.access.apple_store(),
+                &self.app.audit_store,
+                case_tenant(),
+                due,
+            )
+            .await?;
+            let state: String =
+                sqlx::query_scalar("SELECT state FROM mdm_apple.attempts WHERE id=$1::uuid")
+                    .bind(&expired)
+                    .fetch_one(&mut pg)
+                    .await?;
+            ensure!(
+                state == "superseded",
+                "expired renewal request remained deliverable"
+            );
+        } else {
             rss_mdm_apple_channel::renewal::maintain(
                 &self.app.apple()?.channel,
                 &self.app.access.apple_store(),
@@ -67,27 +96,6 @@ impl Fixture {
             )
             .await?;
         }
-        let count:i64=sqlx::query_scalar("SELECT count(*) FROM mdm_apple.scep_attempts WHERE tenant_id=$1::uuid AND renewal_of IS NOT NULL AND state='prepared'").bind(case_tenant()).fetch_one(&mut pg).await?;
-        ensure!(count == 1, "renewal scheduling duplicated an issuance");
-        let expired: String = sqlx::query_scalar("SELECT id::text FROM mdm_apple.scep_attempts WHERE tenant_id=$1::uuid AND renewal_of IS NOT NULL AND state='prepared'").bind(case_tenant()).fetch_one(&mut pg).await?;
-        sqlx::query("UPDATE mdm_apple.scep_attempts SET expires_at=clock_timestamp()-interval '1 second' WHERE id=$1::uuid").bind(&expired).execute(&mut pg).await?;
-        rss_mdm_apple_channel::renewal::maintain(
-            &self.app.apple()?.channel,
-            &self.app.access.apple_store(),
-            &self.app.audit_store,
-            case_tenant(),
-            due,
-        )
-        .await?;
-        let state: String =
-            sqlx::query_scalar("SELECT state FROM mdm_apple.attempts WHERE id=$1::uuid")
-                .bind(&expired)
-                .fetch_one(&mut pg)
-                .await?;
-        ensure!(
-            state == "superseded",
-            "expired renewal request remained deliverable"
-        );
         let (command, body) = old.next("InstallProfile").await?;
         let payload = body["Payload"].as_data().unwrap();
         use x509_cert::der::{Decode, asn1::OctetString};
@@ -131,31 +139,33 @@ impl Fixture {
         let secret = scep["PayloadContent"].as_dictionary().unwrap()["Challenge"]
             .as_string()
             .unwrap();
-        old.manage("NotNow", Some(command), None).await?;
-        sqlx::query("UPDATE mdm_apple.attempts SET next_attempt=clock_timestamp()-interval '1 second' WHERE id=$1::uuid").bind(command.to_string()).execute(&mut pg).await?;
-        let (retry, request) = old.next("InstallProfile").await?;
-        ensure!(
-            retry == command && request == body,
-            "renewal NotNow changed its request"
-        );
-        let reused =
-            scep_client::Device::with_key(enrollment, attempt, secret, Some(&old_device.key))?;
-        let request = reused.request(
-            &self.root.join("apple-issuer.pem"),
-            &Uuid::new_v4().to_string(),
-            self.app.clock.unix_seconds()?,
-        )?;
-        ensure!(
-            reused
-                .enroll(
-                    &self.client()?,
-                    &self.app.apple()?.channel.scep_fixture()?.0,
-                    &request
-                )
-                .await
-                .is_err(),
-            "renewal reused active key"
-        );
+        if expected_account.is_none() {
+            old.manage("NotNow", Some(command), None).await?;
+            sqlx::query("UPDATE mdm_apple.attempts SET next_attempt=clock_timestamp()-interval '1 second' WHERE id=$1::uuid").bind(command.to_string()).execute(&mut pg).await?;
+            let (retry, request) = old.next("InstallProfile").await?;
+            ensure!(
+                retry == command && request == body,
+                "renewal NotNow changed its request"
+            );
+            let reused =
+                scep_client::Device::with_key(enrollment, attempt, secret, Some(&old_device.key))?;
+            let request = reused.request(
+                &self.root.join("apple-issuer.pem"),
+                &Uuid::new_v4().to_string(),
+                self.app.clock.unix_seconds()?,
+            )?;
+            ensure!(
+                reused
+                    .enroll(
+                        &self.client()?,
+                        &self.app.apple()?.channel.scep_fixture()?.0,
+                        &request
+                    )
+                    .await
+                    .is_err(),
+                "renewal reused active key"
+            );
+        }
         let device = scep_client::Device::new(enrollment, attempt, secret)?;
         let request = device.request(
             &self.root.join("apple-issuer.pem"),

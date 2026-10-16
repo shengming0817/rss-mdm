@@ -61,7 +61,7 @@ async fn bootstrap_escrow_requires_evidence_and_clears_secrets() -> Result<()> {
         ),
     ]);
     ensure!(peer.send("/checkin", get.clone()).await?.0 == StatusCode::NOT_IMPLEMENTED);
-    f.policy_cycle(&peer).await?;
+    f.native_context(&peer).await?;
     f.grant_native_actions(&["device_control"]).await?;
     let op = f.create_restart().await?;
     let (resolve, _) = peer.next("DeviceInformation").await?;

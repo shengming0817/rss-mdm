@@ -5,7 +5,7 @@ use rss_mdm_execution_service::channels::PushOutcome;
 use uuid::Uuid;
 #[tokio::test]
 #[ignore = "Apple T2: controlled HTTP/2 APNs with certificate authentication"]
-async fn production_transport_receipts_are_not_command_evidence() -> Result<()> {
+async fn apns_transport_returns_bounded_correlated_receipts() -> Result<()> {
     let participant =
         Participant::start(vec![200, 410, 429, 503, 400], vec![1, 2, 254, 255]).await?;
     let id = Uuid::new_v4();

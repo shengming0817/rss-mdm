@@ -190,6 +190,7 @@ impl From<Error> for rss_mdm_execution_service::channels::Rejection {
             Error::Unauthorized => R::Unauthorized,
             Error::Forbidden => R::Forbidden,
             Error::Conflict => R::Conflict,
+            Error::EnrollmentPaused => R::EnrollmentPaused,
             Error::Unavailable(Failure::RequestDeadline) => R::Deadline,
             Error::Unavailable(Failure::Audit) => R::Audit,
             Error::Unavailable(Failure::AuditIntegrity) => R::AuditIntegrity,
@@ -253,5 +254,17 @@ impl axum::response::IntoResponse for Error {
         }
         response.extensions_mut().insert(self);
         response
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn enrollment_pause_survives_execution_channel_round_trip() {
+        let rejection =
+            rss_mdm_execution_service::channels::Rejection::from(Error::EnrollmentPaused);
+        let error = Error::from(rss_mdm_execution_service::Error::from(rejection));
+        assert!(matches!(error, Error::EnrollmentPaused));
     }
 }

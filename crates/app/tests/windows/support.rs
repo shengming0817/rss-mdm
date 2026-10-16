@@ -608,11 +608,21 @@ impl Host {
         self.peer_profile(rss_mdm_registration_service::enrollment::WindowsProfile::Device)
             .await
     }
+    pub(crate) async fn peer_for(&self, device: &str) -> anyhow::Result<Peer> {
+        self.peer_with_authority(
+            rss_mdm_registration_service::enrollment::WindowsProfile::Device,
+            false,
+            PeerPreparation::CurrentCredential,
+            device,
+        )
+        .await
+    }
     pub(crate) async fn self_peer(&self) -> anyhow::Result<Peer> {
         self.peer_with_authority(
             rss_mdm_registration_service::enrollment::WindowsProfile::Device,
             true,
             PeerPreparation::EnrollmentProtocol,
+            crate::test_support::case::name("tls-device"),
         )
         .await
     }
@@ -620,14 +630,20 @@ impl Host {
         &self,
         profile: rss_mdm_registration_service::enrollment::WindowsProfile,
     ) -> anyhow::Result<Peer> {
-        self.peer_with_authority(profile, false, PeerPreparation::CurrentCredential)
-            .await
+        self.peer_with_authority(
+            profile,
+            false,
+            PeerPreparation::CurrentCredential,
+            crate::test_support::case::name("tls-device"),
+        )
+        .await
     }
     pub(crate) async fn enrolled_peer(&self) -> anyhow::Result<Peer> {
         self.peer_with_authority(
             rss_mdm_registration_service::enrollment::WindowsProfile::Device,
             false,
             PeerPreparation::EnrollmentProtocol,
+            crate::test_support::case::name("tls-device"),
         )
         .await
     }
@@ -723,6 +739,7 @@ impl Host {
     fn initial_message(
         url: &str,
         registration: Uuid,
+        device: &str,
         secrets: &rss_mdm_windows_channel::test_support::Secrets,
     ) -> anyhow::Result<syncml::Message> {
         let mut message = syncml::decode(
@@ -730,7 +747,7 @@ impl Host {
             &CodecLimits::default(),
         )?;
         message.header.target = url.to_owned();
-        message.header.source = crate::test_support::case::name("tls-device").into();
+        message.header.source = device.into();
         message.header.credential = Some(syncml::Credential {
             meta: syncml::Meta {
                 format: Some("b64".into()),
@@ -747,8 +764,7 @@ impl Host {
             if let Command::DevInfo { items, .. } = command {
                 for item in items {
                     if item.source.as_deref() == Some("./DevInfo/DevId") {
-                        item.data =
-                            Some(Secret(crate::test_support::case::name("tls-device").into()));
+                        item.data = Some(Secret(device.into()));
                     }
                 }
             }
@@ -760,6 +776,7 @@ impl Host {
         profile: rss_mdm_registration_service::enrollment::WindowsProfile,
         self_service: bool,
         preparation: PeerPreparation,
+        device: &str,
     ) -> anyhow::Result<Peer> {
         use x509_cert::der::{EncodePem, pem::LineEnding};
         let root = &self.root;
@@ -801,7 +818,7 @@ impl Host {
                 &proof,
                 issuance::fixture::Seed {
                     request,
-                    device: crate::test_support::case::name("tls-device"),
+                    device,
                     intent: &intent,
                     certificate: &cert,
                     now: now(),
@@ -886,7 +903,7 @@ impl Host {
             receipt.enrollment_id,
             &intent.sealed,
         )?;
-        let message = Self::initial_message(&url, intent.registration, &secrets)?;
+        let message = Self::initial_message(&url, intent.registration, device, &secrets)?;
         let next_nonce = [7u8; 16];
         let followup = syncml::Message {
             header: syncml::Header {

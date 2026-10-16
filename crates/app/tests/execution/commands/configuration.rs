@@ -705,52 +705,8 @@ async fn associated_agent_health_executes_only_original_mdm_and_missing_channel_
     planning_http::call(&mut client.browser,&client.router,&format!("/api/v1/groups/{group}"),0,json!({"action":"create","assetContext":"associated_device","name":"Agent health remediation","description":"","criteria":{"selector":{"kind":"device"},"quantifier":"one","criteria":{"kind":"predicate","field":"custom.corporate_agent.healthy","op":"eq","value":{"kind":"boolean","value":false}}}})).await?;
     planning_http::call(&mut client.browser,&client.router,&format!("/api/v1/scopes/{scope}"),0,json!({"action":"put","definition":{"targets":[{"kind":"group","id":group}],"limitations":null,"exclusions":[]}})).await?;
     let resource = resource(&mut client, &[CORTANA]).await?;
-    let excluded_scope = Uuid::new_v4();
-    planning_http::call(&mut client.browser,&client.router,&format!("/api/v1/scopes/{excluded_scope}"),0,json!({"action":"put","definition":{"targets":[{"kind":"device","id":alone}],"limitations":null,"exclusions":[]}})).await?;
-    for index in 1..=17 {
-        let excluded_policy = Uuid::from_u128(index);
-        change(&mut client,&format!("/api/v1/policies/{excluded_policy}"),0,json!({"action":"put","enabled":true,"definition":{"scope":excluded_scope,"action":{"kind":"configuration","resource":{"id":resource,"version":"1","platform":"windows","architecture":"x86_64","variant":"native"},"exit":"retain"}}})).await?;
-    }
     change(&mut client,&format!("/api/v1/policies/{policy}"),0,json!({"action":"put","enabled":true,"definition":{"scope":scope,"action":{"kind":"configuration","resource":{"id":resource,"version":"1","platform":"windows","architecture":"x86_64","variant":"native"},"exit":"retain"}}})).await?;
     planning_http::await_ingress().await?;
-    use rss_mdm_execution_service::source_authority::{CandidateKind, SourceAuthority};
-    let source = crate::planning::execution_source::ExecutionSource::new(
-        client.app.flow.planning.objects.clone(),
-    );
-    let mut transaction = pg.begin().await?;
-    sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
-        .bind(case_tenant())
-        .execute(&mut *transaction)
-        .await?;
-    let first_page = source
-        .candidates_on(
-            &mut transaction,
-            client.app.identity.tenant,
-            case_device(),
-            CandidateKind::Configuration,
-            Uuid::nil(),
-        )
-        .await?;
-    ensure!(
-        first_page.items.is_empty()
-            && first_page.has_more
-            && first_page.scanned_after == Uuid::from_u128(16),
-        "excluded candidates lost bounded scan progress"
-    );
-    let next_page = source
-        .candidates_on(
-            &mut transaction,
-            client.app.identity.tenant,
-            case_device(),
-            CandidateKind::Configuration,
-            first_page.scanned_after,
-        )
-        .await?;
-    ensure!(
-        next_page.items.iter().any(|c| c.policy == policy),
-        "eligible policy after empty page was skipped"
-    );
-    transaction.rollback().await?;
     let operations = published(&mut client, policy).await?;
     ensure!(
         operations.len() == 1,
@@ -889,4 +845,94 @@ async fn associated_agent_health_executes_only_original_mdm_and_missing_channel_
     pg.close().await?;
     host.close().await?;
     Ok(())
+}
+
+#[tokio::test]
+#[ignore = "make t2 MODULE=execution.commands.configuration"]
+async fn empty_candidate_page_preserves_progress_to_the_next_matching_policy() -> anyhow::Result<()>
+{
+    let host = crate::windows::test_support::Host::open().await?;
+    let _peer = host.peer().await?;
+    let mut client = Client::start(host.browser.clone(), host.app.clone()).await?;
+    let grants = [
+        "resource_read",
+        "resource_write",
+        "policy_read",
+        "policy_write",
+        "scope_read",
+        "scope_write",
+    ]
+    .into_iter()
+    .map(|operation| json!({"operation":operation,"scope":{"kind":"tenant"}}))
+    .collect::<Vec<_>>();
+    crate::test_support::identity::set_grants(
+        case_tenant(),
+        crate::test_support::case::admin(),
+        serde_json::from_value(json!(grants))?,
+    )
+    .await?;
+    let resource = resource(&mut client, &[CORTANA]).await?;
+    let scope = Uuid::new_v4();
+    crate::test_support::agent_execution::seed_scope(
+        &host.app.flow.planning,
+        scope,
+        json!([{"kind":"device","id":case_device()}]),
+    )
+    .await?;
+    let policy = Uuid::new_v4();
+    let mut pg =
+        sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?)
+            .await?;
+    let excluded_scope = Uuid::new_v4();
+    crate::test_support::agent_execution::seed_scope(
+        &host.app.flow.planning,
+        excluded_scope,
+        json!([]),
+    )
+    .await?;
+    for index in 1..=17 {
+        let excluded_policy = Uuid::from_u128(index);
+        change(&mut client,&format!("/api/v1/policies/{excluded_policy}"),0,json!({"action":"put","enabled":true,"definition":{"scope":excluded_scope,"action":{"kind":"configuration","resource":{"id":resource,"version":"1","platform":"windows","architecture":"x86_64","variant":"native"},"exit":"retain"}}})).await?;
+    }
+    change(&mut client,&format!("/api/v1/policies/{policy}"),0,json!({"action":"put","enabled":true,"definition":{"scope":scope,"action":{"kind":"configuration","resource":{"id":resource,"version":"1","platform":"windows","architecture":"x86_64","variant":"native"},"exit":"retain"}}})).await?;
+    use rss_mdm_execution_service::source_authority::{CandidateKind, SourceAuthority};
+    let source = crate::planning::execution_source::ExecutionSource::new(
+        client.app.flow.planning.objects.clone(),
+    );
+    let mut transaction = pg.begin().await?;
+    sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
+        .bind(case_tenant())
+        .execute(&mut *transaction)
+        .await?;
+    let first_page = source
+        .candidates_on(
+            &mut transaction,
+            client.app.identity.tenant,
+            case_device(),
+            CandidateKind::Configuration,
+            Uuid::nil(),
+        )
+        .await?;
+    ensure!(
+        first_page.items.is_empty()
+            && first_page.has_more
+            && first_page.scanned_after == Uuid::from_u128(16),
+        "excluded candidates lost bounded scan progress"
+    );
+    let next_page = source
+        .candidates_on(
+            &mut transaction,
+            client.app.identity.tenant,
+            case_device(),
+            CandidateKind::Configuration,
+            first_page.scanned_after,
+        )
+        .await?;
+    ensure!(
+        next_page.items.iter().any(|c| c.policy == policy),
+        "eligible policy after empty page was skipped"
+    );
+    transaction.rollback().await?;
+    pg.close().await?;
+    host.close().await
 }

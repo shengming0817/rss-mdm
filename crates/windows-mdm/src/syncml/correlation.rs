@@ -131,11 +131,11 @@ impl Expected {
     pub fn record_sent(&mut self, sent: SentMessage, l: &CodecLimits) -> CorrelationResult<()> {
         bound(self.messages.len().saturating_add(1), l.session_messages)
             .map_err(C::InvalidExpected)?;
-        self.validate(l).map_err(C::InvalidExpected)?;
-        let mut candidate = self.clone();
-        candidate.messages.push(sent);
-        candidate.validate(l).map_err(C::InvalidExpected)?;
-        *self = candidate;
+        self.messages.push(sent);
+        if let Err(error) = self.validate(l) {
+            self.messages.pop();
+            return Err(C::InvalidExpected(error));
+        }
         Ok(())
     }
     fn validate(&self, l: &CodecLimits) -> Result<()> {

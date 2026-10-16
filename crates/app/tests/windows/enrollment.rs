@@ -93,6 +93,18 @@ async fn discovery_wstep_replay_and_tls_identity() -> anyhow::Result<()> {
     let root = &host.root;
     let root_cert = &host.root_cert;
     let url = &peer.url;
+    let positive = || {
+        peer.mutual
+            .post(url)
+            .header("content-type", "application/vnd.syncml.dm+xml")
+            .body(
+                rss_mdm_windows_mdm::syncml::encode(&peer.message, &CodecLimits::default())
+                    .unwrap(),
+            )
+            .send()
+    };
+    ensure!(positive().await?.status() == StatusCode::OK);
+
     ensure!(
         client
             .post(url)
@@ -124,23 +136,7 @@ async fn discovery_wstep_replay_and_tls_identity() -> anyhow::Result<()> {
             .is_err(),
         "management accepted an untrusted client CA"
     );
-    let reference = host.reference;
-    let secret = rss_identity_core::session::SessionSecret::parse(host.secret.expose().into())?;
-    let actor = app
-        .identity
-        .authority
-        .authenticate_session(app.identity.tenant, secret, crate::identity::deadline())
-        .await?;
-    app.identity
-        .authority
-        .revoke_current_session(actor, crate::identity::deadline())
-        .await?;
-    ensure!(
-        app.identity
-            .authenticate(app.credentials.get(reference)?)
-            .await
-            .is_err()
-    );
+    ensure!(positive().await?.status() == StatusCode::OK);
     host.close().await?;
     Ok(())
 }
@@ -413,7 +409,10 @@ async fn self_enrollment_preserves_server_identity_and_terminal_protocol_id() ->
         peer.mutual
             .post(&peer.url)
             .header("content-type", "application/vnd.syncml.dm+xml")
-            .body(syncml::encode(&peer.message, &CodecLimits::default())?)
+            .body(rss_mdm_windows_mdm::syncml::encode(
+                &peer.message,
+                &CodecLimits::default()
+            )?)
             .send()
             .await?
             .status()

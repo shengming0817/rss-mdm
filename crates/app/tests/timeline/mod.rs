@@ -791,11 +791,11 @@ async fn corrupt_source_is_rejected_without_advancing_the_index() -> Result<()> 
         "SELECT position FROM mdm_timeline.checkpoints WHERE tenant_id='{}'",
         case_tenant()
     ))?;
-    pg(&format!(
-        "UPDATE rss_audit.records SET canonical=decode('00','hex') WHERE tenant_id='{}' AND position=(SELECT min(position) FROM rss_audit.records WHERE tenant_id='{}')",
-        case_tenant(),
-        case_tenant()
+    let changed = pg(&format!(
+        "WITH changed AS (UPDATE rss_audit.records SET canonical=decode('00','hex') WHERE tenant_id='{}' AND position=(SELECT min(position) FROM rss_audit.records WHERE tenant_id='{}') RETURNING position) SELECT count(*) FROM changed",
+        case_tenant(), case_tenant()
     ))?;
+    ensure!(changed.trim() == "1", "corruption did not hit exactly one source fact");
     let (status, error) = f
         .admin
         .call(&f.router, Method::GET, "/api/v1/audit-events", None)

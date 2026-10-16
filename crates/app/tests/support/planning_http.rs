@@ -137,3 +137,62 @@ pub(crate) async fn native_configuration_bytes(
 pub(crate) fn windows_configuration() -> Value {
     json!({"target":{"kind":"device"},"apply":{"platform":"windows","request":{"kind":"sync_ml","request":{"kind":"node","node":"./Device/Vendor/MSFT/Policy/Config/Experience/AllowCortana","instance":[],"operation":"replace","value":{"type":"integer","value":"1"}}}},"remove":null})
 }
+
+/// Ordinary native consumers need an active template, not Resource publication tests.
+pub(crate) async fn seed_native_template(
+    planning: &rss_mdm_flow_service::planning::Planning,
+    id: uuid::Uuid,
+    platform: rss_mdm_resource::Platform,
+    template: rss_mdm_resource::NativeCollectionDefinition,
+) -> Result<()> {
+    use rss_mdm_resource::{
+        Architecture, Artifact, Declaration, Digest, Id, Kind, Variant, Version,
+    };
+    let bytes = template.canonical();
+    let artifact = Artifact::new(
+        Id::new("native-template")?,
+        bytes.len() as u64,
+        Digest::of(&bytes),
+    )?;
+    let version = Version::new(
+        planning.tenant,
+        Id::new(id.to_string())?,
+        Id::new("v1")?,
+        Kind::NativeCollection,
+        [Architecture::X86_64, Architecture::Aarch64]
+            .into_iter()
+            .map(|architecture| {
+                Variant::new(
+                    platform,
+                    architecture,
+                    Id::new("default").expect("fixed id"),
+                    Declaration::NativeCollection {
+                        artifact: artifact.clone(),
+                        definition: template.clone(),
+                    },
+                )
+            })
+            .collect(),
+    )?;
+    planning
+        .runtime
+        .local_tx(planning.tenant, crate::identity::deadline(), move |tx| {
+            Box::pin(async move {
+                rss_mdm_resource_postgres::fixture::active_version_in(
+                    tx,
+                    version,
+                    rss_contract::Timepoint::try_from(1_i64).expect("fixture time"),
+                )
+                .await
+            })
+        })
+        .await
+        .fold(
+            Ok,
+            |e| Err(anyhow::anyhow!(e)),
+            |e| Err(anyhow::anyhow!(e)),
+            |_| Err(anyhow::anyhow!("template rollback unconfirmed")),
+            |_| Err(anyhow::anyhow!("template commit unconfirmed")),
+            |e| Err(anyhow::anyhow!(e)),
+        )
+}

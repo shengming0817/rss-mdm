@@ -768,11 +768,7 @@ impl Fixture {
             .await?;
         Ok((device, der))
     }
-    async fn authenticate_peer(
-        &self,
-        device: &scep_client::Device,
-        der: &[u8],
-    ) -> Result<lifecycle::Peer> {
+    fn peer_identity(&self, device: &scep_client::Device, der: &[u8]) -> Result<lifecycle::Peer> {
         let apple = self.app.apple()?;
         let peer = lifecycle::Peer {
             client: reqwest::Client::builder()
@@ -788,6 +784,14 @@ impl Fixture {
             origin: apple.config.management.origin.clone(),
             topic: apple.config.apns_topic.clone(),
         };
+        Ok(peer)
+    }
+    async fn authenticate_peer(
+        &self,
+        device: &scep_client::Device,
+        der: &[u8],
+    ) -> Result<lifecycle::Peer> {
+        let peer = self.peer_identity(device, der)?;
         let reply = peer
             .send(
                 "/checkin",
@@ -860,7 +864,7 @@ impl Fixture {
         &mut self,
         scope: rss_mdm_resource::TemplateScope,
     ) -> Result<serde_json::Value> {
-        use crate::test_support::agent_execution::{resource, upload};
+        use crate::test_support::agent_execution::upload;
         use rss_mdm_resource::{
             NativeAdapter, NativeCollectionDefinition, NativeCollectionSpec, NativeMapping,
         };
@@ -887,28 +891,21 @@ impl Fixture {
         })?;
         let bytes = template.canonical();
         let id = Uuid::new_v4();
-        let digest = rss_mdm_resource::Digest::of(&bytes).bytes();
-        resource(
-            &mut self.browser,
-            &self.router,
+        crate::test_support::planning_http::seed_native_template(
+            &self.app.flow.planning,
             id,
-            0,
-            json!({"action":"create","kind":"native_collection"}),
+            rss_mdm_resource::Platform::MacOS,
+            template,
         )
         .await?;
-        let variants = ["x86_64", "aarch64"].map(|architecture| json!({"platform":"macos","architecture":architecture,"key":"default","declaration":{"kind":"native_collection","artifact":{"reference":"native-template","length":bytes.len(),"sha256":digest},"definition":template}}));
-        resource(&mut self.browser, &self.router, id, 1, json!({"action":"version","version":"v1","kind":"native_collection","variants":variants})).await?;
         ensure!(upload(&self.browser, &self.router, id, &bytes).await? == StatusCode::CREATED);
-        resource(
-            &mut self.browser,
-            &self.router,
-            id,
-            2,
-            json!({"action":"activate","version":"v1"}),
+        let scope = Uuid::new_v4();
+        crate::test_support::agent_execution::seed_scope(
+            &self.app.flow.planning,
+            scope,
+            json!([{"kind":"device","id":case_device()}]),
         )
         .await?;
-        let scope = Uuid::new_v4();
-        self.policy_post(&format!("/api/v1/scopes/{scope}"), 0, json!({"action":"put","definition":{"targets":[{"kind":"device","id":case_device()}],"limitations":null,"exclusions":[]}})).await?;
         Ok(
             json!({"scope":scope,"action":{"kind":"native_collection","resource":{"id":id,"version":"v1","platform":"macos","architecture":"aarch64","variant":"default"},"runLifetimeSeconds":1800}}),
         )
@@ -947,10 +944,48 @@ impl Fixture {
         definition: &serde_json::Value,
         count: usize,
     ) -> Result<Vec<Uuid>> {
-        let mut runs = Vec::new();
+        use sqlx::Connection;
+        let planning = &self.app.flow.planning;
+        let policies = rss_mdm_flow_service::planning::policies::Policies::new(
+            planning.runtime.clone(),
+            self.app.audit_store.clone(),
+            planning.tenant,
+            planning.policy_store.clone(),
+            self.app.inputs.clone(),
+        );
+        let proof = crate::device::test_support::admin(case_tenant(), "admin-a").await?;
+        let mut ids = Vec::with_capacity(count);
         for _ in 0..count {
-            runs.push(self.queue_collection(definition).await?.1);
+            let id = Uuid::new_v4();
+            let audit =
+                rss_mdm_audit_integration::RequestAudit::new(case_tenant().into(), "policy_write");
+            proof.bind_audit(&audit)?;
+            let operation = serde_json::from_value(
+                json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"put","enabled":true,"definition":definition}}),
+            )?;
+            policies.change(&proof, id, &operation, &audit).await?;
+            audit.finalize(None);
+            ids.push(id);
         }
+        let mut db =
+            sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?)
+                .await?;
+        let runs = tokio::time::timeout(Duration::from_secs(30), async {
+            loop {
+                // Each owner recovers its own policy; do not rescan the growing device backlog on every insert.
+                for id in &ids { self.app.execution.recover_action_fixture(*id).await?; }
+                let runs: Vec<Uuid> = sqlx::query_scalar("SELECT r.id FROM mdm_commands.action_runs r JOIN mdm_policy.versions v ON(v.tenant_id,v.id)=(r.tenant_id,r.policy_version) JOIN mdm_access.collection_runs c ON(c.tenant_id,c.id)=(r.tenant_id,r.id) JOIN mdm_apple.attempts a ON(a.tenant_id,a.collection)=(r.tenant_id,r.id) WHERE r.tenant_id=$1::uuid AND v.policy=ANY($2) AND r.gateway_accepted AND c.sealed_at IS NULL AND a.phase='collect_device' ORDER BY r.id")
+                    .bind(case_tenant()).bind(&ids).fetch_all(&mut db).await?;
+                if runs.len() == count { return Ok::<_,anyhow::Error>(runs); }
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        }).await??;
+        db.close().await?;
+        // Keep the real device recovery/budget seam (#2758) after all cross-page input exists.
+        self.app
+            .execution
+            .settle_native_fixture(case_device())
+            .await?;
         Ok(runs)
     }
 }

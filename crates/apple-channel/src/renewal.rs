@@ -610,3 +610,16 @@ pub async fn next_maintenance(
     tx.rollback().await.map_err(db)?;
     Ok(millis.map(|ms| std::time::Duration::from_millis(ms.max(1) as u64)))
 }
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn renewal_window_is_bounded_by_lifetime_and_expiry() {
+        for (before, after, opens) in [(0, 90, 60), (0, 90 * 86400, 83 * 86400)] {
+            assert!(!super::due(before, after, opens - 1));
+            assert!(super::due(before, after, opens));
+            assert!(super::due(before, after, after - 1));
+            assert!(!super::due(before, after, after));
+        }
+    }
+}

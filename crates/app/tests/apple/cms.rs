@@ -50,7 +50,7 @@ fn cms_is_attached_and_independently_verified() -> anyhow::Result<()> {
 
 #[test]
 #[ignore = "MODULE=apple.cms: independent CMS signed attributes and ECDSA bootstrap integrity"]
-fn account_bootstrap_integrity_is_not_apple_attestation() -> anyhow::Result<()> {
+fn bootstrap_cms_integrity_and_expiry_interoperate_with_openssl() -> anyhow::Result<()> {
     let work = tempfile::tempdir()?;
     let key = work.path().join("ec.key");
     let certificate = work.path().join("ec.pem");

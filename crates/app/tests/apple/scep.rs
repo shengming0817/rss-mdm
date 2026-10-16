@@ -316,9 +316,30 @@ async fn pause_during_signing_preserves_result_and_managed_continuity() -> Resul
             .await?;
     let paused: bool = sqlx::query_scalar("SELECT paused FROM mdm_access.registration_admission WHERE tenant_id=$1::uuid AND channel='macos_mdm'").bind(case_tenant()).fetch_one(&mut pg).await?;
     ensure!(paused, "notify hook must pause after CA acceptance");
+    let pending = f.peer_identity(&device, &der)?;
+    let rejected = pending
+        .send(
+            "/checkin",
+            protocol::dictionary([
+                ("MessageType", "Authenticate".into()),
+                (
+                    "UDID",
+                    crate::test_support::case::name("rss-t2-apple").into(),
+                ),
+                ("Topic", pending.topic.clone().into()),
+            ]),
+        )
+        .await?;
     ensure!(
-        f.authenticate_peer(&device, &der).await.is_err(),
-        "first activation must be paused"
+        rejected.0 == StatusCode::CONFLICT,
+        "first activation returned the wrong rejection: {}",
+        rejected.0
+    );
+    let unbound: bool = sqlx::query_scalar("SELECT certificate IS NOT NULL AND fingerprint IS NULL FROM mdm_apple.scep_attempts WHERE tenant_id=$1::uuid AND id=$2")
+        .bind(case_tenant()).bind(attempt).fetch_one(&mut pg).await?;
+    ensure!(
+        unbound,
+        "paused first activation lost the signed result or bound the credential"
     );
     sqlx::query("UPDATE mdm_access.registration_admission SET paused=false,revision=2 WHERE tenant_id=$1::uuid AND channel='macos_mdm'").bind(case_tenant()).execute(&mut pg).await?;
     let peer = f.authenticate_peer(&device, &der).await?;

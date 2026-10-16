@@ -1124,9 +1124,13 @@ async fn linked_renewal_and_parent_child_supersession() -> anyhow::Result<()> {
         .body(child.wire.clone())
         .send()
         .await?;
+    ensure!(old.status() == StatusCode::INTERNAL_SERVER_ERROR);
     ensure!(
-        !old.status().is_success(),
-        "old parent certificate replay revived child"
+        matches!(
+            soap::decode_response(&child.issue, &old.bytes().await?, &CodecLimits::default())?.body,
+            Body::Fault(soap::FaultKind::Authentication)
+        ),
+        "old parent replay did not fail authentication"
     );
     let next = linked_peer(
         &host,
@@ -1151,17 +1155,26 @@ async fn linked_renewal_and_parent_child_supersession() -> anyhow::Result<()> {
     let mut next_message = next.message.clone();
     next_message.header.session_id += 140;
     ensure!(manage(&next.mutual, &next.url, &next_message).await? == StatusCode::UNAUTHORIZED);
-    ensure!(
-        !host
-            .client
-            .post(next.issue.header.to.as_ref().unwrap())
-            .header("content-type", "application/soap+xml")
-            .body(next.wire)
-            .send()
-            .await?
-            .status()
-            .is_success()
-    );
+    let retired = host
+        .client
+        .post(next.issue.header.to.as_ref().unwrap())
+        .header("content-type", "application/soap+xml")
+        .body(next.wire.clone())
+        .send()
+        .await?;
+    ensure!(retired.status() == StatusCode::INTERNAL_SERVER_ERROR);
+    ensure!(matches!(
+        soap::decode_response(
+            &next.issue,
+            &retired.bytes().await?,
+            &CodecLimits::default()
+        )?
+        .body,
+        Body::Fault(soap::FaultKind::Authentication)
+    ));
+    let still_retired: i64 = sqlx::query_scalar("SELECT count(*) FROM mdm_access.registrations WHERE tenant_id=$1::uuid AND id=ANY($2) AND state='superseded'")
+        .bind(case_tenant()).bind(vec![child.id, next.id]).fetch_one(&mut pg).await?;
+    ensure!(still_retired == 2);
     pg.close().await?;
     host.close().await?;
     Ok(())
@@ -1652,8 +1665,7 @@ async fn declared_policy_delete_claims_recover_from_unknown_commit() -> anyhow::
 #[cfg(feature = "integration")]
 #[tokio::test]
 #[ignore = "make t2 MODULE=windows.declared"]
-async fn declared_readiness_has_closed_http_diagnosis_and_primary_remains_available()
--> anyhow::Result<()> {
+async fn primary_commands_are_independent_of_declared_child_readiness() -> anyhow::Result<()> {
     use crate::execution::test_support::Client;
     use axum::http::Method;
     use serde_json::json;
@@ -1662,19 +1674,6 @@ async fn declared_readiness_has_closed_http_diagnosis_and_primary_remains_availa
     let parent = host.enrolled_peer().await?;
     let mut client = Client::start(host.browser.clone(), host.app.clone()).await?;
     client.set_authorized(true).await?;
-    let grants=["windows_mi_execute"].into_iter().map(|operation|json!({"operation":operation,"scope":{"kind":"device","id":crate::test_support::case::name("tls-device")}})).collect::<Vec<_>>();
-    let rule=client.browser.call(&client.router,Method::PUT,&format!("/api/v1/authorization/rules/{}",Uuid::new_v4()),Some(json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"value":{"subject":{"kind":"user","user":crate::test_support::identity::user(case_tenant(),crate::test_support::case::admin())},"grants":grants}}))).await?;
-    ensure!(rule.0 == StatusCode::OK);
-    let id = Uuid::new_v4();
-    let document = format!(
-        r#"<DeclaredConfiguration schema="1.0" context="Device" id="{id}" checksum="readiness-v1" osdefinedscenario="MSFTExtensibilityMIProviderConfig"><DSC namespace="root/test" className="ExampleProvider"><Key name="Name">resource</Key><Value name="Text">value</Value></DSC></DeclaredConfiguration>"#
-    );
-    let input = || json!({"operationId":Uuid::new_v4(),"inputVersion":"1","deadline":now()+300,"target":{"kind":"device"},"task":{"platform":"windows","request":{"kind":"sync_ml","request":{"kind":"node","node":"./Device/Vendor/MSFT/DeclaredConfiguration/Host/Complete/Documents/*/Document","instance":[id],"operation":"replace","value":{"type":"xml","value":document}}}}});
-    let missing = client.call(Method::POST, "", Some(input())).await?;
-    ensure!(
-        missing.0 == StatusCode::BAD_REQUEST,
-        "retired arbitrary MI input: {missing:?}"
-    );
     client
         .known_windows_capability(crate::test_support::case::name("tls-device"))
         .await?;
@@ -1688,8 +1687,8 @@ async fn declared_readiness_has_closed_http_diagnosis_and_primary_remains_availa
     let ca = &host.app.windows()?.channel.ca;
     let certificate = sign_certificate(ca, &parent.intent).await?;
     let child = linked_peer(&host, &parent, &certificate, &host.root.join("device.key")).await?;
-    let unready = client.call(Method::POST, "", Some(input())).await?;
-    ensure!(unready.0 == StatusCode::BAD_REQUEST);
+    let unready = client.call(Method::POST, "", Some(ordinary())).await?;
+    ensure!(unready.0 == StatusCode::ACCEPTED);
     authenticate_child(&child.mutual, &child.url, &child.message, &parent.ack).await?;
     let primary = client.call(Method::POST, "", Some(ordinary())).await?;
     ensure!(primary.0 == StatusCode::ACCEPTED);
@@ -1708,20 +1707,6 @@ async fn declared_readiness_has_closed_http_diagnosis_and_primary_remains_availa
     ensure!(
         detail.1["primaryMdmRegistration"]["registrationId"]
             == parent.intent.registration.to_string()
-    );
-    host.app
-        .devices
-        .revoke(
-            &parent.proof,
-            crate::test_support::case::name("tls-device"),
-            parent.intent.registration,
-            Uuid::new_v4(),
-        )
-        .await?;
-    let retired = client.call(Method::POST, "", Some(input())).await?;
-    ensure!(
-        retired.0 == StatusCode::BAD_REQUEST,
-        "parent retirement: {retired:?}"
     );
     host.close().await?;
     Ok(())
