@@ -697,6 +697,8 @@ async fn failed_prepare_rejects_without_dispatching_installation() -> Result<()>
         installation(&peer, &mut client, policy, operation, AttemptPhase::Prepare).await?;
     let command =
         installation_command(&prepare, AttemptPhase::Prepare).expect("correlated MSI prepare");
+    ensure!(installation_command(&prepare, AttemptPhase::Execute).is_none());
+    ensure!(pg(&format!("SELECT EXISTS(SELECT 1 FROM mdm_commands.attempts a JOIN mdm_commands.attempt_items i ON(i.tenant_id,i.attempt)=(a.tenant_id,a.id) WHERE a.tenant_id='{}' AND a.operation='{operation}' AND a.phase='prepare' AND i.command={command} AND NOT coalesce(i.receipt_accepted,false))",case_tenant()))?.trim()=="t", "Prepare was counted as acknowledged before its receipt");
     let mut response = reply(&initial, &prepare, false);
     for c in &mut response.commands {
         if let s::Command::Status(s) = c
