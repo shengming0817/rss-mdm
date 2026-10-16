@@ -84,7 +84,7 @@ pub(crate) async fn enrollment_matrix(router: &Router, browser: &mut Browser) ->
     );
     let resume = format!("/api/v1/enrollments/{enrollment}/resume");
     browser.operation = Some(uuid::Uuid::new_v4());
-    let (_, resumed) = browser
+    let (status, resumed) = browser
         .call(
             router,
             Method::POST,
@@ -92,7 +92,7 @@ pub(crate) async fn enrollment_matrix(router: &Router, browser: &mut Browser) ->
             Some(json!({"password": "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBA"})),
         )
         .await?;
-    ensure!(resumed["status"] == "pending");
+    ensure!(status == StatusCode::OK && resumed["status"] == "pending");
     ensure!(
         browser
             .call(
@@ -102,8 +102,7 @@ pub(crate) async fn enrollment_matrix(router: &Router, browser: &mut Browser) ->
                 Some(json!({"password":"BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBA"}))
             )
             .await?
-            .1
-            == resumed
+            == (StatusCode::OK, resumed.clone())
     );
     browser.operation = Some(uuid::Uuid::new_v4());
     ensure!(browser.call(router, Method::POST, issue, Some(json!({"deviceId":"outside","password":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA","source":"mdm.windows","windowsProfile":"Device"}))).await?.0 == StatusCode::FORBIDDEN);
@@ -165,26 +164,14 @@ pub(crate) async fn enrollment_matrix(router: &Router, browser: &mut Browser) ->
             .0
             == StatusCode::CONFLICT
     );
-    let mut anonymous = Browser::default();
-    ensure!(
-        anonymous
-            .call(
-                router,
-                Method::POST,
-                issue,
-                Some(json!({"deviceId":crate::test_support::case::name("device-1"),"password":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA","source":"mdm.windows","windowsProfile":"Device"}))
-            )
-            .await?
-            .0
-            == StatusCode::UNAUTHORIZED
-    );
-    ensure!(
-        audit_count(|r| r.action() == "enrollment_create"
-            && r.result() == "denied"
-            && r.actor().is_none())?
-            > 0,
-        "preauthentication denial lost action"
-    );
+    use tower::ServiceExt;
+    let response = router.clone().oneshot(Request::builder().method(Method::POST).uri(issue)
+        .header("host","mdm.example.test").header("origin","https://mdm.example.test")
+        .header("x-identity-request","1").header("content-type","application/json")
+        .body(Body::from(serde_json::to_vec(&json!({"deviceId":crate::test_support::case::name("device-1"),"password":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA","source":"mdm.windows","windowsProfile":"Device"}))?))?).await?;
+    ensure!(response.status() == StatusCode::UNAUTHORIZED);
+    let request_id = response.headers()["x-request-id"].to_str()?;
+    ensure!(audit_count(|r| r.request() == Some(request_id) && r.action() == "enrollment_create" && r.result() == "denied" && r.actor().is_none())? == 1);
     println!("enrollment identity/authorization/replay/audit failure matrix passed");
     Ok(())
 

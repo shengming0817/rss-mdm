@@ -10,18 +10,27 @@ use rss_mdm_certificate::agent::PROFILE;
 use uuid::Uuid;
 #[tokio::test]
 #[ignore = "make t2 MODULE=agent.pki-recovery"]
-async fn restored_ca_signs_only_live_authorized_agent_csrs_and_tls_preserves_purpose()
--> anyhow::Result<()> {
+async fn restored_ca_preserves_authorized_agent_issuance_and_activation() -> anyhow::Result<()> {
     let s = service(deployment()).await?;
     let p = admin(case_a(), "admin-a").await?;
     let foreign = admin(case_b(), "admin-b").await?;
     let g = grant()?;
-    assert!(authorize_request(&s, &foreign, &g, &audit()).await.is_err());
+    // This rejection is the authorization helper's tenant guard.
+    assert_eq!(
+        authorize_request(&s, &foreign, &g, &audit())
+            .await
+            .unwrap_err()
+            .code,
+        wire::ErrorCode::PermissionDenied
+    );
     let receipt = authorize_request(&s, &p, &g, &audit()).await?;
     let input = signing(&g, receipt.grant_id)?;
     let mut wrong = input.clone();
     wrong.secret = runtime::Secret::parse(&crate::enrollment::random())?;
-    assert!(s.issue(&wrong, &audit()).await.is_err());
+    assert_eq!(
+        s.issue(&wrong, &audit()).await.unwrap_err().code,
+        wire::ErrorCode::InvalidIdentity
+    );
     let candidate = s.issue(&input, &audit()).await?;
     std::fs::write(root().join("agent-recovery-request"), b"issuance persisted")?;
     tokio::time::timeout(std::time::Duration::from_secs(180), async {
@@ -57,9 +66,9 @@ async fn restored_ca_signs_only_live_authorized_agent_csrs_and_tls_preserves_pur
         verified.metadata().not_after - verified.metadata().not_before,
         365 * 86400
     );
-    assert!(
-        s.authenticate(&evidence).await.is_err(),
-        "candidate entered runtime before activation"
+    assert_eq!(
+        s.authenticate(&evidence).await.err().unwrap().code,
+        wire::ErrorCode::InvalidIdentity
     );
     let activate = wire::ActivationRequest {
         wire_version: 1,

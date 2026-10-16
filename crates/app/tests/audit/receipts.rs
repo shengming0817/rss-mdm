@@ -42,7 +42,14 @@ async fn exercise(pool: &PgPool, ledger: bool) -> Result<()> {
             Box::pin(async move { store.append(tx, fact, false).await })
         })
         .await;
-    ensure!(state(inconsistent) == "rolled_back");
+    ensure!(inconsistent.fold(
+        |_| false,
+        |_| false,
+        |e| matches!(e, TransactionError::Operation(Error::Receipt)),
+        |_| false,
+        |_| false,
+        |_| false
+    ));
     let changed = Fact::business(
         &request,
         "stable-operation",
@@ -56,7 +63,14 @@ async fn exercise(pool: &PgPool, ledger: bool) -> Result<()> {
             Box::pin(async move { store.append(tx, fact, true).await })
         })
         .await;
-    ensure!(state(conflict) == "rolled_back");
+    ensure!(conflict.fold(
+        |_| false,
+        |_| false,
+        |e| matches!(e, TransactionError::Operation(Error::Receipt)),
+        |_| false,
+        |_| false,
+        |_| false
+    ));
     let missing = Fact::business(
         &request,
         "missing-operation",
@@ -70,7 +84,14 @@ async fn exercise(pool: &PgPool, ledger: bool) -> Result<()> {
             Box::pin(async move { store.append(tx, fact, true).await })
         })
         .await;
-    ensure!(state(missing) == "rolled_back");
+    ensure!(missing.fold(
+        |_| false,
+        |_| false,
+        |e| matches!(e, TransactionError::Operation(Error::Receipt)),
+        |_| false,
+        |_| false,
+        |_| false
+    ));
     let rollback = Fact::business(
         &request,
         "rolled-back-operation",
@@ -92,7 +113,14 @@ async fn exercise(pool: &PgPool, ledger: bool) -> Result<()> {
             },
         )
         .await;
-    ensure!(state(rollback) == "rolled_back");
+    ensure!(rollback.fold(
+        |_| false,
+        |_| false,
+        |e| matches!(e, TransactionError::Operation(Error::Receipt)),
+        |_| false,
+        |_| false,
+        |_| false
+    ));
     ensure!(bytes(pool, tenant).await? == original);
     request.finalize(None);
     Ok(())

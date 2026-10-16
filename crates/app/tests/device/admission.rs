@@ -1,7 +1,7 @@
 use super::*;
 #[tokio::test]
 #[ignore = "MODULE=device.admission: real registration state and PostgreSQL"]
-async fn runtime_role_cannot_mutate_history_or_bypass_tenants() -> anyhow::Result<()> {
+async fn runtime_role_cannot_mutate_history_or_read_without_tenant() -> anyhow::Result<()> {
     let (access, service, admin_a, mut root) = fixture().await?;
     bind(
         &service,

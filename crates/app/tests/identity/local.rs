@@ -3,6 +3,7 @@
     reason = "test scenarios preserve distinct recovery assertions"
 )]
 use crate::test_support::*;
+use anyhow::Context;
 #[tokio::test]
 #[ignore = "MODULE=identity.local: real authority and PostgreSQL"]
 async fn local_identity_mdm_authorization_and_revocation() -> Result<()> {
@@ -11,6 +12,41 @@ async fn local_identity_mdm_authorization_and_revocation() -> Result<()> {
     fixture_resources
         .finish(async {
             let initial = fixture.router(fixture.authorization().merge(fixture.enrollment()))?;
+            let management = fixture.identity.management_tenant.to_string();
+            let mut initializer = Browser::default();
+            let login = initializer
+                .call(
+                    &initial,
+                    Method::POST,
+                    &format!("/api/v1/identity/tenants/{management}/login"),
+                    Some(json!({"login":"bootstrap","password":PASSWORD})),
+                )
+                .await?;
+            ensure!(login.0 == StatusCode::OK);
+            let principal = login.1["identity"]["principalId"]
+                .as_str()
+                .context("management initializer")?;
+            let disabled = initializer
+                .call(
+                    &initial,
+                    Method::POST,
+                    &format!("/api/v1/identity/tenants/{management}/accounts/{principal}/enabled"),
+                    Some(json!({"enabled":false})),
+                )
+                .await?;
+            ensure!(disabled.0 == StatusCode::FORBIDDEN);
+            ensure!(
+                initializer
+                    .call(
+                        &initial,
+                        Method::GET,
+                        &format!("/api/v1/identity/tenants/{management}/session"),
+                        None
+                    )
+                    .await?
+                    .0
+                    == StatusCode::OK
+            );
             let mut browser = Browser::default();
             ensure!(browser.login_password(&initial, "other", PASSWORD).await? == StatusCode::OK);
             let credential = &browser.cookies["__Host-identity-session"];
@@ -209,12 +245,9 @@ async fn native_accounts(
                 .0
                 == StatusCode::OK
         );
-        ensure!(
-            identity
+        ensure!(matches!(identity
                 .authenticate(credentials.get(reference)?)
-                .await
-                .is_err()
-        );
+                .await, Err(crate::Error::Unauthorized)));
         *browser = Browser::default();
         ensure!(browser.login_password(product, "other", PASSWORD).await? == StatusCode::OK);
     }
@@ -232,12 +265,9 @@ async fn native_accounts(
             .0
             == StatusCode::OK
     );
-    ensure!(
-        identity
+    ensure!(matches!(identity
             .authenticate(credentials.get(reference)?)
-            .await
-            .is_err()
-    );
+            .await, Err(crate::Error::Unauthorized)));
     let logout_reference = cache(browser)?;
     ensure!(
         stale
@@ -265,12 +295,9 @@ async fn native_accounts(
             .0
             == StatusCode::UNAUTHORIZED
     );
-    ensure!(
-        identity
+    ensure!(matches!(identity
             .authenticate(credentials.get(logout_reference)?)
-            .await
-            .is_err()
-    );
+            .await, Err(crate::Error::Unauthorized)));
     *browser = Browser::default();
     ensure!(browser.login_password(product, "other", PASSWORD).await? == StatusCode::OK);
     let password_reference = cache(browser)?;
@@ -293,12 +320,9 @@ async fn native_accounts(
             .0
             == StatusCode::UNAUTHORIZED
     );
-    ensure!(
-        identity
+    ensure!(matches!(identity
             .authenticate(credentials.get(password_reference)?)
-            .await
-            .is_err()
-    );
+            .await, Err(crate::Error::Unauthorized)));
     ensure!(
         admin
             .call(
@@ -382,7 +406,7 @@ async fn native_accounts(
     ensure!(
         http.0 == StatusCode::SERVICE_UNAVAILABLE
             && http.1.get("roles").is_none()
-            && enrollment.is_err()
+            && matches!(enrollment, Err(crate::Error::Unavailable(crate::Failure::IdentityStorage)))
     );
     Ok(())
     }).await

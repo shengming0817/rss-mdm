@@ -356,6 +356,14 @@ async fn verify_ledger_privileges(
             "installer accepted {grant}"
         );
         sqlx::raw_sql(revoke).execute(observer).await?;
+        let mut resources = Vec::new();
+        Worker::open(config, Arc::default(), Arc::default(), |r| {
+            resources.push(r)
+        })
+        .await?;
+        for resource in resources.into_iter().rev() {
+            resource.shutdown().await?;
+        }
     }
     if !ledger {
         for (grant, revoke) in [
@@ -380,6 +388,14 @@ async fn verify_ledger_privileges(
                     .is_err()
             );
             sqlx::raw_sql(revoke).execute(observer).await?;
+            let mut resources = Vec::new();
+            Worker::open(config, Arc::default(), Arc::default(), |r| {
+                resources.push(r)
+            })
+            .await?;
+            for resource in resources.into_iter().rev() {
+                resource.shutdown().await?;
+            }
         }
     }
     crate::migration::migrate(options, installation).await?;
@@ -408,7 +424,10 @@ async fn rejected(config: &Config) -> Result<()> {
         resources.push(r)
     })
     .await;
-    ensure!(result.is_err());
+    ensure!(matches!(
+        result,
+        Err(Error::Unavailable(Failure::IdentityStorage))
+    ));
     for resource in resources.into_iter().rev() {
         resource.shutdown().await?;
     }

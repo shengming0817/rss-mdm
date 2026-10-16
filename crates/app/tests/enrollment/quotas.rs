@@ -133,6 +133,7 @@ async fn concurrent_self_enrollment_replays_and_preserves_live_reservations() ->
     }
     let before = call(&mut other, &router, Method::GET, ME, None).await?;
     ensure!(windows(&before)["active"] == 0 && windows(&before)["reserved"] == 1);
+    ensure!(before["channels"].as_array().unwrap().iter().map(|c| c["channel"].as_str().unwrap()).collect::<std::collections::BTreeSet<_>>() == std::collections::BTreeSet::from(["agent","windows_mdm","macos_mdm"]));
     ensure!(
         before["channels"]
             .as_array()
@@ -260,6 +261,7 @@ async fn overrides_inherit_and_organization_responsibility_is_optional_and_exemp
     .await?;
     let own = call(&mut other, &router, Method::GET, ME, None).await?;
     ensure!(windows(&own)["limit"] == 1);
+    ensure!(own["channels"].as_array().unwrap().iter().find(|c| c["channel"] == "agent").unwrap()["limit"] == 0);
     ensure!(
         own["channels"]
             .as_array()
@@ -503,6 +505,14 @@ async fn channel_admission_is_independent_audited_and_replayable() -> Result<()>
             )
             .await?;
             ensure!(paused["revision"] == 1 && paused["admission"] == "paused");
+            let operation = admin.operation.unwrap().to_string();
+            ensure!(
+                audit_count(|r| r.source() == "mdm.business"
+                    && r.operation() == Some(operation.as_str())
+                    && r.result() == "success")?
+                    == 1
+            );
+
             ensure!(
                 call(
                     &mut admin,
@@ -524,6 +534,16 @@ async fn channel_admission_is_independent_audited_and_replayable() -> Result<()>
                 .await?;
             ensure!(status == StatusCode::CONFLICT && body["code"] == "enrollment_paused");
             let current = call(&mut other, &router, Method::GET, CHANNELS, None).await?;
+            ensure!(
+                current["channels"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|c| c["channel"].as_str().unwrap())
+                    .collect::<std::collections::BTreeSet<_>>()
+                    == std::collections::BTreeSet::from(["agent", "windows_mdm", "macos_mdm"])
+            );
+
             ensure!(
                 current["channels"]
                     .as_array()

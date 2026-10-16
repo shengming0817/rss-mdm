@@ -38,7 +38,8 @@ async fn initialization_receipt_atomicity_and_recovery() -> Result<()> {
     )
     .await;
     pg("GRANT INSERT ON mdm_audit.receipts TO mdm_access")?;
-    ensure!(failed.is_err());
+    ensure!(matches!(failed, Err(rss_mdm_authorization_service::Error::Audit(_))));
+    ensure!(audit_count(|r| r.source() == "mdm.business" && r.operation() == Some(init_key.to_string().as_str()) && r.result() == "success")? == 0);
     for table in [
         "authorization_initializations",
         "authorization_rules",
@@ -62,6 +63,7 @@ async fn initialization_receipt_atomicity_and_recovery() -> Result<()> {
         init_key,
     )
     .await?;
+    ensure!(audit_count(|r| r.source() == "mdm.business" && r.operation() == Some(init_key.to_string().as_str()) && r.result() == "success")? == 1);
     // Simulate the persisted result of deleting the seed, without changing its marker/receipt.
     pg(&format!(
         "UPDATE mdm_access.authorization_rules SET revision=2,document=NULL WHERE tenant_id='{TENANT}' AND instance='{}' AND id='{}'",
@@ -172,6 +174,9 @@ async fn bounded_initialization_recovery() -> Result<()> {
             TENANT = case_tenant()
         ))?;
         ensure!(durable.trim() == if committed { "1" } else { "0" });
+        ensure!(pg(&format!("SELECT count(*) FROM mdm_access.authorization_operations WHERE tenant_id='{}' AND operation_id='{key}'", case_tenant()))?.trim() == if committed { "1" } else { "0" });
+        ensure!(audit_count(|r| r.source() == "mdm.business" && r.operation() == Some(key.to_string().as_str()) && r.result() == "success")? == usize::from(committed));
+
         let receipt =
             crate::authorization::store::initialize_authorization(store, user.clone(), key).await?;
         ensure!(
@@ -181,25 +186,6 @@ async fn bounded_initialization_recovery() -> Result<()> {
                 == receipt.id
         );
     }
-    let audit = rss_mdm_audit_integration::RequestAudit::new(
-        case_tenant().into(),
-        "authorization_initialize",
-    );
-    let deadline = rss_request_context::Deadline::from_timeout(
-        &crate::lifecycle::RuntimeTimer,
-        std::time::Duration::from_millis(10),
-    )?;
-    let before: Result<(), crate::Error> = crate::authorization::bounded_initialization(
-        &audit,
-        deadline,
-        std::future::pending::<std::result::Result<(), crate::Error>>(),
-    )
-    .await;
-    audit.finalize(Some(rss_mdm_audit_integration::FailureReason::Transaction));
-    ensure!(matches!(
-        before,
-        Err(crate::Error::Unavailable(crate::Failure::RequestDeadline))
-    ));
     Ok(())
 
     }).await

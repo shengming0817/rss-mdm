@@ -1,4 +1,5 @@
 use super::*;
+use anyhow::Context;
 
 #[tokio::test]
 #[ignore = "MODULE=authorization.rules: real authorization contract"]
@@ -51,14 +52,13 @@ async fn rules_cas_replay_revocation_and_escalation() -> Result<()> {
     let rule_id = Uuid::new_v4();
     let key = Uuid::new_v4();
     let path = format!("/api/v1/authorization/rules/{rule_id}");
-    let value = json!({"subject":user(&subject),"grants":[grant("inventory_read",json!({"kind":"device","id":"a"})),grant("device_wipe",json!({"kind":"device","id":"b"}))]});
+    let value = json!({"subject":user(&subject),"grants":[grant("enrollment",json!({"kind":"device","id":"a"})),grant("inventory_read",json!({"kind":"device","id":"a"})),grant("device_wipe",json!({"kind":"device","id":"b"}))]});
     let created = put(&mut admin, &router, &path, key, 0, value.clone()).await?;
     ensure!(created.0 == StatusCode::OK && created.1["revision"] == 1);
     ensure!(
         put(&mut admin, &router, &path, key, 0, value.clone())
             .await?
-            .1
-            == created.1
+            == created
     );
     ensure!(
         put(&mut admin, &router, &path, key, 0, Value::Null)
@@ -66,6 +66,11 @@ async fn rules_cas_replay_revocation_and_escalation() -> Result<()> {
             .0
             == StatusCode::CONFLICT
     );
+    let effective = member.call(&router, Method::GET, "/api/v1/authorization", None).await?;
+    ensure!(effective.0 == StatusCode::OK);
+    for permission in ["enrollment", "inventory_read"] {
+        ensure!(effective.1["grants"].as_array().unwrap().contains(&grant(permission,json!({"kind":"device","id":"a"}))));
+    }
     for (device, expected) in [("a", StatusCode::NOT_FOUND), ("b", StatusCode::FORBIDDEN)] {
         ensure!(
             member
@@ -99,10 +104,31 @@ async fn rules_cas_replay_revocation_and_escalation() -> Result<()> {
     }
     let mut a = admin.clone();
     let mut b = admin.clone();
-    let (first, second) = tokio::join!(
+    use sqlx::Connection;
+    let mut root = sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?).await?;
+    let mut hold = root.begin().await?;
+    rss_mdm_authorization_service::lock_on(&mut hold, case_tenant(), INSTANCE).await?;
+    let release = async {
+        let observed = tokio::time::timeout(Duration::from_secs(3), async {
+            loop {
+                let waiting: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM pg_stat_activity business JOIN pg_stat_activity audit ON business.pid=ANY(pg_blocking_pids(audit.pid)) WHERE business.datname=current_database() AND audit.datname=current_database() AND pg_backend_pid()=ANY(pg_blocking_pids(business.pid)) AND business.query LIKE '%pg_advisory_xact_lock%' AND audit.query LIKE '%rss_audit.reserve%')").fetch_one(&mut *hold).await?;
+                if waiting { return Ok::<_, sqlx::Error>(()); }
+                sqlx::query("SELECT pg_stat_clear_snapshot()").execute(&mut *hold).await?;
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        }).await;
+        hold.rollback().await?;
+        observed.context("both CAS requests must overlap")??;
+        Ok::<_, anyhow::Error>(())
+    };
+    let (first, second, released) = tokio::join!(
         put(&mut a, &router, &path, Uuid::new_v4(), 1, value.clone()),
-        put(&mut b, &router, &path, Uuid::new_v4(), 1, value.clone())
+        put(&mut b, &router, &path, Uuid::new_v4(), 1, value.clone()),
+        release
     );
+    released?;
+    root.close().await?;
+    ensure!(admin.call(&router, Method::GET, &path, None).await?.1["revision"] == 2);
     let mut statuses = [first?.0.as_u16(), second?.0.as_u16()];
     statuses.sort();
     ensure!(statuses == [200, 409]);
@@ -116,8 +142,7 @@ async fn rules_cas_replay_revocation_and_escalation() -> Result<()> {
     ensure!(
         put(&mut admin, &router, &path, key, 0, value.clone())
             .await?
-            .1
-            == created.1
+            == created
     );
     ensure!(
         put(&mut admin, &router, &path, Uuid::new_v4(), 3, value)
@@ -202,8 +227,9 @@ async fn rules_cas_replay_revocation_and_escalation() -> Result<()> {
     ensure!(foreign_audit.snapshot().actor.is_none());
     foreign_audit.finalize(None);
     stale.bind_audit(&audit).unwrap();
+    let stale_key = Uuid::new_v4();
     let rejected = crate::authorization::store::change_rule(store.audit_store(&crate::config::AuditConfig::Plain).await?.as_ref(), &stale, Uuid::new_v4(), crate::authorization::Change {
-        operation_id:Uuid::new_v4(), expected_revision:0, value:Some(serde_json::from_value(json!({"subject":user(&subject),"grants":[grant("group_read",json!({"kind":"tenant"}))]}))?)
+        operation_id:stale_key, expected_revision:0, value:Some(serde_json::from_value(json!({"subject":user(&subject),"grants":[grant("group_read",json!({"kind":"tenant"}))]}))?)
     }, &audit).await;
     audit.finalize(None);
     let stale_denied = matches!(
@@ -229,16 +255,24 @@ async fn rules_cas_replay_revocation_and_escalation() -> Result<()> {
     ensure!(put(&mut admin, &router, &group_rule, Uuid::new_v4(), 0, json!({"subject":{"kind":"user_group","id":privilege_group},"grants":[grant("authorization_write",json!({"kind":"tenant"}))]})).await?.0 == StatusCode::OK);
     let member_rule = format!("/api/v1/authorization/rules/{}", Uuid::new_v4());
     ensure!(put(&mut admin, &router, &member_rule, Uuid::new_v4(), 0, json!({"subject":user(&subject),"grants":[grant("user_group_write",json!({"kind":"tenant"}))]})).await?.0 == StatusCode::OK);
+    let escalation_key = Uuid::new_v4();
     let escalation = put(
         &mut member,
         &router,
         &privilege_group_path,
-        Uuid::new_v4(),
+        escalation_key,
         1,
         json!({"name":"privileged","enabled":true,"members":[user(&subject)["user"].clone()]}),
     )
     .await?;
     let escalation_denied = escalation.0 == StatusCode::FORBIDDEN;
+    let group = admin.call(&router, Method::GET, &privilege_group_path, None).await?;
+    ensure!(group.0 == StatusCode::OK && group.1["revision"] == 1 && group.1["value"]["members"] == json!([]));
+    for operation in [stale_key, escalation_key] {
+        ensure!(pg(&format!("SELECT count(*) FROM mdm_access.authorization_operations WHERE tenant_id='{}' AND operation_id='{operation}'", case_tenant()))?.trim() == "0");
+        ensure!(audit_count(|r| r.source() == "mdm.business" && r.operation() == Some(operation.to_string().as_str()) && r.result() == "success")? == 0);
+    }
+
     ensure!(
         stale_denied && escalation_denied,
         "stale writer denied={stale_denied}; group escalation denied={escalation_denied}"
@@ -352,23 +386,8 @@ async fn capability_routes_without_application_preserve_revocation_and_atomicity
             .0
             == StatusCode::OK
     );
-    ensure!(
-        admin
-            .call(
-                &router,
-                Method::POST,
-                &format!(
-                    "/api/v1/identity/tenants/{TENANT}/accounts",
-                    TENANT = case_tenant()
-                ),
-                Some(json!({"login":"foundation-member","password":PASSWORD}))
-            )
-            .await?
-            .0
-            == StatusCode::CREATED
-    );
     let mut member = Browser::default();
-    ensure!(member.login(&router, "foundation-member").await? == StatusCode::OK);
+    ensure!(member.login(&router, "other").await? == StatusCode::OK);
     let subject = browser_subject(&member, &router).await?;
     crate::test_support::identity::set_grants(
         case_tenant(),
@@ -406,13 +425,13 @@ async fn capability_routes_without_application_preserve_revocation_and_atomicity
                 Some(payload.clone())
             )
             .await?
-            .1
-            == created.1
+            == created
     );
     ensure!(member.call(&router, Method::GET, &path, None).await?.0 == StatusCode::OK);
     // Failed audit rolls the lifecycle mutation back, even through the narrow router.
     member.operation = Some(Uuid::new_v4());
     pg("REVOKE INSERT ON mdm_audit.receipts FROM mdm_access")?;
+    let cancel_key = member.operation.unwrap();
     let rejected = member
         .call(
             &router,
@@ -425,6 +444,9 @@ async fn capability_routes_without_application_preserve_revocation_and_atomicity
     let rejected = rejected?;
     ensure!(rejected.0 == StatusCode::INTERNAL_SERVER_ERROR);
     ensure!(rejected.1["code"] == "audit_contract_error");
+    ensure!(pg(&format!("SELECT count(*) FROM mdm_access.registration_operations WHERE tenant_id='{}' AND operation_id='{cancel_key}'", case_tenant()))?.trim() == "0");
+    ensure!(audit_count(|r| r.source() == "mdm.business" && r.operation() == Some(cancel_key.to_string().as_str()) && r.result() == "success")? == 0);
+
     ensure!(member.call(&router, Method::GET, &path, None).await?.1["status"] == "pending");
     crate::test_support::identity::set_grants(case_tenant(), &subject, vec![]).await?;
     ensure!(member.call(&router, Method::GET, &path, None).await?.0 == StatusCode::FORBIDDEN);
@@ -438,44 +460,6 @@ async fn capability_routes_without_application_preserve_revocation_and_atomicity
     access.close().await;
     Ok(())
     }).await
-}
-
-#[tokio::test]
-#[ignore = "MODULE=authorization.rules: enrollment does not imply device wipe"]
-async fn enrollment_grant_does_not_authorize_wipe() -> Result<()> {
-    let mut fixture = authority::Authority::open().await?;
-    let fixture_resources = std::mem::take(&mut fixture.resources);
-    fixture_resources
-        .finish(async {
-            let (router, _, app_resources) =
-                app_with_access(&fixture.base, fixture.access.clone()).await?;
-            app_resources
-                .finish(async {
-                    let mut browser = fixture.browser("other")?;
-                    set_device_grants(
-                        &mut browser,
-                        &router,
-                        crate::test_support::case::name("device-1"),
-                        &["inventory_read", "enrollment"],
-                    )
-                    .await?;
-                    ensure!(
-                        browser
-                            .call(
-                                &router,
-                                Method::POST,
-                                &format!("{DEVICE}/actions", DEVICE = case_device()),
-                                Some(json!({"action":"wipe"}))
-                            )
-                            .await?
-                            .0
-                            == StatusCode::FORBIDDEN
-                    );
-                    Ok(())
-                })
-                .await
-        })
-        .await
 }
 
 mod route_permissions;

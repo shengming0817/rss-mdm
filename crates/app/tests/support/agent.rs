@@ -138,6 +138,7 @@ pub(crate) struct Agent {
     pub(crate) password: &'static str,
     pub(crate) credential: &'static str,
     pub(crate) request: Value,
+    pub(crate) candidate: Value,
     pub(crate) registration: Value,
 }
 pub(crate) fn csr() -> Result<String> {
@@ -211,7 +212,7 @@ pub(crate) async fn enroll_profile(
     browser: &mut Browser,
     label: &str,
     profile: Value,
-) -> Result<(Value, Value)> {
+) -> Result<(Value, Value, Value)> {
     let secret = super::credential(&Uuid::new_v4().to_string());
     let op = Uuid::new_v4();
     let (status,pending)=agent_call(router,Method::POST,"/api/v1/agent/enroll/requests",None,Some(json!({"wireVersion":1,"operationId":op,"secret":secret,"platform":profile["platform"],"csr":csr()?}))).await?;
@@ -280,17 +281,18 @@ pub(crate) async fn enroll_profile(
         evidence(label).unwrap(),
         registration["deviceId"].as_str().unwrap().into(),
     );
-    Ok((request, registration))
+    Ok((request, candidate, registration))
 }
 pub(crate) async fn register(router: &Router, browser: &mut Browser) -> Result<Agent> {
     let label = Box::leak(super::credential(&Uuid::new_v4().to_string()).into_boxed_str());
-    let (request,registration)=enroll_profile(router,browser,label,json!({"capabilities":["inventory.collect.v1"],"platform":"macos","architecture":"aarch64","executionContext":software_execution::context(software_execution::Platform::MacOs)})).await?;
+    let (request,candidate,registration)=enroll_profile(router,browser,label,json!({"capabilities":["inventory.collect.v1"],"platform":"macos","architecture":"aarch64","executionContext":software_execution::context(software_execution::Platform::MacOs)})).await?;
     let device = registration["deviceId"].as_str().unwrap();
     set_device_grants(browser, router, device, &["inventory_read", "credentials"]).await?;
     Ok(Agent {
         password: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
         credential: label,
         request,
+        candidate,
         registration,
     })
 }

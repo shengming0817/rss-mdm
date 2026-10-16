@@ -58,6 +58,14 @@ async fn permission_projection_deduplication_and_cursor_invalidation() -> anyhow
         s.views(&admin, &next).await,
         Err(rss_mdm_device_service::Error::CursorInvalidated)
     ));
+    let fresh = s.views(&admin, &query(1)).await?;
+    let mut next = query(1);
+    next.cursor = Some(fresh["nextCursor"].as_str().context("fresh cursor")?.into());
+    let next_page = s.views(&admin, &next).await?;
+    assert_ne!(
+        fresh["items"][0]["reference"],
+        next_page["items"][0]["reference"]
+    );
     crate::test_support::identity::set_grants(
         case_a(),
         admin.principal_id(),
@@ -89,10 +97,8 @@ async fn permission_projection_deduplication_and_cursor_invalidation() -> anyhow
         .await,
         Err(rss_mdm_device_service::Error::Forbidden)
     ));
-    let mut changed = query(64);
-    changed.cursor = Some(token);
     assert!(matches!(
-        s.views(&admin, &changed).await,
+        s.views(&admin, &next).await,
         Err(rss_mdm_device_service::Error::CursorInvalidated)
     ));
     assert!(
@@ -207,7 +213,7 @@ async fn http_lists_manual_conflicts_and_signed_source_pagination() -> anyhow::R
     let (status, first) = browser.call(&router, Method::GET, &list_path, None).await?;
     assert_eq!(status, StatusCode::OK, "{first}");
     assert_eq!(first["total"], 3);
-    assert_eq!(first["items"].as_array().unwrap().len(), 2);
+    assert_eq!(first["items"], json!([{"kind":"integer","value":1},{"kind":"integer","value":2}]));
     let second_path = format!(
         "{path}/inventory-lists/{key}?limit=2&cursor={}",
         first["nextCursor"].as_str().unwrap()
@@ -217,6 +223,7 @@ async fn http_lists_manual_conflicts_and_signed_source_pagination() -> anyhow::R
         .await?;
     assert_eq!(status, StatusCode::OK, "{second}");
     assert_eq!(second["items"], json!([{"kind":"integer","value":3}]));
+    assert!(second["nextCursor"].is_null());
     let mut anonymous = Browser::default();
     assert_eq!(
         anonymous.call(&router, Method::GET, &path, None).await?.0,
@@ -260,7 +267,7 @@ async fn pending_targets_filter_by_source_and_child_never_replaces_primary() -> 
         json!({"endpointCount":1,"deviceViewCount":1})
     );
     assert_eq!(page["items"][0]["endpoints"][0]["id"], device);
-    filter.channel = Some("agent".into());
+    filter.source = Some("mdm.apple".into());
     assert_eq!(
         s.views(&admin, &filter).await?["statistics"]["deviceViewCount"],
         0

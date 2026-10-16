@@ -36,7 +36,8 @@ async fn verify(router: &Router, admin: &mut Browser, member: &mut Browser) -> R
     let first = admin.call(router, Method::GET, &page, None).await?;
     ensure!(
         first.0 == StatusCode::OK
-            && first.1["items"].as_array().unwrap().len() == 100
+            && first.1["items"] == json!(members(100))
+            && first.1["revision"] == 1
             && first.1["nextOffset"] == 100
     );
     let second = admin
@@ -49,7 +50,8 @@ async fn verify(router: &Router, admin: &mut Browser, member: &mut Browser) -> R
         .await?;
     ensure!(
         second.0 == StatusCode::OK
-            && second.1["items"].as_array().unwrap().len() == 1
+            && second.1["items"] == json!([members(101).pop().unwrap()])
+            && second.1["revision"] == 1
             && second.1["nextOffset"].is_null()
     );
     ensure!(

@@ -12,6 +12,7 @@ use rss_mdm_agent_wire::{enroll as wire, runtime};
 use rss_mdm_audit_integration::RequestAudit;
 use rss_mdm_certificate::agent::VerifiedAgentCsr;
 use rss_mdm_registration_service::agent::{Assembly, NativeAdmission, Pending, Service};
+use sqlx::Connection;
 use std::{path::PathBuf, sync::Arc, time::Duration};
 use uuid::Uuid;
 use x509_cert::der::Decode;
@@ -341,15 +342,18 @@ async fn explicit_development_limit_and_unknown_result_remain_auditable() -> any
         metadata.metadata().not_after - metadata.metadata().not_before,
         3650 * 86400
     );
-    assert!(
-        service(deployment())
-            .await?
-            .trust()
-            .verify_peer(&evidence, now())
-            .is_err()
-    );
-    value["lifetime"]["days"] = 3651.into();
-    assert!(service(value).await.is_err());
+    let production = service(deployment()).await?;
+    assert!(matches!(
+        production.trust().verify_peer(&evidence, now()),
+        Err(rss_mdm_certificate::Error::Unauthorized)
+    ));
+    let control = grant()?;
+    let authorized = authorize_request(&production, &p, &control, &audit()).await?;
+    let signed = production
+        .issue(&signing(&control, authorized.grant_id)?, &audit())
+        .await?;
+    let accepted = peer(production.trust(), &chain(&signed)?, &root()).await?;
+    production.trust().verify_peer(&accepted, now())?;
     let value = deployment();
     let unknown = service_with_provider(value, Some("absent-agent-key")).await?;
     let g = grant()?;
@@ -449,23 +453,25 @@ async fn provisioner_rejects_substituted_csr_and_consumed_token() -> anyhow::Res
             .unwrap();
     let identity =
         rss_mdm_certificate::agent::identity(Uuid::parse_str(case_a())?, "provider-binding")?;
-    let claims = serde_json::json!({"iss":"rss-agent","aud":[url],"sub":"rss-mdm-agent","sans":[identity],"iat":now(),"nbf":now(),"exp":now()+60,"jti":Uuid::new_v4().to_string(),"cnf":{"x5rt#S256":URL_SAFE_NO_PAD.encode(Sha256::digest(csr.der()))}});
-    let message = format!(
-        "{}.{}",
-        URL_SAFE_NO_PAD.encode(serde_json::to_vec(
-            &serde_json::json!({"alg":"RS256","kid":"agent-t2-key"})
-        )?),
-        URL_SAFE_NO_PAD.encode(serde_json::to_vec(&claims)?)
-    );
-    let mut signature = vec![0; key.public().modulus_len()];
-    key.sign(
-        &signature::RSA_PKCS1_SHA256,
-        &SystemRandom::new(),
-        message.as_bytes(),
-        &mut signature,
-    )
-    .unwrap();
-    let token = format!("{message}.{}", URL_SAFE_NO_PAD.encode(signature));
+    let token = || -> anyhow::Result<String> {
+        let claims = serde_json::json!({"iss":"rss-agent","aud":[url],"sub":"rss-mdm-agent","sans":[identity],"iat":now(),"nbf":now(),"exp":now()+60,"jti":Uuid::new_v4().to_string(),"cnf":{"x5rt#S256":URL_SAFE_NO_PAD.encode(Sha256::digest(csr.der()))}});
+        let message = format!(
+            "{}.{}",
+            URL_SAFE_NO_PAD.encode(serde_json::to_vec(
+                &serde_json::json!({"alg":"RS256","kid":"agent-t2-key"})
+            )?),
+            URL_SAFE_NO_PAD.encode(serde_json::to_vec(&claims)?)
+        );
+        let mut signature = vec![0; key.public().modulus_len()];
+        key.sign(
+            &signature::RSA_PKCS1_SHA256,
+            &SystemRandom::new(),
+            message.as_bytes(),
+            &mut signature,
+        )
+        .unwrap();
+        Ok(format!("{message}.{}", URL_SAFE_NO_PAD.encode(signature)))
+    };
     let client = reqwest::Client::builder()
         .tls_built_in_root_certs(false)
         .add_root_certificate(reqwest::Certificate::from_pem(&std::fs::read(
@@ -475,6 +481,15 @@ async fn provisioner_rejects_substituted_csr_and_consumed_token() -> anyhow::Res
         .redirect(reqwest::redirect::Policy::none())
         .timeout(Duration::from_secs(5))
         .build()?;
+    let control = client
+        .post(&url)
+        .json(&serde_json::json!({"csr":csr.pem()?,"ott":token()?}))
+        .send()
+        .await?;
+    assert_eq!(control.status(), reqwest::StatusCode::CREATED);
+    let issued: serde_json::Value = control.json().await?;
+    assert!(!issued["crt"].as_str().unwrap().is_empty());
+    let token = token()?;
     // Different correctly signed RSA key/CSR with the same CN: only cnf binding
     // rejects substitution. step-ca consumes the token before CSR validation.
     // Another valid Agent CSR uses an independent SHA256 RSA key.
@@ -486,13 +501,13 @@ async fn provisioner_rejects_substituted_csr_and_consumed_token() -> anyhow::Res
         .json(&serde_json::json!({"csr":substituted,"ott":token}))
         .send()
         .await?;
-    assert!(!response.status().is_success());
+    assert_eq!(response.status(), reqwest::StatusCode::FORBIDDEN);
     let response = client
         .post(&url)
         .json(&serde_json::json!({"csr":csr.pem()?,"ott":token}))
         .send()
         .await?;
-    assert!(!response.status().is_success());
+    assert_eq!(response.status(), reqwest::StatusCode::UNAUTHORIZED);
     Ok(())
 }
 
@@ -527,6 +542,8 @@ async fn agent_ingress_holds_one_global_permit_per_request() -> anyhow::Result<(
     let release = Arc::new(Barrier::new(5));
     let (entered, mut entries) = mpsc::channel(4);
     let handler_release = release.clone();
+    let ready_calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let ready_counter = ready_calls.clone();
     let held = get(move || {
         let entered = entered.clone();
         let release = handler_release.clone();
@@ -539,7 +556,13 @@ async fn agent_ingress_holds_one_global_permit_per_request() -> anyhow::Result<(
     let router = rss_mdm_agent_channel::boundary::wrap(
         Router::new().route("/held", held).route(
             "/ready",
-            get(|| async { axum::http::StatusCode::NO_CONTENT }),
+            get(move || {
+                let calls = ready_counter.clone();
+                async move {
+                    calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    axum::http::StatusCode::NO_CONTENT
+                }
+            }),
         ),
         envelope,
     )
@@ -574,10 +597,27 @@ async fn agent_ingress_holds_one_global_permit_per_request() -> anyhow::Result<(
         503,
         "fifth peer reaches the global body budget"
     );
+    assert_eq!(ready_calls.load(std::sync::atomic::Ordering::SeqCst), 0);
     release.wait().await;
+    let mut completed = Vec::new();
     for task in running {
-        assert_eq!(task.await??.status(), 200);
+        let response = task.await??;
+        assert_eq!(response.status(), 200);
+        completed.push(response.headers()["x-request-id"].to_str()?.to_owned());
     }
+    let mut observer =
+        <sqlx::PgConnection as sqlx::Connection>::connect_with(&options("postgres")?).await?;
+    let records = crate::audit_test_support::read(&mut observer).await?;
+    for id in completed {
+        assert_eq!(
+            records
+                .iter()
+                .filter(|r| r.request() == Some(id.as_str()) && r.status() == 200)
+                .count(),
+            1
+        );
+    }
+    observer.close().await?;
     assert_eq!(requests.available_permits(), 4);
     let response = router
         .oneshot(
@@ -869,11 +909,21 @@ async fn rotation_requires_installed_trust_and_published_revocation_before_retir
         expected_revision: registry.trust(Purpose::Agent)?.revision,
         action: Action::Approve,
     };
-    assert!(
+    assert!(matches!(
         registry
             .transition(&p, Purpose::Agent, &approve, &audit(), now())
-            .await
-            .is_err()
+            .await,
+        Err(rss_mdm_pki_service::Error::Conflict)
+    ));
+    let state = crate::test_support::pg(&format!(
+        "SELECT jsonb_build_array((SELECT state FROM mdm_pki.rotations WHERE tenant_id='{tenant}' AND id='{rotation}'),(SELECT count(*) FROM mdm_pki.installations WHERE tenant_id='{tenant}' AND purpose='agent' AND registration='{registration}'))::text",
+        tenant = case_a(),
+        rotation = rotation.id,
+        registration = receipt.runtime.registration_id
+    ))?;
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&state)?,
+        serde_json::json!(["distributing", 0])
     );
     let trust = registry.trust(Purpose::Agent)?;
     s.acknowledge_trust(
@@ -928,12 +978,15 @@ async fn rotation_requires_installed_trust_and_published_revocation_before_retir
         action: Action::Retire,
     };
     assert!(
-        registry
-            .transition(&p, Purpose::Agent, &retire, &audit(), now())
-            .await
-            .is_err(),
+        matches!(
+            registry
+                .transition(&p, Purpose::Agent, &retire, &audit(), now())
+                .await,
+            Err(rss_mdm_pki_service::Error::Conflict)
+        ),
         "live old certificate cannot retire"
     );
+    assert_eq!(crate::test_support::pg(&format!("SELECT count(*) FROM mdm_pki.certificates WHERE tenant_id='{}' AND issuer='{}' AND registration='{}' AND not_after>{}",case_a(),previous.issuers[0].digest,receipt.runtime.registration_id,now()))?.trim(), "1");
     let devices =
         crate::device::DeviceService::new(db.registration(), case_a().into(), audit_store.clone());
     devices
@@ -945,12 +998,20 @@ async fn rotation_requires_installed_trust_and_published_revocation_before_retir
         )
         .await?;
     assert!(
-        registry
-            .transition(&p, Purpose::Agent, &retire, &audit(), now())
-            .await
-            .is_err(),
+        matches!(
+            registry
+                .transition(&p, Purpose::Agent, &retire, &audit(), now())
+                .await,
+            Err(rss_mdm_pki_service::Error::Conflict)
+        ),
         "revoke submission is not publication"
     );
+    let pending = crate::test_support::pg(&format!(
+        "SELECT count(*) FROM mdm_pki.revocations WHERE tenant_id='{}' AND issuer='{}' AND state<>'published'",
+        case_a(),
+        previous.issuers[0].digest
+    ))?;
+    assert_eq!(pending.trim(), "1");
     tokio::time::timeout(Duration::from_secs(90), async {
         loop {
             registry.sweep(|| Ok(now())).await?;
@@ -1154,7 +1215,10 @@ async fn root_revocation_is_accepted_durably_and_denies_live_issuer_without_eras
     s.trust().trust.verify_history(&bytes[0], &issuer.digest)?;
     let restart = service(deployment()).await?;
     assert_eq!(restart.trust().trust.public()?.issuers[0].root_crl, crl);
-    assert!(restart.trust().trust.active().is_err());
+    assert!(matches!(
+        restart.trust().trust.active(),
+        Err(rss_mdm_device_trust::Error::Revoked)
+    ));
     db.close().await;
     Ok(())
 }
@@ -1209,6 +1273,10 @@ async fn multiple_expired_publications_require_one_atomic_set_and_replay_exactly
             root_crl: publication_fixture(&owner, &issuer.root_crl, true, later, None).await?,
         });
     }
+    let durable_before = crate::test_support::pg(&format!(
+        "SELECT encode(body,'hex') FROM mdm_pki.trust WHERE tenant_id='{}' AND purpose='agent'",
+        case_a()
+    ))?;
     let partial = PublicationSet {
         operation: Uuid::new_v4(),
         purpose: Purpose::Agent,
@@ -1218,13 +1286,19 @@ async fn multiple_expired_publications_require_one_atomic_set_and_replay_exactly
             root_crl: publications[0].root_crl.clone(),
         }],
     };
-    assert!(
-        registry
-            .publish(&p, &partial, &audit(), later)
-            .await
-            .is_err()
-    );
+    assert!(matches!(
+        registry.publish(&p, &partial, &audit(), later).await,
+        Err(rss_mdm_pki_service::Error::Request)
+    ));
     assert_eq!(registry.trust(Purpose::Agent)?, trust);
+    assert_eq!(
+        crate::test_support::pg(&format!(
+            "SELECT encode(body,'hex') FROM mdm_pki.trust WHERE tenant_id='{}' AND purpose='agent'",
+            case_a()
+        ))?,
+        durable_before
+    );
+
     let mut input = PublicationSet {
         operation: Uuid::new_v4(),
         purpose: Purpose::Agent,
@@ -1233,6 +1307,22 @@ async fn multiple_expired_publications_require_one_atomic_set_and_replay_exactly
     registry.publish(&p, &input, &audit(), later).await?;
     let accepted = registry.trust(Purpose::Agent)?;
     rss_mdm_device_trust::DeviceTrust::new(accepted.clone(), Purpose::Agent, later)?;
+    let durable: Trust = serde_json::from_str(&crate::test_support::pg(&format!(
+        "SELECT convert_from(body,'UTF8') FROM mdm_pki.trust WHERE tenant_id='{}' AND purpose='agent'",
+        case_a()
+    ))?)?;
+    assert_eq!(durable, accepted);
+    let registry = Registry::new(
+        db.archive_pool(),
+        db.audit_store(&crate::config::AuditConfig::Plain).await?,
+        vec![rss_mdm_device_trust::DeviceTrust::restore(
+            durable,
+            Purpose::Agent,
+            later,
+        )?],
+        fixture_providers()?,
+    );
+    registry.synchronize(later).await?;
     input.publications.reverse();
     registry.publish(&p, &input, &audit(), later).await?;
     assert_eq!(registry.trust(Purpose::Agent)?, accepted);
@@ -1302,7 +1392,18 @@ async fn unknown_original_ca_result_blocks_retirement_after_rotation() -> anyhow
             )
             .await?;
     }
-    assert!(
+    let active = registry.trust(Purpose::Agent)?;
+    assert_eq!(s.trust().trust.active()?.digest, second.issuers[0].digest);
+    let durable_before = crate::test_support::pg(&format!(
+        "SELECT jsonb_build_array((SELECT jsonb_agg(to_jsonb(s) ORDER BY attempt) FROM mdm_pki.signing s WHERE tenant_id='{tenant}'),(SELECT to_jsonb(r) FROM mdm_pki.rotations r WHERE tenant_id='{tenant}' AND id='{id}'))::text",
+        tenant = case_a()
+    ))?;
+    let facts: serde_json::Value = serde_json::from_str(&durable_before)?;
+    assert_eq!(facts[0].as_array().unwrap().len(), 1);
+    assert_eq!(facts[0][0]["state"], "unknown");
+    assert_eq!(facts[1]["state"], "activated");
+    assert_eq!(facts[0][0]["issuer"], facts[1]["previous"]);
+    assert!(matches!(
         registry
             .transition(
                 &p,
@@ -1315,8 +1416,16 @@ async fn unknown_original_ca_result_blocks_retirement_after_rotation() -> anyhow
                 &audit(),
                 now()
             )
-            .await
-            .is_err()
+            .await,
+        Err(rss_mdm_pki_service::Error::Conflict)
+    ));
+    assert_eq!(registry.trust(Purpose::Agent)?, active);
+    assert_eq!(
+        crate::test_support::pg(&format!(
+            "SELECT jsonb_build_array((SELECT jsonb_agg(to_jsonb(s) ORDER BY attempt) FROM mdm_pki.signing s WHERE tenant_id='{tenant}'),(SELECT to_jsonb(r) FROM mdm_pki.rotations r WHERE tenant_id='{tenant}' AND id='{id}'))::text",
+            tenant = case_a()
+        ))?,
+        durable_before
     );
     db.close().await;
     Ok(())

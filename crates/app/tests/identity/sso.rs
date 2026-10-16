@@ -1,6 +1,7 @@
 //! Product callback, explicit linking and provider isolation with real HTTPS Keycloak.
 use crate::clock::Clock;
 use crate::test_support::*;
+use anyhow::Context;
 #[path = "sso/authorization.rs"]
 mod authorization;
 const CALLBACK: &str = "https://mdm.example.test/api/v1/identity/oidc/callback";
@@ -189,16 +190,6 @@ async fn product_callback_link_step_up_and_provider_isolation() -> Result<()> {
     })
     .await?;
     identity_resources.finish(async {
-    let reader = Arc::new(
-        InventoryReader::connect(
-            config
-                .access_database
-                .options()?
-                .username("mdm_api")
-                .password("api-fixture"),
-        )
-        .await?,
-    );
     let access = database(&base).await?;
     let audit_store = access.audit_store(&config.audit).await?;
     let (router, _, _, _, resources) = crate::api::application_fixture(
@@ -258,38 +249,21 @@ async fn product_callback_link_step_up_and_provider_isolation() -> Result<()> {
     ensure!(created_survivor.0 == StatusCode::CREATED);
     let mut linked = Browser::default();
     ensure!(linked.login(&router, "sso-local").await? == StatusCode::OK);
-    let original = linked
-        .call(&router, Method::GET, "/api/v1/authorization", None)
-        .await?
-        .1["principalId"]
-        .clone();
+    let initial = linked.call(&router, Method::GET, "/api/v1/authorization", None).await?;
+    ensure!(initial.0 == StatusCode::OK);
+    let original = Uuid::parse_str(initial.1["principalId"].as_str().context("principal ID")?)?;
+    ensure!(!original.is_nil());
     roundtrip(&router, &mut linked, provider, "link", "alice").await?;
-    // Explicit linking preserves the local account, including an opaque upstream subject.
-    ensure!(
-        linked
-            .call(&router, Method::GET, "/api/v1/authorization", None)
-            .await?
-            .1["principalId"]
-            == original
-    );
     let mut alice = Browser::default();
     roundtrip(&router, &mut alice, provider, "login", "alice").await?;
-    ensure!(
-        alice
-            .call(&router, Method::GET, "/api/v1/authorization", None)
-            .await?
-            .1["principalId"]
-            == original
-    );
     let mut bob = Browser::default();
     roundtrip(&router, &mut bob, provider, "login", "bob").await?;
-    ensure!(
-        bob.call(&router, Method::GET, "/api/v1/authorization", None)
-            .await?
-            .1["principalId"]
-            != original,
-        "same email linked two external subjects"
-    );
+    for (browser, same) in [(&mut linked, true), (&mut alice, true), (&mut bob, false)] {
+        let response = browser.call(&router, Method::GET, "/api/v1/authorization", None).await?;
+        ensure!(response.0 == StatusCode::OK);
+        let principal = Uuid::parse_str(response.1["principalId"].as_str().context("principal ID")?)?;
+        ensure!(!principal.is_nil() && (principal == original) == same);
+    }
     authorization::four_subjects_and_independent_lifetimes(
         &router,
         &mut admin,
@@ -373,7 +347,6 @@ async fn product_callback_link_step_up_and_provider_isolation() -> Result<()> {
             .0
             == StatusCode::NO_CONTENT
     );
-    reader.close().await;
     println!("MDM_ENTERPRISE_SSO_MATRIX_PASSED");
     Ok(())
     }).await
