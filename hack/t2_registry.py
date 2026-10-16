@@ -681,7 +681,7 @@ case_fixtures('planning.group_scope', 'planning::t2::group_scope::group_delete_s
 
 def consume(inputs, names):
     """The named modules test a real production path through these inputs."""
-    for name in names.split():
+    for name in names.split() if isinstance(names, str) else names:
         MODULES[name] = replace(MODULES[name], production_inputs=MODULES[name].production_inputs + tuple(inputs))
 
 
@@ -845,13 +845,8 @@ consume(('crates/windows-channel/src/lib.rs',),
 consume(('crates/backend-postgres-support/src/access*', 'crates/*/src/access-contract.json', 'crates/app/src/database.rs', 'crates/flow-service/src/access-admission.sql'),
         ' '.join(name for name, module in MODULES.items() if module.build == APP and module.postgres))
 
-# Shared production configuration has a broad, but real, consumer set. No-PG
-# protocol modules do not become consumers merely because they live in App.
-PRODUCT_INPUTS = ('crates/app/src/migration.rs',
-                  'crates/app/schema/*', 'crates/*-service/schema/*', 'crates/*-channel/schema/*')
+# Application assembly and configuration have actual product consumers.
 for name, module in tuple(MODULES.items()):
-    if module.postgres:
-        MODULES[name] = replace(module, production_inputs=module.production_inputs + PRODUCT_INPUTS)
     if module.build == APP:
         MODULES[name] = replace(MODULES[name], support_inputs=(*MODULES[name].support_inputs,'crates/app/tests/fixtures/error.rs'))
         MODULES[name] = replace(MODULES[name], production_inputs=MODULES[name].production_inputs +
@@ -1843,3 +1838,53 @@ for name, module in tuple(MODULES.items()):
     MODULES[name] = replace(module, support_inputs=tuple(dict.fromkeys(support)))
     if 'windows' in fixtures:
         consume(('deployment/windows-leaf.tpl',), name)
+
+
+# Installation/catalog prove the shared setup once. Runtime consumers come from
+# the owning capability, never from sharing a PostgreSQL fixture.
+consume(('crates/app/src/migration/units.rs',),
+        'installation.migration installation.tenants deployment.management-tenant catalog.contract')
+consume(('crates/app/schema/*.sql', 'crates/*-service/schema/*.sql',
+         'crates/*-channel/schema/*.sql', 'crates/*-postgres/migrations/*.sql'),
+        'installation.migration catalog.contract')
+
+# install/relations contain the owner's complete storage contract. Reuse the
+# existing production consumption declarations rather than a second owner list.
+for owner in ('agent-channel', 'apple-channel', 'windows-channel',
+              'authorization-service', 'registration-service', 'inventory-service',
+              'flow-service', 'execution-service', 'content-service', 'pki-service',
+              'device-service', 'timeline-service', 'certificate-archive-service'):
+    prefix = f'crates/{owner}/src/'
+    consumers = [name for name, module in MODULES.items()
+                 if any(path.startswith(prefix) for path in module.production_inputs)]
+    consume((f'crates/{owner}/schema/install.sql', f'crates/{owner}/schema/relations.sql'), consumers)
+
+consume(('crates/inventory-service/schema/field-scopes.sql',),
+        'assets.http assets.queries assets.sources assets.group_input inventory.runtime '
+        'agent.reports windows.management apple.collection planning.onboarding')
+consume(('crates/app/schema/audit-runtime.sql',), AUDITED_MODULES + ' installation.tenants deployment.management-tenant')
+consume(('crates/app/schema/identity-audit-runtime.sql', 'crates/app/schema/identity-audit-ledger-probe.sql'),
+        'identity.audit authorization.initialization installation.tenants deployment.management-tenant')
+consume(('crates/app/schema/identity-roles.sql',),
+        AUTH_CONSUMERS + ' identity.local identity.sso identity.audit installation.tenants deployment.management-tenant')
+consume(('crates/app/schema/audit-roles.sql',), AUDITED_MODULES + ' installation.tenants deployment.management-tenant')
+consume(('crates/app/schema/flow-roles.sql',),
+        'group.persistence group.generations planning.http planning.scope planning.group_scope '
+        'planning.policy planning.agent_policy planning.frequency planning.software planning.onboarding '
+        'planning.recovery planning.resource_archive assets.http assets.group_input compliance.http compliance.group_input')
+consume(('crates/app/schema/commands-roles.sql',), TASK_CONSUMERS +
+        ' execution.commands.admission execution.commands.dispatch execution.commands.recovery '
+        'execution.commands.windows execution.commands.configuration execution.commands.onboarding '
+        'windows.management windows.commands apple.collection apple.commands apple.onboarding')
+consume(('crates/app/schema/software-publication-roles.sql',),
+        'policy.persistence policy.recovery resource.persistence resource.recovery '
+        'software_release.persistence software_release.recovery software.catalog software.http '
+        'publication.winget publication.brew publication.mapping publication.withdrawal publication.recovery '
+        'planning.software execution.software.offer execution.software.recovery')
+# Installation binding is read by both request and worker tenant admission.
+consume(('crates/app/schema/installation.sql',),
+        [name for name, module in MODULES.items() if module.build == APP and module.profile == 'product'])
+# Enrollment progress is read by enrollment management and channel admission.
+consume(('crates/registration-service/schema/enrollment-progress.sql',),
+        'enrollment.http enrollment.recovery agent.registration agent.configurations agent.pki '
+        'windows.enrollment windows.issuance windows.management apple.scep apple.account_enrollment apple.ade')
