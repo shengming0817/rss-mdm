@@ -20,7 +20,8 @@ def contexts(run_id, jobs):
         result[job.key] = dict(caseId=job.id, invocationId=job.key, namespace=namespace,
                                tenant=tenant, peer=peer,
                                actors=[dict(tenant=tenant if side == 'tenant' else peer, role=role,
-                                            login=role + '-' + namespace, principal=None)
+                                            login=role + '-' + (coordinate(run_id, (tenant if side == 'tenant' else peer) + '/' + role).replace('-', '')
+                                                if role == 'admin' and 'stable_admin' in job.module.fixtures else namespace), principal=None)
                                        for side, role in job.module.actors],
                                fixtures=list(job.module.fixtures))
         validate(result[job.key])
