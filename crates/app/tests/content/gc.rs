@@ -254,3 +254,67 @@ async fn inherited_delete_privilege_fails_admission() -> Result<()> {
     crate::flow::admit_storage(&fixture.runtime, tenant).await?;
     Ok(())
 }
+
+#[tokio::test]
+#[ignore = "MODULE=content.gc: catalog evidence releases transfer capacity and retains deletion pins"]
+async fn catalog_evidence_retains_pin_without_reserving_transfer() -> Result<()> {
+    use rss_mdm_resource as r;
+    use rss_mdm_software_service::catalog::ContentPort;
+    let fixture = Fixture::with_peer_and_uploads(None, Some(1)).await?;
+    let bytes = case::name("catalog pin lifetime").as_bytes();
+    let artifact = fixture.seed_content(bytes).await?;
+    let store = fixture.content.as_ref().unwrap();
+    let version = r::Version::new(
+        rss_request_context::TenantId::parse(case_tenant())?,
+        r::Id::new(Uuid::new_v4().to_string())?,
+        r::Id::new("v1")?,
+        r::Kind::Software,
+        vec![r::Variant::new(
+            r::Platform::Windows,
+            r::Architecture::X86_64,
+            r::Id::new("default")?,
+            r::Declaration::Software {
+                definition: serde_json::from_value(publication_support::private_definition(
+                    fixture.registered["snapshot"].clone(),
+                    bytes,
+                ))?,
+            },
+        )],
+    )?;
+    let evidence = ContentPort::verify(store.as_ref(), &version).await?;
+    ensure!(evidence.resource_digest() == version.digest().bytes());
+    // A held catalog receipt must not self-compete with a subsequent download.
+    let download = store.verify(&artifact).await?;
+    ensure!(
+        store.verify(&artifact).await.is_err(),
+        "active download lost its permit"
+    );
+    drop(download);
+    use crate::clock::Clock;
+    let now = crate::clock::SystemClock.unix_seconds()?;
+    let digest = artifact.digest().bytes();
+    let hex = digest
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect::<String>();
+    pg(&format!(
+        "UPDATE mdm_content.manifests SET expires=0 WHERE tenant_id='{}' AND sha256=decode('{hex}','hex')",
+        case_tenant()
+    ))?;
+    ensure!(
+        store.garbage(now).await?.iter().all(|g| g.digest != digest),
+        "catalog evidence lost its deletion pin"
+    );
+    drop(evidence);
+    // Verified drop releases the PG pin asynchronously, without extending its deadline.
+    tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            if store.garbage(now).await?.iter().any(|g| g.digest == digest) {
+                return Ok::<_, anyhow::Error>(());
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await??;
+    Ok(())
+}

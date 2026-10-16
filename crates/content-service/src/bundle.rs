@@ -28,7 +28,7 @@ impl ContentPort for Store {
                     }
                 }
             }
-            let files = self
+            let mut files = self
                 .verify_materials(&materials)
                 .await
                 .map_err(|_| catalog::Error::Content)?;
@@ -92,6 +92,11 @@ impl ContentPort for Store {
                     .map_err(|_| catalog::Error::Content)?
                     .map_err(|_| catalog::Error::Content)?;
                 }
+            }
+            // Reading is complete. Transaction settlement still owns every deletion pin,
+            // but must not reserve a transfer slot needed by subsequent material reads.
+            for file in &mut files {
+                file.release_transfer();
             }
             Ok(Box::new(PinnedSoftware {
                 digest: version.digest().bytes(),

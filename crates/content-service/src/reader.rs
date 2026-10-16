@@ -197,6 +197,10 @@ impl Store {
     }
 }
 impl Verified {
+    /// Catalog validation has finished reading; retain identity and deletion pins only.
+    pub(crate) fn release_transfer(&mut self) {
+        self._permit.take();
+    }
     pub fn matches(&self, a: &Artifact) -> bool {
         self.store.check_deadline(self.deadline).is_ok()
             && self.artifact.length() == a.length()
@@ -354,6 +358,22 @@ mod tests {
             Deadline::at(RuntimeTimer.now() + std::time::Duration::from_secs(60)),
         );
         drop(lease);
+        assert_eq!(slots.available_permits(), 1);
+    }
+
+    #[tokio::test]
+    async fn cancelled_transfer_releases_capacity() {
+        let slots = Arc::new(Semaphore::new(1));
+        let lease = TransferLease::new(
+            slots.clone().try_acquire_owned().unwrap(),
+            Deadline::at(RuntimeTimer.now() + std::time::Duration::from_secs(60)),
+        );
+        let task = tokio::spawn(async move {
+            let _lease = lease;
+            std::future::pending::<()>().await;
+        });
+        task.abort();
+        assert!(task.await.unwrap_err().is_cancelled());
         assert_eq!(slots.available_permits(), 1);
     }
 }
