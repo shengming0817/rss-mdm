@@ -352,12 +352,11 @@ async fn prepare_sessions(paths: &[std::path::PathBuf]) -> Result<Vec<serde_json
                 continue;
             }
             let key = (actor.tenant.clone(), actor.login.clone());
-            if !sessions.contains_key(&key) {
-                if !authorities.contains_key(&actor.tenant) {
-                    authorities.insert(
-                        actor.tenant.clone(),
-                        identity_with(configured(&actor.tenant)?).await?,
-                    );
+            if let std::collections::btree_map::Entry::Vacant(entry) = sessions.entry(key.clone()) {
+                if let std::collections::btree_map::Entry::Vacant(entry) =
+                    authorities.entry(actor.tenant.clone())
+                {
+                    entry.insert(identity_with(configured(&actor.tenant)?).await?);
                 }
                 let timer = super::monotonic();
                 let started = timer.now();
@@ -375,13 +374,10 @@ async fn prepare_sessions(paths: &[std::path::PathBuf]) -> Result<Vec<serde_json
                 let until = (view.auth_time + 300)
                     .min(view.idle_expires_at)
                     .min(view.absolute_expires_at);
-                sessions.insert(
-                    key.clone(),
-                    (
-                        SessionSecret::parse(issued.secret().expose().into())?,
-                        until,
-                    ),
-                );
+                entry.insert((
+                    SessionSecret::parse(issued.secret().expose().into())?,
+                    until,
+                ));
                 costs.push(serde_json::json!({"phase":"identity-sessions","count":1,"tenant":actor.tenant,"seconds":timer.now().checked_duration_since(started).context("fixture clock moved backwards")?.as_secs_f64()}));
             }
             let (secret, until) = &sessions[&key];
