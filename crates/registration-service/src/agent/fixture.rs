@@ -74,7 +74,12 @@ impl Service {
         let mut devices = Vec::with_capacity(seeds.len());
         for seed in seeds {
             self.configuration_signer.verify(&seed.request.file)?;
-            if seed.request.file.configuration != stored {
+            if serde_json::to_value(&seed.request.file.configuration)
+                .map_err(|_| Error::Malformed)?
+                != owner
+                    .try_get::<serde_json::Value, _>("document")
+                    .map_err(db)?
+            {
                 return Err(Error::Malformed);
             }
             let package = self
