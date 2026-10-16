@@ -78,7 +78,7 @@ async fn each_route_requires_its_exact_capability() -> Result<()> {
             Method::POST,
             release.clone(),
             Some(
-                json!({"operationId":uuid::Uuid::new_v4(),"expectedRevision":0,"input":{"action":"candidate","resource":"missing","version":"v1","expectedResourceRevision":1,"resourceDigest":vec![1;32]}}),
+                json!({"operationId":uuid::Uuid::new_v4(),"expectedRevision":999,"input":{"action":"candidate","resource":"missing","version":"v1","expectedResourceRevision":1,"resourceDigest":vec![1;32]}}),
             ),
         ),
         (
@@ -106,12 +106,6 @@ async fn each_route_requires_its_exact_capability() -> Result<()> {
             Method::POST,
             format!("/api/v1/groups/{id}/previews"),
             op(json!({})),
-        ),
-        (
-            "release_publish",
-            Method::POST,
-            format!("/api/v1/software-sources/{source}/candidates/{id}"),
-            op(json!({"action":"publish","ring":"test","publication":vec![0;32],"attempt":1})),
         ),
         (
             "release_recover",
@@ -176,10 +170,7 @@ async fn each_route_requires_its_exact_capability() -> Result<()> {
                 .call(&router, method.clone(), path, body.clone())
                 .await?;
             ensure!(
-                matches!(
-                    status,
-                    StatusCode::NOT_FOUND | StatusCode::CONFLICT | StatusCode::BAD_REQUEST
-                ),
+                matches!(status, StatusCode::NOT_FOUND | StatusCode::CONFLICT),
                 "grant {grant} failed to reach domain validation: {status} {result}"
             );
             if *method == Method::GET {

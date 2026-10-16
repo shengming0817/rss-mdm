@@ -265,12 +265,14 @@ async fn prepare_accounts(
                             .map_err(|e| PgError::from(sqlx::Error::Protocol(e.to_string())))?;
                         let principal = account.key().principal.as_uuid().to_string();
                         if role == "admin" {
-                            let rule = fixture_rule(&target.to_string(), &principal)
+                            let rules = fixture_rules(&target.to_string(), &principal)
                                 .map_err(|e| PgError::from(sqlx::Error::Protocol(e.to_string())))?;
                             tx.with_connection(move |connection| Box::pin(async move {
-                                sqlx::query("INSERT INTO mdm_access.authorization_rules(tenant_id,instance,id,revision,document) VALUES($1::uuid,$2::uuid,$3,1,$4)")
-                                    .bind(target.to_string()).bind(INSTANCE).bind(uuid::Uuid::new_v4()).bind(rule)
-                                    .execute(connection).await?;
+                                for rule in rules {
+                                    sqlx::query("INSERT INTO mdm_access.authorization_rules(tenant_id,instance,id,revision,document) VALUES($1::uuid,$2::uuid,$3,1,$4)")
+                                        .bind(target.to_string()).bind(INSTANCE).bind(uuid::Uuid::new_v4()).bind(rule)
+                                        .execute(&mut *connection).await?;
+                                }
                                 Ok(())
                             })).await?;
                         }
@@ -304,35 +306,81 @@ async fn prepare_accounts(
     Ok(costs)
 }
 
-fn fixture_rule(tenant: &str, principal: &str) -> Result<serde_json::Value> {
-    use crate::authorization::{Grant, Permission, Rule, Scope, Subject};
-    let mut grants: Vec<_> = [
-        Permission::AuthorizationRead,
-        Permission::AuthorizationWrite,
-        Permission::UserGroupRead,
-        Permission::UserGroupWrite,
-        Permission::DepartmentRead,
-        Permission::IdentityAccountsManage,
-        Permission::IdentityProvidersManage,
+const MANAGEMENT_PERMISSIONS: [crate::authorization::Permission; 7] = {
+    use crate::authorization::Permission::*;
+    [
+        AuthorizationRead,
+        AuthorizationWrite,
+        UserGroupRead,
+        UserGroupWrite,
+        DepartmentRead,
+        IdentityAccountsManage,
+        IdentityProvidersManage,
     ]
-    .into_iter()
-    .map(|operation| Grant {
-        operation,
-        scope: Scope::Tenant,
-    })
-    .collect();
-    grants.extend(device_grants(
-        None,
-        &["inventory_read", "enrollment", "credentials"],
-    )?);
-    let rule = Rule {
-        subject: Subject::User {
-            user: user(tenant, principal),
-        },
-        grants,
-    };
-    rule.validate(tenant, INSTANCE)?;
-    Ok(serde_json::to_value(rule)?)
+};
+
+fn fixture_rules(tenant: &str, principal: &str) -> Result<Vec<serde_json::Value>> {
+    use crate::authorization::{Grant, Rule, Scope, Subject};
+    // Independent rules let business tests replace device grants without revoking
+    // the authority needed to administer the next change. Keep read-only grants
+    // separate for consumers that explicitly preserve only InventoryRead.
+    let groups = [
+        MANAGEMENT_PERMISSIONS
+            .into_iter()
+            .map(|operation| Grant {
+                operation,
+                scope: Scope::Tenant,
+            })
+            .collect(),
+        device_grants(None, &["inventory_read"])?,
+        device_grants(None, &["enrollment", "credentials"])?,
+    ];
+    groups
+        .into_iter()
+        .map(|grants| {
+            let rule = Rule {
+                subject: Subject::User {
+                    user: user(tenant, principal),
+                },
+                grants,
+            };
+            rule.validate(tenant, INSTANCE)?;
+            Ok(serde_json::to_value(rule)?)
+        })
+        .collect()
+}
+
+fn protected_management_rule(rule: &crate::authorization::Rule) -> bool {
+    use crate::authorization::{Permission, Scope};
+    rule.grants
+        .iter()
+        .any(|g| g.operation == Permission::AuthorizationWrite)
+        && rule
+            .grants
+            .iter()
+            .all(|g| MANAGEMENT_PERMISSIONS.contains(&g.operation) && g.scope == Scope::Tenant)
+}
+
+#[test]
+fn baseline_management_does_not_protect_device_grants() -> Result<()> {
+    use crate::authorization::{Permission, Rule};
+    let rules = fixture_rules("11111111-1111-4111-8111-111111111111", BOOTSTRAP)?
+        .into_iter()
+        .map(serde_json::from_value::<Rule>)
+        .collect::<Result<Vec<_>, _>>()?;
+    anyhow::ensure!(rules.iter().map(|r| r.grants.len()).sum::<usize>() == 10);
+    anyhow::ensure!(protected_management_rule(&rules[0]));
+    anyhow::ensure!(!protected_management_rule(&rules[1]) && !protected_management_rule(&rules[2]));
+    anyhow::ensure!(
+        rules[1]
+            .grants
+            .iter()
+            .all(|g| g.operation == Permission::InventoryRead)
+    );
+    let mut mixed = rules[0].clone();
+    mixed.grants.extend(rules[1].grants.clone());
+    anyhow::ensure!(!protected_management_rule(&mixed));
+    Ok(())
 }
 
 async fn prepare_sessions(paths: &[std::path::PathBuf]) -> Result<Vec<serde_json::Value>> {
@@ -504,10 +552,7 @@ async fn grant(
             continue;
         }
         if matches!(&rule.subject, Subject::User { user } if user.principal_id == subject)
-            && !rule
-                .grants
-                .iter()
-                .any(|g| g.operation == Permission::AuthorizationWrite)
+            && !protected_management_rule(rule)
         {
             let audit =
                 rss_mdm_audit_integration::RequestAudit::new(tenant.into(), "authorization_write");
