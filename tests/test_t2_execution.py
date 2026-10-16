@@ -199,6 +199,62 @@ class ExecutionProof(unittest.TestCase):
 
 
 class ProcessOwnership(unittest.TestCase):
+    def test_ownership_check_cancellation_reaps_children_and_restores_handlers(self):
+        import os
+        import select
+        import signal
+        import subprocess
+        import textwrap
+        script = textwrap.dedent("""
+            import signal, sys
+            from pathlib import Path
+            from unittest.mock import patch
+            import t2_execution as execution
+            signals = (signal.SIGINT, signal.SIGTERM, signal.SIGHUP, signal.SIGQUIT)
+            previous = {sig: signal.getsignal(sig) for sig in signals}
+            class Discovery:
+                def __init__(self, output, processes):
+                    self.processes = processes
+                def prepare_discovery(self, modules, checks):
+                    self.processes.run([sys.executable, '-c', sys.argv[1]])
+            with patch.object(execution, 'require_lease'), \
+                 patch.object(execution, 'lease_fds', return_value=()), \
+                 patch.object(execution, 'Builds', Discovery):
+                try:
+                    execution.check_ownership([], Path('.'))
+                except RuntimeError:
+                    if any(signal.getsignal(sig) != handler for sig, handler in previous.items()):
+                        raise SystemExit(2)
+                    raise SystemExit(1)
+                raise SystemExit(0)
+        """)
+        for sig in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP, signal.SIGQUIT):
+            with self.subTest(signal=sig):
+                child_code = ('import os,signal,time; '
+                              + ('signal.signal(signal.SIGTERM, signal.SIG_IGN); ' if sig == signal.SIGTERM else '')
+                              + 'print(os.getpid(), flush=True); time.sleep(60)')
+                child_pid = None
+                with subprocess.Popen([sys.executable, '-c', script, child_code],
+                        cwd=Path(__file__).resolve().parents[1] / 'hack',
+                        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True) as parent:
+                    try:
+                        self.assertTrue(select.select([parent.stdout], [], [], 10)[0], 'child never started')
+                        child_pid = int(parent.stdout.readline())
+                        parent.send_signal(sig)
+                        _, stderr = parent.communicate(timeout=12)
+                        self.assertEqual(parent.returncode, 1, stderr)
+                        with self.assertRaises(ProcessLookupError):
+                            os.kill(child_pid, 0)
+                    finally:
+                        if parent.poll() is None:
+                            parent.kill()
+                            parent.wait()
+                        if child_pid is not None:
+                            try:
+                                os.killpg(child_pid, signal.SIGKILL)
+                            except ProcessLookupError:
+                                pass
+
     def test_fixture_stdin_protocol_and_persistent_children_share_cancellation(self):
         from unittest.mock import patch
         from t2_processes import owned_by, subprocess as fixture_process

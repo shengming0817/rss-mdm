@@ -451,7 +451,17 @@ def check_ownership(checks, output):
     """Build/list only: no runtime fixtures or test functions are started."""
     require_lease(ROOT)
     processes = Processes()
+    previous = {}
+    def cancel(number, frame):
+        processes.cancel()
     try:
+        for sig in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP, signal.SIGQUIT):
+            previous[sig] = signal.signal(sig, cancel)
         Builds(output, processes).prepare_discovery([], checks)
+        processes.check()
     finally:
-        processes.close()
+        try:
+            processes.close()
+        finally:
+            for sig, handler in previous.items():
+                signal.signal(sig, handler)
