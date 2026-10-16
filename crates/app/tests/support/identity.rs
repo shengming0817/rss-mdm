@@ -62,7 +62,9 @@ pub(crate) fn credential_for(tenant: &str, login: &str) -> Result<SessionSecret>
         .unwrap()
         .join(format!("credential-{tenant}-{login}"));
     Ok(SessionSecret::parse(
-        crate::config::secret(&path)?.to_string(),
+        crate::config::secret(&path)
+            .with_context(|| format!("prepared identity credential unavailable for role {login}"))?
+            .to_string(),
     )?)
 }
 pub(crate) fn age_prepared_admin_session() -> Result<()> {
