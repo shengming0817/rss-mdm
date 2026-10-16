@@ -10,10 +10,10 @@ use rss_transactional_messaging::policy::OperationDeadline;
 use uuid::Uuid;
 #[tokio::test]
 #[ignore = "real TLS PG commit acknowledgement loss"]
-async fn protocol_ack_loss_and_fault_ack_recover_original_request() {
-    for protocol in [false, true] {
+async fn protocol_ack_loss_recovers_original_request() {
+    {
         let proxy = ack::AckProxy::start().await;
-        let runtime = runtime_at(protocol.then_some(proxy.port)).await;
+        let runtime = runtime_at(Some(proxy.port)).await;
         let store = PolicyStore::new(runtime.clone(), tenant(), deadline())
             .await
             .unwrap();
@@ -27,14 +27,7 @@ async fn protocol_ack_loss_and_fault_ack_recover_original_request() {
             },
         );
         let request = Uuid::new_v4();
-        let gate = if protocol {
-            Some(ack::CommitGate::start("mdm_policy", &request.to_string()).await)
-        } else {
-            runtime.inject_next_transaction_fault(
-                rss_transactional_messaging_postgres::PgTransactionFault::CommitUnknownAfterAck,
-            );
-            None
-        };
+        let gate = ack::CommitGate::start("mdm_policy", &request.to_string()).await;
         let result = {
             let mut call = Box::pin(execute(
                 &runtime,
@@ -43,7 +36,7 @@ async fn protocol_ack_loss_and_fault_ack_recover_original_request() {
                 &input,
                 OperationDeadline::from_remaining(std::time::Duration::from_secs(7)),
             ));
-            if let Some(gate) = &gate {
+            {
                 tokio::select! {_=gate.entered()=>{},r=&mut call=>panic!("early settlement: {r:?}")};
                 proxy
                     .discard

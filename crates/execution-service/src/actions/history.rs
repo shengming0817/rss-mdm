@@ -8,11 +8,6 @@ use uuid::Uuid;
 
 pub const RESULT_SUMMARY_SQL: &str = "CASE WHEN r.result IS NULL THEN NULL WHEN r.result->'evidence' IS NOT NULL THEN jsonb_set(r.result,'{evidence,steps}',(SELECT jsonb_agg(value || jsonb_build_object('diagnostics',(value->'diagnostics')-'stdout'-'stderr') ORDER BY position) FROM jsonb_array_elements(r.result#>'{evidence,steps}') WITH ORDINALITY AS item(value,position))) ELSE (r.result-'output'-'native') || jsonb_build_object('diagnostics',(r.result->'diagnostics')-'stdout'-'stderr') END";
 
-#[derive(Clone, Copy)]
-enum RunOwner {
-    Policy(Uuid),
-    Remote(Uuid),
-}
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Page {
@@ -91,35 +86,13 @@ impl Queries {
         id: Uuid,
         audit: &RequestAudit,
     ) -> Result<crate::queries::records::RunDetail, crate::queries::QueryError> {
-        self.run_detail(proof, RunOwner::Policy(policy), id, audit)
-            .await
-    }
-    pub async fn remote_action_run(
-        &self,
-        proof: &AuthorizedPrincipal,
-        operation: Uuid,
-        id: Uuid,
-        audit: &RequestAudit,
-    ) -> Result<crate::queries::records::RunDetail, crate::queries::QueryError> {
-        self.run_detail(proof, RunOwner::Remote(operation), id, audit)
-            .await
-    }
-    async fn run_detail(
-        &self,
-        proof: &AuthorizedPrincipal,
-        owner: RunOwner,
-        id: Uuid,
-        audit: &RequestAudit,
-    ) -> Result<crate::queries::records::RunDetail, crate::queries::QueryError> {
-        crate::transaction::run(&self.audit_store,&self.runtime,self.tenant,audit,(&self.audit_store,&self.policy_reader,proof,owner,id,audit),|ctx,tx|Box::pin(async move {
-            let (store,reader,proof,owner,id,audit)=*ctx;
+        crate::transaction::run(&self.audit_store,&self.runtime,self.tenant,audit,(&self.audit_store,&self.policy_reader,proof,policy,id,audit),|ctx,tx|Box::pin(async move {
+            let (store,reader,proof,policy,id,audit)=*ctx;
             let mut run=db::load_run(tx,id).await?;
             let plan=db::load_source(reader,tx,run.source).await?;
-            let (field,parent)=match (owner,run.source) {
-                (RunOwner::Policy(policy),db::Source::Policy {..}) if plan.owner()==policy=>("policyId",policy),
-                (RunOwner::Remote(parent),db::Source::RemoteOperation {operation}) if parent==operation=>("operationId",parent),
-                _=>return Err(Error::Execution(crate::missing::ExecutionError::MissingTask).into()),
-            };
+            if plan.owner()!=policy {
+                return Err(Error::Execution(crate::missing::ExecutionError::MissingTask).into());
+            }
             storage::authorized(tx,proof,&run.target.device,Permission::OperationRead).await?;
             let collection = match &plan { db::ScheduledPolicy::Script(script) => script.frozen.collection.as_ref(), _ => None };
             let native = matches!(&plan, db::ScheduledPolicy::AgentCollection(_));
@@ -137,7 +110,7 @@ impl Queries {
             let effect=run.result.as_ref().and_then(|r|r["effect"].as_str()).unwrap_or("unverified").to_owned();
             let user_action=if matches!(plan,db::ScheduledPolicy::Software(ref software) if matches!(software.assignment.intent(),rss_mdm_policy::SoftwareIntent::AvailableInstall)) && run.state.awaits_user(storage::now(tx).await?) {Some("waiting_user")}else{None};
             let mut value=json!({"taskId":id,"authorization":run.invocation.as_ref().map(|i|&i.authorization),"attemptId":run.state.attempt(),"device":run.target.device,"registrationId":run.target.registration,"generation":run.target.generation,"availableAt":run.available_at,"deadline":run.deadline,"state":run.state,"effect":effect,"userAction":user_action,"result":run.result});
-            value[field]=json!(parent);crate::queries::records::decode(value)
+            value["policyId"]=json!(policy);crate::queries::records::decode(value)
         })).await.map_err(Into::into)
     }
 }

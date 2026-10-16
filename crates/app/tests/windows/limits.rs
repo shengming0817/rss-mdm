@@ -64,7 +64,7 @@ async fn ingress_burst(
         }
     }
     ensure!(
-        refused >= 64 && accepted <= 64,
+        refused == 64 && accepted == 64,
         "forwarded headers bypassed peer admission"
     );
     let after = crate::audit_test_support::read(&mut pg)

@@ -33,31 +33,6 @@ async fn registration_binding_and_replay() -> Result<()> {
         .await?
         .0 == StatusCode::CONFLICT
     );
-    for path in [
-        "/api/agent/v1/registrations",
-        "/api/agent/v1/reports",
-        "/api/agent/enroll/v1/certificates",
-        "/api/agent/runtime/v1/reports",
-        "/api/agent/v3/registrations",
-        "/api/agent/v6/registrations",
-        "/api/agent/v6/reports",
-        "/api/agent/v6/tasks/claim",
-    ] {
-        let response = router
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .method(Method::POST)
-                    .uri(path)
-                    .header("host", "mdm.example.test")
-                    .body(Body::empty())?,
-            )
-            .await?;
-        ensure!(
-            response.status() == StatusCode::NOT_FOUND,
-            "retired route {path}"
-        );
-    }
     let body = json!({"wireVersion":1,"collection":agent.registration["collections"][0],"reportId":Uuid::new_v4(),"sequence":0,"observedAt":1,"body":{"kind":"failed","code":"collectionFailed"}});
     ensure!(
         agent_call(

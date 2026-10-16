@@ -1,26 +1,5 @@
 use super::*;
 use sqlx::Connection;
-#[tokio::test]
-#[ignore = "MODULE=apple.collection: native protocol and durable state"]
-async fn collection_lifecycle() -> Result<()> {
-    let mut f = Fixture::start().await?;
-    let (_peer, device) = f.ready_local_peer().await?;
-    let response = f
-        .browser
-        .call(
-            &f.router,
-            Method::POST,
-            &format!("/api/v1/devices/{}/collection-runs", case_device()),
-            Some(json!({"source":"mdm.apple","requestId":Uuid::new_v4()})),
-        )
-        .await?;
-    ensure!(
-        response.0 == StatusCode::NOT_FOUND,
-        "removed fixed collection endpoint: {response:?}"
-    );
-    drop(device);
-    f.close().await
-}
 
 #[tokio::test]
 #[ignore = "MODULE=apple.collection: published template and actual native peer"]
@@ -238,12 +217,6 @@ async fn published_native_template_uses_policy_and_direct_collection_progress() 
     let refresh_policy = Uuid::new_v4();
     post(&mut f.browser,&f.router,&format!("/api/v1/policies/{refresh_policy}"),json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"put","enabled":true,"definition":{"scope":scope,"action":{"kind":"native_collection","resource":{"id":id,"version":"v1","platform":"macos","architecture":"aarch64","variant":"default"},"runLifetimeSeconds":300}}}})).await?;
     let (refresh, _) = peer.next_collection().await?;
-    let mut historical = sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?).await?;
-    let parent = Uuid::new_v4();
-    crate::test_support::agent_execution::historical_remote_run(&mut historical,case_tenant(),refresh,parent).await?;
-    sqlx::query("UPDATE mdm_apple.attempts SET state='not_now',next_attempt=clock_timestamp() WHERE tenant_id=$1::uuid AND id=$2 AND phase='collect'").bind(case_tenant()).bind(refresh).execute(&mut historical).await?;
-    ensure!(peer.manage("Idle",None,None).await?.is_empty(), "retired Remote collection was retried");
-
     ensure!(refresh != run);
     peer.manage(
         "Acknowledged",
@@ -263,10 +236,6 @@ async fn published_native_template_uses_policy_and_direct_collection_progress() 
         )),
     )
     .await?;
-    f.app.execution.recover_remote_fixture(parent).await?;
-    let state:String=sqlx::query_scalar("SELECT state->>'execution' FROM mdm_commands.action_runs WHERE tenant_id=$1::uuid AND id=$2").bind(case_tenant()).bind(refresh).fetch_one(&mut historical).await?;
-    ensure!(state == "succeeded", "original Remote native receipt failed to settle: {state}");
-    historical.close().await?;
     let invalid = f
         .browser
         .call(

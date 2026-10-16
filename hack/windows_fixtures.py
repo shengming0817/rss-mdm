@@ -12,22 +12,17 @@ def generate(root, tls_certificate, tls_key, *, materials=()):
     openssl("req", "-x509", "-newkey", "rsa:2048", "-nodes", "-sha256", "-days", "180",
             "-subj", "/CN=RSS Windows T2 CA", "-addext", "basicConstraints=critical,CA:TRUE",
             "-addext", "keyUsage=critical,keyCertSign,cRLSign", "-keyout", root/"device-ca.key", "-out", root/"device-ca.pem")
-    if 'windows-renewal' in materials:
-        # A short-lived issuer puts real TLS client certificates in the renewal window now.
-        openssl("req", "-x509", "-key", root/"device-ca.key", "-sha256", "-days", "6",
-                "-subj", "/CN=RSS Windows T2 CA", "-addext", "basicConstraints=critical,CA:TRUE",
-                "-addext", "keyUsage=critical,keyCertSign,cRLSign", "-out", root/"renewal-ca.pem")
     openssl("pkcs8", "-topk8", "-nocrypt", "-in", root/"device-ca.key", "-outform", "DER", "-out", root/"device-ca.pk8")
     openssl("pkcs8", "-topk8", "-nocrypt", "-in", tls_key, "-outform", "DER", "-out", root/"windows-tls.pk8")
-    for name, bits, algorithm in [("device", "2048", "-sha256"), ("renew-device", "2048", "-sha256"), ("weak", "1024", "-sha256"), ("sha1", "2048", "-sha1")]:
+    for name, bits, algorithm in [("device", "2048", "-sha256"), ("renew-device", "2048", "-sha256"), ("weak", "1024", "-sha256")]:
         if name == 'renew-device' and 'windows-renewal' not in materials:
             continue
-        if name in ('weak', 'sha1') and 'windows-adversarial' not in materials:
+        if name == 'weak' and 'windows-weak-csr' not in materials:
             continue
         openssl("req", "-new", "-newkey", "rsa:"+bits, "-nodes", algorithm, "-subj", "/CN=untrusted-csr-subject",
                 "-keyout", root/(name+".key"), "-outform", "DER", "-out", root/(name+".csr"))
     openssl("pkcs8", "-topk8", "-nocrypt", "-in", root/"device.key", "-outform", "DER", "-out", root/"device.pk8")
-    if 'windows-adversarial' in materials:
+    if 'windows-rogue-client' in materials:
         openssl("req", "-x509", "-newkey", "rsa:2048", "-nodes", "-sha256", "-days", "180",
                 "-subj", "/CN=Untrusted T2 CA", "-addext", "basicConstraints=critical,CA:TRUE",
                 "-addext", "keyUsage=critical,keyCertSign,cRLSign", "-keyout", root/"rogue-ca.key", "-out", root/"rogue-ca.pem")

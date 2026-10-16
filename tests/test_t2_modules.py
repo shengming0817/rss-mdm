@@ -108,7 +108,7 @@ class ModuleImpactTests(unittest.TestCase):
                 'planning.frequency', 'planning.recovery', 'diagnostics.http'},
             'crates/management-http/src/planning/mod.rs': {
                 'planning.self_service', 'planning.http', 'planning.policy', 'planning.agent_policy', 'planning.frequency',
-                'planning.remote', 'planning.software'},
+                'planning.software'},
             'crates/management-http/src/software_native.rs': {
                 'publication.winget', 'publication.brew', 'publication.withdrawal'},
             'hack/enrollment-password.py': {'enrollment.http', 'enrollment.recovery'},
@@ -132,8 +132,8 @@ class ModuleImpactTests(unittest.TestCase):
             selected = select_inputs([path])
             self.assertEqual(set(selected.modules), {
                 'execution.agent.history', 'execution.commands.windows', 'planning.http',
-                'planning.agent_policy', 'planning.remote', 'planning.software'}
-                | ({'apple.commands','apple.users','apple.ddm','apple.status'} if path.endswith('/records.rs') else {'windows.declared'}))
+                'planning.agent_policy', 'planning.software'}
+                | ({'apple.commands','apple.users','apple.ddm'} if path.endswith('/records.rs') else {'windows.declared'}))
 
     def test_native_modules_select_actual_write_read_permission_and_helper_inputs(self):
         for path in ('crates/execution-service/src/service.rs',
@@ -155,7 +155,7 @@ class ModuleImpactTests(unittest.TestCase):
                      'crates/execution-service/src/transaction.rs',
                      'crates/apple-mdm/src/native/request.rs'):
             selected = select_inputs([path])
-            self.assertTrue({'apple.ddm', 'apple.status'} <= set(selected.modules), path)
+            self.assertTrue({'apple.ddm'} <= set(selected.modules), path)
 
     def test_script_preparation_selects_all_script_entrances(self):
         for path in ('crates/resource/src/script.rs',
@@ -163,7 +163,7 @@ class ModuleImpactTests(unittest.TestCase):
                      'crates/execution-service/src/freeze_inputs.rs',
                      'crates/flow-service/src/resource_catalog/mod.rs'):
             selected = select_inputs([path])
-            self.assertTrue({'planning.agent_policy', 'planning.remote'} <= set(selected.modules), path)
+            self.assertTrue({'planning.agent_policy'} <= set(selected.modules), path)
         self.assertIn('execution.agent.recovery', self.selected('crates/resource/src/script.rs'))
         for path in ('crates/execution-service/src/input_preparation.rs',
                      'crates/execution-service/src/input_preparation/publication.rs'):
@@ -326,7 +326,18 @@ class ModuleImpactTests(unittest.TestCase):
 
     def test_shared_registration_fixture_selects_only_direct_consumers(self):
         self.assertEqual(self.selected('crates/app/tests/support/agent.rs'),
-                         {'agent.configurations','planning.self_service','agent.registration','agent.reports','planning.remote','execution.agent.poll','execution.agent.recovery','planning.onboarding','execution.commands.onboarding','execution.agent.delivery','execution.software.recovery','planning.agent_policy','execution.software.offer','execution.agent.history','assets.http','execution.agent.content','apple.onboarding','planning.software','planning.http','execution.software.content','planning.frequency','execution.commands.windows','software.http'})
+                         {'agent.configurations','planning.self_service','agent.registration','agent.reports','execution.agent.poll','execution.agent.recovery','planning.onboarding','execution.commands.onboarding','execution.agent.delivery','execution.software.recovery','planning.agent_policy','execution.software.offer','execution.agent.history','assets.http','execution.agent.content','apple.onboarding','planning.software','planning.http','execution.software.content','planning.frequency','execution.commands.windows','software.http'})
+
+    def test_case_only_windows_inputs_select_directory_consumers(self):
+        for path in ('hack/windows_fixtures.py', 'deployment/windows-leaf.tpl'):
+            with self.subTest(path=path):
+                selected = self.selected(path)
+                self.assertIn('planning.http', selected)
+                self.assertNotIn('planning.self_service', selected)
+
+    def test_windows_csr_unit_input_does_not_select_t2(self):
+        selected = select_inputs(['crates/certificate/tests/windows.rs'])
+        self.assertEqual(selected.modules, ())
 
     def test_content_range_selects_real_download_consumers(self):
         self.assertEqual(self.selected('crates/content-service/src/range.rs'),
@@ -413,7 +424,7 @@ class ModuleImpactTests(unittest.TestCase):
                                             'apple.apns','apple.cms','gateway.admission'}))
 
     def test_task_wire_and_signing_select_task_consumers_not_native_protocols(self):
-        expected = {'planning.agent_policy','planning.frequency','planning.remote','planning.software',
+        expected = {'planning.agent_policy','planning.frequency','planning.software',
                     'execution.agent.delivery','execution.agent.poll','execution.agent.content',
                     'execution.agent.recovery','execution.software.offer','execution.software.content',
                     'execution.software.recovery'}

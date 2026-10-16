@@ -139,8 +139,8 @@ def resolve_cases(module, names):
                        or side == 'peer' and value.scope != 'pair' for side, role in value.actors)
                 or type(value.configuration_devices) is not int or value.configuration_devices < 0):
             raise ValueError('invalid preparation needs: ' + module.id + ': ' + name)
-        allowed_materials = {'windows-adversarial', 'windows-renewal', 'pki-recovery',
-                             'agent-adversarial', 'agent-long-lived', 'other'}
+        allowed_materials = {'windows-weak-csr', 'windows-rogue-client', 'windows-renewal', 'pki-recovery',
+                             'agent-long-lived', 'other'}
         if len(set(value.materials)) != len(value.materials) or set(value.materials) - allowed_materials:
             raise ValueError('invalid cryptographic materials: ' + module.id + ': ' + name)
         if 'agent_pki' in value.fixtures and value.db_mode == 'reuse' and value.scope == 'objects' and (value.materials or value.configuration_devices):

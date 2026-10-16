@@ -212,7 +212,8 @@ async fn verify(router: &Router, admin: &mut Browser, member: &mut Browser) -> R
     ensure!(ids.len() >= 4, "near-limit success not reached");
     let oversized = Uuid::new_v4();
     pg(&format!(
-        "INSERT INTO mdm_access.user_groups SELECT tenant_id,instance,'{oversized}',1,document FROM mdm_access.user_groups WHERE id='{}'",
+        "INSERT INTO mdm_access.user_groups SELECT tenant_id,instance,'{oversized}',1,document FROM mdm_access.user_groups WHERE tenant_id='{}' AND instance='{INSTANCE}' AND id='{}'",
+        case_tenant(),
         ids[0]
     ))?;
     ensure!(

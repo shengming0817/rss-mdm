@@ -15,7 +15,6 @@ mod software;
 
 mod agent_policy;
 mod frequency;
-mod remote;
 
 mod policy;
 

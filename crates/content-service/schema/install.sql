@@ -27,16 +27,6 @@ ALTER TABLE ONLY mdm_content.bindings
 ALTER TABLE mdm_content.bindings ENABLE ROW LEVEL SECURITY;
 
 CREATE POLICY tenant ON mdm_content.bindings USING ((tenant_id = (NULLIF(current_setting('rss.tenant_id'::text, true), ''::text))::uuid)) WITH CHECK ((tenant_id = (NULLIF(current_setting('rss.tenant_id'::text, true), ''::text))::uuid));
-CREATE TABLE mdm_content.diagnostic_artifacts (
- tenant_id uuid NOT NULL, operation uuid NOT NULL, registration uuid NOT NULL,
- generation bigint NOT NULL CHECK(generation>0), identity jsonb NOT NULL,
- reference text NOT NULL, length bigint NOT NULL CHECK(length BETWEEN 1 AND 16777216),
- sha256 bytea NOT NULL CHECK(octet_length(sha256)=32), expires_at bigint NOT NULL CHECK(expires_at>0),
- PRIMARY KEY(tenant_id,operation), UNIQUE(tenant_id,reference)
-);
-ALTER TABLE mdm_content.diagnostic_artifacts ENABLE ROW LEVEL SECURITY;
-ALTER TABLE mdm_content.diagnostic_artifacts FORCE ROW LEVEL SECURITY;
-CREATE POLICY tenant ON mdm_content.diagnostic_artifacts USING(tenant_id=NULLIF(current_setting('rss.tenant_id',true),'')::uuid) WITH CHECK(tenant_id=NULLIF(current_setting('rss.tenant_id',true),'')::uuid);
 CREATE TABLE mdm_content.uploads (
  tenant_id uuid NOT NULL, id uuid NOT NULL, document jsonb NOT NULL,
  epoch uuid, held_until bigint NOT NULL DEFAULT 0, expires bigint NOT NULL,

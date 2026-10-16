@@ -54,7 +54,6 @@ pub(super) fn class(c: StorageClass) -> &'static str {
     match c {
         StorageClass::Artifact => "artifact",
         StorageClass::NativeConfiguration => "native_configuration",
-        StorageClass::NativeDiagnostic => "native_diagnostic",
     }
 }
 pub(super) fn encode<T: Serialize>(v: &T) -> Result<serde_json::Value, Error> {

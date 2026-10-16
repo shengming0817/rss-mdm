@@ -94,8 +94,10 @@ async fn projection_and_tenant_scopes() -> Result<()> {
     sibling.project(&cancel).await?;
     a.ingest(batch("empty", 5, Body::Snapshot(vec![]))).await?;
     a.project(&cancel).await?;
+    let empty = inspect(&a, "empty").await?;
+    assert_eq!(empty["assets"].as_array().unwrap().len(), 2);
     assert!(
-        inspect(&a, "empty").await?["assets"]
+        empty["assets"]
             .as_array()
             .unwrap()
             .iter()
@@ -303,6 +305,7 @@ async fn empty_and_delete() -> Result<()> {
     assert_eq!(inspect(&a, "delete").await?["projection"], "not_projected");
     a.project(&cancel).await?;
     let view = inspect(&a, "delete").await?;
+    assert_eq!(view["assets"].as_array().unwrap().len(), 2);
     assert!(
         view["assets"]
             .as_array()

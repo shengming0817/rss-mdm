@@ -5,10 +5,10 @@ use support::*;
 mod ack;
 #[tokio::test]
 #[ignore = "real TLS PG commit acknowledgement loss"]
-async fn protocol_ack_loss_and_fault_ack_recover_original_request() {
-    for protocol in [false, true] {
+async fn protocol_ack_loss_recovers_original_request() {
+    {
         let proxy = ack::AckProxy::start().await;
-        let runtime = runtime_at(if protocol { Some(proxy.port) } else { None }).await;
+        let runtime = runtime_at(Some(proxy.port)).await;
         let s = ResourceStore::new(runtime.clone(), tenant(), deadline())
             .await
             .unwrap();
@@ -20,20 +20,13 @@ async fn protocol_ack_loss_and_fault_ack_recover_original_request() {
             as_of: at(10),
             command: Command::Create(core::Kind::Script),
         };
-        let gate = if protocol {
-            Some(ack::CommitGate::start("mdm_resource", id.as_str()).await)
-        } else {
-            runtime.inject_next_transaction_fault(
-                rss_transactional_messaging_postgres::PgTransactionFault::CommitUnknownAfterAck,
-            );
-            None
-        };
+        let gate = ack::CommitGate::start("mdm_resource", id.as_str()).await;
         let result = {
             let deadline = rss_transactional_messaging::policy::OperationDeadline::from_remaining(
                 std::time::Duration::from_secs(7),
             );
             let mut operation = Box::pin(s.execute(&request, deadline));
-            if let Some(gate) = &gate {
+            {
                 tokio::select! {_=gate.entered()=>{},r=&mut operation=>panic!("request returned before COMMIT gate: {r:?}")}
                 proxy
                     .discard

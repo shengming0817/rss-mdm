@@ -16,11 +16,11 @@ pub async fn association_in(
 ) -> Result<Option<(String, Option<Uuid>)>, sqlx::Error> {
     let (statement, id) = match identity {
         Identity::Operation(id) => (
-            "SELECT device,remote_operation FROM mdm_commands.operations WHERE tenant_id=$1::uuid AND id=$2",
+            "SELECT device,NULL::uuid FROM mdm_commands.operations WHERE tenant_id=$1::uuid AND id=$2",
             id,
         ),
         Identity::ActionRun(id) => (
-            "SELECT device,remote_operation FROM mdm_commands.action_runs WHERE tenant_id=$1::uuid AND id=$2",
+            "SELECT device,NULL::uuid FROM mdm_commands.action_runs WHERE tenant_id=$1::uuid AND id=$2",
             id,
         ),
         Identity::ChangeRequest(id) => (

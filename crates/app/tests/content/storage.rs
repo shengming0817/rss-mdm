@@ -126,7 +126,7 @@ async fn s3_chunk_frontier_and_native_restart() -> Result<()> {
     );
     ensure!(
         store
-            .verify_class(&a, StorageClass::NativeDiagnostic)
+            .verify_class(&a, StorageClass::Artifact)
             .await
             .is_err()
     );
@@ -167,7 +167,10 @@ async fn volume_fences_a_stale_writer_and_keeps_failed_body_frontier() -> Result
         .append(&b.actor, id, 0, now, bytes.as_slice())
         .await?;
     drop(producer);
-    ensure!(writer.await?.is_err());
+    ensure!(matches!(
+        writer.await?,
+        Err(rss_mdm_content_service::Error::Conflict)
+    ));
     ensure!(store.status(&b.actor, id, now).await?.offset == bytes.len() as u64);
     store.finish(&b.actor, id, now).await?;
     ensure!(
@@ -184,7 +187,10 @@ async fn volume_fences_a_stale_writer_and_keeps_failed_body_frontier() -> Result
         Err(std::io::Error::other("interrupted fixture body")),
     ]);
     let reader = tokio_util::io::StreamReader::new(body);
-    ensure!(store.append(&b.actor, bad, 0, now, reader).await.is_err());
+    ensure!(matches!(
+        store.append(&b.actor, bad, 0, now, reader).await,
+        Err(rss_mdm_content_service::Error::Storage)
+    ));
     ensure!(store.status(&b.actor, bad, now).await?.offset == 0);
     second.close().await;
     Ok(())

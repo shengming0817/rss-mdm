@@ -3701,26 +3701,6 @@
         },
         {
           "additionalProperties": false,
-          "description": "Existing Remote Operation execution.",
-          "properties": {
-            "kind": {
-              "const": "remote_operation",
-              "type": "string"
-            },
-            "operationId": {
-              "description": "Operation identity.",
-              "format": "uuid",
-              "type": "string"
-            }
-          },
-          "required": [
-            "kind",
-            "operationId"
-          ],
-          "type": "object"
-        },
-        {
-          "additionalProperties": false,
           "description": "Targeted Policy self-service invocation.",
           "properties": {
             "allowAi": {

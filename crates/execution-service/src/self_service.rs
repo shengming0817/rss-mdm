@@ -88,9 +88,7 @@ impl Invocation {
             return Ok(false);
         }
         match plan {
-            db::ScheduledPolicy::Script(script)
-                if script.policy().is_some() && script.id == *policy_version =>
-            {
+            db::ScheduledPolicy::Script(script) if script.id == *policy_version => {
                 if script
                     .frozen
                     .definition
@@ -152,7 +150,7 @@ async fn prepare_in(
         return Ok(None);
     }
     match plan {
-        db::ScheduledPolicy::Script(script) if script.policy().is_some() => {
+        db::ScheduledPolicy::Script(script) => {
             let Some(entry) = script
                 .entry_in(&service.source, tx, &target.device, now)
                 .await?

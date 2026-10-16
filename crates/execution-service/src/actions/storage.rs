@@ -13,19 +13,16 @@ use uuid::Uuid;
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Source {
     Policy { version: Uuid },
-    RemoteOperation { operation: Uuid },
 }
 impl Source {
-    pub fn columns(self) -> (&'static str, Option<Uuid>, Option<Uuid>) {
+    pub fn columns(self) -> (&'static str, Uuid) {
         match self {
-            Self::Policy { version } => ("policy", Some(version), None),
-            Self::RemoteOperation { operation } => ("remote_operation", None, Some(operation)),
+            Self::Policy { version } => ("policy", version),
         }
     }
     pub fn audit(self, audit: &rss_mdm_audit_integration::RequestAudit) {
-        if let Self::Policy { version } = self {
-            audit.plan(version);
-        }
+        let Self::Policy { version } = self;
+        audit.plan(version);
     }
 }
 pub struct Run {
@@ -41,15 +38,12 @@ pub struct Run {
 }
 pub async fn load_run(tx: &mut PgTransaction<'_>, id: Uuid) -> Result<Run> {
     let tenant = tx.tenant_id().to_string();
-    let row=tx.with_connection(move|c|Box::pin(async move{sqlx::query("SELECT source_kind,policy_version,remote_operation,device,registration::text,generation,available_at,deadline,state,result,invocation,source_objects FROM mdm_commands.action_runs WHERE tenant_id=$1::uuid AND id=$2::uuid FOR UPDATE").bind(tenant).bind(id.to_string()).fetch_optional(c).await})).await?.ok_or(Error::Execution(crate::missing::ExecutionError::MissingTask))?;
+    let row=tx.with_connection(move|c|Box::pin(async move{sqlx::query("SELECT source_kind,policy_version,device,registration::text,generation,available_at,deadline,state,result,invocation,source_objects FROM mdm_commands.action_runs WHERE tenant_id=$1::uuid AND id=$2::uuid FOR UPDATE").bind(tenant).bind(id.to_string()).fetch_optional(c).await})).await?.ok_or(Error::Execution(crate::missing::ExecutionError::MissingTask))?;
     Ok(Run {
         id,
         source: match row.try_get::<&str, _>("source_kind")? {
             "policy" => Source::Policy {
                 version: row.try_get("policy_version")?,
-            },
-            "remote_operation" => Source::RemoteOperation {
-                operation: row.try_get("remote_operation")?,
             },
             _ => return Err(Error::Unavailable(crate::Failure::CommandInvariant).into()),
         },
@@ -125,7 +119,7 @@ pub async fn audit_details(
 
 pub enum ScheduledPolicy {
     AgentCollection(ExecutionPolicy<crate::action_contract::FrozenAgentCollection>),
-    Script(ExecutionPolicy),
+    Script(Box<ExecutionPolicy>),
     Native(ExecutionPolicy<crate::action_contract::FrozenNativeCollection>),
     Software(SoftwareExecutionPolicy),
     Enrollment(crate::sources::enrollment::EnrollmentPolicy),
@@ -239,9 +233,6 @@ impl ScheduledPolicy {
         run: &Run,
         now: i64,
     ) -> Result<bool> {
-        if matches!(run.source, Source::RemoteOperation { .. }) {
-            return Ok(false);
-        }
         if run.state.started_at.is_none() {
             let channel = if matches!(self, Self::Native(_)) {
                 rss_mdm_inventory::Channel::Mdm
@@ -399,13 +390,9 @@ impl ScheduledPolicy {
                         invocation.parameters.clone(),
                     )
                 } else {
-                    let authorization = if v.policy().is_some() {
-                        wire::TaskAuthorization::Policy {
-                            policy_id: v.owner,
-                            policy_version: v.id,
-                        }
-                    } else {
-                        wire::TaskAuthorization::RemoteOperation { operation_id: v.id }
+                    let authorization = wire::TaskAuthorization::Policy {
+                        policy_id: v.owner,
+                        policy_version: v.id,
                     };
                     (
                         authorization,
@@ -561,9 +548,9 @@ pub async fn load_policy_version(
         crate::frozen::Frozen::NativeCollection { .. } => Ok(ScheduledPolicy::Native(
             crate::sources::admission::native_in(reader, tx, id).await?,
         )),
-        crate::frozen::Frozen::Execution { .. } => Ok(ScheduledPolicy::Script(
+        crate::frozen::Frozen::Execution { .. } => Ok(ScheduledPolicy::Script(Box::new(
             crate::sources::admission::read_in(reader, tx, id).await?,
-        )),
+        ))),
         crate::frozen::Frozen::Software { .. } => Ok(ScheduledPolicy::Software(
             crate::sources::software::read_in(reader, tx, id).await?,
         )),
@@ -578,20 +565,5 @@ pub async fn load_source(
 ) -> Result<ScheduledPolicy> {
     match source {
         Source::Policy { version } => load_policy_version(reader, tx, version).await,
-        Source::RemoteOperation { operation } => {
-            let remote = crate::remote_operations::storage::read_in(tx, operation).await?;
-            if matches!(
-                remote.frozen,
-                crate::frozen::Frozen::NativeCollection { .. }
-            ) {
-                Ok(ScheduledPolicy::Native(
-                    crate::sources::admission::remote_native_in(tx, operation).await?,
-                ))
-            } else {
-                Ok(ScheduledPolicy::Script(
-                    crate::sources::admission::remote_in(tx, operation).await?,
-                ))
-            }
-        }
     }
 }

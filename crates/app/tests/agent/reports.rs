@@ -94,34 +94,21 @@ async fn durable_reports_and_projection() -> Result<()> {
             {"field":"channel.mdm.enrollment","value":{"kind":"value","value":{"kind":"string","value":"unenrolled"}}}
         ]}
     });
-    for version in [2, 3, 4, 5, 6, 255] {
-        let mut retired = report.clone();
-        retired["wireVersion"] = json!(version);
+    for version in [255] {
+        let mut unsupported = report.clone();
+        unsupported["wireVersion"] = json!(version);
         ensure!(
             agent_call(
                 router,
                 Method::POST,
                 "/api/v1/agent/runtime/reports",
                 Some(credential),
-                Some(retired)
+                Some(unsupported)
             )
             .await?
             .0 == StatusCode::BAD_REQUEST
         );
     }
-    let mut historical = report.clone();
-    historical.as_object_mut().unwrap().remove("collection");
-    ensure!(
-        agent_call(
-            router,
-            Method::POST,
-            "/api/v1/agent/runtime/reports",
-            Some(credential),
-            Some(historical)
-        )
-        .await?
-        .0 == StatusCode::BAD_REQUEST
-    );
     ensure!(
         agent_call(
             router,
@@ -132,7 +119,7 @@ async fn durable_reports_and_projection() -> Result<()> {
         )
         .await?
         .0 == StatusCode::NOT_FOUND,
-        "retired input created a report"
+        "unsupported input created a report"
     );
     let (status, ack) = agent_call(
         router,

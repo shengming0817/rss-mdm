@@ -14,7 +14,7 @@ Resource 持有不可变内容。Policy 持有组织持续分配及六类闭合 
 
 Action 直接持有对应资源选择：脚本、原生采集和配置使用 Exact，软件和 Agent 安装使用 Software，Enrollment 无资源。`ResourceIdentity` 只借用资源及版本坐标。`ActionKind` 持有持久标签、目录解析及 AssignmentBehavior 分类；Agent check-in、原生采集恢复与原生期望核对的 SQL 参数从该分类派生。显式重跑只支持已有消费者的脚本和 Enrollment。
 
-Execution 的 `ResourcePreparation` 是四类资源预检输入，`PublicationInput` 是六类冻结输入，均为借用的内部请求，不持有 Policy 身份、Scope 或 rollout。Policy 在自己的事务里提交授权、收据、审计和 wake；Execution 在同一事务里复查 active version、绑定内容证明、冻结并封存原生授权。Remote 只保留历史 owner、查询、取消与原 attempt 结算，创建、目标展开和分发生产路径已删除。设备创建使用闭合 DeviceControl 授权与三动作合同，平台原生载荷只由后端固定映射生成。
+Execution 的 `ResourcePreparation` 是四类资源预检输入，`PublicationInput` 是六类冻结输入，均为借用的内部请求，不持有 Policy 身份、Scope 或 rollout。Policy 在自己的事务里提交授权、收据、审计和 wake；Execution 在同一事务里复查 active version、绑定内容证明、冻结并封存原生授权。Remote 与通用 direct 的历史读取、结算和存储已退出；当前安装不提供旧部署升级或数据导入。设备创建使用闭合 DeviceControl 授权与三动作合同，平台原生载荷只由后端固定映射生成。
 
 预览复用资源和内容校验，但不登记采集定义、不封存配置、不发布版本或执行任务。软件草稿只持有 Scope、rollout 和冻结内容，历史版本为 `None`；阶段分母仍读取当前真实 Scope，成功事实为零。持久软件分配使用真实版本并共享准入计算。
 

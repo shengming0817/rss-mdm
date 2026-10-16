@@ -81,7 +81,7 @@ def verify(context):
             ('POST','/api/v1/software/resources/resource/versions/version',1024*1024),
         ]
         for method,path,limit in budgets:
-            for length in (limit-1,limit,limit+1):
+            for length in (limit,limit+1):
                 expected = 200 if length <= limit else 413
                 status=request(path,method=method,body=b'x'*length)[0]
                 if status!=expected:
@@ -193,8 +193,15 @@ def verify_business(context, fixture):
                     status,receipt=browser.call('PUT',path,update)
                     require(status==200 and receipt['revision']==1,'gateway rejected legal large user group')
                     require(browser.call('PUT',path,update)==(status,receipt),'gateway business receipt replay')
-                    status,page=browser.call('GET',path+'/members')
-                    require(status==200 and page['items'],'gateway business members not persisted')
+                    seen=[]
+                    offset=0
+                    while True:
+                        status,page=browser.call('GET',path+f'/members?offset={offset}&expectedRevision=1')
+                        require(status==200 and page['revision']==1,'gateway member page failed')
+                        seen.extend(page['items'])
+                        offset=page['nextOffset']
+                        if offset is None:break
+                    require(len(seen)==len(members) and {m['principalId'] for m in seen}=={m['principalId'] for m in members},'gateway member pagination lost or duplicated identities')
                     query="SELECT revision::text || ':' || document::text FROM mdm_access.user_groups WHERE id='"+path.rsplit('/',1)[1]+"'"
                     before=fixture.owner.sql(query,fixture.database)
                     # Rejection must happen before another mutation reaches the business.

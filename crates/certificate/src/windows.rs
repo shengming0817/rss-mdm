@@ -290,3 +290,7 @@ impl IssuanceProfile {
         Ok(profile)
     }
 }
+
+#[cfg(test)]
+#[path = "../tests/windows.rs"]
+mod tests;

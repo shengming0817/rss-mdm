@@ -237,9 +237,6 @@ pub enum Owner {
         policy: uuid::Uuid,
         version: uuid::Uuid,
     },
-    Remote {
-        operation: uuid::Uuid,
-    },
 }
 /// Frozen publications retain protected native content; readers open it only for execution.
 #[derive(Clone, Deserialize, Serialize)]
@@ -330,7 +327,6 @@ mod protected_tests {
                 policy,
                 version: Uuid::new_v4(),
             },
-            Owner::Remote { operation: version },
         ] {
             assert!(recovered.open(&key, tenant, wrong).is_err());
         }

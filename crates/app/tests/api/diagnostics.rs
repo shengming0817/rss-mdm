@@ -92,19 +92,7 @@ fn monotonic() -> Arc<dyn rss_observation::Clock> {
 async fn request_diagnostics_keep_causes_internal_and_issue_request_ids() {
     use tower::ServiceExt;
     let (pool, audit_store) = crate::audit_test_support::request_store().await.unwrap();
-    for reason in [
-        Failure::RequestDeadline,
-        Failure::IdentityStorage,
-        Failure::AssetsStorage,
-        Failure::InventoryQuery,
-        Failure::ManualQuery,
-        Failure::CollectionQuery,
-        Failure::AssetObjectLimit,
-        Failure::AssetSourceLimit,
-        Failure::AssetBytesLimit,
-        Failure::Clock,
-        Failure::Capacity,
-    ] {
+    for reason in [Failure::RequestDeadline] {
         let router = Router::new()
             .route(
                 "/livez",

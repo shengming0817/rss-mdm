@@ -191,12 +191,12 @@ fn units() -> Vec<(&'static str, &'static str)> {
             rss_mdm_inventory_service::INSTALL_SQL,
         ),
         (
-            "content-service-schema-v1",
+            "content-service-schema-v2",
             rss_mdm_content_service::INSTALL_SQL,
         ),
         ("flow-service-schema-v1", rss_mdm_flow_service::INSTALL_SQL),
         (
-            "execution-service-schema-v3",
+            "execution-service-schema-v4",
             rss_mdm_execution_service::INSTALL_SQL,
         ),
         (
@@ -232,11 +232,11 @@ fn units() -> Vec<(&'static str, &'static str)> {
             rss_mdm_inventory_service::RELATIONS_SQL,
         ),
         (
-            "content-service-relations-v1",
+            "content-service-relations-v2",
             rss_mdm_content_service::RELATIONS_SQL,
         ),
         (
-            "execution-service-relations-v2",
+            "execution-service-relations-v3",
             rss_mdm_execution_service::RELATIONS_SQL,
         ),
         (
@@ -244,7 +244,7 @@ fn units() -> Vec<(&'static str, &'static str)> {
             rss_mdm_audit_integration::OPERATION_RECEIPT_RELATIONS_SQL,
         ),
         (
-            "flow-service-relations-v2",
+            "flow-service-relations-v3",
             rss_mdm_flow_service::RELATIONS_SQL,
         ),
         (

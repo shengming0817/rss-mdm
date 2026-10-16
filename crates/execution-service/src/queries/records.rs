@@ -51,7 +51,6 @@ pub struct ExecutionStatistics {
 pub enum Origin {
     Direct,
     Policy,
-    RemoteOperation,
 }
 #[derive(Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -63,7 +62,6 @@ pub struct ExecutionMetadata {
     generation: i64,
     origin: Origin,
     pub policy: Option<Uuid>,
-    pub remote_operation: Option<Uuid>,
     deadline: i64,
     status: String,
 }
@@ -198,17 +196,6 @@ pub struct CommandDetail {
     pub observation: NativeObservation,
     pub agent_installation: Option<InstallationObservation>,
 }
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct DiagnosticObservation {
-    pub step: rss_mdm_windows_mdm::native::diagnostic::Step,
-    pub block_count: Option<u32>,
-    pub received_bytes: u64,
-    pub expires_at: Option<i64>,
-    pub transfer: String,
-    pub reason: Option<String>,
-    pub artifact: Option<rss_mdm_content_service::diagnostic::Metadata>,
-}
 pub enum NativeObservation {
     Apple {
         facts: rss_mdm_apple_mdm::native::evidence::ReadEvidence,
@@ -221,7 +208,6 @@ pub enum NativeObservation {
     },
     Windows {
         receipts: Vec<WindowsReceipt>,
-        diagnostic: Option<DiagnosticObservation>,
         progress: String,
         effect: rss_mdm_windows_mdm::native::verification::EffectState,
         reason: Option<&'static str>,
@@ -324,53 +310,6 @@ pub struct Capability {
     product_support: Support,
     device_prerequisite: Support,
     permission: Permission,
-}
-#[derive(Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct RemoteSummary {
-    pub id: Uuid,
-    resource: String,
-    resource_version: String,
-    kind: String,
-    created_at: i64,
-    deadline: i64,
-    cancellation_requested: bool,
-    staged: bool,
-    source_retired: bool,
-    target_expansion_stopped: bool,
-}
-#[derive(Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct RemoteStatistics {
-    total: u64,
-    cancellation_requested: u64,
-    staging: u64,
-}
-pub type RemoteDirectory = Directory<RemoteSummary, Uuid, RemoteStatistics>;
-#[derive(Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct RemoteDetail {
-    source_retired: bool,
-    target_expansion_stopped: bool,
-    operation_id: Uuid,
-    deadline: i64,
-    snapshot: crate::remote_operations::Snapshot,
-    phase: crate::remote_execution::RemotePhase,
-    cancellation_requested: bool,
-    deadline_elapsed: bool,
-    items: Vec<RemoteTarget>,
-    next_cursor: Option<String>,
-}
-#[derive(Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct RemoteTarget {
-    device: String,
-    status: String,
-    delivery_id: Option<Uuid>,
-    diagnosis: Option<String>,
-    agent_state: Option<RunState>,
-    mdm_status: Option<String>,
-    result: Option<SummaryResult>,
 }
 #[derive(Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
