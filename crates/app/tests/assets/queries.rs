@@ -117,6 +117,20 @@ async fn query_snapshots_saved_ownership_and_stable_pagination() -> Result<()> {
     );
     ensure!(other.call(router, Method::GET, &second, None).await?.0 == StatusCode::FORBIDDEN);
     permissions(subject, Some("asset-a"), false).await?;
+    let effective = browser
+        .call(router, Method::GET, "/api/v1/authorization", None)
+        .await?;
+    ensure!(effective.0 == StatusCode::OK);
+    let reads = effective.1["grants"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|g| g["operation"] == "inventory_read")
+        .collect::<Vec<_>>();
+    ensure!(
+        reads.len() == 1 && reads[0]["scope"] == json!({"kind":"device","id":"asset-a"}),
+        "asset reader retained broad grants: {effective:?}"
+    );
     ensure!(browser.call(router, Method::GET, &second, None).await?.0 == StatusCode::FORBIDDEN);
     ensure!(
         browser
