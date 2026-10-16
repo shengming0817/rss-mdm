@@ -155,15 +155,15 @@ impl Fixture {
             let _guard = crate::test_support::software::content_setup_guard().await?;
             crate::execution_assembly::open_content(config, config.native_protector()?).await?
         };
+        if let Some(content) = &content {
+            resources.resource(crate::execution_assembly::ContentResource(content.clone()));
+        }
         let identity = crate::identity::Identity::connect(
             config,
             compiled.identity_management.clone(),
             |resource| resources.acquire(resource),
         )
         .await?;
-        if let Some(content) = &content {
-            resources.resource(crate::execution_assembly::ContentResource(content.clone()));
-        }
         let execution = crate::execution_assembly::open(
             config,
             config.native_protector()?,
