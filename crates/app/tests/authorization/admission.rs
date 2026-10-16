@@ -196,12 +196,20 @@ async fn permission_drift_corrupt_policy_and_stalled_postgres() -> Result<()> {
     } else {
         Ok(String::new())
     };
-    let rolled_back = sqlx::query("ROLLBACK").execute(&mut holder).await;
-    let closed = holder.close().await;
+    if let Err(error) = unpaused {
+        drop(holder);
+        anyhow::bail!("PG unpause cleanup failed: {error}; stalled scenario: {frozen:?}");
+    }
+    let cleanup = tokio::time::timeout(Duration::from_secs(2), async {
+        let rolled_back = sqlx::query("ROLLBACK").execute(&mut holder).await;
+        let closed = holder.close().await;
+        rolled_back?;
+        closed?;
+        anyhow::Ok(())
+    })
+    .await;
     frozen?;
-    unpaused?;
-    rolled_back?;
-    closed?;
+    cleanup.map_err(|_| anyhow::anyhow!("stalled PG cleanup deadline"))??;
     ensure!(matches!(
         stalled,
         Ok(Err(rss_mdm_authorization_service::Error::Deadline))
