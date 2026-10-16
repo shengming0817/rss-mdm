@@ -357,6 +357,7 @@ class EntryModes(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             out = Path(directory)
             (out / 'result.json').write_text('{"status":"passed"}')
+            (out / 'ownership.log').write_text('stale discovery')
             with (
                 patch.object(ci, 'require_lease'),
                 patch.object(ci, 'OUT', out),
@@ -375,6 +376,7 @@ class EntryModes(unittest.TestCase):
             self.assertEqual(evidence['status'], 'failed')
             self.assertEqual(evidence['selection']['error']['code'], failure.code)
             self.assertEqual(evidence['selection']['error']['inputs'], failure.inputs)
+            self.assertFalse((out / 'ownership.log').exists())
 
     def test_explicit_full_bypasses_unavailable_baseline(self):
         with (

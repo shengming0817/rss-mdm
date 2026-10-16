@@ -361,7 +361,7 @@ EXTRA_EVIDENCE = {"pin": ("pin.log",)}
 def clear_execution_evidence(gate_names):
     paths = {OUT / f"{name}.log" for name in gate_names}
     paths.update(OUT / name for names in EXTRA_EVIDENCE.values() for name in names)
-    paths.update({OUT / "result.json", OUT / "selection.json", OUT / "t2", OUT / "ownership"})
+    paths.update({OUT / "result.json", OUT / "selection.json", OUT / "t2", OUT / "ownership", OUT / "ownership.log"})
     for path in paths:
         if path.is_dir() and not path.is_symlink():
             shutil.rmtree(path)

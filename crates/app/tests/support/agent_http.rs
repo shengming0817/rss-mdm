@@ -1,6 +1,8 @@
 //! HTTP over the actual Agent TLS listener.
 use std::{path::PathBuf, sync::Arc};
-fn root() -> PathBuf { PathBuf::from(std::env::var("MDM_AGENT_PKI_FIXTURES").unwrap()) }
+fn root() -> PathBuf {
+    PathBuf::from(std::env::var("MDM_AGENT_PKI_FIXTURES").unwrap())
+}
 pub(crate) type AgentHttp =
     tokio::io::BufReader<tokio_rustls::client::TlsStream<tokio::net::TcpStream>>;
 pub(crate) async fn connect_agent(
@@ -97,4 +99,3 @@ pub(crate) async fn agent_http(
     io.read_exact(&mut bytes).await?;
     Ok((status, serde_json::from_slice(&bytes)?))
 }
-

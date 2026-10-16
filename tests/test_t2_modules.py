@@ -492,12 +492,18 @@ class ModuleImpactTests(unittest.TestCase):
 
     def test_local_schema_selects_installation_and_real_consumers(self):
         self.assertEqual(self.selected('crates/app/schema/self-service-access.sql'),
-                         {'installation.migration', 'catalog.contract', 'planning.self_service', 'execution.software.recovery'})
+                         {'installation.migration', 'catalog.contract', 'planning.self_service', 'execution.software.offer', 'execution.software.content', 'execution.software.recovery'})
         self.assertEqual(self.selected('crates/windows-channel/schema/entra.sql'),
                          {'installation.migration', 'catalog.contract', 'windows.entra'})
         selected = self.selected('crates/flow-service/schema/install.sql')
         self.assertTrue({'installation.migration', 'catalog.contract', 'planning.policy', 'planning.recovery'} <= selected)
         self.assertTrue(selected.isdisjoint({'identity.sso', 'apple.cms', 'agent.pki', 'resource.persistence'}))
+
+    def test_audit_permissions_cover_self_service_reads(self):
+        for path in ('crates/app/schema/audit-runtime.sql', 'crates/app/schema/audit-roles.sql'):
+            selected = self.selected(path)
+            self.assertIn('planning.self_service', selected)
+            self.assertNotIn('resource.persistence', selected)
 
     def test_migration_registration_is_not_execution_or_all_pg(self):
         self.assertEqual(self.selected('crates/app/src/migration/units.rs'),

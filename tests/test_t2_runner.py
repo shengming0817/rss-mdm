@@ -115,7 +115,10 @@ class Execution(unittest.TestCase):
     def test_removed_last_owner_is_discovered_without_starting_fixtures(self):
         checks = [dict(package='rss-mdm-app', kind='lib', target='', features=['integration'])]
         with self.harness() as (root, builds, fixture_type, _):
-            t2.run_modules([], root, ownership_checks=checks)
+            receipt = {}
+            t2.run_modules([], root, ownership_checks=checks, ownership_receipt=receipt)
+            self.assertEqual(receipt['status'], 'passed')
+            self.assertTrue((root / receipt['runId'] / 'discovery.json').exists())
             builds.prepare_discovery.assert_called_once_with([], checks)
             builds.prepare_runtime.assert_not_called()
             fixture_type.assert_not_called()
@@ -284,7 +287,7 @@ class Execution(unittest.TestCase):
             for run_id in ids:
                 directory=root/run_id;directory.mkdir()
                 (directory/'result.json').write_text(json.dumps({'runId':run_id}))
-            (root/'result.json').write_text(json.dumps({'modules':{'owner':{'runId':ids[0]}}}))
+            (root/'result.json').write_text(json.dumps({'ownershipVerification':{'status':'passed','runId':ids[0]}}))
             unknown=root/'20260928T010059Z-12345678';unknown.mkdir()
             foreign=root/'foreign';foreign.mkdir();(foreign/'proof').write_text('untouched')
             link=root/'20260928T010058Z-12345678';link.symlink_to(foreign,target_is_directory=True)

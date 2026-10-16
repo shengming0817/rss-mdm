@@ -196,7 +196,7 @@ def execute_case(job, builds, fixtures, case_dir, output, rendezvous=None):
     return result
 
 
-def run_modules(names, output, *, jobs=2, selected_case='', listing=False, reuse_plan=None, selected_cases=(), ownership_checks=()):
+def run_modules(names, output, *, jobs=2, selected_case='', listing=False, reuse_plan=None, selected_cases=(), ownership_checks=(), ownership_receipt=None):
     require_lease(ROOT)
     require(type(jobs) is int and jobs > 0, 'JOBS must be a positive integer')
     require(not output.is_symlink(), 'T2 output directory cannot be a symlink')
@@ -235,6 +235,8 @@ def run_modules(names, output, *, jobs=2, selected_case='', listing=False, reuse
         build_started = time.monotonic()
         try:
             builds.prepare_discovery(modules, ownership_checks)
+            if ownership_checks and ownership_receipt is not None:
+                ownership_receipt.update(status='passed', runId=run_id)
         finally:
             build_seconds['discovery'] = round(time.monotonic() - build_started, 3)
         discovered = {module.id: builds.discover(module) if module.build else [] for module in modules}
@@ -387,15 +389,16 @@ def main(argv=None):
             selection = (explicit_selection([], MODULES, cargo_mode='affected') if args.module == 'all' else
                          selected([], [args.module], t2_mode='module'))
         names = select_modules(args.module, selection)
+        ownership_receipt = dict(status='not-selected')
         results = run_modules(names, output, jobs=args.jobs, selected_case=args.case, listing=args.list == '1',
                               reuse_plan=json.loads(args.reuse_plan.read_text()) if args.reuse_plan else None,
-                              ownership_checks=selection['ownershipChecks'])
+                              ownership_checks=selection['ownershipChecks'], ownership_receipt=ownership_receipt)
         require(ci.working_source_state() == source, 'source changed during T2')
         status = ('failed' if any(item['status'] == 'failed' for item in results.values()) else
                   'skipped' if not names or args.list == '1' else 'passed')
         evidence = {'module': args.module, 'selection': selection, 'status': status, 'modules': results,
                     'jobs': args.jobs, 'sourceRevision': head, 'sourceState': source, 'wallSeconds': round(time.monotonic() - started, 3),
-                    'ownershipVerification': 'passed' if selection['ownershipChecks'] else 'not-selected',
+                    'ownershipVerification': ownership_receipt,
                     'toolVerification': {name:'not-run' for name in selection['toolTests']}}
         if not names:
             evidence['reason'] = 'no-modules-selected'

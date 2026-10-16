@@ -30,7 +30,7 @@ class ExecutionProof(unittest.TestCase):
             builds = Builds(Path(directory), processes)
             with patch.object(builds, 'prepare_targets') as targets:
                 builds.prepare_discovery([module])
-                targets.assert_called_once_with({module.build})
+                targets.assert_called_once_with({module.build}, ownership_checks=set())
             self.assertEqual(processes.run.call_count, 1)
             self.assertEqual(processes.run.call_args.args[0][:2], ['cargo', 'metadata'])
             self.assertEqual(builds.executables, {})
@@ -47,7 +47,7 @@ class ExecutionProof(unittest.TestCase):
             builds = Builds(Path(directory), processes)
             with patch.object(builds, 'prepare_targets') as targets:
                 builds.prepare_discovery([], [check])
-                targets.assert_called_once_with({module.build})
+                targets.assert_called_once_with({module.build}, ownership_checks={module.build})
             self.assertEqual(builds.executables, {})
         empty = self.listing()
         empty['rust-suites']['resource::behavior']['testcases'] = {}
@@ -67,6 +67,8 @@ class ExecutionProof(unittest.TestCase):
             parse_listing(bad, module)
 
     def test_empty_discovery_and_duplicate_json_are_rejected(self):
+        with self.assertRaisesRegex(RuntimeError, 'missing target discovery'):
+            validate_ownership({'rust-suites': {}}, MODULES['resource.persistence'].build, [])
         with self.assertRaises(RuntimeError):
             parse_listing({'rust-suites': {}}, MODULES['resource.persistence'])
         with self.assertRaises(ValueError):
@@ -78,6 +80,17 @@ class ExecutionProof(unittest.TestCase):
         for owners in ([], [module, Module('duplicate', module.build, ('',))]):
             with self.subTest(owners=owners), self.assertRaisesRegex(RuntimeError, 'exactly one'):
                 validate_ownership(self.listing(), module.build, owners)
+
+    def test_feature_superset_cannot_claim_tests_absent_from_owner_build(self):
+        from dataclasses import replace
+        specialized = MODULES['resource.persistence'].build
+        plain = replace(specialized, features=())
+        owner = Module('plain', plain, ('',))
+        empty = self.listing()
+        empty['rust-suites']['resource::behavior']['testcases'] = {}
+        with self.assertRaisesRegex(RuntimeError, 'exactly one'):
+            validate_ownership(self.listing(), specialized, [owner], {plain: empty})
+        validate_ownership(self.listing(), specialized, [owner], {plain: self.listing()})
 
     def test_unknown_support_tests_have_no_ownership_exemption(self):
         module = MODULES['resource.persistence']

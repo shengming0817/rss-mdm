@@ -199,11 +199,11 @@ mod certificate_archive_tests;
 pub mod agent_pki;
 
 #[cfg(all(test, feature = "integration"))]
-#[path = "../tests/agent_pki/mod.rs"]
-mod agent_pki_tests;
-#[cfg(test)]
 #[path = "../tests/agent_pki/recovery.rs"]
 mod agent_pki_recovery_tests;
+#[cfg(all(test, feature = "integration"))]
+#[path = "../tests/agent_pki/mod.rs"]
+mod agent_pki_tests;
 
 mod device_pki;
 

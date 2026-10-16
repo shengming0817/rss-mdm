@@ -1,7 +1,7 @@
 //! Pinned CA, durable grant/issuance state and real TLS possession.
 mod maintenance;
-use crate::test_support::agent_http::{agent_http, connect_agent};
 use crate::device::test_support::{admin, case_a, case_b, options};
+use crate::test_support::agent_http::{agent_http, connect_agent};
 use crate::test_support::agent_tls::peer;
 use crate::{
     Database,
@@ -110,7 +110,10 @@ pub(crate) fn grant() -> anyhow::Result<wire::GrantRequest> {
         csr: STANDARD.encode(std::fs::read(root().join("agent.der"))?),
     })
 }
-pub(crate) fn signing(g: &wire::GrantRequest, id: Uuid) -> anyhow::Result<wire::CertificateRequest> {
+pub(crate) fn signing(
+    g: &wire::GrantRequest,
+    id: Uuid,
+) -> anyhow::Result<wire::CertificateRequest> {
     Ok(wire::CertificateRequest {
         wire_version: 1,
         operation_id: Uuid::new_v4(),
@@ -321,7 +324,6 @@ async fn renewal_grant_lookup_survives_expired_identity_without_writing_authorit
     assert_eq!(snapshot()?, before);
     Ok(())
 }
-
 
 #[tokio::test]
 #[ignore = "make t2 MODULE=agent.pki"]
@@ -588,7 +590,6 @@ async fn agent_ingress_holds_one_global_permit_per_request() -> anyhow::Result<(
     assert_eq!(response.status(), 204);
     Ok(())
 }
-
 
 #[tokio::test]
 #[ignore = "make t2 MODULE=agent.pki"]

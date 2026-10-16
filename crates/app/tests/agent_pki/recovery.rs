@@ -1,8 +1,10 @@
 //! Recovery proof starts from durable issuance, then restores the same authority.
-use crate::agent_pki_tests::{root, now, deployment, service, grant, signing, chain, audit, authorize_request};
+use crate::Database;
+use crate::agent_pki_tests::{
+    audit, authorize_request, chain, deployment, grant, now, root, service, signing,
+};
 use crate::device::test_support::{admin, case_a, case_b, options};
 use crate::test_support::agent_tls::peer;
-use crate::Database;
 use rss_mdm_agent_wire::{enroll as wire, runtime};
 use rss_mdm_certificate::agent::PROFILE;
 use uuid::Uuid;

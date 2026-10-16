@@ -66,4 +66,3 @@ def install(root, cli, admin, origin, *, template_source=None):
                  endpoint=dict(listen='127.0.0.1:0',origin='https://mdm.example.test:9445',certificate_file=str(root/'server.crt'),private_key_file=str(root/'agent-tls.pk8')),
                  lifetime=dict(mode='standard'))
     (root/'agent-pki.json').write_text(json.dumps(value))
-
