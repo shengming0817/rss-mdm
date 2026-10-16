@@ -1048,7 +1048,8 @@ TOOL_INPUTS = {
     'hack/fixture_tools.py': ('test_apple_tools',),
     'hack/apple_ca.py': ('test_apple_ca',),
     'hack/pki_ca.py': ('test_apple_ca',),
-    'hack/agent_pki_fixtures.py': ('test_agent_pki_fixtures',),
+    'hack/agent_pki_fixtures.py': ('test_t2_fixtures',),
+    'hack/pki_recovery.py': ('test_pki_recovery',),
     'fixtures/apple-tools.lock.json': ('test_apple_tools', 'test_apple_ca', 'test_t2_environment'),
     'hack/auth_t3.py': ('test_auth_t3',),
     'hack/auth_t3_browser.mjs': ('test_auth_t3',),
@@ -1638,7 +1639,7 @@ consume(('crates/app/src/enrollment_progress.rs',), 'enrollment.http windows.enr
 consume(('crates/registration-service/schema/enrollment-progress.sql',), 'installation.migration catalog.contract enrollment.http windows.enrollment windows.management')
 consume(('crates/registration-service/src/database.rs',), 'enrollment.http enrollment.recovery enrollment.quotas device.binding device.revocation device.recovery agent.registration agent.pki')
 
-MODULES['agent.configurations'] = replace(MODULES['agent.configurations'], fixtures=('identity','agent_pki'), scope='tenant', support_inputs=(*MODULES['agent.configurations'].support_inputs,*AGENT_FIXTURE_INPUTS,'crates/app/tests/support/software.rs','crates/app/tests/agent_pki/mod.rs','tests/support/software/mod.rs'))
+MODULES['agent.configurations'] = replace(MODULES['agent.configurations'], fixtures=('identity','agent_pki'), scope='tenant', support_inputs=(*MODULES['agent.configurations'].support_inputs,*AGENT_FIXTURE_INPUTS,'crates/app/tests/support/software.rs','crates/app/tests/support/agent_http.rs','tests/support/software/mod.rs'))
 consume(('crates/registration-service/src/agent/*','crates/registration-service/schema/agent-configurations.sql','crates/software-service/src/agent_packages*','crates/content-service/src/software.rs','crates/content-service/src/reader.rs','crates/app/src/agent_configurations.rs','crates/agent-channel/src/enroll.rs','crates/agent-wire/src/enroll.rs','crates/agent-wire/src/enroll/configuration.rs','crates/management-http/src/agent_enrollment.rs','crates/management-http/src/software_catalog.rs'), 'agent.configurations')
 
 consume(('crates/registration-service/src/enrollment/native.rs','crates/registration-service/src/device/store.rs','crates/registration-service/schema/quota-usage.sql','crates/windows-channel/src/issuance.rs','crates/windows-channel/src/lib.rs','crates/windows-mdm/src/soap*','crates/windows-mdm/src/soap/*','crates/app/src/assembly/windows/*','crates/app/src/identity.rs','crates/app/src/api.rs','crates/authorization-service/src/context.rs','crates/authorization-service/src/session.rs','crates/management-http/src/router.rs'), 'windows.entra')
@@ -1821,6 +1822,22 @@ for suffix in ('console_pending_directory_and_permission_changes', 'console_dire
         policies[index] = policy
 MODULES[module.id] = replace(module, policies=tuple(policies))
 
+
+# Recovery is a distinct proof. Its policy and production seams come from the
+# final PKI description; it does not duplicate the ordinary PKI test namespace.
+module = MODULES['agent.pki']
+recovery_selector = 'agent_pki_tests::restored_ca_signs_only_live_authorized_agent_csrs_and_tls_preserves_purpose'
+recovery_policy, = (p for p in module.policies if p.selector == recovery_selector)
+MODULES['agent.pki-recovery'] = replace(module, id='agent.pki-recovery',
+    selectors=('agent_pki_recovery_tests::',),
+    test_inputs=('crates/app/tests/agent_pki/recovery.rs',),
+    support_inputs=(*module.support_inputs, 'crates/app/tests/agent_pki/mod.rs', 'hack/pki_recovery.py'),
+    scope=recovery_policy.scope, actors=recovery_policy.actors,
+    materials=recovery_policy.materials, policies=())
+MODULES['agent.pki'] = replace(module,
+    policies=tuple(p for p in module.policies if p.selector != recovery_selector),
+    support_inputs=(*module.support_inputs, 'crates/app/tests/support/agent_http.rs'))
+
 # Derive input consumers only after all module and case fixture declarations are complete.
 for name, module in tuple(MODULES.items()):
     fixtures = set(module.fixtures).union(*(policy.fixtures or () for policy in module.policies))
@@ -1889,3 +1906,4 @@ consume(('crates/app/schema/installation.sql',),
 consume(('crates/registration-service/schema/enrollment-progress.sql',),
         'enrollment.http enrollment.recovery agent.registration agent.configurations agent.pki '
         'windows.enrollment windows.issuance windows.management apple.scep apple.account_enrollment apple.ade')
+

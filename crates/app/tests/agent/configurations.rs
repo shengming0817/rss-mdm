@@ -386,13 +386,13 @@ impl Tls {
             .iter()
             .map(|v| STANDARD.decode(v.as_str().unwrap()))
             .collect::<std::result::Result<Vec<_>, _>>()?;
-        let mut io = crate::agent_pki_tests::connect_agent_with_key(
+        let mut io = crate::test_support::agent_http::connect_agent_with_key(
             self.address,
             Some(&chain),
             &format!("configuration-{n}.pk8"),
         )
         .await?;
-        let (status,receipt)=crate::agent_pki_tests::agent_http(&mut io,"POST","/api/v1/agent/enroll/activate",Some(json!({"wireVersion":1,"issuanceId":candidate["issuanceId"],"operationId":Uuid::new_v4()}))).await?;
+        let (status,receipt)=crate::test_support::agent_http::agent_http(&mut io,"POST","/api/v1/agent/enroll/activate",Some(json!({"wireVersion":1,"issuanceId":candidate["issuanceId"],"operationId":Uuid::new_v4()}))).await?;
         ensure!(
             status == 200,
             "independent mTLS activation {status} {receipt}"

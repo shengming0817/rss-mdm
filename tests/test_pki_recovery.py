@@ -8,7 +8,7 @@ import unittest
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]/'hack'))
-from agent_pki_fixtures import restore
+from pki_recovery import restore
 
 
 class BackupRestore(unittest.TestCase):
@@ -30,7 +30,7 @@ class BackupRestore(unittest.TestCase):
                 if Path(source) == root/'step-backup':
                     self.assertTrue(all((original/name).read_bytes() == b'' for name in contents))
                 return copytree(source,target,*args,**kwargs)
-            with patch('agent_pki_fixtures.shutil.copytree',side_effect=copying):
+            with patch('pki_recovery.shutil.copytree',side_effect=copying):
                 restore(root)
             for name, content in contents.items():
                 self.assertEqual((original/name).read_bytes(),content)
