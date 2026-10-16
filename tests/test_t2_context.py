@@ -58,3 +58,34 @@ class ContextTests(unittest.TestCase):
         jobs.append(job('one-over', 'tenant'))
         with self.assertRaisesRegex(ValueError, '1024'):
             registration_tenants(contexts('run', jobs).values())
+
+    def test_admission_pause_owns_tenant_across_completion_failure_and_cancellation(self):
+        from t2_model import resolve_cases
+        registration = 'agent::t2::registration::'
+        names = [registration + name for name in (
+            'admission_pause_preserves_candidate_and_existing_identity',
+            'registration_binding_and_replay',
+            'browser_approval_quota_expiry_and_restart_are_durable',
+            'registration_recovery_preserves_credential_rotation')]
+        policies = resolve_cases(MODULES['agent.registration'], names)
+        delivery = 'execution::t2::agent::delivery::registration_capability_and_wire_gate'
+        delivery_module = MODULES['execution.agent.delivery']
+        # Resolve its exact override without constructing an incomplete discovery roster.
+        delivery_module = replace(delivery_module, policies=tuple(
+            p for p in delivery_module.policies if delivery.startswith(p.selector)))
+        policies += resolve_cases(delivery_module, [delivery])
+        jobs = [Invocation(module, Case(module.build, 'binary', '/binary', name))
+                for name, module in zip(names + [delivery], policies)]
+        pause = jobs[0]
+        self.assertEqual((pause.module.db_mode, pause.module.scope), ('reuse', 'tenant'))
+        victims = [jobs[1], jobs[2], jobs[4]]
+        self.assertEqual([j.module.scope for j in victims], ['tenant', 'tenant', 'objects'])
+        # Every new invocation gets an observation domain even if its predecessor
+        # never restores admission (success, early error, or process cancellation).
+        repeated = [replace(pause, invocation=i) for i in range(3)]
+        values = contexts('admission-regression', repeated + victims)
+        ordinary = {values[j.key]['tenant'] for j in victims}
+        isolated = {values[j.key]['tenant'] for j in repeated}
+        self.assertEqual(len(ordinary), 3)
+        self.assertEqual(len(isolated), 3)
+        self.assertTrue(ordinary.isdisjoint(isolated))

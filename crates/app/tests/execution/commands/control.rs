@@ -186,20 +186,46 @@ async fn fixed_controls_preserve_uncertainty() -> anyhow::Result<()> {
             "ACK claimed effect: {read:?}"
         );
         client.publish_operation(*id).await?;
+        let request_id = Uuid::new_v4();
+        let mut approval = json!({"requestId":request_id,"expectedRevision":read.1["revision"]});
+        if *id == ids[1] {
+            approval["confirmation"] = confirmation.clone();
+        }
+        let stored = || {
+            crate::test_support::pg(&format!(
+                "SELECT jsonb_build_array(revision,approval) FROM mdm_commands.operations WHERE tenant_id='{}' AND id='{id}'",
+                case_tenant()
+            ))
+        };
+        let before = stored()?;
+        let denied = client
+            .call(Method::POST, &format!("/{id}/approve"), Some(approval))
+            .await?;
         ensure!(
-            client
-                .call(
-                    Method::POST,
-                    &format!("/{id}/approve"),
-                    Some(json!({"requestId":Uuid::new_v4(),"expectedRevision":read.1["revision"]}))
-                )
-                .await?
-                .0
-                == StatusCode::CONFLICT
+            denied.0 == StatusCode::CONFLICT,
+            "received command reapproval: {denied:?}"
         );
         ensure!(
-            client.call(Method::GET, &format!("/{id}"), None).await?.1["commandStatus"]
-                == "received"
+            stored()? == before,
+            "received command reapproval changed revision/authority"
+        );
+        let after = client.call(Method::GET, &format!("/{id}"), None).await?;
+        ensure!(
+            after.0 == StatusCode::OK
+                && after.1["revision"] == read.1["revision"]
+                && after.1["commandStatus"] == "received"
+                && after.1["observation"]["effect"] == "unverifiable",
+            "received command reapproval changed state: {after:?}"
+        );
+        ensure!(crate::test_support::pg(&format!(
+            "SELECT count(*) FROM mdm_commands.requests WHERE tenant_id='{}' AND id='{request_id}'", case_tenant()))?.trim() == "0",
+            "rejected reapproval persisted a success receipt");
+        ensure!(
+            crate::test_support::audit_count(|r| r.source() == "mdm.business"
+                && r.operation() == Some(request_id.to_string().as_str())
+                && r.result() == "success")?
+                == 0,
+            "rejected reapproval appended a success business fact"
         );
     }
     host.close().await?;

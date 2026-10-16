@@ -101,17 +101,41 @@ async fn native_accounts(
             .0
             == StatusCode::FORBIDDEN
     );
+    // A business-tenant administrator is not the installation initializer.
+    // Prove actual revocation using the independent member, leaving admin live
+    // to exercise the remaining membership/password/session revocation matrix.
+    set_management_grants(principal, json!(["identity_accounts_manage"])).await?;
     ensure!(
-        admin
-            .call(
-                admin_router,
-                Method::POST,
-                &format!("{tenant}/accounts/{ADMIN}/enabled", ADMIN = case_admin()),
-                Some(json!({"enabled":false}))
-            )
+        browser
+            .call(product, Method::GET, &format!("{tenant}/accounts"), None)
             .await?
             .0
-            == StatusCode::FORBIDDEN
+            == StatusCode::OK
+    );
+    set_management_grants(principal, json!([])).await?;
+    let target_state = || {
+        pg(&format!(
+            "SELECT jsonb_build_object('account',(SELECT to_jsonb(a) FROM identity_authority.accounts a WHERE tenant_id='{tenant}' AND principal_id='{target}'),'membership',(SELECT to_jsonb(m) FROM identity_authority.memberships m WHERE tenant_id='{tenant}' AND principal_id='{target}'),'sessions',(SELECT coalesce(jsonb_agg(to_jsonb(s) ORDER BY session_id),'[]'::jsonb) FROM identity_authority.sessions s WHERE tenant_id='{tenant}' AND principal_id='{target}'))::text",
+            tenant = case_tenant(),
+            target = case_admin()
+        ))
+    };
+    let before = target_state()?;
+    let denied = browser
+        .call(
+            product,
+            Method::POST,
+            &format!("{tenant}/accounts/{}/enabled", case_admin()),
+            Some(json!({"enabled":false})),
+        )
+        .await?;
+    ensure!(
+        denied.0 == StatusCode::FORBIDDEN,
+        "revoked account manager: {denied:?}"
+    );
+    ensure!(
+        before == target_state()?,
+        "denied account disable mutated identity state"
     );
     // Passive product queries do not extend idle; the current cookie survives a process restart.
     let before = pg(&format!(
