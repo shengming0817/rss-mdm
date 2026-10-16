@@ -1,17 +1,13 @@
 //! Read-only bridge from a published Policy version to Agent execution.
 use super::*;
 use crate::action_contract::ScheduledInput;
-enum Authority {
-    Policy(Box<Policy>),
-    Remote(crate::remote_operations::Remote),
-}
 pub struct ExecutionPolicy<T = FrozenAction> {
     pub id: Uuid,
     pub owner: Uuid,
     pub frozen: T,
     pub frequency: Frequency,
     pub active: bool,
-    authority: Authority,
+    policy: Policy,
 }
 pub async fn read_in(
     reader: &rss_mdm_policy_postgres::PolicyReader,
@@ -28,21 +24,12 @@ pub async fn read_in(
         active: policy.enabled && policy.version == id,
         frozen: *action,
         frequency,
-        authority: Authority::Policy(Box::new(policy)),
+        policy,
     })
 }
 impl<T: ScheduledInput> ExecutionPolicy<T> {
-    pub fn policy(&self) -> Option<&Policy> {
-        match &self.authority {
-            Authority::Policy(p) => Some(p),
-            Authority::Remote(_) => None,
-        }
-    }
     pub fn entry_source(&self) -> String {
-        match &self.authority {
-            Authority::Policy(p) => format!("scope:{}", p.definition.scope),
-            Authority::Remote(_) => "remote".into(),
-        }
+        format!("scope:{}", self.policy.definition.scope)
     }
 
     pub async fn entry_in(
@@ -58,14 +45,7 @@ impl<T: ScheduledInput> ExecutionPolicy<T> {
         {
             return Ok(None);
         }
-        match &self.authority {
-            Authority::Remote(remote) => Ok(crate::remote_operations::storage::allowed_in(
-                tx, remote.id, device, now,
-            )
-            .await?
-            .then_some(1)),
-            Authority::Policy(policy) => storage::eligible_in(source, tx, policy, device).await,
-        }
+        storage::eligible_in(source, tx, &self.policy, device).await
     }
     pub async fn withdrawn_in(
         &self,
@@ -76,10 +56,7 @@ impl<T: ScheduledInput> ExecutionPolicy<T> {
         if !self.active {
             return Ok(true);
         }
-        match &self.authority {
-            Authority::Remote(remote) => Ok(remote.cancelled),
-            Authority::Policy(policy) => storage::withdrawn_in(source, tx, policy, device).await,
-        }
+        storage::withdrawn_in(source, tx, &self.policy, device).await
     }
     pub async fn authorized_in(
         &self,
@@ -127,21 +104,6 @@ async fn versions_in(
     Ok(ids)
 }
 
-pub async fn remote_in(tx: &mut PgTransaction<'_>, id: Uuid) -> Result<ExecutionPolicy> {
-    let remote = crate::remote_operations::storage::read_in(tx, id).await?;
-    let Frozen::Execution { action, .. } = remote.frozen.clone() else {
-        return Err(Error::Unsupported.into());
-    };
-    Ok(ExecutionPolicy {
-        id,
-        owner: id,
-        frozen: *action,
-        frequency: Frequency::OncePerVersion,
-        active: !remote.cancelled,
-        authority: Authority::Remote(remote),
-    })
-}
-
 pub async fn native_in(
     reader: &rss_mdm_policy_postgres::PolicyReader,
     tx: &mut PgTransaction<'_>,
@@ -157,27 +119,9 @@ pub async fn native_in(
         frozen: *action,
         frequency,
         active: policy.enabled && policy.version == id,
-        authority: Authority::Policy(Box::new(policy)),
+        policy,
     })
 }
-pub async fn remote_native_in(
-    tx: &mut PgTransaction<'_>,
-    id: Uuid,
-) -> Result<ExecutionPolicy<FrozenNativeCollection>> {
-    let remote = crate::remote_operations::storage::read_in(tx, id).await?;
-    let Frozen::NativeCollection { action, .. } = remote.frozen.clone() else {
-        return Err(Error::Unsupported.into());
-    };
-    Ok(ExecutionPolicy {
-        id,
-        owner: id,
-        frozen: *action,
-        frequency: Frequency::OncePerVersion,
-        active: !remote.cancelled,
-        authority: Authority::Remote(remote),
-    })
-}
-
 pub async fn agent_collection_in(
     reader: &rss_mdm_policy_postgres::PolicyReader,
     tx: &mut PgTransaction<'_>,
@@ -193,6 +137,6 @@ pub async fn agent_collection_in(
         frozen: *action,
         frequency,
         active: policy.enabled && policy.version == id,
-        authority: Authority::Policy(Box::new(policy)),
+        policy,
     })
 }

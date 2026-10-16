@@ -244,7 +244,6 @@ pub(crate) async fn open(
                 inputs: inputs.clone(),
                 signed: signer.is_some(),
                 content_available: content.is_some(),
-                diagnostic_reader: content.as_ref().map(|s| s.diagnostic_reader()),
             },
         ));
         let service = Arc::new(ExecutionService::new(

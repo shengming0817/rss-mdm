@@ -37,12 +37,7 @@ async fn template_dispatch_at_last_supported_message() -> anyhow::Result<()> {
     )
     .await
 }
-#[tokio::test]
-#[ignore = "MODULE=windows.management: original Remote collection receipt without redelivery"]
-async fn historical_remote_template_settles_original_results_without_cache_redelivery()
--> anyhow::Result<()> {
-    template_flow(None, 9, Completion::Historical).await
-}
+
 #[tokio::test]
 #[ignore = "MODULE=windows.management: client abort of a real template run"]
 async fn template_client_abort_cannot_publish_a_snapshot() -> anyhow::Result<()> {
@@ -108,7 +103,6 @@ enum Completion {
     FinalInventoryBudget,
     FragmentInventory,
     RevokedInventory,
-    Historical,
     SessionAbort,
     MessageBudget,
 }
@@ -355,7 +349,6 @@ async fn template_flow(
         }
     }
     report.final_message = false;
-    let mut delivery_request = report.clone();
     let mut ready = native::post(&peer.mutual, &peer.url, &report).await?;
     ensure!(ready.status() == StatusCode::OK);
     // Applicability requires authenticated native capability facts before admission.
@@ -405,7 +398,6 @@ async fn template_flow(
             credential: None,
         })];
         end.final_message = message_id == request_message;
-        delivery_request = end.clone();
         ready = native::post(&peer.mutual, &peer.url, &end).await?;
         ensure!(
             ready.status() == StatusCode::OK,
@@ -464,27 +456,6 @@ async fn template_flow(
         host.close().await?;
         return Ok(());
     }
-    let remote = if completion == Completion::Historical {
-        let run:Uuid=sqlx::query_scalar("SELECT id FROM mdm_commands.action_runs WHERE tenant_id=$1::uuid AND policy_version IN(SELECT id FROM mdm_policy.versions WHERE tenant_id=$1::uuid AND policy=$2)").bind(case_tenant()).bind(policy).fetch_one(&mut pg).await?;
-        let parent = Uuid::new_v4();
-        // Stop the precise Policy producer before restoring predecessor ownership.
-        crate::test_support::stop_worker(owner.take()).await?;
-        crate::test_support::agent_execution::historical_remote_run(
-            &mut pg,
-            case_tenant(),
-            run,
-            parent,
-        )
-        .await?;
-        let replay = native::post(&peer.mutual, &peer.url, &delivery_request).await?;
-        ensure!(
-            !replay.status().is_success(),
-            "retired Remote cached Get was redelivered"
-        );
-        Some((run, parent))
-    } else {
-        None
-    };
     let mut packet = native::report(&peer.message, &gets, "template-workstation", 200);
     packet.header.message_id = wire.header.message_id + 1;
     packet.final_message = false;
@@ -538,11 +509,7 @@ async fn template_flow(
             .status()
             == StatusCode::OK
     );
-    let runs: Vec<Uuid> = if let Some((run, _)) = remote {
-        vec![run]
-    } else {
-        sqlx::query_scalar("SELECT r.id FROM mdm_commands.action_runs r JOIN mdm_policy.versions v ON (v.tenant_id,v.id)=(r.tenant_id,r.policy_version) WHERE r.tenant_id=$1::uuid AND v.policy=$2").bind(case_tenant()).bind(policy).fetch_all(&mut pg).await?
-    };
+    let runs: Vec<Uuid> = sqlx::query_scalar("SELECT r.id FROM mdm_commands.action_runs r JOIN mdm_policy.versions v ON (v.tenant_id,v.id)=(r.tenant_id,r.policy_version) WHERE r.tenant_id=$1::uuid AND v.policy=$2").bind(case_tenant()).bind(policy).fetch_all(&mut pg).await?;
     ensure!(runs.len() == 1, "native Policy runs: {runs:?}");
     let pending:bool=sqlx::query_scalar("SELECT sealed_at IS NULL FROM mdm_access.collection_runs WHERE tenant_id=$1::uuid AND id=$2").bind(case_tenant()).bind(runs[0]).fetch_one(&mut pg).await?;
     ensure!(pending, "non-Final template results sealed early");
@@ -597,30 +564,13 @@ async fn template_flow(
     // Recovery happens after its original execution timeout, as after worker downtime.
     sqlx::query("UPDATE mdm_commands.action_runs SET state=jsonb_set(jsonb_set(state,'{execution}','\"running\"'),'{startedAt}',to_jsonb($3::bigint)) WHERE tenant_id=$1::uuid AND id=$2")
         .bind(case_tenant()).bind(runs[0]).bind(now-120).execute(&mut pg).await?;
-    if let Some((_, parent)) = remote {
-        host.app.execution.recover_remote_fixture(parent).await?;
-    } else {
-        host.app.execution.recover_action_fixture(policy).await?;
-    }
+    host.app.execution.recover_action_fixture(policy).await?;
     let state:String=sqlx::query_scalar("SELECT state->>'execution' FROM mdm_commands.action_runs WHERE tenant_id=$1::uuid AND id=$2")
         .bind(case_tenant()).bind(runs[0]).fetch_one(&mut pg).await?;
     ensure!(
         state == "succeeded",
         "sealed success was lost after downtime: {state}"
     );
-    if remote.is_some() {
-        let attempts: i64 = sqlx::query_scalar(
-            "SELECT count(*) FROM mdm_windows.collections WHERE tenant_id=$1::uuid AND id=$2",
-        )
-        .bind(case_tenant())
-        .bind(runs[0])
-        .fetch_one(&mut pg)
-        .await?;
-        ensure!(attempts == 1);
-        pg.close().await?;
-        host.close().await?;
-        return Ok(());
-    }
     // Shift the completed occurrence to the previous interval; the current one is due.
     sqlx::query("UPDATE mdm_commands.action_runs SET occurrence='timer:'||($3::bigint)::text||':'||registration::text,created_at=$3 WHERE tenant_id=$1::uuid AND id=$2")
         .bind(case_tenant()).bind(runs[0]).bind(now-3600).execute(&mut pg).await?;

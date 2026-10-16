@@ -405,7 +405,7 @@ async fn script_resource(
 
 fn script_effects() -> Result<String> {
     pg(&format!(
-        "SELECT jsonb_build_array((SELECT count(*) FROM mdm_policy.policies WHERE tenant_id='{tenant}'),(SELECT count(*) FROM mdm_policy.versions WHERE tenant_id='{tenant}'),(SELECT count(*) FROM mdm_commands.action_runs WHERE tenant_id='{tenant}'),(SELECT count(*) FROM mdm_automation.automation_jobs WHERE tenant_id='{tenant}'),(SELECT count(*) FROM mdm_planning.remote_operations WHERE tenant_id='{tenant}'),(SELECT count(*) FROM mdm.collection_definitions WHERE tenant_id='{tenant}'))",
+        "SELECT jsonb_build_array((SELECT count(*) FROM mdm_policy.policies WHERE tenant_id='{tenant}'),(SELECT count(*) FROM mdm_policy.versions WHERE tenant_id='{tenant}'),(SELECT count(*) FROM mdm_commands.action_runs WHERE tenant_id='{tenant}'),(SELECT count(*) FROM mdm_automation.automation_jobs WHERE tenant_id='{tenant}'),(SELECT count(*) FROM mdm.collection_definitions WHERE tenant_id='{tenant}'))",
         tenant = case_tenant()
     ))
 }
@@ -517,16 +517,6 @@ async fn script_preparation_is_shared_without_preview_effects() -> Result<()> {
         script_effects()? == before,
         "unsigned draft or publication wrote execution facts"
     );
-    let retired = fixture
-        .author
-        .call(
-            &fixture.router,
-            Method::POST,
-            "/api/v1/remote-operations",
-            Some(json!({"operationId":Uuid::new_v4(),"action":{"kind":"execute"}})),
-        )
-        .await?;
-    ensure!(retired.0 == StatusCode::METHOD_NOT_ALLOWED);
     Ok(())
 }
 

@@ -652,7 +652,7 @@ AC-O01-02　演练进程重启、数据库短暂故障和版本升级失败，�
 | WMD-V02<br>前后端与 Agent 共用业务契约 | 统一定义 Operation、Target、DesiredState、CollectionRequest、ExecutionReceipt 与 Observation；控制台、服务端和 Agent 共享版本化 schema/SDK，原生 MDM 报文经适配器转换。 | 新增目标<br>一级 |
 | WMD-V03<br>逻辑意图与平台实现分离 | 提供 inventory.collect、configuration.apply、software.ensure、script.run、device.action 等操作族；模板绑定平台变体与校验器，禁止以任意 shell 字符串作为全部能力的统一抽象。 | 新增目标<br>一级 |
 | WMD-V04<br>适用性与前置条件 | 发布前计算 OS、版本、芯片、设备/用户上下文、解释器、包管理器、证书/监督状态等前提；不适用与暂时阻塞分开。 | 新增目标<br>一级 |
-| WMD-V05<br>分配预览与执行受理 | 草稿预览展示目标资格及阻断原因，不发布正式结果或执行事实。持续 Policy 引用当前 Scope，执行型由 Agent 签入时受理，配置型按差分通过原生 MDM 收敛；设备控制只受理单设备 restart、lock、wipe，并绑定当前 PrimaryMDM 注册与期限。Remote 固定目标快照只用于已存在的历史记录，不再创建新的远程执行。内容摘要及注册世代在实际受理时绑定，交付前重验。 | 新增目标<br>一级 |
+| WMD-V05<br>分配预览与执行受理 | 草稿预览展示目标资格及阻断原因，不发布正式结果或执行事实。持续 Policy 引用当前 Scope，执行型由 Agent 签入时受理，配置型按差分通过原生 MDM 收敛；设备控制只受理单设备 restart、lock、wipe，并绑定当前 PrimaryMDM 注册与期限。Remote Operation 与旧通用 direct 执行已退出，无历史升级或数据导入承诺。内容摘要及注册世代在实际受理时绑定，交付前重验。 | 新增目标<br>一级 |
 | WMD-V06<br>统一结果与原生明细 | 公共结果至少区分受理、等待、执行、等待用户、等待重启、结果不明、失败、状态已核实；保留原生状态码、命令 UUID、通道与证据强度。 | 新增目标<br>一级 |
 | WMD-V07<br>重复投递与执行恢复 | 业务执行标识稳定；Agent 有持久执行日志与结果补传。native MDM 无法共享本地幂等存储时按命令语义和状态核实恢复，不宣称任意动作 exactly-once。 | 新增目标<br>一级 |
 | WMD-V08<br>可信任务与回执 | 任务绑定设备、注册世代、用途、摘要、过期时间和授权；回执由实际通道认证入口产生并归属原任务。Agent 自报 capability 不得绕过服务端授权。 | 新增目标<br>一级 |
@@ -931,7 +931,7 @@ AC-06-22-03　两个策略管理同一软件、一项配置从 Profile 转 DDM�
 | 对象 | 关键职责 |
 | --- | --- |
 | Device / Enrollment / CapabilitySnapshot | 统一业务设备、独立通道注册/认证、可执行能力及计算依据。Apple 用户通道保留用户主体。 |
-| Policy / Operation / Run / Attempt | Policy 是持续分配，分为执行型与配置型；已退役的 Remote Operation 仅保留原固定快照、期限与历史；新设备 Operation 只持有重启、锁定或擦除，Run/Attempt 持有设备执行、通道及注册世代；期望状态与执行历史分开。 |
+| Policy / Operation / Run / Attempt | Policy 是持续分配，分为执行型与配置型；新设备 Operation 只持有重启、锁定或擦除，Run/Attempt 持有设备执行、通道及注册世代；期望状态与执行历史分开。 |
 | Application / PlatformVariant / Source / Release | 逻辑软件与平台版本；元数据源/产物源及不可变生命周期快照；禁止 packageId 单独作为跨源唯一身份。 |
 | FieldDefinition / CollectorBinding / Observation | 字段语义、如何采集、逐来源证据；形成 ResolvedAsset 后供查询/分组/合规统一消费。 |
 | AppleDeclaration / NativeConfiguration | Apple 声明与传统 profile 各自的 ID、版本、状态与删除语义；不将声明集合强行塞入单条同步命令。 |
@@ -1133,7 +1133,7 @@ RSS MDM 的产品目标是：基于统一业务契约和可恢复执行，组合
 - 持续策略归组织持有，发布者人员或会话变化不触发重新确认。新执行仍检查当前分配、内容摘要、注册世代和通道能力。
 - Agent 发布不生成全设备 Run；签入分页查询有效策略，按需原子受理。默认每执行版本一次，支持重入、周期、注册和显式重执行；已启动而结果未知的脚本不自动重复。
 - 配置按必要差分创建原生命令，暂缺注册或能力时保留分配并在事实更新后核对；共享效果保留、冲突明确报告。命令期限和失败不等于持续分配失效。
-- #2623 退出 Remote 创建、目标展开及资源分发，不保留动作或兼容别名。历史来源、签名、授权、快照、Run/Attempt 与审计不改写；未启动任务由恢复取消，已启动任务只结算原回执。设备 POST 只提供 restart/lock/wipe，危险确认绑定当前主 MDM 注册，Mac wipe 只接受已核实的 EACS 条件并禁止 obliteration 回退。
+- #2623 退出 Remote 创建；#2755 经确认无旧部署升级义务，删除 Remote、旧通用 direct 的历史读取、结算及原生诊断制品链路，不提供兼容别名或旧数据迁移。设备 POST 只提供 restart/lock/wipe，危险确认绑定当前主 MDM 注册，Mac wipe 只接受已核实的 EACS 条件并禁止 obliteration 回退。
 - 删除 Candidate 保存执行、ScriptPlan 与服务端强制二人审批主链，使用当前初始化 schema，不提供这些旧模型的兼容路由或数据迁移。安装使用[当前完整 schema](../deployment/installation.md#全新实例安装)。
 
 

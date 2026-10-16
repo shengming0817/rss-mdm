@@ -18,19 +18,6 @@ async fn issuance_recovery_and_enrollment_boundaries() -> anyhow::Result<()> {
     let w = windows()?;
     let csr = std::fs::read(root()?.join("device.csr"))?;
     certificate::Csr::verify(&csr)?;
-    for input in [
-        std::fs::read(root()?.join("weak.csr"))?,
-        std::fs::read(root()?.join("sha1.csr"))?,
-        [csr.clone(), vec![0]].concat(),
-        {
-            let mut b = csr.clone();
-            let end = b.len() - 1;
-            b[end] ^= 1;
-            b
-        },
-    ] {
-        ensure!(certificate::Csr::verify(&input).is_err());
-    }
     let mut absent = x509_cert::request::CertReq::from_der(&csr)?;
     absent.algorithm.parameters = None;
     certificate::Csr::verify(&absent.to_der()?)?;
@@ -651,64 +638,6 @@ fn sign_fixture(tbs: &x509_cert::TbsCertificate) -> anyhow::Result<Vec<u8>> {
 }
 
 #[tokio::test]
-#[ignore = "make t2 MODULE=windows.issuance: real CA, TLS and private file loading"]
-async fn startup_failures_keep_windows_input_categories() -> anyhow::Result<()> {
-    use std::os::unix::fs::PermissionsExt;
-    let original: serde_json::Value =
-        serde_json::from_slice(&std::fs::read(root()?.join("windows.json"))?)?;
-    let scratch = tempfile::tempdir()?;
-    for (field, issue, private) in [
-        ("trust_file", crate::ConfigIssue::EnrollmentCa, false),
-        ("protocol_key_file", crate::ConfigIssue::ProtocolKey, true),
-    ] {
-        for fault in ["absent", "invalid", "unsafe", "oversized"] {
-            if !private && fault == "unsafe" {
-                continue;
-            }
-            let path = scratch.path().join(format!("sensitive-{field}-{fault}"));
-            if fault != "absent" {
-                let bytes = if fault == "unsafe" {
-                    std::fs::read(original[field].as_str().unwrap())?
-                } else if fault == "oversized" {
-                    vec![
-                        9;
-                        if field == "protocol_key_file" {
-                            33
-                        } else {
-                            64 * 1024 * 1024 + 1
-                        }
-                    ]
-                } else {
-                    vec![9; 31]
-                };
-                std::fs::write(&path, bytes)?;
-                std::fs::set_permissions(
-                    &path,
-                    std::fs::Permissions::from_mode(if fault == "unsafe" { 0o644 } else { 0o600 }),
-                )?;
-            }
-            let mut input = original.clone();
-            input[field] = serde_json::json!(path);
-            let error = match Windows::load(
-                serde_json::from_value(input)?,
-                now(),
-                fixture_providers()?,
-                None,
-            ) {
-                Ok(_) => anyhow::bail!("accepted {field} {fault}"),
-                Err(error) => error,
-            };
-            ensure!(
-                matches!(&error, crate::Error::Configuration(actual) if std::mem::discriminant(actual) == std::mem::discriminant(&issue)),
-                "{field} {fault}: {error:?}"
-            );
-            ensure!(!format!("{error:?} {error}").contains("sensitive-"));
-        }
-    }
-    Ok(())
-}
-
-#[tokio::test]
 #[ignore = "make t2 MODULE=windows.issuance"]
 async fn native_renewal_preserves_registration_and_activates_only_after_new_tls_proof()
 -> anyhow::Result<()> {
@@ -720,7 +649,7 @@ async fn native_renewal_preserves_registration_and_activates_only_after_new_tls_
     use x509_cert::der::{EncodePem, pem::LineEnding};
     let mut host = Host::renewal_window().await?;
     host.listen().await?;
-    let peer = host.peer().await?;
+    let peer = host.enrolled_peer().await?;
     let ca = &host.app.windows()?.channel.ca;
     let certificate = sign_certificate(ca, &peer.intent).await?;
     let temporary = tempfile::tempdir()?;

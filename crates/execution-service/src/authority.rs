@@ -23,17 +23,6 @@ pub enum ExecutionAuthority {
         required: Vec<Permission>,
         evidence: Vec<UserGrant>,
     },
-    /// Historical direct authority; never minted by the current create/approve path.
-    User {
-        required: Vec<Permission>,
-        evidence: Vec<UserGrant>,
-    },
-    RemoteOperation {
-        required: Vec<Permission>,
-        tenant: String,
-        operation: uuid::Uuid,
-        device: String,
-    },
     Policy {
         source_objects: Vec<crate::source_authority::DeviceObject>,
         unit: String,
@@ -78,7 +67,6 @@ impl ExecutionAuthority {
                 )
                 .await
             }
-            Self::User { .. } | Self::RemoteOperation { .. } => Ok(false),
             Self::DeviceControl { .. } => Ok(true),
             Self::Policy {
                 tenant,
@@ -129,7 +117,7 @@ impl ExecutionAuthority {
     }
     pub fn apple_owner(&self, operation: uuid::Uuid) -> Result<String, Error> {
         Ok(match self {
-            Self::User { evidence, .. } | Self::DeviceControl { evidence, .. } => {
+            Self::DeviceControl { evidence, .. } => {
                 let user = evidence.first().ok_or(Error::Forbidden)?.user();
                 if evidence.iter().any(|g| g.user() != user) {
                     return Err(Error::Forbidden);
@@ -137,7 +125,7 @@ impl ExecutionAuthority {
                 format!("user:{}:{}", user.instance_id, user.principal_id)
             }
             Self::Policy { unit, .. } => format!("configuration:{unit}"),
-            Self::RemoteOperation { .. } | Self::AgentInstall { .. } => {
+            Self::AgentInstall { .. } => {
                 format!("operation:{operation}")
             }
         })
@@ -145,18 +133,14 @@ impl ExecutionAuthority {
     pub fn required(&self) -> &[Permission] {
         match self {
             Self::DeviceControl { required, .. }
-            | Self::User { required, .. }
             | Self::AgentInstall { required, .. }
-            | Self::RemoteOperation { required, .. }
             | Self::Policy { required, .. } => required,
         }
     }
     pub fn bind_required(&mut self, permissions: Vec<Permission>) {
         match self {
             Self::DeviceControl { required, .. }
-            | Self::User { required, .. }
             | Self::AgentInstall { required, .. }
-            | Self::RemoteOperation { required, .. }
             | Self::Policy { required, .. } => *required = permissions,
         }
     }
@@ -188,10 +172,6 @@ impl ExecutionAuthority {
             confirmation.check(registration, generation)?;
         }
         crate::device_control::matches(*action, input)
-    }
-
-    pub(crate) fn retired(&self) -> bool {
-        matches!(self, Self::User { .. } | Self::RemoteOperation { .. })
     }
 
     pub async fn valid(
@@ -268,25 +248,13 @@ impl ExecutionAuthority {
                 }
                 crate::agent_install::authorized_on(source, conn, self, now).await
             }
-            Self::DeviceControl { evidence, .. } | Self::User { evidence, .. } => {
+            Self::DeviceControl { evidence, .. } => {
                 for grant in evidence {
                     if grant.valid(conn, permission, now).await? {
                         return Ok(true);
                     }
                 }
                 Ok(false)
-            }
-            Self::RemoteOperation {
-                tenant,
-                operation,
-                device,
-                ..
-            } => {
-                let frozen=sqlx::query_scalar::<_,serde_json::Value>("SELECT o.frozen FROM mdm_planning.remote_operations o JOIN mdm_planning.remote_operation_targets t ON(t.tenant_id,t.operation)=(o.tenant_id,o.id) WHERE o.tenant_id=$1::uuid AND o.id=$2 AND NOT o.cancelled AND o.deadline>$4 AND t.device=$3 AND t.status='accepted'").bind(tenant).bind(operation).bind(device).bind(now).fetch_optional(&mut *conn).await.map_err(db)?;
-                let Some(frozen) = frozen else {
-                    return Ok(false);
-                };
-                native_grant(conn, frozen, device, permission, now).await
             }
             Self::Policy {
                 tenant,

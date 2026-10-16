@@ -650,3 +650,6 @@ pub(crate) async fn sign_profile(
     chain.into_iter().next().ok_or(Error::Conflict)
 }
 use sha2::Digest;
+
+#[cfg(feature = "integration")]
+pub mod fixture;

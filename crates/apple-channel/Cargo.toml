@@ -54,4 +54,4 @@ anyhow.workspace=true
 workspace=true
 
 [features]
-integration=["rss-mdm-certificate/integration"]
+integration=["rss-mdm-registration-service/integration","rss-mdm-certificate/integration"]

@@ -94,7 +94,7 @@ impl Fixture {
                 }
             }
         }
-        let (router, execution, runtime) = crate::api::application_fixture(
+        let (router, execution, runtime, _) = crate::api::application_fixture(
             serde_json::from_value(base.clone())?,
             Arc::new(crate::clock::SystemClock),
             monotonic(),

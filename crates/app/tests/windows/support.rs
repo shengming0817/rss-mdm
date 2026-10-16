@@ -585,6 +585,7 @@ impl Host {
         self.peer_with_authority(
             rss_mdm_registration_service::enrollment::WindowsProfile::Device,
             true,
+            PeerPreparation::EnrollmentProtocol,
         )
         .await
     }
@@ -592,7 +593,16 @@ impl Host {
         &self,
         profile: rss_mdm_registration_service::enrollment::WindowsProfile,
     ) -> anyhow::Result<Peer> {
-        self.peer_with_authority(profile, false).await
+        self.peer_with_authority(profile, false, PeerPreparation::CurrentCredential)
+            .await
+    }
+    pub(crate) async fn enrolled_peer(&self) -> anyhow::Result<Peer> {
+        self.peer_with_authority(
+            rss_mdm_registration_service::enrollment::WindowsProfile::Device,
+            false,
+            PeerPreparation::EnrollmentProtocol,
+        )
+        .await
     }
     async fn enrollment_receipt(
         &self,
@@ -640,31 +650,19 @@ impl Host {
         };
         Ok((proof, password, receipt))
     }
-    async fn peer_with_authority(
+    fn issue_request(
         &self,
         profile: rss_mdm_registration_service::enrollment::WindowsProfile,
-        self_service: bool,
-    ) -> anyhow::Result<Peer> {
-        use x509_cert::der::{EncodePem, pem::LineEnding};
-        let root = &self.root;
-        let app = &self.app;
-        let store = &self.store;
-        let client = &self.client;
-        let root_cert = &self.root_cert;
-        let plain = crate::enrollment::random();
-        let (proof, password, receipt) = self
-            .enrollment_receipt(profile, self_service, &plain)
-            .await?;
-        let path = format!(
-            "{}/EnrollmentServer/Enrollment.svc",
-            app.windows()?.config.enrollment.origin
-        );
+        enrollment: Uuid,
+        plain: &str,
+        path: &str,
+    ) -> anyhow::Result<soap::Message> {
         let mut issue = soap::decode(
             include_bytes!("../../../windows-mdm/tests/fixtures/issue-request.xml"),
             Operation::Issue,
             &CodecLimits::default(),
         )?;
-        issue.header.to = Some(path.clone());
+        issue.header.to = Some(path.to_owned());
         let token = issue
             .header
             .security
@@ -677,14 +675,14 @@ impl Host {
             self.app
                 .windows()?
                 .channel
-                .enrollment_username(receipt.enrollment_id)?,
+                .enrollment_username(enrollment)?,
         );
-        token.password = Secret(plain);
+        token.password = Secret(plain.to_owned());
         let Body::Issue(body) = &mut issue.body else {
             panic!()
         };
         body.request =
-            soap::CertificateRequest::Pkcs10(Secret(std::fs::read(root.join("device.csr"))?));
+            soap::CertificateRequest::Pkcs10(Secret(std::fs::read(self.root.join("device.csr"))?));
         for (key, value) in &mut body.additional_context.0 {
             if key == "EnrollmentType" {
                 *value = profile.as_str().to_owned();
@@ -693,52 +691,142 @@ impl Host {
                 *value = crate::test_support::case::name("tls-device").into();
             }
         }
-        let wire = soap::encode(&issue, &CodecLimits::default())?;
-        let response = client
-            .post(&path)
-            .header("content-type", "application/soap+xml")
-            .body(wire.clone())
-            .send()
-            .await?;
-        ensure!(
-            response.status() == StatusCode::OK,
-            "WSTEP failed: {:?}",
-            response.status()
-        );
-        let first = response.bytes().await?;
-        let decoded = soap::decode_response(&issue, &first, &CodecLimits::default())?;
-        let Body::IssueResponse(result) = decoded.body else {
-            panic!()
-        };
-        ensure!(String::from_utf8_lossy(&result.provisioning.0).contains("AAUTHLEVEL"));
-        let auth = crate::enrollment::store::enrollment_authorization(
-            &store.registration(),
-            case_tenant(),
-            receipt.enrollment_id,
-            &password,
-        )
-        .await?;
-        let csr = std::fs::read(root.join("device.csr"))?;
-        let intent = rss_mdm_windows_channel::issuance::issuance_intent(
-            &store.windows_store(),
-            &app.windows()?.channel,
-            &auth,
-            &proof,
-            (
-                &csr,
-                match profile {
-                    rss_mdm_registration_service::enrollment::WindowsProfile::Full => {
-                        rss_mdm_windows_mdm::provisioning::EnrollmentType::Full
+        Ok(issue)
+    }
+    fn initial_message(
+        url: &str,
+        registration: Uuid,
+        secrets: &rss_mdm_windows_channel::test_support::Secrets,
+    ) -> anyhow::Result<syncml::Message> {
+        let mut message = syncml::decode(
+            include_bytes!("../../../windows-mdm/tests/fixtures/initialization.xml"),
+            &CodecLimits::default(),
+        )?;
+        message.header.target = url.to_owned();
+        message.header.source = crate::test_support::case::name("tls-device").into();
+        message.header.credential = Some(syncml::Credential {
+            meta: syncml::Meta {
+                format: Some("b64".into()),
+                media_type: Some("syncml:auth-basic".into()),
+                ..Default::default()
+            },
+            data: Secret(STANDARD.encode(format!(
+                "{}:{}",
+                registration,
+                secrets.client_password.as_str()
+            ))),
+        });
+        for command in &mut message.commands {
+            if let Command::DevInfo { items, .. } = command {
+                for item in items {
+                    if item.source.as_deref() == Some("./DevInfo/DevId") {
+                        item.data =
+                            Some(Secret(crate::test_support::case::name("tls-device").into()));
                     }
-                    rss_mdm_registration_service::enrollment::WindowsProfile::Device => {
-                        rss_mdm_windows_mdm::provisioning::EnrollmentType::Device
-                    }
+                }
+            }
+        }
+        Ok(message)
+    }
+    async fn peer_with_authority(
+        &self,
+        profile: rss_mdm_registration_service::enrollment::WindowsProfile,
+        self_service: bool,
+        preparation: PeerPreparation,
+    ) -> anyhow::Result<Peer> {
+        use x509_cert::der::{EncodePem, pem::LineEnding};
+        let root = &self.root;
+        let app = &self.app;
+        let store = &self.store;
+        let client = &self.client;
+        let root_cert = &self.root_cert;
+        let plain = crate::enrollment::random();
+        let (proof, receipt, seeded) = if matches!(preparation, PeerPreparation::CurrentCredential)
+        {
+            let proof = admin(case_tenant(), "admin-a").await?;
+            let request = Uuid::new_v4();
+            let intent = issuance::fixture::intent(
+                &app.windows()?.channel,
+                case_tenant(),
+                request,
+                &std::fs::read(root.join("device.csr"))?,
+                enrollment_type(profile),
+                now(),
+            )?;
+            let cert = sign_certificate(&app.windows()?.channel.ca, &intent).await?;
+            let mut tx = store.archive_pool().begin().await?;
+            sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
+                .bind(case_tenant())
+                .execute(&mut *tx)
+                .await?;
+            let (receipt, provisioning) = issuance::fixture::current_in(
+                &mut tx,
+                &app.windows()?.channel,
+                &proof,
+                issuance::fixture::Seed {
+                    request,
+                    device: crate::test_support::case::name("tls-device"),
+                    intent: &intent,
+                    certificate: &cert,
+                    now: now(),
                 },
-            ),
-            now(),
-        )
-        .await?;
-        let cert = sign_certificate(&app.windows()?.channel.ca, &intent).await?;
+            )
+            .await?;
+            tx.commit().await?;
+            (proof, receipt, Some((intent, cert, provisioning)))
+        } else {
+            let (proof, _, receipt) = self
+                .enrollment_receipt(profile, self_service, &plain)
+                .await?;
+            (proof, receipt, None)
+        };
+        let path = format!(
+            "{}/EnrollmentServer/Enrollment.svc",
+            app.windows()?.config.enrollment.origin
+        );
+        let issue = self.issue_request(profile, receipt.enrollment_id, &plain, &path)?;
+        let wire = soap::encode(&issue, &CodecLimits::default())?;
+        let (intent, cert, provisioning) = if let Some(seeded) = seeded {
+            seeded
+        } else {
+            let response = client
+                .post(&path)
+                .header("content-type", "application/soap+xml")
+                .body(wire.clone())
+                .send()
+                .await?;
+            ensure!(
+                response.status() == StatusCode::OK,
+                "WSTEP failed: {:?}",
+                response.status()
+            );
+            let decoded =
+                soap::decode_response(&issue, &response.bytes().await?, &CodecLimits::default())?;
+            let Body::IssueResponse(result) = decoded.body else {
+                anyhow::bail!("missing issuance response")
+            };
+            ensure!(String::from_utf8_lossy(&result.provisioning.0).contains("AAUTHLEVEL"));
+            let auth = crate::enrollment::store::enrollment_authorization(
+                &store.registration(),
+                case_tenant(),
+                receipt.enrollment_id,
+                &Password::new(plain.clone())?,
+            )
+            .await?;
+            let csr = std::fs::read(root.join("device.csr"))?;
+            let intent = rss_mdm_windows_channel::issuance::issuance_intent(
+                &store.windows_store(),
+                &app.windows()?.channel,
+                &auth,
+                &proof,
+                (&csr, enrollment_type(profile)),
+                now(),
+            )
+            .await?;
+            let cert = sign_certificate(&app.windows()?.channel.ca, &intent).await?;
+            (intent, cert, result.provisioning.0)
+        };
+
         let cert_pem = x509_cert::Certificate::from_der(&cert)?.to_pem(LineEnding::LF)?;
         let identity = reqwest::Identity::from_pem(
             &[
@@ -757,38 +845,12 @@ impl Host {
             .windows()?
             .channel
             .management_url(rss_mdm_registration_service::Purpose::Primary);
-        let mut message = syncml::decode(
-            include_bytes!("../../../windows-mdm/tests/fixtures/initialization.xml"),
-            &CodecLimits::default(),
+        let secrets = app.windows()?.channel.open_secrets_fixture(
+            case_tenant(),
+            receipt.enrollment_id,
+            &intent.sealed,
         )?;
-        message.header.target = url.clone();
-        message.header.source = crate::test_support::case::name("tls-device").into();
-        let secrets =
-            app.windows()?
-                .channel
-                .open_secrets_fixture(case_tenant(), auth.id, &intent.sealed)?;
-        message.header.credential = Some(syncml::Credential {
-            meta: syncml::Meta {
-                format: Some("b64".into()),
-                media_type: Some("syncml:auth-basic".into()),
-                ..Default::default()
-            },
-            data: Secret(STANDARD.encode(format!(
-                "{}:{}",
-                intent.registration,
-                secrets.client_password.as_str()
-            ))),
-        });
-        for command in &mut message.commands {
-            if let Command::DevInfo { items, .. } = command {
-                for item in items {
-                    if item.source.as_deref() == Some("./DevInfo/DevId") {
-                        item.data =
-                            Some(Secret(crate::test_support::case::name("tls-device").into()));
-                    }
-                }
-            }
-        }
+        let message = Self::initial_message(&url, intent.registration, &secrets)?;
         let next_nonce = [7u8; 16];
         let followup = syncml::Message {
             header: syncml::Header {
@@ -822,13 +884,17 @@ impl Host {
             issue,
             path,
             wire,
-            provisioning: result.provisioning.0,
+            provisioning,
             mutual,
             url,
             message,
             ack: followup,
         })
     }
+}
+enum PeerPreparation {
+    CurrentCredential,
+    EnrollmentProtocol,
 }
 pub(crate) struct Peer {
     profile: rss_mdm_registration_service::enrollment::WindowsProfile,
@@ -1103,4 +1169,17 @@ async fn provider(
         crate::identity::deadline(),
     )
     .await?)
+}
+
+fn enrollment_type(
+    profile: rss_mdm_registration_service::enrollment::WindowsProfile,
+) -> rss_mdm_windows_mdm::provisioning::EnrollmentType {
+    match profile {
+        rss_mdm_registration_service::enrollment::WindowsProfile::Full => {
+            rss_mdm_windows_mdm::provisioning::EnrollmentType::Full
+        }
+        rss_mdm_registration_service::enrollment::WindowsProfile::Device => {
+            rss_mdm_windows_mdm::provisioning::EnrollmentType::Device
+        }
+    }
 }

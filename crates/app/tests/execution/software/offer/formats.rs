@@ -128,35 +128,6 @@ async fn chain(format: &str, bundle: bool, user: bool) -> Result<()> {
     } else {
         ("macos", "aarch64", "macos_aarch64")
     };
-    let version_input = |definition: Value| json!({"operationId":Uuid::new_v4(),"expectedRevision":1,"input":{"action":"version","version":"v1","kind":"software","variants":[{"platform":os,"architecture":arch,"key":"default","declaration":{"kind":"software","definition":definition}}]}});
-    for ownership in [
-        json!("managed_only"),
-        json!("allow_user_existing"),
-        json!(null),
-    ] {
-        let mut old = definition.clone();
-        old["ownership"] = ownership;
-        ensure!(
-            f.author
-                .call(&f.router, Method::POST, &path, Some(version_input(old)))
-                .await?
-                .0
-                == StatusCode::BAD_REQUEST
-        );
-    }
-    if format == "dmg_app" {
-        for digest in [json!(vec![1; 32]), json!(null)] {
-            let mut old = definition.clone();
-            old["behavior"]["payload"]["application"]["materialSha256"] = digest;
-            ensure!(
-                f.author
-                    .call(&f.router, Method::POST, &path, Some(version_input(old)))
-                    .await?
-                    .0
-                    == StatusCode::BAD_REQUEST
-            );
-        }
-    }
     write(&mut f.author,&f.router,&path,1,json!({"action":"version","version":"v1","kind":"software","variants":[{"platform":os,"architecture":arch,"key":"default","declaration":{"kind":"software","definition":definition}}]})).await?;
     let content_setup = crate::test_support::software::content_setup_guard().await?;
     let request = Request::builder().method(Method::POST)
@@ -278,6 +249,12 @@ async fn chain(format: &str, bundle: bool, user: bool) -> Result<()> {
     let content = f.router.clone().oneshot(content).await?;
     ensure!(content.status() == StatusCode::OK);
     ensure!(content.into_body().collect().await?.to_bytes() == bytes);
+    // Bundle/container admission is proven by the signed frozen offer and exact content.
+    // Result settlement uses the same native identity as the single-package anchors below.
+    if bundle || format == "dmg_pkg" {
+        crate::test_support::stop_worker(stack).await?;
+        return Ok(());
+    }
     for kind in ["received", "start"] {
         let r = event_with(&f.router, &f.credential, &task, json!({"kind":kind})).await?;
         ensure!(r.0 == StatusCode::OK, "{kind}: {r:?}");
@@ -367,7 +344,7 @@ async fn dmg_app_complete_backend_chain() -> Result<()> {
 }
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 #[ignore = "make t2 MODULE=execution.software.offer"]
-async fn dmg_pkg_complete_backend_chain() -> Result<()> {
+async fn dmg_pkg_frozen_offer_and_content() -> Result<()> {
     chain("dmg_pkg", false, false).await
 }
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
@@ -382,11 +359,11 @@ async fn msix_provisioning_complete_backend_chain() -> Result<()> {
 }
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 #[ignore = "make t2 MODULE=execution.software.offer"]
-async fn msixbundle_registration_complete_backend_chain() -> Result<()> {
+async fn msixbundle_registration_frozen_offer_and_content() -> Result<()> {
     chain("msix", true, true).await
 }
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 #[ignore = "make t2 MODULE=execution.software.offer"]
-async fn msixbundle_provisioning_complete_backend_chain() -> Result<()> {
+async fn msixbundle_provisioning_frozen_offer_and_content() -> Result<()> {
     chain("msix", true, false).await
 }

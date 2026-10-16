@@ -43,8 +43,8 @@ class Provider:
         self.container = self.compose('ps', '-q', 'step-ca', timeout=15)
         if not self.container or '\n' in self.container:
             raise RuntimeError('fixed step-ca container missing during startup')
-        actual = json.loads(run(['docker','inspect',self.container],capture_output=True).stdout)[0]
-        expected = run(['docker','image','inspect',self.owner.providers['step-ca'],'--format','{{.Id}}'],capture_output=True).stdout.strip()
+        actual = json.loads(run(['docker','inspect',self.container],capture_output=True,timeout=10).stdout)[0]
+        expected = run(['docker','image','inspect',self.owner.providers['step-ca'],'--format','{{.Id}}'],capture_output=True,timeout=10).stdout.strip()
         if actual['Image'] != expected:
             raise RuntimeError('CA container image differs from fixed provider')
         address = self.compose('port', 'step-ca', str(PKI_CA['port']), timeout=15)

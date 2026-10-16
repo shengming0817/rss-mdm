@@ -14,7 +14,6 @@ mod policy;
 mod scep;
 #[path = "support/scep.rs"]
 mod scep_client;
-mod status;
 mod users;
 use super::*;
 use crate::{
@@ -784,7 +783,31 @@ impl Fixture {
         Ok(peer)
     }
     async fn ready_local_peer(&mut self) -> Result<(lifecycle::Peer, scep_client::Device)> {
-        let (device, der) = self.scep_leaf().await?;
+        let device =
+            scep_client::Device::new(Uuid::new_v4(), Uuid::new_v4(), &crate::enrollment::random())?;
+        let der = device.local_leaf(&std::path::PathBuf::from(std::env::var(
+            "MDM_APPLE_PKI_FIXTURES",
+        )?))?;
+        let proof = crate::device::test_support::admin(case_tenant(), "admin-a").await?;
+        let mut tx = self.app.access.archive_pool().begin().await?;
+        sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
+            .bind(case_tenant())
+            .execute(&mut *tx)
+            .await?;
+        rss_mdm_apple_channel::enrollment::seed_current_peer_in(
+            &mut tx,
+            &self.app.apple()?.channel,
+            &proof,
+            rss_mdm_apple_channel::enrollment::CurrentPeer {
+                device: case_device(),
+                udid: crate::test_support::case::name("rss-t2-apple"),
+                csr: &device.csr,
+                certificate: &der,
+                now: self.app.clock.unix_seconds()?,
+            },
+        )
+        .await?;
+        tx.commit().await?;
         let peer = self.authenticate_peer(&device, &der).await?;
         peer.token().await?;
         Ok((peer, device))

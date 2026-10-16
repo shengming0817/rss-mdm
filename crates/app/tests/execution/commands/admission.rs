@@ -510,53 +510,7 @@ async fn cancellation_request_identity_does_not_claim_another_device() -> anyhow
     host.close().await?;
     Ok(())
 }
-#[tokio::test]
-#[ignore = "make t2 MODULE=execution.commands.admission"]
-async fn child_dispatch_keeps_its_device_and_parent_search_link() -> anyhow::Result<()> {
-    let (host, mut client) = ordinary(rss_device_command_postgres::CommandClock::Postgres).await?;
-    let (other, child) = client.timeline_pair().await?;
-    let parent = Uuid::new_v4();
-    let mut pg =
-        sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?)
-            .await?;
-    // Persist the two-target owner relation; the child UUID deliberately equals B's native operation.
-    sqlx::query("INSERT INTO mdm_planning.remote_operations(tenant_id,id,resource,resource_version,frozen,snapshot,created_at,deadline,author) VALUES($1::uuid,$2,'fixture','1','{}','{}',1,10000000000,'{}')")
-        .bind(case_tenant()).bind(parent).execute(&mut pg).await?;
-    sqlx::query("INSERT INTO mdm_planning.remote_operation_targets(tenant_id,operation,device,status,diagnosis) VALUES($1::uuid,$2,$3,'blocked','fixture'),($1::uuid,$2,$4,'blocked','fixture')")
-        .bind(case_tenant()).bind(parent).bind(case_device()).bind(&other).execute(&mut pg).await?;
-    sqlx::query("INSERT INTO mdm_commands.action_runs(tenant_id,id,source_kind,remote_operation,device,registration,generation,occurrence,created_at,available_at,deadline,state,dispatch_fingerprint,source_objects) SELECT tenant_id,$2,'remote_operation',$3,device,registration,registration_generation,'fixture',1,1,10000000000,'{}',decode(repeat('00',32),'hex'),'[]'::jsonb FROM mdm_commands.operations WHERE tenant_id=$1::uuid AND id=$4")
-        .bind(case_tenant()).bind(child).bind(parent).bind(client.operation).execute(&mut pg).await?;
-    pg.close().await?;
-    client
-        .app
-        .execution
-        .accept_action_dispatch(child, vec![0; 32])
-        .await?;
-    let path =
-        format!("/api/v1/devices/{other}/timeline?action=command_dispatch&operationId={child}");
-    let (_, page) = client
-        .browser
-        .call(&client.router, Method::GET, &path, None)
-        .await?;
-    ensure!(
-        page["items"].as_array().unwrap().is_empty(),
-        "child fact leaked to sibling/native UUID: {page}"
-    );
-    let path = format!(
-        "/api/v1/devices/{}/timeline?action=command_dispatch&operationId={parent}",
-        case_device()
-    );
-    let (_, page) = client
-        .browser
-        .call(&client.router, Method::GET, &path, None)
-        .await?;
-    ensure!(
-        page["items"].as_array().unwrap().len() == 1,
-        "parent search link lost: {page}"
-    );
-    host.close().await?;
-    Ok(())
-}
+
 impl Client {
     async fn timeline_pair(&mut self) -> anyhow::Result<(String, Uuid)> {
         let other = crate::test_support::case::name("timeline-other").to_owned();

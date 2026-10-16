@@ -39,7 +39,7 @@ class PoolTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, 'case failed'):
             with pool.database('product', 'fresh'):
                 raise RuntimeError('case failed')
-        pool.owner.sql.assert_called_once_with('DROP DATABASE "t2_case_product" WITH (FORCE)')
+        pool.owner.sql.assert_any_call('DROP DATABASE "t2_case_product" WITH (FORCE)')
         self.assertFalse(pool.dirty)
 
     def test_successful_fault_requires_restoration_before_reuse(self):
@@ -75,6 +75,22 @@ class PoolTests(unittest.TestCase):
         self.assertEqual(pool.costs.snapshot()['counts']['faultReplacements'], 1)
         self.assertEqual(pool.generation, 1)
 
+    def test_tenant_seed_batches_only_missing_coordinates_and_records_after_commit(self):
+        pool = self.pool()
+        pool.seed_tenants('shared', 'product', ['b', 'a', 'a'])
+        sql, database = pool.owner.sql.call_args.args
+        self.assertEqual(database, 'shared')
+        self.assertEqual(sql.count('public.create_new_tenant'), 2)
+        self.assertIn('BEGIN;', sql)
+        self.assertIn('COMMIT;', sql)
+        pool.seed_tenants('shared', 'product', ['a'])
+        self.assertEqual(pool.owner.sql.call_count, 1)
+        pool.owner.sql.side_effect = RuntimeError('seed rejected')
+        with self.assertRaisesRegex(RuntimeError, 'seed rejected'):
+            pool.seed_tenants('shared', 'product', ['c'])
+        self.assertNotIn('c', pool.seeded_tenants['shared'])
+        self.assertEqual(pool.costs.snapshot()['counts']['preparedTenants'], 2)
+
 
 class PreparationTests(unittest.TestCase):
     def fixture(self, output):
@@ -85,10 +101,14 @@ class PreparationTests(unittest.TestCase):
         fixture.apple_recovery_test = recovery
         fixture.normal = Mock()
         fixture.normal.owner.project = 'normal'
+        fixture.normal.ready = False
         fixture.fault = Mock()
         fixture.fault.owner.project = 'fault'
+        fixture.fault.ready = False
         fixture.gateway_owner = Mock()
         fixture.gateway_owner.project = 'gateway'
+        for owner in (fixture.normal.owner, fixture.fault.owner, fixture.gateway_owner):
+            owner.postgres_queries = dict(container=0, port=0)
         fixture.builds.processes.cleanup.return_value = nullcontext()
         return fixture
 
@@ -202,6 +222,81 @@ class PreparationTests(unittest.TestCase):
             finally:
                 fixture.cert_directory.cleanup()
 
+    def test_identity_environment_initialization_and_refresh_are_single_flight(self):
+        from concurrent.futures import ThreadPoolExecutor
+        import threading
+        with tempfile.TemporaryDirectory() as tmp:
+            fixture = self.fixture(Path(tmp))
+            self.addCleanup(fixture.cert_directory.cleanup)
+            pool = fixture.normal
+            pool.owner.root = Path(tmp)
+            (pool.owner.root / 'ca.crt').write_text('fixture CA')
+            pool.owner.sql.return_value = 'management'
+            pool.generation = 1
+            pool.installation = 'installation'
+            pool.database_config.return_value = {}
+            fixture.runtime_config = Mock(return_value={})
+            fixture.builds.executables = {'rss-mdm': '/fixture/mdm'}
+            stages = []
+            def helper(root, manifest, output, database):
+                stages.append(manifest['stage'])
+                (root / 'source-session').write_text(str(len(stages)))
+            fixture.identity_helper = helper
+            def parallel():
+                barrier = threading.Barrier(4)
+                def call(_):
+                    barrier.wait(timeout=5)
+                    return fixture.identity_environment(pool, 'shared', Path(tmp))
+                with ThreadPoolExecutor(max_workers=4) as executor:
+                    return list(executor.map(call, range(4)))
+            with patch('t2_fixtures.run') as run:
+                initial = parallel()
+                self.assertEqual(stages, ['environment'])
+                self.assertEqual({value[2] for value in initial}, {'1'})
+                run.assert_called_once()
+                fixture.identities[('normal', 1, 'shared')]['refreshed'] = -1000
+                refreshed = parallel()
+                self.assertEqual(stages, ['environment', 'refresh'])
+                self.assertEqual({value[2] for value in refreshed}, {'2'})
+                # Previously returned snapshots remain valid strings, not mutable file handles.
+                self.assertEqual(initial[0][2], '1')
+
+    def test_shared_materials_copy_private_bytes_and_relocate_configuration(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            fixture = self.fixture(Path(tmp))
+            self.addCleanup(fixture.cert_directory.cleanup)
+            roots = [Path(tmp) / name for name in ('first', 'second')]
+            for root in roots:
+                root.mkdir()
+                for name in ('ca.crt', 'server.crt', 'server.key'):
+                    (root / name).write_text(name)
+            def generate(root, certificate, key, materials):
+                (root / 'device.key').write_text('original')
+                (root / 'windows.json').write_text(json.dumps({'path': str(root / 'device.key')}))
+            with patch('windows_fixtures.generate', side_effect=generate) as generator:
+                for root in roots:
+                    fixture.prepare_materials('windows', root)
+                generator.assert_called_once()
+            (roots[0] / 'device.key').write_text('corrupted')
+            self.assertEqual((roots[1] / 'device.key').read_text(), 'original')
+            self.assertEqual(json.loads((roots[1] / 'windows.json').read_text())['path'], str(roots[1] / 'device.key'))
+
+    def test_failed_identity_environment_is_not_retried_by_later_cases(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            fixture = self.fixture(Path(tmp))
+            self.addCleanup(fixture.cert_directory.cleanup)
+            pool = fixture.normal
+            pool.generation = 1
+            pool.owner.root = Path(tmp)
+            (pool.owner.root / 'ca.crt').write_text('fixture CA')
+            pool.owner.sql.side_effect = RuntimeError('original database failure')
+            with self.assertRaisesRegex(RuntimeError, 'original database failure'):
+                fixture.identity_environment(pool, 'shared', Path(tmp))
+            with self.assertRaisesRegex(RuntimeError, 'previously failed') as caught:
+                fixture.identity_environment(pool, 'shared', Path(tmp))
+            self.assertEqual(str(caught.exception.__cause__), 'original database failure')
+            pool.owner.sql.assert_called_once()
+
 
 class CostTests(unittest.TestCase):
     def test_cost_updates_have_one_owner_across_pools(self):
@@ -226,3 +321,29 @@ class CostTests(unittest.TestCase):
         event, = events
         self.assertEqual((event['phase'], event['status'], event['database']), ('clone', 'failed', 'owned'))
         self.assertGreaterEqual(event['endedMonotonic'], event['startedMonotonic'])
+
+
+class CryptographicNeedsTests(unittest.TestCase):
+    def test_normal_agent_material_is_minimal_and_configuration_keys_are_exact(self):
+        from agent_pki_fixtures import prepare
+        for count, materials in ((0, ()), (2, ('other',))):
+            with self.subTest(count=count), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                config = root / 'ca.json'
+                config.write_text(json.dumps({'root': [str(root / 'root.crt')],
+                                             'crt': str(root / 'issuer.crt'), 'key': str(root / 'issuer.key')}))
+                commands = []
+                def openssl(*args):
+                    commands.append(tuple(map(str, args)))
+                    for flag in ('-out', '-keyout'):
+                        if flag in args:
+                            Path(args[args.index(flag) + 1]).write_text('fixture')
+                with patch('agent_pki_fixtures.openssl', side_effect=openssl):
+                    prepare(root, config, root / 'password', configuration_devices=count, materials=materials)
+                self.assertEqual(sorted(path.name for path in root.glob('configuration-*.der')),
+                                 [f'configuration-{i}.der' for i in range(count)])
+                self.assertTrue((root / 'agent.der').exists())
+                self.assertEqual((root / 'other.der').exists(), 'other' in materials)
+                self.assertFalse((root / 'weak.der').exists())
+                self.assertFalse((root / 'agent-subordinate.key').exists())
+                self.assertFalse(any('x509' in command for command in commands))

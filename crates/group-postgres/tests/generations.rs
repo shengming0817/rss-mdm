@@ -297,8 +297,7 @@ async fn static_patches_use_the_same_sealed_publication_and_preserve_old_sets() 
         assert!(
             affected(&runtime, &s, vec!["b".into()], Some(group), 33)
                 .await
-                .iter()
-                .all(|id| *id > group)
+                .is_empty()
         );
         let stored_rows = runtime.local_tx_with_context(tenant(), deadline(), &s, |_, tx|Box::pin(async move {
             tx.with_connection(move |c|Box::pin(async move {

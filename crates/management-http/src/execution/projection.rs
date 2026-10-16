@@ -1,7 +1,6 @@
 //! Transport addresses are owned by management HTTP, not execution storage.
 use rss_mdm_execution_service::queries::records::{
     CommandDetail, ExecutionDirectory, ExecutionEvidence, ExecutionKind, NativeObservation,
-    RemoteDirectory,
 };
 use serde_json::{Value, json};
 pub fn directory(facts: ExecutionDirectory) -> Value {
@@ -16,15 +15,8 @@ pub fn directory(facts: ExecutionDirectory) -> Value {
                 format!("/api/v1/devices/{device}/operations/{}", item.metadata.id)
             }
             ExecutionKind::ActionRun => {
-                if let Some(policy) = item.metadata.policy {
-                    format!("/api/v1/policies/{policy}/runs/{}", item.metadata.id)
-                } else {
-                    format!(
-                        "/api/v1/remote-operations/{}/runs/{}",
-                        item.metadata.remote_operation.expect("stored run source"),
-                        item.metadata.id
-                    )
-                }
+                let policy = item.metadata.policy.expect("stored Policy run source");
+                format!("/api/v1/policies/{policy}/runs/{}", item.metadata.id)
             }
         })
         .collect::<Vec<_>>();
@@ -51,38 +43,11 @@ pub fn directory(facts: ExecutionDirectory) -> Value {
     }
     value
 }
-pub fn remote_directory(facts: RemoteDirectory) -> Value {
-    let urls = facts
-        .items
-        .iter()
-        .map(|item| format!("/api/v1/remote-operations/{}", item.id))
-        .collect::<Vec<_>>();
-    let mut value = serde_json::to_value(facts).expect("directory facts serialize");
-    for (item, url) in value["items"]
-        .as_array_mut()
-        .expect("typed page")
-        .iter_mut()
-        .zip(urls)
-    {
-        item["detailUrl"] = json!(url);
-    }
-    value
-}
-
 /// The HTTP owner renders native facts after Execution's common authorization and state composition.
-pub fn command(facts: CommandDetail, device: &str) -> Value {
+pub fn command(facts: CommandDetail) -> Value {
     let native = observation(&facts.observation);
     let mut value = serde_json::to_value(facts).expect("command facts serialize");
     value["observation"] = native;
-    if value["observation"]["diagnostic"]["artifact"].is_object() {
-        let encoded = url::form_urlencoded::byte_serialize(device.as_bytes())
-            .collect::<String>()
-            .replace('+', "%20");
-        value["observation"]["diagnostic"]["artifact"]["downloadUrl"] = json!(format!(
-            "/api/v1/devices/{encoded}/operations/{}/diagnostic-artifact",
-            value["operationId"].as_str().expect("operation id")
-        ));
-    }
     value
 }
 fn optional<T: serde::Serialize>(value: &mut Value, name: &str, field: Option<&T>) {
@@ -106,14 +71,12 @@ fn observation(facts: &NativeObservation) -> Value {
     match facts {
         NativeObservation::Windows {
             receipts,
-            diagnostic,
             progress,
             effect,
             reason,
         } => {
             let mut value = json!({"protocol":"syncml","observationScope":"native_objects","receipts":receipts,"progress":progress,"effect":effect});
             optional(&mut value, "effectReason", reason.as_ref());
-            optional(&mut value, "diagnostic", diagnostic.as_ref());
             value
         }
         NativeObservation::Declarations { facts, progress } => {

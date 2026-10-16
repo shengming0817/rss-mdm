@@ -5,7 +5,7 @@
 //! Required coordinates supplied by the T2 runner before migration and execution.
 //! Ordinary objects share a tenant; each full-tenant observation owns its planned domain.
 use serde::{Deserialize, Serialize};
-use std::{collections::BTreeMap, io, path::Path, sync::OnceLock};
+use std::{io, path::Path, sync::OnceLock};
 
 #[derive(Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -15,11 +15,18 @@ pub struct CaseContext {
     namespace: String,
     tenant: String,
     peer: String,
-    admin_login: String,
-    other_login: String,
-    identity_tenants: Vec<String>,
     fixtures: Vec<String>,
-    admins: BTreeMap<String, String>,
+    actors: Vec<Actor>,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct Actor {
+    pub tenant: String,
+    pub role: String,
+    pub login: String,
+    #[serde(deserialize_with = "Option::<String>::deserialize")]
+    pub principal: Option<String>,
 }
 
 #[derive(Clone, Copy)]
@@ -46,8 +53,6 @@ impl CaseContext {
         for (field, value) in [
             ("caseId", &self.case_id),
             ("invocationId", &self.invocation_id),
-            ("adminLogin", &self.admin_login),
-            ("otherLogin", &self.other_login),
         ] {
             if value.is_empty() {
                 return Err(field);
@@ -64,11 +69,6 @@ impl CaseContext {
         if self.tenant == self.peer {
             return Err("peer");
         }
-        if self.identity_tenants != [self.tenant.clone()]
-            && self.identity_tenants != [self.tenant.clone(), self.peer.clone()]
-        {
-            return Err("identityTenants");
-        }
         if self.fixtures.iter().any(String::is_empty)
             || self
                 .fixtures
@@ -80,13 +80,23 @@ impl CaseContext {
         {
             return Err("fixtures");
         }
-        if self.admins.iter().any(|(tenant, id)| {
-            !self.identity_tenants.contains(tenant) || uuid::Uuid::parse_str(id).is_err()
-        }) || matches!(phase, Phase::Ready)
-            && self.has_fixture("identity")
-            && self.admins.len() != self.identity_tenants.len()
-        {
-            return Err("admins");
+        let mut seen = std::collections::BTreeSet::new();
+        for actor in &self.actors {
+            if ![&self.tenant, &self.peer].contains(&&actor.tenant)
+                || !matches!(actor.role.as_str(), "admin" | "other")
+                || actor.login.is_empty()
+                || !seen.insert((&actor.tenant, &actor.role))
+                || actor
+                    .principal
+                    .as_ref()
+                    .is_some_and(|id| uuid::Uuid::parse_str(id).is_err())
+                || matches!(phase, Phase::Ready) && actor.principal.is_none()
+            {
+                return Err("actors");
+            }
+        }
+        if self.actors.is_empty() == self.has_fixture("identity") {
+            return Err("actors");
         }
         Ok(())
     }
@@ -99,32 +109,26 @@ impl CaseContext {
     pub fn invocation_id(&self) -> &str {
         &self.invocation_id
     }
-    pub fn identity_tenants(&self) -> &[String] {
-        &self.identity_tenants
+    pub fn actors(&self) -> &[Actor] {
+        &self.actors
+    }
+    pub fn actors_mut(&mut self) -> &mut [Actor] {
+        &mut self.actors
     }
     pub fn admin_for(&self, tenant: &str) -> &str {
-        self.admins
-            .get(tenant)
-            .expect("tenant not prepared in validated case context")
+        self.actors
+            .iter()
+            .find(|actor| actor.tenant == tenant && actor.role == "admin")
+            .and_then(|actor| actor.principal.as_deref())
+            .expect("admin not declared or prepared")
     }
     pub fn account_login(&self, kind: &str) -> &str {
-        match kind {
-            "admin" => &self.admin_login,
-            "other" => &self.other_login,
-            _ => panic!("unknown fixture account kind"),
-        }
-    }
-    pub fn record_admin(&mut self, tenant: &str, principal: String) -> io::Result<()> {
-        if !self.identity_tenants.iter().any(|value| value == tenant)
-            || uuid::Uuid::parse_str(&principal).is_err()
-        {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "invalid prepared admin",
-            ));
-        }
-        self.admins.insert(tenant.into(), principal);
-        Ok(())
+        &self
+            .actors
+            .iter()
+            .find(|actor| actor.tenant == self.tenant && actor.role == kind)
+            .expect("actor not declared")
+            .login
     }
     // An optional qualification gate is reached from inside both actual Rust cases.
     // It cannot turn mere fixture preparation or nextest startup overlap into proof.
@@ -247,8 +251,8 @@ mod validation {
     fn planned() -> serde_json::Value {
         serde_json::json!({"caseId":"case", "invocationId":"invoke", "namespace":"00000000000000000000000000000001",
             "tenant":"11111111-1111-4111-8111-111111111111", "peer":"22222222-2222-4222-8222-222222222222",
-            "adminLogin":"admin-1", "otherLogin":"other-1", "identityTenants":["11111111-1111-4111-8111-111111111111"],
-            "fixtures":["identity"], "admins":{}})
+            "actors":[{"tenant":"11111111-1111-4111-8111-111111111111", "role":"admin", "login":"admin-1", "principal":null}],
+            "fixtures":["identity"]})
     }
     #[test]
     fn rejects_malformed_and_incomplete_contract_before_consumption() {
@@ -258,11 +262,8 @@ mod validation {
             "namespace",
             "tenant",
             "peer",
-            "adminLogin",
-            "otherLogin",
-            "identityTenants",
+            "actors",
             "fixtures",
-            "admins",
         ] {
             for replacement in [
                 None,
@@ -286,10 +287,7 @@ mod validation {
         assert!(CaseContext::decode(&bytes, Phase::Preparing).is_ok());
         assert!(CaseContext::decode(&bytes, Phase::Ready).is_err());
         let mut value = CaseContext::decode(&bytes, Phase::Preparing).unwrap();
-        let tenant = value.tenant().to_owned();
-        value
-            .record_admin(&tenant, "44444444-4444-4444-8444-444444444444".into())
-            .unwrap();
+        value.actors_mut()[0].principal = Some("44444444-4444-4444-8444-444444444444".into());
         assert!(CaseContext::decode(&serde_json::to_vec(&value).unwrap(), Phase::Ready).is_ok());
         value
             .fixtures

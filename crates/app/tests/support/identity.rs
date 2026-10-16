@@ -1,4 +1,5 @@
 //! Real embedded authority fixtures. Credentials and proofs come only from public APIs.
+//! ref: rss-identity crates/identity-postgres/src/provisioning.rs@ad44649c8a6cbd8ab2c2e01e2858241ad7f18a37.
 use crate::{config::Config, identity::Identity};
 use anyhow::{Context, Result};
 use rss_identity_core::{
@@ -76,30 +77,88 @@ fn save(root: &std::path::Path, tenant: &str, login: &str, secret: &SessionSecre
         secret.expose().as_bytes(),
     )
 }
-#[tokio::test]
-#[ignore = "make t2: prepare real case accounts once per compatible environment"]
-async fn prepare_identity() -> Result<()> {
-    use super::case::{CaseContext, Phase};
-    use base64::Engine;
-    use ring::signature::KeyPair;
-    use serde_json::json;
-    #[derive(serde::Deserialize)]
-    #[serde(deny_unknown_fields)]
-    struct Setup {
-        stage: PreparationStage,
-        tenants: Vec<String>,
+#[derive(serde::Deserialize)]
+#[serde(tag = "stage", rename_all = "snake_case", deny_unknown_fields)]
+enum Setup {
+    Environment,
+    AgentTrust,
+    Refresh,
+    Accounts {
         cases: Vec<std::path::PathBuf>,
-    }
+        management: String,
+        source_secret: std::path::PathBuf,
+        provisioning_database: crate::config::Database,
+    },
+    Sessions {
+        cases: Vec<std::path::PathBuf>,
+    },
+}
+
+#[tokio::test]
+#[ignore = "make t2: prepare only admitted case actors through the public authority"]
+async fn prepare_identity() -> Result<()> {
     let manifest: Setup =
         serde_json::from_slice(&std::fs::read(std::env::var("MDM_IDENTITY_SETUP")?)?)?;
     let config_path = std::path::PathBuf::from(std::env::var("MDM_TEST_CONFIG")?);
     let root = config_path.parent().unwrap();
-    if matches!(manifest.stage, PreparationStage::Sessions) {
-        return prepare_sessions(&manifest.cases, root).await;
-    }
-    let pkcs8 =
-        ring::signature::Ed25519KeyPair::generate_pkcs8(&ring::rand::SystemRandom::new()).unwrap();
-    let key = ring::signature::Ed25519KeyPair::from_pkcs8(pkcs8.as_ref()).unwrap();
+    let costs = match manifest {
+        Setup::Environment => {
+            prepare_environment(root).await?;
+            Vec::new()
+        }
+        Setup::AgentTrust => {
+            let config: Config = serde_json::from_slice(&std::fs::read(&config_path)?)?;
+            let tenant = rss_request_context::TenantId::parse(&config.identity.tenant_id)?;
+            let access = crate::Database::connect(config.access_database.options()?).await?;
+            let audit = access.audit_store(&config.audit).await?;
+            let providers = crate::device_pki::providers(&config.device_pki)?;
+            let pki = config
+                .agent_pki
+                .load(
+                    audit.clone(),
+                    Arc::new(crate::clock::SystemClock),
+                    providers.clone(),
+                )?
+                .ok_or_else(|| anyhow::anyhow!("agent fixture trust missing"))?;
+            use crate::clock::Clock;
+            let result = rss_mdm_pki_service::registry::Registry::new(
+                access.archive_pool(),
+                audit,
+                vec![pki.issuer.trust().trust.clone()],
+                providers,
+            )
+            .admit(tenant, crate::clock::SystemClock.unix_seconds()?)
+            .await;
+            access.close().await;
+            result?;
+            Vec::new()
+        }
+        Setup::Refresh => {
+            refresh_management(root).await?;
+            Vec::new()
+        }
+        Setup::Accounts {
+            cases,
+            management,
+            source_secret,
+            provisioning_database,
+        } => prepare_accounts(&cases, &management, &source_secret, &provisioning_database).await?,
+        Setup::Sessions { cases } => prepare_sessions(&cases).await?,
+    };
+    write(
+        &root.join("identity-costs.json"),
+        &serde_json::to_vec(&costs)?,
+    )
+}
+
+async fn prepare_environment(root: &std::path::Path) -> Result<()> {
+    use base64::Engine;
+    use ring::signature::KeyPair;
+    use serde_json::json;
+    let pkcs8 = ring::signature::Ed25519KeyPair::generate_pkcs8(&ring::rand::SystemRandom::new())
+        .map_err(|_| anyhow::anyhow!("fixture signing key generation"))?;
+    let key = ring::signature::Ed25519KeyPair::from_pkcs8(pkcs8.as_ref())
+        .map_err(|_| anyhow::anyhow!("fixture signing key"))?;
     let keyfile = root.join("task-signing.pk8");
     write(&keyfile, pkcs8.as_ref())?;
     write(
@@ -112,167 +171,209 @@ async fn prepare_identity() -> Result<()> {
     std::fs::create_dir(&content)?;
     write(
         &root.join("content.json"),
-        &serde_json::to_vec(
-            &json!({"storage":{"kind":"volume","directory":content},"imports":{},"max_artifact_bytes":33554432,"max_temporary_bytes":67108864,"max_uploads":4,"transfer_seconds":60,"retention_seconds":3600,"max_bundle_bytes":67108864,"max_bundle_entries":100,"max_expansion_ratio":100}),
-        )?,
+        &serde_json::to_vec(&json!({
+            "storage":{"kind":"volume","directory":content},"imports":{},"max_artifact_bytes":33554432,"max_temporary_bytes":67108864,"max_uploads":4,"transfer_seconds":60,"retention_seconds":3600,"max_bundle_bytes":33554432,"max_bundle_entries":100,"max_expansion_ratio":100
+        }))?,
     )?;
-    let mut costs = Vec::new();
-    for tenant in &manifest.tenants {
-        let mut phase = "configuration";
-        let prepared: Result<_> = async {
-            let config = configured(tenant)?;
-            phase = "access-connect";
-            let access = crate::Database::connect(config.access_database.options()?).await?;
-            phase = "audit-connect";
-            let audit = access.audit_store(&config.audit).await?;
-            phase = "identity-connect";
-            let identity = identity_with(config).await?;
-            phase = "authorization-initialize";
-            crate::authorization::store::initialize_authorization(
-                &audit,
-                user(tenant, BOOTSTRAP),
-                uuid::Uuid::new_v4(),
-            )
-            .await?;
-            phase = "bootstrap-login";
-            let bootstrap = login_named(&identity, "bootstrap").await?;
-            Ok((access, audit, identity, bootstrap))
-        }
-        .await;
-        let (access, audit, identity, bootstrap) = prepared
-            .with_context(|| preparation_coordinate(tenant, "environment", "bootstrap", phase))?;
-        for path in &manifest.cases {
-            let mut context = CaseContext::read(path, Phase::Preparing)
-                .context("identity preparation phase=case-context")?;
-            if !context
-                .identity_tenants()
-                .iter()
-                .any(|value| value == tenant)
-            {
-                continue;
-            }
-            for kind in ["admin", "other"] {
-                let name = context.account_login(kind).to_owned();
-                let mut phase = "authenticate-bootstrap";
-                let prepared: Result<_> = async {
-                let started = rss_request_context::Clock::now(&crate::lifecycle::RuntimeTimer);
-                let actor = identity
-                    .authority
-                    .authenticate_session(
-                        identity.tenant,
-                        SessionSecret::parse(bootstrap.expose().into())?,
-                        crate::identity::deadline(),
-                    )
-                    .await?;
-                phase = "create-account";
-                let account = identity
-                    .authority
-                    .create_local_account(
-                        actor,
-                        LoginKey::parse(&name)?,
-                        Password::new(PASSWORD.into())?,
-                        crate::identity::deadline(),
-                    )
-                    .await?;
-                let subject = account.key().principal.as_uuid().to_string();
-                if kind == "admin" {
-                    phase = "inspect-bootstrap";
-                    let principal = crate::authorization::context::AuthorizedPrincipal::new(
-                        identity
-                            .authority
-                            .inspect_session(
-                                identity.tenant,
-                                SessionSecret::parse(bootstrap.expose().into())?,
-                                crate::identity::deadline(),
-                            )
-                            .await?,
-                    )?
-                    .load_authorization(access.authorization())
-                    .await?;
-                    phase = "load-foundational-grants";
-                    let foundational = principal.authorization()?.rules.iter()
-                        .filter_map(|record| record.value.as_ref())
-                        .find(|rule| matches!(&rule.subject,
-                            crate::authorization::Subject::User { user } if user.principal_id == BOOTSTRAP))
-                        .context("bootstrap authorization missing")?
-                        .grants.clone();
-                    phase = "grant-foundational";
-                    grant(&audit, &principal, tenant, &subject, foundational, false).await?;
-                    phase = "grant-devices";
-                    grant(
-                        &audit,
-                        &principal,
-                        tenant,
-                        &subject,
-                        device_grants(None, &["inventory_read", "enrollment", "credentials"])?,
-                        false,
-                    )
-                    .await?;
-                }
-                costs.push(json!({"phase":"identity-accounts","count":1,"tenant":tenant,"invocationId":context.invocation_id(),"seconds":rss_request_context::Clock::now(&crate::lifecycle::RuntimeTimer).saturating_duration_since(started).as_secs_f64()}));
-                Ok(subject)
-                }.await;
-                let subject = prepared.with_context(|| {
-                    preparation_coordinate(tenant, context.invocation_id(), kind, phase)
-                })?;
-                if kind == "admin" {
-                    context.record_admin(tenant, subject).with_context(|| {
-                        preparation_coordinate(
-                            tenant,
-                            context.invocation_id(),
-                            kind,
-                            "record-admin",
-                        )
-                    })?;
-                }
-            }
-            write(path, &serde_json::to_vec(&context)?).with_context(|| {
-                preparation_coordinate(tenant, context.invocation_id(), "accounts", "write-context")
-            })?;
-        }
-        access.close().await;
-    }
-    write(
-        &root.join("identity-costs.json"),
-        &serde_json::to_vec(&costs)?,
-    )?;
-    Ok(())
+    let value: Config = serde_json::from_slice(&std::fs::read(root.join("runtime.json"))?)?;
+    let access = crate::Database::connect(value.access_database.options()?).await?;
+    let audit = access.audit_store(&value.audit).await?;
+    let result = crate::authorization::store::initialize_authorization(
+        &audit,
+        user(&value.identity.tenant_id, BOOTSTRAP),
+        uuid::Uuid::new_v4(),
+    )
+    .await;
+    access.close().await;
+    result?;
+    refresh_management(root).await
 }
 
-#[derive(serde::Deserialize)]
-#[serde(rename_all = "snake_case")]
-enum PreparationStage {
-    Accounts,
-    Sessions,
+async fn refresh_management(root: &std::path::Path) -> Result<()> {
+    let value: Config = serde_json::from_slice(&std::fs::read(root.join("runtime.json"))?)?;
+    let authority = identity_with(value).await?;
+    let secret = login_named(&authority, "bootstrap").await?;
+    write(&root.join("source-session"), secret.expose().as_bytes())
 }
-async fn prepare_sessions(cases: &[std::path::PathBuf], root: &std::path::Path) -> Result<()> {
+
+async fn prepare_accounts(
+    paths: &[std::path::PathBuf],
+    management: &str,
+    source_secret: &std::path::Path,
+    database: &crate::config::Database,
+) -> Result<Vec<serde_json::Value>> {
     use super::case::{CaseContext, Phase};
-    let mut costs = Vec::new();
-    for path in cases {
-        let context = CaseContext::read(path, Phase::Ready)?;
-        for tenant in context.identity_tenants() {
-            let identity = identity_with(configured(tenant)?).await?;
-            for kind in ["admin", "other"] {
-                let started = rss_request_context::Clock::now(&crate::lifecycle::RuntimeTimer);
-                let secret = login_named(&identity, context.account_login(kind))
-                    .await
-                    .with_context(|| {
-                        preparation_coordinate(
-                            tenant,
-                            context.invocation_id(),
-                            kind,
-                            "login-account",
-                        )
-                    })?;
-                save(path.parent().unwrap(), tenant, kind, &secret)?;
-                costs.push(serde_json::json!({"phase":"identity-sessions","count":1,"tenant":tenant,"invocationId":context.invocation_id(),"seconds":rss_request_context::Clock::now(&crate::lifecycle::RuntimeTimer).saturating_duration_since(started).as_secs_f64()}));
+    use rss_identity_core::{InstanceId, account::PasswordKdf};
+    use rss_identity_postgres::AccountProvisioner;
+    use rss_request_context::TenantId;
+    use rss_transactional_messaging_postgres::PgError;
+    use std::collections::{BTreeMap, BTreeSet};
+    let mut cases = Vec::new();
+    let mut seen = BTreeSet::new();
+    let mut members: BTreeMap<String, Vec<(usize, usize)>> = BTreeMap::new();
+    for path in paths {
+        anyhow::ensure!(seen.insert(path.canonicalize()?), "duplicate case path");
+        let context = CaseContext::read(path, Phase::Preparing)?;
+        for (actor, value) in context.actors().iter().enumerate() {
+            members
+                .entry(value.tenant.clone())
+                .or_default()
+                .push((cases.len(), actor));
+        }
+        cases.push(context);
+    }
+    let source = TenantId::parse(management)?;
+    let mut tenants = vec![(source, 1)];
+    for tenant in members.keys() {
+        let tenant = TenantId::parse(tenant)?;
+        anyhow::ensure!(tenant != source, "case actor cannot use management tenant");
+        tenants.push((tenant, 1));
+    }
+    let config = configured(management)?;
+    let source_identity = identity_with(configured(management)?).await?;
+    let actor = Arc::new(
+        source_identity
+            .authority
+            .inspect_session(
+                source,
+                SessionSecret::parse(crate::config::secret(source_secret)?.to_string())?,
+                crate::identity::deadline(),
+            )
+            .await?,
+    );
+    let runtime = crate::identity::open_runtime(
+        database,
+        &config.flow.storage.target,
+        &config.flow.storage.lineage,
+        &tenants,
+    )
+    .await?;
+    let kdf = Arc::new(PasswordKdf::new());
+    let result = async {
+        let provisioner = AccountProvisioner::connect(runtime.clone(), kdf.clone(),
+            crate::identity::authority_config(InstanceId::parse(INSTANCE)?, tenants.iter().map(|(t, _)| *t).collect())?,
+            source, Arc::new(crate::authorization::identity_management::IdentityManagementPolicy::new(INSTANCE)?),
+            crate::identity::deadline()).await?;
+        let mut costs = vec![serde_json::json!({"phase":"case-reads","count":paths.len()})];
+        for (tenant, coordinates) in members {
+            let timer = super::monotonic();
+            let started = timer.now();
+            let mut prepared = Vec::new();
+            for &(case, index) in &coordinates {
+                let account = &cases[case].actors()[index];
+                prepared.push((account.role.clone(), provisioner.prepare_local_account(
+                    LoginKey::parse(&account.login)?, Password::new(PASSWORD.into())?,
+                    crate::identity::deadline()).await?));
             }
+            let target = TenantId::parse(&tenant)?;
+            let outcome = runtime.local_tx_with_context(target, crate::identity::deadline(),
+                (&provisioner, actor.clone(), Some(prepared)), |(provisioner, actor, prepared), tx| Box::pin(async move {
+                    let mut principals = Vec::new();
+                    for (role, prepared) in prepared.take().ok_or_else(|| PgError::from(sqlx::Error::Protocol("fixture accounts consumed".into())))? {
+                        let account = provisioner.create_local_account_in(tx, actor.clone(), prepared).await
+                            .map_err(|e| PgError::from(sqlx::Error::Protocol(e.to_string())))?;
+                        let principal = account.key().principal.as_uuid().to_string();
+                        if role == "admin" {
+                            let rule = fixture_rule(&target.to_string(), &principal)
+                                .map_err(|e| PgError::from(sqlx::Error::Protocol(e.to_string())))?;
+                            tx.with_connection(move |connection| Box::pin(async move {
+                                sqlx::query("INSERT INTO mdm_access.authorization_rules(tenant_id,instance,id,revision,document) VALUES($1::uuid,$2::uuid,$3,1,$4)")
+                                    .bind(target.to_string()).bind(INSTANCE).bind(uuid::Uuid::new_v4()).bind(rule)
+                                    .execute(connection).await?;
+                                Ok(())
+                            })).await?;
+                        }
+                        principals.push(principal);
+                    }
+                    Ok(principals)
+                })).await;
+            let principals = outcome.fold(Ok, |e| Err(anyhow::anyhow!(e)), |e| Err(anyhow::anyhow!(e)),
+                |_| Err(anyhow::anyhow!("fixture rollback failed")), |_| Err(anyhow::anyhow!("fixture commit unknown")),
+                |e| Err(anyhow::anyhow!(e)))?;
+            for ((case, index), principal) in coordinates.iter().copied().zip(principals) {
+                cases[case].actors_mut()[index].principal = Some(principal);
+            }
+            costs.push(serde_json::json!({"phase":"identity-accounts","count":coordinates.len(),"tenant":tenant,"seconds":timer.now().checked_duration_since(started).context("fixture clock moved backwards")?.as_secs_f64()}));
+        }
+        for (path, context) in paths.iter().zip(cases) {
+            write(path, &serde_json::to_vec(&context)?)?;
+        }
+        costs.push(serde_json::json!({"phase":"case-writes","count":paths.len()}));
+        Ok::<_, anyhow::Error>(costs)
+    }.await;
+    kdf.close();
+    let cleanup = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        kdf.wait_closed().await;
+        runtime.close().await;
+    })
+    .await;
+    let costs = result?;
+    cleanup.context("fixture identity cleanup deadline")?;
+    Ok(costs)
+}
+
+fn fixture_rule(tenant: &str, principal: &str) -> Result<serde_json::Value> {
+    use crate::authorization::{Grant, Permission, Rule, Scope, Subject};
+    let mut grants: Vec<_> = [
+        Permission::AuthorizationRead,
+        Permission::AuthorizationWrite,
+        Permission::UserGroupRead,
+        Permission::UserGroupWrite,
+        Permission::DepartmentRead,
+        Permission::IdentityAccountsManage,
+        Permission::IdentityProvidersManage,
+    ]
+    .into_iter()
+    .map(|operation| Grant {
+        operation,
+        scope: Scope::Tenant,
+    })
+    .collect();
+    grants.extend(device_grants(
+        None,
+        &["inventory_read", "enrollment", "credentials"],
+    )?);
+    let rule = Rule {
+        subject: Subject::User {
+            user: user(tenant, principal),
+        },
+        grants,
+    };
+    rule.validate(tenant, INSTANCE)?;
+    Ok(serde_json::to_value(rule)?)
+}
+
+async fn prepare_sessions(paths: &[std::path::PathBuf]) -> Result<Vec<serde_json::Value>> {
+    use super::case::{CaseContext, Phase};
+    use std::collections::BTreeMap;
+    let mut costs = Vec::new();
+    for path in paths {
+        let context = CaseContext::read(path, Phase::Ready)?;
+        let mut authorities = BTreeMap::new();
+        for actor in context.actors() {
+            if !authorities.contains_key(&actor.tenant) {
+                authorities.insert(
+                    actor.tenant.clone(),
+                    identity_with(configured(&actor.tenant)?).await?,
+                );
+            }
+            let timer = super::monotonic();
+            let started = timer.now();
+            let secret = login_named(&authorities[&actor.tenant], &actor.login)
+                .await
+                .with_context(|| {
+                    preparation_coordinate(
+                        &actor.tenant,
+                        context.invocation_id(),
+                        &actor.role,
+                        "login-account",
+                    )
+                })?;
+            save(path.parent().unwrap(), &actor.tenant, &actor.role, &secret)?;
+            costs.push(serde_json::json!({"phase":"identity-sessions","count":1,"tenant":actor.tenant,"invocationId":context.invocation_id(),"seconds":timer.now().checked_duration_since(started).context("fixture clock moved backwards")?.as_secs_f64()}));
         }
     }
-    write(
-        &root.join("identity-costs.json"),
-        &serde_json::to_vec(&costs)?,
-    )
+    Ok(costs)
 }
 
 fn preparation_coordinate(tenant: &str, invocation: &str, kind: &str, phase: &str) -> String {

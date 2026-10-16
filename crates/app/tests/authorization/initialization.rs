@@ -9,6 +9,12 @@ async fn initialization_receipt_atomicity_and_recovery() -> Result<()> {
         audit_store,
         ..
     } = fixture().await?;
+    crate::authorization::store::initialize_authorization(
+        &audit_store,
+        crate::test_support::identity::user(case_tenant(), case_admin()),
+        Uuid::new_v4(),
+    )
+    .await?;
     ensure!(matches!(
         crate::authorization::store::initialize_authorization(
             &audit_store,

@@ -6,8 +6,6 @@ GRANT USAGE ON SCHEMA mdm_content TO mdm_flow_runtime;
 
 GRANT SELECT,INSERT ON TABLE mdm_content.bindings TO mdm_flow_runtime;
 GRANT USAGE ON SCHEMA mdm_content TO mdm_command_runtime;
-GRANT SELECT,INSERT ON mdm_content.diagnostic_artifacts TO mdm_command_runtime;
-GRANT SELECT ON mdm_content.diagnostic_artifacts TO mdm_flow_runtime;
 GRANT SELECT,INSERT,UPDATE,DELETE ON mdm_content.uploads,mdm_content.objects,mdm_content.manifests,mdm_content.pins TO mdm_flow_runtime;
 GRANT SELECT,INSERT ON mdm_content.settings TO mdm_flow_runtime;
 GRANT USAGE ON SCHEMA mdm_content TO mdm_resource_runtime;

@@ -124,15 +124,6 @@ impl Create {
             return Err(Error::Malformed);
         }
         self.target.validate()?;
-        if matches!(
-            self.task,
-            Task::Windows {
-                request: rss_mdm_windows_mdm::native::Execution::DiagnosticLog { .. }
-            }
-        ) && self.target != NativeTarget::Device
-        {
-            return Err(Error::Malformed);
-        }
         if matches!(self.task, Task::Macos { .. })
             && let NativeTarget::User { user_id } = &self.target
         {
@@ -239,11 +230,6 @@ impl Task {
                 request: W::SyncMl { request },
             } => {
                 json!({"platform":"windows","kind":"sync_ml","name":"SyncML","objects":request.objects().map_err(|_|Error::Malformed)?.into_iter().map(|o|o.key().to_owned()).collect::<Vec<_>>()})
-            }
-            Self::Windows {
-                request: W::DiagnosticLog { .. },
-            } => {
-                json!({"platform":"windows","kind":"diagnostic_log","name":"DiagnosticLog","objects":[]})
             }
             Self::Windows {
                 request: W::Msi { job },

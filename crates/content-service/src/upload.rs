@@ -2,7 +2,7 @@
 use super::*;
 use rss_mdm_resource::{Digest as ResourceDigest, Id};
 use uuid::Uuid;
-/// Immutable physical upload binding; diagnostics never claim a Resource identity.
+/// Immutable physical upload binding for Resource content.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Binding {
@@ -21,7 +21,6 @@ pub struct Binding {
 )]
 pub enum Purpose {
     Resource(ResourceBinding),
-    Diagnostic(crate::diagnostic::Identity),
 }
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -40,13 +39,11 @@ impl Binding {
     pub fn resource(&self) -> Result<&ResourceBinding, Error> {
         match &self.purpose {
             Purpose::Resource(v) => Ok(v),
-            Purpose::Diagnostic(_) => Err(Error::Malformed),
         }
     }
     pub fn class(&self) -> StorageClass {
         match &self.purpose {
             Purpose::Resource(v) => v.storage_class,
-            Purpose::Diagnostic(_) => StorageClass::NativeDiagnostic,
         }
     }
     pub fn artifact(&self) -> Result<Artifact, Error> {
@@ -95,14 +92,9 @@ impl Store {
         {
             return Err(Error::Malformed);
         }
-        if matches!(&binding.purpose,Purpose::Resource(r) if r.storage_class==StorageClass::NativeDiagnostic)
-        {
-            return Err(Error::Malformed);
-        }
         self.clean_orphans(now).await?;
         binding.artifact()?;
         let expires = match &binding.purpose {
-            Purpose::Diagnostic(i) => i.expires_at,
             Purpose::Resource(_) => now
                 .checked_add(self.config.retention_seconds as i64)
                 .ok_or(Error::Malformed)?,

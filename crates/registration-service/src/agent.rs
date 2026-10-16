@@ -303,3 +303,6 @@ async fn authorize_on(
         .require(p, permission, None)
         .map_err(|_| Error::Forbidden)
 }
+
+#[cfg(feature = "integration")]
+mod fixture;

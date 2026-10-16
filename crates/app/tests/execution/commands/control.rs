@@ -1,18 +1,16 @@
-//! Native effect uncertainty, strict confirmation and historical delivery fences.
+//! Native effect uncertainty, strict confirmation.
 use crate::execution::test_support::{
     native::{begin, post, report},
     *,
 };
 use anyhow::ensure;
 use axum::http::{Method, StatusCode};
-use base64::Engine;
 use rss_mdm_windows_mdm::{CodecLimits, syncml as s};
 use serde_json::json;
-use sqlx::Connection;
 
 #[tokio::test]
-#[ignore = "MODULE=execution.commands.windows: real TLS/SyncML and historical recovery"]
-async fn fixed_controls_preserve_uncertainty_and_retire_old_authority() -> anyhow::Result<()> {
+#[ignore = "MODULE=execution.commands.windows: real TLS/SyncML control receipts"]
+async fn fixed_controls_preserve_uncertainty() -> anyhow::Result<()> {
     let mut host = crate::windows::test_support::Host::open().await?;
     host.listen().await?;
     let peer = host.peer().await?;
@@ -126,41 +124,9 @@ async fn fixed_controls_preserve_uncertainty_and_retire_old_authority() -> anyho
         None,
     )
     .await?;
-    let mut pg =
-        sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?)
-            .await?;
     let mut response = exchange.response.clone();
     let mut seen = std::collections::BTreeSet::new();
-    let mut cached_delivery_requests = Vec::new();
-    let mut delivery_request = peer.ack.clone();
-    delivery_request.header.session_id = 1201;
-    if let s::Command::Status(status) = &mut delivery_request.commands[0] {
-        status.challenge.as_mut().unwrap().nonce = Some(rss_mdm_windows_mdm::Secret(
-            base64::engine::general_purpose::STANDARD.encode([1201u32 as u8; 16]),
-        ));
-    }
     for _ in 0..6 {
-        if response
-            .commands
-            .iter()
-            .any(|c| matches!(c, s::Command::Exec { .. }))
-        {
-            cached_delivery_requests.push(delivery_request.clone());
-            for c in &response.commands {
-                if let s::Command::Exec { items, .. } = c {
-                    let index =
-                        usize::from(items[0].target.as_deref().unwrap().ends_with("/doWipe"));
-                    let id = ids[index];
-                    // This attempt has reached the peer, but its original ACK has not arrived.
-                    sqlx::query("UPDATE mdm_commands.operations SET approval=(approval-'action'-'confirmation')||'{\"kind\":\"user\"}'::jsonb WHERE tenant_id=$1::uuid AND id=$2").bind(case_tenant()).bind(id).execute(&mut pg).await?;
-                    client.publish_operation(id).await?;
-                    ensure!(
-                        client.call(Method::GET, &format!("/{id}"), None).await?.1["commandStatus"]
-                            == "published"
-                    );
-                }
-            }
-        }
         let gets = response
             .commands
             .iter()
@@ -207,7 +173,6 @@ async fn fixed_controls_preserve_uncertainty_and_retire_old_authority() -> anyho
         let reply = post(&peer.mutual, &peer.url, &packet).await?;
         ensure!(reply.status() == StatusCode::OK);
         response = s::decode(&reply.bytes().await?, &CodecLimits::default())?;
-        delivery_request = packet;
         if seen.len() == 2 {
             break;
         }
@@ -237,69 +202,6 @@ async fn fixed_controls_preserve_uncertainty_and_retire_old_authority() -> anyho
                 == "received"
         );
     }
-    ensure!(!cached_delivery_requests.is_empty());
-    for packet in cached_delivery_requests {
-        let replay = post(&peer.mutual, &peer.url, &packet).await?;
-        ensure!(
-            !replay.status().is_success(),
-            "retired authority replayed cached native delivery"
-        );
-    }
-    let pending = Uuid::new_v4();
-    ensure!(client.call(Method::POST,"",Some(json!({"operationId":pending,"deadline":host.app.clock.unix_seconds()?+300,"action":{"kind":"restart"}}))).await?.0==StatusCode::ACCEPTED);
-    sqlx::query("UPDATE mdm_commands.operations SET approval=(approval-'action'-'confirmation')||'{\"kind\":\"user\"}'::jsonb WHERE tenant_id=$1::uuid AND id=$2").bind(case_tenant()).bind(pending).execute(&mut pg).await?;
-    // Run the execution owner's recovery, which retires unstarted legacy authority.
-    // The gateway publication helper alone does not apply that business rule.
-    let timer = rss_mdm_execution_service::recovery::Timer::new();
-    let cancel = tokio_util::sync::CancellationToken::new();
-    let control = rss_reconcile::Control::new(&timer, Duration::from_secs(2), &cancel);
-    let policy = rss_reconcile::Policy::try_from(rss_reconcile::PolicyConfig {
-        concurrency: 1,
-        lease_ttl: Duration::from_secs(10),
-        attempt_timeout: Duration::from_secs(1),
-        scan_interval: Duration::from_millis(100),
-        idle_scan_interval: Duration::from_millis(100),
-        initial_backoff: Duration::from_millis(100),
-        max_backoff: Duration::from_secs(1),
-        max_attempts: 3,
-    })?;
-    let recovery = client
-        .app
-        .execution
-        .run_recovery(
-            &rss_mdm_execution_service::recovery_scope(client.app.identity.tenant),
-            policy,
-            &control,
-            &tokio::sync::Notify::new(),
-        )
-        .await?;
-    // The bounded run may interrupt its last attempt. Verify committed business
-    // state rather than requiring zero interrupted attempts at the deadline.
-    ensure!(recovery.suspended == 0, "{recovery:?}");
-    for id in &ids {
-        let read = client.call(Method::GET, &format!("/{id}"), None).await?;
-        ensure!(
-            read.1["commandStatus"] == "received"
-                && read.1["observation"]["effect"] == "unverifiable",
-            "recovery changed historical uncertainty: {read:?}"
-        );
-    }
-    ensure!(
-        client
-            .call(Method::GET, &format!("/{pending}"), None)
-            .await?
-            .1["commandStatus"]
-            == "cancelled"
-    );
-    let count: i64 = sqlx::query_scalar(
-        "SELECT count(*) FROM mdm_commands.attempts WHERE tenant_id=$1::uuid AND operation=$2",
-    )
-    .bind(case_tenant())
-    .bind(pending)
-    .fetch_one(&mut pg)
-    .await?;
-    ensure!(count == 0, "retired pending task acquired an attempt");
-    pg.close().await?;
     host.close().await?;
     Ok(())
 }

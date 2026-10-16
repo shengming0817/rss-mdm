@@ -151,6 +151,50 @@ pub(crate) fn csr() -> Result<String> {
         std::path::PathBuf::from(std::env::var("MDM_AGENT_PKI_FIXTURES")?).join("agent.der"),
     )?))
 }
+/// Prepare current credential state while keeping the real CA, TLS, and request verifier.
+pub(crate) async fn seed_profile(
+    base: &Value,
+    execution: Arc<rss_mdm_execution_service::ExecutionService>,
+    label: &str,
+    device: &str,
+    profile: Value,
+) -> Result<Value> {
+    let config: crate::agent_pki::Config = serde_json::from_value(base["agent_pki"].clone())?;
+    let access = database(base).await?;
+    let result = async {
+        let audit = access
+            .audit_store(&crate::config::AuditConfig::Plain)
+            .await?;
+        let pki = config
+            .load(
+                audit.clone(),
+                Arc::new(crate::clock::SystemClock),
+                crate::device_pki::providers(&serde_json::from_value::<
+                    Vec<crate::device_pki::Provider>,
+                >(base["device_pki"].clone())?)?,
+            )?
+            .ok_or_else(|| anyhow::anyhow!("agent fixture PKI missing"))?;
+        let service = application_service(&pki, &access, audit, execution)?;
+        let root = std::path::PathBuf::from(std::env::var("MDM_AGENT_PKI_FIXTURES")?);
+        let (issued, runtime) = service
+            .seed_peer(
+                device,
+                serde_json::from_value(profile)?,
+                std::fs::read(root.join("agent.der"))?,
+            )
+            .await?;
+        let peer =
+            crate::test_support::agent_tls::peer(pki.issuer.trust(), &issued.chain, &root).await?;
+        service.authenticate(&peer).await?;
+        remember(label, peer, runtime.device_id.clone());
+        Ok(serde_json::to_value(runtime)?)
+    }
+    .await;
+    access.close().await;
+    result
+}
+
+/// Enrollment and credential-lifecycle specialties retain the complete public operation chain.
 pub(crate) async fn enroll_profile(
     router: &Router,
     browser: &mut Browser,

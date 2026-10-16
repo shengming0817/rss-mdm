@@ -73,7 +73,7 @@ async fn sign_xml(xml: String, key: &std::path::Path) -> anyhow::Result<Vec<u8>>
 async fn signed_parent_enrollment_independent_tls_and_retirement() -> anyhow::Result<()> {
     let mut host = Host::open().await?;
     host.listen().await?;
-    let peer = host.peer().await?;
+    let peer = host.enrolled_peer().await?;
     let w = &host.app.windows()?.channel;
     let discovery = format!(
         "{}/EnrollmentConfiguration?api-version=1.0",
@@ -1070,7 +1070,7 @@ async fn renew(
 async fn linked_renewal_and_parent_child_supersession() -> anyhow::Result<()> {
     let mut host = Host::renewal_window().await?;
     host.listen().await?;
-    let parent = host.peer().await?;
+    let parent = host.enrolled_peer().await?;
     let ca = &host.app.windows()?.channel.ca;
     let certificate = sign_certificate(ca, &parent.intent).await?;
     let child = linked_peer(&host, &parent, &certificate, &host.root.join("device.key")).await?;
@@ -1347,7 +1347,7 @@ async fn declared_policy_delete_claims_recover_from_unknown_commit() -> anyhow::
     use serde_json::json;
     let mut host = Host::open().await?;
     host.listen().await?;
-    let parent = host.peer().await?;
+    let parent = host.enrolled_peer().await?;
     let ca = &host.app.windows()?.channel.ca;
     let certificate = sign_certificate(ca, &parent.intent).await?;
     let mut client = Client::start(host.browser.clone(), host.app.clone()).await?;
@@ -1417,10 +1417,8 @@ async fn declared_policy_delete_claims_recover_from_unknown_commit() -> anyhow::
     )
     .await?;
     wait_diagnosis(&mut client, first, "windows_declared_enrollment_not_ready").await?;
-    remote_not_ready(&mut client, &resource).await?;
     let child = linked_peer(&host, &parent, &certificate, &host.root.join("device.key")).await?;
     wait_diagnosis(&mut client, first, "windows_declared_enrollment_not_ready").await?;
-    remote_not_ready(&mut client, &resource).await?;
     authenticate_child(&child.mutual, &child.url, &child.message, &parent.ack).await?;
     let apply = published(&mut client, first)
         .await
@@ -1652,22 +1650,6 @@ async fn declared_policy_delete_claims_recover_from_unknown_commit() -> anyhow::
 }
 
 #[cfg(feature = "integration")]
-async fn remote_not_ready(
-    client: &mut crate::execution::test_support::Client,
-    resource: &str,
-) -> anyhow::Result<()> {
-    use axum::http::Method;
-    use serde_json::json;
-    let operation = Uuid::new_v4();
-    let response=client.browser.call(&client.router,Method::POST,"/api/v1/remote-operations",Some(json!({"operationId":operation,"resource":{"id":resource,"version":"1","platform":"windows","architecture":"x86_64","variant":"native"},"targets":{"kind":"devices","devices":[crate::test_support::case::name("tls-device")]},"action":{"kind":"apply_configuration"},"deadline":now()+600}))).await?;
-    ensure!(
-        response.0 == StatusCode::METHOD_NOT_ALLOWED,
-        "retired Remote: {response:?}"
-    );
-    Ok(())
-}
-
-#[cfg(feature = "integration")]
 #[tokio::test]
 #[ignore = "make t2 MODULE=windows.declared"]
 async fn declared_readiness_has_closed_http_diagnosis_and_primary_remains_available()
@@ -1677,7 +1659,7 @@ async fn declared_readiness_has_closed_http_diagnosis_and_primary_remains_availa
     use serde_json::json;
     let mut host = Host::open().await?;
     host.listen().await?;
-    let parent = host.peer().await?;
+    let parent = host.enrolled_peer().await?;
     let mut client = Client::start(host.browser.clone(), host.app.clone()).await?;
     client.set_authorized(true).await?;
     let grants=["windows_mi_execute"].into_iter().map(|operation|json!({"operation":operation,"scope":{"kind":"device","id":crate::test_support::case::name("tls-device")}})).collect::<Vec<_>>();

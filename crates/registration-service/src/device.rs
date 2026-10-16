@@ -491,3 +491,6 @@ pub(crate) async fn agent_in(
     management::revalidate(c, &p).await?;
     Ok(p)
 }
+
+#[cfg(feature = "integration")]
+pub mod fixture;

@@ -247,13 +247,15 @@ pub async fn settle_device(
     let now = storage::now(tx).await?;
     // Completed/cancelled evidence and not-yet-admitted reads can make progress now.
     // Waiting/Unknown history must not consume their bounded check-in page.
-    let ids:Vec<Uuid>=tx.with_connection(move|c|Box::pin(async move {
-        sqlx::query_scalar(r#"SELECT r.id FROM mdm_commands.action_runs r
+    let ids: Vec<Uuid> = tx
+        .with_connection(move |c| {
+            Box::pin(async move {
+                sqlx::query_scalar(
+                    r#"SELECT r.id FROM mdm_commands.action_runs r
         LEFT JOIN mdm_policy.versions v ON(v.tenant_id,v.id)=(r.tenant_id,r.policy_version)
-        LEFT JOIN mdm_planning.remote_operations o ON(o.tenant_id,o.id)=(r.tenant_id,r.remote_operation)
         LEFT JOIN mdm_access.collection_runs c ON(c.tenant_id,c.id)=(r.tenant_id,r.id)
         WHERE r.tenant_id=$1::uuid AND r.device=$2
-          AND coalesce(v.frozen,o.frozen)->>'kind'='native_collection'
+          AND v.frozen->>'kind'='native_collection'
           AND r.state->>'execution' IN('not_started','running','unknown')
           AND r.state->>'cancellation'<>'confirmed'
         ORDER BY CASE
@@ -262,9 +264,16 @@ pub async fn settle_device(
           WHEN c.sealed_at IS NOT NULL OR r.deadline<=$3 THEN 0
           WHEN r.gateway_accepted AND c.id IS NULL AND r.available_at<=$3 THEN 1
           WHEN c.id IS NOT NULL THEN 2
-          ELSE 3 END, r.created_at,r.id LIMIT 64"#)
-            .bind(tenant).bind(device).bind(now).fetch_all(c).await
-    })).await?;
+          ELSE 3 END, r.created_at,r.id LIMIT 64"#,
+                )
+                .bind(tenant)
+                .bind(device)
+                .bind(now)
+                .fetch_all(c)
+                .await
+            })
+        })
+        .await?;
     for id in ids {
         super::recovery::recover_one(service, tx, id).await?;
     }
@@ -399,11 +408,6 @@ pub(crate) async fn delivery_eligible_target_on(
     target: &crate::Target,
     id: Uuid,
 ) -> std::result::Result<bool, crate::Error> {
-    let retired: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_commands.action_runs WHERE tenant_id=$1::uuid AND id=$2 AND source_kind='remote_operation')")
-        .bind(tenant.to_string()).bind(id).fetch_one(&mut *c).await.map_err(crate::database::db)?;
-    if retired {
-        return Ok(false);
-    }
     let version: Option<Uuid> = sqlx::query_scalar(
         "SELECT policy_version FROM mdm_commands.action_runs WHERE tenant_id=$1::uuid AND id=$2",
     )
@@ -430,7 +434,7 @@ pub(crate) async fn eligible_target_on(
     target: &crate::Target,
     id: Uuid,
 ) -> std::result::Result<bool, crate::Error> {
-    let row=sqlx::query("SELECT coalesce(v.frozen,o.frozen) AS frozen,r.device,r.deadline,r.state,r.source_objects,(policy.definition->>'scope')::uuid AS scope FROM mdm_commands.action_runs r LEFT JOIN mdm_policy.versions v ON(v.tenant_id,v.id)=(r.tenant_id,r.policy_version) LEFT JOIN mdm_policy.policies policy ON(policy.tenant_id,policy.id)=(v.tenant_id,v.policy) LEFT JOIN mdm_planning.remote_operations o ON(o.tenant_id,o.id)=(r.tenant_id,r.remote_operation) WHERE r.tenant_id=$1::uuid AND r.id=$2 AND r.device=$3 AND r.registration=$4 AND r.generation=$5 AND r.deadline>floor(extract(epoch FROM clock_timestamp())) AND ((policy.enabled AND policy.current_version=r.policy_version) OR (o.deadline>floor(extract(epoch FROM clock_timestamp())) AND NOT o.cancelled))")
+    let row=sqlx::query("SELECT v.frozen AS frozen,r.device,r.deadline,r.state,r.source_objects,(policy.definition->>'scope')::uuid AS scope FROM mdm_commands.action_runs r LEFT JOIN mdm_policy.versions v ON(v.tenant_id,v.id)=(r.tenant_id,r.policy_version) LEFT JOIN mdm_policy.policies policy ON(policy.tenant_id,policy.id)=(v.tenant_id,v.policy) WHERE r.tenant_id=$1::uuid AND r.id=$2 AND r.device=$3 AND r.registration=$4 AND r.generation=$5 AND r.deadline>floor(extract(epoch FROM clock_timestamp())) AND (policy.enabled AND policy.current_version=r.policy_version)")
         .bind(tenant.to_string()).bind(id).bind(target.device.as_str()).bind(target.registration).bind(target.generation).fetch_optional(&mut *c).await.map_err(crate::database::db)?;
     let Some(row) = row else {
         return Ok(false);
@@ -520,7 +524,7 @@ pub async fn plan_on(
     tenant: &str,
     id: Uuid,
 ) -> std::result::Result<rss_mdm_windows_mdm::native::collection::Plan, crate::Error> {
-    let frozen:serde_json::Value=sqlx::query_scalar("SELECT coalesce(v.frozen,o.frozen) FROM mdm_commands.action_runs r LEFT JOIN mdm_policy.versions v ON(v.tenant_id,v.id)=(r.tenant_id,r.policy_version) LEFT JOIN mdm_planning.remote_operations o ON(o.tenant_id,o.id)=(r.tenant_id,r.remote_operation) WHERE r.tenant_id=$1::uuid AND r.id=$2")
+    let frozen:serde_json::Value=sqlx::query_scalar("SELECT v.frozen FROM mdm_commands.action_runs r LEFT JOIN mdm_policy.versions v ON(v.tenant_id,v.id)=(r.tenant_id,r.policy_version) WHERE r.tenant_id=$1::uuid AND r.id=$2")
         .bind(tenant).bind(id).fetch_one(c).await.map_err(crate::database::db)?;
     let frozen: crate::frozen::Frozen =
         serde_json::from_value(frozen).map_err(|_| Error::Malformed)?;

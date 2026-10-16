@@ -69,11 +69,22 @@ class Execution(unittest.TestCase):
             fixtures.scenario.side_effect = scenario
             yield Path(directory), builds, fixtures_type, fixtures
 
+    def test_list_stops_before_runtime_preparation(self):
+        with self.harness() as (root, builds, fixture_type, _):
+            result = t2.run_modules(['agent.registration'], root, listing=True)
+            builds.prepare_discovery.assert_called_once()
+            builds.prepare_runtime.assert_not_called()
+            fixture_type.assert_not_called()
+            self.assertEqual(result['agent.registration']['reason'], 'list-only')
+            import json
+            run = json.loads(next(root.glob('*/run.json')).read_text())
+            self.assertEqual(set(run['buildSeconds']), {'discovery'})
+
     def test_missing_dependencies_fail_before_build_and_service_start(self):
         with self.harness() as (root, builds, fixture_type, _), patch.object(t2.shutil, 'which', return_value=None):
             with self.assertRaisesRegex(RuntimeError, 'missing dependencies'):
                 t2.run_modules(['sources.winget'], root)
-            builds.prepare.assert_not_called()
+            builds.prepare_discovery.assert_not_called()
             fixture_type.assert_not_called()
 
     def test_execution_failure_keeps_callsite_and_cleans_up(self):
@@ -278,7 +289,7 @@ class Execution(unittest.TestCase):
             old = root / 'previous.log'; old.write_text('old evidence')
             link = root / 'linked.log'; link.symlink_to(old)
             result = t2.run_modules([], root)
-            builds.prepare.assert_not_called()
+            builds.prepare_discovery.assert_not_called()
             fixture_type.assert_not_called()
             self.assertEqual(old.read_text(), 'old evidence')
             self.assertTrue(link.is_symlink())
@@ -370,6 +381,8 @@ class Execution(unittest.TestCase):
             self.assertTrue(pending['invocationId'])
             costs = json.loads((directory / 'resources.json').read_text())
             self.assertEqual(costs['operations'][-1]['phase'], 'run-cleanup')
+            run = json.loads((directory / 'run.json').read_text())
+            self.assertEqual(set(run['buildSeconds']), {'discovery', 'runtime'})
 
     def test_cases_from_one_module_overlap(self):
         barrier = threading.Barrier(2)
@@ -445,6 +458,9 @@ with patch.object(t2, 'ROOT', Path(sys.argv[1])), patch.object(t2, 'require_leas
                     t2.main(['--module', 'agent.registration'])
             result = json.loads((root / 'artifacts/local-t2/result.json').read_text())
             self.assertEqual(result['execution'], failure)
+            self.assertRegex(result['sourceRevision'], r'^[a-f0-9]{40}$')
+            self.assertEqual(result['sourceState'], 'stable')
+            self.assertEqual(result['jobs'], 2)
 
     def test_changed_source_cannot_publish_success(self):
         import ci

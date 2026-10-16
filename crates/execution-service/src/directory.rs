@@ -16,7 +16,6 @@ pub struct Query {
     pub device: Option<String>,
     pub kind: Option<String>,
     pub policy: Option<Uuid>,
-    pub remote_operation: Option<Uuid>,
     pub status: Option<String>,
 }
 fn limit() -> usize {
@@ -32,7 +31,6 @@ impl Query {
             || !(1..=1000).contains(&self.limit)
             || self.after.is_some_and(|id| id.is_nil())
             || self.policy.is_some_and(|id| id.is_nil())
-            || self.remote_operation.is_some_and(|id| id.is_nil())
             || self
                 .device
                 .as_ref()
@@ -68,12 +66,12 @@ impl crate::queries::Queries {
             let current=crate::action_admission::current(tx,a).await?;
             let allowed=current.devices_for(a,Permission::OperationRead)?.map(|v|v.into_iter().collect::<Vec<_>>());
             let tenant=tx.tenant_id().to_string();let page=page.clone();
-            let mut query=sqlx::QueryBuilder::<sqlx::Postgres>::new("WITH executions AS (SELECT o.id,o.device,'command'::text AS kind,o.registration,o.registration_generation AS generation,o.source_kind,o.policy_version,o.remote_operation,v.policy,o.input_context->>'deadline' AS deadline,coalesce(d.status,'unknown') AS status,jsonb_build_object('commandStatus',d.status) AS evidence FROM mdm_commands.operations o LEFT JOIN rss_device_command.commands d ON(d.tenant_id,d.command_id)=(o.tenant_id,o.id::text) LEFT JOIN mdm_policy.versions v ON(v.tenant_id,v.id)=(o.tenant_id,o.policy_version) WHERE o.tenant_id=$1::uuid UNION ALL SELECT r.id,r.device,'action_run',r.registration,r.generation,r.source_kind,r.policy_version,r.remote_operation,v.policy,r.deadline::text,coalesce(r.state->>'execution','unknown'),jsonb_build_object('state',r.state,'effect',coalesce(r.result->>'effect','unverified'),'result',");
-            query.push(actions::history::RESULT_SUMMARY_SQL).push(") FROM mdm_commands.action_runs r LEFT JOIN mdm_policy.versions v ON(v.tenant_id,v.id)=(r.tenant_id,r.policy_version) WHERE r.tenant_id=$1::uuid), visible AS (SELECT * FROM executions WHERE ($2::text[] IS NULL OR device=ANY($2)) AND ($3::text IS NULL OR device=$3) AND ($4::text IS NULL OR kind=$4) AND ($5::uuid IS NULL OR policy=$5) AND ($6::uuid IS NULL OR remote_operation=$6) AND ($7::text IS NULL OR status=$7)), page AS (SELECT * FROM visible WHERE ($8::uuid IS NULL OR CASE WHEN $9 THEN (id,kind)<($8,$11::text) ELSE (id,kind)>($8,$11::text) END) ORDER BY CASE WHEN NOT $9 THEN id END ASC,CASE WHEN $9 THEN id END DESC,CASE WHEN NOT $9 THEN kind END ASC,CASE WHEN $9 THEN kind END DESC LIMIT $10) SELECT jsonb_build_object('items',coalesce((SELECT jsonb_agg(jsonb_build_object('id',id,'kind',kind,'device',device,'registrationId',registration,'generation',generation,'origin',source_kind,'policy',policy,'remoteOperation',remote_operation,'deadline',deadline::bigint,'status',status,'evidence',evidence) ORDER BY CASE WHEN NOT $9 THEN id END ASC,CASE WHEN $9 THEN id END DESC,CASE WHEN NOT $9 THEN kind END ASC,CASE WHEN $9 THEN kind END DESC) FROM page),'[]'::jsonb),'statistics',(SELECT jsonb_build_object('total',count(*),'commands',count(*) FILTER(WHERE kind='command'),'actionRuns',count(*) FILTER(WHERE kind='action_run'),'unknown',count(*) FILTER(WHERE status='unknown')) FROM visible),'asOf',floor(extract(epoch FROM statement_timestamp()))::bigint)");
+            let mut query=sqlx::QueryBuilder::<sqlx::Postgres>::new("WITH executions AS (SELECT o.id,o.device,'command'::text AS kind,o.registration,o.registration_generation AS generation,o.source_kind,o.policy_version,v.policy,o.input_context->>'deadline' AS deadline,coalesce(d.status,'unknown') AS status,jsonb_build_object('commandStatus',d.status) AS evidence FROM mdm_commands.operations o LEFT JOIN rss_device_command.commands d ON(d.tenant_id,d.command_id)=(o.tenant_id,o.id::text) LEFT JOIN mdm_policy.versions v ON(v.tenant_id,v.id)=(o.tenant_id,o.policy_version) WHERE o.tenant_id=$1::uuid UNION ALL SELECT r.id,r.device,'action_run',r.registration,r.generation,r.source_kind,r.policy_version,v.policy,r.deadline::text,coalesce(r.state->>'execution','unknown'),jsonb_build_object('state',r.state,'effect',coalesce(r.result->>'effect','unverified'),'result',");
+            query.push(actions::history::RESULT_SUMMARY_SQL).push(") FROM mdm_commands.action_runs r LEFT JOIN mdm_policy.versions v ON(v.tenant_id,v.id)=(r.tenant_id,r.policy_version) WHERE r.tenant_id=$1::uuid), visible AS (SELECT * FROM executions WHERE ($2::text[] IS NULL OR device=ANY($2)) AND ($3::text IS NULL OR device=$3) AND ($4::text IS NULL OR kind=$4) AND ($5::uuid IS NULL OR policy=$5) AND ($6::text IS NULL OR status=$6)), page AS (SELECT * FROM visible WHERE ($7::uuid IS NULL OR CASE WHEN $8 THEN (id,kind)<($7,$10::text) ELSE (id,kind)>($7,$10::text) END) ORDER BY CASE WHEN NOT $8 THEN id END ASC,CASE WHEN $8 THEN id END DESC,CASE WHEN NOT $8 THEN kind END ASC,CASE WHEN $8 THEN kind END DESC LIMIT $9) SELECT jsonb_build_object('items',coalesce((SELECT jsonb_agg(jsonb_build_object('id',id,'kind',kind,'device',device,'registrationId',registration,'generation',generation,'origin',source_kind,'policy',policy,'deadline',deadline::bigint,'status',status,'evidence',evidence) ORDER BY CASE WHEN NOT $8 THEN id END ASC,CASE WHEN $8 THEN id END DESC,CASE WHEN NOT $8 THEN kind END ASC,CASE WHEN $8 THEN kind END DESC) FROM page),'[]'::jsonb),'statistics',(SELECT jsonb_build_object('total',count(*),'commands',count(*) FILTER(WHERE kind='command'),'actionRuns',count(*) FILTER(WHERE kind='action_run'),'unknown',count(*) FILTER(WHERE status='unknown')) FROM visible),'asOf',floor(extract(epoch FROM statement_timestamp()))::bigint)");
             let sql=query.sql().to_owned();
             let mut value:Value=tx.with_connection(move|c|Box::pin(async move {
                 sqlx::query_scalar(sql).bind(tenant).bind(allowed).bind(page.device).bind(page.kind).bind(page.policy)
-                    .bind(page.remote_operation).bind(page.status).bind(page.after).bind(page.descending).bind((page.limit+1) as i64).bind(page.after_kind).fetch_one(c).await
+                    .bind(page.status).bind(page.after).bind(page.descending).bind((page.limit+1) as i64).bind(page.after_kind).fetch_one(c).await
             })).await?;
             let items=value["items"].as_array_mut().ok_or(Error::Malformed)?;let more=items.len()>page.limit;items.truncate(page.limit);
             let next=if more{items.last().map(|v|json!({"id":v["id"],"kind":v["kind"]}))}else{None};value["nextCursor"]=next.unwrap_or(Value::Null);
@@ -153,7 +151,7 @@ impl crate::queries::Queries {
                     let mdm = registrations
                         .iter()
                         .any(|v| v["channel"] == "mdm" && v["status"] == "active");
-                    let signed = s.signed;
+                    let agent_support = agent_support(s.signed, s.content_available);
                     let result = [
                         capability(
                             &current,
@@ -163,7 +161,7 @@ impl crate::queries::Queries {
                                 "script",
                                 Permission::ScriptExecute,
                                 "agent",
-                                signed && s.content_available,
+                                agent_support,
                             ),
                             agent_prerequisite(
                                 agent.is_some(),
@@ -178,7 +176,7 @@ impl crate::queries::Queries {
                                 "software",
                                 Permission::SoftwareDeploy,
                                 "agent",
-                                signed && s.content_available,
+                                agent_support,
                             ),
                             agent_prerequisite(
                                 agent.is_some(),
@@ -234,4 +232,23 @@ fn capability(
         "productSupport":{"state":if supported{"supported"}else{"unsupported"},"reason":if supported{None}else{Some("product_not_configured")}},
         "devicePrerequisite":{"state":prerequisite.0,"reason":prerequisite.1},
         "permission":{"allowed":allowed,"reason":if allowed{None}else{Some("permission_denied")}}})
+}
+
+fn agent_support(signed: bool, content: bool) -> bool {
+    signed && content
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn agent_execution_requires_signing_and_content() {
+        for (signed, content, expected) in [
+            (false, false, false),
+            (false, true, false),
+            (true, false, false),
+            (true, true, true),
+        ] {
+            assert_eq!(super::agent_support(signed, content), expected);
+        }
+    }
 }

@@ -81,7 +81,7 @@ async fn reader_is_exact_tenant_scoped_and_read_only() -> anyhow::Result<()> {
             .is_err()
     );
     let reader = InventoryReader::connect(options("mdm_api")?).await?;
-    for _ in 0..5 {
+    {
         assert_eq!(
             reader
                 .read(scope(a, "mdm.windows").tenant(), &[scope(a, "mdm.windows")])

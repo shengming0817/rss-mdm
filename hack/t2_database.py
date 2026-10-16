@@ -70,7 +70,7 @@ class DatabasePool:
         self.templates = {}
         self.shared = {}
         self.installation = None
-        self.tenants = []
+        self.seeded_tenants = {}
 
     def postgres(self):
         with self.lock:
@@ -80,6 +80,7 @@ class DatabasePool:
                 self.ready = False
                 self.templates.clear()
                 self.shared.clear()
+                self.seeded_tenants.clear()
                 self.dirty = False
                 self.costs.increment('faultReplacements')
             if not self.ready:
@@ -126,15 +127,60 @@ class DatabasePool:
                 self.dirty = True
             raise
 
+    def sample_connections(self, databases):
+        if not databases:
+            return
+        try:
+            names = ','.join(literal(name) for name in sorted(set(databases)))
+            rows = json.loads(self.owner.sql(
+                "SELECT coalesce(jsonb_object_agg(datname,sessions),'{}'::jsonb) "
+                f"FROM pg_stat_database WHERE datname IN ({names})"))
+            require(isinstance(rows, dict) and all(type(count) is int and count >= 0 for count in rows.values()),
+                    'invalid PostgreSQL session counters')
+            self.costs.append(dict(phase='postgres-sessions', status='passed', pg=self.owner.project,
+                                   pgGeneration=self.generation, databases=rows))
+        except Exception as error:
+            # Diagnostics never replace an original fault case's failure or prevent cleanup.
+            self.costs.append(dict(phase='postgres-sessions', status='failed', pg=self.owner.project,
+                                   pgGeneration=self.generation, reason=type(error).__name__))
+
     def clone(self, profile, prefix):
         template, properties, coordinates = self.template(profile)
         name = prefix + uuid.uuid4().hex
-        with measure(self.costs, 'clone', database=name, profile=profile, pg=self.owner.project, pgGeneration=self.generation):
-            self.owner.sql(f'CREATE DATABASE {identifier(name)} OWNER mdm_owner TEMPLATE {identifier(template)}')
-            self.restore_properties(name, properties)
-            require(self.coordinates(name, profile) == coordinates, 'cloned installation coordinates differ')
+        try:
+            with measure(self.costs, 'clone', database=name, profile=profile, pg=self.owner.project, pgGeneration=self.generation):
+                self.owner.sql(f'CREATE DATABASE {identifier(name)} OWNER mdm_owner TEMPLATE {identifier(template)}')
+                self.restore_properties(name, properties)
+                require(self.coordinates(name, profile) == coordinates, 'cloned installation coordinates differ')
+        except BaseException as error:
+            from t2_processes import cleanup
+            try:
+                with cleanup():
+                    self.owner.sql(f'DROP DATABASE IF EXISTS {identifier(name)} WITH (FORCE)')
+            except BaseException as cleanup_error:
+                error.add_note('partial database cleanup failed: ' + type(cleanup_error).__name__)
+            raise
         self.costs.increment('clonedDatabases')
         return name
+
+    def seed_tenants(self, database, profile, tenants):
+        if profile == 'empty':
+            return
+        with self.lock:
+            prepared = self.seeded_tenants.setdefault(database, set())
+            missing = sorted(set(tenants) - prepared)
+            if not missing:
+                return
+            with measure(self.costs, 'tenant-seed', database=database, count=len(missing)):
+                if profile == 'product':
+                    sql = ''.join(f"SELECT public.create_new_tenant({literal(tenant)}::uuid,1,NULL,NULL);" for tenant in missing)
+                else:
+                    sql = 'INSERT INTO rss_transactional_messaging.tenant_epoch VALUES' + ','.join(
+                        f'({literal(tenant)},1)' for tenant in missing) + ';'
+                role = 'mdm_group_owner' if profile == 'group' else 'mdm_owner'
+                self.owner.sql(f'BEGIN; SET ROLE {role}; ' + sql + ' COMMIT;', database)
+            prepared.update(missing)
+            self.costs.increment('preparedTenants', len(missing))
 
     def database_config(self, root, database, role='mdm_owner', password='owner-fixture'):
         private(root / (role + '-password'), password)
@@ -202,13 +248,6 @@ class DatabasePool:
                         config = self.installation_config(root, name)
                         run([self.builds.executables['rss-mdm'], 'migrate', '--config', config],
                             cwd=ROOT, capture_output=True, timeout=90)
-                        for tenant in self.tenants:
-                            registration = private(root / 'tenant-create.json', dict(
-                                database=self.database_config(root, name), installation=self.installation,
-                                tenant_id=tenant, initial_epoch=1,
-                                operation_id=str(uuid.uuid5(uuid.NAMESPACE_URL, name + '/' + tenant))))
-                            run([self.builds.executables['rss-mdm'], 'tenant-create', '--config', registration],
-                                cwd=ROOT, capture_output=True, timeout=45)
                     else:
                         executable = 'migrations' if profile == 'group' else 'policy_migrations'
                         sql = run([self.builds.executables[executable]], cwd=ROOT, capture_output=True).stdout
@@ -218,9 +257,7 @@ class DatabasePool:
                                                      for unit in ('0001.sql', '0002_outbox_writer.sql'))
                         role = 'mdm_group_owner' if profile == 'group' else 'mdm_owner'
                         owner.sql(f'BEGIN; SET ROLE {role}; {sql} COMMIT;', name)
-                        owner.sql("INSERT INTO rss_transactional_messaging.storage_lineage(target,lineage) VALUES(decode(repeat('01',16),'hex'),decode(repeat('02',16),'hex')); "
-                                  + 'INSERT INTO rss_transactional_messaging.tenant_epoch VALUES'
-                                  + ','.join(f'({literal(tenant)},1)' for tenant in self.tenants) + ';', name)
+                        owner.sql("INSERT INTO rss_transactional_messaging.storage_lineage(target,lineage) VALUES(decode(repeat('01',16),'hex'),decode(repeat('02',16),'hex'));", name)
                 properties = self.properties(name)
                 coordinates = self.coordinates(name, profile)
                 owner.sql(f'ALTER DATABASE {identifier(name)} ALLOW_CONNECTIONS false;')
@@ -244,6 +281,8 @@ class DatabasePool:
         try:
             yield name
         finally:
+            self.sample_connections([name])
             with measure(self.costs, 'database-drop', database=name, pg=self.owner.project, pgGeneration=self.generation):
                 self.owner.sql(f'DROP DATABASE {identifier(name)} WITH (FORCE)')
+            self.seeded_tenants.pop(name, None)
 

@@ -18,8 +18,6 @@
       "search_path": "search_path=pg_catalog"
     }
   ],
-  "external_relations": [
-    "mdm_planning.remote_operations"
-  ],
+  "external_relations": [],
   "verified_schemas": []
 }
