@@ -23,17 +23,25 @@ async fn permission_drift_corrupt_policy_and_stalled_postgres() -> Result<()> {
     ))?;
     let corrupt = member
         .call(&router, Method::GET, "/api/v1/authorization", None)
-        .await?;
+        .await;
     pg(&format!(
         "UPDATE mdm_access.authorization_rules SET document=NULL WHERE tenant_id='{TENANT}' AND id='{rule_id}'",
         TENANT = case_tenant()
     ))?;
-    ensure!(corrupt.0 == StatusCode::SERVICE_UNAVAILABLE && corrupt.1.get("grants").is_none());
+    let corrupt = corrupt?;
+    ensure!(
+        corrupt.0 == StatusCode::SERVICE_UNAVAILABLE,
+        "corrupt policy response: {corrupt:?}"
+    );
+    ensure!(
+        corrupt.1.get("grants").is_none(),
+        "corrupt policy leaked grants: {corrupt:?}"
+    );
     // Runtime admission and data access both fail closed on PG permission drift.
     pg("REVOKE SELECT ON mdm_access.authorization_rules FROM mdm_access")?;
     let denied = member
         .call(&router, Method::GET, "/api/v1/authorization", None)
-        .await?;
+        .await;
     let context = admin
         .call(
             &router,
@@ -44,15 +52,46 @@ async fn permission_drift_corrupt_policy_and_stalled_postgres() -> Result<()> {
             ),
             None,
         )
-        .await?;
+        .await;
     let reconnect = crate::Database::connect(config.access_database.options()?).await;
     pg("GRANT SELECT ON mdm_access.authorization_rules TO mdm_access")?;
+    let denied = denied?;
+    let context = context?;
     ensure!(
-        denied.0 == StatusCode::SERVICE_UNAVAILABLE
-            && denied.1.get("grants").is_none()
-            && reconnect.is_err()
-            && context.0 == StatusCode::OK
-            && context.1["navigation"]["manageAccounts"] == true
+        denied.0 == StatusCode::SERVICE_UNAVAILABLE,
+        "permission drift response: {denied:?}"
+    );
+    ensure!(
+        denied.1.get("grants").is_none(),
+        "permission drift leaked grants: {denied:?}"
+    );
+    ensure!(
+        reconnect.is_err(),
+        "permission drift admitted a new access store"
+    );
+    ensure!(
+        context.0 == StatusCode::SERVICE_UNAVAILABLE,
+        "permission drift navigation: {context:?}"
+    );
+    ensure!(
+        context.1.get("navigation").is_none() && context.1.get("grants").is_none(),
+        "permission drift leaked navigation: {context:?}"
+    );
+    let restored = admin
+        .call(
+            &router,
+            Method::GET,
+            &format!("/api/v1/identity-host/tenants/{}/context", case_tenant()),
+            None,
+        )
+        .await?;
+    ensure!(
+        restored.0 == StatusCode::OK,
+        "restored navigation response: {restored:?}"
+    );
+    ensure!(
+        restored.1["navigation"]["manageAccounts"] == true,
+        "restored navigation: {restored:?}"
     );
     // The union rejects undeclared objects, grants and permissive tenant policies.
     for (drift, restore) in [
@@ -120,6 +159,7 @@ async fn permission_drift_corrupt_policy_and_stalled_postgres() -> Result<()> {
         .execute(&mut holder)
         .await?;
     let container = std::env::var("MDM_TEST_PG_CONTAINER")?;
+    let mut paused = false;
     let freeze = async {
         let deadline = rss_request_context::Clock::now(&crate::lifecycle::RuntimeTimer)
             + Duration::from_millis(750);
@@ -138,9 +178,8 @@ async fn permission_drift_corrupt_policy_and_stalled_postgres() -> Result<()> {
             tokio::time::sleep(Duration::from_millis(5)).await;
         }
         command(&["pause", &container], None)?;
+        paused = true;
         tokio::time::sleep(Duration::from_millis(3200)).await;
-        command(&["unpause", &container], None)?;
-        sqlx::query("ROLLBACK").execute(&mut holder).await?;
         anyhow::Ok(())
     };
     let (stalled, frozen) = tokio::join!(
@@ -150,8 +189,19 @@ async fn permission_drift_corrupt_policy_and_stalled_postgres() -> Result<()> {
         ),
         freeze
     );
+    // Cleanup precedes propagating either task's failure, so an observation error
+    // cannot strand the isolated PG instance or its exclusive table lock.
+    let unpaused = if paused {
+        command(&["unpause", &container], None)
+    } else {
+        Ok(String::new())
+    };
+    let rolled_back = sqlx::query("ROLLBACK").execute(&mut holder).await;
+    let closed = holder.close().await;
     frozen?;
-    holder.close().await?;
+    unpaused?;
+    rolled_back?;
+    closed?;
     ensure!(matches!(
         stalled,
         Ok(Err(rss_mdm_authorization_service::Error::Deadline))
