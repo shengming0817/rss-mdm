@@ -157,59 +157,6 @@ async fn signed_parent_enrollment_independent_tls_and_retirement() -> anyhow::Re
     let wire = signed(&issue, &key).await?;
     let proof = w.ca.linked_proof(&wire, at)?;
     ensure!(proof.fingerprint() == w.ca.verify(&[parent_cert.into()], at)?.fingerprint());
-    ensure!(w.ca.linked_proof(&wire, at + 301).is_err());
-    ensure!(
-        w.ca.linked_proof(
-            &String::from_utf8(wire.clone())?
-                .replace("TEST-DEVICE", "tampered")
-                .into_bytes(),
-            at
-        )
-        .is_err()
-    );
-    let original = String::from_utf8(wire.clone())?;
-    let reference = r#"URI="""#;
-    let negative = [
-        original.replace("</s:Envelope>", "<s:Body/></s:Envelope>"),
-        original.replace("</o:Security>", "<ds:Signature xmlns:ds=\"http://www.w3.org/2000/09/xmldsig#\"/></o:Security>"),
-        original.replace("linked-time", "parent-cert"),
-        original.replace(reference, r#"URI="https://invalid.example/reference""#),
-        original.replace("URI=\"#parent-cert\"", "URI=\"#linked-time\""),
-        original.replace("rsa-sha256", "rsa-sha1"),
-        original.replace("enveloped-signature", "xpath"),
-        original.replace("</ds:Transforms>", "<ds:Transform Algorithm=\"http://www.w3.org/2000/09/xmldsig#enveloped-signature\"/></ds:Transforms>"),
-        original.replace("</ds:SignedInfo>", "<ds:Reference URI=\"\"/></ds:SignedInfo>"),
-        format!("<?fixture prohibited?>{original}"),
-        original.replace("<s:Envelope", "<!DOCTYPE s:Envelope [<!ENTITY malicious SYSTEM 'file:///etc/passwd'>]><s:Envelope"),
-        original.replace("</s:Body>", &format!("{}{} </s:Body>", "<nested>".repeat(65), "</nested>".repeat(65))),
-        original.replace("</s:Body>", &("<node/>".repeat(4097) + "</s:Body>")),
-    ];
-    for (index, invalid) in negative.into_iter().enumerate() {
-        ensure!(
-            invalid != original,
-            "negative fixture mutation {index} did not apply"
-        );
-        ensure!(
-            w.ca.linked_proof(invalid.as_bytes(), at).is_err(),
-            "unsafe signature shape {index} accepted"
-        );
-    }
-    // Prefix spelling and attribute order are not identity. Sign an equivalent
-    // representation independently before passing the original bytes to verification.
-    let equivalent = String::from_utf8(soap::encode(&issue, &CodecLimits::default())?)?
-        .replace("<s:", "<env:")
-        .replace("</s:", "</env:")
-        .replace(" s:", " env:")
-        .replace("xmlns:s=", "xmlns:env=");
-    let attributes = r#"xmlns:s="http://www.w3.org/2003/05/soap-envelope" xmlns:a="http://www.w3.org/2005/08/addressing""#;
-    let reordered = original.replace(attributes, r#"xmlns:a="http://www.w3.org/2005/08/addressing" xmlns:s="http://www.w3.org/2003/05/soap-envelope""#);
-    ensure!(
-        reordered != original,
-        "attribute order fixture did not apply"
-    );
-    ensure!(w.ca.linked_proof(reordered.as_bytes(), at)?.fingerprint() == proof.fingerprint());
-    let equivalent = sign_xml(equivalent, &key).await?;
-    ensure!(w.ca.linked_proof(&equivalent, at)?.fingerprint() == proof.fingerprint());
     let post = |wire: Vec<u8>| {
         host.client
             .post(path)

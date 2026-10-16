@@ -130,49 +130,35 @@ impl Fixture {
         db.close().await?;
         Ok(())
     }
-    // Obtain authenticated native capabilities with one clean install/remove exchange.
-    // The complete coowner, failed-removal and recovery matrix belongs to policy_cycle.
+    // Only resolve capabilities. Reject the unexecuted preparation command and prove absence;
+    // successful installation, coownership and withdrawal belong to policy_cycle.
     pub(super) async fn native_context(&mut self, peer: &lifecycle::Peer) -> Result<()> {
         self.policy_grants().await?;
         let owner = self.policy_worker().await?;
         let profile = Uuid::new_v4();
-        let (policy, operation) = self
-            .configuration_policy(
-                profile_task(profile, true),
-                Some(remove_profile_task(profile)),
-                "remove",
+        let (policy, _) = self
+            .configuration_policy(profile_task(profile, true), None, "retain")
+            .await?;
+        ensure!(owner.shutdown().join().await?.is_clean());
+        let (unexecuted, _) = peer.next("InstallProfile").await?;
+        let reply = peer
+            .manage("CommandFormatError", Some(unexecuted), None)
+            .await?;
+        if !reply.is_empty() {
+            let (observe, _) = lifecycle::command(&reply, "ProfileList")?;
+            peer.manage(
+                "Acknowledged",
+                Some(observe),
+                Some(("ProfileList", plist::Value::Array(vec![]))),
             )
             .await?;
-        let (install, _) = peer.next("InstallProfile").await?;
-        let reply = peer.manage("Acknowledged", Some(install), None).await?;
-        let (observe, _) = lifecycle::command(&reply, "ProfileList")?;
-        peer.manage(
-            "Acknowledged",
-            Some(observe),
-            Some((
-                "ProfileList",
-                profile_manifest(profile, "com.apple.security.firewall"),
-            )),
-        )
-        .await?;
-        ensure!(self.operation(operation).await?["commandStatus"] == "applied");
+        }
         self.policy_post(
             &format!("/api/v1/policies/{policy}"),
             1,
             json!({"action":"disable"}),
         )
         .await?;
-        let (remove, _) = peer.next("RemoveProfile").await?;
-        let reply = peer.manage("Acknowledged", Some(remove), None).await?;
-        let (observe, _) = lifecycle::command(&reply, "ProfileList")?;
-        peer.manage(
-            "Acknowledged",
-            Some(observe),
-            Some(("ProfileList", plist::Value::Array(vec![]))),
-        )
-        .await?;
-        self.policy_claims_released(policy).await?;
-        ensure!(owner.shutdown().join().await?.is_clean());
         Ok(())
     }
     pub(super) async fn policy_cycle(&mut self, peer: &lifecycle::Peer) -> Result<()> {
