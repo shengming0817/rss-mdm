@@ -727,6 +727,7 @@ async fn native_trust_requires_exact_csp_readback_before_confirmation() -> anyho
     anyhow::bail!("exact native Root/CA readback did not confirm installed trust")
 }
 
+#[cfg(feature = "integration")]
 #[tokio::test]
 #[ignore = "MODULE=windows.management: issuance is not first authentication"]
 async fn admission_pause_blocks_first_authentication_but_preserves_authenticated_sessions()

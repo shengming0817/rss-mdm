@@ -404,7 +404,6 @@ async fn self_enrollment_preserves_server_identity_and_terminal_protocol_id() ->
                 .enrollment_username(peer.receipt.enrollment_id)?
     );
     ensure!(before["progress"]["systemConfirmation"] == "unknown");
-    use rss_mdm_windows_mdm::syncml;
     ensure!(
         peer.mutual
             .post(&peer.url)

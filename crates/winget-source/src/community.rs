@@ -97,31 +97,24 @@ impl CommunityManifest {
         &self.originals
     }
 }
-fn deny_tags(v: &serde_yaml_ng::Value) -> Result<(), Error> {
-    use serde_yaml_ng::Value as Y;
-    match v {
-        Y::Tagged(_) => Err(Error::Unsupported),
-        Y::Sequence(values) => {
-            for value in values {
-                deny_tags(value)?;
-            }
-            Ok(())
-        }
-        Y::Mapping(values) => {
-            for (key, value) in values {
-                deny_tags(key)?;
-                deny_tags(value)?;
-            }
-            Ok(())
-        }
-        _ => Ok(()),
-    }
-}
 fn read(query: &Query, bytes: &[u8]) -> Result<Value, Error> {
-    let yaml: serde_yaml_ng::Value =
-        serde_yaml_ng::from_slice(bytes).map_err(|_| Error::InvalidResponse)?;
-    deny_tags(&yaml)?;
-    let value = serde_json::to_value(yaml).map_err(|_| Error::InvalidResponse)?;
+    let options = serde_saphyr::options! {
+        strict_booleans: true,
+        duplicate_keys: serde_saphyr::DuplicateKeyPolicy::Error,
+        merge_keys: serde_saphyr::MergeKeyPolicy::AsOrdinary,
+        reject_unsupported_tags: true,
+        with_snippet: false,
+    };
+    let value: Value = serde_saphyr::from_slice_with_options(bytes, options).map_err(|error| {
+        if matches!(
+            error.without_snippet(),
+            serde_saphyr::Error::UnsupportedTag { .. }
+        ) {
+            Error::Unsupported
+        } else {
+            Error::InvalidResponse
+        }
+    })?;
     if value["PackageIdentifier"].as_str() != Some(query.package())
         || value["PackageVersion"].as_str() != Some(query.version())
     {
