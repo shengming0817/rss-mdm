@@ -19,7 +19,7 @@ import tarfile
 import tempfile
 import tomllib
 
-from t2_model import ROOT, all_tools
+from t2_model import ROOT, Module, all_tools
 
 
 class SelectionError(RuntimeError):
@@ -186,7 +186,6 @@ def validate_registry(data):
             if module['id'] != name:
                 raise ValueError('module id mismatch')
             module.setdefault('dependency_inputs', [])
-            module.setdefault('replaces', [])
             for field in ('production_inputs', 'test_inputs', 'support_inputs'):
                 if not all(valid_path(path) for path in module[field]):
                     raise ValueError('invalid input path')
@@ -332,6 +331,7 @@ def selected(
     cargo_mode='affected',
     t2_mode='affected',
     removed=(),
+    ownership_checks=(),
 ):
     reasons = [
         {key: sorted(set(value)) if key in {'modules', 'packages', 'tools'} else value for key, value in reason.items()}
@@ -344,6 +344,7 @@ def selected(
         toolTests=sorted(set(tools)),
         reasons=[value for _, value in sorted({json.dumps(r, sort_keys=True): r for r in reasons}.items())],
         removedModules=list(removed),
+        ownershipChecks=list(ownership_checks),
     )
 
 
@@ -786,14 +787,72 @@ def analyze_controls(oldroot, root, changes, registries):
     return packages_all, modules, tools, reasons
 
 
-def module_behavior(module, tool_only):
+# Ownership changes are verified by tooling and by changed inputs. They do not
+# themselves change the executable scenario. Fields come from the current model;
+# historical snapshot-only fields cannot restore retired selection policies.
+OWNERSHIP_FIELDS = {'id', 'production_inputs', 'test_inputs', 'support_inputs', 'dependency_inputs'}
+
+
+def module_behavior(module):
     if module is None:
         return None
-    return {
-        key: [path for path in value if path not in tool_only] if key == 'support_inputs' else value
-        for key, value in module.items()
-        if key != 'dependency_inputs'
-    }
+    return {key: module[key] for key in Module.__dataclass_fields__
+            if key not in OWNERSHIP_FIELDS}
+
+
+def proof_target(module):
+    return None if module is None else [module[key] for key in ('build', 'selectors', 'children')]
+
+
+def removed_carriers(oldroot, root, old, after, changes):
+    """Require current test ownership, not a historical name or a support glob."""
+    files = {p.relative_to(oldroot).as_posix() for p in oldroot.rglob('*')
+             if p.is_file() and matches(p.relative_to(oldroot).as_posix(), old['test_inputs'])}
+    carriers, owners = [], set()
+    for path in sorted(files):
+        endpoints = {path} | {c.new for c in changes if c.old == path and c.status in {'R', 'C'}}
+        for endpoint in sorted(endpoints):
+            if not (root / endpoint).is_file():
+                carriers.append(dict(path=endpoint, kind='deleted', modules=[]))
+                continue
+            current = {name for name, module in after.modules.items()
+                       if matches(endpoint, module['test_inputs'])}
+            if not current and not matches(endpoint, after.t1):
+                raise SelectionError('test-carrier-without-owner', endpoint)
+            owners.update(current)
+            carriers.append(dict(path=endpoint, kind='business' if current else 'unit-test', modules=sorted(current)))
+    if old.get('python'):
+        path = 'hack/t2_modules/' + old['python'] + '.py'
+        endpoints = {path} | {c.new for c in changes if c.old == path and c.status in {'R', 'C'}}
+        for endpoint in sorted(endpoints):
+            current = {name for name, module in after.modules.items()
+                       if module.get('python') and 'hack/t2_modules/' + module['python'] + '.py' == endpoint}
+            exists = (root / endpoint).is_file()
+            if exists and not current:
+                raise SelectionError('python-carrier-without-owner', endpoint)
+            owners.update(current)
+            carriers.append(dict(path=endpoint, kind='business' if exists else 'deleted', modules=sorted(current)))
+    return dict(module=old['id'], carriers=carriers, owners=sorted(owners))
+
+
+def ownership_builds(modules, graph):
+    """Discover existing affected targets with current features, even without owners."""
+    builds = {}
+    packages = {graph.packages[k]['name']: graph.packages[k] for k in graph.members}
+    for module in modules:
+        build = module and module['build']
+        if not build or build['package'] not in packages:
+            continue
+        package = packages[build['package']]
+        targets = [t for t in package['targets'] if build['kind'] in t['kind']
+                   and (not build['target'] or build['target'] == t['name'])]
+        if not targets:
+            continue  # Cargo, not a failed build, establishes removal.
+        if len(targets) != 1:
+            raise SelectionError('ambiguous-proof-target', build['package'])
+        current = dict(build, features=sorted(package['features']))
+        builds[json.dumps(current, sort_keys=True)] = current
+    return [builds[key] for key in sorted(builds)]
 
 
 def select(root, base):
@@ -806,17 +865,19 @@ def select(root, base):
     with baseline_tree(root, base) as oldroot:
         before, after = snapshot(oldroot, 'baseline:' + base), snapshot(root)
         modules, tools, packages, reasons, removed = set(), set(), set(), [], []
-        for name in before.modules.keys() | after.modules.keys():
+        proof_modules = []
+        for name in sorted(before.modules.keys() | after.modules.keys()):
             old, new = before.modules.get(name), after.modules.get(name)
-            if module_behavior(old, after.tool_only) != module_behavior(new, after.tool_only):
+            if new is not None and module_behavior(old) != module_behavior(new):
                 modules.add(name)
                 reasons.append(dict(kind='business', input='module-description:' + name, modules=[name]))
+            if proof_target(old) != proof_target(new):
+                proof_modules.extend(m for m in (old, new) if m is not None)
             if new is None:
-                successors = {n for n, module in after.modules.items() if name in module['replaces']}
-                if not successors:
-                    raise SelectionError('deleted-module-without-proof', name)
-                modules.update(successors)
-                removed.append(dict(module=name, successors=sorted(successors)))
+                record = removed_carriers(oldroot, root, old, after, changes)
+                modules.update(record['owners'])
+                removed.append(record)
+                reasons.append(dict(kind='tool', input='removed-module:' + name, modules=record['owners']))
         for path in before.representatives.keys() | after.representatives.keys():
             old, new = set(before.representatives.get(path, ())), set(after.representatives.get(path, ()))
             if old != new:
@@ -824,6 +885,7 @@ def select(root, base):
                 reasons.append(dict(kind='representative', input=path, modules=sorted(old | new)))
         cargo_inputs = any(p.startswith('crates/') or p in {'Cargo.toml', 'Cargo.lock'} for p in paths)
         graphs = (metadata(oldroot, 'baseline:' + base), metadata(root)) if cargo_inputs else (None, None)
+        checks = ownership_builds(proof_modules, graphs[1] or metadata(root)) if proof_modules else []
         for path in sorted(paths):
             if path in {'Cargo.toml', 'Cargo.lock'} or path.endswith('/Cargo.toml'):
                 continue
@@ -881,6 +943,7 @@ def select(root, base):
             tools,
             reasons,
             removed=sorted(removed, key=lambda item: item['module']),
+            ownership_checks=checks,
         )
 
 
@@ -912,8 +975,27 @@ def validate_selection(decision, packages, modules, tools):
             if not isinstance(name, str) or not name or name in modules or name in removed:
                 raise ValueError('invalid removed module')
             removed.add(name)
-            if not selection_targets(record['successors'], decision['t2']['modules']):
-                raise ValueError('missing successor proof')
+            selection_targets(record['owners'], decision['t2']['modules'])
+            for carrier in record['carriers']:
+                if not valid_path(carrier['path']) or carrier['kind'] not in {'deleted', 'business', 'unit-test'}:
+                    raise ValueError('invalid removed carrier')
+                owners = selection_targets(carrier['modules'], record['owners'])
+                if bool(owners) != (carrier['kind'] == 'business'):
+                    raise ValueError('invalid carrier ownership')
+        checks = decision['ownershipChecks']
+        keys = []
+        for build in checks:
+            if (set(build) != {'package', 'kind', 'target', 'features'} or build['package'] not in packages
+                    or build['kind'] not in {'lib', 'bin', 'test', 'example'}
+                    or not isinstance(build['target'], str)
+                    or (build['kind'] != 'lib' and not build['target'])
+                    or not isinstance(build['features'], list)
+                    or any(not isinstance(f, str) or not f for f in build['features'])
+                    or build['features'] != sorted(set(build['features']))):
+                raise ValueError('invalid ownership check')
+            keys.append(json.dumps(build, sort_keys=True))
+        if keys != sorted(set(keys)):
+            raise ValueError('duplicate or unordered ownership checks')
         for reason in decision['reasons']:
             if (
                 reason['kind']

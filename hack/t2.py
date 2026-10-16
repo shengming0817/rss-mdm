@@ -196,7 +196,7 @@ def execute_case(job, builds, fixtures, case_dir, output, rendezvous=None):
     return result
 
 
-def run_modules(names, output, *, jobs=2, selected_case='', listing=False, reuse_plan=None, selected_cases=()):
+def run_modules(names, output, *, jobs=2, selected_case='', listing=False, reuse_plan=None, selected_cases=(), ownership_checks=()):
     require_lease(ROOT)
     require(type(jobs) is int and jobs > 0, 'JOBS must be a positive integer')
     require(not output.is_symlink(), 'T2 output directory cannot be a symlink')
@@ -206,7 +206,7 @@ def run_modules(names, output, *, jobs=2, selected_case='', listing=False, reuse
     selected_cases = tuple(selected_cases) or ((selected_case,) if selected_case else ())
     require(len(selected_cases) == len(set(selected_cases)), 'duplicate selected cases')
     results = {name: stage_result('skipped', reason='not-selected') for name in MODULES}
-    if not names:
+    if not names and not ownership_checks:
         require(not selected_cases and reuse_plan is None, 'CASE or reuse plan does not belong to any selected module')
         prune_runs(output)
         return results
@@ -234,7 +234,7 @@ def run_modules(names, output, *, jobs=2, selected_case='', listing=False, reuse
         builds = Builds(directory, processes)
         build_started = time.monotonic()
         try:
-            builds.prepare_discovery(modules)
+            builds.prepare_discovery(modules, ownership_checks)
         finally:
             build_seconds['discovery'] = round(time.monotonic() - build_started, 3)
         discovered = {module.id: builds.discover(module) if module.build else [] for module in modules}
@@ -264,7 +264,8 @@ def run_modules(names, output, *, jobs=2, selected_case='', listing=False, reuse
             require(all(case in inventory['policies'] for case in selected_cases), 'unknown CASE in selected modules')
             invocations = [job for job in invocations if job.id in selected_cases]
             phases = [invocations]
-        if listing:
+        if listing or not modules:
+            require(not selected_cases and reuse_plan is None or bool(modules), 'CASE or reuse plan requires a selected module')
             print(json.dumps(inventory, indent=2), flush=True)
             results.update({job.module.id: stage_result('skipped', reason='list-only') for job in invocations})
             return results
@@ -387,12 +388,14 @@ def main(argv=None):
                          selected([], [args.module], t2_mode='module'))
         names = select_modules(args.module, selection)
         results = run_modules(names, output, jobs=args.jobs, selected_case=args.case, listing=args.list == '1',
-                              reuse_plan=json.loads(args.reuse_plan.read_text()) if args.reuse_plan else None)
+                              reuse_plan=json.loads(args.reuse_plan.read_text()) if args.reuse_plan else None,
+                              ownership_checks=selection['ownershipChecks'])
         require(ci.working_source_state() == source, 'source changed during T2')
         status = ('failed' if any(item['status'] == 'failed' for item in results.values()) else
                   'skipped' if not names or args.list == '1' else 'passed')
         evidence = {'module': args.module, 'selection': selection, 'status': status, 'modules': results,
                     'jobs': args.jobs, 'sourceRevision': head, 'sourceState': source, 'wallSeconds': round(time.monotonic() - started, 3),
+                    'ownershipVerification': 'passed' if selection['ownershipChecks'] else 'not-selected',
                     'toolVerification': {name:'not-run' for name in selection['toolTests']}}
         if not names:
             evidence['reason'] = 'no-modules-selected'

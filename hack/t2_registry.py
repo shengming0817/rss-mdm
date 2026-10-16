@@ -214,7 +214,7 @@ add('installation.migration', selectors=('migration::tests::fresh_installation_r
 add('installation.tenants', build=None, profile='empty', python='tenants',
     sources=('crates/app/src/tenant_registry.rs','crates/app/src/tenant_use.rs','crates/app/schema/installation.sql','crates/app/src/main.rs','crates/app/src/migration.rs','crates/app/src/maintenance.rs','crates/app/src/authorization_bootstrap.rs','crates/app/src/lifecycle.rs'),
     support=('hack/t2_modules/tenants.py',))
-MODULES['installation.tenants'] = replace(MODULES['installation.tenants'], db_mode='fresh', scope='objects', replaces=('installation.upgrade_runtime',))
+MODULES['installation.tenants'] = replace(MODULES['installation.tenants'], db_mode='fresh', scope='objects')
 add('deployment.management-tenant', build=None, profile='empty', python='management_tenant',
     sources=('crates/app/src/identity.rs','crates/app/src/identity_audit.rs','crates/app/src/api.rs','crates/app/src/database.rs','crates/app/src/migration.rs','crates/app/schema/installation.sql','crates/authorization-service/src/tenancy.rs','crates/authorization-service/src/database.rs','crates/authorization-service/src/store.rs','crates/authorization-service/src/model.rs','crates/authorization-service/src/evaluate.rs','crates/authorization-service/src/identity_management.rs','crates/management-http/src/tenant_administration.rs','crates/management-http/src/authorization/http.rs','crates/app/src/tenant_http.rs','crates/app/src/tenant_administrator.rs','crates/app/src/tenant_registry.rs','crates/app/schema/tenant-administration.sql'),
     support=('hack/t2_modules/management_tenant.py','hack/t2_modules/tenants.py','hack/t2_modules/tenant_http.py',))
@@ -1856,7 +1856,8 @@ for owner in ('agent-channel', 'apple-channel', 'windows-channel',
               'device-service', 'timeline-service', 'certificate-archive-service'):
     prefix = f'crates/{owner}/src/'
     consumers = [name for name, module in MODULES.items()
-                 if any(path.startswith(prefix) for path in module.production_inputs)]
+                 if any(path.startswith(prefix) and not path.endswith(('access-admission.sql', 'access-contract.json'))
+                        for path in module.production_inputs)]
     consume((f'crates/{owner}/schema/install.sql', f'crates/{owner}/schema/relations.sql'), consumers)
 
 consume(('crates/inventory-service/schema/field-scopes.sql',),

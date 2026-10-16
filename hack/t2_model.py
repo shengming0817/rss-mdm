@@ -65,7 +65,6 @@ class Module:
     children: tuple[str, ...] = ()
     expected_cases: int | None = None
     dependency_inputs: tuple[DependencyInput, ...] = ()
-    replaces: tuple[str, ...] = ()
 
     actors: tuple[tuple[str, str], ...] = ()
     configuration_devices: int = 0

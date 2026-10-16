@@ -79,7 +79,10 @@ class Invocation:
 
 def validate_ownership(document, build, modules):
     """Every ignored test is executed by exactly one public owner or declared caller."""
-    modules = [module for module in modules if module.build == build]
+    modules = [module for module in modules if module.build
+               and (module.build.package, module.build.kind, module.build.target)
+               == (build.package, build.kind, build.target)
+               and set(module.build.features) <= set(build.features)]
     names = []
     for binary in document['rust-suites'].values():
         if binary['package-name'] != build.package or binary['kind'] != build.kind:
@@ -305,7 +308,7 @@ class Builds:
         require(result.returncode == 0, 'build or discovery failed; see ' + str(log))
         return result.stdout
 
-    def prepare_discovery(self, modules):
+    def prepare_discovery(self, modules, ownership_checks=()):
         require_lease(ROOT)
         start = time.monotonic()
         # stderr must not contaminate the JSON metadata protocol.
@@ -315,7 +318,9 @@ class Builds:
         require(metadata.returncode == 0, 'Cargo metadata failed')
         self.package_names = {item['id']: item['name'] for item in strict_json(metadata.stdout)['packages']}
         self.metadata.write_text(metadata.stdout)
-        self.prepare_targets({module.build for module in modules if module.build})
+        checks = {Build(value['package'], value['kind'], value['target'], tuple(value['features']))
+                  for value in ownership_checks}
+        self.prepare_targets({module.build for module in modules if module.build} | checks)
         self.elapsed = time.monotonic() - start
 
     def prepare_targets(self, builds):
@@ -420,3 +425,13 @@ class Builds:
                 [sys.executable, '-u', ROOT / 'hack/t2_python.py', module.id, payload],
                 env=fixture.env, log=log, timeout=CASE_TIMEOUT)
         require(result.returncode == 0, 'Python scenario failed: ' + module.id)
+
+
+def check_ownership(checks, output):
+    """Build/list only: no runtime fixtures or test functions are started."""
+    require_lease(ROOT)
+    processes = Processes()
+    try:
+        Builds(output, processes).prepare_discovery([], checks)
+    finally:
+        processes.close()
