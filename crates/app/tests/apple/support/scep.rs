@@ -111,54 +111,21 @@ impl Device {
     }
     /// Ordinary consumers need a real leaf, not a SCEP enrollment exchange.
     pub fn local_leaf(&self, pki: &Path) -> Result<Vec<u8>> {
-        let configuration: serde_json::Value =
-            serde_json::from_slice(&std::fs::read(pki.join("step/config/ca.json"))?)?;
-        let certificate = PathBuf::from(
-            configuration["crt"]
-                .as_str()
-                .ok_or_else(|| anyhow::anyhow!("fixture issuer missing"))?,
-        );
-        let key = PathBuf::from(
-            configuration["key"]
-                .as_str()
-                .ok_or_else(|| anyhow::anyhow!("fixture issuer key missing"))?,
-        );
-        let password = format!("file:{}", pki.join("step-password").display());
-        let csr = self.root.path().join("local.csr");
-        let leaf = self.root.path().join("local.der");
-        let extensions = self.root.path().join("local.ext");
-        std::fs::write(&csr, &self.csr)?;
-        std::fs::write(
-            &extensions,
-            "basicConstraints=critical,CA:FALSE\nkeyUsage=critical,digitalSignature\nextendedKeyUsage=clientAuth\n",
-        )?;
-        let serial = format!("0x{}", Uuid::new_v4().simple());
-        openssl(&[
-            "x509".as_ref(),
-            "-req".as_ref(),
-            "-inform".as_ref(),
-            "DER".as_ref(),
-            "-in".as_ref(),
-            csr.as_os_str(),
-            "-CA".as_ref(),
-            certificate.as_os_str(),
-            "-CAkey".as_ref(),
-            key.as_os_str(),
-            "-passin".as_ref(),
-            password.as_ref(),
-            "-days".as_ref(),
-            "1".as_ref(),
-            "-set_serial".as_ref(),
-            serial.as_ref(),
-            "-extfile".as_ref(),
-            extensions.as_os_str(),
-            "-outform".as_ref(),
-            "DER".as_ref(),
-            "-out".as_ref(),
-            leaf.as_os_str(),
-        ])?;
-        Ok(std::fs::read(leaf)?)
+        use crate::clock::Clock;
+        let now = crate::clock::SystemClock.unix_seconds()?;
+        let subject = x509_cert::request::CertReq::from_der(&self.csr)?
+            .info
+            .subject
+            .to_string();
+        let subject = subject
+            .strip_prefix("CN=")
+            .ok_or_else(|| anyhow::anyhow!("fixture CSR subject"))?;
+        Ok(
+            crate::test_support::pki::leaf(pki, &self.csr, subject, &[], now, now + 86400)?
+                .remove(0),
+        )
     }
+
     pub fn request(&self, recipient: &Path, transaction: &str, now: i64) -> Result<Vec<u8>> {
         use cms::{
             content_info::ContentInfo,

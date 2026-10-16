@@ -9,8 +9,7 @@ use ring::signature::KeyPair;
 async fn registration_capability_and_wire_gate() -> Result<()> {
     let fixture = Fixture::new().await?;
     let router = fixture.router;
-    let mut author = fixture.author;
-    let (_,registration)=crate::test_support::agent::enroll_profile(&router,&mut author,case_inventory_credential(),json!({"capabilities":["inventory.collect.v1"],"platform":"macos","architecture":"aarch64","executionContext":crate::test_support::software_execution::context(crate::test_support::software_execution::Platform::MacOs)})).await?;
+    let registration=crate::test_support::agent::seed_profile(&fixture.base,fixture.execution.clone(),case_inventory_credential(),case::name("inventory-peer"),json!({"capabilities":["inventory.collect.v1"],"platform":"macos","architecture":"aarch64","executionContext":crate::test_support::software_execution::context(crate::test_support::software_execution::Platform::MacOs)})).await?;
     ensure!(registration["capabilities"] == json!(["inventory.collect.v1"]));
     let taskless = agent_call(
         &router,
@@ -24,7 +23,7 @@ async fn registration_capability_and_wire_gate() -> Result<()> {
         taskless.0 == StatusCode::FORBIDDEN,
         "inventory-only registration entered task API: {taskless:?}"
     );
-    let (_,registration)=crate::test_support::agent::enroll_profile(&router,&mut author,case_credential(),json!({"capabilities":["inventory.collect.v1","task.execute.v1"],"platform":"macos","architecture":"aarch64","executionContext":crate::test_support::software_execution::context(crate::test_support::software_execution::Platform::MacOs)})).await?;
+    let registration=crate::test_support::agent::seed_profile(&fixture.base,fixture.execution.clone(),case_credential(),case_device_id(),json!({"capabilities":["inventory.collect.v1","task.execute.v1"],"platform":"macos","architecture":"aarch64","executionContext":crate::test_support::software_execution::context(crate::test_support::software_execution::Platform::MacOs)})).await?;
     ensure!(registration["capabilities"] == json!(["inventory.collect.v1", "task.execute.v1"]));
     // Legacy URL and major cannot enter task intake.
     let old = router
@@ -461,7 +460,7 @@ async fn native_inventory_case(map_software: bool, all_failed: bool, macos: bool
     } else {
         crate::test_support::software_execution::Platform::Windows
     });
-    let (_,registration)=crate::test_support::agent::enroll_profile(&f.router,&mut f.author,case_credential(),json!({"capabilities":["inventory.collect.v1","inventory.native.v1"],"platform":platform,"architecture":"x86_64","executionContext":context})).await?;
+    let registration=crate::test_support::agent::seed_profile(&f.base,f.execution.clone(),case_credential(),case_device_id(),json!({"capabilities":["inventory.collect.v1","inventory.native.v1"],"platform":platform,"architecture":"x86_64","executionContext":context})).await?;
     let device = registration["deviceId"].as_str().unwrap().to_owned();
     f.scope(case_task_scope(), json!([{"kind":"device","id":device}]))
         .await?;
@@ -1018,7 +1017,7 @@ async fn macos_user_applications_and_brew_keep_other_users_after_complete_empty(
     );
     context["interactiveUser"] =
         json!({"identity":"501","sessionId":Uuid::new_v4(),"administrator":false});
-    let (_, registration) = crate::test_support::agent::enroll_profile(&f.router, &mut f.author, case_credential(), json!({"capabilities":["inventory.collect.v1","inventory.native.v1"],"platform":"macos","architecture":"aarch64","executionContext":context})).await?;
+    let registration = crate::test_support::agent::seed_profile(&f.base, f.execution.clone(), case_credential(), case_device_id(), json!({"capabilities":["inventory.collect.v1","inventory.native.v1"],"platform":"macos","architecture":"aarch64","executionContext":context})).await?;
     let device = registration["deviceId"].as_str().unwrap().to_owned();
     f.scope(case_task_scope(), json!([{"kind":"device","id":device}]))
         .await?;

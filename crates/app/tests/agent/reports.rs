@@ -19,10 +19,11 @@ async fn durable_reports_and_projection() -> Result<()> {
         &["inventory_read", "enrollment"],
     )
     .await?;
-    let agent = crate::test_support::agent::register(router, browser).await?;
-    let credential = agent.credential;
-    let registration = agent.registration;
-    let password = agent.password;
+    let credential = crate::test_support::case::name("report-peer");
+    let service = crate::test_support::agent::service(&fixture).await?;
+    let registration = crate::test_support::agent::seed_service(&service, credential,
+        crate::test_support::case::name("device-1"), json!({"capabilities":["inventory.collect.v1"],"platform":"macos","architecture":"aarch64","executionContext":software_execution::context(software_execution::Platform::MacOs)})).await?;
+    let password = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
     let config = &fixture.base;
     let (status, error) = agent_call(
         router,
