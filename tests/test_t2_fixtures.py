@@ -390,6 +390,19 @@ class PreparationBatchTests(unittest.TestCase):
             self.assertEqual(len(calls), 1)
             self.assertEqual(len({fixture.case_contexts[j.key]['actors'][0]['principal'] for j in jobs}), 1)
 
+    def test_gateway_product_worker_has_a_distinct_tenant_from_shared_workers(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            fixture = RunFixtures(Mock(), Path(tmp), 2)
+            self.addCleanup(fixture.cert_directory.cleanup)
+            shared = MODULES['execution.agent.content']
+            gateway = MODULES['gateway.admission']
+            jobs = [Invocation(shared, Case(shared.build, 'test', '/test', 'shared')), Invocation(gateway, None)]
+            fixture.prepare(jobs)
+            contexts = [fixture.case_contexts[job.key] for job in jobs]
+            self.assertNotEqual(contexts[0]['tenant'], contexts[1]['tenant'])
+            self.assertEqual(jobs[0].module.profile, jobs[1].module.profile)
+            self.assertIn('local_worker', gateway.fixtures)
+
     def test_host_start_does_not_hold_global_resource_lock_and_failure_is_shared(self):
         import threading
         from concurrent.futures import ThreadPoolExecutor

@@ -26,6 +26,8 @@ pub async fn quality_at(
                   SELECT DISTINCT ON(h.scope,f->'definition'->>'key') h.scope,h.sequence,h.run,h.document,f->'definition'->>'key' AS field
                   FROM latest h CROSS JOIN LATERAL jsonb_array_elements((h.document->>'attempts')::jsonb->'definition'->'fields') f
                   WHERE h.document IS NOT NULL AND f->'scope'=$4::jsonb
+                    AND (h.document->>'result'<>'pending'
+                      OR f->'definition'->>'key' NOT IN ('channel.agent.installation','channel.mdm.enrollment'))
                   ORDER BY h.scope,f->'definition'->>'key',h.sequence DESC,h.run DESC
                 ) SELECT scope,sequence,run::text AS id,
                     document->>'result' AS result,document->>'attempts' AS attempts,

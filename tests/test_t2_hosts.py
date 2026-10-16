@@ -59,6 +59,8 @@ server.serve_forever()
         host.log_path = Path('/owned/host.log')
         host.stopping = threading.Event()
         host.failed = threading.Event()
+        host.state_lock = threading.Lock()
+        host.closed = False
         host.thread = None
         return host
 
@@ -78,6 +80,52 @@ server.serve_forever()
         host.processes.release.assert_called_once_with(host.child)
         host.processes.cancel.assert_not_called()
         host.log.close.assert_called_once()
+
+    def test_diagnostic_failure_preserves_cleanup_and_close_is_idempotent(self):
+        from unittest.mock import patch
+        host = self.host()
+        host.failed.set()
+        with patch.object(Path, 'read_text', side_effect=OSError('unreadable')):
+            host.close()
+            host.close()
+        host.processes.release.assert_called_once_with(host.child)
+        host.log.close.assert_called_once()
+
+    def test_unexpected_exit_retains_first_failure_record(self):
+        import json
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            host = self.host()
+            host.log_path = Path(tmp) / 'host.log'
+            host.child.poll.return_value = 7
+            host.monitor()
+            record = json.loads(host.log_path.with_name('failure.json').read_text())
+            self.assertEqual(record, dict(event='unexpected-host-exit', exitCode=7, log='host.log'))
+            host.processes.cancel.assert_called_once()
+
+    def test_close_wins_monitor_race_without_reporting_failure(self):
+        from unittest.mock import patch
+        host = self.host()
+        passed_wait = threading.Event()
+        def wait(_):
+            passed_wait.set()
+            return False
+        host.state_lock.acquire()
+        monitor = threading.Thread(target=host.monitor)
+        try:
+            with patch.object(host.stopping, 'wait', side_effect=wait):
+                monitor.start()
+                self.assertTrue(passed_wait.wait(2))
+                host.stopping.set()
+                host.state_lock.release()
+                monitor.join(2)
+        finally:
+            if host.state_lock.locked():
+                host.state_lock.release()
+            monitor.join(2)
+        self.assertFalse(monitor.is_alive())
+        host.child.poll.assert_not_called()
+        host.processes.cancel.assert_not_called()
 
     def test_readiness_failure_releases_child_and_log(self):
         import json

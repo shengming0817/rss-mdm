@@ -459,8 +459,10 @@ add('catalog.contract', build=None, python='catalog',
     sources=('crates/*-service/src/*/catalog.sql', 'crates/*-service/src/*/catalog.json',
              'crates/software-service/src/*/catalog.sql', 'crates/software-service/src/*/catalog.json'),
     support=('hack/command_catalog.py', 'hack/t2_modules/catalog.py'))
-add('gateway.admission', build=None, python='gateway', fixtures=('gateway','identity'),
+# Gateway owns a complete product host and therefore its tenant projection claim.
+add('gateway.admission', build=None, python='gateway', fixtures=('gateway','identity','local_worker'),
     sources=('deployment/nginx.conf',), support=('hack/t2_modules/gateway.py',))
+MODULES['gateway.admission'] = replace(MODULES['gateway.admission'], scope='tenant')
 
 
 # Isolation follows state and observation ownership. Only exceptions name a case.
@@ -1713,7 +1715,7 @@ consume(('crates/registration-service/src/admission.rs','crates/registration-ser
 
 # Account requirements belong to the existing module description. Cases with no
 # identity dependency resolve to no actors, even when overriding module fixtures.
-_OTHER_ACTORS = frozenset('certificate-archive.http timeline.http identity.local authorization.rules authorization.membership authorization.capacity authorization.initialization authorization.admission enrollment.http enrollment.quotas device.binding device.revocation agent.configurations agent.registration agent.reports api.identity_context diagnostics.http assets.http assets.queries planning.onboarding planning.group_scope planning.policy planning.http planning.agent_policy planning.frequency planning.software planning.self_service compliance.http execution.agent.delivery execution.agent.content execution.agent.history execution.agent.poll execution.agent.recovery execution.software.offer execution.software.content execution.software.recovery software.http execution.commands.admission execution.commands.windows'.split())
+_OTHER_ACTORS = frozenset('certificate-archive.http timeline.http identity.local authorization.rules authorization.membership authorization.capacity authorization.initialization authorization.admission enrollment.http enrollment.quotas enrollment.recovery device.binding device.revocation device.recovery agent.configurations agent.registration agent.reports api.identity_context diagnostics.http assets.http assets.queries planning.onboarding planning.group_scope planning.policy planning.http planning.agent_policy planning.frequency planning.software planning.self_service compliance.http execution.agent.delivery execution.agent.content execution.agent.history execution.agent.poll execution.agent.recovery execution.software.offer execution.software.content execution.software.recovery software.http execution.commands.admission execution.commands.windows'.split())
 for name, module in tuple(MODULES.items()):
     if 'identity' not in module.fixtures:
         continue
@@ -1860,6 +1862,7 @@ for module_id, selector, fixture in (
     ('apple.onboarding', 'apple::tests::onboarding::absent_agent_group_installs_fixed_package_and_registers_independently', 'ca_agent'),
     ('execution.commands.onboarding', 'execution::t2::commands::onboarding::windows_policy_install_register_and_replay_use_independent_identity', 'ca_agent'),
     ('execution.commands.onboarding', 'execution::t2::commands::onboarding::windows_policy_install_register_and_replay_use_independent_identity', 'ca_windows'),
+    ('execution.commands.onboarding', 'execution::t2::commands::onboarding::replacement_rejects_old_installation_and_requires_current_epoch_absence', 'ca_windows'),
     ('execution.commands.configuration', 'execution::t2::commands::configuration::native_object_sets_share_a_device_and_withdraw_only_their_own_objects', 'ca_windows'),
     ('execution.commands.onboarding', 'execution::t2::commands::onboarding::scope_exit_preserves_dispatched_installation_authority_until_its_deadline', 'ca_agent'),
     ('execution.software.recovery', 'execution::t2::software::recovery::unknown_effect_survives_credential_recovery', 'ca_agent'),
@@ -1955,3 +1958,7 @@ consume(('crates/registration-service/schema/enrollment-progress.sql',),
 
 consume(('crates/app/src/migration.rs',),
         'installation.migration installation.tenants deployment.management-tenant catalog.contract api.identity_context')
+
+# Channel maintenance preserves the last sealed fact while a new query is pending.
+consume(('crates/inventory-service/schema/channel-maintenance.sql',),
+        'execution.commands.onboarding apple.onboarding agent.reports inventory.runtime planning.onboarding planning.group_scope')
