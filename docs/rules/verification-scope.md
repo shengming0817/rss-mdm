@@ -21,7 +21,7 @@ T1 提供模型与边界证据；T2 使用真实依赖提供持久化、权限�
 
 `make ci CI_BASE=origin/develop` 按影响范围运行快速检查，任何模式均不启动 PostgreSQL、网关或 IdP，不隐式执行 T2。`make t2 MODULE=affected CI_BASE=origin/develop` 运行受影响测试模块（裸 `make t2` 默认 affected），`MODULE=planning.http` 等选择专项，`MODULE=all` 选择全部；旧 SUITE/--suite 明确拒绝。执行与发现使用 `hack/t2_registry.py` 的唯一描述，affected 由 `hack/ci_impact.py` 统一选择，Rust 测试函数通过 nextest 实际发现。`make ci-full` 在同一构建租约内组合全部快速检查和全部 T2，正式候选和浏览器 T3 独立。本仓结果不由父仓 CI 代替；不新增远端 CI。
 
-CI 直接验证当前工作区，不要求预先提交、clean HEAD 或冷构建。`make ci-plan` 仅预览；选择器比较基线 merge-base 与当前修改，计入未跟踪且非忽略的输入。docs/root Markdown 不贡献 Rust package seed，crate README 可参与 rustdoc。selection 分别记录 Cargo 的 `cargo.mode/packages` 与 T2 的 `t2.mode/modules`，并以原因区分业务影响、工具验证、代表场景与显式全量。Cargo 使用反向依赖闭包；独立 T1 文件不选 T2，独立 T2 文件只选所属模块，helper 只选直接消费者。生产输入按模块声明的实际消费接缝选择，多个输入取并集。manifest/lock 按两版依赖及实际接缝消费者选择，不沿 App 整包图扩大 T2；共享编译语义覆盖真实运行消费者。登记、模块输入和可识别 rename/copy 合并基线与当前归属；职责迁移须指向当前后继证明；需求退出须说明退出依据并清理登记，不要求制造替代测试。当前选择器仍对删除模块要求 `replaces` 后继，退出语义尚需选择器实现支持；不得用虚假后继绕过失败，现有限制见[测试模块](../guides/test-modules.md#affected-与执行证据)。未知输入、基线不可用、分析异常和非法结果明确失败，不执行隐式全量。存在脏文件本身不扩大选择。CI 在选择前与执行后核对当前文件集合、内容及状态，运行期间输入变化则失败，避免将旧测试结果用于新源码。
+CI 直接验证当前工作区，不要求预先提交、clean HEAD 或冷构建。`make ci-plan` 仅预览；选择器比较基线 merge-base 与当前修改，计入未跟踪且非忽略的输入。docs/root Markdown 不贡献 Rust package seed，crate README 可参与 rustdoc。selection 分别记录 Cargo 的 `cargo.mode/packages` 与 T2 的 `t2.mode/modules`，并以原因区分业务影响、工具验证、代表场景与显式全量。Cargo 使用反向依赖闭包；独立 T1 文件不选 T2，独立 T2 文件只选所属模块，helper 只选直接消费者。生产输入按模块声明的实际消费接缝选择，多个输入取并集。manifest/lock 按两版依赖及实际接缝消费者选择，不沿 App 整包图扩大 T2；共享编译语义覆盖真实运行消费者。登记、模块输入和可识别 rename/copy 合并基线与当前归属；职责迁移须指向当前后继证明；需求退出须说明退出依据并清理登记，不要求制造替代测试。模块删除由两版登记及实际测试载体推导，不保留旧名称或退出名册。幸存测试文件须由当前 T2/T1 owner 承接；受删除或 selector/build 变化影响的现存 target 在正式 CI 中仅编译/发现，拒绝无 owner 的 ignored 测试，即使业务 T2 选择为空也不跳过。退出的业务依据留 issue/PR；工具只证明登记与载体一致。未知输入、基线不可用、分析异常和非法结果明确失败，不执行隐式全量。存在脏文件本身不扩大选择。CI 在选择前与执行后核对当前文件集合、内容及状态，运行期间输入变化则失败，避免将旧测试结果用于新源码。
 
 PG T2 提供持久化、SQL、权限与事务证据；协议 T2 提供真实 HTTP/TLS、身份、回执与恢复证据。App 反向依赖闭包不能直接代替 T2 路径映射。功能预算边界使用小输入或算术边界；规模与性能承诺由有明确场景的独立验证任务提供证据。
 
@@ -32,3 +32,5 @@ artifacts/local-ci 中 selection/result 记录选中 gate、命令及 passed/fai
 真实候选用一次正式 OCI 构建及随附部署输入验证安装、启动和认证，不依赖 matching checkout。候选 smoke/浏览器不替代真机；发布声明绑定实际 OS/架构、注册方式、权限、依赖、故障范围及结果。未测组合如实保留，性能、RPO/RTO 不继承历史数字。
 
 开发/T2 环境按 worktree 隔离，独立于共享 target 槽位。`JOBS` 限制独立 case 的完整生命周期，默认 2；模块内也允许并发。普通兼容业务按对象/主体或合法专用租户隔离观察范围，共用可写库；DDL、库内权限和损坏材料使用一次性库，安装始终使用空库；共享角色和停库故障使用独立 PG 实例。故障实例恢复检查成功后可复用，失败或不确定则隔离，仅为后续 case 建立替代环境，不重跑掩盖原失败。数据库数量不由 case、模块或 worker 数决定。稳定身份、内容与签名按兼容环境准备；公共 worker 属于运行环境，精确消费者故障属专用观察域。复用需验证同库重复、换序与实际并发重叠，同对象竞争用同步点。平台工具、Identity、SCEP、Keycloak 和 HTTPS/Git 按实际需要准备。详见[测试模块](../guides/test-modules.md)。
+
+日常 affected 与定期完整 T2 分工独立：局部 SQL/迁移登记选择安装/catalog 及实际消费者，公共准备不展开为全业务回归；纯归属说明变化由工具验证，执行策略变化选择相应模块。定期完整 T2 沿用已有安排，不叠加到每次局部修改。

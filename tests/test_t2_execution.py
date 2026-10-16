@@ -35,6 +35,26 @@ class ExecutionProof(unittest.TestCase):
             self.assertEqual(processes.run.call_args.args[0][:2], ['cargo', 'metadata'])
             self.assertEqual(builds.executables, {})
 
+    def test_empty_owner_set_still_builds_requested_target(self):
+        from types import SimpleNamespace
+        from unittest.mock import Mock, patch
+        module = MODULES['resource.persistence']
+        check = dict(package=module.build.package, kind=module.build.kind,
+                     target=module.build.target, features=list(module.build.features))
+        with tempfile.TemporaryDirectory() as directory, patch('t2_execution.require_lease'):
+            processes = Mock()
+            processes.run.return_value = SimpleNamespace(stdout='{"packages":[]}', stderr='', returncode=0)
+            builds = Builds(Path(directory), processes)
+            with patch.object(builds, 'prepare_targets') as targets:
+                builds.prepare_discovery([], [check])
+                targets.assert_called_once_with({module.build})
+            self.assertEqual(builds.executables, {})
+        empty = self.listing()
+        empty['rust-suites']['resource::behavior']['testcases'] = {}
+        validate_ownership(empty, module.build, [])
+        with self.assertRaisesRegex(RuntimeError, 'exactly one'):
+            validate_ownership(self.listing(), module.build, [])
+
     def test_discovery_uses_current_names_and_exact_target(self):
         module = MODULES['resource.persistence']
         cases = parse_listing(self.listing(), module)

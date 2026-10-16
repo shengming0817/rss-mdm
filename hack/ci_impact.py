@@ -865,6 +865,11 @@ def select(root, base):
     with baseline_tree(root, base) as oldroot:
         before, after = snapshot(oldroot, 'baseline:' + base), snapshot(root)
         modules, tools, packages, reasons, removed = set(), set(), set(), [], []
+        retired_tools = {Path(c.old).stem for c in changes
+                         if c.old.startswith('tests/test_') and c.old.endswith('.py')
+                         and not (root / c.old).is_file()}
+        if any(test not in all_tools(root) for tests in after.tools.values() for test in tests):
+            raise SelectionError('tool-test-unavailable')
         proof_modules = []
         for name in sorted(before.modules.keys() | after.modules.keys()):
             old, new = before.modules.get(name), after.modules.get(name)
@@ -903,13 +908,14 @@ def select(root, base):
                 if path in after.tool_only:
                     consumers.update(before.representatives.get(path, ()))
                 modules.update(consumers)
-                tools.update(impact.tools)
+                active_tools = set(impact.tools) - retired_tools
+                tools.update(active_tools)
                 reasons.append(
                     dict(
                         kind='representative' if path in after.tool_only and consumers else impact.kind,
                         input=path,
                         modules=sorted(consumers),
-                        tools=list(impact.tools),
+                        tools=sorted(active_tools),
                     )
                 )
                 if graph:

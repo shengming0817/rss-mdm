@@ -112,6 +112,20 @@ class Execution(unittest.TestCase):
                 self.assertIn('actual failing process output',(root/case['log']).read_text())
                 self.assertIn('process exited nonzero',(root/case['failureLog']).read_text())
 
+    def test_removed_last_owner_is_discovered_without_starting_fixtures(self):
+        checks = [dict(package='rss-mdm-app', kind='lib', target='', features=['integration'])]
+        with self.harness() as (root, builds, fixture_type, _):
+            t2.run_modules([], root, ownership_checks=checks)
+            builds.prepare_discovery.assert_called_once_with([], checks)
+            builds.prepare_runtime.assert_not_called()
+            fixture_type.assert_not_called()
+        with self.harness() as (root, builds, fixture_type, _):
+            builds.prepare_discovery.side_effect = RuntimeError('unowned ignored test')
+            with self.assertRaises(RuntimeError):
+                t2.run_modules([], root, ownership_checks=checks)
+            builds.prepare_runtime.assert_not_called()
+            fixture_type.assert_not_called()
+
     def test_empty_selection_creates_no_run_directory(self):
         with self.harness() as (root, *_):
             t2.run_modules([],root)

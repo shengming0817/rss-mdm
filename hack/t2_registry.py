@@ -1907,3 +1907,6 @@ consume(('crates/registration-service/schema/enrollment-progress.sql',),
         'enrollment.http enrollment.recovery agent.registration agent.configurations agent.pki '
         'windows.enrollment windows.issuance windows.management apple.scep apple.account_enrollment apple.ade')
 
+
+consume(('crates/app/src/migration.rs',),
+        'installation.migration installation.tenants deployment.management-tenant catalog.contract api.identity_context')
