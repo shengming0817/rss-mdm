@@ -335,7 +335,7 @@ async fn pause_during_signing_preserves_result_and_managed_continuity() -> Resul
         "first activation returned the wrong rejection: {}",
         rejected.0
     );
-    let unbound: bool = sqlx::query_scalar("SELECT certificate IS NOT NULL AND fingerprint IS NULL FROM mdm_apple.scep_attempts WHERE tenant_id=$1::uuid AND id=$2")
+    let unbound: bool = sqlx::query_scalar("SELECT certificate IS NOT NULL AND fingerprint IS NOT NULL AND registration IS NULL AND state='consumed' FROM mdm_apple.scep_attempts WHERE tenant_id=$1::uuid AND id=$2")
         .bind(case_tenant()).bind(attempt).fetch_one(&mut pg).await?;
     ensure!(
         unbound,

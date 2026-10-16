@@ -105,7 +105,7 @@ async fn absent_agent_group_installs_fixed_package_and_registers_independently()
 
     ensure!(peer.manage("NotNow", Some(install), None).await?.is_empty());
     ensure!(f.operation(operation).await?["agentInstallation"]["delivery"] == "deferred");
-    let (retry, _) = next_after_cooldown(&peer, operation, "InstallEnterpriseApplication").await?;
+    let (retry, _) = next_after_cooldown(&peer, install, "InstallEnterpriseApplication").await?;
     ensure!(retry == install, "NotNow retries the same native identity");
     // The reference server receives the ACK; the product loses this transport message.
     // Both then continue on the same device, so the oracle still checks query syntax.
@@ -142,7 +142,7 @@ async fn absent_agent_group_installs_fixed_package_and_registers_independently()
     )
     .await?;
     ensure!(f.operation(operation).await?["agentInstallation"]["installation"] == "installing");
-    let (observe, _) = next_after_cooldown(&peer, operation, "InstalledApplicationList").await?;
+    let (observe, _) = next_after_cooldown(&peer, observe, "InstalledApplicationList").await?;
     // Error responses cannot claim installed even if an extraneous list is present.
     peer.manage(
         "Error",
@@ -165,7 +165,7 @@ async fn absent_agent_group_installs_fixed_package_and_registers_independently()
             && state["commandStatus"] != "applied",
         "{state}"
     );
-    let (observe, _) = next_after_cooldown(&peer, operation, "InstalledApplicationList").await?;
+    let (observe, _) = next_after_cooldown(&peer, observe, "InstalledApplicationList").await?;
     peer.manage(
         "Acknowledged",
         Some(observe),
@@ -292,15 +292,16 @@ async fn agent_installation_configuration_preserves_bound_attempt_identity() -> 
 
 async fn next_after_cooldown(
     peer: &lifecycle::Peer,
-    operation: Uuid,
+    attempt: Uuid,
     kind: &str,
 ) -> Result<(Uuid, plist::Dictionary)> {
     use sqlx::Connection;
     let mut db =
         sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?)
             .await?;
-    let attempt: Uuid = sqlx::query_scalar("SELECT id FROM mdm_apple.attempts WHERE tenant_id=$1::uuid AND operation=$2 AND state IN('pending','sent','not_now') AND next_attempt>clock_timestamp() ORDER BY ordinal DESC LIMIT 1")
-        .bind(case_tenant()).bind(operation).fetch_one(&mut db).await?;
+    let future: bool = sqlx::query_scalar("SELECT next_attempt>clock_timestamp() FROM mdm_apple.attempts WHERE tenant_id=$1::uuid AND id=$2")
+        .bind(case_tenant()).bind(attempt).fetch_one(&mut db).await?;
+    ensure!(future, "current attempt has no future cooldown");
     ensure!(
         peer.manage("Idle", None, None).await?.is_empty(),
         "cooldown allowed an early retry"

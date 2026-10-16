@@ -945,6 +945,14 @@ impl Fixture {
         count: usize,
     ) -> Result<Vec<Uuid>> {
         use sqlx::Connection;
+        // Backlog preparation uses the existing scheduled-policy recovery owner;
+        // the canonical template test owns check-in admission. A due Once creates
+        // the same pending native run without scanning the growing device backlog.
+        let mut definition = definition.clone();
+        definition["action"]["schedule"] = json!({
+            "trigger":{"kind":"once","at":self.app.clock.unix_seconds()? - 1},
+            "notBefore":0,"jitterSeconds":0,"misfire":{"kind":"coalesce_one"}
+        });
         let planning = &self.app.flow.planning;
         let policies = rss_mdm_flow_service::planning::policies::Policies::new(
             planning.runtime.clone(),
@@ -970,16 +978,30 @@ impl Fixture {
         let mut db =
             sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?)
                 .await?;
-        let runs = tokio::time::timeout(Duration::from_secs(30), async {
-            loop {
-                // Each owner recovers its own policy; do not rescan the growing device backlog on every insert.
-                for id in &ids { self.app.execution.recover_action_fixture(*id).await?; }
-                let runs: Vec<Uuid> = sqlx::query_scalar("SELECT r.id FROM mdm_commands.action_runs r JOIN mdm_policy.versions v ON(v.tenant_id,v.id)=(r.tenant_id,r.policy_version) JOIN mdm_access.collection_runs c ON(c.tenant_id,c.id)=(r.tenant_id,r.id) JOIN mdm_apple.attempts a ON(a.tenant_id,a.collection)=(r.tenant_id,r.id) WHERE r.tenant_id=$1::uuid AND v.policy=ANY($2) AND r.gateway_accepted AND c.sealed_at IS NULL AND a.phase='collect_device' ORDER BY r.id")
-                    .bind(case_tenant()).bind(&ids).fetch_all(&mut db).await?;
-                if runs.len() == count { return Ok::<_,anyhow::Error>(runs); }
-                tokio::time::sleep(Duration::from_millis(50)).await;
-            }
-        }).await??;
+        let mut runs = Vec::with_capacity(count);
+        for policy in &ids {
+            // Each independent preparation keeps its existing wait budget. Do not
+            // time out the cumulative work of all 65/66 production transactions.
+            let run = tokio::time::timeout(Duration::from_secs(30), async {
+                loop {
+                    self.app.execution.recover_action_fixture(*policy).await?;
+                    let run: Option<Uuid> = sqlx::query_scalar("SELECT r.id FROM mdm_commands.action_runs r JOIN mdm_policy.versions v ON(v.tenant_id,v.id)=(r.tenant_id,r.policy_version) JOIN mdm_access.collection_runs c ON(c.tenant_id,c.id)=(r.tenant_id,r.id) JOIN mdm_apple.attempts a ON(a.tenant_id,a.collection)=(r.tenant_id,r.id) WHERE r.tenant_id=$1::uuid AND v.policy=$2 AND r.gateway_accepted AND c.sealed_at IS NULL AND a.phase='collect_device'")
+                        .bind(case_tenant()).bind(policy).fetch_optional(&mut db).await?;
+                    if let Some(run) = run { return Ok::<_, anyhow::Error>(run); }
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+                }
+            }).await??;
+            runs.push(run);
+        }
+        ensure!(
+            runs.len() == count
+                && runs
+                    .iter()
+                    .copied()
+                    .collect::<std::collections::BTreeSet<_>>()
+                    .len()
+                    == count
+        );
         db.close().await?;
         // Keep the real device recovery/budget seam (#2758) after all cross-page input exists.
         self.app

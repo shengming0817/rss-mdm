@@ -854,7 +854,7 @@ async fn empty_candidate_page_preserves_progress_to_the_next_matching_policy() -
     let host = crate::windows::test_support::Host::open().await?;
     let _peer = host.peer().await?;
     let mut client = Client::start(host.browser.clone(), host.app.clone()).await?;
-    let grants = [
+    let mut grants = [
         "resource_read",
         "resource_write",
         "policy_read",
@@ -865,6 +865,14 @@ async fn empty_candidate_page_preserves_progress_to_the_next_matching_policy() -
     .into_iter()
     .map(|operation| json!({"operation":operation,"scope":{"kind":"tenant"}}))
     .collect::<Vec<_>>();
+    grants.extend(
+        crate::test_support::identity::device_grants(
+            None,
+            &["inventory_read", "configuration_write"],
+        )?
+        .into_iter()
+        .map(|grant| serde_json::to_value(grant).expect("typed grant")),
+    );
     crate::test_support::identity::set_grants(
         case_tenant(),
         crate::test_support::case::admin(),
