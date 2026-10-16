@@ -34,6 +34,8 @@ class Host:
         self.processes = builds.processes
         self.stopping = threading.Event()
         self.failed = threading.Event()
+        self.state_lock = threading.Lock()
+        self.closed = False
         self.thread = None
         self.child = None
         output.mkdir(parents=True, exist_ok=True)
@@ -77,27 +79,51 @@ class Host:
         except BaseException:
             self.close()
             # Python scenarios use temporary roots; retain startup diagnostics in test.log.
-            print(self.log_path.read_text()[-16384:], flush=True)
+            self.diagnostics()
             raise
+
+    def diagnostics(self):
+        try:
+            print(self.log_path.read_text()[-16384:], flush=True)
+        except OSError:
+            print('T2 host diagnostics unavailable: ' + str(self.log_path), flush=True)
 
     def monitor(self):
         while not self.stopping.wait(.2):
-            if self.child.poll() is not None:
+            with self.state_lock:
+                if self.stopping.is_set():
+                    return
+                code = self.child.poll()
+                if code is None:
+                    continue
                 self.failed.set()
-                self.processes.cancel()
-                return
+                try:
+                    private(self.log_path.with_name('failure.json'),
+                            dict(event='unexpected-host-exit', exitCode=code, log='host.log'))
+                except OSError:
+                    print('T2 host failure record unavailable: ' + str(self.log_path), flush=True)
+            self.processes.cancel()
+            return
 
     def check(self):
         require(not self.failed.is_set() and self.child.poll() is None,
                 f'public T2 host died; this run cannot reuse its environment; see {self.log_path}')
 
     def close(self):
-        if self.failed.is_set():
-            print('Unexpected T2 host exit: ' + str(self.log_path), flush=True)
-            print(self.log_path.read_text()[-16384:], flush=True)
-        self.stopping.set()
+        with self.state_lock:
+            if self.closed:
+                return
+            self.closed = True
+            self.stopping.set()
         if self.thread is not None:
             self.thread.join()
-        if self.child is not None:
-            self.processes.release(self.child)
-        self.log.close()
+        try:
+            if self.failed.is_set():
+                print('Unexpected T2 host exit: ' + str(self.log_path), flush=True)
+                self.diagnostics()
+        finally:
+            try:
+                if self.child is not None:
+                    self.processes.release(self.child)
+            finally:
+                self.log.close()

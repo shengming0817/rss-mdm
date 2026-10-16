@@ -510,9 +510,20 @@ impl InventoryRuntime {
             {
                 observation.last_completed_at = Some(self.clock.now.now());
             }
-            let report = report
-                .into_result()
-                .map_err(|_| WorkerFailure::ProjectionRun)?;
+            let report = report.into_result().map_err(|error| {
+                let diagnostic = error.diagnostic();
+                eprintln!(
+                    "{}",
+                    serde_json::json!({
+                        "event": "mdm_projection_failure",
+                        "kind": format!("{:?}", error.kind()),
+                        "phase": diagnostic.map(|d| format!("{:?}", d.phase())),
+                        "sqlstate": diagnostic.and_then(|d| d.sqlstate()),
+                        "position": diagnostic.and_then(|d| d.position()).map(|p| format!("{p:?}")),
+                    })
+                );
+                WorkerFailure::ProjectionRun
+            })?;
             self.readiness.initialized.store(true, Ordering::Release);
             if expired == 0 && pending_count == 0 && report.applied == 0 {
                 let nearest = self

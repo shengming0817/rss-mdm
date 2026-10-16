@@ -2,6 +2,7 @@
 use crate::execution::test_support::{Client, case_device, case_tenant, native};
 use crate::test_support::{channel_onboarding as setup, *};
 use anyhow::Context;
+use rss_mdm_execution_service::AttemptPhase;
 use rss_mdm_windows_mdm::{CodecLimits, Secret, syncml as s};
 async fn post(
     peer: &crate::windows::test_support::Peer,
@@ -234,7 +235,8 @@ async fn windows_policy_install_register_and_replay_use_independent_identity() -
             && state["operationIds"] == json!([operation]),
         "{state}"
     );
-    let (initial, execute) = execute(&peer, &mut client, policy).await?;
+    let (initial, execute) =
+        installation(&peer, &mut client, policy, operation, AttemptPhase::Execute).await?;
     let url = peer.url.replace(
         "/ManagementServer/MDM.svc",
         "/api/v1/agent/enroll/native-grants",
@@ -559,45 +561,108 @@ async fn start_fixture_until(
         host, client, peer, commands, owner, policy, operation, until,
     ))
 }
-async fn execute(
+const INSTALL_URI: &str = "./Device/Vendor/MSFT/EnterpriseDesktopAppManagement/MSI/%7B12345678-1234-4234-8234-123456789ABC%7D/DownloadInstall";
+fn installation_command(message: &s::Message, phase: AttemptPhase) -> Option<u32> {
+    message.commands.iter().find_map(|command| {
+        let items = match (phase, command) {
+            (AttemptPhase::Prepare, s::Command::Add { items, .. })
+            | (AttemptPhase::Execute, s::Command::Exec { items, .. }) => items,
+            _ => return None,
+        };
+        (items.len() == 1 && items[0].target.as_deref() == Some(INSTALL_URI)).then(|| command.id())
+    })
+}
+#[test]
+fn installation_wait_rejects_absent_unrelated_and_wrong_phase_commands() {
+    let mut message = s::Message {
+        header: s::Header {
+            session_id: 1,
+            message_id: 1,
+            target: "device".into(),
+            source: "server".into(),
+            credential: None,
+            meta: None,
+        },
+        commands: vec![],
+        final_message: true,
+    };
+    assert_eq!(installation_command(&message, AttemptPhase::Prepare), None);
+    let mut items = vec![s::Item {
+        more_data: false,
+        target: Some("./unrelated".into()),
+        source: None,
+        meta: None,
+        data: None,
+    }];
+    message.commands.push(s::Command::Exec {
+        id: 1,
+        meta: None,
+        items: items.clone(),
+    });
+    assert_eq!(installation_command(&message, AttemptPhase::Execute), None);
+    items[0].target = Some(INSTALL_URI.into());
+    message.commands = vec![s::Command::Exec {
+        id: 2,
+        meta: None,
+        items: items.clone(),
+    }];
+    assert_eq!(installation_command(&message, AttemptPhase::Prepare), None);
+    assert_eq!(
+        installation_command(&message, AttemptPhase::Execute),
+        Some(2)
+    );
+    message.commands = vec![s::Command::Add {
+        id: 3,
+        meta: None,
+        items,
+    }];
+    assert_eq!(
+        installation_command(&message, AttemptPhase::Prepare),
+        Some(3)
+    );
+}
+async fn installation(
     peer: &crate::windows::test_support::Peer,
     client: &mut Client,
     policy: Uuid,
+    operation: Uuid,
+    phase: AttemptPhase,
 ) -> Result<(s::Message, s::Message)> {
-    tokio::time::timeout(Duration::from_secs(30), async {
+    use sqlx::Connection;
+    let mut connection = sqlx::PgConnection::connect_with(
+        &crate::device::test_support::options("mdm_command_runtime")?.password("runtime-fixture"),
+    )
+    .await?;
+    let mut readiness = Value::Null;
+    let result = tokio::time::timeout(Duration::from_secs(30), async {
         let (mut initial, mut next) = begin(peer, 902).await?;
         let mut session = 910;
         loop {
-            if next
-                .commands
-                .iter()
-                .any(|c| matches!(c, s::Command::Exec { .. }))
-            {
+            if let Some(command) = installation_command(&next, phase) {
+                ensure!(pg(&format!("SELECT EXISTS(SELECT 1 FROM mdm_commands.attempts a JOIN mdm_commands.attempt_items i ON(i.tenant_id,i.attempt)=(a.tenant_id,a.id) WHERE a.tenant_id='{}' AND a.operation='{operation}' AND a.phase='{}' AND a.session={} AND a.message={} AND i.command={command} AND i.uri='{INSTALL_URI}')",case_tenant(),phase.as_str(),next.header.session_id,next.header.message_id))?.trim()=="t", "installation command has no correlated durable attempt");
                 return Ok((initial, next));
             }
-            // A newly delivered Prepare still needs its ACK and any correlated Get results.
-            if next
-                .commands
-                .iter()
-                .any(|c| !matches!(c, s::Command::Status(_)))
-            {
+            if next.commands.iter().any(|c| !matches!(c, s::Command::Status(_))) {
                 next = post(peer, &reply(&initial, &next, false)).await?;
-                if next
-                    .commands
-                    .iter()
-                    .any(|c| matches!(c, s::Command::Exec { .. }))
-                {
-                    return Ok((initial, next));
+                if installation_command(&next, phase).is_some() {
+                    continue;
                 }
             }
-            // Read-side synchronization keeps the latest sealed report stable while
-            // Inventory and Scope catch up; another exchange would create a new report.
+            // Assignment readiness alone does not prove that the newest sealed
+            // Agent report has reached Inventory. Observe the production read
+            // boundary before starting another session and another collection.
             loop {
-                let state =
-                    setup::diagnosis(&mut client.browser, &client.router, policy, case_device())
-                        .await?;
-                if state["availability"] == "ready" && state["taskAdmission"]["state"] == "eligible"
-                {
+                let mut tx = connection.begin().await?;
+                crate::Database::configure_transaction(&mut tx, case_tenant()).await?;
+                rss_mdm_inventory_postgres::lock_watermark_in(&mut tx, rss_request_context::TenantId::parse(case_tenant())?).await?;
+                let scope_fresh: bool = sqlx::query_scalar("SELECT mdm_planning.scope_admission((SELECT (definition->>'scope')::uuid FROM mdm_policy.policies WHERE tenant_id=$1::uuid AND id=$2),NULL)->>'state'='fresh'")
+                    .bind(case_tenant()).bind(policy).fetch_one(&mut *tx).await?;
+                let absent = rss_mdm_execution_service::agent_install::absent_on(
+                    &mut tx, case_tenant(), case_device(),
+                ).await.map_err(|error| anyhow::anyhow!("installation absence readiness: {error:?}"))?;
+                tx.rollback().await?;
+                readiness = json!({"scopeFresh": scope_fresh, "absenceKnown": absent.is_some()});
+                if scope_fresh && absent.is_some() {
                     break;
                 }
                 tokio::time::sleep(Duration::from_millis(100)).await;
@@ -605,20 +670,41 @@ async fn execute(
             (initial, next) = begin(peer, session).await?;
             session += 1;
         }
-    })
-    .await
-    .context("installation execution did not become ready")?
+    }).await;
+    match result {
+        Ok(result) => result,
+        Err(error) => {
+            let diagnosis =
+                setup::diagnosis(&mut client.browser, &client.router, policy, case_device())
+                    .await?;
+            let attempts = pg(&format!(
+                "SELECT coalesce(jsonb_agg(jsonb_build_object('phase',a.phase,'session',a.session,'message',a.message,'command',i.command,'status',i.status,'receiptAccepted',i.receipt_accepted,'resultAccepted',i.result_accepted)),'[]') FROM mdm_commands.attempts a LEFT JOIN mdm_commands.attempt_items i ON(i.tenant_id,i.attempt)=(a.tenant_id,a.id) WHERE a.tenant_id='{}' AND a.operation='{operation}'",
+                case_tenant()
+            ))?;
+            anyhow::bail!(
+                "installation {} did not become ready: {error}; operation={operation}; diagnosis={diagnosis}; attempts={attempts}; readiness={readiness}",
+                phase.as_str()
+            )
+        }
+    }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 #[ignore = "make t2 MODULE=execution.commands.onboarding"]
 async fn failed_prepare_rejects_without_dispatching_installation() -> Result<()> {
-    let (host, mut client, peer, commands, owner, _, operation) = start_fixture().await?;
-    let (initial, prepare) = begin(&peer, 902).await?;
+    let (host, mut client, peer, commands, owner, policy, operation) = start_fixture().await?;
+    let (initial, prepare) =
+        installation(&peer, &mut client, policy, operation, AttemptPhase::Prepare).await?;
+    let command =
+        installation_command(&prepare, AttemptPhase::Prepare).expect("correlated MSI prepare");
+    ensure!(installation_command(&prepare, AttemptPhase::Execute).is_none());
+    ensure!(pg(&format!("SELECT EXISTS(SELECT 1 FROM mdm_commands.attempts a JOIN mdm_commands.attempt_items i ON(i.tenant_id,i.attempt)=(a.tenant_id,a.id) WHERE a.tenant_id='{}' AND a.operation='{operation}' AND a.phase='prepare' AND i.command={command} AND NOT coalesce(i.receipt_accepted,false))",case_tenant()))?.trim()=="t", "Prepare was counted as acknowledged before its receipt");
     let mut response = reply(&initial, &prepare, false);
     for c in &mut response.commands {
         if let s::Command::Status(s) = c
             && s.command == s::CommandName::Add
+            && s.message_ref == prepare.header.message_id
+            && s.command_ref == command
         {
             s.code = 500;
         }
@@ -634,6 +720,7 @@ async fn failed_prepare_rejects_without_dispatching_installation() -> Result<()>
         "{state:?}"
     );
     ensure!(pg(&format!("SELECT count(*) FROM mdm_commands.attempts WHERE operation='{operation}' AND phase='execute'"))?.trim()=="0");
+    ensure!(pg(&format!("SELECT EXISTS(SELECT 1 FROM mdm_commands.attempts a JOIN mdm_commands.attempt_items i ON(i.tenant_id,i.attempt)=(a.tenant_id,a.id) WHERE a.tenant_id='{}' AND a.operation='{operation}' AND a.phase='prepare' AND a.session={} AND a.message={} AND i.command={command} AND i.status=500 AND i.receipt_accepted)",case_tenant(),prepare.header.session_id,prepare.header.message_id))?.trim()=="t", "failed Prepare receipt was not accepted");
     ensure!(commands.shutdown().join().await?.is_clean());
     ensure!(owner.shutdown().join().await?.is_clean());
     host.close().await
@@ -643,7 +730,8 @@ async fn failed_prepare_rejects_without_dispatching_installation() -> Result<()>
 async fn native_enforcement_failure_is_separate_from_delivery_and_never_reinstalled() -> Result<()>
 {
     let (host, mut client, peer, commands, owner, policy, operation) = start_fixture().await?;
-    let (initial, execute) = execute(&peer, &mut client, policy).await?;
+    let (initial, execute) =
+        installation(&peer, &mut client, policy, operation, AttemptPhase::Execute).await?;
     post(&peer, &reply(&initial, &execute, false)).await?;
     let (initial, query) = begin(&peer, 903).await?;
     let mut response = reply(&initial, &query, true);
@@ -708,7 +796,7 @@ async fn native_enforcement_failure_is_separate_from_delivery_and_never_reinstal
 #[ignore = "make t2 MODULE=execution.commands.onboarding"]
 async fn cancellation_blocks_registration_and_preserves_uncertain_native_effect() -> Result<()> {
     let (host, mut client, peer, commands, owner, policy, operation) = start_fixture().await?;
-    execute(&peer, &mut client, policy).await?;
+    installation(&peer, &mut client, policy, operation, AttemptPhase::Execute).await?;
     let result = client
         .call(
             Method::POST,
@@ -768,7 +856,7 @@ async fn schedule_expiry_caps_installation_and_blocks_new_agent_registration() -
     let (host, mut client, peer, commands, owner, policy, operation, until) =
         start_fixture_until(Some(20)).await?;
     let until = until.expect("scheduled fixture");
-    execute(&peer, &mut client, policy).await?;
+    installation(&peer, &mut client, policy, operation, AttemptPhase::Execute).await?;
     ensure!(
         client
             .call(Method::GET, &format!("/{operation}"), None)
@@ -806,8 +894,8 @@ async fn schedule_expiry_caps_installation_and_blocks_new_agent_registration() -
 #[ignore = "make t2 MODULE=execution.commands.onboarding"]
 async fn replacement_rejects_old_installation_and_requires_current_epoch_absence() -> Result<()> {
     let (host, mut client, peer, commands, owner, policy, operation) = start_fixture().await?;
-    execute(&peer, &mut client, policy).await?;
-    let current = host.peer().await?;
+    installation(&peer, &mut client, policy, operation, AttemptPhase::Execute).await?;
+    let current = host.enrolled_peer().await?;
     let url = peer.url.replace(
         "/ManagementServer/MDM.svc",
         "/api/v1/agent/enroll/native-grants",
@@ -868,7 +956,7 @@ async fn replacement_rejects_old_installation_and_requires_current_epoch_absence
 #[ignore = "make t2 MODULE=execution.commands.onboarding"]
 async fn scope_exit_preserves_dispatched_installation_authority_until_its_deadline() -> Result<()> {
     let (host, mut client, peer, commands, owner, policy, operation) = start_fixture().await?;
-    execute(&peer, &mut client, policy).await?;
+    installation(&peer, &mut client, policy, operation, AttemptPhase::Execute).await?;
     let policy_view = client
         .browser
         .call(
@@ -991,5 +1079,46 @@ async fn policy_freeze_distinguishes_superseded_identity_from_withdrawn_approval
         rejected.0 == StatusCode::FORBIDDEN && rejected.1["code"] == "permission_denied",
         "withdrawn approval: {rejected:?}"
     );
+    host.close().await
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+#[ignore = "make t2 MODULE=execution.commands.onboarding"]
+async fn installed_report_blocks_execute_after_preparation() -> Result<()> {
+    use sqlx::Row;
+    let (host, mut client, peer, commands, owner, policy, operation) = start_fixture().await?;
+    let (initial, prepare) =
+        installation(&peer, &mut client, policy, operation, AttemptPhase::Prepare).await?;
+    // A pending maintenance query preserves the previous sealed channel fact,
+    // including when Group reads its historical quality at a newer watermark.
+    let mut tx = client.app.access.begin(case_tenant()).await?;
+    let scope: String = sqlx::query_scalar("SELECT scope FROM mdm_access.collection_runs WHERE tenant_id=$1::uuid AND source='mdm.windows' AND result='pending' ORDER BY sequence DESC LIMIT 1")
+        .bind(case_tenant()).fetch_one(&mut *tx).await?;
+    let watermark: i64 =
+        sqlx::query_scalar("SELECT revision FROM mdm.asset_clock WHERE tenant_id=$1::uuid")
+            .bind(case_tenant())
+            .fetch_one(&mut *tx)
+            .await?;
+    let quality = rss_mdm_inventory_service::collection::read::quality_at(
+        &mut tx,
+        case_tenant().into(),
+        vec![scope],
+        watermark,
+        serde_json::to_string(&rss_mdm_inventory::CollectionScope::Device)?,
+    )
+    .await?;
+    ensure!(
+        quality.len() == 1 && quality[0].try_get::<String, _>("result")? == "snapshot",
+        "pending maintenance displaced sealed channel quality"
+    );
+    tx.rollback().await?;
+    // Collect the new installed fact before attempting to advance the prepared
+    // command. Using the old absence here would incorrectly send Execute.
+    let response = post(&peer, &reply(&initial, &prepare, true)).await?;
+    ensure!(installation_command(&response, AttemptPhase::Execute).is_none());
+    ensure!(pg(&format!("SELECT count(*) FROM mdm_commands.attempts WHERE tenant_id='{}' AND operation='{operation}' AND phase='execute'", case_tenant()))?.trim()=="0");
+    ensure!(pg(&format!("SELECT EXISTS(SELECT 1 FROM mdm_access.collection_runs WHERE tenant_id='{}' AND source='mdm.windows' AND result='snapshot' AND evidence->>'version'='1.2.3' AND sealed_at IS NOT NULL)", case_tenant()))?.trim()=="t");
+    ensure!(commands.shutdown().join().await?.is_clean());
+    ensure!(owner.shutdown().join().await?.is_clean());
     host.close().await
 }
