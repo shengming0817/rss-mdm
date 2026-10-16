@@ -438,7 +438,8 @@ async fn configuration_prefix(
     macos: &w::configuration::Package,
     start: usize,
 ) -> Result<Vec<String>> {
-    let started = tokio::time::Instant::now();
+    let clock = monotonic();
+    let started = clock.now();
     let file = file.clone();
     let windows = windows.clone();
     let macos = macos.clone();
@@ -480,7 +481,7 @@ async fn configuration_prefix(
         "configuration prefix: devices={} offline_signatures={} elapsed_seconds={:.3}",
         devices.len(),
         devices.len(),
-        started.elapsed().as_secs_f64()
+        clock.now().saturating_duration_since(started).as_secs_f64()
     );
     Ok(devices)
 }
@@ -502,7 +503,8 @@ async fn fixed_packages_and_configurations_activate_beyond_self_quota() -> Resul
     ensure!(devices.len() == 19);
     let state = read(&f, &mut user, file.configuration.configuration_id).await?;
     ensure!(state["reserved"] == 0 && state["consumed"] == 19);
-    let live_started = tokio::time::Instant::now();
+    let phase_clock = monotonic();
+    let live_started = phase_clock.now();
     for n in 19..21 {
         let package = if n % 2 == 0 { &windows } else { &macos };
         ensure!(devices.insert(enroll(&f, &tls, &file, package, n).await?));
@@ -535,7 +537,10 @@ async fn fixed_packages_and_configurations_activate_beyond_self_quota() -> Resul
     ensure!(devices.len() == 42);
     println!(
         "configuration boundary phase: peers=42 online_issuances=4 exchange_replays=4 tls_activations=4 refill_waits=4 elapsed_seconds={:.3}",
-        live_started.elapsed().as_secs_f64()
+        phase_clock
+            .now()
+            .saturating_duration_since(live_started)
+            .as_secs_f64()
     );
     let state = read(&f, &mut user, unlimited.configuration.configuration_id).await?;
     ensure!(state["reserved"] == 0 && state["consumed"] == 21);
