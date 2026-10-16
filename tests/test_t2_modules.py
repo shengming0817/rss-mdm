@@ -355,8 +355,8 @@ class ModuleImpactTests(unittest.TestCase):
         self.assertNotIn('apple.apns', selected)
         self.assertNotIn('sources.winget', selected)
         self.assertNotIn('publication.artifact', selected)
-        # Gateway admission now includes a real management write against product PG.
-        self.assertIn('gateway.admission', selected)
+        # Shared migration setup is proven by installation/catalog.
+        self.assertNotIn('gateway.admission', selected)
 
     def test_python_tests_and_docs_do_not_select_integration(self):
         self.assertEqual(self.selected('tests/test_source_t2.py'), set())
@@ -464,7 +464,7 @@ class ModuleImpactTests(unittest.TestCase):
                 'agent.reports','planning.onboarding','execution.commands.onboarding',
                 'apple.onboarding','execution.agent.delivery','execution.agent.poll','execution.agent.recovery'},
             'crates/agent-wire/schema/enroll/native-grant-request-v1.schema.json': {
-                'execution.commands.onboarding','apple.onboarding','agent.pki','agent.registration','agent.reports','execution.agent.delivery'},
+                'execution.commands.onboarding','apple.onboarding','agent.pki','agent.pki-recovery','agent.registration','agent.reports','execution.agent.delivery'},
         }
         for path, expected in inputs.items():
             selected = select_inputs([path])

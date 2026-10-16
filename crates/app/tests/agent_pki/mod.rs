@@ -10,7 +10,7 @@ use crate::{
 use base64::{Engine, engine::general_purpose::STANDARD};
 use rss_mdm_agent_wire::{enroll as wire, runtime};
 use rss_mdm_audit_integration::RequestAudit;
-use rss_mdm_certificate::agent::{PROFILE, VerifiedAgentCsr};
+use rss_mdm_certificate::agent::VerifiedAgentCsr;
 use rss_mdm_registration_service::agent::{Assembly, NativeAdmission, Pending, Service};
 use std::{path::PathBuf, sync::Arc, time::Duration};
 use uuid::Uuid;

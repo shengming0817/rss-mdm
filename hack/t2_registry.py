@@ -1875,7 +1875,9 @@ for owner in ('agent-channel', 'apple-channel', 'windows-channel',
     consumers = [name for name, module in MODULES.items()
                  if any(path.startswith(prefix) and not path.endswith(('access-admission.sql', 'access-contract.json'))
                         for path in module.production_inputs)]
-    consume((f'crates/{owner}/schema/install.sql', f'crates/{owner}/schema/relations.sql'), consumers)
+    consume((f'crates/{owner}/schema/install.sql',), consumers)
+    if owner not in {'pki-service', 'device-service', 'timeline-service', 'certificate-archive-service'}:
+        consume((f'crates/{owner}/schema/relations.sql',), consumers)
 
 consume(('crates/inventory-service/schema/field-scopes.sql',),
         'assets.http assets.queries assets.sources assets.group_input inventory.runtime '

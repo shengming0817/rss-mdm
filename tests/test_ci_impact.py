@@ -13,6 +13,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import tomllib
 import unittest
 from unittest.mock import patch
 
@@ -230,7 +231,8 @@ DEPENDENCY_POLICIES = {}
 
             validate_selection(
                 decision,
-                decision['cargo']['packages'],
+                [tomllib.loads(path.read_text())['package']['name']
+                 for path in self.root.glob('*/**/Cargo.toml')],
                 decision['t2']['modules'],
                 [path.stem for path in (self.root / 'tests').glob('test_*.py')],
             )
