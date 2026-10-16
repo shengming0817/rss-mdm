@@ -179,9 +179,8 @@ impl Fixture {
                 .is_err(),
             "native listener survived shutdown"
         );
-        ensure!(self.owner.shutdown().join().await?.is_clean());
         pg.close().await?;
-        Ok(())
+        self.close().await
     }
 }
 

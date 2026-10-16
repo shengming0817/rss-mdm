@@ -58,7 +58,9 @@ async fn s3_product_http_contract() -> Result<()> {
 #[ignore = "MODULE=content.storage: durable PG control, real S3 fixed chunks and native snapshots"]
 async fn s3_chunk_frontier_and_native_restart() -> Result<()> {
     let (_secrets, storage) = s3_storage()?;
-    let fixture = Fixture::with_storage(storage.clone()).await?;
+    let mut fixture = Fixture::with_storage(storage.clone()).await?;
+    let resources = std::mem::take(&mut fixture.resources);
+    resources.finish(async {
     let store = fixture.content.as_ref().unwrap();
     let now = crate::windows::test_support::now();
     let bytes = vec![0x67; 128 * 1024 * 1024 + 3];
@@ -132,11 +134,14 @@ async fn s3_chunk_frontier_and_native_restart() -> Result<()> {
     );
     second.close().await;
     Ok(())
+    }).await
 }
 #[tokio::test]
 #[ignore = "MODULE=content.storage: real PG multi-instance epoch and failed-body frontier"]
 async fn volume_fences_a_stale_writer_and_keeps_failed_body_frontier() -> Result<()> {
-    let fixture = Fixture::open(false).await?;
+    let mut fixture = Fixture::open(false).await?;
+    let resources = std::mem::take(&mut fixture.resources);
+    resources.finish(async {
     let store = fixture.content.as_ref().unwrap();
     let bytes = b"epoch-frontier-bytes";
     let b = binding(bytes, StorageClass::Artifact);
@@ -194,13 +199,16 @@ async fn volume_fences_a_stale_writer_and_keeps_failed_body_frontier() -> Result
     ensure!(store.status(&b.actor, bad, now).await?.offset == 0);
     second.close().await;
     Ok(())
+    }).await
 }
 
 #[tokio::test]
 #[ignore = "MODULE=content.storage: physical S3 snapshot survives failed PG frontier commit"]
 async fn s3_failed_frontier_commit_preserves_acknowledged_native_prefix() -> Result<()> {
     let (_secrets, storage) = s3_storage()?;
-    let fixture = Fixture::with_storage(storage.clone()).await?;
+    let mut fixture = Fixture::with_storage(storage.clone()).await?;
+    let resources = std::mem::take(&mut fixture.resources);
+    resources.finish(async {
     let store = fixture.content.as_ref().unwrap();
     let mut config: Value =
         serde_json::from_slice(&std::fs::read(std::env::var("MDM_TEST_CONFIG")?)?)?;
@@ -248,6 +256,7 @@ EXECUTE FUNCTION public.content_frontier_fault();"#,
     );
     second.close().await;
     Ok(())
+    }).await
 }
 
 // A dedicated workload identity keeps this permission fault isolated from parallel S3 cases.
@@ -343,7 +352,9 @@ async fn s3_rejected_writes_release_quota_after_permission_recovery_and_expiry()
     // Replace private file contents before host construction; no runtime secret mutation.
     std::fs::write(secrets.path().join("access"), access.as_bytes())?;
     std::fs::write(secrets.path().join("secret"), secret.as_bytes())?;
-    let fixture = Fixture::with_storage(storage.clone()).await?;
+    let mut fixture = Fixture::with_storage(storage.clone()).await?;
+    let resources = std::mem::take(&mut fixture.resources);
+    resources.finish(async {
     let mut cfg: Value =
         serde_json::from_slice(&std::fs::read(std::env::var("MDM_TEST_CONFIG")?)?)?;
     cfg["content"]["storage"] = storage;
@@ -410,4 +421,5 @@ async fn s3_rejected_writes_release_quota_after_permission_recovery_and_expiry()
     store.close().await;
     drop(fixture);
     Ok(())
+    }).await
 }

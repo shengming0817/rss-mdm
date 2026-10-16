@@ -3,9 +3,12 @@ use crate::test_support::*;
 #[tokio::test]
 #[ignore = "make t2 MODULE=planning.policy"]
 async fn assignment_pagination_uses_published_scope_without_eager_execution() -> Result<()> {
-    let fixture = authority::Authority::open().await?;
-    let reader = authority::reader(&fixture.base).await?;
-    let router = app(&fixture.base, reader.clone()).await?;
+    let mut fixture = authority::Authority::open().await?;
+    let fixture_resources = std::mem::take(&mut fixture.resources);
+    fixture_resources.finish(async {
+
+    let (router, app_resources) = app(&fixture.base).await?;
+    app_resources.finish(async {
     let mut browser = fixture.browser("other")?;
     let member = browser_subject(&browser, &router).await?;
     let mut grants = identity::device_grants(None, &["inventory_read", "configuration_write"])?;
@@ -158,6 +161,9 @@ async fn assignment_pagination_uses_published_scope_without_eager_execution() ->
         ))? == before
     );
     crate::test_support::stop_worker(automation).await?;
-    reader.close().await;
+
     Ok(())
+    }).await
+
+    }).await
 }

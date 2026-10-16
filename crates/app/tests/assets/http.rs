@@ -4,8 +4,13 @@ mod identity_read {
     #[tokio::test]
     #[ignore = "MODULE=assets.http: real read authorization and PostgreSQL projection"]
     async fn persisted_inventory_read_respects_device_scope() -> Result<()> {
-        let fixture = authority::Authority::open().await?;
-        let (authorized, _) = app_with_access(&fixture.base, fixture.access.clone()).await?;
+        let mut fixture = authority::Authority::open().await?;
+        let fixture_resources = std::mem::take(&mut fixture.resources);
+        fixture_resources
+            .finish(async {
+                let (authorized, _, app_resources) =
+                    app_with_access(&fixture.base, fixture.access.clone()).await?;
+                app_resources.finish(async {
         let mut browser = fixture.browser("other")?;
         let query = &format!("/api/v1/devices/{}/inventory", case::name("device-1"));
         ensure!(
@@ -64,6 +69,9 @@ mod identity_read {
         browser.operation = None;
         ensure!(browser.call(&authorized, Method::GET, query, None).await?.0 == StatusCode::OK);
         Ok(())
+        }).await
+            })
+            .await
     }
 }
 

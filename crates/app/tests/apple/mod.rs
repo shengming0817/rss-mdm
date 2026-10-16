@@ -40,6 +40,7 @@ fn case_device() -> &'static str {
     crate::test_support::case::name("apple-native-mac")
 }
 struct Fixture {
+    resources: crate::test_support::Resources,
     app: Arc<Assembly>,
     browser: Browser,
     router: Router,
@@ -70,6 +71,7 @@ impl Fixture {
         preserve_authorization: bool,
         ade: Option<rss_mdm_apple_channel::ade::Fixture>,
     ) -> Result<Self> {
+        let (resources, mut fixture) = crate::test_support::Resources::build(move |resources| Box::pin(async move {
         let root = PathBuf::from(std::env::var("MDM_APPLE_FIXTURES")?);
         let manage =
             tokio::net::TcpListener::bind(address.unwrap_or("127.0.0.1:0".parse()?)).await?;
@@ -110,6 +112,7 @@ impl Fixture {
         let clock = Arc::new(crate::clock::SystemClock);
         let monotonic: Arc<dyn rss_observation::Clock> = fixture_clock();
         let access = Arc::new(crate::Database::connect(config.access_database.options()?).await?);
+        resources.resource(crate::lifecycle::AccessResource(access.clone()));
         let devices = Arc::new(
             crate::device::DeviceService::new(
                 access.registration(),
@@ -132,6 +135,9 @@ impl Fixture {
                 .await?,
         )
         .await?;
+        resources.resource(crate::test_support::InventoryFixtureResource(
+            runtime.clone(),
+        ));
         let management = config
             .flow
             .open(
@@ -142,13 +148,22 @@ impl Fixture {
                 rss_request_context::TenantId::parse(case_tenant())?,
                 clock.clone(),
                 None,
-                |_| {},
+                |resource| resources.resource(resource),
             )
             .await?;
         let content = {
             let _guard = crate::test_support::software::content_setup_guard().await?;
             crate::execution_assembly::open_content(config, config.native_protector()?).await?
         };
+        if let Some(content) = &content {
+            resources.resource(crate::execution_assembly::ContentResource(content.clone()));
+        }
+        let identity = crate::identity::Identity::connect(
+            config,
+            compiled.identity_management.clone(),
+            |resource| resources.acquire(resource),
+        )
+        .await?;
         let execution = crate::execution_assembly::open(
             config,
             config.native_protector()?,
@@ -158,15 +173,17 @@ impl Fixture {
             content,
             std::collections::BTreeMap::new(),
             rss_device_command_postgres::CommandClock::Postgres,
-            crate::test_support::identity::session_authority(config).await?,
+            Arc::new(
+                rss_mdm_authorization_service::session::SessionAuthority::new(
+                    identity.authority.clone(),
+                    identity.tenant,
+                ),
+            ),
         )
         .await?;
-        let identity = crate::identity::Identity::connect(
-            config,
-            compiled.identity_management.clone(),
-            |_| {},
-        )
-        .await?;
+        resources.resource(rss_mdm_execution_service::Resource(
+            execution.service.clone(),
+        ));
         let config = compiled.config;
         let timeline = access.timeline(
             access
@@ -320,6 +337,7 @@ impl Fixture {
                             let mut pg = sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?).await?;
                             sqlx::query("INSERT INTO mdm_access.registration_admission(tenant_id,channel,revision,paused) VALUES($1::uuid,'macos_mdm',1,true)")
                                 .bind(&tenant).execute(&mut pg).await?;
+                            pg.close().await?;
                             anyhow::Ok(())
                         }.await;
                         if result.is_err() { return StatusCode::INTERNAL_SERVER_ERROR.into_response(); }
@@ -413,10 +431,9 @@ impl Fixture {
         let router = router.layer(axum::Extension(rss_identity_http_axum::ClientAddress(
             "127.0.0.1".parse()?,
         )));
-        let browser = crate::test_support::authority::Authority::open()
-            .await?
-            .browser("admin")?;
+        let browser = crate::test_support::authority::Authority::prepared_browser("admin").await?;
         Ok(Self {
+            resources: Default::default(),
             app,
             browser,
             router,
@@ -427,6 +444,10 @@ impl Fixture {
             pause_before_notify,
             ade,
         })
+
+        })).await?;
+        fixture.resources = resources;
+        Ok(fixture)
     }
     async fn profile_query_due(&self, operation: Uuid) -> Result<()> {
         use sqlx::Connection;
@@ -694,32 +715,41 @@ mod renewal;
 
 impl Fixture {
     async fn close(self) -> Result<()> {
-        let report = self.owner.shutdown().join().await?;
-        if !report.is_clean() {
-            let diagnostics = self
-                .app
-                .inventory
-                .diagnostics(fixture_clock().now() + Duration::from_secs(1))
-                .await;
-            if let Some(rss_projection::ObservationStatus::Stopped(projection)) =
-                diagnostics.projection
-                && let rss_projection::Stop::Failed(error) = projection.stop
-            {
-                let detail = error.diagnostic();
-                eprintln!(
-                    "{}",
-                    json!({
-                        "event": "apple_fixture_inventory_projection_failure",
-                        "kind": format!("{:?}", error.kind()),
-                        "providerPhase": detail.map(|d| format!("{:?}", d.phase())),
-                        "sqlstate": detail.and_then(|d| d.sqlstate()),
-                        "position": detail.and_then(|d| d.position()).map(|p| p.get()),
-                    })
-                );
-            }
-        }
-        ensure!(report.is_clean(), "Apple fixture shutdown: {report:?}");
-        Ok(())
+        let Self {
+            resources,
+            owner,
+            app,
+            ..
+        } = self;
+        resources
+            .finish(async move {
+                let report = owner.shutdown().join().await?;
+                if !report.is_clean() {
+                    let diagnostics = app
+                        .inventory
+                        .diagnostics(fixture_clock().now() + Duration::from_secs(1))
+                        .await;
+                    if let Some(rss_projection::ObservationStatus::Stopped(projection)) =
+                        diagnostics.projection
+                        && let rss_projection::Stop::Failed(error) = projection.stop
+                    {
+                        let detail = error.diagnostic();
+                        eprintln!(
+                            "{}",
+                            json!({
+                                "event": "apple_fixture_inventory_projection_failure",
+                                "kind": format!("{:?}", error.kind()),
+                                "providerPhase": detail.map(|d| format!("{:?}", d.phase())),
+                                "sqlstate": detail.and_then(|d| d.sqlstate()),
+                                "position": detail.and_then(|d| d.position()).map(|p| p.get()),
+                            })
+                        );
+                    }
+                }
+                ensure!(report.is_clean(), "Apple fixture shutdown: {report:?}");
+                Ok(())
+            })
+            .await
     }
     async fn scep_leaf(&mut self) -> Result<(scep_client::Device, Vec<u8>)> {
         let (enrollment, attempt, password) = self.enrollment().await?;

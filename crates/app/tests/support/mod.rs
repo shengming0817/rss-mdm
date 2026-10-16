@@ -290,17 +290,22 @@ pub(crate) async fn database(value: &Value) -> Result<Arc<crate::Database>> {
     ))
 }
 
-pub(crate) async fn app(value: &Value, _reader: Arc<InventoryReader>) -> Result<Router> {
-    Ok(app_with_access(value, database(value).await?).await?.0)
+pub(crate) async fn app(value: &Value) -> Result<(Router, Resources)> {
+    let (router, _, resources) = app_with_access(value, database(value).await?).await?;
+    Ok((router, resources))
 }
 
 pub(crate) async fn app_with_access(
     value: &Value,
     access: Arc<crate::Database>,
-) -> Result<(Router, Arc<rss_mdm_audit_integration::AuditStore>)> {
+) -> Result<(
+    Router,
+    Arc<rss_mdm_audit_integration::AuditStore>,
+    Resources,
+)> {
     let c: Config = serde_json::from_value(value.clone())?;
     let audit_store = access.audit_store(&c.audit).await?;
-    let (router, _, _, _) = crate::api::application_fixture(
+    let (router, _, _, _, resources) = crate::api::application_fixture(
         c,
         Arc::new(crate::clock::SystemClock),
         monotonic(),
@@ -315,6 +320,7 @@ pub(crate) async fn app_with_access(
             "127.0.0.1".parse()?,
         ))),
         audit_store,
+        resources,
     ))
 }
 
@@ -334,16 +340,37 @@ pub(crate) async fn start_automation(value: &Value) -> Result<Option<rss_runtime
         Arc::new(crate::lifecycle::RuntimeTimer),
     )?;
     let mut startup = stack.startup()?;
-    let access = crate::Database::connect(config.access_database.options()?).await?;
+    let access = Arc::new(crate::Database::connect(config.access_database.options()?).await?);
+    startup.stage_resource(rss_runtime::DynManagedResource::new_box(
+        crate::lifecycle::AccessResource(access.clone()),
+    ));
     let audit_store = access.audit_store(&config.audit).await?;
+    let inventory = crate::inventory_runtime::InventoryRuntime::fixture(
+        config.runtime_database.options()?,
+        access.inventory(),
+        rss_request_context::TenantId::parse(case_tenant())?,
+        monotonic(),
+        audit_store.clone(),
+    )
+    .await?;
+    startup.stage_resource(rss_runtime::DynManagedResource::new_box(
+        InventoryFixtureResource(inventory.clone()),
+    ));
+    let content =
+        crate::execution_assembly::open_content(&config, config.native_protector()?).await?;
+    if let Some(content) = &content {
+        startup.stage_resource(rss_runtime::DynManagedResource::new_box(
+            crate::execution_assembly::ContentResource(content.clone()),
+        ));
+    }
     let service = config
         .flow
         .open(
-            agent_runtime(value).await?,
+            inventory,
             audit_store,
             rss_request_context::TenantId::parse(case_tenant())?,
             Arc::new(crate::clock::SystemClock),
-            crate::execution_assembly::open_content(&config, config.native_protector()?).await?,
+            content,
             |resource| startup.stage_resource(rss_runtime::DynManagedResource::new_box(resource)),
         )
         .await?;
@@ -599,3 +626,189 @@ pub(crate) mod channel_onboarding;
 pub(crate) mod agent_tls;
 
 pub(crate) mod agent_http;
+
+#[derive(Default)]
+#[must_use = "fixture resources must be explicitly shut down"]
+pub(crate) struct Resources(pub(super) Vec<Box<rss_runtime::DynManagedResource<'static>>>);
+impl Resources {
+    pub(crate) fn extend(&mut self, mut other: Self) {
+        self.0.append(&mut other.0);
+    }
+    pub(crate) fn acquire(&mut self, resource: Box<rss_runtime::DynManagedResource<'static>>) {
+        self.0.push(resource);
+    }
+    pub(crate) fn resource(&mut self, resource: impl rss_runtime::ManagedResource + 'static) {
+        self.acquire(rss_runtime::DynManagedResource::new_box(resource));
+    }
+    pub(crate) async fn build<T>(
+        initialize: impl for<'a> FnOnce(&'a mut Self) -> futures::future::BoxFuture<'a, Result<T>>,
+    ) -> Result<(Self, T)> {
+        use futures::FutureExt;
+        let mut resources = Self::default();
+        let result = std::panic::AssertUnwindSafe(async { initialize(&mut resources).await })
+            .catch_unwind()
+            .await;
+        match result {
+            Ok(Ok(value)) => Ok((resources, value)),
+            failure => resources
+                .settle(failure)
+                .await
+                .map(|value| (Self::default(), value)),
+        }
+    }
+
+    fn take_owner(&mut self) -> Result<rss_runtime::ShutdownStack> {
+        let mut owner = rss_runtime::ShutdownStack::try_new(
+            rss_runtime::TotalDrainBudget::new(Duration::from_secs(40))?,
+            Arc::new(crate::lifecycle::RuntimeTimer),
+        )?;
+        let mut startup = owner.startup()?;
+        for resource in std::mem::take(&mut self.0) {
+            startup.stage_resource(resource);
+        }
+        startup.commit().finish();
+        Ok(owner)
+    }
+
+    pub(crate) async fn finish<T>(
+        self,
+        operation: impl std::future::Future<Output = Result<T>>,
+    ) -> Result<T> {
+        use futures::FutureExt;
+        self.settle(std::panic::AssertUnwindSafe(operation).catch_unwind().await)
+            .await
+    }
+
+    async fn settle<T>(mut self, result: std::thread::Result<Result<T>>) -> Result<T> {
+        let cleanup = async {
+            let receipt = self.take_owner()?.shutdown().join().await?;
+            ensure!(
+                receipt.is_clean(),
+                "fixture resource shutdown incomplete: {receipt:?}"
+            );
+            Ok::<_, anyhow::Error>(())
+        }
+        .await;
+        match result {
+            Ok(Ok(value)) => {
+                cleanup?;
+                Ok(value)
+            }
+            Ok(Err(error)) => match cleanup {
+                Ok(()) => Err(error),
+                Err(cleanup) => {
+                    Err(error.context(format!("fixture cleanup also failed: {cleanup:#}")))
+                }
+            },
+            Err(panic) => {
+                if let Err(error) = cleanup {
+                    eprintln!("fixture cleanup failed after panic: {error:#}");
+                }
+                std::panic::resume_unwind(panic)
+            }
+        }
+    }
+}
+
+impl Drop for Resources {
+    fn drop(&mut self) {
+        if self.0.is_empty() {
+            return;
+        }
+        // Cancellation cannot await: hand the same resources to RSS's existing drop drain.
+        if let Err(error) = self.take_owner() {
+            eprintln!("fixture resource drop cleanup unavailable: {error:#}");
+        }
+    }
+}
+
+pub(crate) struct InventoryFixtureResource(pub Arc<crate::inventory_runtime::InventoryRuntime>);
+impl rss_runtime::ManagedResource for InventoryFixtureResource {
+    fn name(&self) -> &str {
+        "fixture-inventory"
+    }
+    fn shutdown_timeout(&self) -> Duration {
+        Duration::from_secs(10)
+    }
+    async fn shutdown(&self) -> std::result::Result<(), rss_runtime::ShutdownError> {
+        self.0.close_fixture().await
+    }
+}
+
+#[tokio::test]
+async fn fixture_resources_preserve_failures_and_close_during_initialization() {
+    use futures::FutureExt;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    struct Resource(Arc<AtomicUsize>, bool);
+    impl rss_runtime::ManagedResource for Resource {
+        fn name(&self) -> &str {
+            "fixture-cleanup-probe"
+        }
+        async fn shutdown(&self) -> std::result::Result<(), rss_runtime::ShutdownError> {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            if self.1 {
+                return Err(rss_runtime::ShutdownError::new(std::io::Error::other(
+                    "injected cleanup failure",
+                )));
+            }
+            Ok(())
+        }
+    }
+    let closed = Arc::new(AtomicUsize::new(0));
+    for cleanup_failure in [false, true] {
+        for panic in [false, true] {
+            let mut resources = Resources::default();
+            resources.resource(Resource(closed.clone(), cleanup_failure));
+            let outcome = std::panic::AssertUnwindSafe(resources.finish::<()>(async {
+                assert!(!panic, "test fixture assertion failure");
+                anyhow::bail!("test fixture operation failure")
+            }))
+            .catch_unwind()
+            .await;
+            if panic {
+                let payload = outcome.expect_err("original panic must survive cleanup");
+                assert_eq!(
+                    payload.downcast_ref::<&str>(),
+                    Some(&"test fixture assertion failure")
+                );
+            } else {
+                let error = outcome
+                    .expect("operation returns an error")
+                    .expect_err("operation failed");
+                assert!(format!("{error:#}").contains("test fixture operation failure"));
+                if cleanup_failure {
+                    assert!(format!("{error:#}").contains("fixture-cleanup-probe"));
+                }
+            }
+        }
+    }
+    assert_eq!(closed.load(Ordering::SeqCst), 4);
+    for panic in [false, true] {
+        let count = closed.clone();
+        let outcome = std::panic::AssertUnwindSafe(Resources::build::<()>(move |resources| {
+            Box::pin(async move {
+                resources.resource(Resource(count, false));
+                assert!(!panic, "injected initialization panic");
+                anyhow::bail!("injected initialization failure")
+            })
+        }))
+        .catch_unwind()
+        .await;
+        assert!(if panic {
+            outcome.is_err()
+        } else {
+            outcome.unwrap().is_err()
+        });
+    }
+    assert_eq!(closed.load(Ordering::SeqCst), 6);
+    let mut resources = Resources::default();
+    resources.resource(Resource(closed.clone(), false));
+    drop(resources);
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while closed.load(Ordering::SeqCst) != 7 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("RSS drop drain closes the abandoned fixture");
+}

@@ -7,50 +7,64 @@ use crate::test_support::*;
 #[tokio::test]
 #[ignore = "make t2 MODULE=planning.http"]
 async fn console_collection_routes_reuse_current_policy() -> Result<()> {
-    let fixture = authority::Authority::open().await?;
-    let reader = authority::reader(&fixture.base).await?;
-    let router = app(&fixture.base, reader).await?;
-    let mut browser = fixture.browser("other")?;
-    let subject = browser_subject(&browser, &router).await?;
-    set_management_grants(
-        &subject,
-        json!(["group_read", "scope_read", "policy_read", "resource_read"]),
-    )
-    .await?;
-    for path in ["/api/v1/groups", "/api/v1/scopes", "/api/v1/resources"] {
-        let (status, page) = browser.call(&router, Method::GET, path, None).await?;
-        ensure!(
-            status == StatusCode::OK,
-            "missing collection {path}: {status} {page}"
-        );
-        ensure!(page["items"].is_array() && page["nextCursor"].is_null());
-        ensure!(
-            browser
-                .call(&router, Method::GET, &format!("{path}?limit=0"), None)
-                .await?
-                .0
-                == StatusCode::BAD_REQUEST
-        );
-        ensure!(
-            browser
-                .call(&router, Method::GET, &format!("{path}?limit=1001"), None)
-                .await?
-                .0
-                == StatusCode::BAD_REQUEST
-        );
-    }
-    set_management_grants(&subject, json!([])).await?;
-    for path in ["/api/v1/groups", "/api/v1/scopes", "/api/v1/resources"] {
-        ensure!(browser.call(&router, Method::GET, path, None).await?.0 == StatusCode::FORBIDDEN);
-    }
-    Ok(())
+    let mut fixture = authority::Authority::open().await?;
+    let fixture_resources = std::mem::take(&mut fixture.resources);
+    fixture_resources
+        .finish(async {
+            let (router, app_resources) = app(&fixture.base).await?;
+            app_resources
+                .finish(async {
+                    let mut browser = fixture.browser("other")?;
+                    let subject = browser_subject(&browser, &router).await?;
+                    set_management_grants(
+                        &subject,
+                        json!(["group_read", "scope_read", "policy_read", "resource_read"]),
+                    )
+                    .await?;
+                    for path in ["/api/v1/groups", "/api/v1/scopes", "/api/v1/resources"] {
+                        let (status, page) = browser.call(&router, Method::GET, path, None).await?;
+                        ensure!(
+                            status == StatusCode::OK,
+                            "missing collection {path}: {status} {page}"
+                        );
+                        ensure!(page["items"].is_array() && page["nextCursor"].is_null());
+                        ensure!(
+                            browser
+                                .call(&router, Method::GET, &format!("{path}?limit=0"), None)
+                                .await?
+                                .0
+                                == StatusCode::BAD_REQUEST
+                        );
+                        ensure!(
+                            browser
+                                .call(&router, Method::GET, &format!("{path}?limit=1001"), None)
+                                .await?
+                                .0
+                                == StatusCode::BAD_REQUEST
+                        );
+                    }
+                    set_management_grants(&subject, json!([])).await?;
+                    for path in ["/api/v1/groups", "/api/v1/scopes", "/api/v1/resources"] {
+                        ensure!(
+                            browser.call(&router, Method::GET, path, None).await?.0
+                                == StatusCode::FORBIDDEN
+                        );
+                    }
+                    Ok(())
+                })
+                .await
+        })
+        .await
 }
 
 #[tokio::test]
 #[ignore = "make t2 MODULE=planning.http"]
 async fn console_pending_directory_and_permission_changes() -> Result<()> {
-    let fixture = authority::Authority::open().await?;
-    let router = app(&fixture.base, authority::reader(&fixture.base).await?).await?;
+    let mut fixture = authority::Authority::open().await?;
+    let fixture_resources = std::mem::take(&mut fixture.resources);
+    fixture_resources.finish(async {
+    let (router, app_resources) = app(&fixture.base).await?;
+    app_resources.finish(async {
     let mut browser = fixture.browser("other")?;
     let device = case::name("pending-console");
     set_device_grants(
@@ -111,13 +125,19 @@ async fn console_pending_directory_and_permission_changes() -> Result<()> {
             == StatusCode::FORBIDDEN
     );
     Ok(())
+    }).await
+
+    }).await
 }
 
 #[tokio::test]
 #[ignore = "make t2 MODULE=planning.http"]
 async fn console_directory_pages_registered_revoked_and_pending() -> Result<()> {
-    let fixture = authority::Authority::open().await?;
-    let router = app(&fixture.base, authority::reader(&fixture.base).await?).await?;
+    let mut fixture = authority::Authority::open().await?;
+    let fixture_resources = std::mem::take(&mut fixture.resources);
+    fixture_resources.finish(async {
+    let (router, app_resources) = app(&fixture.base).await?;
+    app_resources.finish(async {
     let mut browser = fixture.browser("other")?;
     let subject = browser_subject(&browser, &router).await?;
     identity::set_grants(
@@ -226,6 +246,9 @@ async fn console_directory_pages_registered_revoked_and_pending() -> Result<()> 
         );
     }
     Ok(())
+    }).await
+
+    }).await
 }
 
 #[tokio::test]
@@ -233,93 +256,106 @@ async fn console_directory_pages_registered_revoked_and_pending() -> Result<()> 
 async fn console_script_support_requires_signer_and_content() -> Result<()> {
     use crate::test_support::agent_execution::{Fixture, case_device_id};
     let mut fixture = Fixture::new().await?;
-    fixture.register().await?;
-    for (signed, content) in [(true, true), (true, false)] {
-        let mut config = fixture.base.clone();
-        if !signed {
-            config["task_signing"] = Value::Null;
-            config["agent_pki"] = json!({"mode":"disabled"});
-        }
-        if !content {
-            config["content"] = Value::Null;
-        }
-        let router = app(&config, authority::reader(&config).await?).await?;
-        let (status, detail) = fixture
-            .author
-            .call(
-                &router,
-                Method::GET,
-                &format!("/api/v1/devices/{}", case_device_id()),
-                None,
-            )
-            .await?;
-        ensure!(
-            status == StatusCode::OK,
-            "capability detail signed={signed} content={content}: {status} {detail}"
-        );
-        let capability = detail["capabilities"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .find(|v| v["action"] == "script")
-            .unwrap();
-        let supported = signed && content;
-        ensure!(
-            capability["productSupport"]["state"]
-                == if supported {
-                    "supported"
-                } else {
-                    "unsupported"
-                },
-            "script support signed={signed} content={content}: {capability}"
-        );
-        ensure!(
-            capability["productSupport"]["reason"]
-                == if supported {
-                    Value::Null
-                } else {
-                    json!("product_not_configured")
+    let resources = std::mem::take(&mut fixture.resources);
+    resources
+        .finish(async {
+            fixture.register().await?;
+            for (signed, content) in [(true, true), (true, false)] {
+                let mut config = fixture.base.clone();
+                if !signed {
+                    config["task_signing"] = Value::Null;
+                    config["agent_pki"] = json!({"mode":"disabled"});
                 }
-        );
-        ensure!(
-            capability["devicePrerequisite"]["state"] == "ready"
-                && capability["permission"]["allowed"] == true,
-            "configuration merged device or permission facts: {capability}"
-        );
-    }
-    let grants = fixture
-        .grants
-        .iter()
-        .filter(|grant| grant.operation != crate::authorization::Permission::ScriptExecute)
-        .cloned()
-        .collect();
-    identity::set_grants(case_tenant(), &fixture.author_id, grants).await?;
-    let (status, detail) = fixture
-        .author
-        .call(
-            &fixture.router,
-            Method::GET,
-            &format!("/api/v1/devices/{}", case_device_id()),
-            None,
-        )
-        .await?;
-    ensure!(status == StatusCode::OK);
-    let capability = &detail["capabilities"][0];
-    ensure!(
-        capability["action"] == "script"
-            && capability["productSupport"]["state"] == "supported"
-            && capability["devicePrerequisite"]["state"] == "ready"
-            && capability["permission"]["allowed"] == false,
-        "revocation merged capability facts: {capability}"
-    );
-    Ok(())
+                if !content {
+                    config["content"] = Value::Null;
+                }
+                let (router, app_resources) = app(&config).await?;
+                app_resources
+                    .finish(async {
+                        let (status, detail) = fixture
+                            .author
+                            .call(
+                                &router,
+                                Method::GET,
+                                &format!("/api/v1/devices/{}", case_device_id()),
+                                None,
+                            )
+                            .await?;
+                        ensure!(
+                            status == StatusCode::OK,
+                            "capability detail signed={signed} content={content}: {status} {detail}"
+                        );
+                        let capability = detail["capabilities"]
+                            .as_array()
+                            .unwrap()
+                            .iter()
+                            .find(|v| v["action"] == "script")
+                            .unwrap();
+                        let supported = signed && content;
+                        ensure!(
+                            capability["productSupport"]["state"]
+                                == if supported {
+                                    "supported"
+                                } else {
+                                    "unsupported"
+                                },
+                            "script support signed={signed} content={content}: {capability}"
+                        );
+                        ensure!(
+                            capability["productSupport"]["reason"]
+                                == if supported {
+                                    Value::Null
+                                } else {
+                                    json!("product_not_configured")
+                                }
+                        );
+                        ensure!(
+                            capability["devicePrerequisite"]["state"] == "ready"
+                                && capability["permission"]["allowed"] == true,
+                            "configuration merged device or permission facts: {capability}"
+                        );
+                        Ok(())
+                    })
+                    .await?;
+            }
+            let grants = fixture
+                .grants
+                .iter()
+                .filter(|grant| grant.operation != crate::authorization::Permission::ScriptExecute)
+                .cloned()
+                .collect();
+            identity::set_grants(case_tenant(), &fixture.author_id, grants).await?;
+            let (status, detail) = fixture
+                .author
+                .call(
+                    &fixture.router,
+                    Method::GET,
+                    &format!("/api/v1/devices/{}", case_device_id()),
+                    None,
+                )
+                .await?;
+            ensure!(status == StatusCode::OK);
+            let capability = &detail["capabilities"][0];
+            ensure!(
+                capability["action"] == "script"
+                    && capability["productSupport"]["state"] == "supported"
+                    && capability["devicePrerequisite"]["state"] == "ready"
+                    && capability["permission"]["allowed"] == false,
+                "revocation merged capability facts: {capability}"
+            );
+            Ok(())
+        })
+        .await
 }
 
 #[tokio::test]
 #[ignore = "make t2 MODULE=planning.http"]
 async fn console_metadata_filters_and_selectors() -> Result<()> {
-    let fixture = authority::Authority::open().await?;
-    let router = app(&fixture.base, authority::reader(&fixture.base).await?).await?;
+    let mut fixture = authority::Authority::open().await?;
+    let fixture_resources = std::mem::take(&mut fixture.resources);
+    fixture_resources.finish(async {
+    let (router, app_resources) = app(&fixture.base).await?;
+    app_resources.finish(async {
     let mut browser = fixture.browser("other")?;
     let subject = browser_subject(&browser, &router).await?;
     set_management_grants(
@@ -453,13 +489,19 @@ async fn console_metadata_filters_and_selectors() -> Result<()> {
             == StatusCode::FORBIDDEN
     );
     Ok(())
+    }).await
+
+    }).await
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 #[ignore = "make t2 MODULE=planning.http"]
 async fn console_scope_ready_tracks_current_admission() -> Result<()> {
-    let fixture = authority::Authority::open().await?;
-    let router = app(&fixture.base, authority::reader(&fixture.base).await?).await?;
+    let mut fixture = authority::Authority::open().await?;
+    let fixture_resources = std::mem::take(&mut fixture.resources);
+    fixture_resources.finish(async {
+    let (router, app_resources) = app(&fixture.base).await?;
+    app_resources.finish(async {
     let mut browser = fixture.browser("other")?;
     let subject = browser_subject(&browser, &router).await?;
     set_management_grants(&subject, json!(["scope_read", "scope_write"])).await?;
@@ -517,13 +559,18 @@ async fn console_scope_ready_tracks_current_admission() -> Result<()> {
     );
     stop_worker(owner).await?;
     Ok(())
+    }).await
+
+    }).await
 }
 
 #[tokio::test]
 #[ignore = "make t2 MODULE=planning.http"]
 async fn planning_routes_and_derived_result_authorization() -> Result<()> {
-    let fixture = authority::Authority::open().await?;
-    let reader = authority::reader(&fixture.base).await?;
+    let mut fixture = authority::Authority::open().await?;
+    let fixture_resources = std::mem::take(&mut fixture.resources);
+    fixture_resources.finish(async {
+
     pg(&format!(
         "INSERT INTO mdm_access.devices VALUES('{TENANT}','{DEVICE_ONE}')",
         TENANT = case_tenant(),
@@ -539,7 +586,8 @@ async fn planning_routes_and_derived_result_authorization() -> Result<()> {
     let session = &fixture.browser("other")?;
     let automation = start_automation(base).await?;
     await_ingress().await?;
-    let initial = app(base, reader.clone()).await?;
+    let (initial, app_resources) = app(base).await?;
+    app_resources.finish(async {
     let member = browser_subject(session, &initial).await?;
     set_management_grants(
         &member,
@@ -833,7 +881,8 @@ async fn planning_routes_and_derived_result_authorization() -> Result<()> {
     ensure!(state["revision"] == 1 && state["enabled"] == true);
     // Revocation is persistent and visible to every existing router/session.
     set_management_grants(&member, json!([])).await?;
-    let restricted = app(base, reader.clone()).await?;
+    let (restricted, app_resources) = app(base).await?;
+    app_resources.finish(async {
     let mut denied = session.clone();
     for path in [&group_path, &policy_path, &resource_path] {
         ensure!(
@@ -849,8 +898,12 @@ async fn planning_routes_and_derived_result_authorization() -> Result<()> {
     );
     ensure!(pg("SELECT count(*) FROM mdm_group.groups WHERE name='must-rollback'")?.trim() == "0");
     crate::test_support::stop_worker(automation).await?;
-    reader.close().await;
+
     Ok(())
+    }).await
+    }).await
+
+    }).await
 }
 fn seed_management_device(device: &str) -> Result<()> {
     let grant = uuid::Uuid::new_v4();
@@ -1005,8 +1058,11 @@ async fn derived_result_authorization(
 #[tokio::test]
 #[ignore = "make t2 MODULE=planning.http"]
 async fn collection_blueprints_instantiate_replay_and_keep_tenant_versions() -> Result<()> {
-    let fixture = authority::Authority::open().await?;
-    let router = app(&fixture.base, authority::reader(&fixture.base).await?).await?;
+    let mut fixture = authority::Authority::open().await?;
+    let fixture_resources = std::mem::take(&mut fixture.resources);
+    fixture_resources.finish(async {
+    let (router, app_resources) = app(&fixture.base).await?;
+    app_resources.finish(async {
     let mut browser = fixture.browser("other")?;
     let subject = browser_subject(&browser, &router).await?;
     set_management_grants(&subject, json!(["resource_read", "resource_write"])).await?;
@@ -1026,7 +1082,8 @@ async fn collection_blueprints_instantiate_replay_and_keep_tenant_versions() -> 
     // Fail after the resource commit, then resume the same operation with content enabled.
     let mut without_content = fixture.base.clone();
     without_content["content"] = serde_json::Value::Null;
-    let unavailable = app(&without_content, authority::reader(&fixture.base).await?).await?;
+    let (unavailable, app_resources) = app(&without_content).await?;
+    app_resources.finish(async {
     let interrupted = settled_write(&mut browser, &unavailable, &path, body.clone()).await?;
     ensure!(
         !interrupted.0.is_success(),
@@ -1084,4 +1141,8 @@ async fn collection_blueprints_instantiate_replay_and_keep_tenant_versions() -> 
             == StatusCode::FORBIDDEN
     );
     Ok(())
+    }).await
+    }).await
+
+    }).await
 }

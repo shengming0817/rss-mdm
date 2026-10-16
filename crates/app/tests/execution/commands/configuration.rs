@@ -512,62 +512,88 @@ async fn native_object_sets_share_a_device_and_withdraw_only_their_own_objects()
     }
     // Reconstruct the execution adapter and drive the same policy reconciliation on persisted facts.
     let config = crate::test_support::identity::config(case_tenant())?;
-    let restarted = Box::pin(crate::execution_assembly::open(
-        &config,
-        config.native_protector()?,
-        crate::test_support::identity::audit_store(&config).await?,
-        crate::execution_assembly::open_content(&config, config.native_protector()?).await?,
-        std::collections::BTreeMap::new(),
-        rss_device_command_postgres::CommandClock::Postgres,
-        crate::test_support::identity::session_authority(&config).await?,
-    ))
+    let audit = client.app.audit_store.clone();
+    let identity = client.app.identity.clone();
+    let (resources, restarted) = crate::test_support::Resources::build(move |resources| {
+        Box::pin(async move {
+            let content =
+                crate::execution_assembly::open_content(&config, config.native_protector()?)
+                    .await?;
+            if let Some(content) = &content {
+                resources.resource(crate::execution_assembly::ContentResource(content.clone()));
+            }
+            let restarted = crate::execution_assembly::open(
+                &config,
+                config.native_protector()?,
+                audit,
+                content,
+                std::collections::BTreeMap::new(),
+                rss_device_command_postgres::CommandClock::Postgres,
+                Arc::new(
+                    rss_mdm_authorization_service::session::SessionAuthority::new(
+                        identity.authority.clone(),
+                        identity.tenant,
+                    ),
+                ),
+            )
+            .await?;
+            resources.resource(rss_mdm_execution_service::Resource(
+                restarted.service.clone(),
+            ));
+            Ok(restarted)
+        })
+    })
     .await?;
-    let timer = recovery::Timer::new();
-    let cancel = tokio_util::sync::CancellationToken::new();
-    let control = rss_reconcile::Control::new(&timer, Duration::from_secs(2), &cancel);
-    let recovery_policy = rss_reconcile::Policy::try_from(rss_reconcile::PolicyConfig {
-        concurrency: 1,
-        lease_ttl: Duration::from_secs(10),
-        attempt_timeout: Duration::from_secs(1),
-        scan_interval: Duration::from_millis(100),
-        idle_scan_interval: Duration::from_millis(100),
-        initial_backoff: Duration::from_millis(100),
-        max_backoff: Duration::from_secs(1),
-        max_attempts: 3,
-    })?;
-    restarted
-        .service
-        .run_recovery(
-            &recovery_scope(client.app.identity.tenant),
-            recovery_policy,
-            &control,
-            &tokio::sync::Notify::new(),
-        )
+    resources
+        .finish(async {
+            let timer = recovery::Timer::new();
+            let cancel = tokio_util::sync::CancellationToken::new();
+            let control = rss_reconcile::Control::new(&timer, Duration::from_secs(2), &cancel);
+            let recovery_policy = rss_reconcile::Policy::try_from(rss_reconcile::PolicyConfig {
+                concurrency: 1,
+                lease_ttl: Duration::from_secs(10),
+                attempt_timeout: Duration::from_secs(1),
+                scan_interval: Duration::from_millis(100),
+                idle_scan_interval: Duration::from_millis(100),
+                initial_backoff: Duration::from_millis(100),
+                max_backoff: Duration::from_secs(1),
+                max_attempts: 3,
+            })?;
+            restarted
+                .service
+                .run_recovery(
+                    &recovery_scope(client.app.identity.tenant),
+                    recovery_policy,
+                    &control,
+                    &tokio::sync::Notify::new(),
+                )
+                .await?;
+            let policy_read = client
+                .browser
+                .call(
+                    &client.router,
+                    Method::GET,
+                    &format!("/api/v1/policies/{shared}/assignments"),
+                    None,
+                )
+                .await?;
+            let current: Vec<Uuid> = policy_read.1["items"][0]["operationIds"]
+                .as_array()
+                .ok_or_else(|| anyhow::anyhow!("operation IDs missing"))?
+                .iter()
+                .map(|v| Uuid::parse_str(v.as_str().unwrap()))
+                .collect::<std::result::Result<_, _>>()?;
+            ensure!(
+                current == removed,
+                "cancel/restart reissued an uncertain Delete"
+            );
+            ensure!(
+                exchange(&peer, 976, &mut values).await?.is_empty(),
+                "unknown deletion replayed after recovery"
+            );
+            Ok(())
+        })
         .await?;
-    let policy_read = client
-        .browser
-        .call(
-            &client.router,
-            Method::GET,
-            &format!("/api/v1/policies/{shared}/assignments"),
-            None,
-        )
-        .await?;
-    let current: Vec<Uuid> = policy_read.1["items"][0]["operationIds"]
-        .as_array()
-        .ok_or_else(|| anyhow::anyhow!("operation IDs missing"))?
-        .iter()
-        .map(|v| Uuid::parse_str(v.as_str().unwrap()))
-        .collect::<std::result::Result<_, _>>()?;
-    ensure!(
-        current == removed,
-        "cancel/restart reissued an uncertain Delete"
-    );
-    ensure!(
-        exchange(&peer, 976, &mut values).await?.is_empty(),
-        "unknown deletion replayed after recovery"
-    );
-    restarted.runtime.close().await;
     let other:i64=sqlx::query_scalar("SELECT count(*) FROM mdm_planning.configuration_claims WHERE tenant_id=$1::uuid AND policy=$2").bind(case_tenant()).bind(second).fetch_one(&mut pg).await?;
     ensure!(other == 1);
     host.replace(&peer).await?;
@@ -639,9 +665,8 @@ async fn associated_agent_health_executes_only_original_mdm_and_missing_channel_
         sqlx::query("INSERT INTO mdm_access.report_sources(tenant_id,registration,source,epoch,enabled) VALUES($1::uuid,$2,'agent.script',$3,true)").bind(case_tenant()).bind(registration).bind(epoch).execute(&mut pg).await?;
         sqlx::query("INSERT INTO mdm.inventory(field_scope,tenant_id,journal,generation,scope,coverage,field,value,batch_id,observed_at,received_at,state,last_known,last_known_batch,last_known_observed,last_known_received,registration,source,epoch,collection_sequence) VALUES(replace(jsonb_build_object('kind','device')::text,' ',''),$1::uuid,'mdm.observation.v1','inventory-v7',$2,$3,'custom.corporate_agent.healthy',$4,'health-fixture',1,2,'known',$4,'health-fixture',1,2,$5,'agent.script',$6,0)").bind(case_tenant()).bind(scope).bind(serde_json::to_string(&definition.coverage()?)?).bind(serde_json::to_value(Scalar::Boolean(false))?).bind(registration).bind(epoch).execute(&mut pg).await?;
     }
-    let config = crate::test_support::identity::config(case_tenant())?;
     let associations = rss_mdm_device_service::Associations::new(
-        crate::test_support::identity::audit_store(&config).await?,
+        client.app.audit_store.clone(),
         client.app.identity.tenant,
         &[7; 32],
     )?;

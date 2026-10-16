@@ -68,16 +68,40 @@ impl Client {
             sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?)
                 .await?;
         let config = crate::test_support::identity::config(case_tenant())?;
-        let restarted = Box::pin(crate::execution_assembly::open(
-            &config,
-            config.native_protector()?,
-            crate::test_support::identity::audit_store(&config).await?,
-            crate::execution_assembly::open_content(&config, config.native_protector()?).await?,
-            std::collections::BTreeMap::new(),
-            rss_device_command_postgres::CommandClock::Controlled(clock.clone()),
-            crate::test_support::identity::session_authority(&config).await?,
-        ))
+        let audit = self.app.audit_store.clone();
+        let identity = self.app.identity.clone();
+        let restart_clock = clock.clone();
+        let (resources, restarted) = crate::test_support::Resources::build(move |resources| {
+            Box::pin(async move {
+                let content =
+                    crate::execution_assembly::open_content(&config, config.native_protector()?)
+                        .await?;
+                if let Some(content) = &content {
+                    resources.resource(crate::execution_assembly::ContentResource(content.clone()));
+                }
+                let restarted = crate::execution_assembly::open(
+                    &config,
+                    config.native_protector()?,
+                    audit,
+                    content,
+                    std::collections::BTreeMap::new(),
+                    rss_device_command_postgres::CommandClock::Controlled(restart_clock),
+                    Arc::new(
+                        rss_mdm_authorization_service::session::SessionAuthority::new(
+                            identity.authority.clone(),
+                            identity.tenant,
+                        ),
+                    ),
+                )
+                .await?;
+                resources.resource(rss_mdm_execution_service::Resource(
+                    restarted.service.clone(),
+                ));
+                Ok(restarted)
+            })
+        })
         .await?;
+        resources.finish(async {
         eprintln!("command T2: restarted runtime admitted");
         let persisted: (String, String) = sqlx::query_as(
             "SELECT c.status,o.status FROM rss_device_command.commands c JOIN rss_transactional_messaging.outbox o ON o.tenant_id=c.tenant_id AND o.message_id=c.outbox_message_id WHERE c.tenant_id=$1::uuid AND c.command_id=$2",
@@ -189,11 +213,8 @@ impl Client {
                 .1["commandStatus"]
                 == "timed_out"
         );
-        use rss_runtime::ManagedResource;
-        rss_mdm_execution_service::Resource(restarted.service)
-            .shutdown()
-            .await?;
         pg.close().await?;
         Ok(())
+        }).await
     }
 }

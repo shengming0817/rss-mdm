@@ -130,6 +130,8 @@ fn import(entry: Uuid, revision: i64, contents: &str) -> Value {
 #[ignore = "make t2 MODULE=certificate-archive.http"]
 async fn real_http_preserves_history_rewraps_and_restarts_locked() -> Result<()> {
     let mut f = Fixture::open().await?;
+    let resources = std::mem::take(&mut f.authority.resources);
+    resources.finish(async {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
     let address = listener.local_addr()?;
     let router = f.router.clone();
@@ -262,11 +264,14 @@ async fn real_http_preserves_history_rewraps_and_restarts_locked() -> Result<()>
         .0 == StatusCode::LOCKED
     );
     Ok(())
+    }).await
 }
 #[tokio::test]
 #[ignore = "make t2 MODULE=certificate-archive.http"]
 async fn permissions_rls_immutable_versions_and_tampering_are_enforced() -> Result<()> {
     let mut f = Fixture::open().await?;
+    let resources = std::mem::take(&mut f.authority.resources);
+    resources.finish(async {
     f.initialize().await?;
     let entry = Uuid::new_v4();
     f.write("/import", import(entry, 0, "protected data"))
@@ -367,11 +372,14 @@ async fn permissions_rls_immutable_versions_and_tampering_are_enforced() -> Resu
     let (_, v) = f.call(Method::GET, "/entries", None).await?;
     ensure!(v["items"].as_array().unwrap().len() == 1);
     Ok(())
+    }).await
 }
 #[tokio::test]
 #[ignore = "make t2 MODULE=certificate-archive.http"]
 async fn generation_alerts_and_two_sessions_use_one_tenant_identity() -> Result<()> {
     let mut f = Fixture::open().await?;
+    let resources = std::mem::take(&mut f.authority.resources);
+    resources.finish(async {
     f.initialize().await?;
     let mut other = f.authority.browser("other")?;
     let subject = browser_subject(&other, &f.router).await?;
@@ -428,6 +436,7 @@ async fn generation_alerts_and_two_sessions_use_one_tenant_identity() -> Result<
             == 2
     );
     Ok(())
+    }).await
 }
 
 #[tokio::test]
@@ -435,6 +444,8 @@ async fn generation_alerts_and_two_sessions_use_one_tenant_identity() -> Result<
 async fn issued_results_keep_exact_request_versions_and_pem_work_drains() -> Result<()> {
     use base64::{Engine, engine::general_purpose::STANDARD};
     let mut f = Fixture::open().await?;
+    let resources = std::mem::take(&mut f.authority.resources);
+    resources.finish(async {
     f.initialize().await?;
     let mut owner = rss_runtime::ShutdownStack::try_new(
         rss_runtime::TotalDrainBudget::new(Duration::from_secs(10))?,
@@ -584,6 +595,7 @@ async fn issued_results_keep_exact_request_versions_and_pem_work_drains() -> Res
             .all(|v| v["requestVersion"].is_null())
     );
     Ok(())
+    }).await
 }
 
 async fn wait_for_archive_locks(blocker: i32, count: usize) -> Result<()> {
@@ -603,6 +615,8 @@ async fn wait_for_archive_locks(blocker: i32, count: usize) -> Result<()> {
 #[ignore = "make t2 MODULE=certificate-archive.http"]
 async fn replayed_export_rechecks_generation_after_peer_password_change() -> Result<()> {
     let mut f = Fixture::open().await?;
+    let resources = std::mem::take(&mut f.authority.resources);
+    resources.finish(async {
     f.initialize().await?;
     let entry = Uuid::new_v4();
     f.write("/import", import(entry, 0, "private historic material"))
@@ -659,4 +673,5 @@ async fn replayed_export_rechecks_generation_after_peer_password_change() -> Res
     ensure!(status == StatusCode::LOCKED);
     ensure!(body.get("files").is_none());
     Ok(())
+    }).await
 }

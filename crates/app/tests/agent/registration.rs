@@ -6,7 +6,9 @@ use rss_mdm_audit_integration::RequestAudit;
 #[tokio::test]
 #[ignore = "MODULE=agent.registration"]
 async fn registration_binding_and_replay() -> Result<()> {
-    let fixture = authority::Authority::open().await?;
+    let mut fixture = authority::Authority::open().await?;
+    let fixture_resources = std::mem::take(&mut fixture.resources);
+    fixture_resources.finish(async {
     let router = crate::test_support::agent::router(&fixture).await?;
     let mut browser = fixture.browser("other")?;
     // Self enrollment requires a live identity, not an enrollment permission.
@@ -151,11 +153,15 @@ async fn registration_binding_and_replay() -> Result<()> {
     let native_password=browser.call(&router,Method::POST,"/api/v1/enrollments",Some(json!({"deviceId":"claimed-device","password":agent.password,"source":"agent.builtin"}))).await?;
     ensure!(native_password.0 == StatusCode::BAD_REQUEST);
     Ok(())
+
+    }).await
 }
 #[tokio::test]
 #[ignore = "MODULE=agent.registration"]
 async fn registration_recovery_preserves_credential_rotation() -> Result<()> {
-    let fixture = authority::Authority::open().await?;
+    let mut fixture = authority::Authority::open().await?;
+    let fixture_resources = std::mem::take(&mut fixture.resources);
+    fixture_resources.finish(async {
     let service = crate::test_support::agent::service(&fixture).await?;
     let router = crate::test_support::agent::router(&fixture).await?;
     let mut browser = fixture.browser("other")?;
@@ -240,12 +246,16 @@ async fn registration_recovery_preserves_credential_rotation() -> Result<()> {
             == wire::ErrorCode::CredentialRetired
     );
     Ok(())
+
+    }).await
 }
 
 #[tokio::test]
 #[ignore = "MODULE=agent.registration"]
 async fn browser_approval_quota_expiry_and_restart_are_durable() -> Result<()> {
-    let fixture = authority::Authority::open().await?;
+    let mut fixture = authority::Authority::open().await?;
+    let fixture_resources = std::mem::take(&mut fixture.resources);
+    fixture_resources.finish(async {
     let service = crate::test_support::agent::service(&fixture).await?;
     let user = crate::device::test_support::admin(case_tenant(), "other-a").await?;
     let mut quota_tx = fixture.access.begin(case_tenant()).await?;
@@ -312,12 +322,16 @@ async fn browser_approval_quota_expiry_and_restart_are_durable() -> Result<()> {
         restart.issue(&expired, &a()).await.err().unwrap().code == wire::ErrorCode::GrantExpired
     );
     Ok(())
+
+    }).await
 }
 
 #[tokio::test]
 #[ignore = "MODULE=agent.registration: paused first activation and retained candidate"]
 async fn admission_pause_preserves_candidate_and_existing_identity() -> Result<()> {
-    let f = authority::Authority::open().await?;
+    let mut f = authority::Authority::open().await?;
+    let f_resources = std::mem::take(&mut f.resources);
+    f_resources.finish(async {
     let router = crate::test_support::agent::router(&f).await?;
     let service = crate::test_support::agent::service(&f).await?;
     let mut admin = f.browser("admin")?;
@@ -444,4 +458,6 @@ async fn admission_pause_preserves_candidate_and_existing_identity() -> Result<(
     );
     service.authenticate(&peer).await?;
     Ok(())
+
+    }).await
 }

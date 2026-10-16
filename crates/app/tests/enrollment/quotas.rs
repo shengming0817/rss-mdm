@@ -65,7 +65,9 @@ fn windows(usage: &Value) -> &Value {
 #[tokio::test]
 #[ignore = "MODULE=enrollment.quotas: real HTTP concurrency and durable quota admission"]
 async fn concurrent_self_enrollment_replays_and_preserves_live_reservations() -> Result<()> {
-    let f = authority::Authority::open().await?;
+    let mut f = authority::Authority::open().await?;
+    let f_resources = std::mem::take(&mut f.resources);
+    f_resources.finish(async {
     let (router, mut admin, mut other, _server) = hosted(&f).await?;
     browser_consumer(&admin, &other).await?;
     let defaults = call(&mut admin, &router, Method::GET, DEFAULTS, None).await?;
@@ -173,10 +175,7 @@ async fn concurrent_self_enrollment_replays_and_preserves_live_reservations() ->
             guessed,
             Uuid::parse_str(id)?,
             &crate::enrollment_progress::EnrollmentProgress {
-                sessions: crate::test_support::identity::session_authority(
-                    &crate::test_support::identity::config(case_tenant())?
-                )
-                .await?,
+                sessions: Arc::new(rss_mdm_authorization_service::session::SessionAuthority::new(f.identity.authority.clone(), f.identity.tenant)),
                 windows: None,
                 apple: None
             },
@@ -225,16 +224,24 @@ async fn concurrent_self_enrollment_replays_and_preserves_live_reservations() ->
             == StatusCode::TOO_MANY_REQUESTS
     );
     // Configuration is durable across service reconstruction and revisioned writes.
-    let restarted = authority::Authority::open().await?;
+    let mut restarted = authority::Authority::open().await?;
+    let restarted_resources = std::mem::take(&mut restarted.resources);
+    restarted_resources.finish(async {
     let rerouter = restarted.router(restarted.enrollment())?;
     let mut reread = restarted.browser("admin")?;
     ensure!(call(&mut reread, &rerouter, Method::GET, DEFAULTS, None).await?["revision"] == 2);
     Ok(())
+
+    }).await
+
+    }).await
 }
 #[tokio::test]
 #[ignore = "MODULE=enrollment.quotas: overrides, expiry, organization exemption and responsibility"]
 async fn overrides_inherit_and_organization_responsibility_is_optional_and_exempt() -> Result<()> {
-    let f = authority::Authority::open().await?;
+    let mut f = authority::Authority::open().await?;
+    let f_resources = std::mem::take(&mut f.resources);
+    f_resources.finish(async {
     let (router, mut admin, mut other, _server) = hosted(&f).await?;
     let me = call(&mut other, &router, Method::GET, ME, None).await?;
     let target = json!({"tenantId":case_tenant(),"instanceId":me["instanceId"],"principalId":me["principalId"]});
@@ -333,50 +340,60 @@ async fn overrides_inherit_and_organization_responsibility_is_optional_and_exemp
     tx.commit().await?;
     ensure!(windows(&call(&mut other, &router, Method::GET, ME, None).await?)["used"] == 0);
     Ok(())
+
+    }).await
 }
 #[tokio::test]
 #[ignore = "MODULE=enrollment.quotas: activation and revocation use one allocation"]
 async fn active_registration_replaces_reservation_and_revocation_releases_it() -> Result<()> {
-    let f = authority::Authority::open().await?;
-    let (router, mut admin, mut other, _server) = hosted(&f).await?;
-    let receipt = write(&mut other, &router, Method::POST, SELF, native()).await?;
-    let other_proof = crate::device::test_support::admin(case_tenant(), "other-a").await?;
-    let service = crate::device::DeviceService::new(
-        f.access.registration(),
-        case_tenant().into(),
-        f.audit.clone(),
-    );
-    let command = crate::device::BindRegistration {
-        operation_id: Uuid::new_v4(),
-        request_id: Uuid::parse_str(receipt["enrollmentId"].as_str().unwrap())?,
-        expected_generation: 0,
-        source: rss_mdm_inventory::ReportSource::MdmWindows,
-    };
-    let credential =
-        crate::device::test_support::proof(case_tenant(), rss_mdm_inventory::Channel::Mdm, 77);
-    let bound = service
-        .bind(&other_proof, &credential, command.clone())
-        .await?;
-    ensure!(service.bind(&other_proof, &credential, command).await? == bound);
-    let usage = call(&mut other, &router, Method::GET, ME, None).await?;
-    ensure!(
-        windows(&usage)["active"] == 1
-            && windows(&usage)["reserved"] == 0
-            && windows(&usage)["used"] == 1
-    );
-    write(
-        &mut admin,
-        &router,
-        Method::POST,
-        &format!(
-            "/api/v1/devices/{}/registrations/{}/revoke",
-            bound.device, bound.registration
-        ),
-        json!({}),
-    )
-    .await?;
-    ensure!(windows(&call(&mut other, &router, Method::GET, ME, None).await?)["used"] == 0);
-    Ok(())
+    let mut f = authority::Authority::open().await?;
+    let f_resources = std::mem::take(&mut f.resources);
+    f_resources
+        .finish(async {
+            let (router, mut admin, mut other, _server) = hosted(&f).await?;
+            let receipt = write(&mut other, &router, Method::POST, SELF, native()).await?;
+            let other_proof = crate::device::test_support::admin(case_tenant(), "other-a").await?;
+            let service = crate::device::DeviceService::new(
+                f.access.registration(),
+                case_tenant().into(),
+                f.audit.clone(),
+            );
+            let command = crate::device::BindRegistration {
+                operation_id: Uuid::new_v4(),
+                request_id: Uuid::parse_str(receipt["enrollmentId"].as_str().unwrap())?,
+                expected_generation: 0,
+                source: rss_mdm_inventory::ReportSource::MdmWindows,
+            };
+            let credential = crate::device::test_support::proof(
+                case_tenant(),
+                rss_mdm_inventory::Channel::Mdm,
+                77,
+            );
+            let bound = service
+                .bind(&other_proof, &credential, command.clone())
+                .await?;
+            ensure!(service.bind(&other_proof, &credential, command).await? == bound);
+            let usage = call(&mut other, &router, Method::GET, ME, None).await?;
+            ensure!(
+                windows(&usage)["active"] == 1
+                    && windows(&usage)["reserved"] == 0
+                    && windows(&usage)["used"] == 1
+            );
+            write(
+                &mut admin,
+                &router,
+                Method::POST,
+                &format!(
+                    "/api/v1/devices/{}/registrations/{}/revoke",
+                    bound.device, bound.registration
+                ),
+                json!({}),
+            )
+            .await?;
+            ensure!(windows(&call(&mut other, &router, Method::GET, ME, None).await?)["used"] == 0);
+            Ok(())
+        })
+        .await
 }
 
 /// An explicitly selected browser checkout consumes only these public HTTP APIs.
@@ -412,15 +429,18 @@ async fn browser_consumer(admin: &Browser, user: &Browser) -> Result<()> {
     );
     // The consumer leaves no settings or grants for the following contention scenario.
     let mut browser = admin.clone();
-    let configuration = authority::Authority::open().await?;
-    let router = configuration.router(configuration.enrollment())?;
-    let usage = call(&mut user.clone(), &router, Method::GET, ME, None).await?;
-    let target = format!(
-        "/api/v1/registration-quotas/users/{}/{}",
-        usage["instanceId"].as_str().unwrap(),
-        usage["principalId"].as_str().unwrap()
-    );
-    write(
+    let mut configuration = authority::Authority::open().await?;
+    let configuration_resources = std::mem::take(&mut configuration.resources);
+    configuration_resources
+        .finish(async {
+            let router = configuration.router(configuration.enrollment())?;
+            let usage = call(&mut user.clone(), &router, Method::GET, ME, None).await?;
+            let target = format!(
+                "/api/v1/registration-quotas/users/{}/{}",
+                usage["instanceId"].as_str().unwrap(),
+                usage["principalId"].as_str().unwrap()
+            );
+            write(
         &mut browser,
         &router,
         Method::PUT,
@@ -428,101 +448,110 @@ async fn browser_consumer(admin: &Browser, user: &Browser) -> Result<()> {
         json!({"expectedRevision":2,"limits":{"agent":null,"windows_mdm":null,"macos_mdm":null}}),
     )
     .await?;
-    println!("rss-web browser client consumed real registration HTTP and PostgreSQL");
-    Ok(())
+            println!("rss-web browser client consumed real registration HTTP and PostgreSQL");
+            Ok(())
+        })
+        .await
 }
 
 #[tokio::test]
 #[ignore = "MODULE=enrollment.quotas: dynamic admission, CAS, authority and retained receipts"]
 async fn channel_admission_is_independent_audited_and_replayable() -> Result<()> {
-    let f = authority::Authority::open().await?;
-    let (router, mut admin, mut other, _server) = hosted(&f).await?;
-    browser_consumer(&admin, &other).await?;
-    const CHANNELS: &str = "/api/v1/registration-channels";
-    const ADMISSION: &str = "/api/v1/registration-channels/windows_mdm/admission";
-    let initial = call(&mut other, &router, Method::GET, CHANNELS, None).await?;
-    let channels = initial["channels"].as_array().unwrap();
-    ensure!(channels.len() == 3);
-    ensure!(
-        channels
-            .iter()
-            .map(|c| c["channel"].as_str().unwrap())
-            .collect::<std::collections::BTreeSet<_>>()
-            == std::collections::BTreeSet::from(["agent", "windows_mdm", "macos_mdm"])
-    );
-    ensure!(
-        initial["channels"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .all(|c| c["admission"] == "allowed" && c["revision"] == 0)
-    );
-    other.operation = Some(Uuid::new_v4());
-    let (status, _) = other
-        .call(
-            &router,
-            Method::PUT,
-            ADMISSION,
-            Some(json!({"expectedRevision":0,"admission":"paused"})),
-        )
-        .await?;
-    ensure!(status == StatusCode::FORBIDDEN);
-    let mut pending = other.clone();
-    let receipt = write(&mut pending, &router, Method::POST, SELF, native()).await?;
-    let paused = write(
-        &mut admin,
-        &router,
-        Method::PUT,
-        ADMISSION,
-        json!({"expectedRevision":0,"admission":"paused"}),
-    )
-    .await?;
-    ensure!(paused["revision"] == 1 && paused["admission"] == "paused");
-    ensure!(
-        call(
-            &mut admin,
-            &router,
-            Method::PUT,
-            ADMISSION,
-            Some(json!({"expectedRevision":0,"admission":"paused"}))
-        )
-        .await?
-            == paused
-    );
-    // A completed operation's exact receipt remains recoverable, with its original deadline.
-    ensure!(call(&mut pending, &router, Method::POST, SELF, Some(native())).await? == receipt);
-    other.operation = Some(Uuid::new_v4());
-    let (status, body) = other
-        .call(&router, Method::POST, SELF, Some(native()))
-        .await?;
-    ensure!(status == StatusCode::CONFLICT && body["code"] == "enrollment_paused");
-    let current = call(&mut other, &router, Method::GET, CHANNELS, None).await?;
-    ensure!(
-        current["channels"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .filter(|c| c["channel"] != "windows_mdm")
-            .all(|c| c["admission"] == "allowed" && c["revision"] == 0)
-    );
-    admin.operation = Some(Uuid::new_v4());
-    let (status, _) = admin
-        .call(
-            &router,
-            Method::PUT,
-            ADMISSION,
-            Some(json!({"expectedRevision":0,"admission":"allowed"})),
-        )
-        .await?;
-    ensure!(status == StatusCode::CONFLICT);
-    write(
-        &mut admin,
-        &router,
-        Method::PUT,
-        ADMISSION,
-        json!({"expectedRevision":1,"admission":"allowed"}),
-    )
-    .await?;
-    call(&mut other, &router, Method::POST, SELF, Some(native())).await?;
-    Ok(())
+    let mut f = authority::Authority::open().await?;
+    let f_resources = std::mem::take(&mut f.resources);
+    f_resources
+        .finish(async {
+            let (router, mut admin, mut other, _server) = hosted(&f).await?;
+            browser_consumer(&admin, &other).await?;
+            const CHANNELS: &str = "/api/v1/registration-channels";
+            const ADMISSION: &str = "/api/v1/registration-channels/windows_mdm/admission";
+            let initial = call(&mut other, &router, Method::GET, CHANNELS, None).await?;
+            let channels = initial["channels"].as_array().unwrap();
+            ensure!(channels.len() == 3);
+            ensure!(
+                channels
+                    .iter()
+                    .map(|c| c["channel"].as_str().unwrap())
+                    .collect::<std::collections::BTreeSet<_>>()
+                    == std::collections::BTreeSet::from(["agent", "windows_mdm", "macos_mdm"])
+            );
+            ensure!(
+                initial["channels"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .all(|c| c["admission"] == "allowed" && c["revision"] == 0)
+            );
+            other.operation = Some(Uuid::new_v4());
+            let (status, _) = other
+                .call(
+                    &router,
+                    Method::PUT,
+                    ADMISSION,
+                    Some(json!({"expectedRevision":0,"admission":"paused"})),
+                )
+                .await?;
+            ensure!(status == StatusCode::FORBIDDEN);
+            let mut pending = other.clone();
+            let receipt = write(&mut pending, &router, Method::POST, SELF, native()).await?;
+            let paused = write(
+                &mut admin,
+                &router,
+                Method::PUT,
+                ADMISSION,
+                json!({"expectedRevision":0,"admission":"paused"}),
+            )
+            .await?;
+            ensure!(paused["revision"] == 1 && paused["admission"] == "paused");
+            ensure!(
+                call(
+                    &mut admin,
+                    &router,
+                    Method::PUT,
+                    ADMISSION,
+                    Some(json!({"expectedRevision":0,"admission":"paused"}))
+                )
+                .await?
+                    == paused
+            );
+            // A completed operation's exact receipt remains recoverable, with its original deadline.
+            ensure!(
+                call(&mut pending, &router, Method::POST, SELF, Some(native())).await? == receipt
+            );
+            other.operation = Some(Uuid::new_v4());
+            let (status, body) = other
+                .call(&router, Method::POST, SELF, Some(native()))
+                .await?;
+            ensure!(status == StatusCode::CONFLICT && body["code"] == "enrollment_paused");
+            let current = call(&mut other, &router, Method::GET, CHANNELS, None).await?;
+            ensure!(
+                current["channels"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .filter(|c| c["channel"] != "windows_mdm")
+                    .all(|c| c["admission"] == "allowed" && c["revision"] == 0)
+            );
+            admin.operation = Some(Uuid::new_v4());
+            let (status, _) = admin
+                .call(
+                    &router,
+                    Method::PUT,
+                    ADMISSION,
+                    Some(json!({"expectedRevision":0,"admission":"allowed"})),
+                )
+                .await?;
+            ensure!(status == StatusCode::CONFLICT);
+            write(
+                &mut admin,
+                &router,
+                Method::PUT,
+                ADMISSION,
+                json!({"expectedRevision":1,"admission":"allowed"}),
+            )
+            .await?;
+            call(&mut other, &router, Method::POST, SELF, Some(native())).await?;
+            Ok(())
+        })
+        .await
 }

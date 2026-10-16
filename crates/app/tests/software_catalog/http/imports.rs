@@ -70,6 +70,8 @@ async fn exact_rest_community_and_brew_imports_preserve_evidence_and_replay() ->
         bottle.clone().into_bytes(),
     );
     let mut f = Fixture::with_peer_and_uploads(Some(peer), Some(1)).await?;
+    let resources = std::mem::take(&mut f.resources);
+    resources.finish(async {
     let base = f.peer.as_ref().unwrap().base.clone();
     let native = json!({"runAs":"system","arguments":[],"environment":{},"timeoutSeconds":60,"outputBytes":4096,"exitCodes":{"success":[0],"reboot":[]}});
     let msi = json!({"kind":"msi","installer":"installer","scope":"system","install":native,"upgradeInvocation":native,"upgrade":"in_place","uninstall":null,"detect":{"kind":"msi_product","productCode":"{AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE}","version":"1.2"}});
@@ -285,4 +287,5 @@ async fn exact_rest_community_and_brew_imports_preserve_evidence_and_replay() ->
         state.source_documents.insert(format!("/acme/homebrew-private/{commit}/Casks/app.rb"),format!("cask \"app\" do\n  version \"1.2\"\n  sha256 \"{sha}\"\n  url \"{base}artifacts/app.dmg\"\n  name \"Application\"\n  desc \"Controlled application\"\n  homepage \"https://example.test/\"\n  app \"App.app\"\nend\n").into_bytes());
     }
     Ok(())
+    }).await
 }

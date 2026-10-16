@@ -25,31 +25,35 @@ pub(crate) fn proof(tenant: &str, channel: Channel, key: u8) -> VerifiedChannelC
     .expect("native credential proof")
 }
 pub(crate) async fn admin(tenant: &str, token: &str) -> anyhow::Result<AuthorizedPrincipal> {
-    let identity = crate::test_support::identity::identity(tenant).await?;
-    let login = match (tenant, token) {
-        (tenant, "admin-a") if tenant == case_a() => "admin",
-        (tenant, "admin-b") if tenant == case_b() => "admin",
-        (tenant, "other-a") if tenant == case_a() => "other",
-        _ => anyhow::bail!("credential tenant mismatch"),
-    };
-    let secret = crate::test_support::identity::credential(&identity, login)?;
-    // This direct-store matrix is one bounded fixture operation; HTTP requests use their own budget.
-    let proof = identity
-        .authority
-        .inspect_session(
-            identity.tenant,
-            secret,
-            rss_transactional_messaging::policy::OperationDeadline::from_remaining(
-                Duration::from_secs(900),
-            ),
-        )
-        .await?;
-    let access = Database::connect(options("mdm_access")?).await?;
-    let proof = AuthorizedPrincipal::new(proof)?
-        .load_authorization(access.authorization())
-        .await?;
-    access.close().await;
-    Ok(proof)
+    let (identity, identity_resources) = crate::test_support::identity::identity(tenant).await?;
+    identity_resources
+        .finish(async {
+            let login = match (tenant, token) {
+                (tenant, "admin-a") if tenant == case_a() => "admin",
+                (tenant, "admin-b") if tenant == case_b() => "admin",
+                (tenant, "other-a") if tenant == case_a() => "other",
+                _ => anyhow::bail!("credential tenant mismatch"),
+            };
+            let secret = crate::test_support::identity::credential(&identity, login)?;
+            // This direct-store matrix is one bounded fixture operation; HTTP requests use their own budget.
+            let proof = identity
+                .authority
+                .inspect_session(
+                    identity.tenant,
+                    secret,
+                    rss_transactional_messaging::policy::OperationDeadline::from_remaining(
+                        Duration::from_secs(900),
+                    ),
+                )
+                .await?;
+            let access = Database::connect(options("mdm_access")?).await?;
+            let proof = AuthorizedPrincipal::new(proof)?
+                .load_authorization(access.authorization())
+                .await?;
+            access.close().await;
+            Ok(proof)
+        })
+        .await
 }
 
 pub(crate) fn options(user: &str) -> anyhow::Result<PgConnectOptions> {

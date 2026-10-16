@@ -170,28 +170,35 @@ async fn dependency_denial_over_http(
 #[tokio::test]
 #[ignore = "MODULE=software.http: private formats and authenticated dependency admission"]
 async fn private_formats_and_dependency_routes() -> Result<()> {
-    let fixture = Fixture::open(false).await?;
-    fixture.seed_content(b"abc").await?;
-    let cookie = fixture
-        .user
-        .cookies
-        .iter()
-        .map(|(k, v)| format!("{k}={v}"))
-        .collect::<Vec<_>>()
-        .join("; ");
-    let definition =
-        publication_support::private_definition(fixture.registered["snapshot"].clone(), b"abc");
-    let mut user = fixture.user.clone();
-    private_formats(
-        &mut user,
-        &fixture.router,
-        &fixture.client,
-        &fixture.origin,
-        &cookie,
-        fixture.registered["snapshot"].clone(),
-    )
-    .await?;
-    dependency_denial_over_http(&mut user, &fixture.router, &definition).await
+    let mut fixture = Fixture::open(false).await?;
+    let resources = std::mem::take(&mut fixture.resources);
+    resources
+        .finish(async {
+            fixture.seed_content(b"abc").await?;
+            let cookie = fixture
+                .user
+                .cookies
+                .iter()
+                .map(|(k, v)| format!("{k}={v}"))
+                .collect::<Vec<_>>()
+                .join("; ");
+            let definition = publication_support::private_definition(
+                fixture.registered["snapshot"].clone(),
+                b"abc",
+            );
+            let mut user = fixture.user.clone();
+            private_formats(
+                &mut user,
+                &fixture.router,
+                &fixture.client,
+                &fixture.origin,
+                &cookie,
+                fixture.registered["snapshot"].clone(),
+            )
+            .await?;
+            dependency_denial_over_http(&mut user, &fixture.router, &definition).await
+        })
+        .await
 }
 
 mod publication;

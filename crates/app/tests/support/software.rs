@@ -33,6 +33,7 @@ impl Drop for HttpServer {
     }
 }
 pub(crate) struct Fixture {
+    pub(crate) resources: super::Resources,
     pub(crate) directory: std::path::PathBuf,
     pub(crate) router: Router,
     pub(crate) execution: Arc<rss_mdm_execution_service::ExecutionService>,
@@ -73,6 +74,7 @@ impl Fixture {
         max_uploads: Option<u64>,
         storage: Option<Value>,
     ) -> Result<Self> {
+        let (resources, mut fixture) = crate::test_support::Resources::build(move |resources| Box::pin(async move {
         let mut base: Value =
             serde_json::from_slice(&std::fs::read(std::env::var("MDM_TEST_CONFIG")?)?)?;
         let directory =
@@ -94,18 +96,20 @@ impl Fixture {
                 }
             }
         }
-        let (router, execution, runtime, _) = crate::api::application_fixture(
+        let access = database(&base).await?;
+        let audit = access
+            .audit_store(&crate::config::AuditConfig::Plain)
+            .await?;
+        let (router, execution, runtime, _, application_resources) = crate::api::application_fixture(
             serde_json::from_value(base.clone())?,
             Arc::new(crate::clock::SystemClock),
             monotonic(),
-            database(&base).await?,
+            access,
             None,
-            database(&base)
-                .await?
-                .audit_store(&crate::config::AuditConfig::Plain)
-                .await?,
+            audit,
         )
         .await?;
+        resources.extend(application_resources);
         let router = router.layer(axum::Extension(rss_identity_http_axum::ClientAddress(
             "127.0.0.1".parse()?,
         )));
@@ -122,7 +126,7 @@ impl Fixture {
         let origin = format!("http://{address}");
         let mut user = Browser {
             network: Some((client.clone(), origin.clone())),
-            ..authority::Authority::open().await?.browser("admin")?
+            ..authority::Authority::prepared_browser("admin").await?
         };
         let subject = browser_subject(&user, &router).await?;
         let grants = [
@@ -148,6 +152,7 @@ impl Fixture {
         let source_path = format!("/api/v1/software/sources/{source}/revisions/1");
         let registered=write(&mut user,&router,&source_path,0,json!({"action":"register","definition":{"id":source,"revision":"1","protocol":{"kind":"private"}}})).await?;
         Ok(Self {
+            resources: Default::default(),
             directory,
             router,
             queries: execution.queries,
@@ -162,6 +167,10 @@ impl Fixture {
             peer,
             _server: server,
         })
+
+        })).await?;
+        fixture.resources = resources;
+        Ok(fixture)
     }
 }
 pub(crate) async fn write(

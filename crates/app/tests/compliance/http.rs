@@ -76,7 +76,7 @@ async fn history_boundaries(
     let config = crate::test_support::identity::config(tenant)?;
     let access = database(base).await?;
     let audit = access.audit_store(&config.audit).await?;
-    let (other_router, _, _, _) = crate::api::application_fixture(
+    let (other_router, _, _, _, resources) = crate::api::application_fixture(
         config,
         Arc::new(crate::clock::SystemClock),
         monotonic(),
@@ -85,52 +85,56 @@ async fn history_boundaries(
         audit,
     )
     .await?;
-    let other_router = other_router.layer(axum::Extension(rss_identity_http_axum::ClientAddress(
-        "127.0.0.1".parse()?,
-    )));
-    pg_tenant(
-        tenant,
-        &format!("INSERT INTO mdm_access.devices VALUES('{tenant}','compliance-a')"),
-    )?;
-    crate::test_support::identity::set_grants(
-        tenant,
-        case::context().admin_for(tenant),
-        crate::test_support::identity::device_grants(None, &["compliance_read"])?,
-    )
-    .await?;
-    let mut cross = Browser::default();
-    ensure!(
-        cross
-            .call(
-                &other_router,
-                Method::POST,
-                &format!("/api/v1/identity/tenants/{tenant}/login"),
-                Some(json!({"login":case::login("admin"),"password":PASSWORD}))
+    resources
+        .finish(async {
+            let other_router = other_router.layer(axum::Extension(
+                rss_identity_http_axum::ClientAddress("127.0.0.1".parse()?),
+            ));
+            pg_tenant(
+                tenant,
+                &format!("INSERT INTO mdm_access.devices VALUES('{tenant}','compliance-a')"),
+            )?;
+            crate::test_support::identity::set_grants(
+                tenant,
+                case::context().admin_for(tenant),
+                crate::test_support::identity::device_grants(None, &["compliance_read"])?,
             )
-            .await?
-            .0
-            == StatusCode::OK
-    );
-    ensure!(
-        cross
-            .call(&other_router, Method::GET, history, None)
-            .await?
-            .0
-            == StatusCode::OK
-    );
-    ensure!(
-        cross
-            .call(
-                &other_router,
-                Method::GET,
-                &format!("{history}?cursor={token}"),
-                None
-            )
-            .await?
-            .0
-            == StatusCode::BAD_REQUEST
-    );
-    Ok(())
+            .await?;
+            let mut cross = Browser::default();
+            ensure!(
+                cross
+                    .call(
+                        &other_router,
+                        Method::POST,
+                        &format!("/api/v1/identity/tenants/{tenant}/login"),
+                        Some(json!({"login":case::login("admin"),"password":PASSWORD}))
+                    )
+                    .await?
+                    .0
+                    == StatusCode::OK
+            );
+            ensure!(
+                cross
+                    .call(&other_router, Method::GET, history, None)
+                    .await?
+                    .0
+                    == StatusCode::OK
+            );
+            ensure!(
+                cross
+                    .call(
+                        &other_router,
+                        Method::GET,
+                        &format!("{history}?cursor={token}"),
+                        None
+                    )
+                    .await?
+                    .0
+                    == StatusCode::BAD_REQUEST
+            );
+            Ok(())
+        })
+        .await
 }
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "MODULE=compliance.http: real HTTP and durable worker contract"]

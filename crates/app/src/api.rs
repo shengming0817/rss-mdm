@@ -68,118 +68,149 @@ pub(crate) async fn application_fixture(
         crate::execution_assembly::Assembly,
         Arc<rss_transactional_messaging_postgres::PgRuntime>,
         Arc<rss_mdm_flow_service::planning::Planning>,
+        crate::test_support::Resources,
     ),
     Error,
 > {
-    access.claim_tenant_use(&config).await?;
-    let runtime = crate::inventory_runtime::InventoryRuntime::fixture(
-        config.runtime_database.options()?,
-        access.inventory(),
-        rss_request_context::TenantId::parse(&config.identity.tenant_id)
-            .map_err(|_| Error::Configuration(ConfigIssue::Tenant))?,
-        monotonic.clone(),
-        access
-            .audit_store(&crate::config::AuditConfig::Plain)
-            .await?,
-    )
-    .await?;
-    let protection = config.native_protector()?;
-    let content = crate::execution_assembly::open_content(&config, protection.clone()).await?;
-    let planning = config
-        .flow
-        .open(
-            runtime.clone(),
-            audit_store.clone(),
+    let mut resources = crate::test_support::Resources::default();
+    resources.resource(crate::lifecycle::AccessResource(access.clone()));
+    let result = async {
+        access.claim_tenant_use(&config).await?;
+        let runtime = crate::inventory_runtime::InventoryRuntime::fixture(
+            config.runtime_database.options()?,
+            access.inventory(),
             rss_request_context::TenantId::parse(&config.identity.tenant_id)
-                .map_err(|_| Error::Malformed)?,
-            clock.clone(),
-            content.clone(),
-            |_| {},
+                .map_err(|_| Error::Configuration(ConfigIssue::Tenant))?,
+            monotonic.clone(),
+            access
+                .audit_store(&crate::config::AuditConfig::Plain)
+                .await?,
         )
         .await?;
-    let compiled = config.compile()?;
-    access
-        .authorization_store()
-        .require_management_initializer()
-        .await?;
-    let identity = match identity {
-        Some(identity) => identity,
-        None => {
-            Identity::connect(
-                &compiled.config,
-                compiled.identity_management.clone(),
-                |_| {},
-            )
-            .await?
+        resources.resource(crate::test_support::InventoryFixtureResource(
+            runtime.clone(),
+        ));
+        let protection = config.native_protector()?;
+        let content = crate::execution_assembly::open_content(&config, protection.clone()).await?;
+        if let Some(content) = &content {
+            resources.resource(crate::execution_assembly::ContentResource(content.clone()));
         }
-    };
-    let execution = crate::execution_assembly::open(
-        &compiled.config,
-        protection,
-        audit_store.clone(),
-        content,
-        planning.publications.services.clone(),
-        rss_device_command_postgres::CommandClock::Postgres,
-        Arc::new(
-            rss_mdm_authorization_service::session::SessionAuthority::new(
-                identity.authority.clone(),
-                identity.tenant,
-            ),
-        ),
-    )
-    .await?;
-    let associations = Arc::new(
-        rss_mdm_device_service::Associations::new(
-            audit_store.clone(),
-            identity.tenant,
-            &planning.cursor_key,
-        )
-        .map_err(|_| Error::Unavailable(crate::Failure::Database))?,
-    );
-    let timeline = access.timeline(audit_store.clone(), identity.tenant, &planning.cursor_key)?;
-    timeline
-        .initialize()
-        .await
-        .map_err(|_| Error::Unavailable(crate::Failure::Database))?;
-    let plan_runtime = planning.runtime.clone();
-    let fixture_planning = planning.planning.clone();
-    let execution_service = execution.clone();
-    let mut fixture_routers = from_compiled(
-        compiled,
-        AssemblyDependencies {
-            certificate_archive: crate::certificate_archive::assemble(
-                &access,
+        let planning = config
+            .flow
+            .open(
+                runtime.clone(),
                 audit_store.clone(),
+                rss_request_context::TenantId::parse(&config.identity.tenant_id)
+                    .map_err(|_| Error::Malformed)?,
                 clock.clone(),
+                content.clone(),
+                |resource| resources.resource(resource),
+            )
+            .await?;
+        let compiled = config.compile()?;
+        access
+            .authorization_store()
+            .require_management_initializer()
+            .await?;
+        let identity = match identity {
+            Some(identity) => identity,
+            None => {
+                Identity::connect(
+                    &compiled.config,
+                    compiled.identity_management.clone(),
+                    |resource| resources.acquire(resource),
+                )
+                .await?
+            }
+        };
+        let execution = crate::execution_assembly::open(
+            &compiled.config,
+            protection,
+            audit_store.clone(),
+            content,
+            planning.publications.services.clone(),
+            rss_device_command_postgres::CommandClock::Postgres,
+            Arc::new(
+                rss_mdm_authorization_service::session::SessionAuthority::new(
+                    identity.authority.clone(),
+                    identity.tenant,
+                ),
             ),
-            timeline,
-            associations,
-            audit_store,
-            execution,
-            clock,
-            monotonic,
-            access: access.clone(),
-            runtime,
-            flow: planning,
-            identity,
-        },
-    )
-    .await?;
-    crate::test_support::pki::seed_trust(&access.archive_pool(), fixture_routers.pki.bindings())
+        )
+        .await?;
+        resources.resource(rss_mdm_execution_service::Resource(
+            execution.service.clone(),
+        ));
+        let associations = Arc::new(
+            rss_mdm_device_service::Associations::new(
+                audit_store.clone(),
+                identity.tenant,
+                &planning.cursor_key,
+            )
+            .map_err(|_| Error::Unavailable(crate::Failure::Database))?,
+        );
+        let timeline =
+            access.timeline(audit_store.clone(), identity.tenant, &planning.cursor_key)?;
+        timeline
+            .initialize()
+            .await
+            .map_err(|_| Error::Unavailable(crate::Failure::Database))?;
+        let plan_runtime = planning.runtime.clone();
+        let fixture_planning = planning.planning.clone();
+        let execution_service = execution.clone();
+        let mut fixture_routers = from_compiled(
+            compiled,
+            AssemblyDependencies {
+                certificate_archive: crate::certificate_archive::assemble(
+                    &access,
+                    audit_store.clone(),
+                    clock.clone(),
+                ),
+                timeline,
+                associations,
+                audit_store,
+                execution,
+                clock,
+                monotonic,
+                access: access.clone(),
+                runtime,
+                flow: planning,
+                identity,
+            },
+        )
+        .await?;
+        crate::test_support::pki::seed_trust(
+            &access.archive_pool(),
+            fixture_routers.pki.bindings(),
+        )
         .await
         .map_err(|_| Error::Unavailable(crate::Failure::Database))?;
-    // Test carrier projects real, completed TLS evidence; the production browser router stays separate.
-    for (kind, tls) in fixture_routers.listeners {
-        if kind == crate::native::NativeListenerKind::Agent {
-            fixture_routers.browser = fixture_routers.browser.merge(tls.router)
+        // Test carrier projects real, completed TLS evidence; the production browser router stays separate.
+        for (kind, tls) in fixture_routers.listeners {
+            if kind == crate::native::NativeListenerKind::Agent {
+                fixture_routers.browser = fixture_routers.browser.merge(tls.router)
+            }
+        }
+        Ok((
+            fixture_routers.browser,
+            execution_service,
+            plan_runtime,
+            fixture_planning,
+        ))
+    }
+    .await;
+    match result {
+        Ok((router, execution, runtime, planning)) => {
+            Ok((router, execution, runtime, planning, resources))
+        }
+        Err(error) => {
+            let cleanup = resources.finish(async { Ok(()) }).await;
+            if let Err(cleanup_error) = cleanup {
+                eprintln!("application fixture cleanup also failed: {cleanup_error:#}");
+            }
+            Err(error)
         }
     }
-    Ok((
-        fixture_routers.browser,
-        execution_service,
-        plan_runtime,
-        fixture_planning,
-    ))
 }
 pub(crate) struct AssemblyDependencies {
     pub(crate) certificate_archive: Arc<rss_mdm_certificate_archive_service::Archive>,

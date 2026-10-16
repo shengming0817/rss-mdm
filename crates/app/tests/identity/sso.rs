@@ -183,7 +183,12 @@ async fn product_callback_link_step_up_and_provider_isolation() -> Result<()> {
     let policy = Arc::new(
         crate::authorization::identity_management::IdentityManagementPolicy::new(INSTANCE)?,
     );
-    let identity = crate::identity::Identity::for_oidc_fixture(&config, policy).await?;
+    let mut identity_resources = crate::test_support::Resources::default();
+    let identity = crate::identity::Identity::for_oidc_fixture(&config, policy, |resource| {
+        identity_resources.acquire(resource)
+    })
+    .await?;
+    identity_resources.finish(async {
     let reader = Arc::new(
         InventoryReader::connect(
             config
@@ -194,18 +199,19 @@ async fn product_callback_link_step_up_and_provider_isolation() -> Result<()> {
         )
         .await?,
     );
-    let audit_store = database(&base).await?.audit_store(&config.audit).await?;
-    let router = crate::api::application_fixture(
+    let access = database(&base).await?;
+    let audit_store = access.audit_store(&config.audit).await?;
+    let (router, _, _, _, resources) = crate::api::application_fixture(
         config,
         Arc::new(crate::clock::SystemClock),
         monotonic(),
-        database(&base).await?,
+        access,
         Some(identity),
         audit_store,
     )
-    .await?
-    .0
-    .layer(axum::Extension(rss_identity_http_axum::ClientAddress(
+    .await?;
+    resources.finish(async {
+    let router = router.layer(axum::Extension(rss_identity_http_axum::ClientAddress(
         "127.0.0.1".parse()?,
     )));
     let mut admin = Browser::default();
@@ -370,4 +376,6 @@ async fn product_callback_link_step_up_and_provider_isolation() -> Result<()> {
     reader.close().await;
     println!("MDM_ENTERPRISE_SSO_MATRIX_PASSED");
     Ok(())
+    }).await
+    }).await
 }

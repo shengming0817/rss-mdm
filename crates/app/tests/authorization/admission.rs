@@ -4,6 +4,7 @@ use super::*;
 #[ignore = "MODULE=authorization.admission: real authorization contract"]
 async fn permission_drift_corrupt_policy_and_stalled_postgres() -> Result<()> {
     let Fixture {
+        resources,
         config,
         router,
         mut admin,
@@ -11,6 +12,7 @@ async fn permission_drift_corrupt_policy_and_stalled_postgres() -> Result<()> {
         store,
         ..
     } = fixture().await?;
+    resources.finish(async {
     let rule_id = Uuid::new_v4();
     pg(&format!(
         "INSERT INTO mdm_access.authorization_rules(tenant_id,instance,id,revision,document) VALUES('{TENANT}','{INSTANCE}','{rule_id}',1,NULL)",
@@ -135,7 +137,9 @@ async fn permission_drift_corrupt_policy_and_stalled_postgres() -> Result<()> {
         pg(restore)?;
         ensure!(rejected, "undeclared access privilege admitted");
     }
-    let identity = crate::test_support::identity::identity(case_tenant()).await?;
+    let (identity, identity_resources) =
+        crate::test_support::identity::identity(case_tenant()).await?;
+    identity_resources.finish(async {
     let stale = crate::authorization::context::AuthorizedPrincipal::new(
         identity
             .authority
@@ -223,4 +227,6 @@ async fn permission_drift_corrupt_policy_and_stalled_postgres() -> Result<()> {
     );
 
     Ok(())
+    }).await
+    }).await
 }

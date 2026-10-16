@@ -58,6 +58,8 @@ async fn policy(
 #[ignore = "make t2 MODULE=planning.agent_policy"]
 async fn preview_publish_authorization_and_commit_replay() -> Result<()> {
     let mut fixture = Fixture::new().await?;
+    let resources = std::mem::take(&mut fixture.resources);
+    resources.finish(async {
     fixture.register().await?;
     claim_request(&fixture.router, Uuid::new_v4()).await?;
     let (id, _bytes, _definition) = fixture.resource().await?;
@@ -67,7 +69,8 @@ async fn preview_publish_authorization_and_commit_replay() -> Result<()> {
             json!([{"kind":"device","id":case_device_id()}]),
         )
         .await?;
-    let identity = crate::test_support::identity::identity(case_tenant()).await?;
+    let (identity, identity_resources) = crate::test_support::identity::identity(case_tenant()).await?;
+    identity_resources.finish(async {
     let access = database(&fixture.base).await?;
     let stale = crate::authorization::context::AuthorizedPrincipal::new(
         identity
@@ -174,11 +177,15 @@ async fn preview_publish_authorization_and_commit_replay() -> Result<()> {
             == StatusCode::CONFLICT
     );
     Ok(())
+    }).await
+    }).await
 }
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 #[ignore = "make t2 MODULE=planning.agent_policy"]
 async fn explicit_rerun_deduplicates() -> Result<()> {
     let mut fixture = Fixture::new().await?;
+    let resources = std::mem::take(&mut fixture.resources);
+    resources.finish(async {
     fixture.register().await?;
     claim_request(&fixture.router, Uuid::new_v4()).await?;
     let (id, _bytes, _definition) = fixture.resource().await?;
@@ -239,11 +246,14 @@ async fn explicit_rerun_deduplicates() -> Result<()> {
     task_event(&router,&again,json!({"kind":"result","exitCode":0,"quality":"complete","output":{"version":"1.2","healthy":true}})).await?;
     crate::test_support::stop_worker(stack).await?;
     Ok(())
+    }).await
 }
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 #[ignore = "make t2 MODULE=planning.agent_policy"]
 async fn policy_scan_reaches_late_match() -> Result<()> {
     let mut fixture = Fixture::new().await?;
+    let resources = std::mem::take(&mut fixture.resources);
+    resources.finish(async {
     fixture.register().await?;
     claim_request(&fixture.router, Uuid::new_v4()).await?;
     let (resource, _bytes, _definition) = fixture.resource().await?;
@@ -292,11 +302,14 @@ async fn policy_scan_reaches_late_match() -> Result<()> {
     task_event(router,&task,json!({"kind":"result","exitCode":0,"quality":"complete","output":{"version":"1.2","healthy":true}})).await?;
     crate::test_support::stop_worker(stack).await?;
     Ok(())
+    }).await
 }
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 #[ignore = "make t2 MODULE=planning.agent_policy"]
 async fn policy_reference_and_archive_are_serialized() -> Result<()> {
     let mut fixture = Fixture::new().await?;
+    let resources = std::mem::take(&mut fixture.resources);
+    resources.finish(async {
     let (id, _bytes, _definition) = fixture.resource().await?;
     fixture.scope(case_empty_scope(), json!([])).await?;
     let router = &fixture.router;
@@ -339,6 +352,7 @@ async fn policy_reference_and_archive_are_serialized() -> Result<()> {
         );
     }
     Ok(())
+    }).await
 }
 
 async fn reject_script_at_all_entrances(
@@ -415,6 +429,8 @@ fn script_effects() -> Result<String> {
 async fn script_preparation_is_shared_without_preview_effects() -> Result<()> {
     use sha2::{Digest, Sha256};
     let mut fixture = Fixture::new().await?;
+    let resources = std::mem::take(&mut fixture.resources);
+    resources.finish(async {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
     let address = listener.local_addr()?;
     let _server =
@@ -512,12 +528,16 @@ async fn script_preparation_is_shared_without_preview_effects() -> Result<()> {
     without_signing["task_signing"] = serde_json::Value::Null;
     without_signing["agent_pki"] = json!({"mode":"disabled"});
     let mut unsigned = Fixture::from_config(without_signing).await?;
+    let resources = std::mem::take(&mut unsigned.resources);
+    resources.finish(async {
     reject_script_at_all_entrances(&mut unsigned, definition.clone(), StatusCode::CONFLICT).await?;
     ensure!(
         script_effects()? == before,
         "unsigned draft or publication wrote execution facts"
     );
     Ok(())
+    }).await
+    }).await
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
@@ -525,6 +545,8 @@ async fn script_preparation_is_shared_without_preview_effects() -> Result<()> {
 async fn registered_script_eligibility_gates_preview_and_automatic() -> Result<()> {
     use crate::test_support::software_execution::{Platform, context};
     let mut f = Fixture::new().await?;
+    let resources = std::mem::take(&mut f.resources);
+    resources.finish(async {
     f.register().await?;
     f.scope(
         case_task_scope(),
@@ -617,6 +639,7 @@ async fn registered_script_eligibility_gates_preview_and_automatic() -> Result<(
     ensure!(script_effects()? == before);
     crate::test_support::stop_worker(stack).await?;
     Ok(())
+    }).await
 }
 
 #[tokio::test]
@@ -624,6 +647,8 @@ async fn registered_script_eligibility_gates_preview_and_automatic() -> Result<(
 async fn management_accepts_large_legal_policy_parameters() -> Result<()> {
     use sha2::{Digest, Sha256};
     let mut fixture = Fixture::new().await?;
+    let resources = std::mem::take(&mut fixture.resources);
+    resources.finish(async {
     fixture.register().await?;
     fixture
         .scope(
@@ -685,4 +710,5 @@ async fn management_accepts_large_legal_policy_parameters() -> Result<()> {
         .await?;
     ensure!(status == StatusCode::BAD_REQUEST && rejected["code"] == "malformed_request");
     Ok(())
+    }).await
 }

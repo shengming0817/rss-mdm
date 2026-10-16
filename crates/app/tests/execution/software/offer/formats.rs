@@ -88,6 +88,8 @@ async fn chain(format: &str, bundle: bool, user: bool) -> Result<()> {
         _ => anyhow::bail!("unknown matrix entry"),
     };
     let mut f = Fixture::with_profiles(platform, profiles, local.clone()).await?;
+    let resources = std::mem::take(&mut f.resources);
+    resources.finish(async {
     let stack = worker(&f.base, f.content.clone()).await?;
     let (behavior, bytes) = match format {
         "exe" => (
@@ -330,6 +332,7 @@ async fn chain(format: &str, bundle: bool, user: bool) -> Result<()> {
     );
     crate::test_support::stop_worker(stack).await?;
     Ok(())
+    }).await
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]

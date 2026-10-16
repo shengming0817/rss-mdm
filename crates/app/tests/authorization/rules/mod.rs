@@ -4,8 +4,8 @@ use super::*;
 #[ignore = "MODULE=authorization.rules: real authorization contract"]
 async fn rules_cas_replay_revocation_and_escalation() -> Result<()> {
     let Fixture {
+        resources,
         base,
-        reader,
         router,
         mut admin,
         mut member,
@@ -13,6 +13,7 @@ async fn rules_cas_replay_revocation_and_escalation() -> Result<()> {
         store,
         ..
     } = fixture().await?;
+    resources.finish(async {
     ensure!(
         member
             .call(&router, Method::GET, "/api/v1/authorization/rules", None)
@@ -124,7 +125,8 @@ async fn rules_cas_replay_revocation_and_escalation() -> Result<()> {
             .0
             == StatusCode::CONFLICT
     );
-    let restarted = app(&base, reader.clone()).await?;
+    let (restarted, _, app_resources) = app_with_access(&base, database(&base).await?).await?;
+    app_resources.finish(async {
     ensure!(
         member
             .call(
@@ -159,7 +161,8 @@ async fn rules_cas_replay_revocation_and_escalation() -> Result<()> {
         .await?
         .0 == StatusCode::OK
     );
-    let identity = crate::test_support::identity::identity(case_tenant()).await?;
+    let (identity, identity_resources) = crate::test_support::identity::identity(case_tenant()).await?;
+    identity_resources.finish(async {
     let stale = crate::authorization::context::AuthorizedPrincipal::new(
         identity
             .authority
@@ -242,6 +245,9 @@ async fn rules_cas_replay_revocation_and_escalation() -> Result<()> {
     );
 
     Ok(())
+    }).await
+    }).await
+    }).await
 }
 #[tokio::test]
 #[ignore = "real Identity + PG with independently constructed capability routers"]
@@ -250,7 +256,10 @@ async fn capability_routes_without_application_preserve_revocation_and_atomicity
     use crate::enrollment::{EnrollmentService, credentials::Credentials};
     use axum::middleware;
     let config = crate::test_support::identity::config(case_tenant())?;
-    let identity = Arc::new(crate::test_support::identity::identity(case_tenant()).await?);
+    let (identity, identity_resources) =
+        crate::test_support::identity::identity(case_tenant()).await?;
+    let identity = Arc::new(identity);
+    identity_resources.finish(async {
     let access =
         Arc::new(crate::database::Database::connect(config.access_database.options()?).await?);
     let monotonic: Arc<dyn rss_observation::Clock> = Arc::new(crate::Monotonic(|| {
@@ -428,34 +437,45 @@ async fn capability_routes_without_application_preserve_revocation_and_atomicity
     );
     access.close().await;
     Ok(())
+    }).await
 }
 
 #[tokio::test]
 #[ignore = "MODULE=authorization.rules: enrollment does not imply device wipe"]
 async fn enrollment_grant_does_not_authorize_wipe() -> Result<()> {
-    let fixture = authority::Authority::open().await?;
-    let (router, _) = app_with_access(&fixture.base, fixture.access.clone()).await?;
-    let mut browser = fixture.browser("other")?;
-    set_device_grants(
-        &mut browser,
-        &router,
-        crate::test_support::case::name("device-1"),
-        &["inventory_read", "enrollment"],
-    )
-    .await?;
-    ensure!(
-        browser
-            .call(
-                &router,
-                Method::POST,
-                &format!("{DEVICE}/actions", DEVICE = case_device()),
-                Some(json!({"action":"wipe"}))
-            )
-            .await?
-            .0
-            == StatusCode::FORBIDDEN
-    );
-    Ok(())
+    let mut fixture = authority::Authority::open().await?;
+    let fixture_resources = std::mem::take(&mut fixture.resources);
+    fixture_resources
+        .finish(async {
+            let (router, _, app_resources) =
+                app_with_access(&fixture.base, fixture.access.clone()).await?;
+            app_resources
+                .finish(async {
+                    let mut browser = fixture.browser("other")?;
+                    set_device_grants(
+                        &mut browser,
+                        &router,
+                        crate::test_support::case::name("device-1"),
+                        &["inventory_read", "enrollment"],
+                    )
+                    .await?;
+                    ensure!(
+                        browser
+                            .call(
+                                &router,
+                                Method::POST,
+                                &format!("{DEVICE}/actions", DEVICE = case_device()),
+                                Some(json!({"action":"wipe"}))
+                            )
+                            .await?
+                            .0
+                            == StatusCode::FORBIDDEN
+                    );
+                    Ok(())
+                })
+                .await
+        })
+        .await
 }
 
 mod route_permissions;

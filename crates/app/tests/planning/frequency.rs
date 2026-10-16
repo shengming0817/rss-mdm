@@ -111,6 +111,8 @@ async fn publish_scope_without_assignments(
 #[ignore = "make t2 MODULE=planning.frequency"]
 async fn once_per_entry_tracks_membership_epochs() -> Result<()> {
     let mut fixture = Fixture::new().await?;
+    let resources = std::mem::take(&mut fixture.resources);
+    resources.finish(async {
     fixture.register().await?;
     let (resource, _bytes, _definition) = fixture.resource().await?;
     let stack = worker(&fixture.base).await?;
@@ -187,11 +189,14 @@ async fn once_per_entry_tracks_membership_epochs() -> Result<()> {
     service.runtime.close().await;
     crate::test_support::stop_worker(stack).await?;
     Ok(())
+    }).await
 }
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 #[ignore = "make t2 MODULE=planning.frequency"]
 async fn registration_and_checkin_survive_router_restart() -> Result<()> {
     let mut fixture = Fixture::new().await?;
+    let resources = std::mem::take(&mut fixture.resources);
+    resources.finish(async {
     fixture.register().await?;
     let (resource, _bytes, _definition) = fixture.resource().await?;
     fixture
@@ -216,7 +221,8 @@ async fn registration_and_checkin_survive_router_restart() -> Result<()> {
     let task = claim(router).await?;
     belongs_to(&task, registration)?;
     complete(router, &task).await?;
-    let restarted = app_with_access(base, database(base).await?).await?.0;
+    let (restarted, _, app_resources) = app_with_access(base, database(base).await?).await?;
+    app_resources.finish(async {
     no_repeat(&restarted, registration, 1).await?;
     disable(author, router, registration).await?;
     let checkin = publish(
@@ -242,11 +248,15 @@ async fn registration_and_checkin_survive_router_restart() -> Result<()> {
     disable(author, router, checkin).await?;
     crate::test_support::stop_worker(stack).await?;
     Ok(())
+    }).await
+    }).await
 }
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 #[ignore = "make t2 MODULE=planning.frequency"]
 async fn interval_misfire_skip_and_coalesce() -> Result<()> {
     let mut fixture = Fixture::new().await?;
+    let resources = std::mem::take(&mut fixture.resources);
+    resources.finish(async {
     fixture.register().await?;
     let (resource, _bytes, _definition) = fixture.resource().await?;
     fixture
@@ -272,4 +282,5 @@ async fn interval_misfire_skip_and_coalesce() -> Result<()> {
     disable(author, router, coalesce).await?;
     crate::test_support::stop_worker(stack).await?;
     Ok(())
+    }).await
 }

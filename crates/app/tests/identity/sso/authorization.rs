@@ -266,42 +266,47 @@ pub(super) async fn four_subjects_and_independent_lifetimes(
             && allows(&expired, "device_wipe")
     );
     // A proof's own deadline removes every capability, including direct-user and local-group grants.
-    let identity = crate::test_support::identity::identity(case_tenant()).await?;
-    let access = crate::Database::connect(
-        crate::test_support::identity::config(case_tenant())?
-            .access_database
-            .options()?,
-    )
-    .await?;
-    let credential = rss_identity_core::session::SessionSecret::parse(
-        alice.cookies["__Host-identity-session"].clone(),
-    )?;
-    let session = identity
-        .authority
-        .inspect_session(
-            identity.tenant,
-            credential,
-            rss_transactional_messaging::policy::OperationDeadline::from_remaining(
-                Duration::from_millis(250),
-            ),
-        )
-        .await?;
-    let proof = crate::authorization::context::AuthorizedPrincipal::new(session)?
-        .load_authorization(access.authorization())
-        .await?;
-    tokio::time::sleep(Duration::from_millis(300)).await;
-    ensure!(matches!(
-        proof.require(
-            crate::authorization::Permission::InventoryRead,
-            Some("user-device")
-        ),
-        Err(rss_mdm_authorization_service::Error::Unauthorized)
-    ));
-    access.close().await;
-    for path in paths {
-        put(admin, router, &path, 1, Value::Null).await?;
-    }
-    put(admin, router, &group_path, 1, Value::Null).await?;
-    println!("MDM_FOUR_SUBJECTS_REAL_KEYCLOAK_PASSED");
-    Ok(())
+    let (identity, identity_resources) =
+        crate::test_support::identity::identity(case_tenant()).await?;
+    identity_resources
+        .finish(async {
+            let access = crate::Database::connect(
+                crate::test_support::identity::config(case_tenant())?
+                    .access_database
+                    .options()?,
+            )
+            .await?;
+            let credential = rss_identity_core::session::SessionSecret::parse(
+                alice.cookies["__Host-identity-session"].clone(),
+            )?;
+            let session = identity
+                .authority
+                .inspect_session(
+                    identity.tenant,
+                    credential,
+                    rss_transactional_messaging::policy::OperationDeadline::from_remaining(
+                        Duration::from_millis(250),
+                    ),
+                )
+                .await?;
+            let proof = crate::authorization::context::AuthorizedPrincipal::new(session)?
+                .load_authorization(access.authorization())
+                .await?;
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            ensure!(matches!(
+                proof.require(
+                    crate::authorization::Permission::InventoryRead,
+                    Some("user-device")
+                ),
+                Err(rss_mdm_authorization_service::Error::Unauthorized)
+            ));
+            access.close().await;
+            for path in paths {
+                put(admin, router, &path, 1, Value::Null).await?;
+            }
+            put(admin, router, &group_path, 1, Value::Null).await?;
+            println!("MDM_FOUR_SUBJECTS_REAL_KEYCLOAK_PASSED");
+            Ok(())
+        })
+        .await
 }

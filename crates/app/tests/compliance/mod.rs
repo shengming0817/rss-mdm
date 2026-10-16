@@ -100,6 +100,7 @@ async fn task_phase(b: &mut Browser, router: &Router, path: &str, phase: &str) -
     .await?
 }
 struct Fixture {
+    resources: crate::test_support::Resources,
     base: Value,
     router: Router,
     browser: Browser,
@@ -124,7 +125,7 @@ impl Fixture {
         );
         let access = database(&base).await?;
         let audit = access.audit_store(&config.audit).await?;
-        let (router, _, plan_runtime, _) = crate::api::application_fixture(
+        let (router, _, plan_runtime, _, resources) = crate::api::application_fixture(
             config,
             Arc::new(crate::clock::SystemClock),
             monotonic(),
@@ -136,7 +137,7 @@ impl Fixture {
         let router = router.layer(axum::Extension(rss_identity_http_axum::ClientAddress(
             "127.0.0.1".parse()?,
         )));
-        let browser = authority::Authority::open().await?.browser("admin")?;
+        let browser = authority::Authority::prepared_browser("admin").await?;
         let subject = browser_subject(&browser, &router).await?;
         grants(&subject, None).await?;
         pg(&format!(
@@ -144,6 +145,7 @@ impl Fixture {
             TENANT = case_tenant()
         ))?;
         Ok(Self {
+            resources,
             base,
             router,
             browser,
@@ -166,6 +168,10 @@ impl Fixture {
         Ok((id, path, written))
     }
     async fn close(self) {
+        self.resources
+            .finish(async { Ok(()) })
+            .await
+            .expect("application resources closed");
         self.reader.close().await;
     }
 }

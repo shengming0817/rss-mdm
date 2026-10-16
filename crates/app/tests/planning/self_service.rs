@@ -75,172 +75,186 @@ async fn event_with_context(
 #[ignore = "make t2 MODULE=planning.self_service"]
 async fn targeted_invocation_binds_parameters_identity_frequency_and_result() -> Result<()> {
     let mut f = Fixture::new().await?;
-    f.register().await?;
-    ensure!(claim_request(&f.router, Uuid::new_v4()).await?.0 == StatusCode::OK);
-    f.scope(
-        case_task_scope(),
-        json!([{"kind":"device","id":case_device_id()}]),
-    )
-    .await?;
-    let (resource, _, _) = f.script_resource(4096, true).await?;
-    let (id, policy) = publish_definition(&mut f, definition(resource, true)).await?;
-    let reads = audit_count(|record| record.action() == "command_read")?;
-    let directory = call(&f, Method::GET, DIRECTORY, None, true, true).await?;
-    ensure!(
-        audit_count(|record| record.action() == "command_read")? == reads + 1,
-        "directory must retain its task read audit action"
-    );
-    ensure!(
-        directory.0 == StatusCode::OK && directory.1["items"].as_array().unwrap().len() == 1,
-        "directory: {directory:?}"
-    );
-    ensure!(
-        directory.1["items"][0]["selfService"]["allowAi"] == true
-            && directory.1["items"][0]["selfService"]["riskLevel"] == 2
-    );
-    let reads = audit_count(|record| record.action() == "command_read")?;
-    ensure!(
-        call(&f, Method::GET, DIRECTORY, None, false, true).await?.0 == StatusCode::UNAUTHORIZED
-    );
-    ensure!(
-        audit_count(|record| record.action() == "command_read")? == reads + 1,
-        "unauthenticated directory rejection must retain its task read audit action"
-    );
-    let accepts = audit_count(|record| record.action() == "command_accept")?;
-    ensure!(
-        call(
-            &f,
-            Method::POST,
-            INVOKE,
-            Some(json!({"unknown":true})),
-            true,
-            true
-        )
-        .await?
-        .0 == StatusCode::BAD_REQUEST
-    );
-    ensure!(
-        audit_count(|record| record.action() == "command_accept")? == accepts + 1,
-        "JSON rejection before invocation service must retain its task accept audit action"
-    );
-    ensure!(call(&f, Method::GET, DIRECTORY, None, true, false).await?.1["items"] == json!([]));
-    let input = request(id, &policy, json!({"name":"Acme"}));
-    let mut invalid = input.clone();
-    invalid["confirmed"] = json!(false);
-    ensure!(
-        call(&f, Method::POST, INVOKE, Some(invalid), true, true)
-            .await?
-            .0
-            == StatusCode::FORBIDDEN
-    );
-    for parameters in [
-        json!({}),
-        json!({"name":"Acme","path":"/Library"}),
-        json!({"name":"x".repeat(33)}),
-        json!({"name":true}),
-    ] {
-        let mut invalid = input.clone();
-        invalid["parameters"] = parameters;
-        ensure!(
-            call(&f, Method::POST, INVOKE, Some(invalid), true, true)
+    let resources = std::mem::take(&mut f.resources);
+    resources
+        .finish(async {
+            f.register().await?;
+            ensure!(claim_request(&f.router, Uuid::new_v4()).await?.0 == StatusCode::OK);
+            f.scope(
+                case_task_scope(),
+                json!([{"kind":"device","id":case_device_id()}]),
+            )
+            .await?;
+            let (resource, _, _) = f.script_resource(4096, true).await?;
+            let (id, policy) = publish_definition(&mut f, definition(resource, true)).await?;
+            let reads = audit_count(|record| record.action() == "command_read")?;
+            let directory = call(&f, Method::GET, DIRECTORY, None, true, true).await?;
+            ensure!(
+                audit_count(|record| record.action() == "command_read")? == reads + 1,
+                "directory must retain its task read audit action"
+            );
+            ensure!(
+                directory.0 == StatusCode::OK
+                    && directory.1["items"].as_array().unwrap().len() == 1,
+                "directory: {directory:?}"
+            );
+            ensure!(
+                directory.1["items"][0]["selfService"]["allowAi"] == true
+                    && directory.1["items"][0]["selfService"]["riskLevel"] == 2
+            );
+            let reads = audit_count(|record| record.action() == "command_read")?;
+            ensure!(
+                call(&f, Method::GET, DIRECTORY, None, false, true).await?.0
+                    == StatusCode::UNAUTHORIZED
+            );
+            ensure!(
+                audit_count(|record| record.action() == "command_read")? == reads + 1,
+                "unauthenticated directory rejection must retain its task read audit action"
+            );
+            let accepts = audit_count(|record| record.action() == "command_accept")?;
+            ensure!(
+                call(
+                    &f,
+                    Method::POST,
+                    INVOKE,
+                    Some(json!({"unknown":true})),
+                    true,
+                    true
+                )
                 .await?
-                .0
-                == StatusCode::BAD_REQUEST
-        );
-    }
-    ensure!(run_count(id)?.trim() == "0");
-    let accepted = call(&f, Method::POST, INVOKE, Some(input.clone()), true, true).await?;
-    ensure!(accepted.0 == StatusCode::ACCEPTED, "invoke: {accepted:?}");
-    ensure!(
-        call(&f, Method::GET, DIRECTORY, None, true, true).await?.1["items"] == json!([]),
-        "pending call remained in directory"
-    );
-    ensure!(
-        call(&f, Method::POST, INVOKE, Some(input.clone()), true, true)
-            .await?
-            .1
-            == accepted.1
-    );
-    let mut conflict = input.clone();
-    conflict["parameters"]["name"] = json!("Other");
-    ensure!(
-        call(&f, Method::POST, INVOKE, Some(conflict), true, true)
-            .await?
-            .0
-            == StatusCode::CONFLICT
-    );
-    ensure!(
-        call(
-            &f,
-            Method::POST,
-            INVOKE,
-            Some(request(id, &policy, json!({"name":"Other"}))),
-            true,
-            true
-        )
-        .await?
-        .0 == StatusCode::CONFLICT
-    );
-    let stack = worker(&f.base).await?;
-    let task = claim(&f.router).await?;
-    ensure!(task["payload"]["task"]["taskId"] == accepted.1["runId"]);
-    ensure!(task["payload"]["task"]["parameters"] == json!({"name":"Acme","path":"/Applications"}));
-    ensure!(task["payload"]["task"]["arguments"] == json!(["Acme"]));
-    ensure!(task["payload"]["task"]["environment"]["RSS_PARAM_PATH"] == "/Applications");
-    ensure!(
-        task["payload"]["task"]["authorization"]["requestId"] == input["operationId"]
-            && task["payload"]["task"]["authorization"]["subject"]["user"]["principalId"]
-                == f.author_id
-            && task["payload"]["task"]["authorization"]["source"] == "ai"
-    );
-    complete(&f.router, &task).await?;
-    let status = call(
-        &f,
-        Method::GET,
-        &format!("{INVOKE}/{}", input["operationId"].as_str().unwrap()),
-        None,
-        true,
-        true,
-    )
-    .await?;
-    ensure!(
-        status.0 == StatusCode::OK
-            && status.1["runId"] == accepted.1["runId"]
-            && status.1["attemptId"] == task["payload"]["task"]["attemptId"]
-    );
-    ensure!(
-        status.1["result"]["evidence"]["quality"] == "complete"
-            && status.1["result"]["evidence"]["collectedAt"] == 2
-            && status.1["result"]["evidence"]["receivedAt"]
-                .as_i64()
-                .unwrap()
-                > 2
-    );
-    ensure!(
-        call(
-            &f,
-            Method::POST,
-            INVOKE,
-            Some(request(id, &policy, json!({"name":"Again"}))),
-            true,
-            true
-        )
-        .await?
-        .0 == StatusCode::CONFLICT,
-        "self-service must consume once-per-version"
-    );
-    ensure!(
-        call(&f, Method::GET, DIRECTORY, None, true, true).await?.1["items"] == json!([]),
-        "consumed once-per-version remained in directory"
-    );
-    ensure!(run_count(id)?.trim() == "1");
-    crate::test_support::stop_worker(stack).await?;
-    Ok(())
+                .0 == StatusCode::BAD_REQUEST
+            );
+            ensure!(
+                audit_count(|record| record.action() == "command_accept")? == accepts + 1,
+                "JSON rejection before invocation service must retain its task accept audit action"
+            );
+            ensure!(
+                call(&f, Method::GET, DIRECTORY, None, true, false).await?.1["items"] == json!([])
+            );
+            let input = request(id, &policy, json!({"name":"Acme"}));
+            let mut invalid = input.clone();
+            invalid["confirmed"] = json!(false);
+            ensure!(
+                call(&f, Method::POST, INVOKE, Some(invalid), true, true)
+                    .await?
+                    .0
+                    == StatusCode::FORBIDDEN
+            );
+            for parameters in [
+                json!({}),
+                json!({"name":"Acme","path":"/Library"}),
+                json!({"name":"x".repeat(33)}),
+                json!({"name":true}),
+            ] {
+                let mut invalid = input.clone();
+                invalid["parameters"] = parameters;
+                ensure!(
+                    call(&f, Method::POST, INVOKE, Some(invalid), true, true)
+                        .await?
+                        .0
+                        == StatusCode::BAD_REQUEST
+                );
+            }
+            ensure!(run_count(id)?.trim() == "0");
+            let accepted = call(&f, Method::POST, INVOKE, Some(input.clone()), true, true).await?;
+            ensure!(accepted.0 == StatusCode::ACCEPTED, "invoke: {accepted:?}");
+            ensure!(
+                call(&f, Method::GET, DIRECTORY, None, true, true).await?.1["items"] == json!([]),
+                "pending call remained in directory"
+            );
+            ensure!(
+                call(&f, Method::POST, INVOKE, Some(input.clone()), true, true)
+                    .await?
+                    .1
+                    == accepted.1
+            );
+            let mut conflict = input.clone();
+            conflict["parameters"]["name"] = json!("Other");
+            ensure!(
+                call(&f, Method::POST, INVOKE, Some(conflict), true, true)
+                    .await?
+                    .0
+                    == StatusCode::CONFLICT
+            );
+            ensure!(
+                call(
+                    &f,
+                    Method::POST,
+                    INVOKE,
+                    Some(request(id, &policy, json!({"name":"Other"}))),
+                    true,
+                    true
+                )
+                .await?
+                .0 == StatusCode::CONFLICT
+            );
+            let stack = worker(&f.base).await?;
+            let task = claim(&f.router).await?;
+            ensure!(task["payload"]["task"]["taskId"] == accepted.1["runId"]);
+            ensure!(
+                task["payload"]["task"]["parameters"]
+                    == json!({"name":"Acme","path":"/Applications"})
+            );
+            ensure!(task["payload"]["task"]["arguments"] == json!(["Acme"]));
+            ensure!(task["payload"]["task"]["environment"]["RSS_PARAM_PATH"] == "/Applications");
+            ensure!(
+                task["payload"]["task"]["authorization"]["requestId"] == input["operationId"]
+                    && task["payload"]["task"]["authorization"]["subject"]["user"]["principalId"]
+                        == f.author_id
+                    && task["payload"]["task"]["authorization"]["source"] == "ai"
+            );
+            complete(&f.router, &task).await?;
+            let status = call(
+                &f,
+                Method::GET,
+                &format!("{INVOKE}/{}", input["operationId"].as_str().unwrap()),
+                None,
+                true,
+                true,
+            )
+            .await?;
+            ensure!(
+                status.0 == StatusCode::OK
+                    && status.1["runId"] == accepted.1["runId"]
+                    && status.1["attemptId"] == task["payload"]["task"]["attemptId"]
+            );
+            ensure!(
+                status.1["result"]["evidence"]["quality"] == "complete"
+                    && status.1["result"]["evidence"]["collectedAt"] == 2
+                    && status.1["result"]["evidence"]["receivedAt"]
+                        .as_i64()
+                        .unwrap()
+                        > 2
+            );
+            ensure!(
+                call(
+                    &f,
+                    Method::POST,
+                    INVOKE,
+                    Some(request(id, &policy, json!({"name":"Again"}))),
+                    true,
+                    true
+                )
+                .await?
+                .0 == StatusCode::CONFLICT,
+                "self-service must consume once-per-version"
+            );
+            ensure!(
+                call(&f, Method::GET, DIRECTORY, None, true, true).await?.1["items"] == json!([]),
+                "consumed once-per-version remained in directory"
+            );
+            ensure!(run_count(id)?.trim() == "1");
+            crate::test_support::stop_worker(stack).await?;
+            Ok(())
+        })
+        .await
 }
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 #[ignore = "make t2 MODULE=planning.self_service"]
 async fn self_service_rechecks_config_and_capability_before_start() -> Result<()> {
     let mut f = Fixture::new().await?;
+    let resources = std::mem::take(&mut f.resources);
+    resources.finish(async {
     f.register().await?;
     f.scope(
         case_task_scope(),
@@ -312,11 +326,14 @@ async fn self_service_rechecks_config_and_capability_before_start() -> Result<()
     ensure!(pg(&format!("SELECT count(*) FROM mdm_commands.action_attempts WHERE run='{}' AND permit IS NOT NULL",task["payload"]["task"]["taskId"].as_str().unwrap()))?.trim()=="0");
     crate::test_support::stop_worker(stack).await?;
     Ok(())
+    }).await
 }
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 #[ignore = "make t2 MODULE=planning.self_service"]
 async fn grants_and_scope_are_rechecked_and_ai_switch_does_not_change_automation() -> Result<()> {
     let mut f = Fixture::new().await?;
+    let resources = std::mem::take(&mut f.resources);
+    resources.finish(async {
     f.register().await?;
     crate::test_support::identity::independent_source_read(
         case_tenant(),
@@ -435,7 +452,8 @@ async fn grants_and_scope_are_rechecked_and_ai_switch_does_not_change_automation
         .collect();
     crate::test_support::identity::set_management_grants(case_tenant(), &f.author_id, revoked)
         .await?;
-    let identity = crate::test_support::identity::identity(case_tenant()).await?;
+    let (identity, identity_resources) = crate::test_support::identity::identity(case_tenant()).await?;
+    identity_resources.finish(async {
     let proof = identity
         .authority
         .inspect_session(
@@ -457,6 +475,8 @@ async fn grants_and_scope_are_rechecked_and_ai_switch_does_not_change_automation
     ensure!(pg(&format!("SELECT state->>'execution' FROM mdm_commands.action_runs WHERE tenant_id='{}' AND id='{}'", case_tenant(), normal["payload"]["task"]["taskId"].as_str().unwrap()))?.trim() == "succeeded", "self-service withdrawal, management grant removal and enterprise logout must not withdraw ordinary Policy execution");
     crate::test_support::stop_worker(stack).await?;
     Ok(())
+    }).await
+    }).await
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
@@ -465,6 +485,8 @@ async fn device_access_logged_in_user_requires_exact_os_session_and_helper_witho
 -> Result<()> {
     use sha2::{Digest, Sha256};
     let mut f = Fixture::new().await?;
+    let resources = std::mem::take(&mut f.resources);
+    resources.finish(async {
     f.register().await?;
     f.scope(
         case_task_scope(),
@@ -651,96 +673,105 @@ async fn device_access_logged_in_user_requires_exact_os_session_and_helper_witho
     }
     crate::test_support::stop_worker(stack).await?;
     Ok(())
+    }).await
 }
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 #[ignore = "make t2 MODULE=planning.self_service"]
 async fn check_in_interval_is_shared_by_automatic_and_targeted_calls() -> Result<()> {
     let mut f = Fixture::new().await?;
-    f.register().await?;
-    claim_request(&f.router, Uuid::new_v4()).await?;
-    f.scope(
-        case_task_scope(),
-        json!([{"kind":"device","id":case_device_id()}]),
-    )
-    .await?;
-    let (resource, _, _) = f.resource().await?;
-    let mut value = definition(resource, false);
-    value["action"]["frequency"] = json!("every_trigger");
-    value["action"]["schedule"]["trigger"] = json!({"kind":"check_in","minimumSeconds":3600});
-    let (id, policy) = publish_definition(&mut f, value).await?;
-    let stack = worker(&f.base).await?;
-    let automatic = claim(&f.router).await?;
-    ensure!(automatic["payload"]["task"]["authorization"]["kind"] == "policy");
-    complete(&f.router, &automatic).await?;
-    ensure!(
-        call(
-            &f,
-            Method::POST,
-            INVOKE,
-            Some(request(id, &policy, json!({}))),
-            true,
-            true
-        )
-        .await?
-        .0 == StatusCode::CONFLICT,
-        "automatic run must consume the same minimum interval"
-    );
-    ensure!(
-        call(&f, Method::GET, DIRECTORY, None, true, true).await?.1["items"] == json!([]),
-        "cooldown remained in directory"
-    );
-    ensure!(run_count(id)?.trim() == "1");
-    pg(&format!(
-        "UPDATE mdm_commands.action_runs SET created_at=created_at-3601 WHERE id='{}'",
-        automatic["payload"]["task"]["taskId"].as_str().unwrap()
-    ))?;
-    ensure!(
-        call(&f, Method::GET, DIRECTORY, None, true, true).await?.1["items"]
-            .as_array()
-            .unwrap()
-            .len()
-            == 1,
-        "elapsed cooldown did not restore directory"
-    );
-    let accepted = call(
-        &f,
-        Method::POST,
-        INVOKE,
-        Some(request(id, &policy, json!({}))),
-        true,
-        true,
-    )
-    .await?;
-    ensure!(accepted.0 == StatusCode::ACCEPTED);
-    let targeted = claim(&f.router).await?;
-    ensure!(targeted["payload"]["task"]["taskId"] == accepted.1["runId"]);
-    complete(&f.router, &targeted).await?;
-    ensure!(
-        call(
-            &f,
-            Method::POST,
-            INVOKE,
-            Some(request(id, &policy, json!({}))),
-            true,
-            true
-        )
-        .await?
-        .0 == StatusCode::CONFLICT,
-        "targeted run must consume the same minimum interval"
-    );
-    ensure!(
-        claim_request(&f.router, Uuid::new_v4()).await?.1["task"].is_null(),
-        "targeted run must also suppress automatic check-in"
-    );
-    ensure!(run_count(id)?.trim() == "2");
-    crate::test_support::stop_worker(stack).await?;
-    Ok(())
+    let resources = std::mem::take(&mut f.resources);
+    resources
+        .finish(async {
+            f.register().await?;
+            claim_request(&f.router, Uuid::new_v4()).await?;
+            f.scope(
+                case_task_scope(),
+                json!([{"kind":"device","id":case_device_id()}]),
+            )
+            .await?;
+            let (resource, _, _) = f.resource().await?;
+            let mut value = definition(resource, false);
+            value["action"]["frequency"] = json!("every_trigger");
+            value["action"]["schedule"]["trigger"] =
+                json!({"kind":"check_in","minimumSeconds":3600});
+            let (id, policy) = publish_definition(&mut f, value).await?;
+            let stack = worker(&f.base).await?;
+            let automatic = claim(&f.router).await?;
+            ensure!(automatic["payload"]["task"]["authorization"]["kind"] == "policy");
+            complete(&f.router, &automatic).await?;
+            ensure!(
+                call(
+                    &f,
+                    Method::POST,
+                    INVOKE,
+                    Some(request(id, &policy, json!({}))),
+                    true,
+                    true
+                )
+                .await?
+                .0 == StatusCode::CONFLICT,
+                "automatic run must consume the same minimum interval"
+            );
+            ensure!(
+                call(&f, Method::GET, DIRECTORY, None, true, true).await?.1["items"] == json!([]),
+                "cooldown remained in directory"
+            );
+            ensure!(run_count(id)?.trim() == "1");
+            pg(&format!(
+                "UPDATE mdm_commands.action_runs SET created_at=created_at-3601 WHERE id='{}'",
+                automatic["payload"]["task"]["taskId"].as_str().unwrap()
+            ))?;
+            ensure!(
+                call(&f, Method::GET, DIRECTORY, None, true, true).await?.1["items"]
+                    .as_array()
+                    .unwrap()
+                    .len()
+                    == 1,
+                "elapsed cooldown did not restore directory"
+            );
+            let accepted = call(
+                &f,
+                Method::POST,
+                INVOKE,
+                Some(request(id, &policy, json!({}))),
+                true,
+                true,
+            )
+            .await?;
+            ensure!(accepted.0 == StatusCode::ACCEPTED);
+            let targeted = claim(&f.router).await?;
+            ensure!(targeted["payload"]["task"]["taskId"] == accepted.1["runId"]);
+            complete(&f.router, &targeted).await?;
+            ensure!(
+                call(
+                    &f,
+                    Method::POST,
+                    INVOKE,
+                    Some(request(id, &policy, json!({}))),
+                    true,
+                    true
+                )
+                .await?
+                .0 == StatusCode::CONFLICT,
+                "targeted run must consume the same minimum interval"
+            );
+            ensure!(
+                claim_request(&f.router, Uuid::new_v4()).await?.1["task"].is_null(),
+                "targeted run must also suppress automatic check-in"
+            );
+            ensure!(run_count(id)?.trim() == "2");
+            crate::test_support::stop_worker(stack).await?;
+            Ok(())
+        })
+        .await
 }
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 #[ignore = "make t2 MODULE=planning.self_service"]
 async fn sensitive_status_rechecks_read_permissions_without_leaking_diagnostics() -> Result<()> {
     use crate::authorization::{Grant, Permission, Scope};
     let mut f = Fixture::new().await?;
+    let resources = std::mem::take(&mut f.resources);
+    resources.finish(async {
     f.register().await?;
     claim_request(&f.router, Uuid::new_v4()).await?;
     f.grants.push(Grant {
@@ -835,12 +866,15 @@ async fn sensitive_status_rechecks_read_permissions_without_leaking_diagnostics(
     );
     crate::test_support::stop_worker(stack).await?;
     Ok(())
+    }).await
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 #[ignore = "make t2 MODULE=planning.self_service"]
 async fn employee_request_ids_are_independent_and_unknown_is_hidden() -> Result<()> {
     let mut f = Fixture::new().await?;
+    let resources = std::mem::take(&mut f.resources);
+    resources.finish(async {
     f.register().await?;
     claim_request(&f.router, Uuid::new_v4()).await?;
     f.scope(
@@ -984,6 +1018,7 @@ async fn employee_request_ids_are_independent_and_unknown_is_hidden() -> Result<
     );
     crate::test_support::stop_worker(stack).await?;
     Ok(())
+    }).await
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
@@ -991,6 +1026,8 @@ async fn employee_request_ids_are_independent_and_unknown_is_hidden() -> Result<
 async fn explicit_access_uses_live_identity_membership_and_device_subjects_without_management_grants()
 -> Result<()> {
     let mut f = Fixture::new().await?;
+    let resources = std::mem::take(&mut f.resources);
+    resources.finish(async {
     f.register().await?;
     claim_request(&f.router, Uuid::new_v4()).await?;
     f.scope(
@@ -1181,7 +1218,8 @@ async fn explicit_access_uses_live_identity_membership_and_device_subjects_witho
     task_event(&f.router, &one, json!({"kind":"received"})).await?;
     task_event(&f.router, &one, json!({"kind":"start"})).await?;
     let two = claim(&f.router).await?;
-    let identity = crate::test_support::identity::identity(case_tenant()).await?;
+    let (identity, identity_resources) = crate::test_support::identity::identity(case_tenant()).await?;
+    identity_resources.finish(async {
     let secret = rss_identity_core::session::SessionSecret::parse(
         f.author
             .cookies
@@ -1255,6 +1293,8 @@ async fn explicit_access_uses_live_identity_membership_and_device_subjects_witho
     );
     crate::test_support::stop_worker(stack).await?;
     Ok(())
+    }).await
+    }).await
 }
 
 async fn software_self_service_call(
@@ -1294,6 +1334,8 @@ async fn available_software_requires_request_and_deduplicates_users_policies_and
 -> Result<()> {
     use crate::test_support::software_execution as software;
     let mut f = software::Fixture::approved(software::Platform::MacOs).await?;
+    let resources = std::mem::take(&mut f.resources);
+    resources.finish(async {
     let mut other = Browser::default();
     ensure!(other.login(&f.router, "admin").await? == StatusCode::OK);
     let employee = f
@@ -1575,6 +1617,7 @@ async fn available_software_requires_request_and_deduplicates_users_policies_and
     );
     crate::test_support::stop_worker(stack).await?;
     Ok(())
+    }).await
 }
 
 #[test]
@@ -1613,6 +1656,8 @@ async fn software_unknown_survives_same_account_relogin_and_keeps_other_accounts
         local.clone(),
     )
     .await?;
+    let resources = std::mem::take(&mut f.resources);
+    resources.finish(async {
     let resource_id = Uuid::new_v4();
     let bytes = b"controlled user MSI";
     let digest = rss_mdm_resource::Digest::of(bytes).bytes();
@@ -1766,4 +1811,5 @@ async fn software_unknown_survives_same_account_relogin_and_keeps_other_accounts
     );
     crate::test_support::stop_worker(stack).await?;
     Ok(())
+    }).await
 }

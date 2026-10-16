@@ -165,7 +165,9 @@ async fn http_lists_manual_conflicts_and_signed_source_pagination() -> anyhow::R
             sqlx::query("INSERT INTO mdm.manual_assignments(tenant_id,device,field,revision,fact) VALUES($1::uuid,$2,$3,1,$4)").bind(case_a()).bind(device).bind(field).bind(serde_json::to_value(fact(value))?).execute(&mut c).await?;
         }
     }
-    let authority = Authority::open().await?;
+    let mut authority = Authority::open().await?;
+    let authority_resources = std::mem::take(&mut authority.resources);
+    authority_resources.finish(async {
     let routes = Router::new().nest(
         "/api/v1",
         rss_mdm_management_http::device_views::routes().with_state(Arc::new(s)),
@@ -229,6 +231,8 @@ async fn http_lists_manual_conflicts_and_signed_source_pagination() -> anyhow::R
     assert!(FieldKey::parse(key).is_ok());
     access.close().await;
     Ok(())
+
+    }).await
 }
 
 #[tokio::test]

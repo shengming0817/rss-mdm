@@ -6,7 +6,10 @@ async fn fixture() -> Result<Fixture> {
         serde_json::from_slice(&std::fs::read(std::env::var("MDM_TEST_CONFIG")?)?)?;
     base["enrollment_entries"] =
         json!({"windows":"https://enroll.example.test","macos":"https://enroll.example.test/"});
+    let (resources, mut f) = Resources::build(move |resources| {
+        Box::pin(async move {
     let mut f = Fixture::from_config(base).await?;
+    resources.extend(std::mem::take(&mut f.resources));
     f.grants
         .extend(identity::device_grants(None, &["enrollment"])?);
     identity::set_grants(case_tenant(), &f.author_id, f.grants.clone()).await?;
@@ -18,6 +21,10 @@ async fn fixture() -> Result<Fixture> {
     stop_worker(setup).await?;
     f.scope(case_task_scope(), json!([{"kind":"group","id":group}]))
         .await?;
+    Ok(f)
+    })
+    }).await?;
+    f.resources = resources;
     Ok(f)
 }
 async fn publish(f: &mut Fixture) -> Result<Uuid> {
@@ -68,6 +75,8 @@ async fn report(f: &Fixture, sequence: u64, state: &str) -> Result<()> {
 async fn explicit_source_absence_drives_one_standard_entry_without_creating_mdm_identity()
 -> Result<()> {
     let mut f = fixture().await?;
+    let resources = std::mem::take(&mut f.resources);
+    resources.finish(async {
     let id = publish(&mut f).await?;
     let overlapping = publish(&mut f).await?;
     let automation = start_automation(&f.base).await?;
@@ -143,91 +152,102 @@ async fn explicit_source_absence_drives_one_standard_entry_without_creating_mdm_
     stop_worker(workers).await?;
     stop_worker(automation).await?;
     Ok(())
+    }).await
 }
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 #[ignore = "make t2 MODULE=planning.onboarding"]
 async fn scope_wide_grant_is_rechecked_before_opening_enrollment() -> Result<()> {
     let mut f = fixture().await?;
-    publish(&mut f).await?;
-    let automation = start_automation(&f.base).await?;
-    let workers = worker(&f.base).await?;
-    report(&f, 0, "unenrolled").await?;
-    let task = claim(&f.router).await?;
-    let grants = f
-        .grants
-        .iter()
-        .filter(|g| g.operation != crate::authorization::Permission::Enrollment)
-        .cloned()
-        .collect();
-    identity::set_grants(case_tenant(), &f.author_id, grants).await?;
-    let response = task_event_request(
-        &f.router,
-        &task,
-        Uuid::new_v4(),
-        &mut json!({"kind":"start"}),
-    )
-    .await?;
-    ensure!(response.0 == StatusCode::FORBIDDEN, "{response:?}");
-    stop_worker(workers).await?;
-    stop_worker(automation).await?;
-    Ok(())
+    let resources = std::mem::take(&mut f.resources);
+    resources
+        .finish(async {
+            publish(&mut f).await?;
+            let automation = start_automation(&f.base).await?;
+            let workers = worker(&f.base).await?;
+            report(&f, 0, "unenrolled").await?;
+            let task = claim(&f.router).await?;
+            let grants = f
+                .grants
+                .iter()
+                .filter(|g| g.operation != crate::authorization::Permission::Enrollment)
+                .cloned()
+                .collect();
+            identity::set_grants(case_tenant(), &f.author_id, grants).await?;
+            let response = task_event_request(
+                &f.router,
+                &task,
+                Uuid::new_v4(),
+                &mut json!({"kind":"start"}),
+            )
+            .await?;
+            ensure!(response.0 == StatusCode::FORBIDDEN, "{response:?}");
+            stop_worker(workers).await?;
+            stop_worker(automation).await?;
+            Ok(())
+        })
+        .await
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 #[ignore = "make t2 MODULE=planning.onboarding"]
 async fn uncertain_entry_survives_application_restart_and_policy_disable() -> Result<()> {
     let mut f = fixture().await?;
-    let id = publish(&mut f).await?;
-    let automation = start_automation(&f.base).await?;
-    let workers = worker(&f.base).await?;
-    report(&f, 0, "unenrolled").await?;
-    let task = claim(&f.router).await?;
-    task_event(&f.router, &task, json!({"kind":"received"})).await?;
-    task_event(&f.router, &task, json!({"kind":"start"})).await?;
-    task_event(
-        &f.router,
-        &task,
-        json!({"kind":"enrollment_result","outcome":"unknown"}),
-    )
-    .await?;
-    stop_worker(workers).await?;
-    let access = database(&f.base).await?;
-    let (router, execution, _, _) = crate::api::application_fixture(
-        serde_json::from_value(f.base.clone())?,
-        Arc::new(crate::clock::SystemClock),
-        monotonic(),
-        access.clone(),
-        None,
-        access
-            .audit_store(&crate::config::AuditConfig::Plain)
-            .await?,
-    )
-    .await?;
-    let execution = execution.service;
-    let router = router.layer(axum::Extension(rss_identity_http_axum::ClientAddress(
-        "127.0.0.1".parse()?,
-    )));
-    execution.recover_action_fixture(id).await?;
-    ensure!(claim_request(&router, Uuid::new_v4()).await?.1["task"].is_null());
-    ensure!(run_count(id)?.trim() == "1");
-    post(
+    let resources = std::mem::take(&mut f.resources);
+    resources
+        .finish(async {
+            let id = publish(&mut f).await?;
+            let automation = start_automation(&f.base).await?;
+            let workers = worker(&f.base).await?;
+            report(&f, 0, "unenrolled").await?;
+            let task = claim(&f.router).await?;
+            task_event(&f.router, &task, json!({"kind":"received"})).await?;
+            task_event(&f.router, &task, json!({"kind":"start"})).await?;
+            task_event(
+                &f.router,
+                &task,
+                json!({"kind":"enrollment_result","outcome":"unknown"}),
+            )
+            .await?;
+            stop_worker(workers).await?;
+            let access = database(&f.base).await?;
+            let (router, execution, _, _, resources) = crate::api::application_fixture(
+                serde_json::from_value(f.base.clone())?,
+                Arc::new(crate::clock::SystemClock),
+                monotonic(),
+                access.clone(),
+                None,
+                access
+                    .audit_store(&crate::config::AuditConfig::Plain)
+                    .await?,
+            )
+            .await?;
+            resources
+                .finish(async {
+                    let execution = execution.service;
+                    let router = router.layer(axum::Extension(
+                        rss_identity_http_axum::ClientAddress("127.0.0.1".parse()?),
+                    ));
+                    execution.recover_action_fixture(id).await?;
+                    ensure!(claim_request(&router, Uuid::new_v4()).await?.1["task"].is_null());
+                    ensure!(run_count(id)?.trim() == "1");
+                    post(
         &mut f.author,
         &router,
         &format!("/api/v1/policies/{id}"),
         json!({"operationId":Uuid::new_v4(),"expectedRevision":1,"input":{"action":"disable"}}),
     )
     .await?;
-    execution.recover_action_fixture(id).await?;
-    let state = pg(&format!(
-        "SELECT state FROM mdm_commands.action_runs WHERE id='{}'",
-        task["payload"]["task"]["taskId"].as_str().unwrap()
-    ))?;
-    let state: Value = serde_json::from_str(state.trim())?;
-    ensure!(
-        state["execution"] == "unknown" && state["cancellation"] == "requested",
-        "{state}"
-    );
-    ensure!(
+                    execution.recover_action_fixture(id).await?;
+                    let state = pg(&format!(
+                        "SELECT state FROM mdm_commands.action_runs WHERE id='{}'",
+                        task["payload"]["task"]["taskId"].as_str().unwrap()
+                    ))?;
+                    let state: Value = serde_json::from_str(state.trim())?;
+                    ensure!(
+                        state["execution"] == "unknown" && state["cancellation"] == "requested",
+                        "{state}"
+                    );
+                    ensure!(
         pg(&format!(
             "SELECT count(*) FROM mdm_access.registrations WHERE tenant_id='{}' AND channel='mdm'",
             case_tenant()
@@ -235,6 +255,10 @@ async fn uncertain_entry_survives_application_restart_and_policy_disable() -> Re
         .trim()
             == "0"
     );
-    stop_worker(automation).await?;
-    Ok(())
+                    stop_worker(automation).await?;
+                    Ok(())
+                })
+                .await
+        })
+        .await
 }

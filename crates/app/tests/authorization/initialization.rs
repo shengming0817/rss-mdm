@@ -4,11 +4,13 @@ use super::*;
 #[ignore = "MODULE=authorization.initialization: real authorization contract"]
 async fn initialization_receipt_atomicity_and_recovery() -> Result<()> {
     let Fixture {
+        resources,
         base,
         subject,
         audit_store,
         ..
     } = fixture().await?;
+    resources.finish(async {
     crate::authorization::store::initialize_authorization(
         &audit_store,
         crate::test_support::identity::user(case_tenant(), case_admin()),
@@ -120,12 +122,15 @@ async fn initialization_receipt_atomicity_and_recovery() -> Result<()> {
     );
 
     Ok(())
+    }).await
 }
 
 #[tokio::test]
 #[ignore = "MODULE=authorization.initialization: bounded transaction and ACK recovery"]
 async fn bounded_initialization_recovery() -> Result<()> {
-    let fixture = authority::Authority::open().await?;
+    let mut fixture = authority::Authority::open().await?;
+    let fixture_resources = std::mem::take(&mut fixture.resources);
+    fixture_resources.finish(async {
     let store = fixture.audit.as_ref();
     // The same command deadline projection is used before COMMIT and after a durable but unacknowledged COMMIT.
     for (fault, committed) in [
@@ -196,4 +201,6 @@ async fn bounded_initialization_recovery() -> Result<()> {
         Err(crate::Error::Unavailable(crate::Failure::RequestDeadline))
     ));
     Ok(())
+
+    }).await
 }

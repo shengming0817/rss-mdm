@@ -6,65 +6,77 @@ use crate::test_support::*;
 #[tokio::test]
 #[ignore = "MODULE=identity.local: real authority and PostgreSQL"]
 async fn local_identity_mdm_authorization_and_revocation() -> Result<()> {
-    let fixture = authority::Authority::open().await?;
-    let initial = fixture.router(fixture.authorization().merge(fixture.enrollment()))?;
-    let mut browser = Browser::default();
-    ensure!(browser.login_password(&initial, "other", PASSWORD).await? == StatusCode::OK);
-    let credential = &browser.cookies["__Host-identity-session"];
-    for (method, path) in [
-        (Method::GET, "/api/v1/authorization".to_owned()),
-        (
-            Method::GET,
-            format!(
-                "/api/v1/identity/tenants/{TENANT}/session",
-                TENANT = case_tenant()
-            ),
-        ),
-        (Method::POST, "/api/v1/enrollments".to_owned()),
-    ] {
-        for cookie in [
-            format!("__Host-identity-session={credential}; broken"),
-            format!("__Host-identity-session={credential}; __Host-identity-session={credential}"),
-        ] {
-            let request = Request::builder()
-                .method(method.clone())
-                .uri(&path)
-                .header("host", "mdm.example.test")
-                .header("origin", "https://mdm.example.test")
-                .header("x-identity-request", "1")
-                .header("x-csrf-token", browser.csrf.as_ref().unwrap())
-                .header("cookie", cookie)
-                .body(Body::empty())?;
-            let response = initial.clone().oneshot(request).await?;
+    let mut fixture = authority::Authority::open().await?;
+    let fixture_resources = std::mem::take(&mut fixture.resources);
+    fixture_resources
+        .finish(async {
+            let initial = fixture.router(fixture.authorization().merge(fixture.enrollment()))?;
+            let mut browser = Browser::default();
+            ensure!(browser.login_password(&initial, "other", PASSWORD).await? == StatusCode::OK);
+            let credential = &browser.cookies["__Host-identity-session"];
+            for (method, path) in [
+                (Method::GET, "/api/v1/authorization".to_owned()),
+                (
+                    Method::GET,
+                    format!(
+                        "/api/v1/identity/tenants/{TENANT}/session",
+                        TENANT = case_tenant()
+                    ),
+                ),
+                (Method::POST, "/api/v1/enrollments".to_owned()),
+            ] {
+                for cookie in [
+                    format!("__Host-identity-session={credential}; broken"),
+                    format!(
+                        "__Host-identity-session={credential}; __Host-identity-session={credential}"
+                    ),
+                ] {
+                    let request = Request::builder()
+                        .method(method.clone())
+                        .uri(&path)
+                        .header("host", "mdm.example.test")
+                        .header("origin", "https://mdm.example.test")
+                        .header("x-identity-request", "1")
+                        .header("x-csrf-token", browser.csrf.as_ref().unwrap())
+                        .header("cookie", cookie)
+                        .body(Body::empty())?;
+                    let response = initial.clone().oneshot(request).await?;
+                    ensure!(
+                        response.status() == StatusCode::BAD_REQUEST,
+                        "strict host cookie boundary: {method} {path} returned {}",
+                        response.status()
+                    );
+                    ensure!(!response.headers().contains_key("set-cookie"));
+                }
+            }
+            let (_, me) = browser
+                .call(&initial, Method::GET, "/api/v1/authorization", None)
+                .await?;
             ensure!(
-                response.status() == StatusCode::BAD_REQUEST,
-                "strict host cookie boundary: {method} {path} returned {}",
-                response.status()
+                me["instanceId"] == INSTANCE
+                    && me["tenantId"] == case_tenant()
+                    && me["grants"] == json!([])
             );
-            ensure!(!response.headers().contains_key("set-cookie"));
-        }
-    }
-    let (_, me) = browser
-        .call(&initial, Method::GET, "/api/v1/authorization", None)
-        .await?;
-    ensure!(
-        me["instanceId"] == INSTANCE
-            && me["tenantId"] == case_tenant()
-            && me["grants"] == json!([])
-    );
-    let subject = me["principalId"].as_str().unwrap();
-    // Reconstruct the authority and routes to prove session persistence across host restarts.
-    let restarted = authority::Authority::open().await?;
-    let authorized = restarted.router(restarted.authorization())?;
-    Box::pin(native_accounts(
-        &initial,
-        &authorized,
-        &mut browser,
-        subject,
-    ))
-    .await?;
-    println!("MDM_LOCAL_AUTHORITY_MATRIX_PASSED");
-    Ok(())
+            let subject = me["principalId"].as_str().unwrap();
+            // Reconstruct the authority and routes to prove session persistence across host restarts.
+            let mut restarted = authority::Authority::open().await?;
+            let restarted_resources = std::mem::take(&mut restarted.resources);
+            restarted_resources
+                .finish(async {
+                    let authorized = restarted.router(restarted.authorization())?;
+                    Box::pin(native_accounts(
+                        &initial,
+                        &authorized,
+                        &mut browser,
+                        subject,
+                    ))
+                    .await?;
+                    println!("MDM_LOCAL_AUTHORITY_MATRIX_PASSED");
+                    Ok(())
+                })
+                .await
+        })
+        .await
 }
 
 async fn native_accounts(
@@ -153,7 +165,9 @@ async fn native_accounts(
         .await?;
     pg("GRANT SELECT ON identity_authority.sessions TO mdm_identity_runtime")?;
     ensure!(denied.0 == StatusCode::SERVICE_UNAVAILABLE && denied.1.get("roles").is_none());
-    let identity = crate::test_support::identity::identity(case_tenant()).await?;
+    let (identity, identity_resources) =
+        crate::test_support::identity::identity(case_tenant()).await?;
+    identity_resources.finish(async {
     let credentials = crate::enrollment::credentials::Credentials::new(monotonic(), 16);
     let cache = |browser: &Browser| -> Result<uuid::Uuid> {
         Ok(
@@ -371,4 +385,5 @@ async fn native_accounts(
             && enrollment.is_err()
     );
     Ok(())
+    }).await
 }
