@@ -350,22 +350,15 @@ fn fixture_rules(tenant: &str, principal: &str) -> Result<Vec<serde_json::Value>
         .collect()
 }
 
-fn protected_management_rule(rule: &crate::authorization::Rule) -> Result<bool> {
+fn protected_management_rule(rule: &crate::authorization::Rule) -> bool {
     use crate::authorization::{Permission, Scope};
-    if !rule
-        .grants
+    rule.grants
         .iter()
         .any(|g| g.operation == Permission::AuthorizationWrite)
-    {
-        return Ok(false);
-    }
-    anyhow::ensure!(
-        rule.grants
+        && rule
+            .grants
             .iter()
-            .all(|g| MANAGEMENT_PERMISSIONS.contains(&g.operation) && g.scope == Scope::Tenant),
-        "fixture management rule contains replaceable business grants"
-    );
-    Ok(true)
+            .all(|g| MANAGEMENT_PERMISSIONS.contains(&g.operation) && g.scope == Scope::Tenant)
 }
 
 #[test]
@@ -376,10 +369,8 @@ fn baseline_management_does_not_protect_device_grants() -> Result<()> {
         .map(serde_json::from_value::<Rule>)
         .collect::<Result<Vec<_>, _>>()?;
     anyhow::ensure!(rules.iter().map(|r| r.grants.len()).sum::<usize>() == 10);
-    anyhow::ensure!(protected_management_rule(&rules[0])?);
-    anyhow::ensure!(
-        !protected_management_rule(&rules[1])? && !protected_management_rule(&rules[2])?
-    );
+    anyhow::ensure!(protected_management_rule(&rules[0]));
+    anyhow::ensure!(!protected_management_rule(&rules[1]) && !protected_management_rule(&rules[2]));
     anyhow::ensure!(
         rules[1]
             .grants
@@ -388,7 +379,7 @@ fn baseline_management_does_not_protect_device_grants() -> Result<()> {
     );
     let mut mixed = rules[0].clone();
     mixed.grants.extend(rules[1].grants.clone());
-    anyhow::ensure!(protected_management_rule(&mixed).is_err());
+    anyhow::ensure!(!protected_management_rule(&mixed));
     Ok(())
 }
 
@@ -561,7 +552,7 @@ async fn grant(
             continue;
         }
         if matches!(&rule.subject, Subject::User { user } if user.principal_id == subject)
-            && !protected_management_rule(rule)?
+            && !protected_management_rule(rule)
         {
             let audit =
                 rss_mdm_audit_integration::RequestAudit::new(tenant.into(), "authorization_write");
