@@ -77,7 +77,7 @@ impl Fixture {
             std::env::var("MDM_APPLE_WEBHOOK_LISTEN").unwrap_or_else(|_| "127.0.0.1:0".into()),
         )
         .await?;
-        if std::env::var_os("MDM_STEP_CA_URL").is_some() {
+        if std::env::var_os("MDM_APPLE_WEBHOOK_LISTEN").is_some() {
             publish_webhooks(webhook.local_addr()?).await?;
         }
         let mut config = crate::test_support::identity::config(case_tenant())?;
