@@ -103,6 +103,15 @@ async fn initialization_receipt_atomicity_and_recovery() -> Result<()> {
         "installation":{"audit_mode":"plain","instance_id":INSTANCE,"target":base["flow"]["storage"]["target"],"lineage":base["flow"]["storage"]["lineage"]},
         "audit":{"mode":"plain"},"login":crate::test_support::case::login("other"),"passwordFile":std::path::Path::new(&std::env::var("MDM_TEST_CONFIG")?).parent().unwrap().join("account-password"),
         "operationId":wrong_key,"user":{"instanceId":INSTANCE,"tenantId":case_tenant(),"principalId":Uuid::new_v4()}});
+    // This case owns its tenant. Start the public command from an uninitialized
+    // authorization store while retaining the real, authenticated Identity account.
+    let mut valid = init.clone();
+    valid["operationId"] = json!(Uuid::new_v4());
+    valid["user"]["principalId"] = subject.clone().into();
+    pg(&format!("DELETE FROM mdm_access.authorization_initializations WHERE tenant_id='{tenant}' AND instance='{INSTANCE}'; DELETE FROM mdm_access.authorization_rules WHERE tenant_id='{tenant}' AND instance='{INSTANCE}'",tenant=case_tenant()))?;
+    let public = crate::authorization::initialize(serde_json::from_value(valid.clone())?).await?;
+    let replay = crate::authorization::initialize(serde_json::from_value(valid)?).await?;
+    ensure!(public.id == replay.id && public.revision == replay.revision);
     ensure!(matches!(
         crate::authorization::initialize(serde_json::from_value(init.clone())?).await,
         Err(crate::Error::Authorization(

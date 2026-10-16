@@ -134,6 +134,46 @@ async fn exercise(ledger: bool) -> Result<()> {
             .fetch_all(&observer)
             .await?;
     ensure!(original.len() == expected as usize);
+    let mut actions = std::collections::BTreeSet::new();
+    for canonical in &original {
+        let decoded = rss_audit_core::decode_untrusted(canonical)?;
+        let event = decoded.event();
+        if event.identity().tenant().to_string() != case_tenant() {
+            continue;
+        }
+        ensure!(
+            event.identity().source().source_id().as_str() == format!("identity.{}", case_tenant())
+        );
+        let action = event.facts().action().as_str();
+        match action {
+            "identity.account.initialized" => {
+                ensure!(
+                    event.facts().actor().kind().as_str() == "maintenance"
+                        && event.facts().actor().id().as_str() == case_tenant()
+                );
+                ensure!(
+                    event.facts().resource().id().as_str() == crate::test_support::case::admin()
+                );
+            }
+            "identity.session.created" => {
+                ensure!(
+                    event.facts().actor().kind().as_str() == "principal"
+                        && event.facts().actor().id().as_str()
+                            == crate::test_support::case::admin()
+                );
+            }
+            _ => anyhow::bail!("unexpected initial identity event: {action}"),
+        }
+        ensure!(actions.insert(action.to_owned()));
+    }
+    ensure!(
+        actions
+            == std::collections::BTreeSet::from([
+                "identity.account.initialized".to_owned(),
+                "identity.session.created".to_owned()
+            ])
+    );
+
     let linked: i64 = sqlx::query_scalar(
         "SELECT count(*) FROM rss_audit.records WHERE ledger_sequence IS NOT NULL",
     )

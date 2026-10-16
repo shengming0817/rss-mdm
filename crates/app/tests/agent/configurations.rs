@@ -871,6 +871,34 @@ async fn backend_settings_are_the_only_grant_lifetime_authority() -> Result<()> 
         .0 == StatusCode::CONFLICT
     );
     let file = configuration(&f, &mut user, json!({"kind":"finite","count":2}), Some(5)).await?;
+    let operation = pg(&format!(
+        "SELECT operation_id::text FROM mdm_access.agent_configurations WHERE tenant_id='{}' AND id='{}'",
+        case_tenant(),
+        file.configuration.configuration_id
+    ))?;
+    let path = format!(
+        "/api/v1/agent-configuration-operations/{}",
+        operation.trim()
+    );
+    let found = user.call(&f.router, Method::GET, &path, None).await?;
+    ensure!(
+        found.0 == StatusCode::OK
+            && found.1["configuration"] == serde_json::to_value(&file.configuration)?
+            && found.1["remaining"] == 2
+    );
+    ensure!(found.1.get("secret").is_none() && found.1.get("signature").is_none());
+    let mut other = authority::Authority::prepared_browser("other").await?;
+    ensure!(other.call(&f.router, Method::GET, &path, None).await?.0 == StatusCode::FORBIDDEN);
+    ensure!(
+        user.call(
+            &f.router,
+            Method::GET,
+            &format!("/api/v1/agent-configuration-operations/{}", Uuid::new_v4()),
+            None
+        )
+        .await?
+            == (StatusCode::OK, Value::Null)
+    );
     let input = exchange(&file, &package, 0)?;
     let assigned = machine(&f, "/api/v1/agent/enroll/configurations/exchange", &input).await?;
     ensure!(
@@ -878,12 +906,12 @@ async fn backend_settings_are_the_only_grant_lifetime_authority() -> Result<()> 
         "seven day grant insert {assigned:?}"
     );
     let grant_times = pg(&format!(
-        "SELECT jsonb_build_array(extract(epoch FROM created_at)::bigint,extract(epoch FROM expires_at)::bigint)::text FROM mdm_access.agent_grants WHERE tenant_id='{}' AND id='{}'",
+        "SELECT jsonb_build_array(extract(epoch FROM expires_at-created_at),floor(extract(epoch FROM expires_at))::bigint)::text FROM mdm_access.agent_grants WHERE tenant_id='{}' AND id='{}'",
         case_tenant(),
         assigned.1["grantId"].as_str().unwrap()
     ))?;
     let grant_times: Value = serde_json::from_str(&grant_times)?;
-    ensure!(grant_times[1].as_i64().unwrap() - grant_times[0].as_i64().unwrap() == 604800);
+    ensure!((grant_times[0].as_f64().unwrap() - 604800.0).abs() < 1.0);
     ensure!(
         assigned.1["expiresAt"] == grant_times[1]
             && assigned.1["expiresAt"] != json!(file.configuration.expires_at)

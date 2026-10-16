@@ -69,7 +69,7 @@ async fn rules_cas_replay_revocation_and_escalation() -> Result<()> {
     let effective = member.call(&router, Method::GET, "/api/v1/authorization", None).await?;
     ensure!(effective.0 == StatusCode::OK);
     for permission in ["enrollment", "inventory_read"] {
-        ensure!(effective.1["grants"].as_array().unwrap().contains(&grant(permission,json!({"kind":"device","id":"a"}))));
+        ensure!(effective.1["grants"].as_array().unwrap().iter().any(|g| g["operation"] == permission && g["scope"] == json!({"kind":"device","id":"a"}) && g["ruleId"] == json!(rule_id) && g["ruleRevision"] == 1));
     }
     for (device, expected) in [("a", StatusCode::NOT_FOUND), ("b", StatusCode::FORBIDDEN)] {
         ensure!(

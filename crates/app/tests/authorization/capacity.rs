@@ -186,32 +186,63 @@ async fn verify(router: &Router, admin: &mut Browser, member: &mut Browser) -> R
         ))?;
     }
     let large = json!({"name":"capacity","enabled":true,"members":members(10000)});
-    let mut ids = Vec::new();
-    loop {
-        let id = Uuid::new_v4();
-        let operation = Uuid::new_v4();
-        let response = put(
+    let document = serde_json::to_string(&large)?.replace('\'', "''");
+    let sizes: Value = serde_json::from_str(&pg(&format!(
+        "SELECT jsonb_build_array(octet_length('{document}'::jsonb::text),(SELECT coalesce(sum(octet_length(document::text)),0) FROM mdm_access.authorization_rules WHERE tenant_id='{tenant}' AND instance='{INSTANCE}')+(SELECT coalesce(sum(octet_length(document::text)),0) FROM mdm_access.user_groups WHERE tenant_id='{tenant}' AND instance='{INSTANCE}'))::text",
+        tenant = case_tenant()
+    ))?)?;
+    let size = sizes[0].as_u64().unwrap();
+    let existing = sizes[1].as_u64().unwrap();
+    let count = (8_388_608 - existing) / size - 1;
+    ensure!(count > 0 && size <= 2_097_152);
+    let mut ids: Vec<_> = (0..count).map(|_| Uuid::new_v4()).collect();
+    let values = ids
+        .iter()
+        .map(|id| {
+            format!(
+                "('{tenant}','{INSTANCE}','{id}',1,'{document}'::jsonb)",
+                tenant = case_tenant()
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(",");
+    pg(&format!(
+        "INSERT INTO mdm_access.user_groups(tenant_id,instance,id,revision,document) VALUES {values}"
+    ))?;
+    ensure!(
+        admin
+            .call(router, Method::GET, "/api/v1/authorization", None)
+            .await?
+            .0
+            == StatusCode::OK
+    );
+    let last = Uuid::new_v4();
+    ensure!(
+        put(
             admin,
             router,
-            &format!("/api/v1/authorization/user-groups/{id}"),
-            operation,
+            &format!("/api/v1/authorization/user-groups/{last}"),
+            Uuid::new_v4(),
             0,
-            large.clone(),
+            large.clone()
         )
-        .await?;
-        if response.0 == StatusCode::CONFLICT {
-            no_write(id, operation, "user_groups")?;
-            break;
-        }
-        ensure!(
-            response.0 == StatusCode::OK,
-            "large group boundary failed: {}",
-            response.0
-        );
-        ids.push(id);
-        ensure!(ids.len() < 10, "aggregate limit not enforced");
-    }
-    ensure!(ids.len() >= 4, "near-limit success not reached");
+        .await?
+        .0 == StatusCode::OK
+    );
+    ids.push(last);
+    let over = Uuid::new_v4();
+    let operation = Uuid::new_v4();
+    let rejected = put(
+        admin,
+        router,
+        &format!("/api/v1/authorization/user-groups/{over}"),
+        operation,
+        0,
+        large,
+    )
+    .await?;
+    ensure!(rejected.0 == StatusCode::CONFLICT && rejected.1["code"] == "operation_conflict");
+    no_write(over, operation, "user_groups")?;
     let oversized = Uuid::new_v4();
     pg(&format!(
         "INSERT INTO mdm_access.user_groups SELECT tenant_id,instance,'{oversized}',1,document FROM mdm_access.user_groups WHERE tenant_id='{}' AND instance='{INSTANCE}' AND id='{}'",

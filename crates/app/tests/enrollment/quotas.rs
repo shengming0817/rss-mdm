@@ -458,7 +458,7 @@ async fn browser_consumer(admin: &Browser, user: &Browser) -> Result<()> {
 
 #[tokio::test]
 #[ignore = "MODULE=enrollment.quotas: dynamic admission, CAS, authority and retained receipts"]
-async fn channel_admission_is_independent_audited_and_replayable() -> Result<()> {
+async fn channel_admission_is_independent_and_replayable() -> Result<()> {
     let mut f = authority::Authority::open().await?;
     let f_resources = std::mem::take(&mut f.resources);
     f_resources
