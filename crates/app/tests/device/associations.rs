@@ -428,14 +428,16 @@ async fn change_checkpoints_resume_after_empty_pages_and_restart() -> anyhow::Re
         agent: member(&mut c, agent, Channel::Agent).await?,
         evidence: "verified by operator".into(),
     };
-    for _ in 0..66 {
-        request.operation_id = Uuid::new_v4();
-        let event = audit("device_association_confirm");
-        let relation = service.confirm(&admin, &request, &event).await?;
-        event.finalize(None);
-        request.association_id = Some(relation.id);
-        request.expected_version = relation.version;
-    }
+    let started = tokio::time::Instant::now();
+    let relation = service
+        .seed_confirmation_history(&admin, request.clone(), 66)
+        .await?;
+    println!(
+        "CHECKPOINT_PREPARATION confirmations=66 transactions=1 seconds={:.3}",
+        started.elapsed().as_secs_f64()
+    );
+    request.association_id = Some(relation.id);
+    request.expected_version = relation.version;
     let first = service.changes(&admin, Some(&empty)).await?;
     assert!(first["nextCursor"].is_string());
     // A write after the first page must wait for the next polling window.
@@ -460,6 +462,13 @@ async fn change_checkpoints_resume_after_empty_pages_and_restart() -> anyhow::Re
             .iter()
             .all(|item| item["action"] == "device_association_confirm")
     );
+    for (index, item) in items.iter().enumerate() {
+        assert_eq!(item["association"]["id"], relation.id.to_string());
+        assert_eq!(item["association"]["version"], index as i64 + 1);
+        if index > 0 {
+            assert!(item["position"].as_u64() > items[index - 1]["position"].as_u64());
+        }
+    }
     let last = items.last().context("last event")?["position"]
         .as_u64()
         .context("position")?;
@@ -495,8 +504,14 @@ async fn change_checkpoints_resume_after_empty_pages_and_restart() -> anyhow::Re
         restarted.changes(&admin, Some(&checkpoint)).await,
         Err(rss_mdm_device_service::Error::CursorInvalidated)
     ));
-    let (hidden, checkpoint) =
-        drain(&restarted, &admin, restarted.changes(&admin, None).await?).await?;
+    let hidden_first = restarted.changes(&admin, None).await?;
+    assert_eq!(hidden_first["items"], json!([]));
+    assert!(
+        hidden_first["nextCursor"].is_string(),
+        "filtered page must advance through real history"
+    );
+    assert!(hidden_first["checkpoint"].is_null());
+    let (hidden, checkpoint) = drain(&restarted, &admin, hidden_first).await?;
     assert!(hidden.is_empty());
     assert_eq!(
         restarted.changes(&admin, Some(&checkpoint)).await?["items"],

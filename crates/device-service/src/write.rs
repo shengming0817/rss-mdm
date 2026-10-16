@@ -35,19 +35,7 @@ impl Associations {
         request: &Confirm,
         audit: &RequestAudit,
     ) -> Result<Association> {
-        if request.operation_id.is_nil()
-            || request.expected_version < 0
-            || request.association_id.is_none() != (request.expected_version == 0)
-            || request.mdm.channel != Channel::Mdm
-            || request.agent.channel != Channel::Agent
-            || request.mdm.device == request.agent.device
-            || !model::text(&request.evidence)
-            || [&request.mdm, &request.agent]
-                .iter()
-                .any(|m| !model::text(&m.device) || m.registration_id.is_nil() || m.generation <= 0)
-        {
-            return Err(Error::Malformed);
-        }
+        validate_confirm(request)?;
         self.change(proof, Change::Confirm(request), audit).await
     }
     pub async fn revoke(
@@ -88,33 +76,9 @@ impl Associations {
                 &budget.control(),
                 (self, proof, &change, audit, &digest),
                 |(service, proof, change, audit, digest), tx| {
-                    Box::pin(async move {
-                        let (result, replayed) = tx
-                            .with_connection_context(
-                                &mut (*proof, *change, *audit, *digest),
-                                |(proof, change, audit, digest), c| {
-                                    Box::pin(write_on(c, proof, change, audit, digest))
-                                },
-                            )
-                            .await?;
-                        audit.target(&result.id.to_string());
-                        let fact = Fact::business(
-                            audit,
-                            &format!("device_association:{}", change.operation()),
-                            digest,
-                            200,
-                            "success",
-                            None,
-                        )?
-                        .with_details(serde_json::json!({"association":result}))?;
-                        service.audit.append(tx, &fact, replayed).await?;
-                        if replayed {
-                            audit.management_result(ManagementResult::Replayed);
-                        }
-                        proof.check_live()?;
-                        audit.mark_commit_started();
-                        Ok(result)
-                    })
+                    Box::pin(
+                        async move { service.change_in(tx, proof, change, audit, digest).await },
+                    )
                 },
             )
             .await;
@@ -135,6 +99,40 @@ impl Associations {
             |_| Err(Error::CommitUnknown),
             |e| Err(model::transaction_error(e)),
         )
+    }
+    async fn change_in<T: rss_request_context::ExecutionTimer>(
+        &self,
+        tx: &mut rss_audit_postgres::WriteAuditTransaction<'_, '_, '_, T>,
+        proof: &AuthorizedPrincipal,
+        change: &Change<'_>,
+        audit: &RequestAudit,
+        digest: &[u8],
+    ) -> Result<Association> {
+        let (result, replayed) = tx
+            .with_connection_context(
+                &mut (proof, change, audit, digest),
+                |(proof, change, audit, digest), c| {
+                    Box::pin(write_on(c, proof, change, audit, digest))
+                },
+            )
+            .await?;
+        audit.target(&result.id.to_string());
+        let fact = Fact::business(
+            audit,
+            &format!("device_association:{}", change.operation()),
+            digest,
+            200,
+            "success",
+            None,
+        )?
+        .with_details(serde_json::json!({"association":result}))?;
+        self.audit.append(tx, &fact, replayed).await?;
+        if replayed {
+            audit.management_result(ManagementResult::Replayed);
+        }
+        proof.check_live()?;
+        audit.mark_commit_started();
+        Ok(result)
     }
 }
 async fn write_on(
@@ -271,3 +269,24 @@ pub(crate) async fn persist(
     }
     read::load(c, tenant, id).await
 }
+
+fn validate_confirm(request: &Confirm) -> Result<()> {
+    if request.operation_id.is_nil()
+        || request.expected_version < 0
+        || request.association_id.is_none() != (request.expected_version == 0)
+        || request.mdm.channel != Channel::Mdm
+        || request.agent.channel != Channel::Agent
+        || request.mdm.device == request.agent.device
+        || !model::text(&request.evidence)
+        || [&request.mdm, &request.agent]
+            .iter()
+            .any(|m| !model::text(&m.device) || m.registration_id.is_nil() || m.generation <= 0)
+    {
+        return Err(Error::Malformed);
+    }
+    Ok(())
+}
+
+#[cfg(feature = "integration")]
+#[path = "confirmation_history.rs"]
+mod confirmation_history;
