@@ -174,6 +174,7 @@ impl From<rss_mdm_execution_service::channels::Rejection> for Error {
             R::Unauthorized => Self::Unauthorized,
             R::Forbidden => Self::Forbidden,
             R::Conflict => Self::Conflict,
+            R::EnrollmentPaused => Self::EnrollmentPaused,
             R::Storage => Self::Unavailable(crate::Failure::Database),
             R::Protocol => Self::Unavailable(crate::Failure::Protocol),
             R::Deadline => Self::Unavailable(crate::Failure::RequestDeadline),

@@ -320,30 +320,11 @@ async fn windows_policy_install_register_and_replay_use_independent_identity() -
         unknown.status() == StatusCode::SERVICE_UNAVAILABLE
             && unknown.json::<Value>().await?["code"] == "activation_unknown"
     );
-    for (field, value, code) in [
-        ("wireVersion", json!(3), "malformed_request"),
-        (
-            "capabilities",
-            json!(["inventory.basic.v3"]),
-            "malformed_request",
-        ),
-        (
-            "capabilities",
-            json!(["inventory.collect.v1", "inventory.collect.v1"]),
-            "malformed_request",
-        ),
-        ("deviceId", json!("untrusted"), "malformed_request"),
-    ] {
-        let mut invalid = input.clone();
-        if field == "capabilities" {
-            invalid["runtime"][field] = value;
-        } else {
-            invalid[field] = value;
-        }
-        let response = peer.mutual.post(&url).json(&invalid).send().await?;
-        ensure!(response.status() == StatusCode::BAD_REQUEST);
-        ensure!(response.json::<serde_json::Value>().await?["code"] == code);
-    }
+    let mut invalid = input.clone();
+    invalid["deviceId"] = json!("untrusted");
+    let rejected = peer.mutual.post(&url).json(&invalid).send().await?;
+    ensure!(rejected.status() == StatusCode::BAD_REQUEST);
+    ensure!(rejected.json::<serde_json::Value>().await?["code"] == "malformed_request");
     let response = peer.mutual.post(&url).json(&input).send().await?;
     let status = response.status();
     let receipt: Value = response.json().await?;
@@ -735,15 +716,21 @@ async fn native_enforcement_failure_is_separate_from_delivery_and_never_reinstal
     post(&peer, &reply(&initial, &execute, false)).await?;
     let (initial, query) = begin(&peer, 903).await?;
     let mut response = reply(&initial, &query, true);
+    let mut statuses = 0;
     for c in &mut response.commands {
         if let s::Command::Results(r) = c {
             for i in &mut r.items {
                 if i.source.as_deref().is_some_and(|s| s.ends_with("/Status")) {
+                    statuses += 1;
                     i.data = Some(Secret("60".into()));
                 }
             }
         }
     }
+    ensure!(
+        statuses == 1,
+        "installer enforcement Status was not reached exactly once"
+    );
     response.final_message = false;
     let interim = post(&peer, &response).await?;
     let mut end = response.clone();
@@ -863,6 +850,10 @@ async fn schedule_expiry_caps_installation_and_blocks_new_agent_registration() -
             .await?
             .1["deadline"]
             == until
+    );
+    ensure!(
+        package_status(&client.router, operation).await? == StatusCode::OK,
+        "package was never accessible before expiry"
     );
     tokio::time::timeout(Duration::from_secs(25), async {
         while crate::clock::SystemClock.unix_seconds()? <= until {
@@ -992,7 +983,7 @@ async fn scope_exit_preserves_dispatched_installation_authority_until_its_deadli
     let state =
         setup::diagnosis(&mut client.browser, &client.router, policy, case_device()).await?;
     ensure!(
-        state["availability"] != "ready",
+        state["availability"] == "unavailable" && state["reason"] == "source_removed",
         "Scope exit not visible: {state}"
     );
     ensure!(package_status(&client.router, operation).await? == StatusCode::OK);

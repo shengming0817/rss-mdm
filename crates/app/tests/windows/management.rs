@@ -281,6 +281,16 @@ async fn native_notifications_are_acked_and_replayed_without_finishing_pending_q
         None,
     )
     .await?;
+    use sqlx::Connection;
+    let mut pg = sqlx::PgConnection::connect_with(&options("postgres")?).await?;
+    let pending_query = "SELECT version_status IS NULL AND edition_status IS NULL FROM mdm_commands.capability_queries WHERE tenant_id=$1::uuid AND registration=$2 AND session=1900";
+    ensure!(
+        sqlx::query_scalar::<_, bool>(pending_query)
+            .bind(case_tenant())
+            .bind(peer.intent.registration)
+            .fetch_one(&mut pg)
+            .await?
+    );
     let mut message = syncml::Message {
         header: syncml::Header {
             message_id: 3,
@@ -336,8 +346,14 @@ async fn native_notifications_are_acked_and_replayed_without_finishing_pending_q
     let reply = syncml::decode(&original, &CodecLimits::default())?;
     ensure!(!reply.final_message);
     ensure!(reply.commands.iter().any(|c|matches!(c,Command::Status(status) if status.command==CommandName::Alert && status.command_ref==2 && status.code==200)));
-    use sqlx::Connection;
-    let mut pg = sqlx::PgConnection::connect_with(&options("postgres")?).await?;
+    ensure!(
+        sqlx::query_scalar::<_, bool>(pending_query)
+            .bind(case_tenant())
+            .bind(peer.intent.registration)
+            .fetch_one(&mut pg)
+            .await?,
+        "Alert completed an unanswered capability query"
+    );
     let records: Vec<Vec<u8>> =
         sqlx::query_scalar("SELECT canonical FROM mdm_audit.receipts WHERE tenant_id=$1::uuid")
             .bind(case_tenant())
@@ -373,6 +389,10 @@ async fn native_notifications_are_acked_and_replayed_without_finishing_pending_q
         "pending native reads lost after alert {}",
         result.status()
     );
+    let observed: (String, i32, i64) = sqlx::query_as("SELECT os_version,edition,session FROM mdm_commands.capabilities WHERE tenant_id=$1::uuid AND registration=$2")
+        .bind(case_tenant()).bind(peer.intent.registration).fetch_one(&mut pg).await?;
+    ensure!(observed == ("10.0.26100.0".into(), 48, 1900));
+    pg.close().await?;
     host.close().await
 }
 
@@ -455,6 +475,33 @@ async fn native_unenrollment_notification_retires_only_its_authenticated_registr
     work.accept_approved().await?;
     work.publish_operation(work.operation).await?;
     let pool = sqlx::PgPool::connect_with(options("postgres")?).await?;
+    let second_device = crate::test_support::case::name("unaffected-native-device");
+    let second = host.peer_for(second_device).await?;
+    let second_exchange = crate::execution::test_support::native::begin(
+        &second.mutual,
+        &second.url,
+        &second.message,
+        &second.ack,
+        1298,
+        None,
+    )
+    .await?;
+    ensure!(!second_exchange.gets.is_empty());
+    let second_snapshot = "SELECT jsonb_build_object('registration',to_jsonb(r),'credentials',(SELECT jsonb_agg(to_jsonb(c) ORDER BY c.id) FROM mdm_access.credentials c WHERE c.tenant_id=r.tenant_id AND c.registration=r.id),'pending',(SELECT jsonb_agg(to_jsonb(q) ORDER BY q.session) FROM mdm_commands.capability_queries q WHERE q.tenant_id=r.tenant_id AND q.registration=r.id)) FROM mdm_access.registrations r WHERE r.tenant_id=$1::uuid AND r.id=$2";
+    let second_before: serde_json::Value = sqlx::query_scalar(second_snapshot)
+        .bind(case_tenant())
+        .bind(second.intent.registration)
+        .fetch_one(&pool)
+        .await?;
+    ensure!(
+        second_before["registration"]["state"] == "active"
+            && second_before["credentials"]
+                .as_array()
+                .is_some_and(|v| !v.is_empty())
+            && second_before["pending"]
+                .as_array()
+                .is_some_and(|v| !v.is_empty())
+    );
     let mut notification = peer.message.clone();
     notification.header.session_id = 1300;
     notification.header.credential = None;
@@ -533,6 +580,15 @@ async fn native_unenrollment_notification_retires_only_its_authenticated_registr
     .await?;
     let count: i64 = sqlx::query_scalar("SELECT count(*) FROM mdm_windows.unenrollment_receipts WHERE tenant_id=$1::uuid AND registration=$2").bind(case_tenant()).bind(peer.intent.registration).fetch_one(&pool).await?;
     ensure!(count == 1);
+    let second_after: serde_json::Value = sqlx::query_scalar(second_snapshot)
+        .bind(case_tenant())
+        .bind(second.intent.registration)
+        .fetch_one(&pool)
+        .await?;
+    ensure!(
+        second_after == second_before,
+        "retirement modified another registration's credentials or pending native reads"
+    );
     pool.close().await;
     let response = syncml::decode(&original, &CodecLimits::default())?;
     ensure!(
@@ -603,40 +659,46 @@ async fn native_trust_requires_exact_csp_readback_before_confirmation() -> anyho
                 }
             }
         }
-        for command in &opened.response.commands {
-            if let Command::Get { id, items, .. } = command {
-                for item in items {
-                    if let Some(uri) = item.target.as_ref().filter(|u| store.contains_key(*u)) {
-                        report.commands.push(Command::Status(syncml::Status {
-                            id: report.commands.len() as u32 + 1,
-                            message_ref: opened.response.header.message_id,
-                            command_ref: *id,
-                            command: CommandName::Get,
-                            code: 200,
-                            target_refs: vec![],
-                            source_refs: vec![],
-                            items: vec![],
-                            challenge: None,
-                            credential: None,
-                        }));
-                        report.commands.push(Command::Results(syncml::Results {
-                            id: report.commands.len() as u32 + 1,
-                            message_ref: Some(opened.response.header.message_id),
-                            command_ref: Some(*id),
-                            command: Some(CommandName::Get),
-                            meta: None,
-                            items: vec![syncml::Item {
-                                source: Some(uri.clone()),
-                                target: None,
-                                more_data: false,
+        ensure!(
+            !store.is_empty(),
+            "trust test did not receive any certificate Add"
+        );
+        if index > 0 {
+            for command in &opened.response.commands {
+                if let Command::Get { id, items, .. } = command {
+                    for item in items {
+                        if let Some(uri) = item.target.as_ref().filter(|u| store.contains_key(*u)) {
+                            report.commands.push(Command::Status(syncml::Status {
+                                id: report.commands.len() as u32 + 1,
+                                message_ref: opened.response.header.message_id,
+                                command_ref: *id,
+                                command: CommandName::Get,
+                                code: 200,
+                                target_refs: vec![],
+                                source_refs: vec![],
+                                items: vec![],
+                                challenge: None,
+                                credential: None,
+                            }));
+                            report.commands.push(Command::Results(syncml::Results {
+                                id: report.commands.len() as u32 + 1,
+                                message_ref: Some(opened.response.header.message_id),
+                                command_ref: Some(*id),
+                                command: Some(CommandName::Get),
                                 meta: None,
-                                data: Some(Secret(if index == 0 {
-                                    "AA==".into()
-                                } else {
-                                    store[uri].clone()
-                                })),
-                            }],
-                        }));
+                                items: vec![syncml::Item {
+                                    source: Some(uri.clone()),
+                                    target: None,
+                                    more_data: false,
+                                    meta: None,
+                                    data: Some(Secret(if index == 1 {
+                                        "AA==".into()
+                                    } else {
+                                        store[uri].clone()
+                                    })),
+                                }],
+                            }));
+                        }
                     }
                 }
             }
@@ -653,10 +715,10 @@ async fn native_trust_requires_exact_csp_readback_before_confirmation() -> anyho
         }
         let response = native::post(&peer.mutual, &peer.url, &report).await?;
         ensure!(response.status() == StatusCode::OK);
-        let count:i64 = sqlx::query_scalar("SELECT count(*) FROM mdm_pki.installations WHERE tenant_id=$1::uuid AND purpose='windows'")
-            .bind(case_tenant()).fetch_one(&mut observer).await?;
-        if index == 0 {
-            ensure!(count == 0, "wrong CSP readback confirmed trust");
+        let count:i64 = sqlx::query_scalar("SELECT count(*) FROM mdm_pki.installations WHERE tenant_id=$1::uuid AND purpose='windows' AND registration=$2")
+            .bind(case_tenant()).bind(peer.intent.registration).fetch_one(&mut observer).await?;
+        if index <= 1 {
+            ensure!(count == 0, "Add ACK or wrong CSP readback confirmed trust");
         } else if count == 1 {
             observer.close().await?;
             return host.close().await;
@@ -665,6 +727,7 @@ async fn native_trust_requires_exact_csp_readback_before_confirmation() -> anyho
     anyhow::bail!("exact native Root/CA readback did not confirm installed trust")
 }
 
+#[cfg(feature = "integration")]
 #[tokio::test]
 #[ignore = "MODULE=windows.management: issuance is not first authentication"]
 async fn admission_pause_blocks_first_authentication_but_preserves_authenticated_sessions()
@@ -704,9 +767,30 @@ async fn admission_pause_blocks_first_authentication_but_preserves_authenticated
         .await?;
     ensure!(authenticated.status() == StatusCode::OK);
 
+    let capability_reply = syncml::decode(&authenticated.bytes().await?, &CodecLimits::default())?;
     sqlx::query("UPDATE mdm_access.registration_admission SET paused=true,revision=3 WHERE tenant_id=$1::uuid AND channel='windows_mdm'").bind(case_tenant()).execute(&mut pg).await?;
     let replay = post().send().await?;
     ensure!(replay.status() == StatusCode::OK && replay.bytes().await? == bytes);
+    let gets = capability_reply
+        .commands
+        .iter()
+        .filter_map(|c| match c {
+            Command::Get { id, items, .. } => Some((*id, items[0].target.clone().unwrap())),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    ensure!(!gets.is_empty());
+    let message =
+        crate::execution::test_support::native::report(&peer.message, &gets, "10.0.26100.0", 200);
+    let response =
+        crate::execution::test_support::native::post(&peer.mutual, &peer.url, &message).await?;
+    ensure!(
+        response.status() == StatusCode::OK,
+        "pause rejected an existing registration's new message"
+    );
+    let progressed: bool = sqlx::query_scalar("SELECT last_message=$4 FROM mdm_access.management_sessions WHERE tenant_id=$1::uuid AND registration=$2 AND session_id=$3")
+        .bind(case_tenant()).bind(registration).bind(message.header.session_id.to_string()).bind(i32::try_from(message.header.message_id)?).fetch_one(&mut pg).await?;
+    ensure!(progressed);
     host.close().await?;
     Ok(())
 }

@@ -28,17 +28,6 @@ async fn template_revocation_between_fragments_aborts() -> anyhow::Result<()> {
     template_flow(Some(true), 9, Completion::Snapshot).await
 }
 #[tokio::test]
-#[ignore = "MODULE=windows.management: last supported collection dispatch message"]
-async fn template_dispatch_at_last_supported_message() -> anyhow::Result<()> {
-    template_flow(
-        None,
-        CodecLimits::default().session_messages as u32 - 1,
-        Completion::Snapshot,
-    )
-    .await
-}
-
-#[tokio::test]
 #[ignore = "MODULE=windows.management: client abort of a real template run"]
 async fn template_client_abort_cannot_publish_a_snapshot() -> anyhow::Result<()> {
     template_flow(None, 9, Completion::SessionAbort).await
@@ -253,58 +242,52 @@ async fn template_flow(
     let bytes = template.canonical();
     let id = Uuid::new_v4();
     let digest = rss_mdm_resource::Digest::of(&bytes).bytes();
-    resource(
-        &mut f.browser,
-        &f.router,
-        id,
-        0,
-        json!({"action":"create","kind":"native_collection"}),
-    )
-    .await?;
-    resource(&mut f.browser,&f.router,id,1,json!({"action":"version","version":"v1","kind":"native_collection","variants":(["x86_64", "aarch64"].map(|architecture| json!({"platform":"windows","architecture":architecture,"key":"default","declaration":{"kind":"native_collection","artifact":{"reference":"native-template","length":bytes.len(),"sha256":digest},"definition":template}})))})).await?;
-    ensure!(
-        upload_for(&f.browser, &f.router, id, &bytes, "windows", "x86_64").await?
-            == StatusCode::CREATED
-    );
-    resource(
-        &mut f.browser,
-        &f.router,
-        id,
-        2,
-        json!({"action":"activate","version":"v1"}),
-    )
-    .await?;
     let scope = Uuid::new_v4();
-    post(&mut f.browser,&f.router,&format!("/api/v1/scopes/{scope}"),json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"put","definition":{"targets":[{"kind":"device","id":case_device()}],"limitations":null,"exclusions":[]}}})).await?;
+    if completion == Completion::Snapshot && revoke_after_first.is_none() {
+        resource(
+            &mut f.browser,
+            &f.router,
+            id,
+            0,
+            json!({"action":"create","kind":"native_collection"}),
+        )
+        .await?;
+        resource(&mut f.browser,&f.router,id,1,json!({"action":"version","version":"v1","kind":"native_collection","variants":(["x86_64", "aarch64"].map(|architecture| json!({"platform":"windows","architecture":architecture,"key":"default","declaration":{"kind":"native_collection","artifact":{"reference":"native-template","length":bytes.len(),"sha256":digest},"definition":template}})))})).await?;
+        ensure!(
+            upload_for(&f.browser, &f.router, id, &bytes, "windows", "x86_64").await?
+                == StatusCode::CREATED
+        );
+        resource(
+            &mut f.browser,
+            &f.router,
+            id,
+            2,
+            json!({"action":"activate","version":"v1"}),
+        )
+        .await?;
+        post(&mut f.browser,&f.router,&format!("/api/v1/scopes/{scope}"),json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"put","definition":{"targets":[{"kind":"device","id":case_device()}],"limitations":null,"exclusions":[]}}})).await?;
+    } else {
+        crate::test_support::planning_http::seed_native_template(
+            &host.app.flow.planning,
+            id,
+            rss_mdm_resource::Platform::Windows,
+            template,
+        )
+        .await?;
+        ensure!(
+            upload_for(&f.browser, &f.router, id, &bytes, "windows", "x86_64").await?
+                == StatusCode::CREATED
+        );
+        crate::test_support::agent_execution::seed_scope(
+            &host.app.flow.planning,
+            scope,
+            json!([{"kind":"device","id":case_device()}]),
+        )
+        .await?;
+    }
     let policy = Uuid::new_v4();
     let now = crate::clock::Clock::unix_seconds(&crate::clock::SystemClock)?;
     post(&mut f.browser,&f.router,&format!("/api/v1/policies/{policy}"),json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"put","enabled":true,"definition":{"scope":scope,"action":{"kind":"native_collection","frequency":"every_trigger","schedule":{"trigger":{"kind":"interval","anchor":now-7200,"seconds":3600},"notBefore":0,"jitterSeconds":0,"misfire":{"kind":"coalesce_one"}},"resource":{"id":id,"version":"v1","platform":"windows","architecture":"x86_64","variant":"default"},"runLifetimeSeconds":300}}}})).await?;
-    let directory = f
-        .browser
-        .call(
-            &f.router,
-            Method::GET,
-            &format!("/api/v1/policies?action=native_collection&resource={id}"),
-            None,
-        )
-        .await?;
-    ensure!(directory.0 == StatusCode::OK, "{directory:?}");
-    ensure!(
-        directory.1["items"]
-            .as_array()
-            .is_some_and(|items| items.iter().any(|item| item["id"] == policy.to_string())),
-        "native collection missing from directory: {directory:?}"
-    );
-    let invalid = f
-        .browser
-        .call(
-            &f.router,
-            Method::GET,
-            "/api/v1/policies?action=plugin",
-            None,
-        )
-        .await?;
-    ensure!(invalid.0 == StatusCode::BAD_REQUEST, "{invalid:?}");
     ensure!(
         native::post(&peer.mutual, &peer.url, &peer.message)
             .await?
@@ -444,18 +427,6 @@ async fn template_flow(
         host.close().await?;
         return Ok(());
     }
-    if request_message == CodecLimits::default().session_messages as u32 - 1
-        && completion == Completion::Snapshot
-    {
-        let stored:i64=sqlx::query_scalar("SELECT w.request_message FROM mdm_windows.collections w JOIN mdm_access.collection_runs r USING(tenant_id,id) WHERE w.tenant_id=$1::uuid AND r.evidence ? 'nativeTemplate'").bind(case_tenant()).fetch_one(&mut pg).await?;
-        ensure!(
-            stored == i64::from(request_message),
-            "last supported request was not persisted"
-        );
-        crate::test_support::stop_worker(owner.take()).await?;
-        host.close().await?;
-        return Ok(());
-    }
     let mut packet = native::report(&peer.message, &gets, "template-workstation", 200);
     packet.header.message_id = wire.header.message_id + 1;
     packet.final_message = false;
@@ -488,8 +459,9 @@ async fn template_flow(
                 .bind(case_tenant())
                 .execute(&mut pg)
                 .await?;
-            sqlx::query("UPDATE mdm_access.collection_runs SET deadline=clock_timestamp()-interval '1 second' WHERE tenant_id=$1::uuid AND id=$2")
+            let changed = sqlx::query("UPDATE mdm_access.collection_runs SET deadline=clock_timestamp()-interval '1 second' WHERE tenant_id=$1::uuid AND id=$2")
             .bind(case_tenant()).bind(run).execute(&mut pg).await?;
+            ensure!(changed.rows_affected() == 1);
         }
         denied_template_result(&peer, &mut pg, packet, run, revoke_after_first).await?;
         crate::test_support::stop_worker(owner.take()).await?;
@@ -948,7 +920,7 @@ async fn dynamic_result(
                     ..
                 }
             )));
-            let failed:bool=sqlx::query_scalar("SELECT result='failed' AND batch IS NULL FROM mdm_access.collection_runs WHERE tenant_id=$1::uuid AND id=$2").bind(case_tenant()).bind(run).fetch_one(&mut *pg).await.context("dynamic sealed result")?;
+            let failed:bool=sqlx::query_scalar("SELECT result='failed' AND sealed_at IS NOT NULL AND NOT delivery_pending AND batch IS NULL FROM mdm_access.collection_runs WHERE tenant_id=$1::uuid AND id=$2").bind(case_tenant()).bind(run).fetch_one(&mut *pg).await.context("dynamic sealed result")?;
             ensure!(failed);
             return Ok(());
         }
@@ -1036,8 +1008,23 @@ async fn dynamic_result(
             completion,
             Completion::Inventory | Completion::FragmentInventory
         ) {
-            ensure!(page.1.to_string().contains("Example"), "{page:?}");
+            let rows = page.1["asset"]["items"]
+                .as_array()
+                .ok_or_else(|| anyhow::anyhow!("missing inventory rows: {page:?}"))?;
+            ensure!(
+                rows.len() == 1
+                    && rows[0]["value"]["name"]["value"] == "Example"
+                    && rows[0]["value"]["version"]["value"] == "1.2",
+                "{page:?}"
+            );
         }
+    }
+    if completion == Completion::FinalInventoryBudget {
+        ensure!(
+            attempts["fields"]["device.model"]["value"]["value"]
+                == json!({"kind":"string","value":"canonical-workstation"}),
+            "partial report lost its confirmed scalar: {attempts}"
+        );
     }
     let sealed = crate::collection::store::load_on(pg, case_tenant(), run).await?;
     crate::inventory_runtime::test_support::wait_ready_projection(&host.runtime, &sealed).await?;

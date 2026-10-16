@@ -274,21 +274,49 @@ async fn issuance_recovery_and_enrollment_boundaries() -> anyhow::Result<()> {
         } else {
             rss_audit_postgres::PgFault::CommitUnknownAfterAck
         });
-        let result = tokio::time::timeout(
-            Duration::from_millis(200),
-            complete(&audit_store, &w, &a, &proof, &i, &c),
-        )
-        .await;
-        ensure!(if fault == 3 {
-            result.is_err()
+        if fault == 3 {
+            let request_audit = audit(&proof, a.operation, &a.device, "enrollment_issue");
+            let mount = crate::device::ChannelMount::new(
+                rss_request_context::TenantId::parse(case_tenant())?,
+                rss_mdm_inventory::ReportSource::MdmWindows,
+                rss_mdm_registration_service::Purpose::Primary,
+            );
+            {
+                let mut pending = Box::pin(rss_mdm_windows_channel::issuance::complete_issuance(
+                    &audit_store,
+                    &w.channel,
+                    &a,
+                    &proof,
+                    &i,
+                    &c,
+                    &request_audit,
+                    now(),
+                    &mount,
+                    &crate::registration_lifecycle::Bridge,
+                ));
+                tokio::select! {
+                    result = &mut pending => anyhow::bail!("issuance never reached pending commit: {result:?}"),
+                    reached = tokio::time::timeout(Duration::from_secs(5), async {
+                        while request_audit.snapshot().write_outcome != rss_mdm_audit_integration::WriteOutcome::Unknown {
+                            tokio::time::sleep(Duration::from_millis(5)).await;
+                        }
+                    }) => reached?,
+                }
+                let result = tokio::time::timeout(Duration::from_millis(200), &mut pending).await;
+                ensure!(
+                    result.is_err(),
+                    "pending commit completed without cancellation: {result:?}"
+                );
+            }
+            request_audit.finalize(Some(rss_mdm_audit_integration::FailureReason::Cancelled));
         } else {
-            matches!(
-                result,
-                Ok(Err(Error::Windows(
+            ensure!(matches!(
+                complete(&audit_store, &w, &a, &proof, &i, &c).await,
+                Err(Error::Windows(
                     rss_mdm_windows_channel::Error::CommitUnknown
-                )))
-            )
-        });
+                ))
+            ));
+        }
         complete(&audit_store, &w, &a, &proof, &i, &c).await?;
         let count: i64 = sqlx::query_scalar(
             "SELECT count(*) FROM mdm_access.registrations WHERE tenant_id=$1::uuid AND device=$2",

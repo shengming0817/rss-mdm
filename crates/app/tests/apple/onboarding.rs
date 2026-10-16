@@ -105,7 +105,7 @@ async fn absent_agent_group_installs_fixed_package_and_registers_independently()
 
     ensure!(peer.manage("NotNow", Some(install), None).await?.is_empty());
     ensure!(f.operation(operation).await?["agentInstallation"]["delivery"] == "deferred");
-    let (retry, _) = next_after_cooldown(&peer, "InstallEnterpriseApplication").await?;
+    let (retry, _) = next_after_cooldown(&peer, install, "InstallEnterpriseApplication").await?;
     ensure!(retry == install, "NotNow retries the same native identity");
     // The reference server receives the ACK; the product loses this transport message.
     // Both then continue on the same device, so the oracle still checks query syntax.
@@ -142,7 +142,7 @@ async fn absent_agent_group_installs_fixed_package_and_registers_independently()
     )
     .await?;
     ensure!(f.operation(operation).await?["agentInstallation"]["installation"] == "installing");
-    let (observe, _) = next_after_cooldown(&peer, "InstalledApplicationList").await?;
+    let (observe, _) = next_after_cooldown(&peer, observe, "InstalledApplicationList").await?;
     // Error responses cannot claim installed even if an extraneous list is present.
     peer.manage(
         "Error",
@@ -165,7 +165,7 @@ async fn absent_agent_group_installs_fixed_package_and_registers_independently()
             && state["commandStatus"] != "applied",
         "{state}"
     );
-    let (observe, _) = next_after_cooldown(&peer, "InstalledApplicationList").await?;
+    let (observe, _) = next_after_cooldown(&peer, observe, "InstalledApplicationList").await?;
     peer.manage(
         "Acknowledged",
         Some(observe),
@@ -190,30 +190,11 @@ async fn absent_agent_group_installs_fixed_package_and_registers_independently()
     );
     let input = json!({"wireVersion":1,"operationId":Uuid::new_v4(),"installationOperation":operation,"secret":credential("managed-apple-agent"),"csr":crate::test_support::agent::csr()?,"runtime":{"executionContext":crate::test_support::software_execution::context(crate::test_support::software_execution::Platform::MacOs),"platform":"macos","architecture":"aarch64","capabilities":["inventory.collect.v1","mdm.enrollment.v1"]}});
     let url = format!("{}/api/v1/agent/enroll/native-grants", peer.origin);
-    for (field, value, code) in [
-        ("wireVersion", json!(3), "malformed_request"),
-        (
-            "capabilities",
-            json!(["inventory.basic.v3"]),
-            "malformed_request",
-        ),
-        (
-            "capabilities",
-            json!(["inventory.collect.v1", "inventory.collect.v1"]),
-            "malformed_request",
-        ),
-        ("deviceId", json!("untrusted"), "malformed_request"),
-    ] {
-        let mut invalid = input.clone();
-        if field == "capabilities" {
-            invalid["runtime"][field] = value;
-        } else {
-            invalid[field] = value;
-        }
-        let response = peer.client.post(&url).json(&invalid).send().await?;
-        ensure!(response.status() == StatusCode::BAD_REQUEST);
-        ensure!(response.json::<serde_json::Value>().await?["code"] == code);
-    }
+    let mut invalid = input.clone();
+    invalid["deviceId"] = json!("untrusted");
+    let rejected = peer.client.post(&url).json(&invalid).send().await?;
+    ensure!(rejected.status() == StatusCode::BAD_REQUEST);
+    ensure!(rejected.json::<serde_json::Value>().await?["code"] == "malformed_request");
     let response = peer.client.post(&url).json(&input).send().await?;
     let status = response.status();
     let receipt: serde_json::Value = response.json().await?;
@@ -249,8 +230,8 @@ async fn absent_agent_group_installs_fixed_package_and_registers_independently()
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
-#[ignore = "MODULE=apple.onboarding: actual issued peer survives optional feature changes"]
-async fn enabling_agent_installation_preserves_existing_native_identity_and_rights() -> Result<()> {
+#[ignore = "MODULE=apple.onboarding: optional installation config retains bound attempt identity"]
+async fn agent_installation_configuration_preserves_bound_attempt_identity() -> Result<()> {
     use sqlx::{Connection, Row};
     let f = Fixture::start().await?;
     let (device, der) = f.seed_local_identity().await?;
@@ -311,18 +292,25 @@ async fn enabling_agent_installation_preserves_existing_native_identity_and_righ
 
 async fn next_after_cooldown(
     peer: &lifecycle::Peer,
+    attempt: Uuid,
     kind: &str,
 ) -> Result<(Uuid, plist::Dictionary)> {
-    tokio::time::timeout(Duration::from_secs(45), async {
-        loop {
-            let bytes = peer.manage("Idle", None, None).await?;
-            if !bytes.is_empty() {
-                return lifecycle::command(&bytes, kind);
-            }
-            tokio::time::sleep(Duration::from_millis(250)).await;
-        }
-    })
-    .await?
+    use sqlx::Connection;
+    let mut db =
+        sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?)
+            .await?;
+    let future: bool = sqlx::query_scalar("SELECT next_attempt>clock_timestamp() FROM mdm_apple.attempts WHERE tenant_id=$1::uuid AND id=$2")
+        .bind(case_tenant()).bind(attempt).fetch_one(&mut db).await?;
+    ensure!(future, "current attempt has no future cooldown");
+    ensure!(
+        peer.manage("Idle", None, None).await?.is_empty(),
+        "cooldown allowed an early retry"
+    );
+    let changed = sqlx::query("UPDATE mdm_apple.attempts SET next_attempt=clock_timestamp()-interval '1 second' WHERE tenant_id=$1::uuid AND id=$2")
+        .bind(case_tenant()).bind(attempt).execute(&mut db).await?;
+    ensure!(changed.rows_affected() == 1);
+    db.close().await?;
+    peer.next(kind).await
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]

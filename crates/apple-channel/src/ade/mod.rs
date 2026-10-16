@@ -110,3 +110,66 @@ pub struct Fixture {
     pub origin: String,
     pub manufacturer_root: Vec<u8>,
 }
+
+/// Legal directory preparation for consumers whose action starts after ADE setup.
+/// No successful operation, enrollment, receipt or audit record is manufactured.
+#[cfg(feature = "integration")]
+pub mod fixture {
+    use super::*;
+    pub struct Directory<'a> {
+        pub tenant: &'a str,
+        pub organization: Uuid,
+        pub profile: Uuid,
+        pub remote_profile: Uuid,
+        pub serial: &'a str,
+        pub token: &'a [u8],
+        pub configuration: serde_json::Value,
+        pub origin: &'a str,
+        pub now: i64,
+    }
+    pub async fn seed_in(
+        c: &mut sqlx::PgConnection,
+        protection: &rss_mdm_native_protection::Protector,
+        input: Directory<'_>,
+    ) -> Result<serde_json::Value, Error> {
+        let Directory {
+            tenant,
+            organization,
+            profile,
+            remote_profile,
+            serial,
+            token,
+            configuration,
+            origin,
+            now,
+        } = input;
+        let token = client::Token::parse(token, now)?;
+        let setup: management::Setup =
+            serde_json::from_value(configuration.clone()).map_err(|_| Error::Malformed)?;
+        setup.validate()?;
+        crate::organizations::ensure_in(c, tenant, organization).await?;
+        let key = rss_mdm_certificate::apple::ade::generate_key(now)?;
+        let key_id = Uuid::new_v4();
+        let private = protection
+            .seal_bytes(
+                &key.private_key,
+                &aad(tenant, organization, &key_id.to_string(), "apple.ade.key")?,
+            )
+            .map_err(|_| Error::Conflict)?;
+        let sealed = protection
+            .seal_bytes(
+                &serde_json::to_vec(&token).map_err(|_| Error::Malformed)?,
+                &aad(tenant, organization, "1", "apple.ade.token")?,
+            )
+            .map_err(|_| Error::Conflict)?;
+        sqlx::query("INSERT INTO mdm_apple.ade_servers(tenant_id,organization,revision,enabled,server_uuid,org_id,key_id,certificate,private_key,token,token_revision,token_expires,verified,cursor,synced_at,next_sync) VALUES($1::uuid,$2,1,true,$2,'T2-organization',$3,$4,$5,$6,1,$7,true,'page-2',$8,$8+3600)")
+            .bind(tenant).bind(organization).bind(key_id).bind(key.certificate).bind(private).bind(sealed).bind(token.expires()?).bind(now).execute(&mut *c).await.map_err(db)?;
+        sqlx::query("INSERT INTO mdm_apple.ade_profiles(tenant_id,organization,id,revision,configuration,remote_uuid) VALUES($1::uuid,$2,$3,1,$4,$5)")
+            .bind(tenant).bind(organization).bind(profile).bind(configuration).bind(remote_profile).execute(&mut *c).await.map_err(db)?;
+        sqlx::query("INSERT INTO mdm_apple.ade_devices(tenant_id,organization,serial,operation_date,deleted,seen_run,remote_profile,observed_at) VALUES($1::uuid,$2,$3,'2026-10-01T00:00:00.123456Z',false,$4,$5,$6)")
+            .bind(tenant).bind(organization).bind(serial).bind(Uuid::new_v4()).bind(remote_profile).bind(now).execute(c).await.map_err(db)?;
+        Ok(setup.apple(format!(
+            "{origin}/api/v1/apple/ade/enroll/{organization}/{profile}"
+        )))
+    }
+}

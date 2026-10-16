@@ -2,7 +2,7 @@ use crate::execution::test_support::{Client, native};
 use crate::windows::test_support::Host;
 #[tokio::test]
 #[ignore = "make t2 MODULE=windows.commands"]
-async fn enrollment_to_native_command_wiring() -> anyhow::Result<()> {
+async fn current_credential_to_native_command_wiring() -> anyhow::Result<()> {
     let mut host = Host::open().await?;
     host.listen().await?;
     let peer = host.peer().await?;
@@ -36,10 +36,10 @@ async fn enrollment_to_native_command_wiring() -> anyhow::Result<()> {
         )
         .await?;
     anyhow::ensure!(
-        opened.response.commands.iter().chain(message.commands.iter()).any(|command| matches!(command,
+        opened.response.commands.iter().chain(message.commands.iter()).filter(|command| matches!(command,
             rss_mdm_windows_mdm::syncml::Command::Exec { items, .. }
             if items.iter().any(|item| item.target.as_deref() == Some("./Device/Vendor/MSFT/Reboot/RebootNow"))
-        )),
+        )).count() == 1,
         "approved command was not delivered after capability discovery: {message:?}, detail: {detail:?}"
     );
     host.close().await?;

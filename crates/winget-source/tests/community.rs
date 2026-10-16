@@ -25,6 +25,13 @@ fn singleton_inheritance_retains_switches_and_precise_identity() {
         value.manifest().installer_metadata()["InstallerSwitches"]["Silent"],
         "/quiet"
     );
+    let mut files = manifest();
+    files[0].1 = String::from_utf8(files[0].1.clone())
+        .unwrap()
+        .replace("PackageName: Acme Application", "PackageName: yes")
+        .into_bytes();
+    let yaml_text = CommunityManifest::parse(&query(), &files).unwrap();
+    assert_eq!(yaml_text.manifest().locale_metadata()["PackageName"], "yes");
 }
 #[test]
 fn multifile_and_singleton_have_the_same_effective_installer() {
@@ -43,6 +50,18 @@ fn multifile_and_singleton_have_the_same_effective_installer() {
 #[test]
 fn unknown_behavior_duplicate_roles_wrong_version_and_credentials_are_rejected() {
     for replacement in [
+        (
+            "PackageName: Acme Application",
+            "PackageName: !custom Acme Application",
+        ),
+        (
+            "PackageName: Acme Application",
+            "PackageName: Acme Application\nPackageName: shadow",
+        ),
+        (
+            "PackageName: Acme Application",
+            "<<: {PackageName: Acme Application}",
+        ),
         (
             "Scope: machine",
             "Scope: machine\nElevationRequirement: elevationProhibited",

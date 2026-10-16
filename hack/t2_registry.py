@@ -397,6 +397,9 @@ add('native.tls', selectors=('native::tls::tests::',), profile='product', fixtur
     tests=('crates/app/tests/native/tls.rs',))
 app_family('windows',
            fixtures=('windows',), namespace='windows::t2')
+add('windows.push_transport', selectors=('windows::t2::push_transport::',), profile='none', fixtures=('windows',),
+    sources=('crates/windows-channel/src/push.rs', 'crates/app/src/native/tls.rs'),
+    tests=('crates/app/tests/windows/push_transport.rs',))
 MODULES['windows.declared'] = replace(MODULES['windows.declared'], support_inputs=(*MODULES['windows.declared'].support_inputs, 'crates/app/tests/windows/support.rs', 'crates/app/tests/device/support.rs', 'crates/app/tests/enrollment/support.rs', 'crates/app/tests/execution/support.rs', 'crates/app/tests/execution/support/native.rs', 'crates/app/tests/execution/support/configuration.rs'), db_mode='fresh', scope='objects')
 add('windows.entra', selectors=('windows::t2::entra::',), profile='product',fixtures=('windows','identity','local_worker'),
     sources=('crates/windows-channel/src/entra/*','crates/windows-channel/schema/entra.sql','crates/windows-channel/schema/entra-web.sql','crates/registration-service/schema/windows-entra.sql','crates/authorization-service/src/entra.rs','crates/management-http/src/windows_entra.rs'),
@@ -1061,6 +1064,7 @@ TOOL_INPUTS = {
     'hack/candidate_smoke.py': ('test_candidate_smoke',),
 }
 T1_INPUTS = (
+    'crates/apple-channel/tests/apns.rs', 'crates/winget-source/tests/community.rs',
     'crates/app/tests/windows/unit.rs','fixtures/snapshot.json', 'crates/content-s3/tests/unit.rs', 'crates/inventory-service/tests/assets/unit.rs') + ('crates/app/tests/agent_pki/health.rs','crates/certificate/tests/agent.rs','crates/certificate/tests/apple.rs','crates/certificate/tests/windows.rs','crates/certificate-archive-service/tests/behavior.rs','crates/authorization-service/tests/unit.rs','crates/inventory-service/tests/runtime.rs','crates/software-service/tests/management/*') + tuple(f'crates/{name}/tests/*' for name in (
     'inventory', 'group', 'scope', 'policy', 'resource', 'software-release',
     'compliance', 'agent-wire', 'windows-mdm', 'apple-mdm', 'content-service')) + (

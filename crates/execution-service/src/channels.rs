@@ -22,6 +22,8 @@ pub enum Rejection {
     Forbidden,
     #[error("protocol state conflict")]
     Conflict,
+    #[error("enrollment admission paused")]
+    EnrollmentPaused,
     #[error("protocol storage unavailable")]
     Storage,
     #[error("protocol state invalid")]

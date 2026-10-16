@@ -57,6 +57,9 @@ fn user_authentication_and_bootstrap_never_accept_account_authority() {
         ("UserID", user.to_string().into()),
     ]);
     assert!(matches!(checkin(&request),Ok(CheckIn::UserAuthenticate{user:id,..}) if id==user));
+    let mut missing_user = request.clone();
+    missing_user.remove("UserID");
+    assert!(checkin(&missing_user).is_err());
     request.insert("DigestResponse".into(), "directory-password".into());
     assert!(matches!(checkin(&request), Err(Error::Unsupported)));
     let mut request = dictionary([("MessageType", "SetBootstrapToken".into())]);

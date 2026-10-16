@@ -3,7 +3,35 @@ use rss_mdm_execution_service::channels::PushOutcome;
 #[test]
 fn provider_reasons_choose_recovery_without_logging_arbitrary_text() {
     let id = Uuid::nil();
+    let accepted = classify(id, 200, b"");
+    assert_eq!(
+        (
+            accepted.id,
+            accepted.status,
+            accepted.outcome,
+            accepted.reason
+        ),
+        (id, 200, PushOutcome::Accepted, None)
+    );
     for (status, body, outcome, reason) in [
+        (
+            410,
+            r#"{"reason":"Unregistered"}"#,
+            PushOutcome::Unregistered,
+            Reason::TokenInvalid,
+        ),
+        (
+            429,
+            r#"{"reason":"TooManyRequests"}"#,
+            PushOutcome::Retryable,
+            Reason::Throttled,
+        ),
+        (
+            503,
+            r#"{"reason":"ServiceUnavailable"}"#,
+            PushOutcome::Retryable,
+            Reason::Server,
+        ),
         (
             400,
             r#"{"reason":"BadDeviceToken"}"#,

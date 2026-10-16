@@ -82,9 +82,14 @@ impl Client {
     async fn dispatch_receipts(&mut self) -> anyhow::Result<()> {
         let audit = RequestAudit::new(case_tenant().into(), "management_read");
         #[cfg(feature = "integration")]
-        self.retry_gateway().await?;
-        #[cfg(feature = "integration")]
-        self.crash_relay().await?;
+        {
+            self.retry_gateway().await?;
+            self.app.execution.relay_once().await?;
+            // Crash recovery has its own false -> true acceptance, independent of retry faults.
+            self.operation = Uuid::new_v4();
+            self.accept_approved().await?;
+            self.crash_relay().await?;
+        }
         self.app.execution.relay_once().await?;
         // Drive the public bounded recovery seam without a competing fault consumer.
         let s = self.app.execution.clone();
@@ -218,6 +223,16 @@ impl Client {
                 let _ = self.0.wait();
             }
         }
+        let mut pg =
+            sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?)
+                .await?;
+        let message = format!("dispatch.{}", self.operation);
+        let (accepted, fingerprint): (bool, Vec<u8>) = sqlx::query_as("SELECT o.gateway_accepted,b.fingerprint FROM mdm_commands.operations o JOIN rss_transactional_messaging.outbox b ON b.tenant_id=o.tenant_id AND b.message_id=$3 WHERE o.tenant_id=$1::uuid AND o.id=$2")
+            .bind(case_tenant()).bind(self.operation).bind(&message).fetch_one(&mut pg).await?;
+        ensure!(
+            !accepted,
+            "crash scenario must begin before gateway acceptance"
+        );
         let mut child = Child(
             std::process::Command::new(std::env::current_exe()?)
                 .args([
@@ -226,17 +241,15 @@ impl Client {
                     "--ignored",
                     "--nocapture",
                 ])
+                .env("MDM_CRASH_OPERATION", self.operation.to_string())
                 .stdout(std::process::Stdio::null())
                 .stderr(std::process::Stdio::null())
                 .spawn()?,
         );
-        let mut pg =
-            sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?)
-                .await?;
         tokio::time::timeout(Duration::from_secs(5),async {
             loop {
                 ensure!(child.0.try_wait()?.is_none(),"relay child exited before durable acceptance");
-                let accepted:bool=sqlx::query_scalar("SELECT gateway_accepted FROM mdm_commands.operations WHERE tenant_id=$1::uuid AND id=$2::uuid").bind(case_tenant()).bind(self.operation.to_string()).fetch_one(&mut pg).await?;
+                let accepted:bool=sqlx::query_scalar("SELECT o.gateway_accepted AND b.status='publishing' AND b.lease_token IS NOT NULL AND b.lease_until>clock_timestamp() FROM mdm_commands.operations o JOIN rss_transactional_messaging.outbox b ON b.tenant_id=o.tenant_id AND b.message_id=$3 WHERE o.tenant_id=$1::uuid AND o.id=$2").bind(case_tenant()).bind(self.operation).bind(&message).fetch_one(&mut pg).await?;
                 if accepted {return Ok::<_,anyhow::Error>(());}
                 tokio::time::sleep(Duration::from_millis(25)).await;
             }
@@ -253,6 +266,12 @@ impl Client {
                 tokio::time::sleep(Duration::from_millis(100)).await;
             }
         }).await??;
+        let after: Vec<u8> = sqlx::query_scalar("SELECT fingerprint FROM rss_transactional_messaging.outbox WHERE tenant_id=$1::uuid AND message_id=$2")
+            .bind(case_tenant()).bind(&message).fetch_one(&mut pg).await?;
+        ensure!(
+            after == fingerprint,
+            "crash recovery changed dispatch identity"
+        );
         pg.close().await?;
         Ok(())
     }

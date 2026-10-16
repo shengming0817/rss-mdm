@@ -542,6 +542,36 @@ impl Control {
         ensure!(rss_mdm_apple_channel::ade::worker::cycle(&self.f.ade).await?);
         Ok(())
     }
+    async fn prepared_directory(&mut self) -> Result<()> {
+        crate::test_support::identity::set_grants(
+            case_tenant(),
+            crate::test_support::case::admin(),
+            serde_json::from_value(json!([
+                {"operation":"authorization_read","scope":{"kind":"tenant"}},
+                {"operation":"authorization_write","scope":{"kind":"tenant"}}
+            ]))?,
+        )
+        .await?;
+        let remote_profile = self.state.lock().await.profile;
+        let mut tx = self.f.app.access.archive_pool().begin().await?;
+        sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
+            .bind(case_tenant())
+            .execute(&mut *tx)
+            .await?;
+        let configuration = rss_mdm_apple_channel::ade::fixture::seed_in(&mut tx, &self.f.app.protection,
+            rss_mdm_apple_channel::ade::fixture::Directory {
+                tenant: case_tenant(), organization: self.organization, profile: self.profile, remote_profile,
+                serial: crate::test_support::case::name("ade-serial"),
+                token: &serde_json::to_vec(&json!({"consumer_key":"fixture-consumer","consumer_secret":"fixture-secret","access_token":"fixture-access","access_secret":"fixture-access-secret","access_token_expiry":"2030-01-01T00:00:00Z"}))?,
+                configuration: json!({"name":"T2 ADE","mandatory":true,"removable":false,"skip":["AppleID","Intelligence"]}),
+                origin: &self.f.ade.authentication.origin, now: self.f.app.clock.unix_seconds()?,
+            }).await?;
+        tx.commit().await?;
+        let mut state = self.state.lock().await;
+        state.assigned = true;
+        state.configuration = configuration;
+        Ok(())
+    }
     async fn setup(&mut self) -> Result<()> {
         crate::test_support::identity::set_grants(
             case_tenant(),
@@ -796,7 +826,7 @@ async fn organization_ade_enrolls_without_a_user_or_personal_quota() -> Result<(
 #[ignore = "MODULE=apple.ade: unknown profile resolution and assignment invalidation"]
 async fn unknown_profile_is_resolved_and_unassignment_revokes_pending_admission() -> Result<()> {
     let mut c = Control::start().await?;
-    c.setup().await?;
+    c.prepared_directory().await?;
     let machine = c.machine()?;
     let signed = c.enroll(machine.clone()).await?;
     ensure!(signed.0 == StatusCode::OK);
@@ -910,7 +940,7 @@ async fn unknown_profile_is_resolved_and_unassignment_revokes_pending_admission(
 async fn interrupted_snapshots_and_unknown_assignment_recover_without_false_publication()
 -> Result<()> {
     let mut c = Control::start().await?;
-    c.setup().await?;
+    c.prepared_directory().await?;
     let mut pg =
         sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?)
             .await?;
@@ -1014,7 +1044,7 @@ async fn interrupted_snapshots_and_unknown_assignment_recover_without_false_publ
 async fn unapplied_effect_releases_the_barrier_and_throttling_retries_only_pending_devices()
 -> Result<()> {
     let mut c = Control::start().await?;
-    c.setup().await?;
+    c.prepared_directory().await?;
     let serial = crate::test_support::case::name("ade-serial");
     c.command(json!({"kind":"clear","devices":[serial]}))
         .await?;
@@ -1079,7 +1109,7 @@ async fn unapplied_effect_releases_the_barrier_and_throttling_retries_only_pendi
 #[ignore = "MODULE=apple.ade: incomplete observations cannot prove unassignment"]
 async fn incomplete_observation_never_confirms_a_clear() -> Result<()> {
     let mut c = Control::start().await?;
-    c.setup().await?;
+    c.prepared_directory().await?;
     c.state.lock().await.drop_clear_once = true;
     let clear = c
         .command(json!({"kind":"clear","devices":[crate::test_support::case::name("ade-serial")]}))
@@ -1122,7 +1152,7 @@ async fn incomplete_observation_never_confirms_a_clear() -> Result<()> {
 #[ignore = "MODULE=apple.ade: full snapshot authority after incremental cursor reset"]
 async fn full_rebuild_replaces_newer_delta_state_and_revokes_stale_profile() -> Result<()> {
     let mut c = Control::start().await?;
-    c.setup().await?;
+    c.prepared_directory().await?;
     let machine = c.machine()?;
     ensure!(c.enroll(machine.clone()).await?.0 == StatusCode::OK);
     let serial = crate::test_support::case::name("ade-serial");
@@ -1200,7 +1230,7 @@ async fn full_rebuild_replaces_newer_delta_state_and_revokes_stale_profile() -> 
 #[ignore = "MODULE=apple.ade: empty delta freshness, terminal cursor and broken-chain refusal"]
 async fn unchanged_devices_remain_authoritative_until_the_directory_chain_breaks() -> Result<()> {
     let mut c = Control::start().await?;
-    c.setup().await?;
+    c.prepared_directory().await?;
     let serial = crate::test_support::case::name("ade-serial");
     let machine = c.machine()?;
     let mut pg =

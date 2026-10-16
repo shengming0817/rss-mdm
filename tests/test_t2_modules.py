@@ -290,7 +290,7 @@ class ModuleImpactTests(unittest.TestCase):
         device = self.selected('crates/app/tests/device/support.rs')
         required = {'authorization.admission','enrollment.recovery','native.tls','software.http',
                     'planning.http','execution.software.offer','execution.software.content','execution.software.recovery'}
-        required |= {name for name in MODULES if name.startswith(('device.','windows.','execution.commands.'))}
+        required |= {name for name in MODULES if name != 'windows.push_transport' and name.startswith(('device.','windows.','execution.commands.'))}
         required |= {'apple.'+part for part in ('collection','profile','policy','renewal','identity','push','fairness','host','scep')}
         self.assertTrue(required <= device,required-device)
         self.assertTrue(device.isdisjoint({'identity.sso','content.http','apple.cms','apple.apns','publication.artifact'}))

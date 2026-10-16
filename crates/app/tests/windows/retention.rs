@@ -119,7 +119,12 @@ async fn bounded_pruning_preserves_durable_history() -> anyhow::Result<()> {
     pg.execute("GRANT EXECUTE ON FUNCTION pg_catalog.ceil(numeric) TO PUBLIC")
         .await?;
     ensure!(
-        failed_deadline.is_err(),
+        matches!(
+            failed_deadline,
+            Err(rss_mdm_windows_channel::Error::Unavailable(
+                rss_mdm_windows_channel::Failure::Database
+            ))
+        ),
         "deadline query failure became healthy idle"
     );
     ensure!(
@@ -287,8 +292,15 @@ async fn schedule(
         .bind(tenant)
         .execute(&mut *tx)
         .await?;
-    sqlx::query("INSERT INTO mdm_access.management_sessions SELECT s.tenant_id,s.registration,$3,s.generation,s.credential,'complete',1,s.client_authenticated,s.login_user,s.nonce,clock_timestamp()+$4*interval '1 millisecond',NULL::uuid FROM (SELECT * FROM mdm_access.management_sessions WHERE tenant_id=$1::uuid AND registration=$2::uuid AND session_id::int<1000 ORDER BY session_id LIMIT 1) s")
+    let inserted = sqlx::query("INSERT INTO mdm_access.management_sessions SELECT s.tenant_id,s.registration,$3,s.generation,s.credential,'complete',1,s.client_authenticated,s.login_user,s.nonce,clock_timestamp()+$4*interval '1 millisecond',NULL::uuid FROM (SELECT * FROM mdm_access.management_sessions WHERE tenant_id=$1::uuid AND registration=$2::uuid AND session_id::int<1000 ORDER BY session_id LIMIT 1) s")
         .bind(tenant).bind(registration.to_string()).bind(session).bind(millis).execute(&mut *tx).await?;
+    ensure!(
+        inserted.rows_affected() == 1,
+        "scheduled session was never inserted"
+    );
+    let present: bool = sqlx::query_scalar("SELECT expires_at>clock_timestamp() FROM mdm_access.management_sessions WHERE tenant_id=$1::uuid AND registration=$2 AND session_id=$3")
+        .bind(tenant).bind(registration).bind(session).fetch_one(&mut *tx).await?;
+    ensure!(present, "scheduled session was already expired");
     if hint {
         crate::worker_wake::notify(&mut tx, crate::worker_wake::Work::Windows).await?;
     }

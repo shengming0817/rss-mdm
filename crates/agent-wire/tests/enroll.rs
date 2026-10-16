@@ -46,6 +46,24 @@ fn bootstrap_is_closed_and_cannot_claim_a_device_or_runtime_credential() {
         assert!(serde_json::from_value::<wire::GrantRequest>(invalid.clone()).is_err());
         assert!(!validator.is_valid(&invalid));
     }
+    let native = json!({"wireVersion":1,"operationId":Uuid::new_v4(),"installationOperation":Uuid::new_v4(),"secret":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA","csr":"AA==",
+        "runtime":{"platform":"windows","architecture":"x86_64","capabilities":["inventory.collect.v1"],"executionContext":{"revision":1,"osVersion":[10,0,22621,0],"userHelper":true,"systemBroker":true,"interactiveUser":null,"sourceCredentials":[],"msixSideload":false,"msixUnsigned":false}}});
+    assert!(wire::NativeGrantRequest::decode(&serde_json::to_vec(&native).unwrap()).is_ok());
+    for (pointer, value) in [
+        ("/wireVersion", json!(3)),
+        ("/runtime/capabilities", json!(["inventory.basic.v3"])),
+        (
+            "/runtime/capabilities",
+            json!(["inventory.collect.v1", "inventory.collect.v1"]),
+        ),
+    ] {
+        let mut invalid = native.clone();
+        *invalid.pointer_mut(pointer).unwrap() = value;
+        assert!(wire::NativeGrantRequest::decode(&serde_json::to_vec(&invalid).unwrap()).is_err());
+    }
+    let mut claimed = native;
+    claimed["deviceId"] = json!("untrusted");
+    assert!(wire::NativeGrantRequest::decode(&serde_json::to_vec(&claimed).unwrap()).is_err());
 }
 
 #[test]

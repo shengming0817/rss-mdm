@@ -220,7 +220,7 @@ impl From<rss_mdm_execution_service::channels::Rejection> for Error {
             R::Malformed => Self::Malformed,
             R::Unauthorized => Self::Unauthorized,
             R::Forbidden => Self::Forbidden,
-            R::Conflict => Self::Conflict,
+            R::Conflict | R::EnrollmentPaused => Self::Conflict,
             R::Storage => Self::Unavailable(Failure::Database),
             R::Protocol => Self::Unavailable(Failure::Protocol),
             R::Deadline => Self::Unavailable(Failure::RequestDeadline),

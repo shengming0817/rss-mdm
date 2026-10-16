@@ -590,7 +590,7 @@ async fn consent_native_issuance_replay_scope_and_revocation() -> anyhow::Result
         anyhow::bail!("missing exact replay")
     };
     ensure!(unchanged.provisioning == first.provisioning);
-    let mut transplant = issue(
+    let transplant = issue(
         &host,
         jwt.token(user, Some(Uuid::new_v4()), &[])?,
         Some(opaque),
@@ -599,11 +599,17 @@ async fn consent_native_issuance_replay_scope_and_revocation() -> anyhow::Result
         send(&host, &transplant).await?.0 == StatusCode::INTERNAL_SERVER_ERROR,
         "single-use consent reused for another device"
     );
-    if let Body::Issue(input) = &mut transplant.body {
+    let mut weak = valid.clone();
+    if let Body::Issue(input) = &mut weak.body {
         input.request =
             soap::CertificateRequest::Pkcs10(Secret(std::fs::read(host.root.join("weak.csr"))?));
     }
-    ensure!(send(&host, &transplant).await?.0 == StatusCode::INTERNAL_SERVER_ERROR);
+    let (status, body) = send(&host, &weak).await?;
+    ensure!(status == StatusCode::INTERNAL_SERVER_ERROR);
+    ensure!(matches!(
+        soap::decode_response(&weak, &body, &CodecLimits::default())?.body,
+        Body::Fault(soap::FaultKind::CertificateRequest)
+    ));
     // Organization authority keeps its canonical user and is exempt from personal quotas.
     let mut owner = sqlx::PgConnection::connect_with(&options("postgres")?).await?;
     sqlx::query("SELECT set_config('rss.tenant_id',$1,false)")
@@ -673,34 +679,6 @@ async fn consent_native_issuance_replay_scope_and_revocation() -> anyhow::Result
     ensure!(
         send(&host, &valid).await?.0 == StatusCode::INTERNAL_SERVER_ERROR,
         "revoked policy allowed replay"
-    );
-    let mut revision = 2;
-    for text in ["x".repeat(20 * 1024), "\"".repeat(32768)] {
-        let policy = json!({"enabled":false,"allUsers":false,"users":[user],"termsVersion":format!("large-{revision}"),"termsText":text,"allowBackground":false});
-        let (status,value)=admin.call(&host.browser,Method::PUT,"/api/v1/windows/entra-policy",Some(json!({"expectedRevision":revision,"operationId":Uuid::new_v4(),"policy":policy}))).await?;
-        ensure!(
-            status == StatusCode::OK,
-            "valid large terms rejected {status} {value}"
-        );
-        revision += 1;
-        let (_, read) = admin
-            .call(
-                &host.browser,
-                Method::GET,
-                "/api/v1/windows/entra-policy",
-                None,
-            )
-            .await?;
-        ensure!(
-            read["policy"]["termsText"] == text,
-            "terms did not round trip"
-        );
-    }
-    let oversized = json!({"enabled":false,"allUsers":false,"users":[user],"termsVersion":"oversized","termsText":"x".repeat(32769),"allowBackground":false});
-    let (status,_)=admin.call(&host.browser,Method::PUT,"/api/v1/windows/entra-policy",Some(json!({"expectedRevision":revision,"operationId":Uuid::new_v4(),"policy":oversized}))).await?;
-    ensure!(
-        status == StatusCode::BAD_REQUEST,
-        "oversized terms admitted"
     );
     host.close().await?;
     server.abort();
@@ -958,6 +936,36 @@ async fn management_policy_body_replay_and_audit_faults() -> anyhow::Result<()> 
             == StatusCode::FORBIDDEN
     );
     owner.close().await?;
+    let mut revision = admin.call(&host.browser, Method::GET, path, None).await?.1["revision"]
+        .as_u64()
+        .unwrap();
+    for text in ["\"".repeat(32768)] {
+        let policy = json!({"enabled":false,"allUsers":false,"users":[],"termsVersion":format!("large-{revision}"),"termsText":text,"allowBackground":false});
+        let (status,value)=admin.call(&host.browser,Method::PUT,"/api/v1/windows/entra-policy",Some(json!({"expectedRevision":revision,"operationId":Uuid::new_v4(),"policy":policy}))).await?;
+        ensure!(
+            status == StatusCode::OK,
+            "valid large terms rejected {status} {value}"
+        );
+        revision += 1;
+        let (_, read) = admin
+            .call(
+                &host.browser,
+                Method::GET,
+                "/api/v1/windows/entra-policy",
+                None,
+            )
+            .await?;
+        ensure!(
+            read["policy"]["termsText"] == text,
+            "terms did not round trip"
+        );
+    }
+    let oversized = json!({"enabled":false,"allUsers":false,"users":[],"termsVersion":"oversized","termsText":"x".repeat(32769),"allowBackground":false});
+    let (status,_)=admin.call(&host.browser,Method::PUT,"/api/v1/windows/entra-policy",Some(json!({"expectedRevision":revision,"operationId":Uuid::new_v4(),"policy":oversized}))).await?;
+    ensure!(
+        status == StatusCode::BAD_REQUEST,
+        "oversized terms admitted"
+    );
     host.close().await?;
     Ok(())
 }

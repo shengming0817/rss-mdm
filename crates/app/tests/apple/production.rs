@@ -34,7 +34,7 @@ impl Fixture {
             .await?;
         ensure!(reply.0 == StatusCode::OK);
         peer.token().await?;
-        self.policy_cycle(&peer).await?;
+        self.native_context(&peer).await?;
         self.grant_native_actions(&["device_control"]).await?;
         let operation = self.create_restart().await?;
         let participant = push::test_support::Participant::start(vec![200], vec![42; 32]).await?;

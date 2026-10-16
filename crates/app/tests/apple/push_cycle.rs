@@ -14,7 +14,7 @@ async fn state(pg: &mut PgConnection) -> Result<serde_json::Value> {
 }
 impl Fixture {
     pub async fn push_cycle(&mut self, peer: &lifecycle::Peer) -> Result<()> {
-        self.policy_cycle(peer).await?;
+        self.native_context(peer).await?;
         self.grant_native_actions(&["device_control"]).await?;
         let operation = self.create_restart().await?;
         let mut pg =
@@ -169,7 +169,12 @@ async fn deadline_query_failure_is_not_healthy_idle() -> Result<()> {
     .await;
     fixture.close().await?;
     ensure!(
-        result.is_err(),
+        matches!(
+            result,
+            Err(rss_mdm_apple_channel::Error::Unavailable(
+                rss_mdm_apple_channel::Failure::Database
+            ))
+        ),
         "deadline query failure became healthy idle"
     );
     ensure!(matches!(restored, Ok((0, push::WakeHealth::Idle, None))));
