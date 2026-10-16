@@ -290,10 +290,7 @@ pub(crate) async fn database(value: &Value) -> Result<Arc<crate::Database>> {
     ))
 }
 
-pub(crate) async fn app(
-    value: &Value,
-    _reader: Arc<InventoryReader>,
-) -> Result<(Router, Resources)> {
+pub(crate) async fn app(value: &Value) -> Result<(Router, Resources)> {
     let (router, _, resources) = app_with_access(value, database(value).await?).await?;
     Ok((router, resources))
 }
@@ -343,16 +340,37 @@ pub(crate) async fn start_automation(value: &Value) -> Result<Option<rss_runtime
         Arc::new(crate::lifecycle::RuntimeTimer),
     )?;
     let mut startup = stack.startup()?;
-    let access = crate::Database::connect(config.access_database.options()?).await?;
+    let access = Arc::new(crate::Database::connect(config.access_database.options()?).await?);
+    startup.stage_resource(rss_runtime::DynManagedResource::new_box(
+        crate::lifecycle::AccessResource(access.clone()),
+    ));
     let audit_store = access.audit_store(&config.audit).await?;
+    let inventory = crate::inventory_runtime::InventoryRuntime::fixture(
+        config.runtime_database.options()?,
+        access.inventory(),
+        rss_request_context::TenantId::parse(case_tenant())?,
+        monotonic(),
+        audit_store.clone(),
+    )
+    .await?;
+    startup.stage_resource(rss_runtime::DynManagedResource::new_box(
+        InventoryFixtureResource(inventory.clone()),
+    ));
+    let content =
+        crate::execution_assembly::open_content(&config, config.native_protector()?).await?;
+    if let Some(content) = &content {
+        startup.stage_resource(rss_runtime::DynManagedResource::new_box(
+            crate::execution_assembly::ContentResource(content.clone()),
+        ));
+    }
     let service = config
         .flow
         .open(
-            agent_runtime(value).await?,
+            inventory,
             audit_store,
             rss_request_context::TenantId::parse(case_tenant())?,
             Arc::new(crate::clock::SystemClock),
-            crate::execution_assembly::open_content(&config, config.native_protector()?).await?,
+            content,
             |resource| startup.stage_resource(rss_runtime::DynManagedResource::new_box(resource)),
         )
         .await?;

@@ -53,9 +53,12 @@ async fn permission_drift_corrupt_policy_and_stalled_postgres() -> Result<()> {
         denied.0 == StatusCode::SERVICE_UNAVAILABLE
             && denied.1.get("grants").is_none()
             && reconnect.is_err()
-            && context.0 == StatusCode::OK
-            && context.1["navigation"]["manageAccounts"] == true
+            && context.0 == StatusCode::SERVICE_UNAVAILABLE
+            && context.1.get("navigation").is_none()
     );
+    let recovered = admin.call(&router, Method::GET,
+        &format!("/api/v1/identity-host/tenants/{}/context", case_tenant()), None).await?;
+    ensure!(recovered.0 == StatusCode::OK && recovered.1["navigation"]["manageAccounts"] == true);
     // The union rejects undeclared objects, grants and permissive tenant policies.
     for (drift, restore) in [
         (

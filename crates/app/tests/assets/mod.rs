@@ -36,7 +36,6 @@ async fn permissions(subject: &str, device: Option<&str>, write: bool) -> Result
 struct Fixture {
     resources: crate::test_support::Resources,
     base: Value,
-    reader: Arc<InventoryReader>,
     automation: Option<rss_runtime::ShutdownStack>,
     router: Router,
     browser: Browser,
@@ -46,19 +45,8 @@ impl Fixture {
     async fn open() -> Result<Self> {
         let base: Value =
             serde_json::from_slice(&std::fs::read(std::env::var("MDM_TEST_CONFIG")?)?)?;
-        let config: Config = serde_json::from_value(base.clone())?;
-        let reader = Arc::new(
-            InventoryReader::connect(
-                config
-                    .access_database
-                    .options()?
-                    .username("mdm_api")
-                    .password("api-fixture"),
-            )
-            .await?,
-        );
         let automation = start_automation(&base).await?;
-        let (router, resources) = app(&base, reader.clone()).await?;
+        let (router, resources) = app(&base).await?;
         let browser = authority::Authority::prepared_browser("admin").await?;
         let subject = browser_subject(&browser, &router).await?;
         permissions(&subject, None, true).await?;
@@ -77,7 +65,6 @@ impl Fixture {
         Ok(Self {
             resources,
             base,
-            reader,
             automation,
             router,
             browser,
@@ -87,7 +74,6 @@ impl Fixture {
     async fn close(self) -> Result<()> {
         crate::test_support::stop_worker(self.automation).await?;
         self.resources.finish(async { Ok(()) }).await?;
-        self.reader.close().await;
         Ok(())
     }
 }

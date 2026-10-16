@@ -785,6 +785,8 @@ async fn corrupt_source_is_rejected_without_advancing_the_index() -> Result<()> 
     let mut f = Fixture::open().await?;
     let f_resources = std::mem::take(&mut f.resources);
     f_resources.finish(async {
+    let proof = crate::device::test_support::admin(case_tenant(), "admin-a").await?;
+    f.append(&proof, Uuid::new_v4(), 0, 1, 1).await?;
     let before = pg(&format!(
         "SELECT position FROM mdm_timeline.checkpoints WHERE tenant_id='{}'",
         case_tenant()

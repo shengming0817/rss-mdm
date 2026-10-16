@@ -11,8 +11,7 @@ async fn console_collection_routes_reuse_current_policy() -> Result<()> {
     let fixture_resources = std::mem::take(&mut fixture.resources);
     fixture_resources
         .finish(async {
-            let reader = authority::reader(&fixture.base).await?;
-            let (router, app_resources) = app(&fixture.base, reader).await?;
+            let (router, app_resources) = app(&fixture.base).await?;
             app_resources
                 .finish(async {
                     let mut browser = fixture.browser("other")?;
@@ -64,7 +63,7 @@ async fn console_pending_directory_and_permission_changes() -> Result<()> {
     let mut fixture = authority::Authority::open().await?;
     let fixture_resources = std::mem::take(&mut fixture.resources);
     fixture_resources.finish(async {
-    let (router, app_resources) = app(&fixture.base, authority::reader(&fixture.base).await?).await?;
+    let (router, app_resources) = app(&fixture.base).await?;
     app_resources.finish(async {
     let mut browser = fixture.browser("other")?;
     let device = case::name("pending-console");
@@ -137,7 +136,7 @@ async fn console_directory_pages_registered_revoked_and_pending() -> Result<()> 
     let mut fixture = authority::Authority::open().await?;
     let fixture_resources = std::mem::take(&mut fixture.resources);
     fixture_resources.finish(async {
-    let (router, app_resources) = app(&fixture.base, authority::reader(&fixture.base).await?).await?;
+    let (router, app_resources) = app(&fixture.base).await?;
     app_resources.finish(async {
     let mut browser = fixture.browser("other")?;
     let subject = browser_subject(&browser, &router).await?;
@@ -270,8 +269,7 @@ async fn console_script_support_requires_signer_and_content() -> Result<()> {
                 if !content {
                     config["content"] = Value::Null;
                 }
-                let (router, app_resources) =
-                    app(&config, authority::reader(&config).await?).await?;
+                let (router, app_resources) = app(&config).await?;
                 app_resources
                     .finish(async {
                         let (status, detail) = fixture
@@ -356,7 +354,7 @@ async fn console_metadata_filters_and_selectors() -> Result<()> {
     let mut fixture = authority::Authority::open().await?;
     let fixture_resources = std::mem::take(&mut fixture.resources);
     fixture_resources.finish(async {
-    let (router, app_resources) = app(&fixture.base, authority::reader(&fixture.base).await?).await?;
+    let (router, app_resources) = app(&fixture.base).await?;
     app_resources.finish(async {
     let mut browser = fixture.browser("other")?;
     let subject = browser_subject(&browser, &router).await?;
@@ -502,7 +500,7 @@ async fn console_scope_ready_tracks_current_admission() -> Result<()> {
     let mut fixture = authority::Authority::open().await?;
     let fixture_resources = std::mem::take(&mut fixture.resources);
     fixture_resources.finish(async {
-    let (router, app_resources) = app(&fixture.base, authority::reader(&fixture.base).await?).await?;
+    let (router, app_resources) = app(&fixture.base).await?;
     app_resources.finish(async {
     let mut browser = fixture.browser("other")?;
     let subject = browser_subject(&browser, &router).await?;
@@ -572,7 +570,7 @@ async fn planning_routes_and_derived_result_authorization() -> Result<()> {
     let mut fixture = authority::Authority::open().await?;
     let fixture_resources = std::mem::take(&mut fixture.resources);
     fixture_resources.finish(async {
-    let reader = authority::reader(&fixture.base).await?;
+
     pg(&format!(
         "INSERT INTO mdm_access.devices VALUES('{TENANT}','{DEVICE_ONE}')",
         TENANT = case_tenant(),
@@ -588,7 +586,7 @@ async fn planning_routes_and_derived_result_authorization() -> Result<()> {
     let session = &fixture.browser("other")?;
     let automation = start_automation(base).await?;
     await_ingress().await?;
-    let (initial, app_resources) = app(base, reader.clone()).await?;
+    let (initial, app_resources) = app(base).await?;
     app_resources.finish(async {
     let member = browser_subject(session, &initial).await?;
     set_management_grants(
@@ -883,7 +881,7 @@ async fn planning_routes_and_derived_result_authorization() -> Result<()> {
     ensure!(state["revision"] == 1 && state["enabled"] == true);
     // Revocation is persistent and visible to every existing router/session.
     set_management_grants(&member, json!([])).await?;
-    let (restricted, app_resources) = app(base, reader.clone()).await?;
+    let (restricted, app_resources) = app(base).await?;
     app_resources.finish(async {
     let mut denied = session.clone();
     for path in [&group_path, &policy_path, &resource_path] {
@@ -900,7 +898,7 @@ async fn planning_routes_and_derived_result_authorization() -> Result<()> {
     );
     ensure!(pg("SELECT count(*) FROM mdm_group.groups WHERE name='must-rollback'")?.trim() == "0");
     crate::test_support::stop_worker(automation).await?;
-    reader.close().await;
+
     Ok(())
     }).await
     }).await
@@ -1063,7 +1061,7 @@ async fn collection_blueprints_instantiate_replay_and_keep_tenant_versions() -> 
     let mut fixture = authority::Authority::open().await?;
     let fixture_resources = std::mem::take(&mut fixture.resources);
     fixture_resources.finish(async {
-    let (router, app_resources) = app(&fixture.base, authority::reader(&fixture.base).await?).await?;
+    let (router, app_resources) = app(&fixture.base).await?;
     app_resources.finish(async {
     let mut browser = fixture.browser("other")?;
     let subject = browser_subject(&browser, &router).await?;
@@ -1084,7 +1082,7 @@ async fn collection_blueprints_instantiate_replay_and_keep_tenant_versions() -> 
     // Fail after the resource commit, then resume the same operation with content enabled.
     let mut without_content = fixture.base.clone();
     without_content["content"] = serde_json::Value::Null;
-    let (unavailable, app_resources) = app(&without_content, authority::reader(&fixture.base).await?).await?;
+    let (unavailable, app_resources) = app(&without_content).await?;
     app_resources.finish(async {
     let interrupted = settled_write(&mut browser, &unavailable, &path, body.clone()).await?;
     ensure!(

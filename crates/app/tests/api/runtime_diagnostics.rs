@@ -9,8 +9,7 @@ async fn runtime_diagnostics_requires_explicit_permission() -> Result<()> {
     let fixture_resources = std::mem::take(&mut fixture.resources);
     fixture_resources
         .finish(async {
-            let reader = authority::reader(&fixture.base).await?;
-            let (router, app_resources) = app(&fixture.base, reader.clone()).await?;
+            let (router, app_resources) = app(&fixture.base).await?;
             app_resources
                 .finish(async {
                     ensure!(
@@ -47,7 +46,7 @@ async fn runtime_diagnostics_requires_explicit_permission() -> Result<()> {
                         member.call(&router, Method::GET, PATH, None).await?.0
                             == StatusCode::FORBIDDEN
                     );
-                    reader.close().await;
+
                     Ok(())
                 })
                 .await

@@ -6,8 +6,8 @@ async fn assignment_pagination_uses_published_scope_without_eager_execution() ->
     let mut fixture = authority::Authority::open().await?;
     let fixture_resources = std::mem::take(&mut fixture.resources);
     fixture_resources.finish(async {
-    let reader = authority::reader(&fixture.base).await?;
-    let (router, app_resources) = app(&fixture.base, reader.clone()).await?;
+
+    let (router, app_resources) = app(&fixture.base).await?;
     app_resources.finish(async {
     let mut browser = fixture.browser("other")?;
     let member = browser_subject(&browser, &router).await?;
@@ -161,7 +161,7 @@ async fn assignment_pagination_uses_published_scope_without_eager_execution() ->
         ))? == before
     );
     crate::test_support::stop_worker(automation).await?;
-    reader.close().await;
+
     Ok(())
     }).await
 

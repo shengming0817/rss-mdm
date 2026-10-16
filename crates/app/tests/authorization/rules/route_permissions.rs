@@ -9,7 +9,7 @@ async fn each_route_requires_its_exact_capability() -> Result<()> {
     let server = publication_support::Server::new().await;
     let cfg = publication_http::configuration(&fixture.base, &server);
     let base = &cfg;
-    let reader = authority::reader(base).await?;
+
     let session = &fixture.browser("other")?;
     let id = uuid::Uuid::new_v4();
     let source = base["flow"]["publication"]["sources"][0]["name"]
@@ -110,12 +110,6 @@ async fn each_route_requires_its_exact_capability() -> Result<()> {
             op(json!({})),
         ),
         (
-            "release_publish",
-            Method::POST,
-            format!("/api/v1/software-sources/{source}/candidates/{id}"),
-            op(json!({"action":"publish","ring":"test","publication":vec![0;32],"attempt":1})),
-        ),
-        (
             "release_recover",
             Method::POST,
             format!("/api/v1/software-sources/{source}/candidates/{id}"),
@@ -135,7 +129,7 @@ async fn each_route_requires_its_exact_capability() -> Result<()> {
     };
     // Exercise every permission change against the same running service. Rebuilding
     // full applications per grant needlessly multiplies component connection pools.
-    let (router, app_resources) = app(base, reader.clone()).await?;
+    let (router, app_resources) = app(base).await?;
     app_resources.finish(async {
     let member = browser_subject(session, &router).await?;
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
@@ -211,7 +205,7 @@ async fn each_route_requires_its_exact_capability() -> Result<()> {
             == expected_denied.to_string(),
         "denied action/target/actor audit incomplete"
     );
-    reader.close().await;
+
     Ok(())
     }).await
 

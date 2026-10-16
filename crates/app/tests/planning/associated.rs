@@ -400,7 +400,7 @@ async fn agent_health_drives_mdm_configuration_assignment() -> anyhow::Result<()
     let associations =
         rss_mdm_device_service::Associations::new(fixture.audit.clone(), tenant(), &[7; 32])?;
     associations.reconcile().await?;
-    let (router, app_resources) = app(&fixture.base, authority::reader(&fixture.base).await?).await?;
+    let (router, app_resources) = app(&fixture.base).await?;
     app_resources.finish(async {
     let mut browser = fixture.browser("other")?;
     let member = browser_subject(&browser, &router).await?;
