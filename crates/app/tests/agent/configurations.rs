@@ -430,8 +430,62 @@ async fn enroll(
         .unwrap()
         .to_owned())
 }
+/// Prepare current configuration peers; allocation boundaries below remain real API calls.
+async fn configuration_prefix(
+    service: &rss_mdm_registration_service::agent::Service,
+    file: &w::configuration::ConfigurationFile,
+    windows: &w::configuration::Package,
+    macos: &w::configuration::Package,
+    start: usize,
+) -> Result<Vec<String>> {
+    let started = tokio::time::Instant::now();
+    let file = file.clone();
+    let windows = windows.clone();
+    let macos = macos.clone();
+    let configuration_id = file.configuration.configuration_id;
+    let seeds = tokio::task::spawn_blocking(move || -> Result<Vec<_>> {
+        use crate::clock::Clock;
+        let now = crate::clock::SystemClock.unix_seconds()?;
+        (start..start + 19)
+            .map(|n| {
+                let package = if n % 2 == 0 { &windows } else { &macos };
+                let request = exchange(&file, package, n)?;
+                let device = Uuid::new_v4().to_string();
+                let identity =
+                    rss_mdm_certificate::agent::identity(file.configuration.tenant_id, &device)?;
+                let csr = STANDARD.decode(&request.csr)?;
+                let chain = crate::test_support::pki::leaf(
+                    &root(),
+                    &csr,
+                    "rss-mdm-agent",
+                    &[identity],
+                    now,
+                    now + 86400,
+                )?;
+                let validity = crate::test_support::pki::validity(&chain[0])?;
+                Ok(rss_mdm_registration_service::agent::ConfigurationPeerSeed {
+                    device,
+                    request,
+                    chain,
+                    validity,
+                })
+            })
+            .collect()
+    })
+    .await??;
+    let devices = service
+        .seed_configuration_peers(configuration_id, seeds)
+        .await?;
+    println!(
+        "configuration prefix: devices={} offline_signatures={} elapsed_seconds={:.3}",
+        devices.len(),
+        devices.len(),
+        started.elapsed().as_secs_f64()
+    );
+    Ok(devices)
+}
 #[tokio::test]
-#[ignore = "MODULE=agent.configurations: published fixed installers, 21 independent keys and real mTLS HTTP"]
+#[ignore = "MODULE=agent.configurations: 42 independent peers, quota boundaries and representative mTLS HTTP"]
 async fn fixed_packages_and_configurations_activate_beyond_self_quota() -> Result<()> {
     let f = fixture().await?;
     let mut user = f.user.clone();
@@ -440,10 +494,20 @@ async fn fixed_packages_and_configurations_activate_beyond_self_quota() -> Resul
     let file = configuration(&f, &mut user, json!({"kind":"finite","count":21}), None).await?;
     let authority = authority::Authority::open().await?;
     let tls = Tls::start(&authority).await?;
-    let mut devices = std::collections::BTreeSet::new();
-    for n in 0..21 {
+    let service = crate::test_support::agent::service(&authority).await?;
+    let mut devices = configuration_prefix(&service, &file, &windows, &macos, 0)
+        .await?
+        .into_iter()
+        .collect::<std::collections::BTreeSet<_>>();
+    ensure!(devices.len() == 19);
+    let state = read(&f, &mut user, file.configuration.configuration_id).await?;
+    ensure!(state["reserved"] == 0 && state["consumed"] == 19);
+    let live_started = tokio::time::Instant::now();
+    for n in 19..21 {
         let package = if n % 2 == 0 { &windows } else { &macos };
         ensure!(devices.insert(enroll(&f, &tls, &file, package, n).await?));
+        let state = read(&f, &mut user, file.configuration.configuration_id).await?;
+        ensure!(state["reserved"] == 0 && state["consumed"] == n + 1);
     }
     let state = read(&f, &mut user, file.configuration.configuration_id).await?;
     ensure!(state["reserved"] == 0 && state["consumed"] == 21);
@@ -457,10 +521,22 @@ async fn fixed_packages_and_configurations_activate_beyond_self_quota() -> Resul
         .0 == StatusCode::TOO_MANY_REQUESTS
     );
     let unlimited = configuration(&f, &mut user, json!({"kind":"unlimited"}), None).await?;
-    for n in 21..42 {
+    for device in configuration_prefix(&service, &unlimited, &windows, &macos, 21).await? {
+        ensure!(devices.insert(device));
+    }
+    let state = read(&f, &mut user, unlimited.configuration.configuration_id).await?;
+    ensure!(state["reserved"] == 0 && state["consumed"] == 19);
+    for n in 40..42 {
         let package = if n % 2 == 0 { &windows } else { &macos };
         ensure!(devices.insert(enroll(&f, &tls, &unlimited, package, n).await?));
+        let state = read(&f, &mut user, unlimited.configuration.configuration_id).await?;
+        ensure!(state["reserved"] == 0 && state["consumed"] == n - 20);
     }
+    ensure!(devices.len() == 42);
+    println!(
+        "configuration boundary phase: peers=42 online_issuances=4 exchange_replays=4 tls_activations=4 refill_waits=4 elapsed_seconds={:.3}",
+        live_started.elapsed().as_secs_f64()
+    );
     let state = read(&f, &mut user, unlimited.configuration.configuration_id).await?;
     ensure!(state["reserved"] == 0 && state["consumed"] == 21);
     let me = user

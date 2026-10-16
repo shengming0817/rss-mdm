@@ -1,10 +1,25 @@
 //! Minimal current credential prerequisites for downstream integration consumers.
 use super::*;
+use rss_mdm_agent_wire::enroll::configuration as wc;
 use rss_mdm_certificate::agent::IssuedAgentCertificate;
 
+/// One independently signed current peer for a configuration's prepared prefix.
+/// The request carries the real configuration, target installation and distinct CSR.
+pub struct ConfigurationPeerSeed {
+    pub device: String,
+    pub request: wc::Exchange,
+    pub chain: Vec<Vec<u8>>,
+    pub validity: std::ops::Range<i64>,
+}
+struct PeerSeed {
+    device: String,
+    profile: wire::RuntimeProfile,
+    csr_bytes: Vec<u8>,
+    chain: Vec<Vec<u8>>,
+    validity: std::ops::Range<i64>,
+}
 impl Service {
-    /// Prepare a new task peer with an actual CA certificate and current runtime binding.
-    /// Enrollment authorization, activation HTTP, and their audit receipts are not exercised.
+    /// Prepare a task peer with a real CA certificate and current runtime binding.
     pub async fn seed_peer(
         &self,
         device: &str,
@@ -12,13 +27,108 @@ impl Service {
         csr_bytes: Vec<u8>,
         chain: Vec<Vec<u8>>,
         validity: std::ops::Range<i64>,
-    ) -> Result<
-        (
-            IssuedAgentCertificate,
-            rss_mdm_agent_wire::runtime::BindingProfile,
-        ),
-        Error,
-    > {
+    ) -> Result<(IssuedAgentCertificate, runtime::BindingProfile), Error> {
+        let mut tx = self.store.begin(&self.tenant.to_string()).await?;
+        let result = self
+            .seed_peer_in(
+                &mut tx,
+                PeerSeed {
+                    device: device.into(),
+                    profile,
+                    csr_bytes,
+                    chain,
+                    validity,
+                },
+                None,
+            )
+            .await?;
+        tx.commit().await.map_err(db)?;
+        Ok(result)
+    }
+
+    /// Prepare only an unconsumed configuration's prefix; live boundary allocations
+    /// and their issuance remain production operations in the consuming test.
+    pub async fn seed_configuration_peers(
+        &self,
+        configuration_id: Uuid,
+        seeds: Vec<ConfigurationPeerSeed>,
+    ) -> Result<Vec<String>, Error> {
+        let tenant = self.tenant.to_string();
+        let mut tx = self.store.begin(&tenant).await?;
+        let owner = sqlx::query("SELECT * FROM mdm_access.agent_configurations WHERE tenant_id=$1::uuid AND id=$2 FOR UPDATE")
+            .bind(&tenant).bind(configuration_id).fetch_one(&mut *tx).await.map_err(db)?;
+        let stored: wc::Configuration =
+            serde_json::from_value(owner.try_get("document").map_err(db)?)
+                .map_err(|_| Error::Corrupt)?;
+        let occupied: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_access.agent_grants WHERE tenant_id=$1::uuid AND configuration_id=$2)")
+            .bind(&tenant).bind(configuration_id).fetch_one(&mut *tx).await.map_err(db)?;
+        if seeds.is_empty()
+            || occupied
+            || owner.try_get::<String, _>("state").map_err(db)? != "available"
+            || stored.tenant_id.to_string() != tenant
+            || stored.expires_at <= now(&mut tx).await?
+            || matches!(stored.quantity, wc::Quantity::Finite { count } if seeds.len() >= count.get() as usize)
+        {
+            return Err(Error::Malformed);
+        }
+        let mut devices = Vec::with_capacity(seeds.len());
+        for seed in seeds {
+            self.configuration_signer.verify(&seed.request.file)?;
+            if seed.request.file.configuration != stored {
+                return Err(Error::Malformed);
+            }
+            let package = self
+                .installations
+                .verify(&mut tx, &tenant, &seed.request.installation)
+                .await?;
+            let target = wc::Target {
+                platform: seed.request.runtime.platform,
+                architecture: seed.request.runtime.architecture,
+            };
+            if package.tenant_id != stored.tenant_id
+                || package.target != target
+                || !stored.targets.contains(&target)
+                || !stored.channels.contains(&package.channel)
+            {
+                return Err(Error::Malformed);
+            }
+            let binding = serde_json::json!({"runtime":seed.request.runtime,"installation":seed.request.installation});
+            let csr_bytes = STANDARD
+                .decode(&seed.request.csr)
+                .map_err(|_| Error::Malformed)?;
+            let device = seed.device;
+            self.seed_peer_in(
+                &mut tx,
+                PeerSeed {
+                    device: device.clone(),
+                    profile: seed.request.runtime,
+                    csr_bytes,
+                    chain: seed.chain,
+                    validity: seed.validity,
+                },
+                Some((configuration_id, &owner, binding)),
+            )
+            .await?;
+            devices.push(device);
+        }
+        tx.commit().await.map_err(db)?;
+        Ok(devices)
+    }
+
+    async fn seed_peer_in(
+        &self,
+        c: &mut PgConnection,
+        seed: PeerSeed,
+        configuration: Option<(Uuid, &PgRow, serde_json::Value)>,
+    ) -> Result<(IssuedAgentCertificate, runtime::BindingProfile), Error> {
+        let PeerSeed {
+            device,
+            profile,
+            csr_bytes,
+            chain,
+            validity,
+        } = seed;
+        let device = device.as_str();
         profile.validate().map_err(|_| Error::Malformed)?;
         let tenant = self.tenant.to_string();
         let tenant_uuid = Uuid::parse_str(&tenant).map_err(|_| Error::Malformed)?;
@@ -45,18 +155,36 @@ impl Service {
         let epoch = Uuid::new_v4();
         let profile_value = serde_json::to_value(&profile).map_err(|_| Error::Malformed)?;
         let request_digest = digest(&profile_value)?;
-        let mut tx = self.store.begin(&tenant).await?;
         sqlx::query("INSERT INTO mdm_access.devices(tenant_id,id) VALUES($1::uuid,$2)")
             .bind(&tenant)
             .bind(device)
-            .execute(&mut *tx)
+            .execute(&mut *c)
             .await
             .map_err(db)?;
-        sqlx::query("INSERT INTO mdm_access.agent_grants(tenant_id,id,operation_id,source,actor,instance,device,platform,secret_digest,request_digest,spki,state,expires_at) VALUES($1::uuid,$2,$3,'download','integration-fixture','integration-fixture',$4,$5,$6,$6,$7,'consumed',clock_timestamp()+interval '1 hour')")
-            .bind(&tenant).bind(grant).bind(operation).bind(device).bind(profile_value["platform"].as_str().ok_or(Error::Malformed)?)
-            .bind(&request_digest).bind(hex(csr.spki())).execute(&mut *tx).await.map_err(db)?;
+        let (source, actor, instance, configuration_id, configuration_binding) = match configuration
+        {
+            Some((id, owner, binding)) => (
+                "configuration",
+                owner.try_get::<String, _>("creator").map_err(db)?,
+                owner.try_get::<String, _>("instance").map_err(db)?,
+                Some(id),
+                Some(binding),
+            ),
+            None => (
+                "download",
+                "integration-fixture".into(),
+                "integration-fixture".into(),
+                None,
+                None,
+            ),
+        };
+        sqlx::query("INSERT INTO mdm_access.agent_grants(tenant_id,id,operation_id,source,actor,instance,device,platform,secret_digest,request_digest,spki,state,expires_at,configuration_id,configuration_binding) VALUES($1::uuid,$2,$3,$4,$5,$6,$7,$8,$9,$9,$10,'consumed',clock_timestamp()+interval '1 hour',$11,$12)")
+            .bind(&tenant).bind(grant).bind(operation).bind(source).bind(actor).bind(instance)
+            .bind(device).bind(profile_value["platform"].as_str().ok_or(Error::Malformed)?)
+            .bind(&request_digest).bind(hex(csr.spki())).bind(configuration_id).bind(configuration_binding)
+            .execute(&mut *c).await.map_err(db)?;
         sqlx::query("INSERT INTO mdm_access.registrations(tenant_id,id,device,channel,generation,agent_grant_id,state,purpose,epoch) VALUES($1::uuid,$2,$3,'agent',1,$4,'active','primary',$5)")
-            .bind(&tenant).bind(registration).bind(device).bind(grant).bind(epoch).execute(&mut *tx).await.map_err(db)?;
+            .bind(&tenant).bind(registration).bind(device).bind(grant).bind(epoch).execute(&mut *c).await.map_err(db)?;
         for source in [
             "agent.builtin",
             "agent.script",
@@ -64,12 +192,12 @@ impl Service {
             "agent.native",
         ] {
             sqlx::query("INSERT INTO mdm_access.report_sources(tenant_id,registration,source,epoch,enabled) VALUES($1::uuid,$2,$3,$4,true)")
-                .bind(&tenant).bind(registration).bind(source).bind(epoch).execute(&mut *tx).await.map_err(db)?;
+                .bind(&tenant).bind(registration).bind(source).bind(epoch).execute(&mut *c).await.map_err(db)?;
         }
         let runtime = self
             .binding
             .bind(
-                &mut tx,
+                c,
                 Binding {
                     tenant: self.tenant,
                     device: device.into(),
@@ -82,7 +210,7 @@ impl Service {
             )
             .await?;
         sqlx::query("INSERT INTO mdm_access.credentials(tenant_id,id,registration,channel,locator,state) VALUES($1::uuid,$2,$3,'agent',$4,'active')")
-            .bind(&tenant).bind(credential).bind(registration).bind(&fingerprint).execute(&mut *tx).await.map_err(db)?;
+            .bind(&tenant).bind(credential).bind(registration).bind(&fingerprint).execute(&mut *c).await.map_err(db)?;
         // The current authentication owner joins its issuance metadata to the credential.
         // Preserve a typed activation snapshot for credential retirement consumers.
         let receipt = wire::ActivationReceipt {
@@ -101,9 +229,9 @@ impl Service {
             .bind(hex(csr.spki())).bind(identity).bind(profile_value).bind(start).bind(end)
             .bind(serde_json::to_value(chain).map_err(|_| Error::Corrupt)?).bind(serde_json::to_value(&issued.metadata).map_err(|_| Error::Corrupt)?)
             .bind(fingerprint).bind(serde_json::to_value(receipt).map_err(|_| Error::Corrupt)?).bind(credential).bind(&issuer_hex)
-            .execute(&mut *tx).await.map_err(db)?;
+            .execute(&mut *c).await.map_err(db)?;
         rss_mdm_pki_service::certificates::record_in(
-            &mut tx,
+            c,
             &tenant,
             "agent",
             registration,
@@ -112,7 +240,6 @@ impl Service {
         )
         .await
         .map_err(|_| Error::Storage)?;
-        tx.commit().await.map_err(db)?;
         Ok((issued, runtime))
     }
 }

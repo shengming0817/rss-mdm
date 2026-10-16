@@ -275,7 +275,8 @@ async fn catalog_evidence_retains_pin_without_reserving_transfer() -> Result<()>
             r::Id::new("default")?,
             r::Declaration::Software {
                 definition: serde_json::from_value(publication_support::private_definition(
-                    fixture.registered["snapshot"].clone(), bytes,
+                    fixture.registered["snapshot"].clone(),
+                    bytes,
                 ))?,
             },
         )],
@@ -284,22 +285,36 @@ async fn catalog_evidence_retains_pin_without_reserving_transfer() -> Result<()>
     ensure!(evidence.resource_digest() == version.digest().bytes());
     // A held catalog receipt must not self-compete with a subsequent download.
     let download = store.verify(&artifact).await?;
-    ensure!(store.verify(&artifact).await.is_err(), "active download lost its permit");
+    ensure!(
+        store.verify(&artifact).await.is_err(),
+        "active download lost its permit"
+    );
     drop(download);
+    use crate::clock::Clock;
+    let now = crate::clock::SystemClock.unix_seconds()?;
     let digest = artifact.digest().bytes();
-    let hex = digest.iter().map(|b| format!("{b:02x}")).collect::<String>();
-    pg(&format!("UPDATE mdm_content.manifests SET expires=0 WHERE tenant_id='{}' AND sha256=decode('{hex}','hex')", case_tenant()))?;
-    ensure!(store.garbage(i64::MAX / 2).await?.iter().all(|g| g.digest != digest),
-        "catalog evidence lost its deletion pin");
+    let hex = digest
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect::<String>();
+    pg(&format!(
+        "UPDATE mdm_content.manifests SET expires=0 WHERE tenant_id='{}' AND sha256=decode('{hex}','hex')",
+        case_tenant()
+    ))?;
+    ensure!(
+        store.garbage(now).await?.iter().all(|g| g.digest != digest),
+        "catalog evidence lost its deletion pin"
+    );
     drop(evidence);
     // Verified drop releases the PG pin asynchronously, without extending its deadline.
     tokio::time::timeout(Duration::from_secs(3), async {
         loop {
-            if store.garbage(i64::MAX / 2).await?.iter().any(|g| g.digest == digest) {
+            if store.garbage(now).await?.iter().any(|g| g.digest == digest) {
                 return Ok::<_, anyhow::Error>(());
             }
             tokio::task::yield_now().await;
         }
-    }).await??;
+    })
+    .await??;
     Ok(())
 }
