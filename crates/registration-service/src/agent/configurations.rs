@@ -65,7 +65,7 @@ impl Signer {
             signature,
         })
     }
-    fn verify(&self, file: &wire_config::ConfigurationFile) -> Result<(), Error> {
+    pub(super) fn verify(&self, file: &wire_config::ConfigurationFile) -> Result<(), Error> {
         let key = self
             .trusted_keys
             .get(&file.configuration.key_id)

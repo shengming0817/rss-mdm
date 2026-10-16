@@ -329,7 +329,7 @@ impl ExecutionService {
             if op.revision!=change.expected_revision{return Err(Error::Conflict.into());}
             let command=service.required_command(tx,&op).await?;
             let now=storage::now(tx).await?;
-            if command.status().is_terminal() || now>=op.request.deadline {return Err(Error::Conflict.into());}
+            if command.status().is_terminal() || (approve && command.status() == dc::Status::Received) || now>=op.request.deadline {return Err(Error::Conflict.into());}
             let approval=if approve {
                 let ExecutionAuthority::DeviceControl { action, confirmation, .. } = &op.approval else {return Err(Error::Conflict.into());};
                 if storage::current_registration(tx,device,op.request.task.purpose()?).await? != (op.registration,op.registration_generation) {return Err(Error::Conflict.into());}
