@@ -86,17 +86,18 @@ impl Identity {
         let tenant = TenantId::parse(&config.identity.tenant_id).map_err(|_| invalid())?;
         let instance = InstanceId::parse(&config.identity.instance_id).map_err(|_| invalid())?;
         let management_tenant = management_tenant(&config.identity.database, instance).await?;
+        let management_epoch = rss_mdm_authorization_service::tenancy::MANAGEMENT_EPOCH;
+        let mut tenants = vec![(tenant, config.flow.storage.epoch)];
+        if tenant != management_tenant {
+            tenants.push((management_tenant, management_epoch));
+        } else if config.flow.storage.epoch != management_epoch {
+            return Err(invalid());
+        }
         let runtime = open_runtime(
             &config.identity.database,
             &config.flow.storage.target,
             &config.flow.storage.lineage,
-            &[
-                (tenant, config.flow.storage.epoch),
-                (
-                    management_tenant,
-                    rss_mdm_authorization_service::tenancy::MANAGEMENT_EPOCH,
-                ),
-            ],
+            &tenants,
         )
         .await?;
         acquire(rss_runtime::DynManagedResource::new_box(RuntimeResource(
@@ -109,7 +110,10 @@ impl Identity {
         let authority = Authority::connect_runtime(
             runtime,
             kdf.clone(),
-            authority_config(instance, vec![tenant, management_tenant])?,
+            authority_config(
+                instance,
+                tenants.iter().map(|(tenant, _)| *tenant).collect(),
+            )?,
             policy.clone(),
             deadline(),
         )

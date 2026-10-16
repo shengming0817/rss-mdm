@@ -92,7 +92,7 @@ pub(crate) fn leaf(
         format!("{}\n", uuid::Uuid::new_v4().simple()),
     )?;
     std::fs::write(dir.join("csr.der"), csr)?;
-    let extra = if sans.is_empty() {
+    let mut extra = if sans.is_empty() {
         String::new()
     } else {
         format!(
@@ -103,6 +103,22 @@ pub(crate) fn leaf(
                 .join(",")
         )
     };
+    if subject == "rss-mdm-agent" {
+        let trust: Trust = serde_json::from_slice(&std::fs::read(root.join("agent-trust.json"))?)?;
+        let generation = trust
+            .issuers
+            .iter()
+            .find(|issuer| issuer.mode == rss_mdm_agent_wire::pki::Mode::Active)
+            .ok_or_else(|| anyhow::anyhow!("fixture Agent issuer missing"))?;
+        let hex = |value: &str| {
+            value
+                .as_bytes()
+                .iter()
+                .map(|b| format!("{b:02x}"))
+                .collect::<String>()
+        };
+        extra.push_str(&format!("1.3.6.1.4.1.37476.9000.64.1=ASN1:SEQUENCE:provisioner\n[provisioner]\nkind=INTEGER:1\nname=FORMAT:HEX,OCTETSTRING:{}\ncredential=FORMAT:HEX,OCTETSTRING:{}\n", hex(&generation.provisioner), hex(&generation.kid)));
+    }
     std::fs::write(
         dir.join("ca.conf"),
         format!(
