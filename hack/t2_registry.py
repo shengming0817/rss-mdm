@@ -490,6 +490,7 @@ MODULES['device.recovery'] = replace(MODULES['device.recovery'], db_mode='reuse'
     CasePolicy('device::t2::recovery::bounded_bind_and_revoke_settlement', 'reuse', 'tenant'),
 ))
 MODULES['agent.registration'] = replace(MODULES['agent.registration'], policies=(
+    CasePolicy('agent::t2::registration::admission_pause_preserves_candidate_and_existing_identity', 'reuse', 'tenant'),
     CasePolicy('agent::t2::registration::registration_recovery_preserves_credential_rotation', 'reuse', 'tenant'),
 ))
 MODULES['agent.reports'] = replace(MODULES['agent.reports'], db_mode='reuse', scope='tenant')
