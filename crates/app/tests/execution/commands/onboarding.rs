@@ -893,7 +893,7 @@ async fn schedule_expiry_caps_installation_and_blocks_new_agent_registration() -
 async fn replacement_rejects_old_installation_and_requires_current_epoch_absence() -> Result<()> {
     let (host, mut client, peer, commands, owner, policy, operation) = start_fixture().await?;
     installation(&peer, &mut client, policy, operation, AttemptPhase::Execute).await?;
-    let current = host.peer().await?;
+    let current = host.enrolled_peer().await?;
     let url = peer.url.replace(
         "/ManagementServer/MDM.svc",
         "/api/v1/agent/enroll/native-grants",
