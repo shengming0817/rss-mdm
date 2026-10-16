@@ -355,8 +355,8 @@ class ModuleImpactTests(unittest.TestCase):
         self.assertNotIn('apple.apns', selected)
         self.assertNotIn('sources.winget', selected)
         self.assertNotIn('publication.artifact', selected)
-        # Gateway admission now includes a real management write against product PG.
-        self.assertIn('gateway.admission', selected)
+        # Shared migration setup is proven by installation/catalog.
+        self.assertNotIn('gateway.admission', selected)
 
     def test_python_tests_and_docs_do_not_select_integration(self):
         self.assertEqual(self.selected('tests/test_source_t2.py'), set())
@@ -464,7 +464,7 @@ class ModuleImpactTests(unittest.TestCase):
                 'agent.reports','planning.onboarding','execution.commands.onboarding',
                 'apple.onboarding','execution.agent.delivery','execution.agent.poll','execution.agent.recovery'},
             'crates/agent-wire/schema/enroll/native-grant-request-v1.schema.json': {
-                'execution.commands.onboarding','apple.onboarding','agent.pki','agent.registration','agent.reports','execution.agent.delivery'},
+                'execution.commands.onboarding','apple.onboarding','agent.pki','agent.pki-recovery','agent.registration','agent.reports','execution.agent.delivery'},
         }
         for path, expected in inputs.items():
             selected = select_inputs([path])
@@ -490,9 +490,32 @@ class ModuleImpactTests(unittest.TestCase):
         self.assertEqual(self.selected('crates/apple-channel/src/push.rs'),
                          {'apple.apns','apple.push','apple.host'})
 
-    def test_formal_migration_excludes_every_no_pg_module(self):
+    def test_local_schema_selects_installation_and_real_consumers(self):
+        self.assertEqual(self.selected('crates/app/schema/self-service-access.sql'),
+                         {'installation.migration', 'catalog.contract', 'planning.self_service', 'execution.software.offer', 'execution.software.content', 'execution.software.recovery'})
+        self.assertEqual(self.selected('crates/windows-channel/schema/entra.sql'),
+                         {'installation.migration', 'catalog.contract', 'windows.entra'})
         selected = self.selected('crates/flow-service/schema/install.sql')
-        self.assertEqual(selected, {name for name, module in MODULES.items() if module.postgres})
+        self.assertTrue({'installation.migration', 'catalog.contract', 'planning.policy', 'planning.recovery'} <= selected)
+        self.assertTrue(selected.isdisjoint({'identity.sso', 'apple.cms', 'agent.pki', 'resource.persistence'}))
+
+    def test_audit_permissions_cover_self_service_reads(self):
+        for path in ('crates/app/schema/audit-runtime.sql', 'crates/app/schema/audit-roles.sql'):
+            selected = self.selected(path)
+            self.assertIn('planning.self_service', selected)
+            self.assertNotIn('resource.persistence', selected)
+
+    def test_migration_registration_is_not_execution_or_all_pg(self):
+        self.assertEqual(self.selected('crates/app/src/migration/units.rs'),
+                         {'installation.migration', 'installation.tenants', 'deployment.management-tenant', 'catalog.contract'})
+        self.assertIn('api.identity_context', self.selected('crates/app/src/migration.rs'))
+
+    def test_recovery_helper_and_normal_transport_have_distinct_consumers(self):
+        self.assertEqual(self.selected('hack/pki_recovery.py'), {'agent.pki-recovery'})
+        self.assertEqual(self.selected('crates/app/tests/agent_pki/recovery.rs'), {'agent.pki-recovery'})
+        self.assertEqual(self.selected('crates/app/tests/support/agent_http.rs'), {'agent.pki', 'agent.configurations'})
+        self.assertNotIn('agent.configurations', self.selected('crates/app/tests/agent_pki/mod.rs'))
+
 
     def test_authority_and_audit_select_distinct_mutation_seams(self):
         selected = self.selected('crates/authorization-service/src/context.rs')

@@ -13,6 +13,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import tomllib
 import unittest
 from unittest.mock import patch
 
@@ -230,7 +231,8 @@ DEPENDENCY_POLICIES = {}
 
             validate_selection(
                 decision,
-                decision['cargo']['packages'],
+                [tomllib.loads(path.read_text())['package']['name']
+                 for path in self.root.glob('*/**/Cargo.toml')],
                 decision['t2']['modules'],
                 [path.stem for path in (self.root / 'tests').glob('test_*.py')],
             )
@@ -369,7 +371,7 @@ class CiImpactContract(unittest.TestCase):
             + "\nfrom dataclasses import replace\nMODULES['leaf'] = replace(MODULES['leaf'], production_inputs=('crates/leaf/src/*','shared/input.rs'))\n"
         )
         decision = self.repo.select()[1]
-        self.assert_selected(decision, [], ['leaf'])
+        self.assert_selected(decision, [], [])
         self.assertEqual(decision['toolTests'], ['test_registry'])
 
     def test_removed_mapping_preserves_old_consumer(self):
@@ -383,21 +385,54 @@ class CiImpactContract(unittest.TestCase):
             self.repo.select()[1], ['leaf', 'leaf-integration'], ['leaf']
         )
 
-    def test_deleted_module_needs_current_proof_owner(self):
+    def test_deleted_module_requires_current_carrier_owner(self):
+        self.repo._write('crates/leaf/tests/behavior.rs', '')
+        self.repo.commit('test carrier')
+        self.repo.base = self.repo.git('rev-parse', 'HEAD').stdout.strip()
         p = self.repo.root / 'hack/t2_registry.py'
         p.write_text(p.read_text() + "\ndel MODULES['leaf']\n")
-        self.assertEqual(
-            self.repo.select()[1]['error']['code'], 'deleted-module-without-proof'
-        )
-        p.write_text(
-            p.read_text()
-            + "from dataclasses import replace\nMODULES['other'] = replace(MODULES['other'], replaces=('leaf',))\n"
-        )
+        self.assertEqual(self.repo.select()[1]['error']['code'], 'test-carrier-without-owner')
+        p.write_text(p.read_text() + "from dataclasses import replace\nMODULES['other'] = replace(MODULES['other'], test_inputs=('crates/leaf/tests/*',))\n")
         decision = self.repo.select()[1]
         self.assert_selected(decision, [], ['other'])
-        self.assertEqual(
-            decision['removedModules'], [{'module': 'leaf', 'successors': ['other']}]
-        )
+        self.assertEqual(decision['removedModules'][0]['owners'], ['other'])
+        self.assertEqual(decision['ownershipChecks'], [dict(package='leaf', kind='lib', target='', features=[])])
+
+    def test_removed_last_module_still_requests_discovery(self):
+        p = self.repo.root / 'hack/t2_registry.py'
+        p.write_text(p.read_text() + "\ndel MODULES['leaf']\n")
+        decision = self.repo.select()[1]
+        self.assert_selected(decision, [], [])
+        self.assertEqual(decision['removedModules'], [dict(module='leaf', carriers=[], owners=[])])
+        self.assertEqual(decision['ownershipChecks'], [dict(package='leaf', kind='lib', target='', features=[])])
+
+    def test_deleted_test_can_exit_without_old_name_registration(self):
+        self.repo._write('crates/leaf/tests/behavior.rs', '')
+        self.repo.commit('test carrier')
+        self.repo.base = self.repo.git('rev-parse', 'HEAD').stdout.strip()
+        self.repo.delete('crates/leaf/tests/behavior.rs')
+        p = self.repo.root / 'hack/t2_registry.py'
+        p.write_text(p.read_text() + "\ndel MODULES['leaf']\n")
+        decision = self.repo.select()[1]
+        self.assertEqual(decision['status'], 'selected')
+        self.assertEqual(decision['t2']['modules'], [])
+        self.assertEqual(decision['removedModules'][0]['carriers'],
+                         [dict(path='crates/leaf/tests/behavior.rs', kind='deleted', modules=[])])
+
+    def test_selector_change_requests_ownership_check_not_other_modules(self):
+        p = self.repo.root / 'hack/t2_registry.py'
+        p.write_text(p.read_text() + "\nfrom dataclasses import replace\nMODULES['leaf'] = replace(MODULES['leaf'], selectors=('current::',))\n")
+        decision = self.repo.select()[1]
+        self.assert_selected(decision, [], ['leaf'])
+        self.assertEqual([b['package'] for b in decision['ownershipChecks']], ['leaf'])
+
+    def test_description_only_dependency_mapping_is_tool_validation(self):
+        p = self.repo.root / 'hack/t2_registry.py'
+        p.write_text(p.read_text() + "\nfrom dataclasses import replace\nfrom t2_model import DependencyInput\nMODULES['leaf'] = replace(MODULES['leaf'], dependency_inputs=(DependencyInput('crates/leaf/Cargo.toml','core'),))\n")
+        decision = self.repo.select()[1]
+        self.assert_selected(decision, [], [])
+        self.assertEqual(decision['toolTests'], ['test_registry'])
+        self.assertEqual(decision['ownershipChecks'], [])
 
     def test_test_input_selects_owner_and_assertion_changes(self):
         self.repo.change('crates/leaf/tests/behavior.rs', 'assert!(false);')

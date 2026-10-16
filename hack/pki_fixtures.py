@@ -152,43 +152,16 @@ def running(root, env, *, case, windows=False, agent=False, agent_origin=None, a
         private(providers_file,authority_entries)
         env['MDM_'+purpose.upper()+'_PKI'+('_CANDIDATE' if generation else '')+'_FIXTURES']=str(root)
         if agent and 'pki-recovery' in materials:
-            # The case first creates durable issuance evidence, then explicitly triggers recovery.
-            import threading, contextvars
-            stopped = threading.Event()
-            failures = []
-            def recover_after_request():
-                nonlocal provider
-                while not stopped.wait(.1):
-                    if not (root/'agent-recovery-request').exists():
-                        continue
-                    try:
-                        provider.fence()
-                        from agent_pki_fixtures import restore
-                        restore(root)
-                        standby = Provider(root, hashlib.sha256((case+':agent-standby'+(':'+generation if generation else '')).encode()).hexdigest()[:20], compose_file=compose_file, providers=providers, internal_host=provider.internal_host)
-                        standby.promote_from(provider, origin)
-                        previous = provider
-                        provider = standby
-                        previous.reset()
-                        (root/'agent-recovery-complete').write_text('restored and promoted after issuance\n')
-                    except BaseException as error:
-                        failures.append(error)
-                        (root/'agent-recovery-failed').write_text(type(error).__name__)
-                    return
-            recovery_context = contextvars.copy_context()
-            recovery = threading.Thread(target=lambda: recovery_context.run(recover_after_request), name='case-ca-recovery')
-            recovery.start()
+            from pki_recovery import recovering
+            state = [provider]
             try:
-                yield provider
+                with recovering(root, state, case, generation, origin, compose_file, providers):
+                    yield provider
             finally:
-                stopped.set()
-                recovery.join()
-            if failures:
-                raise RuntimeError('case CA recovery failed') from failures[0]
-            if not (root/'agent-recovery-complete').exists():
-                raise RuntimeError('case did not exercise CA recovery')
+                provider = state[0]
         else:
             yield provider
+
         provider.check()
     finally:
         with cleanup():

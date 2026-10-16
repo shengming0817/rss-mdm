@@ -597,3 +597,5 @@ pub(crate) fn secret(label: &str) -> [u8; 32] {
 pub(crate) mod channel_onboarding;
 
 pub(crate) mod agent_tls;
+
+pub(crate) mod agent_http;

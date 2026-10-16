@@ -66,18 +66,3 @@ def install(root, cli, admin, origin, *, template_source=None):
                  endpoint=dict(listen='127.0.0.1:0',origin='https://mdm.example.test:9445',certificate_file=str(root/'server.crt'),private_key_file=str(root/'agent-tls.pk8')),
                  lifetime=dict(mode='standard'))
     (root/'agent-pki.json').write_text(json.dumps(value))
-
-
-def restore(root):
-    # Caller has stopped step-ca. Preserve the same path, identity, provisioner
-    # database and consumed token history; never initialize a replacement CA.
-    original = root/'step'
-    backup = root/'step-backup'
-    shutil.copytree(original, backup)
-    # Keep shared filesystem inodes stable while discarding every original byte.
-    # Docker Desktop can retain a stale view after removing/recreating this tree.
-    for path in original.rglob('*'):
-        if path.is_file():
-            path.write_bytes(b'')
-    shutil.copytree(backup, original, dirs_exist_ok=True)
-    (root/'agent-backup-restored').write_text('same CA identity, config and database restored\n')

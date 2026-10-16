@@ -211,6 +211,27 @@ class Selection(unittest.TestCase):
             self.assertEqual((external / 'result.json').read_text(), 'external proof')
             self.assertFalse((out / 'pin.log').is_symlink())
 
+    def test_ci_checks_orphan_targets_even_when_business_selection_is_empty(self):
+        checks = [dict(package='rss-mdm-app', kind='lib', target='', features=['integration'])]
+        for failed in (False, True):
+            with self.subTest(failed=failed), tempfile.TemporaryDirectory() as directory:
+                out = Path(directory)
+                selection = make_selection([], [], ownership_checks=checks)
+                with (patch.object(ci, 'require_lease'), patch.object(ci, 'OUT', out),
+                      patch.object(ci, 'select_impact', return_value=selection),
+                      patch.object(ci, 'command', return_value=result('head')),
+                      patch.object(ci, 'fast_gates', return_value=[]),
+                      patch.object(ci, 'working_source_state', return_value='stable'),
+                      patch('t2_execution.check_ownership', side_effect=RuntimeError('unowned ignored test') if failed else None) as check,
+                      patch('t2.run_modules') as business,
+                      patch.dict(ci.os.environ, {'CI_PLAN': '0', 'CI_T2': 'none'}),
+                      contextlib.redirect_stdout(io.StringIO())):
+                    self.assertEqual(ci.main(), int(failed))
+                check.assert_called_once_with(checks, out / 'ownership')
+                business.assert_not_called()
+                evidence = json.loads((out / 'result.json').read_text())
+                self.assertEqual(evidence['gates']['ownership']['status'], 'failed' if failed else 'passed')
+
     def test_plan_does_not_execute_or_erase_previous_result(self):
         with tempfile.TemporaryDirectory() as directory:
             out = Path(directory)
@@ -235,7 +256,8 @@ class Selection(unittest.TestCase):
             self.assertEqual((out / 'result.json').read_text(), 'previous execution')
             self.assertEqual((out / 'selection.json').read_text(), 'previous selection')
             plan = json.loads((out / 'plan.json').read_text())
-            self.assertTrue(all(gate['selected'] for gate in plan['gates'].values()))
+            self.assertTrue(all(gate['selected'] for name, gate in plan['gates'].items() if name != 'ownership'))
+            self.assertFalse(plan['gates']['ownership']['selected'])
             for name in ('pin',):
                 self.assertTrue(plan['gates'][name]['check'])
 
@@ -335,6 +357,7 @@ class EntryModes(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             out = Path(directory)
             (out / 'result.json').write_text('{"status":"passed"}')
+            (out / 'ownership.log').write_text('stale discovery')
             with (
                 patch.object(ci, 'require_lease'),
                 patch.object(ci, 'OUT', out),
@@ -353,6 +376,7 @@ class EntryModes(unittest.TestCase):
             self.assertEqual(evidence['status'], 'failed')
             self.assertEqual(evidence['selection']['error']['code'], failure.code)
             self.assertEqual(evidence['selection']['error']['inputs'], failure.inputs)
+            self.assertFalse((out / 'ownership.log').exists())
 
     def test_explicit_full_bypasses_unavailable_baseline(self):
         with (

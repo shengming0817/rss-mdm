@@ -30,10 +30,30 @@ class ExecutionProof(unittest.TestCase):
             builds = Builds(Path(directory), processes)
             with patch.object(builds, 'prepare_targets') as targets:
                 builds.prepare_discovery([module])
-                targets.assert_called_once_with({module.build})
+                targets.assert_called_once_with({module.build}, ownership_checks=set())
             self.assertEqual(processes.run.call_count, 1)
             self.assertEqual(processes.run.call_args.args[0][:2], ['cargo', 'metadata'])
             self.assertEqual(builds.executables, {})
+
+    def test_empty_owner_set_still_builds_requested_target(self):
+        from types import SimpleNamespace
+        from unittest.mock import Mock, patch
+        module = MODULES['resource.persistence']
+        check = dict(package=module.build.package, kind=module.build.kind,
+                     target=module.build.target, features=list(module.build.features))
+        with tempfile.TemporaryDirectory() as directory, patch('t2_execution.require_lease'):
+            processes = Mock()
+            processes.run.return_value = SimpleNamespace(stdout='{"packages":[]}', stderr='', returncode=0)
+            builds = Builds(Path(directory), processes)
+            with patch.object(builds, 'prepare_targets') as targets:
+                builds.prepare_discovery([], [check])
+                targets.assert_called_once_with({module.build}, ownership_checks={module.build})
+            self.assertEqual(builds.executables, {})
+        empty = self.listing()
+        empty['rust-suites']['resource::behavior']['testcases'] = {}
+        validate_ownership(empty, module.build, [])
+        with self.assertRaisesRegex(RuntimeError, 'exactly one'):
+            validate_ownership(self.listing(), module.build, [])
 
     def test_discovery_uses_current_names_and_exact_target(self):
         module = MODULES['resource.persistence']
@@ -47,6 +67,8 @@ class ExecutionProof(unittest.TestCase):
             parse_listing(bad, module)
 
     def test_empty_discovery_and_duplicate_json_are_rejected(self):
+        with self.assertRaisesRegex(RuntimeError, 'missing target discovery'):
+            validate_ownership({'rust-suites': {}}, MODULES['resource.persistence'].build, [])
         with self.assertRaises(RuntimeError):
             parse_listing({'rust-suites': {}}, MODULES['resource.persistence'])
         with self.assertRaises(ValueError):
@@ -58,6 +80,17 @@ class ExecutionProof(unittest.TestCase):
         for owners in ([], [module, Module('duplicate', module.build, ('',))]):
             with self.subTest(owners=owners), self.assertRaisesRegex(RuntimeError, 'exactly one'):
                 validate_ownership(self.listing(), module.build, owners)
+
+    def test_feature_superset_cannot_claim_tests_absent_from_owner_build(self):
+        from dataclasses import replace
+        specialized = MODULES['resource.persistence'].build
+        plain = replace(specialized, features=())
+        owner = Module('plain', plain, ('',))
+        empty = self.listing()
+        empty['rust-suites']['resource::behavior']['testcases'] = {}
+        with self.assertRaisesRegex(RuntimeError, 'exactly one'):
+            validate_ownership(self.listing(), specialized, [owner], {plain: empty})
+        validate_ownership(self.listing(), specialized, [owner], {plain: self.listing()})
 
     def test_unknown_support_tests_have_no_ownership_exemption(self):
         module = MODULES['resource.persistence']
@@ -166,6 +199,62 @@ class ExecutionProof(unittest.TestCase):
 
 
 class ProcessOwnership(unittest.TestCase):
+    def test_ownership_check_cancellation_reaps_children_and_restores_handlers(self):
+        import os
+        import select
+        import signal
+        import subprocess
+        import textwrap
+        script = textwrap.dedent("""
+            import signal, sys
+            from pathlib import Path
+            from unittest.mock import patch
+            import t2_execution as execution
+            signals = (signal.SIGINT, signal.SIGTERM, signal.SIGHUP, signal.SIGQUIT)
+            previous = {sig: signal.getsignal(sig) for sig in signals}
+            class Discovery:
+                def __init__(self, output, processes):
+                    self.processes = processes
+                def prepare_discovery(self, modules, checks):
+                    self.processes.run([sys.executable, '-c', sys.argv[1]])
+            with patch.object(execution, 'require_lease'), \
+                 patch.object(execution, 'lease_fds', return_value=()), \
+                 patch.object(execution, 'Builds', Discovery):
+                try:
+                    execution.check_ownership([], Path('.'))
+                except RuntimeError:
+                    if any(signal.getsignal(sig) != handler for sig, handler in previous.items()):
+                        raise SystemExit(2)
+                    raise SystemExit(1)
+                raise SystemExit(0)
+        """)
+        for sig in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP, signal.SIGQUIT):
+            with self.subTest(signal=sig):
+                child_code = ('import os,signal,time; '
+                              + ('signal.signal(signal.SIGTERM, signal.SIG_IGN); ' if sig == signal.SIGTERM else '')
+                              + 'print(os.getpid(), flush=True); time.sleep(60)')
+                child_pid = None
+                with subprocess.Popen([sys.executable, '-c', script, child_code],
+                        cwd=Path(__file__).resolve().parents[1] / 'hack',
+                        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True) as parent:
+                    try:
+                        self.assertTrue(select.select([parent.stdout], [], [], 10)[0], 'child never started')
+                        child_pid = int(parent.stdout.readline())
+                        parent.send_signal(sig)
+                        _, stderr = parent.communicate(timeout=12)
+                        self.assertEqual(parent.returncode, 1, stderr)
+                        with self.assertRaises(ProcessLookupError):
+                            os.kill(child_pid, 0)
+                    finally:
+                        if parent.poll() is None:
+                            parent.kill()
+                            parent.wait()
+                        if child_pid is not None:
+                            try:
+                                os.killpg(child_pid, signal.SIGKILL)
+                            except ProcessLookupError:
+                                pass
+
     def test_fixture_stdin_protocol_and_persistent_children_share_cancellation(self):
         from unittest.mock import patch
         from t2_processes import owned_by, subprocess as fixture_process

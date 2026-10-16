@@ -1,6 +1,7 @@
 //! Pinned CA, durable grant/issuance state and real TLS possession.
 mod maintenance;
 use crate::device::test_support::{admin, case_a, case_b, options};
+use crate::test_support::agent_http::{agent_http, connect_agent};
 use crate::test_support::agent_tls::peer;
 use crate::{
     Database,
@@ -9,18 +10,18 @@ use crate::{
 use base64::{Engine, engine::general_purpose::STANDARD};
 use rss_mdm_agent_wire::{enroll as wire, runtime};
 use rss_mdm_audit_integration::RequestAudit;
-use rss_mdm_certificate::agent::{PROFILE, VerifiedAgentCsr};
+use rss_mdm_certificate::agent::VerifiedAgentCsr;
 use rss_mdm_registration_service::agent::{Assembly, NativeAdmission, Pending, Service};
 use std::{path::PathBuf, sync::Arc, time::Duration};
 use uuid::Uuid;
 use x509_cert::der::Decode;
-fn root() -> PathBuf {
+pub(crate) fn root() -> PathBuf {
     PathBuf::from(std::env::var("MDM_AGENT_PKI_FIXTURES").unwrap())
 }
-fn now() -> i64 {
+pub(crate) fn now() -> i64 {
     SystemClock.unix_seconds().unwrap()
 }
-fn deployment() -> serde_json::Value {
+pub(crate) fn deployment() -> serde_json::Value {
     serde_json::from_slice(
         &std::fs::read(
             root()
@@ -44,7 +45,7 @@ impl NativeAdmission for NoNative {
         Box::pin(async { Err(rss_mdm_registration_service::Error::Forbidden) })
     }
 }
-async fn service(value: serde_json::Value) -> anyhow::Result<Arc<Service>> {
+pub(crate) async fn service(value: serde_json::Value) -> anyhow::Result<Arc<Service>> {
     service_with_provider(value, None).await
 }
 async fn service_with_provider(
@@ -97,10 +98,10 @@ async fn service_with_provider(
         native: Arc::new(NoNative),
     })?))
 }
-fn audit() -> RequestAudit {
+pub(crate) fn audit() -> RequestAudit {
     RequestAudit::new(case_a().into(), "agent_request")
 }
-fn grant() -> anyhow::Result<wire::GrantRequest> {
+pub(crate) fn grant() -> anyhow::Result<wire::GrantRequest> {
     Ok(wire::GrantRequest {
         wire_version: 1,
         operation_id: Uuid::new_v4(),
@@ -109,7 +110,10 @@ fn grant() -> anyhow::Result<wire::GrantRequest> {
         csr: STANDARD.encode(std::fs::read(root().join("agent.der"))?),
     })
 }
-fn signing(g: &wire::GrantRequest, id: Uuid) -> anyhow::Result<wire::CertificateRequest> {
+pub(crate) fn signing(
+    g: &wire::GrantRequest,
+    id: Uuid,
+) -> anyhow::Result<wire::CertificateRequest> {
     Ok(wire::CertificateRequest {
         wire_version: 1,
         operation_id: Uuid::new_v4(),
@@ -121,7 +125,7 @@ fn signing(g: &wire::GrantRequest, id: Uuid) -> anyhow::Result<wire::Certificate
         )?,
     })
 }
-fn chain(c: &wire::Candidate) -> anyhow::Result<Vec<Vec<u8>>> {
+pub(crate) fn chain(c: &wire::Candidate) -> anyhow::Result<Vec<Vec<u8>>> {
     Ok(c.certificate_chain
         .iter()
         .map(|v| STANDARD.decode(v))
@@ -321,91 +325,6 @@ async fn renewal_grant_lookup_survives_expired_identity_without_writing_authorit
     Ok(())
 }
 
-#[tokio::test]
-#[ignore = "make t2 MODULE=agent.pki"]
-async fn restored_ca_signs_only_live_authorized_agent_csrs_and_tls_preserves_purpose()
--> anyhow::Result<()> {
-    let s = service(deployment()).await?;
-    let p = admin(case_a(), "admin-a").await?;
-    let foreign = admin(case_b(), "admin-b").await?;
-    let g = grant()?;
-    assert!(authorize_request(&s, &foreign, &g, &audit()).await.is_err());
-    let receipt = authorize_request(&s, &p, &g, &audit()).await?;
-    let input = signing(&g, receipt.grant_id)?;
-    let mut wrong = input.clone();
-    wrong.secret = runtime::Secret::parse(&crate::enrollment::random())?;
-    assert!(s.issue(&wrong, &audit()).await.is_err());
-    let candidate = s.issue(&input, &audit()).await?;
-    std::fs::write(root().join("agent-recovery-request"), b"issuance persisted")?;
-    tokio::time::timeout(std::time::Duration::from_secs(180), async {
-        loop {
-            anyhow::ensure!(
-                !root().join("agent-recovery-failed").exists(),
-                "CA recovery failed"
-            );
-            if root().join("agent-recovery-complete").exists() {
-                return Ok::<_, anyhow::Error>(());
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-        }
-    })
-    .await??;
-    assert!(root().join("agent-backup-restored").exists());
-    let next = grant()?;
-    let next_receipt = authorize_request(&s, &p, &next, &audit()).await?;
-    let next_candidate = s
-        .issue(&signing(&next, next_receipt.grant_id)?, &audit())
-        .await?;
-    assert_ne!(next_candidate.issuance_id, candidate.issuance_id);
-
-    let replay = s.issue(&input, &audit()).await?;
-    assert_eq!(
-        serde_json::to_value(&candidate)?,
-        serde_json::to_value(replay)?
-    );
-    let evidence = peer(s.trust(), &chain(&candidate)?, &root()).await?;
-    let verified = s.trust().verify_peer(&evidence, now())?;
-    assert_eq!(verified.metadata().profile, PROFILE);
-    assert_eq!(
-        verified.metadata().not_after - verified.metadata().not_before,
-        365 * 86400
-    );
-    assert!(
-        s.authenticate(&evidence).await.is_err(),
-        "candidate entered runtime before activation"
-    );
-    let activate = wire::ActivationRequest {
-        wire_version: 1,
-        issuance_id: candidate.issuance_id,
-        operation_id: Uuid::new_v4(),
-    };
-    let active = s.activate(&evidence, &activate, &audit()).await?;
-    let retry = s.activate(&evidence, &activate, &audit()).await?;
-    assert_eq!(serde_json::to_value(&active)?, serde_json::to_value(retry)?);
-    assert_eq!(
-        s.authenticate(&evidence).await?.registration(),
-        active.runtime.registration_id
-    );
-    let db = Database::connect(options("mdm_access")?).await?;
-    let devices = crate::device::DeviceService::new(
-        db.registration(),
-        case_a().into(),
-        db.audit_store(&crate::config::AuditConfig::Plain).await?,
-    );
-    devices
-        .revoke(
-            &p,
-            &active.runtime.device_id,
-            active.runtime.registration_id,
-            Uuid::new_v4(),
-        )
-        .await?;
-    assert_eq!(
-        s.authenticate(&evidence).await.err().unwrap().code,
-        wire::ErrorCode::CredentialRevoked
-    );
-    Ok(())
-}
 #[tokio::test]
 #[ignore = "make t2 MODULE=agent.pki"]
 async fn explicit_development_limit_and_unknown_result_remain_auditable() -> anyhow::Result<()> {
@@ -670,103 +589,6 @@ async fn agent_ingress_holds_one_global_permit_per_request() -> anyhow::Result<(
         .await?;
     assert_eq!(response.status(), 204);
     Ok(())
-}
-
-pub(crate) type AgentHttp =
-    tokio::io::BufReader<tokio_rustls::client::TlsStream<tokio::net::TcpStream>>;
-async fn connect_agent(
-    address: std::net::SocketAddr,
-    chain: Option<&[Vec<u8>]>,
-) -> anyhow::Result<AgentHttp> {
-    connect_agent_with_key(address, chain, "agent.pk8").await
-}
-pub(crate) async fn connect_agent_with_key(
-    address: std::net::SocketAddr,
-    chain: Option<&[Vec<u8>]>,
-    key_file: &str,
-) -> anyhow::Result<AgentHttp> {
-    use tokio_rustls::{
-        TlsConnector,
-        rustls::{
-            self,
-            pki_types::{
-                CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer, ServerName, pem::PemObject,
-            },
-        },
-    };
-    let mut roots = rustls::RootCertStore::empty();
-    for cert in CertificateDer::pem_slice_iter(&std::fs::read(root().join("ca.crt"))?) {
-        roots.add(cert?)?;
-    }
-    let builder = rustls::ClientConfig::builder_with_provider(Arc::new(
-        rustls::crypto::ring::default_provider(),
-    ))
-    .with_safe_default_protocol_versions()?
-    .with_root_certificates(roots);
-    let config = match chain {
-        Some(chain) => builder.with_client_auth_cert(
-            chain.iter().cloned().map(CertificateDer::from).collect(),
-            PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(std::fs::read(
-                root().join(key_file),
-            )?)),
-        )?,
-        None => builder.with_no_client_auth(),
-    };
-    let stream = tokio::net::TcpStream::connect(address).await?;
-    Ok(tokio::io::BufReader::new(
-        TlsConnector::from(Arc::new(config))
-            .connect(ServerName::try_from("localhost")?, stream)
-            .await?,
-    ))
-}
-pub(crate) async fn agent_http(
-    io: &mut AgentHttp,
-    method: &str,
-    path: &str,
-    body: Option<serde_json::Value>,
-) -> anyhow::Result<(u16, serde_json::Value)> {
-    use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt};
-    let body = body
-        .map(|v| serde_json::to_vec(&v))
-        .transpose()?
-        .unwrap_or_default();
-    let head = format!(
-        "{method} {path} HTTP/1.1\r\nHost: mdm.example.test:9445\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: keep-alive\r\n\r\n",
-        body.len()
-    );
-    io.get_mut().write_all(head.as_bytes()).await?;
-    io.get_mut().write_all(&body).await?;
-    io.get_mut().flush().await?;
-    let mut line = String::new();
-    io.read_line(&mut line).await?;
-    let status = line
-        .split_whitespace()
-        .nth(1)
-        .ok_or_else(|| anyhow::anyhow!("missing HTTP status"))?
-        .parse()?;
-    let mut length = None;
-    loop {
-        line.clear();
-        anyhow::ensure!(
-            io.read_line(&mut line).await? != 0,
-            "truncated HTTP headers"
-        );
-        if line == "\r\n" {
-            break;
-        }
-        if let Some((name, value)) = line.split_once(':')
-            && name.eq_ignore_ascii_case("content-length")
-        {
-            length = Some(value.trim().parse::<usize>()?);
-        }
-    }
-    if status == 204 {
-        anyhow::ensure!(length.is_none_or(|n| n == 0), "204 must have no body");
-        return Ok((status, serde_json::Value::Null));
-    }
-    let mut bytes = vec![0; length.ok_or_else(|| anyhow::anyhow!("missing HTTP content-length"))?];
-    io.read_exact(&mut bytes).await?;
-    Ok((status, serde_json::from_slice(&bytes)?))
 }
 
 #[tokio::test]
@@ -1500,7 +1322,7 @@ async fn unknown_original_ca_result_blocks_retirement_after_rotation() -> anyhow
     Ok(())
 }
 
-async fn authorize_request(
+pub(crate) async fn authorize_request(
     s: &Service,
     p: &rss_mdm_authorization_service::context::AuthorizedPrincipal,
     g: &wire::GrantRequest,

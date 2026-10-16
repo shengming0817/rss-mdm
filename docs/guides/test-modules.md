@@ -72,9 +72,13 @@ Identity 用户组与设备 Group 各自归属。Assets 验证资产输入，Pla
 
 选择器对 merge-base、已提交差异、工作区修改、未跟踪和删除输入取并集。独立 T1 文件只贡献 Cargo 检查；独立 T2 文件只选择自身；helper 变化只选择实际消费者；生产变化按登记的输入与消费接缝选择。模块被选中不会继续递归扩大。登记描述与选择机制分离，基线完整版本树仅导出描述，不运行历史 selector；执行描述和业务输入变化选模块，依赖归属注释等机制变化由工具行为测试证明，实际依赖变化合并旧新消费者。混合职责的生产文件按整个文件选择，不做 Rust 语义 diff。发现、调度、日志和汇总由工具测试持有；真实执行、隔离或故障变化在同一 registry 的 `REPRESENTATIVE_INPUTS` 声明最小现有模块集合，共享 fixture/profile 输入按真实消费者选择。可识别 rename/copy 合并两端输入。未知输入、不可用基线、异常或非法选择结果必须失败，由实现者修复归属或分析问题；不通过隐式全量、静默跳过或手工 MODULE 掩盖。
 
-模块职责迁移时，当前 registry 用 `replaces` 登记后继，选择器输出 `removedModules` 并选择后继证明。需求退出不应制造替代测试，但当前 `hack/ci_impact.py` 对所有模块删除仍要求后继；#2756 承接选择语义调整。在实现支持前如实报告此失败，不伪造 `replaces`、静默跳过或声称退出已获验证。准备依赖只提供环境和合法状态，不递归运行前置流程的完整验收。
+模块职责变化使用两版 registry 和实际文件/target 事实。`removedModules` 记录消失的模块、载体删除或当前 T1/T2 归属；不维护 `replaces`、旧名称或永久退出名册。仍存在或移动后的测试文件必须有当前测试 owner，仅 support/production 通配不能承接。Python scenario 删除后，其执行文件也须删除或由当前模块直接承接。需求退出依据在 issue/PR，机器检查不替代业务判断。
 
-Cargo 反向依赖决定编译/Clippy/T1/rustdoc 范围，T2 不继承整个 Cargo 闭包。成功输出包含 `status=selected`、`cargo.mode/packages`、`t2.mode/modules`、`toolTests`、`reasons` 和 `removedModules`；失败输出为 `status=failed` 与 `error`，进程非零退出。Resource `behavior.rs` 只选 `resource.persistence`；Content T1 和 Scope 模型测试不推荐 T2；Content Range 生产输入选择 HTTP 和两类 Agent task-content 消费接缝。相应 must-select/must-not-select 由工具行为测试固定。
+`ownershipChecks` 是从本次删除或 build/selector/child 变化派生的临时发现计划。Cargo metadata 确认 target 是否仍存在；现存 target 按当前 features 用 nextest 编译/发现，检查每个 ignored 测试的唯一当前 owner，零 ignored 允许退出。目标已删除无需构建，构建或发现失败不能冒充删除成功。`make ci` 与 affected T2 入口执行检查，即使业务模块空选也不跳过；不启动数据库、Identity 或业务测试函数。`ci-plan` 仅展示要求，未执行发现不表示校验通过。
+
+迁移列表与执行机制分离。局部 schema 选择必要安装/catalog 和真实数据、事务、权限消费者，角色 SQL 按角色使用方选择；只有确有广泛行为影响的机制才扩大。仅登记说明或输入归属元数据变化执行工具验证；真实输入变化合并旧新消费者，执行策略变化选择所属模块。日常 affected 不叠加定期完整 T2，周期回归沿用既有安排。
+
+Cargo 反向依赖决定编译/Clippy/T1/rustdoc 范围，T2 不继承整个 Cargo 闭包。成功输出包含 `status=selected`、`cargo.mode/packages`、`t2.mode/modules`、`toolTests`、`reasons`、`removedModules` 和 `ownershipChecks`；失败输出为 `status=failed` 与 `error`，进程非零退出。Resource `behavior.rs` 只选 `resource.persistence`；Content T1 和 Scope 模型测试不推荐 T2；Content Range 生产输入选择 HTTP 和两类 Agent task-content 消费接缝。相应 must-select/must-not-select 由工具行为测试固定。
 
 `JOBS` 默认 2，只控制同时运行的独立 case 数量，预算覆盖准备、执行和清理；模块归属不构成互斥。数据库数量由状态影响范围决定，不按模块或 worker 分库：
 

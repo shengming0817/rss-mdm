@@ -361,7 +361,7 @@ EXTRA_EVIDENCE = {"pin": ("pin.log",)}
 def clear_execution_evidence(gate_names):
     paths = {OUT / f"{name}.log" for name in gate_names}
     paths.update(OUT / name for names in EXTRA_EVIDENCE.values() for name in names)
-    paths.update({OUT / "result.json", OUT / "selection.json", OUT / "t2"})
+    paths.update({OUT / "result.json", OUT / "selection.json", OUT / "t2", OUT / "ownership", OUT / "ownership.log"})
     for path in paths:
         if path.is_dir() and not path.is_symlink():
             shutil.rmtree(path)
@@ -435,6 +435,8 @@ def execute_ci():
     }.items():
         plan["gates"][name] = {"selected": True,
                                "check": description}
+    plan['gates']['ownership'] = {'selected': bool(selection['ownershipChecks']),
+                                  'builds': selection['ownershipChecks']}
     print(json.dumps(plan, indent=2), flush=True)
     if os.environ.get("CI_PLAN", "0") == "1":
         (OUT / "plan.json").write_text(json.dumps(plan, indent=2) + "\n")
@@ -470,6 +472,17 @@ def execute_ci():
             (OUT / f"{name}.log").write_text(str(error))
             results[name] = stage_result("failed",started,command=args)
         print(f"{name}: {results[name]}", flush=True)
+    started = time.monotonic()
+    if selection['ownershipChecks']:
+        try:
+            from t2_execution import check_ownership
+            check_ownership(selection['ownershipChecks'], OUT / 'ownership')
+            results['ownership'] = stage_result('passed', started)
+        except Exception as error:
+            (OUT / 'ownership.log').write_text(str(error))
+            results['ownership'] = stage_result('failed', started, reason=type(error).__name__)
+    else:
+        results['ownership'] = stage_result('skipped', reason='not-selected')
     integration = {name:stage_result('skipped',reason='not-run') for name in MODULES}
     if t2_mode == 'all':
         from t2 import run_modules

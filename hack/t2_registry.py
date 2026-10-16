@@ -214,7 +214,7 @@ add('installation.migration', selectors=('migration::tests::fresh_installation_r
 add('installation.tenants', build=None, profile='empty', python='tenants',
     sources=('crates/app/src/tenant_registry.rs','crates/app/src/tenant_use.rs','crates/app/schema/installation.sql','crates/app/src/main.rs','crates/app/src/migration.rs','crates/app/src/maintenance.rs','crates/app/src/authorization_bootstrap.rs','crates/app/src/lifecycle.rs'),
     support=('hack/t2_modules/tenants.py',))
-MODULES['installation.tenants'] = replace(MODULES['installation.tenants'], db_mode='fresh', scope='objects', replaces=('installation.upgrade_runtime',))
+MODULES['installation.tenants'] = replace(MODULES['installation.tenants'], db_mode='fresh', scope='objects')
 add('deployment.management-tenant', build=None, profile='empty', python='management_tenant',
     sources=('crates/app/src/identity.rs','crates/app/src/identity_audit.rs','crates/app/src/api.rs','crates/app/src/database.rs','crates/app/src/migration.rs','crates/app/schema/installation.sql','crates/authorization-service/src/tenancy.rs','crates/authorization-service/src/database.rs','crates/authorization-service/src/store.rs','crates/authorization-service/src/model.rs','crates/authorization-service/src/evaluate.rs','crates/authorization-service/src/identity_management.rs','crates/management-http/src/tenant_administration.rs','crates/management-http/src/authorization/http.rs','crates/app/src/tenant_http.rs','crates/app/src/tenant_administrator.rs','crates/app/src/tenant_registry.rs','crates/app/schema/tenant-administration.sql'),
     support=('hack/t2_modules/management_tenant.py','hack/t2_modules/tenants.py','hack/t2_modules/tenant_http.py',))
@@ -681,7 +681,7 @@ case_fixtures('planning.group_scope', 'planning::t2::group_scope::group_delete_s
 
 def consume(inputs, names):
     """The named modules test a real production path through these inputs."""
-    for name in names.split():
+    for name in names.split() if isinstance(names, str) else names:
         MODULES[name] = replace(MODULES[name], production_inputs=MODULES[name].production_inputs + tuple(inputs))
 
 
@@ -795,7 +795,7 @@ consume(('crates/execution-service/src/actions/history.rs',), 'execution.agent.h
 consume(('crates/execution-service/src/actions/software.rs',), 'execution.software.offer execution.software.content execution.software.recovery')
 consume(('crates/execution-service/src/actions/agent.rs',), 'execution.agent.delivery execution.agent.content execution.agent.recovery')
 consume(('crates/execution-service/src/actions/recovery.rs',), 'execution.agent.recovery execution.software.recovery')
-AUDITED_MODULES = 'device.associations device.views apple.ade apple.account_enrollment agent.pki certificate-archive.http diagnostics.http audit.receipts audit.integrity audit.recovery audit.budget authorization.rules authorization.membership authorization.capacity authorization.initialization authorization.admission identity.audit enrollment.http enrollment.recovery device.binding device.revocation device.recovery device.admission agent.registration agent.reports assets.http planning.http planning.policy planning.agent_policy planning.frequency planning.software planning.onboarding planning.group_scope planning.recovery planning.resource_archive compliance.http compliance.recovery software.catalog software.http content.http content.mirror content.gc execution.agent.delivery execution.agent.content execution.agent.recovery execution.software.offer execution.software.content execution.software.recovery execution.commands.admission execution.commands.dispatch execution.commands.recovery execution.commands.windows execution.commands.configuration execution.commands.onboarding windows.issuance windows.management windows.commands apple.scep apple.collection apple.profile apple.policy apple.onboarding apple.renewal apple.identity apple.push apple.ddm publication.winget publication.brew publication.mapping publication.withdrawal publication.recovery'
+AUDITED_MODULES = 'planning.self_service device.associations device.views apple.ade apple.account_enrollment agent.pki certificate-archive.http diagnostics.http audit.receipts audit.integrity audit.recovery audit.budget authorization.rules authorization.membership authorization.capacity authorization.initialization authorization.admission identity.audit enrollment.http enrollment.recovery device.binding device.revocation device.recovery device.admission agent.registration agent.reports assets.http planning.http planning.policy planning.agent_policy planning.frequency planning.software planning.onboarding planning.group_scope planning.recovery planning.resource_archive compliance.http compliance.recovery software.catalog software.http content.http content.mirror content.gc execution.agent.delivery execution.agent.content execution.agent.recovery execution.software.offer execution.software.content execution.software.recovery execution.commands.admission execution.commands.dispatch execution.commands.recovery execution.commands.windows execution.commands.configuration execution.commands.onboarding windows.issuance windows.management windows.commands apple.scep apple.collection apple.profile apple.policy apple.onboarding apple.renewal apple.identity apple.push apple.ddm publication.winget publication.brew publication.mapping publication.withdrawal publication.recovery'
 consume(('crates/audit-integration/src/*',), AUDITED_MODULES)
 consume(('crates/flow-service/src/transaction.rs',), 'planning.http planning.policy planning.agent_policy planning.frequency planning.group_scope planning.recovery planning.resource_archive planning.scope planning.assets planning.software planning.onboarding')
 consume(('crates/audit-integration/src/budget.rs',), 'audit.budget enrollment.http enrollment.recovery device.binding device.revocation device.recovery agent.registration windows.issuance windows.management apple.scep apple.profile apple.renewal content.http content.mirror content.gc')
@@ -845,13 +845,8 @@ consume(('crates/windows-channel/src/lib.rs',),
 consume(('crates/backend-postgres-support/src/access*', 'crates/*/src/access-contract.json', 'crates/app/src/database.rs', 'crates/flow-service/src/access-admission.sql'),
         ' '.join(name for name, module in MODULES.items() if module.build == APP and module.postgres))
 
-# Shared production configuration has a broad, but real, consumer set. No-PG
-# protocol modules do not become consumers merely because they live in App.
-PRODUCT_INPUTS = ('crates/app/src/migration.rs',
-                  'crates/app/schema/*', 'crates/*-service/schema/*', 'crates/*-channel/schema/*')
+# Application assembly and configuration have actual product consumers.
 for name, module in tuple(MODULES.items()):
-    if module.postgres:
-        MODULES[name] = replace(module, production_inputs=module.production_inputs + PRODUCT_INPUTS)
     if module.build == APP:
         MODULES[name] = replace(MODULES[name], support_inputs=(*MODULES[name].support_inputs,'crates/app/tests/fixtures/error.rs'))
         MODULES[name] = replace(MODULES[name], production_inputs=MODULES[name].production_inputs +
@@ -1053,7 +1048,8 @@ TOOL_INPUTS = {
     'hack/fixture_tools.py': ('test_apple_tools',),
     'hack/apple_ca.py': ('test_apple_ca',),
     'hack/pki_ca.py': ('test_apple_ca',),
-    'hack/agent_pki_fixtures.py': ('test_agent_pki_fixtures',),
+    'hack/agent_pki_fixtures.py': ('test_t2_fixtures',),
+    'hack/pki_recovery.py': ('test_pki_recovery',),
     'fixtures/apple-tools.lock.json': ('test_apple_tools', 'test_apple_ca', 'test_t2_environment'),
     'hack/auth_t3.py': ('test_auth_t3',),
     'hack/auth_t3_browser.mjs': ('test_auth_t3',),
@@ -1603,7 +1599,7 @@ consume(('crates/agent-wire/src/self_service.rs','crates/agent-wire/schema/runti
 consume(('crates/policy/src/self_service.rs','crates/execution-service/src/script_eligibility.rs'), TASK_CONSUMERS)
 
 consume(('crates/execution-service/src/self_service/*', 'crates/execution-service/src/actions/evidence.rs'), TASK_CONSUMERS)
-consume(('crates/app/schema/self-service-access.sql',), 'installation.migration catalog.contract planning.self_service execution.software.recovery')
+consume(('crates/app/schema/self-service-access.sql',), 'installation.migration catalog.contract planning.self_service execution.software.offer execution.software.content execution.software.recovery')
 consume(('crates/registration-service/src/enrollment.rs','crates/registration-service/src/enrollment/*','crates/registration-service/src/agent/grants.rs','crates/management-http/src/agent_enrollment.rs','crates/authorization-service/src/context.rs'), 'enrollment.quotas')
 
 consume(('crates/windows-channel/src/protocol_device.rs',), 'windows.issuance windows.enrollment windows.management windows.declared')
@@ -1643,7 +1639,7 @@ consume(('crates/app/src/enrollment_progress.rs',), 'enrollment.http windows.enr
 consume(('crates/registration-service/schema/enrollment-progress.sql',), 'installation.migration catalog.contract enrollment.http windows.enrollment windows.management')
 consume(('crates/registration-service/src/database.rs',), 'enrollment.http enrollment.recovery enrollment.quotas device.binding device.revocation device.recovery agent.registration agent.pki')
 
-MODULES['agent.configurations'] = replace(MODULES['agent.configurations'], fixtures=('identity','agent_pki'), scope='tenant', support_inputs=(*MODULES['agent.configurations'].support_inputs,*AGENT_FIXTURE_INPUTS,'crates/app/tests/support/software.rs','crates/app/tests/agent_pki/mod.rs','tests/support/software/mod.rs'))
+MODULES['agent.configurations'] = replace(MODULES['agent.configurations'], fixtures=('identity','agent_pki'), scope='tenant', support_inputs=(*MODULES['agent.configurations'].support_inputs,*AGENT_FIXTURE_INPUTS,'crates/app/tests/support/software.rs','crates/app/tests/support/agent_http.rs','tests/support/software/mod.rs'))
 consume(('crates/registration-service/src/agent/*','crates/registration-service/schema/agent-configurations.sql','crates/software-service/src/agent_packages*','crates/content-service/src/software.rs','crates/content-service/src/reader.rs','crates/app/src/agent_configurations.rs','crates/agent-channel/src/enroll.rs','crates/agent-wire/src/enroll.rs','crates/agent-wire/src/enroll/configuration.rs','crates/management-http/src/agent_enrollment.rs','crates/management-http/src/software_catalog.rs'), 'agent.configurations')
 
 consume(('crates/registration-service/src/enrollment/native.rs','crates/registration-service/src/device/store.rs','crates/registration-service/schema/quota-usage.sql','crates/windows-channel/src/issuance.rs','crates/windows-channel/src/lib.rs','crates/windows-mdm/src/soap*','crates/windows-mdm/src/soap/*','crates/app/src/assembly/windows/*','crates/app/src/identity.rs','crates/app/src/api.rs','crates/authorization-service/src/context.rs','crates/authorization-service/src/session.rs','crates/management-http/src/router.rs'), 'windows.entra')
@@ -1826,6 +1822,22 @@ for suffix in ('console_pending_directory_and_permission_changes', 'console_dire
         policies[index] = policy
 MODULES[module.id] = replace(module, policies=tuple(policies))
 
+
+# Recovery is a distinct proof. Its policy and production seams come from the
+# final PKI description; it does not duplicate the ordinary PKI test namespace.
+module = MODULES['agent.pki']
+recovery_selector = 'agent_pki_tests::restored_ca_signs_only_live_authorized_agent_csrs_and_tls_preserves_purpose'
+recovery_policy, = (p for p in module.policies if p.selector == recovery_selector)
+MODULES['agent.pki-recovery'] = replace(module, id='agent.pki-recovery',
+    selectors=('agent_pki_recovery_tests::',),
+    test_inputs=('crates/app/tests/agent_pki/recovery.rs',),
+    support_inputs=(*module.support_inputs, 'crates/app/tests/agent_pki/mod.rs', 'hack/pki_recovery.py'),
+    scope=recovery_policy.scope, actors=recovery_policy.actors,
+    materials=recovery_policy.materials, policies=())
+MODULES['agent.pki'] = replace(module,
+    policies=tuple(p for p in module.policies if p.selector != recovery_selector),
+    support_inputs=(*module.support_inputs, 'crates/app/tests/support/agent_http.rs'))
+
 # Derive input consumers only after all module and case fixture declarations are complete.
 for name, module in tuple(MODULES.items()):
     fixtures = set(module.fixtures).union(*(policy.fixtures or () for policy in module.policies))
@@ -1843,3 +1855,60 @@ for name, module in tuple(MODULES.items()):
     MODULES[name] = replace(module, support_inputs=tuple(dict.fromkeys(support)))
     if 'windows' in fixtures:
         consume(('deployment/windows-leaf.tpl',), name)
+
+
+# Installation/catalog prove the shared setup once. Runtime consumers come from
+# the owning capability, never from sharing a PostgreSQL fixture.
+consume(('crates/app/src/migration/units.rs',),
+        'installation.migration installation.tenants deployment.management-tenant catalog.contract')
+consume(('crates/app/schema/*.sql', 'crates/*-service/schema/*.sql',
+         'crates/*-channel/schema/*.sql', 'crates/*-postgres/migrations/*.sql'),
+        'installation.migration catalog.contract')
+
+# install/relations contain the owner's complete storage contract. Reuse the
+# existing production consumption declarations rather than a second owner list.
+for owner in ('agent-channel', 'apple-channel', 'windows-channel',
+              'authorization-service', 'registration-service', 'inventory-service',
+              'flow-service', 'execution-service', 'content-service', 'pki-service',
+              'device-service', 'timeline-service', 'certificate-archive-service'):
+    prefix = f'crates/{owner}/src/'
+    consumers = [name for name, module in MODULES.items()
+                 if any(path.startswith(prefix) and not path.endswith(('access-admission.sql', 'access-contract.json'))
+                        for path in module.production_inputs)]
+    consume((f'crates/{owner}/schema/install.sql',), consumers)
+    if owner not in {'pki-service', 'device-service', 'timeline-service', 'certificate-archive-service'}:
+        consume((f'crates/{owner}/schema/relations.sql',), consumers)
+
+consume(('crates/inventory-service/schema/field-scopes.sql',),
+        'assets.http assets.queries assets.sources assets.group_input inventory.runtime '
+        'agent.reports windows.management apple.collection planning.onboarding')
+consume(('crates/app/schema/audit-runtime.sql',), AUDITED_MODULES + ' installation.tenants deployment.management-tenant')
+consume(('crates/app/schema/identity-audit-runtime.sql', 'crates/app/schema/identity-audit-ledger-probe.sql'),
+        'identity.audit authorization.initialization installation.tenants deployment.management-tenant')
+consume(('crates/app/schema/identity-roles.sql',),
+        AUTH_CONSUMERS + ' identity.local identity.sso identity.audit installation.tenants deployment.management-tenant')
+consume(('crates/app/schema/audit-roles.sql',), AUDITED_MODULES + ' installation.tenants deployment.management-tenant')
+consume(('crates/app/schema/flow-roles.sql',),
+        'group.persistence group.generations planning.http planning.scope planning.group_scope '
+        'planning.policy planning.agent_policy planning.frequency planning.software planning.onboarding '
+        'planning.recovery planning.resource_archive assets.http assets.group_input compliance.http compliance.group_input')
+consume(('crates/app/schema/commands-roles.sql',), TASK_CONSUMERS +
+        ' execution.commands.admission execution.commands.dispatch execution.commands.recovery '
+        'execution.commands.windows execution.commands.configuration execution.commands.onboarding '
+        'windows.management windows.commands apple.collection apple.commands apple.onboarding')
+consume(('crates/app/schema/software-publication-roles.sql',),
+        'policy.persistence policy.recovery resource.persistence resource.recovery '
+        'software_release.persistence software_release.recovery software.catalog software.http '
+        'publication.winget publication.brew publication.mapping publication.withdrawal publication.recovery '
+        'planning.software execution.software.offer execution.software.recovery')
+# Installation binding is read by both request and worker tenant admission.
+consume(('crates/app/schema/installation.sql',),
+        [name for name, module in MODULES.items() if module.build == APP and module.profile == 'product'])
+# Enrollment progress is read by enrollment management and channel admission.
+consume(('crates/registration-service/schema/enrollment-progress.sql',),
+        'enrollment.http enrollment.recovery agent.registration agent.configurations agent.pki '
+        'windows.enrollment windows.issuance windows.management apple.scep apple.account_enrollment apple.ade')
+
+
+consume(('crates/app/src/migration.rs',),
+        'installation.migration installation.tenants deployment.management-tenant catalog.contract api.identity_context')

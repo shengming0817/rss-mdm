@@ -77,28 +77,45 @@ class Invocation:
                     materials=list(self.module.materials))
 
 
-def validate_ownership(document, build, modules):
-    """Every ignored test is executed by exactly one public owner or declared caller."""
-    modules = [module for module in modules if module.build == build]
+def discovered_names(document, build):
+    require(isinstance(document, dict) and isinstance(document.get('rust-suites'), dict),
+            'invalid nextest discovery document')
     names = []
+    matched = False
     for binary in document['rust-suites'].values():
         if binary['package-name'] != build.package or binary['kind'] != build.kind:
             continue
         if build.target and binary['binary-name'] != build.target:
             continue
+        matched = True
         require(binary['status'] == 'listed', 'incomplete target discovery')
         names.extend(name for name, test in binary['testcases'].items() if test['ignored'])
+    require(matched, 'missing target discovery: ' + build.package)
+    return names
+
+
+def same_target(left, right):
+    return (left.package, left.kind, left.target) == (right.package, right.kind, right.target)
+
+
+def validate_ownership(document, build, modules, owner_listings=None):
+    """A selector owns only tests actually discovered by its execution build."""
+    modules = [module for module in modules if module.build and
+               (same_target(module.build, build) if owner_listings is not None else module.build == build)]
+    names = discovered_names(document, build)
+    actual = {module.id: set(discovered_names(owner_listings[module.build], module.build))
+              if owner_listings is not None else set(names) for module in modules}
     for name in names:
-        owners = [module.id for module in modules if module.includes(name)]
-        owners += [module.id + ':child' for module in modules for prefix in module.children
-                   if name.startswith(prefix)]
+        owners = [module.id for module in modules if name in actual[module.id] and module.includes(name)]
+        owners += [module.id + ':child' for module in modules if name in actual[module.id]
+                   for prefix in module.children if name.startswith(prefix)]
         require(len(owners) == 1, f'ignored test needs exactly one module owner: {name}: {owners}')
     for module in modules:
         for prefix in module.children:
-            require(sum(name.startswith(prefix) for name in names) == 1,
+            require(sum(name.startswith(prefix) for name in actual[module.id]) == 1,
                     'declared caller must discover exactly one child: ' + module.id + ': ' + prefix)
         if module.expected_cases is not None:
-            require(sum(module.includes(name) for name in names) == module.expected_cases,
+            require(sum(module.includes(name) for name in actual[module.id]) == module.expected_cases,
                     'fixture target has missing or additional entries: ' + module.id)
 
 
@@ -305,7 +322,7 @@ class Builds:
         require(result.returncode == 0, 'build or discovery failed; see ' + str(log))
         return result.stdout
 
-    def prepare_discovery(self, modules):
+    def prepare_discovery(self, modules, ownership_checks=()):
         require_lease(ROOT)
         start = time.monotonic()
         # stderr must not contaminate the JSON metadata protocol.
@@ -315,10 +332,15 @@ class Builds:
         require(metadata.returncode == 0, 'Cargo metadata failed')
         self.package_names = {item['id']: item['name'] for item in strict_json(metadata.stdout)['packages']}
         self.metadata.write_text(metadata.stdout)
-        self.prepare_targets({module.build for module in modules if module.build})
+        checks = {Build(value['package'], value['kind'], value['target'], tuple(value['features']))
+                  for value in ownership_checks}
+        owners = {module.build for module in [*MODULES.values(), IDENTITY_SETUP] if module.build
+                  and any(same_target(module.build, check) for check in checks)}
+        self.prepare_targets({module.build for module in modules if module.build} | checks | owners,
+                             ownership_checks=checks)
         self.elapsed = time.monotonic() - start
 
-    def prepare_targets(self, builds):
+    def prepare_targets(self, builds, *, ownership_checks=()):
         for build in sorted(set(builds) - self.targets.keys()):
             index = len(self.targets)
             directory = self.output / str(index)
@@ -347,9 +369,12 @@ class Builds:
             (directory / 'discovery.log').write_text(listing.stderr)
             require(listing.returncode == 0, 'Rust discovery failed')
             self.listings[build] = strict_json(listing.stdout)
-            validate_ownership(self.listings[build], build, [*MODULES.values(), IDENTITY_SETUP])
             self.verify_binary(build)
             (directory / 'tests.json').write_text(listing.stdout)
+        for build in builds:
+            validate_ownership(self.listings[build], build, [*MODULES.values(), IDENTITY_SETUP],
+                               self.listings if build in ownership_checks else None)
+
     def prepare_runtime(self, modules):
         require_lease(ROOT)
         start = time.monotonic()
@@ -420,3 +445,23 @@ class Builds:
                 [sys.executable, '-u', ROOT / 'hack/t2_python.py', module.id, payload],
                 env=fixture.env, log=log, timeout=CASE_TIMEOUT)
         require(result.returncode == 0, 'Python scenario failed: ' + module.id)
+
+
+def check_ownership(checks, output):
+    """Build/list only: no runtime fixtures or test functions are started."""
+    require_lease(ROOT)
+    processes = Processes()
+    previous = {}
+    def cancel(number, frame):
+        processes.cancel()
+    try:
+        for sig in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP, signal.SIGQUIT):
+            previous[sig] = signal.signal(sig, cancel)
+        Builds(output, processes).prepare_discovery([], checks)
+        processes.check()
+    finally:
+        try:
+            processes.close()
+        finally:
+            for sig, handler in previous.items():
+                signal.signal(sig, handler)
