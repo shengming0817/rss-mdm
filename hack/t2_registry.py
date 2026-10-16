@@ -1865,7 +1865,14 @@ for module_id, selector, fixture in (
     ('execution.software.recovery', 'execution::t2::software::recovery::unknown_effect_survives_credential_recovery', 'ca_agent'),
     ('windows.management', 'windows::t2::management::session_replay_nonce_collection_and_revoke', 'ca_windows'),
 ):
-    case_fixtures(module_id, selector, fixture)
+    module = MODULES[module_id]
+    previous = next((p for p in module.policies if p.selector == selector),
+                    CasePolicy(selector, module.db_mode, module.scope))
+    fixtures = previous.fixtures if previous.fixtures is not None else module.fixtures
+    policy = replace(previous, fixtures=(*fixtures, fixture))
+    if module_id == 'execution.software.recovery':
+        policy = replace(policy, scope='tenant')
+    MODULES[module_id] = replace(module, policies=(*[p for p in module.policies if p.selector != selector], policy))
 module = MODULES['apple.identity']
 MODULES[module.id] = replace(module, policies=tuple(replace(p, fixtures=tuple(f for f in module.fixtures if f != 'scep'))
     if p.selector.endswith('token_is_required_before_management') else p for p in module.policies))
