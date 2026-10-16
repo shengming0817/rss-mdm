@@ -13,7 +13,8 @@ pub(crate) async fn host_context_matrix(
         "/api/v1/identity-host/tenants/{TENANT}/context",
         TENANT = case_tenant()
     );
-    let router = app(base, reader.clone()).await?;
+    let (router, app_resources) = app(base, reader.clone()).await?;
+    app_resources.finish(async {
     let rule_id = uuid::Uuid::new_v4();
     for permissions in [
         json!([]),
@@ -98,17 +99,23 @@ pub(crate) async fn host_context_matrix(
         .await?;
     ensure!(context["navigation"] == json!({"manageAccounts":false,"manageProviders":false}));
     Ok(())
+    }).await
 }
 
 #[tokio::test]
 #[ignore = "MODULE=api.identity_context: real capability boundary"]
 async fn navigation_uses_current_identity_management_policy() -> Result<()> {
-    let fixture = authority::Authority::open().await?;
-    let reader = authority::reader(&fixture.base).await?;
-    let browser = fixture.browser("other")?;
-    let router = fixture.router(fixture.authorization())?;
-    let subject = browser_subject(&browser, &router).await?;
-    host_context_matrix(&fixture.base, reader.clone(), &browser, &subject).await?;
-    reader.close().await;
-    Ok(())
+    let mut fixture = authority::Authority::open().await?;
+    let fixture_resources = std::mem::take(&mut fixture.resources);
+    fixture_resources
+        .finish(async {
+            let reader = authority::reader(&fixture.base).await?;
+            let browser = fixture.browser("other")?;
+            let router = fixture.router(fixture.authorization())?;
+            let subject = browser_subject(&browser, &router).await?;
+            host_context_matrix(&fixture.base, reader.clone(), &browser, &subject).await?;
+            reader.close().await;
+            Ok(())
+        })
+        .await
 }

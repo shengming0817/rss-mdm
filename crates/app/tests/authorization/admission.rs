@@ -96,7 +96,9 @@ async fn permission_drift_corrupt_policy_and_stalled_postgres() -> Result<()> {
         pg(restore)?;
         ensure!(rejected, "undeclared access privilege admitted");
     }
-    let identity = crate::test_support::identity::identity(case_tenant()).await?;
+    let (identity, identity_resources) =
+        crate::test_support::identity::identity(case_tenant()).await?;
+    identity_resources.finish(async {
     let stale = crate::authorization::context::AuthorizedPrincipal::new(
         identity
             .authority
@@ -165,4 +167,5 @@ async fn permission_drift_corrupt_policy_and_stalled_postgres() -> Result<()> {
     );
 
     Ok(())
+    }).await
 }

@@ -7,7 +7,9 @@ async fn upload_recovery_download_range_and_authorization() -> Result<()> {
     // Large storage pieces have independent provider coverage.
     upload_contract(Fixture::open(false).await?, 2 * 1024 * 1024 + 1).await
 }
-pub(super) async fn upload_contract(fixture: Fixture, length: usize) -> Result<()> {
+pub(super) async fn upload_contract(mut fixture: Fixture, length: usize) -> Result<()> {
+    let resources = std::mem::take(&mut fixture.resources);
+    resources.finish(async {
     let router = &fixture.router;
     let runtime = &fixture.runtime;
     let client = &fixture.client;
@@ -144,6 +146,7 @@ pub(super) async fn upload_contract(fixture: Fixture, length: usize) -> Result<(
         enabled,
     )
     .await
+    }).await
 }
 // Client EOF can precede the server's authorization/preflight transaction. Wait for
 // its committed upload intent so the injected runtime fault belongs to final binding.
@@ -309,7 +312,9 @@ async fn download_contract(
 #[tokio::test]
 #[ignore = "MODULE=content.http: corrupt uploads reject and distinct operations reuse content"]
 async fn corrupt_uploads_have_no_binding_and_new_operations_reuse_verified_content() -> Result<()> {
-    let fixture = Fixture::open(false).await?;
+    let mut fixture = Fixture::open(false).await?;
+    let resources = std::mem::take(&mut fixture.resources);
+    resources.finish(async {
     let mut user = fixture.user.clone();
     let router = &fixture.router;
     let resource = Uuid::new_v4();
@@ -386,4 +391,5 @@ async fn corrupt_uploads_have_no_binding_and_new_operations_reuse_verified_conte
     }
     ensure!(pg(&format!("SELECT count(*) FROM mdm_content.bindings WHERE tenant_id='{TENANT}' AND resource='{resource}'", TENANT = case_tenant()))?.trim() == "2");
     Ok(())
+    }).await
 }

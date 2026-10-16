@@ -172,6 +172,7 @@ pub(crate) enum Platform {
 /// A real authorized session, one Agent/Scope, and an approved dependency/root pair.
 /// Action assertions belong to callers; only the requested platform is prepared.
 pub(crate) struct Fixture {
+    pub(crate) resources: super::Resources,
     pub(crate) source_snapshot: Value,
     pub(crate) dependency: Uuid,
     pub(crate) dependency_digest: Value,
@@ -214,16 +215,17 @@ impl Fixture {
         base: Value,
     ) -> Result<Self> {
         let setup_guard = super::software::content_setup_guard().await?;
-        let (router, execution, _, planning) = crate::api::application_fixture(
+        let access = database(&base).await?;
+        let audit = access
+            .audit_store(&crate::config::AuditConfig::Plain)
+            .await?;
+        let (router, execution, _, planning, resources) = crate::api::application_fixture(
             serde_json::from_value(base.clone())?,
             Arc::new(crate::clock::SystemClock),
             monotonic(),
-            database(&base).await?,
+            access,
             None,
-            database(&base)
-                .await?
-                .audit_store(&crate::config::AuditConfig::Plain)
-                .await?,
+            audit,
         )
         .await
         .map_err(|e| anyhow::anyhow!("software fixture application: {e:?}"))?;
@@ -397,6 +399,7 @@ impl Fixture {
         .await?;
 
         Ok(Self {
+            resources,
             source_snapshot: registered["snapshot"].clone(),
             dependency,
             dependency_digest: dependency_version["resourceDigest"].clone(),
@@ -438,22 +441,42 @@ pub(crate) async fn worker(
         return Ok(None);
     }
     let config: Config = serde_json::from_value(base.clone())?;
+    let mut authority = authority::Authority::from_config(base.clone()).await?;
+    let mut resources = std::mem::take(&mut authority.resources);
+    let content = match content {
+        Some(content) => Some(content),
+        None => {
+            let content =
+                crate::execution_assembly::open_content(&config, config.native_protector()?)
+                    .await?;
+            if let Some(content) = &content {
+                resources.resource(crate::execution_assembly::ContentResource(content.clone()));
+            }
+            content
+        }
+    };
     let worker = crate::execution_assembly::open(
         &config,
         config.native_protector()?,
-        crate::test_support::identity::audit_store(&config).await?,
+        authority.audit.clone(),
         content,
         std::collections::BTreeMap::new(),
         rss_device_command_postgres::CommandClock::Postgres,
-        crate::test_support::identity::session_authority(&config).await?,
+        Arc::new(
+            rss_mdm_authorization_service::session::SessionAuthority::new(
+                authority.identity.authority.clone(),
+                authority.identity.tenant,
+            ),
+        ),
     )
     .await?
     .service;
-    worker_for(&config, worker).await
+    worker_for(&config, worker, resources).await
 }
 pub(crate) async fn worker_for(
     config: &Config,
     worker: Arc<rss_mdm_execution_service::ExecutionService>,
+    resources: super::Resources,
 ) -> Result<Option<rss_runtime::ShutdownStack>> {
     if !crate::test_support::case::owns_worker() {
         return Ok(None);
@@ -463,6 +486,9 @@ pub(crate) async fn worker_for(
         Arc::new(crate::lifecycle::RuntimeTimer),
     )?;
     let mut startup = stack.startup()?;
+    for resource in resources.0 {
+        startup.stage_resource(resource);
+    }
     startup.stage_resource(rss_runtime::DynManagedResource::new_box(
         rss_mdm_execution_service::Resource(worker.clone()),
     ));

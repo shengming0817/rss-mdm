@@ -12,7 +12,9 @@ pub(crate) async fn enrollment_matrix(router: &Router, browser: &mut Browser) ->
         &["inventory_read", "enrollment"],
     )
     .await?;
-    let enrollment_fixture = authority::Authority::open().await?;
+    let mut enrollment_fixture = authority::Authority::open().await?;
+    let enrollment_fixture_resources = std::mem::take(&mut enrollment_fixture.resources);
+    enrollment_fixture_resources.finish(async {
     let enrollment_router = enrollment_fixture.router(enrollment_fixture.enrollment())?;
     let mut enrollment_browser = browser.clone();
     enrollment_browser.operation = Some(uuid::Uuid::new_v4());
@@ -112,7 +114,9 @@ pub(crate) async fn enrollment_matrix(router: &Router, browser: &mut Browser) ->
         &["inventory_read"],
     )
     .await?;
-    let restarted_fixture = authority::Authority::open().await?;
+    let mut restarted_fixture = authority::Authority::open().await?;
+    let restarted_fixture_resources = std::mem::take(&mut restarted_fixture.resources);
+    restarted_fixture_resources.finish(async {
     let restarted = restarted_fixture.router(restarted_fixture.enrollment())?;
     let mut denied = browser.clone();
     denied.operation = Some(uuid::Uuid::new_v4());
@@ -183,14 +187,23 @@ pub(crate) async fn enrollment_matrix(router: &Router, browser: &mut Browser) ->
     );
     println!("enrollment identity/authorization/replay/audit failure matrix passed");
     Ok(())
+
+    }).await
+
+    }).await
 }
 
 #[tokio::test]
 #[ignore = "MODULE=enrollment.http: create, status, resume, cancel and authorization"]
 async fn enrollment_lifecycle_and_reauthorization() -> Result<()> {
-    let fixture = authority::Authority::open().await?;
-    let router = fixture.router(fixture.authorization().merge(fixture.enrollment()))?;
-    let mut browser = fixture.browser("other")?;
-    enrollment_matrix(&router, &mut browser).await?;
-    Ok(())
+    let mut fixture = authority::Authority::open().await?;
+    let fixture_resources = std::mem::take(&mut fixture.resources);
+    fixture_resources
+        .finish(async {
+            let router = fixture.router(fixture.authorization().merge(fixture.enrollment()))?;
+            let mut browser = fixture.browser("other")?;
+            enrollment_matrix(&router, &mut browser).await?;
+            Ok(())
+        })
+        .await
 }

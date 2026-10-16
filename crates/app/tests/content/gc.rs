@@ -218,30 +218,37 @@ async fn gc_reference_race(
 #[tokio::test]
 #[ignore = "MODULE=content.gc: reference locking and real file reclamation"]
 async fn reference_and_gc_are_serialized() -> Result<()> {
-    let fixture = Fixture::open(false).await?;
-    let retained = fixture
-        .seed_content(case::name("retained resource").as_bytes())
-        .await?;
-    let store = fixture.content.as_ref().unwrap();
-    gc_reference_race(&fixture.runtime, store).await?;
-    cleanup_preserves_resource_references(
-        &mut fixture.user.clone(),
-        &fixture.router,
-        store,
-        fixture.directory.as_path(),
-        &retained,
-    )
-    .await?;
-    ensure!(
-        store.verify(&retained).await.is_ok(),
-        "referenced artifact was reclaimed"
-    );
-    Ok(())
+    let mut fixture = Fixture::open(false).await?;
+    let resources = std::mem::take(&mut fixture.resources);
+    resources
+        .finish(async {
+            let retained = fixture
+                .seed_content(case::name("retained resource").as_bytes())
+                .await?;
+            let store = fixture.content.as_ref().unwrap();
+            gc_reference_race(&fixture.runtime, store).await?;
+            cleanup_preserves_resource_references(
+                &mut fixture.user.clone(),
+                &fixture.router,
+                store,
+                fixture.directory.as_path(),
+                &retained,
+            )
+            .await?;
+            ensure!(
+                store.verify(&retained).await.is_ok(),
+                "referenced artifact was reclaimed"
+            );
+            Ok(())
+        })
+        .await
 }
 #[tokio::test]
 #[ignore = "MODULE=content.gc: executable inherited privilege is rejected"]
 async fn inherited_delete_privilege_fails_admission() -> Result<()> {
-    let fixture = Fixture::open(false).await?;
+    let mut fixture = Fixture::open(false).await?;
+    let resources = std::mem::take(&mut fixture.resources);
+    resources.finish(async {
     let tenant = rss_request_context::TenantId::parse(case_tenant())?;
     pg(
         "CREATE ROLE mdm_content_drift; GRANT USAGE ON SCHEMA mdm_content TO mdm_content_drift; GRANT DELETE ON mdm_content.bindings TO mdm_content_drift; GRANT mdm_content_drift TO mdm_flow_runtime WITH INHERIT FALSE, SET TRUE",
@@ -253,4 +260,5 @@ async fn inherited_delete_privilege_fails_admission() -> Result<()> {
     ensure!(rejected.is_err());
     crate::flow::admit_storage(&fixture.runtime, tenant).await?;
     Ok(())
+    }).await
 }

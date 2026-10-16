@@ -5,7 +5,9 @@ use sqlx::Connection;
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 #[ignore = "make t2 MODULE=execution.software.content"]
 async fn expiry_dependency_paths_and_withdrawal_fence() -> Result<()> {
-    let fixture = Fixture::approved(Platform::MacOs).await?;
+    let mut fixture = Fixture::approved(Platform::MacOs).await?;
+    let resources = std::mem::take(&mut fixture.resources);
+    resources.finish(async {
     let stack = worker(&fixture.base, fixture.content.clone()).await?;
     let router = fixture.router;
     let mut author = fixture.author;
@@ -110,62 +112,71 @@ async fn expiry_dependency_paths_and_withdrawal_fence() -> Result<()> {
     ensure!(event(&router, &task, json!({"kind":"start"})).await?.0 == StatusCode::FORBIDDEN);
     crate::test_support::stop_worker(stack).await?;
     Ok(())
+    }).await
 }
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 #[ignore = "make t2 MODULE=execution.software.content"]
 async fn uninstall_content_permission() -> Result<()> {
-    let fixture = Fixture::approved(Platform::MacOs).await?;
-    let stack = worker(&fixture.base, fixture.content.clone()).await?;
-    let router = fixture.router;
-    let mut author = fixture.author;
-    let removal = fixture.removal;
+    let mut fixture = Fixture::approved(Platform::MacOs).await?;
+    let resources = std::mem::take(&mut fixture.resources);
+    resources
+        .finish(async {
+            let stack = worker(&fixture.base, fixture.content.clone()).await?;
+            let router = fixture.router;
+            let mut author = fixture.author;
+            let removal = fixture.removal;
 
-    let resource = fixture.resource;
-    let scope = fixture.scope;
-    let authored = |intent: &str| authored(resource, scope, intent);
-    let uninstall = Uuid::new_v4();
-    write(
-        &mut author,
-        &router,
-        &format!("/api/v1/policies/{uninstall}"),
-        0,
-        json!({"action":"put","enabled":true,"definition":authored("explicit_uninstall")}),
-    )
-    .await?;
-    let removal_task = claim(&router).await?;
-    ensure!(
-        removal_task["payload"]["task"]["intent"] == "uninstall"
-            && removal_task["payload"]["task"]["startMode"] == "automatic",
-        "uninstall: {removal_task}"
-    );
-    let content = Request::builder()
-        .method(Method::GET)
-        .uri(format!(
-            "/api/v1/agent/runtime/tasks/{}/content?attempt={}&artifact=0%2Fremove",
-            removal_task["payload"]["task"]["taskId"].as_str().unwrap(),
-            removal_task["payload"]["task"]["attemptId"]
-                .as_str()
-                .unwrap()
-        ))
-        .header("host", "mdm.example.test:9445")
-        .extension(
-            crate::test_support::agent::evidence(case_credential()).expect("registered TLS peer"),
-        )
-        .body(Body::empty())?;
-    let content = router.clone().oneshot(content).await?;
-    ensure!(
-        content.status() == StatusCode::OK,
-        "remove content: {}",
-        content.status()
-    );
-    ensure!(content.into_body().collect().await?.to_bytes() == removal);
-    crate::test_support::stop_worker(stack).await?;
-    Ok(())
+            let resource = fixture.resource;
+            let scope = fixture.scope;
+            let authored = |intent: &str| authored(resource, scope, intent);
+            let uninstall = Uuid::new_v4();
+            write(
+                &mut author,
+                &router,
+                &format!("/api/v1/policies/{uninstall}"),
+                0,
+                json!({"action":"put","enabled":true,"definition":authored("explicit_uninstall")}),
+            )
+            .await?;
+            let removal_task = claim(&router).await?;
+            ensure!(
+                removal_task["payload"]["task"]["intent"] == "uninstall"
+                    && removal_task["payload"]["task"]["startMode"] == "automatic",
+                "uninstall: {removal_task}"
+            );
+            let content = Request::builder()
+                .method(Method::GET)
+                .uri(format!(
+                    "/api/v1/agent/runtime/tasks/{}/content?attempt={}&artifact=0%2Fremove",
+                    removal_task["payload"]["task"]["taskId"].as_str().unwrap(),
+                    removal_task["payload"]["task"]["attemptId"]
+                        .as_str()
+                        .unwrap()
+                ))
+                .header("host", "mdm.example.test:9445")
+                .extension(
+                    crate::test_support::agent::evidence(case_credential())
+                        .expect("registered TLS peer"),
+                )
+                .body(Body::empty())?;
+            let content = router.clone().oneshot(content).await?;
+            ensure!(
+                content.status() == StatusCode::OK,
+                "remove content: {}",
+                content.status()
+            );
+            ensure!(content.into_body().collect().await?.to_bytes() == removal);
+            crate::test_support::stop_worker(stack).await?;
+            Ok(())
+        })
+        .await
 }
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 #[ignore = "make t2 MODULE=execution.software.content"]
 async fn windows_variant_content() -> Result<()> {
-    let fixture = Fixture::approved(Platform::Windows).await?;
+    let mut fixture = Fixture::approved(Platform::Windows).await?;
+    let resources = std::mem::take(&mut fixture.resources);
+    resources.finish(async {
     let stack = worker(&fixture.base, fixture.content.clone()).await?;
     let router = fixture.router;
     let mut author = fixture.author;
@@ -219,4 +230,5 @@ async fn windows_variant_content() -> Result<()> {
     ensure!(windows_content.into_body().collect().await?.to_bytes() == windows_bytes);
     crate::test_support::stop_worker(stack).await?;
     Ok(())
+    }).await
 }

@@ -5,35 +5,54 @@ const PATH: &str = "/api/v1/runtime/diagnostics";
 #[tokio::test]
 #[ignore = "make t2 MODULE=diagnostics.http: real host wiring, session, permission and audit"]
 async fn runtime_diagnostics_requires_explicit_permission() -> Result<()> {
-    let fixture = authority::Authority::open().await?;
-    let reader = authority::reader(&fixture.base).await?;
-    let router = app(&fixture.base, reader.clone()).await?;
-    ensure!(
-        Browser::default()
-            .call(&router, Method::GET, PATH, None)
-            .await?
-            .0
-            == StatusCode::UNAUTHORIZED
-    );
-    let mut member = fixture.browser("other")?;
-    let subject = browser_subject(&member, &router).await?;
-    set_management_grants(&subject, json!(["authorization_read"])).await?;
-    ensure!(member.call(&router, Method::GET, PATH, None).await?.0 == StatusCode::FORBIDDEN);
-    set_management_grants(&subject, json!(["runtime_diagnostics_read"])).await?;
-    let (status, value) = member.call(&router, Method::GET, PATH, None).await?;
-    ensure!(status == StatusCode::OK, "{status} {value}");
-    ensure!(value.as_object().unwrap().len() == 3);
-    ensure!(value["alive"] == true && value["ready"].is_boolean());
-    ensure!(
-        value["components"]
-            .as_array()
-            .is_some_and(|items| items.len() >= 4)
-    );
-    ensure!(audit_count(|r| r.action() == "runtime_diagnostics_read" && r.status() == 200)? > 0);
-    set_management_grants(&subject, json!([])).await?;
-    ensure!(member.call(&router, Method::GET, PATH, None).await?.0 == StatusCode::FORBIDDEN);
-    reader.close().await;
-    Ok(())
+    let mut fixture = authority::Authority::open().await?;
+    let fixture_resources = std::mem::take(&mut fixture.resources);
+    fixture_resources
+        .finish(async {
+            let reader = authority::reader(&fixture.base).await?;
+            let (router, app_resources) = app(&fixture.base, reader.clone()).await?;
+            app_resources
+                .finish(async {
+                    ensure!(
+                        Browser::default()
+                            .call(&router, Method::GET, PATH, None)
+                            .await?
+                            .0
+                            == StatusCode::UNAUTHORIZED
+                    );
+                    let mut member = fixture.browser("other")?;
+                    let subject = browser_subject(&member, &router).await?;
+                    set_management_grants(&subject, json!(["authorization_read"])).await?;
+                    ensure!(
+                        member.call(&router, Method::GET, PATH, None).await?.0
+                            == StatusCode::FORBIDDEN
+                    );
+                    set_management_grants(&subject, json!(["runtime_diagnostics_read"])).await?;
+                    let (status, value) = member.call(&router, Method::GET, PATH, None).await?;
+                    ensure!(status == StatusCode::OK, "{status} {value}");
+                    ensure!(value.as_object().unwrap().len() == 3);
+                    ensure!(value["alive"] == true && value["ready"].is_boolean());
+                    ensure!(
+                        value["components"]
+                            .as_array()
+                            .is_some_and(|items| items.len() >= 4)
+                    );
+                    ensure!(
+                        audit_count(
+                            |r| r.action() == "runtime_diagnostics_read" && r.status() == 200
+                        )? > 0
+                    );
+                    set_management_grants(&subject, json!([])).await?;
+                    ensure!(
+                        member.call(&router, Method::GET, PATH, None).await?.0
+                            == StatusCode::FORBIDDEN
+                    );
+                    reader.close().await;
+                    Ok(())
+                })
+                .await
+        })
+        .await
 }
 
 struct Fixture {
@@ -66,7 +85,12 @@ impl Fixture {
             None,
             Default::default(),
             rss_device_command_postgres::CommandClock::Postgres,
-            crate::test_support::identity::session_authority(&config).await?,
+            Arc::new(
+                rss_mdm_authorization_service::session::SessionAuthority::new(
+                    authority.identity.authority.clone(),
+                    authority.identity.tenant,
+                ),
+            ),
         )
         .await?;
         let source = Arc::new(crate::runtime_diagnostics::RuntimeDiagnostics {
@@ -102,7 +126,7 @@ impl Fixture {
         for resource in self.resources {
             resource.shutdown().await?;
         }
-        Ok(())
+        self.authority.resources.finish(async { Ok(()) }).await
     }
 }
 fn component(value: &Value, name: &str) -> Value {

@@ -8,6 +8,8 @@ use sqlx::Connection;
 #[ignore = "make t2 MODULE=execution.software.recovery"]
 async fn successful_removal_invalidates_prior_installation_across_policies() -> Result<()> {
     let mut f = Fixture::approved(Platform::MacOs).await?;
+    let resources = std::mem::take(&mut f.resources);
+    resources.finish(async {
     let stack = worker(&f.base, f.content.clone()).await?;
     let install = Uuid::new_v4();
     let duplicate = Uuid::new_v4();
@@ -75,6 +77,7 @@ async fn successful_removal_invalidates_prior_installation_across_policies() -> 
     assert_no_software_run(&f.router, after_reinstall).await?;
     crate::test_support::stop_worker(stack).await?;
     Ok(())
+    }).await
 }
 
 async fn complete_effect(
@@ -122,6 +125,8 @@ async fn assert_no_software_run(router: &Router, policy: Uuid) -> Result<()> {
 #[ignore = "make t2 MODULE=execution.software.recovery"]
 async fn unresolved_installation_blocks_removal_and_other_versions() -> Result<()> {
     let mut f = Fixture::approved(Platform::MacOs).await?;
+    let resources = std::mem::take(&mut f.resources);
+    resources.finish(async {
     let stack = worker(&f.base, f.content.clone()).await?;
     let original = Uuid::new_v4();
     write(&mut f.author, &f.router, &format!("/api/v1/policies/{original}"), 0, json!({"action":"put","enabled":true,"definition":authored(f.resource,f.scope,"required_install")})).await?;
@@ -162,6 +167,7 @@ async fn unresolved_installation_blocks_removal_and_other_versions() -> Result<(
     assert_no_software_run(&f.router, replacement).await?;
     crate::test_support::stop_worker(stack).await?;
     Ok(())
+    }).await
 }
 
 async fn publish_next_software_version(f: &mut Fixture) -> Result<()> {
@@ -231,7 +237,9 @@ async fn publish_next_software_version(f: &mut Fixture) -> Result<()> {
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 #[ignore = "make t2 MODULE=execution.software.recovery"]
 async fn known_failure_has_bounded_retries() -> Result<()> {
-    let fixture = Fixture::approved(Platform::MacOs).await?;
+    let mut fixture = Fixture::approved(Platform::MacOs).await?;
+    let resources = std::mem::take(&mut fixture.resources);
+    resources.finish(async {
     let stack = worker(&fixture.base, fixture.content.clone()).await?;
     let router = fixture.router;
     let mut author = fixture.author;
@@ -338,11 +346,14 @@ async fn known_failure_has_bounded_retries() -> Result<()> {
     .await?;
     crate::test_support::stop_worker(stack).await?;
     Ok(())
+    }).await
 }
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 #[ignore = "make t2 MODULE=execution.software.recovery"]
 async fn reboot_waits_for_detection() -> Result<()> {
-    let fixture = Fixture::approved(Platform::MacOs).await?;
+    let mut fixture = Fixture::approved(Platform::MacOs).await?;
+    let resources = std::mem::take(&mut fixture.resources);
+    resources.finish(async {
     let stack = worker(&fixture.base, fixture.content.clone()).await?;
     let router = fixture.router;
     let mut author = fixture.author;
@@ -426,11 +437,14 @@ async fn reboot_waits_for_detection() -> Result<()> {
     .await?;
     crate::test_support::stop_worker(stack).await?;
     Ok(())
+    }).await
 }
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 #[ignore = "make t2 MODULE=execution.software.recovery"]
 async fn unknown_effect_survives_credential_recovery() -> Result<()> {
-    let fixture = Fixture::approved(Platform::MacOs).await?;
+    let mut fixture = Fixture::approved(Platform::MacOs).await?;
+    let resources = std::mem::take(&mut fixture.resources);
+    let result = async {
     let stack = worker(&fixture.base, fixture.content.clone()).await?;
     let router = fixture.router;
     let mut author = fixture.author;
@@ -506,7 +520,9 @@ async fn unknown_effect_survives_credential_recovery() -> Result<()> {
     ensure!(grant.0 == StatusCode::OK, "{grant:?}");
     let mut signing = input;
     signing["runtime"] = json!({"platform":"macos","architecture":"aarch64","capabilities":["inventory.collect.v1","software.pkg.system.v1"],"executionContext":context(Platform::MacOs)});
-    let service = crate::test_support::agent::service(&authority::Authority::open().await?).await?;
+    let mut authority = authority::Authority::open().await?;
+    let authority_resources = std::mem::take(&mut authority.resources);
+    let service = crate::test_support::agent::service(&authority).await?;
     let next_credential = &credential("replacement");
     let next_registration =
         crate::test_support::agent::complete_grant(&service, &grant.1, &signing, next_credential)
@@ -525,13 +541,18 @@ async fn unknown_effect_survives_credential_recovery() -> Result<()> {
         "unknown side effect retried after registration replacement: {after_reenroll:?}"
     );
     ensure!(pg(&format!("SELECT count(*) FROM mdm_commands.action_runs r JOIN mdm_policy.versions v ON (v.tenant_id,v.id)=(r.tenant_id,r.policy_version) WHERE r.tenant_id='{}' AND v.policy='{opposing}'",case_tenant()))?.trim() == "0", "opposing intent bypassed Unknown after credential generation changed");
+    authority_resources.finish(async { Ok(()) }).await?;
     crate::test_support::stop_worker(stack).await?;
     Ok(())
+    }.await;
+    resources.finish(async { result }).await
 }
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 #[ignore = "make t2 MODULE=execution.software.recovery"]
 async fn unknown_result_replay_and_late_detection() -> Result<()> {
-    let fixture = Fixture::approved(Platform::MacOs).await?;
+    let mut fixture = Fixture::approved(Platform::MacOs).await?;
+    let resources = std::mem::take(&mut fixture.resources);
+    resources.finish(async {
     let stack = worker(&fixture.base, fixture.content.clone()).await?;
     let router = fixture.router;
     let mut author = fixture.author;
@@ -606,6 +627,7 @@ async fn unknown_result_replay_and_late_detection() -> Result<()> {
     );
     crate::test_support::stop_worker(stack).await?;
     Ok(())
+    }).await
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
@@ -613,6 +635,8 @@ async fn unknown_result_replay_and_late_detection() -> Result<()> {
 async fn withdrawn_software_does_not_poison_claims_for_other_policies_or_outside_scope()
 -> Result<()> {
     let mut f = Fixture::approved(Platform::MacOs).await?;
+    let resources = std::mem::take(&mut f.resources);
+    resources.finish(async {
     let outside = prepared_scope(&f.planning, &[]).await?;
     let dependency = f
         .author
@@ -666,4 +690,5 @@ async fn withdrawn_software_does_not_poison_claims_for_other_policies_or_outside
     );
     crate::test_support::stop_worker(stack).await?;
     Ok(())
+    }).await
 }

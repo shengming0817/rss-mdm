@@ -233,7 +233,7 @@ async fn configuration(
         "operation disclosed file"
     );
     ensure!(found.1["remaining"] == quantity.get("count").cloned().unwrap_or(Value::Null));
-    let mut other = authority::Authority::open().await?.browser("other")?;
+    let mut other = authority::Authority::prepared_browser("other").await?;
     let forbidden = other
         .call(
             &f.router,
@@ -438,7 +438,9 @@ async fn fixed_packages_and_configurations_activate_beyond_self_quota() -> Resul
     let windows = publish(&f, &mut user, true).await?;
     let macos = publish(&f, &mut user, false).await?;
     let file = configuration(&f, &mut user, json!({"kind":"finite","count":21}), None).await?;
-    let authority = authority::Authority::open().await?;
+    let mut authority = authority::Authority::open().await?;
+    let authority_resources = std::mem::take(&mut authority.resources);
+    authority_resources.finish(async {
     let tls = Tls::start(&authority).await?;
     let mut devices = std::collections::BTreeSet::new();
     for n in 0..21 {
@@ -500,6 +502,8 @@ async fn fixed_packages_and_configurations_activate_beyond_self_quota() -> Resul
     );
     ensure!(tls.owner.shutdown().join().await?.is_clean());
     Ok(())
+
+    }).await
 }
 #[tokio::test]
 #[ignore = "MODULE=agent.configurations: concurrent finite allocation, cancellation, revoke and frozen TTL"]
@@ -508,7 +512,7 @@ async fn finite_reservations_and_frozen_authority_survive_revoke() -> Result<()>
     let mut user = f.user.clone();
     let package = publish(&f, &mut user, false).await?;
     let file = configuration(&f, &mut user, json!({"kind":"finite","count":2}), None).await?;
-    let mut other = authority::Authority::open().await?.browser("other")?;
+    let mut other = authority::Authority::prepared_browser("other").await?;
     ensure!(other.call(&f.router,Method::POST,"/api/v1/agent-configurations",Some(json!({"operationId":Uuid::new_v4(),"secret":credential("forbidden"),"quantity":{"kind":"unlimited"},"targets":[{"platform":"macos","architecture":"aarch64"}],"channels":["production"]}))).await?.0==StatusCode::FORBIDDEN);
     for quantity in [
         json!({"kind":"finite","count":0}),
@@ -645,27 +649,32 @@ async fn finite_reservations_and_frozen_authority_survive_revoke() -> Result<()>
         candidate.0 == StatusCode::OK,
         "assigned grant lost frozen TTL after revoke {candidate:?}"
     );
-    let authority = authority::Authority::open().await?;
-    let tls = Tls::start(&authority).await?;
-    tls.activate(&candidate.1, second).await?;
-    let mut consumed_cancel = cancellation;
-    consumed_cancel.grant_id = serde_json::from_value(accepted[1].1["grantId"].clone())?;
-    consumed_cancel.creation_operation_id = inputs[second].operation_id;
-    consumed_cancel.secret = inputs[second].secret.clone();
-    consumed_cancel.operation_id = Uuid::new_v4();
-    ensure!(
-        machine(
-            &f,
-            "/api/v1/agent/enroll/reservations/cancel",
-            &consumed_cancel
-        )
-        .await?
-        .0 == StatusCode::CONFLICT
-    );
-    let state = read(&f, &mut user, file.configuration.configuration_id).await?;
-    ensure!(state["consumed"] == 1 && state["reserved"] == 1);
-    ensure!(tls.owner.shutdown().join().await?.is_clean());
-    Ok(())
+    let mut authority = authority::Authority::open().await?;
+    let authority_resources = std::mem::take(&mut authority.resources);
+    authority_resources
+        .finish(async {
+            let tls = Tls::start(&authority).await?;
+            tls.activate(&candidate.1, second).await?;
+            let mut consumed_cancel = cancellation;
+            consumed_cancel.grant_id = serde_json::from_value(accepted[1].1["grantId"].clone())?;
+            consumed_cancel.creation_operation_id = inputs[second].operation_id;
+            consumed_cancel.secret = inputs[second].secret.clone();
+            consumed_cancel.operation_id = Uuid::new_v4();
+            ensure!(
+                machine(
+                    &f,
+                    "/api/v1/agent/enroll/reservations/cancel",
+                    &consumed_cancel
+                )
+                .await?
+                .0 == StatusCode::CONFLICT
+            );
+            let state = read(&f, &mut user, file.configuration.configuration_id).await?;
+            ensure!(state["consumed"] == 1 && state["reserved"] == 1);
+            ensure!(tls.owner.shutdown().join().await?.is_clean());
+            Ok(())
+        })
+        .await
 }
 #[tokio::test]
 #[ignore = "MODULE=agent.configurations: HTTP lost commits, permanent issuance accounting and lookup"]
@@ -674,7 +683,9 @@ async fn unknown_exchange_and_issuance_do_not_reset_quantity() -> Result<()> {
     let mut user = f.user.clone();
     let package = publish(&f, &mut user, false).await?;
     let file = configuration(&f, &mut user, json!({"kind":"finite","count":1}), None).await?;
-    let authority = authority::Authority::open().await?;
+    let mut authority = authority::Authority::open().await?;
+    let authority_resources = std::mem::take(&mut authority.resources);
+    authority_resources.finish(async {
     let service = agent::service(&authority).await?;
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
     let origin = format!("http://{}", listener.local_addr()?);
@@ -782,6 +793,8 @@ async fn unknown_exchange_and_issuance_do_not_reset_quantity() -> Result<()> {
     );
     ensure!(read(&f, &mut user, file.configuration.configuration_id).await?["consumed"] == 1);
     Ok(())
+
+    }).await
 }
 #[tokio::test]
 #[ignore = "MODULE=agent.configurations: first claim waits across grant expiry before a slot is reused"]
@@ -906,7 +919,9 @@ async fn backend_settings_are_the_only_grant_lifetime_authority() -> Result<()> 
         assigned.0 == StatusCode::OK,
         "seven day grant insert {assigned:?}"
     );
-    let authority = authority::Authority::open().await?;
+    let mut authority = authority::Authority::open().await?;
+    let authority_resources = std::mem::take(&mut authority.resources);
+    authority_resources.finish(async {
     let service = agent::service(&authority).await?;
     let principal = crate::device::test_support::admin(case_tenant(), "admin-a").await?;
     ensure!(
@@ -967,6 +982,8 @@ async fn backend_settings_are_the_only_grant_lifetime_authority() -> Result<()> 
             == StatusCode::FORBIDDEN
     );
     Ok(())
+
+    }).await
 }
 
 #[tokio::test]

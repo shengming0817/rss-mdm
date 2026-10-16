@@ -6,7 +6,9 @@ use crate::test_support::*;
 #[tokio::test]
 #[ignore = "MODULE=agent.reports: durable intake, projection, capacity, retention and ACK recovery"]
 async fn durable_reports_and_projection() -> Result<()> {
-    let fixture = authority::Authority::open().await?;
+    let mut fixture = authority::Authority::open().await?;
+    let fixture_resources = std::mem::take(&mut fixture.resources);
+    fixture_resources.finish(async {
     let owned_router = crate::test_support::agent::router(&fixture).await?;
     let router = &owned_router;
     let audit_store = fixture.audit.as_ref();
@@ -337,4 +339,6 @@ async fn durable_reports_and_projection() -> Result<()> {
         ensure!(pg(&format!("SELECT count(*) FROM mdm_access.collection_runs WHERE tenant_id='{TENANT}' AND id='{fault_report}'", TENANT = case_tenant()))?.trim() == "1", "report recovery duplicated durable intake");
     }
     Ok(())
+
+    }).await
 }

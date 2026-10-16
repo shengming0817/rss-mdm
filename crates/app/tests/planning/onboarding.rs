@@ -7,6 +7,8 @@ async fn fixture() -> Result<Fixture> {
     base["enrollment_entries"] =
         json!({"windows":"https://enroll.example.test","macos":"https://enroll.example.test/"});
     let mut f = Fixture::from_config(base).await?;
+    let resources = std::mem::take(&mut f.resources);
+    resources.finish(async {
     f.grants
         .extend(identity::device_grants(None, &["enrollment"])?);
     identity::set_grants(case_tenant(), &f.author_id, f.grants.clone()).await?;
@@ -19,6 +21,7 @@ async fn fixture() -> Result<Fixture> {
     f.scope(case_task_scope(), json!([{"kind":"group","id":group}]))
         .await?;
     Ok(f)
+    }).await
 }
 async fn publish(f: &mut Fixture) -> Result<Uuid> {
     let id = Uuid::new_v4();
@@ -192,7 +195,7 @@ async fn uncertain_entry_survives_application_restart_and_policy_disable() -> Re
     .await?;
     stop_worker(workers).await?;
     let access = database(&f.base).await?;
-    let (router, execution, _, _) = crate::api::application_fixture(
+    let (router, execution, _, _, resources) = crate::api::application_fixture(
         serde_json::from_value(f.base.clone())?,
         Arc::new(crate::clock::SystemClock),
         monotonic(),
@@ -203,31 +206,33 @@ async fn uncertain_entry_survives_application_restart_and_policy_disable() -> Re
             .await?,
     )
     .await?;
-    let execution = execution.service;
-    let router = router.layer(axum::Extension(rss_identity_http_axum::ClientAddress(
-        "127.0.0.1".parse()?,
-    )));
-    execution.recover_action_fixture(id).await?;
-    ensure!(claim_request(&router, Uuid::new_v4()).await?.1["task"].is_null());
-    ensure!(run_count(id)?.trim() == "1");
-    post(
+    resources
+        .finish(async {
+            let execution = execution.service;
+            let router = router.layer(axum::Extension(rss_identity_http_axum::ClientAddress(
+                "127.0.0.1".parse()?,
+            )));
+            execution.recover_action_fixture(id).await?;
+            ensure!(claim_request(&router, Uuid::new_v4()).await?.1["task"].is_null());
+            ensure!(run_count(id)?.trim() == "1");
+            post(
         &mut f.author,
         &router,
         &format!("/api/v1/policies/{id}"),
         json!({"operationId":Uuid::new_v4(),"expectedRevision":1,"input":{"action":"disable"}}),
     )
     .await?;
-    execution.recover_action_fixture(id).await?;
-    let state = pg(&format!(
-        "SELECT state FROM mdm_commands.action_runs WHERE id='{}'",
-        task["payload"]["task"]["taskId"].as_str().unwrap()
-    ))?;
-    let state: Value = serde_json::from_str(state.trim())?;
-    ensure!(
-        state["execution"] == "unknown" && state["cancellation"] == "requested",
-        "{state}"
-    );
-    ensure!(
+            execution.recover_action_fixture(id).await?;
+            let state = pg(&format!(
+                "SELECT state FROM mdm_commands.action_runs WHERE id='{}'",
+                task["payload"]["task"]["taskId"].as_str().unwrap()
+            ))?;
+            let state: Value = serde_json::from_str(state.trim())?;
+            ensure!(
+                state["execution"] == "unknown" && state["cancellation"] == "requested",
+                "{state}"
+            );
+            ensure!(
         pg(&format!(
             "SELECT count(*) FROM mdm_access.registrations WHERE tenant_id='{}' AND channel='mdm'",
             case_tenant()
@@ -235,6 +240,8 @@ async fn uncertain_entry_survives_application_restart_and_policy_disable() -> Re
         .trim()
             == "0"
     );
-    stop_worker(automation).await?;
-    Ok(())
+            stop_worker(automation).await?;
+            Ok(())
+        })
+        .await
 }

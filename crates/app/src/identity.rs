@@ -167,11 +167,12 @@ impl Identity {
     pub(crate) async fn for_oidc_fixture(
         config: &Config,
         policy: Arc<IdentityManagementPolicy>,
+        acquire: impl FnMut(Box<rss_runtime::DynManagedResource<'static>>),
     ) -> Result<Self, Error> {
         Self::connect_using(
             config,
             policy,
-            |_| {},
+            acquire,
             |config, authority, origin, instance, _tenant| {
                 let oidc = rss_identity_oidc::HttpOidc::for_loopback_test(config.profiles()?)
                     .map_err(|_| invalid())?;

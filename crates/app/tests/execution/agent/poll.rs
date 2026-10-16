@@ -6,6 +6,8 @@ use std::collections::BTreeSet;
 #[ignore = "make t2 MODULE=execution.agent.poll"]
 async fn cancellation_backlog_does_not_starve_live_offer() -> Result<()> {
     let mut fixture = Fixture::new().await?;
+    let resources = std::mem::take(&mut fixture.resources);
+    resources.finish(async {
     fixture.register().await?;
     let (resource, _bytes, _definition) = fixture.resource().await?;
     fixture
@@ -81,4 +83,5 @@ async fn cancellation_backlog_does_not_starve_live_offer() -> Result<()> {
     ))?;
     crate::test_support::stop_worker(stack).await?;
     Ok(())
+    }).await
 }

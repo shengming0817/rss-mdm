@@ -6,6 +6,8 @@ use std::collections::BTreeSet;
 #[ignore = "make t2 MODULE=execution.agent.history"]
 async fn policy_run_history_cursor_summary_and_detail() -> Result<()> {
     let mut fixture = Fixture::new().await?;
+    let resources = std::mem::take(&mut fixture.resources);
+    resources.finish(async {
     fixture.register().await?;
     claim_request(&fixture.router, Uuid::new_v4()).await?;
     let (resource, _bytes, _definition) = fixture.resource().await?;
@@ -165,6 +167,7 @@ async fn policy_run_history_cursor_summary_and_detail() -> Result<()> {
     cleanup?;
     crate::test_support::stop_worker(stack).await?;
     Ok(())
+    }).await
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
@@ -172,6 +175,8 @@ async fn policy_run_history_cursor_summary_and_detail() -> Result<()> {
 async fn sensitive_collection_run_details_reauthorize_both_read_paths() -> Result<()> {
     use crate::authorization::{Grant, Permission, Scope};
     let mut f = Fixture::new().await?;
+    let resources = std::mem::take(&mut f.resources);
+    resources.finish(async {
     f.register().await?;
     claim_request(&f.router, Uuid::new_v4()).await?;
     f.grants.push(Grant {
@@ -258,6 +263,7 @@ async fn sensitive_collection_run_details_reauthorize_both_read_paths() -> Resul
     }
     crate::test_support::stop_worker(stack).await?;
     Ok(())
+    }).await
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
@@ -265,54 +271,65 @@ async fn sensitive_collection_run_details_reauthorize_both_read_paths() -> Resul
 async fn device_capabilities_use_current_permissions_after_proof_capture() -> Result<()> {
     use crate::authorization::Permission;
     let mut f = Fixture::new().await?;
-    f.register().await?;
-    claim_request(&f.router, Uuid::new_v4()).await?;
-    let stale = crate::device::test_support::admin(case_tenant(), "other-a").await?;
-    ensure!(
-        stale
-            .require(Permission::ScriptExecute, Some(case_device_id()))
-            .is_ok()
-    );
-    let queries = f.queries.clone();
-    let initial = serde_json::to_value(
-        queries
-            .directory_capabilities(&stale, case_device_id(), true, true)
-            .await?,
-    )?;
-    ensure!(initial[0]["permission"]["allowed"] == true);
-    let withdrawn = f
-        .grants
-        .iter()
-        .filter(|g| g.operation != Permission::ScriptExecute)
-        .cloned()
-        .collect();
-    crate::test_support::identity::set_grants(case_tenant(), &f.author_id, withdrawn).await?;
-    let current = serde_json::to_value(
-        queries
-            .directory_capabilities(&stale, case_device_id(), true, true)
-            .await?,
-    )?;
-    ensure!(
-        current[0]["permission"]["allowed"] == false
-            && current[0]["permission"]["reason"] == "permission_denied",
-        "stale action capability: {current}"
-    );
-    let withdrawn = f
-        .grants
-        .iter()
-        .filter(|g| g.operation != Permission::InventoryRead)
-        .cloned()
-        .collect();
-    crate::test_support::identity::set_grants(case_tenant(), &f.author_id, withdrawn).await?;
-    ensure!(matches!(
-        queries
-            .directory_capabilities(&stale, case_device_id(), true, true)
-            .await,
-        Err(rss_mdm_execution_service::queries::QueryError::Forbidden)
-    ));
-    crate::test_support::identity::set_grants(case_tenant(), &f.author_id, f.grants.clone())
-        .await?;
-    Ok(())
+    let resources = std::mem::take(&mut f.resources);
+    resources
+        .finish(async {
+            f.register().await?;
+            claim_request(&f.router, Uuid::new_v4()).await?;
+            let stale = crate::device::test_support::admin(case_tenant(), "other-a").await?;
+            ensure!(
+                stale
+                    .require(Permission::ScriptExecute, Some(case_device_id()))
+                    .is_ok()
+            );
+            let queries = f.queries.clone();
+            let initial = serde_json::to_value(
+                queries
+                    .directory_capabilities(&stale, case_device_id(), true, true)
+                    .await?,
+            )?;
+            ensure!(initial[0]["permission"]["allowed"] == true);
+            let withdrawn = f
+                .grants
+                .iter()
+                .filter(|g| g.operation != Permission::ScriptExecute)
+                .cloned()
+                .collect();
+            crate::test_support::identity::set_grants(case_tenant(), &f.author_id, withdrawn)
+                .await?;
+            let current = serde_json::to_value(
+                queries
+                    .directory_capabilities(&stale, case_device_id(), true, true)
+                    .await?,
+            )?;
+            ensure!(
+                current[0]["permission"]["allowed"] == false
+                    && current[0]["permission"]["reason"] == "permission_denied",
+                "stale action capability: {current}"
+            );
+            let withdrawn = f
+                .grants
+                .iter()
+                .filter(|g| g.operation != Permission::InventoryRead)
+                .cloned()
+                .collect();
+            crate::test_support::identity::set_grants(case_tenant(), &f.author_id, withdrawn)
+                .await?;
+            ensure!(matches!(
+                queries
+                    .directory_capabilities(&stale, case_device_id(), true, true)
+                    .await,
+                Err(rss_mdm_execution_service::queries::QueryError::Forbidden)
+            ));
+            crate::test_support::identity::set_grants(
+                case_tenant(),
+                &f.author_id,
+                f.grants.clone(),
+            )
+            .await?;
+            Ok(())
+        })
+        .await
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]

@@ -50,27 +50,31 @@ async fn fixture() -> Result<Fixture> {
         )
         .await?,
     );
-    let router = app(&base, reader.clone()).await?;
-    let mut admin = Browser::default();
-    ensure!(admin.login(&router, "admin").await? == StatusCode::OK);
-    let mut member = Browser::default();
-    ensure!(member.login(&router, "other").await? == StatusCode::OK);
-    let subject = browser_subject(&member, &router).await?;
-    let store = database(&base).await?;
-    let audit_store = store
-        .audit_store(&crate::config::AuditConfig::Plain)
-        .await?;
-    Ok(Fixture {
-        base,
-        config,
-        reader,
-        router,
-        admin,
-        member,
-        subject,
-        store,
-        audit_store,
-    })
+    let (router, app_resources) = app(&base, reader.clone()).await?;
+    app_resources
+        .finish(async {
+            let mut admin = Browser::default();
+            ensure!(admin.login(&router, "admin").await? == StatusCode::OK);
+            let mut member = Browser::default();
+            ensure!(member.login(&router, "other").await? == StatusCode::OK);
+            let subject = browser_subject(&member, &router).await?;
+            let store = database(&base).await?;
+            let audit_store = store
+                .audit_store(&crate::config::AuditConfig::Plain)
+                .await?;
+            Ok(Fixture {
+                base,
+                config,
+                reader,
+                router,
+                admin,
+                member,
+                subject,
+                store,
+                audit_store,
+            })
+        })
+        .await
 }
 mod admission;
 mod capacity;

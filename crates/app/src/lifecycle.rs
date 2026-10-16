@@ -38,7 +38,7 @@ pub(crate) fn http_policy() -> rss_axum::Http1ServePolicy {
     )
     .expect("constant HTTP/1 limits are valid")
 }
-struct AccessResource(std::sync::Arc<crate::Database>);
+pub(crate) struct AccessResource(pub(crate) std::sync::Arc<crate::Database>);
 impl ManagedResource for AccessResource {
     fn name(&self) -> &str {
         "access-store"

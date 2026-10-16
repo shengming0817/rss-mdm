@@ -24,7 +24,9 @@ pub(crate) async fn revoke_http_matrix(session: &Browser) -> Result<()> {
         INSERT INTO mdm_access.report_sources(tenant_id,registration,source,epoch,enabled) VALUES('{TENANT}','{registration}','mdm.windows','{epoch}',true);", TENANT = case_tenant()))?;
     let path = format!("/api/v1/devices/{device}/registrations/{registration}/revoke");
     let listing = &format!("/api/v1/devices/{device}/registrations");
-    let fixture = authority::Authority::open().await?;
+    let mut fixture = authority::Authority::open().await?;
+    let fixture_resources = std::mem::take(&mut fixture.resources);
+    fixture_resources.finish(async {
     let initial = fixture.router(fixture.authorization().merge(fixture.enrollment()))?;
     set_device_grants(&mut session.clone(), &initial, device, &["inventory_read"]).await?;
     let denied = fixture.router(fixture.authorization().merge(fixture.enrollment()))?;
@@ -154,14 +156,21 @@ pub(crate) async fn revoke_http_matrix(session: &Browser) -> Result<()> {
             == 1
     );
     Ok(())
+
+    }).await
 }
 
 #[tokio::test]
 #[ignore = "MODULE=device.revocation: real capability boundary"]
 async fn http_revoke_is_atomic_authorized_and_idempotent() -> Result<()> {
-    let fixture = authority::Authority::open().await?;
-    revoke_http_matrix(&fixture.browser("other")?).await?;
-    Ok(())
+    let mut fixture = authority::Authority::open().await?;
+    let fixture_resources = std::mem::take(&mut fixture.resources);
+    fixture_resources
+        .finish(async {
+            revoke_http_matrix(&fixture.browser("other")?).await?;
+            Ok(())
+        })
+        .await
 }
 
 mod storage;

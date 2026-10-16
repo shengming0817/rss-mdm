@@ -20,14 +20,19 @@ fn configured(tenant: &str) -> Result<Config> {
     value["identity"]["tenant_id"] = tenant.into();
     Ok(serde_json::from_value(value)?)
 }
-pub(crate) async fn identity(tenant: &str) -> Result<Identity> {
-    identity_with(config(tenant)?).await
+pub(crate) async fn identity(tenant: &str) -> Result<(Identity, super::Resources)> {
+    let mut resources = super::Resources::default();
+    let result = identity_with(config(tenant)?, &mut resources).await;
+    match result {
+        Ok(identity) => Ok((identity, resources)),
+        Err(error) => resources.finish(async { Err(error) }).await,
+    }
 }
-async fn identity_with(config: Config) -> Result<Identity> {
+async fn identity_with(config: Config, resources: &mut super::Resources) -> Result<Identity> {
     let policy = Arc::new(
         crate::authorization::identity_management::IdentityManagementPolicy::new(INSTANCE)?,
     );
-    Ok(Identity::connect(&config, policy, |_| {}).await?)
+    Ok(Identity::connect(&config, policy, |resource| resources.acquire(resource)).await?)
 }
 pub(crate) async fn login(identity: &Identity, login: &str) -> Result<SessionSecret> {
     login_named(identity, super::case::login(login)).await
@@ -174,9 +179,14 @@ async fn prepare_environment(root: &std::path::Path) -> Result<()> {
 
 async fn refresh_management(root: &std::path::Path) -> Result<()> {
     let value: Config = serde_json::from_slice(&std::fs::read(root.join("runtime.json"))?)?;
-    let authority = identity_with(value).await?;
-    let secret = login_named(&authority, "bootstrap").await?;
-    write(&root.join("source-session"), secret.expose().as_bytes())
+    let mut resources = super::Resources::default();
+    let authority = identity_with(value, &mut resources).await?;
+    resources
+        .finish(async {
+            let secret = login_named(&authority, "bootstrap").await?;
+            write(&root.join("source-session"), secret.expose().as_bytes())
+        })
+        .await
 }
 
 async fn prepare_accounts(
@@ -219,17 +229,21 @@ async fn prepare_accounts(
         tenants.push((tenant, 1));
     }
     let config = configured(management)?;
-    let source_identity = identity_with(configured(management)?).await?;
-    let actor = Arc::new(
-        source_identity
-            .authority
-            .inspect_session(
-                source,
-                SessionSecret::parse(crate::config::secret(source_secret)?.to_string())?,
-                crate::identity::deadline(),
-            )
-            .await?,
-    );
+    let (source_identity, identity_resources) = identity(management).await?;
+    let actor = identity_resources
+        .finish(async {
+            Ok(Arc::new(
+                source_identity
+                    .authority
+                    .inspect_session(
+                        source,
+                        SessionSecret::parse(crate::config::secret(source_secret)?.to_string())?,
+                        crate::identity::deadline(),
+                    )
+                    .await?,
+            ))
+        })
+        .await?;
     let runtime = crate::identity::open_runtime(
         database,
         &config.flow.storage.target,
@@ -338,6 +352,8 @@ fn fixture_rule(tenant: &str, principal: &str) -> Result<serde_json::Value> {
 async fn prepare_sessions(paths: &[std::path::PathBuf]) -> Result<Vec<serde_json::Value>> {
     use super::case::{CaseContext, Phase};
     use std::collections::BTreeMap;
+    let mut resources = super::Resources::default();
+    let result = async {
     let mut costs = Vec::new();
     let mut authorities = BTreeMap::new();
     let mut sessions = BTreeMap::new();
@@ -356,7 +372,7 @@ async fn prepare_sessions(paths: &[std::path::PathBuf]) -> Result<Vec<serde_json
                 if let std::collections::btree_map::Entry::Vacant(entry) =
                     authorities.entry(actor.tenant.clone())
                 {
-                    entry.insert(identity_with(configured(&actor.tenant)?).await?);
+                    entry.insert(identity_with(configured(&actor.tenant)?, &mut resources).await?);
                 }
                 let timer = super::monotonic();
                 let started = timer.now();
@@ -389,6 +405,8 @@ async fn prepare_sessions(paths: &[std::path::PathBuf]) -> Result<Vec<serde_json
         }
     }
     Ok(costs)
+    }.await;
+    resources.finish(async { result }).await
 }
 
 fn preparation_coordinate(tenant: &str, invocation: &str, kind: &str, phase: &str) -> String {
@@ -448,40 +466,36 @@ async fn set_grants_in(
     grants: Vec<crate::authorization::Grant>,
     preserve_read: bool,
 ) -> Result<()> {
-    let identity = identity(tenant).await?;
-    let access = crate::Database::connect(config(tenant)?.access_database.options()?).await?;
-    let principal = crate::authorization::context::AuthorizedPrincipal::new(
-        identity
-            .authority
-            .inspect_session(
-                identity.tenant,
-                credential(&identity, "admin")?,
-                crate::identity::deadline(),
+    let (identity, identity_resources) = identity(tenant).await?;
+    identity_resources
+        .finish(async {
+            let access =
+                crate::Database::connect(config(tenant)?.access_database.options()?).await?;
+            let principal = crate::authorization::context::AuthorizedPrincipal::new(
+                identity
+                    .authority
+                    .inspect_session(
+                        identity.tenant,
+                        credential(&identity, "admin")?,
+                        crate::identity::deadline(),
+                    )
+                    .await?,
+            )?
+            .load_authorization(access.authorization())
+            .await?;
+            grant(
+                access.audit_store(&config(tenant)?.audit).await?.as_ref(),
+                &principal,
+                tenant,
+                subject,
+                grants,
+                preserve_read,
             )
-            .await?,
-    )?
-    .load_authorization(access.authorization())
-    .await?;
-    grant(
-        access.audit_store(&config(tenant)?.audit).await?.as_ref(),
-        &principal,
-        tenant,
-        subject,
-        grants,
-        preserve_read,
-    )
-    .await?;
-    access.close().await;
-    Ok(())
-}
-
-pub(crate) async fn audit_store(
-    config: &crate::config::Config,
-) -> anyhow::Result<std::sync::Arc<rss_mdm_audit_integration::AuditStore>> {
-    Ok(crate::Database::connect(config.access_database.options()?)
-        .await?
-        .audit_store(&config.audit)
-        .await?)
+            .await?;
+            access.close().await;
+            Ok(())
+        })
+        .await
 }
 
 async fn grant(
@@ -551,21 +565,4 @@ async fn grant(
         audit.finalize(None);
     }
     Ok(())
-}
-
-pub(crate) async fn session_authority(
-    config: &Config,
-) -> Result<std::sync::Arc<rss_mdm_authorization_service::session::SessionAuthority>> {
-    let policy = Arc::new(
-        crate::authorization::identity_management::IdentityManagementPolicy::new(
-            &config.identity.instance_id,
-        )?,
-    );
-    let identity = Identity::connect(config, policy, |_| {}).await?;
-    Ok(std::sync::Arc::new(
-        rss_mdm_authorization_service::session::SessionAuthority::new(
-            identity.authority,
-            identity.tenant,
-        ),
-    ))
 }

@@ -27,10 +27,12 @@ impl Fixture {
         let mut db =
             sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?)
                 .await?;
-        tokio::time::timeout(Duration::from_secs(30),async {loop {
+        let result = tokio::time::timeout(Duration::from_secs(30),async {loop {
             let id:Option<Uuid>=sqlx::query_scalar("SELECT c.operation FROM mdm_planning.configuration_claims c JOIN rss_device_command.commands d ON d.tenant_id=c.tenant_id AND d.command_id=c.operation::text WHERE c.tenant_id=$1::uuid AND c.policy=$2 AND d.status IN('published','received','applied')").bind(case_tenant()).bind(policy).fetch_optional(&mut db).await?;
             if let Some(id)=id {return Ok::<_,anyhow::Error>(id);}tokio::time::sleep(Duration::from_millis(50)).await;
-        }}).await?
+        }}).await?;
+        db.close().await?;
+        result
     }
     pub(super) async fn policy_worker(&self) -> Result<rss_runtime::ShutdownStack> {
         let mut owner = rss_runtime::ShutdownStack::try_new(
@@ -244,6 +246,7 @@ impl Fixture {
             let count:i64=sqlx::query_scalar("SELECT count(*) FROM mdm_planning.configuration_claims WHERE tenant_id=$1::uuid AND device=$2").bind(case_tenant()).bind(case_device()).fetch_one(&mut db).await?;
             if count==0 {return Ok::<_,anyhow::Error>(());}tokio::time::sleep(Duration::from_millis(50)).await;
         }}).await??;
+        db.close().await?;
         ensure!(owner.shutdown().join().await?.is_clean());
         Ok(())
     }

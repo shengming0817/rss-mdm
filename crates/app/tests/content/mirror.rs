@@ -124,15 +124,22 @@ async fn mirror_matrix(
 #[tokio::test]
 #[ignore = "MODULE=content.mirror: controlled HTTPS and durable bindings"]
 async fn mirror_transport_atomicity_and_recovery() -> Result<()> {
-    let fixture = Fixture::open(true).await?;
-    let definition =
-        publication_support::private_definition(fixture.registered["snapshot"].clone(), b"abc");
-    mirror_matrix(
-        &mut fixture.user.clone(),
-        &fixture.router,
-        &definition,
-        fixture.peer.as_ref().unwrap(),
-        &fixture.runtime,
-    )
-    .await
+    let mut fixture = Fixture::open(true).await?;
+    let resources = std::mem::take(&mut fixture.resources);
+    resources
+        .finish(async {
+            let definition = publication_support::private_definition(
+                fixture.registered["snapshot"].clone(),
+                b"abc",
+            );
+            mirror_matrix(
+                &mut fixture.user.clone(),
+                &fixture.router,
+                &definition,
+                fixture.peer.as_ref().unwrap(),
+                &fixture.runtime,
+            )
+            .await
+        })
+        .await
 }

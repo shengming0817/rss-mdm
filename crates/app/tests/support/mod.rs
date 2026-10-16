@@ -290,17 +290,25 @@ pub(crate) async fn database(value: &Value) -> Result<Arc<crate::Database>> {
     ))
 }
 
-pub(crate) async fn app(value: &Value, _reader: Arc<InventoryReader>) -> Result<Router> {
-    Ok(app_with_access(value, database(value).await?).await?.0)
+pub(crate) async fn app(
+    value: &Value,
+    _reader: Arc<InventoryReader>,
+) -> Result<(Router, Resources)> {
+    let (router, _, resources) = app_with_access(value, database(value).await?).await?;
+    Ok((router, resources))
 }
 
 pub(crate) async fn app_with_access(
     value: &Value,
     access: Arc<crate::Database>,
-) -> Result<(Router, Arc<rss_mdm_audit_integration::AuditStore>)> {
+) -> Result<(
+    Router,
+    Arc<rss_mdm_audit_integration::AuditStore>,
+    Resources,
+)> {
     let c: Config = serde_json::from_value(value.clone())?;
     let audit_store = access.audit_store(&c.audit).await?;
-    let (router, _, _, _) = crate::api::application_fixture(
+    let (router, _, _, _, resources) = crate::api::application_fixture(
         c,
         Arc::new(crate::clock::SystemClock),
         monotonic(),
@@ -315,6 +323,7 @@ pub(crate) async fn app_with_access(
             "127.0.0.1".parse()?,
         ))),
         audit_store,
+        resources,
     ))
 }
 
@@ -599,3 +608,86 @@ pub(crate) mod channel_onboarding;
 pub(crate) mod agent_tls;
 
 pub(crate) mod agent_http;
+
+#[derive(Default)]
+#[must_use = "fixture resources must be explicitly shut down"]
+pub(crate) struct Resources(pub(super) Vec<Box<rss_runtime::DynManagedResource<'static>>>);
+impl Resources {
+    pub(crate) fn extend(&mut self, other: Self) {
+        self.0.extend(other.0);
+    }
+    pub(crate) fn acquire(&mut self, resource: Box<rss_runtime::DynManagedResource<'static>>) {
+        self.0.push(resource);
+    }
+    pub(crate) fn resource(&mut self, resource: impl rss_runtime::ManagedResource + 'static) {
+        self.acquire(rss_runtime::DynManagedResource::new_box(resource));
+    }
+    pub(crate) async fn finish<T>(
+        self,
+        operation: impl std::future::Future<Output = Result<T>>,
+    ) -> Result<T> {
+        use futures::FutureExt;
+        let result = std::panic::AssertUnwindSafe(operation).catch_unwind().await;
+        let mut owner = rss_runtime::ShutdownStack::try_new(
+            rss_runtime::TotalDrainBudget::new(Duration::from_secs(40))?,
+            Arc::new(crate::lifecycle::RuntimeTimer),
+        )?;
+        let mut startup = owner.startup()?;
+        for resource in self.0 {
+            startup.stage_resource(resource);
+        }
+        startup.commit().finish();
+        let shutdown = owner.shutdown().join().await?;
+        ensure!(shutdown.is_clean(), "fixture resource shutdown incomplete");
+        match result {
+            Ok(result) => result,
+            Err(panic) => std::panic::resume_unwind(panic),
+        }
+    }
+}
+
+pub(crate) struct InventoryFixtureResource(pub Arc<crate::inventory_runtime::InventoryRuntime>);
+impl rss_runtime::ManagedResource for InventoryFixtureResource {
+    fn name(&self) -> &str {
+        "fixture-inventory"
+    }
+    fn shutdown_timeout(&self) -> Duration {
+        Duration::from_secs(10)
+    }
+    async fn shutdown(&self) -> std::result::Result<(), rss_runtime::ShutdownError> {
+        self.0.close_fixture().await
+    }
+}
+
+#[tokio::test]
+async fn fixture_resources_close_after_error_and_panic() {
+    use futures::FutureExt;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    struct Resource(Arc<AtomicUsize>);
+    impl rss_runtime::ManagedResource for Resource {
+        fn name(&self) -> &str {
+            "fixture-cleanup-probe"
+        }
+        async fn shutdown(&self) -> std::result::Result<(), rss_runtime::ShutdownError> {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }
+    }
+    let closed = Arc::new(AtomicUsize::new(0));
+    for panic in [false, true] {
+        let mut resources = Resources::default();
+        resources.resource(Resource(closed.clone()));
+        let outcome = std::panic::AssertUnwindSafe(resources.finish::<()>(async {
+            assert!(!panic, "test fixture assertion failure");
+            anyhow::bail!("test fixture operation failure")
+        }))
+        .catch_unwind()
+        .await;
+        if panic {
+            assert!(outcome.is_err());
+        } else {
+            assert!(outcome.unwrap().is_err());
+        }
+    }
+    assert_eq!(closed.load(Ordering::SeqCst), 2);
+}

@@ -3,7 +3,9 @@ use crate::test_support::*;
 #[tokio::test]
 #[ignore = "make t2 MODULE=authorization.rules"]
 async fn each_route_requires_its_exact_capability() -> Result<()> {
-    let fixture = authority::Authority::open().await?;
+    let mut fixture = authority::Authority::open().await?;
+    let fixture_resources = std::mem::take(&mut fixture.resources);
+    fixture_resources.finish(async {
     let server = publication_support::Server::new().await;
     let cfg = publication_http::configuration(&fixture.base, &server);
     let base = &cfg;
@@ -133,7 +135,8 @@ async fn each_route_requires_its_exact_capability() -> Result<()> {
     };
     // Exercise every permission change against the same running service. Rebuilding
     // full applications per grant needlessly multiplies component connection pools.
-    let router = app(base, reader.clone()).await?;
+    let (router, app_resources) = app(base, reader.clone()).await?;
+    app_resources.finish(async {
     let member = browser_subject(session, &router).await?;
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
     let address = listener.local_addr()?;
@@ -210,4 +213,7 @@ async fn each_route_requires_its_exact_capability() -> Result<()> {
     );
     reader.close().await;
     Ok(())
+    }).await
+
+    }).await
 }

@@ -371,7 +371,9 @@ async fn associated_context_maps_before_exclusions_and_missing_channels_recover(
 async fn agent_health_drives_mdm_configuration_assignment() -> anyhow::Result<()> {
     use crate::test_support::planning_http::*;
     use crate::test_support::*;
-    let fixture = authority::Authority::open().await?;
+    let mut fixture = authority::Authority::open().await?;
+    let fixture_resources = std::mem::take(&mut fixture.resources);
+    fixture_resources.finish(async {
     let mdm = case::name("health-mdm");
     let agent = case::name("health-agent");
     crate::device::t2::associations::seed(mdm, "mdm", "2714-HEALTH")?;
@@ -398,7 +400,8 @@ async fn agent_health_drives_mdm_configuration_assignment() -> anyhow::Result<()
     let associations =
         rss_mdm_device_service::Associations::new(fixture.audit.clone(), tenant(), &[7; 32])?;
     associations.reconcile().await?;
-    let router = app(&fixture.base, authority::reader(&fixture.base).await?).await?;
+    let (router, app_resources) = app(&fixture.base, authority::reader(&fixture.base).await?).await?;
+    app_resources.finish(async {
     let mut browser = fixture.browser("other")?;
     let member = browser_subject(&browser, &router).await?;
     let mut grants = identity::device_grants(None, &["inventory_read", "configuration_write"])?;
@@ -497,4 +500,7 @@ async fn agent_health_drives_mdm_configuration_assignment() -> anyhow::Result<()
     ensure!(old_route.0 == StatusCode::NOT_FOUND);
     stop_worker(automation).await?;
     Ok(())
+    }).await
+
+    }).await
 }

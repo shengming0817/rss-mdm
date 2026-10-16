@@ -4,6 +4,8 @@ use crate::test_support::*;
 #[ignore = "make t2 MODULE=execution.agent.recovery"]
 async fn started_execution_becomes_unknown_and_disabled_policy_cancels() -> Result<()> {
     let mut fixture = Fixture::new().await?;
+    let resources = std::mem::take(&mut fixture.resources);
+    resources.finish(async {
     fixture.register().await?;
     crate::test_support::identity::independent_source_read(
         case_tenant(),
@@ -69,4 +71,5 @@ async fn started_execution_becomes_unknown_and_disabled_policy_cancels() -> Resu
     );
     crate::test_support::stop_worker(stack).await?;
     Ok(())
+    }).await
 }

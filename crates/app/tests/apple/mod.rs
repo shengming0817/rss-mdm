@@ -40,6 +40,7 @@ fn case_device() -> &'static str {
     crate::test_support::case::name("apple-native-mac")
 }
 struct Fixture {
+    resources: crate::test_support::Resources,
     app: Arc<Assembly>,
     browser: Browser,
     router: Router,
@@ -109,7 +110,9 @@ impl Fixture {
         let config = &compiled.config;
         let clock = Arc::new(crate::clock::SystemClock);
         let monotonic: Arc<dyn rss_observation::Clock> = fixture_clock();
+        let mut resources = crate::test_support::Resources::default();
         let access = Arc::new(crate::Database::connect(config.access_database.options()?).await?);
+        resources.resource(crate::lifecycle::AccessResource(access.clone()));
         let devices = Arc::new(
             crate::device::DeviceService::new(
                 access.registration(),
@@ -132,6 +135,9 @@ impl Fixture {
                 .await?,
         )
         .await?;
+        resources.resource(crate::test_support::InventoryFixtureResource(
+            runtime.clone(),
+        ));
         let management = config
             .flow
             .open(
@@ -142,13 +148,22 @@ impl Fixture {
                 rss_request_context::TenantId::parse(case_tenant())?,
                 clock.clone(),
                 None,
-                |_| {},
+                |resource| resources.resource(resource),
             )
             .await?;
         let content = {
             let _guard = crate::test_support::software::content_setup_guard().await?;
             crate::execution_assembly::open_content(config, config.native_protector()?).await?
         };
+        let identity = crate::identity::Identity::connect(
+            config,
+            compiled.identity_management.clone(),
+            |resource| resources.acquire(resource),
+        )
+        .await?;
+        if let Some(content) = &content {
+            resources.resource(crate::execution_assembly::ContentResource(content.clone()));
+        }
         let execution = crate::execution_assembly::open(
             config,
             config.native_protector()?,
@@ -158,15 +173,17 @@ impl Fixture {
             content,
             std::collections::BTreeMap::new(),
             rss_device_command_postgres::CommandClock::Postgres,
-            crate::test_support::identity::session_authority(config).await?,
+            Arc::new(
+                rss_mdm_authorization_service::session::SessionAuthority::new(
+                    identity.authority.clone(),
+                    identity.tenant,
+                ),
+            ),
         )
         .await?;
-        let identity = crate::identity::Identity::connect(
-            config,
-            compiled.identity_management.clone(),
-            |_| {},
-        )
-        .await?;
+        resources.resource(rss_mdm_execution_service::Resource(
+            execution.service.clone(),
+        ));
         let config = compiled.config;
         let timeline = access.timeline(
             access
@@ -320,6 +337,7 @@ impl Fixture {
                             let mut pg = sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?).await?;
                             sqlx::query("INSERT INTO mdm_access.registration_admission(tenant_id,channel,revision,paused) VALUES($1::uuid,'macos_mdm',1,true)")
                                 .bind(&tenant).execute(&mut pg).await?;
+                            pg.close().await?;
                             anyhow::Ok(())
                         }.await;
                         if result.is_err() { return StatusCode::INTERNAL_SERVER_ERROR.into_response(); }
@@ -413,10 +431,9 @@ impl Fixture {
         let router = router.layer(axum::Extension(rss_identity_http_axum::ClientAddress(
             "127.0.0.1".parse()?,
         )));
-        let browser = crate::test_support::authority::Authority::open()
-            .await?
-            .browser("admin")?;
+        let browser = crate::test_support::authority::Authority::prepared_browser("admin").await?;
         Ok(Self {
+            resources,
             app,
             browser,
             router,
@@ -718,6 +735,7 @@ impl Fixture {
                 );
             }
         }
+        self.resources.finish(async { Ok(()) }).await?;
         ensure!(report.is_clean(), "Apple fixture shutdown: {report:?}");
         Ok(())
     }

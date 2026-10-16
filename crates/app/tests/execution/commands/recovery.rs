@@ -71,11 +71,16 @@ impl Client {
         let restarted = Box::pin(crate::execution_assembly::open(
             &config,
             config.native_protector()?,
-            crate::test_support::identity::audit_store(&config).await?,
+            self.app.audit_store.clone(),
             crate::execution_assembly::open_content(&config, config.native_protector()?).await?,
             std::collections::BTreeMap::new(),
             rss_device_command_postgres::CommandClock::Controlled(clock.clone()),
-            crate::test_support::identity::session_authority(&config).await?,
+            Arc::new(
+                rss_mdm_authorization_service::session::SessionAuthority::new(
+                    self.app.identity.authority.clone(),
+                    self.app.identity.tenant,
+                ),
+            ),
         ))
         .await?;
         eprintln!("command T2: restarted runtime admitted");

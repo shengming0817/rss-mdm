@@ -7,7 +7,9 @@ use ring::signature::KeyPair;
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 #[ignore = "make t2 MODULE=execution.agent.delivery"]
 async fn registration_capability_and_wire_gate() -> Result<()> {
-    let fixture = Fixture::new().await?;
+    let mut fixture = Fixture::new().await?;
+    let resources = std::mem::take(&mut fixture.resources);
+    resources.finish(async {
     let router = fixture.router;
     let registration=crate::test_support::agent::seed_profile(&fixture.base,fixture.execution.clone(),case_inventory_credential(),case::name("inventory-peer"),json!({"capabilities":["inventory.collect.v1"],"platform":"macos","architecture":"aarch64","executionContext":crate::test_support::software_execution::context(crate::test_support::software_execution::Platform::MacOs)})).await?;
     ensure!(registration["capabilities"] == json!(["inventory.collect.v1"]));
@@ -66,11 +68,14 @@ async fn registration_capability_and_wire_gate() -> Result<()> {
         .0 == StatusCode::OK
     );
     Ok(())
+    }).await
 }
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 #[ignore = "make t2 MODULE=execution.agent.delivery"]
 async fn offer_start_result_replay_and_inventory_projection() -> Result<()> {
     let mut fixture = Fixture::new().await?;
+    let resources = std::mem::take(&mut fixture.resources);
+    resources.finish(async {
     let registration = fixture.register().await?;
     let (id, _bytes, _definition) = fixture.resource().await?;
     fixture
@@ -255,6 +260,7 @@ async fn offer_start_result_replay_and_inventory_projection() -> Result<()> {
     runtime.close_fixture().await?;
     crate::test_support::stop_worker(stack).await?;
     Ok(())
+    }).await
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
@@ -262,6 +268,8 @@ async fn offer_start_result_replay_and_inventory_projection() -> Result<()> {
 async fn chunked_results_require_complete_output_and_preserve_attempt_identity() -> Result<()> {
     use rss_mdm_agent_wire::runtime as wire;
     let mut fixture = Fixture::new().await?;
+    let resources = std::mem::take(&mut fixture.resources);
+    resources.finish(async {
     fixture.register().await?;
     let (resource, _, _) = fixture.resource_with_output_limit(524288).await?;
     fixture
@@ -321,6 +329,7 @@ async fn chunked_results_require_complete_output_and_preserve_attempt_identity()
     ensure!(pg(&format!("SELECT count(*) FROM mdm_commands.output_chunks WHERE tenant_id='{}' AND attempt='{attempt}'",case_tenant()))?.trim()=="2");
     crate::test_support::stop_worker(stack).await?;
     Ok(())
+    }).await
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
@@ -328,6 +337,8 @@ async fn chunked_results_require_complete_output_and_preserve_attempt_identity()
 async fn collection_structure_budget_precedes_partial_field_acceptance() -> Result<()> {
     use rss_mdm_agent_wire::runtime as wire;
     let mut fixture = Fixture::new().await?;
+    let resources = std::mem::take(&mut fixture.resources);
+    resources.finish(async {
     fixture.register().await?;
     fixture
         .scope(
@@ -394,6 +405,7 @@ async fn collection_structure_budget_precedes_partial_field_acceptance() -> Resu
     }
     crate::test_support::stop_worker(stack).await?;
     Ok(())
+    }).await
 }
 
 /// Synthetic protocol fixture: proves server HTTP/PG semantics, not Windows execution.
@@ -442,6 +454,8 @@ async fn native_inventory_case(map_software: bool, all_failed: bool, macos: bool
         "device.software.installations"
     };
     let mut f = Fixture::new().await?;
+    let resources = std::mem::take(&mut f.resources);
+    resources.finish(async {
     f.grants
         .retain(|g| g.operation != crate::authorization::Permission::ScriptExecute);
     f.grants
@@ -992,6 +1006,7 @@ async fn native_inventory_case(map_software: bool, all_failed: bool, macos: bool
     runtime.close_fixture().await?;
     crate::test_support::stop_worker(worker).await?;
     Ok(())
+    }).await
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
@@ -1001,6 +1016,8 @@ async fn macos_user_applications_and_brew_keep_other_users_after_complete_empty(
     use rss_mdm_resource as r;
     use sha2::{Digest, Sha256};
     let mut f = Fixture::new().await?;
+    let resources = std::mem::take(&mut f.resources);
+    resources.finish(async {
     f.grants
         .extend(crate::test_support::identity::device_grants(
             None,
@@ -1237,4 +1254,5 @@ async fn macos_user_applications_and_brew_keep_other_users_after_complete_empty(
     runtime.close_fixture().await?;
     crate::test_support::stop_worker(worker).await?;
     Ok(())
+    }).await
 }

@@ -6,8 +6,10 @@
 use crate::test_support::*;
 use rss_mdm_timeline_service::Timeline;
 use rss_request_context::TenantId;
+use sqlx::Connection;
 use uuid::Uuid;
 struct Fixture {
+    resources: crate::test_support::Resources,
     authority: authority::Authority,
     router: Router,
     admin: Browser,
@@ -16,9 +18,9 @@ struct Fixture {
 }
 impl Fixture {
     async fn open() -> Result<Self> {
-        let authority = authority::Authority::open().await?;
+        let mut authority = authority::Authority::open().await?;
         let config: Config = serde_json::from_value(authority.base.clone())?;
-        let (router, _, runtime, _) = crate::api::application_fixture(
+        let (router, _, runtime, _, application_resources) = crate::api::application_fixture(
             config,
             Arc::new(crate::clock::SystemClock),
             monotonic(),
@@ -27,6 +29,8 @@ impl Fixture {
             authority.audit.clone(),
         )
         .await?;
+        let mut resources = std::mem::take(&mut authority.resources);
+        resources.extend(application_resources);
         let tenant = TenantId::parse(case_tenant())?;
         let key = rss_mdm_flow_service::storage::cursor_key(&runtime, tenant).await?;
         let timeline = authority
@@ -38,6 +42,7 @@ impl Fixture {
             "127.0.0.1".parse()?,
         )));
         Ok(Self {
+            resources,
             authority,
             router,
             admin,
@@ -117,6 +122,8 @@ impl Fixture {
 #[ignore = "make t2 MODULE=timeline.http"]
 async fn existing_business_facts_are_queryable_over_real_http() -> Result<()> {
     let mut f = Fixture::open().await?;
+    let f_resources = std::mem::take(&mut f.resources);
+    f_resources.finish(async {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
     let address = listener.local_addr()?;
     let router = f.router.clone();
@@ -292,12 +299,16 @@ async fn existing_business_facts_are_queryable_over_real_http() -> Result<()> {
     );
     ensure!(!serde_json::to_string(&page)?.contains("AAAAAAAAAAAA"));
     Ok(())
+
+    }).await
 }
 #[tokio::test]
 #[ignore = "make t2 MODULE=timeline.http"]
 async fn fixed_watermark_pagination_survives_new_events_and_rebuild_rejects_old_cursor()
 -> Result<()> {
     let mut f = Fixture::open().await?;
+    let f_resources = std::mem::take(&mut f.resources);
+    f_resources.finish(async {
     for _ in 0..6 {
         f.get("/api/v1/audit-events").await?;
     }
@@ -361,87 +372,96 @@ async fn fixed_watermark_pagination_survives_new_events_and_rebuild_rejects_old_
             == StatusCode::CONFLICT
     );
     Ok(())
+
+    }).await
 }
 #[tokio::test]
 #[ignore = "make t2 MODULE=timeline.http"]
 async fn administrators_use_existing_access_and_tenant_isolation_is_preserved() -> Result<()> {
     let mut f = Fixture::open().await?;
-    let page = f.get("/api/v1/audit-events").await?;
-    ensure!(
-        page["items"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .all(|v| v["actor"] != case::context().admin_for(case::peer()))
-    );
-    f.get("/api/v1/devices/unknown-device/timeline").await?;
-    let before = pg(&format!(
-        "SELECT position FROM mdm_timeline.checkpoints WHERE tenant_id='{}'",
-        case_tenant()
-    ))?;
-    let mut anonymous = Browser::default();
-    ensure!(
-        anonymous
-            .call(&f.router, Method::GET, "/api/v1/audit-events", None)
-            .await?
-            .0
-            == StatusCode::UNAUTHORIZED
-    );
-    let mut other = f.authority.browser("other")?;
-    ensure!(
-        other
-            .call(&f.router, Method::GET, "/api/v1/audit-events", None)
-            .await?
-            .0
-            == StatusCode::FORBIDDEN
-    );
-    ensure!(
-        f.admin
-            .call(
-                &f.router,
-                Method::GET,
-                "/api/v1/audit-events?limit=201",
-                None
-            )
-            .await?
-            .0
-            == StatusCode::BAD_REQUEST
-    );
-    ensure!(
-        before
-            == pg(&format!(
+    let f_resources = std::mem::take(&mut f.resources);
+    f_resources
+        .finish(async {
+            let page = f.get("/api/v1/audit-events").await?;
+            ensure!(
+                page["items"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .all(|v| v["actor"] != case::context().admin_for(case::peer()))
+            );
+            f.get("/api/v1/devices/unknown-device/timeline").await?;
+            let before = pg(&format!(
                 "SELECT position FROM mdm_timeline.checkpoints WHERE tenant_id='{}'",
                 case_tenant()
-            ))?
-    );
-    let subject = browser_subject(&other, &f.router).await?;
-    identity::set_grants(
-        case_tenant(),
-        &subject,
-        vec![crate::authorization::Grant {
-            operation: crate::authorization::Permission::AuthorizationRead,
-            scope: crate::authorization::Scope::Tenant,
-        }],
-    )
-    .await?;
-    ensure!(
-        other
-            .call(
-                &f.router,
-                Method::GET,
-                "/api/v1/devices/unknown-device/timeline",
-                None
+            ))?;
+            let mut anonymous = Browser::default();
+            ensure!(
+                anonymous
+                    .call(&f.router, Method::GET, "/api/v1/audit-events", None)
+                    .await?
+                    .0
+                    == StatusCode::UNAUTHORIZED
+            );
+            let mut other = f.authority.browser("other")?;
+            ensure!(
+                other
+                    .call(&f.router, Method::GET, "/api/v1/audit-events", None)
+                    .await?
+                    .0
+                    == StatusCode::FORBIDDEN
+            );
+            ensure!(
+                f.admin
+                    .call(
+                        &f.router,
+                        Method::GET,
+                        "/api/v1/audit-events?limit=201",
+                        None
+                    )
+                    .await?
+                    .0
+                    == StatusCode::BAD_REQUEST
+            );
+            ensure!(
+                before
+                    == pg(&format!(
+                        "SELECT position FROM mdm_timeline.checkpoints WHERE tenant_id='{}'",
+                        case_tenant()
+                    ))?
+            );
+            let subject = browser_subject(&other, &f.router).await?;
+            identity::set_grants(
+                case_tenant(),
+                &subject,
+                vec![crate::authorization::Grant {
+                    operation: crate::authorization::Permission::AuthorizationRead,
+                    scope: crate::authorization::Scope::Tenant,
+                }],
             )
-            .await?
-            .0
-            == StatusCode::OK
-    );
-    Ok(())
+            .await?;
+            ensure!(
+                other
+                    .call(
+                        &f.router,
+                        Method::GET,
+                        "/api/v1/devices/unknown-device/timeline",
+                        None
+                    )
+                    .await?
+                    .0
+                    == StatusCode::OK
+            );
+            Ok(())
+        })
+        .await
 }
 #[tokio::test]
 #[ignore = "make t2 MODULE=timeline.http"]
 async fn projection_commit_is_atomic_concurrent_and_corruption_is_visible() -> Result<()> {
     let mut f = Fixture::open().await?;
+    let f_resources = std::mem::take(&mut f.resources);
+    f_resources.finish(async {
     f.get("/api/v1/audit-events").await?;
     let before = pg(&format!(
         "SELECT position FROM mdm_timeline.checkpoints WHERE tenant_id='{}'",
@@ -501,111 +521,121 @@ async fn projection_commit_is_atomic_concurrent_and_corruption_is_visible() -> R
             .is_server_error()
     );
     Ok(())
+
+    }).await
 }
 
 #[tokio::test]
 #[ignore = "make t2 MODULE=timeline.http"]
 async fn source_recording_time_orders_facts_and_unknown_execution_remains_unknown() -> Result<()> {
     let mut f = Fixture::open().await?;
-    let proof = crate::device::test_support::admin(case_tenant(), "admin-a").await?;
-    let operation = Uuid::new_v4();
-    for (index, recorded, observed) in [(0, 200, 300), (1, 100, 400), (2, 200, 50)] {
-        f.append(&proof, operation, index, recorded, observed)
-            .await?;
-    }
-    let page = f
-        .get(&format!(
-            "/api/v1/audit-events?operationId={operation}&limit=2"
-        ))
-        .await?;
-    let items = page["items"].as_array().unwrap();
-    ensure!(
-        items.len() == 2
-            && items.iter().all(|v| v["recordedAt"] == 200
-                && v["phase"] == "unknown"
-                && v["executionState"] == "unknown"
-                && v["effect"] == "unknown")
-    );
-    ensure!(items[0]["position"].as_u64() > items[1]["position"].as_u64());
-    let next = f
-        .get(&format!(
-            "/api/v1/audit-events?operationId={operation}&cursor={}",
-            page["nextCursor"].as_str().unwrap()
-        ))
-        .await?;
-    ensure!(next["items"][0]["recordedAt"] == 100 && next["nextCursor"].is_null());
-    let filtered = f
-        .get(&format!(
-            "/api/v1/audit-events?operationId={operation}&from=150&until=201"
-        ))
-        .await?;
-    ensure!(filtered["items"].as_array().unwrap().len() == 2);
-    ensure!(!serde_json::to_string(&filtered)?.contains("private-fixture-secret"));
-    Ok(())
+    let f_resources = std::mem::take(&mut f.resources);
+    f_resources
+        .finish(async {
+            let proof = crate::device::test_support::admin(case_tenant(), "admin-a").await?;
+            let operation = Uuid::new_v4();
+            for (index, recorded, observed) in [(0, 200, 300), (1, 100, 400), (2, 200, 50)] {
+                f.append(&proof, operation, index, recorded, observed)
+                    .await?;
+            }
+            let page = f
+                .get(&format!(
+                    "/api/v1/audit-events?operationId={operation}&limit=2"
+                ))
+                .await?;
+            let items = page["items"].as_array().unwrap();
+            ensure!(
+                items.len() == 2
+                    && items.iter().all(|v| v["recordedAt"] == 200
+                        && v["phase"] == "unknown"
+                        && v["executionState"] == "unknown"
+                        && v["effect"] == "unknown")
+            );
+            ensure!(items[0]["position"].as_u64() > items[1]["position"].as_u64());
+            let next = f
+                .get(&format!(
+                    "/api/v1/audit-events?operationId={operation}&cursor={}",
+                    page["nextCursor"].as_str().unwrap()
+                ))
+                .await?;
+            ensure!(next["items"][0]["recordedAt"] == 100 && next["nextCursor"].is_null());
+            let filtered = f
+                .get(&format!(
+                    "/api/v1/audit-events?operationId={operation}&from=150&until=201"
+                ))
+                .await?;
+            ensure!(filtered["items"].as_array().unwrap().len() == 2);
+            ensure!(!serde_json::to_string(&filtered)?.contains("private-fixture-secret"));
+            Ok(())
+        })
+        .await
 }
 #[tokio::test]
 #[ignore = "make t2 MODULE=timeline.http"]
 async fn on_demand_projection_is_bounded_idle_and_resumes_from_durable_checkpoint() -> Result<()> {
     let mut f = Fixture::open().await?;
-    let proof = crate::device::test_support::admin(case_tenant(), "admin-a").await?;
-    let operation = Uuid::new_v4();
-    let before = pg(&format!(
-        "SELECT position FROM mdm_timeline.checkpoints WHERE tenant_id='{}'",
-        case_tenant()
-    ))?;
-    for index in 0..130 {
-        f.append(&proof, operation, index, 200, 200).await?;
-    }
-    // Persistent facts alone do not advance the query index.
-    ensure!(
-        before
-            == pg(&format!(
+    let f_resources = std::mem::take(&mut f.resources);
+    f_resources
+        .finish(async {
+            let proof = crate::device::test_support::admin(case_tenant(), "admin-a").await?;
+            let operation = Uuid::new_v4();
+            let before = pg(&format!(
                 "SELECT position FROM mdm_timeline.checkpoints WHERE tenant_id='{}'",
                 case_tenant()
-            ))?
-    );
-    let first = f
-        .get(&format!(
-            "/api/v1/audit-events?operationId={operation}&limit=200"
-        ))
-        .await?;
-    ensure!(first["coverage"]["complete"] == false);
-    ensure!(
-        !first["items"].as_array().unwrap().is_empty()
-            && first["items"].as_array().unwrap().len() <= 64
-    );
-    let mut indexed = first["coverage"]["indexedThrough"].as_u64().unwrap();
-    let mut complete = false;
-    for _ in 0..8 {
-        let page = f
-            .get(&format!(
-                "/api/v1/audit-events?operationId={operation}&limit=200"
-            ))
-            .await?;
-        let next = page["coverage"]["indexedThrough"].as_u64().unwrap();
-        ensure!(next >= indexed && next - indexed <= 64);
-        indexed = next;
-        if page["coverage"]["complete"] == true {
-            ensure!(page["items"].as_array().unwrap().len() == 130);
-            complete = true;
-            break;
-        }
-    }
-    ensure!(complete, "small bounded backlog did not converge");
-    let restarted = f.authority.access.timeline(
-        f.authority.audit.clone(),
-        TenantId::parse(case_tenant())?,
-        &f.key,
-    )?;
-    restarted.initialize().await?;
-    let query = rss_mdm_timeline_service::Query {
-        operation_id: Some(operation),
-        limit: Some(200),
-        ..Default::default()
-    };
-    let page = restarted.query(&proof, "audit", &query).await?;
-    ensure!(page.items.len() == 130 && page.coverage.indexed_through.unwrap() >= indexed);
-    ensure!(
+            ))?;
+            for index in 0..130 {
+                f.append(&proof, operation, index, 200, 200).await?;
+            }
+            // Persistent facts alone do not advance the query index.
+            ensure!(
+                before
+                    == pg(&format!(
+                        "SELECT position FROM mdm_timeline.checkpoints WHERE tenant_id='{}'",
+                        case_tenant()
+                    ))?
+            );
+            let first = f
+                .get(&format!(
+                    "/api/v1/audit-events?operationId={operation}&limit=200"
+                ))
+                .await?;
+            ensure!(first["coverage"]["complete"] == false);
+            ensure!(
+                !first["items"].as_array().unwrap().is_empty()
+                    && first["items"].as_array().unwrap().len() <= 64
+            );
+            let mut indexed = first["coverage"]["indexedThrough"].as_u64().unwrap();
+            let mut complete = false;
+            for _ in 0..8 {
+                let page = f
+                    .get(&format!(
+                        "/api/v1/audit-events?operationId={operation}&limit=200"
+                    ))
+                    .await?;
+                let next = page["coverage"]["indexedThrough"].as_u64().unwrap();
+                ensure!(next >= indexed && next - indexed <= 64);
+                indexed = next;
+                if page["coverage"]["complete"] == true {
+                    ensure!(page["items"].as_array().unwrap().len() == 130);
+                    complete = true;
+                    break;
+                }
+            }
+            ensure!(complete, "small bounded backlog did not converge");
+            let restarted = f.authority.access.timeline(
+                f.authority.audit.clone(),
+                TenantId::parse(case_tenant())?,
+                &f.key,
+            )?;
+            restarted.initialize().await?;
+            let query = rss_mdm_timeline_service::Query {
+                operation_id: Some(operation),
+                limit: Some(200),
+                ..Default::default()
+            };
+            let page = restarted.query(&proof, "audit", &query).await?;
+            ensure!(page.items.len() == 130 && page.coverage.indexed_through.unwrap() >= indexed);
+            ensure!(
         pg(&format!(
             "SELECT count(*)=count(DISTINCT position) FROM mdm_timeline.facts WHERE tenant_id='{}'",
             case_tenant()
@@ -613,11 +643,12 @@ async fn on_demand_projection_is_bounded_idle_and_resumes_from_durable_checkpoin
         .trim()
             == "t"
     );
-    Ok(())
+            Ok(())
+        })
+        .await
 }
 
 async fn lock_checkpoint() -> Result<sqlx::PgConnection> {
-    use sqlx::Connection;
     let mut owner = sqlx::PgConnection::connect(&std::env::var("MDM_ADMIN_URL")?).await?;
     sqlx::raw_sql("BEGIN").execute(&mut owner).await?;
     sqlx::query(
@@ -633,7 +664,7 @@ async fn wait_for_projection_lock(owner: &mut sqlx::PgConnection) -> Result<()> 
         loop {
             // Each poll must observe fresh activity while the checkpoint lock transaction stays open.
             sqlx::query("SELECT pg_stat_clear_snapshot()").execute(&mut *owner).await?;
-            let waiting:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE datname=current_database() AND pid<>pg_backend_pid() AND wait_event_type='Lock' AND query LIKE '%mdm_timeline.checkpoints%')").fetch_one(&mut *owner).await?;
+            let waiting:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE datname=current_database() AND pid<>pg_backend_pid() AND wait_event_type='Lock' AND pg_backend_pid()=ANY(pg_blocking_pids(pid)) AND query LIKE '%mdm_timeline.checkpoints%')").fetch_one(&mut *owner).await?;
             if waiting {return Ok::<_,anyhow::Error>(())}
             tokio::time::sleep(Duration::from_millis(5)).await;
         }
@@ -645,84 +676,107 @@ async fn wait_for_projection_lock(owner: &mut sqlx::PgConnection) -> Result<()> 
 async fn query_budget_returns_partial_after_acknowledged_rollback_and_next_query_recovers()
 -> Result<()> {
     let mut f = Fixture::open().await?;
-    let mut owner = lock_checkpoint().await?;
-    let browser = f.admin.clone();
-    let router = f.router.clone();
-    let query = tokio::spawn(async move {
-        let mut browser = browser;
-        browser
-            .call(&router, Method::GET, "/api/v1/audit-events", None)
-            .await
-    });
-    wait_for_projection_lock(&mut owner).await?;
-    let (status, page) = query.await??;
-    ensure!(
-        status == StatusCode::OK
-            && page["coverage"]["complete"] == false
-            && page["coverage"]["indexedThrough"].is_null()
-    );
-    ensure!(
-        pg(&format!(
-            "SELECT count(*) FROM mdm_timeline.facts WHERE tenant_id='{}'",
-            case_tenant()
-        ))?
-        .trim()
-            == "0"
-    );
-    sqlx::raw_sql("ROLLBACK").execute(&mut owner).await?;
-    let recovered = f.get("/api/v1/audit-events").await?;
-    ensure!(!recovered["items"].as_array().unwrap().is_empty());
-    Ok(())
+    let f_resources = std::mem::take(&mut f.resources);
+    f_resources
+        .finish(async {
+            let proof = crate::device::test_support::admin(case_tenant(), "admin-a").await?;
+            f.append(&proof, Uuid::new_v4(), 0, 1, 1).await?;
+            let mut owner = lock_checkpoint().await?;
+            let browser = f.admin.clone();
+            let router = f.router.clone();
+            let query = tokio::spawn(async move {
+                let mut browser = browser;
+                browser
+                    .call(&router, Method::GET, "/api/v1/audit-events", None)
+                    .await
+            });
+            wait_for_projection_lock(&mut owner).await?;
+            let (status, page) = query.await??;
+            ensure!(
+                status == StatusCode::OK
+                    && page["coverage"]["complete"] == false
+                    && page["coverage"]["indexedThrough"].is_null()
+            );
+            ensure!(
+                pg(&format!(
+                    "SELECT count(*) FROM mdm_timeline.facts WHERE tenant_id='{}'",
+                    case_tenant()
+                ))?
+                .trim()
+                    == "0"
+            );
+            sqlx::raw_sql("ROLLBACK").execute(&mut owner).await?;
+            owner.close().await?;
+            let recovered = f.get("/api/v1/audit-events").await?;
+            ensure!(!recovered["items"].as_array().unwrap().is_empty());
+            Ok(())
+        })
+        .await
 }
 #[tokio::test]
 #[ignore = "make t2 MODULE=timeline.http"]
 async fn prepared_batch_cannot_cross_a_rebuilt_generation_at_the_same_position() -> Result<()> {
     let mut f = Fixture::open().await?;
-    let mut owner = lock_checkpoint().await?;
-    let timeline = f.timeline.clone();
-    let proof = crate::device::test_support::admin(case_tenant(), "admin-a").await?;
-    let query =
-        tokio::spawn(async move { timeline.query(&proof, "audit", &Default::default()).await });
-    wait_for_projection_lock(&mut owner).await?;
-    sqlx::query("UPDATE mdm_timeline.checkpoints SET generation=$2 WHERE tenant_id=$1::uuid")
-        .bind(case_tenant())
-        .bind(Uuid::new_v4())
-        .execute(&mut owner)
-        .await?;
-    sqlx::raw_sql("COMMIT").execute(&mut owner).await?;
-    let page = query.await??;
-    ensure!(
-        page.items.is_empty() && !page.coverage.complete && page.coverage.indexed_through.is_none()
-    );
-    ensure!(
-        pg(&format!(
-            "SELECT position FROM mdm_timeline.checkpoints WHERE tenant_id='{}'",
-            case_tenant()
-        ))?
-        .trim()
-            == "-1"
-    );
-    ensure!(
-        pg(&format!(
-            "SELECT count(*) FROM mdm_timeline.facts WHERE tenant_id='{}'",
-            case_tenant()
-        ))?
-        .trim()
-            == "0"
-    );
-    ensure!(
-        !f.get("/api/v1/audit-events").await?["items"]
-            .as_array()
-            .unwrap()
-            .is_empty()
-    );
-    Ok(())
+    let f_resources = std::mem::take(&mut f.resources);
+    f_resources
+        .finish(async {
+            let proof = crate::device::test_support::admin(case_tenant(), "admin-a").await?;
+            f.append(&proof, Uuid::new_v4(), 0, 1, 1).await?;
+            let mut owner = lock_checkpoint().await?;
+            let timeline = f.timeline.clone();
+            let query =
+                tokio::spawn(
+                    async move { timeline.query(&proof, "audit", &Default::default()).await },
+                );
+            wait_for_projection_lock(&mut owner).await?;
+            sqlx::query(
+                "UPDATE mdm_timeline.checkpoints SET generation=$2 WHERE tenant_id=$1::uuid",
+            )
+            .bind(case_tenant())
+            .bind(Uuid::new_v4())
+            .execute(&mut owner)
+            .await?;
+            sqlx::raw_sql("COMMIT").execute(&mut owner).await?;
+            owner.close().await?;
+            let page = query.await??;
+            ensure!(
+                page.items.is_empty()
+                    && !page.coverage.complete
+                    && page.coverage.indexed_through.is_none()
+            );
+            ensure!(
+                pg(&format!(
+                    "SELECT position FROM mdm_timeline.checkpoints WHERE tenant_id='{}'",
+                    case_tenant()
+                ))?
+                .trim()
+                    == "-1"
+            );
+            ensure!(
+                pg(&format!(
+                    "SELECT count(*) FROM mdm_timeline.facts WHERE tenant_id='{}'",
+                    case_tenant()
+                ))?
+                .trim()
+                    == "0"
+            );
+            ensure!(
+                !f.get("/api/v1/audit-events").await?["items"]
+                    .as_array()
+                    .unwrap()
+                    .is_empty()
+            );
+            Ok(())
+        })
+        .await
 }
 
 #[tokio::test]
 #[ignore = "make t2 MODULE=timeline.http"]
 async fn corrupt_source_is_rejected_without_advancing_the_index() -> Result<()> {
     let mut f = Fixture::open().await?;
+    let f_resources = std::mem::take(&mut f.resources);
+    f_resources.finish(async {
     let before = pg(&format!(
         "SELECT position FROM mdm_timeline.checkpoints WHERE tenant_id='{}'",
         case_tenant()
@@ -755,4 +809,6 @@ async fn corrupt_source_is_rejected_without_advancing_the_index() -> Result<()> 
             == "0"
     );
     Ok(())
+
+    }).await
 }

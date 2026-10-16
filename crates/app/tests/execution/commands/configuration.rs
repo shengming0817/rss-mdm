@@ -515,11 +515,16 @@ async fn native_object_sets_share_a_device_and_withdraw_only_their_own_objects()
     let restarted = Box::pin(crate::execution_assembly::open(
         &config,
         config.native_protector()?,
-        crate::test_support::identity::audit_store(&config).await?,
+        client.app.audit_store.clone(),
         crate::execution_assembly::open_content(&config, config.native_protector()?).await?,
         std::collections::BTreeMap::new(),
         rss_device_command_postgres::CommandClock::Postgres,
-        crate::test_support::identity::session_authority(&config).await?,
+        Arc::new(
+            rss_mdm_authorization_service::session::SessionAuthority::new(
+                client.app.identity.authority.clone(),
+                client.app.identity.tenant,
+            ),
+        ),
     ))
     .await?;
     let timer = recovery::Timer::new();
@@ -639,9 +644,8 @@ async fn associated_agent_health_executes_only_original_mdm_and_missing_channel_
         sqlx::query("INSERT INTO mdm_access.report_sources(tenant_id,registration,source,epoch,enabled) VALUES($1::uuid,$2,'agent.script',$3,true)").bind(case_tenant()).bind(registration).bind(epoch).execute(&mut pg).await?;
         sqlx::query("INSERT INTO mdm.inventory(field_scope,tenant_id,journal,generation,scope,coverage,field,value,batch_id,observed_at,received_at,state,last_known,last_known_batch,last_known_observed,last_known_received,registration,source,epoch,collection_sequence) VALUES(replace(jsonb_build_object('kind','device')::text,' ',''),$1::uuid,'mdm.observation.v1','inventory-v7',$2,$3,'custom.corporate_agent.healthy',$4,'health-fixture',1,2,'known',$4,'health-fixture',1,2,$5,'agent.script',$6,0)").bind(case_tenant()).bind(scope).bind(serde_json::to_string(&definition.coverage()?)?).bind(serde_json::to_value(Scalar::Boolean(false))?).bind(registration).bind(epoch).execute(&mut pg).await?;
     }
-    let config = crate::test_support::identity::config(case_tenant())?;
     let associations = rss_mdm_device_service::Associations::new(
-        crate::test_support::identity::audit_store(&config).await?,
+        client.app.audit_store.clone(),
         client.app.identity.tenant,
         &[7; 32],
     )?;

@@ -105,6 +105,7 @@ async fn admin_session(
 }
 
 pub(crate) struct Host {
+    resources: crate::test_support::Resources,
     pub(crate) root: PathBuf,
     pub(crate) app: Arc<Assembly>,
     pub(crate) command_audit: Arc<rss_mdm_audit_integration::AuditStore>,
@@ -280,9 +281,12 @@ impl Host {
                 crate::test_support::identity::INSTANCE,
             )?,
         );
+        let mut resources = crate::test_support::Resources::default();
         let identity =
-            crate::identity::Identity::connect(&config, identity_management.clone(), |_| {})
-                .await?;
+            crate::identity::Identity::connect(&config, identity_management.clone(), |resource| {
+                resources.acquire(resource)
+            })
+            .await?;
         let secret = admin_session(&identity, credential).await?;
         let credentials = crate::enrollment::credentials::Credentials::new(monotonic(), 100);
         let reference = credentials.insert(rss_identity_core::session::SessionSecret::parse(
@@ -306,7 +310,8 @@ impl Host {
                 .await?,
         )
         .await?;
-        let (management, timeline) = management(&config, &store, runtime.clone()).await?;
+        let (management, timeline) =
+            management(&config, &store, runtime.clone(), &mut resources).await?;
         let command_audit = store
             .audit_store(&crate::config::AuditConfig::Plain)
             .await?;
@@ -314,6 +319,9 @@ impl Host {
             let _guard = crate::test_support::software::content_setup_guard().await?;
             crate::execution_assembly::open_content(&config, config.native_protector()?).await?
         };
+        if let Some(content) = &content {
+            resources.resource(crate::execution_assembly::ContentResource(content.clone()));
+        }
         let execution = crate::execution_assembly::open(
             &config,
             config.native_protector()?,
@@ -321,10 +329,18 @@ impl Host {
             content,
             std::collections::BTreeMap::new(),
             command_clock,
-            crate::test_support::identity::session_authority(&config).await?,
+            Arc::new(
+                rss_mdm_authorization_service::session::SessionAuthority::new(
+                    identity.authority.clone(),
+                    identity.tenant,
+                ),
+            ),
         )
         .await
         .map_err(|e| anyhow::anyhow!("command startup: {e:?}"))?;
+        resources.resource(rss_mdm_execution_service::Resource(
+            execution.service.clone(),
+        ));
         let agent_audit = command_audit.clone();
         let agent_pki = config.agent_pki.load(
             agent_audit.clone(),
@@ -444,6 +460,7 @@ impl Host {
             .timeout(Duration::from_secs(12))
             .build()?;
         Ok(Self {
+            resources,
             root,
             app,
             command_audit,
@@ -572,6 +589,7 @@ impl Host {
         if let Some(owner) = self.running.take() {
             ensure!(owner.shutdown().join().await?.is_clean());
         }
+        self.resources.finish(async { Ok(()) }).await?;
         self.runtime.close_fixture().await?;
         self.store.close().await;
         Ok(())
@@ -971,6 +989,7 @@ async fn management(
     config: &crate::config::Config,
     access: &Database,
     inventory: Arc<crate::inventory_runtime::InventoryRuntime>,
+    resources: &mut crate::test_support::Resources,
 ) -> anyhow::Result<(
     Arc<crate::flow::Flow>,
     Arc<rss_mdm_timeline_service::Timeline>,
@@ -986,7 +1005,7 @@ async fn management(
             tenant,
             Arc::new(crate::clock::SystemClock),
             None,
-            |_| {},
+            |resource| resources.resource(resource),
         )
         .await?;
     let timeline = access.timeline(

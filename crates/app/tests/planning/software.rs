@@ -4,7 +4,9 @@ use crate::test_support::*;
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 #[ignore = "make t2 MODULE=planning.software"]
 async fn rollout_time_success_gates_and_stage_evidence() -> Result<()> {
-    let fixture = Fixture::approved(Platform::MacOs).await?;
+    let mut fixture = Fixture::approved(Platform::MacOs).await?;
+    let resources = std::mem::take(&mut fixture.resources);
+    resources.finish(async {
     let empty_scope = prepared_scope(&fixture.planning, &[]).await?;
     let content = fixture.content.clone();
     let base = fixture.base;
@@ -205,74 +207,82 @@ async fn rollout_time_success_gates_and_stage_evidence() -> Result<()> {
     );
     crate::test_support::stop_worker(stack).await?;
     Ok(())
+    }).await
 }
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 #[ignore = "make t2 MODULE=planning.software"]
 async fn new_approval_changes_execution_version() -> Result<()> {
-    let fixture = Fixture::approved(Platform::MacOs).await?;
-    let stack = worker(&fixture.base, fixture.content.clone()).await?;
-    let router = fixture.router;
-    let mut author = fixture.author;
-    let resource = fixture.resource;
+    let mut fixture = Fixture::approved(Platform::MacOs).await?;
+    let resources = std::mem::take(&mut fixture.resources);
+    resources
+        .finish(async {
+            let stack = worker(&fixture.base, fixture.content.clone()).await?;
+            let router = fixture.router;
+            let mut author = fixture.author;
+            let resource = fixture.resource;
 
-    let scope = fixture.scope;
-    let authored = |intent: &str| authored(resource, scope, intent);
-    let policy = Uuid::new_v4();
-    let policy_path = format!("/api/v1/policies/{policy}");
-    let published = write(
-        &mut author,
-        &router,
-        &policy_path,
-        0,
-        json!({"action":"put","enabled":true,"definition":authored("required_install")}),
-    )
-    .await?;
-    ensure!(published["version"] == 1, "publish: {published}");
-    write(
-        &mut author,
-        &router,
-        &policy_path,
-        1,
-        json!({"action":"disable"}),
-    )
-    .await?;
-    write(
-        &mut author,
-        &router,
-        &format!("/api/v1/software/resources/{resource}/versions/v1"),
-        1,
-        json!({"action":"withdraw"}),
-    )
-    .await?;
-    write(
-        &mut author,
-        &router,
-        &format!("/api/v1/software/resources/{resource}/versions/v1"),
-        2,
-        json!({"action":"enable"}),
-    )
-    .await?;
+            let scope = fixture.scope;
+            let authored = |intent: &str| authored(resource, scope, intent);
+            let policy = Uuid::new_v4();
+            let policy_path = format!("/api/v1/policies/{policy}");
+            let published = write(
+                &mut author,
+                &router,
+                &policy_path,
+                0,
+                json!({"action":"put","enabled":true,"definition":authored("required_install")}),
+            )
+            .await?;
+            ensure!(published["version"] == 1, "publish: {published}");
+            write(
+                &mut author,
+                &router,
+                &policy_path,
+                1,
+                json!({"action":"disable"}),
+            )
+            .await?;
+            write(
+                &mut author,
+                &router,
+                &format!("/api/v1/software/resources/{resource}/versions/v1"),
+                1,
+                json!({"action":"withdraw"}),
+            )
+            .await?;
+            write(
+                &mut author,
+                &router,
+                &format!("/api/v1/software/resources/{resource}/versions/v1"),
+                2,
+                json!({"action":"enable"}),
+            )
+            .await?;
 
-    let rebound = write(
-        &mut author,
-        &router,
-        &policy_path,
-        2,
-        json!({"action":"put","enabled":false,"definition":authored("required_install")}),
-    )
-    .await?;
-    ensure!(
-        rebound["versionId"] != published["versionId"],
-        "reapproval must create a new execution version: {rebound}"
-    );
-    crate::test_support::stop_worker(stack).await?;
-    Ok(())
+            let rebound = write(
+                &mut author,
+                &router,
+                &policy_path,
+                2,
+                json!({"action":"put","enabled":false,"definition":authored("required_install")}),
+            )
+            .await?;
+            ensure!(
+                rebound["versionId"] != published["versionId"],
+                "reapproval must create a new execution version: {rebound}"
+            );
+            crate::test_support::stop_worker(stack).await?;
+            Ok(())
+        })
+        .await
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 #[ignore = "make t2 MODULE=planning.software"]
 async fn rollout_statistics_checkpoint_excluded_pages_and_reject_stale_inputs() -> Result<()> {
     let mut f = Fixture::approved(Platform::MacOs).await?;
+    let resources = std::mem::take(&mut f.resources);
+    resources.finish(async {
     let mut devices = Vec::new();
     for i in 0..20 {
         let device = format!(
@@ -433,4 +443,5 @@ async fn rollout_statistics_checkpoint_excluded_pages_and_reject_stale_inputs() 
         "statistics created execution effects"
     );
     Ok(())
+    }).await
 }
