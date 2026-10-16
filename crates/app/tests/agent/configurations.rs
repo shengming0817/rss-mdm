@@ -438,8 +438,6 @@ async fn configuration_prefix(
     macos: &w::configuration::Package,
     start: usize,
 ) -> Result<Vec<String>> {
-    let clock = monotonic();
-    let started = clock.now();
     let file = file.clone();
     let windows = windows.clone();
     let macos = macos.clone();
@@ -474,16 +472,9 @@ async fn configuration_prefix(
             .collect()
     })
     .await??;
-    let devices = service
+    Ok(service
         .seed_configuration_peers(configuration_id, seeds)
-        .await?;
-    println!(
-        "configuration prefix: devices={} offline_signatures={} elapsed_seconds={:.3}",
-        devices.len(),
-        devices.len(),
-        clock.now().saturating_duration_since(started).as_secs_f64()
-    );
-    Ok(devices)
+        .await?)
 }
 #[tokio::test]
 #[ignore = "MODULE=agent.configurations: 42 independent peers, quota boundaries and representative mTLS HTTP"]
@@ -503,8 +494,6 @@ async fn fixed_packages_and_configurations_activate_beyond_self_quota() -> Resul
     ensure!(devices.len() == 19);
     let state = read(&f, &mut user, file.configuration.configuration_id).await?;
     ensure!(state["reserved"] == 0 && state["consumed"] == 19);
-    let phase_clock = monotonic();
-    let live_started = phase_clock.now();
     for n in 19..21 {
         let package = if n % 2 == 0 { &windows } else { &macos };
         ensure!(devices.insert(enroll(&f, &tls, &file, package, n).await?));
@@ -535,13 +524,6 @@ async fn fixed_packages_and_configurations_activate_beyond_self_quota() -> Resul
         ensure!(state["reserved"] == 0 && state["consumed"] == n - 20);
     }
     ensure!(devices.len() == 42);
-    println!(
-        "configuration boundary phase: peers=42 online_issuances=4 exchange_replays=4 tls_activations=4 refill_waits=4 elapsed_seconds={:.3}",
-        phase_clock
-            .now()
-            .saturating_duration_since(live_started)
-            .as_secs_f64()
-    );
     let state = read(&f, &mut user, unlimited.configuration.configuration_id).await?;
     ensure!(state["reserved"] == 0 && state["consumed"] == 21);
     let me = user
