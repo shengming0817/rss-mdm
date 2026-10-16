@@ -428,13 +428,18 @@ async fn change_checkpoints_resume_after_empty_pages_and_restart() -> anyhow::Re
         agent: member(&mut c, agent, Channel::Agent).await?,
         evidence: "verified by operator".into(),
     };
-    let started = tokio::time::Instant::now();
+    let clock = crate::test_support::monotonic();
+    let started = clock.now();
     let relation = service
         .seed_confirmation_history(&admin, request.clone(), 66)
         .await?;
     println!(
         "CHECKPOINT_PREPARATION confirmations=66 transactions=1 seconds={:.3}",
-        started.elapsed().as_secs_f64()
+        clock
+            .now()
+            .checked_duration_since(started)
+            .context("fixture clock moved backwards")?
+            .as_secs_f64()
     );
     request.association_id = Some(relation.id);
     request.expected_version = relation.version;

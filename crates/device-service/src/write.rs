@@ -108,14 +108,30 @@ impl Associations {
         audit: &RequestAudit,
         digest: &[u8],
     ) -> Result<Association> {
-        let (result, replayed) = tx
+        let outcome = tx
             .with_connection_context(
                 &mut (proof, change, audit, digest),
                 |(proof, change, audit, digest), c| {
-                    Box::pin(write_on(c, proof, change, audit, digest))
+                    Box::pin(write_on(c, proof, change, audit, digest, None))
                 },
             )
             .await?;
+        let result = self
+            .record_change(tx, change, audit, digest, outcome)
+            .await?;
+        proof.check_live()?;
+        audit.mark_commit_started();
+        Ok(result)
+    }
+    async fn record_change<T: rss_request_context::ExecutionTimer>(
+        &self,
+        tx: &mut rss_audit_postgres::WriteAuditTransaction<'_, '_, '_, T>,
+        change: &Change<'_>,
+        audit: &RequestAudit,
+        digest: &[u8],
+        outcome: (Association, bool),
+    ) -> Result<Association> {
+        let (result, replayed) = outcome;
         audit.target(&result.id.to_string());
         let fact = Fact::business(
             audit,
@@ -130,8 +146,6 @@ impl Associations {
         if replayed {
             audit.management_result(ManagementResult::Replayed);
         }
-        proof.check_live()?;
-        audit.mark_commit_started();
         Ok(result)
     }
 }
@@ -141,8 +155,15 @@ async fn write_on(
     change: &Change<'_>,
     _audit: &RequestAudit,
     digest: &[u8],
+    prepared: Option<(&rss_mdm_authorization_service::Snapshot, &identity::World)>,
 ) -> Result<(Association, bool)> {
-    let snapshot = read::authorization(c, proof).await?;
+    let loaded_snapshot;
+    let snapshot = if let Some((snapshot, _)) = prepared {
+        snapshot
+    } else {
+        loaded_snapshot = read::authorization(c, proof).await?;
+        &loaded_snapshot
+    };
     // Audit lock is already held. Operation identity is tenant-wide and never transferable.
     sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,2578))")
         .bind(format!("{}:{}", proof.tenant_id(), change.operation()))
@@ -159,48 +180,53 @@ async fn write_on(
         }
         let result: Association = serde_json::from_str(&row.try_get::<String, _>("result")?)
             .map_err(|_| Error::Storage)?;
-        read::authorize(&snapshot, proof, &result.members, true)?;
+        read::authorize(snapshot, proof, &result.members, true)?;
         return Ok((result, true));
     }
     let members = match change {
         Change::Confirm(r) => vec![r.mdm.clone(), r.agent.clone()],
         Change::Revoke { id, .. } => read::load(c, proof.tenant_id(), *id).await?.members,
     };
-    read::authorize(&snapshot, proof, &members, true)?;
-    let world = identity::world(
-        c,
-        TenantId::parse(proof.tenant_id()).map_err(|_| Error::Malformed)?,
-    )
-    .await?;
-    read::lock_members(c, proof.tenant_id(), &members).await?;
-    let now: i64 =
-        sqlx::query_scalar("SELECT floor(extract(epoch FROM clock_timestamp()))::bigint")
-            .fetch_one(&mut *c)
-            .await?;
-    let id = match change {
+    read::authorize(snapshot, proof, &members, true)?;
+    let loaded_world;
+    let world = if let Some((_, world)) = prepared {
+        world
+    } else {
+        loaded_world = identity::world(
+            c,
+            TenantId::parse(proof.tenant_id()).map_err(|_| Error::Malformed)?,
+        )
+        .await?;
+        &loaded_world
+    };
+    let result = match change {
         Change::Confirm(r) => {
             persist(
                 c,
                 proof.tenant_id(),
                 proof.principal_id(),
                 r,
-                &identity::evidence(&world, &members),
+                &identity::evidence(world, &members),
                 State::Confirmed,
             )
             .await?
-            .id
         }
         Change::Revoke { id, request } => {
+            read::lock_members(c, proof.tenant_id(), &members).await?;
+            let now: i64 =
+                sqlx::query_scalar("SELECT floor(extract(epoch FROM clock_timestamp()))::bigint")
+                    .fetch_one(&mut *c)
+                    .await?;
+
             let changed=sqlx::query("UPDATE mdm_devices.associations SET version=version+1,state='revoked',revoked_by=$4,revoked_at=$5,reason=$6 WHERE tenant_id=$1::uuid AND id=$2 AND version=$3 AND state<>'revoked'")
                 .bind(proof.tenant_id()).bind(id).bind(request.expected_version).bind(proof.principal_id()).bind(now).bind(&request.reason).execute(&mut *c).await?.rows_affected();
             if changed != 1 {
                 return Err(Error::Conflict);
             }
             sqlx::query("UPDATE mdm_devices.members SET released=true WHERE tenant_id=$1::uuid AND association_id=$2").bind(proof.tenant_id()).bind(id).execute(&mut *c).await?;
-            *id
+            read::load(c, proof.tenant_id(), *id).await?
         }
     };
-    let result = read::load(c, proof.tenant_id(), id).await?;
     sqlx::query("INSERT INTO mdm_devices.operations(tenant_id,operation_id,actor,instance,digest,result) VALUES($1::uuid,$2,$3,$4,$5,$6::jsonb)")
         .bind(proof.tenant_id()).bind(change.operation()).bind(proof.principal_id()).bind(proof.instance_id()).bind(digest).bind(serde_json::to_string(&result).map_err(|_|Error::Storage)?).execute(c).await?;
     Ok((result, false))

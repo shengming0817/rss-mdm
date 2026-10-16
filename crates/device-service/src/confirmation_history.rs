@@ -19,20 +19,41 @@ impl Associations {
             return Err(Error::Malformed);
         }
         validate_confirm(&request)?;
-        let audits: Vec<_> = (0..count)
-            .map(|_| RequestAudit::new(self.tenant.to_string(), "device_association_confirm"))
-            .collect();
+        let mut audits = Vec::with_capacity(count);
         let budget = AuditBudget::new(Duration::from_secs(8));
         let attempt = self
             .audit
             .write(
                 self.tenant,
                 &budget.control(),
-                (self, proof, request, &audits),
+                (self, proof, request, &mut audits),
                 |(service, proof, request, audits), tx| {
                     Box::pin(async move {
+                        // These read sets remain protected by this transaction's
+                        // authorization and asset-watermark locks. Only the same
+                        // member pair is confirmed; CAS/current registrations and
+                        // every operation receipt still use the shared writer.
+                        let prepared = tx
+                            .with_connection_context(proof, |proof, c| {
+                                Box::pin(async move {
+                                    let snapshot = read::authorization(c, proof).await?;
+                                    let world = identity::world(
+                                        c,
+                                        TenantId::parse(proof.tenant_id())
+                                            .map_err(|_| Error::Malformed)?,
+                                    )
+                                    .await?;
+                                    Ok::<_, Error>((snapshot, world))
+                                })
+                            })
+                            .await?;
                         let mut last = None;
-                        for audit in audits.iter() {
+                        for _ in 0..count {
+                            audits.push(RequestAudit::new(
+                                service.tenant.to_string(),
+                                "device_association_confirm",
+                            ));
+                            let audit = audits.last().ok_or(Error::Malformed)?;
                             request.operation_id = Uuid::new_v4();
                             validate_confirm(request)?;
                             proof.bind_audit(audit)?;
@@ -41,9 +62,26 @@ impl Associations {
                             let digest = Sha256::digest(
                                 serde_json::to_vec(&change).map_err(|_| Error::Malformed)?,
                             );
-                            let result = service
-                                .change_in(tx, proof, &change, audit, &digest)
+                            let outcome = tx
+                                .with_connection_context(
+                                    &mut (*proof, &change, audit, &digest[..], &prepared),
+                                    |(proof, change, audit, digest, prepared), c| {
+                                        Box::pin(write_on(
+                                            c,
+                                            proof,
+                                            change,
+                                            audit,
+                                            digest,
+                                            Some((&prepared.0, &prepared.1)),
+                                        ))
+                                    },
+                                )
                                 .await?;
+                            let result = service
+                                .record_change(tx, &change, audit, &digest, outcome)
+                                .await?;
+                            proof.check_live()?;
+                            audit.mark_commit_started();
                             request.association_id = Some(result.id);
                             request.expected_version = result.version;
                             last = Some(result);
