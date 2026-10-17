@@ -542,6 +542,7 @@ async fn template_flow(
         id: 2,
         alert: s::Alert::UnenrollmentRequested,
     }];
+    authenticate_during_recovery(&host, &peer, &mut pg, policy).await?;
     ensure!(
         native::post(&peer.mutual, &peer.url, &notification)
             .await?
@@ -557,6 +558,83 @@ async fn template_flow(
     ensure!(live == 0, "retirement paging missed pending actions");
     pg.close().await?;
     host.close().await
+}
+
+/// Hold a later row so the actual recovery transaction retains the channel fence.
+/// Authentication must finish while the real writer still holds this device's fence.
+async fn authenticate_during_recovery(
+    host: &Host,
+    peer: &crate::windows::test_support::Peer,
+    observer: &mut sqlx::PgConnection,
+    policy: Uuid,
+) -> anyhow::Result<()> {
+    use sqlx::Connection;
+    let row: Uuid = sqlx::query_scalar("SELECT id FROM mdm_commands.action_runs WHERE tenant_id=$1::uuid AND registration=$2 AND state->>'execution' IN('not_started','running','waiting_reboot','unknown') AND state->>'cancellation'='none' ORDER BY id OFFSET 1 LIMIT 1")
+        .bind(case_tenant()).bind(peer.intent.registration).fetch_one(&mut *observer).await?;
+    let mut connection =
+        sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?)
+            .await?;
+    let mut held = connection.begin().await?;
+    let blocker: i32 = sqlx::query_scalar("SELECT pg_backend_pid()")
+        .fetch_one(&mut *held)
+        .await?;
+    sqlx::query(
+        "SELECT id FROM mdm_commands.action_runs WHERE tenant_id=$1::uuid AND id=$2 FOR UPDATE",
+    )
+    .bind(case_tenant())
+    .bind(row)
+    .fetch_one(&mut *held)
+    .await?;
+    let authentication = async {
+        let result = async {
+            let worker = blocked_recovery(observer, blocker).await?;
+            let key = serde_json::to_string(&(case_tenant(), case_device(), rss_mdm_inventory::Channel::Mdm))?;
+            let locked: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM pg_locks WHERE pid=$1 AND locktype='advisory' AND granted AND classid::bigint=((hashtextextended($2,2348)>>32)&4294967295) AND objid::bigint=(hashtextextended($2,2348)&4294967295) AND objsubid=1)")
+                .bind(worker).bind(key).fetch_one(&mut *observer).await?;
+            ensure!(locked, "recovery did not hold this device's channel fence");
+            let leaf = host.app.windows()?.channel.ca.verify(
+                &[tokio_rustls::rustls::pki_types::CertificateDer::from(peer.certificate.as_slice())],
+                crate::windows::test_support::now(),
+            )?;
+            let credential = crate::device::ChannelMount::new(
+                rss_request_context::TenantId::parse(case_tenant())?,
+                rss_mdm_inventory::ReportSource::MdmWindows,
+                rss_mdm_registration_service::Purpose::Primary,
+            ).credential(leaf.fingerprint())?;
+            let principal = host.app.devices.management_principal(&credential).await?;
+            ensure!(principal.registration() == peer.intent.registration && principal.device() == case_device(),
+                "authentication returned another registration while recovery held the channel");
+            // The holder is still blocked by our row transaction: the read did not
+            // succeed merely because recovery happened to release its channel lock.
+            let still_blocked: bool = sqlx::query_scalar("SELECT $1=ANY(pg_blocking_pids($2))")
+                .bind(blocker).bind(worker).fetch_one(&mut *observer).await?;
+            ensure!(still_blocked, "recovery escaped the authentication rendezvous");
+            Ok::<_, anyhow::Error>(())
+        }.await;
+        // Release the writer even when the old-code authentication counterexample fails.
+        held.rollback().await?;
+        result
+    };
+    let (recovered, authenticated) = tokio::join!(
+        host.app.execution.recover_action_fixture(policy),
+        authentication
+    );
+    let closed = connection.close().await;
+    recovered?;
+    authenticated?;
+    closed?;
+    Ok(())
+}
+
+async fn blocked_recovery(observer: &mut sqlx::PgConnection, blocker: i32) -> anyhow::Result<i32> {
+    tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            let pid: Option<i32> = sqlx::query_scalar("SELECT pid FROM pg_stat_activity WHERE datname=current_database() AND usename='mdm_command_runtime' AND query LIKE '%FROM mdm_commands.action_runs%FOR UPDATE' AND $1=ANY(pg_blocking_pids(pid)) ORDER BY pid LIMIT 1")
+                .bind(blocker).fetch_optional(&mut *observer).await?;
+            if let Some(pid) = pid { return Ok::<_, anyhow::Error>(pid); }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    }).await.map_err(|_| anyhow::anyhow!("recovery never reached the action row held by {blocker}"))?
 }
 
 async fn denied_template_result(
