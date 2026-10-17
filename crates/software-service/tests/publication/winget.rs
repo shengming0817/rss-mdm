@@ -221,7 +221,7 @@ async fn draft_publication_rolls_back_every_write_and_replay_rechecks_access() {
         );
     }
     sql("DROP SEQUENCE public.draft_fault_reached");
-    service
+    let applied = service
         .submit(
             &input.candidate,
             rel::Ring::Test,
@@ -238,6 +238,53 @@ async fn draft_publication_rolls_back_every_write_and_replay_rechecks_access() {
         )),
         "1"
     );
+    let rel::Transition::Applied { next, receipt, .. } = applied else {
+        panic!("first successful submit must apply");
+    };
+    let persisted_receipt = || {
+        sql(&format!(
+            "SELECT to_jsonb(r) FROM mdm_software_release.requests r WHERE tenant_id='{}' AND id='{}'",
+            tenant(),
+            request.id.value()
+        ))
+    };
+    let original_receipt = persisted_receipt();
+    assert!(!original_receipt.is_empty());
+    let publish_audits = || {
+        audit_records()
+            .iter()
+            .filter(|r| {
+                r.event().facts().action().as_str() == "software_publish"
+                    && r.event().facts().resource().id().as_str() == input.candidate.value()
+            })
+            .count()
+    };
+    assert_eq!(publish_audits(), 1);
+    let after = counts();
+    assert_eq!(
+        service
+            .submit(
+                &input.candidate,
+                rel::Ring::Test,
+                &request,
+                &TestPublishAccess,
+                cutoff()
+            )
+            .await
+            .unwrap(),
+        rel::Transition::Replayed(receipt)
+    );
+    assert_eq!(
+        service
+            .candidate(&input.candidate, cutoff())
+            .await
+            .unwrap()
+            .unwrap(),
+        *next
+    );
+    assert_eq!(persisted_receipt(), original_receipt);
+    assert_eq!(publish_audits(), 1);
+    assert_eq!(counts(), after);
     struct Revoked;
     impl PublishAccess for Revoked {
         fn check<'a, 'c>(
@@ -248,7 +295,6 @@ async fn draft_publication_rolls_back_every_write_and_replay_rechecks_access() {
             Box::pin(async { Err(Error::Identity) })
         }
     }
-    let after = counts();
     assert!(matches!(
         service
             .submit(
