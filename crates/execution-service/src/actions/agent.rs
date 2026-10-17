@@ -206,6 +206,7 @@ impl ExecutionService {
                 },
                 wire::TaskEvent::ChunkedCollectionResult{manifest}=>{
                     let db::ScheduledPolicy::AgentCollection(v)=&plan else{return Err(Error::Malformed.into());};
+                    if v.frozen.definition.spec().plan.requires_inline() {return Err(Error::Malformed.into());}
                     let result=super::output::assemble_native(tx,&plan,&run,manifest).await?;
                     super::agent_collection::finish(tx,&v.frozen,&mut run,&result,effect_allowed,now).await?;
                 },

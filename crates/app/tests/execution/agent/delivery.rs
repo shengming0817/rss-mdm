@@ -441,7 +441,7 @@ async fn native_unmapped_evidence_requires_sensitive_permission() -> Result<()> 
         "windows",
         None,
         rss_mdm_agent_wire::runtime::NativeQueryStatus::Complete,
-        &[0, 3],
+        &[0, 1, 2, 3],
     )
     .await
 }
@@ -465,7 +465,7 @@ async fn macos_native_mapping_and_context_recheck() -> Result<()> {
         "macos",
         Some("device.software.receipts"),
         rss_mdm_agent_wire::runtime::NativeQueryStatus::Complete,
-        &[0, 3],
+        &[0, 1, 2, 3],
     )
     .await
 }
@@ -556,6 +556,7 @@ async fn native_inventory_case(
         };
         specs.push(template.spec().clone());
     }
+    if !large_raw {
     for (id, name) in if macos {
         [("sys_security","macos.agent.gatekeeper"),("sys_accounts","macos.agent.accounts"),("sys_certificates","macos.agent.certificates_system"),("sys_updates","macos.agent.updates_available_local")]
     } else {
@@ -568,6 +569,7 @@ async fn native_inventory_case(
         for mapping in spec.mappings.values_mut() {mapping.query=id.into();}
         specs.push(spec);
     }
+    }
     let mut ps = specs[0].plan.spec().clone();
     let mut mappings = specs[0].mappings.clone();
     for spec in &specs[1..] {
@@ -576,6 +578,10 @@ async fn native_inventory_case(
     }
     if !map_software {
         mappings.remove(software_field);
+    }
+    if !large_raw {
+        ps.budget.output_bytes=w::NATIVE_SYSTEM_MAX_BYTES;
+        for q in ps.queries.values_mut() {q.budget.output_bytes=q.budget.output_bytes.min(w::NATIVE_SYSTEM_MAX_BYTES);}
     }
     let definition = r::AgentCollectionDefinition::new(r::AgentCollectionSpec {
                 applicability: specs.last().unwrap().applicability.clone(),
@@ -621,6 +627,7 @@ async fn native_inventory_case(
     let policy_input = || json!({"scope":case_task_scope(),"action":{"kind":"agent_collection","resource":{"id":resource_id,"version":"v1","platform":platform,"architecture":"x86_64","variant":"default"},"runLifetimeSeconds":300}});
     let mut prior_network = String::new();
     let mut prior_software = String::new();
+    let mut prior_updates = String::new();
     for &stage in stages {
         let policy = Uuid::new_v4();
         if !map_software && stage == 0 {
@@ -746,7 +753,7 @@ async fn native_inventory_case(
                     "sys_security"=>if macos {json!({"presence":"present","configured":"enabled","running":"unknown","version":"1"})}else{json!({"presence":"present","configured":"enabled","running":"disabled","mode":"passive","health":"passive","signature_version":"1"})},
                     "sys_accounts"=>if macos {json!({"id":"00000000-0000-0000-0000-000000000501","uid":501,"name":"sensitive-account","account_type":"local","enabled":"enabled"})}else{json!({"id":"S-1-5-21-1-2-3-1001","name":"sensitive-account","account_type":"local","enabled":"enabled"})},
                     "sys_certificates"=>json!({"id":"a".repeat(64),"subject":"CN=sensitive-certificate","issuer":"CN=CA","not_before":1,"not_after":2000000000,"scope":"device","owner":"","store":if macos {"system"}else{"my"}}),
-                    "sys_updates"=>json!({"id":"update-1","title":"Update","version":"1","origin":"configured","state":"available"}),
+                    "sys_updates"=>json!({"id":if stage==0 {"update-1"}else{"must-not-replace"},"title":if stage==0 {"Update"}else{"Truncated update"},"version":"1","origin":"configured","state":"available"}),
                     _=>unreachable!(),
                 })?]}
             } else if !macos && let Some(rows) = windows_assets::rows(id, stage) {
@@ -939,11 +946,19 @@ async fn native_inventory_case(
                 let v: Value = serde_json::from_str(network.trim())?;
                 ensure!(v["value"] == json!([]));
             }
-            if stage<=2 {
+            if !large_raw && stage<=2 {
                 let certificates:Value=serde_json::from_str(pg(&format!("SELECT value::text FROM mdm.inventory WHERE tenant_id='{}' AND registration='{}' AND field='device.certificates.metadata' AND source='agent.native'",case_tenant(),spec.registration_id))?.trim())?;
                 ensure!(certificates["value"].as_array().unwrap().len()==if stage==2 {0}else{1},"certificate partial/empty replacement failed: {certificates}");
                 let updates:Value=serde_json::from_str(pg(&format!("SELECT value::text FROM mdm.inventory WHERE tenant_id='{}' AND registration='{}' AND field='device.updates.available' AND source='agent.native'",case_tenant(),spec.registration_id))?.trim())?;
                 ensure!(updates["value"].as_array().unwrap().len()==if stage==2 {0}else{1});
+                if stage==0 {prior_updates=updates.to_string();}
+                if stage==1 {ensure!(updates.to_string()==prior_updates,"truncated update replaced prior complete discovery");}
+                if stage==0 {
+                    let security=if macos {"device.security.macos.gatekeeper.observation"}else{"device.security.windows.defender.observation"};
+                    let evidence=pg(&format!("SELECT value::text FROM mdm.inventory WHERE tenant_id='{}' AND registration='{}' AND field='{security}'",case_tenant(),spec.registration_id))?;
+                    ensure!(evidence.contains(if macos {"unknown"}else{"passive"}),"security observation not projected: {evidence}");
+                }
+
             }
             if !macos && map_software {
                 windows_assets::verify_identity(spec.registration_id, spec.attempt_id, stage)?;
@@ -1010,7 +1025,17 @@ async fn native_inventory_case(
             "native evidence recovery failed: {}",
             detail.0
         );
-        if !map_software {
+        if !all_failed && !large_raw {
+        let certificate_scope=json!({"kind":"native_certificates","platform":platform,"owner":null,"store":if macos {"system"}else{"my"}});
+        let account_scope=json!({"kind":"native_accounts","platform":platform,"identities":[]});
+        let mut sensitive_paths=Vec::new();
+        for (scope,secret) in [(certificate_scope,"sensitive-certificate"),(account_scope,"sensitive-account")] {
+            let params=url::form_urlencoded::Serializer::new(String::new()).append_pair("scope",&scope.to_string()).finish();
+            let path=format!("/api/v1/devices/{device}/inventory?{params}");
+            let visible=f.author.call(&f.router,Method::GET,&path,None).await?;
+            ensure!(visible.0==StatusCode::OK && visible.1.to_string().contains(secret),"positive sensitive field read failed: {visible:?}");
+            sensitive_paths.push((path,secret));
+        }
         let ordinary = f
             .grants
             .iter()
@@ -1018,10 +1043,10 @@ async fn native_inventory_case(
             .cloned()
             .collect();
         crate::test_support::identity::set_grants(case_tenant(), &f.author_id, ordinary).await?;
-        let certificate_scope=json!({"kind":"native_certificates","platform":platform,"owner":null,"store":if macos {"system"}else{"my"}});
-        let params=url::form_urlencoded::Serializer::new(String::new()).append_pair("scope",&certificate_scope.to_string()).finish();
-        let mapped=f.author.call(&f.router,Method::GET,&format!("/api/v1/devices/{device}/inventory?{params}"),None).await?;
-        ensure!(!mapped.1.to_string().contains("sensitive-certificate") && !mapped.1.to_string().contains("sensitive-account"),"mapped sensitive value leak: {mapped:?}");
+        for (path,secret) in sensitive_paths {
+            let hidden=f.author.call(&f.router,Method::GET,&path,None).await?;
+            ensure!(hidden.0==StatusCode::OK && !hidden.1.to_string().contains(secret),"sensitive field read leaked or failed unexpectedly: {hidden:?}");
+        }
         let denied = f
             .author
             .call(&f.router, Method::GET, &detail_path, None)
@@ -1406,6 +1431,16 @@ async fn certificate_scope_case(macos: bool) -> Result<()> {
                 let response=agent_call(&f.router,Method::POST,&path,Some(case_credential()),Some(json!({"wireVersion":1,"operationId":Uuid::new_v4(),"attemptId":spec.attempt_id,"executionContext":context,"event":{"kind":kind}}))).await?;
                 ensure!(response.0==StatusCode::OK,"certificate start: {response:?}");
                 if kind=="start" {let ack:w::TaskEventAck=serde_json::from_value(response.1)?;crate::test_support::task_signature::verify(&ack.into_permit().unwrap(),&crate::test_support::task_signature::TaskVerification {permit:w::TaskPermit::Start,..verification})?;}
+            }
+            if stage==0 {
+                let secret=br#"{"private_key":"must-never-persist"}"#;
+                let manifest=w::OutputManifest::new(secret.len() as u32,Sha256::digest(secret).into())?;
+                let chunk=w::OutputChunk::new(manifest.clone(),0,secret)?;
+                let rejected=agent_call(&f.router,Method::POST,&path,Some(case_credential()),Some(json!({"wireVersion":1,"operationId":Uuid::new_v4(),"attemptId":spec.attempt_id,"executionContext":context,"event":w::TaskEvent::OutputChunk(chunk)}))).await?;
+                ensure!(rejected.0==StatusCode::BAD_REQUEST,"System raw chunk accepted: {rejected:?}");
+                ensure!(pg(&format!("SELECT count(*) FROM mdm_commands.output_chunks WHERE tenant_id='{}' AND attempt='{}'",case_tenant(),spec.attempt_id))?.trim()=="0","rejected secret chunk persisted");
+                let rejected=agent_call(&f.router,Method::POST,&path,Some(case_credential()),Some(json!({"wireVersion":1,"operationId":Uuid::new_v4(),"attemptId":spec.attempt_id,"executionContext":context,"event":w::TaskEvent::ChunkedCollectionResult {manifest}}))).await?;
+                ensure!(rejected.0==StatusCode::BAD_REQUEST);
             }
             let q=&spec.plan.spec().queries["facts"];
             let w::NativeQueryDefinition::System {query}=&q.definition else {unreachable!()};let store=query.certificate_store().unwrap();

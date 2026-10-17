@@ -595,10 +595,9 @@ impl NativeSystemQuery {
                         "decrypting",
                         "encryption_paused",
                         "decryption_paused",
-                        "unknown",
                     ],
                 ) && vocab("protection", &["unprotected", "protected", "unknown"])
-                    && vocab("lock", &["unlocked", "locked", "unknown"])
+                    && vocab("lock", &["unlocked", "locked"])
                     && row
                         .get("encrypted_percent")
                         .is_none_or(|v| v.as_i64().is_some_and(|n| (0..=100).contains(&n)))

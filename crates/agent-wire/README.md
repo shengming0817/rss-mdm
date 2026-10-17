@@ -58,15 +58,17 @@ Brew 引擎仅接受 v2：只读批准 prefix 下 Cellar/Caskroom 的安装记�
 数据可以由用户拥有，但必须作为不可信输入有界解析；不跟随逃出批准根的链接。
 缺失、无权限、格式不支持、超时、截断或扫描期间变化分别保留失败证据，不能当完整空清单。
 旧 Brew 引擎 v1 和旧内置 Brew 蓝图版本不再接纳；其他引擎版本保持原契约。
-服务端与 Agent 应在旧任务结算后协调升级，保留 journal；不能用旧引擎回退或清除状态绕过升级。
+新固定候选只接纳匹配安装 manifest 的服务端与 Agent；旧实例继续按原版本结算任务并保留 journal，不通过旧引擎回退或清除状态切换。
 
 Mac 软件行的 origin 分别为 `application`、`pkg_receipt`、`homebrew`；Brew 行必须匹配声明的
 prefix、tap 与 package_kind，用户 UID 必须非零。签名状态为 signed/unsigned/invalid/unknown。
 完整空收据列表可发布；失败或截断保留旧值。所有原始证据，包括失败和未映射内容，仍要求
 InventoryRead 与 InventorySensitiveRead。设备执行与真机支持矩阵由独立 Agent #2723 验证。
 
-升级前停止签发旧 Collection 任务并等待其终态，保留审计与 journal；再协调切换服务端与固定 rev
-的 Agent。旧 Collection v1/v2 不解码、不执行，不清空 journal 或重新注册绕过未决任务。
+本候选不提供旧实例原地升级；安装器及运行期只接纳精确安装 manifest。
+旧数据库中的执行上下文、冻结 Resource、查询及规则不能因任务排空就切换为新结构。
+旧实例应由原版本按原生命周期结算，保留注册、journal、审计与资产；不清库或重新注册绕过。
+如需原地升级，应先交付独立验证的精确基线迁移。本次运行路径只接受 Collection V3。
 固定候选完整 rev 和 schema 指纹以当前契约 PR 的交接制品为准；独立 Agent 应固定同一候选，
 不能继续沿用旧 Brew 命令契约的源码或签名向量。
 
@@ -96,3 +98,11 @@ Collection V3 在原有 UID/SID、会话和 context revision 外签入稳定账�
 安装、签名、配置、运行和健康分别表达；没有厂商可验证的健康 API 时 health 为 unknown。
 FileVault、硬件加密、Secure Token、Bootstrap Token 的本地状态不证明恢复材料或 Token 已由服务器托管。
 固定候选的完整 Git revision 由交付评论提供；服务端受控样本不证明真实平台执行效果。
+
+BitLocker conversion/lock 沿用既有 Inventory 闭合词汇，无法读取时省略该列并报告 Partial，
+不新增同义字段或改写历史字段类型。完整列表要求每卷必要列齐全；未知保护状态仍用既有 unknown。
+部分卷证据可留作诊断，但不能将不完整列表发布为当前完整卷清单。
+
+包含 System recipe 的计划总输出上限为 1 MiB，只接受 inline CollectionResult。
+原始 OutputChunk 和 ChunkedCollectionResult 在写入前拒绝；验证通过的大结果仍可由服务端沿现有存储分块保留。
+Agent 达到预算须返回 Truncated 的有界结果，保留旧事实，不能偷偷切换到未校验分块。

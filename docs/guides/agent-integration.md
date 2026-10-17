@@ -87,4 +87,4 @@ Agent HTTPS 监听器公开 `GET /api/v1/agent/enroll/packages`、`GET .../packa
 安全、账户、证书和更新由同一原生 Collection V3 契约承载，见 [wire 契约](../../crates/agent-wire/README.md#安全账户证书与更新)
 和 [标准包操作](assets.md#agent-安全账户证书与更新标准包)。Agent 必须固定交付的完整 revision，
 更新当前用户 GeneratedUID、精确引擎声明及 scan 证据；不沿用旧 Collection V2 或省略新增必填成员。
-切换前停止旧任务签发并按原生命周期完成结算，保留 journal、审计和历史资产，不清空状态或重新注册绕过。
+本候选只接纳匹配的精确安装 manifest，不承诺旧数据库原地升级。旧实例按原版本结算任务并保留注册、journal、审计和历史资产，不清库或重新注册绕过安装拒绝；任务排空不等于持久格式迁移完成。

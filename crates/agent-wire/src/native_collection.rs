@@ -11,6 +11,9 @@ use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 pub use system::*;
 
+/// Maximum validated inline result for plans containing sensitive System recipes.
+pub const NATIVE_SYSTEM_MAX_BYTES: u32 = 1024 * 1024;
+
 /// One supported native engine contract (versions are independently negotiated).
 #[derive(
     Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, schemars::JsonSchema,
@@ -757,6 +760,11 @@ impl NativeQuery {
     pub fn validate(&self) -> Result<(), WireError> {
         self.definition.validate()?;
         self.budget.validate()?;
+        if matches!(self.definition, NativeQueryDefinition::System { .. })
+            && self.budget.output_bytes > NATIVE_SYSTEM_MAX_BYTES
+        {
+            return Err(WireError::InvalidValue);
+        }
         let p = self.definition.properties();
         if self.version != self.definition.engine().contract_version()
             || self.instance_keys.len() > 8
@@ -834,6 +842,13 @@ impl NativeCollectionPlan {
     /// Validate structural query, platform, identity and budget constraints.
     pub fn new(p: NativePlanSpec) -> Result<Self, WireError> {
         p.budget.validate()?;
+        if p.queries
+            .values()
+            .any(|q| matches!(q.definition, NativeQueryDefinition::System { .. }))
+            && p.budget.output_bytes > NATIVE_SYSTEM_MAX_BYTES
+        {
+            return Err(WireError::InvalidValue);
+        }
         match &p.scope {
             crate::CollectionScope::Device => {}
             crate::CollectionScope::User { identity }
@@ -875,6 +890,13 @@ impl NativeCollectionPlan {
             return Err(WireError::InvalidValue);
         }
         Ok(Self(p))
+    }
+    /// Sensitive system reads must be validated as a whole before any output is persisted.
+    pub fn requires_inline(&self) -> bool {
+        self.0
+            .queries
+            .values()
+            .any(|q| matches!(q.definition, NativeQueryDefinition::System { .. }))
     }
     /// Required operating system, shared by every query.
     pub fn platform(&self) -> TaskPlatform {
@@ -1206,6 +1228,11 @@ impl NativeQueryResult {
                             .as_ref()
                             .is_some_and(|u| u.expected.contains(owner))
                     })
+            {
+                return false;
+            }
+            if matches!(q.definition, NativeQueryDefinition::System { .. })
+                && schema.keys().any(|k| !row.contains_key(k))
             {
                 return false;
             }

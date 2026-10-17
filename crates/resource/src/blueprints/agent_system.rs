@@ -56,7 +56,7 @@ fn pack(
         },
         budget: w::NativeBudget {
             timeout_seconds: 300,
-            output_bytes: 16 * 1024 * 1024,
+            output_bytes: w::NATIVE_SYSTEM_MAX_BYTES,
             max_rows: 65535,
         },
     };

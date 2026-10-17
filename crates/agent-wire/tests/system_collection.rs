@@ -201,3 +201,45 @@ fn selected_accounts_do_not_expand_to_unapproved_identities() {
     bad["id"] = json!("00000000-0000-0000-0000-000000000502");
     assert!(!answer(&q, json!([bad])).complete_for(&q, 100));
 }
+
+#[test]
+fn unknown_bitlocker_columns_are_partial_evidence_not_new_inventory_enum_values() {
+    let q = query(NativeSystemQuery::WindowsBitlocker);
+    let mut rows = json!([{"id":"volume-a","conversion":"encrypted","protection":"protected","lock":"unlocked","algorithm":"XTS_AES_256","encrypted_percent":100},
+        {"id":"volume-b","conversion":"encrypted","protection":"unknown","algorithm":"XTS_AES_256","encrypted_percent":100}]);
+    // A failed lock read is omitted, preserving the old full list while retaining known evidence.
+    let mut result = answer(&q, rows.clone());
+    assert!(!result.complete_for(&q, 100));
+    result.status = NativeQueryStatus::Partial;
+    let p = plan(q.clone());
+    assert!(
+        NativeCollectionResult {
+            plan_digest: p.digest(),
+            collected_at: 100,
+            queries: [("facts".into(), result)].into()
+        }
+        .validate_for(&p, 100)
+        .is_ok()
+    );
+    rows[1]["lock"] = json!("unknown");
+    assert!(
+        !q.definition
+            .accepts_row(&serde_json::from_value(rows[1].clone()).unwrap())
+    );
+}
+
+#[test]
+fn system_plan_requires_bounded_inline_output_and_does_not_downgrade_to_chunks() {
+    let mut q = query(NativeSystemQuery::WindowsCertificates {
+        store: WindowsCertificateStore::My,
+        user: false,
+    });
+    q.budget.output_bytes = NATIVE_SYSTEM_MAX_BYTES;
+    let p = plan(q.clone());
+    assert!(p.requires_inline());
+    q.budget.output_bytes = NATIVE_SYSTEM_MAX_BYTES + 1;
+    assert!(q.validate().is_err());
+    let mut input = p.spec().clone();
+    input.budget.output_bytes = NATIVE_SYSTEM_MAX_BYTES + 1;
+    assert!(NativeCollectionPlan::new(input).is_err());
+}
