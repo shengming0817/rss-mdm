@@ -27,19 +27,30 @@ async fn runtime_diagnostics_requires_explicit_permission() -> Result<()> {
                             == StatusCode::FORBIDDEN
                     );
                     set_management_grants(&subject, json!(["runtime_diagnostics_read"])).await?;
+                    let before = audit_count(|r| {
+                        r.action() == "runtime_diagnostics_read"
+                            && r.status() == 200
+                            && r.actor() == Some(subject.as_str())
+                    })?;
                     let (status, value) = member.call(&router, Method::GET, PATH, None).await?;
                     ensure!(status == StatusCode::OK, "{status} {value}");
                     ensure!(value.as_object().unwrap().len() == 3);
                     ensure!(value["alive"] == true && value["ready"].is_boolean());
+                    names(
+                        &value["components"],
+                        &[
+                            "inventory",
+                            "identity_audit",
+                            "apple",
+                            "automation",
+                            "execution_recovery",
+                        ],
+                    )?;
                     ensure!(
-                        value["components"]
-                            .as_array()
-                            .is_some_and(|items| items.len() >= 4)
-                    );
-                    ensure!(
-                        audit_count(
-                            |r| r.action() == "runtime_diagnostics_read" && r.status() == 200
-                        )? > 0
+                        audit_count(|r| r.action() == "runtime_diagnostics_read"
+                            && r.status() == 200
+                            && r.actor() == Some(subject.as_str()))?
+                            == before + 1
                     );
                     set_management_grants(&subject, json!([])).await?;
                     ensure!(
@@ -128,6 +139,25 @@ impl Fixture {
         self.authority.resources.finish(async { Ok(()) }).await
     }
 }
+fn names(value: &Value, expected: &[&str]) -> Result<()> {
+    let items = value
+        .as_array()
+        .context("diagnostic collection must be an array")?;
+    let actual: std::collections::BTreeSet<_> =
+        items.iter().map(|item| item["name"].as_str()).collect();
+    ensure!(items.len() == expected.len());
+    ensure!(actual == expected.iter().map(|name| Some(*name)).collect());
+    Ok(())
+}
+const AUTOMATION_QUEUES: &[&str] = &[
+    "pending",
+    "running",
+    "completed",
+    "failed",
+    "superseded",
+    "asset_changes_pending",
+];
+
 fn component(value: &Value, name: &str) -> Value {
     value["components"]
         .as_array()
@@ -327,6 +357,7 @@ async fn runner_failure_is_visible_while_bridge_and_queries_succeed() -> Result<
         let encoded = value.to_string();
         ensure!(!encoded.contains(&role) && !encoded.contains("diagnostic-fixture") && !encoded.contains("job:"));
         ensure!(failed["dependencies"][0]["state"] == "available");
+        names(&failed["queues"], AUTOMATION_QUEUES)?;
         ensure!(failed["queues"].as_array().unwrap().iter().all(|q|q["count"].is_number()));
         pg(&format!("ALTER ROLE {role} CONNECTION LIMIT -1"))?;
         signals.automation().notify_one();
@@ -408,6 +439,7 @@ async fn dependency_failure_preserves_partial_results_and_authority() -> Result<
     let automation = component(&value, "automation");
     ensure!(automation["dependencies"][0]["state"] == "unavailable");
     ensure!(automation["health"] == "degraded");
+    names(&automation["queues"], AUTOMATION_QUEUES)?;
     ensure!(
         automation["queues"]
             .as_array()
@@ -420,6 +452,10 @@ async fn dependency_failure_preserves_partial_results_and_authority() -> Result<
     let past = monotonic().now() - Duration::from_secs(1);
     let expired = fixture.source.collect(past, true).await;
     let expired = serde_json::to_value(expired)?;
+    names(
+        &component(&expired, "inventory")["dependencies"],
+        &["inventory_delivery", "observation_journal"],
+    )?;
     ensure!(
         component(&expired, "inventory")["dependencies"]
             .as_array()
@@ -427,24 +463,18 @@ async fn dependency_failure_preserves_partial_results_and_authority() -> Result<
             .iter()
             .all(|d| d["reason"] == "deadline")
     );
-    ensure!(
-        fixture
-            .source
-            .snapshot(
-                rss_request_context::TenantId::parse(case::peer())?,
-                INSTANCE,
-                past
-            )
-            .await
-            .is_err()
-    );
-    ensure!(
-        fixture
-            .source
-            .snapshot(fixture.authority.identity.tenant, "wrong-instance", past)
-            .await
-            .is_err()
-    );
+    for (tenant, instance) in [
+        (
+            rss_request_context::TenantId::parse(case::peer())?,
+            INSTANCE,
+        ),
+        (fixture.authority.identity.tenant, "wrong-instance"),
+    ] {
+        ensure!(matches!(
+            fixture.source.snapshot(tenant, instance, past).await,
+            Err(rss_mdm_management_http::Error::Forbidden)
+        ));
+    }
     let text = value.to_string();
     for secret in [
         PASSWORD,
@@ -488,7 +518,15 @@ async fn durable_backlog_is_distinct_from_storage_failure_and_is_bounded() -> Re
     pg(&format!(
         "UPDATE mdm_automation.automation_jobs SET completed=true WHERE tenant_id='{own}' AND NOT completed"
     ))?;
-    ensure!(component(&fixture.query().await?, "automation")["queues"][0]["count"] == 0);
+    ensure!(
+        component(&fixture.query().await?, "automation")["queues"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|q| q["name"] == "pending")
+            .context("missing pending queue")?["count"]
+            == 0
+    );
     fixture.close().await
 }
 
@@ -531,6 +569,7 @@ async fn actual_worker_progress_and_readiness_share_the_same_projection() -> Res
         .iter()
         .find(|r| r.batch().id().as_str() == report.id.to_string())
         .unwrap();
+    // Delivery worker is bypassed here; the inventory projection worker below remains real.
     fixture.source.inventory.fixture_deliver(durable).await?;
     let delayed = component(&fixture.query().await?, "inventory");
     ensure!(delayed["queues"][0]["count"] == 0 && delayed["progress"]["sourceHead"].is_number());

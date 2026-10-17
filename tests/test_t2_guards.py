@@ -17,7 +17,7 @@ sys.path.insert(0,'hack')
 from t2_modules import installation as t2
 with tempfile.TemporaryDirectory() as directory:
  root=Path(directory);config=root/'config.json';config.write_text(json.dumps({'database':{'name':'fixture'}}))
- with patch.object(t2,'run',return_value=SimpleNamespace(stdout='f')),patch.object(t2.subprocess,'run',return_value=SimpleNamespace(returncode=1,stderr='')):
+ with patch.object(t2,'run',return_value=SimpleNamespace(stdout='f')),patch.object(t2.subprocess,'run',return_value=SimpleNamespace(returncode=1,stderr='migration installation: mdm_owner admission rejected')):
   try:t2.verify_migrations('fixture','binary',config,root,{})
   except RuntimeError as e:
    if str(e)!='rejected migrator performed DDL':raise SystemExit('wrong failure classification')

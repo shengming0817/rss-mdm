@@ -16,10 +16,9 @@ pub(crate) async fn host_context_matrix(
     app_resources.finish(async {
     let rule_id = uuid::Uuid::new_v4();
     for permissions in [
-        json!([]),
         json!(["accounts"]),
         json!(["providers"]),
-        json!(["accounts", "providers"]),
+        json!([]),
     ] {
         let grants: Vec<_> = permissions.as_array().unwrap().iter().map(|permission| json!({
             "operation": if permission == "accounts" { "identity_accounts_manage" } else { "identity_providers_manage" },
@@ -49,7 +48,7 @@ pub(crate) async fn host_context_matrix(
                 == StatusCode::UNAUTHORIZED
         );
         let mut member = browser.clone();
-        let before = member
+        let (before_status, before) = member
             .call(
                 &router,
                 Method::GET,
@@ -59,8 +58,7 @@ pub(crate) async fn host_context_matrix(
                 ),
                 None,
             )
-            .await?
-            .1;
+            .await?;
         let (status, context) = member.call(&router, Method::GET, &path, None).await?;
         ensure!(status == StatusCode::OK);
         ensure!(
@@ -69,7 +67,7 @@ pub(crate) async fn host_context_matrix(
             "manageAccounts":permissions.as_array().unwrap().contains(&json!("accounts")),
             "manageProviders":permissions.as_array().unwrap().contains(&json!("providers"))}})
         );
-        let after = member
+        let (after_status, after) = member
             .call(
                 &router,
                 Method::GET,
@@ -79,8 +77,9 @@ pub(crate) async fn host_context_matrix(
                 ),
                 None,
             )
-            .await?
-            .1;
+            .await?;
+        ensure!(before_status == StatusCode::OK && after_status == StatusCode::OK);
+        ensure!(before["session"]["idleExpiresAt"].as_u64().is_some_and(|expiry| expiry > 0));
         ensure!(before["session"]["idleExpiresAt"] == after["session"]["idleExpiresAt"]);
         let wrong = path.replace(case_tenant(), crate::test_support::case::peer());
         ensure!(

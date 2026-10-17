@@ -1,11 +1,11 @@
 use super::*;
 use anyhow::{Result, ensure};
+use futures::FutureExt;
 use sqlx::{Connection, PgConnection};
 use uuid::Uuid;
 
 #[tokio::test(start_paused = true)]
 async fn idle_wait_preserves_early_hints_and_recovers_lost_notifications() {
-    use futures::FutureExt;
     let signals = Signals::default();
     let stop = CancellationToken::new();
     let notify = signals.get(Work::Inventory);
@@ -52,6 +52,22 @@ async fn start_task(
     }
     Ok(owner)
 }
+// A later committed notification is processed after earlier notifications on this connection.
+// ref: PostgreSQL NOTIFY transaction/commit ordering.
+async fn barrier(writer: &mut PgConnection, listener: &Listener) -> Result<()> {
+    sqlx::query("SELECT pg_notify($1,$2)")
+        .bind(&listener.channel)
+        .bind(Work::CommandRelay.payload())
+        .execute(writer)
+        .await?;
+    tokio::time::timeout(
+        RECOVERY,
+        listener.signals.get(Work::CommandRelay).notified(),
+    )
+    .await?;
+    Ok(())
+}
+
 async fn committed_count(connection: &mut PgConnection, tenant: &str) -> Result<i64> {
     sqlx::query("SELECT set_config('rss.tenant_id',$1,false)")
         .bind(tenant)
@@ -80,12 +96,12 @@ async fn stage(connection: &mut PgConnection, tenant: &str) -> Result<()> {
 
 #[tokio::test]
 #[ignore = "MODULE=worker.wake: PostgreSQL commit, LISTEN race, reconnect and two instances"]
-async fn committed_hints_reconnect_and_restart_preserve_durable_work() -> Result<()> {
+async fn committed_hints_reconnect_and_restart_preserve_durable_markers() -> Result<()> {
     use crate::device::test_support::options;
     let tenant = crate::test_support::case::tenant().to_owned();
     let mut writer = PgConnection::connect_with(&options("mdm_access")?).await?;
     let mut observer = PgConnection::connect_with(&options("mdm_access")?).await?;
-    // Work committed before registration is discovered by the post-LISTEN initial scan.
+    // Registration emits an initial scan hint; the marker is durable, not proof of consumption.
     let mut before = writer.begin().await?;
     stage(&mut before, &tenant).await?;
     before.commit().await?;
@@ -112,23 +128,14 @@ async fn committed_hints_reconnect_and_restart_preserve_durable_work() -> Result
     let asset_hint = listener.signals.get(Work::AutomationInput);
     let mut tx = writer.begin().await?;
     stage(&mut tx, &tenant).await?;
-    ensure!(
-        tokio::time::timeout(Duration::from_millis(50), hint.notified())
-            .await
-            .is_err()
-    );
+    barrier(&mut observer, &listener).await?;
+    ensure!(hint.notified().now_or_never().is_none());
+    ensure!(asset_hint.notified().now_or_never().is_none());
     ensure!(committed_count(&mut observer, &tenant).await? == 1);
-    ensure!(
-        tokio::time::timeout(Duration::from_millis(50), asset_hint.notified())
-            .await
-            .is_err()
-    );
     tx.rollback().await?;
-    ensure!(
-        tokio::time::timeout(Duration::from_millis(50), hint.notified())
-            .await
-            .is_err()
-    );
+    barrier(&mut writer, &listener).await?;
+    ensure!(hint.notified().now_or_never().is_none());
+    ensure!(asset_hint.notified().now_or_never().is_none());
     let mut tx = writer.begin().await?;
     stage(&mut tx, &tenant).await?;
     tx.commit().await?;
@@ -136,14 +143,15 @@ async fn committed_hints_reconnect_and_restart_preserve_durable_work() -> Result
     tokio::time::timeout(RECOVERY, peer_hint.notified()).await?;
     tokio::time::timeout(RECOVERY, asset_hint.notified()).await?;
     ensure!(committed_count(&mut observer, &tenant).await? == 2);
+    barrier(&mut writer, &foreign).await?;
     for work in [Work::Inventory, Work::AutomationInput] {
         ensure!(
-            tokio::time::timeout(
-                Duration::from_millis(50),
-                foreign.signals.get(work).notified()
-            )
-            .await
-            .is_err(),
+            foreign
+                .signals
+                .get(work)
+                .notified()
+                .now_or_never()
+                .is_none(),
             "unrelated tenant received a committed hint"
         );
     }
@@ -152,13 +160,16 @@ async fn committed_hints_reconnect_and_restart_preserve_durable_work() -> Result
     tx.commit().await?;
     for work in [Work::Inventory, Work::AutomationInput] {
         tokio::time::timeout(RECOVERY, foreign.signals.get(work).notified()).await?;
+    }
+    barrier(&mut writer, &listener).await?;
+    for work in [Work::Inventory, Work::AutomationInput] {
         ensure!(
-            tokio::time::timeout(
-                Duration::from_millis(50),
-                listener.signals.get(work).notified()
-            )
-            .await
-            .is_err(),
+            listener
+                .signals
+                .get(work)
+                .notified()
+                .now_or_never()
+                .is_none(),
             "foreign commit woke this tenant"
         );
     }
@@ -200,7 +211,7 @@ async fn committed_hints_reconnect_and_restart_preserve_durable_work() -> Result
 
 #[tokio::test]
 #[ignore = "MODULE=worker.wake: real PostgreSQL transport EOF and reconnect diagnostics"]
-async fn transport_eof_reports_loss_and_recovery_before_rescan() -> Result<()> {
+async fn transport_eof_reports_loss_recovery_and_rescan_hint() -> Result<()> {
     use crate::device::test_support::options;
     let upstream = options("mdm_access")?;
     let proxy = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
@@ -279,12 +290,9 @@ async fn identity_channels_require_exact_scope_and_empty_payload() -> Result<()>
             .bind(&channel)
             .execute(&mut *tx)
             .await?;
-        ensure!(
-            tokio::time::timeout(Duration::from_millis(50), audit.notified())
-                .await
-                .is_err()
-        );
         tx.rollback().await?;
+        barrier(&mut writer, &listener).await?;
+        ensure!(audit.notified().now_or_never().is_none());
         sqlx::query("SELECT pg_notify($1,'')")
             .bind(channel)
             .execute(&mut writer)
@@ -316,18 +324,15 @@ async fn identity_channels_require_exact_scope_and_empty_payload() -> Result<()>
             .bind(payload)
             .execute(&mut writer)
             .await?;
+        barrier(&mut writer, &listener).await?;
+        ensure!(audit.notified().now_or_never().is_none());
         ensure!(
-            tokio::time::timeout(Duration::from_millis(50), audit.notified())
-                .await
-                .is_err()
-        );
-        ensure!(
-            tokio::time::timeout(
-                Duration::from_millis(50),
-                listener.signals.get(Work::Inventory).notified()
-            )
-            .await
-            .is_err()
+            listener
+                .signals
+                .get(Work::Inventory)
+                .notified()
+                .now_or_never()
+                .is_none()
         );
     }
     ensure!(owner.shutdown().join().await?.is_clean());

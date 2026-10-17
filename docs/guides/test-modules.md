@@ -36,6 +36,7 @@ make ci-full
 | 模块 | 测试职责与代码归属 |
 |---|---|
 | `installation.migration` | App 正式安装、重放、损坏账本拒绝和 CLI 并发安装；安装使用空库。 |
+| `installation.registry` | 租户 CRUD、回执、容量竞争、first-use 与 RLS；从兼容 product baseline 克隆独立库，实际迁移动作仍由专项显式调用。 |
 | `audit.{receipts,integrity,recovery,budget}` | App 通用 Audit 组合、Plain/Ledger、ACK、进程中断和预算；业务模块保留自己事务的原子性证明。 |
 | `identity.{local,sso,audit}` | 身份生命周期、联合登录、Identity outbox→Audit worker；不承载资产或任务矩阵。 |
 | `authorization.{rules,membership,capacity,initialization,admission}` | 规则与产品用户组、CAS/撤权、真实容量、初始化恢复和准入；路由权限交叉矩阵只在 rules 执行。 |

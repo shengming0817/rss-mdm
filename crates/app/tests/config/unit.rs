@@ -186,6 +186,16 @@ fn native_protocols_are_explicit_closed_and_do_not_require_windows() {
     }
     config.as_object_mut().unwrap().remove("native_protocols");
     assert!(serde_json::from_value::<Config>(config.clone()).is_err());
+    for (key, value) in [
+        ("identity_management", serde_json::json!([])),
+        ("tenant_administration", serde_json::json!({})),
+    ] {
+        let mut invalid: serde_json::Value =
+            serde_json::from_str(include_str!("../../../../fixtures/mdm-config.example.json"))
+                .unwrap();
+        invalid[key] = value;
+        assert!(serde_json::from_value::<Config>(invalid).is_err());
+    }
     config["windows"] = windows;
     assert!(serde_json::from_value::<Config>(config).is_err());
 }
@@ -217,6 +227,11 @@ fn ca_inputs_reject_symlinks_directories_and_oversize() {
     assert!(database.options().is_err());
     std::fs::write(&ca, b"public certificate").unwrap();
     assert!(database.options().is_ok());
+    database.password_file = root.join("missing-password");
+    assert!(matches!(
+        database.options(),
+        Err(Error::Configuration(ConfigIssue::DatabasePassword))
+    ));
     std::fs::remove_dir_all(root).unwrap();
 }
 

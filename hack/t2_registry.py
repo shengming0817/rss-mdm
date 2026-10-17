@@ -208,9 +208,13 @@ MODULES['agent.pki'] = replace(MODULES['agent.pki'], scope='tenant', policies=(
     CasePolicy('agent_pki_tests::unknown_original_ca_result_blocks_retirement_after_rotation', 'reuse', 'tenant',('identity','agent_pki','pki_rotation')),
 ))
 
-add('installation.migration', selectors=('migration::tests::ledger_installation_rejects_audit_privilege_drift','migration::tests::fresh_installation_replay_and_mismatch_rejection','migration::tests::field_scope_migration_rejects_hidden_state_and_restores_rls','tenant_registry::tests::'), profile='empty',
+add('installation.migration', selectors=('migration::tests::ledger_installation_rejects_audit_privilege_drift','migration::tests::fresh_installation_replay_and_mismatch_rejection','migration::tests::field_scope_migration_rejects_hidden_state_and_restores_rls','tenant_registry::tests::rollback_failure_preserves_primary_reason_and_cleanup_evidence'), profile='empty',
     sources=('crates/app/src/migration.rs','crates/app/src/tenant_registry.rs','crates/app/src/tenant_use.rs','crates/app/schema/installation.sql'), tests=('crates/app/tests/migration/mod.rs','crates/app/tests/tenant_registry/mod.rs',),
     python='installation', support=('hack/t2_modules/installation.py',))
+add('installation.registry', selectors=('tenant_registry::tests::business::',), profile='product',
+    sources=('crates/app/src/migration.rs','crates/app/src/tenant_registry.rs','crates/app/src/tenant_use.rs','crates/app/schema/installation.sql'),
+    tests=('crates/app/tests/tenant_registry/business.rs',), support=('crates/app/tests/tenant_registry/mod.rs',))
+MODULES['installation.registry'] = replace(MODULES['installation.registry'], db_mode='fresh', scope='objects')
 add('installation.tenants', build=None, profile='empty', python='tenants',
     sources=('crates/app/src/tenant_registry.rs','crates/app/src/tenant_use.rs','crates/app/schema/installation.sql','crates/app/src/main.rs','crates/app/src/migration.rs','crates/app/src/maintenance.rs','crates/app/src/authorization_bootstrap.rs','crates/app/src/lifecycle.rs'),
     support=('hack/t2_modules/tenants.py',))
@@ -280,7 +284,7 @@ for name in ('projection', 'recovery', 'process'):
 add('worker.wake', selectors=('worker_wake::tests::',),
     sources=('crates/app/src/worker_wake.rs',),
     tests=('crates/app/tests/worker_wake/mod.rs',), support=())
-MODULES['worker.wake'] = replace(MODULES['worker.wake'], policies=(CasePolicy('worker_wake::tests::committed_hints_reconnect_and_restart_preserve_durable_work', 'reuse', 'pair'),))
+MODULES['worker.wake'] = replace(MODULES['worker.wake'], policies=(CasePolicy('worker_wake::tests::committed_hints_reconnect_and_restart_preserve_durable_markers', 'reuse', 'pair'),))
 add('inventory.runtime', selectors=('inventory_runtime::tests::',), fixtures=('identity',),
     sources=('crates/inventory-service/src/inventory_runtime.rs',),
     tests=('crates/app/tests/inventory_runtime/mod.rs',), support=())
