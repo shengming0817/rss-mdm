@@ -322,3 +322,50 @@ async fn collected_bundle_presence_remains_unknown() -> Result<()> {
     drop(device);
     f.close().await
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+#[ignore = "MODULE=apple.onboarding: started Agent handoff completes real SCEP and native check-in"]
+async fn agent_handoff_completes_native_registration_and_token_update() -> Result<()> {
+    let mut f = Fixture::start().await?;
+    let handoff =
+        crate::test_support::native_handoff::Handoff::new(rss_mdm_resource::Platform::MacOS)
+            .await?;
+    let id = Uuid::parse_str(handoff.receipt["enrollmentId"].as_str().unwrap())?;
+    let request = Request::builder()
+        .method(Method::POST)
+        .uri(format!("/api/v1/enrollments/{id}/profile"))
+        .header("host", "mdm.example.test")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            json!({"password":credential("wrong-native-handoff")}).to_string(),
+        ))?;
+    ensure!(f.router.clone().oneshot(request).await?.status() == StatusCode::UNAUTHORIZED);
+    let (enrollment, attempt, password) = f.profile_request(id, handoff.password.clone()).await?;
+    let device = scep_client::Device::new(enrollment, attempt, &password)?;
+    let request = device.request(
+        &f.root.join("apple-issuer.pem"),
+        &Uuid::new_v4().to_string(),
+        f.app.clock.unix_seconds()?,
+    )?;
+    let der = device
+        .enroll(
+            &f.client()?,
+            &f.app.apple()?.channel.scep_fixture()?.0,
+            &request,
+        )
+        .await?;
+    let peer = f.authenticate_peer(&device, &der).await?;
+    peer.token().await?;
+    let linked = pg(&format!(
+        "SELECT count(*) FROM mdm_access.agent_native_enrollments l JOIN mdm_access.requests q ON(q.tenant_id,q.id)=(l.tenant_id,l.request) JOIN mdm_access.registrations r ON(r.tenant_id,r.request_id)=(q.tenant_id,q.id) JOIN mdm_apple.devices a ON(a.tenant_id,a.registration)=(r.tenant_id,r.id) WHERE l.tenant_id='{}' AND l.request='{id}' AND l.source_registration='{}' AND q.state='bound' AND r.state='active' AND a.state='active' AND r.id<>l.source_registration",
+        case_tenant(),
+        handoff.source["registrationId"].as_str().unwrap()
+    ))?;
+    ensure!(
+        linked.trim() == "1",
+        "native registration must follow its exact Agent task"
+    );
+    handoff.close().await?;
+    drop(device);
+    f.close().await
+}

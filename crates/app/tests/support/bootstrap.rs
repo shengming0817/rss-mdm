@@ -2,17 +2,34 @@
 use super::*;
 use crate::clock::Clock;
 use base64::{Engine, engine::general_purpose::STANDARD};
-use rss_mdm_certificate::HandshakePeer;
 use rss_mdm_execution_service::{Task, storage, transaction};
 use rss_mdm_windows_mdm::native::{Execution, Request as Native, Value as NativeValue};
 use sqlx::Row;
 
 pub(crate) async fn issue(
-    app: &crate::api::Assembly,
+    app: &Arc<crate::api::Assembly>,
     router: &Router,
     _root: &std::path::Path,
     installation: uuid::Uuid,
-) -> Result<HandshakePeer> {
+) -> Result<BootstrapPeer> {
+    issue_observed(app, router, _root, installation, None).await
+}
+pub(crate) async fn issue_windows(
+    app: &Arc<crate::api::Assembly>,
+    router: &Router,
+    root: &std::path::Path,
+    installation: uuid::Uuid,
+    message: &rss_mdm_windows_mdm::syncml::Message,
+) -> Result<BootstrapPeer> {
+    issue_observed(app, router, root, installation, Some(message)).await
+}
+async fn issue_observed(
+    app: &Arc<crate::api::Assembly>,
+    router: &Router,
+    _root: &std::path::Path,
+    installation: uuid::Uuid,
+    observed: Option<&rss_mdm_windows_mdm::syncml::Message>,
+) -> Result<BootstrapPeer> {
     let root = std::path::PathBuf::from(std::env::var("MDM_AGENT_PKI_FIXTURES")?);
     let root = root.as_path();
     let (id, deadline, task) = transaction::inspect(&app.execution_runtime, rss_request_context::TenantId::parse(case_tenant())?, (&app.protection, installation), |ctx, tx| Box::pin(async move {
@@ -34,18 +51,45 @@ pub(crate) async fn issue(
                     request: Native::Sequence { operations },
                 },
         } => {
-            let value = operations
-                .into_iter()
-                .find_map(|op| match op {
-                    Native::Node {
+            if let Some(message) = observed {
+                let fields = windows_fields(&message.commands);
+                for operation in &operations {
+                    if let Native::Node {
                         node,
-                        value: Some(NativeValue::Text(value)),
+                        value: Some(value),
                         ..
-                    } if node.ends_with("/Challenge") => Some(value),
-                    _ => None,
-                })
-                .ok_or_else(|| anyhow::anyhow!("SCEP challenge missing"))?;
-            String::from_utf8(STANDARD.decode(value)?)?
+                    } = operation
+                    {
+                        let field = node.rsplit('/').next().unwrap();
+                        let expected = match value {
+                            NativeValue::Text(v) => v.clone(),
+                            NativeValue::Integer(v) => v.to_string(),
+                            _ => anyhow::bail!("unexpected SCEP value"),
+                        };
+                        ensure!(
+                            fields.get(field) == Some(&expected),
+                            "native SCEP field {field} differs from frozen delivery"
+                        );
+                    }
+                }
+                let challenge = fields
+                    .get("Challenge")
+                    .ok_or_else(|| anyhow::anyhow!("missing delivered challenge"))?;
+                String::from_utf8(STANDARD.decode(challenge)?)?
+            } else {
+                let value = operations
+                    .into_iter()
+                    .find_map(|op| match op {
+                        Native::Node {
+                            node,
+                            value: Some(NativeValue::Text(value)),
+                            ..
+                        } if node.ends_with("/Challenge") => Some(value),
+                        _ => None,
+                    })
+                    .ok_or_else(|| anyhow::anyhow!("SCEP challenge missing"))?;
+                String::from_utf8(STANDARD.decode(value)?)?
+            }
         }
         Task::Macos {
             request: rss_mdm_apple_mdm::native::request::Request::InstallProfile { profile },
@@ -105,31 +149,40 @@ pub(crate) async fn issue(
         .bootstrap_configuration()?;
     let now = crate::clock::SystemClock.unix_seconds()?;
     let mut request = json!({"timestamp":time::OffsetDateTime::from_unix_timestamp(now)?.format(&time::format_description::well_known::Rfc3339)?,"provisionerName":config.trust.active()?.provisioner,"x509CertificateRequest":{"raw":STANDARD.encode(&csr)},"scepChallenge":secret,"scepTransactionID":id.to_string()});
-    webhook(router, config, "challenge", &request).await?;
-    let chain = super::pki::leaf(
-        root,
-        &csr,
-        &rss_mdm_certificate::bootstrap::subject(installation, id),
-        &[],
-        now - 1,
-        deadline,
-    )?;
+    let approval = webhook(router, config, "challenge", &request).await?;
+    let approved = &approval["data"]["subject"];
+    ensure!(
+        approved["commonName"] == cn
+            && approved["organizationalUnit"] == json!([rss_mdm_certificate::bootstrap::PURPOSE])
+    );
+    let expiry = time::OffsetDateTime::parse(
+        approval["data"]["notAfter"]
+            .as_str()
+            .ok_or_else(|| anyhow::anyhow!("missing approved expiry"))?,
+        &time::format_description::well_known::Rfc3339,
+    )?
+    .unix_timestamp();
+    ensure!(expiry == deadline);
+    let subject = format!(
+        "OU={},CN={}",
+        approved["organizationalUnit"][0].as_str().unwrap(),
+        approved["commonName"].as_str().unwrap()
+    );
+    let chain = super::pki::leaf(root, &csr, &subject, &[], now - 1, expiry)?;
     request["x509Certificate"] = json!({"raw":STANDARD.encode(&chain[0])});
     webhook(router, config, "notify", &request).await?;
-    super::agent_tls::peer_with_verifier(
-        config.trust.verifier(false),
-        &chain,
-        root,
-        key.to_str().unwrap(),
-    )
-    .await
+    Ok(BootstrapPeer {
+        app: app.clone(),
+        chain,
+        directory: temp,
+    })
 }
 async fn webhook(
     router: &Router,
     config: &rss_mdm_registration_service::agent::bootstrap::Configuration,
     phase: &str,
     input: &Value,
-) -> Result<()> {
+) -> Result<Value> {
     let (id, key) = if phase == "challenge" {
         (&config.challenge_id, &config.challenge_key)
     } else {
@@ -164,27 +217,66 @@ async fn webhook(
         "bootstrap {phase}: {status} {}",
         String::from_utf8_lossy(&body)
     );
-    Ok(())
+    Ok(serde_json::from_slice(&body)?)
+}
+pub(crate) struct BootstrapPeer {
+    app: Arc<crate::api::Assembly>,
+    chain: Vec<Vec<u8>>,
+    directory: tempfile::TempDir,
 }
 pub(crate) async fn grant(
-    router: &Router,
-    peer: &HandshakePeer,
+    _router: &Router,
+    peer: &BootstrapPeer,
     input: &Value,
 ) -> Result<GrantResponse> {
-    let mut request = Request::builder()
-        .method("POST")
-        .uri("/api/v1/agent/enroll/native-grants")
-        .header("host", "mdm.example.test:9445")
-        .header("content-type", "application/json")
-        .body(Body::from(serde_json::to_vec(input)?))?;
-    request.extensions_mut().insert(peer.clone());
-    let response = router.clone().oneshot(request).await?;
-    let status = response.status();
-    let bytes = axum::body::to_bytes(response.into_body(), 128 * 1024).await?;
-    Ok(GrantResponse {
-        status,
-        body: serde_json::from_slice(&bytes)?,
-    })
+    let routers = crate::api::from_state(
+        peer.app.clone(),
+        "mdm.example.test".into(),
+        super::monotonic(),
+    );
+    let (_, router) = routers
+        .listeners
+        .into_iter()
+        .find(|(kind, _)| *kind == crate::native::NativeListenerKind::Agent)
+        .ok_or_else(|| anyhow::anyhow!("missing production Agent listener"))?;
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let address = listener.local_addr()?;
+    let mut owner = rss_runtime::ShutdownStack::try_new(
+        rss_runtime::TotalDrainBudget::new(Duration::from_secs(5))?,
+        Arc::new(crate::lifecycle::RuntimeTimer),
+    )?;
+    owner
+        .startup()?
+        .stage_task_with_token(crate::native::tls::registration(
+            listener,
+            router,
+            peer.app.audit_store.clone(),
+            case_tenant().into(),
+            crate::native::NativeListenerKind::Agent,
+        ));
+    let result = async {
+        let key = peer.directory.path().join("bootstrap.pk8");
+        let mut io = super::agent_http::connect_agent_with_key(
+            address,
+            Some(&peer.chain),
+            key.to_str().unwrap(),
+        )
+        .await?;
+        let (status, body) = super::agent_http::agent_http(
+            &mut io,
+            "POST",
+            "/api/v1/agent/enroll/native-grants",
+            Some(input.clone()),
+        )
+        .await?;
+        Ok::<_, anyhow::Error>(GrantResponse {
+            status: StatusCode::from_u16(status)?,
+            body,
+        })
+    }
+    .await;
+    ensure!(owner.shutdown().join().await?.is_clean());
+    result
 }
 
 pub(crate) struct GrantResponse {
@@ -198,4 +290,29 @@ impl GrantResponse {
     pub(crate) async fn json<T: serde::de::DeserializeOwned>(self) -> Result<T> {
         Ok(serde_json::from_value(self.body)?)
     }
+}
+
+pub(crate) fn windows_fields(
+    commands: &[rss_mdm_windows_mdm::syncml::Command],
+) -> BTreeMap<String, String> {
+    use rss_mdm_windows_mdm::syncml::Command as C;
+    let mut output = BTreeMap::new();
+    for command in commands {
+        match command {
+            C::Sequence { commands, .. } | C::Atomic { commands, .. } => {
+                output.extend(windows_fields(commands))
+            }
+            C::Add { items, .. } => {
+                for item in items {
+                    if let (Some(uri), Some(value)) = (&item.target, &item.data)
+                        && uri.contains("/ClientCertificateInstall/SCEP/")
+                    {
+                        output.insert(uri.rsplit('/').next().unwrap().to_owned(), value.0.clone());
+                    }
+                }
+            }
+            _ => (),
+        }
+    }
+    output
 }

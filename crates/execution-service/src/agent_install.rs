@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use uuid::Uuid;
 
-/// Deployment pins bind the reviewed product artifact to its claimed signing identity.
+/// Published package identity binds the reviewed artifact to its native detector.
 /// Production package signature/notarization verification belongs to package publication/T3.
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(tag = "platform", rename_all = "snake_case", deny_unknown_fields)]
@@ -381,6 +381,9 @@ pub async fn absent_on(
     let Some(evidence) = fact.evidence else {
         return Ok(None);
     };
+    if evidence.catalog_digest != detection_on(c, tenant_id, source).await?.digest()? {
+        return Ok(None);
+    }
     let architecture = match evidence.architecture.as_deref() {
         Some("x86_64") => Architecture::X86_64,
         Some("aarch64") => Architecture::Aarch64,
@@ -487,31 +490,110 @@ pub async fn dispatch_ready_on(
 }
 
 /// Derive native observation targets from the publication owner, including retired releases.
-pub async fn identities_on(
+#[derive(Clone, Serialize, Deserialize)]
+pub struct DetectionCatalog {
+    pub identities: Vec<Identity>,
+    pub win32: Vec<Win32Identity>,
+    pub complete: bool,
+}
+#[derive(Clone, Serialize, Deserialize)]
+pub struct Win32Identity {
+    pub key: String,
+    pub publisher: String,
+}
+impl DetectionCatalog {
+    pub fn digest(&self) -> std::result::Result<[u8; 32], Error> {
+        use sha2::{Digest, Sha256};
+        Ok(Sha256::digest(serde_json::to_vec(self).map_err(|_| Error::Malformed)?).into())
+    }
+}
+pub async fn detection_on(
     c: &mut sqlx::PgConnection,
     tenant: rss_request_context::TenantId,
     source: rss_mdm_inventory::ReportSource,
-) -> std::result::Result<Vec<Identity>, Error> {
+) -> std::result::Result<DetectionCatalog, Error> {
     let platform = match source {
-        rss_mdm_inventory::ReportSource::MdmWindows => Platform::Windows,
-        rss_mdm_inventory::ReportSource::MdmApple => Platform::Macos,
+        rss_mdm_inventory::ReportSource::MdmWindows => {
+            rss_mdm_agent_wire::runtime::TaskPlatform::Windows
+        }
+        rss_mdm_inventory::ReportSource::MdmApple => {
+            rss_mdm_agent_wire::runtime::TaskPlatform::Macos
+        }
         _ => return Err(Error::Malformed),
     };
     let known = rss_mdm_software_service::agent_packages::known_in(c, tenant)
         .await
         .map_err(crate::agent_preparation::publication_error)?;
-    let mut identities = Vec::new();
-    for release in known {
-        // EXE has no native installation adapter; its presence comes from existing software inventory.
-        if release.metadata.format
-            == rss_mdm_agent_wire::enroll::configuration::InstallerFormat::NsisExe
+    let mut catalog = DetectionCatalog {
+        identities: Vec::new(),
+        win32: Vec::new(),
+        complete: true,
+    };
+    for release in known
+        .into_iter()
+        .filter(|r| r.metadata.target.platform == platform)
+    {
+        if let (
+            resource::SoftwareBehavior::Exe(exe),
+            rss_mdm_software_service::agent_packages::Packaging::NsisExe { publisher, .. },
+        ) = (&release.software.behavior, &release.packaging)
         {
+            let resource::SoftwareDetection::Registry {
+                scope: resource::SoftwareScope::System,
+                key,
+                value,
+                ..
+            } = &exe.detect
+            else {
+                catalog.complete = false;
+                continue;
+            };
+            let lower = key.to_ascii_lowercase();
+            let suffix = [
+                "software\\microsoft\\windows\\currentversion\\uninstall\\",
+                "software\\wow6432node\\microsoft\\windows\\currentversion\\uninstall\\",
+            ]
+            .into_iter()
+            .find_map(|prefix| lower.strip_prefix(prefix));
+            if value.eq_ignore_ascii_case("DisplayVersion")
+                && let Some(key) = suffix.filter(|v| !v.is_empty() && !v.contains('\\'))
+            {
+                catalog.win32.push(Win32Identity {
+                    key: key.to_owned(),
+                    publisher: publisher.clone(),
+                });
+            } else {
+                catalog.complete = false;
+            }
             continue;
         }
-        let identity = crate::agent_preparation::identity(&release)?;
-        if identity.platform() == platform && !identities.contains(&identity) {
-            identities.push(identity);
+        match crate::agent_preparation::identity(&release) {
+            Ok(identity) => {
+                if !catalog.identities.contains(&identity) {
+                    catalog.identities.push(identity);
+                }
+            }
+            Err(Error::Unsupported) => catalog.complete = false,
+            Err(e) => return Err(e),
         }
     }
-    Ok(identities)
+    Ok(catalog)
+}
+
+/// Removing our exact bootstrap object is an activation cleanup duty, not a new install grant.
+pub(crate) async fn cleanup_authorized_on(
+    c: &mut sqlx::PgConnection,
+    authority: &crate::authority::ExecutionAuthority,
+) -> std::result::Result<bool, Error> {
+    let crate::authority::ExecutionAuthority::AgentInstall {
+        stage: crate::authority::AgentInstallStage::Cleanup,
+        tenant,
+        operation,
+        device,
+        ..
+    } = authority
+    else {
+        return Ok(false);
+    };
+    sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_access.agent_bootstraps b JOIN mdm_commands.operations o ON(o.tenant_id,o.id)=(b.tenant_id,b.installation) WHERE b.tenant_id=$1::uuid AND b.installation=$2 AND o.device=$3 AND b.state='consumed' AND NOT b.cleanup_complete AND EXISTS(SELECT 1 FROM mdm_access.agent_grants g JOIN mdm_access.registrations r ON(r.tenant_id,r.agent_grant_id)=(g.tenant_id,g.id) WHERE g.tenant_id=b.tenant_id AND g.native_authority->>'bootstrap'=b.id::text))").bind(tenant).bind(operation).bind(device).fetch_one(c).await.map_err(crate::database::db)
 }

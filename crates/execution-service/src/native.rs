@@ -121,28 +121,27 @@ async fn collection_result_eligible(
     session: u32,
     reference: &s::Reference,
 ) -> std::result::Result<bool, Error> {
-    let rows=sqlx::query("SELECT w.id,w.kind,w.template_state,r.scope,r.sealed_at IS NULL AND CASE w.kind WHEN 'agent' THEN r.deadline IS NULL OR r.deadline>clock_timestamp() WHEN 'template' THEN r.deadline IS NOT NULL AND r.deadline>clock_timestamp() ELSE false END AS live,w.kind='agent' AND w.request_message=$4 AND $5 BETWEEN w.first_command AND w.first_command+3 AS agent_match FROM mdm_windows.collections w JOIN mdm_access.collection_runs r USING(tenant_id,id) WHERE w.tenant_id=$1::uuid AND w.registration=$2 AND w.session_id=$3")
-        .bind(p.tenant().to_string()).bind(p.registration()).bind(session.to_string()).bind(i64::from(reference.message_id)).bind(i64::from(reference.command_id)).fetch_all(&mut *c).await.map_err(db)?;
+    let rows=sqlx::query("SELECT w.id,w.kind,w.template_state,r.scope,r.sealed_at IS NULL AND CASE w.kind WHEN 'agent' THEN r.deadline IS NULL OR r.deadline>clock_timestamp() WHEN 'template' THEN r.deadline IS NOT NULL AND r.deadline>clock_timestamp() ELSE false END AS live FROM mdm_windows.collections w JOIN mdm_access.collection_runs r USING(tenant_id,id) WHERE w.tenant_id=$1::uuid AND w.registration=$2 AND w.session_id=$3")
+        .bind(p.tenant().to_string()).bind(p.registration()).bind(session.to_string()).fetch_all(&mut *c).await.map_err(db)?;
     for row in rows {
         let id = row.try_get("id").map_err(db)?;
-        if row.try_get::<String, _>("kind").map_err(db)? == "template" {
-            let scope = serde_json::from_str(&row.try_get::<String, _>("scope").map_err(db)?)
-                .map_err(|_| protocol())?;
-            let state = open_collection_state(
-                protection,
-                &scope,
-                id,
-                &row.try_get::<Vec<u8>, _>("template_state").map_err(db)?,
-            )?;
-            if state.owns(reference.message_id, reference.command_id) {
-                return if row.try_get::<bool, _>("live").map_err(db)? {
-                    crate::actions::native_collection::delivery_eligible_on(source, c, p, id).await
-                } else {
-                    Ok(false)
-                };
+        let scope = serde_json::from_str(&row.try_get::<String, _>("scope").map_err(db)?)
+            .map_err(|_| protocol())?;
+        let state = open_collection_state(
+            protection,
+            &scope,
+            id,
+            &row.try_get::<Vec<u8>, _>("template_state").map_err(db)?,
+        )?;
+        if state.owns(reference.message_id, reference.command_id) {
+            if !row.try_get::<bool, _>("live").map_err(db)? {
+                return Ok(false);
             }
-        } else if row.try_get::<bool, _>("agent_match").map_err(db)? {
-            return row.try_get("live").map_err(db);
+            return if row.try_get::<String, _>("kind").map_err(db)? == "template" {
+                crate::actions::native_collection::delivery_eligible_on(source, c, p, id).await
+            } else {
+                Ok(true)
+            };
         }
     }
     // Capability prerequisites are bounded, registration-owned reads, never user operations.

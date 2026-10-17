@@ -57,7 +57,7 @@ pub(crate) async fn publish_until(
     windows: bool,
     until: Option<i64>,
 ) -> Result<Uuid> {
-    publish_format(user, router, device, app, windows, until, false).await
+    publish_format(user, router, device, app, windows, until, "msi").await
 }
 pub(crate) async fn publish_msix(
     user: &mut Browser,
@@ -65,7 +65,7 @@ pub(crate) async fn publish_msix(
     device: &str,
     app: &crate::api::Assembly,
 ) -> Result<Uuid> {
-    publish_format(user, router, device, app, true, None, true).await
+    publish_format(user, router, device, app, true, None, "msix").await
 }
 async fn publish_format(
     user: &mut Browser,
@@ -74,8 +74,9 @@ async fn publish_format(
     app: &crate::api::Assembly,
     windows: bool,
     until: Option<i64>,
-    msix: bool,
+    format: &str,
 ) -> Result<Uuid> {
+    let msix = format == "msix";
     use software::write;
     let planning = &app.flow.planning;
     let content = app.content_writer.as_ref().expect("installation content");
@@ -97,9 +98,15 @@ async fn publish_format(
         definition["version"] = json!("1.2.3.0");
         definition["behavior"] = json!({"kind":"msix","container":{"kind":"package","installer":"package"},"identity":{"name":"RSS.Agent","publisher":"CN=RSS","version":[1,2,3,0],"architecture":"x86_64","resourceId":""},"dependencies":[],"deployment":{"kind":"device_provisioning"},"minimumOs":[10,0,19041,0],"requireSideload":true,"allowUnsigned":false,"uninstall":false,"invocation":{"runAs":"system","arguments":[],"environment":{},"timeoutSeconds":60,"outputBytes":4096,"exitCodes":{"success":[0],"reboot":[]}},"upgrade":"in_place"});
     }
+    if format == "exe" {
+        definition["behavior"]["kind"] = json!("exe");
+        definition["behavior"]["layout"] =
+            json!({"rss-agent.exe":"package","rss-agent.candidate.json":"candidate"});
+        definition["behavior"]["detect"] = json!({"kind":"registry","scope":"system","key":"Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\rss-agent","value":"DisplayVersion","version":"1.2.3"});
+    }
     let base: Value = serde_json::from_slice(&std::fs::read(std::env::var("MDM_TEST_CONFIG")?)?)?;
     let manifest = serde_json::to_vec(
-        &json!({"wireVersion":1,"tenantId":case_tenant(),"target":{"platform":platform,"architecture":arch},"version":definition["version"],"origin":"https://mdm.example.test:9445","signingKeys":base["task_signing"]["trusted_keys"],"packaging":if msix {json!({"kind":"windows_msix","publisher":"CN=RSS","signature_evidence":"controlled-protocol-fixture; OS trust not asserted"})}else if windows {json!({"kind":"windows_msi","publisher":"RSS controlled publisher","signature_evidence":"controlled-protocol-fixture"})}else{json!({"kind":"macos_pkg","bundle":"com.rss.agent","team":"RSS1234567","notarization_evidence":"controlled-protocol-fixture"})}}),
+        &json!({"wireVersion":1,"tenantId":case_tenant(),"target":{"platform":platform,"architecture":arch},"version":definition["version"],"origin":"https://mdm.example.test:9445","signingKeys":base["task_signing"]["trusted_keys"],"packaging":if format=="exe" {json!({"kind":"nsis_exe","publisher":"RSS controlled publisher","signature_evidence":"controlled-protocol-fixture"})}else if msix {json!({"kind":"windows_msix","publisher":"CN=RSS","signature_evidence":"controlled-protocol-fixture; OS trust not asserted"})}else if windows {json!({"kind":"windows_msi","publisher":"RSS controlled publisher","signature_evidence":"controlled-protocol-fixture"})}else{json!({"kind":"macos_pkg","bundle":"com.rss.agent","team":"RSS1234567","notarization_evidence":"controlled-protocol-fixture"})}}),
     )?;
     definition["artifacts"]["candidate"] = json!({"reference":"agent-candidate","length":manifest.len(),"sha256":Sha256::digest(&manifest).to_vec()});
     let version =
@@ -135,6 +142,9 @@ async fn publish_format(
         "Agent publication: {status} {published}"
     );
 
+    if format == "exe" {
+        return Ok(Uuid::parse_str(published["releaseId"].as_str().unwrap())?);
+    }
     let scope = Uuid::new_v4();
     if windows {
         agent_execution::seed_scope(planning, scope, json!([{"kind":"device","id":device}]))
@@ -203,4 +213,13 @@ fn msix_bytes() -> Result<Vec<u8>> {
     archive.start_file("payload.bin", zip::write::SimpleFileOptions::default())?;
     archive.write_all(b"controlled MSIX protocol material; not an OS-signed release")?;
     Ok(archive.finish()?.into_inner())
+}
+
+pub(crate) async fn publish_exe(
+    user: &mut Browser,
+    router: &Router,
+    device: &str,
+    app: &crate::api::Assembly,
+) -> Result<Uuid> {
+    publish_format(user, router, device, app, true, None, "exe").await
 }

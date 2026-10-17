@@ -562,7 +562,7 @@ pub async fn installation_observation(
         };
     }
     let bound=tx.with_connection(move|c|Box::pin(async move{sqlx::query_as::<_,(Uuid,String,String)>("SELECT r.id,r.device,r.state FROM mdm_access.agent_grants e JOIN mdm_access.registrations r ON(r.tenant_id,r.agent_grant_id)=(e.tenant_id,e.id) WHERE e.tenant_id=$1::uuid AND e.source='native' AND e.native_authority->>'installation'=$2::uuid::text").bind(tenant.to_string()).bind(operation).fetch_optional(c).await})).await?;
-    let bootstrap=tx.with_connection(move|c|Box::pin(async move {sqlx::query_scalar::<_,serde_json::Value>("SELECT jsonb_build_object('state',state,'delivery',delivery,'cleanup',cleanup,'deadline',deadline) FROM mdm_access.agent_bootstraps WHERE tenant_id=$1::uuid AND installation=$2").bind(tenant.to_string()).bind(operation).fetch_optional(c).await})).await?;
+    let bootstrap=tx.with_connection(move|c|Box::pin(async move {sqlx::query_scalar::<_,serde_json::Value>("SELECT jsonb_build_object('state',state,'delivery',delivery,'cleanup',cleanup,'cleanupComplete',cleanup_complete,'cleanupRetryAt',cleanup_retry_at,'deadline',deadline) FROM mdm_access.agent_bootstraps WHERE tenant_id=$1::uuid AND installation=$2").bind(tenant.to_string()).bind(operation).fetch_optional(c).await})).await?;
     let registered = if let Some((id, device, state)) = bound {
         let profile = channels::agent_binding_in(tx, agent, id).await?;
         serde_json::json!({"deviceId":device,"registrationId":id,"state":state,"capabilities":profile.map(|p|p.capabilities)})

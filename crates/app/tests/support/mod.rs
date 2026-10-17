@@ -625,6 +625,7 @@ pub(crate) mod channel_onboarding;
 
 pub(crate) mod agent_tls;
 pub(crate) mod bootstrap;
+pub(crate) mod native_handoff;
 
 pub(crate) mod agent_http;
 

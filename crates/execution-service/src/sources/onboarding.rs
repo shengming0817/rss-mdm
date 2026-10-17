@@ -103,7 +103,17 @@ pub async fn state_in(
             let Some(package) = action.packages.get(&target) else {
                 return status(State::MissingVariant);
             };
-            if !evidence.matches(&package.detection_identity()) {
+            let digest = tx
+                .with_connection(move |c| {
+                    Box::pin(async move {
+                        Ok(crate::agent_install::detection_on(c, tenant, source)
+                            .await
+                            .and_then(|c| c.digest()))
+                    })
+                })
+                .await??;
+            if evidence.catalog_digest != digest || !evidence.matches(&package.detection_identity())
+            {
                 return status(State::ChannelUnknown);
             }
             let package = package.clone();

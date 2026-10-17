@@ -263,6 +263,8 @@ pub struct BootstrapObservation {
     state: String,
     delivery: Uuid,
     cleanup: Option<Uuid>,
+    cleanup_complete: bool,
+    cleanup_retry_at: i64,
     deadline: i64,
 }
 #[derive(Deserialize, Serialize)]

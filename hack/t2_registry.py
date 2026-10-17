@@ -1996,4 +1996,9 @@ for name in ('execution.commands.onboarding', 'apple.onboarding', 'planning.onbo
             'crates/registration-service/src/enrollment/agent_policy.rs', 'crates/execution-service/src/bootstrap_delivery.rs',
             'crates/execution-service/src/actions/native_enrollment.rs', 'crates/windows-channel/src/agent_enrollment.rs',
             'crates/windows-mdm/src/software/*', 'crates/certificate/src/bootstrap.rs'),
-        support_inputs=(*module.support_inputs, 'hack/bootstrap_fixtures.py', 'crates/app/tests/support/bootstrap.rs'))
+        support_inputs=(*module.support_inputs, 'hack/bootstrap_fixtures.py', 'crates/app/tests/support/bootstrap.rs', 'crates/app/tests/support/native_handoff.rs'))
+
+module = MODULES['apple.onboarding']
+MODULES['apple.onboarding'] = replace(module, policies=(*module.policies, CasePolicy(
+    'apple::tests::onboarding::agent_handoff_completes_native_registration_and_token_update',
+    db_mode='reuse', scope='tenant', fixtures=tuple(dict.fromkeys((*module.fixtures, 'scep'))))))

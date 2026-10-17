@@ -112,6 +112,15 @@ pub async fn receive(
             _ => absent = false,
         }
     }
+    let catalog = rss_mdm_execution_service::agent_install::detection_on(
+        c,
+        p.tenant(),
+        ReportSource::MdmApple,
+    )
+    .await?;
+    let saved:serde_json::Value=sqlx::query_scalar("SELECT evidence->'catalogDigest' FROM mdm_access.collection_runs WHERE tenant_id=$1::uuid AND id=$2").bind(p.tenant().to_string()).bind(id_collection).fetch_one(&mut *c).await.map_err(db)?;
+    let catalog_digest: [u8; 32] = serde_json::from_value(saved).map_err(|_| Error::Malformed)?;
+    absent &= catalog.complete && catalog_digest == catalog.digest()?;
     let state = if absent {
         AgentInstallation::Absent
     } else {
@@ -125,6 +134,7 @@ pub async fn receive(
             ReportSource::MdmApple,
             state,
             Some(AgentEvidence {
+                catalog_digest,
                 provisioned: false,
                 checked_identities: bundles,
                 identity: observed_identity,
@@ -142,14 +152,16 @@ pub async fn send(
     protection: &rss_mdm_native_protection::Protector,
     p: &DevicePrincipal,
 ) -> Result<(Vec<u8>, Vec<rss_mdm_audit_integration::Fact>), Error> {
-    let identities = rss_mdm_execution_service::agent_install::identities_on(
+    let catalog = rss_mdm_execution_service::agent_install::detection_on(
         c,
         p.tenant(),
         ReportSource::MdmApple,
     )
     .await?;
-    let bundles: std::collections::BTreeSet<_> = identities
-        .into_iter()
+    let bundles: std::collections::BTreeSet<_> = catalog
+        .identities
+        .iter()
+        .cloned()
         .filter_map(|i| match i {
             Identity::Macos { bundle, .. } => Some(bundle),
             _ => None,
@@ -191,7 +203,8 @@ pub async fn send(
     let collection = if let Some(id) = collection {
         id
     } else {
-        let (id, _, sequence) = channel::start_in(c, p, ReportSource::MdmApple).await?;
+        let (id, _, sequence) =
+            channel::start_in(c, p, ReportSource::MdmApple, catalog.digest()?).await?;
         let mut query = wire::query(bundles.first().ok_or(Error::Malformed)?)?;
         query.insert(
             "Identifiers".into(),

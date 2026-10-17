@@ -1,7 +1,7 @@
 BEGIN;
 CREATE TABLE mdm_access.agent_bootstraps (
  tenant_id uuid NOT NULL,id uuid NOT NULL,installation uuid NOT NULL,delivery uuid NOT NULL,
- cleanup uuid,source jsonb NOT NULL,release uuid NOT NULL,issuer text NOT NULL,provisioner text NOT NULL,
+ cleanup uuid,cleanup_complete boolean NOT NULL DEFAULT false,cleanup_retry_at bigint NOT NULL DEFAULT 0,source jsonb NOT NULL,release uuid NOT NULL,issuer text NOT NULL,provisioner text NOT NULL,
  challenge bytea NOT NULL CHECK(octet_length(challenge)=32),deadline bigint NOT NULL,
  state text NOT NULL CHECK(state IN ('prepared','signing','issued','consumed','revoked')),
  transaction_id text,csr_digest bytea,spki bytea,fingerprint bytea,certificate bytea,
@@ -15,7 +15,7 @@ ALTER TABLE mdm_access.agent_bootstraps ENABLE ROW LEVEL SECURITY;
 ALTER TABLE mdm_access.agent_bootstraps FORCE ROW LEVEL SECURITY;
 CREATE POLICY tenant ON mdm_access.agent_bootstraps USING(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid) WITH CHECK(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid);
 GRANT SELECT,INSERT ON mdm_access.agent_bootstraps TO mdm_command_runtime;
-GRANT UPDATE(cleanup) ON mdm_access.agent_bootstraps TO mdm_command_runtime;
+GRANT UPDATE(cleanup,cleanup_complete,cleanup_retry_at) ON mdm_access.agent_bootstraps TO mdm_command_runtime;
 GRANT SELECT ON mdm_access.agent_bootstraps TO mdm_access;
 GRANT UPDATE(state,transaction_id,csr_digest,spki,fingerprint,certificate) ON mdm_access.agent_bootstraps TO mdm_access;
 GRANT USAGE ON SCHEMA mdm_agent_packages TO mdm_command_runtime;

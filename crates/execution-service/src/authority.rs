@@ -50,6 +50,10 @@ impl ExecutionAuthority {
     ) -> Result<bool, Error> {
         match self {
             Self::AgentInstall {
+                stage: AgentInstallStage::Cleanup,
+                ..
+            } => crate::agent_install::cleanup_authorized_on(c, self).await,
+            Self::AgentInstall {
                 tenant,
                 version,
                 device,
@@ -267,7 +271,11 @@ impl ExecutionAuthority {
                 if !allowed {
                     return Ok(false);
                 }
-                crate::agent_install::authorized_on(source, conn, self, now).await
+                if *stage == AgentInstallStage::Cleanup {
+                    crate::agent_install::cleanup_authorized_on(conn, self).await
+                } else {
+                    crate::agent_install::authorized_on(source, conn, self, now).await
+                }
             }
             Self::DeviceControl { evidence, .. } => {
                 for grant in evidence {

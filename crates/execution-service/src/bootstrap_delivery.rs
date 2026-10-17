@@ -194,11 +194,15 @@ impl ExecutionService {
         device: &str,
         audit: &RequestAudit,
     ) -> Result<()> {
+        let now = self.installation_authorization_time(storage::now(tx).await?);
         let tenant = tx.tenant_id();
         let name = device.to_owned();
+        tx.with_connection(move|c|Box::pin(async move {
+            sqlx::query("UPDATE mdm_access.agent_bootstraps SET cleanup_complete=true WHERE tenant_id=$1::uuid AND cleanup IS NOT NULL AND NOT cleanup_complete AND mdm_commands.installation_status(cleanup)='applied'").bind(tenant.to_string()).execute(c).await?;Ok(())
+        })).await?;
         let rows=tx.with_connection(move|c|Box::pin(async move {
-            sqlx::query_as::<_,(Uuid,Uuid)>("SELECT b.id,b.installation FROM mdm_access.agent_bootstraps b JOIN mdm_commands.operations o ON(o.tenant_id,o.id)=(b.tenant_id,b.installation) WHERE b.tenant_id=$1::uuid AND o.device=$2 AND b.cleanup IS NULL AND b.state='consumed' AND EXISTS(SELECT 1 FROM mdm_access.agent_grants g JOIN mdm_access.registrations r ON(r.tenant_id,r.agent_grant_id)=(g.tenant_id,g.id) WHERE g.tenant_id=b.tenant_id AND g.native_authority->>'bootstrap'=b.id::text AND r.state='active') FOR UPDATE OF b")
-                .bind(tenant.to_string()).bind(name).fetch_all(c).await
+            sqlx::query_as::<_,(Uuid,Uuid)>("SELECT b.id,b.installation FROM mdm_access.agent_bootstraps b JOIN mdm_commands.operations o ON(o.tenant_id,o.id)=(b.tenant_id,b.installation) WHERE b.tenant_id=$1::uuid AND o.device=$2 AND NOT b.cleanup_complete AND b.cleanup_retry_at<=$3 AND (b.cleanup IS NULL OR EXISTS(SELECT 1 FROM mdm_commands.operations cleanup WHERE cleanup.tenant_id=b.tenant_id AND cleanup.id=b.cleanup AND (mdm_commands.installation_status(cleanup.id) IN('rejected','cancelled','expired') OR (cleanup.input_context->>'deadline')::bigint<=$3))) AND b.state='consumed' AND EXISTS(SELECT 1 FROM mdm_access.agent_grants g JOIN mdm_access.registrations r ON(r.tenant_id,r.agent_grant_id)=(g.tenant_id,g.id) WHERE g.tenant_id=b.tenant_id AND g.native_authority->>'bootstrap'=b.id::text ) FOR UPDATE OF b")
+                .bind(tenant.to_string()).bind(name).bind(now).fetch_all(c).await
         })).await?;
         for (id, installation) in rows {
             let op = storage::load(tx, &self.protection, installation).await?;
@@ -224,7 +228,7 @@ impl ExecutionService {
             };
             let input = Create {
                 operation_id: delivery,
-                deadline: storage::now(tx).await? + 300,
+                deadline: now + 300,
                 input_version: op.request.input_version,
                 target: NativeTarget::Device,
                 task,
@@ -260,7 +264,7 @@ impl ExecutionService {
             );
             result?;
             tx.with_connection(move|c|Box::pin(async move {
-                sqlx::query("UPDATE mdm_access.agent_bootstraps SET cleanup=$3 WHERE tenant_id=$1::uuid AND id=$2 AND cleanup IS NULL").bind(tenant.to_string()).bind(id).bind(delivery).execute(c).await?;Ok(())
+                sqlx::query("UPDATE mdm_access.agent_bootstraps SET cleanup=$3,cleanup_retry_at=$4 WHERE tenant_id=$1::uuid AND id=$2 AND NOT cleanup_complete").bind(tenant.to_string()).bind(id).bind(delivery).bind(now+300).execute(c).await?;Ok(())
             })).await?;
         }
         Ok(())
