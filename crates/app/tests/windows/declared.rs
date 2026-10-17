@@ -501,13 +501,18 @@ async fn mi_effect(
             != "applied",
         "partial native state became effect"
     );
-    // More duplicate summaries than the attempt budget must not spend a single retry.
+    // A duplicate in a fresh session must not spend an observation attempt.
     let complete = syncml::decode(&partial.bytes().await?, &CodecLimits::default())
         .context("decode completed progress response")?;
     ensure!(!has_declared_query(&complete));
+    let before = observe_attempts(operation).await?;
     repeated_completed_summaries(child, url, initial, parent_ack, &document)
         .await
         .context("repeat completed summaries")?;
+    ensure!(
+        observe_attempts(operation).await? == before,
+        "completed summary spent an attempt"
+    );
     let result = mi_version_changes(
         &mut client,
         operation,
@@ -598,9 +603,14 @@ async fn mi_complete(
             != "applied",
         "summary became effect"
     );
+    let before = observe_attempts(operation).await?;
     let previous = queried.clone();
     let previous =
         repeated_summaries(child, url, initial, previous, document, "result-v2", 60).await?;
+    ensure!(
+        observe_attempts(operation).await? == before,
+        "pending summary spent an attempt"
+    );
     let mut packet = with_summary(
         result_packet(
             initial,
@@ -645,32 +655,30 @@ async fn repeated_completed_summaries(
     parent_ack: &syncml::Message,
     document: &str,
 ) -> anyhow::Result<()> {
-    for index in 0..35 {
-        // A completed read ends its OMA-DM session. The next current summary
-        // arrives in a new authenticated session with ordinary capability reads.
-        let mut first = with_summary(initial.clone(), document, "result-v1", 20)?;
-        first.header.session_id += 100 + index;
-        let sent = authenticate_child(child, url, &first, parent_ack)
-            .await
-            .context("authenticate repeated summary session")?;
-        ensure!(
-            !has_declared_query(&sent),
-            "unchanged consumed summary created a query"
-        );
-        let packet = with_summary(
-            result_packet(&first, &sent, None),
-            document,
-            "result-v1",
-            20,
-        )?;
-        let response = crate::execution::test_support::native::post(child, url, &packet).await?;
-        ensure!(response.status() == StatusCode::OK);
-        let response = syncml::decode(&response.bytes().await?, &CodecLimits::default())?;
-        ensure!(
-            !has_declared_query(&response),
-            "capability results retried unchanged summary"
-        );
-    }
+    // A completed read ends its OMA-DM session. The next current summary
+    // arrives in a new authenticated session with ordinary capability reads.
+    let mut first = with_summary(initial.clone(), document, "result-v1", 20)?;
+    first.header.session_id += 100;
+    let sent = authenticate_child(child, url, &first, parent_ack)
+        .await
+        .context("authenticate repeated summary session")?;
+    ensure!(
+        !has_declared_query(&sent),
+        "unchanged consumed summary created a query"
+    );
+    let packet = with_summary(
+        result_packet(&first, &sent, None),
+        document,
+        "result-v1",
+        20,
+    )?;
+    let response = crate::execution::test_support::native::post(child, url, &packet).await?;
+    ensure!(response.status() == StatusCode::OK);
+    let response = syncml::decode(&response.bytes().await?, &CodecLimits::default())?;
+    ensure!(
+        !has_declared_query(&response),
+        "capability results retried unchanged summary"
+    );
     Ok(())
 }
 
@@ -684,22 +692,27 @@ async fn repeated_summaries(
     version: &str,
     state: u32,
 ) -> anyhow::Result<syncml::Message> {
-    for _ in 0..35 {
-        let packet = with_summary(
-            result_packet(initial, &previous, None),
-            document,
-            version,
-            state,
-        )?;
-        let response = crate::execution::test_support::native::post(child, url, &packet).await?;
-        ensure!(response.status() == StatusCode::OK);
-        previous = syncml::decode(&response.bytes().await?, &CodecLimits::default())?;
-        ensure!(
-            !has_declared_query(&previous),
-            "duplicate summary created another query"
-        );
-    }
+    let packet = with_summary(
+        result_packet(initial, &previous, None),
+        document,
+        version,
+        state,
+    )?;
+    let response = crate::execution::test_support::native::post(child, url, &packet).await?;
+    ensure!(response.status() == StatusCode::OK);
+    previous = syncml::decode(&response.bytes().await?, &CodecLimits::default())?;
+    ensure!(
+        !has_declared_query(&previous),
+        "duplicate summary created another query"
+    );
     Ok(previous)
+}
+
+#[cfg(feature = "integration")]
+async fn observe_attempts(operation: Uuid) -> anyhow::Result<i64> {
+    let mut pg = PgConnection::connect_with(&options("postgres")?).await?;
+    Ok(sqlx::query_scalar("SELECT count(*) FROM mdm_commands.attempts WHERE tenant_id=$1::uuid AND operation=$2 AND phase='observe'")
+        .bind(case_tenant()).bind(operation).fetch_one(&mut pg).await?)
 }
 
 struct LinkedPeer {

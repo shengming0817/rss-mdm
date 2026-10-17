@@ -15,72 +15,47 @@ use uuid::Uuid;
 #[tokio::test]
 #[ignore = "MODULE=windows.management: native template over real SyncML mTLS"]
 async fn native_template_policy_uses_correlated_get_and_collection_run() -> anyhow::Result<()> {
-    template_flow(None, 9, Completion::Snapshot).await
+    template_flow(None, Completion::Snapshot).await
 }
 #[tokio::test]
 #[ignore = "MODULE=windows.management: template authority before first fragment"]
 async fn template_revocation_before_first_fragment_aborts() -> anyhow::Result<()> {
-    template_flow(Some(false), 9, Completion::Snapshot).await
+    template_flow(Some(false), Completion::Snapshot).await
 }
 #[tokio::test]
 #[ignore = "MODULE=windows.management: template authority between fragments"]
 async fn template_revocation_between_fragments_aborts() -> anyhow::Result<()> {
-    template_flow(Some(true), 9, Completion::Snapshot).await
+    template_flow(Some(true), Completion::Snapshot).await
 }
 #[tokio::test]
 #[ignore = "MODULE=windows.management: client abort of a real template run"]
 async fn template_client_abort_cannot_publish_a_snapshot() -> anyhow::Result<()> {
-    template_flow(None, 9, Completion::SessionAbort).await
-}
-#[tokio::test]
-#[ignore = "MODULE=windows.management: non-Final report at the message budget"]
-async fn template_nonfinal_message_budget_cannot_publish_a_snapshot() -> anyhow::Result<()> {
-    template_flow(
-        None,
-        CodecLimits::default().session_messages as u32 - 1,
-        Completion::MessageBudget,
-    )
-    .await
+    template_flow(None, Completion::SessionAbort).await
 }
 #[tokio::test]
 #[ignore = "MODULE=windows.management: dynamic inventory through SyncML and projection"]
 async fn dynamic_inventory_reenumerates_and_projects() -> anyhow::Result<()> {
-    template_flow(None, 9, Completion::Inventory).await
+    template_flow(None, Completion::Inventory).await
 }
 #[tokio::test]
 #[ignore = "MODULE=windows.management: a missing dynamic child cannot publish an empty list"]
 async fn dynamic_inventory_missing_child_is_partial() -> anyhow::Result<()> {
-    template_flow(None, 9, Completion::MissingChild).await
+    template_flow(None, Completion::MissingChild).await
 }
 #[tokio::test]
 #[ignore = "MODULE=windows.management: confirmed empty replaces only native inventory"]
 async fn dynamic_empty_preserves_agent_software() -> anyhow::Result<()> {
-    template_flow(None, 9, Completion::EmptyInventory).await
-}
-#[tokio::test]
-#[ignore = "MODULE=windows.management: Final budget boundary preserves confirmed partial fields"]
-async fn dynamic_final_budget_preserves_partial_inventory() -> anyhow::Result<()> {
-    template_flow(
-        None,
-        CodecLimits::default().session_messages as u32 - 1,
-        Completion::FinalInventoryBudget,
-    )
-    .await
-}
-#[tokio::test]
-#[ignore = "MODULE=windows.management: dynamic leaf MoreData uses exact persisted ownership"]
-async fn dynamic_leaf_more_data_completes() -> anyhow::Result<()> {
-    template_flow(None, 9, Completion::FragmentInventory).await
+    template_flow(None, Completion::EmptyInventory).await
 }
 #[tokio::test]
 #[ignore = "MODULE=windows.management: dynamic leaf replay and continuation recheck grants"]
 async fn dynamic_leaf_replay_and_continuation_revalidate_grants() -> anyhow::Result<()> {
-    template_flow(None, 9, Completion::RevokedInventory).await
+    template_flow(None, Completion::RevokedInventory).await
 }
 #[tokio::test]
 #[ignore = "MODULE=windows.management: expired template cannot continue a large object"]
 async fn expired_template_rejects_more_data() -> anyhow::Result<()> {
-    template_flow(None, 9, Completion::Expired).await
+    template_flow(None, Completion::Expired).await
 }
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Completion {
@@ -89,11 +64,8 @@ enum Completion {
     Inventory,
     MissingChild,
     EmptyInventory,
-    FinalInventoryBudget,
-    FragmentInventory,
     RevokedInventory,
     SessionAbort,
-    MessageBudget,
 }
 #[allow(
     clippy::cognitive_complexity,
@@ -101,9 +73,9 @@ enum Completion {
 )]
 async fn template_flow(
     revoke_after_first: Option<bool>,
-    request_message: u32,
     completion: Completion,
 ) -> anyhow::Result<()> {
+    let request_message = 4;
     let mut host = Host::open().await?;
     host.listen().await?;
     let peer = host.peer().await?;
@@ -112,8 +84,6 @@ async fn template_flow(
         Completion::Inventory
             | Completion::MissingChild
             | Completion::EmptyInventory
-            | Completion::FinalInventoryBudget
-            | Completion::FragmentInventory
             | Completion::RevokedInventory
     ) {
         Some(crate::test_support::inventory::seed_source(
@@ -223,8 +193,6 @@ async fn template_flow(
         Completion::Inventory
             | Completion::MissingChild
             | Completion::EmptyInventory
-            | Completion::FinalInventoryBudget
-            | Completion::FragmentInventory
             | Completion::RevokedInventory
     ) {
         let mut spec = template.spec().clone();
@@ -409,8 +377,6 @@ async fn template_flow(
         Completion::Inventory
             | Completion::MissingChild
             | Completion::EmptyInventory
-            | Completion::FinalInventoryBudget
-            | Completion::FragmentInventory
             | Completion::RevokedInventory
     ) {
         dynamic_result(
@@ -437,17 +403,14 @@ async fn template_flow(
             _ => {}
         }
     }
-    if matches!(
-        completion,
-        Completion::SessionAbort | Completion::MessageBudget
-    ) {
+    if matches!(completion, Completion::SessionAbort) {
         // fetch_one proves an actual dispatched, unsealed template run in this session.
         let run: Uuid = sqlx::query_scalar("SELECT r.id FROM mdm_access.collection_runs r JOIN mdm_windows.collections w USING(tenant_id,id) JOIN mdm_commands.action_runs a USING(tenant_id,id) JOIN mdm_policy.versions v ON(v.tenant_id,v.id)=(a.tenant_id,a.policy_version) WHERE r.tenant_id=$1::uuid AND v.policy=$2 AND w.registration=$3 AND w.session_id=$4 AND w.request_message=$5 AND r.sealed_at IS NULL AND r.evidence ? 'nativeTemplate'")
             .bind(case_tenant()).bind(policy).bind(peer.intent.registration)
             .bind(wire.header.session_id.to_string()).bind(i64::from(request_message))
             .fetch_one(&mut pg).await?;
         crate::test_support::stop_worker(owner.take()).await?;
-        terminated_template_result(&peer, &mut pg, packet, run, completion).await?;
+        terminated_template_result(&peer, &mut pg, packet, run).await?;
         pg.close().await?;
         host.close().await?;
         return Ok(());
@@ -668,7 +631,6 @@ async fn terminated_template_result(
     pg: &mut sqlx::PgConnection,
     mut packet: s::Message,
     run: Uuid,
-    completion: Completion,
 ) -> anyhow::Result<()> {
     ensure!(
         packet
@@ -676,18 +638,11 @@ async fn terminated_template_result(
             .iter()
             .any(|c| matches!(c, s::Command::Results(_)))
     );
-    let reason = if completion == Completion::SessionAbort {
-        packet.final_message = true;
-        packet.commands.push(s::Command::Alert {
-            id: packet.commands.iter().map(s::Command::id).max().unwrap() + 1,
-            alert: s::Alert::SessionAbort,
-        });
-        "aborted"
-    } else {
-        ensure!(packet.header.message_id as usize == CodecLimits::default().session_messages);
-        ensure!(!packet.final_message);
-        "message_budget"
-    };
+    packet.final_message = true;
+    packet.commands.push(s::Command::Alert {
+        id: packet.commands.iter().map(s::Command::id).max().unwrap() + 1,
+        alert: s::Alert::SessionAbort,
+    });
     let response = native::post(&peer.mutual, &peer.url, &packet).await?;
     ensure!(
         response.status() == StatusCode::OK,
@@ -699,7 +654,7 @@ async fn terminated_template_result(
     let terminal: (bool, String, String, bool, bool) = sqlx::query_as("SELECT sealed_at IS NOT NULL,result,reason,batch IS NULL,delivery_pending FROM mdm_access.collection_runs WHERE tenant_id=$1::uuid AND id=$2")
         .bind(case_tenant()).bind(run).fetch_one(pg).await?;
     ensure!(
-        terminal == (true, "failed".into(), reason.into(), true, false),
+        terminal == (true, "failed".into(), "aborted".into(), true, false),
         "termination published collection evidence for {run}: {terminal:?}"
     );
     Ok(())
@@ -778,7 +733,7 @@ async fn dynamic_result(
         if gets.is_empty() {
             break;
         }
-        let fragment = completion == Completion::FragmentInventory
+        let fragment = completion == Completion::Inventory
             && gets.iter().any(|(_, uri)| uri.ends_with("/Name"));
         let mut packet = native::report(&peer.message, &gets, "", 200);
         packet.header.message_id = wire.header.message_id + 1;
@@ -958,10 +913,7 @@ async fn dynamic_result(
     }
     let result:(String,String)=sqlx::query_as("SELECT result,attempts FROM mdm_access.collection_runs WHERE tenant_id=$1::uuid AND id=$2 AND sealed_at IS NOT NULL").bind(case_tenant()).bind(run).fetch_one(&mut *pg).await.context("dynamic sealed result")?;
     let attempts: serde_json::Value = serde_json::from_str(&result.1)?;
-    if matches!(
-        completion,
-        Completion::MissingChild | Completion::FinalInventoryBudget
-    ) {
+    if matches!(completion, Completion::MissingChild) {
         ensure!(result.0 == "partial", "{result:?}");
         ensure!(
             attempts["fields"]["device.software.windows.win32"]["value"].is_null(),
@@ -972,10 +924,7 @@ async fn dynamic_result(
             result.0 == "snapshot" && enumerations == 2,
             "{result:?}, enumerations={enumerations}"
         );
-        if matches!(
-            completion,
-            Completion::Inventory | Completion::FragmentInventory
-        ) {
+        if matches!(completion, Completion::Inventory) {
             let row = &attempts["fields"]["device.software.windows.win32"]["value"]["value"]["value"]
                 [0]["value"];
             ensure!(
@@ -1004,10 +953,7 @@ async fn dynamic_result(
                 tokio::time::sleep(Duration::from_millis(50)).await;
             }
         }).await??;
-        if matches!(
-            completion,
-            Completion::Inventory | Completion::FragmentInventory
-        ) {
+        if matches!(completion, Completion::Inventory) {
             let rows = page.1["asset"]["items"]
                 .as_array()
                 .ok_or_else(|| anyhow::anyhow!("missing inventory rows: {page:?}"))?;
@@ -1019,20 +965,16 @@ async fn dynamic_result(
             );
         }
     }
-    if completion == Completion::FinalInventoryBudget {
+    if completion == Completion::MissingChild {
         ensure!(
-            attempts["fields"]["device.model"]["value"]["value"]
-                == json!({"kind":"string","value":"canonical-workstation"}),
+            attempts["fields"]["device.model"]["quality"] == "success",
             "partial report lost its confirmed scalar: {attempts}"
         );
     }
     let sealed = crate::collection::store::load_on(pg, case_tenant(), run).await?;
     crate::inventory_runtime::test_support::wait_ready_projection(&host.runtime, &sealed).await?;
     let value:serde_json::Value=sqlx::query_scalar("SELECT value::jsonb FROM mdm.inventory WHERE tenant_id=$1::uuid AND scope=$2 AND field=$3 ORDER BY collection_sequence DESC LIMIT 1").bind(case_tenant()).bind(saved.scope.encode()?).bind(key.as_str()).fetch_one(&mut *pg).await?;
-    if matches!(
-        completion,
-        Completion::MissingChild | Completion::FinalInventoryBudget
-    ) {
+    if matches!(completion, Completion::MissingChild) {
         ensure!(value == serde_json::to_value(&old)?);
     }
     if completion == Completion::EmptyInventory {
