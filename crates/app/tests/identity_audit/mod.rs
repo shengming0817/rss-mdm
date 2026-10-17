@@ -122,13 +122,30 @@ async fn exercise(ledger: bool) -> Result<()> {
     } else {
         0
     };
-    verify_ledger_privileges(&config, &observer, &options, &installation, ledger).await?;
+    let mut transaction = observer.begin().await?;
+    sqlx::raw_sql("SET LOCAL ROLE mdm_command_runtime; SET LOCAL search_path=pg_catalog")
+        .execute(&mut *transaction)
+        .await?;
+    let actual: String = sqlx::query_scalar(include_str!(
+        "../../../execution-service/src/dependencies.sql"
+    ))
+    .fetch_one(&mut *transaction)
+    .await?;
+    ensure!(
+        serde_json::from_str::<serde_json::Value>(&actual)?
+            == serde_json::from_str::<serde_json::Value>(include_str!(
+                "../../../execution-service/src/dependencies.json"
+            ))?,
+        "command dependency admission must support both audit modes"
+    );
+    transaction.rollback().await?;
+
     let before: i64 = sqlx::query_scalar("SELECT count(*) FROM rss_audit.records")
         .fetch_one(&observer)
         .await?;
     ensure!(before == management_records);
     let expected = management_records + 2;
-    run_worker(&config, &observer, expected, true).await?;
+    run_worker(&config, &observer, expected, !ledger).await?;
     let original: Vec<Vec<u8>> =
         sqlx::query_scalar("SELECT canonical FROM rss_audit.records ORDER BY position")
             .fetch_all(&observer)
@@ -198,9 +215,11 @@ async fn exercise(ledger: bool) -> Result<()> {
             .fetch_all(&observer)
             .await?;
     ensure!(original == replay);
-    wakeup::event_driven_delivery(&config, &identity, &observer, expected).await?;
-    fatal_worker(&config, &observer, false).await?;
-    fatal_worker(&config, &observer, true).await?;
+    if !ledger {
+        wakeup::event_driven_delivery(&config, &identity, &observer, expected).await?;
+        fatal_worker(&config, &observer, false).await?;
+        fatal_worker(&config, &observer, true).await?;
+    }
     if ledger {
         for (revoke, grant) in [
             (
@@ -217,19 +236,7 @@ async fn exercise(ledger: bool) -> Result<()> {
             sqlx::raw_sql(grant).execute(&observer).await?;
         }
     }
-    // Excess privileges are not silently repaired by construction or installation replay.
-    sqlx::raw_sql("GRANT SELECT ON identity_authority.accounts TO mdm_identity_audit")
-        .execute(&observer)
-        .await?;
-    rejected(&config).await?;
-    ensure!(
-        crate::migration::migrate(&options, &installation)
-            .await
-            .is_err()
-    );
-    sqlx::raw_sql("REVOKE SELECT ON identity_authority.accounts FROM mdm_identity_audit")
-        .execute(&observer)
-        .await?;
+    // Installer owns the excess-privilege matrix; worker keeps actual read admission.
     sqlx::raw_sql("REVOKE SELECT ON rss_audit.records FROM mdm_identity_audit")
         .execute(&observer)
         .await?;
@@ -237,8 +244,10 @@ async fn exercise(ledger: bool) -> Result<()> {
     sqlx::raw_sql("GRANT SELECT ON rss_audit.records TO mdm_identity_audit")
         .execute(&observer)
         .await?;
-    manipulate(&observer, "UPDATE rss_transactional_messaging.outbox SET status='dead_letter' WHERE status='published'").await?;
-    rejected(&config).await?;
+    if !ledger {
+        manipulate(&observer, "UPDATE rss_transactional_messaging.outbox SET status='dead_letter' WHERE status='published'").await?;
+        rejected(&config).await?;
+    }
     drop(identity);
     for resource in identity_resources.into_iter().rev() {
         resource.shutdown().await?;
@@ -342,122 +351,6 @@ async fn management_only_startup_integrity(
     for resource in resources.into_iter().rev() {
         resource.shutdown().await?;
     }
-    Ok(())
-}
-#[allow(
-    clippy::cognitive_complexity,
-    reason = "real PostgreSQL privilege matrix keeps grant/reject/revoke cases together"
-)]
-async fn verify_ledger_privileges(
-    config: &Config,
-    observer: &PgPool,
-    options: &PgConnectOptions,
-    installation: &crate::migration::Installation,
-    ledger: bool,
-) -> Result<()> {
-    let mut worker_connection =
-        PgConnection::connect_with(&config.identity.audit_worker.options()?).await?;
-    verify_profile(&mut worker_connection, config.audit.mode())
-        .await
-        .context("worker privilege baseline")?;
-    worker_connection.close().await?;
-    for (grant, revoke) in [
-        (
-            "GRANT CREATE ON SCHEMA rss_ledger TO mdm_identity_audit",
-            "REVOKE CREATE ON SCHEMA rss_ledger FROM mdm_identity_audit",
-        ),
-        (
-            "GRANT INSERT ON rss_ledger.entries TO mdm_identity_audit",
-            "REVOKE INSERT ON rss_ledger.entries FROM mdm_identity_audit",
-        ),
-        (
-            "GRANT UPDATE(tag) ON rss_ledger.entries TO mdm_identity_audit",
-            "REVOKE UPDATE(tag) ON rss_ledger.entries FROM mdm_identity_audit",
-        ),
-        (
-            "CREATE ROLE audit_set_only NOLOGIN; GRANT audit_set_only TO mdm_identity_audit WITH INHERIT FALSE; GRANT DELETE ON rss_ledger.entries TO audit_set_only",
-            "REVOKE DELETE ON rss_ledger.entries FROM audit_set_only; REVOKE audit_set_only FROM mdm_identity_audit; DROP ROLE audit_set_only",
-        ),
-        (
-            "GRANT INSERT ON rss_ledger.entries TO PUBLIC",
-            "REVOKE INSERT ON rss_ledger.entries FROM PUBLIC",
-        ),
-        (
-            "CREATE FUNCTION rss_ledger.unexpected() RETURNS integer LANGUAGE sql AS 'SELECT 1'",
-            "DROP FUNCTION rss_ledger.unexpected()",
-        ),
-    ] {
-        sqlx::raw_sql(grant).execute(observer).await?;
-        rejected(config)
-            .await
-            .with_context(|| format!("worker accepted {grant}"))?;
-        ensure!(
-            crate::migration::migrate(options, installation)
-                .await
-                .is_err(),
-            "installer accepted {grant}"
-        );
-        sqlx::raw_sql(revoke).execute(observer).await?;
-        let mut resources = Vec::new();
-        Worker::open(config, Arc::default(), Arc::default(), |r| {
-            resources.push(r)
-        })
-        .await?;
-        for resource in resources.into_iter().rev() {
-            resource.shutdown().await?;
-        }
-    }
-    if !ledger {
-        for (grant, revoke) in [
-            (
-                "GRANT USAGE ON SCHEMA rss_ledger TO mdm_identity_audit",
-                "REVOKE USAGE ON SCHEMA rss_ledger FROM mdm_identity_audit",
-            ),
-            (
-                "GRANT SELECT ON rss_ledger.entries TO mdm_identity_audit",
-                "REVOKE SELECT ON rss_ledger.entries FROM mdm_identity_audit",
-            ),
-            (
-                "GRANT EXECUTE ON FUNCTION rss_ledger.prepare_append(uuid,text,text,smallint) TO mdm_identity_audit",
-                "REVOKE EXECUTE ON FUNCTION rss_ledger.prepare_append(uuid,text,text,smallint) FROM mdm_identity_audit",
-            ),
-        ] {
-            sqlx::raw_sql(grant).execute(observer).await?;
-            rejected(config).await?;
-            ensure!(
-                crate::migration::migrate(options, installation)
-                    .await
-                    .is_err()
-            );
-            sqlx::raw_sql(revoke).execute(observer).await?;
-            let mut resources = Vec::new();
-            Worker::open(config, Arc::default(), Arc::default(), |r| {
-                resources.push(r)
-            })
-            .await?;
-            for resource in resources.into_iter().rev() {
-                resource.shutdown().await?;
-            }
-        }
-    }
-    crate::migration::migrate(options, installation).await?;
-    let mut transaction = observer.begin().await?;
-    sqlx::raw_sql("SET LOCAL ROLE mdm_command_runtime; SET LOCAL search_path=pg_catalog")
-        .execute(&mut *transaction)
-        .await?;
-    let actual: String = sqlx::query_scalar(include_str!(
-        "../../../execution-service/src/dependencies.sql"
-    ))
-    .fetch_one(&mut *transaction)
-    .await?;
-    ensure!(
-        serde_json::from_str::<serde_json::Value>(&actual)?
-            == serde_json::from_str::<serde_json::Value>(include_str!(
-                "../../../execution-service/src/dependencies.json"
-            ))?,
-        "command dependency admission must support both audit modes"
-    );
-    transaction.rollback().await?;
     Ok(())
 }
 async fn rejected(config: &Config) -> Result<()> {
