@@ -134,13 +134,15 @@ async fn durable_report_recovery_and_projection() -> Result<()> {
             Uuid::new_v4(),
         )
         .await?;
-    ensure!(service.management_principal(&credential).await.is_err());
+    ensure!(matches!(
+        service.management_principal(&credential).await,
+        Err(rss_mdm_registration_service::Error::Unauthorized)
+    ));
     let mut tx = access.begin(case_a()).await?;
-    ensure!(
-        crate::device::store::revalidate_management(&mut tx, &stale)
-            .await
-            .is_err()
-    );
+    ensure!(matches!(
+        crate::device::store::revalidate_management(&mut tx, &stale).await,
+        Err(rss_mdm_registration_service::Error::Unauthorized)
+    ));
     tx.rollback().await?;
     #[cfg(feature = "integration")]
     {

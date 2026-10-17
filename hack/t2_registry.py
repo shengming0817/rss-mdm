@@ -658,6 +658,8 @@ def case_fixtures(module, selector, marker):
 
 
 case_fixtures('windows.issuance', 'windows::t2::issuance::native_renewal_preserves_registration_and_activates_only_after_new_tls_proof', 'local_worker')
+# Template flows own Automation/Execution shutdown before durable recovery and retirement.
+case_fixtures('windows.management', 'windows::t2::management::collection::', 'local_worker')
 case_fixtures('diagnostics.http', 'api::t2::runtime_diagnostics::execution_first_scan_failure_recovers_only_after_real_success', None)
 case_fixtures('assets.http', 'assets::t2::http::manual::manual_types_replay_cas_and_rollback', 'shared_worker')
 case_fixtures('planning.http', 'planning::t2::http::console_scope_ready_tracks_current_admission', 'local_worker')
