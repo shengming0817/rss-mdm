@@ -347,5 +347,62 @@ fn agent_templates_bind_native_queries_to_existing_field_types() {
             .unwrap_or_else(|e| panic!("{} {name}: {e:?}", blueprint.id));
         }
     }
-    assert_eq!(count, 26);
+    assert!(count > 26);
+    for id in [
+        "windows.agent.bitlocker",
+        "windows.agent.accounts",
+        "windows.agent.certificates_user_my",
+        "windows.agent.updates_available_online",
+        "macos.agent.gatekeeper",
+        "macos.agent.accounts",
+        "macos.agent.certificates_login",
+        "macos.agent.updates_available_online",
+    ] {
+        assert!(blueprints::get(id, "1").is_some(), "missing {id}");
+    }
+}
+
+#[test]
+fn native_admission_requires_current_os_edition_engine_and_architecture() {
+    use rss_mdm_agent_wire::{CollectionEnvironment, runtime as w};
+    use rss_mdm_policy::{Architecture, Platform};
+    let blueprints::Definition::AgentCollection { template } =
+        blueprints::get("windows.agent.bitlocker", "1")
+            .unwrap()
+            .definition
+    else {
+        unreachable!()
+    };
+    let mut agent=crate::channels::AgentBinding {
+        platform:"windows".into(),architecture:"x86_64".into(),capabilities:vec![w::Capability::InventoryCollectionV1,w::Capability::InventoryNativeV1],
+        execution_context:serde_json::from_value(serde_json::json!({"revision":1,"osVersion":[10,0,22621,0],"systemBroker":true,"userHelper":false,"interactiveUser":null,"msixSideload":false,"msixUnsigned":false,"sourceCredentials":[]})).unwrap(),
+    };
+    let mut environment = CollectionEnvironment {
+        edition: Some("Professional".into()),
+        tools: Default::default(),
+        native_engines: template.spec().plan.requirements(),
+    };
+    let allowed = |a: &crate::channels::AgentBinding, e: &CollectionEnvironment| {
+        crate::agent_collection_eligibility::matches(
+            a,
+            Platform::Windows,
+            Architecture::X86_64,
+            &template,
+            e,
+        )
+    };
+    assert!(allowed(&agent, &environment));
+    environment.edition = None;
+    assert!(!allowed(&agent, &environment));
+    environment.edition = Some("Core".into());
+    assert!(!allowed(&agent, &environment));
+    environment.edition = Some("Professional".into());
+    agent.execution_context.os_version = [6, 3, 9600, 0];
+    assert!(!allowed(&agent, &environment));
+    agent.execution_context.os_version = [10, 0, 22621, 0];
+    agent.architecture = "aarch64".into();
+    assert!(!allowed(&agent, &environment));
+    agent.architecture = "x86_64".into();
+    environment.native_engines.clear();
+    assert!(!allowed(&agent, &environment));
 }

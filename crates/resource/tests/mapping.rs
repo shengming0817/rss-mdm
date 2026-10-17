@@ -127,3 +127,26 @@ fn unsigned_scaling_checks_the_output_range_without_losing_input_precision() {
         .is_err()
     );
 }
+
+#[test]
+fn device_guard_array_membership_is_not_a_bitmask_or_nonempty_test() {
+    let map = Conversion::ArrayMember {
+        member: 2,
+        present: serde_json::json!("enabled"),
+        absent: serde_json::json!("disabled"),
+    };
+    assert_eq!(
+        map.apply(&serde_json::json!([1])).unwrap(),
+        serde_json::json!("disabled")
+    );
+    assert_eq!(
+        map.apply(&serde_json::json!([2, 3])).unwrap(),
+        serde_json::json!("enabled")
+    );
+    assert_eq!(
+        map.apply(&serde_json::json!([])).unwrap(),
+        serde_json::json!("disabled")
+    );
+    assert!(map.apply(&serde_json::json!(2)).is_err());
+    assert!(map.apply(&serde_json::json!(["2"])).is_err());
+}

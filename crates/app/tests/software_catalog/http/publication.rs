@@ -11,7 +11,7 @@ async fn publication_http_authority_receipts_and_public_native_binding() -> Resu
     let base: Value = serde_json::from_slice(&std::fs::read(std::env::var("MDM_TEST_CONFIG")?)?)?;
     let cfg = publication_http::configuration(&base, &server);
     let mut local = execution::context(Platform::Windows);
-    local["interactiveUser"] = json!({"identity":"S-1-5-21-100-200-300-1001","sessionId":Uuid::new_v4(),"administrator":true});
+    local["interactiveUser"] = json!({"generatedUid":null,"identity":"S-1-5-21-100-200-300-1001","sessionId":Uuid::new_v4(),"administrator":true});
     let mut f = execution::Fixture::with_config(
         Platform::Windows,
         json!([

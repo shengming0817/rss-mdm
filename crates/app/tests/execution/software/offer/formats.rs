@@ -55,7 +55,7 @@ async fn chain(format: &str, bundle: bool, user: bool) -> Result<()> {
         Platform::Windows
     };
     let mut local = context(platform);
-    local["interactiveUser"] = json!({"identity":if platform==Platform::Windows {"S-1-5-21-100-200-300-1001"} else {"501"},"sessionId":Uuid::new_v4(),"administrator":true});
+    local["interactiveUser"] = json!({"generatedUid":if platform==Platform::Windows {None}else{Some("00000000-0000-0000-0000-000000000501")},"identity":if platform==Platform::Windows {"S-1-5-21-100-200-300-1001"} else {"501"},"sessionId":Uuid::new_v4(),"administrator":true});
     if platform == Platform::Windows {
         local["msixSideload"] = json!(true);
     }

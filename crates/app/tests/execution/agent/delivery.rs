@@ -556,6 +556,18 @@ async fn native_inventory_case(
         };
         specs.push(template.spec().clone());
     }
+    for (id, name) in if macos {
+        [("sys_security","macos.agent.gatekeeper"),("sys_accounts","macos.agent.accounts"),("sys_certificates","macos.agent.certificates_system"),("sys_updates","macos.agent.updates_available_local")]
+    } else {
+        [("sys_security","windows.agent.defender"),("sys_accounts","windows.agent.accounts"),("sys_certificates","windows.agent.certificates_device_my"),("sys_updates","windows.agent.updates_available_local")]
+    } {
+        let r::blueprints::Definition::AgentCollection {template}=r::blueprints::get(name,"1").unwrap().definition else {unreachable!()};
+        let mut spec=template.spec().clone();let mut plan=spec.plan.spec().clone();
+        let query=plan.queries.remove("facts").unwrap();plan.queries.insert(id.into(),query);
+        spec.plan=w::NativeCollectionPlan::new(plan)?;
+        for mapping in spec.mappings.values_mut() {mapping.query=id.into();}
+        specs.push(spec);
+    }
     let mut ps = specs[0].plan.spec().clone();
     let mut mappings = specs[0].mappings.clone();
     for spec in &specs[1..] {
@@ -566,6 +578,7 @@ async fn native_inventory_case(
         mappings.remove(software_field);
     }
     let definition = r::AgentCollectionDefinition::new(r::AgentCollectionSpec {
+                applicability: specs.last().unwrap().applicability.clone(),
         plan: w::NativeCollectionPlan::new(ps)?,
         mappings,
     })?;
@@ -649,9 +662,9 @@ async fn native_inventory_case(
                     "/api/v1/agent/runtime/tasks/claim",
                     Some(case_credential()),
                     Some(claim_input(if macos {
-                        json!({"macos.hardware":1,"macos.pkg_receipts":1})
+                        json!({"macos.hardware":1,"macos.pkg_receipts":1,"macos.security":1,"macos.accounts":1,"macos.certificates":1,"macos.updates":1})
                     } else {
-                        json!({"windows.wmi":1,"windows.registry":1,"windows.network":1,"windows.software":1})
+                        json!({"windows.wmi":1,"windows.registry":1,"windows.network":1,"windows.software":1,"windows.security":1,"windows.accounts":1,"windows.certificates":1,"windows.updates":1})
                     })),
                 )
                 .await?;
@@ -728,7 +741,15 @@ async fn native_inventory_case(
         let now = crate::clock::Clock::unix_seconds(&crate::clock::SystemClock)?;
         let mut queries = std::collections::BTreeMap::new();
         for (id, q) in &spec.plan.spec().queries {
-            let rows = if !macos && let Some(rows) = windows_assets::rows(id, stage) {
+            let rows = if id.starts_with("sys_") {
+                if stage>=2 {vec![]} else {vec![serde_json::from_value(match id.as_str() {
+                    "sys_security"=>if macos {json!({"presence":"present","configured":"enabled","running":"unknown","version":"1"})}else{json!({"presence":"present","configured":"enabled","running":"disabled","mode":"passive","health":"passive","signature_version":"1"})},
+                    "sys_accounts"=>if macos {json!({"id":"00000000-0000-0000-0000-000000000501","uid":501,"name":"sensitive-account","account_type":"local","enabled":"enabled"})}else{json!({"id":"S-1-5-21-1-2-3-1001","name":"sensitive-account","account_type":"local","enabled":"enabled"})},
+                    "sys_certificates"=>json!({"id":"a".repeat(64),"subject":"CN=sensitive-certificate","issuer":"CN=CA","not_before":1,"not_after":2000000000,"scope":"device","owner":"","store":if macos {"system"}else{"my"}}),
+                    "sys_updates"=>json!({"id":"update-1","title":"Update","version":"1","origin":"configured","state":"available"}),
+                    _=>unreachable!(),
+                })?]}
+            } else if !macos && let Some(rows) = windows_assets::rows(id, stage) {
                 rows
             } else if id == "memory" {
                 vec![
@@ -803,9 +824,10 @@ async fn native_inventory_case(
             queries.insert(
                 id.clone(),
                 w::NativeQueryResult {
+                    scan: (id=="sys_updates").then(||w::NativeScanEvidence {mode:w::UpdateScanMode::Local,source:Some("configured".into()),started_at:Some(now-10),finished_at:Some(now-5)}),
                     query_digest: q.digest(),
                     collected_at: now,
-                    status: if all_failed { status } else if stage == 1 && (id == "network" || id == "receipts") {
+                    status: if all_failed { status } else if stage == 1 && (id == "network" || id == "receipts" || id.starts_with("sys_")) {
                         w::NativeQueryStatus::Truncated
                     } else { w::NativeQueryStatus::Complete },
                     enumeration_complete: !(stage == 1 && id == "network"),
@@ -917,6 +939,12 @@ async fn native_inventory_case(
                 let v: Value = serde_json::from_str(network.trim())?;
                 ensure!(v["value"] == json!([]));
             }
+            if stage<=2 {
+                let certificates:Value=serde_json::from_str(pg(&format!("SELECT value::text FROM mdm.inventory WHERE tenant_id='{}' AND registration='{}' AND field='device.certificates.metadata' AND source='agent.native'",case_tenant(),spec.registration_id))?.trim())?;
+                ensure!(certificates["value"].as_array().unwrap().len()==if stage==2 {0}else{1},"certificate partial/empty replacement failed: {certificates}");
+                let updates:Value=serde_json::from_str(pg(&format!("SELECT value::text FROM mdm.inventory WHERE tenant_id='{}' AND registration='{}' AND field='device.updates.available' AND source='agent.native'",case_tenant(),spec.registration_id))?.trim())?;
+                ensure!(updates["value"].as_array().unwrap().len()==if stage==2 {0}else{1});
+            }
             if !macos && map_software {
                 windows_assets::verify_identity(spec.registration_id, spec.attempt_id, stage)?;
                 let response = f
@@ -990,6 +1018,10 @@ async fn native_inventory_case(
             .cloned()
             .collect();
         crate::test_support::identity::set_grants(case_tenant(), &f.author_id, ordinary).await?;
+        let certificate_scope=json!({"kind":"native_certificates","platform":platform,"owner":null,"store":if macos {"system"}else{"my"}});
+        let params=url::form_urlencoded::Serializer::new(String::new()).append_pair("scope",&certificate_scope.to_string()).finish();
+        let mapped=f.author.call(&f.router,Method::GET,&format!("/api/v1/devices/{device}/inventory?{params}"),None).await?;
+        ensure!(!mapped.1.to_string().contains("sensitive-certificate") && !mapped.1.to_string().contains("sensitive-account"),"mapped sensitive value leak: {mapped:?}");
         let denied = f
             .author
             .call(&f.router, Method::GET, &detail_path, None)
@@ -1064,7 +1096,7 @@ async fn macos_user_applications_and_brew_keep_other_users_after_complete_empty(
         crate::test_support::software_execution::Platform::MacOs,
     );
     context["interactiveUser"] =
-        json!({"identity":"501","sessionId":Uuid::new_v4(),"administrator":false});
+        json!({"generatedUid":"00000000-0000-0000-0000-000000000501","identity":"501","sessionId":Uuid::new_v4(),"administrator":false});
     let registration = crate::test_support::agent::seed_profile(&f.base, f.execution.clone(), case_credential(), case_device_id(), json!({"capabilities":["inventory.collect.v1","inventory.native.v1"],"platform":"macos","architecture":"aarch64","executionContext":context})).await?;
     let device = registration["deviceId"].as_str().unwrap().to_owned();
     f.scope(case_task_scope(), json!([{"kind":"device","id":device}]))
@@ -1086,6 +1118,7 @@ async fn macos_user_applications_and_brew_keep_other_users_after_complete_empty(
     let mut mappings = specs[0].mappings.clone();
     mappings.extend(specs[1].mappings.clone());
     let definition = r::AgentCollectionDefinition::new(r::AgentCollectionSpec {
+                applicability: Default::default(),
         plan: w::NativeCollectionPlan::new(plan)?,
         mappings,
     })?;
@@ -1128,7 +1161,7 @@ async fn macos_user_applications_and_brew_keep_other_users_after_complete_empty(
     for (stage, uid) in [(0, "501"), (1, "502"), (2, "501")] {
         context["revision"] = json!(stage + 2);
         context["interactiveUser"] =
-            json!({"identity":uid,"sessionId":Uuid::new_v4(),"administrator":false});
+            json!({"generatedUid":format!("00000000-0000-0000-0000-{:012}",uid.parse::<u32>().unwrap()),"identity":uid,"sessionId":Uuid::new_v4(),"administrator":false});
         let policy = Uuid::new_v4();
         post(&mut f.author,&f.router,&format!("/api/v1/policies/{policy}"),json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"put","enabled":true,"definition":{"scope":case_task_scope(),"action":{"kind":"agent_collection","resource":{"id":resource_id,"version":"v1","platform":"macos","architecture":"aarch64","variant":"default"},"runLifetimeSeconds":300}}}})).await?;
         let task = tokio::time::timeout(Duration::from_secs(30), async {
@@ -1188,6 +1221,7 @@ async fn macos_user_applications_and_brew_keep_other_users_after_complete_empty(
             queries.insert(
                 id.clone(),
                 w::NativeQueryResult {
+                    scan: None,
                     query_digest: query.digest(),
                     collected_at: now,
                     status: w::NativeQueryStatus::Complete,
@@ -1300,5 +1334,114 @@ async fn macos_user_applications_and_brew_keep_other_users_after_complete_empty(
     runtime.close_fixture().await?;
     crate::test_support::stop_worker(worker).await?;
     Ok(())
+    }).await
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+#[ignore = "make t2 MODULE=execution.agent.delivery: Windows certificate store and signed SID isolation"]
+async fn windows_certificate_scopes_preserve_other_users_and_stores() -> Result<()> {
+    certificate_scope_case(false).await
+}
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+#[ignore = "make t2 MODULE=execution.agent.delivery: macOS certificate store and GeneratedUID isolation"]
+async fn macos_certificate_scopes_preserve_other_users_and_stores() -> Result<()> {
+    certificate_scope_case(true).await
+}
+async fn certificate_scope_case(macos: bool) -> Result<()> {
+    use rss_mdm_agent_wire::runtime as w;
+    use rss_mdm_resource as r;
+    use sha2::{Digest, Sha256};
+    let platform = if macos { "macos" } else { "windows" };
+    let mut f = Fixture::new().await?;
+    let resources = std::mem::take(&mut f.resources);
+    resources.finish(async {
+        f.grants.extend(crate::test_support::identity::device_grants(None,&["inventory_collect","operation_read"])?);
+        f.grants.push(crate::authorization::Grant {operation:crate::authorization::Permission::InventorySensitiveRead,scope:crate::authorization::Scope::Tenant});
+        crate::test_support::identity::set_grants(case_tenant(),&f.author_id,f.grants.clone()).await?;
+        let mut context=crate::test_support::software_execution::context(if macos {crate::test_support::software_execution::Platform::MacOs}else{crate::test_support::software_execution::Platform::Windows});
+        let registration=crate::test_support::agent::seed_profile(&f.base,f.execution.clone(),case_credential(),case_device_id(),json!({"capabilities":["inventory.collect.v1","inventory.native.v1"],"platform":platform,"architecture":"x86_64","executionContext":context})).await?;
+        let device=registration["deviceId"].as_str().unwrap().to_owned();
+        f.scope(case_task_scope(),json!([{"kind":"device","id":device}])).await?;
+        let worker=worker(&f.base).await?;
+        let runtime=agent_runtime(&f.base).await?;
+        let inventory=crate::inventory_runtime::test_support::start(runtime.clone()).await?;
+        // Machine store; two users; another store; failed and empty attempts in user A's store.
+        // macOS has one user login store, so its additional store is System Roots.
+        let mut scopes=Vec::new();
+        let mut published=std::collections::BTreeMap::new();
+        let mut prior_user=String::new();
+        for stage in 0..6 {
+            let user=matches!(stage,1|2|4|5) || (!macos && stage==3);
+            let n=if stage==2 {502}else{501};
+            let uid=n.to_string();let sid=format!("S-1-5-21-1-2-3-{n}");let guid=format!("00000000-0000-0000-0000-{n:012}");
+            context["revision"]=json!(stage+2);
+            context["interactiveUser"]=json!({"identity":if macos {&uid}else{&sid},"generatedUid":if macos {Some(&guid)}else{None},"sessionId":Uuid::new_v4(),"administrator":false});
+            let blueprint=if macos {if user {"macos.agent.certificates_login"}else if stage==3 {"macos.agent.certificates_system_roots"}else{"macos.agent.certificates_system"}}else if stage==0 {"windows.agent.certificates_device_my"}else if stage==3 {"windows.agent.certificates_user_root"}else{"windows.agent.certificates_user_my"};
+            let r::blueprints::Definition::AgentCollection {template:definition}=r::blueprints::get(blueprint,"1").unwrap().definition else {unreachable!()};
+            let engines=definition.spec().plan.requirements();
+            let resource_id=if let Some(id)=published.get(blueprint) {*id} else {
+            let resource_id=Uuid::new_v4();let bytes=definition.canonical();let digest:[u8;32]=Sha256::digest(&bytes).into();
+            resource(&mut f.author,&f.router,resource_id,0,json!({"action":"create","kind":"agent_collection"})).await?;
+            resource(&mut f.author,&f.router,resource_id,1,json!({"action":"version","version":"v1","kind":"agent_collection","variants":[{"platform":platform,"architecture":"x86_64","key":"default","declaration":{"kind":"agent_collection","artifact":{"reference":"native.json","length":bytes.len(),"sha256":digest},"definition":definition}}]})).await?;
+            ensure!(upload_for(&f.author,&f.router,resource_id,&bytes,platform,"x86_64").await?==StatusCode::CREATED);
+            resource(&mut f.author,&f.router,resource_id,2,json!({"action":"activate","version":"v1"})).await?;
+            published.insert(blueprint,resource_id);resource_id
+            };
+            let policy=Uuid::new_v4();
+            post(&mut f.author,&f.router,&format!("/api/v1/policies/{policy}"),json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"put","enabled":true,"definition":{"scope":case_task_scope(),"action":{"kind":"agent_collection","resource":{"id":resource_id,"version":"v1","platform":platform,"architecture":"x86_64","variant":"default"},"runLifetimeSeconds":300}}}})).await?;
+            let task=tokio::time::timeout(Duration::from_secs(30),async {
+                loop {
+                    let response=agent_call(&f.router,Method::POST,"/api/v1/agent/runtime/tasks/claim",Some(case_credential()),Some(json!({"wireVersion":1,"operationId":Uuid::new_v4(),"profiles":[],"environment":{"edition":null,"tools":{},"nativeEngines":engines},"executionContext":context}))).await?;
+                    ensure!(response.0==StatusCode::OK,"certificate claim: {response:?}");
+                    if !response.1["task"].is_null() {break Ok::<_,anyhow::Error>(serde_json::from_value::<w::SignedTask>(response.1["task"].clone())?);}
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+                }
+            }).await??;
+            let w::TaskPayload::Collection(spec)=&task.payload else {anyhow::bail!("wrong task")};
+            ensure!(spec.execution.generated_uid==if macos && user {Some(guid.clone())}else{None});
+            let verification=crate::test_support::task_signature::TaskVerification {key_id:"t2",public_key:f.key.public_key().as_ref(),tenant_id:Uuid::parse_str(case_tenant())?,device_id:&device,platform:if macos {w::TaskPlatform::Macos}else{w::TaskPlatform::Windows},architecture:w::TaskArchitecture::X86_64,registration_id:serde_json::from_value(registration["registrationId"].clone())?,generation:registration["generation"].as_u64().unwrap(),task_id:spec.task_id,attempt_id:spec.attempt_id,permit:w::TaskPermit::Offer,now:crate::clock::Clock::unix_seconds(&crate::clock::SystemClock)?};
+            crate::test_support::task_signature::verify(&task,&verification)?;
+            let path=format!("/api/v1/agent/runtime/tasks/{}/events",spec.task_id);
+            for kind in ["received","start"] {
+                let response=agent_call(&f.router,Method::POST,&path,Some(case_credential()),Some(json!({"wireVersion":1,"operationId":Uuid::new_v4(),"attemptId":spec.attempt_id,"executionContext":context,"event":{"kind":kind}}))).await?;
+                ensure!(response.0==StatusCode::OK,"certificate start: {response:?}");
+                if kind=="start" {let ack:w::TaskEventAck=serde_json::from_value(response.1)?;crate::test_support::task_signature::verify(&ack.into_permit().unwrap(),&crate::test_support::task_signature::TaskVerification {permit:w::TaskPermit::Start,..verification})?;}
+            }
+            let q=&spec.plan.spec().queries["facts"];
+            let w::NativeQueryDefinition::System {query}=&q.definition else {unreachable!()};let store=query.certificate_store().unwrap();
+            let owner=if user {if macos {guid.clone()}else{sid.clone()}}else{String::new()};
+            let now=crate::clock::Clock::unix_seconds(&crate::clock::SystemClock)?;
+            let rows=if stage==5 {vec![]}else{vec![serde_json::from_value(json!({"id":"a".repeat(64),"subject":"CN=private-certificate","issuer":"CN=CA","not_before":1,"not_after":2000000000,"scope":if user {"user"}else{"device"},"owner":owner,"store":store}))?]};
+            let answer=w::NativeQueryResult {scan:None,query_digest:q.digest(),collected_at:now,status:if stage==4 {w::NativeQueryStatus::Partial}else{w::NativeQueryStatus::Complete},enumeration_complete:stage!=4,row_count:rows.len() as u32,rows,users:None};
+            let event=w::TaskEvent::CollectionResult(w::NativeCollectionResult {plan_digest:spec.plan_digest,collected_at:now,queries:[("facts".into(),answer)].into()});
+            if stage==1 {
+                let mut tampered=serde_json::to_value(&event)?;
+                tampered["queries"]["facts"]["rows"][0]["owner"]=json!(if macos {"00000000-0000-0000-0000-000000000999"}else{"S-1-5-21-1-2-3-999"});
+                let denied=agent_call(&f.router,Method::POST,&path,Some(case_credential()),Some(json!({"wireVersion":1,"operationId":Uuid::new_v4(),"attemptId":spec.attempt_id,"executionContext":context,"event":tampered}))).await?;
+                ensure!(denied.0==StatusCode::BAD_REQUEST,"wrong certificate owner accepted: {denied:?}");
+            }
+            let response=agent_call(&f.router,Method::POST,&path,Some(case_credential()),Some(json!({"wireVersion":1,"operationId":Uuid::new_v4(),"attemptId":spec.attempt_id,"executionContext":context,"event":event}))).await?;
+            ensure!(response.0==StatusCode::OK,"certificate result: {response:?}");
+            tokio::time::timeout(Duration::from_secs(20),async {loop {
+                if pg(&format!("SELECT NOT delivery_pending FROM mdm_access.collection_runs WHERE tenant_id='{}' AND id='{}'",case_tenant(),spec.attempt_id))?.trim()=="t" {break Ok::<_,anyhow::Error>(());}
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }}).await??;
+            let scope=json!({"kind":"native_certificates","platform":platform,"store":store,"owner":if !user {Value::Null}else if macos {json!({"kind":"macos","uid":n,"generated_uid":guid})}else{json!({"kind":"windows","sid":sid})}});
+            let escaped=scope.to_string().replace('\'',"''");
+            let saved=pg(&format!("SELECT value::text FROM mdm.inventory WHERE tenant_id='{}' AND registration='{}' AND field='device.certificates.metadata' AND field_scope::jsonb='{}'::jsonb",case_tenant(),spec.registration_id,escaped))?;
+            let parsed:Value=serde_json::from_str(saved.trim())?;
+            ensure!(parsed["value"].as_array().unwrap().len()==if stage==5 {0}else{1},"wrong store replacement: {parsed}");
+            if stage==1 {prior_user=saved.clone();}
+            if stage==4 {ensure!(saved==prior_user,"partial replaced previous certificate");}
+            if stage<4 {scopes.push(scope);}
+        }
+        let facts:Value=serde_json::from_str(pg(&format!("SELECT jsonb_agg(jsonb_build_object('scope',field_scope::jsonb,'value',value::jsonb)) FROM mdm.inventory WHERE tenant_id='{}' AND registration='{}' AND field='device.certificates.metadata'",case_tenant(),registration["registrationId"].as_str().unwrap()))?.trim())?;
+        let facts=facts.as_array().context("certificate facts")?;ensure!(facts.len()==4);
+        for (i,scope) in scopes.iter().enumerate() {
+            let fact=facts.iter().find(|f|f["scope"]==*scope).context("missing store")?;
+            ensure!(fact["value"]["value"].as_array().unwrap().len()==if i==1 {0}else{1},"unrelated certificate scope replaced");
+        }
+        crate::test_support::stop_worker(inventory).await?;runtime.close_fixture().await?;crate::test_support::stop_worker(worker).await?;
+        Ok(())
     }).await
 }
