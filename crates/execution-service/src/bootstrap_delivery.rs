@@ -129,7 +129,7 @@ fn task(
             operations.push(node("/Install/Enroll", None, Verb::Exec));
             Ok(Task::Windows {
                 request: Execution::SyncMl {
-                    request: Request::Sequence { operations },
+                    request: Request::Atomic { operations },
                 },
             })
         }
@@ -201,7 +201,7 @@ impl ExecutionService {
             sqlx::query("UPDATE mdm_access.agent_bootstraps SET cleanup_complete=true WHERE tenant_id=$1::uuid AND cleanup IS NOT NULL AND NOT cleanup_complete AND mdm_commands.installation_status(cleanup)='applied'").bind(tenant.to_string()).execute(c).await?;Ok(())
         })).await?;
         let rows=tx.with_connection(move|c|Box::pin(async move {
-            sqlx::query_as::<_,(Uuid,Uuid)>("SELECT b.id,b.installation FROM mdm_access.agent_bootstraps b JOIN mdm_commands.operations o ON(o.tenant_id,o.id)=(b.tenant_id,b.installation) WHERE b.tenant_id=$1::uuid AND o.device=$2 AND NOT b.cleanup_complete AND b.cleanup_retry_at<=$3 AND (b.cleanup IS NULL OR EXISTS(SELECT 1 FROM mdm_commands.operations cleanup WHERE cleanup.tenant_id=b.tenant_id AND cleanup.id=b.cleanup AND (mdm_commands.installation_status(cleanup.id) IN('rejected','cancelled','expired') OR (cleanup.input_context->>'deadline')::bigint<=$3))) AND b.state='consumed' AND EXISTS(SELECT 1 FROM mdm_access.agent_grants g JOIN mdm_access.registrations r ON(r.tenant_id,r.agent_grant_id)=(g.tenant_id,g.id) WHERE g.tenant_id=b.tenant_id AND g.native_authority->>'bootstrap'=b.id::text ) FOR UPDATE OF b")
+            sqlx::query_as::<_,(Uuid,Uuid)>("SELECT b.id,b.installation FROM mdm_access.agent_bootstraps b JOIN mdm_commands.operations o ON(o.tenant_id,o.id)=(b.tenant_id,b.installation) WHERE b.tenant_id=$1::uuid AND o.device=$2 AND NOT b.cleanup_complete AND b.cleanup_retry_at<=$3 AND (b.cleanup IS NULL OR EXISTS(SELECT 1 FROM mdm_commands.operations cleanup WHERE cleanup.tenant_id=b.tenant_id AND cleanup.id=b.cleanup AND (mdm_commands.installation_status(cleanup.id) IN('rejected','cancelled','expired') OR (cleanup.input_context->>'deadline')::bigint<=$3))) AND b.state='consumed' AND EXISTS(SELECT 1 FROM mdm_access.registrations native WHERE native.tenant_id=o.tenant_id AND native.id=o.registration AND native.generation=o.registration_generation AND native.state='active') AND EXISTS(SELECT 1 FROM mdm_access.agent_grants g JOIN mdm_access.registrations r ON(r.tenant_id,r.agent_grant_id)=(g.tenant_id,g.id) WHERE g.tenant_id=b.tenant_id AND g.native_authority->>'bootstrap'=b.id::text ) FOR UPDATE OF b")
                 .bind(tenant.to_string()).bind(name).bind(now).fetch_all(c).await
         })).await?;
         for (id, installation) in rows {
@@ -210,11 +210,13 @@ impl ExecutionService {
             let task = match op.request.task.source() {
                 rss_mdm_inventory::ReportSource::MdmWindows => Task::Windows {
                     request: rss_mdm_windows_mdm::native::Execution::SyncMl {
-                        request: rss_mdm_windows_mdm::native::Request::Node {
-                            node: "./Device/Vendor/MSFT/ClientCertificateInstall/SCEP/*".into(),
-                            instance: vec![id.to_string()],
-                            operation: rss_mdm_windows_mdm::native::Verb::Delete,
-                            value: None,
+                        request: rss_mdm_windows_mdm::native::Request::Atomic {
+                            operations: vec![rss_mdm_windows_mdm::native::Request::Node {
+                                node: "./Device/Vendor/MSFT/ClientCertificateInstall/SCEP/*".into(),
+                                instance: vec![id.to_string()],
+                                operation: rss_mdm_windows_mdm::native::Verb::Delete,
+                                value: None,
+                            }],
                         },
                     },
                 },

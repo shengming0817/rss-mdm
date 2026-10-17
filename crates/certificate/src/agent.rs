@@ -163,6 +163,18 @@ impl VerifiedAgentCsr {
     pub fn spki(&self) -> [u8; 32] {
         self.spki
     }
+    /// Compare key material, independent of optional RSA AlgorithmIdentifier parameters.
+    pub fn uses_key(
+        &self,
+        key: &x509_cert::spki::SubjectPublicKeyInfoOwned,
+    ) -> Result<bool, Error> {
+        let own = CertReq::from_der(&self.der)
+            .map_err(malformed)?
+            .info
+            .public_key;
+        Ok(own.algorithm.oid == key.algorithm.oid
+            && own.subject_public_key == key.subject_public_key)
+    }
     pub fn pem(&self) -> Result<String, Error> {
         use x509_cert::der::{EncodePem, pem::LineEnding};
         CertReq::from_der(&self.der)

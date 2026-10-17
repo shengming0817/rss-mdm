@@ -48,7 +48,7 @@ async fn issue_observed(
         Task::Windows {
             request:
                 Execution::SyncMl {
-                    request: Native::Sequence { operations },
+                    request: Native::Atomic { operations },
                 },
         } => {
             if let Some(message) = observed {
@@ -225,9 +225,17 @@ pub(crate) struct BootstrapPeer {
     directory: tempfile::TempDir,
 }
 pub(crate) async fn grant(
+    router: &Router,
+    peer: &BootstrapPeer,
+    input: &Value,
+) -> Result<GrantResponse> {
+    grant_fault(router, peer, input, None).await
+}
+pub(crate) async fn grant_fault(
     _router: &Router,
     peer: &BootstrapPeer,
     input: &Value,
+    fault: Option<rss_audit_postgres::PgFault>,
 ) -> Result<GrantResponse> {
     let routers = crate::api::from_state(
         peer.app.clone(),
@@ -262,6 +270,17 @@ pub(crate) async fn grant(
             key.to_str().unwrap(),
         )
         .await?;
+        if let Some(fault) = fault {
+            // Complete production TLS admission before faulting the business transaction.
+            let (status, _) =
+                super::agent_http::agent_http(&mut io, "GET", "/api/v1/agent/enroll/trust", None)
+                    .await?;
+            ensure!(
+                status == 401,
+                "bootstrap identity must not access daily Agent trust: {status}"
+            );
+            peer.app.audit_store.inject_next_fault(fault);
+        }
         let (status, body) = super::agent_http::agent_http(
             &mut io,
             "POST",

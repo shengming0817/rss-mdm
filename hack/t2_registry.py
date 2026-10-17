@@ -2008,3 +2008,19 @@ module = MODULES['apple.onboarding']
 MODULES['apple.onboarding'] = replace(module, policies=(*module.policies, CasePolicy(
     'apple::tests::onboarding::agent_handoff_completes_native_registration_and_token_update',
     db_mode='reuse', scope='tenant', fixtures=tuple(dict.fromkeys((*module.fixtures, 'scep'))))))
+
+# The webhook unit carrier moved from the Apple channel to its shared PKI owner.
+T1_INPUTS += ('crates/apple-channel/tests/webhook.rs', 'crates/pki-service/tests/scep.rs')
+consume(('crates/agent-wire/schema/enroll/native-enrollment-request-v1.schema.json',
+         'crates/agent-wire/schema/enroll/native-enrollment-receipt-v1.schema.json'),
+        'execution.commands.onboarding apple.onboarding planning.onboarding')
+
+for name, selector in (
+    ('execution.commands.onboarding', 'execution::t2::commands::onboarding::agent_handoff_completes_windows_issuance_and_authenticated_signin'),
+    ('apple.onboarding', 'apple::tests::onboarding::agent_handoff_completes_native_registration_and_token_update')):
+    module = MODULES[name]
+    policies = tuple(p for p in module.policies if p.selector != selector)
+    MODULES[name] = replace(module, policies=(*policies, CasePolicy(selector,
+        db_mode='reuse', scope='tenant',
+        actors=tuple(dict.fromkeys((*module.actors, ('tenant', 'other')))),
+        fixtures=tuple(dict.fromkeys((*module.fixtures, 'scep' if name == 'apple.onboarding' else 'ca_windows'))))))

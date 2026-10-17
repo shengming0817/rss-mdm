@@ -35,8 +35,13 @@ impl ExecutionService {
                     agent::belongs(&run, p)?;
                     let plan = db::load_source(&s.policy_reader, tx, run.source).await?;
                     let now = storage::now(tx).await?;
+                    let continued = if run.state.execution==Execution::Running {true} else if run.state.execution==Execution::Failed {false} else {
+                        let tenant=s.tenant;
+                        tx.with_connection(move|c|Box::pin(async move {sqlx::query_scalar::<_,bool>("SELECT EXISTS(SELECT 1 FROM mdm_access.agent_native_enrollments WHERE tenant_id=$1::uuid AND task=$2)").bind(tenant.to_string()).bind(task).fetch_one(c).await})).await?
+                    };
                     if run.state.attempt() != Some(input.attempt_id)
-                        || run.state.execution != Execution::Running
+                        || run.state.started_at.is_none()
+                        || !continued
                         || run.state.cancellation != Cancellation::None
                         || !plan.authorized_run_in(s, tx, &run, now).await?
                     {
@@ -152,7 +157,7 @@ impl AgentPolicyAuthority for ExecutionService {
                 return Err(E::Forbidden);
             }
             enrollment::agent_policy::current_source_in(c, self.tenant, d.id).await?;
-            let row=sqlx::query("SELECT l.authority,r.state AS task_state,r.deadline,p.enabled AND p.current_version=v.id AS live FROM mdm_access.agent_native_enrollments l JOIN mdm_commands.action_runs r ON(r.tenant_id,r.id,r.registration,r.generation)=(l.tenant_id,l.task,l.source_registration,l.source_generation) JOIN mdm_policy.versions v ON(v.tenant_id,v.id)=(r.tenant_id,r.policy_version) JOIN mdm_policy.policies p ON(p.tenant_id,p.id)=(v.tenant_id,v.policy) JOIN mdm_access.registrations g ON(g.tenant_id,g.id,g.generation)=(l.tenant_id,l.source_registration,l.source_generation) WHERE l.tenant_id=$1::uuid AND l.request=$2 AND g.state='active' AND g.channel='agent' AND EXISTS(SELECT 1 FROM mdm_access.credentials k WHERE k.tenant_id=g.tenant_id AND k.registration=g.id AND k.state='active')")
+            let row=sqlx::query("SELECT l.authority,r.state AS task_state,r.deadline,(p.state='enabled') AND p.current_version=v.id AS live FROM mdm_access.agent_native_enrollments l JOIN mdm_commands.action_runs r ON(r.tenant_id,r.id,r.registration,r.generation)=(l.tenant_id,l.task,l.source_registration,l.source_generation) JOIN mdm_policy.versions v ON(v.tenant_id,v.id)=(r.tenant_id,r.policy_version) JOIN mdm_policy.policies p ON(p.tenant_id,p.id)=(v.tenant_id,v.policy) JOIN mdm_access.registrations g ON(g.tenant_id,g.id,g.generation)=(l.tenant_id,l.source_registration,l.source_generation) WHERE l.tenant_id=$1::uuid AND l.request=$2 AND g.state='active' AND g.channel='agent' AND EXISTS(SELECT 1 FROM mdm_access.credentials k WHERE k.tenant_id=g.tenant_id AND k.registration=g.id AND k.state='active')")
                 .bind(&d.tenant).bind(d.id).fetch_optional(&mut *c).await.map_err(|_|E::Storage)?.ok_or(E::Forbidden)?;
             let state: serde_json::Value = row.try_get("task_state").map_err(|_| E::Storage)?;
             let now: i64 =

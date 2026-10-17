@@ -384,7 +384,7 @@ pub async fn send(
     save(c, protection, p, id, &query, &state).await?;
     Ok(state.pending())
 }
-fn query(catalog: DetectionCatalog) -> Result<Query, Error> {
+fn query(mut catalog: DetectionCatalog) -> Result<Query, Error> {
     let mut uris = vec![];
     let mut probes = vec![];
     for identity in catalog.identities.iter().cloned() {
@@ -439,6 +439,13 @@ fn query(catalog: DetectionCatalog) -> Result<Query, Error> {
     }
     uris.push(ARCH.into());
     let count = uris.len();
+    if count + usize::from(!catalog.win32.is_empty()) > 64 {
+        // The bounded read owner cannot prove completeness for a larger catalog.
+        catalog.identities.clear();
+        catalog.win32.clear();
+        catalog.complete = false;
+        return query(catalog);
+    }
 
     let mut reads = std::collections::BTreeMap::new();
     for (i, uri) in uris.into_iter().enumerate() {

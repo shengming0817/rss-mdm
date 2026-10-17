@@ -123,7 +123,7 @@ async fn publish_format(
             response.status()
         );
     }
-    let request=Request::builder().method(Method::POST).uri(format!("/api/v1/resources/{resource}/content?version=v1&variant=default&platform={platform}&architecture={arch}&artifact=candidate&operation={}",Uuid::new_v4()))
+    let request=Request::builder().method(Method::POST).uri(format!("/api/v1/resources/{resource}/content?version=v1&variant=default&platform={platform}&architecture={arch}&artifact=agent-candidate&operation={}",Uuid::new_v4()))
         .header("host","mdm.example.test").header("origin","https://mdm.example.test").header("x-identity-request","1").header("x-csrf-token",user.csrf.as_ref().unwrap())
         .header("cookie",user.cookies.iter().map(|(k,v)|format!("{k}={v}")).collect::<Vec<_>>().join("; ")).header("content-type","application/octet-stream").body(Body::from(manifest))?;
     {
@@ -142,7 +142,7 @@ async fn publish_format(
         "Agent publication: {status} {published}"
     );
 
-    if format == "exe" {
+    if format == "exe" || device.is_empty() {
         return Ok(Uuid::parse_str(published["releaseId"].as_str().unwrap())?);
     }
     let scope = Uuid::new_v4();
@@ -222,4 +222,13 @@ pub(crate) async fn publish_exe(
     app: &crate::api::Assembly,
 ) -> Result<Uuid> {
     publish_format(user, router, device, app, true, None, "exe").await
+}
+
+/// Admit a release without configuring a Policy or starting group automation.
+pub(crate) async fn publish_macos_release(
+    user: &mut Browser,
+    router: &Router,
+    app: &crate::api::Assembly,
+) -> Result<Uuid> {
+    publish_format(user, router, "", app, false, None, "pkg").await
 }

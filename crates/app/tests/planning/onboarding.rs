@@ -104,6 +104,8 @@ async fn explicit_source_absence_drives_one_standard_entry_without_creating_mdm_
         json!({"kind":"enrollment_result","outcome":"opened"}),
     )
     .await?;
+    let replay_after_open=agent_call(&f.router,Method::POST,&handoff_path,Some(case_credential()),Some(handoff.clone())).await?;
+    ensure!(replay_after_open==accepted,"task UI result cannot lose an existing handoff receipt");
     let empty = claim_request(&f.router, Uuid::new_v4()).await?;
     ensure!(empty.0 == StatusCode::OK && empty.1["task"].is_null());
     ensure!(

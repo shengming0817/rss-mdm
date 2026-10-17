@@ -147,15 +147,10 @@ impl Service {
         if installation != input.installation_operation {
             return Err(Error::Forbidden.into());
         }
-        let daily_spki = csr(&input.csr)?.spki().to_vec();
-        let bootstrap_spki = Sha256::digest(
-            leaf.tbs_certificate
-                .subject_public_key_info
-                .to_der()
-                .map_err(|_| Error::Malformed)?,
-        )
-        .to_vec();
-        if daily_spki == bootstrap_spki {
+        if csr(&input.csr)?
+            .uses_key(&leaf.tbs_certificate.subject_public_key_info)
+            .map_err(|_| Error::Malformed)?
+        {
             return Err(Error::Forbidden.into());
         }
         let fingerprint = Sha256::digest(bytes).to_vec();

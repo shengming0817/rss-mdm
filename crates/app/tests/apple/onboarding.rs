@@ -148,6 +148,13 @@ async fn absent_agent_group_installs_fixed_package_and_registers_independently()
         "{state}"
     );
     let input = json!({"wireVersion":1,"operationId":Uuid::new_v4(),"installationOperation":operation,"secret":credential("managed-apple-agent"),"csr":crate::test_support::agent::csr()?,"runtime":{"executionContext":crate::test_support::software_execution::context(crate::test_support::software_execution::Platform::MacOs),"platform":"macos","architecture":"aarch64","capabilities":["inventory.collect.v1","mdm.enrollment.v1"]}});
+    let (bootstrap_delivery, bootstrap_payload) = peer.next("InstallProfile").await?;
+    ensure!(
+        bootstrap_payload.contains_key("Payload"),
+        "native bootstrap must deliver a profile"
+    );
+    peer.manage("Acknowledged", Some(bootstrap_delivery), None)
+        .await?;
     let bootstrap_peer =
         crate::test_support::bootstrap::issue(&f.app, &f.router, &f.root, operation).await?;
     // The native daily identity is no longer mounted as an Agent authorization endpoint.
@@ -202,7 +209,7 @@ async fn agent_publication_preserves_bound_attempt_identity() -> Result<()> {
     config.management.origin = f.app.apple()?.config.management.origin.clone();
     config.management.listen = f.app.apple()?.config.management.listen;
     config.trust_file = f.app.apple()?.config.trust_file.clone();
-    setup::publish(&mut f.browser, &f.router, &case_device(), &f.app, false).await?;
+    setup::publish_macos_release(&mut f.browser, &f.router, &f.app).await?;
     let original_rights: i32 = pg(&format!(
         "SELECT access_rights FROM mdm_apple.devices WHERE tenant_id='{}' AND state='active'",
         case_tenant()
@@ -276,7 +283,7 @@ async fn next_after_cooldown(
 async fn collected_bundle_presence_remains_unknown() -> Result<()> {
     let mut f = Fixture::with_agent(None).await?;
     let (peer, device) = f.ready_local_peer().await?;
-    setup::publish(&mut f.browser, &f.router, case_device(), &f.app, false).await?;
+    setup::publish_macos_release(&mut f.browser, &f.router, &f.app).await?;
     let (platform, _) = peer.next("DeviceInformation").await?;
     let bytes = peer
         .manage(
@@ -364,6 +371,18 @@ async fn agent_handoff_completes_native_registration_and_token_update() -> Resul
     ensure!(
         linked.trim() == "1",
         "native registration must follow its exact Agent task"
+    );
+    crate::test_support::identity::set_grants(case_tenant(), &handoff.fixture.author_id, vec![])
+        .await?;
+    let request = Request::builder()
+        .method(Method::POST)
+        .uri(format!("/api/v1/enrollments/{id}/profile"))
+        .header("host", "mdm.example.test")
+        .header("content-type", "application/json")
+        .body(Body::from(json!({"password":handoff.password}).to_string()))?;
+    ensure!(
+        f.router.clone().oneshot(request).await?.status() == StatusCode::FORBIDDEN,
+        "withdrawn Agent task authority must not enroll MDM"
     );
     handoff.close().await?;
     drop(device);

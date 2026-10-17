@@ -418,9 +418,7 @@ impl Host {
             inputs: execution.inputs.clone(),
             protection: execution.protection.clone(),
             execution_runtime: execution.runtime.clone(),
-            audit_store: store
-                .audit_store(&crate::config::AuditConfig::Plain)
-                .await?,
+            audit_store: agent_audit.clone(),
             apple: None,
             execution: execution.service.clone(),
             flow: management,
@@ -787,6 +785,10 @@ impl Host {
         )
         .await
     }
+    #[allow(
+        clippy::cognitive_complexity,
+        reason = "one controlled peer preserves real enrollment, current-credential setup and Agent-handoff protocol paths without duplicating identity construction"
+    )]
     async fn peer_request(
         &self,
         profile: rss_mdm_registration_service::enrollment::WindowsProfile,

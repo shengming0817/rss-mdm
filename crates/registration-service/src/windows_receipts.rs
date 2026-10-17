@@ -11,6 +11,7 @@ pub async fn replay(
         actor: proof,
         key,
         digest,
+        ..
     } = operation;
     let lock = format!(
         "{}:{}:{}:{}",
@@ -46,11 +47,21 @@ pub async fn save(
         actor: proof,
         key,
         digest,
+        ..
     } = operation;
     let facts = audit.snapshot();
     if audit.tenant() != proof.tenant
-        || facts.actor.as_deref() != Some(proof.subject)
-        || facts.instance.as_deref() != Some(proof.instance)
+        || match operation.service {
+            Some(service) => {
+                facts.actor_kind != "service"
+                    || facts.actor.as_deref() != Some(service)
+                    || facts.instance.is_some()
+            }
+            None => {
+                facts.actor.as_deref() != Some(proof.subject)
+                    || facts.instance.as_deref() != Some(proof.instance)
+            }
+        }
         || facts.operation_id != Some(*key)
     {
         return Err(Error::Forbidden);
@@ -72,6 +83,7 @@ pub struct Operation<'a> {
     actor: Actor<'a>,
     key: Uuid,
     digest: &'a str,
+    service: Option<&'static str>,
 }
 impl<'a> Operation<'a> {
     pub fn from_coordinates(
@@ -86,7 +98,16 @@ impl<'a> Operation<'a> {
             },
             key: d.operation,
             digest,
+            service: None,
         }
+    }
+    pub fn from_admission(
+        admission: &'a crate::enrollment::native::Admission,
+        digest: &'a str,
+    ) -> Self {
+        let mut operation = Self::from_coordinates(admission.coordinates(), digest);
+        operation.service = admission.service_actor();
+        operation
     }
     pub(crate) fn from_authorized(
         p: &'a rss_mdm_authorization_service::context::AuthorizedPrincipal,
@@ -101,6 +122,7 @@ impl<'a> Operation<'a> {
             },
             key,
             digest,
+            service: None,
         }
     }
     pub fn digest(&self) -> &str {

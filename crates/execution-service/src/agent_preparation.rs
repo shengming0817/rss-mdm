@@ -152,10 +152,10 @@ pub fn identity(
                 version,
             } = &native.detect
             else {
-                return Err(Error::Unsupported.into());
+                return Err(Error::Unsupported);
             };
             if version != &metadata.version {
-                return Err(Error::Unsupported.into());
+                return Err(Error::Unsupported);
             }
             Identity::WindowsMsi {
                 product: Uuid::parse_str(product_code.trim_matches(['{', '}']))
@@ -165,7 +165,7 @@ pub fn identity(
         }
         (resource::SoftwareBehavior::Msix(native), Packaging::WindowsMsix { publisher, .. }) => {
             if publisher != &native.identity.publisher {
-                return Err(Error::Unsupported.into());
+                return Err(Error::Unsupported);
             }
             Identity::WindowsMsix {
                 family: family(&native.identity.name, publisher),
@@ -176,10 +176,10 @@ pub fn identity(
         (resource::SoftwareBehavior::Pkg(native), Packaging::MacosPkg { bundle, team, .. }) => {
             let resource::SoftwareDetection::PkgReceipt { receipt, version } = &native.detect
             else {
-                return Err(Error::Unsupported.into());
+                return Err(Error::Unsupported);
             };
             if version != &metadata.version {
-                return Err(Error::Unsupported.into());
+                return Err(Error::Unsupported);
             }
             Identity::Macos {
                 receipt: receipt.clone(),
@@ -187,7 +187,7 @@ pub fn identity(
                 team: team.clone(),
             }
         }
-        _ => return Err(Error::Unsupported.into()),
+        _ => return Err(Error::Unsupported),
     };
     identity.validate()?;
     Ok(identity)

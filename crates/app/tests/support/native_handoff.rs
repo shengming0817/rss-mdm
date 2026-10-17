@@ -13,6 +13,7 @@ impl Handoff {
     pub(crate) async fn new(platform: Platform) -> Result<Self> {
         let mut base: Value =
             serde_json::from_slice(&std::fs::read(std::env::var("MDM_TEST_CONFIG")?)?)?;
+        base["native_protocols"] = json!({});
         base["enrollment_entries"] =
             json!({"windows":"https://mdm.example.test","macos":"https://mdm.example.test/"});
         let mut f = agent_execution::Fixture::from_config(base).await?;
@@ -61,7 +62,7 @@ impl Handoff {
         .await?;
         planning_http::await_ingress().await?;
         let task=tokio::time::timeout(Duration::from_secs(30),async {loop{
-            let result=agent_call(&f.router,Method::POST,"/api/v1/agent/runtime/tasks/claim",Some(agent_execution::case_credential()),Some(json!({"wireVersion":1,"executionContext":context,"environment":{"edition":if windows {Some(48)}else{None},"tools":{},"nativeEngines":{}},"profiles":["posix_sh","bash","power_shell7","osquery"],"operationId":Uuid::new_v4()}))).await?;
+            let result=agent_call(&f.router,Method::POST,"/api/v1/agent/runtime/tasks/claim",Some(agent_execution::case_credential()),Some(json!({"wireVersion":1,"executionContext":context,"environment":{"edition":if windows {Some("professional")}else{None},"tools":{},"nativeEngines":{}},"profiles":["posix_sh","bash","power_shell7","osquery"],"operationId":Uuid::new_v4()}))).await?;
             ensure!(result.0==StatusCode::OK,"handoff claim: {result:?}");
             if !result.1["task"].is_null(){break Ok::<_,anyhow::Error>(result.1["task"].clone());}
             tokio::time::sleep(Duration::from_millis(100)).await;

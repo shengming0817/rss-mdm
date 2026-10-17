@@ -162,6 +162,14 @@ impl Admission {
             Basis::Account { proof, .. } => proof.check_live().map_err(|_| Error::Unauthorized),
         }
     }
+    /// Producer identity for native enrollment without a live human session.
+    pub fn service_actor(&self) -> Option<&'static str> {
+        match self.basis {
+            Basis::AgentPolicy { .. } => Some("service:agent-policy"),
+            Basis::Organization { .. } => Some("service:apple-ade"),
+            _ => None,
+        }
+    }
     pub fn bind_audit(&self, audit: &RequestAudit) -> Result<(), Error> {
         match &self.basis {
             Basis::Entra { proof, .. } => {

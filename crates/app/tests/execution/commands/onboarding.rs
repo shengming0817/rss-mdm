@@ -48,6 +48,50 @@ fn installation_write(command: &s::Command) -> bool {
         _ => false,
     }
 }
+fn reported_value<'a>(uri: &str, response: &'a s::Message) -> &'a str {
+    if uri.starts_with("./Device/Vendor/MSFT/RootCATrustedCertificates/") {
+        return response
+            .commands
+            .iter()
+            .find_map(|command| match command {
+                s::Command::Add { items, .. } => items.iter().find_map(|item| {
+                    (item.target.as_deref() == Some(uri))
+                        .then(|| item.data.as_ref().unwrap().0.as_str())
+                }),
+                _ => None,
+            })
+            .expect("CA CSP readback requires the delivered certificate");
+    }
+    let leaf = uri.rsplit('/').next().unwrap();
+    if uri.contains("/Win32AppInventory/") {
+        return match leaf {
+            "Win32InstalledProgram" => "exe-installed",
+            "RegKey" => "rss-agent",
+            "Publisher" => "RSS controlled publisher",
+            "Version" => "1.2.3",
+            "Source" => "Add/Remove Programs",
+            _ => "RSS Agent",
+        };
+    }
+    if uri.contains("EnterpriseModernAppManagement") {
+        return match leaf {
+            "Publisher" => "CN=RSS",
+            "Version" => "1.2.3.0",
+            "IsProvisioned" => "true",
+            "Status" => "3",
+            _ => "0",
+        };
+    }
+    match leaf {
+        "Mod" => "MDM-only",
+        "Edition" => "48",
+        "ProcessorArchitecture" => "AMD64",
+        "Publisher" => "RSS controlled publisher",
+        "Version" => "1.2.3",
+        "Status" => "70",
+        _ => "10.0.19045.0",
+    }
+}
 fn reply(initial: &s::Message, response: &s::Message, installed: bool) -> s::Message {
     let message = response.header.message_id;
     let mut output = s::Message {
@@ -106,61 +150,7 @@ fn reply(initial: &s::Message, response: &s::Message, installed: bool) -> s::Mes
                     credential: None,
                 }));
                 if code == 200 {
-                    let value = if uri
-                        .starts_with("./Device/Vendor/MSFT/RootCATrustedCertificates/")
-                    {
-                        response
-                            .commands
-                            .iter()
-                            .find_map(|command| match command {
-                                s::Command::Add { items, .. } => items.iter().find_map(|item| {
-                                    (item.target.as_deref() == Some(uri))
-                                        .then(|| item.data.as_ref().unwrap().0.as_str())
-                                }),
-                                _ => None,
-                            })
-                            .expect("CA CSP readback requires the delivered certificate")
-                    } else if uri.ends_with("/Mod") {
-                        "MDM-only"
-                    } else if uri.ends_with("/Edition") {
-                        "48"
-                    } else if uri.ends_with("ProcessorArchitecture") {
-                        "AMD64"
-                    } else if uri.contains("/Win32AppInventory/") {
-                        if uri.ends_with("/Win32InstalledProgram") {
-                            "exe-installed"
-                        } else if uri.ends_with("/RegKey") {
-                            "rss-agent"
-                        } else if uri.ends_with("/Publisher") {
-                            "RSS controlled publisher"
-                        } else if uri.ends_with("/Version") {
-                            "1.2.3"
-                        } else if uri.ends_with("/Source") {
-                            "Add/Remove Programs"
-                        } else {
-                            "RSS Agent"
-                        }
-                    } else if uri.contains("EnterpriseModernAppManagement") {
-                        if uri.ends_with("/Publisher") {
-                            "CN=RSS"
-                        } else if uri.ends_with("/Version") {
-                            "1.2.3.0"
-                        } else if uri.ends_with("/IsProvisioned") {
-                            "true"
-                        } else if uri.ends_with("/Status") {
-                            "3"
-                        } else {
-                            "0"
-                        }
-                    } else if uri.ends_with("/Publisher") {
-                        "RSS controlled publisher"
-                    } else if uri.ends_with("/Version") {
-                        "1.2.3"
-                    } else if uri.ends_with("/Status") {
-                        "70"
-                    } else {
-                        "10.0.19045.0"
-                    };
+                    let value = reported_value(uri, response);
                     output.commands.push(s::Command::Results(s::Results {
                         id: output.commands.len() as u32 + 1,
                         message_ref: Some(message),
@@ -365,19 +355,25 @@ async fn windows_policy_install_register_and_replay_use_independent_identity() -
     // Stop producers before fault injection, then restart the existing command runtime.
     ensure!(commands.shutdown().join().await?.is_clean());
     ensure!(owner.shutdown().join().await?.is_clean());
-    host.app
-        .audit_store
-        .inject_next_fault(rss_audit_postgres::PgFault::BeforeCommitPending);
-    let unknown = bootstrap::grant(&client.router, &bootstrap_peer, &input).await?;
+    let unknown = bootstrap::grant_fault(
+        &client.router,
+        &bootstrap_peer,
+        &input,
+        Some(rss_audit_postgres::PgFault::BeforeCommitPending),
+    )
+    .await?;
     ensure!(
         unknown.status() == StatusCode::SERVICE_UNAVAILABLE
             && unknown.json::<Value>().await?["code"] == "activation_unknown"
     );
     ensure!(pg(&format!("SELECT count(*) FROM mdm_access.registrations WHERE tenant_id='{}' AND channel='agent'",case_tenant()))?.trim()=="0");
-    host.app
-        .audit_store
-        .inject_next_fault(rss_audit_postgres::PgFault::CommitUnknownAfterAck);
-    let unknown = bootstrap::grant(&client.router, &bootstrap_peer, &input).await?;
+    let unknown = bootstrap::grant_fault(
+        &client.router,
+        &bootstrap_peer,
+        &input,
+        Some(rss_audit_postgres::PgFault::CommitUnknownAfterAck),
+    )
+    .await?;
     ensure!(
         unknown.status() == StatusCode::SERVICE_UNAVAILABLE
             && unknown.json::<Value>().await?["code"] == "activation_unknown"
@@ -536,7 +532,7 @@ async fn windows_policy_install_register_and_replay_use_independent_identity() -
         bootstrap::grant(&client.router, &bootstrap_peer, &input)
             .await?
             .status()
-            == StatusCode::UNAUTHORIZED
+            == StatusCode::FORBIDDEN
     );
     let report = json!({"wireVersion":1,"collection":receipt["collections"][0],"reportId":Uuid::new_v4(),"sequence":0,"observedAt":1,"body":{"kind":"failed","code":"collectionFailed"}});
     ensure!(
@@ -674,6 +670,13 @@ async fn start_fixture_format(
     );
     post(&peer, &reply(&initial, &response, false)).await?;
     let operation = setup::operation(policy).await?;
+    tokio::time::timeout(Duration::from_secs(30), async {
+        loop {
+            let published = pg(&format!("SELECT EXISTS(SELECT 1 FROM mdm_access.agent_bootstraps b JOIN rss_device_command.commands d ON d.tenant_id=b.tenant_id AND d.command_id=b.delivery::text WHERE b.tenant_id='{}' AND b.installation='{operation}' AND d.status='published')",case_tenant()))?;
+            if published.trim()=="t" {break Ok::<_,anyhow::Error>(());}
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    }).await??;
     Ok((
         host, client, peer, commands, owner, policy, operation, until,
     ))
@@ -760,11 +763,8 @@ async fn installation(
             if let Some(command) = installation_command(&next, phase) {
                 ensure!(pg(&format!("SELECT EXISTS(SELECT 1 FROM mdm_commands.attempts a JOIN mdm_commands.attempt_items i ON(i.tenant_id,i.attempt)=(a.tenant_id,a.id) WHERE a.tenant_id='{}' AND a.operation='{operation}' AND a.phase='{}' AND a.session={} AND a.message={} AND i.command={command} AND i.uri='{INSTALL_URI}')",case_tenant(),phase.as_str(),next.header.session_id,next.header.message_id))?.trim()=="t", "installation command has no correlated durable attempt");
                 if phase==AttemptPhase::Execute && bootstrap.is_none() {
-                    for extra in 1900..1920 {
-                        let (start,wire)=begin(peer,extra).await?;
-                        if !bootstrap::windows_fields(&wire.commands).is_empty(){bootstrap=Some(wire.clone());break;}
-                        post(peer,&reply(&start,&wire,false)).await?;
-                    }
+                    let diagnostic=pg(&format!("SELECT jsonb_build_object('status',(SELECT status FROM rss_device_command.commands WHERE tenant_id=o.tenant_id AND command_id=o.id::text),'accepted',o.gateway_accepted,'failure',o.dispatch_failure,'required',o.authority->'required','stage',o.authority->'stage','attempts',(SELECT jsonb_agg(jsonb_build_object('phase',a.phase,'session',a.session)) FROM mdm_commands.attempts a WHERE a.tenant_id=o.tenant_id AND a.operation=o.id)) FROM mdm_access.agent_bootstraps b JOIN mdm_commands.operations o ON(o.tenant_id,o.id)=(b.tenant_id,b.delivery) WHERE b.tenant_id='{}' AND b.installation='{operation}'",case_tenant()))?;
+                    anyhow::bail!("bootstrap delivery missing: {diagnostic}");
                 }
                 return Ok((initial, next, bootstrap));
             }
@@ -1043,7 +1043,7 @@ async fn replacement_rejects_old_installation_and_requires_current_epoch_absence
         bootstrap::grant(&client.router, &bootstrap_peer, &input)
             .await?
             .status()
-            == StatusCode::UNAUTHORIZED
+            == StatusCode::FORBIDDEN
     );
     ensure!(
         current
@@ -1071,7 +1071,7 @@ async fn replacement_rejects_old_installation_and_requires_current_epoch_absence
     ensure!(!query.commands.iter().any(installation_write));
     let count = || {
         pg(&format!(
-            "SELECT count(*) FROM mdm_commands.operations WHERE tenant_id='{}' AND authority->>'kind'='agent_install'",
+            "SELECT count(*) FROM mdm_commands.operations WHERE tenant_id='{}' AND authority->>'kind'='agent_install' AND authority->>'stage'='install'",
             case_tenant()
         ))
     };
@@ -1182,9 +1182,14 @@ async fn policy_freeze_distinguishes_superseded_identity_from_withdrawn_authorit
         .await?;
     ensure!(original.0 == StatusCode::OK, "{original:?}");
     let definition = original.1["definition"].clone();
-    let resource = definition["action"]["resource"]["id"]
+    let release = definition["action"]["packages"]["windows_x86_64"]
         .as_str()
-        .ok_or_else(|| anyhow::anyhow!("missing software resource: {original:?}"))?;
+        .unwrap();
+    let resource = pg(&format!(
+        "SELECT binding->>'resource' FROM mdm_agent_packages.releases WHERE tenant_id='{}' AND id='{release}'",
+        case_tenant()
+    ))?;
+    let resource = resource.trim();
     let mut wrong = definition.clone();
     wrong["action"]["admissionOperation"] = json!(Uuid::new_v4());
     let rejected = client

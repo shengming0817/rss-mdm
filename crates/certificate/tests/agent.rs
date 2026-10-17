@@ -72,6 +72,25 @@ fn signed_csr_profile_rejects_substituted_identity_and_usage() {
         }
         request.sign(key, digest).unwrap();
         let der = request.build().to_der().unwrap();
+        if valid {
+            use x509_cert::der::Decode;
+            let verified = VerifiedAgentCsr::verify(&der).unwrap();
+            let mut public = x509_cert::request::CertReq::from_der(&der)
+                .unwrap()
+                .info
+                .public_key;
+            assert!(verified.uses_key(&public).unwrap());
+            public.algorithm.parameters = None;
+            assert!(
+                verified.uses_key(&public).unwrap(),
+                "RSA NULL and absent parameters identify the same key"
+            );
+            let other = x509_cert::spki::SubjectPublicKeyInfoOwned::from_der(
+                &weak.public_key_to_der().unwrap(),
+            )
+            .unwrap();
+            assert!(!verified.uses_key(&other).unwrap());
+        }
         assert_eq!(
             VerifiedAgentCsr::verify(&der).is_ok(),
             valid,
