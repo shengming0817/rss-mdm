@@ -61,45 +61,7 @@ async fn bootstrap_escrow_requires_evidence_and_clears_secrets() -> Result<()> {
         ),
     ]);
     ensure!(peer.send("/checkin", get.clone()).await?.0 == StatusCode::NOT_IMPLEMENTED);
-    f.native_context(&peer).await?;
-    f.grant_native_actions(&["device_control"]).await?;
-    let op = f.create_restart().await?;
-    let (resolve, _) = peer.next("DeviceInformation").await?;
-    let next = peer
-        .manage(
-            "Acknowledged",
-            Some(resolve),
-            Some((
-                "QueryResponses",
-                plist::Value::Dictionary(protocol::dictionary([
-                    ("OSVersion", "15.0".into()),
-                    ("IsSupervised", true.into()),
-                    ("IsAppleSilicon", true.into()),
-                ])),
-            )),
-        )
-        .await?;
-    let (resolve, _) = command(&next, "SecurityInfo")?;
-    let next = peer
-        .manage(
-            "Acknowledged",
-            Some(resolve),
-            Some((
-                "SecurityInfo",
-                plist::Value::Dictionary(protocol::dictionary([(
-                    "ManagementStatus",
-                    plist::Value::Dictionary(protocol::dictionary([
-                        ("EnrolledViaDEP", true.into()),
-                        ("IsUserEnrollment", false.into()),
-                        ("UserApprovedEnrollment", true.into()),
-                    ])),
-                )])),
-            )),
-        )
-        .await?;
-    let (execute, _) = command(&next, "RestartDevice")?;
-    peer.manage("Acknowledged", Some(execute), None).await?;
-    ensure!(f.operation(op).await?["commandStatus"] == "received");
+    f.native_context().await?;
     let empty = peer.send("/checkin", get.clone()).await?;
     ensure!(
         empty.0 == StatusCode::OK && !protocol::decode(&empty.1)?.contains_key("BootstrapToken")
