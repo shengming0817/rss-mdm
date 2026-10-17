@@ -265,7 +265,10 @@ impl SoftwareAssignment {
         };
         let tenant = tx.tenant_id().to_string();
         let document = crate::checked_input(serde_json::to_value(input))?;
-        let counts:Option<serde_json::Value>=tx.with_connection(move|c|Box::pin(async move {sqlx::query_scalar("SELECT counts FROM mdm_commands.software_stage_stats WHERE tenant_id=$1::uuid AND version=$2 AND stage=$3 AND input-'runs'=$4::jsonb-'runs' AND ready").bind(tenant).bind(version).bind(index as i32).bind(document).fetch_optional(c).await})).await?;
+        // A new Run in a later stage must not revoke an already satisfied earlier-stage gate.
+        // Membership revisions and binding changes still fence the whole cached reduction;
+        // result changes fence it only when they affect this generation's actual members.
+        let counts:Option<serde_json::Value>=tx.with_connection(move|c|Box::pin(async move {sqlx::query_scalar("SELECT s.counts FROM mdm_commands.software_stage_stats s JOIN mdm_policy.versions v ON(v.tenant_id,v.id)=(s.tenant_id,s.version) WHERE s.tenant_id=$1::uuid AND s.version=$2 AND s.stage=$3 AND s.input-'runs'-'results'=$4::jsonb-'runs'-'results' AND (s.input->>'results')::bigint<=($4::jsonb->>'results')::bigint AND s.ready AND NOT EXISTS(SELECT 1 FROM mdm_commands.software_result_changes c JOIN mdm_commands.software_stats_members m ON(m.tenant_id,m.device)=(c.tenant_id,c.device) WHERE c.tenant_id=s.tenant_id AND c.policy=v.policy AND c.revision>(s.input->>'results')::bigint AND m.version=s.version AND m.stage=s.stage AND m.generation=s.generation)").bind(tenant).bind(version).bind(index as i32).bind(document).fetch_optional(c).await})).await?;
         match counts {
             Some(v) => crate::stored(serde_json::from_value(v)),
             None => Ok(StageCounts::default()),

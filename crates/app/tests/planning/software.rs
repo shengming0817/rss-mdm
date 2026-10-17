@@ -1,6 +1,7 @@
 use crate::test_support::software::write;
 use crate::test_support::software_execution::*;
 use crate::test_support::*;
+use anyhow::Context;
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 #[ignore = "make t2 MODULE=planning.software"]
 async fn rollout_time_success_gates_and_stage_evidence() -> Result<()> {
@@ -148,13 +149,15 @@ async fn rollout_time_success_gates_and_stage_evidence() -> Result<()> {
         gated.0 == StatusCode::OK && gated.1["task"].is_null(),
         "optional success gate: {gated:?}"
     );
-    let first_task = claim_with(&router, &first_credential, Platform::MacOs).await?;
+    let first_task = claim_with(&router, &first_credential, Platform::MacOs).await.context("first-stage offer")?;
     for kind in [json!({"kind":"received"}), json!({"kind":"start"}), result_event(&first_task, "install", Some(0), "present", false)?] {
         ensure!(event_with(&router, &first_credential, &first_task, kind).await?.0 == StatusCode::OK);
     }
     let progress = ready_rollout(&mut author, &router, future).await?;
     ensure!(progress.1["stages"][0]["verifiedSuccess"] == 1, "{progress:?}");
-    let resumed_task = claim(&router).await?;
+    let eligible = author.call(&router, Method::GET, &format!("/api/v1/policies/{future}/assignments"), None).await?;
+    ensure!(eligible.0 == StatusCode::OK && eligible.1["items"].as_array().unwrap().iter().find(|item| item["object"]["id"] == crate::test_support::software_execution::case_device()).unwrap()["taskAdmission"]["state"] == "eligible", "completed first stage did not open the second: {eligible:?}; progress={progress:?}");
+    let resumed_task = claim(&router).await.map_err(|e| anyhow::anyhow!("second-stage offer: {e:#}; runs={:?}", pg(&format!("SELECT jsonb_agg(jsonb_build_object('device',device,'state',state,'occurrence',occurrence)) FROM mdm_commands.action_runs WHERE tenant_id='{}'",case_tenant()))))?;
     ensure!(
         resumed_task["payload"]["task"]["steps"][0]["action"]["package"] == "Private.Controlled",
         "resume: {resumed_task}"
@@ -209,7 +212,7 @@ async fn rollout_time_success_gates_and_stage_evidence() -> Result<()> {
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
     })
-    .await??;
+    .await.context("reordered stage statistics")??;
     ensure!(
         reordered_status.1["stages"][0]["verifiedSuccess"] == 1
             && reordered_status.1["stages"][1]["verifiedSuccess"] == 0,

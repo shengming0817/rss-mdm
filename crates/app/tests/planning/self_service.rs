@@ -307,10 +307,10 @@ async fn self_service_rechecks_config_and_capability_before_start() -> Result<()
     let task = claim(&f.router).await?;
     let registration = pg(&format!("SELECT id FROM mdm_access.registrations WHERE tenant_id='{}' AND device='{}' AND channel='agent' AND state='active'", case_tenant(), case_device_id()))?;
     let capabilities = pg(&format!("SELECT capabilities FROM mdm_agent.bindings WHERE tenant_id='{}' AND registration='{}'", case_tenant(), registration.trim()))?;
-    pg(&format!("UPDATE mdm_agent.bindings SET capabilities='[\"inventory.collect.v1\"]'::jsonb WHERE tenant_id='{}' AND registration='{}'", case_tenant(), registration.trim()))?;
+    pg(&format!("UPDATE mdm_agent.bindings SET capabilities='[\"inventory.collect.v1\"]' WHERE tenant_id='{}' AND registration='{}'", case_tenant(), registration.trim()))?;
     let mut start = json!({"kind":"start"});
     let rejected = task_event_request(&f.router, &task, Uuid::new_v4(), &mut start).await?;
-    pg(&format!("UPDATE mdm_agent.bindings SET capabilities='{}'::jsonb WHERE tenant_id='{}' AND registration='{}'", capabilities.trim().replace('\'', "''"), case_tenant(), registration.trim()))?;
+    pg(&format!("UPDATE mdm_agent.bindings SET capabilities='{}' WHERE tenant_id='{}' AND registration='{}'", capabilities.trim().replace('\'', "''"), case_tenant(), registration.trim()))?;
     ensure!(rejected.0 == StatusCode::FORBIDDEN, "capability revoked after offer: {rejected:?}");
     ensure!(pg(&format!("SELECT count(*) FROM mdm_commands.action_attempts WHERE run='{}' AND permit IS NOT NULL",task["payload"]["task"]["taskId"].as_str().unwrap()))?.trim()=="0");
     value["selfService"]["published"] = json!(false);
