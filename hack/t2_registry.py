@@ -1063,6 +1063,7 @@ TOOL_INPUTS = {
     'hack/candidate_smoke.py': ('test_candidate_smoke',),
 }
 T1_INPUTS = (
+    'crates/windows-channel/tests/unit.rs',
     'crates/apple-channel/tests/apns.rs', 'crates/winget-source/tests/community.rs',
     'crates/app/tests/windows/unit.rs','fixtures/snapshot.json', 'crates/content-s3/tests/unit.rs', 'crates/inventory-service/tests/assets/unit.rs') + ('crates/app/tests/agent_pki/health.rs','crates/certificate/tests/agent.rs','crates/certificate/tests/apple.rs','crates/certificate/tests/windows.rs','crates/certificate-archive-service/tests/behavior.rs','crates/authorization-service/tests/unit.rs','crates/inventory-service/tests/runtime.rs','crates/software-service/tests/management/*') + tuple(f'crates/{name}/tests/*' for name in (
     'inventory', 'group', 'scope', 'policy', 'resource', 'software-release',
@@ -1964,3 +1965,10 @@ consume(('crates/app/src/migration.rs',),
 # Channel maintenance preserves the last sealed fact while a new query is pending.
 consume(('crates/inventory-service/schema/channel-maintenance.sql',),
         'execution.commands.onboarding apple.onboarding agent.reports inventory.runtime planning.onboarding planning.group_scope')
+
+# Context preparation is consumed directly by these six protocol modules.
+consume(('crates/apple-channel/src/native.rs',),
+        'apple.commands apple.users apple.policy apple.identity apple.push apple.host')
+for name in ('apple.commands', 'apple.users', 'apple.identity', 'apple.push', 'apple.host'):
+    MODULES[name] = replace(MODULES[name], support_inputs=(*MODULES[name].support_inputs,
+        'crates/app/tests/apple/policy.rs'))

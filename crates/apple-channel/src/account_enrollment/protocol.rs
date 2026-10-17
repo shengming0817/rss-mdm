@@ -90,20 +90,7 @@ pub(super) async fn enroll(
         .ok_or(Error::Unavailable(Failure::Clock))?;
     let request = rss_mdm_certificate::apple::enrollment_request(&bytes, now)?;
     let body = rss_mdm_apple_mdm::protocol::decode(&request.payload)?;
-    let product = rss_mdm_apple_mdm::protocol::text(&body, "PRODUCT")?;
-    let build = rss_mdm_apple_mdm::protocol::text(&body, "VERSION")?;
-    rss_mdm_apple_mdm::protocol::text(&body, "LANGUAGE")?;
-    let major = build
-        .bytes()
-        .take_while(u8::is_ascii_digit)
-        .collect::<Vec<_>>();
-    let major = std::str::from_utf8(&major)
-        .ok()
-        .and_then(|s| s.parse::<u32>().ok())
-        .ok_or(Error::Malformed)?;
-    if !(product.starts_with("Mac") || product.starts_with("iMac")) || major < 23 {
-        return Err(Error::Malformed);
-    }
+    validate_platform(&body)?;
     let digest = rss_mdm_registration_service::enrollment::digest(&(
         "apple.account.request/v1",
         request.signer,
@@ -393,4 +380,45 @@ async fn profile_on(
         .map_err(db)?;
     admission.check_live()?;
     Ok((bytes, false))
+}
+
+fn validate_platform(body: &plist::Dictionary) -> Result<(), Error> {
+    let product = rss_mdm_apple_mdm::protocol::text(body, "PRODUCT")?;
+    let build = rss_mdm_apple_mdm::protocol::text(body, "VERSION")?;
+    rss_mdm_apple_mdm::protocol::text(body, "LANGUAGE")?;
+    let major = build
+        .bytes()
+        .take_while(u8::is_ascii_digit)
+        .collect::<Vec<_>>();
+    let major = std::str::from_utf8(&major)
+        .ok()
+        .and_then(|s| s.parse::<u32>().ok())
+        .ok_or(Error::Malformed)?;
+    if !(product.starts_with("Mac") || product.starts_with("iMac")) || major < 23 {
+        return Err(Error::Malformed);
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn account_platform_requires_supported_mac_build() {
+        for (product, build, accepted) in [
+            ("Mac14,2", "23A344", true),
+            ("iMac20,1", "23A344", true),
+            ("iPhone15,2", "23A344", false),
+            ("Mac14,2", "22A344", false),
+            ("Mac14,2", "A344", false),
+            ("Mac14,2", "4294967296A", false),
+        ] {
+            let body = rss_mdm_apple_mdm::protocol::dictionary([
+                ("PRODUCT", product.into()),
+                ("VERSION", build.into()),
+                ("LANGUAGE", "en".into()),
+            ]);
+            assert_eq!(validate_platform(&body).is_ok(), accepted);
+        }
+    }
 }

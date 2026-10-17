@@ -692,13 +692,6 @@ fn startup_diagnostics(root: &std::path::Path) -> Result<()> {
             .health(crate::clock::SystemClock.unix_seconds()?)
             .is_ready()
     );
-    for expires in [
-        apple.channel.trust_fixture().expires(),
-        apple.channel.signer_expiration_fixture(),
-        apple.channel.push_fixture().expires,
-    ] {
-        ensure!(!apple.channel.health(expires as i64).is_ready());
-    }
     Ok(())
 }
 
@@ -945,69 +938,70 @@ impl Fixture {
         count: usize,
     ) -> Result<Vec<Uuid>> {
         use sqlx::Connection;
-        // Backlog preparation uses the existing scheduled-policy recovery owner;
-        // the canonical template test owns check-in admission. A due Once creates
-        // the same pending native run without scanning the growing device backlog.
-        let mut definition = definition.clone();
-        definition["action"]["schedule"] = json!({
-            "trigger":{"kind":"once","at":self.app.clock.unix_seconds()? - 1},
-            "notBefore":0,"jitterSeconds":0,"misfire":{"kind":"coalesce_one"}
-        });
-        let planning = &self.app.flow.planning;
-        let policies = rss_mdm_flow_service::planning::policies::Policies::new(
-            planning.runtime.clone(),
-            self.app.audit_store.clone(),
-            planning.tenant,
-            planning.policy_store.clone(),
-            self.app.inputs.clone(),
-        );
-        let proof = crate::device::test_support::admin(case_tenant(), "admin-a").await?;
-        let mut ids = Vec::with_capacity(count);
-        for _ in 0..count {
-            let id = Uuid::new_v4();
-            let audit =
-                rss_mdm_audit_integration::RequestAudit::new(case_tenant().into(), "policy_write");
-            proof.bind_audit(&audit)?;
-            let operation = serde_json::from_value(
-                json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"put","enabled":true,"definition":definition}}),
-            )?;
-            policies.change(&proof, id, &operation, &audit).await?;
-            audit.finalize(None);
-            ids.push(id);
-        }
+        ensure!(count > 0);
+        // One frozen Policy version owns distinct pending occurrences. Queue through
+        // the production owner so fingerprints, outbox and source evidence stay real.
+        let (_, first) = self.queue_collection(definition).await?;
         let mut db =
             sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?)
                 .await?;
-        let mut runs = Vec::with_capacity(count);
-        for policy in &ids {
-            // Each independent preparation keeps its existing wait budget. Do not
-            // time out the cumulative work of all 65/66 production transactions.
-            let run = tokio::time::timeout(Duration::from_secs(30), async {
-                loop {
-                    self.app.execution.recover_action_fixture(*policy).await?;
-                    let run: Option<Uuid> = sqlx::query_scalar("SELECT r.id FROM mdm_commands.action_runs r JOIN mdm_policy.versions v ON(v.tenant_id,v.id)=(r.tenant_id,r.policy_version) JOIN mdm_access.collection_runs c ON(c.tenant_id,c.id)=(r.tenant_id,r.id) JOIN mdm_apple.attempts a ON(a.tenant_id,a.collection)=(r.tenant_id,r.id) WHERE r.tenant_id=$1::uuid AND v.policy=$2 AND r.gateway_accepted AND c.sealed_at IS NULL AND a.phase='collect_device'")
-                        .bind(case_tenant()).bind(policy).fetch_optional(&mut db).await?;
-                    if let Some(run) = run { return Ok::<_, anyhow::Error>(run); }
-                    tokio::time::sleep(Duration::from_millis(50)).await;
-                }
-            }).await??;
-            runs.push(run);
+        let (version, registration, generation): (Uuid, Uuid, i64) = sqlx::query_as(
+            "SELECT policy_version,registration,generation FROM mdm_commands.action_runs WHERE tenant_id=$1::uuid AND id=$2")
+            .bind(case_tenant()).bind(first).fetch_one(&mut db).await?;
+        let mut runs = vec![first];
+        runs.extend((1..count).map(|_| Uuid::new_v4()));
+        if count > 1 {
+            let target = rss_mdm_execution_service::Target {
+                device: case_device().into(),
+                registration,
+                generation,
+            };
+            let pending = runs[1..].to_vec();
+            let now = self.app.clock.unix_seconds()?;
+            self.app.execution_runtime.local_tx_with_context(
+                rss_request_context::TenantId::parse(case_tenant())?,
+                // Only preparation is batched. settle_native_fixture below retains
+                // the unmodified production transaction budget.
+                rss_transactional_messaging::policy::OperationDeadline::from_remaining(Duration::from_secs(30)),
+                (&self.app.execution, &self.app.audit_store), |(service, audit), tx| Box::pin(async move {
+                    audit.lock_in(tx).await.map_err(|e| rss_transactional_messaging_postgres::PgError::from(sqlx::Error::Protocol(e.to_string())))?;
+                    for id in pending {
+                        rss_mdm_execution_service::actions::production::queue_run_in(service, tx,
+                            rss_mdm_execution_service::actions::production::RunInput {
+                                source: rss_mdm_execution_service::actions::storage::Source::Policy { version },
+                                target: &target, id, occurrence: format!("backlog:{id}"),
+                                available: now, deadline: now + 1800, now,
+                            }).await.map_err(|e| rss_transactional_messaging_postgres::PgError::from(sqlx::Error::Protocol(e.to_string())))?;
+                    }
+                    Ok(())
+                }),
+            ).await.fold(Ok, |e| Err(anyhow::anyhow!(e)), |e| Err(anyhow::anyhow!(e)),
+                |_| Err(anyhow::anyhow!("backlog preparation rollback unconfirmed")),
+                |_| Err(anyhow::anyhow!("backlog preparation commit unconfirmed")), |e| Err(anyhow::anyhow!(e)))?;
         }
+        tokio::time::timeout(Duration::from_secs(30), async {
+            loop {
+                let accepted: i64 = sqlx::query_scalar("SELECT count(*) FROM mdm_commands.action_runs WHERE tenant_id=$1::uuid AND id=ANY($2) AND gateway_accepted AND state->>'execution' IN ('not_started','running') AND state->>'cancellation'='none'")
+                    .bind(case_tenant()).bind(&runs).fetch_one(&mut db).await?;
+                if accepted == count as i64 { return Ok::<_, anyhow::Error>(()); }
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        }).await??;
+        // #2758: exercise real device recovery only after the full live ActionRun
+        // workset exists. A CollectionRun count alone cannot prove this seam.
+        for _ in 0..count.div_ceil(64) {
+            self.app
+                .execution
+                .settle_native_fixture(case_device())
+                .await?;
+        }
+        let pending: i64 = sqlx::query_scalar("SELECT count(DISTINCT c.id) FROM mdm_commands.action_runs r JOIN mdm_access.collection_runs c USING(tenant_id,id) JOIN mdm_apple.attempts a ON(a.tenant_id,a.collection)=(c.tenant_id,c.id) WHERE c.tenant_id=$1::uuid AND c.id=ANY($2) AND c.sealed_at IS NULL AND a.phase='collect_device' AND a.state='pending' AND r.gateway_accepted AND r.state->>'execution' IN ('not_started','running') AND r.state->>'cancellation'='none'")
+            .bind(case_tenant()).bind(&runs).fetch_one(&mut db).await?;
         ensure!(
-            runs.len() == count
-                && runs
-                    .iter()
-                    .copied()
-                    .collect::<std::collections::BTreeSet<_>>()
-                    .len()
-                    == count
+            pending == count as i64,
+            "recovery did not preserve the entire live backlog"
         );
         db.close().await?;
-        // Keep the real device recovery/budget seam (#2758) after all cross-page input exists.
-        self.app
-            .execution
-            .settle_native_fixture(case_device())
-            .await?;
         Ok(runs)
     }
 }

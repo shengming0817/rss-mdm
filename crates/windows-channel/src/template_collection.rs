@@ -273,24 +273,22 @@ pub async fn receive(
         }
         let bytes = seal(protection, &run, id, &state)?;
         sqlx::query("UPDATE mdm_windows.collections SET template_state=$3 WHERE tenant_id=$1::uuid AND id=$2 AND kind='template'").bind(&tenant).bind(id).bind(bytes).execute(&mut *c).await.map_err(db)?;
-        if !state.pending() && run.attempts.complete() && message.final_message {
-            facts.extend(store::seal(c, &mut run, "complete").await?);
-        } else if message.header.message_id as usize >= CodecLimits::default().session_messages {
-            if message.final_message {
-                facts.extend(store::seal(c, &mut run, "message_budget").await?);
-            } else {
-                facts.extend(
-                    rss_mdm_inventory_service::collection::channel::abandon_in(
-                        c,
-                        &tenant,
-                        id,
-                        "message_budget",
-                    )
-                    .await?,
-                );
-            }
-        } else {
-            store::save_attempts_in(c, &run).await?;
+        match settlement(
+            !state.pending() && run.attempts.complete(),
+            message.final_message,
+            message.header.message_id as usize,
+        ) {
+            Settlement::Seal(reason) => facts.extend(store::seal(c, &mut run, reason).await?),
+            Settlement::Abandon => facts.extend(
+                rss_mdm_inventory_service::collection::channel::abandon_in(
+                    c,
+                    &tenant,
+                    id,
+                    "message_budget",
+                )
+                .await?,
+            ),
+            Settlement::Pending => store::save_attempts_in(c, &run).await?,
         }
     }
     Ok(s::Message {
@@ -303,4 +301,24 @@ pub async fn receive(
             .collect(),
         final_message: message.final_message,
     })
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub(super) enum Settlement {
+    Seal(&'static str),
+    Abandon,
+    Pending,
+}
+pub(super) fn settlement(complete: bool, final_message: bool, message_id: usize) -> Settlement {
+    if complete && final_message {
+        Settlement::Seal("complete")
+    } else if message_id >= CodecLimits::default().session_messages {
+        if final_message {
+            Settlement::Seal("message_budget")
+        } else {
+            Settlement::Abandon
+        }
+    } else {
+        Settlement::Pending
+    }
 }

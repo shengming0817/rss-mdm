@@ -43,3 +43,33 @@ fn digest_uses_binary_nonce_and_challenge_round_trips() {
         .replace(&STANDARD.encode(nonce), "bad!");
     assert!(syncml::decode(bad.as_bytes(), &CodecLimits::default()).is_err());
 }
+
+#[test]
+fn template_settlement_keeps_final_and_nonfinal_budget_semantics() {
+    use crate::template_collection::{Settlement, settlement};
+    let limit = CodecLimits::default().session_messages;
+    for message in [limit - 1, limit, limit + 1] {
+        assert_eq!(
+            settlement(true, true, message),
+            Settlement::Seal("complete")
+        );
+        assert_eq!(
+            settlement(false, true, message),
+            if message < limit {
+                Settlement::Pending
+            } else {
+                Settlement::Seal("message_budget")
+            }
+        );
+        for complete in [false, true] {
+            assert_eq!(
+                settlement(complete, false, message),
+                if message < limit {
+                    Settlement::Pending
+                } else {
+                    Settlement::Abandon
+                }
+            );
+        }
+    }
+}

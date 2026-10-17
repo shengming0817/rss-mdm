@@ -5,7 +5,7 @@ impl Fixture {
     pub(super) async fn queue_fairness(&mut self, peer: &Peer) -> Result<()> {
         self.policy_grants().await?;
         let definition = self.collection_template().await?;
-        self.pending_collections(&definition, 65).await?;
+        let expired = self.pending_collections(&definition, 65).await?;
         let mut pg =
             sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?)
                 .await?;
@@ -14,8 +14,14 @@ impl Fixture {
             .execute(&mut pg)
             .await?;
         // Yield while the running Flow worker finishes its transaction.
-        sqlx::query("UPDATE mdm_access.collection_runs SET deadline=clock_timestamp()-interval '1 second' WHERE tenant_id=$1::uuid AND source='mdm.apple' AND sealed_at IS NULL")
-            .bind(case_tenant()).execute(&mut pg).await?;
+        sqlx::query("UPDATE mdm_access.collection_runs SET deadline=clock_timestamp()-interval '1 second' WHERE tenant_id=$1::uuid AND id=ANY($2) AND sealed_at IS NULL")
+            .bind(case_tenant()).bind(&expired).execute(&mut pg).await?;
+        let ineligible: i64 = sqlx::query_scalar("SELECT count(DISTINCT c.id) FROM mdm_access.collection_runs c JOIN mdm_apple.attempts a ON(a.tenant_id,a.collection)=(c.tenant_id,c.id) WHERE c.tenant_id=$1::uuid AND c.id=ANY($2) AND c.deadline<clock_timestamp() AND a.deadline>clock_timestamp() AND a.state='pending'")
+            .bind(case_tenant()).bind(&expired).fetch_one(&mut pg).await?;
+        ensure!(
+            ineligible == 65,
+            "expired runs must still occupy live attempt candidate pages"
+        );
         let (_, run) = self.queue_collection(&definition).await?;
         sqlx::query("UPDATE mdm_apple.channels SET next_push=clock_timestamp()-interval '1 second' WHERE tenant_id=$1::uuid AND registration IN (SELECT id FROM mdm_access.registrations WHERE tenant_id=$1::uuid AND device=$2)")
         .bind(case_tenant()).bind(case_device())
@@ -63,6 +69,26 @@ impl Fixture {
             )),
         )
         .await?;
+        let mut db =
+            sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?)
+                .await?;
+        let mut settled = false;
+        for _ in 0..2 {
+            self.app
+                .execution
+                .settle_native_fixture(case_device())
+                .await?;
+            settled = sqlx::query_scalar("SELECT state->>'execution'='succeeded' AND result->>'collectionRun'=$2::text FROM mdm_commands.action_runs WHERE tenant_id=$1::uuid AND id=$2")
+                .bind(case_tenant()).bind(run).fetch_one(&mut db).await?;
+            if settled {
+                break;
+            }
+        }
+        ensure!(
+            settled,
+            "live backlog prevented the tail report from settling its ActionRun"
+        );
+        db.close().await?;
         Ok(())
     }
 }

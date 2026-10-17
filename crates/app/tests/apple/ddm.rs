@@ -137,25 +137,7 @@ async fn policy_coowners_share_native_publication_without_fabricating_removal() 
         count == 1,
         "replayed DDM report created a second collection"
     );
-    ensure!(
-        native(&peer, None, "status", Some(&report(&initial, true, "15.1")))
-            .await?
-            .0
-            == StatusCode::OK
-    );
-    let (result,attempts):(String,String)=sqlx::query_as("SELECT result,attempts FROM mdm_access.collection_runs WHERE tenant_id=$1::uuid AND evidence ? 'report' ORDER BY sequence DESC LIMIT 1")
-        .bind(case_tenant()).fetch_one(&mut inventory_db).await?;
-    ensure!(result == "partial");
-    let progress: rss_mdm_inventory::CollectionProgress = serde_json::from_str(&attempts)?;
-    let field = rss_mdm_inventory::FieldKey::parse("device.ddm.device.operating_system.version")?;
-    ensure!(
-        progress.fields()[&field].quality == rss_mdm_inventory::Quality::Unknown,
-        "unordered report fabricated current truth"
-    );
-    ensure!(native(&peer, None, "status", Some(&first_report)).await?.0 == StatusCode::OK);
-    let count:i64=sqlx::query_scalar("SELECT count(*) FROM mdm_access.collection_runs WHERE tenant_id=$1::uuid AND evidence ? 'report'")
-        .bind(case_tenant()).fetch_one(&mut inventory_db).await?;
-    ensure!(count == 2);
+    // Unordered quality belongs to apple-mdm Projection T1; this seam owns one persisted replay.
     inventory_db.close().await?;
     ensure!(f.operation(applied).await?["commandStatus"] == "applied");
     f.policy_post(

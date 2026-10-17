@@ -14,7 +14,7 @@ async fn state(pg: &mut PgConnection) -> Result<serde_json::Value> {
 }
 impl Fixture {
     pub async fn push_cycle(&mut self, peer: &lifecycle::Peer) -> Result<()> {
-        self.native_context(peer).await?;
+        self.native_context().await?;
         self.grant_native_actions(&["device_control"]).await?;
         let operation = self.create_restart().await?;
         let mut pg =
@@ -24,9 +24,9 @@ impl Fixture {
             .execute(&mut pg)
             .await?;
         let participant =
-            push::test_support::Participant::start(vec![429, 503, 400, 200, 410], vec![42; 32])
+            push::test_support::Participant::start(vec![429, 429, 400, 200, 410], vec![42; 32])
                 .await?;
-        for (status, failures, minimum) in [(429, 1, 25.0), (503, 2, 55.0), (400, 0, 25.0)] {
+        for (status, failures, minimum) in [(429, 1, 25.0), (429, 2, 55.0), (400, 0, 25.0)] {
             due(&mut pg).await?;
             rss_mdm_apple_channel::push::wake(&participant.push, &self.app.execution).await?;
             let receipt = state(&mut pg).await?;

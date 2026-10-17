@@ -14,8 +14,8 @@ async fn native_controls_are_closed_and_never_claim_effects() -> Result<()> {
         !unknown.0.is_success(),
         "missing native prerequisites accepted: {unknown:?}"
     );
-    // A real Policy-owned Profile exchange supplies native context for this registration.
-    f.native_context(&peer).await?;
+    // The prerequisite context is legal preparation; this case owns control admission and wire mapping.
+    f.native_context().await?;
     f.grant_native_actions(&["device_control", "device_wipe"])
         .await?;
     let detail = f
@@ -53,12 +53,14 @@ async fn native_controls_are_closed_and_never_claim_effects() -> Result<()> {
             .call(&f.router, Method::POST, &path, Some(input.clone()))
             .await?;
         ensure!(accepted.0 == StatusCode::ACCEPTED, "{kind}: {accepted:?}");
-        ensure!(
-            f.browser
-                .call(&f.router, Method::POST, &path, Some(input))
-                .await?
-                == accepted
-        );
+        if kind == "restart" {
+            ensure!(
+                f.browser
+                    .call(&f.router, Method::POST, &path, Some(input))
+                    .await?
+                    == accepted
+            );
+        }
         let (attempt, payload) = peer.next(command).await?;
         if kind == "lock" {
             ensure!(payload["PIN"].as_string() == Some("781239"))

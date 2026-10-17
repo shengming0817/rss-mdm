@@ -178,7 +178,7 @@ impl Fixture {
             )
             .await?;
         ensure!(wrong.0 == StatusCode::UNAUTHORIZED);
-        self.native_context(peer).await?;
+        self.native_context().await?;
         self.grant_native_actions(&["device_control"]).await?;
         let rejected = self.create_restart().await?;
         let (id, _) = peer.next("RestartDevice").await?;
@@ -241,16 +241,16 @@ impl Fixture {
         self.policy_grants().await?;
         let definition = self.collection_template().await?;
         let owner = self.policy_worker().await?;
-        let queued = self.pending_collections(&definition, 66).await;
+        let queued = self.pending_collections(&definition, 65).await;
         crate::test_support::stop_worker(Some(owner)).await?;
         let runs = queued?;
-        let run = runs[65];
+        let run = runs[64];
         let mut pending_reader =
             sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?)
                 .await?;
         let pending: Vec<String> = sqlx::query_scalar("SELECT id::text FROM mdm_access.collection_runs WHERE tenant_id=$1::uuid AND sealed_at IS NULL AND registration IN (SELECT d.registration FROM mdm_apple.devices d JOIN mdm_access.registrations r ON (r.tenant_id,r.id)=(d.tenant_id,d.registration) WHERE d.tenant_id=$1::uuid AND r.device=$2 AND d.state='active')").bind(case_tenant()).bind(case_device()).fetch_all(&mut pending_reader).await?;
         ensure!(
-            pending.len() >= 65,
+            pending.len() == 65 && runs.iter().all(|id| pending.contains(&id.to_string())),
             "retirement must exercise the real accumulated collection backlog"
         );
         let checkout = peer
@@ -267,6 +267,12 @@ impl Fixture {
             .await?;
         ensure!(checkout.0 == StatusCode::OK);
         let facts = crate::audit_test_support::read(&mut pending_reader).await?;
+        let terminal_count: i64 = sqlx::query_scalar("SELECT count(*) FROM mdm_access.collection_runs WHERE tenant_id=$1::uuid AND id=ANY($2) AND result='failed' AND reason='revoked' AND sealed_at IS NOT NULL AND batch IS NULL AND NOT delivery_pending")
+            .bind(case_tenant()).bind(&runs).fetch_one(&mut pending_reader).await?;
+        ensure!(
+            terminal_count == 65,
+            "retirement missed a target collection"
+        );
         for id in pending {
             ensure!(
                 facts
