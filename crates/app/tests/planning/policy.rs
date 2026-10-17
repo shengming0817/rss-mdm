@@ -111,7 +111,15 @@ async fn assignment_pagination_uses_published_scope_without_eager_execution() ->
     ensure!(first.0==StatusCode::OK,"policy directory: {first:?}");
     let token=first.1["nextCursor"].as_str().ok_or_else(||anyhow::anyhow!("policy cursor missing: {first:?}"))?;
     let second=browser.call(router,Method::GET,&format!("/api/v1/policies?resource={resource}&limit=1&cursor={token}"),None).await?;
-    ensure!(second.0==StatusCode::OK && second.1["nextCursor"].is_null() && first.1["items"][0]["id"]!=second.1["items"][0]["id"],"policy paging: {second:?}");
+    ensure!(second.0==StatusCode::OK && second.1["nextCursor"].is_null(),"policy paging: {second:?}");
+    let page_id = |page: &serde_json::Value| -> Result<Uuid> {
+        let items = page["items"].as_array().ok_or_else(|| anyhow::anyhow!("missing policy items: {page}"))?;
+        ensure!(items.len() == 1, "expected one policy per page: {page}");
+        Ok(Uuid::parse_str(items[0]["id"].as_str().ok_or_else(|| anyhow::anyhow!("missing policy ID: {page}"))?)?)
+    };
+    ensure!(page_id(&json!({"items":[],"nextCursor":null})).is_err(), "empty policy page must fail validation");
+    let actual = std::collections::BTreeSet::from([page_id(&first.1)?, page_id(&second.1)?]);
+    ensure!(actual == std::collections::BTreeSet::from([id, other_policy]), "incomplete policy pages: {actual:?}");
     let changed=browser.call(router,Method::GET,&format!("/api/v1/policies?resource={resource}&state=disabled&limit=1&cursor={token}"),None).await?;
     ensure!(changed.0==StatusCode::CONFLICT,"changed cursor filter: {changed:?}");
     let mut cursor = None;
