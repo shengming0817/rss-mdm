@@ -1643,7 +1643,94 @@ fn cleanup_reply(initial: &s::Message, response: &s::Message, fail: Option<Uuid>
         &mut out,
         response.header.message_id,
     );
+    // Results removed for 404 must not leave duplicate IDs when Delete receipts are appended.
+    for (index, command) in out.commands.iter_mut().enumerate() {
+        match command {
+            s::Command::Status(status) => status.id = index as u32 + 1,
+            s::Command::Results(result) => result.id = index as u32 + 1,
+            _ => unreachable!("fixture replies contain only correlated statuses and results"),
+        }
+    }
     out
+}
+
+// Consume every server continuation in its originating session; do not lose readbacks.
+async fn cleanup_session(
+    peer: &crate::windows::test_support::Peer,
+    session: u32,
+    fail: Option<Uuid>,
+    trace: &mut std::collections::BTreeSet<(Uuid, &'static str)>,
+) -> Result<()> {
+    fn observe(
+        commands: &[s::Command],
+        trace: &mut std::collections::BTreeSet<(Uuid, &'static str)>,
+    ) {
+        for command in commands {
+            let (items, phase) = match command {
+                s::Command::Delete { items, .. } => (items, "delete"),
+                s::Command::Get { items, .. } => (items, "readback"),
+                s::Command::Atomic { commands, .. } | s::Command::Sequence { commands, .. } => {
+                    observe(commands, trace);
+                    continue;
+                }
+                _ => continue,
+            };
+            for item in items {
+                if let Some(uri) = item.target.as_deref()
+                    && uri.contains("/ClientCertificateInstall/SCEP/")
+                    && let Some(id) = uri.rsplit('/').next().and_then(|v| Uuid::parse_str(v).ok())
+                {
+                    trace.insert((id, phase));
+                }
+            }
+        }
+    }
+    let (initial, mut wire) = begin(peer, session).await?;
+    loop {
+        if wire
+            .commands
+            .iter()
+            .all(|c| matches!(c, s::Command::Status(_)))
+        {
+            return Ok(());
+        }
+        ensure!(
+            (wire.header.message_id as usize) < CodecLimits::default().session_messages,
+            "cleanup session exhausted protocol message budget: {trace:?}"
+        );
+        observe(&wire.commands, trace);
+        let response = cleanup_reply(&initial, &wire, fail);
+        wire = post(peer, &response).await?;
+    }
+}
+
+async fn finish_cleanup(
+    peer: &crate::windows::test_support::Peer,
+    object: Uuid,
+    first_session: u32,
+    fail: Option<Uuid>,
+) -> Result<std::collections::BTreeSet<(Uuid, &'static str)>> {
+    let mut trace = std::collections::BTreeSet::new();
+    let result=tokio::time::timeout(Duration::from_secs(30),async {
+        let mut session=first_session;
+        loop {
+            cleanup_session(peer,session,fail,&mut trace).await?;
+            let state=pg(&format!("SELECT cleanup_complete FROM mdm_access.agent_bootstraps WHERE tenant_id='{}' AND id='{object}'",case_tenant()))?;
+            if state.trim()=="t" && fail.is_none_or(|pending|trace.contains(&(pending,"delete"))) {return Ok::<_,anyhow::Error>(());}
+            session+=1;
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    }).await;
+    result.map_err(|error| {
+        anyhow::anyhow!(
+            "cleanup {object} did not finish: {error}; correlated native commands: {trace:?}"
+        )
+    })??;
+    ensure!(
+        trace.contains(&(object, "delete")) && trace.contains(&(object, "readback")),
+        "cleanup completed without both actual Delete and absence readback: {trace:?}"
+    );
+    Ok(trace)
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
@@ -1698,27 +1785,11 @@ async fn historical_bootstrap_cleanup_survives_current_identity_completion() -> 
         &secret,
     )
     .await?;
-    let mut completed = false;
-    for session in 2600..2640 {
-        let (start, wire) = begin(&peer, session).await?;
-        post(&peer, &cleanup_reply(&start, &wire, Some(old))).await?;
-        let state = pg(&format!(
-            "SELECT cleanup_complete FROM mdm_access.agent_bootstraps WHERE tenant_id='{}' AND id='{current}'",
-            case_tenant()
-        ))?;
-        if state.trim() == "t" {
-            completed = true;
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(100)).await;
-    }
+    let current = Uuid::parse_str(current)?;
+    let trace = finish_cleanup(&peer, current, 2600, Some(old)).await?;
     ensure!(
-        completed,
-        "current identity cleanup did not complete: {}",
-        pg(&format!(
-            "SELECT jsonb_agg(jsonb_build_object('id',b.id,'complete',b.cleanup_complete,'cleanup',b.cleanup,'status',mdm_commands.installation_status(b.cleanup),'failure',o.dispatch_failure)) FROM mdm_access.agent_bootstraps b LEFT JOIN mdm_commands.operations o ON(o.tenant_id,o.id)=(b.tenant_id,b.cleanup) WHERE b.tenant_id='{}' AND b.installation='{operation}'",
-            case_tenant()
-        ))?
+        trace.contains(&(old, "delete")),
+        "old identity must receive its deliberately failed deletion"
     );
     let original = pg(&format!(
         "SELECT cleanup FROM mdm_access.agent_bootstraps WHERE tenant_id='{}' AND id='{old}' AND NOT cleanup_complete",
@@ -1728,24 +1799,7 @@ async fn historical_bootstrap_cleanup_survives_current_identity_completion() -> 
     host.app.execution.advance_installation_authorization_to(
         crate::clock::Clock::unix_seconds(&crate::clock::SystemClock)? + 301,
     )?;
-    let mut recovered = false;
-    for session in 2700..2740 {
-        let (start, wire) = begin(&peer, session).await?;
-        post(&peer, &cleanup_reply(&start, &wire, None)).await?;
-        let state = pg(&format!(
-            "SELECT cleanup_complete FROM mdm_access.agent_bootstraps WHERE tenant_id='{}' AND id='{old}'",
-            case_tenant()
-        ))?;
-        if state.trim() == "t" {
-            recovered = true;
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(100)).await;
-    }
-    ensure!(
-        recovered,
-        "new identity completion must not revoke the old object's cleanup duty"
-    );
+    finish_cleanup(&peer, old, 2700, None).await?;
     ensure!(
         pg(&format!(
             "SELECT count(*) FROM mdm_commands.operations WHERE tenant_id='{}' AND id='{original}'",
