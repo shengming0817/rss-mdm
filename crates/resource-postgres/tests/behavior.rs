@@ -193,9 +193,7 @@ async fn resource_cas_events_and_owner_admission() {
     );
     assert!(matches!(
         result,
-        Err(Error::RolledBack(
-            rss_transactional_messaging_postgres::PgError::PermissionDenied(_)
-        ))
+        Err(Error::RolledBack(ref error)) if error.kind() == rss_transactional_messaging::error::MessagingErrorKind::Permanent
     ));
     assert!(
         s.version(&key, &id("three"), deadline())

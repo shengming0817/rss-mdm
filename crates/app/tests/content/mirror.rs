@@ -39,8 +39,7 @@ async fn mirror_matrix(
             mirror_resource(user, router, definition, server, path, bytes).await?;
         let response = user.call(router, Method::POST, &url, None).await?;
         ensure!(
-            response.0 == StatusCode::SERVICE_UNAVAILABLE
-                && response.1["code"] == "service_unavailable",
+            response.0 == StatusCode::BAD_REQUEST && response.1["code"] == "malformed_request",
             "unsafe mirror succeeded: {response:?}"
         );
         ensure!(

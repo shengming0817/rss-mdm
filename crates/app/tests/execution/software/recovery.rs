@@ -504,6 +504,7 @@ async fn unknown_effect_survives_credential_recovery() -> Result<()> {
     assert_no_software_run(&router, opposing).await?;
     let registration: String = pg(&format!("SELECT id FROM mdm_access.registrations WHERE tenant_id='{}' AND device='{}' AND channel='agent' AND state='active'",case_tenant(),case_device()))?.trim().into();
     let old_generation: u64 = pg(&format!("SELECT generation FROM mdm_access.registrations WHERE tenant_id='{}' AND id='{registration}'", case_tenant()))?.trim().parse()?;
+    let old_credential = pg(&format!("SELECT id FROM mdm_access.credentials WHERE tenant_id='{}' AND registration='{registration}' AND state='active'", case_tenant()))?.trim().to_owned();
     let secret = credential("recovery-software");
     set_device_grants(
         &mut author,
@@ -539,7 +540,11 @@ async fn unknown_effect_survives_credential_recovery() -> Result<()> {
         crate::test_support::agent::complete_grant(&service, &grant.1, &signing, next_credential)
             .await?;
     ensure!(next_registration["registrationId"] == registration);
-    ensure!(next_registration["generation"].as_u64().unwrap() > old_generation);
+    // Credential recovery preserves the registration/runtime identity and fences the predecessor credential.
+    ensure!(next_registration["generation"].as_u64().unwrap() == old_generation);
+    let current_credential = pg(&format!("SELECT id FROM mdm_access.credentials WHERE tenant_id='{}' AND registration='{registration}' AND state='active'", case_tenant()))?.trim().to_owned();
+    ensure!(!current_credential.is_empty() && current_credential != old_credential);
+    ensure!(pg(&format!("SELECT state FROM mdm_access.credentials WHERE tenant_id='{}' AND id='{old_credential}'", case_tenant()))?.trim() == "superseded");
     let old = agent(&router, "/api/v1/agent/runtime/tasks/claim", Some(json!({"wireVersion":1,"executionContext":context(Platform::MacOs),"environment":{"edition":null,"tools":{},"nativeEngines":{}},"profiles":["posix_sh"],"operationId":Uuid::new_v4()}))).await?;
     ensure!(old.0 == StatusCode::UNAUTHORIZED || old.0 == StatusCode::FORBIDDEN, "old credential still authorized: {old:?}");
     let after_reenroll = agent_call(
@@ -554,6 +559,7 @@ async fn unknown_effect_survives_credential_recovery() -> Result<()> {
         after_reenroll.0 == StatusCode::OK && after_reenroll.1["task"].is_null(),
         "unknown side effect retried after registration replacement: {after_reenroll:?}"
     );
+    ensure!(pg(&format!("SELECT count(*) FROM mdm_commands.action_runs r JOIN mdm_policy.versions v ON (v.tenant_id,v.id)=(r.tenant_id,r.policy_version) WHERE r.tenant_id='{}' AND v.policy='{unknown_policy}'",case_tenant()))?.trim() == "1");
     ensure!(pg(&format!("SELECT count(*) FROM mdm_commands.action_runs r JOIN mdm_policy.versions v ON (v.tenant_id,v.id)=(r.tenant_id,r.policy_version) WHERE r.tenant_id='{}' AND v.policy='{opposing}'",case_tenant()))?.trim() == "0", "opposing intent bypassed Unknown after credential generation changed");
 
     Ok(())

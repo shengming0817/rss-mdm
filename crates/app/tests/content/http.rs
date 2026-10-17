@@ -96,7 +96,7 @@ pub(super) async fn upload_recovery(
         .call(router, Method::POST, &admission_path, Some(enable.clone()))
         .await?;
     ensure!(
-        absent.0 == StatusCode::FORBIDDEN && absent.1["code"] == "permission_denied",
+        absent.0 == StatusCode::BAD_REQUEST && absent.1["code"] == "malformed_request",
         "missing content: {absent:?}"
     );
     let operation = Uuid::new_v4();

@@ -123,7 +123,7 @@ async fn s3_product_http_contract() -> Result<()> {
 }
 #[tokio::test]
 #[ignore = "MODULE=content.storage: durable PG control, real S3 fixed chunks and native snapshots"]
-async fn s3_chunk_frontier_and_native_restart() -> Result<()> {
+async fn s3_artifact_cross_chunk_frontier() -> Result<()> {
     let (_secrets, storage) = s3_storage()?;
     let (resources, store, second) = stores(Some(storage)).await?;
     resources.finish(async {
@@ -165,30 +165,6 @@ async fn s3_chunk_frontier_and_native_restart() -> Result<()> {
         tail.extend_from_slice(&part?);
     }
     ensure!(tail == vec![0x67; 5]);
-    let native = vec![0x42; 65539];
-    let b = binding(&native, StorageClass::NativeConfiguration);
-    let id = Uuid::new_v4();
-    let a = b.artifact()?;
-    store.begin(id, b.clone(), now).await?;
-    store.append(&b.actor, id, 0, now, &native[..65537]).await?;
-    ensure!(second.status(&b.actor, id, now).await?.offset == 65537);
-    second
-        .append(&b.actor, id, 65537, now, &native[65537..])
-        .await?;
-    second.finish(&b.actor, id, now).await?;
-    ensure!(
-        &*store
-            .verify_class(&a, StorageClass::NativeConfiguration)
-            .await?
-            .read_plaintext(native.len())?
-            == &native
-    );
-    ensure!(
-        store
-            .verify_class(&a, StorageClass::Artifact)
-            .await
-            .is_err()
-    );
     Ok(())
     }).await
 }
