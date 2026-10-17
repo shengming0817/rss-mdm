@@ -139,13 +139,14 @@ async fn reference_target_lock_serializes_deletion() {
     let holding = runtime.local_tx_with_context(tenant(), deadline(), &s, move |s, tx| {
         Box::pin(async move {
             assert_eq!(s.lock_reference_target_in(tx, id).await?.unwrap().id, id);
-            locked.send(()).unwrap();
+            let pid = tx.with_connection(|c| Box::pin(async move { sqlx::query_scalar::<_, i32>("SELECT pg_backend_pid()").fetch_one(c).await })).await?;
+            locked.send(pid).unwrap();
             wait_release.await.unwrap();
             Ok(())
         })
     });
     let deleting = async {
-        wait_locked.await.unwrap();
+        let holder = wait_locked.await.unwrap();
         let command = Command::Delete {
             group: id,
             expected: created.group.revision,
@@ -153,7 +154,12 @@ async fn reference_target_lock_serializes_deletion() {
         let mut deletion = Box::pin(execute_companion(&runtime, &s, op(), &command));
         tokio::select! {
             result = &mut deletion => panic!("delete bypassed reference lock: {result:?}"),
-            _ = tokio::time::sleep(Duration::from_millis(150)) => {}
+            observed = tokio::time::timeout(Duration::from_secs(8), async {
+                loop {
+                    if admin(&format!("SELECT count(*) FROM pg_stat_activity WHERE datname=current_database() AND {holder}=ANY(pg_blocking_pids(pid))")) != "0" { break; }
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            }) => { observed.expect("delete never waited on reference holder"); }
         }
         release.send(()).unwrap();
         deletion.await.unwrap()
@@ -335,11 +341,8 @@ async fn lost_commit_ack_replays_durable_result_once() {
         builds::publish(&runtime, &s, &request).await.unwrap()
     );
     assert_eq!(
-        builds::members(&runtime, &s, request.id)
-            .await
-            .unwrap()
-            .len(),
-        1
+        builds::members(&runtime, &s, request.id).await.unwrap(),
+        vec!["device-1"]
     );
     assert_eq!(event_count(request.id), 1);
     runtime.close().await;
@@ -382,7 +385,8 @@ async fn admission_rejects_catalog_and_security_drift() {
         admin(&format!(
             "ALTER ROLE mdm_group_runtime NOBYPASSRLS; UPDATE pg_index SET indisvalid=true,indisready=true,indislive=true WHERE indexrelid=to_regclass('mdm_group.member_changes_history'); DROP SCHEMA mdm_group CASCADE; SET ROLE mdm_group_owner; {MIGRATION_SQL} {OUTBOX_MIGRATION_SQL} {GENERATIONS_MIGRATION_SQL} {REVERSE_INDEX_MIGRATION_SQL}"
         ));
-        assert!(result.is_err(), "accepted drift: {mutation}");
+        assert!(matches!(result, Err(rss_mdm_group_postgres::Error::RolledBack(ref e)) if format!("{e:?}").contains("Group storage invariant")), "accepted or unrelated drift failure: {mutation}");
+        GroupStore::new(runtime.clone(), tenant(), deadline()).await.unwrap();
     }
     runtime.close().await;
 }
@@ -456,12 +460,35 @@ async fn distinct_runs_compete_on_one_revision_and_preserve_event_contract() {
     let b = builds::request(&created, None);
     builds::prepare(&runtime, &s, &a, &page).await.unwrap();
     builds::prepare(&runtime, &s, &b, &page).await.unwrap();
-    let (first, second) = tokio::join!(
-        builds::publish(&runtime, &s, &a),
-        builds::publish(&runtime, &s, &b)
-    );
+    let (locked, wait_locked) = tokio::sync::oneshot::channel();
+    let (release, wait_release) = tokio::sync::oneshot::channel();
+    let holding = runtime.local_tx_with_context(tenant(), deadline(), &s, |s, tx| Box::pin(async move {
+        s.lock_reference_target_in(tx, id).await?.unwrap();
+        let pid = tx.with_connection(|c| Box::pin(async move { sqlx::query_scalar::<_, i32>("SELECT pg_backend_pid()").fetch_one(c).await })).await?;
+        locked.send(pid).unwrap();
+        wait_release.await.unwrap();
+        Ok(())
+    }));
+    let competing = async {
+        let holder = wait_locked.await.unwrap();
+        let observe = async {
+            tokio::time::timeout(Duration::from_secs(8), async {
+                loop {
+                    if admin(&format!("SELECT count(*) FROM pg_stat_activity WHERE datname=current_database() AND {holder}=ANY(pg_blocking_pids(pid))")).parse::<usize>().unwrap() >= 2 { break; }
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            }).await.expect("both operations must wait on the target row");
+            release.send(()).unwrap();
+        };
+        let (a, b, ()) = tokio::join!(builds::publish(&runtime, &s, &a),
+            builds::publish(&runtime, &s, &b), observe);
+        (a, b)
+    };
+    let (held, (first, second)) = tokio::join!(holding, competing);
+    held.fold(|_| (), |e| panic!("{e:?}"), |e| panic!("{e:?}"), |e| panic!("{e:?}"), |e| panic!("{e:?}"), |e| panic!("{e:?}"));
     assert_ne!(first.is_ok(), second.is_ok());
-    let saved = first.or(second).unwrap();
+    let (saved, rejected) = if first.is_ok() { (first.unwrap(), second) } else { (second.unwrap(), first) };
+    assert!(matches!(rejected, Err(rss_mdm_group_postgres::Error::Rejected(Rejection::VersionConflict))));
     assert_event(&saved, "members_changed");
     assert_eq!(event_count(a.id) + event_count(b.id), 1);
     let changed = s
@@ -500,10 +527,32 @@ async fn concurrent_inputs_rule_changes_and_kind_boundaries() {
     let s = store(runtime.clone(), tenant()).await;
     let (id, created, page) = dynamic_group(&s).await;
     let request = builds::request(&created, None);
-    let (a, b) = tokio::join!(
-        builds::begin(&runtime, &s, &request),
-        builds::begin(&runtime, &s, &request)
-    );
+    let (locked, wait_locked) = tokio::sync::oneshot::channel();
+    let (release, wait_release) = tokio::sync::oneshot::channel();
+    let holding = runtime.local_tx_with_context(tenant(), deadline(), &s, |s, tx| Box::pin(async move {
+        s.lock_reference_target_in(tx, id).await?.unwrap();
+        let pid = tx.with_connection(|c| Box::pin(async move { sqlx::query_scalar::<_, i32>("SELECT pg_backend_pid()").fetch_one(c).await })).await?;
+        locked.send(pid).unwrap();
+        wait_release.await.unwrap();
+        Ok(())
+    }));
+    let competing = async {
+        let holder = wait_locked.await.unwrap();
+        let observe = async {
+            tokio::time::timeout(Duration::from_secs(8), async {
+                loop {
+                    if admin(&format!("SELECT count(*) FROM pg_stat_activity WHERE datname=current_database() AND {holder}=ANY(pg_blocking_pids(pid))")).parse::<usize>().unwrap() >= 2 { break; }
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            }).await.expect("both operations must wait on the target row");
+            release.send(()).unwrap();
+        };
+        let (a, b, ()) = tokio::join!(builds::begin(&runtime, &s, &request),
+            builds::begin(&runtime, &s, &request), observe);
+        (a, b)
+    };
+    let (held, (a, b)) = tokio::join!(holding, competing);
+    held.fold(|_| (), |e| panic!("{e:?}"), |e| panic!("{e:?}"), |e| panic!("{e:?}"), |e| panic!("{e:?}"), |e| panic!("{e:?}"));
     for build in [a.unwrap(), b.unwrap()] {
         assert_eq!(build.request.id, request.id);
         assert_eq!(build.objects, 0);
@@ -611,7 +660,7 @@ async fn atomic_event_failure_rls_and_large_member_ids() {
     admin(
         "GRANT EXECUTE ON FUNCTION rss_transactional_messaging.append_outbox(bytea,jsonb) TO mdm_group_runtime",
     );
-    assert!(failed.is_err());
+    assert!(matches!(failed, Err(rss_mdm_group_postgres::Error::RolledBack(ref e)) if format!("{e:?}").contains("append_outbox") && format!("{e:?}").contains("42501")), "{failed:?}");
     assert_eq!(
         s.get(id, deadline()).await.unwrap().unwrap().member_count,
         0
@@ -676,6 +725,7 @@ async fn admitted_input_and_command_commit_unknown_recover_by_original_identity(
         s.execute(operation, at(), &command, deadline()).await,
         Err(rss_mdm_group_postgres::Error::CommitUnknown { .. })
     ));
+    assert_eq!(s.get(id, deadline()).await.unwrap().unwrap().id, id);
     let receipt = s
         .execute(operation, at(), &command, deadline())
         .await
@@ -697,15 +747,20 @@ async fn admitted_input_and_command_commit_unknown_recover_by_original_identity(
     let runtime = connect_runtime().await;
     let s = store(runtime.clone(), tenant()).await;
     let (_, page) = inputs();
-    builds::prepare(&runtime, &s, &request, &page)
-        .await
-        .unwrap();
+    let stored = builds::settle(runtime.local_tx_with_context(tenant(), deadline(), &s, |s, tx| {
+        Box::pin(async move { s.build_in(tx, request.id).await })
+    }).await, request.id).unwrap();
+    assert_eq!(serde_json::to_value(&stored.request).unwrap(), serde_json::to_value(&request).unwrap());
+    assert!(!stored.input_sealed && !stored.ready && stored.receipt.is_none());
+    let request = stored.request.clone();
+    builds::resume(&runtime, &s, stored, &page).await.unwrap();
     let first = builds::publish(&runtime, &s, &request).await.unwrap();
     assert_eq!(
         first,
         builds::publish(&runtime, &s, &request).await.unwrap()
     );
     assert_eq!(event_count(request.id), 1);
+    assert_eq!(builds::members(&runtime, &s, request.id).await.unwrap(), vec!["a"]);
     runtime.close().await;
 }
 #[tokio::test]
@@ -770,11 +825,17 @@ async fn process_death_after_admission_recovers_without_caller_snapshot() {
         String::from_utf8_lossy(&child.stderr)
     );
     let (_, page) = inputs();
-    builds::prepare(&runtime, &s, &request, &page)
-        .await
-        .unwrap();
+    let stored = builds::settle(runtime.local_tx_with_context(tenant(), deadline(), &s, |s, tx| {
+        Box::pin(async move { s.build_in(tx, request.id).await })
+    }).await, request.id).unwrap();
+    assert_eq!(serde_json::to_value(&stored.request).unwrap(), serde_json::to_value(&request).unwrap());
+    assert!(stored.input_sealed && stored.receipt.is_none());
+    assert_eq!(stored.request.patch.as_ref().unwrap().add, vec!["a", "b"]);
+    let request = stored.request.clone();
+    builds::resume(&runtime, &s, stored, &page).await.unwrap();
     let saved = builds::publish(&runtime, &s, &request).await.unwrap();
     assert_eq!(saved.group.member_count, 2);
+    assert_eq!(builds::members(&runtime, &s, request.id).await.unwrap(), vec!["a", "b"]);
     assert_eq!(event_count(request.id), 1);
     runtime.close().await;
 }
@@ -862,13 +923,15 @@ async fn borrowed_entries_reject_same_tenant_foreign_runtime_without_events() {
         assert!(result.fold(
             |_| false,
             |_| false,
-            |_| true,
+            |e| { assert!(format!("{e:?}").contains("transaction runtime mismatch"), "{e:?}"); true },
             |_| false,
             |_| false,
             |_| false
         ));
     }
     assert_eq!(event_count(request.id), 0);
+    assert_eq!(admin(&format!("SELECT count(*) FROM mdm_group.member_runs WHERE tenant_id='{}' AND id='{}'", tenant(), request.id)), "0");
+    assert_eq!(builds::begin(&runtime, &s, &request).await.unwrap().request.id, request.id);
     other.close().await;
     runtime.close().await;
 }
