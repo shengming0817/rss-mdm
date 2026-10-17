@@ -186,7 +186,8 @@
         "csr_digest",
         "spki",
         "fingerprint",
-        "certificate"
+        "certificate",
+        "deadline"
       ],
       "delete_policy": null
     },

@@ -123,8 +123,8 @@ SCEP provisioner 的挑战和签发通知 webhook 分别指向 Agent origin 的 
 
 1. 策略冻结 release、来源世代及安装授权；服务端创建独立引导投递，期限不超过安装期限和 30 分钟。
 2. Windows 由设备级 SCEP CSP、macOS 由 Profile/SCEP 产生引导私钥。安装包单独投递；包、下载 URL 和安装参数均不携带引导秘密。
-3. SCEP 挑战校验安装、来源、投递、发布和权限，将唯一 CSR/SPKI/事务持久化后允许签发。签发通知验证真实证书并保存指纹。结果未知时不会自动重签。
-4. Agent 用该证书完成专用 mTLS，另行产生日常密钥和 CSR。服务端拒绝引导与日常密钥复用；现有 grant → certificates → activate 完成后保存可信关联，并通过原生通道清理引导配置。清理仅针对该操作的确切 SCEP/Profile 对象，独立于之后的策略启停或包撤回；确认原生命令成功后才结束，过期/拒绝保留原历史并重排清理。
+3. 未签发的引导投递沿用原安装总期限，短期证书期限从实际 SCEP challenge 起算，最长 30 分钟且不超过原总期限。挑战校验安装、来源、投递、发布和权限，冻结 CSR/SPKI/事务；同请求响应丢失可精确重试，不同请求拒绝。签发通知验证真实证书并保存指纹。已知签发、过期且尚未交换 grant 的尝试可在原授权内更换引导尝试，保留旧记录且不重装；signing 结果未知不会自动重签。
+4. Agent 用该证书完成专用 mTLS，另行产生日常密钥和 CSR。交换后的 grant 已绑定日常公钥，继续受自身及原安装期限、当前来源与权限限制，不因已消费引导证书自然到期而失效。服务端拒绝引导与日常密钥复用；现有 grant → certificates → activate 完成后保存可信关联，并通过原生通道清理引导配置。清理仅针对该操作的确切 SCEP/Profile 对象，独立于之后的策略启停或包撤回；确认原生命令成功后才结束，过期/拒绝保留原历史并重排清理。
 5. 独立日常身份按已有续期与撤销路径存续；包已下载、安装 ACK、MSIX provisioning 均不能证明 Agent 已激活或服务在线。
 
 Agent→MDM 复用 `request_mdm_enrollment` 的签名任务和 Start permit。只有已启动任务的当前 Agent 可以 `POST /api/v1/agent/runtime/tasks/{task}/enrollment`，提交稳定 operationId、attemptId 和客户端生成的 password；服务端仅存口令摘要。返回短期 enrollmentId、期限及平台入口，Windows 还提供用户名、macOS 提供 profileUrl。客户端保留用户系统确认；入口 opened 或客户端报告不建立原生注册事实，必须经 Windows 认证签入，或 Apple Authenticate、TokenUpdate 与当前准入。两端 Device/Registration 独立，仅按服务端请求关联。

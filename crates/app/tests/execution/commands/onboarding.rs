@@ -406,6 +406,11 @@ async fn windows_policy_install_register_and_replay_use_independent_identity() -
             == StatusCode::CONFLICT
     );
     ensure!(pg(&format!("SELECT count(*) FROM mdm_access.agent_grants WHERE tenant_id='{}' AND source='native' AND (native_authority ? 'secret' OR native_authority ? 'input')",case_tenant()))?.trim()=="0", "native authority must not persist bootstrap secrets");
+    // The consumed grant is already bound to its independent daily key and total install budget.
+    pg(&format!(
+        "UPDATE mdm_access.agent_bootstraps SET deadline=floor(extract(epoch FROM clock_timestamp()))::bigint-1 WHERE tenant_id='{}' AND installation='{operation}' AND state='consumed'",
+        case_tenant()
+    ))?;
     let receipt = crate::test_support::agent::complete_grant(
         host.app.agent_enrollment.as_ref().unwrap(),
         &receipt,
@@ -1380,31 +1385,174 @@ async fn installed_exe_invalidates_prior_msi_absence_and_blocks_second_installer
     )
     .await?;
     let (initial, mut response) = begin(&peer, 2200).await?;
-    for _ in 0..12 {
+    let frozen: Value = serde_json::from_str(&pg(&format!(
+        "SELECT jsonb_build_object('id',w.id,'digest',r.evidence->'catalogDigest','catalog',w.channel_state->'catalog') FROM mdm_windows.collections w JOIN mdm_access.collection_runs r USING(tenant_id,id) WHERE w.tenant_id='{}' AND w.session_id='2200' AND w.kind='agent'",
+        case_tenant()
+    ))?)?;
+    let collection = frozen["id"].as_str().context("new catalog collection")?;
+    ensure!(
+        frozen["catalog"]["win32"]
+            .as_array()
+            .is_some_and(|v| v.iter().any(|v| v["key"] == "rss-agent"))
+    );
+    let mut evidence = None;
+    for _ in 0..24 {
         ensure!(
             !response.commands.iter().any(installation_write),
             "new catalog invalidates old absence before dispatch"
         );
-        if !response
-            .commands
-            .iter()
-            .any(|c| matches!(c, s::Command::Get { .. }))
-        {
+        response = post(&peer, &reply(&initial, &response, false)).await?;
+        let observed = pg(&format!(
+            "SELECT evidence FROM mdm_access.collection_runs WHERE tenant_id='{}' AND id='{collection}' AND sealed_at IS NOT NULL",
+            case_tenant()
+        ))?;
+        if !observed.trim().is_empty() {
+            evidence = Some(serde_json::from_str::<Value>(&observed)?);
             break;
         }
-        response = post(&peer, &reply(&initial, &response, false)).await?;
     }
+    let evidence = evidence.context("new Win32 traversal did not seal")?;
+    ensure!(
+        evidence["catalog_digest"] == frozen["digest"] && evidence["identity"] == "win32:rss-agent",
+        "EXE evidence must belong to the current catalog: {evidence}"
+    );
+    ensure!(
+        evidence["checked_identities"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|v| v == "win32:rss-agent")
+    );
     crate::test_support::planning_http::await_ingress().await?;
-    let evidence = pg(&format!(
-        "SELECT evidence FROM mdm_access.collection_runs WHERE tenant_id='{}' AND source='mdm.windows' AND sealed_at IS NOT NULL AND evidence ? 'checked_identities' ORDER BY sequence DESC LIMIT 1",
-        case_tenant()
-    ))?;
-    ensure!(!evidence.trim().is_empty());
     ensure!(pg(&format!("SELECT count(*) FROM mdm_commands.attempts WHERE tenant_id='{}' AND operation='{operation}' AND phase='execute'",case_tenant()))?.trim()=="0");
     let state = client
         .call(Method::GET, &format!("/{operation}"), None)
         .await?;
     ensure!(state.1["agentInstallation"]["agentRegistration"].is_null());
+    ensure!(commands.shutdown().join().await?.is_clean());
+    ensure!(owner.shutdown().join().await?.is_clean());
+    host.close().await
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+#[ignore = "make t2 MODULE=execution.commands.onboarding"]
+async fn historical_msix_catalog_crosses_native_read_batch_without_losing_absence() -> Result<()> {
+    let mut host = crate::windows::test_support::Host::with_agent(
+        None,
+        rss_device_command_postgres::CommandClock::Postgres,
+    )
+    .await?;
+    host.listen().await?;
+    let peer = host.peer().await?;
+    let mut client = Client::start(host.browser.clone(), host.app.clone()).await?;
+    for patch in 0..11 {
+        setup::publish_msix_release(
+            &mut client.browser,
+            &client.router,
+            &host.app,
+            &format!("1.2.{patch}.0"),
+        )
+        .await?;
+    }
+    let (initial, mut response) = begin(&peer, 2300).await?;
+    let frozen: Value = serde_json::from_str(&pg(&format!(
+        "SELECT jsonb_build_object('id',w.id,'digest',r.evidence->'catalogDigest','batches',jsonb_array_length(w.channel_state->'plans')) FROM mdm_windows.collections w JOIN mdm_access.collection_runs r USING(tenant_id,id) WHERE w.tenant_id='{}' AND w.session_id='2300' AND w.kind='agent'",
+        case_tenant()
+    ))?)?;
+    ensure!(
+        frozen["batches"] == 2,
+        "67 reads must traverse two bounded plans"
+    );
+    let collection = frozen["id"].as_str().context("historical collection")?;
+    let mut evidence = None;
+    for _ in 0..24 {
+        response = post(&peer, &reply(&initial, &response, false)).await?;
+        let value = pg(&format!(
+            "SELECT evidence FROM mdm_access.collection_runs WHERE tenant_id='{}' AND id='{collection}' AND sealed_at IS NOT NULL",
+            case_tenant()
+        ))?;
+        if !value.trim().is_empty() {
+            evidence = Some(serde_json::from_str::<Value>(&value)?);
+            break;
+        }
+    }
+    let evidence = evidence.context("complete historical catalog never sealed")?;
+    ensure!(
+        evidence["catalog_digest"] == frozen["digest"]
+            && evidence["checked_identities"].as_array().unwrap().len() == 11
+    );
+    let missing = pg(&format!(
+        "SELECT count(*) FROM mdm_windows.collections w,LATERAL jsonb_array_elements(w.channel_state->'statuses') status WHERE w.tenant_id='{}' AND w.id='{collection}' AND status='404'::jsonb",
+        case_tenant()
+    ))?;
+    ensure!(
+        missing.trim() == "66",
+        "all 11 historical identities must be observed"
+    );
+    host.close().await
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+#[ignore = "make t2 MODULE=execution.commands.onboarding"]
+async fn expired_known_bootstrap_recovers_without_reinstall_or_unknown_resigning() -> Result<()> {
+    let (host, mut client, peer, commands, owner, policy, operation) = start_fixture().await?;
+    let parent_deadline = pg(&format!(
+        "SELECT input_context->>'deadline' FROM mdm_commands.operations WHERE tenant_id='{}' AND id='{operation}'",
+        case_tenant()
+    ))?;
+    let prepared_deadline = pg(&format!(
+        "SELECT deadline FROM mdm_access.agent_bootstraps WHERE tenant_id='{}' AND installation='{operation}' AND active",
+        case_tenant()
+    ))?;
+    ensure!(
+        parent_deadline == prepared_deadline,
+        "offline time must not consume certificate lifetime before signing"
+    );
+    let (initial, execute, delivered) =
+        installation(&peer, &mut client, policy, operation, AttemptPhase::Execute).await?;
+    let old = bootstrap::issue_windows(
+        &host.app,
+        &client.router,
+        &host.root,
+        operation,
+        delivered.as_ref().context("first bootstrap")?,
+    )
+    .await?;
+    post(&peer, &reply(&initial, &execute, false)).await?;
+    pg(&format!(
+        "UPDATE mdm_access.agent_bootstraps SET deadline=floor(extract(epoch FROM clock_timestamp()))::bigint-1 WHERE tenant_id='{}' AND installation='{operation}' AND state='issued'",
+        case_tenant()
+    ))?;
+    begin(&peer, 2400).await?;
+    let count = pg(&format!(
+        "SELECT jsonb_build_array(count(*),count(*) FILTER(WHERE active)) FROM mdm_access.agent_bootstraps WHERE tenant_id='{}' AND installation='{operation}'",
+        case_tenant()
+    ))?;
+    ensure!(
+        serde_json::from_str::<Value>(&count)? == json!([2, 1]),
+        "expired known identity must retain history and create one attempt"
+    );
+    ensure!(pg(&format!("SELECT count(*) FROM mdm_commands.operations WHERE tenant_id='{}' AND authority->>'stage'='install'",case_tenant()))?.trim()=="1");
+    let input = json!({"wireVersion":1,"operationId":Uuid::new_v4(),"installationOperation":operation,"secret":credential("retired-bootstrap"),"csr":crate::test_support::agent::csr()?,"runtime":{"executionContext":crate::test_support::software_execution::context(crate::test_support::software_execution::Platform::Windows),"platform":"windows","architecture":"x86_64","capabilities":["inventory.collect.v1","task.execute.v1"]}});
+    ensure!(
+        bootstrap::grant(&client.router, &old, &input)
+            .await?
+            .status()
+            == StatusCode::FORBIDDEN
+    );
+    // An unconfirmed CA dispatch is not permission to create a fresh identity.
+    pg(&format!(
+        "UPDATE mdm_access.agent_bootstraps SET state='signing',deadline=floor(extract(epoch FROM clock_timestamp()))::bigint-1 WHERE tenant_id='{}' AND installation='{operation}' AND active",
+        case_tenant()
+    ))?;
+    begin(&peer, 2401).await?;
+    ensure!(pg(&format!("SELECT count(*) FROM mdm_access.agent_bootstraps WHERE tenant_id='{}' AND installation='{operation}'",case_tenant()))?.trim()=="2");
+    ensure!(
+        pg(&format!(
+            "SELECT input_context->>'deadline' FROM mdm_commands.operations WHERE tenant_id='{}' AND id='{operation}'",
+            case_tenant()
+        ))? == parent_deadline
+    );
     ensure!(commands.shutdown().join().await?.is_clean());
     ensure!(owner.shutdown().join().await?.is_clean());
     host.close().await

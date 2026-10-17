@@ -1,7 +1,7 @@
 WITH tables AS (
  SELECT c.* FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='mdm_commands' AND c.relkind='r'
 ), update_columns(relation, col) AS (VALUES
- ('mdm_access.agent_bootstraps','cleanup'),('mdm_access.agent_bootstraps','cleanup_complete'),('mdm_access.agent_bootstraps','cleanup_retry_at'),
+ ('mdm_access.agent_bootstraps','active'),('mdm_access.agent_bootstraps','cleanup'),('mdm_access.agent_bootstraps','cleanup_complete'),('mdm_access.agent_bootstraps','cleanup_retry_at'),
  ('mdm_pki.installations','revision'),('mdm_pki.installations','digest'),('mdm_pki.installations','body'),('mdm_pki.installations','confirmed_at'),
  ('mdm_pki.acknowledgements','revision'),('mdm_pki.acknowledgements','digest'),('mdm_pki.acknowledgements','confirmed_at'),
  ('mdm_windows.trust_deliveries','results'),('mdm_windows.trust_deliveries','confirmed'),

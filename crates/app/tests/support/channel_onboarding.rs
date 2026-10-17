@@ -57,7 +57,7 @@ pub(crate) async fn publish_until(
     windows: bool,
     until: Option<i64>,
 ) -> Result<Uuid> {
-    publish_format(user, router, device, app, windows, until, "msi").await
+    publish_format(user, router, device, app, windows, until, ("msi", "1.2.3")).await
 }
 pub(crate) async fn publish_msix(
     user: &mut Browser,
@@ -65,7 +65,7 @@ pub(crate) async fn publish_msix(
     device: &str,
     app: &crate::api::Assembly,
 ) -> Result<Uuid> {
-    publish_format(user, router, device, app, true, None, "msix").await
+    publish_format(user, router, device, app, true, None, ("msix", "1.2.3.0")).await
 }
 async fn publish_format(
     user: &mut Browser,
@@ -74,8 +74,9 @@ async fn publish_format(
     app: &crate::api::Assembly,
     windows: bool,
     until: Option<i64>,
-    format: &str,
+    package: (&str, &str),
 ) -> Result<Uuid> {
+    let (format, version) = package;
     let msix = format == "msix";
     use software::write;
     let planning = &app.flow.planning;
@@ -84,7 +85,7 @@ async fn publish_format(
     let source = Uuid::new_v4();
     let source_path = format!("/api/v1/software/sources/{source}/revisions/1");
     let registered=write(user,router,&source_path,0,json!({"action":"register","definition":{"id":source,"revision":"1","protocol":{"kind":"private"}}})).await?;
-    let package_bytes = if msix { msix_bytes()? } else { bytes() };
+    let package_bytes = if msix { msix_bytes(version)? } else { bytes() };
     let resource = Uuid::new_v4();
     let platform = if windows { "windows" } else { "macos" };
     let arch = if windows { "x86_64" } else { "aarch64" };
@@ -95,8 +96,8 @@ async fn publish_format(
     };
     let mut definition = json!({"source":registered["snapshot"],"package":"RSS.Agent","version":"1.2.3","artifacts":{"package":{"reference":"agent-installer","length":package_bytes.len(),"sha256":Sha256::digest(&package_bytes).to_vec()}},"reboot":"report","downgrade":"deny","dependencies":[],"behavior":{"kind":if windows{"msi"}else{"pkg"},"installer":"package","scope":"system","install":{"runAs":"system","arguments":[],"environment":{},"timeoutSeconds":60,"outputBytes":4096,"exitCodes":{"success":[0],"reboot":[]}},"upgrade":"in_place","uninstall":null,"detect":detect,"upgradeInvocation":{"runAs":"system","arguments":[],"environment":{},"timeoutSeconds":60,"outputBytes":4096,"exitCodes":{"success":[0],"reboot":[]}}},"signatures":[],"provenance":{"kind":"private"},"export":{"kind":"disabled"}});
     if msix {
-        definition["version"] = json!("1.2.3.0");
-        definition["behavior"] = json!({"kind":"msix","container":{"kind":"package","installer":"package"},"identity":{"name":"RSS.Agent","publisher":"CN=RSS","version":[1,2,3,0],"architecture":"x86_64","resourceId":""},"dependencies":[],"deployment":{"kind":"device_provisioning"},"minimumOs":[10,0,19041,0],"requireSideload":true,"allowUnsigned":false,"uninstall":false,"invocation":{"runAs":"system","arguments":[],"environment":{},"timeoutSeconds":60,"outputBytes":4096,"exitCodes":{"success":[0],"reboot":[]}},"upgrade":"in_place"});
+        definition["version"] = json!(version);
+        definition["behavior"] = json!({"kind":"msix","container":{"kind":"package","installer":"package"},"identity":{"name":"RSS.Agent","publisher":"CN=RSS","version":version.split('.').map(str::parse::<u16>).collect::<std::result::Result<Vec<_>,_>>()?,"architecture":"x86_64","resourceId":""},"dependencies":[],"deployment":{"kind":"device_provisioning"},"minimumOs":[10,0,19041,0],"requireSideload":true,"allowUnsigned":false,"uninstall":false,"invocation":{"runAs":"system","arguments":[],"environment":{},"timeoutSeconds":60,"outputBytes":4096,"exitCodes":{"success":[0],"reboot":[]}},"upgrade":"in_place"});
     }
     if format == "exe" {
         definition["behavior"]["kind"] = json!("exe");
@@ -155,7 +156,7 @@ async fn publish_format(
         write(user,router,&format!("/api/v1/scopes/{scope}"),0,json!({"action":"put","definition":{"targets":[{"kind":"group","id":group}],"limitations":null,"exclusions":[]}})).await?;
     }
     let policy = Uuid::new_v4();
-    let mut input = json!({"action":"put","enabled":true,"definition":{"scope":scope,"action":{"kind":"ensure_agent_installed","packages":{if windows{"windows_x86_64"}else{"macos_aarch64"}:published["releaseId"]},"runLifetimeSeconds":600}}});
+    let mut input = json!({"action":"put","enabled":true,"definition":{"scope":scope,"action":{"kind":"ensure_agent_installed","packages":{if windows{"windows_x86_64"}else{"macos_aarch64"}:published["releaseId"]},"runLifetimeSeconds":3600}}});
     if let Some(until) = until {
         input["definition"]["action"]["schedule"] = json!({"trigger":{"kind":"check_in","minimumSeconds":60},"notBefore":0,"until":until,"jitterSeconds":0,"window":null,"misfire":{"kind":"coalesce_one"}});
     }
@@ -206,10 +207,10 @@ pub(crate) async fn diagnosis(
         .ok_or_else(|| anyhow::anyhow!("missing device diagnosis: {:?}", reply.1))
 }
 
-fn msix_bytes() -> Result<Vec<u8>> {
+fn msix_bytes(version: &str) -> Result<Vec<u8>> {
     let mut archive = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
     archive.start_file("AppxManifest.xml", zip::write::SimpleFileOptions::default())?;
-    archive.write_all(br#"<Package xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10"><Identity Name="RSS.Agent" Publisher="CN=RSS" Version="1.2.3.0" ProcessorArchitecture="x64"/><Dependencies><TargetDeviceFamily Name="Windows.Desktop" MinVersion="10.0.19041.0"/></Dependencies></Package>"#)?;
+    archive.write_all(format!(r#"<Package xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10"><Identity Name="RSS.Agent" Publisher="CN=RSS" Version="{version}" ProcessorArchitecture="x64"/><Dependencies><TargetDeviceFamily Name="Windows.Desktop" MinVersion="10.0.19041.0"/></Dependencies></Package>"#).as_bytes())?;
     archive.start_file("payload.bin", zip::write::SimpleFileOptions::default())?;
     archive.write_all(b"controlled MSIX protocol material; not an OS-signed release")?;
     Ok(archive.finish()?.into_inner())
@@ -221,7 +222,7 @@ pub(crate) async fn publish_exe(
     device: &str,
     app: &crate::api::Assembly,
 ) -> Result<Uuid> {
-    publish_format(user, router, device, app, true, None, "exe").await
+    publish_format(user, router, device, app, true, None, ("exe", "1.2.3")).await
 }
 
 /// Admit a release without configuring a Policy or starting group automation.
@@ -230,5 +231,14 @@ pub(crate) async fn publish_macos_release(
     router: &Router,
     app: &crate::api::Assembly,
 ) -> Result<Uuid> {
-    publish_format(user, router, "", app, false, None, "pkg").await
+    publish_format(user, router, "", app, false, None, ("pkg", "1.2.3")).await
+}
+
+pub(crate) async fn publish_msix_release(
+    user: &mut Browser,
+    router: &Router,
+    app: &crate::api::Assembly,
+    version: &str,
+) -> Result<Uuid> {
+    publish_format(user, router, "", app, true, None, ("msix", version)).await
 }

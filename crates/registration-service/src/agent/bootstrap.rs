@@ -54,18 +54,25 @@ impl Service {
         self.write(audit, (self, &csr, &input, challenge, &active, now), |ctx,c| Box::pin(async move {
             let (s,csr,input,challenge,active,now)=*ctx;
             let row = row(c,s.tenant,csr.attempt()).await?;
-            if row.try_get::<Uuid,_>("installation").map_err(db)? != csr.installation()
+            if !row.try_get::<bool,_>("active").map_err(db)?
+                || row.try_get::<Uuid,_>("installation").map_err(db)? != csr.installation()
                 || row.try_get::<i64,_>("deadline").map_err(db)? <= now
-                || row.try_get::<String,_>("state").map_err(db)? != "prepared"
                 || input.provisioner_name.as_deref() != Some(active.provisioner.as_str())
                 || row.try_get::<String,_>("issuer").map_err(db)? != active.digest
                 || row.try_get::<Vec<u8>,_>("challenge").map_err(db)?.as_slice() != Sha256::digest(challenge.as_bytes()).as_slice() { return Err(Error::Forbidden); }
+            let state: String = row.try_get("state").map_err(db)?;
+            let replay = state == "signing"
+                && row.try_get::<Option<String>,_>("transaction_id").map_err(db)?.as_deref() == Some(input.transaction.as_str())
+                && row.try_get::<Option<Vec<u8>>,_>("csr_digest").map_err(db)?.as_deref() == Some(csr.digest().as_slice())
+                && row.try_get::<Option<Vec<u8>>,_>("spki").map_err(db)?.as_deref() == Some(csr.spki().as_slice());
+            if state != "prepared" && !replay { return Err(Error::Forbidden); }
             let source = native::source(c,s.tenant,row.try_get("source").map_err(db)?).await?;
             s.native.bootstrap(c,&source).await?;
-            sqlx::query("UPDATE mdm_access.agent_bootstraps SET state='signing',transaction_id=$3,csr_digest=$4,spki=$5 WHERE tenant_id=$1::uuid AND id=$2")
-                .bind(s.tenant.to_string()).bind(csr.attempt()).bind(&input.transaction).bind(csr.digest().as_slice()).bind(csr.spki().as_slice()).execute(c).await.map_err(db)?;
-            let deadline = row.try_get::<i64,_>("deadline").map_err(db)?;
-            Ok(Change { value: serde_json::json!({"allow":true,"data":{"subject":{"commonName":rss_mdm_certificate::apple::subject(csr.installation(),csr.attempt()),"organizationalUnit":[certificate::PURPOSE]},"notAfter":time::OffsetDateTime::from_unix_timestamp(deadline).map_err(|_|Error::Corrupt)?.format(&time::format_description::well_known::Rfc3339).map_err(|_|Error::Corrupt)?}}), replay:false, digest: digest(&(csr.attempt(),csr.digest(),&input.transaction))? })
+            let stored_deadline: i64 = row.try_get("deadline").map_err(db)?;
+            let deadline = if replay { stored_deadline } else { stored_deadline.min(now + 1800) };
+            if !replay { sqlx::query("UPDATE mdm_access.agent_bootstraps SET state='signing',transaction_id=$3,csr_digest=$4,spki=$5,deadline=$6 WHERE tenant_id=$1::uuid AND id=$2")
+                .bind(s.tenant.to_string()).bind(csr.attempt()).bind(&input.transaction).bind(csr.digest().as_slice()).bind(csr.spki().as_slice()).bind(deadline).execute(c).await.map_err(db)?; }
+            Ok(Change { value: serde_json::json!({"allow":true,"data":{"subject":{"commonName":rss_mdm_certificate::apple::subject(csr.installation(),csr.attempt()),"organizationalUnit":[certificate::PURPOSE]},"notAfter":time::OffsetDateTime::from_unix_timestamp(deadline).map_err(|_|Error::Corrupt)?.format(&time::format_description::well_known::Rfc3339).map_err(|_|Error::Corrupt)?}}), replay, digest: digest(&(csr.attempt(),csr.digest(),&input.transaction))? })
         })).await.map_err(Into::into)
     }
     pub async fn bootstrap_notify(
@@ -158,7 +165,7 @@ impl Service {
         self.write(audit,(self,id,input,&fingerprint),|ctx,c|Box::pin(async move {
             let(s,id,input,fingerprint)=*ctx;
             let row=row(c,s.tenant,id).await?;
-            if !matches!(row.try_get::<String,_>("state").map_err(db)?.as_str(),"issued"|"consumed")
+            if !row.try_get::<bool,_>("active").map_err(db)? || !matches!(row.try_get::<String,_>("state").map_err(db)?.as_str(),"issued"|"consumed")
                 || row.try_get::<i64,_>("deadline").map_err(db)?<=s.clock.unix_seconds()?
                 || row.try_get::<Option<Vec<u8>>,_>("fingerprint").map_err(db)?.as_ref()!=Some(fingerprint) {return Err(Error::Forbidden);}
             let mut proof: serde_json::Value=row.try_get("source").map_err(db)?;

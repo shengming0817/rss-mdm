@@ -18,7 +18,9 @@ const ARCH: &str = "./DevDetail/Ext/Microsoft/ProcessorArchitecture";
 #[serde(deny_unknown_fields)]
 struct Query {
     catalog: DetectionCatalog,
-    plan: Plan,
+    plans: Vec<Plan>,
+    batch: usize,
+    present_win32: Vec<String>,
     probes: Vec<Probe>,
     statuses: Vec<Option<u16>>,
     values: Vec<Option<String>>,
@@ -149,20 +151,33 @@ pub async fn receive(
                 .map_err(|_| Error::Conflict)?;
         }
         state
-            .advance(&query.plan, CodecLimits::default().object_bytes)
+            .advance(
+                &query.plans[query.batch],
+                CodecLimits::default().object_bytes,
+            )
             .map_err(|_| Error::Conflict)?;
-        for (field, outcome) in state.outcomes(&query.plan).map_err(|_| protocol())? {
+        for (field, outcome) in state
+            .outcomes(&query.plans[query.batch])
+            .map_err(|_| protocol())?
+        {
             if field == "win32" {
                 query.exe_done = true;
                 query.exe_absent = match outcome {
                     Outcome::Value(serde_json::Value::Array(rows)) => {
-                        query.catalog.win32.iter().all(|identity| {
-                            !rows.iter().any(|row| {
-                                row["RegKey"]
-                                    .as_str()
-                                    .is_some_and(|key| key.eq_ignore_ascii_case(&identity.key))
+                        query.present_win32 = query
+                            .catalog
+                            .win32
+                            .iter()
+                            .filter(|identity| {
+                                rows.iter().any(|row| {
+                                    row["RegKey"]
+                                        .as_str()
+                                        .is_some_and(|key| key.eq_ignore_ascii_case(&identity.key))
+                                })
                             })
-                        })
+                            .map(|identity| format!("win32:{}", identity.key))
+                            .collect();
+                        query.present_win32.is_empty()
                     }
                     _ => false,
                 };
@@ -181,6 +196,12 @@ pub async fn receive(
                 }
             }
         }
+        if !state.pending() && query.batch + 1 < query.plans.len() {
+            query.batch += 1;
+            state = query.plans[query.batch]
+                .start("agent-observation")
+                .map_err(|_| protocol())?;
+        }
         let complete = query.exe_done && query.statuses.iter().all(Option::is_some);
         if message.header.message_id as usize >= CodecLimits::default().session_messages
             && !(complete && message.final_message)
@@ -192,10 +213,15 @@ pub async fn receive(
             let mut absent = query.catalog.complete && query.exe_absent;
             let mut installed = false;
             let mut provisioned = false;
-            let mut identity = String::new();
+            let mut identity = query.present_win32.first().cloned().unwrap_or_default();
             let mut publisher = None;
             let mut version = None;
-            let mut checked_identities = Vec::new();
+            let mut checked_identities: Vec<String> = query
+                .catalog
+                .win32
+                .iter()
+                .map(|v| format!("win32:{}", v.key))
+                .collect();
             for probe in &query.probes {
                 let i = probe.offset;
                 let (key, present, missing, pkg) = match &probe.identity {
@@ -328,8 +354,7 @@ pub async fn send(
             return Ok(false);
         }
         let query = query(catalog)?;
-        let state = query
-            .plan
+        let state = query.plans[query.batch]
             .start("agent-observation")
             .map_err(|_| protocol())?;
         let (id, scope, _) =
@@ -384,7 +409,7 @@ pub async fn send(
     save(c, protection, p, id, &query, &state).await?;
     Ok(state.pending())
 }
-fn query(mut catalog: DetectionCatalog) -> Result<Query, Error> {
+fn query(catalog: DetectionCatalog) -> Result<Query, Error> {
     let mut uris = vec![];
     let mut probes = vec![];
     for identity in catalog.identities.iter().cloned() {
@@ -439,14 +464,6 @@ fn query(mut catalog: DetectionCatalog) -> Result<Query, Error> {
     }
     uris.push(ARCH.into());
     let count = uris.len();
-    if count + usize::from(!catalog.win32.is_empty()) > 64 {
-        // The bounded read owner cannot prove completeness for a larger catalog.
-        catalog.identities.clear();
-        catalog.win32.clear();
-        catalog.complete = false;
-        return query(catalog);
-    }
-
     let mut reads = std::collections::BTreeMap::new();
     for (i, uri) in uris.into_iter().enumerate() {
         reads.insert(format!("v{i:04}"), Read::Scalar { uri });
@@ -460,10 +477,24 @@ fn query(mut catalog: DetectionCatalog) -> Result<Query, Error> {
             },
         );
     }
-    let plan = Plan::try_from(reads).map_err(|_| protocol())?;
+    let entries: Vec<_> = reads.into_iter().collect();
+    let plans = entries
+        .chunks(64)
+        .map(|batch| {
+            Plan::try_from(
+                batch
+                    .iter()
+                    .cloned()
+                    .collect::<std::collections::BTreeMap<_, _>>(),
+            )
+            .map_err(|_| protocol())
+        })
+        .collect::<Result<Vec<_>, _>>()?;
     Ok(Query {
         catalog,
-        plan,
+        plans,
+        batch: 0,
+        present_win32: Vec::new(),
         probes,
         statuses: vec![None; count],
         values: vec![None; count],

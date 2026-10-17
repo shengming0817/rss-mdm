@@ -41,7 +41,7 @@ impl ExecutionService {
         let generation = op.registration_generation;
         let source = op.request.task.source();
         let release = package.release.release_id;
-        let deadline = op.request.deadline.min(storage::now(tx).await? + 1800);
+        let deadline = op.request.deadline;
         let issuer = deployment.issuer.clone();
         let provisioner = deployment.provisioner.clone();
         let challenge = Sha256::digest(secret.as_bytes()).to_vec();
@@ -188,6 +188,35 @@ fn task(
 }
 
 impl ExecutionService {
+    /// Retry only a known issued, expired identity; an unknown signing attempt stays fenced.
+    pub(crate) async fn recover_bootstrap_in(
+        &self,
+        tx: &mut PgTransaction<'_>,
+        device: &str,
+        audit: &RequestAudit,
+    ) -> Result<()> {
+        let now = self.installation_authorization_time(storage::now(tx).await?);
+        let tenant = tx.tenant_id();
+        let name = device.to_owned();
+        let rows = tx.with_connection(move |c| Box::pin(async move {
+            sqlx::query_as::<_,(Uuid,Uuid)>("SELECT b.id,b.installation FROM mdm_access.agent_bootstraps b JOIN mdm_commands.operations o ON(o.tenant_id,o.id)=(b.tenant_id,b.installation) JOIN mdm_access.registrations r ON(r.tenant_id,r.id,r.generation)=(o.tenant_id,o.registration,o.registration_generation) WHERE b.tenant_id=$1::uuid AND o.device=$2 AND b.active AND b.state='issued' AND b.deadline<=$3 AND (o.input_context->>'deadline')::bigint>$3 AND r.state='active' AND mdm_commands.installation_status(o.id) IN('published','received','applied') FOR UPDATE OF b")
+                .bind(tenant.to_string()).bind(name).bind(now).fetch_all(c).await
+        })).await?;
+        for (id, installation) in rows {
+            let op = storage::load(tx, &self.protection, installation).await?;
+            if !storage::authority_valid(&self.source, &self.protection, tx, &op, now).await? {
+                continue;
+            }
+            tx.with_connection(move |c| Box::pin(async move {
+                sqlx::query("UPDATE mdm_access.agent_bootstraps SET active=false WHERE tenant_id=$1::uuid AND id=$2 AND active AND state='issued' AND deadline<=$3")
+                    .bind(tenant.to_string()).bind(id).bind(now).execute(c).await?;
+                Ok(())
+            })).await?;
+            self.queue_bootstrap_in(tx, device, installation, audit)
+                .await?;
+        }
+        Ok(())
+    }
     pub(crate) async fn cleanup_bootstrap_in(
         &self,
         tx: &mut PgTransaction<'_>,
@@ -201,7 +230,7 @@ impl ExecutionService {
             sqlx::query("UPDATE mdm_access.agent_bootstraps SET cleanup_complete=true WHERE tenant_id=$1::uuid AND cleanup IS NOT NULL AND NOT cleanup_complete AND mdm_commands.installation_status(cleanup)='applied'").bind(tenant.to_string()).execute(c).await?;Ok(())
         })).await?;
         let rows=tx.with_connection(move|c|Box::pin(async move {
-            sqlx::query_as::<_,(Uuid,Uuid)>("SELECT b.id,b.installation FROM mdm_access.agent_bootstraps b JOIN mdm_commands.operations o ON(o.tenant_id,o.id)=(b.tenant_id,b.installation) WHERE b.tenant_id=$1::uuid AND o.device=$2 AND NOT b.cleanup_complete AND b.cleanup_retry_at<=$3 AND (b.cleanup IS NULL OR EXISTS(SELECT 1 FROM mdm_commands.operations cleanup WHERE cleanup.tenant_id=b.tenant_id AND cleanup.id=b.cleanup AND (mdm_commands.installation_status(cleanup.id) IN('rejected','cancelled','expired') OR (cleanup.input_context->>'deadline')::bigint<=$3))) AND b.state='consumed' AND EXISTS(SELECT 1 FROM mdm_access.registrations native WHERE native.tenant_id=o.tenant_id AND native.id=o.registration AND native.generation=o.registration_generation AND native.state='active') AND EXISTS(SELECT 1 FROM mdm_access.agent_grants g JOIN mdm_access.registrations r ON(r.tenant_id,r.agent_grant_id)=(g.tenant_id,g.id) WHERE g.tenant_id=b.tenant_id AND g.native_authority->>'bootstrap'=b.id::text ) FOR UPDATE OF b")
+            sqlx::query_as::<_,(Uuid,Uuid)>("SELECT b.id,b.installation FROM mdm_access.agent_bootstraps b JOIN mdm_commands.operations o ON(o.tenant_id,o.id)=(b.tenant_id,b.installation) WHERE b.tenant_id=$1::uuid AND o.device=$2 AND NOT b.cleanup_complete AND b.cleanup_retry_at<=$3 AND (b.cleanup IS NULL OR EXISTS(SELECT 1 FROM mdm_commands.operations cleanup WHERE cleanup.tenant_id=b.tenant_id AND cleanup.id=b.cleanup AND (mdm_commands.installation_status(cleanup.id) IN('rejected','cancelled','expired') OR (cleanup.input_context->>'deadline')::bigint<=$3))) AND b.state IN('issued','consumed') AND EXISTS(SELECT 1 FROM mdm_access.registrations native WHERE native.tenant_id=o.tenant_id AND native.id=o.registration AND native.generation=o.registration_generation AND native.state='active') AND EXISTS(SELECT 1 FROM mdm_access.agent_grants g JOIN mdm_access.registrations r ON(r.tenant_id,r.agent_grant_id)=(g.tenant_id,g.id) WHERE g.tenant_id=b.tenant_id AND g.native_authority->>'installation'=b.installation::text ) FOR UPDATE OF b")
                 .bind(tenant.to_string()).bind(name).bind(now).fetch_all(c).await
         })).await?;
         for (id, installation) in rows {

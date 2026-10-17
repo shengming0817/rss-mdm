@@ -148,7 +148,7 @@ pub(crate) async fn source(
     if s.source.channel() != rss_mdm_inventory::Channel::Mdm || s.installation.is_nil() {
         return Err(Error::Corrupt);
     }
-    let current: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_access.agent_bootstraps WHERE tenant_id=$1::uuid AND id=$2 AND installation=$3 AND state<>'revoked' AND deadline>extract(epoch FROM clock_timestamp()) AND source->>'registration'=$4 AND source->>'credential'=$5 AND source->>'generation'=$6)")
+    let current: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_access.agent_bootstraps WHERE tenant_id=$1::uuid AND id=$2 AND installation=$3 AND active AND state<>'revoked' AND (state='consumed' OR deadline>extract(epoch FROM clock_timestamp())) AND source->>'registration'=$4 AND source->>'credential'=$5 AND source->>'generation'=$6)")
         .bind(tenant.to_string()).bind(s.bootstrap).bind(s.installation).bind(s.registration.to_string()).bind(s.credential.to_string()).bind(s.generation.to_string())
         .fetch_one(&mut *c).await.map_err(db)?;
     if !current {

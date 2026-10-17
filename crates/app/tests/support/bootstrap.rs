@@ -1,6 +1,7 @@
 //! Controlled native SCEP producer with real CSR signatures and completed TLS possession.
 use super::*;
 use crate::clock::Clock;
+use anyhow::Context;
 use base64::{Engine, engine::general_purpose::STANDARD};
 use rss_mdm_execution_service::{Task, storage, transaction};
 use rss_mdm_windows_mdm::native::{Execution, Request as Native, Value as NativeValue};
@@ -21,14 +22,41 @@ pub(crate) async fn issue_windows(
     installation: uuid::Uuid,
     message: &rss_mdm_windows_mdm::syncml::Message,
 ) -> Result<BootstrapPeer> {
-    issue_observed(app, router, root, installation, Some(message)).await
+    issue_observed(
+        app,
+        router,
+        root,
+        installation,
+        Some(Observed::Windows(message)),
+    )
+    .await
+}
+pub(crate) async fn issue_apple(
+    app: &Arc<crate::api::Assembly>,
+    router: &Router,
+    root: &std::path::Path,
+    installation: uuid::Uuid,
+    payload: &plist::Dictionary,
+) -> Result<BootstrapPeer> {
+    issue_observed(
+        app,
+        router,
+        root,
+        installation,
+        Some(Observed::Apple(payload)),
+    )
+    .await
+}
+enum Observed<'a> {
+    Windows(&'a rss_mdm_windows_mdm::syncml::Message),
+    Apple(&'a plist::Dictionary),
 }
 async fn issue_observed(
     app: &Arc<crate::api::Assembly>,
     router: &Router,
     _root: &std::path::Path,
     installation: uuid::Uuid,
-    observed: Option<&rss_mdm_windows_mdm::syncml::Message>,
+    observed: Option<Observed<'_>>,
 ) -> Result<BootstrapPeer> {
     let root = std::path::PathBuf::from(std::env::var("MDM_AGENT_PKI_FIXTURES")?);
     let root = root.as_path();
@@ -36,7 +64,7 @@ async fn issue_observed(
         let (key, installation) = *ctx;
         let tenant = tx.tenant_id();
         let row = tx.with_connection(move |c| Box::pin(async move {
-            sqlx::query("SELECT id,delivery,deadline FROM mdm_access.agent_bootstraps WHERE tenant_id=$1::uuid AND installation=$2")
+            sqlx::query("SELECT id,delivery,deadline FROM mdm_access.agent_bootstraps WHERE tenant_id=$1::uuid AND installation=$2 AND active")
                 .bind(tenant.to_string()).bind(installation).fetch_one(c).await
         })).await?;
         let delivery = row.try_get("delivery")?;
@@ -44,6 +72,8 @@ async fn issue_observed(
         Ok((row.try_get::<uuid::Uuid,_>("id")?, row.try_get::<i64,_>("deadline")?, op.request.task))
     })).await?;
     // Read only the protected command emitted by the product; the challenge API checks dispatch.
+    let mut subject_from_profile = None;
+    let mut provisioner_from_profile = None;
     let secret = match task {
         Task::Windows {
             request:
@@ -51,7 +81,7 @@ async fn issue_observed(
                     request: Native::Atomic { operations },
                 },
         } => {
-            if let Some(message) = observed {
+            if let Some(Observed::Windows(message)) = observed {
                 let fields = windows_fields(&message.commands);
                 for operation in &operations {
                     if let Native::Node {
@@ -94,13 +124,85 @@ async fn issue_observed(
         Task::Macos {
             request: rss_mdm_apple_mdm::native::request::Request::InstallProfile { profile },
         } => {
-            let value = profile.payloads[0].fields.to_plist()?;
-            // Fields retain their schema-facing plist dictionary in JSON.
-            value["PayloadContent"]
+            let expected = profile.payloads[0].fields.to_plist()?;
+            let expected = expected["PayloadContent"]
                 .as_dictionary()
-                .and_then(|v| v.get("Challenge"))
+                .context("frozen SCEP content")?;
+            let Some(Observed::Apple(payload)) = observed else {
+                anyhow::bail!("Apple bootstrap requires the actually delivered profile");
+            };
+            let bytes = payload
+                .get("Payload")
+                .and_then(plist::Value::as_data)
+                .context("delivered profile bytes")?;
+            use x509_cert::der::{Decode, asn1::OctetString};
+            let signed = cms::content_info::ContentInfo::from_der(bytes)?
+                .content
+                .decode_as::<cms::signed_data::SignedData>()?;
+            let content = signed
+                .encap_content_info
+                .econtent
+                .context("signed SCEP profile content")?
+                .decode_as::<OctetString>()?;
+            let profile = plist::Value::from_reader(std::io::Cursor::new(content.as_bytes()))?;
+            let scep = profile
+                .as_dictionary()
+                .and_then(|p| p.get("PayloadContent"))
+                .and_then(plist::Value::as_array)
+                .and_then(|ps| {
+                    ps.iter().filter_map(plist::Value::as_dictionary).find(|p| {
+                        p.get("PayloadType").and_then(plist::Value::as_string)
+                            == Some("com.apple.security.scep")
+                    })
+                })
+                .and_then(|p| p.get("PayloadContent"))
+                .and_then(plist::Value::as_dictionary)
+                .context("delivered SCEP payload")?;
+            for field in [
+                "URL",
+                "Name",
+                "Subject",
+                "Challenge",
+                "Key Type",
+                "Keysize",
+                "Key Usage",
+                "KeyIsExtractable",
+                "AllowAllAppsAccess",
+            ] {
+                ensure!(
+                    scep.get(field)
+                        == Some(expected.get(field).context("required frozen SCEP field")?),
+                    "delivered SCEP {field} differs from frozen configuration"
+                );
+            }
+            let subject = scep
+                .get("Subject")
+                .and_then(plist::Value::as_array)
+                .context("delivered SCEP subject")?;
+            let mut dn = String::new();
+            for rdn in subject {
+                for attribute in rdn.as_array().context("SCEP RDN")? {
+                    let pair = attribute.as_array().context("SCEP attribute")?;
+                    ensure!(pair.len() == 2);
+                    let name = pair[0].as_string().context("SCEP attribute name")?;
+                    let value = pair[1].as_string().context("SCEP attribute value")?;
+                    ensure!(
+                        matches!(name, "CN" | "OU") && !value.contains(['/', '\\']),
+                        "bounded SCEP subject"
+                    );
+                    dn.push_str(&format!("/{name}={value}"));
+                }
+            }
+            subject_from_profile = Some(dn);
+            provisioner_from_profile = Some(
+                scep.get("Name")
+                    .and_then(plist::Value::as_string)
+                    .context("delivered provisioner")?
+                    .to_owned(),
+            );
+            scep.get("Challenge")
                 .and_then(plist::Value::as_string)
-                .ok_or_else(|| anyhow::anyhow!("SCEP challenge missing: field structure"))?
+                .context("delivered SCEP challenge")?
                 .to_owned()
         }
         _ => anyhow::bail!("unexpected bootstrap command"),
@@ -130,16 +232,12 @@ async fn issue_observed(
         ])
         .arg(&key))?;
     let cn = rss_mdm_certificate::apple::subject(installation, id);
+    let subject =
+        subject_from_profile.unwrap_or_else(|| format!("/OU=rss-mdm-agent-bootstrap/CN={cn}"));
     run(Command::new("openssl")
         .args(["req", "-new", "-keyform", "DER", "-key"])
         .arg(&key)
-        .args([
-            "-subj",
-            &format!("/OU=rss-mdm-agent-bootstrap/CN={cn}"),
-            "-outform",
-            "DER",
-            "-out",
-        ])
+        .args(["-subj", &subject, "-outform", "DER", "-out"])
         .arg(&csr_file))?;
     let csr = std::fs::read(csr_file)?;
     let config = app
@@ -148,8 +246,29 @@ async fn issue_observed(
         .unwrap()
         .bootstrap_configuration()?;
     let now = crate::clock::SystemClock.unix_seconds()?;
-    let mut request = json!({"timestamp":time::OffsetDateTime::from_unix_timestamp(now)?.format(&time::format_description::well_known::Rfc3339)?,"provisionerName":config.trust.active()?.provisioner,"x509CertificateRequest":{"raw":STANDARD.encode(&csr)},"scepChallenge":secret,"scepTransactionID":id.to_string()});
+    let mut request = json!({"timestamp":time::OffsetDateTime::from_unix_timestamp(now)?.format(&time::format_description::well_known::Rfc3339)?,"provisionerName":provisioner_from_profile.unwrap_or(config.trust.active()?.provisioner.clone()),"x509CertificateRequest":{"raw":STANDARD.encode(&csr)},"scepChallenge":secret,"scepTransactionID":id.to_string()});
     let approval = webhook(router, config, "challenge", &request).await?;
+    // Simulate the CA losing the first approved response after the transaction commits.
+    ensure!(
+        webhook(router, config, "challenge", &request).await? == approval,
+        "exact challenge retry must reuse the approval"
+    );
+    let mut changed = request.clone();
+    changed["scepTransactionID"] = json!(Uuid::new_v4());
+    ensure!(
+        webhook_response(router, config, "challenge", &changed)
+            .await?
+            .0
+            == StatusCode::FORBIDDEN
+    );
+    changed = request.clone();
+    changed["scepChallenge"] = json!(credential("different-bootstrap-challenge"));
+    ensure!(
+        webhook_response(router, config, "challenge", &changed)
+            .await?
+            .0
+            == StatusCode::FORBIDDEN
+    );
     let approved = &approval["data"]["subject"];
     ensure!(
         approved["commonName"] == cn
@@ -162,7 +281,15 @@ async fn issue_observed(
         &time::format_description::well_known::Rfc3339,
     )?
     .unix_timestamp();
-    ensure!(expiry == deadline);
+    ensure!(expiry <= deadline && expiry >= now.min(deadline - 1) && expiry <= now + 1801);
+    let frozen_expiry = pg(&format!(
+        "SELECT deadline FROM mdm_access.agent_bootstraps WHERE tenant_id='{}' AND id='{id}'",
+        case_tenant()
+    ))?;
+    ensure!(
+        expiry == frozen_expiry.trim().parse::<i64>()?,
+        "approval must retain its committed deadline"
+    );
     let subject = format!(
         "OU={},CN={}",
         approved["organizationalUnit"][0].as_str().unwrap(),
@@ -183,6 +310,16 @@ async fn webhook(
     phase: &str,
     input: &Value,
 ) -> Result<Value> {
+    let (status, body) = webhook_response(router, config, phase, input).await?;
+    ensure!(status.is_success(), "bootstrap {phase}: {status} {body}");
+    Ok(body)
+}
+async fn webhook_response(
+    router: &Router,
+    config: &rss_mdm_registration_service::agent::bootstrap::Configuration,
+    phase: &str,
+    input: &Value,
+) -> Result<(StatusCode, Value)> {
     let (id, key) = if phase == "challenge" {
         (&config.challenge_id, &config.challenge_key)
     } else {
@@ -212,12 +349,7 @@ async fn webhook(
         .await?;
     let status = response.status();
     let body = axum::body::to_bytes(response.into_body(), 128 * 1024).await?;
-    ensure!(
-        status.is_success(),
-        "bootstrap {phase}: {status} {}",
-        String::from_utf8_lossy(&body)
-    );
-    Ok(serde_json::from_slice(&body)?)
+    Ok((status, serde_json::from_slice(&body)?))
 }
 pub(crate) struct BootstrapPeer {
     app: Arc<crate::api::Assembly>,

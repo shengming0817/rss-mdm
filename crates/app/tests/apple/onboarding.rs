@@ -155,8 +155,14 @@ async fn absent_agent_group_installs_fixed_package_and_registers_independently()
     );
     peer.manage("Acknowledged", Some(bootstrap_delivery), None)
         .await?;
-    let bootstrap_peer =
-        crate::test_support::bootstrap::issue(&f.app, &f.router, &f.root, operation).await?;
+    let bootstrap_peer = crate::test_support::bootstrap::issue_apple(
+        &f.app,
+        &f.router,
+        &f.root,
+        operation,
+        &bootstrap_payload,
+    )
+    .await?;
     // The native daily identity is no longer mounted as an Agent authorization endpoint.
     ensure!(
         peer.client

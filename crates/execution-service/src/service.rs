@@ -148,6 +148,7 @@ impl ExecutionService {
         audit: &RequestAudit,
     ) -> Result<Value> {
         if let ExecutionAuthority::AgentInstall {
+            stage: crate::authority::AgentInstallStage::Install,
             version,
             source_objects,
             ..
