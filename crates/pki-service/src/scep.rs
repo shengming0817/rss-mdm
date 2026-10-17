@@ -1,8 +1,8 @@
 //! step-ca v0.30.2 authenticates the exact request bytes before any JSON is trusted.
 //! ref: smallstep/certificates authority/provisioner/webhook.go@v0.30.2
 use crate::Error;
-use axum::http::HeaderMap;
 use base64::{Engine, engine::general_purpose::STANDARD};
+use http::HeaderMap;
 use serde::Deserialize;
 
 #[derive(Deserialize)]
@@ -24,9 +24,9 @@ pub struct CertificateRequest {
 impl CertificateRequest {
     pub fn der(&self) -> Result<Vec<u8>, Error> {
         if self.raw.len() > 44_000 {
-            return Err(Error::Malformed);
+            return Err(Error::Request);
         }
-        STANDARD.decode(&self.raw).map_err(|_| Error::Malformed)
+        STANDARD.decode(&self.raw).map_err(|_| Error::Request)
     }
 }
 
@@ -39,42 +39,48 @@ pub fn decode(
 ) -> Result<Request, Error> {
     let header = |name: &'static str| {
         if headers.get_all(name).iter().count() != 1 {
-            return Err(Error::Unauthorized);
+            return Err(Error::Forbidden);
         }
         headers
             .get(name)
             .and_then(|v| v.to_str().ok())
-            .ok_or(Error::Unauthorized)
+            .ok_or(Error::Forbidden)
     };
     if bytes.len() > 128 * 1024 || header("x-smallstep-webhook-id")? != id {
-        return Err(Error::Unauthorized);
+        return Err(Error::Forbidden);
     }
     let signature = header("x-smallstep-signature")?;
     if signature.len() != 64 || !signature.bytes().all(|v| v.is_ascii_hexdigit()) {
-        return Err(Error::Unauthorized);
+        return Err(Error::Forbidden);
     }
     let signature = (0..64)
         .step_by(2)
-        .map(|i| u8::from_str_radix(&signature[i..i + 2], 16).map_err(|_| Error::Unauthorized))
+        .map(|i| u8::from_str_radix(&signature[i..i + 2], 16).map_err(|_| Error::Forbidden))
         .collect::<Result<Vec<_>, _>>()?;
-    ring::hmac::verify(key, bytes, &signature).map_err(|_| Error::Unauthorized)?;
-    let request: Request = serde_json::from_slice(bytes).map_err(|_| Error::Malformed)?;
+    ring::hmac::verify(key, bytes, &signature).map_err(|_| Error::Forbidden)?;
+    let request: Request = serde_json::from_slice(bytes).map_err(|_| Error::Request)?;
     let timestamp = time::OffsetDateTime::parse(
         &request.timestamp,
         &time::format_description::well_known::Rfc3339,
     )
-    .map_err(|_| Error::Malformed)?
+    .map_err(|_| Error::Request)?
     .unix_timestamp();
     if timestamp.abs_diff(now) > 300
         || request.transaction.is_empty()
         || request.transaction.len() > 255
         || request.transaction.chars().any(char::is_control)
     {
-        return Err(Error::Unauthorized);
+        return Err(Error::Forbidden);
     }
     Ok(request)
 }
 
-#[cfg(test)]
-#[path = "../tests/webhook.rs"]
-mod tests;
+/// Decode the secret returned by step-ca's webhook provisioning API.
+pub fn key(encoded: &[u8]) -> Result<ring::hmac::Key, Error> {
+    let decoded =
+        zeroize::Zeroizing::new(STANDARD.decode(encoded).map_err(|_| Error::Configuration)?);
+    if decoded.len() < 32 {
+        return Err(Error::Configuration);
+    }
+    Ok(ring::hmac::Key::new(ring::hmac::HMAC_SHA256, &decoded))
+}

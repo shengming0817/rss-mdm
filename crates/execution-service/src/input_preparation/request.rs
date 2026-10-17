@@ -117,7 +117,7 @@ pub enum PublicationInput<'a> {
         lifetime: u32,
     },
     AgentInstall {
-        binding: &'a SoftwareResourceBinding,
+        binding: &'a std::collections::BTreeMap<rss_mdm_policy::SoftwareTarget, Uuid>,
         schedule: &'a Schedule,
         lifetime: u32,
     },
@@ -146,10 +146,8 @@ impl<'a> PublicationInput<'a> {
                 ResourcePreparation::NativeCollection { binding }
             }
             Self::Configuration { binding, .. } => ResourcePreparation::Configuration { binding },
-            Self::Software { binding, .. } | Self::AgentInstall { binding, .. } => {
-                ResourcePreparation::Software { binding }
-            }
-            Self::Enrollment { .. } => return None,
+            Self::Software { binding, .. } => ResourcePreparation::Software { binding },
+            Self::Enrollment { .. } | Self::AgentInstall { .. } => return None,
         })
     }
 }
@@ -210,11 +208,11 @@ impl<'a> From<&'a Action> for PublicationInput<'a> {
                 lifetime: *run_lifetime_seconds,
             },
             Action::EnsureAgentInstalled {
-                resource,
+                packages,
                 schedule,
                 run_lifetime_seconds,
             } => Self::AgentInstall {
-                binding: resource,
+                binding: packages,
                 schedule,
                 lifetime: *run_lifetime_seconds,
             },

@@ -108,9 +108,13 @@ pub struct Source {
     principal: crate::device::DevicePrincipal,
     report_source: rss_mdm_inventory::ReportSource,
     installation: Uuid,
-    runtime: wire::RuntimeProfile,
+    runtime: Option<wire::RuntimeProfile>,
+    bootstrap: Uuid,
 }
 impl Source {
+    pub fn bootstrap(&self) -> Uuid {
+        self.bootstrap
+    }
     pub fn principal(&self) -> &crate::device::DevicePrincipal {
         &self.principal
     }
@@ -120,8 +124,8 @@ impl Source {
     pub fn installation(&self) -> Uuid {
         self.installation
     }
-    pub fn runtime(&self) -> &wire::RuntimeProfile {
-        &self.runtime
+    pub fn runtime(&self) -> Option<&wire::RuntimeProfile> {
+        self.runtime.as_ref()
     }
 }
 #[derive(Deserialize)]
@@ -132,9 +136,10 @@ struct Stored {
     credential: Uuid,
     generation: i64,
     source: rss_mdm_inventory::ReportSource,
-    runtime: wire::RuntimeProfile,
+    runtime: Option<wire::RuntimeProfile>,
+    bootstrap: Uuid,
 }
-pub(super) async fn source(
+pub(crate) async fn source(
     c: &mut PgConnection,
     tenant: rss_request_context::TenantId,
     value: serde_json::Value,
@@ -142,6 +147,12 @@ pub(super) async fn source(
     let s: Stored = serde_json::from_value(value).map_err(|_| Error::Corrupt)?;
     if s.source.channel() != rss_mdm_inventory::Channel::Mdm || s.installation.is_nil() {
         return Err(Error::Corrupt);
+    }
+    let current: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_access.agent_bootstraps WHERE tenant_id=$1::uuid AND id=$2 AND installation=$3 AND state<>'revoked' AND deadline>extract(epoch FROM clock_timestamp()) AND source->>'registration'=$4 AND source->>'credential'=$5 AND source->>'generation'=$6)")
+        .bind(tenant.to_string()).bind(s.bootstrap).bind(s.installation).bind(s.registration.to_string()).bind(s.credential.to_string()).bind(s.generation.to_string())
+        .fetch_one(&mut *c).await.map_err(db)?;
+    if !current {
+        return Err(Error::Forbidden);
     }
     let locator: String = sqlx::query_scalar(
         r#"
@@ -156,10 +167,24 @@ registration=$3 AND channel='mdm' AND state='active'
     .await
     .map_err(db)?
     .ok_or(Error::Forbidden)?;
+    if locator.len() != 64 || !locator.is_ascii() {
+        return Err(Error::Corrupt);
+    }
     let mut bytes = [0u8; 32];
     for (i, b) in bytes.iter_mut().enumerate() {
         *b = u8::from_str_radix(&locator[i * 2..i * 2 + 2], 16).map_err(|_| Error::Corrupt)?
     }
+    let usage = match s.source {
+        rss_mdm_inventory::ReportSource::MdmWindows => rss_mdm_agent_wire::pki::Purpose::Windows,
+        rss_mdm_inventory::ReportSource::MdmApple => rss_mdm_agent_wire::pki::Purpose::Apple,
+        _ => return Err(Error::Forbidden),
+    };
+    rss_mdm_pki_service::registry::current_certificate_in(c, tenant, usage, &bytes)
+        .await
+        .map_err(|e| match e {
+            rss_mdm_pki_service::Error::Storage => Error::Storage,
+            _ => Error::Forbidden,
+        })?;
     let mount = crate::device::ChannelMount::new(tenant, s.source, crate::device::Purpose::Primary);
     let principal = crate::device::store::management_in(c, &mount.credential(bytes)?).await?;
     if principal.registration() != s.registration
@@ -173,6 +198,7 @@ registration=$3 AND channel='mdm' AND state='active'
         report_source: s.source,
         installation: s.installation,
         runtime: s.runtime,
+        bootstrap: s.bootstrap,
     })
 }
 

@@ -272,9 +272,38 @@ impl Inputs {
         tx: &mut PgTransaction<'_>,
         action: &rss_mdm_policy::Action,
     ) -> Result<Option<[u8; 32]>> {
+        if let rss_mdm_policy::Action::EnsureAgentInstalled { packages, .. } = action {
+            let tenant = tx.tenant_id();
+            let mut bindings = Vec::new();
+            for (target, id) in packages {
+                let id = *id;
+                let package = tx
+                    .with_connection(move |c| {
+                        Box::pin(async move {
+                            Ok(
+                                rss_mdm_software_service::agent_packages::resolve_in(c, tenant, id)
+                                    .await
+                                    .map_err(crate::agent_preparation::publication_error),
+                            )
+                        })
+                    })
+                    .await??;
+                bindings.push((
+                    *target,
+                    id,
+                    package.metadata.candidate_sha256,
+                    package.digest,
+                    package.lifecycle,
+                ));
+            }
+            return Ok(Some(
+                crate::transaction::fingerprint(&bindings)?
+                    .try_into()
+                    .map_err(|_| Error::Malformed)?,
+            ));
+        }
         let binding = match action {
-            rss_mdm_policy::Action::Software { resource, .. }
-            | rss_mdm_policy::Action::EnsureAgentInstalled { resource, .. } => resource,
+            rss_mdm_policy::Action::Software { resource, .. } => resource,
             _ => return Ok(None),
         };
         self.software.lock_in(tx).await?;

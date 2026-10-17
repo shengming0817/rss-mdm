@@ -95,6 +95,7 @@ async fn service_with_provider(
         origin: pki.origin.clone(),
         configuration_signer: Arc::new(crate::test_support::agent::fixture_signer()?),
         installations: Arc::new(crate::agent_configurations::Installations),
+        bootstrap: None,
         binding: Arc::new(crate::agent::Bindings),
         native: Arc::new(NoNative),
     })?))
@@ -190,6 +191,7 @@ async fn renewal_grant_lookup_survives_expired_identity_without_writing_authorit
             origin: pki.origin.clone(),
             configuration_signer: Arc::new(crate::test_support::agent::fixture_signer()?),
             installations: Arc::new(crate::agent_configurations::Installations),
+            bootstrap: None,
             binding: Arc::new(crate::agent::Bindings),
             native: Arc::new(NoNative),
         })?))

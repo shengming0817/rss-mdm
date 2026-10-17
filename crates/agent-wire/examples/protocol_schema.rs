@@ -42,6 +42,8 @@ fn main() {
             "ActivationReceipt": schemars::schema_for!(enroll::ActivationReceipt),
             "Progress": schemars::schema_for!(enroll::Progress),
             "RecoverIssuance": schemars::schema_for!(enroll::RecoverIssuance),
+            "NativeEnrollmentRequest": schemars::schema_for!(enroll::NativeEnrollmentRequest),
+            "NativeEnrollmentReceipt": schemars::schema_for!(enroll::NativeEnrollmentReceipt),
             "NativeGrantRequest": schemars::schema_for!(enroll::NativeGrantRequest),
             "ErrorBody": schemars::schema_for!(enroll::ErrorBody),
             "RenewalStatusRequest": schemars::schema_for!(enroll::RenewalStatusRequest),

@@ -32,7 +32,7 @@ fn startup_file_failures_keep_safe_categories() {
         let mut config = value["native_protocols"]["windows"].clone();
         config["trust_file"] = serde_json::json!(path);
         let providers = Arc::new(rss_mdm_pki_service::providers::Providers::new(vec![]).unwrap());
-        let result = Windows::load(serde_json::from_value(config).unwrap(), 0, providers, None);
+        let result = Windows::load(serde_json::from_value(config).unwrap(), 0, providers);
         let error = match result {
             Err(error) => error,
             Ok(_) => panic!("invalid trust accepted"),

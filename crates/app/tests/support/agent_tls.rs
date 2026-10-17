@@ -25,6 +25,14 @@ pub(crate) async fn peer_with_key(
     root: &Path,
     key_file: &str,
 ) -> anyhow::Result<HandshakePeer> {
+    peer_with_verifier(trust.verifier(), chain, root, key_file).await
+}
+pub(crate) async fn peer_with_verifier(
+    verifier: Arc<dyn rustls::server::danger::ClientCertVerifier>,
+    chain: &[Vec<u8>],
+    root: &Path,
+    key_file: &str,
+) -> anyhow::Result<HandshakePeer> {
     let provider = Arc::new(rustls::crypto::ring::default_provider());
     let certificates = CertificateDer::pem_slice_iter(&std::fs::read(root.join("server.crt"))?)
         .collect::<Result<Vec<_>, _>>()?;
@@ -33,7 +41,7 @@ pub(crate) async fn peer_with_key(
     )?));
     let server = rustls::ServerConfig::builder_with_provider(provider.clone())
         .with_safe_default_protocol_versions()?
-        .with_client_cert_verifier(trust.verifier())
+        .with_client_cert_verifier(verifier)
         .with_single_cert(certificates, key)?;
     let mut roots = rustls::RootCertStore::empty();
     roots.add(CertificateDer::from(

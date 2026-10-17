@@ -32,7 +32,7 @@ pub(crate) fn now() -> i64 {
 }
 pub(super) fn windows() -> anyhow::Result<Windows> {
     let config = serde_json::from_slice(&std::fs::read(root()?.join("windows.json"))?)?;
-    Ok(Windows::load(config, now(), fixture_providers()?, None)?)
+    Ok(Windows::load(config, now(), fixture_providers()?)?)
 }
 pub(super) async fn complete(
     store: &rss_mdm_audit_integration::AuditStore,
@@ -252,15 +252,13 @@ impl Host {
         value["flow"]["storage"]["database"] = serde_json::json!({"host":"localhost","port":db.get_port(),"name":db.get_database().unwrap(),"user":"mdm_flow_runtime","password_file":management_password,"ca_file":root.join("ca.crt")});
         value["execution"]["database"] = value["flow"]["storage"]["database"].clone();
         value["execution"]["database"]["user"] = "mdm_command_runtime".into();
+        let _ = agent;
         let original: serde_json::Value =
             serde_json::from_slice(&std::fs::read(std::env::var("MDM_TEST_CONFIG")?)?)?;
         value["content"] = original["content"].clone();
         value["agent_pki"] = original["agent_pki"].clone();
         value["device_pki"] = original["device_pki"].clone();
         value["native_protection_key_file"] = original["native_protection_key_file"].clone();
-        if let Some(agent) = agent {
-            value["agent_installation"] = agent;
-        }
         if push {
             let secret = root.join(format!("wns-{}-secret", Uuid::new_v4()));
             std::fs::write(&secret, "fixture-secret")?;
@@ -369,10 +367,6 @@ impl Host {
                 .expect("Windows test configuration"),
             now(),
             crate::device_pki::providers(&config.device_pki)?,
-            config
-                .agent_installation
-                .identity(rss_mdm_policy::Platform::Windows)
-                .cloned(),
         )?;
         if let Some((mut binding, verifier, jit)) = entra {
             let view = provider(&identity, &secret, &binding.token, jit).await?;

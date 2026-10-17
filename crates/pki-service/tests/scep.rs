@@ -1,4 +1,5 @@
-use super::*;
+use http::HeaderMap;
+use rss_mdm_pki_service::scep::decode;
 #[test]
 fn signed_body_is_required_and_replay_window_is_bounded() {
     let key = ring::hmac::Key::new(ring::hmac::HMAC_SHA256, b"test-secret");

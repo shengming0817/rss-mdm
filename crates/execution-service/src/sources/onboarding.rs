@@ -82,9 +82,7 @@ pub async fn state_in(
     match frozen {
         Frozen::AgentInstall { action } => {
             match fact.state.as_str() {
-                "installed" if source == ReportSource::MdmWindows => {
-                    return status(State::AlreadySatisfied);
-                }
+                "installed" => return status(State::ChannelUnknown),
                 "absent" => (),
                 _ => return status(State::ChannelUnknown),
             }
@@ -105,34 +103,13 @@ pub async fn state_in(
             let Some(package) = action.packages.get(&target) else {
                 return status(State::MissingVariant);
             };
-            let Some(pin) = service.agent_installation.packages.get(&target) else {
-                return status(State::MissingVariant);
-            };
-            let identity = match &package.identity {
-                crate::agent_install::Identity::Windows { product, .. } => product.to_string(),
-                crate::agent_install::Identity::Macos { bundle, .. } => bundle.clone(),
-            };
-            if identity != evidence.identity
-                || package.identity != pin.identity
-                || package.artifact.sha256 != pin.sha256
-                || package.version != pin.version
-            {
-                return status(State::MissingVariant);
+            if !evidence.matches(&package.detection_identity()) {
+                return status(State::ChannelUnknown);
             }
-            let action = action.clone();
+            let package = package.clone();
             let authorized = tx
                 .with_connection(move |c| {
-                    Box::pin(async move {
-                        Ok(rss_mdm_software_service::catalog::admitted_on(
-                            c,
-                            tenant,
-                            action.resource.id.as_str(),
-                            action.resource.version.as_str(),
-                            action.resource_digest,
-                            action.lifecycle_binding,
-                        )
-                        .await)
-                    })
+                    Box::pin(async move { Ok(package.admitted_on(c, tenant).await) })
                 })
                 .await??;
             if !authorized {

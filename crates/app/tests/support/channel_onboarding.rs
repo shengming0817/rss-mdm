@@ -6,14 +6,6 @@ pub(crate) fn bytes() -> Vec<u8> {
         .as_bytes()
         .to_vec()
 }
-pub(crate) fn pin(windows: bool) -> Value {
-    let identity = if windows {
-        json!({"platform":"windows","product":"12345678-1234-4234-8234-123456789abc","publisher":"RSS controlled publisher"})
-    } else {
-        json!({"platform":"macos","receipt":"com.rss.agent.pkg","bundle":"com.rss.agent","team":"RSS1234567"})
-    };
-    json!({"content_origin":"https://mdm.example.test:9445","packages":{if windows{"windows_x86_64"}else{"macos_aarch64"}:{"identity":identity,"package":"RSS.Agent","version":"1.2.3","sha256":Sha256::digest(bytes()).to_vec()}}})
-}
 pub(crate) async fn grants(user: &Browser, router: &Router) -> Result<()> {
     let subject = browser_subject(user, router).await?;
     let mut grants = identity::device_grants(
@@ -65,6 +57,25 @@ pub(crate) async fn publish_until(
     windows: bool,
     until: Option<i64>,
 ) -> Result<Uuid> {
+    publish_format(user, router, device, app, windows, until, false).await
+}
+pub(crate) async fn publish_msix(
+    user: &mut Browser,
+    router: &Router,
+    device: &str,
+    app: &crate::api::Assembly,
+) -> Result<Uuid> {
+    publish_format(user, router, device, app, true, None, true).await
+}
+async fn publish_format(
+    user: &mut Browser,
+    router: &Router,
+    device: &str,
+    app: &crate::api::Assembly,
+    windows: bool,
+    until: Option<i64>,
+    msix: bool,
+) -> Result<Uuid> {
     use software::write;
     let planning = &app.flow.planning;
     let content = app.content_writer.as_ref().expect("installation content");
@@ -72,6 +83,7 @@ pub(crate) async fn publish_until(
     let source = Uuid::new_v4();
     let source_path = format!("/api/v1/software/sources/{source}/revisions/1");
     let registered=write(user,router,&source_path,0,json!({"action":"register","definition":{"id":source,"revision":"1","protocol":{"kind":"private"}}})).await?;
+    let package_bytes = if msix { msix_bytes()? } else { bytes() };
     let resource = Uuid::new_v4();
     let platform = if windows { "windows" } else { "macos" };
     let arch = if windows { "x86_64" } else { "aarch64" };
@@ -80,12 +92,21 @@ pub(crate) async fn publish_until(
     } else {
         json!({"kind":"pkg_receipt","receipt":"com.rss.agent.pkg","version":"1.2.3"})
     };
-    let definition = json!({"source":registered["snapshot"],"package":"RSS.Agent","version":"1.2.3","artifacts":{"package":{"reference":"agent-installer","length":bytes().len(),"sha256":Sha256::digest(bytes()).to_vec()}},"reboot":"report","downgrade":"deny","dependencies":[],"behavior":{"kind":if windows{"msi"}else{"pkg"},"installer":"package","scope":"system","install":{"runAs":"system","arguments":[],"environment":{},"timeoutSeconds":60,"outputBytes":4096,"exitCodes":{"success":[0],"reboot":[]}},"upgrade":"in_place","uninstall":null,"detect":detect,"upgradeInvocation":{"runAs":"system","arguments":[],"environment":{},"timeoutSeconds":60,"outputBytes":4096,"exitCodes":{"success":[0],"reboot":[]}}},"signatures":[],"provenance":{"kind":"private"},"export":{"kind":"disabled"}});
+    let mut definition = json!({"source":registered["snapshot"],"package":"RSS.Agent","version":"1.2.3","artifacts":{"package":{"reference":"agent-installer","length":package_bytes.len(),"sha256":Sha256::digest(&package_bytes).to_vec()}},"reboot":"report","downgrade":"deny","dependencies":[],"behavior":{"kind":if windows{"msi"}else{"pkg"},"installer":"package","scope":"system","install":{"runAs":"system","arguments":[],"environment":{},"timeoutSeconds":60,"outputBytes":4096,"exitCodes":{"success":[0],"reboot":[]}},"upgrade":"in_place","uninstall":null,"detect":detect,"upgradeInvocation":{"runAs":"system","arguments":[],"environment":{},"timeoutSeconds":60,"outputBytes":4096,"exitCodes":{"success":[0],"reboot":[]}}},"signatures":[],"provenance":{"kind":"private"},"export":{"kind":"disabled"}});
+    if msix {
+        definition["version"] = json!("1.2.3.0");
+        definition["behavior"] = json!({"kind":"msix","container":{"kind":"package","installer":"package"},"identity":{"name":"RSS.Agent","publisher":"CN=RSS","version":[1,2,3,0],"architecture":"x86_64","resourceId":""},"dependencies":[],"deployment":{"kind":"device_provisioning"},"minimumOs":[10,0,19041,0],"requireSideload":true,"allowUnsigned":false,"uninstall":false,"invocation":{"runAs":"system","arguments":[],"environment":{},"timeoutSeconds":60,"outputBytes":4096,"exitCodes":{"success":[0],"reboot":[]}},"upgrade":"in_place"});
+    }
+    let base: Value = serde_json::from_slice(&std::fs::read(std::env::var("MDM_TEST_CONFIG")?)?)?;
+    let manifest = serde_json::to_vec(
+        &json!({"wireVersion":1,"tenantId":case_tenant(),"target":{"platform":platform,"architecture":arch},"version":definition["version"],"origin":"https://mdm.example.test:9445","signingKeys":base["task_signing"]["trusted_keys"],"packaging":if msix {json!({"kind":"windows_msix","publisher":"CN=RSS","signature_evidence":"controlled-protocol-fixture; OS trust not asserted"})}else if windows {json!({"kind":"windows_msi","publisher":"RSS controlled publisher","signature_evidence":"controlled-protocol-fixture"})}else{json!({"kind":"macos_pkg","bundle":"com.rss.agent","team":"RSS1234567","notarization_evidence":"controlled-protocol-fixture"})}}),
+    )?;
+    definition["artifacts"]["candidate"] = json!({"reference":"agent-candidate","length":manifest.len(),"sha256":Sha256::digest(&manifest).to_vec()});
     let version =
         software_execution::seed_resource(planning, resource, platform, arch, definition).await?;
     let request=Request::builder().method(Method::POST).uri(format!("/api/v1/resources/{resource}/content?version=v1&variant=default&platform={platform}&architecture={arch}&operation={}",Uuid::new_v4()))
         .header("host","mdm.example.test").header("origin","https://mdm.example.test").header("x-identity-request","1").header("x-csrf-token",user.csrf.as_ref().unwrap())
-        .header("cookie",user.cookies.iter().map(|(k,v)|format!("{k}={v}")).collect::<Vec<_>>().join("; ")).header("content-type","application/octet-stream").body(Body::from(bytes()))?;
+        .header("cookie",user.cookies.iter().map(|(k,v)|format!("{k}={v}")).collect::<Vec<_>>().join("; ")).header("content-type","application/octet-stream").body(Body::from(package_bytes))?;
     {
         let _guard = software::content_setup_guard().await?;
         let response = router.clone().oneshot(request).await?;
@@ -95,7 +116,25 @@ pub(crate) async fn publish_until(
             response.status()
         );
     }
+    let request=Request::builder().method(Method::POST).uri(format!("/api/v1/resources/{resource}/content?version=v1&variant=default&platform={platform}&architecture={arch}&artifact=candidate&operation={}",Uuid::new_v4()))
+        .header("host","mdm.example.test").header("origin","https://mdm.example.test").header("x-identity-request","1").header("x-csrf-token",user.csrf.as_ref().unwrap())
+        .header("cookie",user.cookies.iter().map(|(k,v)|format!("{k}={v}")).collect::<Vec<_>>().join("; ")).header("content-type","application/octet-stream").body(Body::from(manifest))?;
+    {
+        let _guard = software::content_setup_guard().await?;
+        let response = router.clone().oneshot(request).await?;
+        ensure!(
+            response.status() == StatusCode::CREATED,
+            "candidate upload: {:?}",
+            response.status()
+        );
+    }
     software_execution::seed_enabled(planning, content, &version).await?;
+    let (status,published)=user.call(router,Method::POST,"/api/v1/agent-packages",Some(json!({"operationId":Uuid::new_v4(),"resource":resource,"version":"v1","variant":"default","target":{"platform":platform,"architecture":arch},"channel":"test","manifestArtifact":"candidate"}))).await?;
+    ensure!(
+        status == StatusCode::OK,
+        "Agent publication: {status} {published}"
+    );
+
     let scope = Uuid::new_v4();
     if windows {
         agent_execution::seed_scope(planning, scope, json!([{"kind":"device","id":device}]))
@@ -106,7 +145,7 @@ pub(crate) async fn publish_until(
         write(user,router,&format!("/api/v1/scopes/{scope}"),0,json!({"action":"put","definition":{"targets":[{"kind":"group","id":group}],"limitations":null,"exclusions":[]}})).await?;
     }
     let policy = Uuid::new_v4();
-    let mut input = json!({"action":"put","enabled":true,"definition":{"scope":scope,"action":{"kind":"ensure_agent_installed","resource":{"kind":"software","id":resource,"version":"v1","variants":{if windows{"windows_x86_64"}else{"macos_aarch64"}:"default"}},"runLifetimeSeconds":600}}});
+    let mut input = json!({"action":"put","enabled":true,"definition":{"scope":scope,"action":{"kind":"ensure_agent_installed","packages":{if windows{"windows_x86_64"}else{"macos_aarch64"}:published["releaseId"]},"runLifetimeSeconds":600}}});
     if let Some(until) = until {
         input["definition"]["action"]["schedule"] = json!({"trigger":{"kind":"check_in","minimumSeconds":60},"notBefore":0,"until":until,"jitterSeconds":0,"window":null,"misfire":{"kind":"coalesce_one"}});
     }
@@ -122,7 +161,7 @@ pub(crate) async fn publish_until(
 }
 pub(crate) async fn operation(policy: Uuid) -> Result<Uuid> {
     tokio::time::timeout(Duration::from_secs(30),async{loop{
-        let id=pg(&format!("SELECT o.id FROM mdm_commands.operations o JOIN mdm_policy.versions v ON(v.tenant_id,v.id)=(o.tenant_id,o.policy_version) JOIN rss_device_command.commands d ON d.tenant_id=o.tenant_id AND d.command_id=o.id::text WHERE o.tenant_id='{}' AND v.policy='{policy}' AND d.status IN('published','received','applied')",case_tenant()))?;
+        let id=pg(&format!("SELECT o.id FROM mdm_commands.operations o JOIN mdm_policy.versions v ON(v.tenant_id,v.id)=(o.tenant_id,o.policy_version) JOIN rss_device_command.commands d ON d.tenant_id=o.tenant_id AND d.command_id=o.id::text WHERE o.tenant_id='{}' AND v.policy='{policy}' AND o.authority->>'stage'='install' AND d.status IN('published','received','applied')",case_tenant()))?;
         if !id.trim().is_empty(){return Ok::<_,anyhow::Error>(Uuid::parse_str(id.trim())?);}tokio::time::sleep(Duration::from_millis(100)).await;
     }}).await.map_err(|error| {
         let diagnosis=pg(&format!("SELECT jsonb_build_object('clock',(SELECT revision FROM mdm.asset_clock WHERE tenant_id='{tenant}'),'dispatch',(SELECT to_jsonb(d) FROM mdm_planning.asset_dispatch d WHERE tenant_id='{tenant}'),'groups',(SELECT jsonb_agg(to_jsonb(g)) FROM mdm_group.groups g WHERE tenant_id='{tenant}'),'jobs',(SELECT jsonb_agg(jsonb_build_object('kind',kind,'done',completed,'failure',failure,'forwarded',forwarded)) FROM mdm_automation.automation_jobs WHERE tenant_id='{tenant}'),'configuration',(SELECT jsonb_agg(to_jsonb(c)) FROM mdm_planning.configuration_devices c WHERE tenant_id='{tenant}'))",tenant=case_tenant())).unwrap_or_else(|_|"diagnostic unavailable".into());
@@ -155,4 +194,13 @@ pub(crate) async fn diagnosis(
         })
         .cloned()
         .ok_or_else(|| anyhow::anyhow!("missing device diagnosis: {:?}", reply.1))
+}
+
+fn msix_bytes() -> Result<Vec<u8>> {
+    let mut archive = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+    archive.start_file("AppxManifest.xml", zip::write::SimpleFileOptions::default())?;
+    archive.write_all(br#"<Package xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10"><Identity Name="RSS.Agent" Publisher="CN=RSS" Version="1.2.3.0" ProcessorArchitecture="x64"/><Dependencies><TargetDeviceFamily Name="Windows.Desktop" MinVersion="10.0.19041.0"/></Dependencies></Package>"#)?;
+    archive.start_file("payload.bin", zip::write::SimpleFileOptions::default())?;
+    archive.write_all(b"controlled MSIX protocol material; not an OS-signed release")?;
+    Ok(archive.finish()?.into_inner())
 }

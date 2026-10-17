@@ -9,7 +9,7 @@ pub const API_VERSION: u8 = 1;
 pub const SCHEMA_MANIFEST: &str = include_str!("../schema/pki/manifest.json");
 /// SHA-256 of the ordered schema file bytes named by [`SCHEMA_MANIFEST`].
 pub const SCHEMA_FINGERPRINT: &str =
-    "bde3c65a90d9c4c986a3d62168db28ac0dd092c32179d621108b2150f6fbaa20";
+    "be5074ea67a0d0541dd1d2f2a129a15ed2229b5ded29a581bcc4d40819ec8cbd";
 
 const MAX_REVISION: u64 = i64::MAX as u64;
 const MAX_ISSUERS: usize = 16;
@@ -25,6 +25,8 @@ pub enum Purpose {
     Apple,
     /// Agent runtime identity.
     Agent,
+    /// Short-lived native installation bootstrap, excluded from runtime identity.
+    AgentBootstrap,
 }
 /// Approved issuer lifecycle. Retired issuers are excluded from distributed trust.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]

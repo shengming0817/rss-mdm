@@ -36,6 +36,7 @@ pub mod actions;
 mod apple;
 mod apple_assets;
 mod apple_push;
+mod bootstrap_delivery;
 mod input_storage;
 mod managed_registration;
 mod native_configuration;
@@ -166,7 +167,6 @@ impl ExecutionService {
             source: self.source.clone(),
             software: self.inputs.software.clone(),
             agent_store: self.agent_store.clone(),
-            agent_installation: self.inputs.agent_installation.clone(),
         }
     }
 }
@@ -258,7 +258,8 @@ pub mod queries;
 pub struct Inputs {
     pub(crate) protection: Arc<rss_mdm_native_protection::Protector>,
     pub(crate) software: Arc<rss_mdm_software_service::preparation::Preparation>,
-    pub(crate) agent_installation: crate::agent_install::Config,
+    pub(crate) agent_origin: String,
+    pub(crate) bootstrap: Option<rss_mdm_registration_service::agent::bootstrap::Deployment>,
     pub(crate) enrollment_entries: crate::enrollment::Entries,
     pub(crate) runtime: Arc<PgRuntime>,
     pub(crate) tenant: TenantId,
@@ -268,7 +269,8 @@ pub struct Inputs {
 pub struct InputDependencies {
     pub protection: Arc<rss_mdm_native_protection::Protector>,
     pub software: Arc<rss_mdm_software_service::preparation::Preparation>,
-    pub agent_installation: crate::agent_install::Config,
+    pub agent_origin: String,
+    pub bootstrap: Option<rss_mdm_registration_service::agent::bootstrap::Deployment>,
     pub enrollment_entries: crate::enrollment::Entries,
     pub runtime: Arc<PgRuntime>,
     pub tenant: TenantId,
@@ -280,7 +282,8 @@ impl Inputs {
         Self {
             protection: dependencies.protection,
             software: dependencies.software,
-            agent_installation: dependencies.agent_installation,
+            agent_origin: dependencies.agent_origin,
+            bootstrap: dependencies.bootstrap,
             enrollment_entries: dependencies.enrollment_entries,
             runtime: dependencies.runtime,
             tenant: dependencies.tenant,

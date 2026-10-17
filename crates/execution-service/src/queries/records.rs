@@ -259,7 +259,16 @@ pub struct WindowsFrame {
 }
 #[derive(Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct BootstrapObservation {
+    state: String,
+    delivery: Uuid,
+    cleanup: Option<Uuid>,
+    deadline: i64,
+}
+#[derive(Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct InstallationObservation {
+    bootstrap: Option<BootstrapObservation>,
     protocol: String,
     delivery: String,
     installation: String,

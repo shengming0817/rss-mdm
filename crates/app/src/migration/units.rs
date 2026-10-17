@@ -230,6 +230,10 @@ pub(super) fn units() -> Vec<(&'static str, &'static str)> {
             rss_mdm_software_service::agent_packages::INSTALL_SQL,
         ),
         (
+            "registration-agent-bootstrap-v1",
+            rss_mdm_registration_service::AGENT_BOOTSTRAP_SQL,
+        ),
+        (
             "apple-organizations-v1",
             rss_mdm_apple_channel::ORGANIZATIONS_SQL,
         ),
@@ -253,6 +257,10 @@ pub(super) fn units() -> Vec<(&'static str, &'static str)> {
         (
             "windows-entra-web-v2",
             rss_mdm_windows_channel::ENTRA_WEB_SQL,
+        ),
+        (
+            "registration-agent-native-v1",
+            rss_mdm_registration_service::AGENT_NATIVE_SQL,
         ),
         (
             "asset-condition-scopes-v1",

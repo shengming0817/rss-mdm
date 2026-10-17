@@ -265,3 +265,13 @@ impl axum::response::IntoResponse for Error {
         response
     }
 }
+
+impl From<rss_mdm_pki_service::Error> for Error {
+    fn from(error: rss_mdm_pki_service::Error) -> Self {
+        match error {
+            rss_mdm_pki_service::Error::Request => Self::Malformed,
+            rss_mdm_pki_service::Error::Forbidden => Self::Unauthorized,
+            _ => Self::Unavailable(crate::Failure::Database),
+        }
+    }
+}

@@ -63,14 +63,18 @@ pub async fn receive(
         &sealed,
     )?;
     let request = protocol::decode(plain.expose())?;
-    let bundle = request
+    let bundles = request
         .get("Command")
         .and_then(plist::Value::as_dictionary)
         .and_then(|d| d.get("Identifiers"))
         .and_then(plist::Value::as_array)
-        .and_then(|a| a.first())
-        .and_then(plist::Value::as_string)
-        .ok_or(Error::Malformed)?;
+        .ok_or(Error::Malformed)?
+        .iter()
+        .map(|v| v.as_string().map(str::to_owned).ok_or(Error::Malformed))
+        .collect::<Result<Vec<_>, _>>()?;
+    if bundles.is_empty() {
+        return Err(Error::Malformed);
+    }
     let platform = sqlx::query("SELECT id,response FROM mdm_apple.attempts WHERE tenant_id=$1::uuid AND collection=$2 AND phase='collect_agent_platform'").bind(p.tenant().to_string()).bind(id_collection).fetch_one(&mut *c).await.map_err(db)?;
     let platform = platform
         .try_get::<Option<Vec<u8>>, _>("response")
@@ -91,17 +95,27 @@ pub async fn receive(
         .and_then(|b| protocol::decode(b.expose()).ok())
         .and_then(|d| wire::architecture(&d).ok())
         .map(str::to_owned);
-    let presence = if status == protocol::Status::Acknowledged {
-        wire::presence(d, bundle).ok()
-    } else {
-        None
-    };
-    let (state, version) = match presence {
-        Some(wire::Presence::Absent) => (AgentInstallation::Absent, None),
-        Some(wire::Presence::PresentUnverified { version }) => {
-            (AgentInstallation::Unknown, Some(version))
+    let mut absent = status == protocol::Status::Acknowledged;
+    let mut version = None;
+    let mut observed_identity = String::new();
+    for bundle in &bundles {
+        match wire::presence(d, bundle)
+            .ok()
+            .filter(|_| status == protocol::Status::Acknowledged)
+        {
+            Some(wire::Presence::Absent) => (),
+            Some(wire::Presence::PresentUnverified { version: v }) => {
+                absent = false;
+                version = Some(v);
+                observed_identity = bundle.clone();
+            }
+            _ => absent = false,
         }
-        _ => (AgentInstallation::Unknown, None),
+    }
+    let state = if absent {
+        AgentInstallation::Absent
+    } else {
+        AgentInstallation::Unknown
     };
     facts.extend(
         channel::finish_in(
@@ -111,7 +125,9 @@ pub async fn receive(
             ReportSource::MdmApple,
             state,
             Some(AgentEvidence {
-                identity: bundle.into(),
+                provisioned: false,
+                checked_identities: bundles,
+                identity: observed_identity,
                 publisher: None,
                 version,
                 architecture,
@@ -125,11 +141,23 @@ pub async fn send(
     c: &mut PgConnection,
     protection: &rss_mdm_native_protection::Protector,
     p: &DevicePrincipal,
-    identity: Option<&Identity>,
 ) -> Result<(Vec<u8>, Vec<rss_mdm_audit_integration::Fact>), Error> {
-    let Some(Identity::Macos { bundle, .. }) = identity else {
+    let identities = rss_mdm_execution_service::agent_install::identities_on(
+        c,
+        p.tenant(),
+        ReportSource::MdmApple,
+    )
+    .await?;
+    let bundles: std::collections::BTreeSet<_> = identities
+        .into_iter()
+        .filter_map(|i| match i {
+            Identity::Macos { bundle, .. } => Some(bundle),
+            _ => None,
+        })
+        .collect();
+    if bundles.is_empty() {
         return Ok((vec![], vec![]));
-    };
+    }
     let tenant = p.tenant().to_string();
     let allowed:bool=sqlx::query_scalar("SELECT access_rights & 256 = 256 FROM mdm_apple.devices WHERE tenant_id=$1::uuid AND registration=$2 AND state='active'").bind(&tenant).bind(p.registration()).fetch_one(&mut *c).await.map_err(db)?;
     if !allowed {
@@ -164,9 +192,14 @@ pub async fn send(
         id
     } else {
         let (id, _, sequence) = channel::start_in(c, p, ReportSource::MdmApple).await?;
+        let mut query = wire::query(bundles.first().ok_or(Error::Malformed)?)?;
+        query.insert(
+            "Identifiers".into(),
+            plist::Value::Array(bundles.into_iter().map(plist::Value::String).collect()),
+        );
         for (phase, payload) in [
             ("collect_agent_platform", wire::platform()),
-            ("collect_agent", wire::query(bundle)?),
+            ("collect_agent", query),
         ] {
             let attempt = Uuid::new_v4();
             let request = protocol::command(attempt, payload)?;

@@ -15,6 +15,7 @@ pub fn purpose(value: Purpose) -> &'static str {
         Purpose::Windows => "windows",
         Purpose::Apple => "apple",
         Purpose::Agent => "agent",
+        Purpose::AgentBootstrap => "agent_bootstrap",
     }
 }
 #[derive(Serialize, Deserialize)]
@@ -513,7 +514,7 @@ impl Registry {
                     if revision!=*expected as i64 {return Err(Error::Conflict);}
                     if *state=="approved" || *state=="activated" {
                         let missing:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_access.registrations r WHERE r.tenant_id=$1::uuid AND r.state='active' AND ((r.channel='agent' AND $3='agent') OR (r.channel='mdm' AND EXISTS(SELECT 1 FROM mdm_access.requests q WHERE q.tenant_id=r.tenant_id AND q.id=r.request_id AND q.source=$3))) AND NOT EXISTS(SELECT 1 FROM mdm_pki.acknowledgements a WHERE a.tenant_id=r.tenant_id AND a.registration=r.id AND a.rotation=$2 AND a.revision>=(SELECT revision FROM mdm_pki.rotations WHERE tenant_id=r.tenant_id AND id=$2)))")
-                            .bind(p.tenant_id()).bind(*id).bind(match trust.purpose {Purpose::Windows=>"mdm.windows",Purpose::Apple=>"mdm.apple",Purpose::Agent=>"agent"})
+                            .bind(p.tenant_id()).bind(*id).bind(match trust.purpose {Purpose::Windows=>"mdm.windows",Purpose::Apple=>"mdm.apple",Purpose::Agent=>"agent",Purpose::AgentBootstrap=>"agent_bootstrap"})
                             .fetch_one(&mut *c).await.map_err(|_|Error::Storage)?;
                         if missing {return Err(Error::Conflict);}
                     }
@@ -612,3 +613,27 @@ pub async fn persist(c: &mut sqlx::PgConnection, trust: &Trust) -> Result<(), Er
 }
 use sha2::Digest;
 use x509_cert::der::Decode;
+
+/// Revalidate a persisted identity when a later operation borrows its authority without TLS.
+/// The certificate, current purpose trust and pending revocations belong to this registry.
+pub async fn current_certificate_in(
+    c: &mut sqlx::PgConnection,
+    tenant: TenantId,
+    usage: Purpose,
+    fingerprint: &[u8],
+) -> Result<(), Error> {
+    let row=sqlx::query("SELECT k.certificate,t.body,floor(extract(epoch FROM clock_timestamp()))::bigint AS now FROM mdm_pki.certificates k JOIN mdm_pki.trust t USING(tenant_id,purpose) WHERE k.tenant_id=$1::uuid AND k.purpose=$2 AND k.fingerprint=$3 AND NOT EXISTS(SELECT 1 FROM mdm_pki.revocations r WHERE r.tenant_id=k.tenant_id AND r.purpose=k.purpose AND r.issuer=k.issuer AND r.serial=k.serial)")
+        .bind(tenant.to_string()).bind(purpose(usage)).bind(fingerprint).fetch_optional(c).await.map_err(|_|Error::Storage)?.ok_or(Error::Forbidden)?;
+    let now: i64 = row.try_get("now").map_err(|_| Error::Storage)?;
+    let trust: Trust = serde_json::from_slice(
+        &row.try_get::<Vec<u8>, _>("body")
+            .map_err(|_| Error::Storage)?,
+    )
+    .map_err(|_| Error::Configuration)?;
+    let trust = DeviceTrust::new(trust, usage, now).map_err(|_| Error::Forbidden)?;
+    let certificate: Vec<u8> = row.try_get("certificate").map_err(|_| Error::Storage)?;
+    trust
+        .verify(&[certificate.into()], now)
+        .map_err(|_| Error::Forbidden)?;
+    Ok(())
+}

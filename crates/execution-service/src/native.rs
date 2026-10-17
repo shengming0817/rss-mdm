@@ -643,6 +643,18 @@ pub(crate) async fn send_on(
                 )
             })
             .transpose()?;
+        if let Some(package) = authority.agent_package()
+            && let crate::agent_install::Identity::WindowsMsix { minimum_os, .. } =
+                &package.identity
+            && let Some(context) = fresh
+            && context
+                .build
+                .is_none_or(|build| build < minimum_os.map(u32::from))
+        {
+            let failure = serde_json::json!({"platform":"windows","phase":"prepare","reason":"package_minimum_os","context":context});
+            sqlx::query("UPDATE mdm_commands.operations SET dispatch_failure=$3,revision=revision+1 WHERE tenant_id=$1::uuid AND id=$2 AND dispatch_failure IS NULL").bind(&tenant).bind(op.operation_id).bind(failure).execute(&mut *c).await.map_err(db)?;
+            continue;
+        }
         let frozen = old
             .as_ref()
             .map(|r| r.try_get::<Option<serde_json::Value>, _>("platform"))

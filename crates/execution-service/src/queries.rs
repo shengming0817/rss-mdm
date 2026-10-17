@@ -5,7 +5,6 @@ pub struct Admission {
     pub(crate) source: Arc<dyn source_authority::SourceAuthority>,
     pub(crate) software: Arc<rss_mdm_software_service::preparation::Preparation>,
     pub(crate) agent_store: Arc<dyn channels::Agent>,
-    pub(crate) agent_installation: crate::agent_install::Config,
 }
 pub struct Queries {
     pub(crate) source: Arc<dyn source_authority::SourceAuthority>,
@@ -40,7 +39,6 @@ impl Queries {
             source: dependencies.source.clone(),
             software: dependencies.inputs.software.clone(),
             agent_store: dependencies.agent_store.clone(),
-            agent_installation: dependencies.inputs.agent_installation.clone(),
         };
         Self {
             admission,

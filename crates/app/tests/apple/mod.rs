@@ -71,6 +71,7 @@ impl Fixture {
         preserve_authorization: bool,
         ade: Option<rss_mdm_apple_channel::ade::Fixture>,
     ) -> Result<Self> {
+        let _ = agent;
         let (resources, mut fixture) = crate::test_support::Resources::build(move |resources| Box::pin(async move {
         let root = PathBuf::from(std::env::var("MDM_APPLE_FIXTURES")?);
         let manage =
@@ -84,9 +85,6 @@ impl Fixture {
         }
         let mut config = crate::test_support::identity::config(case_tenant())?;
         config.native_protocols.windows = None;
-        if let Some(agent) = agent {
-            config.agent_installation = serde_json::from_value(agent)?;
-        }
         let mut apple: config::Config =
             serde_json::from_slice(&std::fs::read(root.join("apple.json"))?)?;
         apple.account_keys.insert(
@@ -217,10 +215,6 @@ impl Fixture {
             config.native_protocols.apple.unwrap(),
             crate::clock::SystemClock.unix_seconds()?,
             crate::device_pki::providers(&config.device_pki)?,
-            config
-                .agent_installation
-                .identity(rss_mdm_policy::Platform::Macos)
-                .cloned(),
         )?;
         if let Some(ade) = ade {
             apple.channel = Arc::new(
@@ -670,7 +664,6 @@ fn startup_diagnostics(root: &std::path::Path) -> Result<()> {
             config,
             crate::clock::SystemClock.unix_seconds()?,
             fixture_providers(root)?,
-            None,
         ) {
             Err(crate::Error::Configuration(issue)) => ensure!(
                 format!("{issue:?}") == category,
@@ -684,7 +677,6 @@ fn startup_diagnostics(root: &std::path::Path) -> Result<()> {
         serde_json::from_value(original)?,
         crate::clock::SystemClock.unix_seconds()?,
         fixture_providers(root)?,
-        None,
     )?;
     ensure!(
         apple

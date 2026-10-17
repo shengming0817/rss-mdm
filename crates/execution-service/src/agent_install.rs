@@ -1,7 +1,7 @@
 //! Frozen Agent installation contracts and checked native package inputs.
 use crate::Error;
 use rss_mdm_authorization_service::UserGrant;
-use rss_mdm_policy::{Platform, SoftwareResourceBinding};
+use rss_mdm_policy::Platform;
 use rss_mdm_policy::{SoftwareTarget, schedule::Schedule};
 use rss_mdm_resource as resource;
 use serde::{Deserialize, Serialize};
@@ -13,9 +13,14 @@ use uuid::Uuid;
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(tag = "platform", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Identity {
-    Windows {
+    WindowsMsi {
         product: Uuid,
         publisher: String,
+    },
+    WindowsMsix {
+        family: String,
+        identity: resource::MsixIdentity,
+        minimum_os: [u16; 4],
     },
     Macos {
         receipt: String,
@@ -26,14 +31,17 @@ pub enum Identity {
 impl Identity {
     pub fn platform(&self) -> Platform {
         match self {
-            Self::Windows { .. } => Platform::Windows,
+            Self::WindowsMsi { .. } | Self::WindowsMsix { .. } => Platform::Windows,
             Self::Macos { .. } => Platform::Macos,
         }
     }
     pub fn validate(&self) -> std::result::Result<(), Error> {
         let bounded = |s: &str| !s.is_empty() && s.len() <= 256 && !s.chars().any(char::is_control);
         let valid = match self {
-            Self::Windows { product, publisher } => !product.is_nil() && bounded(publisher),
+            Self::WindowsMsi { product, publisher } => !product.is_nil() && bounded(publisher),
+            Self::WindowsMsix {
+                family, identity, ..
+            } => bounded(family) && bounded(&identity.name) && bounded(&identity.publisher),
             Self::Macos {
                 receipt,
                 bundle,
@@ -52,75 +60,8 @@ impl Identity {
 }
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
-pub struct Pin {
-    pub identity: Identity,
-    pub package: String,
-    pub version: String,
-    pub sha256: [u8; 32],
-}
-#[derive(Clone, Debug, Default, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct Config {
-    pub content_origin: String,
-    pub packages: BTreeMap<SoftwareTarget, Pin>,
-}
-impl Config {
-    pub fn validate(&self) -> std::result::Result<(), Error> {
-        if self.packages.is_empty() {
-            return if self.content_origin.is_empty() {
-                Ok(())
-            } else {
-                Err(Error::Malformed)
-            };
-        }
-        let origin = url::Url::parse(&self.content_origin).map_err(|_| Error::Malformed)?;
-        if self.content_origin.len() > 2048
-            || self.content_origin.chars().any(char::is_control)
-            || origin.scheme() != "https"
-            || origin.host_str().is_none()
-            || !origin.username().is_empty()
-            || origin.password().is_some()
-            || origin.path() != "/"
-            || origin.query().is_some()
-            || origin.fragment().is_some()
-        {
-            return Err(Error::Malformed);
-        }
-        for (target, pin) in &self.packages {
-            pin.identity.validate()?;
-            if target.parts().0 != pin.identity.platform()
-                || pin.package.is_empty()
-                || pin.version.is_empty()
-                || pin.sha256 == [0; 32]
-            {
-                return Err(Error::Malformed);
-            }
-        }
-        // Collection must have one stable product identity for each platform across architectures.
-        for platform in [Platform::Windows, Platform::Macos] {
-            let mut identities = self
-                .packages
-                .iter()
-                .filter(|(t, _)| t.parts().0 == platform)
-                .map(|(_, p)| &p.identity);
-            if let Some(first) = identities.next()
-                && identities.any(|i| i != first)
-            {
-                return Err(Error::Malformed);
-            }
-        }
-        Ok(())
-    }
-    pub fn identity(&self, platform: Platform) -> Option<&Identity> {
-        self.packages
-            .iter()
-            .find(|(target, _)| target.parts().0 == platform)
-            .map(|(_, p)| &p.identity)
-    }
-}
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
 pub struct Package {
+    pub release: rss_mdm_agent_wire::enroll::configuration::Installation,
     pub identity: Identity,
     pub target: SoftwareTarget,
     pub version: String,
@@ -133,9 +74,19 @@ impl Package {
     pub fn native_task(&self, operation: Uuid) -> std::result::Result<crate::Task, Error> {
         use crate::Task;
         Ok(match &self.identity {
-            Identity::Windows { .. } => Task::Windows {
+            Identity::WindowsMsi { .. } => Task::Windows {
                 request: rss_mdm_windows_mdm::native::Execution::Msi {
                     job: self.windows_job(operation).map_err(|_| Error::Malformed)?,
+                },
+            },
+            Identity::WindowsMsix { family, .. } => Task::Windows {
+                request: rss_mdm_windows_mdm::native::Execution::SyncMl {
+                    request: rss_mdm_windows_mdm::software::MsixInstall::new(
+                        family.clone(),
+                        self.url(operation),
+                    )
+                    .and_then(|v| v.request())
+                    .map_err(|_| Error::Malformed)?,
                 },
             },
             Identity::Macos { bundle, .. } => {
@@ -174,7 +125,7 @@ impl Package {
             native::Scope,
             software::{Enforcement, InstallJob},
         };
-        let Identity::Windows { product, .. } = &self.identity else {
+        let Identity::WindowsMsi { product, .. } = &self.identity else {
             return Err(rss_mdm_windows_mdm::CodecError::Unsupported);
         };
         Ok(InstallJob {
@@ -185,7 +136,7 @@ impl Package {
             operation: operation.to_string(),
             scope: Scope::Device,
             enforcement: Enforcement {
-                command_line: format!("/quiet /norestart RSS_INSTALLATION_OPERATION={operation}"),
+                command_line: "/quiet /norestart".into(),
                 timeout_minutes: 5,
                 retry_count: 0,
                 retry_interval_minutes: 5,
@@ -203,9 +154,6 @@ impl Package {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct FrozenInstall {
-    pub resource: SoftwareResourceBinding,
-    pub resource_digest: [u8; 32],
-    pub lifecycle_binding: [u8; 32],
     pub schedule: Schedule,
     pub run_lifetime_seconds: u32,
     pub packages: BTreeMap<SoftwareTarget, Package>,
@@ -300,6 +248,7 @@ pub(crate) async fn authorized_on(
         version,
         device,
         operation,
+        package,
         ..
     } = authority
     else {
@@ -359,20 +308,40 @@ pub(crate) async fn authorized_on(
             return Ok(false);
         }
     }
-    rss_mdm_software_service::catalog::admitted_on(
-        c,
-        rss_request_context::TenantId::parse(tenant).map_err(|_| Error::Malformed)?,
-        action.resource.id.as_str(),
-        action.resource.version.as_str(),
-        action.resource_digest,
-        action.lifecycle_binding,
-    )
-    .await
-    .map_err(|e| match crate::transaction::Fault::from(e) {
-        crate::transaction::Fault::Request(e) => e,
-        _ => Error::Unavailable(crate::Failure::SoftwareCatalogStorage),
-    })
+    package
+        .admitted_on(
+            c,
+            rss_request_context::TenantId::parse(tenant).map_err(|_| Error::Malformed)?,
+        )
+        .await
 }
+impl Package {
+    pub async fn admitted_on(
+        &self,
+        c: &mut sqlx::PgConnection,
+        tenant: rss_request_context::TenantId,
+    ) -> std::result::Result<bool, Error> {
+        match rss_mdm_software_service::agent_packages::admitted_on(c, tenant, &self.release).await
+        {
+            Ok(current) => Ok(current.installer_sha256 == self.artifact.sha256
+                && current.version == self.version
+                && current.origin == self.content_origin),
+            Err(
+                rss_mdm_software_service::management::Error::Forbidden
+                | rss_mdm_software_service::management::Error::ResourceMissing,
+            ) => Ok(false),
+            Err(_) => Err(Error::Unavailable(crate::Failure::SoftwareCatalogStorage)),
+        }
+    }
+    pub fn detection_identity(&self) -> String {
+        match &self.identity {
+            Identity::WindowsMsi { product, .. } => product.to_string(),
+            Identity::WindowsMsix { family, .. } => family.clone(),
+            Identity::Macos { bundle, .. } => bundle.clone(),
+        }
+    }
+}
+
 pub async fn dispatched_on(
     c: &mut sqlx::PgConnection,
     tenant: &str,
@@ -475,11 +444,8 @@ pub async fn dispatch_ready_on(
     let Some(package) = action.packages.get(&target) else {
         return Ok(false);
     };
-    let identity = match &package.identity {
-        Identity::Windows { product, .. } => product.to_string(),
-        Identity::Macos { bundle, .. } => bundle.clone(),
-    };
-    if evidence.identity != identity {
+    let identity = package.detection_identity();
+    if !evidence.matches(&identity) {
         return Ok(false);
     }
     let expected = serde_json::to_vec(package).map_err(|_| Error::Malformed)?;
@@ -518,4 +484,34 @@ pub async fn dispatch_ready_on(
         }
     }
     Ok(true)
+}
+
+/// Derive native observation targets from the publication owner, including retired releases.
+pub async fn identities_on(
+    c: &mut sqlx::PgConnection,
+    tenant: rss_request_context::TenantId,
+    source: rss_mdm_inventory::ReportSource,
+) -> std::result::Result<Vec<Identity>, Error> {
+    let platform = match source {
+        rss_mdm_inventory::ReportSource::MdmWindows => Platform::Windows,
+        rss_mdm_inventory::ReportSource::MdmApple => Platform::Macos,
+        _ => return Err(Error::Malformed),
+    };
+    let known = rss_mdm_software_service::agent_packages::known_in(c, tenant)
+        .await
+        .map_err(crate::agent_preparation::publication_error)?;
+    let mut identities = Vec::new();
+    for release in known {
+        // EXE has no native installation adapter; its presence comes from existing software inventory.
+        if release.metadata.format
+            == rss_mdm_agent_wire::enroll::configuration::InstallerFormat::NsisExe
+        {
+            continue;
+        }
+        let identity = crate::agent_preparation::identity(&release)?;
+        if identity.platform() == platform && !identities.contains(&identity) {
+            identities.push(identity);
+        }
+    }
+    Ok(identities)
 }

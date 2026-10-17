@@ -1,4 +1,5 @@
 //! Enrollment is the single lifecycle owner; the grant retains immutable authorization origin.
+pub mod agent_policy;
 pub mod credentials;
 pub mod managed;
 pub mod native;

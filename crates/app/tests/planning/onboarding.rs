@@ -82,8 +82,22 @@ async fn explicit_source_absence_drives_one_standard_entry_without_creating_mdm_
     let task = claim(&f.router).await?;
     ensure!(task["payload"]["task"]["entry"]["kind"] == "macos");
     ensure!(task["payload"].get("resourceDigest").is_none());
+    let handoff_path=format!("/api/v1/agent/runtime/tasks/{}/enrollment",task["payload"]["task"]["taskId"].as_str().unwrap());
+    let handoff=json!({"operationId":Uuid::new_v4(),"attemptId":task["payload"]["task"]["attemptId"],"password":credential("native-handoff")});
+    let denied=agent_call(&f.router,Method::POST,&handoff_path,Some(case_credential()),Some(handoff.clone())).await?;
+    ensure!(denied.0==StatusCode::FORBIDDEN,"handoff requires Start: {denied:?}");
     task_event(&f.router, &task, json!({"kind":"received"})).await?;
     task_event(&f.router, &task, json!({"kind":"start"})).await?;
+    let accepted=agent_call(&f.router,Method::POST,&handoff_path,Some(case_credential()),Some(handoff.clone())).await?;
+    ensure!(accepted.0==StatusCode::OK,"native handoff: {accepted:?}");
+    ensure!(accepted.1["entry"]["kind"]=="macos" && accepted.1["username"].is_null());
+    let again=agent_call(&f.router,Method::POST,&handoff_path,Some(case_credential()),Some(handoff.clone())).await?;
+    ensure!(again==accepted,"same-operation retry must preserve request and expiry");
+    let mut changed=handoff.clone();changed["password"]=json!(credential("changed-handoff"));
+    let conflict=agent_call(&f.router,Method::POST,&handoff_path,Some(case_credential()),Some(changed)).await?;
+    ensure!(conflict.0==StatusCode::CONFLICT,"changed handoff: {conflict:?}");
+    ensure!(pg(&format!("SELECT count(*) FROM mdm_access.agent_native_enrollments WHERE tenant_id='{}' AND task='{}'",case_tenant(),task["payload"]["task"]["taskId"].as_str().unwrap()))?.trim()=="1");
+
     task_event(
         &f.router,
         &task,

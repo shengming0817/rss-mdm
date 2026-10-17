@@ -12,10 +12,19 @@ use uuid::Uuid;
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AgentEvidence {
+    pub provisioned: bool,
+    pub checked_identities: Vec<String>,
     pub identity: String,
     pub publisher: Option<String>,
     pub version: Option<String>,
     pub architecture: Option<String>,
+}
+impl AgentEvidence {
+    pub fn matches(&self, identity: &str) -> bool {
+        self.checked_identities
+            .iter()
+            .any(|candidate| candidate == identity)
+    }
 }
 pub async fn start_in(
     c: &mut PgConnection,

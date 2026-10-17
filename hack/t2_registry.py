@@ -423,7 +423,7 @@ for part in ('cms', 'apns', 'scep', 'collection', 'profile', 'policy', 'onboardi
     selectors = {'cms': ('apple::certificate::tests::',), 'apns': ('apple::push::tests::',)}.get(part, (f'apple::tests::{part}::',))
     source = {
         'cms': ('certificate.rs',), 'apns': ('push.rs',),
-        'scep': ('enrollment.rs','webhook.rs'), 'collection': ('checkin.rs','protocol.rs'),
+        'scep': ('enrollment.rs',), 'collection': ('checkin.rs','protocol.rs'),
         'profile': ('profile.rs',), 'policy': ('profile.rs','attempt.rs'),
         'onboarding': ('agent_collection.rs','flow_store.rs','checkin.rs'),
         'renewal': ('renewal.rs',), 'identity': ('checkin.rs','enrollment.rs'),
@@ -1987,3 +1987,13 @@ MODULES['installation.migration'] = replace(MODULES['installation.migration'], p
 ))
 
 consume(('crates/device-trust/src/windows/*', 'crates/device-trust/fixtures/*'), 'windows.issuance windows.management')
+
+# Dedicated bootstrap protocol scenarios consume real CA material and isolated lifecycle state.
+for name in ('execution.commands.onboarding', 'apple.onboarding', 'planning.onboarding'):
+    module = MODULES[name]
+    MODULES[name] = replace(module, materials=(*module.materials, 'agent-bootstrap'),
+        production_inputs=(*module.production_inputs, 'crates/registration-service/src/agent/bootstrap.rs',
+            'crates/registration-service/src/enrollment/agent_policy.rs', 'crates/execution-service/src/bootstrap_delivery.rs',
+            'crates/execution-service/src/actions/native_enrollment.rs', 'crates/windows-channel/src/agent_enrollment.rs',
+            'crates/windows-mdm/src/software/*', 'crates/certificate/src/bootstrap.rs'),
+        support_inputs=(*module.support_inputs, 'hack/bootstrap_fixtures.py', 'crates/app/tests/support/bootstrap.rs'))

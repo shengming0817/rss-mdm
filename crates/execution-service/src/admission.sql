@@ -1,6 +1,7 @@
 WITH tables AS (
  SELECT c.* FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='mdm_commands' AND c.relkind='r'
 ), update_columns(relation, col) AS (VALUES
+ ('mdm_access.agent_bootstraps','cleanup'),
  ('mdm_pki.installations','revision'),('mdm_pki.installations','digest'),('mdm_pki.installations','body'),('mdm_pki.installations','confirmed_at'),
  ('mdm_pki.acknowledgements','revision'),('mdm_pki.acknowledgements','digest'),('mdm_pki.acknowledgements','confirmed_at'),
  ('mdm_windows.trust_deliveries','results'),('mdm_windows.trust_deliveries','confirmed'),
@@ -38,7 +39,7 @@ WITH tables AS (
  ('public.mdm_installation','instance_id'),('public.mdm_installation','management_tenant_id'),
  ('mdm_access.agent_issuances','tenant_id'),('mdm_access.agent_issuances','credential'),('mdm_access.agent_issuances','not_after')
 ), allowed(relation,sel,ins,del) AS (VALUES
- ('mdm_pki.trust',true,false,false),('mdm_pki.rotations',true,false,false),('mdm_pki.installations',true,true,false),('mdm_pki.acknowledgements',true,true,false),
+ ('mdm_pki.certificates',true,false,false),('mdm_pki.revocations',true,false,false),('mdm_agent_packages.releases',true,false,false),('mdm_access.agent_bootstraps',true,true,false),('mdm_access.agent_native_enrollments',true,true,false),('mdm_access.grants',true,true,false),('mdm_pki.trust',true,false,false),('mdm_pki.rotations',true,false,false),('mdm_pki.installations',true,true,false),('mdm_pki.acknowledgements',true,true,false),
  ('mdm_windows.trust_deliveries',true,true,false),('mdm_apple.trust_deliveries',true,true,false),
  ('mdm_content.manifests',true,false,false),('mdm_flow.native_protection',true,true,false),('mdm_access.agent_grants',true,true,false),('mdm_access.agent_enrollment_settings',true,false,false),
  ('mdm.inventory',true,false,false),
@@ -48,7 +49,7 @@ WITH tables AS (
  ('mdm_commands.output_chunks',true,true,false),('mdm_commands.action_polls',true,true,false),('mdm_commands.action_runs',true,true,false),('mdm_commands.action_receipts',true,true,false),('mdm_commands.action_attempts',true,true,false),('mdm_resource.aggregates',true,false,false),('mdm_resource.immutable',true,false,false),('mdm_agent.bindings',true,false,false),
  ('mdm_planning.scopes',true,false,false),('mdm_planning.scope_results',true,false,false),('mdm_planning.scope_channel_results',true,false,false),('mdm_planning.scope_source_members',true,false,false),('mdm_planning.scope_runs',true,false,false),('mdm_planning.policy_source_grants',true,false,false),('mdm_planning.policy_assignments',true,false,false),('mdm_devices.checkpoints',true,false,false),('mdm_devices.input_snapshots',true,false,false),('mdm_devices.input_objects',true,false,false),
  ('mdm_software.sources',true,false,false),('mdm_software.versions',true,false,false),('mdm_software.materials',true,false,false),
- ('mdm_apple.declarations',true,true,false),('mdm_apple.status_reports',true,true,false),('mdm_apple.attempts',true,true,false),('mdm_apple.profiles',true,true,false),('mdm_apple.devices',true,false,false),('mdm_apple.channels',true,false,false),('mdm_access.requests',true,false,false),
+ ('mdm_apple.declarations',true,true,false),('mdm_apple.status_reports',true,true,false),('mdm_apple.attempts',true,true,false),('mdm_apple.profiles',true,true,false),('mdm_apple.devices',true,false,false),('mdm_apple.channels',true,false,false),('mdm_access.requests',true,true,false),
 
 ('mdm_commands.capabilities',true,true,false),
 ('mdm_commands.capability_queries',true,true,false),
