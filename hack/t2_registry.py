@@ -1974,3 +1974,9 @@ for name in ('apple.commands', 'apple.users', 'apple.identity', 'apple.push', 'a
 
 # ExecutionSource candidate pagination moved from the protocol host to its PG consumer.
 MODULES['planning.policy'] = replace(MODULES['planning.policy'], selectors=(*MODULES['planning.policy'].selectors, 'planning::t2::execution_source::'), test_inputs=(*MODULES['planning.policy'].test_inputs, 'crates/app/tests/planning/execution_source.rs'), support_inputs=(*MODULES['planning.policy'].support_inputs,'crates/app/tests/planning/support.rs','crates/app/tests/support/agent_execution.rs'), production_inputs=(*MODULES['planning.policy'].production_inputs, 'crates/flow-service/src/planning/execution_source.rs'))
+
+# Role membership faults require a disposable PG instance, not only a fresh database.
+MODULES['installation.migration'] = replace(MODULES['installation.migration'], policies=(*MODULES['installation.migration'].policies,
+    CasePolicy('migration::tests::fresh_installation_replay_and_mismatch_rejection', 'instance', 'objects'),
+    CasePolicy('migration::tests::ledger_installation_rejects_audit_privilege_drift', 'instance', 'objects'),
+))

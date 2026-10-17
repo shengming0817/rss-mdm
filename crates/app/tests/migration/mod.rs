@@ -283,23 +283,7 @@ async fn audit_privilege_drift(
 #[tokio::test]
 #[ignore = "make t2 MODULE=installation.migration: Ledger installer privileges"]
 async fn ledger_installation_rejects_audit_privilege_drift() -> Result<()> {
-    let admin_options = PgConnectOptions::from_str(&std::env::var("MDM_ADMIN_URL")?)?
-        .ssl_mode(sqlx::postgres::PgSslMode::VerifyFull)
-        .ssl_root_cert(std::env::var("PG_CA_FILE")?);
-    let mut admin = PgConnection::connect_with(&admin_options).await?;
-    let database = format!("ledger_install_{}", uuid::Uuid::new_v4().simple());
-    sqlx::raw_sql(sqlx::AssertSqlSafe(format!(
-        "CREATE DATABASE {database} OWNER mdm_owner"
-    )))
-    .execute(&mut admin)
-    .await?;
-    sqlx::raw_sql(sqlx::AssertSqlSafe(format!(
-        "GRANT CREATE ON DATABASE {database} TO mdm_audit_owner,mdm_ledger_owner"
-    )))
-    .execute(&mut admin)
-    .await?;
     let options = PgConnectOptions::from_str(&std::env::var("MDM_OWNER_URL")?)?
-        .database(&database)
         .ssl_mode(sqlx::postgres::PgSslMode::VerifyFull)
         .ssl_root_cert(std::env::var("PG_CA_FILE")?);
     let installation = Installation {
@@ -309,10 +293,5 @@ async fn ledger_installation_rejects_audit_privilege_drift() -> Result<()> {
         lineage: [2; 16],
     };
     migrate(&options, &installation).await?;
-    let result = audit_privilege_drift(&options, &installation, true).await;
-    sqlx::raw_sql(sqlx::AssertSqlSafe(format!("DROP DATABASE {database}")))
-        .execute(&mut admin)
-        .await?;
-    admin.close().await?;
-    result
+    audit_privilege_drift(&options, &installation, true).await
 }
