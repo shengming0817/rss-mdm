@@ -19,7 +19,7 @@ async fn authorized_idempotent_atomic_admission() -> anyhow::Result<()> {
 #[ignore = "make t2 MODULE=execution.commands.admission"]
 async fn minimum_role_scope_and_storage_admission() -> anyhow::Result<()> {
     let (host, mut client) = ordinary(rss_device_command_postgres::CommandClock::Postgres).await?;
-    client.accept_approved().await?;
+    client.accept_authorized().await?;
     client.admission_and_scope().await?;
     host.close().await?;
     Ok(())
@@ -166,23 +166,23 @@ impl Client {
             self.call(Method::POST, "", Some(request.clone())).await?.0 == StatusCode::FORBIDDEN
         );
         self.set_authorized(true).await?;
-        let approval = json!({"requestId":Uuid::new_v4(),"expectedRevision":1});
-        let approved = self
+        let authority = json!({"requestId":Uuid::new_v4(),"expectedRevision":1});
+        let authorized = self
             .call(
                 Method::POST,
-                &format!("/{}/approve", self.operation),
-                Some(approval.clone()),
+                &format!("/{}/reauthorize", self.operation),
+                Some(authority.clone()),
             )
             .await?;
-        ensure!(approved.0 == StatusCode::OK && approved.1["revision"] == 2);
+        ensure!(authorized.0 == StatusCode::OK && authorized.1["revision"] == 2);
         ensure!(
             self.call(
                 Method::POST,
-                &format!("/{}/approve", self.operation),
-                Some(approval)
+                &format!("/{}/reauthorize", self.operation),
+                Some(authority)
             )
             .await?
-                == approved
+                == authorized
         );
         let mut pg =
             sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?)

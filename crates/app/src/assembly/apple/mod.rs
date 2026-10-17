@@ -34,7 +34,7 @@ impl Apple {
         {
             return Err(Error::Configuration(ConfigIssue::AppleScep));
         }
-        let authority = certificate::AppleDeviceTrust::from_trust(trust)
+        let authority = rss_mdm_device_trust::apple::AppleDeviceTrust::from_trust(trust)
             .map_err(|_| Error::Configuration(ConfigIssue::AppleScep))?;
         let signer = certificate::ProfileSigner::from_bytes(
             &crate::config::read(&config.profile_certificate_file, 128 * 1024, false)

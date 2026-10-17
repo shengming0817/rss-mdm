@@ -297,7 +297,15 @@ impl Inputs {
             .content
             .as_ref()
             .ok_or(Error::Unsupported)?
-            .verify_class(artifact, class)
+            .verify_class(
+                artifact,
+                class,
+                self.content
+                    .as_ref()
+                    .ok_or(Error::Unsupported)?
+                    .upload_budget()?
+                    .operation_deadline(),
+            )
             .await?)
     }
 }

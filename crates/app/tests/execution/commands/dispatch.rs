@@ -9,7 +9,7 @@ use sqlx::Connection;
 #[ignore = "make t2 MODULE=execution.commands.dispatch"]
 async fn outbox_gateway_ack_and_process_recovery() -> anyhow::Result<()> {
     let (host, mut client) = ordinary(rss_device_command_postgres::CommandClock::Postgres).await?;
-    client.accept_approved().await?;
+    client.accept_authorized().await?;
     client.dispatch_receipts().await?;
     host.close().await?;
     Ok(())
@@ -18,7 +18,7 @@ async fn outbox_gateway_ack_and_process_recovery() -> anyhow::Result<()> {
 #[ignore = "make t2 MODULE=execution.commands.dispatch"]
 async fn clean_shutdown_settles_a_claimed_relay_message() -> anyhow::Result<()> {
     let (host, mut client) = ordinary(rss_device_command_postgres::CommandClock::Postgres).await?;
-    client.accept_approved().await?;
+    client.accept_authorized().await?;
     let mut pg =
         sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?)
             .await?;
@@ -87,7 +87,7 @@ impl Client {
             self.app.execution.relay_once().await?;
             // Crash recovery has its own false -> true acceptance, independent of retry faults.
             self.operation = Uuid::new_v4();
-            self.accept_approved().await?;
+            self.accept_authorized().await?;
             self.crash_relay().await?;
         }
         self.app.execution.relay_once().await?;

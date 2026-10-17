@@ -1,4 +1,4 @@
-//! Real mTLS/SyncML, approved software, Policy and one atomic independent Agent registration.
+//! Real mTLS/SyncML, authorized software, Policy and one atomic independent Agent registration.
 use crate::execution::test_support::{Client, case_device, case_tenant, native};
 use crate::test_support::{channel_onboarding as setup, *};
 use anyhow::Context;
@@ -902,7 +902,7 @@ async fn replacement_rejects_old_installation_and_requires_current_epoch_absence
     ensure!(!query.commands.iter().any(installation_write));
     let count = || {
         pg(&format!(
-            "SELECT count(*) FROM mdm_commands.operations WHERE tenant_id='{}' AND approval->>'kind'='agent_install'",
+            "SELECT count(*) FROM mdm_commands.operations WHERE tenant_id='{}' AND authority->>'kind'='agent_install'",
             case_tenant()
         ))
     };
@@ -1001,7 +1001,7 @@ async fn scope_exit_preserves_dispatched_installation_authority_until_its_deadli
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 #[ignore = "make t2 MODULE=execution.commands.onboarding"]
-async fn policy_freeze_distinguishes_superseded_identity_from_withdrawn_approval() -> Result<()> {
+async fn policy_freeze_distinguishes_superseded_identity_from_withdrawn_authority() -> Result<()> {
     let (host, mut client, _, commands, owner, policy, _) = start_fixture().await?;
     ensure!(commands.shutdown().join().await?.is_clean());
     ensure!(owner.shutdown().join().await?.is_clean());
@@ -1033,7 +1033,7 @@ async fn policy_freeze_distinguishes_superseded_identity_from_withdrawn_approval
         .await?;
     ensure!(
         rejected.0 == StatusCode::BAD_REQUEST && rejected.1["code"] == "malformed_request",
-        "retired approval identity: {rejected:?}"
+        "retired authority identity: {rejected:?}"
     );
     crate::test_support::software::write(
         &mut client.browser,
@@ -1055,7 +1055,7 @@ async fn policy_freeze_distinguishes_superseded_identity_from_withdrawn_approval
         .await?;
     ensure!(
         rejected.0 == StatusCode::FORBIDDEN && rejected.1["code"] == "permission_denied",
-        "withdrawn approval: {rejected:?}"
+        "withdrawn authority: {rejected:?}"
     );
     host.close().await
 }

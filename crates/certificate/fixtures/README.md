@@ -13,5 +13,3 @@ Root membership alone does not identify a manufacturing certificate. The verifie
 
 
 ## Windows linked enrollment signature
-
-`windows-linked-proof.json` contains only public test trust (certificates and signed CRLs), two independently XMLDSIG-signed SOAP representations, and their fixed verification time. It was captured from the real `windows.declared` participant using xmlsec1 on 2026-10-16 for #2770/#2774. No private key, password or bearer is retained. The certificate T1 uses the real verifier for tampering, XML shape, timestamp and canonicalization; product T2 retains fresh signing, parent identity, enrollment, replay and retirement. This vector is test input, never a production trust anchor. Regenerate both representations from the same disposable parent and pin the matching trust and timestamp together.

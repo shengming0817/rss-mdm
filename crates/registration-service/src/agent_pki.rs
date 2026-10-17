@@ -2,7 +2,8 @@
 //! ref: smallstep/certificates authority/provisioner/jwk.go and api/sign.go@v0.30.2.
 use crate::Error;
 use rss_mdm_agent_wire::pki::Purpose;
-use rss_mdm_certificate::agent::{AgentTrust, IssuedAgentCertificate, SUBJECT, VerifiedAgentCsr};
+use rss_mdm_certificate::agent::{SUBJECT, VerifiedAgentCsr};
+use rss_mdm_device_trust::agent::{AgentTrust, IssuedAgentCertificate};
 use rss_mdm_pki_service::{Sign, providers::Providers};
 use std::sync::Arc;
 use uuid::Uuid;

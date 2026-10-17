@@ -324,6 +324,7 @@ fn test_store() -> (tempfile::TempDir, Store) {
     let tenant =
         rss_request_context::TenantId::parse("11111111-1111-4111-8111-111111111111").unwrap();
     let store = Store {
+        cleanup_tasks: tokio_util::task::TaskTracker::new(),
         protection: protection(),
         tenant,
         config: config(dir.path().to_owned()),

@@ -525,7 +525,15 @@ async fn seed_version(
                 sha256: artifact.sha256,
                 actor: actor.into(),
             };
-            content.begin(upload, binding, 1700000000).await.unwrap();
+            content
+                .begin(
+                    upload,
+                    binding,
+                    1700000000,
+                    content.upload_budget().unwrap(),
+                )
+                .await
+                .unwrap();
             content
                 .append(
                     actor,
@@ -533,10 +541,14 @@ async fn seed_version(
                     0,
                     1700000000,
                     std::io::Cursor::new(b"abc".to_vec()),
+                    content.upload_budget().unwrap(),
                 )
                 .await
                 .unwrap();
-            content.finish(actor, upload, 1700000000).await.unwrap();
+            content
+                .finish(actor, upload, 1700000000, content.upload_budget().unwrap())
+                .await
+                .unwrap();
         }
     }
     for (revision, command) in [

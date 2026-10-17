@@ -301,7 +301,7 @@ fn apple_status_blueprints_are_real_native_configurations() {
             enrollment: Enrollment::Device,
             supervised: Some(true),
             automated_enrollment: Some(true),
-            user_approved: Some(true),
+            user_authorized: Some(true),
             apple_silicon: Some(true),
         };
         let target = Target {

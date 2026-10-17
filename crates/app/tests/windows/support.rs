@@ -1056,7 +1056,7 @@ pub(crate) fn fixture_providers() -> anyhow::Result<Arc<rss_mdm_pki_service::pro
 }
 /// Positive issuance always crosses the real pinned CA transport and persistent attempt store.
 pub(crate) async fn sign_certificate(
-    ca: &certificate::WindowsDeviceTrust,
+    ca: &rss_mdm_device_trust::windows::WindowsDeviceTrust,
     intent: &issuance::Intent,
 ) -> anyhow::Result<Vec<u8>> {
     let access = Database::connect(options("mdm_access")?).await?;

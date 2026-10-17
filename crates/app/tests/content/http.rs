@@ -404,3 +404,137 @@ async fn corrupt_uploads_have_no_binding_and_distinct_operations_bind_verified_c
     Ok(())
     }).await
 }
+
+async fn upload_resource(fixture: &Fixture, bytes: &[u8]) -> Result<Uuid> {
+    let mut user = fixture.user.clone();
+    let resource = Uuid::new_v4();
+    let path = format!("/api/v1/resources/{resource}");
+    write(
+        &mut user,
+        &fixture.router,
+        &path,
+        0,
+        json!({"action":"create","kind":"software"}),
+    )
+    .await?;
+    let definition =
+        publication_support::private_definition(fixture.registered["snapshot"].clone(), bytes);
+    write(&mut user, &fixture.router, &path, 1, json!({"action":"version","version":"v1","kind":"software","variants":[{"platform":"windows","architecture":"x86_64","key":"default","declaration":{"kind":"software","definition":definition}}]})).await?;
+    write(
+        &mut user,
+        &fixture.router,
+        &path,
+        2,
+        json!({"action":"activate","version":"v1"}),
+    )
+    .await?;
+    Ok(resource)
+}
+fn streaming_request(fixture: &Fixture, method: Method, path: &str) -> reqwest::RequestBuilder {
+    let cookie = fixture
+        .user
+        .cookies
+        .iter()
+        .map(|(k, v)| format!("{k}={v}"))
+        .collect::<Vec<_>>()
+        .join("; ");
+    fixture
+        .client
+        .request(method, format!("{}{path}", fixture.origin))
+        .header("host", "mdm.example.test")
+        .header("origin", "https://mdm.example.test")
+        .header("x-identity-request", "1")
+        .header("x-csrf-token", fixture.user.csrf.as_ref().unwrap())
+        .header("cookie", cookie)
+        .header("content-type", "application/octet-stream")
+}
+async fn streaming_path(
+    fixture: &Fixture,
+    resource: Uuid,
+    operation: Uuid,
+    append: bool,
+) -> Result<String> {
+    let selection = "version=v1&variant=default&platform=windows&architecture=x86_64";
+    if append {
+        let mut user = fixture.user.clone();
+        let begun = user
+            .call(
+                &fixture.router,
+                Method::POST,
+                &format!("/api/v1/resources/{resource}/uploads/{operation}?{selection}"),
+                None,
+            )
+            .await?;
+        ensure!(begun.0 == StatusCode::OK, "begin: {begun:?}");
+        Ok(format!(
+            "/api/v1/resources/{resource}/uploads/{operation}?offset=0"
+        ))
+    } else {
+        Ok(format!(
+            "/api/v1/resources/{resource}/content?{selection}&operation={operation}"
+        ))
+    }
+}
+#[tokio::test]
+#[ignore = "MODULE=content.http: both real streaming paths exceed the old management deadline"]
+async fn large_streams_use_content_budget_and_bind_exact_bytes() -> Result<()> {
+    let mut fixture = Fixture::with_transfer_seconds(120).await?;
+    let resources = std::mem::take(&mut fixture.resources);
+    resources.finish(async {
+        let length = 16 * 1024 * 1024 + 1;
+        let bytes = vec![7; length];
+        let resource = upload_resource(&fixture, &bytes).await?;
+        for append in [false, true] {
+            let operation = Uuid::new_v4();
+            let path = streaming_path(&fixture, resource, operation, append).await?;
+            let stream = futures::stream::unfold(0usize, move |offset| async move {
+                if offset == length { return None; }
+                if offset == 0 { tokio::time::sleep(std::time::Duration::from_secs(9)).await; }
+                let n = (length-offset).min(65536);
+                Some((Ok::<_, std::io::Error>(vec![7u8;n]), offset+n))
+            });
+            let response = streaming_request(&fixture, if append { Method::PATCH } else { Method::POST }, &path)
+                .body(reqwest::Body::wrap_stream(stream)).send().await?;
+            let status = response.status(); let body = response.text().await?;
+            ensure!(status == if append { StatusCode::OK } else { StatusCode::CREATED }, "stream: {status} {body}");
+            if append {
+                let completed = streaming_request(&fixture, Method::POST, &format!("/api/v1/resources/{resource}/uploads/{operation}/complete")).send().await?;
+                let status = completed.status(); let body = completed.text().await?;
+                ensure!(status == StatusCode::CREATED, "complete: {status} {body}");
+            }
+            let mut user = fixture.user.clone();
+            let receipt = user.call(&fixture.router, Method::GET, &format!("/api/v1/resources/{resource}/content/operations/{operation}"), None).await?;
+            ensure!(receipt.0 == StatusCode::OK && receipt.1["length"] == length);
+            let digest = rss_mdm_resource::Digest::of(&bytes).bytes();
+            ensure!(receipt.1["sha256"] == json!(digest.to_vec()));
+            ensure!(pg(&format!("SELECT count(*) FROM mdm_content.bindings WHERE tenant_id='{}' AND operation='{operation}'",case_tenant()))?.trim() == "1");
+            ensure!(audit_count(|r| r.source()=="mdm.business" && r.operation()==Some(operation.to_string().as_str()) && r.status()==201 && r.result()=="success")? == 1);
+        }
+        Ok(())
+    }).await
+}
+#[tokio::test]
+#[ignore = "MODULE=content.http: content deadline releases exact leases and permits request recovery"]
+async fn stalled_streams_expire_without_binding_and_release_their_leases() -> Result<()> {
+    let mut fixture = Fixture::with_transfer_seconds(4).await?;
+    let resources = std::mem::take(&mut fixture.resources);
+    resources.finish(async {
+        let bytes = b"deadline recovery";
+        let resource = upload_resource(&fixture, bytes).await?;
+        for append in [false, true] {
+            let operation = Uuid::new_v4();
+            let path = streaming_path(&fixture, resource, operation, append).await?;
+            let stream = futures::stream::pending::<Result<Vec<u8>, std::io::Error>>();
+            let response = streaming_request(&fixture, if append { Method::PATCH } else { Method::POST }, &path)
+                .body(reqwest::Body::wrap_stream(stream)).send().await?;
+            let status = response.status(); let body: Value = response.json().await?;
+            ensure!(status == StatusCode::SERVICE_UNAVAILABLE && body["code"] == "content_deadline", "deadline: {status} {body}");
+            ensure!(pg(&format!("SELECT count(*) FROM mdm_content.bindings WHERE tenant_id='{}' AND operation='{operation}'",case_tenant()))?.trim() == "0");
+            ensure!(pg(&format!("SELECT count(*) FROM mdm_content.uploads WHERE tenant_id='{}' AND document->'value'->'upload'->>'id'='{operation}' AND (epoch IS NOT NULL OR held_until<>0)",case_tenant()))?.trim() == "0");
+            let recovered = streaming_request(&fixture, if append { Method::PATCH } else { Method::POST }, &path).body(bytes.to_vec()).send().await?;
+            let status = recovered.status(); let body = recovered.text().await?;
+            ensure!(status == if append { StatusCode::OK } else { StatusCode::CREATED }, "recovery: {status} {body}");
+        }
+        Ok(())
+    }).await
+}

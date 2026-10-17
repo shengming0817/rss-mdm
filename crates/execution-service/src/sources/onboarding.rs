@@ -120,7 +120,7 @@ pub async fn state_in(
                 return status(State::MissingVariant);
             }
             let action = action.clone();
-            let approved = tx
+            let authorized = tx
                 .with_connection(move |c| {
                     Box::pin(async move {
                         Ok(rss_mdm_software_service::catalog::admitted_on(
@@ -135,8 +135,8 @@ pub async fn state_in(
                     })
                 })
                 .await??;
-            if !approved {
-                return status(State::ApprovalWithdrawn);
+            if !authorized {
+                return status(State::AuthorizationWithdrawn);
             }
         }
         Frozen::MdmEnrollment { action } => {

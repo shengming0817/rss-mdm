@@ -77,7 +77,7 @@ impl Config {
             return Err(invalid());
         }
         let trust = Arc::new(
-            rss_mdm_certificate::agent::AgentTrust::from_trust(device_trust, days)
+            rss_mdm_device_trust::agent::AgentTrust::from_trust(device_trust, days)
                 .map_err(|_| invalid())?,
         );
         let issuer = AgentIssuer::new(

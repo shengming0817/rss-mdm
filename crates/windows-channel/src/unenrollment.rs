@@ -155,7 +155,7 @@ pub(crate) async fn requested(
 /// Historical response access never constructs an active device principal.
 pub(crate) async fn replay(
     app: &HttpState,
-    leaf: &crate::certificate::CheckedLeaf,
+    leaf: &rss_mdm_device_trust::windows::CheckedLeaf,
     message: &s::Message,
     bytes: &[u8],
     audit: &RequestAudit,

@@ -125,19 +125,20 @@ impl Store {
         Ok((small, hash.finalize().into()))
     }
     pub async fn verify(self: &Arc<Self>, a: &Artifact) -> Result<Verified, Error> {
-        self.verify_class(a, StorageClass::Artifact).await
+        self.verify_class(a, StorageClass::Artifact, self.deadline()?)
+            .await
     }
     pub async fn verify_class(
         self: &Arc<Self>,
         a: &Artifact,
         c: StorageClass,
+        d: Deadline,
     ) -> Result<Verified, Error> {
         let permit = self
             .transfers
             .clone()
             .try_acquire_owned()
             .map_err(|_| Error::Conflict)?;
-        let d = self.deadline()?;
         let mut v = self.verify_at(a, c, d).await?;
         v._permit = Some(TransferLease::new(permit, d));
         Ok(v)

@@ -37,10 +37,18 @@ async fn begin(
     Path((id, upload)): Path<(String, Uuid)>,
     Query(input): Query<Selection>,
 ) -> Result<Json<Upload>, Error> {
-    rss_mdm_content_service::service::begin_upload(&app, &auth.proof, &audit, &id, upload, &input)
-        .await
-        .map(Json)
-        .map_err(Into::into)
+    rss_mdm_content_service::service::begin_upload(
+        &app,
+        &auth.proof,
+        &audit,
+        &id,
+        upload,
+        &input,
+        rss_mdm_content_service::service::store(&app)?.upload_budget()?,
+    )
+    .await
+    .map(Json)
+    .map_err(Into::into)
 }
 async fn status(
     State(app): State<Arc<HttpState>>,
@@ -48,7 +56,17 @@ async fn status(
     Extension(audit): Extension<RequestAudit>,
     Path((id, upload)): Path<(String, Uuid)>,
 ) -> Result<Json<Upload>, Error> {
-    Ok(Json(current(&app, &auth.proof, &audit, &id, upload).await?))
+    Ok(Json(
+        current(
+            &app,
+            &auth.proof,
+            &audit,
+            &id,
+            upload,
+            rss_mdm_content_service::service::store(&app)?.upload_budget()?,
+        )
+        .await?,
+    ))
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]

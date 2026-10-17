@@ -200,7 +200,7 @@ class ModuleImpactTests(unittest.TestCase):
             'crates/windows-mdm/src/native/request.rs',
             'crates/windows-mdm/src/native/declared.rs',
             'crates/windows-mdm/src/native/verification.rs',
-            'crates/certificate/src/windows/linked.rs',
+            'crates/device-trust/src/windows/linked.rs',
             'crates/management-http/src/error_projection.rs',
         ):
             self.assertIn('windows.declared', self.selected(path), path)

@@ -99,7 +99,7 @@ pub async fn result_eligible_on(
     session: u32,
     reference: &s::Reference,
 ) -> std::result::Result<bool, Error> {
-    let row=sqlx::query("SELECT o.id,o.device,o.registration,o.registration_generation,o.input_context,o.request,o.approval::text,d.status AS command_status,(o.input_context->>'deadline')::bigint>extract(epoch FROM clock_timestamp()) AS within_deadline,a.ordinal=(SELECT max(b.ordinal) FROM mdm_commands.attempts b WHERE b.tenant_id=a.tenant_id AND b.operation=a.operation AND b.phase=a.phase) AS latest FROM mdm_commands.attempts a JOIN mdm_commands.attempt_items i ON (i.tenant_id,i.attempt)=(a.tenant_id,a.id) JOIN mdm_commands.operations o ON(o.tenant_id,o.id)=(a.tenant_id,a.operation) JOIN rss_device_command.commands d ON d.tenant_id=o.tenant_id AND d.command_id=o.id::text WHERE o.tenant_id=$1::uuid AND o.registration=$2 AND o.registration_generation=$3 AND a.credential=$4 AND a.session=$5 AND a.message=$6 AND i.command=$7 AND i.uri=$8")
+    let row=sqlx::query("SELECT o.id,o.device,o.registration,o.registration_generation,o.input_context,o.request,o.authority::text,d.status AS command_status,(o.input_context->>'deadline')::bigint>extract(epoch FROM clock_timestamp()) AS within_deadline,a.ordinal=(SELECT max(b.ordinal) FROM mdm_commands.attempts b WHERE b.tenant_id=a.tenant_id AND b.operation=a.operation AND b.phase=a.phase) AS latest FROM mdm_commands.attempts a JOIN mdm_commands.attempt_items i ON (i.tenant_id,i.attempt)=(a.tenant_id,a.id) JOIN mdm_commands.operations o ON(o.tenant_id,o.id)=(a.tenant_id,a.operation) JOIN rss_device_command.commands d ON d.tenant_id=o.tenant_id AND d.command_id=o.id::text WHERE o.tenant_id=$1::uuid AND o.registration=$2 AND o.registration_generation=$3 AND a.credential=$4 AND a.session=$5 AND a.message=$6 AND i.command=$7 AND i.uri=$8")
         .bind(p.tenant().to_string()).bind(p.registration()).bind(p.generation()).bind(p.credential()).bind(i64::from(session)).bind(i64::from(reference.message_id)).bind(i64::from(reference.command_id)).bind(&reference.uri).fetch_optional(&mut *c).await.map_err(db)?;
     let Some(row) = row else {
         return collection_result_eligible(source, c, protection, p, session, reference).await;
@@ -165,7 +165,7 @@ pub async fn receive_on(
     let history = history.ok_or_else(protocol)?;
     let tenant = p.tenant().to_string();
     let session = i64::from(message.header.session_id);
-    let rows=sqlx::query("SELECT a.id,a.operation,a.message,a.request,o.device,o.registration,o.registration_generation,o.input_context,o.request AS task_request,o.approval::text,d.status AS command_status,(o.input_context->>'deadline')::bigint>extract(epoch FROM clock_timestamp()) AS within_deadline,a.ordinal=(SELECT max(latest.ordinal) FROM mdm_commands.attempts latest WHERE latest.tenant_id=a.tenant_id AND latest.operation=a.operation AND latest.phase=a.phase) AS latest FROM mdm_commands.attempts a JOIN mdm_commands.operations o ON(o.tenant_id,o.id)=(a.tenant_id,a.operation) JOIN rss_device_command.commands d ON d.tenant_id=o.tenant_id AND d.command_id=o.id::text WHERE o.tenant_id=$1::uuid AND o.registration=$2 AND o.registration_generation=$3 AND a.credential=$4 AND a.session=$5 ORDER BY a.ordinal")
+    let rows=sqlx::query("SELECT a.id,a.operation,a.message,a.request,o.device,o.registration,o.registration_generation,o.input_context,o.request AS task_request,o.authority::text,d.status AS command_status,(o.input_context->>'deadline')::bigint>extract(epoch FROM clock_timestamp()) AS within_deadline,a.ordinal=(SELECT max(latest.ordinal) FROM mdm_commands.attempts latest WHERE latest.tenant_id=a.tenant_id AND latest.operation=a.operation AND latest.phase=a.phase) AS latest FROM mdm_commands.attempts a JOIN mdm_commands.operations o ON(o.tenant_id,o.id)=(a.tenant_id,a.operation) JOIN rss_device_command.commands d ON d.tenant_id=o.tenant_id AND d.command_id=o.id::text WHERE o.tenant_id=$1::uuid AND o.registration=$2 AND o.registration_generation=$3 AND a.credential=$4 AND a.session=$5 ORDER BY a.ordinal")
         .bind(&tenant).bind(p.registration()).bind(p.generation()).bind(p.credential()).bind(session).fetch_all(&mut *c).await.map_err(db)?;
     let mut consumed = std::collections::BTreeSet::new();
     for row in rows {
@@ -558,7 +558,7 @@ pub(crate) async fn send_on(
         pending = true;
     }
     let cap=sqlx::query_as::<_,(String,i32)>("SELECT os_version,edition FROM mdm_commands.capabilities WHERE tenant_id=$1::uuid AND registration=$2 AND generation=$3").bind(&tenant).bind(p.registration()).bind(p.generation()).fetch_optional(&mut *c).await.map_err(db)?;
-    let rows=sqlx::query("SELECT o.id,o.device,o.registration,o.registration_generation,o.input_context,o.request,o.approval FROM mdm_commands.operations o JOIN rss_device_command.commands d ON d.tenant_id=o.tenant_id AND d.command_id=o.id::text WHERE o.tenant_id=$1::uuid AND o.registration=$2 AND o.registration_generation=$3 AND o.input_context->>'platform'='windows' AND o.gateway_accepted AND o.dispatch_failure IS NULL AND d.status IN('published','received') AND (o.input_context->>'deadline')::bigint>extract(epoch FROM clock_timestamp()) ORDER BY o.id LIMIT 64").bind(&tenant).bind(p.registration()).bind(p.generation()).fetch_all(&mut *c).await.map_err(db)?;
+    let rows=sqlx::query("SELECT o.id,o.device,o.registration,o.registration_generation,o.input_context,o.request,o.authority FROM mdm_commands.operations o JOIN rss_device_command.commands d ON d.tenant_id=o.tenant_id AND d.command_id=o.id::text WHERE o.tenant_id=$1::uuid AND o.registration=$2 AND o.registration_generation=$3 AND o.input_context->>'platform'='windows' AND o.gateway_accepted AND o.dispatch_failure IS NULL AND d.status IN('published','received') AND (o.input_context->>'deadline')::bigint>extract(epoch FROM clock_timestamp()) ORDER BY o.id LIMIT 64").bind(&tenant).bind(p.registration()).bind(p.generation()).fetch_all(&mut *c).await.map_err(db)?;
     for row in rows {
         let op = super::input_storage::open_row(
             protection,
@@ -567,18 +567,19 @@ pub(crate) async fn send_on(
             &row,
             "request",
         )?;
-        let approval: ExecutionAuthority =
-            serde_json::from_value(row.try_get("approval").map_err(db)?).map_err(|_| protocol())?;
+        let authority: ExecutionAuthority =
+            serde_json::from_value(row.try_get("authority").map_err(db)?)
+                .map_err(|_| protocol())?;
         let at = now(c).await?;
-        if matches!(approval, ExecutionAuthority::DeviceControl { .. })
-            && !approval.control_matches(&op, p.registration(), p.generation())?
+        if matches!(authority, ExecutionAuthority::DeviceControl { .. })
+            && !authority.control_matches(&op, p.registration(), p.generation())?
         {
             continue;
         }
-        if !approval
+        if !authority
             .valid(source, c, protection, &op.task.permissions()?, at)
             .await?
-            || !approval.dispatch_ready(source, c).await?
+            || !authority.dispatch_ready(source, c).await?
         {
             continue;
         }
@@ -1080,7 +1081,7 @@ async fn now(c: &mut PgConnection) -> std::result::Result<i64, Error> {
         .await
         .map_err(db)
 }
-/// Cached command bytes still require a live task approval and deadline.
+/// Cached command bytes still require a live task authority and deadline.
 pub async fn replay_on(
     source: &dyn crate::source_authority::SourceAuthority,
     c: &mut PgConnection,
@@ -1088,7 +1089,7 @@ pub async fn replay_on(
     p: &DevicePrincipal,
     m: &Message,
 ) -> std::result::Result<(), Error> {
-    let rows=sqlx::query("SELECT o.id,o.device,o.registration,o.registration_generation,o.input_context,o.request,o.approval::text,d.status FROM mdm_commands.attempts a JOIN mdm_commands.operations o ON(o.tenant_id,o.id)=(a.tenant_id,a.operation) JOIN rss_device_command.commands d ON d.tenant_id=o.tenant_id AND d.command_id=o.id::text WHERE a.tenant_id=$1::uuid AND o.registration=$2::uuid AND a.session=$3 AND (a.message=$4 OR EXISTS(SELECT 1 FROM mdm_commands.attempt_frames f WHERE f.tenant_id=a.tenant_id AND f.attempt=a.id AND f.message=$4))")
+    let rows=sqlx::query("SELECT o.id,o.device,o.registration,o.registration_generation,o.input_context,o.request,o.authority::text,d.status FROM mdm_commands.attempts a JOIN mdm_commands.operations o ON(o.tenant_id,o.id)=(a.tenant_id,a.operation) JOIN rss_device_command.commands d ON d.tenant_id=o.tenant_id AND d.command_id=o.id::text WHERE a.tenant_id=$1::uuid AND o.registration=$2::uuid AND a.session=$3 AND (a.message=$4 OR EXISTS(SELECT 1 FROM mdm_commands.attempt_frames f WHERE f.tenant_id=a.tenant_id AND f.attempt=a.id AND f.message=$4))")
  .bind(p.tenant().to_string()).bind(p.registration().to_string()).bind(i64::from(m.header.session_id)).bind(i64::from(m.header.message_id)).fetch_all(&mut *c).await.map_err(db)?;
     let now = now(c).await?;
     for row in rows {
@@ -1099,17 +1100,17 @@ pub async fn replay_on(
             &row,
             "request",
         )?;
-        let approval: ExecutionAuthority =
-            serde_json::from_str(&row.try_get::<String, _>("approval").map_err(db)?)
+        let authority: ExecutionAuthority =
+            serde_json::from_str(&row.try_get::<String, _>("authority").map_err(db)?)
                 .map_err(|_| protocol())?;
-        if !approval.dispatch_ready(source, c).await?
+        if !authority.dispatch_ready(source, c).await?
             || !request.target.matches_windows_context(p.user_context())
             || request.deadline <= now
             || !matches!(
                 row.try_get::<String, _>("status").map_err(db)?.as_str(),
                 "published" | "received"
             )
-            || !approval
+            || !authority
                 .valid(source, c, protection, &request.task.permissions()?, now)
                 .await?
         {
@@ -1158,8 +1159,8 @@ async fn receipt_acceptance(
     if old.is_some() || !received {
         return Ok(old);
     }
-    let approval: ExecutionAuthority =
-        serde_json::from_str(&row.try_get::<String, _>("approval").map_err(db)?)
+    let authority: ExecutionAuthority =
+        serde_json::from_str(&row.try_get::<String, _>("authority").map_err(db)?)
             .map_err(|_| protocol())?;
     let at = now(c).await?;
     Ok(Some(
@@ -1173,7 +1174,7 @@ async fn receipt_acceptance(
                     .as_str(),
                 "published" | "received"
             ),
-            authority_valid: approval
+            authority_valid: authority
                 .receipt_valid(source, c, protection, &request.task.permissions()?, at)
                 .await?,
         }

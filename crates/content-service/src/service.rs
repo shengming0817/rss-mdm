@@ -2,7 +2,7 @@
 use crate::transaction::{self};
 use rss_mdm_authorization_service::{Permission, context::AuthorizedPrincipal};
 mod error;
-use crate::{Binding, Store, Upload};
+use crate::{Binding, Store, Upload, UploadBudget};
 pub use error::Error;
 use futures::TryStreamExt;
 use rss_mdm_audit_integration::RequestAudit;
@@ -185,17 +185,24 @@ pub async fn resolve(
     audit: &RequestAudit,
     id: &str,
     input: &Selection,
+    budget: UploadBudget,
 ) -> Result<Binding, Error> {
     audit.require_request_settlement();
     proof.require(Permission::ResourceWrite, None)?;
     audit.target(id);
     audit.set_action("management_write");
-    transaction::inspect(&app.runtime, app.tenant, (proof, id, input), |ctx, tx| {
-        Box::pin(async move {
-            let (proof, id, input) = *ctx;
-            resolve_in(tx, proof, id, input).await
-        })
-    })
+    transaction::inspect(
+        &app.runtime,
+        app.tenant,
+        Some(budget),
+        (proof, id, input),
+        |ctx, tx| {
+            Box::pin(async move {
+                let (proof, id, input) = *ctx;
+                resolve_in(tx, proof, id, input).await
+            })
+        },
+    )
     .await
 }
 pub fn store(app: &Access) -> Result<&Arc<Store>, Error> {
@@ -207,15 +214,16 @@ pub async fn current(
     audit: &RequestAudit,
     id: &str,
     upload: Uuid,
+    budget: UploadBudget,
 ) -> Result<Upload, Error> {
     audit.operation(upload, "management_write");
     proof.require(Permission::ResourceWrite, None)?;
-    let value = store(app)?
-        .status(
+    let value = budget
+        .work(store(app)?.status(
             &format!("{}:{}", proof.instance_id(), proof.principal_id()),
             upload,
             app.clock.unix_seconds().ok_or(Error::Clock)?,
-        )
+        ))
         .await?;
     if value.binding.resource()?.resource != id
         || value.binding.actor != format!("{}:{}", proof.instance_id(), proof.principal_id())
@@ -228,6 +236,7 @@ pub async fn current(
         audit,
         id,
         &Selection::from_binding(&value.binding)?,
+        budget,
     )
     .await?;
     if binding != value.binding {
@@ -241,16 +250,22 @@ pub async fn record(
     audit: &RequestAudit,
     upload: &Upload,
     source_catalog: Option<&rss_mdm_software_service::catalog::Reader>,
+    budget: UploadBudget,
 ) -> Result<(), Error> {
     audit.operation(upload.id, "management_write");
-    let verified = store(app)?
-        .verify_class(&upload.binding.artifact()?, upload.binding.class())
+    let verified = budget
+        .work(store(app)?.verify_class(
+            &upload.binding.artifact()?,
+            upload.binding.class(),
+            budget.operation,
+        ))
         .await?;
     transaction::run(
         &app.audit_store,
         &app.runtime,
         app.tenant,
         audit,
+        Some(budget),
         (app, proof, audit, upload, &verified, source_catalog),
         |ctx, tx| {
             Box::pin(async move {
@@ -348,8 +363,12 @@ pub async fn cleanup(
         .await?;
     let mut removed = 0usize;
     for candidate in candidates {
-        let deleted =
-            transaction::inspect(&app.runtime, app.tenant, (proof, &candidate), |ctx, tx| {
+        let deleted = transaction::inspect(
+            &app.runtime,
+            app.tenant,
+            None,
+            (proof, &candidate),
+            |ctx, tx| {
                 Box::pin(async move {
                     let (proof, candidate) = ctx;
                     let proof = *proof;
@@ -363,8 +382,9 @@ pub async fn cleanup(
                         .await
                         .map_err(Into::into)
                 })
-            })
-            .await?;
+            },
+        )
+        .await?;
         if deleted {
             candidate.remove().await?;
             removed += 1;
@@ -379,22 +399,29 @@ pub async fn mirror(
     id: &str,
     input: &Selection,
 ) -> Result<(), Error> {
+    let budget = store(app)?.upload_budget()?;
     let operation = input.operation.ok_or(Error::Malformed)?;
     audit.operation(operation, "management_write");
-    let binding = resolve(app, proof, audit, id, input).await?;
+    let binding = resolve(app, proof, audit, id, input, budget).await?;
     let source = binding
         .resource()?
         .source
         .as_ref()
         .ok_or(Error::Malformed)?;
     let catalog = app.catalog.as_ref();
-    transaction::inspect(&app.runtime, app.tenant, (catalog, source), |ctx, tx| {
-        Box::pin(async move {
-            let (catalog, source) = *ctx;
-            catalog.source_admitted_in(tx, source).await?;
-            Ok(())
-        })
-    })
+    transaction::inspect(
+        &app.runtime,
+        app.tenant,
+        Some(budget),
+        (catalog, source),
+        |ctx, tx| {
+            Box::pin(async move {
+                let (catalog, source) = *ctx;
+                catalog.source_admitted_in(tx, source).await?;
+                Ok(())
+            })
+        },
+    )
     .await?;
     let content = store(app)?;
     let origins = content
@@ -410,7 +437,9 @@ pub async fn mirror(
     )
     .map_err(|_| Error::Malformed)?;
     let now = app.clock.unix_seconds().ok_or(Error::Clock)?;
-    let session = content.begin(operation, binding.clone(), now).await?;
+    let session = content
+        .begin(operation, binding.clone(), now, budget)
+        .await?;
     if !session.complete {
         if session.offset != 0 {
             return Err(Error::Conflict);
@@ -430,7 +459,7 @@ pub async fn mirror(
             response.bytes_stream().map_err(std::io::Error::other),
         );
         content
-            .append(&session.binding.actor, operation, 0, now, stream)
+            .append(&session.binding.actor, operation, 0, now, stream, budget)
             .await?;
     }
     let result = content
@@ -438,9 +467,10 @@ pub async fn mirror(
             &session.binding.actor,
             operation,
             app.clock.unix_seconds().ok_or(Error::Clock)?,
+            budget,
         )
         .await?;
-    record(app, proof, audit, &result, Some(catalog)).await?;
+    record(app, proof, audit, &result, Some(catalog), budget).await?;
     Ok(())
 }
 pub async fn receipt(
@@ -458,6 +488,7 @@ pub async fn receipt(
         &app.runtime,
         app.tenant,
         audit,
+        None,
         (app, proof, audit, &id, operation),
         |ctx, tx| {
             Box::pin(async move {
@@ -489,14 +520,16 @@ pub async fn begin_upload(
     id: &str,
     upload: Uuid,
     input: &Selection,
+    budget: UploadBudget,
 ) -> Result<Upload, Error> {
     audit.operation(upload, "management_write");
-    let binding = resolve(app, proof, audit, id, input).await?;
+    let binding = resolve(app, proof, audit, id, input, budget).await?;
     Ok(store(app)?
         .begin(
             upload,
             binding,
             app.clock.unix_seconds().ok_or(Error::Clock)?,
+            budget,
         )
         .await?)
 }
@@ -513,7 +546,8 @@ pub async fn append_upload<R: tokio::io::AsyncRead + Unpin + Send>(
     offset: u64,
     reader: R,
 ) -> Result<Append, Error> {
-    let old = current(app, proof, audit, id, upload).await?;
+    let budget = store(app)?.upload_budget()?;
+    let old = current(app, proof, audit, id, upload, budget).await?;
     if old.offset != offset {
         return Ok(Append::OffsetConflict(old.offset));
     }
@@ -524,6 +558,7 @@ pub async fn append_upload<R: tokio::io::AsyncRead + Unpin + Send>(
             offset,
             app.clock.unix_seconds().ok_or(Error::Clock)?,
             reader,
+            budget,
         )
         .await?;
     proof.check_live()?;
@@ -536,15 +571,17 @@ pub async fn complete_upload(
     id: &str,
     upload: Uuid,
 ) -> Result<(), Error> {
-    let old = current(app, proof, audit, id, upload).await?;
+    let budget = store(app)?.upload_budget()?;
+    let old = current(app, proof, audit, id, upload, budget).await?;
     let result = store(app)?
         .finish(
             &old.binding.actor,
             upload,
             app.clock.unix_seconds().ok_or(Error::Clock)?,
+            budget,
         )
         .await?;
-    record(app, proof, audit, &result, None).await
+    record(app, proof, audit, &result, None, budget).await
 }
 pub async fn upload<R: tokio::io::AsyncRead + Unpin + Send>(
     app: &Access,
@@ -554,8 +591,9 @@ pub async fn upload<R: tokio::io::AsyncRead + Unpin + Send>(
     input: &Selection,
     reader: R,
 ) -> Result<(), Error> {
+    let budget = store(app)?.upload_budget()?;
     let operation = input.operation.ok_or(Error::Malformed)?;
-    let session = begin_upload(app, proof, audit, id, operation, input).await?;
+    let session = begin_upload(app, proof, audit, id, operation, input, budget).await?;
     if !session.complete && session.offset != session.binding.length {
         let written = store(app)?
             .append(
@@ -564,6 +602,7 @@ pub async fn upload<R: tokio::io::AsyncRead + Unpin + Send>(
                 0,
                 app.clock.unix_seconds().ok_or(Error::Clock)?,
                 reader,
+                budget,
             )
             .await?;
         if written.offset != written.binding.length {
@@ -575,9 +614,10 @@ pub async fn upload<R: tokio::io::AsyncRead + Unpin + Send>(
             &session.binding.actor,
             operation,
             app.clock.unix_seconds().ok_or(Error::Clock)?,
+            budget,
         )
         .await?;
-    record(app, proof, audit, &complete, None).await
+    record(app, proof, audit, &complete, None, budget).await
 }
 
 pub trait Clock: Send + Sync {

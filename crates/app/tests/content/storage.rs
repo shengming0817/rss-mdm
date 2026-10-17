@@ -133,11 +133,11 @@ async fn s3_artifact_cross_chunk_frontier() -> Result<()> {
     let id = Uuid::new_v4();
     let actor = &b.actor;
     let artifact = b.artifact()?;
-    store.begin(id, b.clone(), now).await?;
-    ensure!(store.append(actor, id, 0, now, &bytes[..3]).await?.offset == 3);
+    store.begin(id, b.clone(), now, store.upload_budget()?, ).await?;
+    ensure!(store.append(actor, id, 0, now, &bytes[..3], store.upload_budget()?, ).await?.offset == 3);
     ensure!(
         store
-            .append(actor, id, 3, now, &bytes[3..65539])
+            .append(actor, id, 3, now, &bytes[3..65539], store.upload_budget()?, )
             .await?
             .offset
             == 65539
@@ -145,9 +145,9 @@ async fn s3_artifact_cross_chunk_frontier() -> Result<()> {
 
     ensure!(second.status(actor, id, now).await?.offset == 65539);
     second
-        .append(actor, id, 65539, now, &bytes[65539..])
+        .append(actor, id, 65539, now, &bytes[65539..], second.upload_budget()?, )
         .await?;
-    second.finish(actor, id, now).await?;
+    second.finish(actor, id, now, second.upload_budget()?, ).await?;
     let digest = b
         .sha256
         .iter()
@@ -177,13 +177,13 @@ async fn volume_fences_a_stale_writer_and_keeps_failed_body_frontier() -> Result
     let b = binding(bytes, StorageClass::Artifact);
     let id = Uuid::new_v4();
     let now = crate::windows::test_support::now();
-    store.begin(id, b.clone(), now).await?;
+    store.begin(id, b.clone(), now, store.upload_budget()?, ).await?;
     let (mut producer, body) = tokio::io::duplex(128);
     use tokio::io::AsyncWriteExt;
     producer.write_all(&bytes[..3]).await?;
     let stale = store.clone();
     let actor = b.actor.clone();
-    let writer = tokio::spawn(async move { stale.append(&actor, id, 0, now, body).await });
+    let writer = tokio::spawn(async move { stale.append(&actor, id, 0, now, body, stale.upload_budget()?, ).await });
     // Wait on the durable claim rather than relying on a scheduler delay.
     tokio::time::timeout(Duration::from_secs(5),async{loop{
   if pg(&format!("SELECT count(*) FROM mdm_content.uploads WHERE tenant_id='{}' AND document->'value'->'upload'->>'id'='{}' AND epoch IS NOT NULL",case_tenant(),id))?.trim()=="1"{break Ok::<_,anyhow::Error>(())}tokio::task::yield_now().await;
@@ -195,7 +195,7 @@ async fn volume_fences_a_stale_writer_and_keeps_failed_body_frontier() -> Result
     ))?;
 
     second
-        .append(&b.actor, id, 0, now, bytes.as_slice())
+        .append(&b.actor, id, 0, now, bytes.as_slice(), second.upload_budget()?, )
         .await?;
     drop(producer);
     ensure!(matches!(
@@ -203,7 +203,7 @@ async fn volume_fences_a_stale_writer_and_keeps_failed_body_frontier() -> Result
         Err(rss_mdm_content_service::Error::Conflict)
     ));
     ensure!(store.status(&b.actor, id, now).await?.offset == bytes.len() as u64);
-    store.finish(&b.actor, id, now).await?;
+    store.finish(&b.actor, id, now, store.upload_budget()?, ).await?;
     ensure!(
         &*store
             .verify(&b.artifact()?)
@@ -212,17 +212,40 @@ async fn volume_fences_a_stale_writer_and_keeps_failed_body_frontier() -> Result
             == bytes
     );
     let bad = Uuid::new_v4();
-    store.begin(bad, b.clone(), now).await?;
+    store.begin(bad, b.clone(), now, store.upload_budget()?, ).await?;
     let body = futures::stream::iter([
         Ok(axum::body::Bytes::from_static(b"epo")),
         Err(std::io::Error::other("interrupted fixture body")),
     ]);
     let reader = tokio_util::io::StreamReader::new(body);
     ensure!(matches!(
-        store.append(&b.actor, bad, 0, now, reader).await,
+        store.append(&b.actor, bad, 0, now, reader, store.upload_budget()?, ).await,
         Err(rss_mdm_content_service::Error::Storage)
     ));
     ensure!(store.status(&b.actor, bad, now).await?.offset == 0);
+    // Dropping a request must release its exact persisted claim, not wait for retention expiry.
+    let cancelled = Uuid::new_v4();
+    store.begin(cancelled, b.clone(), now, store.upload_budget()?).await?;
+    let (producer, body) = tokio::io::duplex(128);
+    let pending = store.clone(); let actor = b.actor.clone();
+    let writer = tokio::spawn(async move {
+        pending.append(&actor, cancelled, 0, now, body, pending.upload_budget()?).await
+    });
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            if pg(&format!("SELECT count(*) FROM mdm_content.uploads WHERE tenant_id='{}' AND document->'value'->'upload'->>'id'='{cancelled}' AND epoch IS NOT NULL",case_tenant()))?.trim()=="1" {break Ok::<_,anyhow::Error>(());}
+            tokio::task::yield_now().await;
+        }
+    }).await??;
+    writer.abort(); ensure!(writer.await.unwrap_err().is_cancelled()); drop(producer);
+    tokio::time::timeout(Duration::from_secs(7), async {
+        loop {
+            if pg(&format!("SELECT count(*) FROM mdm_content.uploads WHERE tenant_id='{}' AND document->'value'->'upload'->>'id'='{cancelled}' AND epoch IS NULL AND held_until=0",case_tenant()))?.trim()=="1" {break Ok::<_,anyhow::Error>(());}
+            tokio::task::yield_now().await;
+        }
+    }).await??;
+    second.append(&b.actor, cancelled, 0, now, bytes.as_slice(), second.upload_budget()?).await?;
+
     Ok(())
     }).await
 }
@@ -238,8 +261,8 @@ async fn s3_failed_frontier_commit_preserves_acknowledged_native_prefix() -> Res
     let b = binding(bytes, StorageClass::NativeConfiguration);
     let id = Uuid::new_v4();
     let now = crate::windows::test_support::now();
-    store.begin(id, b.clone(), now).await?;
-    store.append(&b.actor, id, 0, now, &bytes[..3]).await?;
+    store.begin(id, b.clone(), now, store.upload_budget()?, ).await?;
+    store.append(&b.actor, id, 0, now, &bytes[..3], store.upload_budget()?, ).await?;
     // A deferred constraint trigger rejects COMMIT, after the provider object and
     // ready coordinate have committed. Claim/release do not change the document.
     pg(&format!(
@@ -253,7 +276,7 @@ EXECUTE FUNCTION public.content_frontier_fault();"#,
     ))?;
     let observed = async {
     ensure!(matches!(
-        store.append(&b.actor, id, 3, now, &bytes[3..]).await,
+        store.append(&b.actor, id, 3, now, &bytes[3..], store.upload_budget()?, ).await,
         Err(rss_mdm_content_service::Error::CommitUnknown)
     ));
     ensure!(second.status(&b.actor, id, now).await?.offset == 3);
@@ -264,11 +287,11 @@ EXECUTE FUNCTION public.content_frontier_fault();"#,
         "DROP TRIGGER content_frontier_fault ON mdm_content.uploads; DROP FUNCTION public.content_frontier_fault()",
     )?;
     observed?;
-    second.append(&b.actor, id, 3, now, &bytes[3..]).await?;
-    second.finish(&b.actor, id, now).await?;
+    second.append(&b.actor, id, 3, now, &bytes[3..], second.upload_budget()?, ).await?;
+    second.finish(&b.actor, id, now, second.upload_budget()?, ).await?;
     ensure!(
         &*store
-            .verify_class(&b.artifact()?, StorageClass::NativeConfiguration)
+            .verify_class(&b.artifact()?, StorageClass::NativeConfiguration, second.upload_budget()?.operation_deadline())
             .await?
             .read_plaintext(bytes.len())?
             == bytes
@@ -398,11 +421,11 @@ async fn s3_rejected_writes_release_quota_after_permission_recovery_and_expiry()
     let b = binding(&bytes, StorageClass::Artifact);
     let now = crate::windows::test_support::now();
     let id = Uuid::new_v4();
-    store.begin(id, b.clone(), now).await?;
+    store.begin(id, b.clone(), now, store.upload_budget()?, ).await?;
     for _ in 0..4 {
         ensure!(
             matches!(
-                store.append(&b.actor, id, 0, now, bytes.as_slice()).await,
+                store.append(&b.actor, id, 0, now, bytes.as_slice(), store.upload_budget()?, ).await,
                 Err(rss_mdm_content_service::Error::Configuration)
             ),
             "provider must clearly reject PUT rather than exhaust quota"
@@ -435,11 +458,11 @@ async fn s3_rejected_writes_release_quota_after_permission_recovery_and_expiry()
             == "0"
     );
     let recovered = Uuid::new_v4();
-    store.begin(recovered, b.clone(), now).await?;
+    store.begin(recovered, b.clone(), now, store.upload_budget()?, ).await?;
     store
-        .append(&b.actor, recovered, 0, now, bytes.as_slice())
+        .append(&b.actor, recovered, 0, now, bytes.as_slice(), store.upload_budget()?, )
         .await?;
-    store.finish(&b.actor, recovered, now).await?;
+    store.finish(&b.actor, recovered, now, store.upload_budget()?, ).await?;
     ensure!(
         &*store
             .verify(&b.artifact()?)

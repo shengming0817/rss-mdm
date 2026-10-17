@@ -182,6 +182,8 @@ impl Store {
         id: Uuid,
         offset: Option<u64>,
         now: i64,
+        epoch: Uuid,
+        budget: UploadBudget,
     ) -> Result<(Saved, Uuid), Error> {
         let key = upload::storage_key(actor, id);
         let mut tx = self.tx().await?;
@@ -204,8 +206,7 @@ impl Store {
         {
             return Err(Error::Conflict);
         }
-        let epoch = Uuid::new_v4();
-        sqlx::query("UPDATE mdm_content.uploads SET epoch=$3,held_until=$4 WHERE tenant_id=$1::uuid AND id=$2").bind(self.tenant.to_string()).bind(key).bind(epoch).bind(now.checked_add(self.config.transfer_seconds as i64).ok_or(Error::Malformed)?).execute(&mut *tx).await.map_err(|e|journal::pg_error(concat!(file!(), ":", line!()),e))?;
+        sqlx::query("UPDATE mdm_content.uploads SET epoch=$3,held_until=$4 WHERE tenant_id=$1::uuid AND id=$2").bind(self.tenant.to_string()).bind(key).bind(epoch).bind(now.checked_add(budget.remaining().as_secs().saturating_add(1) as i64).ok_or(Error::Malformed)?).execute(&mut *tx).await.map_err(|e|journal::pg_error(concat!(file!(), ":", line!()),e))?;
         commit(tx).await?;
         Ok((saved, epoch))
     }
@@ -314,6 +315,7 @@ impl Store {
         saved: &Saved,
         epoch: Uuid,
         deadline: Deadline,
+        commit_started: &std::sync::atomic::AtomicBool,
     ) -> Result<(), Error> {
         self.check_deadline(deadline)?;
         let mut tx = self.tx().await?;
@@ -326,6 +328,7 @@ impl Store {
         sqlx::query("UPDATE mdm_content.objects SET expires=0 WHERE tenant_id=$1::uuid AND owner=$2 AND state='ready' AND NOT(id=ANY($3))")
          .bind(self.tenant.to_string()).bind(saved.upload.storage_key()).bind(pieces).execute(&mut *tx).await.map_err(|e|journal::pg_error(concat!(file!(), ":", line!()),e))?;
         self.check_deadline(deadline)?;
+        commit_started.store(true, std::sync::atomic::Ordering::Release);
         commit(tx).await
     }
     pub(super) fn check_deadline(&self, d: Deadline) -> Result<(), Error> {

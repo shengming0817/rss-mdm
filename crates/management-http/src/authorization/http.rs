@@ -249,28 +249,50 @@ async fn authenticate_and_run(
             parts
                 .extensions
                 .insert(crate::runtime_diagnostics::RequestDeadline(deadline));
-            tokio::time::timeout_at(deadline.into(), async {
-                if let Err(error) = app.access.require_tenant_purpose(&proof, management).await {
-                    return Error::from(error).into_response();
-                }
+            let content_owned = parts
+                .extensions
+                .get::<axum::extract::MatchedPath>()
+                .is_some_and(|path| {
+                    crate::body_policy::content_owned(path.as_str(), &parts.method)
+                });
+            let authorization = tokio::time::timeout_at(deadline.into(), async {
+                app.access
+                    .require_tenant_purpose(&proof, management)
+                    .await
+                    .map_err(Error::from)?;
                 let proof = if authorization {
-                    match proof.load_authorization(&app.access).await {
-                        Ok(proof) => proof,
-                        Err(error) => return Error::from(error).into_response(),
-                    }
+                    proof
+                        .load_authorization(&app.access)
+                        .await
+                        .map_err(Error::from)?
                 } else {
                     proof
                 };
-                parts
-                    .extensions
-                    .insert(crate::http_operation::SessionContinuation::new(credential));
-                parts.extensions.insert(RequestAuth {
-                    proof: Arc::new(proof),
-                });
-                next.run(Request::from_parts(parts, body)).await
+                Ok::<_, Error>(proof)
             })
-            .await
-            .unwrap_or_else(|_| Error::Unavailable(Failure::RequestDeadline).into_response())
+            .await;
+            let proof = match authorization {
+                Ok(Ok(proof)) => proof,
+                Ok(Err(error)) => return error.into_response(),
+                Err(_) => return Error::Unavailable(Failure::RequestDeadline).into_response(),
+            };
+            parts
+                .extensions
+                .insert(crate::http_operation::SessionContinuation::new(credential));
+            parts.extensions.insert(RequestAuth {
+                proof: Arc::new(proof),
+            });
+            let request = Request::from_parts(parts, body);
+            if content_owned {
+                // These exact routes hand off to the content owner's bounded operation.
+                next.run(request).await
+            } else {
+                tokio::time::timeout_at(deadline.into(), next.run(request))
+                    .await
+                    .unwrap_or_else(|_| {
+                        Error::Unavailable(Failure::RequestDeadline).into_response()
+                    })
+            }
         }
         Err(response) => response,
     }

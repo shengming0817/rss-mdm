@@ -85,7 +85,7 @@ async fn fixed_controls_preserve_uncertainty() -> anyhow::Result<()> {
         );
     }
     let mut ids = Vec::new();
-    let mut approved_request = None;
+    let mut authorized_request = None;
     for kind in ["restart", "wipe"] {
         let id = Uuid::new_v4();
         let mut action = if kind == "restart" {
@@ -103,23 +103,27 @@ async fn fixed_controls_preserve_uncertainty() -> anyhow::Result<()> {
             let wrong = client
                 .call(
                     Method::POST,
-                    &format!("/{id}/approve"),
+                    &format!("/{id}/reauthorize"),
                     Some(json!({"requestId":Uuid::new_v4(),"expectedRevision":1})),
                 )
                 .await?;
             ensure!(
                 wrong.0 == StatusCode::CONFLICT,
-                "dangerous reapproval without confirmation: {wrong:?}"
+                "dangerous reauthorization without confirmation: {wrong:?}"
             );
             let body = json!({"requestId":Uuid::new_v4(),"expectedRevision":1,"confirmation":confirmation});
-            let approved = client
-                .call(Method::POST, &format!("/{id}/approve"), Some(body.clone()))
+            let authorized = client
+                .call(
+                    Method::POST,
+                    &format!("/{id}/reauthorize"),
+                    Some(body.clone()),
+                )
                 .await?;
             ensure!(
-                approved.0 == StatusCode::OK,
-                "wipe reapproval: {approved:?}"
+                authorized.0 == StatusCode::OK,
+                "wipe reauthorization: {authorized:?}"
             );
-            approved_request = Some((body, approved));
+            authorized_request = Some((body, authorized));
         }
         client.publish_operation(id).await?;
         ids.push(id);
@@ -196,22 +200,26 @@ async fn fixed_controls_preserve_uncertainty() -> anyhow::Result<()> {
         );
         client.publish_operation(*id).await?;
         let request_id = Uuid::new_v4();
-        let mut approval = json!({"requestId":request_id,"expectedRevision":read.1["revision"]});
+        let mut authority = json!({"requestId":request_id,"expectedRevision":read.1["revision"]});
         if *id == ids[1] {
-            approval["confirmation"] = confirmation.clone();
+            authority["confirmation"] = confirmation.clone();
         }
         let stored = || {
             crate::test_support::pg(&format!(
-                "SELECT jsonb_build_array(revision,approval) FROM mdm_commands.operations WHERE tenant_id='{}' AND id='{id}'",
+                "SELECT jsonb_build_array(revision,authority) FROM mdm_commands.operations WHERE tenant_id='{}' AND id='{id}'",
                 case_tenant()
             ))
         };
         let before = stored()?;
         if *id == ids[1] {
-            let (body, response) = approved_request.as_ref().unwrap();
+            let (body, response) = authorized_request.as_ref().unwrap();
             ensure!(
                 client
-                    .call(Method::POST, &format!("/{id}/approve"), Some(body.clone()))
+                    .call(
+                        Method::POST,
+                        &format!("/{id}/reauthorize"),
+                        Some(body.clone())
+                    )
                     .await?
                     == *response
             );
@@ -221,15 +229,15 @@ async fn fixed_controls_preserve_uncertainty() -> anyhow::Result<()> {
             );
         }
         let denied = client
-            .call(Method::POST, &format!("/{id}/approve"), Some(approval))
+            .call(Method::POST, &format!("/{id}/reauthorize"), Some(authority))
             .await?;
         ensure!(
             denied.0 == StatusCode::CONFLICT,
-            "received command reapproval: {denied:?}"
+            "received command reauthorization: {denied:?}"
         );
         ensure!(
             stored()? == before,
-            "received command reapproval changed revision/authority"
+            "received command reauthorization changed revision/authority"
         );
         let after = client.call(Method::GET, &format!("/{id}"), None).await?;
         ensure!(
@@ -237,17 +245,17 @@ async fn fixed_controls_preserve_uncertainty() -> anyhow::Result<()> {
                 && after.1["revision"] == read.1["revision"]
                 && after.1["commandStatus"] == "received"
                 && after.1["observation"]["effect"] == "unverifiable",
-            "received command reapproval changed state: {after:?}"
+            "received command reauthorization changed state: {after:?}"
         );
         ensure!(crate::test_support::pg(&format!(
             "SELECT count(*) FROM mdm_commands.requests WHERE tenant_id='{}' AND id='{request_id}'", case_tenant()))?.trim() == "0",
-            "rejected reapproval persisted a success receipt");
+            "rejected reauthorization persisted a success receipt");
         ensure!(
             crate::test_support::audit_count(|r| r.source() == "mdm.business"
                 && r.operation() == Some(request_id.to_string().as_str())
                 && r.result() == "success")?
                 == 0,
-            "rejected reapproval appended a success business fact"
+            "rejected reauthorization appended a success business fact"
         );
     }
     host.close().await?;

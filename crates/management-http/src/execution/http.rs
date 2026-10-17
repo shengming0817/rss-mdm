@@ -8,7 +8,7 @@ use axum::{
 };
 use rss_mdm_execution_service::{
     Change,
-    device_control::{Approval, Input},
+    device_control::{Input, Reauthorization},
 };
 use serde_json::Value;
 pub fn routes(queries: Arc<rss_mdm_execution_service::queries::Queries>) -> Router<Arc<HttpState>> {
@@ -21,7 +21,10 @@ pub fn routes(queries: Arc<rss_mdm_execution_service::queries::Queries>) -> Rout
         )
         .route("/devices/{device}/operations", post(create))
         .route("/devices/{device}/operations/{id}/cancel", post(cancel))
-        .route("/devices/{device}/operations/{id}/approve", post(approve))
+        .route(
+            "/devices/{device}/operations/{id}/reauthorize",
+            post(reauthorize),
+        )
 }
 async fn directory(
     State(s): State<Arc<rss_mdm_execution_service::queries::Queries>>,
@@ -83,19 +86,19 @@ async fn cancel(
         .map(Json)
         .map_err(Error::from)
 }
-async fn approve(
+async fn reauthorize(
     State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
     Path((device, id)): Path<(String, Uuid)>,
-    input: std::result::Result<Json<Approval>, axum::extract::rejection::JsonRejection>,
+    input: std::result::Result<Json<Reauthorization>, axum::extract::rejection::JsonRejection>,
 ) -> std::result::Result<Json<Value>, Error> {
     let change = input.map_err(Error::from)?.0;
     let revision = Change {
         request_id: change.request_id,
         expected_revision: change.expected_revision,
     };
-    audit.operation(change.request_id, "command_approve");
+    audit.operation(change.request_id, "command_reauthorize");
     audit.target(&device);
     app.execution
         .change(&auth.proof, &device, id, &revision, Some(&change), &audit)
