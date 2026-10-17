@@ -270,5 +270,23 @@ pub(super) fn fields() -> Vec<FieldDefinition> {
         false,
         None,
     );
+    for field in &mut out {
+        if matches!(
+            field.key.as_str(),
+            "device.security.windows.bitlocker.volumes"
+                | "device.security.windows.tpm"
+                | "device.security.windows.secure_boot"
+                | "device.security.windows.vbs"
+                | "device.security.windows.credential_guard"
+                | "device.security.windows.hvci"
+                | "device.security.macos.filevault"
+                | "device.security.macos.firewall"
+                | "device.security.macos.sip"
+        ) {
+            field.sources.insert(AgentNative, 1);
+        }
+    }
+    out.extend(system::fields());
     out
 }
+mod system;

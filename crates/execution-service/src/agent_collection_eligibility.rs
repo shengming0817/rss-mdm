@@ -8,10 +8,39 @@ pub fn matches(
     binding: &channels::AgentBinding,
     platform: Platform,
     architecture: Architecture,
-    plan: &wire::NativeCollectionPlan,
-    engines: &wire::NativeEngines,
+    definition: &rss_mdm_resource::AgentCollectionDefinition,
+    environment: &rss_mdm_agent_wire::CollectionEnvironment,
 ) -> bool {
-    binding.inventory()
+    let plan = &definition.spec().plan;
+    let version = binding.execution_context.os_version;
+    let facts = rss_mdm_resource::CollectionEnvironment {
+        os_version: Some(
+            version
+                .iter()
+                .map(u16::to_string)
+                .collect::<Vec<_>>()
+                .join("."),
+        ),
+        build: Some(u32::from(version[2])),
+        edition: environment.edition.clone(),
+        tools: environment.tools.clone(),
+    };
+    let capabilities = plan
+        .requirements()
+        .keys()
+        .map(|e| {
+            serde_json::to_value(e)
+                .expect("closed engine")
+                .as_str()
+                .expect("engine name")
+                .to_owned()
+        })
+        .collect();
+    definition
+        .spec()
+        .applicability
+        .allows(&facts, "agent", &capabilities)
+        && binding.inventory()
         && binding.native_collection()
         && binding.platform
             == match platform {
@@ -29,7 +58,7 @@ pub fn matches(
                 Platform::Macos => wire::TaskPlatform::Macos,
             }
         && wire::NativeExecutionBinding::bind(plan, &binding.execution_context).is_ok()
-        && plan.supported_by(engines)
+        && plan.supported_by(&environment.native_engines)
 }
 pub async fn check_in(
     tx: &mut PgTransaction<'_>,
@@ -37,7 +66,7 @@ pub async fn check_in(
     target: &Target,
     platform: Platform,
     architecture: Architecture,
-    plan: &wire::NativeCollectionPlan,
+    definition: &rss_mdm_resource::AgentCollectionDefinition,
 ) -> Result<bool> {
     let targets = channels::agent_targets_in(tx, store, vec![target.device.clone()]).await?;
     let Some(agent) = targets
@@ -48,16 +77,24 @@ pub async fn check_in(
     };
     let tenant = tx.tenant_id().to_string();
     let registration = target.registration;
-    let value:Option<serde_json::Value>=tx.with_connection(move|c|Box::pin(async move{sqlx::query_scalar("SELECT profiles->'nativeEngines' FROM mdm_commands.action_polls WHERE tenant_id=$1::uuid AND registration=$2").bind(tenant).bind(registration).fetch_optional(c).await.map(|v:Option<Option<serde_json::Value>>|v.flatten())})).await?;
+    let value:Option<serde_json::Value>=tx.with_connection(move|c|Box::pin(async move{sqlx::query_scalar("SELECT profiles FROM mdm_commands.action_polls WHERE tenant_id=$1::uuid AND registration=$2").bind(tenant).bind(registration).fetch_optional(c).await.map(|v:Option<Option<serde_json::Value>>|v.flatten())})).await?;
     let Some(value) = value else {
         return Ok(false);
     };
-    let engines = crate::stored(serde_json::from_value(value))?;
+    let environment = rss_mdm_agent_wire::CollectionEnvironment {
+        edition: crate::stored(serde_json::from_value(
+            value["environment"]["edition"].clone(),
+        ))?,
+        tools: crate::stored(serde_json::from_value(
+            value["environment"]["tools"].clone(),
+        ))?,
+        native_engines: crate::stored(serde_json::from_value(value["nativeEngines"].clone()))?,
+    };
     Ok(matches(
         &agent.binding,
         platform,
         architecture,
-        plan,
-        &engines,
+        definition,
+        &environment,
     ))
 }

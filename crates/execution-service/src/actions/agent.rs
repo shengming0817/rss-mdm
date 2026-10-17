@@ -86,7 +86,7 @@ impl ExecutionService {
                 let policy=db::load_policy_version(&service.policy_reader,tx,id).await?;
                 let target=crate::Target {device:p.device().into(),registration:p.registration(),generation:p.generation()};
                 match &policy {
-                    db::ScheduledPolicy::AgentCollection(v) if crate::agent_collection_eligibility::matches(&binding,v.frozen.input.platform,v.frozen.input.architecture,&v.frozen.definition.spec().plan,&input.environment().native_engines) => super::production::accept_for_device(service,tx,&policy,&target,input.operation_id(),now).await?,
+                    db::ScheduledPolicy::AgentCollection(v) if crate::agent_collection_eligibility::matches(&binding,v.frozen.input.platform,v.frozen.input.architecture,&v.frozen.definition,input.environment()) => super::production::accept_for_device(service,tx,&policy,&target,input.operation_id(),now).await?,
                     db::ScheduledPolicy::Enrollment(_) if enrollment_capable => super::production::accept_for_device(service,tx,&policy,&target,input.operation_id(),now).await?,
                     db::ScheduledPolicy::Script(script) if crate::script_eligibility::matches(&binding,script.frozen.input.platform,script.frozen.input.architecture,script.frozen.executor_profile(),input.profiles()) => super::production::accept_for_device(service,tx,&policy,&target,input.operation_id(),now).await?,
                     db::ScheduledPolicy::Software(software) if software_capable => super::software::accept_for_device(service,tx,software,&target,now).await?,
@@ -99,7 +99,7 @@ impl ExecutionService {
                 let mut run=db::load_run(tx,stored(Uuid::parse_str(&id))?).await?;belongs(&run,p)?;let plan=db::load_source(&service.policy_reader,tx,run.source).await?;
                 let previous=run.state.clone();
                 run.state.expire(now,plan.timeout_seconds());
-                let capable=match &plan { db::ScheduledPolicy::Native(_) => false, db::ScheduledPolicy::AgentCollection(v) => crate::agent_collection_eligibility::matches(&binding,v.frozen.input.platform,v.frozen.input.architecture,&v.frozen.definition.spec().plan,&input.environment().native_engines), db::ScheduledPolicy::Script(script) => crate::script_eligibility::matches(&binding,script.frozen.input.platform,script.frozen.input.architecture,script.frozen.executor_profile(),input.profiles()), db::ScheduledPolicy::Software(software) => software.assignment.supported_in(&service.admission(),tx,&binding).await?, db::ScheduledPolicy::Enrollment(_) => enrollment_capable };
+                let capable=match &plan { db::ScheduledPolicy::Native(_) => false, db::ScheduledPolicy::AgentCollection(v) => crate::agent_collection_eligibility::matches(&binding,v.frozen.input.platform,v.frozen.input.architecture,&v.frozen.definition,input.environment()), db::ScheduledPolicy::Script(script) => crate::script_eligibility::matches(&binding,script.frozen.input.platform,script.frozen.input.architecture,script.frozen.executor_profile(),input.profiles()), db::ScheduledPolicy::Software(software) => software.assignment.supported_in(&service.admission(),tx,&binding).await?, db::ScheduledPolicy::Enrollment(_) => enrollment_capable };
                 let allowed=capable && plan.authorized_run_in(service,tx,&run,now).await?;
                 if (!allowed && run.invocation.is_some()) || plan.withdrawn_in(service,tx,&run.target,now).await?{run.state.cancel();}
                 super::recovery::audit_recovery(service,tx,&run,&previous).await?;

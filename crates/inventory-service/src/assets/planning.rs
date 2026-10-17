@@ -338,11 +338,17 @@ impl SnapshotReader {
             ScopeSelector::LocalUser { .. } | ScopeSelector::AllAuthorized => {
                 let tenant = self.tenant.to_string();
                 let selected = ids.clone();
-                let uid = match &condition.selector {
-                    ScopeSelector::LocalUser { uid } => Some(uid.to_string()),
-                    _ => None,
+                let (identity, platform) = match &condition.selector {
+                    ScopeSelector::LocalUser { platform, identity } => (
+                        Some(identity.clone()),
+                        Some(match platform {
+                            rss_mdm_inventory::Platform::Windows => "windows",
+                            rss_mdm_inventory::Platform::Macos => "macos",
+                        }),
+                    ),
+                    _ => (None, None),
                 };
-                let mut scopes = if uid.is_none() {
+                let mut scopes = if identity.is_none() {
                     vec![S::Device]
                 } else {
                     Vec::new()
@@ -350,8 +356,8 @@ impl SnapshotReader {
                 let raw: Vec<String> = tx.with_connection(move |c| Box::pin(async move {
                     let sources = crate::device::read::sources_at(c, tenant.clone(), selected, watermark).await?;
                     let registrations: Vec<String> = sources.iter().map(|r| r.try_get("registration")).collect::<std::result::Result<_,sqlx::Error>>()?;
-                    sqlx::query_scalar("SELECT DISTINCT (f->'scope')::text AS scope FROM mdm_access.collection_history h CROSS JOIN LATERAL jsonb_array_elements((h.document->>'attempts')::jsonb->'definition'->'fields') f WHERE tenant_id=$1::uuid AND revision<=$2 AND h.scope::jsonb->>'registration'=ANY($3) AND ($4::text IS NULL OR (f->'scope'->>'kind' IN ('macos_applications','macos_brew') AND f->'scope'->>'uid'=$4)) LIMIT 129")
-                        .bind(tenant).bind(watermark).bind(registrations).bind(uid).fetch_all(c).await
+                    sqlx::query_scalar("SELECT DISTINCT (f->'scope')::text AS scope FROM mdm_access.collection_history h CROSS JOIN LATERAL jsonb_array_elements((h.document->>'attempts')::jsonb->'definition'->'fields') f WHERE tenant_id=$1::uuid AND revision<=$2 AND h.scope::jsonb->>'registration'=ANY($3) AND ($4::text IS NULL OR ($5::text='macos' AND ((f->'scope'->>'kind' IN ('macos_applications','macos_brew') AND f->'scope'->>'uid'=$4) OR (f->'scope'->'owner'->>'kind'='macos' AND f->'scope'->'owner'->>'uid'=$4))) OR ($5::text='windows' AND f->'scope'->'owner'->>'kind'='windows' AND f->'scope'->'owner'->>'sid'=$4)) LIMIT 129")
+                        .bind(tenant).bind(watermark).bind(registrations).bind(identity).bind(platform).fetch_all(c).await
                 })).await?;
                 if raw.len() > 128 {
                     return Err(Error::Unavailable(Failure::AssetSourceLimit).into());

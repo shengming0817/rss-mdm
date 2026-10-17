@@ -27,6 +27,15 @@ pub enum Conversion {
         /// Finite exact source tokens. Unknown tokens are invalid.
         values: BTreeMap<String, Value>,
     },
+    /// Interpret membership in a complete integer array; never treat a numeric bitmask as a set.
+    ArrayMember {
+        /// Exact native enum member.
+        member: i64,
+        /// Value when present in the complete set.
+        present: Value,
+        /// Value when absent from the complete set.
+        absent: Value,
+    },
     /// Convert nonnegative integral units using checked exact rational arithmetic.
     Scale {
         /// Numerator.
@@ -107,6 +116,9 @@ impl Conversion {
     /// Check conversion declarations independently of any device value.
     pub fn validate(&self) -> Result<(), Error> {
         match self {
+            Self::ArrayMember {member,present,absent} => {
+                if *member < 0 || [present,absent].iter().any(|v| !matches!(v,Value::String(s) if !s.is_empty() && s.len()<=128 && !s.chars().any(char::is_control))) {return Err(Error::InvalidInput);}
+            }
             Self::Enum { values } => {
                 if values.is_empty()
                     || values.len() > 128
@@ -156,6 +168,21 @@ impl Conversion {
             v => v.as_i64().ok_or(Error::InvalidInput),
         };
         match self {
+            Self::ArrayMember {
+                member,
+                present,
+                absent,
+            } => {
+                let items = raw.as_array().ok_or(Error::InvalidInput)?;
+                if items.len() > 65535 || items.iter().any(|v| v.as_i64().is_none()) {
+                    return Err(Error::InvalidInput);
+                }
+                Ok(if items.iter().any(|v| v.as_i64() == Some(*member)) {
+                    present.clone()
+                } else {
+                    absent.clone()
+                })
+            }
             Self::Identity => Ok(raw.clone()),
             Self::CimTime => {
                 let s = raw.as_str().ok_or(Error::InvalidInput)?;

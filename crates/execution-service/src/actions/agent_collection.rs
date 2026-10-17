@@ -52,6 +52,14 @@ pub async fn finish(
     })).await?;
     let spec = frozen.definition.spec();
     checked_input(result.validate_for(&spec.plan, now))?;
+    if result.queries.iter().any(|(id, answer)| {
+        let query = &spec.plan.spec().queries[id].definition;
+        matches!(query, wire::NativeQueryDefinition::System { .. })
+            && !owners_match(answer, query, &execution)
+    }) {
+        return Err(Error::Malformed.into());
+    }
+
     let trusted = allowed
         && run
             .state
@@ -129,6 +137,12 @@ pub async fn finish(
                     "incomplete"
                 }
                 wire::NativeQueryStatus::Complete => "complete",
+                wire::NativeQueryStatus::Failed => "failed",
+                wire::NativeQueryStatus::Partial => "partial",
+                wire::NativeQueryStatus::NotScanned => "not_scanned",
+                wire::NativeQueryStatus::SourceUnavailable => "source_unavailable",
+                wire::NativeQueryStatus::UserAbsent => "user_absent",
+                wire::NativeQueryStatus::StoreUnavailable => "store_unavailable",
                 wire::NativeQueryStatus::Unsupported => "unsupported",
                 wire::NativeQueryStatus::Denied => "denied",
                 wire::NativeQueryStatus::Timeout => "timeout",
@@ -207,6 +221,7 @@ fn bind_definition(
         &frozen.resource.id,
         &frozen.resource.variant,
         uid,
+        &spec.execution.generated_uid,
     )))?;
     let dataset = format!("resource.{:x}", Sha256::digest(identity));
     let version = format!("{:x}", Sha256::digest(frozen.resource_digest));
@@ -275,7 +290,86 @@ fn field_scope(
             },
             taps: taps.clone(),
         },
-        _ => S::Device,
+        wire::NativeQueryDefinition::System { query } => {
+            use wire::NativeSystemQuery as Q;
+            let platform = match query.platform() {
+                wire::TaskPlatform::Windows => rss_mdm_inventory::Platform::Windows,
+                wire::TaskPlatform::Macos => rss_mdm_inventory::Platform::Macos,
+            };
+            let owner = || -> Result<rss_mdm_inventory::LocalAccountIdentity> {
+                let wire::SoftwareExecutionTarget::User { identity, .. } = &execution.target else {
+                    return Err(Error::Malformed.into());
+                };
+                Ok(match platform {
+                    rss_mdm_inventory::Platform::Windows => {
+                        rss_mdm_inventory::LocalAccountIdentity::Windows {
+                            sid: identity.clone(),
+                        }
+                    }
+                    rss_mdm_inventory::Platform::Macos => {
+                        rss_mdm_inventory::LocalAccountIdentity::Macos {
+                            uid: uid()?,
+                            generated_uid: execution
+                                .generated_uid
+                                .clone()
+                                .ok_or(Error::Malformed)?,
+                        }
+                    }
+                })
+            };
+            match query {
+                Q::WindowsCertificates { .. } | Q::MacosCertificates { .. } => {
+                    S::NativeCertificates {
+                        platform,
+                        owner: if query.execution_identity()
+                            == wire::ExecutionIdentity::LoggedInUser
+                        {
+                            Some(owner()?)
+                        } else {
+                            None
+                        },
+                        store: query.certificate_store().ok_or(Error::Malformed)?.into(),
+                    }
+                }
+                Q::WindowsAccounts { selection, .. } | Q::MacosAccounts { selection, .. } => {
+                    S::NativeAccounts {
+                        platform,
+                        identities: match selection {
+                            wire::AccountSelection::Local => Default::default(),
+                            wire::AccountSelection::Selected { identities } => identities.clone(),
+                        },
+                    }
+                }
+                Q::WindowsApplication { .. } | Q::MacosApplication { .. } => S::NativeApplication {
+                    platform,
+                    identity: stored(serde_json::to_string(query))?,
+                    owner: if query.execution_identity() == wire::ExecutionIdentity::LoggedInUser {
+                        Some(owner()?)
+                    } else {
+                        None
+                    },
+                },
+                Q::MacosSecurity {
+                    section: wire::MacosSecuritySection::SecureToken,
+                } => S::NativeUser { owner: owner()? },
+                Q::WindowsBitlocker
+                | Q::WindowsFirewall
+                | Q::WindowsDefender
+                | Q::WindowsSecureBoot
+                | Q::WindowsJoin
+                | Q::WindowsUpdates { .. }
+                | Q::MacosUpdates { .. }
+                | Q::MacosSecurity { .. } => S::Device,
+            }
+        }
+        wire::NativeQueryDefinition::WindowsWmi { .. }
+        | wire::NativeQueryDefinition::WindowsRegistry { .. }
+        | wire::NativeQueryDefinition::WindowsCpu
+        | wire::NativeQueryDefinition::WindowsSoftware
+        | wire::NativeQueryDefinition::WindowsNetwork
+        | wire::NativeQueryDefinition::WindowsBattery
+        | wire::NativeQueryDefinition::MacosHardware { .. }
+        | wire::NativeQueryDefinition::MacosPkgReceipts {} => S::Device,
     };
     checked_input(scope.validate_executable())?;
     Ok(scope)
@@ -285,6 +379,27 @@ fn owners_match(
     query: &wire::NativeQueryDefinition,
     execution: &wire::NativeExecutionBinding,
 ) -> bool {
+    if let wire::NativeQueryDefinition::System { query } = query {
+        if query.execution_identity() != wire::ExecutionIdentity::LoggedInUser {
+            return true;
+        }
+        let wire::SoftwareExecutionTarget::User { identity, .. } = &execution.target else {
+            return false;
+        };
+        // Application rows bind their declared application identity, not an invented owner column.
+        if matches!(query, wire::NativeSystemQuery::MacosApplication { .. }) {
+            return true;
+        }
+        let owner = match query.platform() {
+            wire::TaskPlatform::Windows => Some(identity.as_str()),
+            wire::TaskPlatform::Macos => execution.generated_uid.as_deref(),
+        };
+        return owner.is_some()
+            && result
+                .rows
+                .iter()
+                .all(|r| r.get("owner").and_then(|v| v.as_str()) == owner);
+    }
     let user = matches!(
         query,
         wire::NativeQueryDefinition::MacosApplications {
@@ -311,6 +426,7 @@ mod tests {
     fn user_field_scope_is_stable_across_sessions_and_disjoint_across_users_and_recipes() {
         use wire::{ExecutionIdentity, NativeQueryDefinition as Q, SoftwareExecutionTarget as T};
         let binding = |uid: &str| wire::NativeExecutionBinding {
+            generated_uid: Some("00000000-0000-0000-0000-000000000501".into()),
             identity: ExecutionIdentity::LoggedInUser,
             context_revision: 1,
             target: T::User {
