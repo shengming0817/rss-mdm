@@ -1029,9 +1029,9 @@ async fn native_inventory_case(
         let certificate_scope=json!({"kind":"native_certificates","platform":platform,"owner":null,"store":if macos {"system"}else{"my"}});
         let account_scope=json!({"kind":"native_accounts","platform":platform,"identities":[]});
         let mut sensitive_paths=Vec::new();
-        for (scope,secret) in [(certificate_scope,"sensitive-certificate"),(account_scope,"sensitive-account")] {
+        for (scope,field,secret) in [(certificate_scope,"device.certificates.metadata","sensitive-certificate"),(account_scope,if macos {"device.accounts.macos.identities"}else{"device.accounts.windows.identities"},"sensitive-account")] {
             let params=url::form_urlencoded::Serializer::new(String::new()).append_pair("scope",&scope.to_string()).finish();
-            let path=format!("/api/v1/devices/{device}/inventory?{params}");
+            let path=format!("/api/v1/devices/{device}/inventory-lists/{field}?{params}");
             let visible=f.author.call(&f.router,Method::GET,&path,None).await?;
             ensure!(visible.0==StatusCode::OK && visible.1.to_string().contains(secret),"positive sensitive field read failed: {visible:?}");
             sensitive_paths.push((path,secret));
@@ -1045,7 +1045,7 @@ async fn native_inventory_case(
         crate::test_support::identity::set_grants(case_tenant(), &f.author_id, ordinary).await?;
         for (path,secret) in sensitive_paths {
             let hidden=f.author.call(&f.router,Method::GET,&path,None).await?;
-            ensure!(hidden.0==StatusCode::OK && !hidden.1.to_string().contains(secret),"sensitive field read leaked or failed unexpectedly: {hidden:?}");
+            ensure!(hidden.0==StatusCode::FORBIDDEN && !hidden.1.to_string().contains(secret),"sensitive field read leaked or failed unexpectedly: {hidden:?}");
         }
         let denied = f
             .author

@@ -269,6 +269,39 @@ pub fn validate_agent_mapping(
     if !system_field_matches(field.key.as_str(), &query.definition) {
         return Err(Error::Malformed);
     }
+    if matches!(
+        query.definition,
+        rss_mdm_agent_wire::runtime::NativeQueryDefinition::System { .. }
+    ) && !field.key.as_str().starts_with("custom.")
+    {
+        // Standard native facts preserve canonical columns; an editable Resource cannot
+        // rewrite owner/store, turn presence into health, or delete an unknown observation.
+        let m = &binding.mapping;
+        let canonical = if m.columns.is_empty() {
+            let pointer = if field.key.as_str() == "device.security.application.permissions" {
+                "/permissions"
+            } else {
+                "/state"
+            };
+            m.pointer == pointer && m.conversion == C::Identity
+        } else {
+            m.pointer.is_empty()
+                && m.conversion == C::Identity
+                && m.columns.iter().all(|(name, column)| {
+                    column.pointer == format!("/{name}")
+                        && column.columns.is_empty()
+                        && column.conversion
+                            == if matches!(name.as_str(), "not_before" | "not_after") {
+                                C::Integer
+                            } else {
+                                C::Identity
+                            }
+                })
+        };
+        if !canonical || binding.missing != NativeMissing::Missing {
+            return Err(Error::Malformed);
+        }
+    }
     if binding.missing == NativeMissing::Null && !field.nullable {
         return Err(Error::Malformed);
     }
@@ -533,7 +566,7 @@ fn system_field_matches(
                 section: M::BootstrapToken
             })
         ),
-        _ => true,
+        _ => !matches!(query, D::System { .. }) || field.starts_with("custom."),
     }
 }
 
@@ -880,5 +913,30 @@ mod mapping_tests {
         };
         mapping.validate().unwrap();
         assert!(validate_mapping(&field, &mapping).is_err());
+    }
+    #[test]
+    fn system_standard_columns_cannot_rewrite_owner_or_health() {
+        use rss_mdm_resource::blueprints;
+        let blueprints::Definition::AgentCollection { template } =
+            blueprints::get("windows.agent.certificates_device_my", "1")
+                .unwrap()
+                .definition
+        else {
+            unreachable!()
+        };
+        let field = builtin::fields()
+            .into_iter()
+            .find(|f| f.key.as_str() == "device.certificates.metadata")
+            .unwrap();
+        let original = template.spec().mappings[field.key.as_str()].clone();
+        assert!(validate_agent_mapping(&field, &template, &original).is_ok());
+        for (name, other) in [("owner", "subject"), ("store", "issuer"), ("id", "owner")] {
+            let mut changed = original.clone();
+            changed.mapping.columns.get_mut(name).unwrap().pointer = format!("/{other}");
+            assert!(validate_agent_mapping(&field, &template, &changed).is_err());
+        }
+        let mut changed = original;
+        changed.missing = rss_mdm_resource::NativeMissing::Delete;
+        assert!(validate_agent_mapping(&field, &template, &changed).is_err());
     }
 }

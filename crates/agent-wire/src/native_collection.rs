@@ -1025,7 +1025,10 @@ impl NativeExecutionBinding {
             (SoftwareExecutionTarget::Device, ExecutionIdentity::System) => Ok(()),
             (SoftwareExecutionTarget::User { identity, .. }, ExecutionIdentity::LoggedInUser)
                 if (match plan.platform() {
-                    TaskPlatform::Windows => sid_valid(identity),
+                    TaskPlatform::Windows => {
+                        sid_valid(identity)
+                            && !matches!(identity.as_str(), "S-1-5-18" | "S-1-5-19" | "S-1-5-20")
+                    }
                     TaskPlatform::Macos => {
                         macos::nonroot_uid(identity)
                             && self
