@@ -456,7 +456,7 @@ async fn console_metadata_filters_and_selectors() -> Result<()> {
             None,
         )
         .await?;
-    ensure!(["groups", "scopes", "policies"].iter().all(|id| workspace["modules"].as_array().unwrap().iter().any(|m| m["id"] == *id)), "required workspace modules missing: {workspace}");
+    ensure!(["devices", "policies", "software", "security", "operations"].iter().all(|id| workspace["modules"].as_array().unwrap().iter().any(|m| m["id"] == *id)), "required workspace modules missing: {workspace}");
     ensure!(
         workspace["modules"]
             .as_array()

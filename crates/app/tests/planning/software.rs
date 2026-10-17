@@ -50,12 +50,12 @@ async fn rollout_time_success_gates_and_stage_evidence() -> Result<()> {
         )
         .await?;
     ensure!(
-        device_page.1["items"][0]["taskAdmission"]["state"] == "scheduled",
+        device_page.1["items"].as_array().unwrap().iter().find(|item| item["object"]["id"] == crate::test_support::software_execution::case_device()).expect("later-stage target missing")["taskAdmission"]["state"] == "scheduled",
         "device page misstates execution eligibility: {device_page:?}"
     );
     let preview=author.call(&router,Method::POST,"/api/v1/policies/previews",Some(json!({"definition":future_definition(now+3600,None),"after":null,"scopeResult":null}))).await?;
     ensure!(
-        preview.1["items"][0]["taskAdmission"]["state"] == "scheduled",
+        preview.1["items"].as_array().unwrap().iter().find(|item| item["object"]["id"] == crate::test_support::software_execution::case_device()).expect("later-stage target missing")["taskAdmission"]["state"] == "scheduled",
         "preview misstates execution eligibility: {preview:?}"
     );
     let draft_gate = future_definition(1, Some(80));
@@ -69,7 +69,7 @@ async fn rollout_time_success_gates_and_stage_evidence() -> Result<()> {
         .await?;
     ensure!(
         draft_gate.0 == StatusCode::OK
-            && draft_gate.1["items"][0]["taskAdmission"]["state"] == "success_gate",
+            && draft_gate.1["items"].as_array().unwrap().iter().find(|item| item["object"]["id"] == crate::test_support::software_execution::case_device()).expect("later-stage target missing")["taskAdmission"]["state"] == "success_gate",
         "draft gate must use actual denominator and zero historical success: {draft_gate:?}"
     );
     let pending = author
@@ -326,30 +326,18 @@ async fn rollout_statistics_checkpoint_excluded_pages_and_reject_stale_inputs() 
     .await?;
     let resources = std::mem::take(&mut f.resources);
     resources.finish(async {
-    let mut devices = Vec::new();
-    for i in 0..20 {
-        let device = format!(
-            "{}-stats-{i:02}",
-            crate::test_support::case::name("rollout")
-        );
-        crate::test_support::inventory::seed_source(&device, "agent", "agent.builtin", "stats")?;
-        devices.push(device);
-    }
+    let prefix = case::name("rollout");
+    let devices: Vec<_> = (0..20).map(|i| format!("{prefix}-stats-{i:02}")).collect();
+    // Only registration/channel presence is consumed here; Inventory facts and enrollment are not under test.
+    pg(&format!("BEGIN; CREATE TEMP TABLE rollout_devices AS SELECT '{prefix}-stats-'||lpad(n::text,2,'0') AS device,gen_random_uuid() AS grant_id,gen_random_uuid() AS registration,gen_random_uuid() AS credential,gen_random_uuid() AS epoch FROM generate_series(0,19) n; INSERT INTO mdm_access.devices SELECT '{tenant}',device FROM rollout_devices; INSERT INTO mdm_access.agent_grants(tenant_id,id,operation_id,source,actor,instance,device,platform,secret_digest,request_digest,state,expires_at) SELECT '{tenant}',grant_id,gen_random_uuid(),'download','fixture','{instance}',device,'macos',repeat('0',64),repeat('0',64),'consumed',clock_timestamp()+interval '24 hours' FROM rollout_devices; INSERT INTO mdm_access.registrations(tenant_id,id,device,channel,generation,agent_grant_id,state,purpose,epoch) SELECT '{tenant}',registration,device,'agent',1,grant_id,'active','primary',epoch FROM rollout_devices; INSERT INTO mdm_access.credentials SELECT '{tenant}',credential,registration,'agent',md5(credential::text)||md5(registration::text),'active' FROM rollout_devices; INSERT INTO mdm_access.report_sources SELECT '{tenant}',registration,'agent.builtin',epoch,true FROM rollout_devices; COMMIT;", tenant=case_tenant(), instance=INSTANCE))?;
     let refs: Vec<&str> = devices.iter().map(String::as_str).collect();
     let root = prepared_scope(&f.planning, &refs).await?;
     let stage = Uuid::new_v4();
-    let automation = start_automation(&f.base).await?;
-    let created=write(&mut f.author,&f.router,&format!("/api/v1/scopes/{stage}"),0,json!({"action":"put","definition":{"targets":devices.iter().map(|d|json!({"kind":"device","id":d})).collect::<Vec<_>>(),"limitations":null,"exclusions":devices[..16].iter().map(|d|json!({"kind":"device","id":d})).collect::<Vec<_>>()}})).await?;
-    await_task(
-        &mut f.author,
-        &f.router,
-        &format!(
-            "/api/v1/scopes/{stage}/tasks/{}",
-            created["task"].as_str().unwrap()
-        ),
-    )
-    .await?;
-    crate::test_support::stop_worker(automation).await?;
+    let definition: crate::planning::ScopeDefinition = serde_json::from_value(json!({"targets":devices.iter().map(|d|json!({"kind":"device","id":d})).collect::<Vec<_>>(),"limitations":null,"exclusions":devices[..16].iter().map(|d|json!({"kind":"device","id":d})).collect::<Vec<_>>()}))?;
+    f.planning.runtime.local_tx_with_context(f.planning.tenant, crate::identity::deadline(), (f.planning.as_ref(), definition), |(planning, definition), tx| {
+        let definition = definition.clone();
+        Box::pin(async move { planning.seed_scope_in(tx, stage, definition).await.map_err(|e| rss_transactional_messaging_postgres::PgError::from(sqlx::Error::Protocol(e.to_string()))) })
+    }).await.fold(|_| (),|e|panic!("{e:?}"),|e|panic!("{e:?}"),|e|panic!("{e:?}"),|e|panic!("{e:?}"),|e|panic!("{e:?}"));
     let policy = Uuid::new_v4();
     let mut definition = authored(f.resource, root, "required_install");
     definition["action"]["rollout"] = json!({"stages":[{"scope":stage,"opensAt":0}]});

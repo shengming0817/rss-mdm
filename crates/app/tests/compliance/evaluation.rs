@@ -54,8 +54,14 @@ async fn collected_facts(b: &mut Browser, router: &Router, base: &Value) -> Resu
         let current = &response["rules"][0]["current"];
         ensure!(current["applicability"]["platformDecision"] == "match");
         ensure!(current["evidence"][0]["sources"][0]["source"] == "mdm.windows");
+        ensure!(current["evidence"][0]["sources"][0]["snapshotId"] == run.id.to_string());
         if model == "Collected" {
+            let mut retained_snapshot = run.id;
             for values in [[Some("Unconfirmed"), None], [None, None]] {
+                let previous_task = pg(&format!(
+                    "SELECT current_run::text FROM mdm_compliance.rules WHERE tenant_id='{}' AND id='{id}'",
+                    case_tenant()
+                ))?;
                 let incomplete = report(&service, &access, &proof, values).await?;
                 tokio::time::timeout(Duration::from_secs(8), async {
                     loop {
@@ -70,11 +76,6 @@ async fn collected_facts(b: &mut Browser, router: &Router, base: &Value) -> Resu
                     }
                 })
                 .await??;
-                let retained = status(b, router, device, "non_compliant").await?;
-                ensure!(
-                    retained["rules"][0]["current"]["factWatermark"].as_i64()
-                        > current["factWatermark"].as_i64()
-                );
                 // Partial success updates the confirmed field; later failure retains it.
                 let run = ok(
                     b,
@@ -91,10 +92,29 @@ async fn collected_facts(b: &mut Browser, router: &Router, base: &Value) -> Resu
                     "published",
                 )
                 .await?;
+                let current_task = pg(&format!(
+                    "SELECT current_run::text FROM mdm_compliance.rules WHERE tenant_id='{}' AND id='{id}'",
+                    case_tenant()
+                ))?;
                 ensure!(
-                    status(b, router, device, "non_compliant").await?["rules"][0]["current"]["status"]
-                        == "non_compliant"
+                    current_task.trim() == run["task"].as_str().unwrap()
+                        && current_task != previous_task
                 );
+                if values[0].is_some() {
+                    retained_snapshot = incomplete.id;
+                }
+                let retained = status(b, router, device, "non_compliant").await?;
+                let evidence = &retained["rules"][0]["current"]["evidence"][0]["sources"][0];
+                ensure!(
+                    evidence["source"] == "mdm.windows"
+                        && evidence["snapshotId"] == retained_snapshot.to_string(),
+                    "{retained}"
+                );
+                let value: Value = serde_json::from_str(&pg(&format!(
+                    "SELECT value FROM mdm.inventory WHERE tenant_id='{}' AND registration='{registration}' AND field='device.model'",
+                    case_tenant()
+                ))?)?;
+                ensure!(value == json!({"kind":"string","value":"Unconfirmed"}));
             }
         }
     }

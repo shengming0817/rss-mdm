@@ -164,7 +164,7 @@ async fn reference_target_lock_serializes_deletion() {
             result = &mut deletion => panic!("delete bypassed reference lock: {result:?}"),
             observed = tokio::time::timeout(Duration::from_secs(8), async {
                 loop {
-                    if admin(&format!("SELECT count(*) FROM pg_stat_activity WHERE datname=current_database() AND {holder}=ANY(pg_blocking_pids(pid))")) != "0" { break; }
+                    if admin(&format!("WITH RECURSIVE blocked(pid) AS (SELECT pid FROM pg_stat_activity WHERE datname=current_database() AND {holder}=ANY(pg_blocking_pids(pid)) UNION SELECT a.pid FROM pg_stat_activity a JOIN blocked b ON b.pid=ANY(pg_blocking_pids(a.pid)) WHERE a.datname=current_database()) SELECT count(*) FROM blocked")) != "0" { break; }
                     tokio::time::sleep(Duration::from_millis(10)).await;
                 }
             }) => { observed.expect("delete never waited on reference holder"); }
@@ -497,7 +497,7 @@ async fn distinct_runs_compete_on_one_revision_and_preserve_event_contract() {
         let observe = async {
             tokio::time::timeout(Duration::from_secs(8), async {
                 loop {
-                    if admin(&format!("SELECT count(*) FROM pg_stat_activity WHERE datname=current_database() AND {holder}=ANY(pg_blocking_pids(pid))")).parse::<usize>().unwrap() >= 2 { break; }
+                    if admin(&format!("WITH RECURSIVE blocked(pid) AS (SELECT pid FROM pg_stat_activity WHERE datname=current_database() AND {holder}=ANY(pg_blocking_pids(pid)) UNION SELECT a.pid FROM pg_stat_activity a JOIN blocked b ON b.pid=ANY(pg_blocking_pids(a.pid)) WHERE a.datname=current_database()) SELECT count(*) FROM blocked")).parse::<usize>().unwrap() >= 2 { break; }
                     tokio::time::sleep(Duration::from_millis(10)).await;
                 }
             }).await.expect("both operations must wait on the target row");
@@ -593,7 +593,7 @@ async fn concurrent_inputs_rule_changes_and_kind_boundaries() {
         let observe = async {
             tokio::time::timeout(Duration::from_secs(8), async {
                 loop {
-                    if admin(&format!("SELECT count(*) FROM pg_stat_activity WHERE datname=current_database() AND {holder}=ANY(pg_blocking_pids(pid))")).parse::<usize>().unwrap() >= 2 { break; }
+                    if admin(&format!("WITH RECURSIVE blocked(pid) AS (SELECT pid FROM pg_stat_activity WHERE datname=current_database() AND {holder}=ANY(pg_blocking_pids(pid)) UNION SELECT a.pid FROM pg_stat_activity a JOIN blocked b ON b.pid=ANY(pg_blocking_pids(a.pid)) WHERE a.datname=current_database()) SELECT count(*) FROM blocked")).parse::<usize>().unwrap() >= 2 { break; }
                     tokio::time::sleep(Duration::from_millis(10)).await;
                 }
             }).await.expect("both operations must wait on the target row");
@@ -752,6 +752,37 @@ async fn atomic_event_failure_rls_and_large_member_ids() {
     ));
     let foreign_store = store(runtime.clone(), foreign()).await;
     assert!(foreign_store.get(id, deadline()).await.unwrap().is_none());
+    for (bound, expected) in [(tenant(), 1_i64), (foreign(), 0)] {
+        let visible = runtime
+            .local_tx_with_context(bound, deadline(), &s, |_, tx| {
+                Box::pin(async move {
+                    tx.with_connection(move |c| {
+                        Box::pin(async move {
+                            sqlx::query_scalar::<_, i64>(
+                                "SELECT count(*) FROM mdm_group.groups WHERE id=$1::uuid",
+                            )
+                            .bind(id.to_string())
+                            .fetch_one(c)
+                            .await
+                        })
+                    })
+                    .await
+                })
+            })
+            .await
+            .fold(
+                |v| v,
+                |e| panic!("{e:?}"),
+                |e| panic!("{e:?}"),
+                |e| panic!("{e:?}"),
+                |e| panic!("{e:?}"),
+                |e| panic!("{e:?}"),
+            );
+        assert_eq!(
+            visible, expected,
+            "RLS must hide the row without a tenant predicate"
+        );
+    }
     let hidden = runtime
         .local_tx_with_context(foreign(), deadline(), &foreign_store, |store, tx| {
             Box::pin(async move { store.build_in(tx, request.id).await })
