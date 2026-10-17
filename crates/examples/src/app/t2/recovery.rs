@@ -253,7 +253,7 @@ async fn admission_drift() -> Result<()> {
     };
     assert_eq!(
         crate::failure::report(error)["problems"][0]["stage"],
-        "projection_open"
+        "observation_open"
     );
     app(scope(1, "d1")).await?.close().await?;
     let source = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));

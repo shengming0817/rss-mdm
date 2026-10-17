@@ -774,16 +774,7 @@ async fn typed_list_pages_remain_frozen_across_field_updates() -> Result<()> {
     resources.finish(async {
     let device = case::name("asset-list");
     pg(&format!("INSERT INTO mdm_access.devices VALUES('{}','{device}')", case_tenant()))?;
-    f.grants.extend([
-        Grant {
-            operation: Permission::InventoryFieldsWrite,
-            scope: Scope::Tenant,
-        },
-        Grant {
-            operation: Permission::InventoryAssign,
-            scope: Scope::AllDevices,
-        },
-    ]);
+    f.grants.push(Grant { operation: Permission::InventoryFieldsWrite, scope: Scope::Tenant });
     crate::test_support::identity::set_grants(case_tenant(), &f.author_id, f.grants.clone())
         .await?;
     let key = "custom.page_values";

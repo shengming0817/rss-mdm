@@ -150,41 +150,46 @@ async fn missing_collection_and_corrupt_result_preserve_projection() -> Result<(
         "control",
         "Control",
     );
-    let owner = storage::pool(&url("MDM_OWNER_URL")?).await?;
+    use sqlx::Connection;
+    let mut owner = sqlx::PgConnection::connect_with(&url("MDM_OWNER_URL")?).await?;
+    sqlx::query("SELECT set_config('rss.tenant_id',$1,false)")
+        .bind(stream.tenant().to_string())
+        .execute(&mut owner)
+        .await?;
     for (sequence, id) in [(1, "missing-definition"), (2, "corrupt-result")] {
         a.ingest(batch(id, sequence, Body::Snapshot(facts("Recovered"))))
             .await?;
         let before = inspect(&a, id).await?;
         assert_eq!(before["projection"], "not_projected");
-        let saved: serde_json::Value = if sequence == 1 {
-            sqlx::query_scalar("DELETE FROM mdm.collection_definitions d WHERE tenant_id=$1::uuid AND dataset='inventory' AND source='agent.builtin' RETURNING to_jsonb(d)")
-                .bind(stream.tenant().to_string()).fetch_one(&owner).await?
+        let saved: String = if sequence == 1 {
+            sqlx::query_scalar("DELETE FROM mdm.collection_definitions d WHERE tenant_id=$1::uuid AND dataset='inventory' AND source='agent.builtin' RETURNING to_jsonb(d)::text")
+                .bind(stream.tenant().to_string()).fetch_one(&mut owner).await?
         } else {
             let digest: String = sqlx::query_scalar(
                 "SELECT digest FROM mdm.collection_results WHERE tenant_id=$1::uuid AND run=$2",
             )
             .bind(stream.tenant().to_string())
             .bind(id)
-            .fetch_one(&owner)
+            .fetch_one(&mut owner)
             .await?;
             let changed = sqlx::query("UPDATE mdm.collection_results SET digest=repeat('0',64) WHERE tenant_id=$1::uuid AND run=$2")
-                .bind(stream.tenant().to_string()).bind(id).execute(&owner).await?;
+                .bind(stream.tenant().to_string()).bind(id).execute(&mut owner).await?;
             assert_eq!(changed.rows_affected(), 1);
-            serde_json::json!(digest)
+            digest
         };
         let rejected = a.project(&cancel).await;
         // Restore precisely the damaged source material; retry the original received batch.
         if sequence == 1 {
-            sqlx::query("INSERT INTO mdm.collection_definitions SELECT * FROM jsonb_populate_record(NULL::mdm.collection_definitions,$1)")
-                .bind(saved).execute(&owner).await?;
+            sqlx::query("INSERT INTO mdm.collection_definitions SELECT * FROM jsonb_populate_record(NULL::mdm.collection_definitions,$1::jsonb)")
+                .bind(saved).execute(&mut owner).await?;
         } else {
             sqlx::query(
                 "UPDATE mdm.collection_results SET digest=$3 WHERE tenant_id=$1::uuid AND run=$2",
             )
             .bind(stream.tenant().to_string())
             .bind(id)
-            .bind(saved.as_str().unwrap())
-            .execute(&owner)
+            .bind(saved)
+            .execute(&mut owner)
             .await?;
         }
         assert_eq!(
@@ -201,7 +206,7 @@ async fn missing_collection_and_corrupt_result_preserve_projection() -> Result<(
         assert_eq!(recovered["projection"], "projected");
         known(&recovered, &stream, id, "Recovered");
     }
-    storage::close_pool(&owner).await?;
+    owner.close().await?;
     a.close().await?;
     Ok(())
 }

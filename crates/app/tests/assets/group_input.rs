@@ -183,7 +183,7 @@ async fn typed_and_collected_facts_become_group_input() -> Result<()> {
                 .as_array()
                 .unwrap()
                 .iter()
-                .any(|decision| decision["device"] == "asset-b"
+                .any(|decision| decision["object"]["id"] == "asset-b"
                     && decision["explanations"][0]["outcome"] == "conflict")
     );
     pg(&format!(

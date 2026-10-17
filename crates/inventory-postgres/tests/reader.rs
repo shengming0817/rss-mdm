@@ -126,42 +126,51 @@ async fn reader_is_exact_tenant_scoped_and_read_only() -> anyhow::Result<()> {
         .ssl_mode(PgSslMode::VerifyFull)
         .ssl_root_cert(std::env::var("PG_CA_FILE")?);
     let mut owner = PgConnection::connect_with(&owner).await?;
-    for (grant, revoke) in [
+    for (grant, revoke, field) in [
         (
             "GRANT INSERT ON public.mdm_migrations TO mdm_api",
             "REVOKE INSERT ON public.mdm_migrations FROM mdm_api",
+            "dml",
         ),
         (
             "GRANT SELECT ON public.mdm_migrations TO mdm_api",
             "REVOKE SELECT ON public.mdm_migrations FROM mdm_api",
+            "dml",
         ),
         (
             "REVOKE USAGE ON SCHEMA mdm FROM mdm_api",
             "GRANT USAGE ON SCHEMA mdm TO mdm_api",
+            "42501",
         ),
         (
             "GRANT INSERT ON mdm.inventory TO mdm_api",
             "REVOKE INSERT ON mdm.inventory FROM mdm_api",
+            "dml",
         ),
         (
             "GRANT SELECT(scope) ON rss_observation.batches TO mdm_api",
             "REVOKE SELECT(scope) ON rss_observation.batches FROM mdm_api",
+            "dml",
         ),
         (
             "DROP INDEX mdm.inventory_source",
             "CREATE INDEX inventory_source ON mdm.inventory(tenant_id,registration,source,epoch)",
+            "assets",
         ),
         (
             "ALTER TABLE mdm.inventory ALTER COLUMN epoch DROP NOT NULL",
             "ALTER TABLE mdm.inventory ALTER COLUMN epoch SET NOT NULL",
+            "assets",
         ),
         (
             "ALTER TABLE mdm.inventory DROP CONSTRAINT inventory_value_state; ALTER TABLE mdm.inventory ADD CONSTRAINT inventory_value_state CHECK(true)",
             "ALTER TABLE mdm.inventory DROP CONSTRAINT inventory_value_state; ALTER TABLE mdm.inventory ADD CONSTRAINT inventory_value_state CHECK((state='known')=(value IS NOT NULL))",
+            "assets",
         ),
         (
             "ALTER TABLE mdm.inventory NO FORCE ROW LEVEL SECURITY",
             "ALTER TABLE mdm.inventory FORCE ROW LEVEL SECURITY",
+            "rls",
         ),
     ] {
         normal_reader().await?;
@@ -171,12 +180,23 @@ async fn reader_is_exact_tenant_scoped_and_read_only() -> anyhow::Result<()> {
             .err()
             .expect("damaged admission must reject");
         owner.execute(revoke).await?;
-        assert!(
-            rejected
-                .to_string()
-                .starts_with("Inventory admission rejected:"),
-            "{grant}: {rejected:#}"
-        );
+        if field == "42501" {
+            assert_eq!(
+                rejected
+                    .downcast_ref::<sqlx::Error>()
+                    .and_then(|e| e.as_database_error())
+                    .and_then(|e| e.code())
+                    .as_deref(),
+                Some("42501"),
+                "{grant}: {rejected:#}"
+            );
+        } else {
+            assert_eq!(
+                rejected.to_string(),
+                format!("Inventory admission rejected: {field}"),
+                "{grant}"
+            );
+        }
         normal_reader().await?;
     }
     for (create, drop) in [
