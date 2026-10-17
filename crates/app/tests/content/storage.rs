@@ -183,11 +183,13 @@ async fn volume_fences_a_stale_writer_and_keeps_failed_body_frontier() -> Result
     producer.write_all(&bytes[..3]).await?;
     let stale = store.clone();
     let actor = b.actor.clone();
-    let writer = tokio::spawn(async move { stale.append(&actor, id, 0, now, body, stale.upload_budget()?, ).await });
+    let writer = tokio::spawn(async move { stale.append(&actor, id, 0, now - 30, body, stale.upload_budget()?, ).await });
     // Wait on the durable claim rather than relying on a scheduler delay.
     tokio::time::timeout(Duration::from_secs(5),async{loop{
   if pg(&format!("SELECT count(*) FROM mdm_content.uploads WHERE tenant_id='{}' AND document->'value'->'upload'->>'id'='{}' AND epoch IS NOT NULL",case_tenant(),id))?.trim()=="1"{break Ok::<_,anyhow::Error>(())}tokio::task::yield_now().await;
  }}).await??;
+    let minimum_expiry = now + store.config.transfer_seconds as i64 - 5;
+    ensure!(pg(&format!("SELECT held_until >= {minimum_expiry} FROM mdm_content.uploads WHERE tenant_id='{}' AND document->'value'->'upload'->>'id'='{id}'",case_tenant()))?.trim()=="t", "lease must cover the absolute budget even when caller wall time is stale");
     pg(&format!(
         "UPDATE mdm_content.uploads SET held_until=0 WHERE tenant_id='{}' AND document->'value'->'upload'->>'id'='{}'",
         case_tenant(),

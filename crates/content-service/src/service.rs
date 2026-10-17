@@ -444,17 +444,21 @@ pub async fn mirror(
         if session.offset != 0 {
             return Err(Error::Conflict);
         }
-        let response = reader
-            .open(
-                binding
-                    .resource()?
-                    .origin
-                    .as_deref()
-                    .ok_or(Error::Malformed)?,
-                binding.length,
-            )
-            .await
-            .map_err(|_| Error::Import)?;
+        let response = budget
+            .work(async {
+                reader
+                    .open(
+                        binding
+                            .resource()?
+                            .origin
+                            .as_deref()
+                            .ok_or(Error::Malformed)?,
+                        binding.length,
+                    )
+                    .await
+                    .map_err(|_| Error::Import)
+            })
+            .await?;
         let stream = tokio_util::io::StreamReader::new(
             response.bytes_stream().map_err(std::io::Error::other),
         );

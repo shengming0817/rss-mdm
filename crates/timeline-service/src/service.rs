@@ -484,7 +484,7 @@ async fn correlate(
     ) || (view.source == "mdm.request"
         && matches!(
             view.action.as_str(),
-            "command_accept" | "command_approve" | "command_cancel" | "command_read"
+            "command_accept" | "command_reauthorize" | "command_cancel" | "command_read"
         ));
     if device_target
         && let Some(target) = &view.target

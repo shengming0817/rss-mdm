@@ -826,7 +826,7 @@ consume(('crates/windows-channel/src/collection.rs', 'crates/windows-channel/src
 consume(('crates/app/src/assembly/windows/*',), 'windows.enrollment windows.issuance windows.management windows.retention windows.limits native.tls')
 consume(('crates/inventory-service/src/collection*', 'crates/inventory-service/src/apple_collection.rs', 'crates/inventory-service/src/collection/*'), 'agent.reports windows.management windows.retention apple.collection apple.renewal inventory.runtime')
 consume(('crates/inventory-service/src/groups/*',), 'planning.http planning.group_scope assets.group_input compliance.group_input')
-consume(('crates/content-service/src/lib.rs', 'crates/content-service/src/bindings.rs', 'crates/content-service/src/service*', 'crates/content-service/src/transaction.rs', 'crates/content-service/src/admission.sql'), 'content.storage content.http content.mirror content.gc execution.agent.content execution.software.content software.http')
+consume(('crates/content-service/src/lib.rs', 'crates/content-service/src/budget.rs', 'crates/content-service/src/bindings.rs', 'crates/content-service/src/service*', 'crates/content-service/src/transaction.rs', 'crates/content-service/src/admission.sql'), 'content.storage content.http content.mirror content.gc execution.agent.content execution.software.content software.http')
 consume(('crates/content-service/src/catalog.sql', 'crates/content-service/src/catalog.json'),
         'catalog.contract content.http content.mirror content.gc execution.agent.content execution.software.content software.http')
 consume(('crates/flow-service/src/storage*',), 'planning.recovery assets.http compliance.http planning.http software.http content.http')

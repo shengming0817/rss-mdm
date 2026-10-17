@@ -206,7 +206,7 @@ impl Store {
         {
             return Err(Error::Conflict);
         }
-        sqlx::query("UPDATE mdm_content.uploads SET epoch=$3,held_until=$4 WHERE tenant_id=$1::uuid AND id=$2").bind(self.tenant.to_string()).bind(key).bind(epoch).bind(now.checked_add(budget.remaining().as_secs().saturating_add(1) as i64).ok_or(Error::Malformed)?).execute(&mut *tx).await.map_err(|e|journal::pg_error(concat!(file!(), ":", line!()),e))?;
+        sqlx::query("UPDATE mdm_content.uploads SET epoch=$3,held_until=ceil(extract(epoch FROM clock_timestamp())+$4)::bigint WHERE tenant_id=$1::uuid AND id=$2").bind(self.tenant.to_string()).bind(key).bind(epoch).bind(budget.remaining().as_secs_f64()).execute(&mut *tx).await.map_err(|e|journal::pg_error(concat!(file!(), ":", line!()),e))?;
         commit(tx).await?;
         Ok((saved, epoch))
     }

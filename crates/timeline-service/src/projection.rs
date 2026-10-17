@@ -146,7 +146,7 @@ fn phase(action: &str) -> &'static str {
         "collection_start" => "collection_accepted",
         "collection_finish" => "collection_result",
         "command_accept" | "device_action" => "accepted",
-        "command_approve" => "approved",
+        "command_reauthorize" => "reauthorized",
         "command_dispatch" => "dispatched",
         "command_cancel" => "cancellation",
         "command_reconcile" => "reconciliation",
@@ -169,7 +169,10 @@ pub(crate) fn execution_identity(
     let Some(id) = view.operation_id else {
         return Ok(None);
     };
-    if matches!(view.action.as_str(), "command_cancel" | "command_approve") {
+    if matches!(
+        view.action.as_str(),
+        "command_cancel" | "command_reauthorize"
+    ) {
         return Ok(Some(Identity::ChangeRequest(id)));
     }
     if view.source != "mdm.business" {
@@ -248,6 +251,7 @@ mod identity_tests {
     #[test]
     fn same_uuid_resolves_only_in_its_producer_namespace() {
         let id = Uuid::new_v4();
+        assert_eq!(phase("command_reauthorize"), "reauthorized");
         for (action, key, expected) in [
             (
                 "command_accept",
@@ -275,7 +279,7 @@ mod identity_tests {
                 Identity::ChangeRequest(id),
             ),
             (
-                "command_approve",
+                "command_reauthorize",
                 "change".into(),
                 Identity::ChangeRequest(id),
             ),

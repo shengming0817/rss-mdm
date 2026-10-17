@@ -9,6 +9,12 @@ from ci_impact import select_inputs, SelectionError
 
 
 class ModuleImpactTests(unittest.TestCase):
+    def test_upload_budget_selects_its_content_and_execution_consumers(self):
+        self.assertEqual(self.selected('crates/content-service/src/budget.rs'),
+                         self.selected('crates/content-service/src/transaction.rs'))
+        for module in ('content.http', 'content.storage', 'content.mirror'):
+            self.assertIn(module, self.selected('crates/content-service/src/budget.rs'))
+
     def test_macos_native_definitions_select_the_shared_collection_consumers(self):
         shared = select_inputs(['crates/agent-wire/src/native_collection.rs']).modules
         selected = select_inputs(['crates/agent-wire/src/native_collection/macos.rs']).modules
