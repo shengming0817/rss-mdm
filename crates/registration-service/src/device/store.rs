@@ -581,7 +581,7 @@ async fn bind_on(
     } else {
         admin.enrollment(&device)?
     };
-    audit.target(&device);
+    audit.target_device(&device);
     let digest = digest(&(
         "registration_bind",
         command,

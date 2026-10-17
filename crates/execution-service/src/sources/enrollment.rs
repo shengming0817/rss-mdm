@@ -19,7 +19,7 @@ impl EnrollmentPolicy {
         target: &Target,
         now: i64,
     ) -> Result<bool> {
-        if !self.policy.enabled
+        if !self.policy.state.is_enabled()
             || self.policy.version != self.id
             || now < self.frozen.schedule.not_before
             || now >= self.frozen.schedule.ends_at()

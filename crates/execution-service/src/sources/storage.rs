@@ -77,7 +77,7 @@ pub async fn eligible_in(
             Box::pin(async move { Ok(reader.policy_readable_on(c, tenant, version).await) })
         })
         .await??;
-    if !policy.enabled || !readable {
+    if !policy.state.is_enabled() || !readable {
         return Ok(None);
     }
     Ok(
@@ -101,7 +101,7 @@ pub async fn withdrawn_in(
     policy: &Policy,
     device: &str,
 ) -> Result<bool> {
-    Ok(!policy.enabled
+    Ok(!policy.state.is_enabled()
         || admission_in(
             source,
             tx,

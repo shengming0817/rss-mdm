@@ -107,45 +107,7 @@ impl Queries {
                         now,
                     )
                     .await?;
-                    let mut native_values = true;
-                    if !op.authority.control_matches(
-                        &op.request,
-                        op.registration,
-                        op.registration_generation,
-                    )? && matches!(
-                        op.request.task,
-                        Task::Macos {
-                            request: rss_mdm_apple_mdm::native::request::Request::Command { .. }
-                                | rss_mdm_apple_mdm::native::request::Request::Declarations { .. }
-                        }
-                    ) {
-                        let mut required = op.request.task.permissions()?;
-                        required.extend_from_slice(op.authority.required());
-                        required.sort();
-                        required.dedup();
-                        storage::authorized_native(tx, proof, device, &required).await?;
-                    }
-                    if op.request.profile_target().is_some() {
-                        let mut required = op.request.task.permissions()?;
-                        required.extend_from_slice(op.authority.required());
-                        required.push(Permission::InventoryCollect);
-                        required.sort();
-                        required.dedup();
-                        let snapshot = crate::action_admission::current(tx, proof).await?;
-                        for permission in required {
-                            match snapshot.require(
-                                proof,
-                                permission,
-                                permission.device().then_some(device),
-                            ) {
-                                Ok(()) => {}
-                                Err(crate::authorization::error::AuthorizationError::Forbidden) => {
-                                    native_values = false
-                                }
-                                Err(error) => return Err(Error::from(error).into()),
-                            }
-                        }
-                    }
+                    let native_values = service.native_values_in(tx, proof, device, &op).await?;
                     let observation = protocol::observation(
                         tx,
                         &service.protection,
@@ -199,3 +161,51 @@ pub mod records;
 
 mod error;
 pub use error::{Missing, QueryError};
+
+impl Queries {
+    pub(crate) async fn native_values_in(
+        &self,
+        tx: &mut PgTransaction<'_>,
+        proof: &AuthorizedPrincipal,
+        device: &str,
+        op: &storage::Operation,
+    ) -> Result<bool> {
+        let mut native_values = true;
+        if !op.authority.control_matches(
+            &op.request,
+            op.registration,
+            op.registration_generation,
+        )? && matches!(
+            op.request.task,
+            Task::Macos {
+                request: rss_mdm_apple_mdm::native::request::Request::Command { .. }
+                    | rss_mdm_apple_mdm::native::request::Request::Declarations { .. }
+            }
+        ) {
+            let mut required = op.request.task.permissions()?;
+            required.extend_from_slice(op.authority.required());
+            required.sort();
+            required.dedup();
+            storage::authorized_native(tx, proof, device, &required).await?;
+        }
+        if op.request.profile_target().is_some() {
+            let mut required = op.request.task.permissions()?;
+            required.extend_from_slice(op.authority.required());
+            required.push(Permission::InventoryCollect);
+            required.sort();
+            required.dedup();
+            let snapshot = crate::action_admission::current(tx, proof).await?;
+            for permission in required {
+                match snapshot.require(proof, permission, permission.device().then_some(device)) {
+                    Ok(()) => {}
+                    Err(crate::authorization::error::AuthorizationError::Forbidden) => {
+                        native_values = false
+                    }
+                    Err(error) => return Err(Error::from(error).into()),
+                }
+            }
+        }
+        Ok(native_values)
+    }
+}
+pub mod ddm;

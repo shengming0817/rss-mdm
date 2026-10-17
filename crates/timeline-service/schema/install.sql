@@ -13,6 +13,7 @@ CREATE TABLE mdm_timeline.facts (
  PRIMARY KEY(tenant_id,position),UNIQUE(tenant_id,source,event_id)
 );
 CREATE INDEX facts_time ON mdm_timeline.facts(tenant_id,recorded_at DESC,position DESC);
+CREATE INDEX facts_target ON mdm_timeline.facts(tenant_id,(document->'target'->>'type'),(document->'target'->>'id'),recorded_at DESC,position DESC);
 CREATE INDEX facts_operation ON mdm_timeline.facts(tenant_id,operation_id,recorded_at DESC,position DESC);
 CREATE INDEX facts_related_operations ON mdm_timeline.facts USING gin(operations);
 CREATE INDEX facts_devices ON mdm_timeline.facts USING gin(devices);

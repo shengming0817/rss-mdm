@@ -44,7 +44,7 @@ impl super::super::Planning {
                 assignment.availability = Availability::Unavailable;
                 assignment.reason = Some("source_forbidden".into());
             }
-            if !p.enabled {
+            if !p.state.is_enabled() {
                 assignment.availability = Availability::Unavailable;
                 assignment.reason = Some("policy_disabled".into());
             }

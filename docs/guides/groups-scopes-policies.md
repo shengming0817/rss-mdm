@@ -2,13 +2,22 @@
 
 Group 持有成员求值；Scope 组合目标并集、限制并集和排除并集；Policy 持续引用 Scope 并分配闭合 Action；资源绑定位于需要资源的 Action 内。管理入口是 `/api/v1`，资源入口是 `/api/v1`。写入带 operationId、expectedRevision、input；提交未知时重试原身份和原文档。
 
-目录读取使用 `GET /api/v1/groups`、`GET /api/v1/scopes`、`GET /api/v1/policies` 和
-`GET /api/v1/resources`，返回 `items/nextCursor`。统一支持 `limit`（默认 64、1–1000）、
-`after` 和 `descending`，按 ID 排序；`nextCursor` 作为下次请求的 `after`。
-Group 可筛选 `kind/deleted/name`，Scope 可筛选 `deleted/ready`，Policy 可筛选
-`enabled/action/scope/resource`，Resource 可筛选 `kind/active`。删除对象默认不进入 Group/Scope 目录。
-无名称的 Scope、Policy、Resource 使用既有 ID，不新增名称或另一套对象模型。
-权限沿用原 owner；Group 成员摘要仍要求全设备 `inventory_read`。翻页不冻结权限或业务状态。
+目录读取使用 `GET /api/v1/groups`、`/scopes`、`/policies` 和 `/resources`，返回 `items/nextCursor`。
+Group、Scope、Resource 保持 `limit/after/descending` 的 ID 分页；Policy 使用 `limit/cursor/descending`，
+将 `nextCursor` 原样传入 `cursor`，不接受 `after`。Policy 游标绑定筛选、租户、主体和当前权限；筛选或权限变化后从首页重新查询。
+Group 可筛选 `kind/deleted/name`，Scope 可筛选 `deleted/ready`，Resource 可筛选 `kind/active`；
+Policy 可筛选 `state/action/scope/resource/category`，category 来自已有 `definition.selfService.category`。
+Policy 默认不列出 archived；指定 `state=archived` 查询历史对象。目录每页读取当前一致视图，不冻结跨页业务状态。
+
+Policy 响应使用 `state: enabled | disabled | archived`，不返回 enabled 布尔字段。
+创建/更新仍通过 POST 的 put，输入 enabled 表达本次启停意图；enable/disable 为显式变更。
+`DELETE /api/v1/policies/{id}` 接收 `{operationId, expectedRevision}`，仅允许 disabled 策略归档，返回归档后的对象。
+同 operation 重试恢复原回执；不同输入或过期 CAS 返回冲突。归档后不能编辑、启用或 rerun，保留版本、资源引用、执行及审计历史。
+既有任务的结算、未知恢复和配置撤回继续执行。没有物理删除或恢复接口。
+
+`GET /api/v1/devices/{device}/groups?limit&cursor` 反查已发布成员关系，要求 GroupRead 和全设备 InventoryRead。
+响应区分 endpoint 与 association 对象，包含成员/规则版本和评估新鲜度；stale 不表示当前仍满足规则。
+空列表不证明所有组都已计算或均不匹配。权限与设备绑定的游标不能用于另一设备。
 
 创建 Group 必须声明不可变 `assetContext: endpoint | associated_device`。静态组只接受 endpoint；成员、差分与决策使用 `{kind: endpoint | association, id}`。endpoint 组仍求值原始终端；associated_device 组以关联对象和独立终端为完整对象域，并保留原始注册、世代与字段来源。动态组创建或规则变化自动计算，相关事实按字段和设备增量求值，必要时全算。静态组使用 add/remove。预览保存独立计算结果，不发布正式成员、不产生执行。计算检查点固定输入水位并分页恢复；新输入合并到待处理水位，旧计算完成后自动追赶。
 

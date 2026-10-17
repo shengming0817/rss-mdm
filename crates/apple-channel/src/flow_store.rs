@@ -295,6 +295,24 @@ impl channels::AppleCollections for Store {
     }
 }
 impl channels::AppleResults for Store {
+    fn declaration_page<'a>(
+        &'a self,
+        c: &'a mut PgConnection,
+        tenant: String,
+        registration: Uuid,
+        generation: i64,
+        after: Option<Uuid>,
+        limit: usize,
+    ) -> Pending<'a, Vec<(Uuid, String)>> {
+        Box::pin(async move {
+            if !(1..=65).contains(&limit) {
+                return Err(channels::Rejection::Malformed);
+            }
+            sqlx::query_as("SELECT operation,user_key FROM mdm_apple.declarations WHERE tenant_id=$1::uuid AND registration=$2 AND generation=$3 AND ($4::uuid IS NULL OR operation>$4) ORDER BY operation LIMIT $5 FOR SHARE")
+                .bind(tenant).bind(registration).bind(generation).bind(after).bind(limit as i64).fetch_all(c).await.map_err(|_|channels::Rejection::Storage)
+        })
+    }
+
     fn device_control_supported<'a>(
         &'a self,
         c: &'a mut PgConnection,

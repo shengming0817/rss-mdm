@@ -19,6 +19,7 @@ fn body<T>(value: BodyInput<T>) -> std::result::Result<T, Error> {
 pub fn routes() -> Router<Arc<HttpState>> {
     Router::new()
         .route("/groups", get(group_directory))
+        .route("/devices/{device}/groups", get(device_groups))
         .route("/scopes", get(scope_directory))
         .route("/groups/{id}", get(group_read).post(group_write))
         .route("/groups/{id}/previews", post(group_preview))
@@ -40,9 +41,17 @@ async fn run(
     command: Command,
 ) -> std::result::Result<Response, Error> {
     match &command {
-        Command::Scope { id, .. } | Command::ScopeRead { id } => audit.target(&id.to_string()),
-        Command::TaskRead { id, .. } => audit.target(&id.to_string()),
-        Command::ScopePage { scope, .. } => audit.target(&scope.to_string()),
+        Command::Scope { id, .. } | Command::ScopeRead { id } => audit.resource_target(
+            rss_mdm_audit_integration::TargetKind::Scope,
+            &id.to_string(),
+        ),
+        Command::TaskRead { target, .. } => {
+            audit.resource_target(rss_mdm_audit_integration::TargetKind::Scope, target)
+        }
+        Command::ScopePage { scope, .. } => audit.resource_target(
+            rss_mdm_audit_integration::TargetKind::Scope,
+            &scope.to_string(),
+        ),
     }
     audit.set_action(if matches!(command, Command::Scope { .. }) {
         "management_write"
@@ -311,17 +320,30 @@ async fn run_group(
 ) -> Result<Response, Error> {
     match &command {
         GroupCommand::Group { id, change, .. } => {
-            audit.target(&id.to_string());
+            audit.resource_target(
+                rss_mdm_audit_integration::TargetKind::Group,
+                &id.to_string(),
+            );
             audit.operation(change.operation_id, "management_write");
         }
         GroupCommand::GroupPreview { id, operation, .. } => {
-            audit.target(&id.to_string());
+            audit.resource_target(
+                rss_mdm_audit_integration::TargetKind::Group,
+                &id.to_string(),
+            );
             audit.operation(*operation, "management_read");
         }
-        GroupCommand::GroupRead { id } | GroupCommand::TaskRead { id, .. } => {
-            audit.target(&id.to_string())
+        GroupCommand::TaskRead { target, .. } => {
+            audit.resource_target(rss_mdm_audit_integration::TargetKind::Group, target)
         }
-        GroupCommand::GroupPage { group, .. } => audit.target(&group.to_string()),
+        GroupCommand::GroupRead { id } => audit.resource_target(
+            rss_mdm_audit_integration::TargetKind::Group,
+            &id.to_string(),
+        ),
+        GroupCommand::GroupPage { group, .. } => audit.resource_target(
+            rss_mdm_audit_integration::TargetKind::Group,
+            &group.to_string(),
+        ),
     }
     audit.set_action(if matches!(command, GroupCommand::Group { .. }) {
         "management_write"
@@ -346,4 +368,22 @@ async fn run_group(
         StatusCode::OK
     };
     Ok((status, Json(response)).into_response())
+}
+
+async fn device_groups(
+    State(s): State<Arc<HttpState>>,
+    Extension(auth): Extension<RequestAuth>,
+    Extension(audit): Extension<RequestAudit>,
+    Path(device): Path<String>,
+    query: Result<
+        Query<rss_mdm_inventory_service::groups::memberships::Query>,
+        axum::extract::rejection::QueryRejection,
+    >,
+) -> Result<Json<Value>, Error> {
+    let Query(query) = query.map_err(|_| Error::Malformed)?;
+    Ok(Json(
+        s.groups
+            .memberships(&auth.proof, &device, &query, &audit)
+            .await?,
+    ))
 }

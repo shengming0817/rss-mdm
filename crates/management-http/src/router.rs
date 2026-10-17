@@ -259,7 +259,7 @@ async fn action(
     input: Result<Json<Action>, axum::extract::rejection::JsonRejection>,
 ) -> Result<Response, Error> {
     if rss_observation::Id::new(&id).is_ok() {
-        audit.target(&id);
+        audit.target_device(&id);
     }
     audit.set_action("device_action");
     let _grant = auth.proof.dangerous(&id)?;

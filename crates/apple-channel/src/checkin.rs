@@ -54,7 +54,7 @@ pub async fn checkin(
     bound(&app, &leaf).await?;
     let principal = app.devices.management_principal(&credential).await?;
     audit.identify_device(principal.registration());
-    audit.target(principal.device());
+    audit.target_device(principal.device());
     audit.registration(principal.registration());
     let user_access = if protocol::user(&dictionary)?.is_some() {
         match crate::account_enrollment::authorize_user(&app, leaf.enrollment(), &headers).await {
@@ -389,7 +389,7 @@ pub async fn manage(
     bound(&app, &leaf).await?;
     let principal = app.devices.management_principal(&credential).await?;
     audit.identify_device(principal.registration());
-    audit.target(principal.device());
+    audit.target_device(principal.device());
     audit.registration(principal.registration());
     let user_access = if message.user.is_some() {
         match crate::account_enrollment::authorize_user(&app, leaf.enrollment(), &headers).await {

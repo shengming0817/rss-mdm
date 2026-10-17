@@ -61,3 +61,92 @@ fn unknown_action_and_outcome_never_become_success() {
     assert_eq!(view.effect, "unknown");
     audit.finalize(None);
 }
+
+#[test]
+fn resource_namespace_is_part_of_identity_and_projection() {
+    use rss_mdm_audit_integration::TargetKind;
+    let audit = RequestAudit::new(TENANT.into(), "management_write");
+    audit.resource_target(TargetKind::Resource, "same-id");
+    let resource = Fact::business(
+        &audit,
+        "same-operation",
+        b"same-input",
+        200,
+        "success",
+        None,
+    )
+    .unwrap();
+    audit.resource_target(TargetKind::Policy, "same-id");
+    let policy = Fact::business(
+        &audit,
+        "same-operation",
+        b"same-input",
+        200,
+        "success",
+        None,
+    )
+    .unwrap();
+    assert_ne!(resource.fingerprint(), policy.fingerprint());
+    let projected = project(
+        &resource
+            .event(rss_contract::Timepoint::try_from(5i64).unwrap())
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        serde_json::to_value(projected).unwrap()["target"],
+        serde_json::json!({"type":"resource","id":"same-id"})
+    );
+    audit.finalize(None);
+}
+
+#[test]
+fn omitted_invalid_targets_never_invent_a_typed_request_resource() {
+    use rss_mdm_audit_integration::TargetKind;
+    let audit = RequestAudit::new(TENANT.into(), "management_read");
+    for invalid in ["".to_owned(), "\n".to_owned(), "x".repeat(257)] {
+        for kind in [TargetKind::Resource, TargetKind::Policy, TargetKind::Device] {
+            audit.resource_target(kind, &invalid);
+            let fact = Fact::business(
+                &audit,
+                "invalid-target",
+                b"invalid-input",
+                400,
+                "failed",
+                None,
+            )
+            .unwrap();
+            let view = project(
+                &fact
+                    .event(rss_contract::Timepoint::try_from(5i64).unwrap())
+                    .unwrap(),
+            )
+            .unwrap();
+            assert_eq!(
+                serde_json::to_value(view).unwrap()["target"],
+                serde_json::json!({"type":"mdm","id":"request"})
+            );
+        }
+        audit.target_device(&invalid);
+        let fact = Fact::business(
+            &audit,
+            "invalid-device",
+            b"invalid-input",
+            400,
+            "failed",
+            None,
+        )
+        .unwrap();
+        let view = project(
+            &fact
+                .event(rss_contract::Timepoint::try_from(5i64).unwrap())
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            serde_json::to_value(view).unwrap()["target"],
+            serde_json::json!({"type":"mdm","id":"request"})
+        );
+    }
+    audit.finalize(None);
+}

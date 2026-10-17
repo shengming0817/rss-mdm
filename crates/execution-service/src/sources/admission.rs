@@ -21,7 +21,7 @@ pub async fn read_in(
     Ok(ExecutionPolicy {
         id,
         owner: policy.id,
-        active: policy.enabled && policy.version == id,
+        active: policy.state.is_enabled() && policy.version == id,
         frozen: *action,
         frequency,
         policy,
@@ -96,7 +96,7 @@ async fn versions_in(
     let ids=tx.with_connection(move|c|Box::pin(async move {
         sqlx::query("INSERT INTO mdm_commands.action_polls(tenant_id,registration) VALUES($1::uuid,$2::uuid) ON CONFLICT DO NOTHING").bind(&tenant).bind(registration.to_string()).execute(&mut *c).await?;
         let after=sqlx::query_scalar::<_,Option<Uuid>>("SELECT policy_after FROM mdm_commands.action_polls WHERE tenant_id=$1::uuid AND registration=$2::uuid FOR UPDATE").bind(&tenant).bind(registration.to_string()).fetch_one(&mut *c).await?;
-        let rows=sqlx::query("SELECT id,current_version FROM mdm_policy.policies WHERE tenant_id=$1::uuid AND enabled AND definition->'action'->>'kind' =ANY($3) AND ($2::uuid IS NULL OR id>$2) ORDER BY id LIMIT 64").bind(&tenant).bind(after).bind(kinds).fetch_all(&mut *c).await?;
+        let rows=sqlx::query("SELECT id,current_version FROM mdm_policy.policies WHERE tenant_id=$1::uuid AND (state='enabled') AND definition->'action'->>'kind' =ANY($3) AND ($2::uuid IS NULL OR id>$2) ORDER BY id LIMIT 64").bind(&tenant).bind(after).bind(kinds).fetch_all(&mut *c).await?;
         let next=if rows.len()==64 {rows.last().map(|r|r.try_get::<Uuid,_>("id")).transpose()?} else {None};
         sqlx::query("UPDATE mdm_commands.action_polls SET policy_after=$3 WHERE tenant_id=$1::uuid AND registration=$2::uuid").bind(tenant).bind(registration.to_string()).bind(next).execute(c).await?;
         rows.into_iter().map(|r|r.try_get::<Uuid,_>("current_version")).collect::<std::result::Result<Vec<_>,sqlx::Error>>()
@@ -118,7 +118,7 @@ pub async fn native_in(
         owner: policy.id,
         frozen: *action,
         frequency,
-        active: policy.enabled && policy.version == id,
+        active: policy.state.is_enabled() && policy.version == id,
         policy,
     })
 }
@@ -136,7 +136,7 @@ pub async fn agent_collection_in(
         owner: policy.id,
         frozen: *action,
         frequency,
-        active: policy.enabled && policy.version == id,
+        active: policy.state.is_enabled() && policy.version == id,
         policy,
     })
 }

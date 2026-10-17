@@ -39,3 +39,7 @@ MDM 嵌入 rss-identity 公共组件，由 Identity 持有账户、认证与会�
 `{"operation":"runtime_diagnostics_read","scope":{"kind":"tenant"}}`。设备范围无效，既有管理权限不隐式包含此权限。
 撤回规则后后续请求重新加载授权并拒绝查询；查询绑定当前宿主实例和租户。
 诊断语义与认证或审计依赖失败时的处理见[运维与恢复](../deployment/operations.md)。
+
+资源审计查询 `/api/v1/audit-events` 支持 `targetId/targetType` 精确组合筛选，目标响应为 `{type,id}`。
+时间范围继续使用录入时间 recordedAt 的 `[from,until)`，observedAt 独立保留。
+游标绑定筛选、主体和有效授权依据；变更条件或权限后从首页开始，不接受旧游标。源事实中已有的 mdm 类型保持原值，不根据当前资源补猜历史类型。

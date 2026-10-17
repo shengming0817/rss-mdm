@@ -56,8 +56,8 @@
     ],
     [
       "policies",
-      "enabled",
-      "boolean",
+      "state",
+      "text",
       true,
       null,
       "",
@@ -280,6 +280,13 @@
       "policies_revision_check",
       "c",
       "CHECK ((revision > 0))",
+      true
+    ],
+    [
+      "policies",
+      "policies_state_check",
+      "c",
+      "CHECK ((state = ANY (ARRAY['enabled'::text, 'disabled'::text, 'archived'::text])))",
       true
     ],
     [

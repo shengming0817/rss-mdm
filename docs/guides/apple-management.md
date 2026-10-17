@@ -166,3 +166,10 @@ CA 公共证书由单独的受管理 `com.rss-mdm.pki.<registration>` Profile �
 服务 HTTPS/SCEP HTTPS 的证书信任独立于设备 CA，设备须预先信任这些服务证书；生产可使用受信任的服务 TLS 入口。当前协议验证不等于真实 macOS 安装/移除行为已验证，真机 T3 仍独立。轮换、撤销和 CRL 发布操作见[设备 PKI 运维](../deployment/operations.md#设备-pki-轮换与撤销)。
 
 真实 Apple 组织上线与 Mac 设备矩阵验收由 [#2687](https://dev.azure.com/shengming0923/rss/_workitems/edit/2687) 承接；本次后端实现关联 #2672，rss-web 管理界面另行规划。
+
+## 设备声明状态汇总
+
+`GET /api/v1/devices/{device}/ddm?limit&cursor` 分页读取当前 MDM 注册世代的声明，包括 device/user 通道及已撤回 publication。
+每项保留 operation、注册世代、通道、inputVersion、声明 ServerToken 和既有 nativeStatus；历史世代通过原操作详情读取。
+查询使用 OperationRead 和原生值权限，`nativeValuesRedacted` 明确标识脱敏。缺失、Unknown、原生错误与乱序冲突不会转成成功；
+publication 或 synchronized 不证明设置生效、合规或卸载。未注册设备返回 no_current_registration，不能解释为设备已清空配置。

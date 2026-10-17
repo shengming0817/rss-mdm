@@ -18,7 +18,7 @@ const ADMISSION: Admission = Admission {
         "policies.revision",
         "policies.current_version",
         "policies.version_number",
-        "policies.enabled",
+        "policies.state",
         "policies.definition",
         "policies.author",
         "policies.updated_at",

@@ -18,7 +18,7 @@ pub async fn admit_policy(
     let Some(policy) = policies::storage::read_in(&service.policy_reader, tx, id).await? else {
         return Ok(());
     };
-    if !policy.enabled
+    if !policy.state.is_enabled()
         || !matches!(
             policy.definition.action,
             rss_mdm_policy::Action::NativeCollection { .. }
@@ -434,7 +434,7 @@ pub(crate) async fn eligible_target_on(
     target: &crate::Target,
     id: Uuid,
 ) -> std::result::Result<bool, crate::Error> {
-    let row=sqlx::query("SELECT v.frozen AS frozen,r.device,r.deadline,r.state,r.source_objects,(policy.definition->>'scope')::uuid AS scope FROM mdm_commands.action_runs r LEFT JOIN mdm_policy.versions v ON(v.tenant_id,v.id)=(r.tenant_id,r.policy_version) LEFT JOIN mdm_policy.policies policy ON(policy.tenant_id,policy.id)=(v.tenant_id,v.policy) WHERE r.tenant_id=$1::uuid AND r.id=$2 AND r.device=$3 AND r.registration=$4 AND r.generation=$5 AND r.deadline>floor(extract(epoch FROM clock_timestamp())) AND (policy.enabled AND policy.current_version=r.policy_version)")
+    let row=sqlx::query("SELECT v.frozen AS frozen,r.device,r.deadline,r.state,r.source_objects,(policy.definition->>'scope')::uuid AS scope FROM mdm_commands.action_runs r LEFT JOIN mdm_policy.versions v ON(v.tenant_id,v.id)=(r.tenant_id,r.policy_version) LEFT JOIN mdm_policy.policies policy ON(policy.tenant_id,policy.id)=(v.tenant_id,v.policy) WHERE r.tenant_id=$1::uuid AND r.id=$2 AND r.device=$3 AND r.registration=$4 AND r.generation=$5 AND r.deadline>floor(extract(epoch FROM clock_timestamp())) AND (policy.state='enabled' AND policy.current_version=r.policy_version)")
         .bind(tenant.to_string()).bind(id).bind(target.device.as_str()).bind(target.registration).bind(target.generation).fetch_optional(&mut *c).await.map_err(crate::database::db)?;
     let Some(row) = row else {
         return Ok(false);

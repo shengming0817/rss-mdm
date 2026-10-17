@@ -97,7 +97,7 @@ async fn run(
         Command::Detail { device, .. }
         | Command::CollectionRun { device, .. }
         | Command::CollectionItems { device, .. }
-        | Command::ListItems { device, .. } => audit.target(device),
+        | Command::ListItems { device, .. } => audit.target_device(device),
         Command::FieldWrite { field, .. } | Command::FieldReferences { field } => {
             audit.target(field.as_str())
         }

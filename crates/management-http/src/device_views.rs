@@ -52,8 +52,12 @@ async fn detail(
     Path((kind, id)): Path<(String, String)>,
 ) -> Result<Json<Value>, Error> {
     audit.set_action("device_view_read");
-    audit.target(&id);
-    Ok(Json(s.view(&a.proof, &reference(kind, id)?).await?))
+    let reference = reference(kind, id)?;
+    match &reference {
+        ViewRef::Endpoint(id) => audit.target_device(id),
+        ViewRef::Association(id) => audit.target(&id.to_string()),
+    }
+    Ok(Json(s.view(&a.proof, &reference).await?))
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]

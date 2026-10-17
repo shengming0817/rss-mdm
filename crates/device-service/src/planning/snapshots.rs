@@ -399,3 +399,27 @@ pub(super) async fn page(
     let rows:Vec<serde_json::Value>=sqlx::query_scalar("SELECT o.input FROM mdm_devices.input_objects o JOIN mdm_devices.input_snapshots s ON(s.tenant_id,s.id)=(o.tenant_id,o.snapshot) WHERE o.tenant_id=$1::uuid AND o.snapshot=$2 AND s.phase='sealed' AND (o.object LIKE 'endpoint:%' OR o.object LIKE 'association:%') AND o.object>coalesce($3,'') COLLATE \"C\" ORDER BY o.object LIMIT $4").bind(tenant.to_string()).bind(snapshot).bind(after).bind(limit as i64).fetch_all(c).await?;
     rows.into_iter().map(decode).collect()
 }
+
+pub(super) async fn memberships(
+    c: &mut PgConnection,
+    tenant: TenantId,
+    device: &str,
+) -> Result<rss_mdm_inventory_service::objects::MembershipObjects, sqlx::Error> {
+    use rss_mdm_inventory_service::objects::MembershipObjects;
+    use sqlx::Row;
+    let rows=sqlx::query("WITH latest AS (SELECT s.id,s.watermark,s.relation_revision FROM mdm_devices.input_snapshots s WHERE s.tenant_id=$1::uuid AND s.phase='sealed' ORDER BY s.watermark DESC,s.relation_revision DESC LIMIT 1) SELECT s.id,s.watermark>=k.identity_watermark AND s.relation_revision=k.relation_revision AS current,o.input FROM latest s JOIN mdm_devices.checkpoints k ON k.tenant_id=$1::uuid LEFT JOIN mdm_devices.input_objects o ON o.tenant_id=$1::uuid AND o.snapshot=s.id AND o.devices @> ARRAY[$2::text] ORDER BY o.object LIMIT 33").bind(tenant.to_string()).bind(device).fetch_all(c).await?;
+    if rows.len() > 32 {
+        return Err(sqlx::Error::Protocol("membership object limit".into()));
+    }
+    let mut objects = Vec::new();
+    let mut current = !rows.is_empty();
+    for row in rows {
+        current &= row.try_get::<bool, _>("current")?;
+        if let Some(value) = row.try_get::<Option<serde_json::Value>, _>("input")? {
+            let object: DeviceObject = decode(value)?;
+            current &= object.verified;
+            objects.push(object.object);
+        }
+    }
+    Ok(MembershipObjects { objects, current })
+}

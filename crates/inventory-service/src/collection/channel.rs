@@ -126,7 +126,7 @@ pub async fn finish_in(
     audit.identify_device(p.registration());
     audit.registration(p.registration());
     audit.operation(id, "collection_finish");
-    audit.target(p.device());
+    audit.target_device(p.device());
     let fact = rss_mdm_audit_integration::Fact::business(
         &audit,
         &format!("channel-collection:{id}"),

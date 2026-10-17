@@ -2,7 +2,7 @@
 #![forbid(unsafe_code)]
 mod context;
 pub use context::{
-    FailureReason, ManagementResult, RequestAudit, Snapshot, SoftwareFact, WriteOutcome,
+    FailureReason, ManagementResult, RequestAudit, Snapshot, SoftwareFact, TargetKind, WriteOutcome,
 };
 
 mod fact;

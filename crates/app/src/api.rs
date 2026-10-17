@@ -554,6 +554,7 @@ pub(crate) fn from_state(
             execution: state.execution.clone(),
             queries: state.queries.clone(),
             policies: Arc::new(rss_mdm_flow_service::planning::policies::Policies::new(
+                &state.flow.cursor_key,
                 state.flow.runtime.clone(),
                 state.audit_store.clone(),
                 state.identity.tenant,
