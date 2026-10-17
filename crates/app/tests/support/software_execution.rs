@@ -562,7 +562,7 @@ pub(crate) async fn ready_rollout(
     .map_err(|_| anyhow::anyhow!("rollout statistics did not become ready for {policy}"))?
 }
 
-async fn seed_resource(
+pub(crate) async fn seed_resource(
     planning: &rss_mdm_flow_service::planning::Planning,
     id: Uuid,
     platform: &str,
@@ -609,7 +609,7 @@ async fn seed_resource(
         )?;
     Ok(version)
 }
-async fn seed_enabled(
+pub(crate) async fn seed_enabled(
     planning: &rss_mdm_flow_service::planning::Planning,
     content: &rss_mdm_content_service::Store,
     version: &rss_mdm_resource::Version,

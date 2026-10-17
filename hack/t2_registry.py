@@ -208,7 +208,7 @@ MODULES['agent.pki'] = replace(MODULES['agent.pki'], scope='tenant', policies=(
     CasePolicy('agent_pki_tests::unknown_original_ca_result_blocks_retirement_after_rotation', 'reuse', 'tenant',('identity','agent_pki','pki_rotation')),
 ))
 
-add('installation.migration', selectors=('migration::tests::fresh_installation_replay_and_mismatch_rejection','migration::tests::field_scope_migration_rejects_hidden_state_and_restores_rls','tenant_registry::tests::'), profile='empty',
+add('installation.migration', selectors=('migration::tests::ledger_installation_rejects_audit_privilege_drift','migration::tests::fresh_installation_replay_and_mismatch_rejection','migration::tests::field_scope_migration_rejects_hidden_state_and_restores_rls','tenant_registry::tests::'), profile='empty',
     sources=('crates/app/src/migration.rs','crates/app/src/tenant_registry.rs','crates/app/src/tenant_use.rs','crates/app/schema/installation.sql'), tests=('crates/app/tests/migration/mod.rs','crates/app/tests/tenant_registry/mod.rs',),
     python='installation', support=('hack/t2_modules/installation.py',))
 add('installation.tenants', build=None, profile='empty', python='tenants',
@@ -591,7 +591,7 @@ MODULES['execution.commands.recovery'] = replace(MODULES['execution.commands.rec
 MODULES['execution.commands.windows'] = replace(MODULES['execution.commands.windows'], scope='tenant')
 MODULES['windows.management'] = replace(MODULES['windows.management'], scope='tenant', policies=(CasePolicy('windows::t2::management::damaged_committed_transcript_fails_closed_without_rewriting_evidence','fresh','tenant'),))
 MODULES['execution.commands.configuration'] = replace(MODULES['execution.commands.configuration'], db_mode='reuse', scope='tenant')
-MODULES['execution.commands.onboarding'] = replace(MODULES['execution.commands.onboarding'], db_mode='reuse', scope='tenant',support_inputs=(*MODULES['execution.commands.onboarding'].support_inputs,'crates/app/tests/support/channel_onboarding.rs','crates/app/tests/support/software.rs','crates/app/tests/execution/support.rs'))
+MODULES['execution.commands.onboarding'] = replace(MODULES['execution.commands.onboarding'], db_mode='reuse', scope='tenant',support_inputs=(*MODULES['execution.commands.onboarding'].support_inputs,'crates/app/tests/support/channel_onboarding.rs','crates/app/tests/support/software.rs','crates/app/tests/support/software_execution.rs','crates/app/tests/execution/support.rs'))
 MODULES['software.catalog'] = replace(MODULES['software.catalog'], db_mode='instance', scope='objects', policies=(
     CasePolicy('transactions::dependency_admission_uses_exact_current_enablement', 'reuse', 'objects'),
     CasePolicy('transactions::source_receipts_follow_the_borrowed_transaction', 'reuse', 'tenant'),
@@ -619,7 +619,7 @@ MODULES['apple.profile'] = replace(MODULES['apple.profile'], scope='tenant', fix
 MODULES['apple.policy'] = replace(MODULES['apple.policy'], db_mode='reuse', scope='tenant', fixtures=(*MODULES['apple.policy'].fixtures,'local_worker'), policies=(
     CasePolicy('apple::tests::policy::current_approval_and_deadlines', 'reuse', 'tenant'),
 ))
-MODULES['apple.onboarding'] = replace(MODULES['apple.onboarding'], db_mode='reuse', scope='tenant', fixtures=(*MODULES['apple.onboarding'].fixtures,'local_worker'), support_inputs=(*MODULES['apple.onboarding'].support_inputs,'crates/app/tests/support/channel_onboarding.rs','crates/app/tests/support/software.rs'))
+MODULES['apple.onboarding'] = replace(MODULES['apple.onboarding'], db_mode='reuse', scope='tenant', fixtures=(*MODULES['apple.onboarding'].fixtures,'local_worker'), support_inputs=(*MODULES['apple.onboarding'].support_inputs,'crates/app/tests/support/channel_onboarding.rs','crates/app/tests/support/software.rs','crates/app/tests/support/software_execution.rs'))
 MODULES['apple.renewal'] = replace(MODULES['apple.renewal'], db_mode='reuse', scope='tenant')
 MODULES['apple.identity'] = replace(MODULES['apple.identity'], db_mode='reuse', scope='tenant', fixtures=(*MODULES['apple.identity'].fixtures,'local_worker'), policies=(
     CasePolicy('apple::tests::identity::token_is_required_before_management', 'reuse', 'tenant'),
@@ -965,7 +965,7 @@ MODULES['assets.group_input'] = replace(MODULES['assets.group_input'], support_i
 
 # Verified helper call sites. These edges select tests, never production consumers.
 APP_HELPER_CONSUMERS = {
-    'support/software_execution.rs': ('software.http','planning.software','execution.software.offer','execution.software.content','execution.software.recovery'),
+    'support/software_execution.rs': ('execution.commands.onboarding','apple.onboarding','software.http','planning.software','execution.software.offer','execution.software.content','execution.software.recovery'),
     'support/software.rs': (
         'software.http','content.http','content.mirror','content.gc','content.storage','planning.software',
         'execution.software.offer','execution.software.content','execution.software.recovery'),
@@ -1867,7 +1867,6 @@ for module_id, selector, fixture in (
     ('execution.commands.onboarding', 'execution::t2::commands::onboarding::windows_policy_install_register_and_replay_use_independent_identity', 'ca_windows'),
     ('execution.commands.onboarding', 'execution::t2::commands::onboarding::replacement_rejects_old_installation_and_requires_current_epoch_absence', 'ca_windows'),
     ('execution.commands.configuration', 'execution::t2::commands::configuration::native_object_sets_share_a_device_and_withdraw_only_their_own_objects', 'ca_windows'),
-    ('execution.commands.onboarding', 'execution::t2::commands::onboarding::scope_exit_preserves_dispatched_installation_authority_until_its_deadline', 'ca_agent'),
     ('execution.software.recovery', 'execution::t2::software::recovery::unknown_effect_survives_credential_recovery', 'ca_agent'),
     ('windows.management', 'windows::t2::management::session_replay_nonce_collection_and_revoke', 'ca_windows'),
 ):
@@ -1972,3 +1971,12 @@ consume(('crates/apple-channel/src/native.rs',),
 for name in ('apple.commands', 'apple.users', 'apple.identity', 'apple.push', 'apple.host'):
     MODULES[name] = replace(MODULES[name], support_inputs=(*MODULES[name].support_inputs,
         'crates/app/tests/apple/policy.rs'))
+
+# ExecutionSource candidate pagination moved from the protocol host to its PG consumer.
+MODULES['planning.policy'] = replace(MODULES['planning.policy'], selectors=(*MODULES['planning.policy'].selectors, 'planning::t2::execution_source::'), test_inputs=(*MODULES['planning.policy'].test_inputs, 'crates/app/tests/planning/execution_source.rs'), support_inputs=(*MODULES['planning.policy'].support_inputs,'crates/app/tests/planning/support.rs','crates/app/tests/support/agent_execution.rs'), production_inputs=(*MODULES['planning.policy'].production_inputs, 'crates/flow-service/src/planning/execution_source.rs'))
+
+# Role membership faults require a disposable PG instance, not only a fresh database.
+MODULES['installation.migration'] = replace(MODULES['installation.migration'], policies=(*MODULES['installation.migration'].policies,
+    CasePolicy('migration::tests::fresh_installation_replay_and_mismatch_rejection', 'instance', 'objects'),
+    CasePolicy('migration::tests::ledger_installation_rejects_audit_privilege_drift', 'instance', 'objects'),
+))

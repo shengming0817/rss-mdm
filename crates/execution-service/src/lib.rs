@@ -99,6 +99,8 @@ pub struct ExecutionService {
     pub(crate) content: Option<Arc<rss_mdm_content_service::Store>>,
     pub(crate) readiness: health::Readiness,
     #[cfg(feature = "integration")]
+    pub(crate) installation_authorization_floor: std::sync::atomic::AtomicI64,
+    #[cfg(feature = "integration")]
     pub(crate) diagnostic_commit_fault:
         Mutex<Option<rss_transactional_messaging_postgres::PgTransactionFault>>,
     #[cfg(feature = "integration")]
@@ -129,6 +131,8 @@ impl ExecutionService {
     pub fn new(dependencies: Dependencies) -> Self {
         Self {
             readiness: Default::default(),
+            #[cfg(feature = "integration")]
+            installation_authorization_floor: Default::default(),
             #[cfg(feature = "integration")]
             diagnostic_commit_fault: Mutex::new(None),
             #[cfg(feature = "integration")]
@@ -183,6 +187,18 @@ impl ExecutionService {
 
 #[cfg(feature = "integration")]
 impl ExecutionService {
+    /// Advance this service's installation authorization reads without editing frozen inputs.
+    pub fn advance_installation_authorization_to(
+        &self,
+        seconds: i64,
+    ) -> std::result::Result<(), Error> {
+        if seconds <= 0 {
+            return Err(Error::Malformed);
+        }
+        self.installation_authorization_floor
+            .fetch_max(seconds, std::sync::atomic::Ordering::SeqCst);
+        Ok(())
+    }
     /// Pause after real file work and before the fenced association transaction.
     pub fn pause_diagnostic_association_after_file_work(
         &self,
@@ -297,3 +313,17 @@ mod collection_eligibility;
 #[cfg(test)]
 #[path = "../tests/native_collection_unit.rs"]
 mod native_collection_unit;
+
+impl ExecutionService {
+    fn installation_authorization_time(&self, database_now: i64) -> i64 {
+        #[cfg(feature = "integration")]
+        {
+            database_now.max(
+                self.installation_authorization_floor
+                    .load(std::sync::atomic::Ordering::SeqCst),
+            )
+        }
+        #[cfg(not(feature = "integration"))]
+        database_now
+    }
+}

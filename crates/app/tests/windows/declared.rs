@@ -387,7 +387,6 @@ async fn mi_admit(host: &Host) -> anyhow::Result<MiOperation> {
     let resource = resource_input(
         &mut client,
         json!({"target":{"kind":"device"},"apply":task("replace"),"remove":task("delete")}),
-        &["sensitive"],
     )
     .await?;
     let scope = Uuid::new_v4();
@@ -1379,7 +1378,7 @@ async fn declared_policy_delete_claims_recover_from_unknown_commit() -> anyhow::
         r#"<DeclaredConfiguration schema="1.0" context="Device" id="{id}" checksum="policy-v1" osdefinedscenario="MSFTExtensibilityMIProviderConfig"><DSC namespace="root/test" className="ExampleProvider"><Key name="Name">resource</Key><Value name="Text">first-value</Value></DSC></DeclaredConfiguration>"#
     );
     let task = |id: Uuid, document: &str, operation: &str| json!({"platform":"windows","request":{"kind":"sync_ml","request":{"kind":"node","node":"./Device/Vendor/MSFT/DeclaredConfiguration/Host/Complete/Documents/*/Document","instance":[id],"operation":operation,"value":{"type":"xml","value":document}}}});
-    let resource=resource_input(&mut client,json!({"target":{"kind":"device"},"apply":task(id,&document,"replace"),"remove":task(id,&document,"delete")}),&["first-value"]).await?;
+    let resource=resource_input(&mut client,json!({"target":{"kind":"device"},"apply":task(id,&document,"replace"),"remove":task(id,&document,"delete")})).await?;
     let first = Uuid::new_v4();
     let definition = |resource: &str| json!({"scope":scope,"action":{"kind":"configuration","resource":{"id":resource,"version":"1","platform":"windows","architecture":"x86_64","variant":"native"},"exit":"remove"}});
     change(
@@ -1429,7 +1428,7 @@ async fn declared_policy_delete_claims_recover_from_unknown_commit() -> anyhow::
     let other_document = document
         .replace(&id.to_string(), &other_id.to_string())
         .replace("first-value", "competing-value");
-    let other_resource=resource_input(&mut client,json!({"target":{"kind":"device"},"apply":task(other_id,&other_document,"replace"),"remove":task(other_id,&other_document,"delete")}),&["competing-value"]).await?;
+    let other_resource=resource_input(&mut client,json!({"target":{"kind":"device"},"apply":task(other_id,&other_document,"replace"),"remove":task(other_id,&other_document,"delete")})).await?;
     let second = Uuid::new_v4();
     change(
         &mut client,

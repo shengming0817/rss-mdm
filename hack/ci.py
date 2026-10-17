@@ -264,6 +264,7 @@ def verify_metadata(data, root, mode, pin):
         require(("integration" in features[name]) == (mode == "integration"), f"unexpected {mode} features for {name}")
     require({p['name'] for p in data['packages']} >= IDENTITY_PACKAGES | AUDIT_PACKAGES, 'Identity/Audit components missing')
     require(("test-support" in features["rss-identity-oidc"]) == (mode == "integration"), "OIDC fixture transport feature drift")
+    require(("test-support" in features["rss-identity-postgres"]) == (mode == "integration"), "Identity fact-time feature drift")
     nodes = {n['id']: n for n in data['resolve']['nodes']}
     verify_backend_support(data)
     verify_audit_integration(data)

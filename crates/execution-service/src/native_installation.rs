@@ -310,7 +310,7 @@ impl ExecutionService {
                 let Some(package) = op.approval.agent_package() else {
                     return Err(Error::NotFound.into());
                 };
-                let now = storage::now(tx).await?;
+                let now = s.installation_authorization_time(storage::now(tx).await?);
                 let status = s.required_command(tx, &op).await?.status();
                 if now >= op.request.deadline
                     || !matches!(

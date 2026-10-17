@@ -42,6 +42,14 @@ class Policies(unittest.TestCase):
         with self.assertRaises(ValueError):
             resolve_cases(module, ['new_test'])
 
+    def test_empty_installers_cannot_reuse_a_migrated_database(self):
+        module = replace(MODULES['installation.migration'], policies=())
+        for mode in ('fresh', 'instance'):
+            resolved, = resolve_cases(replace(module, db_mode=mode), ['installer'])
+            self.assertEqual((resolved.profile, resolved.db_mode), ('empty', mode))
+        with self.assertRaises(ValueError):
+            resolve_cases(replace(module, db_mode='reuse'), ['installer'])
+
 
 if __name__ == '__main__':
     unittest.main()

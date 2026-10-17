@@ -150,7 +150,7 @@ def resolve_cases(module, names):
             valid = (
                 value.db_mode in {'reuse', 'fresh', 'instance'}
                 and value.scope in {'objects', 'tenant', 'pair'}
-                and (value.profile != 'empty' or value.db_mode == 'fresh')
+                and (value.profile != 'empty' or value.db_mode in {'fresh', 'instance'})
             )
         if not valid:
             raise ValueError('invalid database policy: ' + module.id + ': ' + name)

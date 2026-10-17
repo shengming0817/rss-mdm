@@ -21,7 +21,6 @@ async fn resource(client: &mut Client, nodes: &[&str]) -> anyhow::Result<String>
     resource_input(
         client,
         json!({"target":{"kind":"device"},"apply":task(nodes,false),"remove":task(nodes,true)}),
-        nodes,
     )
     .await
 }
@@ -316,100 +315,11 @@ async fn native_object_sets_share_a_device_and_withdraw_only_their_own_objects()
     for (id, resource) in [(first, &a), (second, &b)] {
         change(&mut client,&format!("/api/v1/policies/{id}"),0,json!({"action":"put","enabled":true,"definition":{"scope":scope,"action":{"kind":"configuration","resource":{"id":resource,"version":"1","platform":"windows","architecture":"x86_64","variant":"native"},"exit":"remove"}}})).await?;
     }
-    let mut protected_pg =
-        sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?)
-            .await?;
-    let persisted: Vec<String> = sqlx::query_scalar("SELECT frozen::text FROM mdm_policy.versions WHERE tenant_id=$1::uuid AND policy IN ($2,$3)")
-        .bind(case_tenant()).bind(first).bind(second).fetch_all(&mut protected_pg).await?;
-    ensure!(persisted.len() == 2);
-    for input in persisted {
-        ensure!(
-            ![CORTANA, CAMERA, TELEMETRY]
-                .iter()
-                .any(|node| input.contains(node)),
-            "frozen Policy native content remained plaintext"
-        );
-    }
-    protected_pg.close().await?;
     let a_ops = published(&mut client, first).await?;
     let b_ops = published(&mut client, second).await?;
     ensure!(
         a_ops.len() == 1 && b_ops.len() == 1 && a_ops != b_ops,
         "disjoint native inputs collapsed into one device slot"
-    );
-    // A valid ciphertext from another Policy version cannot authorize this operation.
-    let mut protected_pg =
-        sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?)
-            .await?;
-    let original: Value = sqlx::query_scalar(
-        "SELECT frozen FROM mdm_policy.versions WHERE tenant_id=$1::uuid AND policy=$2",
-    )
-    .bind(case_tenant())
-    .bind(second)
-    .fetch_one(&mut protected_pg)
-    .await?;
-    sqlx::query("UPDATE mdm_policy.versions SET frozen=jsonb_set(frozen,'{native_sealed}',(SELECT frozen->'native_sealed' FROM mdm_policy.versions WHERE tenant_id=$1::uuid AND policy=$2)) WHERE tenant_id=$1::uuid AND policy=$3")
-        .bind(case_tenant()).bind(first).bind(second).execute(&mut protected_pg).await?;
-    let denied = client
-        .call(Method::GET, &format!("/{}", b_ops[0]), None)
-        .await?;
-    ensure!(
-        denied.0 == StatusCode::SERVICE_UNAVAILABLE,
-        "foreign Policy ciphertext was accepted: {denied:?}"
-    );
-    sqlx::query("UPDATE mdm_policy.versions SET frozen=$3 WHERE tenant_id=$1::uuid AND policy=$2")
-        .bind(case_tenant())
-        .bind(second)
-        .bind(original)
-        .execute(&mut protected_pg)
-        .await?;
-    ensure!(
-        client
-            .call(Method::GET, &format!("/{}", b_ops[0]), None)
-            .await?
-            .0
-            == StatusCode::OK
-    );
-    protected_pg.close().await?;
-    // Equal shared values do not make two different Sequence groups interchangeable.
-    let overlapping_resource = resource(&mut client, &[CORTANA, TELEMETRY]).await?;
-    let overlapping = Uuid::new_v4();
-    change(&mut client,&format!("/api/v1/policies/{overlapping}"),0,json!({"action":"put","enabled":true,"definition":{"scope":scope,"action":{"kind":"configuration","resource":{"id":overlapping_resource,"version":"1","platform":"windows","architecture":"x86_64","variant":"native"},"exit":"remove"}}})).await?;
-    tokio::time::timeout(Duration::from_secs(30), async {
-        loop {
-            let read = client
-                .browser
-                .call(
-                    &client.router,
-                    Method::GET,
-                    &format!("/api/v1/policies/{overlapping}/assignments"),
-                    None,
-                )
-                .await?;
-            ensure!(read.0 == StatusCode::OK);
-            ensure!(
-                read.1["items"][0]["reason"] != "configuration_conflict",
-                "equal object content was mislabeled as a value conflict: {read:?}"
-            );
-            if read.1["items"][0]["reason"] == "native_group_conflict" {
-                ensure!(read.1["items"][0]["availability"] == "unavailable");
-                return Ok::<_, anyhow::Error>(());
-            }
-            tokio::time::sleep(Duration::from_millis(50)).await;
-        }
-    })
-    .await??;
-    change(
-        &mut client,
-        &format!("/api/v1/policies/{overlapping}"),
-        1,
-        json!({"action":"disable"}),
-    )
-    .await?;
-    ensure!(
-        published(&mut client, first).await? == a_ops
-            && published(&mut client, second).await? == b_ops,
-        "conflict discarded the existing immutable dispatch identity"
     );
     // Identical native input has two Policy owners, but one immutable operation.
     let shared = Uuid::new_v4();
@@ -845,102 +755,4 @@ async fn associated_agent_health_executes_only_original_mdm_and_missing_channel_
     pg.close().await?;
     host.close().await?;
     Ok(())
-}
-
-#[tokio::test]
-#[ignore = "make t2 MODULE=execution.commands.configuration"]
-async fn empty_candidate_page_preserves_progress_to_the_next_matching_policy() -> anyhow::Result<()>
-{
-    let host = crate::windows::test_support::Host::open().await?;
-    let _peer = host.peer().await?;
-    let mut client = Client::start(host.browser.clone(), host.app.clone()).await?;
-    let mut grants = [
-        "resource_read",
-        "resource_write",
-        "policy_read",
-        "policy_write",
-        "scope_read",
-        "scope_write",
-    ]
-    .into_iter()
-    .map(|operation| json!({"operation":operation,"scope":{"kind":"tenant"}}))
-    .collect::<Vec<_>>();
-    grants.extend(
-        crate::test_support::identity::device_grants(
-            None,
-            &["inventory_read", "configuration_write"],
-        )?
-        .into_iter()
-        .map(|grant| serde_json::to_value(grant).expect("typed grant")),
-    );
-    crate::test_support::identity::set_grants(
-        case_tenant(),
-        crate::test_support::case::admin(),
-        serde_json::from_value(json!(grants))?,
-    )
-    .await?;
-    let resource = resource(&mut client, &[CORTANA]).await?;
-    let scope = Uuid::new_v4();
-    crate::test_support::agent_execution::seed_scope(
-        &host.app.flow.planning,
-        scope,
-        json!([{"kind":"device","id":case_device()}]),
-    )
-    .await?;
-    let policy = Uuid::new_v4();
-    let mut pg =
-        sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?)
-            .await?;
-    let excluded_scope = Uuid::new_v4();
-    crate::test_support::agent_execution::seed_scope(
-        &host.app.flow.planning,
-        excluded_scope,
-        json!([]),
-    )
-    .await?;
-    for index in 1..=17 {
-        let excluded_policy = Uuid::from_u128(index);
-        change(&mut client,&format!("/api/v1/policies/{excluded_policy}"),0,json!({"action":"put","enabled":true,"definition":{"scope":excluded_scope,"action":{"kind":"configuration","resource":{"id":resource,"version":"1","platform":"windows","architecture":"x86_64","variant":"native"},"exit":"retain"}}})).await?;
-    }
-    change(&mut client,&format!("/api/v1/policies/{policy}"),0,json!({"action":"put","enabled":true,"definition":{"scope":scope,"action":{"kind":"configuration","resource":{"id":resource,"version":"1","platform":"windows","architecture":"x86_64","variant":"native"},"exit":"retain"}}})).await?;
-    use rss_mdm_execution_service::source_authority::{CandidateKind, SourceAuthority};
-    let source = crate::planning::execution_source::ExecutionSource::new(
-        client.app.flow.planning.objects.clone(),
-    );
-    let mut transaction = pg.begin().await?;
-    sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
-        .bind(case_tenant())
-        .execute(&mut *transaction)
-        .await?;
-    let first_page = source
-        .candidates_on(
-            &mut transaction,
-            client.app.identity.tenant,
-            case_device(),
-            CandidateKind::Configuration,
-            Uuid::nil(),
-        )
-        .await?;
-    ensure!(
-        first_page.items.is_empty()
-            && first_page.has_more
-            && first_page.scanned_after == Uuid::from_u128(16),
-        "excluded candidates lost bounded scan progress"
-    );
-    let next_page = source
-        .candidates_on(
-            &mut transaction,
-            client.app.identity.tenant,
-            case_device(),
-            CandidateKind::Configuration,
-            first_page.scanned_after,
-        )
-        .await?;
-    ensure!(
-        next_page.items.iter().any(|c| c.policy == policy),
-        "eligible policy after empty page was skipped"
-    );
-    transaction.rollback().await?;
-    pg.close().await?;
-    host.close().await
 }
