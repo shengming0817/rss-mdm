@@ -107,7 +107,7 @@ impl Fixture {
                                 .await
                                 .map_err(rss_mdm_audit_integration::Error::from)?;
                         }
-                        Ok(())
+                        Ok::<(), rss_mdm_audit_integration::Error>(())
                     })
                 },
             )

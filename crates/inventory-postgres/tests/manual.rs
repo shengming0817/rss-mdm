@@ -179,7 +179,7 @@ async fn field_catalog_cas_history_and_rollback_are_atomic()
     let seed = format!(
         "DO $seed$ DECLARE i integer; f text; BEGIN FOR i IN 0..1024 LOOP f='custom.retired_'||i; PERFORM mdm.append_field_version('{tenant}'::uuid,f,1,jsonb_set('{document}'::jsonb,'{{key}}',to_jsonb(f))); PERFORM mdm.append_field_version('{tenant}'::uuid,f,2,NULL); END LOOP; END $seed$"
     );
-    sqlx::raw_sql(sqlx::AssertSqlSafe(&seed))
+    sqlx::raw_sql(sqlx::AssertSqlSafe(seed.as_str()))
         .execute(&mut *tx)
         .await?;
     let retired: i64 = sqlx::query_scalar("SELECT count(*) FROM mdm.field_versions WHERE tenant_id=$1::uuid AND field LIKE 'custom.retired_%' AND version=2 AND definition IS NULL")

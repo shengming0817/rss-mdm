@@ -1,4 +1,14 @@
 use crate::test_support::*;
+struct AssetRuntime(Arc<rss_transactional_messaging_postgres::PgRuntime>);
+impl rss_runtime::ManagedResource for AssetRuntime {
+    fn name(&self) -> &str {
+        "asset-test-runtime"
+    }
+    async fn shutdown(&self) -> std::result::Result<(), rss_runtime::ShutdownError> {
+        self.0.close().await;
+        Ok(())
+    }
+}
 // Only asset routes and the real authentication/audit boundary; no Agent or Planning.
 struct AssetHttp {
     resources: Resources,
@@ -12,7 +22,7 @@ impl AssetHttp {
         let mut authority = authority::Authority::open().await?;
         let tenant = rss_request_context::TenantId::parse(case_tenant())?;
         let runtime = crate::planning::test_support::runtime(tenant).await;
-        authority.resources.resource(runtime.clone());
+        authority.resources.resource(AssetRuntime(runtime.clone()));
         let inventory = crate::planning::test_support::inventory_runtime(tenant).await;
         authority
             .resources
@@ -141,7 +151,7 @@ mod storage {
         let key = rss_mdm_flow_service::storage::cursor_key(&runtime, tenant)
             .await
             .unwrap();
-        resources.resource(runtime.clone());
+        resources.resource(super::AssetRuntime(runtime.clone()));
         let inventory = inventory_runtime(tenant).await;
         resources.resource(crate::test_support::InventoryFixtureResource(
             inventory.clone(),
