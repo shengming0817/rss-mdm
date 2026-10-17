@@ -236,10 +236,12 @@ class Processes:
                 except subprocess.TimeoutExpired:
                     sent = True
         finally:
-            self.release(child)
-            for stream in (child.stdin, child.stdout, child.stderr):
-                if stream is not None:
-                    stream.close()
+            try:
+                self.release(child)
+            finally:
+                for stream in (child.stdin, child.stdout, child.stderr):
+                    if stream is not None:
+                        stream.close()
 
     def run(self, args, *, env=None, log=None, capture=False, separate_stderr=False, timeout=None, cwd=ROOT):
         require(not self.cancelled.is_set(), 'T2 cancelled')
