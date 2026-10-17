@@ -233,6 +233,7 @@ pub(super) fn validate(
             return Err(storage());
         }
         let entry = archive.by_index_raw(index).map_err(|_| invalid())?;
+        let name = entry.name().map_err(|_| invalid())?.into_owned();
         if entry.encrypted()
             || !entry.is_file()
             || entry
@@ -246,7 +247,7 @@ pub(super) fn validate(
             return Err(invalid());
         }
         let h = read_at::<30>(&mut local, entry.header_start())?;
-        if &h[..4] != b"PK\x03\x04" || u16le(&h[26..28]) != entry.name().len() as u64 {
+        if &h[..4] != b"PK\x03\x04" || u16le(&h[26..28]) != name.len() as u64 {
             return Err(invalid());
         }
         let central_header = read_at::<46>(&mut local, entry.central_header_start())?;
@@ -266,12 +267,12 @@ pub(super) fn validate(
                 return Err(invalid());
             }
         }
-        let mut raw = vec![0; entry.name().len()];
+        let mut raw = vec![0; name.len()];
         local
             .seek(SeekFrom::Start(entry.header_start() + 30))
             .map_err(|_| invalid())?;
         local.read_exact(&mut raw).map_err(|_| invalid())?;
-        if raw != entry.name().as_bytes() {
+        if raw != name.as_bytes() {
             return Err(invalid());
         }
         let data = entry.data_start().ok_or_else(invalid)?;
@@ -293,7 +294,7 @@ pub(super) fn validate(
         }
         drop(entry);
         let mut entry = archive.by_index(index).map_err(|_| invalid())?;
-        if entry.name() == "manifest.json" {
+        if name == "manifest.json" {
             if entry.size() > 1_048_576 {
                 return Err(invalid());
             }
@@ -309,7 +310,7 @@ pub(super) fn validate(
                 return Err(invalid());
             }
         } else {
-            let expected = expected.entries.get(entry.name()).ok_or_else(invalid)?;
+            let expected = expected.entries.get(name.as_str()).ok_or_else(invalid)?;
             if entry.size() != expected.length {
                 return Err(invalid());
             }

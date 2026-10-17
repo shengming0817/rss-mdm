@@ -26,7 +26,7 @@ rss-mdm-authorization-service.workspace = true
 rss-mdm-content-service.workspace = true
 rss-mdm-certificate.workspace = true
 rss-mdm-apple-mdm.workspace = true
-zip = { version = "=8.6.0", default-features = false, features = ["deflate-flate2-zlib-rs"] }
+zip = { version = "=9.0.0", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 rss-mdm-software-service.workspace = true
 rss-mdm-compliance.workspace = true
 rss-mdm-compliance-postgres.workspace = true
