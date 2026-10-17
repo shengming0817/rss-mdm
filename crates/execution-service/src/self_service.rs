@@ -71,7 +71,7 @@ impl Invocation {
         if policy.id != plan.owner()
             || policy.version != *policy_version
             || policy.revision as u64 != *policy_revision
-            || !policy.enabled
+            || !policy.state.is_enabled()
             || !config.published
             || config.allow_ai != Some(*allow_ai)
             || risk != *risk_level
@@ -363,13 +363,13 @@ impl ExecutionService {
             storage::lock(tx, p.device()).await?;
             crate::actions::agent::principal(service, tx, p).await?;
             let tenant = tx.tenant_id().to_string(); let after = input.after;
-            let mut ids = tx.with_connection(move |c| Box::pin(async move { sqlx::query_scalar::<_, Uuid>("SELECT id FROM mdm_policy.policies WHERE tenant_id=$1::uuid AND enabled AND definition->'selfService'->>'published'='true' AND ($2::uuid IS NULL OR id>$2) ORDER BY id LIMIT 65").bind(tenant).bind(after).fetch_all(c).await })).await?;
+            let mut ids = tx.with_connection(move |c| Box::pin(async move { sqlx::query_scalar::<_, Uuid>("SELECT id FROM mdm_policy.policies WHERE tenant_id=$1::uuid AND (state='enabled') AND definition->'selfService'->>'published'='true' AND ($2::uuid IS NULL OR id>$2) ORDER BY id LIMIT 65").bind(tenant).bind(after).fetch_all(c).await })).await?;
             let more = ids.len() > 64; ids.truncate(64); let next = if more { ids.last().copied() } else { None };
             let target = target(p); let now = storage::now(tx).await?; let mut items = Vec::new();
             for id in ids {
                 let Some(policy) = crate::sources::storage::read_in(&service.policy_reader, tx, id).await? else { continue; };
                 let Some(config) = policy.definition.self_service.as_ref() else { continue; };
-                if !policy.enabled || !config.published || (input.source == wire::SelfServiceCaller::Ai && config.allow_ai != Some(true)) { continue; }
+                if !policy.state.is_enabled() || !config.published || (input.source == wire::SelfServiceCaller::Ai && config.allow_ai != Some(true)) { continue; }
                 let Some(basis) = access::select(config, proof)? else { continue; };
                 let Some(subject) = access::qualify_in(service, tx, config, &basis).await? else { continue; };
                 let plan = db::load_source(&service.policy_reader, tx, db::Source::Policy { version: policy.version }).await?;
@@ -411,7 +411,7 @@ impl ExecutionService {
             if policy.version != input.policy_version || policy.revision as u64 != input.policy_revision { return Err(Error::Conflict.into()); }
             let config = policy.definition.self_service.as_ref().ok_or(Error::Forbidden)?;
             let allow_ai = config.allow_ai.ok_or(Error::Forbidden)?; let risk = effective_risk(&policy);
-            if !policy.enabled || !config.published || (input.source == wire::SelfServiceCaller::Ai && (!allow_ai || (risk == 2 && !input.confirmed))) { return Err(Error::Forbidden.into()); }
+            if !policy.state.is_enabled() || !config.published || (input.source == wire::SelfServiceCaller::Ai && (!allow_ai || (risk == 2 && !input.confirmed))) { return Err(Error::Forbidden.into()); }
             let basis = access::select(config, proof)?.ok_or(Error::Forbidden)?;
             let subject = access::qualify_in(service, tx, config, &basis).await?.ok_or(Error::Forbidden)?;
             let actor = actor(p, &subject); let hash = fingerprint(input)?; let event_key = format!("{actor}:{}", input.operation_id); let now = storage::now(tx).await?;
@@ -469,7 +469,7 @@ impl ExecutionService {
             // Reading an accepted request uses the current reader's qualification, not Start authority.
             let policy = crate::sources::storage::read_in(&service.policy_reader, tx, plan.owner()).await?.ok_or(Error::NotFound)?;
             let config = policy.definition.self_service.as_ref().ok_or(Error::Forbidden)?;
-            if !policy.enabled || !config.published { return Err(Error::Forbidden.into()); }
+            if !policy.state.is_enabled() || !config.published { return Err(Error::Forbidden.into()); }
             let basis = access::select(config, proof)?.ok_or(Error::Forbidden)?;
             if access::qualify_in(service, tx, config, &basis).await?.is_none()
                 || !matches!(crate::sources::storage::admission_in(&service.source, tx,

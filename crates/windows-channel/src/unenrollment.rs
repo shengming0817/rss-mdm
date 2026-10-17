@@ -223,7 +223,7 @@ pub(crate) async fn replay(
         .map_err(|_| Error::Unavailable(crate::Failure::Protocol))?;
     audit.identify_device(registration);
     audit.registration(registration);
-    audit.target(&device);
+    audit.target_device(&device);
     audit.management_result(rss_mdm_audit_integration::ManagementResult::Replayed);
     Ok(Some(response.expose().to_vec()))
 }

@@ -97,7 +97,7 @@ pub(crate) async fn manage(
     }
     audit.identify_device(principal.registration());
     audit.registration(principal.registration());
-    audit.target(principal.device());
+    audit.target_device(principal.device());
     let protocol_device = crate::protocol_device::read(&app.access, &principal).await?;
     if message.header.source != protocol_device
         || !app

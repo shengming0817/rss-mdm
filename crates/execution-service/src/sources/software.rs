@@ -88,7 +88,7 @@ pub async fn read_in(
         id,
         owner: policy.id,
         assignment: SoftwareAssignment {
-            active: policy.enabled && policy.version == id,
+            active: policy.state.is_enabled() && policy.version == id,
             frozen: *action,
             scope: policy.definition.scope,
             rollout,

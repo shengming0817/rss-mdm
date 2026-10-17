@@ -468,7 +468,7 @@ async fn enrollment(
         }
         auth.authorize(&proof)?;
         proof.bind_audit(&audit)?;
-        audit.target(&auth.device);
+        audit.target_device(&auth.device);
         let now = app
             .clock
             .unix_seconds()

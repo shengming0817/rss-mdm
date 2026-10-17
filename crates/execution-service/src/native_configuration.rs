@@ -651,7 +651,7 @@ impl ExecutionService {
         let fact_audit = audit.transaction_copy();
         fact_audit.identify_service("configuration-policy");
         fact_audit.operation(input.operation_id, "command_accept");
-        fact_audit.target(device);
+        fact_audit.target_device(device);
         let result = self
             .queue_authorized_in(tx, device, input, authority, fingerprint, &fact_audit)
             .await;
@@ -706,7 +706,7 @@ async fn desired_in(
             let p = policies::storage::read_in(&service.policy_reader, tx, id)
                 .await?
                 .ok_or(Error::NotFound)?;
-            if !p.enabled {
+            if !p.state.is_enabled() {
                 continue;
             }
             let eligible = policies::storage::eligible_in(&service.source, tx, &p, device)

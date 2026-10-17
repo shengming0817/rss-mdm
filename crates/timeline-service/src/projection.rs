@@ -87,8 +87,10 @@ pub fn project(event: &AuditEventV1) -> Result<FactView, Error> {
         actor_kind: event.facts().actor().kind().as_str().into(),
         actor: event.facts().actor().id().as_str().into(),
         action: action.into(),
-        target: (supported && phase != "unknown")
-            .then(|| event.facts().resource().id().as_str().to_owned()),
+        target: crate::model::Target {
+            kind: event.facts().resource().kind().as_str().into(),
+            id: event.facts().resource().id().as_str().into(),
+        },
         device_id,
         operation_id: event
             .context()

@@ -50,7 +50,7 @@ async fn run(
     } else {
         Permission::ResourceRead
     };
-    audit.target(&id);
+    audit.resource_target(rss_mdm_audit_integration::TargetKind::Resource, &id);
     audit.set_action(if change.is_some() {
         "management_write"
     } else {

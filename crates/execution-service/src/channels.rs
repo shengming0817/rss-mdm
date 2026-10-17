@@ -222,6 +222,17 @@ pub trait ApplePush: Send + Sync {
     ) -> Pending<'a, bool>;
 }
 pub trait AppleResults: Send + Sync {
+    /// Current-generation declaration keys, locked through the caller's evidence read.
+    fn declaration_page<'a>(
+        &'a self,
+        c: &'a mut PgConnection,
+        tenant: String,
+        registration: Uuid,
+        generation: i64,
+        after: Option<Uuid>,
+        limit: usize,
+    ) -> Pending<'a, Vec<(Uuid, String)>>;
+
     /// Check current-registration platform evidence without issuing a command.
     fn device_control_supported<'a>(
         &'a self,

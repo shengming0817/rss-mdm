@@ -16,7 +16,7 @@ pub fn routes(queries: Arc<rss_mdm_execution_service::queries::Queries>) -> Rout
                 .with_state(queries),
         )
         .route("/policies", get(list))
-        .route("/policies/{id}", get(read).post(change))
+        .route("/policies/{id}", get(read).post(change).delete(delete))
         .route("/policies/{id}/reruns", post(rerun))
 }
 async fn change(
@@ -31,7 +31,10 @@ async fn change(
 ) -> std::result::Result<Json<Value>, Error> {
     let Json(input) = input.map_err(Error::from)?;
     audit.operation(input.operation_id, "management_write");
-    audit.target(&id.to_string());
+    audit.resource_target(
+        rss_mdm_audit_integration::TargetKind::Policy,
+        &id.to_string(),
+    );
     service
         .change(&auth.proof, id, &input, &audit)
         .await
@@ -74,7 +77,10 @@ async fn rerun(
 ) -> std::result::Result<Json<Value>, Error> {
     let Json(input) = input.map_err(Error::from)?;
     audit.operation(input.operation_id, "management_write");
-    audit.target(&id.to_string());
+    audit.resource_target(
+        rss_mdm_audit_integration::TargetKind::Policy,
+        &id.to_string(),
+    );
     service
         .rerun(&auth.proof, id, &input, &audit)
         .await
@@ -104,4 +110,39 @@ async fn assignments(
     .await
     .map(|v| Json(serde_json::to_value(v).expect("assignment facts serialize")))
     .map_err(Error::from)
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct Delete {
+    operation_id: Uuid,
+    expected_revision: u64,
+}
+async fn delete(
+    State(service): State<Arc<Policies>>,
+    Extension(auth): Extension<RequestAuth>,
+    Extension(audit): Extension<RequestAudit>,
+    Path(id): Path<Uuid>,
+    body: Result<Json<Delete>, axum::extract::rejection::JsonRejection>,
+) -> Result<Json<Value>, Error> {
+    let Json(body) = body.map_err(Error::from)?;
+    audit.operation(body.operation_id, "management_write");
+    audit.resource_target(
+        rss_mdm_audit_integration::TargetKind::Policy,
+        &id.to_string(),
+    );
+    service
+        .change(
+            &auth.proof,
+            id,
+            &crate::http_operation::Operation {
+                operation_id: body.operation_id,
+                expected_revision: body.expected_revision,
+                input: Change::Archive,
+            },
+            &audit,
+        )
+        .await
+        .map(Json)
+        .map_err(Error::from)
 }

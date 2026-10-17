@@ -178,7 +178,7 @@ async fn profile(
     )
     .await?;
     admission.bind_audit(audit)?;
-    audit.target(&admission.coordinates().device);
+    audit.target_device(&admission.coordinates().device);
     let budget =
         rss_mdm_audit_integration::budget::AuditBudget::new(std::time::Duration::from_secs(2));
     let control = budget.control();

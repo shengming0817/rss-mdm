@@ -213,7 +213,7 @@ impl EnrollmentService {
             return Err(Error::Malformed);
         }
         let permission = proof.enrollment(&input.device_id)?;
-        audit.target(&input.device_id);
+        audit.target_device(&input.device_id);
         let reference = self.credentials.insert(
             rss_identity_core::session::SessionSecret::parse(continuation.expose().into())
                 .map_err(|_| Error::Unauthorized)?,
@@ -253,7 +253,7 @@ impl EnrollmentService {
             key
         );
         let permission = proof.self_enrollment(&device_id)?;
-        audit.target(&device_id);
+        audit.target_device(&device_id);
         let reference = self.credentials.insert(
             rss_identity_core::session::SessionSecret::parse(continuation.expose().into())
                 .map_err(|_| Error::Unauthorized)?,
@@ -281,7 +281,7 @@ impl EnrollmentService {
     ) -> Result<Receipt, Error> {
         let permission = store::owned_permission(&self.access, proof, command.id).await?;
         let device = permission.device().to_owned();
-        audit.target(&device);
+        audit.target_device(&device);
         let reference = self.credentials.insert(
             rss_identity_core::session::SessionSecret::parse(continuation.expose().into())
                 .map_err(|_| Error::Unauthorized)?,
@@ -323,7 +323,7 @@ impl EnrollmentService {
     ) -> Result<read::Status, Error> {
         let permission = store::owned_permission(&self.access, proof, id).await?;
         let device = permission.device().to_owned();
-        audit.target(&device);
+        audit.target_device(&device);
         read::enrollment_status(&self.access, permission, id, native, &self.credentials).await
     }
     pub async fn registrations(
@@ -343,7 +343,7 @@ impl EnrollmentService {
     ) -> Result<Receipt, Error> {
         let permission = store::owned_permission(&self.access, proof, id).await?;
         let device = permission.device().to_owned();
-        audit.target(&device);
+        audit.target_device(&device);
         store::change_enrollment(&self.audit_store, permission, id, None, key, audit).await
     }
 }

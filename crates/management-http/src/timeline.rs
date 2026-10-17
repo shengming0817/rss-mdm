@@ -39,7 +39,7 @@ async fn device(
         axum::extract::rejection::QueryRejection,
     >,
 ) -> Result<Json<Page>, Error> {
-    audit.target(&device);
+    audit.target_device(&device);
     let mut query = input(params)?;
     if query.device.is_some() {
         return Err(Error::Malformed);

@@ -40,6 +40,10 @@ pub enum Change {
     Enable,
     /// Disable the existing definition without changing execution content.
     Disable,
+    /// Permanently close an already disabled policy, preserving immutable history.
+    #[serde(skip_deserializing)]
+    #[schemars(skip)]
+    Archive,
 }
 /// The one persistent Policy aggregate.
 #[derive(schemars::JsonSchema, Clone, Debug, Deserialize, Serialize)]
@@ -52,8 +56,8 @@ pub struct Policy {
     pub version: Uuid,
     /// Monotonic semantic version number.
     pub number: i64,
-    /// Whether the persistent assignment is enabled.
-    pub enabled: bool,
+    /// Persistent assignment lifecycle.
+    pub state: State,
     /// Complete authored definition.
     pub definition: Definition,
     /// Backend-resolved software lifecycle, never authored by an administrator.
@@ -95,17 +99,40 @@ impl Policy {
         if old.is_some_and(|p| p.id != id) || old.map_or(0, |p| p.revision as u64) != expected {
             return Err(Error::Conflict);
         }
+        if old.is_some_and(|p| p.state == State::Archived) {
+            return Err(Error::Conflict);
+        }
         let revision = expected
             .checked_add(1)
             .filter(|v| *v <= i64::MAX as u64)
             .ok_or(Error::Conflict)? as i64;
-        let (mut definition, enabled) = match input {
+        let (mut definition, state) = match input {
             Change::Put {
                 definition,
                 enabled,
-            } => ((**definition).clone(), *enabled),
-            Change::Enable => (old.ok_or(Error::NotFound)?.definition.clone(), true),
-            Change::Disable => (old.ok_or(Error::NotFound)?.definition.clone(), false),
+            } => (
+                (**definition).clone(),
+                if *enabled {
+                    State::Enabled
+                } else {
+                    State::Disabled
+                },
+            ),
+            Change::Enable => (
+                old.ok_or(Error::NotFound)?.definition.clone(),
+                State::Enabled,
+            ),
+            Change::Disable => (
+                old.ok_or(Error::NotFound)?.definition.clone(),
+                State::Disabled,
+            ),
+            Change::Archive => {
+                let previous = old.ok_or(Error::NotFound)?;
+                if previous.state != State::Disabled {
+                    return Err(Error::Conflict);
+                }
+                (previous.definition.clone(), State::Archived)
+            }
         };
         if let Some(config) = &mut definition.self_service {
             config.normalize(old.and_then(|p| p.definition.self_service.as_ref()));
@@ -149,7 +176,7 @@ impl Policy {
                 revision,
                 version,
                 number,
-                enabled,
+                state,
                 definition,
                 execution_binding,
             },
@@ -198,8 +225,8 @@ pub struct View {
     pub version: i64,
     /// Immutable execution version identity.
     pub version_id: Uuid,
-    /// Automatic and self-service assignment enablement.
-    pub enabled: bool,
+    /// Automatic and self-service assignment lifecycle.
+    pub state: State,
     /// Complete authored definition, with normalized stored self-service defaults.
     pub definition: Definition,
 }
@@ -210,7 +237,7 @@ impl From<&Policy> for View {
             revision: policy.revision,
             version: policy.number,
             version_id: policy.version,
-            enabled: policy.enabled,
+            state: policy.state,
             definition: policy.definition.clone(),
         }
     }
@@ -226,4 +253,30 @@ fn bound_semantic(definition: &Definition, binding: Option<[u8; 32]>) -> Result<
     hash.update(semantic);
     hash.update(binding);
     Ok(hash.finalize().into())
+}
+
+/// The one Policy lifecycle; archived policies cannot be edited or enabled.
+#[derive(schemars::JsonSchema, Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum State {
+    /// Open to current assignment admission.
+    Enabled,
+    /// Explicitly stopped; existing execution recovery remains active.
+    Disabled,
+    /// Permanently closed while all history remains referenced.
+    Archived,
+}
+impl State {
+    /// Whether new business admission is allowed by the authored lifecycle.
+    pub const fn is_enabled(self) -> bool {
+        matches!(self, Self::Enabled)
+    }
+    /// Canonical persistence discriminator.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Enabled => "enabled",
+            Self::Disabled => "disabled",
+            Self::Archived => "archived",
+        }
+    }
 }

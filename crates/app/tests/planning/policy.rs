@@ -76,6 +76,12 @@ async fn assignment_pagination_uses_published_scope_without_eager_execution() ->
         )
         .await?;
     }
+    call(browser,router,&group_path,2,json!({"action":"members","add":[],"remove":[{"kind":"endpoint","id":devices[1]}]})).await?;
+    let retained=browser.call(router,Method::GET,&format!("/api/v1/devices/{}/groups",devices[0]),None).await?;
+    ensure!(retained.0==StatusCode::OK && retained.1["items"][0]["id"]==group.to_string(),"sparse membership lost unchanged endpoint: {retained:?}");
+    let removed=browser.call(router,Method::GET,&format!("/api/v1/devices/{}/groups",devices[1]),None).await?;
+    ensure!(removed.0==StatusCode::OK && removed.1["items"]==json!([]),"removed endpoint retained: {removed:?}");
+    call(browser,router,&group_path,3,json!({"action":"members","add":[{"kind":"endpoint","id":devices[1]}],"remove":[]})).await?;
     call(browser,router,&format!("/api/v1/scopes/{scope}"),0,json!({"action":"put","definition":{"targets":[{"kind":"group","id":group}],"limitations":null,"exclusions":[]}})).await?;
     let definition = json!({"scope":scope,"action":{"resource":{"id":resource,"version":"v1","platform":"windows","architecture":"x86_64","variant":"default"},"kind":"configuration","exit":"retain"}});
     let before = pg(&format!(
@@ -90,6 +96,32 @@ async fn assignment_pagination_uses_published_scope_without_eager_execution() ->
         json!({"action":"put","enabled":true,"definition":definition}),
     )
     .await?;
+    // Scope publication is the fixture prerequisite. Stop its producer before the
+    // bounded read/CAS checks, which do not measure background reconciliation throughput.
+    crate::test_support::stop_worker(automation).await?;
+    let membership_path=format!("/api/v1/devices/{}-1/groups?limit=1",prefix);
+    let (status,memberships)=browser.call(router,Method::GET,&membership_path,None).await?;
+    ensure!(status==StatusCode::OK && memberships["items"].as_array().is_some_and(|items|items.iter().any(|item|item["id"]==group.to_string())),"reverse memberships: {status} {memberships}");
+    let deletion=json!({"operationId":Uuid::new_v4(),"expectedRevision":1});
+    let rejected=settled_delete(browser,router,policy,deletion).await?;
+    ensure!(rejected.0==StatusCode::CONFLICT,"enabled delete: {rejected:?}");
+    let other_policy=Uuid::new_v4();
+    call(browser,router,&format!("/api/v1/policies/{other_policy}"),0,json!({"action":"put","enabled":false,"definition":definition})).await?;
+    let first=browser.call(router,Method::GET,&format!("/api/v1/policies?resource={resource}&limit=1"),None).await?;
+    ensure!(first.0==StatusCode::OK,"policy directory: {first:?}");
+    let token=first.1["nextCursor"].as_str().ok_or_else(||anyhow::anyhow!("policy cursor missing: {first:?}"))?;
+    let second=browser.call(router,Method::GET,&format!("/api/v1/policies?resource={resource}&limit=1&cursor={token}"),None).await?;
+    ensure!(second.0==StatusCode::OK && second.1["nextCursor"].is_null(),"policy paging: {second:?}");
+    let page_id = |page: &serde_json::Value| -> Result<Uuid> {
+        let items = page["items"].as_array().ok_or_else(|| anyhow::anyhow!("missing policy items: {page}"))?;
+        ensure!(items.len() == 1, "expected one policy per page: {page}");
+        Ok(Uuid::parse_str(items[0]["id"].as_str().ok_or_else(|| anyhow::anyhow!("missing policy ID: {page}"))?)?)
+    };
+    ensure!(page_id(&json!({"items":[],"nextCursor":null})).is_err(), "empty policy page must fail validation");
+    let actual = std::collections::BTreeSet::from([page_id(&first.1)?, page_id(&second.1)?]);
+    ensure!(actual == std::collections::BTreeSet::from([id, other_policy]), "incomplete policy pages: {actual:?}");
+    let changed=browser.call(router,Method::GET,&format!("/api/v1/policies?resource={resource}&state=disabled&limit=1&cursor={token}"),None).await?;
+    ensure!(changed.0==StatusCode::CONFLICT,"changed cursor filter: {changed:?}");
     let mut cursor = None;
     let mut seen = std::collections::BTreeSet::new();
     loop {
@@ -125,10 +157,49 @@ async fn assignment_pagination_uses_published_scope_without_eager_execution() ->
             case_tenant()
         ))? == before
     );
-    crate::test_support::stop_worker(automation).await?;
+    call(browser,router,policy,1,json!({"action":"disable"})).await?;
+    let deletion=json!({"operationId":Uuid::new_v4(),"expectedRevision":2});
+    let deleted=settled_delete(browser,router,policy,deletion.clone()).await?;
+    ensure!(deleted.0==StatusCode::OK && deleted.1["state"]=="archived","disabled delete: {deleted:?}");
+    let replay=settled_delete(browser,router,policy,deletion).await?;
+    ensure!(replay==deleted,"delete replay changed receipt");
+    let enabled=settled_write(browser,router,policy,json!({"operationId":Uuid::new_v4(),"expectedRevision":3,"input":{"action":"enable"}})).await?;
+    ensure!(enabled.0==StatusCode::CONFLICT,"archived enable: {enabled:?}");
+    let directory=browser.call(router,Method::GET,&format!("/api/v1/policies?resource={resource}"),None).await?;
+    ensure!(directory.0==StatusCode::OK && directory.1["items"].as_array().is_some_and(|v|v.len()==1) && directory.1["items"][0]["id"]==other_policy.to_string());
+    let directory=browser.call(router,Method::GET,&format!("/api/v1/policies?state=archived&resource={resource}"),None).await?;
+    ensure!(directory.0==StatusCode::OK && directory.1["items"][0]["id"]==id.to_string());
+    let legacy=browser.call(router,Method::GET,&format!("/api/v1/policies?after={id}"),None).await?;
+    ensure!(legacy.0==StatusCode::BAD_REQUEST);
+    let retained:Value=serde_json::from_str(&pg(&format!("SELECT jsonb_build_array(count(*),count(resource)) FROM mdm_policy.versions WHERE tenant_id='{}' AND policy='{id}'",case_tenant()))?)?;
+    ensure!(retained==json!([1,1]),"archive lost immutable references: {retained}");
+
 
     Ok(())
     }).await
 
     }).await
+}
+
+async fn settled_delete(
+    browser: &mut Browser,
+    router: &Router,
+    path: &str,
+    body: Value,
+) -> Result<(StatusCode, Value)> {
+    tokio::time::timeout(Duration::from_secs(30), async {
+        loop {
+            let response = browser
+                .call(router, Method::DELETE, path, Some(body.clone()))
+                .await?;
+            if response.0 != StatusCode::SERVICE_UNAVAILABLE {
+                return Ok(response);
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .map_err(|_| {
+        anyhow::anyhow!("policy delete did not settle using its original operation identity")
+    })?
 }

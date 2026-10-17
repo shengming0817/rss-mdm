@@ -23,6 +23,7 @@ use rss_mdm_execution_service::{
 };
 pub use rss_mdm_policy::{Change, Policy};
 pub struct Policies {
+    cursor_key: ring::hmac::Key,
     runtime: std::sync::Arc<rss_transactional_messaging_postgres::PgRuntime>,
     audit_store: std::sync::Arc<rss_mdm_audit_integration::AuditStore>,
     tenant: rss_request_context::TenantId,
@@ -31,6 +32,7 @@ pub struct Policies {
 }
 impl Policies {
     pub fn new(
+        cursor_key: &[u8],
         runtime: std::sync::Arc<rss_transactional_messaging_postgres::PgRuntime>,
         audit_store: std::sync::Arc<rss_mdm_audit_integration::AuditStore>,
         tenant: rss_request_context::TenantId,
@@ -38,6 +40,7 @@ impl Policies {
         inputs: std::sync::Arc<rss_mdm_execution_service::Inputs>,
     ) -> Self {
         Self {
+            cursor_key: ring::hmac::Key::new(ring::hmac::HMAC_SHA256, cursor_key),
             runtime,
             audit_store,
             tenant,
@@ -53,6 +56,10 @@ impl Policies {
         op: &crate::operation::Operation<Change>,
         audit: &RequestAudit,
     ) -> std::result::Result<Value, Error> {
+        audit.resource_target(
+            rss_mdm_audit_integration::TargetKind::Policy,
+            &id.to_string(),
+        );
         if id.is_nil() || op.operation_id.is_nil() {
             return Err(Error::Malformed);
         }
@@ -123,13 +130,14 @@ impl Policies {
                             &s.policy_store,
                             tx,
                             &policy,
+                            &op.input,
                             Some(&frozen),
                             p,
                             now,
                         )
                         .await?;
                     } else {
-                        storage::write_in(&s.policy_store, tx, &policy, None, p, now)
+                        storage::write_in(&s.policy_store, tx, &policy, &op.input, None, p, now)
                             .await?;
                     }
                     if changed {

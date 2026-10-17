@@ -17,7 +17,10 @@ pub async fn assignments(
     after: Option<String>,
 ) -> std::result::Result<super::records::AssignmentPage, crate::queries::QueryError> {
     audit.set_action("management_read");
-    audit.target(&id.to_string());
+    audit.resource_target(
+        rss_mdm_audit_integration::TargetKind::Policy,
+        &id.to_string(),
+    );
     auth.manage(Permission::PolicyRead)?;
     auth.require_all_devices(Permission::InventoryRead)?;
     run(&service.audit_store,&service.runtime,service.tenant,audit,(&service,&auth,audit,after),|ctx,tx|Box::pin(async move {
@@ -38,7 +41,7 @@ pub async fn assignments(
         for mut object in objects {
             let mut operations=Vec::new();let mut task_admission=None;
             if !readable {object.availability=crate::source_authority::Availability::Unavailable;object.reason=Some("source_forbidden".into());}
-            if !p.enabled && readable {object.availability=crate::source_authority::Availability::Unavailable;object.reason=Some("policy_disabled".into());}
+            if !p.state.is_enabled() && readable {object.availability=crate::source_authority::Availability::Unavailable;object.reason=Some("policy_disabled".into());}
             if let Some(target)=&object.target {
                 let device=&target.device;
                 let eligible=crate::sources::storage::eligible_in(&s.source,tx,&p,device).await?.is_some();

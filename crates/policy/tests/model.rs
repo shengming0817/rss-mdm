@@ -128,7 +128,7 @@ fn invalid_restored_aggregate_cannot_produce_checked_change() {
             revision,
             number,
             version,
-            enabled: true,
+            state: rss_mdm_policy::State::Enabled,
             definition: definition.clone(),
         };
         assert!(matches!(
@@ -360,4 +360,90 @@ fn software_lifecycle_generation_requires_a_new_execution_version() {
     let mut retired = serde_json::to_value(definition).unwrap();
     retired["action"]["admissionOperation"] = json!(Uuid::new_v4());
     assert!(serde_json::from_value::<Definition>(retired).is_err());
+}
+
+#[test]
+fn archive_is_terminal_and_preserves_semantic_history() {
+    let fixtures: Value =
+        serde_json::from_str(include_str!("fixtures/semantic-identities.json")).unwrap();
+    let definition: Definition = serde_json::from_value(fixtures[0]["definition"].clone()).unwrap();
+    let id = Uuid::new_v4();
+    let enabled = Policy::apply(
+        id,
+        None,
+        0,
+        &Change::Put {
+            definition: Box::new(definition.clone()),
+            enabled: true,
+        },
+        Uuid::new_v4(),
+        None,
+    )
+    .unwrap()
+    .policy;
+    assert_eq!(
+        Policy::apply(
+            id,
+            Some(&enabled),
+            1,
+            &Change::Archive,
+            Uuid::new_v4(),
+            None
+        )
+        .err(),
+        Some(Error::Conflict)
+    );
+    let disabled = Policy::apply(
+        id,
+        Some(&enabled),
+        1,
+        &Change::Disable,
+        Uuid::new_v4(),
+        None,
+    )
+    .unwrap()
+    .policy;
+    let archived = Policy::apply(
+        id,
+        Some(&disabled),
+        2,
+        &Change::Archive,
+        Uuid::new_v4(),
+        None,
+    )
+    .unwrap();
+    assert!(!archived.semantic_changed);
+    assert_eq!(archived.policy.version, enabled.version);
+    assert_eq!(archived.policy.number, enabled.number);
+    assert_eq!(archived.policy.state, State::Archived);
+    for command in [
+        Change::Enable,
+        Change::Disable,
+        Change::Archive,
+        Change::Put {
+            definition: Box::new(definition),
+            enabled: false,
+        },
+    ] {
+        assert_eq!(
+            Policy::apply(
+                id,
+                Some(&archived.policy),
+                3,
+                &command,
+                Uuid::new_v4(),
+                None
+            )
+            .err(),
+            Some(Error::Conflict)
+        );
+    }
+    assert!(serde_json::from_value::<Change>(json!({"action":"archive"})).is_err());
+    let view = serde_json::to_value(View::from(&archived.policy)).unwrap();
+    assert_eq!(view["state"], "archived");
+    assert!(view.get("enabled").is_none());
+    assert_eq!(
+        serde_json::to_value(Change::Archive).unwrap(),
+        json!({"action":"archive"})
+    );
 }

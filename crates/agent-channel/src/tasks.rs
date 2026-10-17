@@ -54,7 +54,7 @@ async fn authenticate(
     }
     audit.identify_device(principal.registration());
     audit.registration(principal.registration());
-    audit.target(principal.device());
+    audit.target_device(principal.device());
     Ok(principal)
 }
 fn task_error(error: impl Into<Error>) -> crate::AgentError {

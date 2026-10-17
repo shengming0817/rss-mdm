@@ -242,7 +242,7 @@ impl DeviceService {
         let audit = RequestAudit::new(admin.tenant_id().into(), "credential_revoke");
         admin.bind_audit(&audit)?;
         audit.operation(operation_id, "credential_revoke");
-        audit.target(device);
+        audit.target_device(device);
         self.audited(
             &audit,
             self.revoke_inner(admin, device, registration, operation_id, &audit),
@@ -426,7 +426,7 @@ impl DeviceService {
     ) -> Result<Uuid, Error> {
         let audit = RequestAudit::new(proof.tenant_id().into(), "enrollment_create");
         proof.bind_audit(&audit)?;
-        audit.target(device);
+        audit.target_device(device);
         let key = Uuid::new_v4();
         audit.operation(key, "enrollment_create");
         let receipt = crate::enrollment::store::create_enrollment(

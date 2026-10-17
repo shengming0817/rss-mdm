@@ -280,7 +280,7 @@ async fn policy_scan_reaches_late_match() -> Result<()> {
     let prepared: Vec<_> = (2..=64).map(|n| {
         let policy = rss_mdm_policy::Policy::apply(Uuid::from_u128(ordered_namespace | n), None, 0,
             &rss_mdm_policy::Change::Put { definition: Box::new(template.definition.clone()), enabled: true }, Uuid::new_v4(), template.execution_binding).unwrap().policy;
-        rss_mdm_policy_postgres::Publication { policy, frozen: Some(frozen.clone()), author: json!({"subject":fixture.author_id}), at }
+        rss_mdm_policy_postgres::Publication { change: rss_mdm_policy::Change::Put { definition: Box::new(policy.definition.clone()), enabled: policy.state.is_enabled() }, policy, frozen: Some(frozen.clone()), author: json!({"subject":fixture.author_id}), at }
     }).collect();
     fixture.planning.runtime.local_tx_with_context(fixture.planning.tenant, crate::identity::deadline(), (&fixture.planning.policy_store, &prepared), |(store, publications), tx| Box::pin(async move {
         for publication in publications.iter() { store.publish_in(tx, publication).await?.unwrap(); }
@@ -512,6 +512,29 @@ async fn script_preparation_is_shared_without_preview_effects() -> Result<()> {
         .await?
             == StatusCode::CREATED
     );
+    let newer=format!("#!/bin/sh\n# new {}\nprintf 'new'\n",Uuid::new_v4());
+    let newer_digest:[u8;32]=Sha256::digest(newer.as_bytes()).into();
+    resource(&mut fixture.author,&fixture.router,content_id,3,json!({"action":"version","version":"v2","kind":"script","variants":[{"platform":"macos","architecture":"aarch64","key":"default","declaration":{"kind":"script","artifact":{"reference":"new-script","length":newer.len(),"sha256":newer_digest},"definition":declaration}}]})).await?;
+    let cookie=fixture.author.cookies.iter().map(|(k,v)|format!("{k}={v}")).collect::<Vec<_>>().join("; ");
+    let request=Request::builder().method(Method::POST).uri(format!("/api/v1/resources/{content_id}/content?version=v2&variant=default&platform=macos&architecture=aarch64&operation={}",Uuid::new_v4())).header("host","mdm.example.test").header("origin","https://mdm.example.test").header("x-identity-request","1").header("x-csrf-token",fixture.author.csrf.as_ref().unwrap()).header("cookie",&cookie).body(Body::from(newer.clone()))?;
+    ensure!(fixture.router.clone().oneshot(request).await?.status()==StatusCode::CREATED);
+    resource(&mut fixture.author,&fixture.router,content_id,4,json!({"action":"activate","version":"v2"})).await?;
+    let download=format!("/api/v1/resources/{content_id}/versions/v1/script?platform=macos&architecture=aarch64&variant=default");
+    let cookie=fixture.author.cookies.iter().map(|(k,v)|format!("{k}={v}")).collect::<Vec<_>>().join("; ");
+    for (range,expected_status,expected) in [(None,StatusCode::OK,bytes.as_bytes()),(Some("bytes=0-8"),StatusCode::PARTIAL_CONTENT,&bytes.as_bytes()[..9])] {
+        let mut request=Request::builder().uri(&download).header("host","mdm.example.test").header("cookie",&cookie);
+        if let Some(range)=range {request=request.header("range",range);}
+        let response=fixture.router.clone().oneshot(request.body(Body::empty())?).await?;
+        ensure!(response.status()==expected_status,"script download: {}",response.status());
+        ensure!(response.headers()["cache-control"]=="no-store");
+        ensure!(response.headers().contains_key("content-disposition"));
+        ensure!(axum::body::to_bytes(response.into_body(),16777216).await?.as_ref()==expected);
+    }
+    let denied=fixture.router.clone().oneshot(Request::builder().uri(&download).header("host","mdm.example.test").body(Body::empty())?).await?;
+    ensure!(denied.status()==StatusCode::UNAUTHORIZED);
+    // The old-version download proof is complete; restore the original active input
+    // before testing the independent corruption rejection at Policy entrances.
+    resource(&mut fixture.author,&fixture.router,content_id,5,json!({"action":"activate","version":"v1"})).await?;
     let hex: String = digest.iter().map(|b| format!("{b:02x}")).collect();
     let path = std::path::Path::new(fixture.base["content"]["storage"]["directory"].as_str().unwrap())
         .join(case_tenant())
@@ -523,6 +546,8 @@ async fn script_preparation_is_shared_without_preview_effects() -> Result<()> {
         StatusCode::SERVICE_UNAVAILABLE,
     )
     .await;
+    let corrupt=fixture.router.clone().oneshot(Request::builder().uri(&download).header("host","mdm.example.test").header("cookie",&cookie).body(Body::empty())?).await?;
+    ensure!(corrupt.status()==StatusCode::SERVICE_UNAVAILABLE,"corrupt script download: {}",corrupt.status());
     std::fs::write(&path, &bytes)?;
     rejected?;
     ensure!(

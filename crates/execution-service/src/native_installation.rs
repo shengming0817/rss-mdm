@@ -66,7 +66,7 @@ impl ExecutionService {
         let fact_audit = audit.transaction_copy();
         fact_audit.identify_service("agent-install-policy");
         fact_audit.operation(input.operation_id, "command_accept");
-        fact_audit.target(device);
+        fact_audit.target_device(device);
         let result = self
             .queue_authorized_in(
                 tx,

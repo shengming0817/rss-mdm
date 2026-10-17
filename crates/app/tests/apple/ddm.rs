@@ -140,6 +140,31 @@ async fn policy_coowners_share_native_publication_without_fabricating_removal() 
     // Unordered quality belongs to apple-mdm Projection T1; this seam owns one persisted replay.
     inventory_db.close().await?;
     ensure!(f.operation(applied).await?["commandStatus"] == "applied");
+    let summary = f
+        .browser
+        .call(
+            &f.router,
+            Method::GET,
+            &format!("/api/v1/devices/{}/ddm?limit=1", case_device()),
+            None,
+        )
+        .await?;
+    ensure!(summary.0 == StatusCode::OK, "DDM summary: {summary:?}");
+    let item = &summary.1["items"][0];
+    ensure!(
+        item["operationId"] == applied.to_string() && item["channel"] == "mdm.apple",
+        "DDM identity: {item}"
+    );
+    ensure!(
+        item["observation"]["effect"] == "unverified"
+            && item["observation"]["compliance"] == "unknown",
+        "DDM effect: {item}"
+    );
+    ensure!(
+        item["observation"]["nativeStatus"].is_object(),
+        "missing native status: {item}"
+    );
+
     f.policy_post(
         &format!("/api/v1/policies/{second}"),
         0,
@@ -222,6 +247,56 @@ async fn policy_coowners_share_native_publication_without_fabricating_removal() 
     ensure!(
         manifest(&peer, None).await? == retained_manifest,
         "retain changed native collection"
+    );
+    let summary_path = format!("/api/v1/devices/{}/ddm?limit=1", case_device());
+    let before = f
+        .browser
+        .call(&f.router, Method::GET, &summary_path, None)
+        .await?;
+    ensure!(
+        before.0 == StatusCode::OK,
+        "DDM page before generation change: {before:?}"
+    );
+    let cursor = before.1["nextCursor"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("missing DDM cursor: {before:?}"))?
+        .to_owned();
+    let original_registration: Uuid =
+        serde_json::from_value(before.1["items"][0]["registrationId"].clone())?;
+    let original_generation = before.1["items"][0]["generation"].as_i64().unwrap();
+    sqlx::query("SELECT set_config('rss.tenant_id',$1,false)")
+        .bind(case_tenant())
+        .execute(&mut pg)
+        .await?;
+    sqlx::query("UPDATE mdm_access.registrations SET generation=generation+1 WHERE tenant_id=$1::uuid AND id=$2").bind(case_tenant()).bind(original_registration).execute(&mut pg).await?;
+    let current = f
+        .browser
+        .call(&f.router, Method::GET, &summary_path, None)
+        .await?;
+    let stale = f
+        .browser
+        .call(
+            &f.router,
+            Method::GET,
+            &format!("{summary_path}&cursor={cursor}"),
+            None,
+        )
+        .await?;
+    sqlx::query(
+        "UPDATE mdm_access.registrations SET generation=$3 WHERE tenant_id=$1::uuid AND id=$2",
+    )
+    .bind(case_tenant())
+    .bind(original_registration)
+    .bind(original_generation)
+    .execute(&mut pg)
+    .await?;
+    ensure!(
+        current.0 == StatusCode::OK && current.1["items"] == json!([]),
+        "old-generation evidence leaked: {current:?}"
+    );
+    ensure!(
+        stale.0 == StatusCode::CONFLICT,
+        "old-generation cursor accepted: {stale:?}"
     );
     crate::test_support::identity::set_grants(
         case_tenant(),

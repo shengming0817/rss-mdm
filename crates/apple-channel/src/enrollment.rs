@@ -107,7 +107,7 @@ async fn authorized(
         return Err(Error::Unauthorized);
     }
     proof.bind_audit(audit)?;
-    audit.target(&proof.coordinates().device);
+    audit.target_device(&proof.coordinates().device);
     Ok((proof.coordinates().clone(), proof))
 }
 pub async fn download(
@@ -383,7 +383,9 @@ pub async fn notify(
                                         .map_err(db)?
                                         .is_some();
                                     audit.identify_service("service:scep-notify");
-                                    audit.target(&row.try_get::<String, _>("device").map_err(db)?);
+                                    audit.target_device(
+                                        &row.try_get::<String, _>("device").map_err(db)?,
+                                    );
                                     persist_leaf(c, &tenant, leaf).await?;
                                     Ok::<_, Error>(replayed)
                                 })
@@ -615,7 +617,7 @@ async fn bind_on(tx: &mut sqlx::PgConnection, inputs: &mut BindInputs<'_>) -> Re
     crate::notify(tx, "apple").await.map_err(db)?;
     proof.mark_bound_in(tx).await?;
     proof.bind_audit(audit)?;
-    audit.target(&auth.device);
+    audit.target_device(&auth.device);
     audit.registration(receipt.registration);
     Ok(())
 }

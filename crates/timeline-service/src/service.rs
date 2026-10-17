@@ -313,6 +313,11 @@ impl Timeline {
         if let Some(token) = token
             && (token.tenant != self.tenant.to_string()
                 || token.instance != proof.instance_id()
+                || token.authority
+                    != proof
+                        .authorization()
+                        .and_then(|s| s.query_binding(proof))
+                        .map_err(|_| Error::Forbidden)?
                 || token.family != family
                 || token.query != query.binding()
                 || token.generation != generation
@@ -333,10 +338,29 @@ impl Timeline {
         query: &Query,
         token: Option<&cursor::Cursor>,
     ) -> Result<(Window, Vec<sqlx::postgres::PgRow>), Error> {
+        // Authorization is reloaded after acquiring the audit read transaction, before exposing facts.
+        rss_mdm_authorization_service::lock_on(c, proof.tenant_id(), proof.instance_id())
+            .await
+            .map_err(authorization_error)?;
+        let current =
+            rss_mdm_authorization_service::snapshot_on(c, proof.tenant_id(), proof.instance_id())
+                .await
+                .map_err(authorization_error)?;
+        current
+            .require(proof, Permission::AuthorizationRead, None)
+            .map_err(|e| authorization_error(e.into()))?;
+        if current.query_binding(proof).map_err(authorization_error)?
+            != proof
+                .authorization()
+                .and_then(|s| s.query_binding(proof))
+                .map_err(authorization_error)?
+        {
+            return Err(Error::Conflict);
+        }
         // Checkpoint and facts share one READ COMMITTED statement snapshot, including empty pages.
-        let rows=sqlx::query("SELECT cp.position AS indexed,cp.source_through,cp.generation,f.document,f.digest,f.position,f.recorded_at FROM mdm_timeline.checkpoints cp LEFT JOIN LATERAL (SELECT document,digest,position,recorded_at FROM mdm_timeline.facts WHERE tenant_id=cp.tenant_id AND position<=COALESCE($2,cp.position) AND (instance_id=$3::uuid OR (instance_id IS NULL AND document->>'supported'='true' AND document->>'actorKind' IN ('service','device','unidentified'))) AND ($4::text IS NULL OR devices @> ARRAY[$4]) AND ($5::uuid IS NULL OR operation_id=$5 OR operations @> ARRAY[$5]) AND ($6::text IS NULL OR actor=$6) AND ($7::text IS NULL OR action=$7) AND ($8::text IS NULL OR outcome=$8) AND ($9::bigint IS NULL OR recorded_at>=$9) AND ($10::bigint IS NULL OR recorded_at<$10) AND ($11::bigint IS NULL OR (recorded_at,position)<($11,$12)) ORDER BY recorded_at DESC,position DESC LIMIT $13) f ON true WHERE cp.tenant_id=$1::uuid ORDER BY f.recorded_at DESC,f.position DESC")
+        let rows=sqlx::query("SELECT cp.position AS indexed,cp.source_through,cp.generation,f.document,f.digest,f.position,f.recorded_at FROM mdm_timeline.checkpoints cp LEFT JOIN LATERAL (SELECT document,digest,position,recorded_at FROM mdm_timeline.facts WHERE tenant_id=cp.tenant_id AND position<=COALESCE($2,cp.position) AND (instance_id=$3::uuid OR (instance_id IS NULL AND document->>'supported'='true' AND document->>'actorKind' IN ('service','device','unidentified'))) AND ($4::text IS NULL OR devices @> ARRAY[$4]) AND ($5::uuid IS NULL OR operation_id=$5 OR operations @> ARRAY[$5]) AND ($6::text IS NULL OR actor=$6) AND ($7::text IS NULL OR action=$7) AND ($8::text IS NULL OR outcome=$8) AND ($9::bigint IS NULL OR recorded_at>=$9) AND ($10::bigint IS NULL OR recorded_at<$10) AND ($14::text IS NULL OR document->'target'->>'id'=$14) AND ($15::text IS NULL OR document->'target'->>'type'=$15) AND ($11::bigint IS NULL OR (recorded_at,position)<($11,$12)) ORDER BY recorded_at DESC,position DESC LIMIT $13) f ON true WHERE cp.tenant_id=$1::uuid ORDER BY f.recorded_at DESC,f.position DESC")
             .bind(self.tenant.to_string()).bind(token.map(|v|v.through)).bind(proof.instance_id()).bind(&query.device).bind(query.operation_id)
-            .bind(&query.actor).bind(&query.action).bind(&query.outcome).bind(query.from).bind(query.until).bind(token.map(|v|v.after_at)).bind(token.map(|v|v.after_position)).bind((query.limit.unwrap_or(50)+1) as i64).fetch_all(c).await?;
+            .bind(&query.actor).bind(&query.action).bind(&query.outcome).bind(query.from).bind(query.until).bind(token.map(|v|v.after_at)).bind(token.map(|v|v.after_position)).bind((query.limit.unwrap_or(50)+1) as i64).bind(&query.target_id).bind(&query.target_type).fetch_all(c).await?;
         let first = rows.first().ok_or(Error::Storage)?;
         let window = Window {
             indexed: first.try_get("indexed")?,
@@ -398,6 +422,10 @@ impl Timeline {
                         &cursor::Cursor {
                             tenant: tenant.clone(),
                             instance: proof.instance_id().into(),
+                            authority: proof
+                                .authorization()
+                                .and_then(|s| s.query_binding(proof))
+                                .map_err(|_| Error::Forbidden)?,
                             family: family.into(),
                             query: query.binding(),
                             generation,
@@ -487,7 +515,7 @@ async fn correlate(
             "command_accept" | "command_reauthorize" | "command_cancel" | "command_read"
         ));
     if device_target
-        && let Some(target) = &view.target
+        && let target = &view.target.id
         && rss_mdm_registration_service::device::read::exists(c, tenant.into(), target.clone())
             .await?
     {
@@ -558,6 +586,18 @@ fn limited_transaction<R>(
     match transaction_error::<()>(error).expect_err("transaction failure") {
         Error::Deadline => Ok(None),
         error => Err(error),
+    }
+}
+
+fn authorization_error(error: rss_mdm_authorization_service::Error) -> Error {
+    use rss_mdm_authorization_service::Error as A;
+    match error {
+        A::Unauthorized | A::Forbidden => Error::Forbidden,
+        A::Malformed => Error::Malformed,
+        A::Corrupt | A::Configuration => Error::Integrity,
+        A::Deadline => Error::Deadline,
+        A::Conflict => Error::Conflict,
+        A::Storage | A::CommitUnknown | A::RollbackFailed | A::Audit(_) => Error::Storage,
     }
 }
 

@@ -18,6 +18,18 @@ fn storage<E>(_: E) -> sqlx::Error {
     sqlx::Error::Protocol("device input unavailable".into())
 }
 impl ObjectReader for PlanningObjects {
+    fn memberships<'a>(
+        &'a self,
+        c: &'a mut sqlx::PgConnection,
+        tenant: rss_request_context::TenantId,
+        device: &'a str,
+    ) -> rss_mdm_inventory_service::objects::Pending<
+        'a,
+        rss_mdm_inventory_service::objects::MembershipObjects,
+    > {
+        Box::pin(snapshots::memberships(c, tenant, device))
+    }
+
     fn changes<'a>(
         &'a self,
         tenant: TenantId,

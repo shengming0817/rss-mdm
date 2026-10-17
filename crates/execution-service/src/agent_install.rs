@@ -255,7 +255,7 @@ pub(crate) async fn authorized_on(
         return Err(Error::Malformed);
     };
     use crate::database::db;
-    let row=sqlx::query("SELECT v.frozen,p.enabled AND p.current_version=v.id AS live,(p.definition->>'scope')::uuid AS scope FROM mdm_policy.policies p JOIN mdm_policy.versions v ON(v.tenant_id,v.policy)=(p.tenant_id,p.id) WHERE p.tenant_id=$1::uuid AND p.id=$2 AND v.id=$3")
+    let row=sqlx::query("SELECT v.frozen,(p.state='enabled') AND p.current_version=v.id AS live,(p.definition->>'scope')::uuid AS scope FROM mdm_policy.policies p JOIN mdm_policy.versions v ON(v.tenant_id,v.policy)=(p.tenant_id,p.id) WHERE p.tenant_id=$1::uuid AND p.id=$2 AND v.id=$3")
         .bind(tenant).bind(policy).bind(version).fetch_optional(&mut *c).await.map_err(db)?;
     let Some(row) = row else {
         return Ok(false);
@@ -409,7 +409,7 @@ pub async fn dispatch_ready_on(
     if dispatched_on(c, tenant, operation).await? {
         return Ok(true);
     }
-    let scope: Option<Uuid> = sqlx::query_scalar("SELECT (p.definition->>'scope')::uuid FROM mdm_policy.policies p WHERE p.tenant_id=$1::uuid AND p.current_version=$2 AND p.enabled")
+    let scope: Option<Uuid> = sqlx::query_scalar("SELECT (p.definition->>'scope')::uuid FROM mdm_policy.policies p WHERE p.tenant_id=$1::uuid AND p.current_version=$2 AND (p.state='enabled')")
         .bind(tenant).bind(version).fetch_optional(&mut *c).await.map_err(db)?;
     let Some(scope) = scope else {
         return Ok(false);

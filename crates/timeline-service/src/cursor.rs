@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 pub(crate) struct Cursor {
     pub tenant: String,
     pub instance: String,
+    pub authority: String,
     pub family: String,
     pub query: Query,
     pub generation: uuid::Uuid,
@@ -42,6 +43,7 @@ mod tests {
         let c = Cursor {
             tenant: "tenant".into(),
             instance: "instance".into(),
+            authority: "authority".into(),
             family: "device".into(),
             query: Query {
                 device: Some("device".into()),

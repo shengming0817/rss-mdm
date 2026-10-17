@@ -196,7 +196,7 @@ async fn prepare_on(
                 deadline: pending.try_get("deadline").map_err(db)?,
                 renewal_of: old_id,
             };
-            audit.target(&device);
+            audit.target_device(&device);
             audit.registration(prepared.registration);
             return Ok(Some((prepared, true)));
         }
@@ -276,7 +276,7 @@ async fn prepare_on(
     crate::notify(c, "apple").await.map_err(db)?;
     let registration = Uuid::parse_str(&registration)
         .map_err(|_| Error::Unavailable(crate::Failure::AppleInvariant))?;
-    audit.target(&device);
+    audit.target_device(&device);
     audit.registration(registration);
     Ok(Some((
         PreparedRenewal {
@@ -346,7 +346,7 @@ pub async fn challenge(
         return Err(Error::Unauthorized);
     }
     audit.identify_service("service:scep-renewal");
-    audit.target(&row.try_get::<String, _>("device").map_err(db)?);
+    audit.target_device(&row.try_get::<String, _>("device").map_err(db)?);
     audit.registration(rss_mdm_registration_service::enrollment::store::uuid(&row, "registration")?);
     sqlx::query("UPDATE mdm_apple.scep_attempts SET state='consumed',transaction_id=$3,csr_digest=$4,spki=$5 WHERE tenant_id=$1::uuid AND id=$2::uuid")
         .bind(&tenant).bind(csr.attempt().to_string()).bind(transaction).bind(csr.digest().as_slice()).bind(csr.spki().as_slice()).execute(&mut *c).await.map_err(db)?;
@@ -408,7 +408,9 @@ pub async fn notify(
                                         return Err(Error::Unauthorized);
                                     }
                                     audit.identify_service("service:scep-renewal");
-                                    audit.target(&row.try_get::<String, _>("device").map_err(db)?);
+                                    audit.target_device(
+                                        &row.try_get::<String, _>("device").map_err(db)?,
+                                    );
                                     audit.registration(
                                         rss_mdm_registration_service::enrollment::store::uuid(
                                             &row,
@@ -521,7 +523,7 @@ pub async fn activate(
     enrollment::persist_leaf(c, &tenant, leaf).await?;
     sqlx::query("UPDATE mdm_apple.scep_attempts SET state=CASE WHEN id=$2::uuid THEN 'bound' ELSE 'superseded' END WHERE tenant_id=$1::uuid AND id IN ($2::uuid,$3::uuid)").bind(&tenant).bind(leaf.attempt().to_string()).bind(old).execute(&mut *c).await.map_err(db)?;
     audit.identify_device(Uuid::parse_str(&registration).map_err(|_| Error::Unauthorized)?);
-    audit.target(&row.try_get::<String, _>("device").map_err(db)?);
+    audit.target_device(&row.try_get::<String, _>("device").map_err(db)?);
     audit.registration(Uuid::parse_str(&registration).map_err(|_| Error::Unauthorized)?);
     Ok::<_, Error>(true)
 

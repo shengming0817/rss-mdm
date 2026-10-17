@@ -174,7 +174,7 @@ async fn report_inner(
     audit.set_action("agent_report");
     audit.identify_device(principal.registration());
     audit.registration(principal.registration());
-    audit.target(principal.device());
+    audit.target_device(principal.device());
     let scope = crate::device::scope_dataset(
         principal.tenant(),
         principal.registration(),
@@ -249,7 +249,7 @@ async fn status_inner(
     audit.set_action("agent_report_read");
     audit.identify_device(principal.registration());
     audit.registration(principal.registration());
-    audit.target(principal.device());
+    audit.target_device(principal.device());
     let mut tx = app.access.begin(&principal.tenant().to_string()).await?;
     let live_scope =
         crate::device::store::revalidate_source(&mut tx, &principal, InventorySource::AgentBuiltin)
