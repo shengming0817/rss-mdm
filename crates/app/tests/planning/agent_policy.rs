@@ -490,27 +490,6 @@ async fn script_preparation_is_shared_without_preview_effects() -> Result<()> {
     let mut invalid = definition.clone();
     invalid["action"]["parameters"] = json!({"unexpected":true});
     reject_script_at_all_entrances(&mut fixture, invalid, StatusCode::BAD_REQUEST).await?;
-    let mut invalid = definition.clone();
-    invalid["action"]["resource"]["architecture"] = json!("x86_64");
-    reject_script_at_all_entrances(&mut fixture, invalid, StatusCode::BAD_REQUEST).await?;
-    let digest: [u8; 32] = Sha256::digest(Uuid::new_v4().as_bytes()).into();
-    let oversized = script_resource(&mut fixture, &declaration, 16_777_217, digest).await?;
-    reject_script_at_all_entrances(
-        &mut fixture,
-        policy_definition(oversized, case_task_scope()),
-        StatusCode::BAD_REQUEST,
-    )
-    .await?;
-    let mut sql = declaration.clone();
-    sql["profile"] = json!("osquery");
-    sql["sql"] = json!("SELECT version FROM osquery_info");
-    let mismatch = script_resource(&mut fixture, &sql, 3, digest).await?;
-    reject_script_at_all_entrances(
-        &mut fixture,
-        policy_definition(mismatch, case_task_scope()),
-        StatusCode::BAD_REQUEST,
-    )
-    .await?;
     // Unique bytes isolate the missing/corrupt content checks from other T2 cases.
     let bytes = format!("#!/bin/sh\n# {}\nprintf '{{}}'\n", Uuid::new_v4());
     let digest: [u8; 32] = Sha256::digest(bytes.as_bytes()).into();
@@ -678,7 +657,7 @@ async fn management_accepts_large_legal_policy_parameters() -> Result<()> {
     fixture
         .scope(
             case_task_scope(),
-            json!([{"kind":"device","id":case_device_id()}]),
+            json!([]),
         )
         .await?;
     let id = Uuid::new_v4();

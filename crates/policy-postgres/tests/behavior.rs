@@ -38,10 +38,9 @@ async fn configuration_cas_replay_and_runtime_isolation() {
         execute(&runtime, &store, Uuid::new_v4(), &b, deadline())
     );
     assert_ne!(a.is_ok(), b.is_ok());
-    let (winner, loser) = if a.is_ok() {
-        (a.unwrap(), b)
-    } else {
-        (b.unwrap(), a)
+    let (winner, loser) = match a {
+        Ok(winner) => (winner, b),
+        Err(error) => (b.unwrap(), Err(error)),
     };
     assert!(matches!(loser, Err(Error::Rejected(Rejection::Conflict))));
     assert_eq!(
@@ -307,7 +306,10 @@ async fn borrowed_reads_reject_foreign_runtime_and_tenant() {
                 |_| false,
                 |_| false,
                 |e| {
-                    assert!(format!("{e:?}").contains("transaction runtime mismatch"));
+                    assert!(
+                        e.kind()
+                            == rss_transactional_messaging::error::MessagingErrorKind::Invariant
+                    );
                     true
                 },
                 |_| false,

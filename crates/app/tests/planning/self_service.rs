@@ -307,7 +307,7 @@ async fn self_service_rechecks_config_and_capability_before_start() -> Result<()
     let task = claim(&f.router).await?;
     let registration = pg(&format!("SELECT id FROM mdm_access.registrations WHERE tenant_id='{}' AND device='{}' AND channel='agent' AND state='active'", case_tenant(), case_device_id()))?;
     let capabilities = pg(&format!("SELECT capabilities FROM mdm_agent.bindings WHERE tenant_id='{}' AND registration='{}'", case_tenant(), registration.trim()))?;
-    pg(&format!("UPDATE mdm_agent.bindings SET capabilities='[]'::jsonb WHERE tenant_id='{}' AND registration='{}'", case_tenant(), registration.trim()))?;
+    pg(&format!("UPDATE mdm_agent.bindings SET capabilities='[\"inventory.collect.v1\"]'::jsonb WHERE tenant_id='{}' AND registration='{}'", case_tenant(), registration.trim()))?;
     let mut start = json!({"kind":"start"});
     let rejected = task_event_request(&f.router, &task, Uuid::new_v4(), &mut start).await?;
     pg(&format!("UPDATE mdm_agent.bindings SET capabilities='{}'::jsonb WHERE tenant_id='{}' AND registration='{}'", capabilities.trim().replace('\'', "''"), case_tenant(), registration.trim()))?;
@@ -492,9 +492,8 @@ async fn device_access_logged_in_user_requires_exact_os_session_and_helper_witho
         json!([{"kind":"device","id":case_device_id()}]),
     )
     .await?;
-    let (_, bytes, mut script) = f.resource().await?;
-    script["runAs"] = json!("logged_in_user");
-    script["purpose"] = json!({"kind":"action"});
+    let bytes = b"#!/bin/sh\nprintf '{\"version\":\"1.2\",\"healthy\":true}\n'\n";
+    let script = json!({"profile":"posix_sh","runAs":"logged_in_user","encoding":"utf8","parameters":{"type":"object","properties":{},"required":[],"additionalProperties":false},"bindings":{},"output":{"type":"object","properties":{"version":{"type":"string"},"healthy":{"type":"boolean"}},"required":["version","healthy"],"additionalProperties":false},"purpose":{"kind":"action"},"timeoutSeconds":60,"outputBytes":4096,"maxRows":1});
     let resource_id = Uuid::new_v4();
     let digest: [u8; 32] = Sha256::digest(bytes).into();
     resource(
@@ -754,9 +753,10 @@ async fn check_in_interval_is_shared_by_automatic_and_targeted_calls() -> Result
                 .0 == StatusCode::CONFLICT,
                 "targeted run must consume the same minimum interval"
             );
+            let empty = claim_request(&f.router, Uuid::new_v4()).await?;
             ensure!(
-                claim_request(&f.router, Uuid::new_v4()).await?.1["task"].is_null(),
-                "targeted run must also suppress automatic check-in"
+                empty.0 == StatusCode::OK && empty.1["task"].is_null(),
+                "targeted run must also suppress automatic check-in: {empty:?}"
             );
             ensure!(run_count(id)?.trim() == "2");
             crate::test_support::stop_worker(stack).await?;
@@ -904,32 +904,17 @@ async fn employee_request_ids_are_independent_and_unknown_is_hidden() -> Result<
         "second employee collision: {accepted_two:?}"
     );
     ensure!(accepted_one.1["runId"] != accepted_two.1["runId"]);
-    ensure!(
-        call(&f, Method::POST, INVOKE, Some(two), true, true)
-            .await?
-            .1
-            == accepted_two.1
-    );
+    let replay = call(&f, Method::POST, INVOKE, Some(two), true, true).await?;
+    ensure!(replay.0 == accepted_two.0 && replay.1 == accepted_two.1);
     let status_path = format!("{INVOKE}/{shared}");
-    ensure!(
-        call(&f, Method::GET, &status_path, None, true, true)
-            .await?
-            .1["runId"]
-            == accepted_two.1["runId"]
-    );
+    let second_status = call(&f, Method::GET, &status_path, None, true, true).await?;
+    ensure!(second_status.0 == StatusCode::OK && second_status.1["runId"] == accepted_two.1["runId"]);
     f.author = original;
-    ensure!(
-        call(&f, Method::POST, INVOKE, Some(one), true, true)
-            .await?
-            .1
-            == accepted_one.1
-    );
-    ensure!(
-        call(&f, Method::GET, &status_path, None, true, true)
-            .await?
-            .1["runId"]
-            == accepted_one.1["runId"]
-    );
+    let replay = call(&f, Method::POST, INVOKE, Some(one), true, true).await?;
+    ensure!(replay.0 == accepted_one.0 && replay.1 == accepted_one.1);
+    let first_status = call(&f, Method::GET, &status_path, None, true, true).await?;
+    ensure!(first_status.0 == StatusCode::OK && first_status.1["runId"] == accepted_one.1["runId"]);
+    ensure!(run_count(first)?.trim() == "1" && run_count(second)?.trim() == "1");
     let events = audit_records()?;
     let matching: Vec<_> = events
         .iter()
@@ -1598,7 +1583,7 @@ async fn available_software_requires_request_and_deduplicates_users_policies_and
             software_self_service_call(
                 &f.router,
                 &f.credential,
-                &f.author,
+                &other,
                 Method::POST,
                 INVOKE,
                 Some(request(*id, policy, json!({})))

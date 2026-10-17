@@ -475,10 +475,9 @@ async fn group_scope_revision_competition() {
     };
     let (a, b) = tokio::join!(execute(&m, &a), execute(&m, &b));
     assert_ne!(a.is_ok(), b.is_ok());
-    let (winner, loser) = if a.is_ok() {
-        (a.unwrap(), b)
-    } else {
-        (b.unwrap(), a)
+    let (winner, loser) = match a {
+        Ok(winner) => (winner, b),
+        Err(error) => (b.unwrap(), Err(error)),
     };
     assert!(matches!(
         loser,

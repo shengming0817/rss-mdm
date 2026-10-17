@@ -667,14 +667,10 @@ async fn derived_result_authorization(
         format!("/api/v1/scopes/{scope}/tasks/{scope_result}"),
         format!("{policy}/assignments"),
     ];
-    for kind in ["members"] {
-        paths.push(format!("{group}/results/{group_result}/{kind}?limit=1"));
-    }
-    for kind in ["members"] {
-        paths.push(format!(
-            "/api/v1/scopes/{scope}/results/{scope_result}/{kind}?channel=mdm&limit=1"
-        ));
-    }
+    paths.push(format!("{group}/results/{group_result}/members?limit=1"));
+    paths.push(format!(
+        "/api/v1/scopes/{scope}/results/{scope_result}/members?channel=mdm&limit=1"
+    ));
     // Keep an actually issued cursor, then shrink the subject's device access.
     let (status, page) = Box::pin(browser.call(router, Method::GET, &paths[3], None)).await?;
     ensure!(status == StatusCode::OK, "authorized derived page: {page}");

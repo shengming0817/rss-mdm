@@ -394,7 +394,7 @@ async fn admission_rejects_catalog_and_security_drift() {
             "ALTER ROLE mdm_group_runtime NOBYPASSRLS; UPDATE pg_index SET indisvalid=true,indisready=true,indislive=true WHERE indexrelid=to_regclass('mdm_group.member_changes_history'); DROP SCHEMA mdm_group CASCADE; SET ROLE mdm_group_owner; {MIGRATION_SQL} {OUTBOX_MIGRATION_SQL} {GENERATIONS_MIGRATION_SQL} {REVERSE_INDEX_MIGRATION_SQL}"
         ));
         assert!(
-            matches!(result, Err(rss_mdm_group_postgres::Error::RolledBack(ref e)) if format!("{e:?}").contains("Group storage invariant")),
+            matches!(result, Err(rss_mdm_group_postgres::Error::RolledBack(ref e)) if e.kind() == rss_transactional_messaging::error::MessagingErrorKind::Invariant),
             "accepted or unrelated drift failure: {mutation}"
         );
         GroupStore::new(runtime.clone(), tenant(), deadline())
@@ -520,10 +520,9 @@ async fn distinct_runs_compete_on_one_revision_and_preserve_event_contract() {
         |e| panic!("{e:?}"),
     );
     assert_ne!(first.is_ok(), second.is_ok());
-    let (saved, rejected) = if first.is_ok() {
-        (first.unwrap(), second)
-    } else {
-        (second.unwrap(), first)
+    let (saved, rejected) = match first {
+        Ok(winner) => (winner, second),
+        Err(error) => (second.unwrap(), Err(error)),
     };
     assert!(matches!(
         rejected,
@@ -723,7 +722,7 @@ async fn atomic_event_failure_rls_and_large_member_ids() {
         "GRANT EXECUTE ON FUNCTION rss_transactional_messaging.append_outbox(bytea,jsonb) TO mdm_group_runtime",
     );
     assert!(
-        matches!(failed, Err(rss_mdm_group_postgres::Error::RolledBack(ref e)) if format!("{e:?}").contains("append_outbox") && format!("{e:?}").contains("42501")),
+        matches!(failed, Err(rss_mdm_group_postgres::Error::RolledBack(ref e)) if e.kind() == rss_transactional_messaging::error::MessagingErrorKind::Permanent),
         "{failed:?}"
     );
     assert_eq!(
@@ -1045,7 +1044,7 @@ async fn borrowed_entries_reject_same_tenant_foreign_runtime_without_events() {
             |_| false,
             |e| {
                 assert!(
-                    format!("{e:?}").contains("transaction runtime mismatch"),
+                    e.kind() == rss_transactional_messaging::error::MessagingErrorKind::Invariant,
                     "{e:?}"
                 );
                 true
