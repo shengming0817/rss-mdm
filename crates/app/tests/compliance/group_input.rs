@@ -1,5 +1,22 @@
 use super::*;
 async fn waiting_group_does_not_spin(b: &mut Browser, router: &Router, base: &Value) -> Result<()> {
+    // Drain setup writes before creating the held input: their legitimate dispatch must
+    // not race with the task-count assertion that detects work without new input.
+    let setup = start_automation(base).await?;
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let caught_up = pg(&format!(
+                "SELECT d.consumed=c.revision FROM mdm_planning.asset_dispatch d JOIN mdm.asset_clock c USING(tenant_id) WHERE d.tenant_id='{}'",
+                case_tenant()
+            ))?;
+            if caught_up.trim() == "t" {
+                return Ok::<_, anyhow::Error>(());
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await??;
+    crate::test_support::stop_worker(setup).await?;
     let group = Uuid::new_v4();
     let gp = format!("/api/v1/groups/{group}");
     let created=ok(b,router,Method::POST,&gp,Some(request(0,json!({"action":"create","assetContext":"endpoint","name":"held group","description":"","criteria":{"selector":{"kind":"device"},"quantifier":"one","criteria":{"kind":"predicate","field":"custom.office_floor","op":"ge","value":{"kind":"integer","value":0}}}})))).await?;
