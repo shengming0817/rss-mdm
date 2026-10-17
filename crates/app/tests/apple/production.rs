@@ -34,7 +34,7 @@ impl Fixture {
             .await?;
         ensure!(reply.0 == StatusCode::OK);
         peer.token().await?;
-        self.native_context(&peer).await?;
+        self.native_context().await?;
         self.grant_native_actions(&["device_control"]).await?;
         let operation = self.create_restart().await?;
         let participant = push::test_support::Participant::start(vec![200], vec![42; 32]).await?;
@@ -188,6 +188,11 @@ impl Fixture {
 #[ignore = "MODULE=apple.host: production assembly, health and bounded shutdown"]
 async fn production_listeners_push_and_shutdown() -> Result<()> {
     let f = Fixture::start().await?;
-    startup_diagnostics(&f.root)?;
     f.production().await
+}
+
+#[test]
+#[ignore = "MODULE=apple.host: material loading without production listeners or application assembly"]
+fn startup_material_diagnostics() -> Result<()> {
+    startup_diagnostics(&PathBuf::from(std::env::var("MDM_APPLE_FIXTURES")?))
 }
