@@ -76,6 +76,7 @@ pub async fn own(
         generation,
     };
     let command = super::channels::AppleCommand {
+        recovery: None,
         operation: input.operation_id,
         authorized_declarations: Vec::new(),
         owner: String::new(),
@@ -253,6 +254,7 @@ async fn receive(
         return Err(Error::Malformed.into());
     };
     let command = channels::AppleCommand {
+        recovery: service.recovery_credentials.clone(),
         operation: op.id,
         authorized_declarations: Vec::new(),
         owner: op.authority.apple_owner(op.id)?,
@@ -451,6 +453,7 @@ async fn send_one(
         }
     };
     let command = super::channels::AppleCommand {
+        recovery: service.recovery_credentials.clone(),
         operation: op.id,
         authorized_declarations,
         owner: op.authority.apple_owner(op.id)?,

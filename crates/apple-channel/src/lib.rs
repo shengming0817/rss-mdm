@@ -418,3 +418,5 @@ pub const ORGANIZATIONS_SQL: &str = include_str!("../schema/organizations.sql");
 pub const ACCOUNT_ENROLLMENT_SQL: &str = include_str!("../schema/account-enrollment.sql");
 
 pub const ADE_SQL: &str = include_str!("../schema/ade.sql");
+
+mod recovery_credentials;

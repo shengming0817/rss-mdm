@@ -17,6 +17,13 @@ pub enum ExecutionAuthority {
         device: String,
         operation: uuid::Uuid,
     },
+    Credential {
+        required: Vec<Permission>,
+        evidence: Vec<UserGrant>,
+        registration: uuid::Uuid,
+        generation: i64,
+        operation: uuid::Uuid,
+    },
     DeviceControl {
         action: crate::device_control::Kind,
         confirmation: Option<crate::device_control::RegistrationConfirmation>,
@@ -67,7 +74,7 @@ impl ExecutionAuthority {
                 )
                 .await
             }
-            Self::DeviceControl { .. } => Ok(true),
+            Self::DeviceControl { .. } | Self::Credential { .. } => Ok(true),
             Self::Policy {
                 tenant,
                 device,
@@ -117,7 +124,7 @@ impl ExecutionAuthority {
     }
     pub fn apple_owner(&self, operation: uuid::Uuid) -> Result<String, Error> {
         Ok(match self {
-            Self::DeviceControl { evidence, .. } => {
+            Self::DeviceControl { evidence, .. } | Self::Credential { evidence, .. } => {
                 let user = evidence.first().ok_or(Error::Forbidden)?.user();
                 if evidence.iter().any(|g| g.user() != user) {
                     return Err(Error::Forbidden);
@@ -132,14 +139,16 @@ impl ExecutionAuthority {
     }
     pub fn required(&self) -> &[Permission] {
         match self {
-            Self::DeviceControl { required, .. }
+            Self::Credential { required, .. }
+            | Self::DeviceControl { required, .. }
             | Self::AgentInstall { required, .. }
             | Self::Policy { required, .. } => required,
         }
     }
     pub fn bind_required(&mut self, permissions: Vec<Permission>) {
         match self {
-            Self::DeviceControl { required, .. }
+            Self::Credential { required, .. }
+            | Self::DeviceControl { required, .. }
             | Self::AgentInstall { required, .. }
             | Self::Policy { required, .. } => *required = permissions,
         }
@@ -248,7 +257,7 @@ impl ExecutionAuthority {
                 }
                 crate::agent_install::authorized_on(source, conn, self, now).await
             }
-            Self::DeviceControl { evidence, .. } => {
+            Self::DeviceControl { evidence, .. } | Self::Credential { evidence, .. } => {
                 for grant in evidence {
                     if grant.valid(conn, permission, now).await? {
                         return Ok(true);

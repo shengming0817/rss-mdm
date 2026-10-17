@@ -55,6 +55,30 @@ impl Inputs {
         authority: &PublicationAuthority<'_>,
     ) -> Result<Frozen> {
         let mut frozen = match input {
+            PublicationInput::Credential {
+                operation,
+                architecture,
+                schedule,
+                frequency,
+                lifetime,
+            } => {
+                if !self.recovery_enabled || !self.signing_enabled {
+                    return Err(Error::Unsupported.into());
+                }
+                Frozen::Credential {
+                    frequency: *frequency,
+                    action: Box::new(crate::credential_tasks::FrozenCredential {
+                        operation: (*operation).clone(),
+                        input: ExecutionInput {
+                            platform: Platform::Windows,
+                            architecture: *architecture,
+                            schedule: (*schedule).clone(),
+                            run_lifetime_seconds: *lifetime,
+                        },
+                        grants: Default::default(),
+                    }),
+                }
+            }
             PublicationInput::AgentInstall {
                 binding,
                 schedule,
@@ -229,6 +253,7 @@ pub fn authorize_policy_snapshot(
     definition: &rss_mdm_policy::Definition,
 ) -> std::result::Result<(), crate::Error> {
     let permission = match definition.action {
+        Action::Credential { ref operation, .. } => crate::credential_tasks::permission(operation),
         Action::Execution { .. } => Permission::ScriptExecute,
         Action::NativeCollection { .. } | Action::AgentCollection { .. } => {
             Permission::InventoryCollect

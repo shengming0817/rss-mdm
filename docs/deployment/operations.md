@@ -169,3 +169,11 @@ Apple 的 challenge/notify webhook ID 和 HMAC 秘密属于稳定协议配置。
 `device_pki_attention` 每分钟输出公开 issuer 摘要、证书到期、CRL nextUpdate 与 unpublished 数量：issuer 剩余 30 天、根剩余 90 天、issuer CRL 剩余 120 秒、根 CRL 剩余 7 天或撤销尚未发布均触发。`device_pki_maintenance_failure` 按累计失败次数的幂次记录依赖故障；CA 运行或 `/revoke` 成功不代表 CRL 已发布。告警接入使用这些结构化事件并核对签名发布及原队列；密钥取回失败同时由 step-ca 的受限日志定位。所有服务实例保存历史 CRL 水位，退休后再引入同一 CA 也不能回滚已接受的号码或内容。
 
 服务端在固定 HTTPS origin 上通过 `/api/v1/agent/enroll/trust` 匿名提供公开信任材料，该接口不授予授权；安装 ACK 仍须当前登记的真实 mTLS 与原幂等操作。首次 HTTPS 根通过受控部署渠道提供；新部署公开 JSON 也必须受保护，不能用本地测试占位材料。Agent 本机信任存储及配置更新操作由 [rss-mdm-agent 服务部署指南](https://dev.azure.com/shengming0923/rss/_git/rss-mdm-agent?path=/docs/guides/local-service-lab.md&version=GBdevelop) 持有。
+
+## 恢复凭据轮换、保留与恢复
+
+凭据专用密钥环与 `native_protection_key_file` 分开管理。更换写入密钥时，将新旧密钥同时加入 `key_files` 并切换 `active_key`，重启后后台分批重加密，材料版本和有效性不变。移除旧密钥前确认没有剩余密文引用它；启动时校验持久密钥身份，缺失或错误密钥拒绝启用。接收证书更新独立于存储重加密：保留尚有执行或 FileVault escrow 需要的旧接收私钥，先更新端上的 escrow profile，再退出旧证书。
+
+失效密文满 90 天后分批清除，元数据和审计保留。当前材料及未核实操作需要的材料不清除；后台同时清理已结算原生命令的秘密输入副本。失败以 `recovery_credential_maintenance_failed` 闭合诊断报告，不打印材料或密钥。数据库删除不代表历史备份已删除，备份沿用部署自己的保留策略。
+
+停写后联合备份数据库、凭据密钥环、接收私钥及原有 native protection/内容材料。恢复使用对应密钥，重新检查当前登录授权、注册世代、撤销状态和保留期限。数据库与密钥重启/备份验证只证明服务端能按授权读取正确材料；PRK 解锁、Recovery Lock、Windows 密码登录及 BitLocker 实际恢复另由真机验收证明。

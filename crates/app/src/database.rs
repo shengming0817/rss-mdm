@@ -177,6 +177,7 @@ async fn admission(pool: &PgPool) -> Result<(), Error> {
         rss_mdm_timeline_service::ACCESS_CONTRACT,
         rss_mdm_device_service::ACCESS_CONTRACT,
         rss_mdm_certificate_archive_service::ACCESS_CONTRACT,
+        rss_mdm_recovery_credentials::ACCESS_CONTRACT,
     ];
     let valid = rss_mdm_backend_postgres_support::access_admission::verify(
         &mut tx,

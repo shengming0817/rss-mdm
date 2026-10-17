@@ -1,5 +1,186 @@
 {
   "$defs": {
+    "CredentialEnvelope": {
+      "additionalProperties": false,
+      "description": "Ciphertext only; this structure is safe to persist in the ordinary communication journal.",
+      "properties": {
+        "ciphertext": {
+          "description": "Base64 ciphertext with the 16-byte GCM tag appended.",
+          "type": "string"
+        },
+        "expectedRevision": {
+          "description": "Frozen revision before this operation.",
+          "format": "int64",
+          "type": "integer"
+        },
+        "nonce": {
+          "description": "AES-GCM nonce.",
+          "items": {
+            "format": "uint8",
+            "maximum": 255,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "maxItems": 12,
+          "minItems": 12,
+          "type": "array"
+        },
+        "subject": {
+          "$ref": "#/$defs/CredentialSubject",
+          "description": "Exact material identity."
+        },
+        "wrappedKey": {
+          "description": "RSA-OAEP-SHA256 wrapped 32-byte AES key, base64 encoded.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "subject",
+        "expectedRevision",
+        "wrappedKey",
+        "nonce",
+        "ciphertext"
+      ],
+      "type": "object"
+    },
+    "CredentialFailure": {
+      "description": "Bounded diagnoses do not contain native error messages or account passwords.",
+      "oneOf": [
+        {
+          "const": "no_materials",
+          "description": "No numerical recovery material is present.",
+          "type": "string"
+        },
+        {
+          "const": "unsupported",
+          "description": "The host does not support this operation.",
+          "type": "string"
+        },
+        {
+          "const": "permission_denied",
+          "description": "The system service lacks the required privilege.",
+          "type": "string"
+        },
+        {
+          "const": "owner_conflict",
+          "description": "Another password-management owner is active.",
+          "type": "string"
+        },
+        {
+          "const": "target_missing",
+          "description": "The exact selected object no longer exists.",
+          "type": "string"
+        },
+        {
+          "const": "recovery_state",
+          "description": "Required local recovery state is missing or invalid.",
+          "type": "string"
+        },
+        {
+          "const": "native_failure",
+          "description": "A platform result could not be confirmed.",
+          "type": "string"
+        }
+      ]
+    },
+    "CredentialItemResult": {
+      "additionalProperties": false,
+      "description": "A material outcome contains no password, native output or arbitrary error text.",
+      "properties": {
+        "outcome": {
+          "$ref": "#/$defs/CredentialOutcome",
+          "description": "Closed result category."
+        },
+        "subject": {
+          "$ref": "#/$defs/CredentialSubject",
+          "description": "Exact object."
+        }
+      },
+      "required": [
+        "subject",
+        "outcome"
+      ],
+      "type": "object"
+    },
+    "CredentialOutcome": {
+      "description": "Closed endpoint result; protocol acknowledgment and recovery verification stay separate.",
+      "oneOf": [
+        {
+          "const": "verified",
+          "description": "Native state and the selected material were verified; not a physical recovery test.",
+          "type": "string"
+        },
+        {
+          "const": "escrowed",
+          "description": "Material was escrowed without a native verification proof.",
+          "type": "string"
+        },
+        {
+          "const": "unknown",
+          "description": "The effect cannot be determined safely.",
+          "type": "string"
+        },
+        {
+          "const": "failed",
+          "description": "No successful effect was established.",
+          "type": "string"
+        },
+        {
+          "const": "blocked",
+          "description": "OS, permissions or competing ownership prevented execution.",
+          "type": "string"
+        }
+      ]
+    },
+    "CredentialSubject": {
+      "description": "An exact Windows object, never an account display name or drive letter.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "description": "Numerical recovery protector on a stable volume.",
+          "properties": {
+            "kind": {
+              "const": "bitlocker",
+              "type": "string"
+            },
+            "protector": {
+              "description": "Recovery protector identity.",
+              "format": "uuid",
+              "type": "string"
+            },
+            "volume": {
+              "description": "Stable WMI volume DeviceID.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "volume",
+            "protector"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Explicit RSS-managed local account.",
+          "properties": {
+            "kind": {
+              "const": "local_administrator",
+              "type": "string"
+            },
+            "sid": {
+              "description": "Stable Windows account SID.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "sid"
+          ],
+          "type": "object"
+        }
+      ]
+    },
     "EnrollmentEntryOutcome": {
       "description": "Outcome of asking the OS to open its enrollment UI; never a claim of active MDM authority.",
       "oneOf": [
@@ -1211,6 +1392,92 @@
     "TaskEvent": {
       "description": "A task receipt, start request, or bounded execution result; none proves applied state.",
       "oneOf": [
+        {
+          "additionalProperties": false,
+          "description": "Encrypted material batch; acknowledgment proves durable escrow only.",
+          "properties": {
+            "definitionDigest": {
+              "description": "Frozen task digest.",
+              "items": {
+                "format": "uint8",
+                "maximum": 255,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "maxItems": 32,
+              "minItems": 32,
+              "type": "array"
+            },
+            "kind": {
+              "const": "credential_escrow",
+              "type": "string"
+            },
+            "materials": {
+              "description": "Secret-bearing envelopes, never plaintext or diagnostic output.",
+              "items": {
+                "$ref": "#/$defs/CredentialEnvelope"
+              },
+              "type": "array"
+            }
+          },
+          "required": [
+            "kind",
+            "definitionDigest",
+            "materials"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Final native material verification and cleanup evidence.",
+          "properties": {
+            "complete": {
+              "description": "Whether enumeration completed, separately from each object's result.",
+              "type": "boolean"
+            },
+            "definitionDigest": {
+              "description": "Frozen task digest.",
+              "items": {
+                "format": "uint8",
+                "maximum": 255,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "maxItems": 32,
+              "minItems": 32,
+              "type": "array"
+            },
+            "failure": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/CredentialFailure"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Closed overall failure, including an empty material inventory."
+            },
+            "items": {
+              "description": "Per-object outcomes; an empty successful result is forbidden.",
+              "items": {
+                "$ref": "#/$defs/CredentialItemResult"
+              },
+              "type": "array"
+            },
+            "kind": {
+              "const": "credential_result",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "definitionDigest",
+            "complete",
+            "items"
+          ],
+          "type": "object"
+        },
         {
           "additionalProperties": false,
           "description": "The complete signed offer was received and verified.",

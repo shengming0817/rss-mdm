@@ -49,6 +49,7 @@ class RunFixtures:
         self.actors = {}
         self.hosts = {}
         self.host_locks = {}
+        self.recovery_material = None
         self.materials = {}
         self.material_locks = {}
         self.s3 = S3Environment()
@@ -144,7 +145,26 @@ class RunFixtures:
         config['native_protocols'] = {}
         config['device_pki'] = []
         config['native_protection_key_file'] = str(self.native_key)
+        config['recovery_credentials'] = self.recovery_config()
         return config
+
+    def recovery_config(self):
+        # Independent ephemeral crypto material; never reuse identity/APNs/native keys.
+        with self.lock:
+            if self.recovery_material is None:
+                key = private(self.root / 'recovery-material.key', '')
+                key.write_bytes(os.urandom(32))
+                recipient_key = private(self.root / 'recovery-recipient.key', '')
+                certificate = self.root / 'recovery-recipient.crt'
+                der = self.root / 'recovery-recipient.der'
+                run(['openssl', 'req', '-x509', '-newkey', 'rsa:2048', '-nodes',
+                     '-subj', '/CN=MDM recovery fixture', '-days', '2',
+                     '-keyout', recipient_key, '-out', certificate], capture_output=True)
+                run(['openssl', 'x509', '-in', certificate, '-outform', 'DER', '-out', der], capture_output=True)
+                self.recovery_material = dict(active_key='fixture', key_files={'fixture': str(key)},
+                    active_recipient=hashlib.sha256(der.read_bytes()).hexdigest(),
+                    recipients=[dict(certificate_file=str(certificate), private_key_file=str(recipient_key))])
+            return self.recovery_material
 
     def identity_helper(self, root, manifest, output, database):
         env = dict(os.environ, RUST_MIN_STACK=str(8 * 1024 * 1024),

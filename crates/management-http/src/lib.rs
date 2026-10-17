@@ -48,3 +48,5 @@ pub mod agent_enrollment;
 mod pki;
 
 mod windows_entra;
+
+pub mod recovery_credentials;

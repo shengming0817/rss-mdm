@@ -78,6 +78,7 @@ pub fn recovery_scope(tenant: TenantId) -> rss_reconcile::Scope {
 #[cfg(feature = "integration")]
 type DiagnosticAssociationGate = (Arc<tokio::sync::Notify>, Arc<tokio::sync::Notify>);
 pub struct ExecutionService {
+    pub(crate) recovery_credentials: Option<Arc<rss_mdm_recovery_credentials::Protection>>,
     pub(crate) inputs: Arc<Inputs>,
     pub(crate) source: Arc<dyn source_authority::SourceAuthority>,
     pub(crate) sessions: Arc<authorization::session::SessionAuthority>,
@@ -107,6 +108,7 @@ pub struct ExecutionService {
     pub(crate) diagnostic_association_gate: Mutex<Option<DiagnosticAssociationGate>>,
 }
 pub struct Dependencies {
+    pub recovery_credentials: Option<Arc<rss_mdm_recovery_credentials::Protection>>,
     pub sessions: Arc<authorization::session::SessionAuthority>,
     pub inputs: Arc<Inputs>,
     pub source: Arc<dyn source_authority::SourceAuthority>,
@@ -131,6 +133,7 @@ impl ExecutionService {
     pub fn new(dependencies: Dependencies) -> Self {
         Self {
             readiness: Default::default(),
+            recovery_credentials: dependencies.recovery_credentials,
             #[cfg(feature = "integration")]
             installation_authorization_floor: Default::default(),
             #[cfg(feature = "integration")]
@@ -157,6 +160,9 @@ impl ExecutionService {
             instance: dependencies.instance,
             content: dependencies.content,
         }
+    }
+    pub fn recovery_credentials(&self) -> Option<Arc<rss_mdm_recovery_credentials::Protection>> {
+        self.recovery_credentials.clone()
     }
     pub fn health(&self) -> health::Health {
         self.readiness.health()
@@ -256,6 +262,7 @@ pub mod queries;
 
 /// Policy publication receives immutable input preparation, never execution readers or workers.
 pub struct Inputs {
+    pub(crate) recovery_enabled: bool,
     pub(crate) protection: Arc<rss_mdm_native_protection::Protector>,
     pub(crate) software: Arc<rss_mdm_software_service::preparation::Preparation>,
     pub(crate) agent_installation: crate::agent_install::Config,
@@ -266,6 +273,7 @@ pub struct Inputs {
     pub(crate) signing_enabled: bool,
 }
 pub struct InputDependencies {
+    pub recovery_enabled: bool,
     pub protection: Arc<rss_mdm_native_protection::Protector>,
     pub software: Arc<rss_mdm_software_service::preparation::Preparation>,
     pub agent_installation: crate::agent_install::Config,
@@ -278,6 +286,7 @@ pub struct InputDependencies {
 impl Inputs {
     pub fn new(dependencies: InputDependencies) -> Self {
         Self {
+            recovery_enabled: dependencies.recovery_enabled,
             protection: dependencies.protection,
             software: dependencies.software,
             agent_installation: dependencies.agent_installation,
@@ -335,3 +344,9 @@ impl ExecutionService {
         database_now
     }
 }
+
+pub mod recovery_credentials;
+
+pub(crate) mod credential_tasks;
+
+mod credential_maintenance;

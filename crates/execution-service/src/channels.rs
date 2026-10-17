@@ -222,6 +222,13 @@ pub trait ApplePush: Send + Sync {
     ) -> Pending<'a, bool>;
 }
 pub trait AppleResults: Send + Sync {
+    /// Remove secret input copies after the original operation has permanently settled.
+    fn purge_credential_inputs<'a>(
+        &'a self,
+        c: &'a mut PgConnection,
+        tenant: String,
+        operation: Uuid,
+    ) -> Pending<'a, ()>;
     /// Current-generation declaration keys, locked through the caller's evidence read.
     fn declaration_page<'a>(
         &'a self,
@@ -294,6 +301,7 @@ pub enum AppleReception {
     Command(Box<dyn AppleAttempt>),
 }
 pub struct AppleCommand {
+    pub recovery: Option<std::sync::Arc<rss_mdm_recovery_credentials::Protection>>,
     pub operation: Uuid,
     pub owner: String,
     pub authorized_declarations: Vec<Uuid>,
@@ -420,7 +428,13 @@ impl AgentBinding {
             .contains(&rss_mdm_agent_wire::runtime::Capability::InventoryNativeV1)
     }
     pub fn task(&self) -> bool {
-        self.script() || self.software() || self.enrollment() || self.native_collection()
+        self.script()
+            || self.software()
+            || self.enrollment()
+            || self.native_collection()
+            || self
+                .capabilities
+                .contains(&rss_mdm_agent_wire::runtime::Capability::CredentialsWindowsV1)
     }
 }
 pub trait Agent: Send + Sync {

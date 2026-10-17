@@ -425,6 +425,9 @@ pub async fn serve(
                     launch.stage_deferred_task_with_token(identity_audit.registration().critical());
                     launch.stage_deferred_task_with_token(associations.registration());
                     launch.stage_deferred_task_with_token(archive.registration().critical());
+                    if let Some(maintenance) = execution.service.clone().credential_maintenance() {
+                        launch.stage_deferred_task_with_token(maintenance);
+                    }
                     launch.stage_deferred_task_with_token(
                         execution
                             .service

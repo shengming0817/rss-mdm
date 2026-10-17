@@ -221,6 +221,7 @@ pub(crate) async fn open(
         ));
         let inputs = Arc::new(rss_mdm_execution_service::Inputs::new(
             rss_mdm_execution_service::InputDependencies {
+                recovery_enabled: config.recovery_credentials.is_some(),
                 protection: protection.clone(),
                 software,
                 agent_installation: config.agent_installation.clone(),
@@ -248,6 +249,11 @@ pub(crate) async fn open(
         ));
         let service = Arc::new(ExecutionService::new(
             rss_mdm_execution_service::Dependencies {
+                recovery_credentials: config
+                    .recovery_credentials
+                    .as_ref()
+                    .map(crate::recovery_credentials::Config::open)
+                    .transpose()?,
                 sessions,
                 source,
                 protection: protection.clone(),
@@ -269,6 +275,7 @@ pub(crate) async fn open(
                 signer,
             },
         ));
+        service.validate_recovery_credentials().await?;
         Ok(Assembly {
             service,
             inputs,

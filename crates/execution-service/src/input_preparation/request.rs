@@ -86,6 +86,13 @@ impl ResourcePreparation<'_> {
 
 /// Material to freeze inside the caller's original transaction.
 pub enum PublicationInput<'a> {
+    Credential {
+        operation: &'a rss_mdm_policy::CredentialOperation,
+        architecture: rss_mdm_policy::Architecture,
+        schedule: &'a Schedule,
+        frequency: Frequency,
+        lifetime: u32,
+    },
     Script {
         binding: &'a ExactResourceBinding,
         parameters: ScriptParameters<'a>,
@@ -149,13 +156,26 @@ impl<'a> PublicationInput<'a> {
             Self::Software { binding, .. } | Self::AgentInstall { binding, .. } => {
                 ResourcePreparation::Software { binding }
             }
-            Self::Enrollment { .. } => return None,
+            Self::Credential { .. } | Self::Enrollment { .. } => return None,
         })
     }
 }
 impl<'a> From<&'a Action> for PublicationInput<'a> {
     fn from(action: &'a Action) -> Self {
         match action {
+            Action::Credential {
+                operation,
+                architecture,
+                schedule,
+                frequency,
+                run_lifetime_seconds,
+            } => Self::Credential {
+                operation,
+                architecture: *architecture,
+                schedule,
+                frequency: *frequency,
+                lifetime: *run_lifetime_seconds,
+            },
             Action::Execution {
                 resource,
                 parameters,

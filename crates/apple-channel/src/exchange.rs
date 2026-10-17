@@ -186,6 +186,17 @@ impl ports::AppleAttempt for CommandAttempt {
             if !accepted {
                 return Ok(S::Waiting);
             }
+            if !phase.prerequisite() {
+                crate::recovery_credentials::receive(
+                    c,
+                    &command,
+                    &target,
+                    &self.report,
+                    self.status,
+                )
+                .await
+                .map_err(ports::Rejection::from)?;
+            }
             if phase == Phase::Observe
                 && self.status == protocol::Status::Acknowledged
                 && matches!(command.request, Request::Declarations { .. })

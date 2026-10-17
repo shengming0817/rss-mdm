@@ -106,6 +106,7 @@ impl ExecutionService {
             self.audit_store.append_in(tx, &fact, true).await?;
             return Ok(value);
         }
+        reject_existing_operation(tx, input.operation_id).await?;
         input.validate(self.store.now(tx).await? / 1_000_000)?;
         let (registration, generation) = storage::current_registration(
             tx,
@@ -127,6 +128,69 @@ impl ExecutionService {
             [source] if source == "mdm.windows" => rss_mdm_inventory::ReportSource::MdmWindows,
             _ => return Err(Error::Unsupported.into()),
         };
+        let recovery_pin = if let crate::device_control::Action::Lock { pin, .. } = &input.action
+            && source == rss_mdm_inventory::ReportSource::MdmApple
+        {
+            let protection = self
+                .recovery_credentials
+                .as_ref()
+                .ok_or(Error::Unsupported)?;
+            let tenant = Uuid::parse_str(&self.tenant.to_string()).map_err(|_| Error::Malformed)?;
+            let binding = rss_mdm_recovery_credentials::Binding {
+                device: device.into(),
+                registration,
+                generation,
+                subject: rss_mdm_recovery_credentials::Subject::LockPin {
+                    operation: input.operation_id,
+                },
+            };
+            let ctx = (
+                protection.clone(),
+                tenant,
+                binding,
+                input.operation_id,
+                zeroize::Zeroizing::new(pin.clone()),
+            );
+            Some(
+                tx.with_connection(move |c| {
+                    Box::pin(async move {
+                        let coordinates = rss_mdm_recovery_credentials::storage::reserve_in(
+                            c, ctx.1, &ctx.2, ctx.3, 0,
+                        )
+                        .await;
+                        let result = match coordinates {
+                            Ok(coordinates) => {
+                                match rss_mdm_recovery_credentials::storage::ingest_in(
+                                    c,
+                                    &ctx.0.keys,
+                                    &coordinates,
+                                    ctx.3,
+                                    ctx.4.as_bytes(),
+                                )
+                                .await
+                                {
+                                    Ok(()) => Ok((
+                                        ctx.2.clone(),
+                                        rss_mdm_recovery_credentials::storage::NativeAction {
+                                            action: "lock_pin".into(),
+                                            coordinates: Some(coordinates),
+                                            recipient: ctx.0.active_recipient().id().into(),
+                                        },
+                                    )),
+                                    Err(e) => Err(e),
+                                }
+                            }
+                            Err(e) => Err(e),
+                        };
+                        Ok(result)
+                    })
+                })
+                .await?
+                .map_err(crate::recovery_credentials::error)?,
+            )
+        } else {
+            None
+        };
         let native = input.native(source)?;
         self.validate_control_in(tx, device, registration, generation, &native, action)
             .await?;
@@ -135,6 +199,22 @@ impl ExecutionService {
         let response = self
             .queue_authorized_in(tx, device, &native, authority, fingerprint, audit)
             .await?;
+        if let Some((binding, link)) = recovery_pin {
+            let tenant = Uuid::parse_str(&self.tenant.to_string()).map_err(|_| Error::Malformed)?;
+            {
+                let operation = input.operation_id;
+                tx.with_connection(move |c| {
+                    Box::pin(async move {
+                        Ok(rss_mdm_recovery_credentials::storage::link_native_in(
+                            c, tenant, operation, &binding, &link,
+                        )
+                        .await)
+                    })
+                })
+            }
+            .await?
+            .map_err(crate::recovery_credentials::error)?;
+        }
         proof.check_live()?;
         Ok(response)
     }
@@ -169,6 +249,11 @@ impl ExecutionService {
                 })
                 .await??;
         }
+        if crate::recovery_credentials::requires_owner(&input.task)
+            && !matches!(authority, ExecutionAuthority::Credential { .. })
+        {
+            return Err(Error::Unsupported.into());
+        }
         let now = self.store.now(tx).await? / 1_000_000;
         input.validate(now)?;
         if input
@@ -191,6 +276,19 @@ impl ExecutionService {
         }
         let (registration, registration_generation) =
             storage::current_registration(tx, device, input.task.purpose()?).await?;
+        if let ExecutionAuthority::Credential {
+            registration: expected_registration,
+            generation: expected_generation,
+            operation,
+            ..
+        } = &authority
+        {
+            if (*expected_registration, *expected_generation, *operation)
+                != (registration, registration_generation, input.operation_id)
+            {
+                return Err(Error::Conflict.into());
+            }
+        }
         if matches!(authority, ExecutionAuthority::DeviceControl { .. })
             && !authority.control_matches(input, registration, registration_generation)?
         {
@@ -265,7 +363,9 @@ impl ExecutionService {
             }
         }
         let (source, policy_version): (&str, Option<Uuid>) = match &authority {
-            ExecutionAuthority::DeviceControl { .. } => ("direct", None),
+            ExecutionAuthority::DeviceControl { .. } | ExecutionAuthority::Credential { .. } => {
+                ("direct", None)
+            }
             ExecutionAuthority::AgentInstall { version, .. }
             | ExecutionAuthority::Policy { version, .. } => ("policy", Some(*version)),
         };
@@ -352,7 +452,7 @@ impl ExecutionService {
         })).await
     }
 }
-async fn replay(
+pub(crate) async fn replay(
     tx: &mut PgTransaction<'_>,
     id: Uuid,
     fingerprint: &[u8],
@@ -532,5 +632,16 @@ impl ExecutionService {
             },
         )
         .await
+    }
+}
+
+/// A request receipt is actor-bound; a different actor cannot probe another operation's secret input.
+pub(crate) async fn reject_existing_operation(tx: &mut PgTransaction<'_>, id: Uuid) -> Result<()> {
+    let tenant = tx.tenant_id().to_string();
+    let exists:bool=tx.with_connection(move|c|Box::pin(async move{sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_commands.operations WHERE tenant_id=$1::uuid AND id=$2)").bind(tenant).bind(id).fetch_one(c).await})).await?;
+    if exists {
+        Err(Error::Conflict.into())
+    } else {
+        Ok(())
     }
 }

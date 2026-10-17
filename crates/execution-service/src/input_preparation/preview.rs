@@ -1,6 +1,9 @@
 //! Validate draft material without collection registration, sealing or assignment identities.
 use super::*;
 pub(crate) enum PreviewInputs {
+    Credential {
+        architecture: Architecture,
+    },
     Resource,
     AgentCollection {
         definition: rss_mdm_resource::AgentCollectionDefinition,
@@ -27,6 +30,14 @@ impl Inputs {
         snapshot: &crate::authorization::Snapshot,
     ) -> Result<PreviewInputs> {
         match input {
+            PublicationInput::Credential { architecture, .. } => {
+                if !self.recovery_enabled || !self.signing_enabled {
+                    return Err(Error::Unsupported.into());
+                }
+                return Ok(PreviewInputs::Credential {
+                    architecture: *architecture,
+                });
+            }
             PublicationInput::AgentInstall {
                 binding,
                 schedule,
@@ -173,7 +184,9 @@ impl Inputs {
                     self.software_in(tx, input, &version).await?,
                 )));
             }
-            PublicationInput::AgentInstall { .. } | PublicationInput::Enrollment { .. } => {
+            PublicationInput::Credential { .. }
+            | PublicationInput::AgentInstall { .. }
+            | PublicationInput::Enrollment { .. } => {
                 unreachable!("onboarding was prepared above")
             }
         }

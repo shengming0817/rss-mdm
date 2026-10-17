@@ -396,6 +396,317 @@
       ],
       "type": "object"
     },
+    "CredentialOperation": {
+      "description": "The only native operations; no shell command, script or arbitrary WMI method is accepted.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "description": "Read numerical recovery protectors from system and fixed data volumes.",
+          "properties": {
+            "kind": {
+              "const": "collect_bitlocker",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Verify an existing protector without creating or deleting one.",
+          "properties": {
+            "kind": {
+              "const": "verify_bitlocker",
+              "type": "string"
+            },
+            "protector": {
+              "description": "Exact existing protector.",
+              "format": "uuid",
+              "type": "string"
+            },
+            "volume": {
+              "description": "Stable volume DeviceID.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "volume",
+            "protector"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Replace precisely one recovery protector, retaining it until escrow acknowledgment.",
+          "properties": {
+            "kind": {
+              "const": "rotate_bitlocker",
+              "type": "string"
+            },
+            "protector": {
+              "description": "Exact old protector to replace.",
+              "format": "uuid",
+              "type": "string"
+            },
+            "volume": {
+              "description": "Stable volume DeviceID.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "volume",
+            "protector"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Reset only the named local administrator account, rejecting another password owner.",
+          "properties": {
+            "kind": {
+              "const": "rotate_local_administrator",
+              "type": "string"
+            },
+            "sid": {
+              "description": "Exact account SID.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "sid"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Verify the last RSS-managed password using protected local recovery state.",
+          "properties": {
+            "kind": {
+              "const": "verify_local_administrator",
+              "type": "string"
+            },
+            "sid": {
+              "description": "Exact account SID.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "sid"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "CredentialRecipient": {
+      "additionalProperties": false,
+      "description": "Public RSA-OAEP-SHA256 recipient. AES-256-GCM protects each material with task-bound AAD.",
+      "properties": {
+        "keyId": {
+          "description": "Exact configured recipient certificate SHA-256 identity.",
+          "type": "string"
+        },
+        "publicKey": {
+          "description": "Base64 DER SubjectPublicKeyInfo; no private key is transmitted.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "keyId",
+        "publicKey"
+      ],
+      "type": "object"
+    },
+    "CredentialSubject": {
+      "description": "An exact Windows object, never an account display name or drive letter.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "description": "Numerical recovery protector on a stable volume.",
+          "properties": {
+            "kind": {
+              "const": "bitlocker",
+              "type": "string"
+            },
+            "protector": {
+              "description": "Recovery protector identity.",
+              "format": "uuid",
+              "type": "string"
+            },
+            "volume": {
+              "description": "Stable WMI volume DeviceID.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "volume",
+            "protector"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Explicit RSS-managed local account.",
+          "properties": {
+            "kind": {
+              "const": "local_administrator",
+              "type": "string"
+            },
+            "sid": {
+              "description": "Stable Windows account SID.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "sid"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "CredentialTaskSpec": {
+      "additionalProperties": false,
+      "description": "Signed, bounded execution intent using the standard Offer/Received/Start lifecycle.",
+      "properties": {
+        "architecture": {
+          "$ref": "#/$defs/TaskArchitecture",
+          "description": "Native processor architecture."
+        },
+        "attemptId": {
+          "description": "Exact attempt.",
+          "format": "uuid",
+          "type": "string"
+        },
+        "authorization": {
+          "$ref": "#/$defs/TaskAuthorization",
+          "description": "Existing product authorization decision."
+        },
+        "deadline": {
+          "description": "Original execution deadline.",
+          "format": "int64",
+          "type": "integer"
+        },
+        "definitionDigest": {
+          "description": "Digest of operation, recipient and expected revisions.",
+          "items": {
+            "format": "uint8",
+            "maximum": 255,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "maxItems": 32,
+          "minItems": 32,
+          "type": "array"
+        },
+        "deviceId": {
+          "description": "Exact device.",
+          "type": "string"
+        },
+        "expected": {
+          "description": "Expected revisions, sorted by subject without duplicates.",
+          "items": {
+            "$ref": "#/$defs/CredentialVersion"
+          },
+          "type": "array"
+        },
+        "expiresAt": {
+          "description": "Signed permit expiry.",
+          "format": "int64",
+          "type": "integer"
+        },
+        "generation": {
+          "description": "Current registration generation.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "operation": {
+          "$ref": "#/$defs/CredentialOperation",
+          "description": "Closed platform intent."
+        },
+        "permit": {
+          "$ref": "#/$defs/TaskPermit",
+          "description": "Offer or Start."
+        },
+        "platform": {
+          "$ref": "#/$defs/TaskPlatform",
+          "description": "Native platform, Windows for this capability."
+        },
+        "recipient": {
+          "$ref": "#/$defs/CredentialRecipient",
+          "description": "Pinned public recipient."
+        },
+        "registrationId": {
+          "description": "Current registration.",
+          "format": "uuid",
+          "type": "string"
+        },
+        "taskId": {
+          "description": "Persistent run identity and credential operation identity.",
+          "format": "uuid",
+          "type": "string"
+        },
+        "tenantId": {
+          "description": "Authenticated tenant.",
+          "format": "uuid",
+          "type": "string"
+        },
+        "wireVersion": {
+          "description": "Current runtime wire major.",
+          "format": "uint8",
+          "maximum": 255,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "wireVersion",
+        "tenantId",
+        "deviceId",
+        "platform",
+        "architecture",
+        "registrationId",
+        "generation",
+        "taskId",
+        "attemptId",
+        "permit",
+        "expiresAt",
+        "deadline",
+        "authorization",
+        "operation",
+        "recipient",
+        "expected",
+        "definitionDigest"
+      ],
+      "type": "object"
+    },
+    "CredentialVersion": {
+      "additionalProperties": false,
+      "description": "Revision frozen before a task begins; new discovered objects use revision zero.",
+      "properties": {
+        "revision": {
+          "description": "Last known material revision.",
+          "format": "int64",
+          "type": "integer"
+        },
+        "subject": {
+          "$ref": "#/$defs/CredentialSubject",
+          "description": "Exact material subject."
+        }
+      },
+      "required": [
+        "subject",
+        "revision"
+      ],
+      "type": "object"
+    },
     "EnrollmentEntry": {
       "description": "Platform-owned enrollment entry; opening it never proves enrollment completed.",
       "oneOf": [
@@ -4368,6 +4679,23 @@
     "TaskPayload": {
       "description": "Validated immutable script or software task payload.",
       "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "credential",
+              "type": "string"
+            },
+            "task": {
+              "$ref": "#/$defs/CredentialTaskSpec"
+            }
+          },
+          "required": [
+            "kind",
+            "task"
+          ],
+          "type": "object"
+        },
         {
           "additionalProperties": false,
           "properties": {

@@ -26,3 +26,5 @@ pub enum Error {
     #[error("Policy not found")]
     NotFound,
 }
+
+pub use assignment::CredentialOperation;
