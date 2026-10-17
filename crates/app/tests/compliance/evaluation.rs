@@ -110,19 +110,6 @@ async fn manual_and_collected_facts_evaluate_with_provenance() -> Result<()> {
     let router = &fixture.router;
     let base = &fixture.base;
     let mut browser = fixture.browser.clone();
-    let (agent, _) = crate::test_support::inventory::seed_source(
-        "compliance-b",
-        "agent",
-        "agent.builtin",
-        "seed",
-    )?;
-    for source in ["agent.script", "agent.osquery"] {
-        let epoch = Uuid::new_v4();
-        pg(&format!(
-            "INSERT INTO mdm_access.report_sources(tenant_id,registration,source,epoch,enabled) VALUES('{TENANT}','{agent}','{source}','{epoch}',true)",
-            TENANT = case_tenant()
-        ))?;
-    }
     let (_, path, _) = fixture.rule().await?;
     let automation = start_automation(base).await?;
     let unknown = status(&mut browser, router, "compliance-a", "unknown").await?;

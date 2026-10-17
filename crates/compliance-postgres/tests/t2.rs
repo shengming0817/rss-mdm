@@ -51,11 +51,7 @@ async fn immutable_versions_results_and_tenant_transactions() -> Result<()> {
     let tenant = TenantId::parse(case_tenant())?;
     let mut connection = connect(false).await?;
     // Even an empty read must reject an unbound transaction.
-    ensure!(
-        storage::rules::<Value>(&mut connection, tenant, None, 1)
-            .await
-            .is_err()
-    );
+    ensure!(matches!(storage::rules::<Value>(&mut connection, tenant, None, 1).await, Err(sqlx::Error::Protocol(_))));
     bind(&mut connection, case_tenant()).await?;
     storage::admit(&mut connection, tenant).await?;
     let id = Uuid::new_v4();
@@ -112,11 +108,8 @@ async fn immutable_versions_results_and_tenant_transactions() -> Result<()> {
     connection.execute("COMMIT").await?;
 
     bind(&mut connection, case_tenant()).await?;
-    ensure!(
-        storage::result_at(&mut connection, tenant, task, "device-a")
-            .await?
-            .is_some()
-    );
+    let stored = storage::result_at(&mut connection, tenant, task, "device-a").await?.unwrap();
+    ensure!(stored.rule_id == id && stored.rule_version == 1 && stored.status == Status::Unknown);
     ensure!(
         storage::replay(&mut connection, tenant, operation).await?
             == Some((vec![1; 32], json!({"revision":1})))
@@ -124,32 +117,23 @@ async fn immutable_versions_results_and_tenant_transactions() -> Result<()> {
     connection.execute("SAVEPOINT invalid_version").await?;
     let mut nonexistent = assessment.clone();
     nonexistent.rule_version += 999;
-    ensure!(
-        storage::result(
-            &mut connection,
-            tenant,
-            Uuid::new_v4(),
-            "device-a",
-            &nonexistent
-        )
-        .await
-        .is_err()
-    );
+    let error = storage::result(&mut connection, tenant, Uuid::new_v4(), "device-a", &nonexistent).await.unwrap_err();
+    ensure!(error.as_database_error().and_then(|e| e.code()).as_deref() == Some("23503"));
     connection.execute("ROLLBACK TO invalid_version").await?;
     connection.execute("SAVEPOINT mismatched_document").await?;
     ensure!(sqlx::query("INSERT INTO mdm_compliance.results SELECT tenant_id,$1::uuid,rule_id,rule_revision,device,evaluated_at,jsonb_set(document,'{ruleVersion}',to_jsonb(rule_revision+1)) FROM mdm_compliance.results")
-        .bind(Uuid::new_v4().to_string()).execute(&mut connection).await.is_err());
+        .bind(Uuid::new_v4().to_string()).execute(&mut connection).await.unwrap_err().as_database_error().and_then(|e| e.code()).as_deref() == Some("23514"));
     connection
         .execute("ROLLBACK TO mismatched_document")
         .await?;
     connection.execute("SAVEPOINT immutable").await?;
-    ensure!(
-        connection
-            .execute("DELETE FROM mdm_compliance.results")
-            .await
-            .is_err()
-    );
+    ensure!(connection.execute("DELETE FROM mdm_compliance.results").await.unwrap_err().as_database_error().and_then(|e| e.code()).as_deref() == Some("42501"));
     connection.execute("ROLLBACK TO immutable").await?;
+    for mutation in ["UPDATE mdm_compliance.versions SET revision=revision+1", "DELETE FROM mdm_compliance.versions"] {
+        connection.execute("SAVEPOINT immutable_version").await?;
+        ensure!(connection.execute(mutation).await.unwrap_err().as_database_error().and_then(|e| e.code()).as_deref() == Some("42501"));
+        connection.execute("ROLLBACK TO immutable_version").await?;
+    }
     let before: i64 = sqlx::query_scalar("SELECT count(*) FROM mdm_compliance.versions")
         .fetch_one(&mut connection)
         .await?;
