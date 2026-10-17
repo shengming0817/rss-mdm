@@ -35,6 +35,13 @@ pub struct SoftwareExecutionContext {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 /// One concrete live OS session.
 pub struct SoftwareInteractiveUser {
+    /// macOS GeneratedUID for this live account; Windows must explicitly report null.
+    #[serde(deserialize_with = "super::required_option")]
+    #[schemars(
+        required,
+        schema_with = "crate::self_service::nullable_schema::<String>"
+    )]
+    pub generated_uid: Option<String>,
     /// Windows SID or macOS numeric UID.
     #[schemars(length(min = 1, max = 184), regex(pattern = "^[^\\x00-\\x1f\\x7f]+$"))]
     pub identity: String,
@@ -62,7 +69,14 @@ impl SoftwareExecutionContext {
         self.validate()?;
         if let Some(u) = &self.interactive_user {
             let valid = valid_os_identity(&u.identity, platform);
-            if !valid {
+            let stable = match platform {
+                TaskPlatform::Windows => u.generated_uid.is_none(),
+                TaskPlatform::Macos => u
+                    .generated_uid
+                    .as_deref()
+                    .is_some_and(crate::runtime::generated_uid_valid),
+            };
+            if !valid || !stable {
                 return Err(WireError::InvalidValue);
             }
         }

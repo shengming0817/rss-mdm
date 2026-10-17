@@ -1,5 +1,87 @@
 {
   "$defs": {
+    "AccountSection": {
+      "description": "Local account evidence families. Membership is direct, not transitive permission.",
+      "oneOf": [
+        {
+          "const": "accounts",
+          "description": "Stable account identity, type and enabled state.",
+          "type": "string"
+        },
+        {
+          "const": "administrators",
+          "description": "Direct members of the local administrators group; no recursive expansion.",
+          "type": "string"
+        },
+        {
+          "const": "sessions",
+          "description": "Sessions necessary to explain local execution, never personal activity.",
+          "type": "string"
+        }
+      ]
+    },
+    "AccountSelection": {
+      "description": "Approved local account set; never a directory recursion or effective authorization query.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "description": "All local accounts, including disabled and system accounts.",
+          "properties": {
+            "kind": {
+              "const": "local",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Only these stable SIDs (Windows) or GeneratedUIDs (macOS).",
+          "properties": {
+            "identities": {
+              "description": "Nonempty bounded stable account identities.",
+              "items": {
+                "type": "string"
+              },
+              "type": "array",
+              "uniqueItems": true
+            },
+            "kind": {
+              "const": "selected",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "identities"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "ApplicationPermission": {
+      "description": "Only permissions needed by the explicitly selected application, never a TCC dump.",
+      "oneOf": [
+        {
+          "const": "full_disk_access",
+          "description": "Probe only the selected application’s required Full Disk Access.",
+          "type": "string"
+        },
+        {
+          "const": "accessibility",
+          "description": "Probe only the selected application’s accessibility permission.",
+          "type": "string"
+        },
+        {
+          "const": "screen_capture",
+          "description": "Probe only the selected application’s screen-capture permission.",
+          "type": "string"
+        }
+      ]
+    },
     "CimType": {
       "description": "WMI property CIM type, with native widths preserved in the declaration.",
       "oneOf": [
@@ -284,7 +366,7 @@
           "type": "string"
         },
         "wireVersion": {
-          "const": 2,
+          "const": 3,
           "description": "Exact wire major.",
           "format": "uint8",
           "maximum": 255,
@@ -529,6 +611,49 @@
         }
       ]
     },
+    "MacosApplicationTarget": {
+      "description": "The running product or one explicitly approved macOS signed bundle.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "description": "The running, registered product itself.",
+          "properties": {
+            "kind": {
+              "const": "agent",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "One explicitly approved signing and application identity.",
+          "properties": {
+            "bundle_id": {
+              "description": "Exact bundle identifier.",
+              "type": "string"
+            },
+            "kind": {
+              "const": "signed",
+              "type": "string"
+            },
+            "team_id": {
+              "description": "Approved signing team.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "bundle_id",
+            "team_id"
+          ],
+          "type": "object"
+        }
+      ]
+    },
     "MacosBrewPackage": {
       "description": "Distinct installed Homebrew record kinds; casks do not prove an application exists.",
       "oneOf": [
@@ -540,6 +665,26 @@
         {
           "const": "cask",
           "description": "Installed cask records.",
+          "type": "string"
+        }
+      ]
+    },
+    "MacosCertificateStore": {
+      "description": "Approved macOS keychain. Never prompts, unlocks a keychain or traverses arbitrary paths.",
+      "oneOf": [
+        {
+          "const": "system",
+          "description": "Machine System keychain.",
+          "type": "string"
+        },
+        {
+          "const": "system_roots",
+          "description": "System root certificate keychain.",
+          "type": "string"
+        },
+        {
+          "const": "login",
+          "description": "Only the bound user’s login keychain.",
           "type": "string"
         }
       ]
@@ -595,6 +740,56 @@
         {
           "const": "battery",
           "description": "Battery charge percentage; no battery is Missing, never a fabricated zero.",
+          "type": "string"
+        }
+      ]
+    },
+    "MacosSecuritySection": {
+      "description": "macOS states remain distinct; local token evidence never proves server escrow.",
+      "oneOf": [
+        {
+          "const": "gatekeeper",
+          "description": "Assessment configuration, component presence and observable availability.",
+          "type": "string"
+        },
+        {
+          "const": "xprotect",
+          "description": "Component/version presence and observable protection state.",
+          "type": "string"
+        },
+        {
+          "const": "system_extensions",
+          "description": "Extension signing identity, configuration and activation evidence.",
+          "type": "string"
+        },
+        {
+          "const": "filevault",
+          "description": "Local FileVault state, independent from key escrow.",
+          "type": "string"
+        },
+        {
+          "const": "firewall",
+          "description": "Local application firewall state.",
+          "type": "string"
+        },
+        {
+          "const": "sip",
+          "description": "System integrity protection observation.",
+          "type": "string"
+        },
+        {
+          "const": "hardware_encryption",
+          "description": "Hardware encryption observation, independent from FileVault.",
+          "type": "string"
+        },
+        {
+          "const": "secure_token",
+          "description": "Bound user’s local Secure Token observation.",
+          "type": "string"
+        },
+        {
+          "const": "bootstrap_token",
+          "description": "Local Bootstrap Token observation, never server escrow success.",
           "type": "string"
         }
       ]
@@ -725,6 +920,13 @@
           "minimum": 0,
           "type": "integer"
         },
+        "generatedUid": {
+          "description": "Stable macOS account UUID from the authenticated live execution context.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "identity": {
           "$ref": "#/$defs/ExecutionIdentity",
           "description": "Exact required privilege boundary."
@@ -737,7 +939,8 @@
       "required": [
         "identity",
         "contextRevision",
-        "target"
+        "target",
+        "generatedUid"
       ],
       "type": "object"
     },
@@ -784,6 +987,25 @@
     "NativeQueryDefinition": {
       "description": "Closed read recipes. Output properties are derived from this declaration.",
       "oneOf": [
+        {
+          "additionalProperties": false,
+          "description": "Closed platform security, identity, certificate or update read.",
+          "properties": {
+            "kind": {
+              "const": "system",
+              "type": "string"
+            },
+            "query": {
+              "$ref": "#/$defs/NativeSystemQuery",
+              "description": "Closed read recipe."
+            }
+          },
+          "required": [
+            "kind",
+            "query"
+          ],
+          "type": "object"
+        },
         {
           "additionalProperties": false,
           "description": "Read local WMI instances.",
@@ -1015,6 +1237,286 @@
             "prefix",
             "package",
             "taps"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "NativeSystemQuery": {
+      "description": "Fixed native reads; output schemas and instance identity are owned by this enum.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "description": "Read-only GetConversionStatus/GetLockStatus/etc., never arbitrary WMI methods.",
+          "properties": {
+            "kind": {
+              "const": "windows_bitlocker",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Domain, private and public profiles individually, not one aggregate switch.",
+          "properties": {
+            "kind": {
+              "const": "windows_firewall",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Defender configuration, mode and observed protection health.",
+          "properties": {
+            "kind": {
+              "const": "windows_defender",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Secure Boot firmware observation, independent from TPM presence.",
+          "properties": {
+            "kind": {
+              "const": "windows_secure_boot",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Local AD/Entra/MDM observations, never server management authority.",
+          "properties": {
+            "kind": {
+              "const": "windows_join",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Approved local Windows identity facts.",
+          "properties": {
+            "kind": {
+              "const": "windows_accounts",
+              "type": "string"
+            },
+            "section": {
+              "$ref": "#/$defs/AccountSection",
+              "description": "Closed evidence section."
+            },
+            "selection": {
+              "$ref": "#/$defs/AccountSelection",
+              "description": "Approved account universe."
+            }
+          },
+          "required": [
+            "kind",
+            "section",
+            "selection"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Read-only metadata from one approved machine or current-user store.",
+          "properties": {
+            "kind": {
+              "const": "windows_certificates",
+              "type": "string"
+            },
+            "store": {
+              "$ref": "#/$defs/WindowsCertificateStore",
+              "description": "Exact approved store."
+            },
+            "user": {
+              "description": "True requires the current signed user session.",
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "kind",
+            "store",
+            "user"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Use the currently configured WUA source. Always disable automatic WUA upgrade;\nnever register a service, change its selection, download, install or reboot.",
+          "properties": {
+            "kind": {
+              "const": "windows_updates",
+              "type": "string"
+            },
+            "mode": {
+              "$ref": "#/$defs/UpdateScanMode",
+              "description": "Explicit read mode; never a deployment action."
+            },
+            "section": {
+              "$ref": "#/$defs/UpdateSection",
+              "description": "Closed evidence section."
+            }
+          },
+          "required": [
+            "kind",
+            "section",
+            "mode"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "One fixed local macOS security observation.",
+          "properties": {
+            "kind": {
+              "const": "macos_security",
+              "type": "string"
+            },
+            "section": {
+              "$ref": "#/$defs/MacosSecuritySection",
+              "description": "Closed evidence section."
+            }
+          },
+          "required": [
+            "kind",
+            "section"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Approved local macOS identity facts.",
+          "properties": {
+            "kind": {
+              "const": "macos_accounts",
+              "type": "string"
+            },
+            "section": {
+              "$ref": "#/$defs/AccountSection",
+              "description": "Closed evidence section."
+            },
+            "selection": {
+              "$ref": "#/$defs/AccountSelection",
+              "description": "Approved account universe."
+            }
+          },
+          "required": [
+            "kind",
+            "section",
+            "selection"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Read-only metadata from one approved keychain.",
+          "properties": {
+            "kind": {
+              "const": "macos_certificates",
+              "type": "string"
+            },
+            "store": {
+              "$ref": "#/$defs/MacosCertificateStore",
+              "description": "Exact approved store."
+            }
+          },
+          "required": [
+            "kind",
+            "store"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Version-probed read-only queries; no install/download/restart or silent shell fallback.",
+          "properties": {
+            "kind": {
+              "const": "macos_updates",
+              "type": "string"
+            },
+            "mode": {
+              "$ref": "#/$defs/UpdateScanMode",
+              "description": "Explicit read mode; never a deployment action."
+            },
+            "section": {
+              "$ref": "#/$defs/UpdateSection",
+              "description": "Closed evidence section."
+            }
+          },
+          "required": [
+            "kind",
+            "section",
+            "mode"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Exact service identity and signer; no executable path or invocation parameters.",
+          "properties": {
+            "kind": {
+              "const": "windows_application",
+              "type": "string"
+            },
+            "target": {
+              "$ref": "#/$defs/WindowsApplicationTarget",
+              "description": "Approved application identity."
+            }
+          },
+          "required": [
+            "kind",
+            "target"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Exact signed application identity; no all-application privacy scan.",
+          "properties": {
+            "kind": {
+              "const": "macos_application",
+              "type": "string"
+            },
+            "permissions": {
+              "description": "Exact required permission probes, never global privacy inventory.",
+              "items": {
+                "$ref": "#/$defs/ApplicationPermission"
+              },
+              "type": "array",
+              "uniqueItems": true
+            },
+            "target": {
+              "$ref": "#/$defs/MacosApplicationTarget",
+              "description": "Approved application identity."
+            }
+          },
+          "required": [
+            "kind",
+            "target",
+            "permissions"
           ],
           "type": "object"
         }
@@ -1820,6 +2322,13 @@
           "description": "Privilege needed by the exact native profile, not a generic authorization grant.",
           "type": "boolean"
         },
+        "generatedUid": {
+          "description": "macOS GeneratedUID for this live account; Windows must explicitly report null.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "identity": {
           "description": "Windows SID or macOS numeric UID.",
           "maxLength": 184,
@@ -1838,6 +2347,7 @@
         }
       },
       "required": [
+        "generatedUid",
         "identity",
         "sessionId",
         "administrator"
@@ -4146,6 +4656,119 @@
         "maxRows"
       ],
       "type": "object"
+    },
+    "UpdateScanMode": {
+      "description": "Read mode is execution evidence, not an asset namespace or permission to install.",
+      "oneOf": [
+        {
+          "const": "local",
+          "description": "Read locally available evidence; no online refresh.",
+          "type": "string"
+        },
+        {
+          "const": "online",
+          "description": "Explicit read-only online discovery through the existing configured source.",
+          "type": "string"
+        }
+      ]
+    },
+    "UpdateSection": {
+      "description": "Independent evidence sets. History cannot prove the installed or applicable set.",
+      "oneOf": [
+        {
+          "const": "scan",
+          "description": "Availability, observed source, scan interval and coverage.",
+          "type": "string"
+        },
+        {
+          "const": "available",
+          "description": "Applicable updates, with source evidence.",
+          "type": "string"
+        },
+        {
+          "const": "installed",
+          "description": "Verified installed update set.",
+          "type": "string"
+        },
+        {
+          "const": "history",
+          "description": "Historical results; not an inventory of installed updates.",
+          "type": "string"
+        },
+        {
+          "const": "reboot",
+          "description": "Observed pending reboot, not permission to restart.",
+          "type": "string"
+        }
+      ]
+    },
+    "WindowsApplicationTarget": {
+      "description": "The running product or an explicitly approved Windows service and signer.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "description": "The running, registered product itself.",
+          "properties": {
+            "kind": {
+              "const": "agent",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "One explicitly approved signing and application identity.",
+          "properties": {
+            "kind": {
+              "const": "signed",
+              "type": "string"
+            },
+            "publisher": {
+              "description": "Approved signer.",
+              "type": "string"
+            },
+            "service": {
+              "description": "Exact approved service.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "service",
+            "publisher"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "WindowsCertificateStore": {
+      "description": "Approved Windows store; collection must not mount offline user hives.",
+      "oneOf": [
+        {
+          "const": "my",
+          "description": "Personal certificate metadata.",
+          "type": "string"
+        },
+        {
+          "const": "root",
+          "description": "Trusted root metadata.",
+          "type": "string"
+        },
+        {
+          "const": "ca",
+          "description": "Intermediate certificate metadata.",
+          "type": "string"
+        },
+        {
+          "const": "trusted_publisher",
+          "description": "Trusted publisher certificate metadata.",
+          "type": "string"
+        }
+      ]
     },
     "WmiFilter": {
       "description": "Bounded structural filter; property names are never query expressions.",

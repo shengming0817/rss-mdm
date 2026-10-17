@@ -427,6 +427,13 @@
           "description": "Privilege needed by the exact native profile, not a generic authorization grant.",
           "type": "boolean"
         },
+        "generatedUid": {
+          "description": "macOS GeneratedUID for this live account; Windows must explicitly report null.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "identity": {
           "description": "Windows SID or macOS numeric UID.",
           "maxLength": 184,
@@ -445,6 +452,7 @@
         }
       },
       "required": [
+        "generatedUid",
         "identity",
         "sessionId",
         "administrator"

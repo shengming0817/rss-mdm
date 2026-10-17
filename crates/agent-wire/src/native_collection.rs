@@ -3,16 +3,43 @@
 use crate::runtime::{ExecutionIdentity, OUTPUT_MAX_BYTES, TaskPlatform, WireError};
 #[path = "native_collection/macos.rs"]
 mod macos;
+#[path = "native_collection/system.rs"]
+mod system;
 pub use macos::{MacosApplicationRoot, MacosBrewPackage, MacosHardwareSection};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
+pub use system::*;
 
 /// One supported native engine contract (versions are independently negotiated).
 #[derive(
     Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, schemars::JsonSchema,
 )]
 pub enum NativeEngine {
+    /// Closed Windows security reads.
+    #[serde(rename = "windows.security")]
+    WindowsSecurity,
+    /// Closed Windows accounts reads.
+    #[serde(rename = "windows.accounts")]
+    WindowsAccounts,
+    /// Closed Windows certificates reads.
+    #[serde(rename = "windows.certificates")]
+    WindowsCertificates,
+    /// Closed Windows updates reads.
+    #[serde(rename = "windows.updates")]
+    WindowsUpdates,
+    /// Closed Macos security reads.
+    #[serde(rename = "macos.security")]
+    MacosSecurity,
+    /// Closed Macos accounts reads.
+    #[serde(rename = "macos.accounts")]
+    MacosAccounts,
+    /// Closed Macos certificates reads.
+    #[serde(rename = "macos.certificates")]
+    MacosCertificates,
+    /// Closed Macos updates reads.
+    #[serde(rename = "macos.updates")]
+    MacosUpdates,
     /// Local read-only WMI queries.
     #[serde(rename = "windows.wmi")]
     WindowsWmi,
@@ -314,6 +341,11 @@ pub struct RegistryValue {
     deny_unknown_fields
 )]
 pub enum NativeQueryDefinition {
+    /// Closed platform security, identity, certificate or update read.
+    System {
+        /// Closed read recipe.
+        query: NativeSystemQuery,
+    },
     /// Read local WMI instances.
     WindowsWmi {
         /// Local namespace, for example root\\cimv2.
@@ -396,6 +428,7 @@ impl NativeQueryDefinition {
     /// Required native engine.
     pub fn engine(&self) -> NativeEngine {
         match self {
+            Self::System { query } => query.engine(),
             Self::WindowsWmi { .. } => NativeEngine::WindowsWmi,
             Self::WindowsRegistry { .. } => NativeEngine::WindowsRegistry,
             Self::WindowsCpu => NativeEngine::WindowsCpu,
@@ -411,6 +444,7 @@ impl NativeQueryDefinition {
     /// Exact native platform; a plan cannot mix definitions from different platforms.
     pub fn platform(&self) -> TaskPlatform {
         match self {
+            Self::System { query } => query.platform(),
             Self::MacosHardware { .. }
             | Self::MacosApplications { .. }
             | Self::MacosPkgReceipts {}
@@ -426,6 +460,7 @@ impl NativeQueryDefinition {
     /// Required privilege boundary, never inferred from a script executor profile.
     pub fn execution_identity(&self) -> ExecutionIdentity {
         match self {
+            Self::System { query } => query.execution_identity(),
             Self::MacosBrew { .. }
             | Self::MacosApplications {
                 root: MacosApplicationRoot::UserApplications,
@@ -450,6 +485,7 @@ impl NativeQueryDefinition {
     pub fn properties(&self) -> BTreeMap<String, NativeType> {
         use NativeType::*;
         match self {
+            Self::System { query } => query.properties(),
             Self::WindowsWmi { properties, .. } => properties
                 .iter()
                 .map(|(k, p)| {
@@ -544,6 +580,7 @@ impl NativeQueryDefinition {
     /// Validate each present native property against the declared platform type.
     pub fn accepts_row(&self, row: &BTreeMap<String, serde_json::Value>) -> bool {
         match self {
+            Self::System { query } => query.accepts_row(row),
             Self::WindowsWmi { properties, .. } => row.iter().all(|(k, v)| {
                 properties.get(k).is_some_and(|p| {
                     if p.array {
@@ -590,6 +627,7 @@ impl NativeQueryDefinition {
     /// Reject executable syntax and unsupported read recipes.
     pub fn validate(&self) -> Result<(), WireError> {
         match self {
+            Self::System { query } => query.validate()?,
             Self::WindowsWmi {
                 namespace,
                 class,
@@ -734,6 +772,7 @@ impl NativeQuery {
             return Err(WireError::InvalidValue);
         }
         let required = match &self.definition {
+            NativeQueryDefinition::System { query } => Some(query.cardinality()),
             NativeQueryDefinition::WindowsRegistry {
                 enumerate_subkeys, ..
             } => Some(if *enumerate_subkeys {
@@ -797,7 +836,8 @@ impl NativeCollectionPlan {
         p.budget.validate()?;
         match &p.scope {
             crate::CollectionScope::Device => {}
-            crate::CollectionScope::User { identity } if macos::nonroot_uid(identity) => {}
+            crate::CollectionScope::User { identity }
+                if macos::nonroot_uid(identity) || sid_valid(identity) => {}
             crate::CollectionScope::Prefix { path } if macos::absolute_data_root(path) => {}
             _ => return Err(WireError::InvalidValue),
         }
@@ -813,8 +853,6 @@ impl NativeCollectionPlan {
             let first = &p.queries.values().next().expect("nonempty").definition;
             if q.definition.platform() != first.platform()
                 || q.definition.execution_identity() != first.execution_identity()
-                || (q.definition.platform() == TaskPlatform::Windows
-                    && p.scope != crate::CollectionScope::Device)
                 || matches!(&p.scope, crate::CollectionScope::Prefix { path }
                     if !matches!(&q.definition, NativeQueryDefinition::MacosBrew { prefix, .. } if prefix == path))
                 || (matches!(&p.scope, crate::CollectionScope::User { .. })
@@ -894,6 +932,18 @@ pub struct NativeExecutionBinding {
     pub context_revision: u64,
     /// Exact device or interactive session. No offline user switching is permitted.
     pub target: crate::runtime::SoftwareExecutionTarget,
+    /// Stable macOS account UUID from the authenticated live execution context.
+    #[serde(deserialize_with = "required_generated_uid")]
+    #[schemars(
+        required,
+        schema_with = "crate::self_service::nullable_schema::<String>"
+    )]
+    pub generated_uid: Option<String>,
+}
+fn required_generated_uid<'de, D: serde::Deserializer<'de>>(
+    d: D,
+) -> Result<Option<String>, D::Error> {
+    Option::<String>::deserialize(d)
 }
 impl NativeExecutionBinding {
     /// Bind only an available broker/helper and the current non-root login.
@@ -921,6 +971,14 @@ impl NativeExecutionBinding {
         let binding = Self {
             identity,
             context_revision: context.revision,
+            generated_uid: if identity == ExecutionIdentity::LoggedInUser {
+                context
+                    .interactive_user
+                    .as_ref()
+                    .and_then(|u| u.generated_uid.clone())
+            } else {
+                None
+            },
             target,
         };
         binding.validate(plan)?;
@@ -936,12 +994,24 @@ impl NativeExecutionBinding {
         {
             return Err(WireError::InvalidValue);
         }
+        if (plan.platform() == TaskPlatform::Windows || self.identity == ExecutionIdentity::System)
+            && self.generated_uid.is_some()
+        {
+            return Err(WireError::InvalidValue);
+        }
         match (&self.target, self.identity) {
             (SoftwareExecutionTarget::Device, ExecutionIdentity::System) => Ok(()),
             (SoftwareExecutionTarget::User { identity, .. }, ExecutionIdentity::LoggedInUser)
-                if plan.platform() == TaskPlatform::Macos
-                    && macos::nonroot_uid(identity)
-                    && !matches!(&plan.spec().scope, crate::CollectionScope::User { identity: owner } if owner != identity) =>
+                if (match plan.platform() {
+                    TaskPlatform::Windows => sid_valid(identity),
+                    TaskPlatform::Macos => {
+                        macos::nonroot_uid(identity)
+                            && self
+                                .generated_uid
+                                .as_deref()
+                                .is_some_and(generated_uid_valid)
+                    }
+                }) && !matches!(&plan.spec().scope, crate::CollectionScope::User { identity: owner } if owner != identity) =>
             {
                 Ok(())
             }
@@ -961,6 +1031,18 @@ impl NativeExecutionBinding {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum NativeQueryStatus {
+    /// A provider read failed.
+    Failed,
+    /// Only part of the approved set could be read.
+    Partial,
+    /// No scan was performed; not a successful empty set.
+    NotScanned,
+    /// The configured update source could not be reached.
+    SourceUnavailable,
+    /// Required user is no longer present.
+    UserAbsent,
+    /// Approved certificate store is inaccessible.
+    StoreUnavailable,
     /// Complete enumeration.
     Complete,
     /// Engine or data unavailable.
@@ -1003,6 +1085,13 @@ impl NativeUserCoverage {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct NativeQueryResult {
+    /// Required for update queries, including empty and unsuccessful results; absent otherwise.
+    #[serde(deserialize_with = "required_scan")]
+    #[schemars(
+        required,
+        schema_with = "crate::self_service::nullable_schema::<NativeScanEvidence>"
+    )]
+    pub scan: Option<NativeScanEvidence>,
     /// Exact frozen query fingerprint.
     pub query_digest: [u8; 32],
     /// Collection Unix time.
@@ -1018,10 +1107,57 @@ pub struct NativeQueryResult {
     /// Required for all-user software collection.
     pub users: Option<NativeUserCoverage>,
 }
+fn required_scan<'de, D: serde::Deserializer<'de>>(
+    d: D,
+) -> Result<Option<NativeScanEvidence>, D::Error> {
+    Option::<NativeScanEvidence>::deserialize(d)
+}
 impl NativeQueryResult {
+    /// Reject missing, extra or mismatched update provenance independently of result success.
+    pub fn evidence_matches(&self, query: &NativeQuery) -> bool {
+        let mode = match &query.definition {
+            NativeQueryDefinition::System { query } => query.scan_mode(),
+            _ => None,
+        };
+        match (mode, &self.scan) {
+            (None, None) => true,
+            (Some(mode), Some(scan)) => {
+                let provenance = match &query.definition {
+                    NativeQueryDefinition::System {
+                        query:
+                            NativeSystemQuery::WindowsUpdates { section, .. }
+                            | NativeSystemQuery::MacosUpdates { section, .. },
+                    } => match section {
+                        UpdateSection::Scan => self.rows.iter().all(|r| {
+                            r.get("source").and_then(|v| v.as_str()) == scan.source.as_deref()
+                                && r.get("scan_started_at").and_then(|v| v.as_i64())
+                                    == scan.started_at
+                                && r.get("scan_finished_at").and_then(|v| v.as_i64())
+                                    == scan.finished_at
+                        }),
+                        UpdateSection::Available
+                        | UpdateSection::Installed
+                        | UpdateSection::History => self.rows.iter().all(|r| {
+                            r.get("origin").and_then(|v| v.as_str()) == scan.source.as_deref()
+                        }),
+                        UpdateSection::Reboot => true,
+                    },
+                    _ => false,
+                };
+                provenance
+                    && scan.mode == mode
+                    && scan.valid(
+                        self.collected_at,
+                        self.status == NativeQueryStatus::Complete,
+                    )
+            }
+            _ => false,
+        }
+    }
     /// Validate query-level evidence independently; false never discards other queries.
     pub fn complete_for(&self, q: &NativeQuery, now: i64) -> bool {
-        if self.query_digest != q.digest()
+        if !self.evidence_matches(q)
+            || self.query_digest != q.digest()
             || self.collected_at < 1
             || self.collected_at > now
             || self.status != NativeQueryStatus::Complete
@@ -1040,6 +1176,20 @@ impl NativeQueryResult {
                 .users
                 .as_ref()
                 .is_some_and(NativeUserCoverage::complete)
+        {
+            return false;
+        }
+        if matches!(
+            q.definition,
+            NativeQueryDefinition::System {
+                query: NativeSystemQuery::WindowsFirewall
+            }
+        ) && self
+            .rows
+            .iter()
+            .filter_map(|r| r.get("id").and_then(|v| v.as_str()))
+            .collect::<BTreeSet<_>>()
+            != ["domain", "private", "public"].into()
         {
             return false;
         }
@@ -1110,7 +1260,19 @@ impl NativeCollectionResult {
             || self.collected_at > now
             || self.queries.keys().ne(p.spec().queries.keys())
             || self.queries.iter().any(|(k, r)| {
-                r.query_digest != p.spec().queries[k].digest()
+                (matches!(
+                    p.spec().queries[k].definition,
+                    NativeQueryDefinition::System { .. }
+                ) && r.users.is_some())
+                    || !r.evidence_matches(&p.spec().queries[k])
+                    || (matches!(
+                        p.spec().queries[k].definition,
+                        NativeQueryDefinition::System { .. }
+                    ) && r
+                        .rows
+                        .iter()
+                        .any(|row| !p.spec().queries[k].definition.accepts_row(row)))
+                    || r.query_digest != p.spec().queries[k].digest()
                     || r.collected_at < 1
                     || r.collected_at > self.collected_at
             })

@@ -49,6 +49,7 @@ fn plan(q: NativeQuery) -> NativeCollectionPlan {
 }
 fn result(q: &NativeQuery) -> NativeQueryResult {
     NativeQueryResult {
+        scan: None,
         query_digest: q.digest(),
         collected_at: 10,
         status: NativeQueryStatus::Complete,
@@ -146,6 +147,7 @@ fn software_requires_stable_complete_user_set_even_for_empty_list() {
         ..query()
     };
     let mut r = NativeQueryResult {
+        scan: None,
         rows: vec![],
         row_count: 0,
         query_digest: q.digest(),
@@ -235,7 +237,7 @@ fn fixed_native_vectors_bind_permit_plan_and_domain() {
     use ring::signature::{ED25519, Ed25519KeyPair, KeyPair, UnparsedPublicKey};
     use sha2::{Digest, Sha256};
     let vectors: serde_json::Value =
-        serde_json::from_str(include_str!("fixtures/native-v2-vectors.json")).unwrap();
+        serde_json::from_str(include_str!("fixtures/native-v3-vectors.json")).unwrap();
     for vectors in vectors.as_array().unwrap() {
         let key = Ed25519KeyPair::from_seed_unchecked(&[42; 32]).unwrap();
         let plan: NativeCollectionPlan = serde_json::from_value(vectors["plan"].clone()).unwrap();
