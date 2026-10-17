@@ -1,6 +1,6 @@
 //! User GUIDs are scoped protocol coordinates under one device certificate, never accounts.
 use super::*;
-use lifecycle::{Peer, command};
+use lifecycle::Peer;
 use sqlx::Connection;
 impl Peer {
     pub(super) async fn user_token(&self, user: Uuid, value: u8) -> Result<()> {

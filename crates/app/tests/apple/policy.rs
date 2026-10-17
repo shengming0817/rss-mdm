@@ -371,6 +371,10 @@ use lifecycle::Peer;
 impl Fixture {
     async fn approval_and_timeout(&mut self, peer: &Peer) -> Result<()> {
         self.native_context().await?;
+        // Drain independent trust maintenance before asserting that revoked
+        // business authority cannot request a wake.
+        ensure!(peer.manage("Idle", None, None).await?.is_empty());
+        self.policy_grants().await?;
         let definition = self.collection_template().await?;
         self.grant_native_actions(&["device_control"]).await?;
         let op = self.create_restart().await?;

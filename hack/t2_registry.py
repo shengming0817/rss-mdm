@@ -1967,5 +1967,8 @@ consume(('crates/inventory-service/schema/channel-maintenance.sql',),
         'execution.commands.onboarding apple.onboarding agent.reports inventory.runtime planning.onboarding planning.group_scope')
 
 # Context preparation is consumed directly by these six protocol modules.
-consume(('crates/apple-channel/src/native.rs', 'crates/app/tests/apple/policy.rs'),
+consume(('crates/apple-channel/src/native.rs',),
         'apple.commands apple.users apple.policy apple.identity apple.push apple.host')
+for name in ('apple.commands', 'apple.users', 'apple.identity', 'apple.push', 'apple.host'):
+    MODULES[name] = replace(MODULES[name], support_inputs=(*MODULES[name].support_inputs,
+        'crates/app/tests/apple/policy.rs'))
