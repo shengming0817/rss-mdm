@@ -477,7 +477,7 @@ MODULES['installation.migration'] = replace(MODULES['installation.migration'], d
 MODULES['audit.receipts'] = replace(MODULES['audit.receipts'], db_mode='reuse', scope='tenant')
 MODULES['audit.integrity'] = replace(MODULES['audit.integrity'], db_mode='instance', scope='objects', policies=(
     CasePolicy('audit_integration_tests::integrity::storage_integrity_is_enforced', 'fresh', 'objects'),
-    CasePolicy('audit_integration_tests::query_cost::startup_probes_leave_both_transaction_hot_paths', 'fresh', 'objects'),
+    CasePolicy('audit_integration_tests::integrity::query_cost::startup_probes_leave_both_transaction_hot_paths', 'fresh', 'objects'),
 ))
 MODULES['audit.recovery'] = replace(MODULES['audit.recovery'], db_mode='reuse', scope='pair')
 MODULES['audit.budget'] = replace(MODULES['audit.budget'], db_mode='reuse', scope='tenant')

@@ -75,7 +75,6 @@ mod test_support;
 
 mod budget;
 mod integrity;
-mod query_cost;
 mod receipts;
 mod recovery;
 

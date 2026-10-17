@@ -246,3 +246,6 @@ async fn storage_integrity_is_enforced() -> Result<()> {
 
 #[path = "owner_admission.rs"]
 mod owner_admission;
+
+#[path = "query_cost.rs"]
+mod query_cost;

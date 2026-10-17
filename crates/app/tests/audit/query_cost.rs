@@ -62,7 +62,7 @@ async fn startup_probes_leave_both_transaction_hot_paths() -> Result<()> {
     for wide in [false, true] {
         if wide {
             crate::planning::test_support::sql(
-                "CREATE SCHEMA audit_cost_unrelated; DO $$ BEGIN FOR i IN 1..200 LOOP EXECUTE format('CREATE FUNCTION audit_cost_unrelated.f%s() RETURNS integer LANGUAGE sql AS %L', i, 'SELECT 1'); END LOOP; END $$",
+                "CREATE SCHEMA audit_cost_unrelated; DO $$ BEGIN FOR i IN 1..200 LOOP EXECUTE format('CREATE FUNCTION audit_cost_unrelated.f%s() RETURNS integer LANGUAGE sql AS %L', i, 'SELECT 1'); END LOOP; END $$; REVOKE ALL ON ALL FUNCTIONS IN SCHEMA audit_cost_unrelated FROM PUBLIC",
             );
         }
         for ledger in [false, true] {
