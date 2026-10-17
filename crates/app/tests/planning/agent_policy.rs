@@ -203,9 +203,8 @@ async fn explicit_rerun_deduplicates() -> Result<()> {
     let task = claim(&router).await?;
     complete(&router, &task).await?;
     let completed = run_count(policy_id)?;
-    for _ in 0..3 {
-        ensure!(claim_request(&router, Uuid::new_v4()).await?.1["task"].is_null());
-    }
+    let empty = claim_request(&router, Uuid::new_v4()).await?;
+    ensure!(empty.0 == StatusCode::OK && empty.1["task"].is_null());
     ensure!(
         run_count(policy_id)? == completed,
         "once-per-version repeated"
@@ -273,10 +272,20 @@ async fn policy_scan_reaches_late_match() -> Result<()> {
         case_device_id()
     ))?;
     let ordered_namespace = case::id("policy-scan") & !0xffff;
-    for n in 1..=64 {
-        let id = Uuid::from_u128(ordered_namespace | n);
-        post(author,router,&format!("/api/v1/policies/{id}"),json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"put","enabled":true,"definition":policy_definition(resource,case_empty_scope())}})).await?;
-    }
+    let template_id = Uuid::from_u128(ordered_namespace | 1);
+    post(author,router,&format!("/api/v1/policies/{template_id}"),json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"put","enabled":true,"definition":policy_definition(resource,case_empty_scope())}})).await?;
+    let template = fixture.planning.policy_store.get(template_id, crate::identity::deadline()).await?.unwrap();
+    let frozen: Value = serde_json::from_str(&pg(&format!("SELECT frozen FROM mdm_policy.versions WHERE tenant_id='{}' AND id='{}'", case_tenant(), template.version))?)?;
+    let at = crate::clock::Clock::unix_seconds(&crate::clock::SystemClock)?;
+    let prepared: Vec<_> = (2..=64).map(|n| {
+        let policy = rss_mdm_policy::Policy::apply(Uuid::from_u128(ordered_namespace | n), None, 0,
+            &rss_mdm_policy::Change::Put { definition: Box::new(template.definition.clone()), enabled: true }, Uuid::new_v4(), template.execution_binding).unwrap().policy;
+        rss_mdm_policy_postgres::Publication { policy, frozen: Some(frozen.clone()), author: json!({"subject":fixture.author_id}), at }
+    }).collect();
+    fixture.planning.runtime.local_tx_with_context(fixture.planning.tenant, crate::identity::deadline(), (&fixture.planning.policy_store, &prepared), |(store, publications), tx| Box::pin(async move {
+        for publication in publications.iter() { store.publish_in(tx, publication).await?.unwrap(); }
+        Ok(())
+    })).await.fold(|_| (), |e|panic!("{e:?}"), |e|panic!("{e:?}"), |e|panic!("{e:?}"), |e|panic!("{e:?}"), |e|panic!("{e:?}"));
     let id = Uuid::from_u128(ordered_namespace | 0xffff);
     post(author,router,&format!("/api/v1/policies/{id}"),json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"put","enabled":true,"definition":policy_definition(resource,case_task_scope())}})).await?;
     ensure!(
@@ -321,10 +330,27 @@ async fn policy_reference_and_archive_are_serialized() -> Result<()> {
     let archive = json!({"operationId":Uuid::new_v4(),"expectedRevision":3,"input":{"action":"archive","version":"v1"}});
     let path = format!("/api/v1/resources/{id}");
     let mut archiver = author.clone();
-    let (created, archived) = tokio::try_join!(
+    use sqlx::Connection;
+    let mut holder = sqlx::PgConnection::connect_with(&crate::planning::test_support::options().username("postgres").password("local-fixture")).await?;
+    let lock = format!("mdm_resource:{}:resource:{id}", case_tenant());
+    sqlx::query("SELECT pg_advisory_lock(hashtextextended($1,2388))").bind(&lock).execute(&mut holder).await?;
+    let release = async {
+        tokio::time::timeout(Duration::from_secs(8), async {
+            loop {
+                let waiting: i64 = sqlx::query_scalar("WITH RECURSIVE blocked(pid) AS (SELECT pid FROM pg_stat_activity WHERE datname=current_database() AND pg_backend_pid()=ANY(pg_blocking_pids(pid)) UNION SELECT a.pid FROM pg_stat_activity a JOIN blocked b ON b.pid=ANY(pg_blocking_pids(a.pid)) WHERE a.datname=current_database()) SELECT count(*) FROM blocked").fetch_one(&mut holder).await?;
+                if waiting >= 2 { return Ok::<_, anyhow::Error>(()); }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        }).await??;
+        sqlx::query("SELECT pg_advisory_unlock(hashtextextended($1,2388))").bind(&lock).execute(&mut holder).await?;
+        Ok::<_, anyhow::Error>(())
+    };
+    let (created, archived, released) = tokio::join!(
         author.call(router, Method::POST, &policy_path, Some(create)),
-        archiver.call(router, Method::POST, &path, Some(archive.clone()))
-    )?;
+        archiver.call(router, Method::POST, &path, Some(archive.clone())), release);
+    holder.close().await?;
+    released?;
+    let (created, archived) = (created?, archived?);
     ensure!(
         created.0.is_success() != archived.0.is_success(),
         "archive race: {created:?} / {archived:?}"
@@ -649,7 +675,6 @@ async fn management_accepts_large_legal_policy_parameters() -> Result<()> {
     let mut fixture = Fixture::new().await?;
     let resources = std::mem::take(&mut fixture.resources);
     resources.finish(async {
-    fixture.register().await?;
     fixture
         .scope(
             case_task_scope(),

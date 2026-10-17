@@ -94,29 +94,68 @@ async fn scope_history_survives_deletion() {
     )
     .await;
     running.stop().await;
-    let projections = [pages::ScopePageKind::Members, pages::ScopePageKind::Decisions];
+    let projections = [
+        pages::ScopePageKind::Members,
+        pages::ScopePageKind::Decisions,
+    ];
     let mut histories = Vec::new();
     for projection in projections {
-        let before = execute(&service, &Command::ScopePage {
-            scope, result, projection,
-            query: pages::PageQuery { channel: rss_mdm_inventory::Channel::Mdm, limit: 100, cursor: None },
-        }).await.unwrap();
+        let before = execute(
+            &service,
+            &Command::ScopePage {
+                scope,
+                result,
+                projection,
+                query: pages::PageQuery {
+                    channel: rss_mdm_inventory::Channel::Mdm,
+                    limit: 100,
+                    cursor: None,
+                },
+            },
+        )
+        .await
+        .unwrap();
         assert_eq!(before["page"]["items"].as_array().unwrap().len(), 2);
         histories.push(before["page"]["items"].as_array().unwrap().clone());
     }
-    execute(&service, &Command::Scope { id: scope, change: operation(1, ScopeChange::Delete) }).await.unwrap();
+    execute(
+        &service,
+        &Command::Scope {
+            id: scope,
+            change: operation(1, ScopeChange::Delete),
+        },
+    )
+    .await
+    .unwrap();
     for (projection, expected) in projections.into_iter().zip(histories) {
         let mut cursor = None;
         let mut items = Vec::new();
         loop {
-            let page = execute(&service, &Command::ScopePage { scope, result, projection,
-                query: pages::PageQuery { channel: rss_mdm_inventory::Channel::Mdm, limit: 1, cursor },
-            }).await.unwrap();
+            let page = execute(
+                &service,
+                &Command::ScopePage {
+                    scope,
+                    result,
+                    projection,
+                    query: pages::PageQuery {
+                        channel: rss_mdm_inventory::Channel::Mdm,
+                        limit: 1,
+                        cursor,
+                    },
+                },
+            )
+            .await
+            .unwrap();
             assert_eq!(page["current"], false);
             items.extend(page["page"]["items"].as_array().unwrap().iter().cloned());
             cursor = page["nextCursor"].as_str().map(str::to_owned);
-            if cursor.is_none() { break; }
-            assert!(items.len() <= expected.len(), "history cursor repeated results");
+            if cursor.is_none() {
+                break;
+            }
+            assert!(
+                items.len() <= expected.len(),
+                "history cursor repeated results"
+            );
         }
         assert_eq!(items, expected);
     }

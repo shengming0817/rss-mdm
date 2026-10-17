@@ -335,7 +335,12 @@ async fn console_script_support_requires_signer_and_content() -> Result<()> {
                 )
                 .await?;
             ensure!(status == StatusCode::OK);
-            let capability = detail["capabilities"].as_array().unwrap().iter().find(|v| v["action"] == "script").unwrap();
+            let capability = detail["capabilities"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|v| v["action"] == "script")
+                .unwrap();
             ensure!(
                 capability["action"] == "script"
                     && capability["productSupport"]["state"] == "supported"
@@ -706,7 +711,6 @@ async fn derived_result_authorization(
                 "derived page leaked after inventory grant shrink at {path}: {status} {body}"
             );
         }
-
     }
     Box::pin(set_management_grants(member, permissions)).await?;
     for path in &paths {

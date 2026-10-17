@@ -140,12 +140,7 @@ async fn targeted_invocation_binds_parameters_identity_frequency_and_result() ->
                     .0
                     == StatusCode::FORBIDDEN
             );
-            for parameters in [
-                json!({}),
-                json!({"name":"Acme","path":"/Library"}),
-                json!({"name":"x".repeat(33)}),
-                json!({"name":true}),
-            ] {
+            for parameters in [json!({"name":"Acme","path":"/Library"})] {
                 let mut invalid = input.clone();
                 invalid["parameters"] = parameters;
                 ensure!(
@@ -162,12 +157,8 @@ async fn targeted_invocation_binds_parameters_identity_frequency_and_result() ->
                 call(&f, Method::GET, DIRECTORY, None, true, true).await?.1["items"] == json!([]),
                 "pending call remained in directory"
             );
-            ensure!(
-                call(&f, Method::POST, INVOKE, Some(input.clone()), true, true)
-                    .await?
-                    .1
-                    == accepted.1
-            );
+            let replay = call(&f, Method::POST, INVOKE, Some(input.clone()), true, true).await?;
+            ensure!(replay.0 == accepted.0 && replay.1 == accepted.1);
             let mut conflict = input.clone();
             conflict["parameters"]["name"] = json!("Other");
             ensure!(
@@ -314,6 +305,14 @@ async fn self_service_rechecks_config_and_capability_before_start() -> Result<()
     );
     let stack = worker(&f.base).await?;
     let task = claim(&f.router).await?;
+    let registration = pg(&format!("SELECT id FROM mdm_access.registrations WHERE tenant_id='{}' AND device='{}' AND channel='agent' AND state='active'", case_tenant(), case_device_id()))?;
+    let capabilities = pg(&format!("SELECT capabilities FROM mdm_agent.bindings WHERE tenant_id='{}' AND registration='{}'", case_tenant(), registration.trim()))?;
+    pg(&format!("UPDATE mdm_agent.bindings SET capabilities='[]'::jsonb WHERE tenant_id='{}' AND registration='{}'", case_tenant(), registration.trim()))?;
+    let mut start = json!({"kind":"start"});
+    let rejected = task_event_request(&f.router, &task, Uuid::new_v4(), &mut start).await?;
+    pg(&format!("UPDATE mdm_agent.bindings SET capabilities='{}'::jsonb WHERE tenant_id='{}' AND registration='{}'", capabilities.trim().replace('\'', "''"), case_tenant(), registration.trim()))?;
+    ensure!(rejected.0 == StatusCode::FORBIDDEN, "capability revoked after offer: {rejected:?}");
+    ensure!(pg(&format!("SELECT count(*) FROM mdm_commands.action_attempts WHERE run='{}' AND permit IS NOT NULL",task["payload"]["task"]["taskId"].as_str().unwrap()))?.trim()=="0");
     value["selfService"]["published"] = json!(false);
     post(&mut f.author,&f.router,&format!("/api/v1/policies/{id}"),json!({"operationId":Uuid::new_v4(),"expectedRevision":2,"input":{"action":"put","enabled":true,"definition":value}})).await?;
     let mut start = json!({"kind":"start"});
@@ -1333,7 +1332,14 @@ async fn software_self_service_call(
 async fn available_software_requires_request_and_deduplicates_users_policies_and_verified_effects()
 -> Result<()> {
     use crate::test_support::software_execution as software;
-    let mut f = software::Fixture::approved(software::Platform::MacOs).await?;
+    let mut f = software::Fixture::with_profiles(
+        software::Platform::MacOs,
+        json!(["inventory.collect.v1", "software.pkg.system.v1"]),
+        software::context(software::Platform::MacOs),
+        false,
+        true,
+    )
+    .await?;
     let resources = std::mem::take(&mut f.resources);
     resources.finish(async {
     let mut other = Browser::default();

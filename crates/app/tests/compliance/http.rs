@@ -228,6 +228,10 @@ async fn http_history_cursors_authorization_and_disable() -> Result<()> {
         None,
     )
     .await?;
+    for page in [&first, &second] {
+        ensure!(page["items"].as_array().unwrap().len() == 1);
+        Uuid::parse_str(page["items"][0]["task"].as_str().unwrap())?;
+    }
     ensure!(first["items"][0]["task"] != second["items"][0]["task"]);
     let (s, _) = browser
         .call(
@@ -297,18 +301,26 @@ async fn http_history_cursors_authorization_and_disable() -> Result<()> {
     )
     .await?;
     ensure!(status(&mut browser, router, "compliance-a", "unknown").await?["reason"] == "no_rules");
+    let retained = ok(
+        &mut browser,
+        router,
+        Method::GET,
+        "/api/v1/devices/compliance-a/compliance/history",
+        None,
+    )
+    .await?;
+    let tasks: std::collections::BTreeSet<_> = retained["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v["task"].as_str().unwrap())
+        .collect();
     ensure!(
-        !ok(
-            &mut browser,
-            router,
-            Method::GET,
-            "/api/v1/devices/compliance-a/compliance/history",
-            None
-        )
-        .await?["items"]
+        history["items"]
             .as_array()
             .unwrap()
-            .is_empty()
+            .iter()
+            .all(|v| tasks.contains(v["task"].as_str().unwrap()))
     );
     ensure!(audit_count(|r| r.action() == "compliance_read")? > 0);
     crate::test_support::stop_worker(automation).await?;

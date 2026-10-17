@@ -19,10 +19,17 @@ async fn mutation_unknown_commit_recovers_original_response() -> Result<()> {
         s == StatusCode::SERVICE_UNAVAILABLE,
         "lost commit ACK must remain unknown"
     );
-    let persisted: Value = serde_json::from_str(&pg(&format!("SELECT response FROM mdm_compliance.operations WHERE tenant_id='{}' AND id='{}'", case_tenant(), body["operationId"].as_str().unwrap()))?)?;
+    let persisted: Value = serde_json::from_str(&pg(&format!(
+        "SELECT response FROM mdm_compliance.operations WHERE tenant_id='{}' AND id='{}'",
+        case_tenant(),
+        body["operationId"].as_str().unwrap()
+    ))?)?;
     ensure!(persisted["task"].as_str().is_some());
     let written = ok(&mut browser, router, Method::PUT, &path, Some(body.clone())).await?;
-    ensure!(written == persisted, "recovery must replay the original receipt");
+    ensure!(
+        written == persisted,
+        "recovery must replay the original receipt"
+    );
     ensure!(
         ok(&mut browser, router, Method::PUT, &path, Some(body)).await? == written,
         "operation replay changed response"
@@ -104,10 +111,26 @@ async fn publication_terminal_page_and_audit_are_atomic() -> Result<()> {
     pg(
         "DROP TRIGGER reject_compliance_publish ON mdm_compliance.rules; DROP FUNCTION public.reject_compliance_publish(); DROP SEQUENCE public.compliance_publish_attempts",
     )?;
-    let completed = task_phase(&mut browser, router, &format!("{path}/tasks/{task}"), "published").await?;
-    ensure!(completed["completed"] == true && completed["failure"].is_null(), "{completed}");
+    let completed = task_phase(
+        &mut browser,
+        router,
+        &format!("{path}/tasks/{task}"),
+        "published",
+    )
+    .await?;
+    ensure!(
+        completed["completed"] == true && completed["failure"].is_null(),
+        "{completed}"
+    );
     ensure!(pg(&format!("SELECT count(*) FROM mdm_compliance.rules WHERE tenant_id='{}' AND current_run='{task}'", case_tenant()))?.trim() == "1");
-    ensure!(pg(&format!("SELECT count(*) FROM mdm_compliance.results WHERE tenant_id='{}' AND task='{task}'", case_tenant()))?.trim() == "33");
+    ensure!(
+        pg(&format!(
+            "SELECT count(*) FROM mdm_compliance.results WHERE tenant_id='{}' AND task='{task}'",
+            case_tenant()
+        ))?
+        .trim()
+            == "33"
+    );
     ensure!(pg(&format!("SELECT count(*) FROM mdm_access.devices d WHERE d.tenant_id='{}' AND NOT EXISTS(SELECT 1 FROM mdm_compliance.results r WHERE r.tenant_id=d.tenant_id AND r.device=d.id AND r.task='{task}')", case_tenant()))?.trim() == "0");
     status(&mut browser, router, "compliance-a", "non_compliant").await?;
     ensure!(

@@ -199,10 +199,21 @@ async fn static_patches_use_the_same_sealed_publication_and_preserve_old_sets() 
     let creation = op();
     let create = Command::Create {
         asset_context: rss_mdm_group_postgres::AssetContext::Endpoint,
-        group, name: "static-paged".into(), description: String::new(), definition: Definition::Static,
+        group,
+        name: "static-paged".into(),
+        description: String::new(),
+        definition: Definition::Static,
     };
-    let mut current = s.execute(creation, at(), &create, deadline()).await.unwrap();
-    assert_eq!(current, s.execute(creation, at(), &create, deadline()).await.unwrap());
+    let mut current = s
+        .execute(creation, at(), &create, deadline())
+        .await
+        .unwrap();
+    assert_eq!(
+        current,
+        s.execute(creation, at(), &create, deadline())
+            .await
+            .unwrap()
+    );
     let mut previous = None;
     for (add, remove) in [
         (vec!["a".into(), "b".into()], vec![]),
@@ -259,7 +270,10 @@ async fn static_patches_use_the_same_sealed_publication_and_preserve_old_sets() 
                 })
                 .await,
         );
-        assert_eq!(current, builds::publish(&runtime, &s, &request).await.unwrap());
+        assert_eq!(
+            current,
+            builds::publish(&runtime, &s, &request).await.unwrap()
+        );
         if let Some(old) = previous {
             assert_eq!((current.added, current.removed), (1, 1));
             let old_members = committed(
@@ -306,15 +320,28 @@ async fn static_patches_use_the_same_sealed_publication_and_preserve_old_sets() 
     }
     // The same published set also proves a borrowed delete rolls back its receipt and event.
     let deletion = op();
-    let delete = Command::Delete { group, expected: current.group.revision };
-    let attempt = runtime.local_tx_with_context(tenant(), deadline(), (&s, &delete), |ctx, tx| {
-        Box::pin(async move {
-            tx.prepare_outbox_partitions(&[ctx.0.partition(&ctx.1.group().to_string())?]).await?;
-            ctx.0.execute_in(tx, deletion, at(), ctx.1).await?.unwrap();
-            Err::<(), _>(PgError::from(sqlx::Error::RowNotFound))
+    let delete = Command::Delete {
+        group,
+        expected: current.group.revision,
+    };
+    let attempt = runtime
+        .local_tx_with_context(tenant(), deadline(), (&s, &delete), |ctx, tx| {
+            Box::pin(async move {
+                tx.prepare_outbox_partitions(&[ctx.0.partition(&ctx.1.group().to_string())?])
+                    .await?;
+                ctx.0.execute_in(tx, deletion, at(), ctx.1).await?.unwrap();
+                Err::<(), _>(PgError::from(sqlx::Error::RowNotFound))
+            })
         })
-    }).await;
-    assert!(attempt.fold(|_| false, |_| false, |_| true, |_| false, |_| false, |_| false));
+        .await;
+    assert!(attempt.fold(
+        |_| false,
+        |_| false,
+        |_| true,
+        |_| false,
+        |_| false,
+        |_| false
+    ));
     assert!(!s.get(group, deadline()).await.unwrap().unwrap().deleted);
     let effects = runtime.local_tx_with_context(tenant(), deadline(), &s, |_, tx| Box::pin(async move {
         tx.with_connection(move |c| Box::pin(async move {
@@ -424,7 +451,9 @@ async fn durable_recalculation_no_change_fences_stale_run() {
     let next = builds::request(&published, None);
     let stale_nochange = builds::request(&published, None);
     builds::prepare(&runtime, &s, &next, &page).await.unwrap();
-    builds::prepare(&runtime, &s, &stale_nochange, &page).await.unwrap();
+    builds::prepare(&runtime, &s, &stale_nochange, &page)
+        .await
+        .unwrap();
     let unchanged = builds::publish(&runtime, &s, &next).await.unwrap();
     assert_eq!(
         unchanged.group.member_version,
@@ -433,8 +462,12 @@ async fn durable_recalculation_no_change_fences_stale_run() {
     assert_eq!((unchanged.added, unchanged.removed), (0, 0));
     assert_eq!(unchanged.group.revision, published.group.revision);
     assert!(unchanged.group.calculation_revision > published.group.calculation_revision);
-    assert!(matches!(builds::publish(&runtime, &s, &stale_nochange).await,
-        Err(rss_mdm_group_postgres::Error::Rejected(Rejection::VersionConflict))));
+    assert!(matches!(
+        builds::publish(&runtime, &s, &stale_nochange).await,
+        Err(rss_mdm_group_postgres::Error::Rejected(
+            Rejection::VersionConflict
+        ))
+    ));
     assert_eq!(
         builds::members(&runtime, &s, first.id).await.unwrap(),
         vec!["device-1"]

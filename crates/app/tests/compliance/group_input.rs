@@ -27,7 +27,10 @@ async fn waiting_group_does_not_spin(b: &mut Browser, router: &Router, base: &Va
     ensure!(
         finished["diagnostic"]["reason"] == "group_input_pending" && finished["processed"] == 0
     );
-    let held = pg(&format!("SELECT jsonb_build_array(desired,(SELECT count(*) FROM mdm_automation.automation_jobs WHERE target='{rule}' AND tenant_id='{}')) FROM mdm_compliance.rules WHERE id='{rule}'", case_tenant()))?;
+    let held = pg(&format!(
+        "SELECT jsonb_build_array(desired,(SELECT count(*) FROM mdm_automation.automation_jobs WHERE target='{rule}' AND tenant_id='{}')) FROM mdm_compliance.rules WHERE id='{rule}'",
+        case_tenant()
+    ))?;
     let independent = Uuid::new_v4();
     let independent_path = format!("/api/v1/compliance-rules/{independent}");
     let run = ok(
@@ -48,7 +51,13 @@ async fn waiting_group_does_not_spin(b: &mut Browser, router: &Router, base: &Va
     ensure!(
         audit_count(|r| r.operation() == Some(task) && r.action() == "automation_superseded")? == 1
     );
-    ensure!(pg(&format!("SELECT jsonb_build_array(desired,(SELECT count(*) FROM mdm_automation.automation_jobs WHERE target='{rule}' AND tenant_id='{}')) FROM mdm_compliance.rules WHERE id='{rule}'", case_tenant()))? == held, "pending input spun new work");
+    ensure!(
+        pg(&format!(
+            "SELECT jsonb_build_array(desired,(SELECT count(*) FROM mdm_automation.automation_jobs WHERE target='{rule}' AND tenant_id='{}')) FROM mdm_compliance.rules WHERE id='{rule}'",
+            case_tenant()
+        ))? == held,
+        "pending input spun new work"
+    );
     pg(&format!(
         "UPDATE mdm_automation.automation_jobs SET forwarded=false WHERE id='{group_task}'"
     ))?;
@@ -57,8 +66,20 @@ async fn waiting_group_does_not_spin(b: &mut Browser, router: &Router, base: &Va
         "SELECT desired::text FROM mdm_compliance.rules WHERE id='{rule}'"
     ))?;
     ensure!(next.trim() != task);
-    task_phase(b, router, &format!("{path}/tasks/{}", next.trim()), "published").await?;
-    ensure!(pg(&format!("SELECT current_run::text FROM mdm_compliance.rules WHERE id='{rule}'"))?.trim() == next.trim());
+    task_phase(
+        b,
+        router,
+        &format!("{path}/tasks/{}", next.trim()),
+        "published",
+    )
+    .await?;
+    ensure!(
+        pg(&format!(
+            "SELECT current_run::text FROM mdm_compliance.rules WHERE id='{rule}'"
+        ))?
+        .trim()
+            == next.trim()
+    );
     crate::test_support::stop_worker(worker).await?;
     Ok(())
 }

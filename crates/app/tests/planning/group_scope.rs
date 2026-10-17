@@ -475,10 +475,23 @@ async fn group_scope_revision_competition() {
     };
     let (a, b) = tokio::join!(execute(&m, &a), execute(&m, &b));
     assert_ne!(a.is_ok(), b.is_ok());
-    let (winner, loser) = if a.is_ok() { (a.unwrap(), b) } else { (b.unwrap(), a) };
-    assert!(matches!(loser, Err(Error::Flow(rss_mdm_flow_service::Error::Conflict))));
+    let (winner, loser) = if a.is_ok() {
+        (a.unwrap(), b)
+    } else {
+        (b.unwrap(), a)
+    };
+    assert!(matches!(
+        loser,
+        Err(Error::Flow(rss_mdm_flow_service::Error::Conflict))
+    ));
     assert_eq!(winner["revision"], 2);
-    assert_eq!(sql(&format!("SELECT revision FROM mdm_planning.scopes WHERE tenant_id='{}' AND id='{s}'", tenant())), "2");
+    assert_eq!(
+        sql(&format!(
+            "SELECT revision FROM mdm_planning.scopes WHERE tenant_id='{}' AND id='{s}'",
+            tenant()
+        )),
+        "2"
+    );
     m.runtime.close().await;
 }
 
@@ -561,8 +574,10 @@ async fn registration_replacement_invalidates_direct_and_group_admission() {
             &id.to_string(),
         )
         .await;
-        assert!(matches!(scope_admission(&m, id, rss_mdm_inventory::Channel::Mdm, &device).await,
-            rss_mdm_execution_service::source_authority::ScopeAdmission::Eligible { .. }));
+        assert!(matches!(
+            scope_admission(&m, id, rss_mdm_inventory::Channel::Mdm, &device).await,
+            rss_mdm_execution_service::source_authority::ScopeAdmission::Eligible { .. }
+        ));
         pending.push(id);
     }
     running.stop().await;
@@ -587,7 +602,7 @@ async fn registration_replacement_invalidates_direct_and_group_admission() {
 async fn group_delete_scope_reference_compete_without_dangling_references() {
     let first = planning(tenant()).await;
     let second = planning(tenant()).await;
-    for reverse in [false, true] {
+    {
         let group = Uuid::new_v4();
         let scope_id = Uuid::new_v4();
         execute(
@@ -622,11 +637,35 @@ async fn group_delete_scope_reference_compete_without_dangling_references() {
                 },
             ),
         };
-        let (a, b) = if reverse {
-            tokio::join!(execute(&first, &reference), execute(&second, &delete))
-        } else {
-            tokio::join!(execute(&first, &delete), execute(&second, &reference))
+        use sqlx::Connection;
+        let mut holder = sqlx::PgConnection::connect_with(
+            &options().username("postgres").password("local-fixture"),
+        )
+        .await
+        .unwrap();
+        sqlx::query("BEGIN").execute(&mut holder).await.unwrap();
+        sqlx::query("SELECT 1 FROM mdm_group.groups WHERE tenant_id=$1::uuid AND id=$2 FOR UPDATE")
+            .bind(tenant().to_string())
+            .bind(group)
+            .fetch_one(&mut holder)
+            .await
+            .unwrap();
+        let release = async {
+            tokio::time::timeout(Duration::from_secs(8), async {
+                loop {
+                    let waiting: i64 = sqlx::query_scalar("WITH RECURSIVE blocked(pid) AS (SELECT pid FROM pg_stat_activity WHERE datname=current_database() AND pg_backend_pid()=ANY(pg_blocking_pids(pid)) UNION SELECT a.pid FROM pg_stat_activity a JOIN blocked b ON b.pid=ANY(pg_blocking_pids(a.pid)) WHERE a.datname=current_database()) SELECT count(*) FROM blocked").fetch_one(&mut holder).await.unwrap();
+                    if waiting >= 2 { break; }
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            }).await.expect("delete and reference never overlapped");
+            sqlx::query("ROLLBACK").execute(&mut holder).await.unwrap();
         };
+        let (a, b, ()) = tokio::join!(
+            execute(&first, &delete),
+            execute(&second, &reference),
+            release
+        );
+        holder.close().await.unwrap();
         assert_ne!(a.is_ok(), b.is_ok());
         assert_eq!(
             sql(&format!(

@@ -4,10 +4,23 @@ use crate::test_support::*;
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 #[ignore = "make t2 MODULE=planning.software"]
 async fn rollout_time_success_gates_and_stage_evidence() -> Result<()> {
-    let mut fixture = Fixture::approved(Platform::MacOs).await?;
+    let mut fixture = Fixture::with_profiles(
+        Platform::MacOs,
+        json!(["inventory.collect.v1", "software.pkg.system.v1"]),
+        context(Platform::MacOs),
+        false,
+        true,
+    )
+    .await?;
     let resources = std::mem::take(&mut fixture.resources);
     resources.finish(async {
     let empty_scope = prepared_scope(&fixture.planning, &[]).await?;
+    let first_device = case::name("rollout-first");
+    let first_credential = crate::test_support::credential("rollout-first");
+    crate::test_support::agent::seed_profile(&fixture.base, fixture.execution.clone(), &first_credential, first_device,
+        json!({"capabilities":["inventory.collect.v1","software.pkg.system.v1"],"platform":"macos","architecture":"aarch64","executionContext":context(Platform::MacOs)})).await?;
+    let first_scope = prepared_scope(&fixture.planning, &[first_device]).await?;
+    let root_scope = prepared_scope(&fixture.planning, &[first_device, crate::test_support::software_execution::case_device()]).await?;
     let content = fixture.content.clone();
     let base = fixture.base;
     let router = fixture.router;
@@ -18,7 +31,7 @@ async fn rollout_time_success_gates_and_stage_evidence() -> Result<()> {
     let future = Uuid::new_v4();
     let future_path = format!("/api/v1/policies/{future}");
     let now = crate::clock::Clock::unix_seconds(&crate::clock::SystemClock)?;
-    let future_definition = |opens_at: i64, minimum: Option<u8>| json!({"scope":scope,"action": {"resource": {"kind":"software","id":resource,"version":"v1","variants":{"macos_aarch64":"default"}},"kind":"software","intent":"required_install","delivery":{"kind":"direct"},"runLifetimeSeconds":600,"rollout":{"stages":[{"scope":empty_scope,"opensAt":0},{"scope":scope,"opensAt":opens_at,"minimumVerifiedPercent":minimum}]}}});
+    let future_definition = |opens_at: i64, minimum: Option<u8>| json!({"scope":root_scope,"action": {"resource": {"kind":"software","id":resource,"version":"v1","variants":{"macos_aarch64":"default"}},"kind":"software","intent":"required_install","delivery":{"kind":"direct"},"runLifetimeSeconds":600,"rollout":{"stages":[{"scope":first_scope,"opensAt":0},{"scope":scope,"opensAt":opens_at,"minimumVerifiedPercent":minimum}]}}});
     let future_policy = write(
         &mut author,
         &router,
@@ -135,18 +148,15 @@ async fn rollout_time_success_gates_and_stage_evidence() -> Result<()> {
         gated.0 == StatusCode::OK && gated.1["task"].is_null(),
         "optional success gate: {gated:?}"
     );
-    let resumed = write(
-        &mut author,
-        &router,
-        &future_path,
-        4,
-        json!({"action":"put","enabled":true,"definition":future_definition(1,None)}),
-    )
-    .await?;
-    ensure!(resumed["versionId"] == frozen_version);
+    let first_task = claim_with(&router, &first_credential, Platform::MacOs).await?;
+    for kind in [json!({"kind":"received"}), json!({"kind":"start"}), result_event(&first_task, "install", Some(0), "present", false)?] {
+        ensure!(event_with(&router, &first_credential, &first_task, kind).await?.0 == StatusCode::OK);
+    }
+    let progress = ready_rollout(&mut author, &router, future).await?;
+    ensure!(progress.1["stages"][0]["verifiedSuccess"] == 1, "{progress:?}");
     let resumed_task = claim(&router).await?;
     ensure!(
-        resumed_task["payload"]["task"]["steps"][1]["action"]["package"] == "Private.Controlled",
+        resumed_task["payload"]["task"]["steps"][0]["action"]["package"] == "Private.Controlled",
         "resume: {resumed_task}"
     );
     ensure!(
@@ -170,7 +180,7 @@ async fn rollout_time_success_gates_and_stage_evidence() -> Result<()> {
         .await?
         .0 == StatusCode::OK
     );
-    let reordered=write(&mut author,&router,&future_path,5,json!({"action":"put","enabled":true,
+    let reordered=write(&mut author,&router,&future_path,4,json!({"action":"put","enabled":true,
         "definition":{"scope":scope,
         "action": {"resource": {"kind":"software","id":resource,"version":"v1","variants":{"macos_aarch64":"default"}},"kind":"software","intent":"required_install","delivery":{"kind":"direct"},"runLifetimeSeconds":600,
         "rollout":{"stages":[{"scope":scope,"opensAt":0},{"scope":empty_scope,"opensAt":1}]}}}})).await?;
@@ -212,11 +222,17 @@ async fn rollout_time_success_gates_and_stage_evidence() -> Result<()> {
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 #[ignore = "make t2 MODULE=planning.software"]
 async fn new_approval_changes_execution_version() -> Result<()> {
-    let mut fixture = Fixture::approved(Platform::MacOs).await?;
+    let mut fixture = Fixture::with_profiles(
+        Platform::MacOs,
+        json!(["inventory.collect.v1", "software.pkg.system.v1"]),
+        context(Platform::MacOs),
+        false,
+        true,
+    )
+    .await?;
     let resources = std::mem::take(&mut fixture.resources);
     resources
         .finish(async {
-            let stack = worker(&fixture.base, fixture.content.clone()).await?;
             let router = fixture.router;
             let mut author = fixture.author;
             let resource = fixture.resource;
@@ -234,11 +250,25 @@ async fn new_approval_changes_execution_version() -> Result<()> {
             )
             .await?;
             ensure!(published["version"] == 1, "publish: {published}");
-            write(
+            let unchanged = write(
                 &mut author,
                 &router,
                 &policy_path,
                 1,
+                json!({"action":"put","enabled":true,"definition":authored("required_install")}),
+            )
+            .await?;
+            ensure!(unchanged["versionId"] == published["versionId"]);
+            let frozen = pg(&format!(
+                "SELECT frozen FROM mdm_policy.versions WHERE tenant_id='{}' AND id='{}'",
+                case_tenant(),
+                published["versionId"].as_str().unwrap()
+            ))?;
+            write(
+                &mut author,
+                &router,
+                &policy_path,
+                2,
                 json!({"action":"disable"}),
             )
             .await?;
@@ -263,7 +293,7 @@ async fn new_approval_changes_execution_version() -> Result<()> {
                 &mut author,
                 &router,
                 &policy_path,
-                2,
+                3,
                 json!({"action":"put","enabled":false,"definition":authored("required_install")}),
             )
             .await?;
@@ -271,7 +301,13 @@ async fn new_approval_changes_execution_version() -> Result<()> {
                 rebound["versionId"] != published["versionId"],
                 "reapproval must create a new execution version: {rebound}"
             );
-            crate::test_support::stop_worker(stack).await?;
+            ensure!(
+                pg(&format!(
+                    "SELECT frozen FROM mdm_policy.versions WHERE tenant_id='{}' AND id='{}'",
+                    case_tenant(),
+                    rebound["versionId"].as_str().unwrap()
+                ))? != frozen
+            );
             Ok(())
         })
         .await
@@ -280,7 +316,14 @@ async fn new_approval_changes_execution_version() -> Result<()> {
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 #[ignore = "make t2 MODULE=planning.software"]
 async fn rollout_statistics_checkpoint_excluded_pages_and_reject_stale_inputs() -> Result<()> {
-    let mut f = Fixture::approved(Platform::MacOs).await?;
+    let mut f = Fixture::with_profiles(
+        Platform::MacOs,
+        json!(["inventory.collect.v1", "software.pkg.system.v1"]),
+        context(Platform::MacOs),
+        false,
+        true,
+    )
+    .await?;
     let resources = std::mem::take(&mut f.resources);
     resources.finish(async {
     let mut devices = Vec::new();
