@@ -204,6 +204,8 @@ impl DeviceService {
         self.retirement_test_budget = Some(total);
         self
     }
+    /// Resolve one committed identity snapshot without waiting for channel writers.
+    /// Consumers recheck this principal under their existing mutation locks.
     pub async fn management_principal(
         &self,
         credential: &VerifiedChannelCredential,
@@ -211,8 +213,8 @@ impl DeviceService {
         if self.tenant != credential.tenant.to_string() {
             return Err(Error::Forbidden);
         }
-        let mut tx = self.access.begin(&self.tenant).await?;
-        let principal = store::management_in(&mut tx, credential).await?;
+        let mut tx = self.access.snapshot(&self.tenant).await?;
+        let principal = management::read(&mut tx, credential).await?;
         tx.commit().await.map_err(crate::database::db)?;
         Ok(principal)
     }
