@@ -372,7 +372,7 @@ async fn dependency_admission_uses_exact_current_enablement() -> Result<()> {
                 &dependent,
                 &enablement,
                 dependent.digest().bytes(),
-                Some(catalog::Error::Dependency)
+                Some(catalog::Error::NotAdmitted)
             )
             .await
             .is_err()
@@ -454,7 +454,7 @@ async fn dependency_admission_uses_exact_current_enablement() -> Result<()> {
                 let lifecycle = preparation.freeze_in(tx, request(false)).await?;
                 ensure_catalog(matches!(
                     preparation.resolve_in(tx, binding, target).await,
-                    Err(catalog::Error::NotAdmitted)
+                    Err(catalog::Error::Conflict)
                 ))?;
                 let binding = &Selection {
                     lifecycle,
@@ -494,7 +494,7 @@ async fn dependency_admission_uses_exact_current_enablement() -> Result<()> {
                 &wrong,
                 &enable(0),
                 wrong.digest().bytes(),
-                Some(catalog::Error::Dependency)
+                Some(catalog::Error::NotAdmitted)
             )
             .await
             .is_err()
@@ -539,7 +539,7 @@ async fn dependency_admission_uses_exact_current_enablement() -> Result<()> {
                 &after,
                 &enable(0),
                 after.digest().bytes(),
-                Some(catalog::Error::Dependency)
+                Some(catalog::Error::NotAdmitted)
             )
             .await
             .is_err()

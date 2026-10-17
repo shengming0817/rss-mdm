@@ -178,13 +178,16 @@ async fn draft_publication_rolls_back_every_write_and_replay_rechecks_access() {
         )
     };
     let before = counts();
+    sql(
+        "CREATE SEQUENCE public.draft_fault_reached; GRANT USAGE ON SEQUENCE public.draft_fault_reached TO mdm_software_driver",
+    );
     // Reject after catalog writes, once via a SQL error and once via a domain rejection.
-    for body in [
+    for (index, body) in [
         "RAISE EXCEPTION 'publication fixture rollback';",
         "UPDATE mdm_software.versions SET lifecycle=jsonb_set(lifecycle,'{state}','\"withdrawn\"') WHERE tenant_id=NEW.tenant_id AND resource=NEW.resource AND version=NEW.version;",
-    ] {
+    ].into_iter().enumerate() {
         sql(&format!(
-            "CREATE FUNCTION public.reject_draft_publication() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN {body} RETURN NEW; END $$; CREATE TRIGGER reject_draft AFTER INSERT ON mdm_software.versions FOR EACH ROW EXECUTE FUNCTION public.reject_draft_publication();"
+            "CREATE FUNCTION public.reject_draft_publication() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN PERFORM nextval('public.draft_fault_reached'); {body} RETURN NEW; END $$; CREATE TRIGGER reject_draft AFTER INSERT ON mdm_software.versions FOR EACH ROW EXECUTE FUNCTION public.reject_draft_publication();"
         ));
         let result = service
             .submit(
@@ -198,11 +201,11 @@ async fn draft_publication_rolls_back_every_write_and_replay_rechecks_access() {
         sql(
             "DROP TRIGGER reject_draft ON mdm_software.versions; DROP FUNCTION public.reject_draft_publication();",
         );
-        if body.starts_with("RAISE") {
-            assert!(matches!(result, Err(Error::RolledBack(_))), "{result:?}");
-        } else {
-            assert!(matches!(result, Err(Error::Content)), "{result:?}");
-        }
+        assert!(matches!(result, Err(Error::Content)), "{result:?}");
+        // The publication boundary deliberately maps catalog failures to Content.
+        // Sequence advancement survives rollback and proves this trigger was reached.
+        assert_eq!(sql("SELECT last_value FROM public.draft_fault_reached"), (index + 1).to_string());
+        assert_eq!(sql("SELECT is_called FROM public.draft_fault_reached"), "t");
         assert_eq!(
             counts(),
             before,
@@ -217,6 +220,7 @@ async fn draft_publication_rolls_back_every_write_and_replay_rechecks_access() {
             original
         );
     }
+    sql("DROP SEQUENCE public.draft_fault_reached");
     service
         .submit(
             &input.candidate,
