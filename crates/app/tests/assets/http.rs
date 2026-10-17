@@ -1,4 +1,58 @@
 use crate::test_support::*;
+// Only asset routes and the real authentication/audit boundary; no Agent or Planning.
+struct AssetHttp {
+    resources: Resources,
+    router: Router,
+    author: Browser,
+    author_id: String,
+    grants: Vec<crate::authorization::Grant>,
+}
+impl AssetHttp {
+    async fn open() -> Result<Self> {
+        let mut authority = authority::Authority::open().await?;
+        let tenant = rss_request_context::TenantId::parse(case_tenant())?;
+        let runtime = crate::planning::test_support::runtime(tenant).await;
+        authority.resources.resource(runtime.clone());
+        let inventory = crate::planning::test_support::inventory_runtime(tenant).await;
+        authority
+            .resources
+            .resource(InventoryFixtureResource(inventory.clone()));
+        let key = rss_mdm_flow_service::storage::cursor_key(&runtime, tenant).await?;
+        let assets = Arc::new(rss_mdm_inventory_service::assets::AssetService::new(
+            inventory,
+            authority.audit.clone(),
+            runtime,
+            tenant,
+            Arc::new(crate::clock::SystemClock),
+            &key,
+            Arc::new(crate::automation::inventory_tasks::InventoryTasks),
+        ));
+        let routes = Router::new()
+            .nest(
+                "/api/v1",
+                rss_mdm_management_http::assets::routes().with_state(Arc::new(
+                    rss_mdm_management_http::assets::http::HttpState { assets },
+                )),
+            )
+            .merge(authority.authorization());
+        let router = authority.router(routes)?;
+        let author = authority.browser("other")?;
+        let author_id = browser_subject(&author, &router).await?;
+        let grants = crate::test_support::identity::device_grants(
+            None,
+            &["inventory_read", "inventory_assign"],
+        )?;
+        crate::test_support::identity::set_grants(case_tenant(), &author_id, grants.clone())
+            .await?;
+        Ok(Self {
+            resources: authority.resources,
+            router,
+            author,
+            author_id,
+            grants,
+        })
+    }
+}
 mod identity_read {
     use crate::test_support::*;
     #[tokio::test]
@@ -67,7 +121,8 @@ mod identity_read {
                 && denied.1["code"] == "audit_contract_error"
         );
         browser.operation = None;
-        ensure!(browser.call(&authorized, Method::GET, query, None).await?.0 == StatusCode::OK);
+        let recovered = browser.call(&authorized, Method::GET, query, None).await?;
+        ensure!(recovered.0 == StatusCode::OK && recovered.1["asset"]["device"]["fields"]["device.model"]["state"]["value"]["value"] == "Model-A");
         Ok(())
         }).await
             })
@@ -78,72 +133,67 @@ mod identity_read {
 mod storage {
     use crate::planning::test_support::*;
 
+    pub(super) async fn independent_assets(
+        runtime: Arc<PgRuntime>,
+        tenant: TenantId,
+    ) -> Arc<assets::AssetService> {
+        let key = rss_mdm_flow_service::storage::cursor_key(&runtime, tenant)
+            .await
+            .unwrap();
+        Arc::new(assets::AssetService::new(
+            inventory_runtime(tenant).await,
+            audit_store_with_integrity(rss_audit_postgres::Integrity::Plain).await,
+            runtime,
+            tenant,
+            Arc::new(crate::clock::SystemClock),
+            &key,
+            Arc::new(crate::automation::inventory_tasks::InventoryTasks),
+        ))
+    }
+    async fn execute(
+        service: &assets::AssetService,
+        command: &assets::Command,
+    ) -> Result<Value, rss_mdm_inventory_service::Error> {
+        let audit = RequestAudit::new(tenant().to_string(), "management_write");
+        audit.set_principal("operator", crate::test_support::INSTANCE);
+        let result = service.execute(command, &audit, &|| Ok(())).await;
+        audit.finalize(None);
+        result
+    }
+
     #[cfg(feature = "integration")]
     #[tokio::test]
     #[ignore = "MODULE=assets.http: real capability storage and transactions"]
     async fn asset_commit_unknown_recovers_original_receipts() {
-        use assets::{
-            Command as AssetCommand, ManualChange, Owner, Query, SavedChange, SavedDefinition,
-            Scalar,
-        };
-        let m = planning(tenant()).await;
-        let device = format!("unknown-{}", Uuid::new_v4());
-        seed_device(&device);
-        let owner = Owner {
-            instance: Uuid::new_v4().to_string(),
-            principal: Uuid::new_v4().to_string(),
-        };
+        use assets::{Command as AssetCommand, Owner, Query, SavedChange, SavedDefinition};
+        let runtime = runtime(tenant()).await;
+        let service = independent_assets(runtime.clone(), tenant()).await;
         let id = Uuid::new_v4();
-        let execution = [
-            AssetCommand::Manual {
-                device: device.clone(),
-                field: rss_mdm_inventory::builtin::ASSET_TAG,
-                change: inventory_operation(
-                    0,
-                    ManualChange::Set {
-                        value: Scalar::String("retained".into()),
-                    },
-                ),
-                owner: owner.clone(),
+        let command = AssetCommand::SavedWrite {
+            id,
+            owner: Owner {
+                instance: Uuid::new_v4().to_string(),
+                principal: Uuid::new_v4().to_string(),
             },
-            AssetCommand::SavedWrite {
-                id,
-                owner,
-                change: inventory_operation(
-                    0,
-                    SavedChange::Put {
-                        definition: Box::new(SavedDefinition {
-                            name: "mine".into(),
-                            query: Query::default(),
-                        }),
-                    },
-                ),
-            },
-        ];
-        let service = assets(&m).await;
-        for command in execution {
-            m.runtime.inject_next_transaction_fault(
-                rss_transactional_messaging_postgres::PgTransactionFault::CommitUnknownAfterAck,
-            );
-            assert!(matches!(
-                execute_asset_service(&m, &service, &command).await,
-                Err(Error::Inventory(
-                    rss_mdm_inventory_service::Error::CommitUnknown
-                ))
-            ));
-            let recovered = execute_asset_service(&m, &service, &command).await.unwrap();
-            assert_eq!(
-                execute_asset_service(&m, &service, &command).await.unwrap(),
-                recovered
-            );
-        }
-        assert_eq!(
-            sql(&format!(
-                "SELECT revision FROM mdm.manual_assignments WHERE tenant_id='{}' AND device='{device}'",
-                tenant()
-            )),
-            "1"
+            change: inventory_operation(
+                0,
+                SavedChange::Put {
+                    definition: Box::new(SavedDefinition {
+                        name: "mine".into(),
+                        query: Query::default(),
+                    }),
+                },
+            ),
+        };
+        runtime.inject_next_transaction_fault(
+            rss_transactional_messaging_postgres::PgTransactionFault::CommitUnknownAfterAck,
         );
+        assert!(matches!(
+            execute(&service, &command).await,
+            Err(rss_mdm_inventory_service::Error::CommitUnknown)
+        ));
+        let recovered = execute(&service, &command).await.unwrap();
+        assert_eq!(execute(&service, &command).await.unwrap(), recovered);
         assert_eq!(
             sql(&format!(
                 "SELECT revision FROM mdm_assets.saved_queries WHERE tenant_id='{}' AND id='{id}'",
@@ -151,17 +201,18 @@ mod storage {
             )),
             "1"
         );
-        m.runtime.close().await;
+        runtime.close().await;
     }
 
     #[tokio::test]
     #[ignore = "MODULE=assets.http: real capability storage and transactions"]
     async fn asset_storage_failures_are_not_malformed() {
-        let m = planning(tenant()).await;
+        let runtime = runtime(tenant()).await;
+        let service = independent_assets(runtime.clone(), tenant()).await;
         let device = format!("storage-stages-{}", Uuid::new_v4());
         seed_device(&device);
         let command = assets::Command::Detail {
-            device,
+            device: device.clone(),
             scope: assets::ReadScope::all(),
         };
         for (table, expected) in [
@@ -169,19 +220,25 @@ mod storage {
             ("mdm.manual_history", "assets_storage"),
             ("mdm_access.collection_history", "assets_storage"),
         ] {
+            assert_eq!(
+                execute(&service, &command).await.unwrap()["asset"]["device"]["device"],
+                device
+            );
             sql(&format!("REVOKE SELECT ON {table} FROM mdm_flow_runtime"));
-            let outcome = execute_asset(&m, &command).await;
+            let outcome = execute(&service, &command).await;
             sql(&format!("GRANT SELECT ON {table} TO mdm_flow_runtime"));
-            let Error::Inventory(error) = outcome.unwrap_err() else {
-                panic!("wrong asset error owner");
-            };
+            assert_eq!(
+                execute(&service, &command).await.unwrap()["asset"]["device"]["device"],
+                device
+            );
+            let error = outcome.unwrap_err();
             let error = rss_mdm_management_http::Error::from(error);
             assert_eq!(
                 serde_json::to_value(error).unwrap(),
                 json!({"kind":"unavailable","reason":expected})
             );
         }
-        m.runtime.close().await;
+        runtime.close().await;
     }
 
     #[cfg(feature = "integration")]
@@ -267,6 +324,16 @@ mod storage {
             replay.finalize(None);
             assert_eq!(canonical(), original);
             assert_eq!(receipt["asset"]["revision"], 1);
+            let repeated = audit();
+            assert_eq!(
+                service
+                    .execute(&command, &repeated, &|| Ok(()))
+                    .await
+                    .unwrap(),
+                receipt
+            );
+            repeated.finalize(None);
+            assert_eq!(canonical(), original);
             let denied = audit();
             assert!(matches!(
                 service
@@ -419,7 +486,7 @@ mod manual {
                     .call(router, Method::PUT, floor, Some(request(1, input)))
                     .await?
                     .0
-                    .is_client_error()
+                    == StatusCode::BAD_REQUEST
             );
         }
         ensure!(
@@ -447,7 +514,7 @@ mod manual {
                 )
                 .await?
                 .0
-                .is_client_error()
+                == StatusCode::BAD_REQUEST
         );
         let mut a = browser.clone();
         let mut b = browser.clone();
@@ -476,6 +543,8 @@ mod manual {
             (a.0 == StatusCode::OK) ^ (b.0 == StatusCode::OK),
             "CAS admitted both/neither: {a:?} {b:?}"
         );
+        ensure!((a.0 == StatusCode::CONFLICT) ^ (b.0 == StatusCode::CONFLICT));
+        let last_value = if a.0 == StatusCode::OK { 4 } else { 5 };
         ok(
             &mut browser,
             router,
@@ -517,28 +586,57 @@ mod manual {
         );
         ensure!(
             removed["asset"]["device"]["fields"]["custom.office_floor"]["sources"][0]["lastKnown"]
-                ["value"]["kind"]
-                == "integer"
+                ["value"]
+                == json!({"kind":"integer","value":last_value})
         );
         // A deferred business write failure rolls back the assignment, receipt and staged audit.
         pg(
             "CREATE FUNCTION public.reject_asset_write() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'fixture'; END $$; CREATE CONSTRAINT TRIGGER reject_asset_write AFTER UPDATE ON mdm.manual_assignments DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION public.reject_asset_write();",
         )?;
+        let failed_write = request(
+            4,
+            json!({"action":"set","value":{"kind":"integer","value":7}}),
+        );
+        let failed_id = failed_write["operationId"].as_str().unwrap();
+        let business_before = pg(&format!(
+            "SELECT encode(canonical,'hex') FROM mdm_audit.receipts WHERE tenant_id='{}' ORDER BY source_id,event_id",
+            case_tenant()
+        ))?;
         let rejected = browser
-            .call(
-                router,
-                Method::PUT,
-                floor,
-                Some(request(
-                    4,
-                    json!({"action":"set","value":{"kind":"integer","value":7}}),
-                )),
-            )
+            .call(router, Method::PUT, floor, Some(failed_write.clone()))
             .await?;
         pg(
             "DROP TRIGGER reject_asset_write ON mdm.manual_assignments; DROP FUNCTION public.reject_asset_write();",
         )?;
         ensure!(rejected.0 == StatusCode::SERVICE_UNAVAILABLE);
+        ensure!(pg(&format!("SELECT count(*) FROM mdm_assets.operations WHERE tenant_id='{}' AND id='{failed_id}'", case_tenant()))?.trim() == "0");
+        // Receipt rows include request facts too; compare only business identities.
+        let business_after = pg(&format!(
+            "SELECT encode(canonical,'hex') FROM mdm_audit.receipts WHERE tenant_id='{}' ORDER BY source_id,event_id",
+            case_tenant()
+        ))?;
+        let business = |text: &str| -> Result<Vec<String>> {
+            Ok(crate::audit_test_support::decode_hex(text)?
+                .into_iter()
+                .filter(|r| r.source() == "mdm.business")
+                .map(|r| r.decoded.event().identity().event_id().as_str().to_owned())
+                .collect())
+        };
+        ensure!(!business(&business_before)?.is_empty());
+        ensure!(business(&business_after)? == business(&business_before)?);
+        let after = ok(
+            &mut browser,
+            router,
+            Method::GET,
+            "/api/v1/devices/asset-a/inventory",
+            None,
+        )
+        .await?;
+        ensure!(
+            after["asset"]["device"]["fields"]["custom.office_floor"]
+                == removed["asset"]["device"]["fields"]["custom.office_floor"]
+        );
+
         ensure!(pg(&format!("SELECT revision FROM mdm.manual_assignments WHERE tenant_id='{TENANT}' AND device='asset-a' AND field='custom.office_floor'", TENANT = case_tenant()))?.trim()=="4");
         fixture.close().await
     }
@@ -548,8 +646,9 @@ mod manual {
 #[ignore = "make t2 MODULE=assets.http"]
 async fn field_catalog_admin_publish_and_reference_checks_need_no_approval() -> Result<()> {
     use crate::authorization::{Grant, Permission, Scope};
-    use crate::test_support::agent_execution::Fixture;
-    let mut fixture = Fixture::new().await?;
+    let mut fixture = AssetHttp::open().await?;
+    let resources = std::mem::take(&mut fixture.resources);
+    resources.finish(async {
     let key = "custom.registry_example";
     let path = format!("/api/v1/asset-fields/{key}");
     let definition = json!({"key":key,"version":1,"valueType":{"kind":"string","maxLength":128,"allowEmpty":false},"nullable":false,"manual":false,"sources":{"agent.script":100},"platforms":["macos"],"sensitivity":"standard","unit":null,"searchable":true,"itemKey":null});
@@ -645,15 +744,18 @@ async fn field_catalog_admin_publish_and_reference_checks_need_no_approval() -> 
     );
 
     Ok(())
+    }).await
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "MODULE=assets.http: bounded lists retain a single authorized snapshot"]
 async fn typed_list_pages_remain_frozen_across_field_updates() -> Result<()> {
     use crate::authorization::{Grant, Permission, Scope};
-    use crate::test_support::agent_execution::{Fixture, case_device_id};
-    let mut f = Fixture::new().await?;
-    f.register().await?;
+    let mut f = AssetHttp::open().await?;
+    let resources = std::mem::take(&mut f.resources);
+    resources.finish(async {
+    let device = case::name("asset-list");
+    pg(&format!("INSERT INTO mdm_access.devices VALUES('{}','{device}')", case_tenant()))?;
     f.grants.extend([
         Grant {
             operation: Permission::InventoryFieldsWrite,
@@ -670,13 +772,13 @@ async fn typed_list_pages_remain_frozen_across_field_updates() -> Result<()> {
     let definition = json!({"key":key,"version":1,"valueType":{"kind":"array","items":{"kind":"integer"},"maxItems":1000},"nullable":true,"manual":true,"sources":{"manual":0},"platforms":["macos","windows"],"sensitivity":"standard","unit":null,"searchable":true,"itemKey":null});
     let result = f.author.call(&f.router, Method::PUT, &format!("/api/v1/asset-fields/{key}"), Some(json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"put","definition":definition}}))).await?;
     ensure!(result.0 == StatusCode::OK, "list field: {result:?}");
-    let field_path = format!("/api/v1/devices/{}/manual-fields/{key}", case_device_id());
+    let field_path = format!("/api/v1/devices/{}/manual-fields/{key}", device);
     let values: Vec<_> = (0..205)
         .map(|v| json!({"kind":"integer","value":v}))
         .collect();
     let result = f.author.call(&f.router, Method::PUT, &field_path, Some(json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"set","value":{"kind":"array","value":values}}}))).await?;
     ensure!(result.0 == StatusCode::OK, "list write: {result:?}");
-    let list_path = format!("/api/v1/devices/{}/inventory-lists/{key}", case_device_id());
+    let list_path = format!("/api/v1/devices/{}/inventory-lists/{key}", device);
     let first = f
         .author
         .call(
@@ -745,6 +847,8 @@ async fn typed_list_pages_remain_frozen_across_field_updates() -> Result<()> {
             None,
         )
         .await?;
-    ensure!(forged.0.is_client_error());
+    ensure!(forged.0 == StatusCode::CONFLICT);
+    ensure!(f.author.call(&f.router, Method::GET, &format!("{list_path}?limit=100&cursor={cursor}"), None).await? == last);
     Ok(())
+    }).await
 }
