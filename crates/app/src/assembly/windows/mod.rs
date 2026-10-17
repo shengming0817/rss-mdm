@@ -118,7 +118,7 @@ impl Windows {
         {
             return Err(Error::Configuration(ConfigIssue::EnrollmentCa));
         }
-        let ca = certificate::WindowsDeviceTrust::from_trust(trust)
+        let ca = rss_mdm_device_trust::windows::WindowsDeviceTrust::from_trust(trust)
             .and_then(|ca| ca.with_lifetime(config.lifetime))
             .map_err(|_| Error::Configuration(ConfigIssue::EnrollmentCa))?;
         let enrollment_tls =

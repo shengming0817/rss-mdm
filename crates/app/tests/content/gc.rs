@@ -53,9 +53,15 @@ async fn cleanup_preserves_resource_references(
         actor: "fixture".into(),
     };
     let artifact = binding.artifact()?;
-    store.begin(upload, binding, 1).await?;
-    store.append("fixture", upload, 0, 1, data).await?;
-    store.finish("fixture", upload, 1).await?;
+    store
+        .begin(upload, binding, 1, store.upload_budget()?)
+        .await?;
+    store
+        .append("fixture", upload, 0, 1, data, store.upload_budget()?)
+        .await?;
+    store
+        .finish("fixture", upload, 1, store.upload_budget()?)
+        .await?;
     super::expire_upload(upload)?;
     pg(&format!(
         "UPDATE mdm_content.manifests SET expires=0 WHERE tenant_id='{}' AND sha256=decode('{}','hex')",
@@ -157,10 +163,15 @@ async fn gc_reference_race(
                 actor: "fixture".into(),
             },
             1,
+            content.upload_budget()?,
         )
         .await?;
-    content.append("fixture", id, 0, 1, data).await?;
-    content.finish("fixture", id, 1).await?;
+    content
+        .append("fixture", id, 0, 1, data, content.upload_budget()?)
+        .await?;
+    content
+        .finish("fixture", id, 1, content.upload_budget()?)
+        .await?;
     super::expire_upload(id)?;
     let candidate = content
         .garbage(i64::MAX / 2)

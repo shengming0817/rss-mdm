@@ -21,7 +21,7 @@ class CapabilityBoundaries(unittest.TestCase):
     def test_certificate_has_no_transport_storage_or_business_dependencies(self):
         deps = dependencies('certificate')
         self.assertFalse(deps & {'sqlx', 'axum', 'reqwest', 'rss-runtime'})
-        self.assertFalse({name for name in deps if name.startswith('rss-mdm-')} - {'rss-mdm-agent-wire', 'rss-mdm-device-trust'})
+        self.assertFalse({name for name in deps if name.startswith('rss-mdm-')})
 
     def test_apple_codec_has_no_runtime_or_product_dependencies(self):
         deps = dependencies('apple-mdm')

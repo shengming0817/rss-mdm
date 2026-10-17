@@ -1,6 +1,6 @@
 //! Minimal current credential prerequisites for downstream integration consumers.
 use super::*;
-use rss_mdm_certificate::agent::IssuedAgentCertificate;
+use rss_mdm_device_trust::agent::IssuedAgentCertificate;
 
 struct PeerSeed {
     device: String,

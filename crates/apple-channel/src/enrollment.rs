@@ -418,7 +418,7 @@ pub async fn attempt(
     tx: &mut sqlx::PgConnection,
     tenant: &str,
     apple: &Apple,
-    leaf: &certificate::CheckedLeaf,
+    leaf: &rss_mdm_device_trust::apple::CheckedLeaf,
 ) -> Result<PgRow, Error> {
     let row=sqlx::query("SELECT state,configuration,spki,fingerprint,authorization_version,transaction_id,csr_digest,registration::text FROM mdm_apple.scep_attempts WHERE tenant_id=$1::uuid AND id=$2::uuid AND enrollment=$3::uuid AND issuer=$4 FOR UPDATE")
         .bind(tenant).bind(leaf.attempt().to_string()).bind(leaf.enrollment().to_string()).bind(leaf.issuer().as_slice()).fetch_optional(&mut *tx).await.map_err(db)?.ok_or(Error::Unauthorized)?;
@@ -439,7 +439,7 @@ pub async fn attempt(
 pub async fn persist_leaf(
     tx: &mut sqlx::PgConnection,
     tenant: &str,
-    leaf: &certificate::CheckedLeaf,
+    leaf: &rss_mdm_device_trust::apple::CheckedLeaf,
 ) -> Result<(), Error> {
     sqlx::query("UPDATE mdm_apple.scep_attempts SET fingerprint=$3,serial=$4,certificate=$5,not_before=$6,not_after=$7 WHERE tenant_id=$1::uuid AND id=$2::uuid")
         .bind(tenant).bind(leaf.attempt().to_string()).bind(leaf.fingerprint().as_slice()).bind(leaf.serial()).bind(leaf.certificate()).bind(leaf.not_before()).bind(leaf.not_after()).execute(&mut *tx).await.map_err(db)?;
@@ -471,7 +471,7 @@ pub async fn persist_leaf(
 
 pub async fn bind(
     app: &HttpState,
-    leaf: &certificate::CheckedLeaf,
+    leaf: &rss_mdm_device_trust::apple::CheckedLeaf,
     udid: &str,
     audit: &RequestAudit,
 ) -> Result<(), Error> {
@@ -535,7 +535,7 @@ pub async fn bind(
 }
 struct BindInputs<'a> {
     app: &'a HttpState,
-    leaf: &'a certificate::CheckedLeaf,
+    leaf: &'a rss_mdm_device_trust::apple::CheckedLeaf,
     udid: &'a str,
     auth: &'a Coordinates,
     proof: &'a Admission,

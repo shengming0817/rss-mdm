@@ -40,7 +40,7 @@ pub fn routes(app: Option<Arc<Service>>) -> Router {
             "/agent-configurations/{id}/revoke",
             post(revoke_configuration),
         )
-        .route("/agent-requests/{id}/authorize", post(approve))
+        .route("/agent-requests/{id}/authorize", post(authorize))
         .route("/agent-requests/{id}/cancel", post(revoke))
         .route(
             "/agent-enrollment-settings",
@@ -69,7 +69,7 @@ async fn update_settings(
             .into(),
     ))
 }
-async fn approve(
+async fn authorize(
     State(app): State<App>,
     Extension(auth): Extension<RequestAuth>,
     Extension(a): Extension<RequestAudit>,
@@ -78,7 +78,7 @@ async fn approve(
 ) -> Result<Json<wire::GrantReceipt>, HttpFailure> {
     Ok(Json(
         service(&app)?
-            .approve(&auth.proof, id, body(input)?.operation_id, &a)
+            .authorize(&auth.proof, id, body(input)?.operation_id, &a)
             .await?,
     ))
 }

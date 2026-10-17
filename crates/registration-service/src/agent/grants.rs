@@ -34,7 +34,7 @@ impl Service {
             Ok(Change{value:receipt(&grant_row(c,&tenant,id).await?)?,replay:false,digest:d.clone()})
         })).await.map_err(Into::into)
     }
-    pub async fn approve(
+    pub async fn authorize(
         &self,
         p: &AuthorizedPrincipal,
         id: Uuid,
@@ -43,16 +43,12 @@ impl Service {
     ) -> Result<wire::GrantReceipt, Failure> {
         self.proof(p, a)?;
         version(wire::API_VERSION, operation)?;
-        a.operation(operation, "agent_grant_approve");
+        a.operation(operation, "agent_grant_authorize");
         self.write(a, (self, p, id, operation, a), |ctx, c| {
             Box::pin(async move {
                 let (service, p, id, operation, a) = ctx;
                 let tenant = service.tenant.to_string();
-                let action = if a.snapshot().action == "agent_grant_approve" {
-                    "approve"
-                } else {
-                    "revoke"
-                };
+                let action = "authorize";
                 let d = digest(&(action, *id, *operation))?;
                 let op = crate::operations::Operation {
                     actor: crate::operations::Actor::from_authorized(p),
@@ -147,11 +143,7 @@ tenant_id=$1::uuid AND id=$2
             Box::pin(async move {
                 let (service, p, id, operation, a) = ctx;
                 let tenant = service.tenant.to_string();
-                let action = if a.snapshot().action == "agent_grant_approve" {
-                    "approve"
-                } else {
-                    "revoke"
-                };
+                let action = "revoke";
                 let d = digest(&(action, *id, *operation))?;
                 let op = crate::operations::Operation {
                     actor: crate::operations::Actor::from_authorized(p),

@@ -7,7 +7,7 @@ pub struct Operation {
     pub id: Uuid,
     pub device: String,
     pub request: Create,
-    pub approval: ExecutionAuthority,
+    pub authority: ExecutionAuthority,
     pub revision: i64,
     pub dispatch_failure: Option<serde_json::Value>,
     pub scope: dc::Scope,
@@ -27,12 +27,14 @@ pub async fn load(
     id: Uuid,
 ) -> Result<Operation> {
     let tenant = tx.tenant_id();
-    let row=tx.with_connection(move|c|Box::pin(async move {sqlx::query("SELECT o.device,o.dispatch_failure,o.request,o.input_context,o.approval::text,o.revision,o.generation,o.epoch,o.registration,o.registration_generation,o.gateway_accepted,d.command_device::text FROM mdm_commands.operations o JOIN mdm_commands.devices d USING(tenant_id,device) WHERE o.tenant_id=$1::uuid AND o.id=$2::uuid").bind(tenant.to_string()).bind(id.to_string()).fetch_optional(c).await})).await?.ok_or(Error::Execution(crate::missing::ExecutionError::MissingOperation))?;
+    let row=tx.with_connection(move|c|Box::pin(async move {sqlx::query("SELECT o.device,o.dispatch_failure,o.request,o.input_context,o.authority::text,o.revision,o.generation,o.epoch,o.registration,o.registration_generation,o.gateway_accepted,d.command_device::text FROM mdm_commands.operations o JOIN mdm_commands.devices d USING(tenant_id,device) WHERE o.tenant_id=$1::uuid AND o.id=$2::uuid").bind(tenant.to_string()).bind(id.to_string()).fetch_optional(c).await})).await?.ok_or(Error::Execution(crate::missing::ExecutionError::MissingOperation))?;
     Ok(Operation {
         id,
         device: row.try_get("device")?,
         request: super::input_storage::open_row(protection, tenant, id, &row, "request")?,
-        approval: stored(serde_json::from_str(&row.try_get::<String, _>("approval")?))?,
+        authority: stored(serde_json::from_str(
+            &row.try_get::<String, _>("authority")?,
+        ))?,
         revision: row.try_get("revision")?,
         dispatch_failure: row.try_get("dispatch_failure")?,
         scope: dc::Scope::new(
@@ -59,14 +61,14 @@ pub async fn execution_started(tx: &mut PgTransaction<'_>, id: Uuid) -> Result<b
     })).await?)
 }
 
-pub async fn approval_valid(
+pub async fn authority_valid(
     source: &Arc<dyn crate::source_authority::SourceAuthority>,
     key: &Arc<rss_mdm_native_protection::Protector>,
     tx: &mut PgTransaction<'_>,
     operation: &Operation,
     now: i64,
 ) -> Result<bool> {
-    check_approval(source, key, tx, operation, now, false).await
+    check_authority(source, key, tx, operation, now, false).await
 }
 pub async fn receipt_valid(
     source: &Arc<dyn crate::source_authority::SourceAuthority>,
@@ -75,9 +77,9 @@ pub async fn receipt_valid(
     operation: &Operation,
     now: i64,
 ) -> Result<bool> {
-    check_approval(source, key, tx, operation, now, true).await
+    check_authority(source, key, tx, operation, now, true).await
 }
-async fn check_approval(
+async fn check_authority(
     source: &Arc<dyn crate::source_authority::SourceAuthority>,
     key: &Arc<rss_mdm_native_protection::Protector>,
     tx: &mut PgTransaction<'_>,
@@ -85,13 +87,14 @@ async fn check_approval(
     now: i64,
     receipt: bool,
 ) -> Result<bool> {
-    if matches!(operation.approval, ExecutionAuthority::DeviceControl { .. })
-        && !operation.approval.control_matches(
-            &operation.request,
-            operation.registration,
-            operation.registration_generation,
-        )?
-    {
+    if matches!(
+        operation.authority,
+        ExecutionAuthority::DeviceControl { .. }
+    ) && !operation.authority.control_matches(
+        &operation.request,
+        operation.registration,
+        operation.registration_generation,
+    )? {
         return Ok(false);
     }
     match current_registration(tx, &operation.device, operation.request.task.purpose()?).await {
@@ -103,17 +106,17 @@ async fn check_approval(
     }
     let key = key.clone();
     let source = source.clone();
-    let approval = operation.approval.clone();
+    let authority = operation.authority.clone();
     let permission = operation.request.task.permissions()?;
     Ok(tx
         .with_connection(move |c| {
             Box::pin(async move {
                 Ok(if receipt {
-                    approval
+                    authority
                         .receipt_valid(source.as_ref(), c, &key, &permission, now)
                         .await
                 } else {
-                    approval
+                    authority
                         .valid(source.as_ref(), c, &key, &permission, now)
                         .await
                 })

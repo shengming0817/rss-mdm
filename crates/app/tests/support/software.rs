@@ -64,21 +64,30 @@ impl Fixture {
         peer: Option<publication_support::Server>,
         max_uploads: Option<u64>,
     ) -> Result<Self> {
-        Self::with_storage_and_options(peer, max_uploads, None).await
+        Self::with_storage_and_options(peer, max_uploads, None, None).await
     }
     pub(crate) async fn with_storage(storage: Value) -> Result<Self> {
-        Self::with_storage_and_options(None, None, Some(storage)).await
+        Self::with_storage_and_options(None, None, Some(storage), None).await
+    }
+    pub(crate) async fn with_transfer_seconds(seconds: u64) -> Result<Self> {
+        Self::with_storage_and_options(None, None, None, Some(seconds)).await
     }
     async fn with_storage_and_options(
         peer: Option<publication_support::Server>,
         max_uploads: Option<u64>,
         storage: Option<Value>,
+        transfer_seconds: Option<u64>,
     ) -> Result<Self> {
         let (resources, mut fixture) = crate::test_support::Resources::build(move |resources| Box::pin(async move {
         let mut base: Value =
             serde_json::from_slice(&std::fs::read(std::env::var("MDM_TEST_CONFIG")?)?)?;
         let directory =
             std::path::PathBuf::from(base["content"]["storage"]["directory"].as_str().unwrap());
+        if let Some(seconds) = transfer_seconds {
+            base["content"]["transfer_seconds"] = json!(seconds);
+            base["content"]["max_artifact_bytes"] = json!(160 * 1024 * 1024);
+            base["content"]["max_temporary_bytes"] = json!(512 * 1024 * 1024);
+        }
         if let Some(storage) = storage {
             base["content"]["storage"] = storage;
             base["content"]["max_artifact_bytes"] = json!(160 * 1024 * 1024);

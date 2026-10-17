@@ -52,7 +52,7 @@ pub struct Apple {
     pub(crate) protection: Arc<rss_mdm_native_protection::Protector>,
     pub(crate) agent_identity: Option<rss_mdm_execution_service::agent_install::Identity>,
     pub(crate) config: Config,
-    pub(crate) authority: certificate::AppleDeviceTrust,
+    pub(crate) authority: rss_mdm_device_trust::apple::AppleDeviceTrust,
     pub(crate) signer: certificate::ProfileSigner,
     pub(crate) push: push::Push,
     push_ready: std::sync::atomic::AtomicBool,
@@ -130,7 +130,7 @@ impl Apple {
     pub fn new(
         protection: Arc<rss_mdm_native_protection::Protector>,
         config: Config,
-        authority: certificate::AppleDeviceTrust,
+        authority: rss_mdm_device_trust::apple::AppleDeviceTrust,
         signer: certificate::ProfileSigner,
         push: push::Push,
         challenge_key: ring::hmac::Key,
@@ -396,7 +396,7 @@ impl Apple {
             .map_err(|_| Error::Conflict)?;
         Ok((url.to_owned(), generation.provisioner))
     }
-    pub fn trust_fixture(&self) -> &certificate::AppleDeviceTrust {
+    pub fn trust_fixture(&self) -> &rss_mdm_device_trust::apple::AppleDeviceTrust {
         &self.authority
     }
     pub fn signer_expiration_fixture(&self) -> u64 {

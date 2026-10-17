@@ -213,22 +213,22 @@ impl Input {
     }
 }
 
-/// Reapproval refreshes grants, never changes the original action, PIN or registration.
+/// Reauthorization refreshes grants, never changes the original action, PIN or registration.
 #[derive(Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct Approval {
+pub struct Reauthorization {
     pub request_id: Uuid,
     pub expected_revision: i64,
-    pub confirmation: Option<ApprovalConfirmation>,
+    pub confirmation: Option<DangerousActionConfirmation>,
 }
 #[derive(Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct ApprovalConfirmation {
+pub struct DangerousActionConfirmation {
     pub confirmed: bool,
     pub expected_registration_id: Uuid,
     pub expected_generation: i64,
 }
-impl Approval {
+impl Reauthorization {
     pub fn registration(&self) -> Result<Option<RegistrationConfirmation>, Error> {
         self.confirmation
             .as_ref()

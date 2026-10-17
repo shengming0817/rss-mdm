@@ -338,19 +338,26 @@ def run_modules(names, output, *, jobs=2, selected_case='', listing=False, reuse
         publish(directory / 'result.json', failure)
         raise RunFailure(str(error), failure) from error
     finally:
-        processes.close()
-        execution_starts = [item['executionStartedMonotonic'] for item in observations
-                            if item.get('executionStartedMonotonic') is not None]
-        publish(directory / 'run.json', dict(
-            runId=run_id, jobs=jobs, listing=listing, buildSeconds=build_seconds,
-            totalBuildSeconds=round(sum(build_seconds.values()), 3),
-            wallSeconds=round(time.monotonic() - run_started, 3),
-            firstExecutionSeconds=round(min(execution_starts) - run_started, 3) if execution_starts else None,
-            completedCases=len(observations), managedProcesses=processes.started,
-            caseSecondsSum=round(sum(item.get('setupSeconds', 0) + item.get('testSeconds', 0)
-                                     + item.get('cleanupSeconds', 0) for item in observations), 3)))
-        for sig, handler in previous.items():
-            signal.signal(sig, handler)
+        try:
+            processes.close()
+        except Exception as error:
+            publish(directory / 'result.json', dict(runId=run_id, status='failed',
+                reason='cleanup_incomplete', cleanup=processes.cleanup_receipt()))
+            raise
+        finally:
+            publish(directory / 'cleanup.json', processes.cleanup_receipt())
+            execution_starts = [item['executionStartedMonotonic'] for item in observations
+                                if item.get('executionStartedMonotonic') is not None]
+            publish(directory / 'run.json', dict(
+                runId=run_id, jobs=jobs, listing=listing, buildSeconds=build_seconds,
+                totalBuildSeconds=round(sum(build_seconds.values()), 3),
+                wallSeconds=round(time.monotonic() - run_started, 3),
+                firstExecutionSeconds=round(min(execution_starts) - run_started, 3) if execution_starts else None,
+                completedCases=len(observations), managedProcesses=processes.started,
+                caseSecondsSum=round(sum(item.get('setupSeconds', 0) + item.get('testSeconds', 0)
+                                         + item.get('cleanupSeconds', 0) for item in observations), 3)))
+            for sig, handler in previous.items():
+                signal.signal(sig, handler)
 
 
 def main(argv=None):

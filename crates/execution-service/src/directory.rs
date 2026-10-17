@@ -86,7 +86,7 @@ impl crate::queries::Queries {
                         let mut observation = super::protocol::observation(tx, &s.protection,
                             s.apple_results.clone(), &op, command, false).await?;
                         observation.redact_values();
-                        let agent_installation = if op.approval.agent_package().is_some() {
+                        let agent_installation = if op.authority.agent_package().is_some() {
                             Some(records::decode(super::native_installation::installation_observation(
                                 tx, s.apple_results.clone(), s.agent_store.clone(), &op).await?)?)
                         } else { None };

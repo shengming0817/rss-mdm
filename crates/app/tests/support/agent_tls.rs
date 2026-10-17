@@ -1,5 +1,6 @@
 //! Real completed TLS proof shared by controlled Agent scenarios.
-use rss_mdm_certificate::{HandshakePeer, agent::AgentTrust};
+use rss_mdm_certificate::HandshakePeer;
+use rss_mdm_device_trust::agent::AgentTrust;
 use std::{path::Path, sync::Arc, time::Duration};
 use tokio_rustls::{
     TlsAcceptor, TlsConnector,

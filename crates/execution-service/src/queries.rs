@@ -99,11 +99,16 @@ impl Queries {
                     }
                     let command = service.command_status(tx, &op).await?;
                     let now = storage::now(tx).await?;
-                    let approved =
-                        storage::approval_valid(&service.source, &service.protection, tx, &op, now)
-                            .await?;
+                    let authorized = storage::authority_valid(
+                        &service.source,
+                        &service.protection,
+                        tx,
+                        &op,
+                        now,
+                    )
+                    .await?;
                     let mut native_values = true;
-                    if !op.approval.control_matches(
+                    if !op.authority.control_matches(
                         &op.request,
                         op.registration,
                         op.registration_generation,
@@ -115,14 +120,14 @@ impl Queries {
                         }
                     ) {
                         let mut required = op.request.task.permissions()?;
-                        required.extend_from_slice(op.approval.required());
+                        required.extend_from_slice(op.authority.required());
                         required.sort();
                         required.dedup();
                         storage::authorized_native(tx, proof, device, &required).await?;
                     }
                     if op.request.profile_target().is_some() {
                         let mut required = op.request.task.permissions()?;
-                        required.extend_from_slice(op.approval.required());
+                        required.extend_from_slice(op.authority.required());
                         required.push(Permission::InventoryCollect);
                         required.sort();
                         required.dedup();
@@ -150,7 +155,7 @@ impl Queries {
                         native_values,
                     )
                     .await?;
-                    let agent_installation = if op.approval.agent_package().is_some() {
+                    let agent_installation = if op.authority.agent_package().is_some() {
                         Some(
                             super::native_installation::installation_observation(
                                 tx,
@@ -176,7 +181,7 @@ impl Queries {
                         input_version: op.request.input_version,
                         deadline: op.request.deadline,
                         dispatch_failure: op.dispatch_failure,
-                        authorization: if approved { "approved" } else { "blocked" }.into(),
+                        authorization: if authorized { "authorized" } else { "blocked" }.into(),
                         command_status: crate::service::status(command).into(),
                         observation,
                         agent_installation: agent_installation.map(records::decode).transpose()?,

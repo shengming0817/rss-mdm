@@ -208,7 +208,7 @@ async fn agent_installation_configuration_preserves_bound_attempt_identity() -> 
         super::fixture_providers(&f.root)?,
         pin.identity(rss_mdm_policy::Platform::Macos).cloned(),
     )?;
-    let trust = rss_mdm_certificate::apple::AppleDeviceTrust::from_trust(
+    let trust = rss_mdm_device_trust::apple::AppleDeviceTrust::from_trust(
         f.app.apple()?.channel.device_trust().clone(),
     )?;
     let leaf = trust.verify(

@@ -439,7 +439,10 @@ pub async fn manage(
         .into_response())
 }
 
-async fn bound(app: &HttpState, leaf: &super::certificate::CheckedLeaf) -> Result<(), Error> {
+async fn bound(
+    app: &HttpState,
+    leaf: &rss_mdm_device_trust::apple::CheckedLeaf,
+) -> Result<(), Error> {
     let tenant = app.identity.tenant().to_string();
     let mut tx = app.access.begin(&tenant).await?;
     let row = enrollment::attempt(&mut tx, &tenant, app.apple()?, leaf).await?;
@@ -452,7 +455,7 @@ async fn bound(app: &HttpState, leaf: &super::certificate::CheckedLeaf) -> Resul
 
 async fn authenticate(
     app: &HttpState,
-    leaf: &super::certificate::CheckedLeaf,
+    leaf: &rss_mdm_device_trust::apple::CheckedLeaf,
     udid: &str,
     audit: &RequestAudit,
 ) -> Result<bool, Error> {

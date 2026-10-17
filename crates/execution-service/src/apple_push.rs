@@ -210,7 +210,7 @@ async fn pending(
         let scope = user_key.to_owned();
         let cursor = after;
         let rows=tx.with_connection(move|c|Box::pin(async move{
- sqlx::query("SELECT o.id,o.device,o.registration,o.registration_generation,o.input_context,o.request,o.approval::text FROM mdm_commands.operations o JOIN rss_device_command.commands d ON d.tenant_id=o.tenant_id AND d.command_id=o.id::text WHERE o.tenant_id=$1::uuid AND o.registration=$2::uuid AND o.gateway_accepted AND d.status IN ('published','received') AND (o.input_context->>'deadline')::bigint>extract(epoch FROM clock_timestamp()) AND o.input_context->>'platform'='macos' AND o.dispatch_failure IS NULL AND o.id>$3 AND ($4='' OR (o.input_context->'target'->>'kind'='user' AND o.input_context->'target'->>'userId'=$4)) ORDER BY o.id LIMIT 64").bind(tenant).bind(registration).bind(cursor).bind(scope).fetch_all(c).await
+ sqlx::query("SELECT o.id,o.device,o.registration,o.registration_generation,o.input_context,o.request,o.authority::text FROM mdm_commands.operations o JOIN rss_device_command.commands d ON d.tenant_id=o.tenant_id AND d.command_id=o.id::text WHERE o.tenant_id=$1::uuid AND o.registration=$2::uuid AND o.gateway_accepted AND d.status IN ('published','received') AND (o.input_context->>'deadline')::bigint>extract(epoch FROM clock_timestamp()) AND o.input_context->>'platform'='macos' AND o.dispatch_failure IS NULL AND o.id>$3 AND ($4='' OR (o.input_context->'target'->>'kind'='user' AND o.input_context->'target'->>'userId'=$4)) ORDER BY o.id LIMIT 64").bind(tenant).bind(registration).bind(cursor).bind(scope).fetch_all(c).await
  })).await?;
         if rows.is_empty() {
             break;
@@ -244,8 +244,9 @@ async fn pending(
                     continue;
                 }
             }
-            let approval: crate::authority::ExecutionAuthority =
-                stored(serde_json::from_str(&row.try_get::<String, _>("approval")?))?;
+            let authority: crate::authority::ExecutionAuthority = stored(serde_json::from_str(
+                &row.try_get::<String, _>("authority")?,
+            ))?;
             let protection = service.protection.clone();
             let source = service.source.clone();
             if tx
@@ -253,7 +254,7 @@ async fn pending(
                     Box::pin(async move {
                         Ok(match request.task.permissions() {
                             Ok(permissions) => {
-                                approval
+                                authority
                                     .valid(source.as_ref(), c, &protection, &permissions, now)
                                     .await
                             }

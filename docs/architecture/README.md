@@ -18,7 +18,8 @@
 | `management-http` | 浏览器管理 HTTP、会话与错误投影 |
 | `agent-channel` | Agent 注册、报告、任务和内容协议 |
 | `windows-channel` / `apple-channel` | 各平台注册、管理协议及持久协议关联状态 |
-| `certificate` | 有界证书解析、密钥、签名与 TLS 对端证明 |
+| `certificate` | 有界证书解析、密钥、签名、证书约束与 TLS 握手来源证明 |
+| `device-trust` | 三平台设备信任、issuer 世代、撤销与证书验证组合；依赖 certificate |
 | `apple-mdm` / `windows-mdm` | 平台报文和 Profile 编解码 |
 | `app` | 配置与文件加载、实例构造、跨能力接缝、路由合并、TLS 监听、readiness、生命周期与安装顺序 |
 

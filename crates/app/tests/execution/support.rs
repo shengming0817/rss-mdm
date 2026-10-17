@@ -120,14 +120,14 @@ impl Client {
         c.close().await?;
         Ok(())
     }
-    pub(crate) async fn accept_approved(&mut self) -> anyhow::Result<()> {
+    pub(crate) async fn accept_authorized(&mut self) -> anyhow::Result<()> {
         self.set_authorized(true).await?;
         let request = json!({"operationId":self.operation,"action":{"kind":"restart"},"deadline":self.app.clock.unix_seconds()?+300});
         ensure!(self.call(Method::POST, "", Some(request)).await?.0 == StatusCode::ACCEPTED);
         ensure!(
             self.call(
                 Method::POST,
-                &format!("/{}/approve", self.operation),
+                &format!("/{}/reauthorize", self.operation),
                 Some(json!({"requestId":Uuid::new_v4(),"expectedRevision":1}))
             )
             .await?

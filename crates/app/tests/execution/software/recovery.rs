@@ -7,7 +7,7 @@ use sqlx::Connection;
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 #[ignore = "make t2 MODULE=execution.software.recovery"]
 async fn successful_removal_invalidates_prior_installation_across_policies() -> Result<()> {
-    let mut f = Fixture::approved(Platform::MacOs).await?;
+    let mut f = Fixture::authorized(Platform::MacOs).await?;
     let resources = std::mem::take(&mut f.resources);
     resources.finish(async {
     let stack = worker(&f.base, f.content.clone()).await?;
@@ -124,7 +124,7 @@ async fn assert_no_software_run(router: &Router, policy: Uuid) -> Result<()> {
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 #[ignore = "make t2 MODULE=execution.software.recovery"]
 async fn unresolved_installation_blocks_removal_and_other_versions() -> Result<()> {
-    let mut f = Fixture::approved(Platform::MacOs).await?;
+    let mut f = Fixture::authorized(Platform::MacOs).await?;
     let resources = std::mem::take(&mut f.resources);
     resources.finish(async {
     let stack = worker(&f.base, f.content.clone()).await?;
@@ -237,7 +237,7 @@ async fn publish_next_software_version(f: &mut Fixture) -> Result<()> {
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 #[ignore = "make t2 MODULE=execution.software.recovery"]
 async fn known_failure_has_bounded_retries() -> Result<()> {
-    let mut fixture = Fixture::approved(Platform::MacOs).await?;
+    let mut fixture = Fixture::authorized(Platform::MacOs).await?;
     let resources = std::mem::take(&mut fixture.resources);
     resources.finish(async {
     let stack = worker(&fixture.base, fixture.content.clone()).await?;
@@ -353,7 +353,7 @@ async fn known_failure_has_bounded_retries() -> Result<()> {
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 #[ignore = "make t2 MODULE=execution.software.recovery"]
 async fn reboot_waits_for_detection() -> Result<()> {
-    let mut fixture = Fixture::approved(Platform::MacOs).await?;
+    let mut fixture = Fixture::authorized(Platform::MacOs).await?;
     let resources = std::mem::take(&mut fixture.resources);
     resources.finish(async {
     let stack = worker(&fixture.base, fixture.content.clone()).await?;
@@ -451,7 +451,7 @@ async fn reboot_waits_for_detection() -> Result<()> {
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 #[ignore = "make t2 MODULE=execution.software.recovery"]
 async fn unknown_effect_survives_credential_recovery() -> Result<()> {
-    let mut fixture = Fixture::approved(Platform::MacOs).await?;
+    let mut fixture = Fixture::authorized(Platform::MacOs).await?;
     let resources = std::mem::take(&mut fixture.resources);
     resources.finish(async {
     let stack = worker(&fixture.base, fixture.content.clone()).await?;
@@ -571,7 +571,7 @@ async fn unknown_effect_survives_credential_recovery() -> Result<()> {
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 #[ignore = "make t2 MODULE=execution.software.recovery"]
 async fn unknown_result_replay_and_late_detection() -> Result<()> {
-    let mut fixture = Fixture::approved(Platform::MacOs).await?;
+    let mut fixture = Fixture::authorized(Platform::MacOs).await?;
     let resources = std::mem::take(&mut fixture.resources);
     resources.finish(async {
     let stack = worker(&fixture.base, fixture.content.clone()).await?;
@@ -658,7 +658,7 @@ async fn unknown_result_replay_and_late_detection() -> Result<()> {
 #[ignore = "make t2 MODULE=execution.software.recovery"]
 async fn withdrawn_software_does_not_poison_claims_for_other_policies_or_outside_scope()
 -> Result<()> {
-    let mut f = Fixture::approved(Platform::MacOs).await?;
+    let mut f = Fixture::authorized(Platform::MacOs).await?;
     let resources = std::mem::take(&mut f.resources);
     resources.finish(async {
     let outside = prepared_scope(&f.planning, &[]).await?;
@@ -713,7 +713,7 @@ async fn withdrawn_software_does_not_poison_claims_for_other_policies_or_outside
         .await?;
     ensure!(
         page.0 == StatusCode::OK
-            && page.1["items"][0]["taskAdmission"]["state"] == "approval_withdrawn",
+            && page.1["items"][0]["taskAdmission"]["state"] == "authorization_withdrawn",
         "withdrawal diagnosis: {page:?}"
     );
     crate::test_support::stop_worker(stack).await?;

@@ -369,7 +369,7 @@ impl Fixture {
 
 use lifecycle::Peer;
 impl Fixture {
-    async fn approval_and_timeout(&mut self, peer: &Peer) -> Result<()> {
+    async fn authorization_and_timeout(&mut self, peer: &Peer) -> Result<()> {
         self.native_context().await?;
         // Drain independent trust maintenance before asserting that revoked
         // business authority cannot request a wake.
@@ -411,7 +411,7 @@ impl Fixture {
                 .apple_wake(&self.app.apple()?.channel.push_fixture().configuration)
                 .await?
                 .is_none(),
-            "revoked approval triggered APNs"
+            "revoked authorization triggered APNs"
         );
         let cancelled = self
             .browser
@@ -504,10 +504,10 @@ async fn configuration_policy_lifecycle() -> Result<()> {
 
 #[tokio::test]
 #[ignore = "MODULE=apple.policy: native protocol and durable state"]
-async fn current_approval_and_deadlines() -> Result<()> {
+async fn current_authorization_and_deadlines() -> Result<()> {
     let mut f = Fixture::start().await?;
     let (peer, device) = f.ready_local_peer().await?;
-    f.approval_and_timeout(&peer).await?;
+    f.authorization_and_timeout(&peer).await?;
     drop(device);
     f.close().await
 }
