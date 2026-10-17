@@ -17,7 +17,23 @@ async fn brew_immutable_tap_recovery_and_version_specific_withdrawal() {
     sql(
         "DROP TRIGGER reject_result ON mdm_software_release.aggregates; DROP FUNCTION public.reject_brew_result();",
     );
-    assert!(failed.is_err());
+    assert!(matches!(failed, Err(Error::RolledBack(_))), "{failed:?}");
+    let snapshot = git(&config, &["rev-parse", "refs/heads/main"]);
+    assert!(
+        git(
+            &config,
+            &["for-each-ref", "--format=%(refname)", "refs/namespaces"]
+        )
+        .contains(snapshot.trim())
+    );
+    let pending = service
+        .candidate(&first.candidate, cutoff())
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(
+        matches!(&pending.snapshot().rings[0], rel::RingState::Publication(p) if p.id() == p1.id() && matches!(p.outcome, rel::PublicationOutcome::Pending))
+    );
     // Re-enabling the source changes its generation while the external result is unknown.
     sql(&format!(
         "UPDATE mdm_software.sources SET lifecycle=jsonb_set(lifecycle,'{{revision}}',to_jsonb((lifecycle->>'revision')::bigint+2)) WHERE tenant_id='{}' AND id='{}'",
@@ -33,12 +49,12 @@ async fn brew_immutable_tap_recovery_and_version_specific_withdrawal() {
             .unwrap(),
         rel::PublicationOutcome::Reported(rel::PublicationResult::Applied(_))
     ));
-    assert!(
+    assert!(matches!(
         service
             .published(rel::Ring::Test, p1.id().digest().bytes(), cutoff())
-            .await
-            .is_err()
-    );
+            .await,
+        Err(Error::Content)
+    ));
     let old = git(&config, &["rev-parse", "refs/heads/main"]);
     let other = seed(runtime.clone(), &server, formula(&server)).await;
     service.create_candidate(&other, cutoff()).await.unwrap();
@@ -97,18 +113,18 @@ async fn brew_immutable_tap_recovery_and_version_specific_withdrawal() {
             .await
             .is_ok()
     );
-    assert!(
+    assert!(matches!(
         service
             .published(rel::Ring::Test, p1.id().digest().bytes(), cutoff())
-            .await
-            .is_err()
-    );
-    assert!(
+            .await,
+        Err(Error::CandidateNotFound)
+    ));
+    assert!(matches!(
         service
             .published(rel::Ring::Test, p3.id().digest().bytes(), cutoff())
-            .await
-            .is_err()
-    );
+            .await,
+        Err(Error::CandidateNotFound)
+    ));
     assert_eq!(
         git(
             &config,

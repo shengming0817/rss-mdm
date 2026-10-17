@@ -57,7 +57,7 @@ async fn mirror_matrix(
     pg("GRANT INSERT ON mdm_audit.receipts TO mdm_flow_runtime")?;
     let failed = failed?;
     ensure!(
-        failed.0 == StatusCode::SERVICE_UNAVAILABLE && failed.1["code"] == "service_unavailable",
+        failed.0 == StatusCode::INTERNAL_SERVER_ERROR && failed.1["code"] == "audit_contract_error",
         "audit failure: {failed:?}"
     );
     ensure!(

@@ -22,7 +22,7 @@ async fn full_version_publication_recovery_and_public_artifact_boundary() {
     sql(
         "DROP TRIGGER reject_result ON mdm_software_release.aggregates; DROP FUNCTION public.reject_release_result();",
     );
-    assert!(failed.is_err());
+    assert!(matches!(failed, Err(Error::RolledBack(_))), "{failed:?}");
     assert_eq!(server.state.lock().unwrap().posts, 0);
     let page = service.reconciliation_page("", 32, cutoff()).await.unwrap();
     assert!(
@@ -198,7 +198,11 @@ async fn draft_publication_rolls_back_every_write_and_replay_rechecks_access() {
         sql(
             "DROP TRIGGER reject_draft ON mdm_software.versions; DROP FUNCTION public.reject_draft_publication();",
         );
-        assert!(result.is_err(), "{result:?}");
+        if body.starts_with("RAISE") {
+            assert!(matches!(result, Err(Error::RolledBack(_))), "{result:?}");
+        } else {
+            assert!(matches!(result, Err(Error::Content)), "{result:?}");
+        }
         assert_eq!(
             counts(),
             before,

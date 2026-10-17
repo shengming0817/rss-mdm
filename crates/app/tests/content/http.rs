@@ -232,7 +232,7 @@ async fn lifecycle_contract(
         .await?;
     pg("GRANT INSERT ON mdm_audit.receipts TO mdm_flow_runtime")?;
     ensure!(
-        failed.0 == StatusCode::SERVICE_UNAVAILABLE && failed.1["code"] == "service_unavailable",
+        failed.0 == StatusCode::INTERNAL_SERVER_ERROR && failed.1["code"] == "audit_contract_error",
         "audit failure: {failed:?}"
     );
     let before = user.call(router, Method::GET, admission_path, None).await?;

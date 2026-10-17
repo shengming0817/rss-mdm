@@ -51,14 +51,14 @@ async fn resource_immutable_versions_reopen_and_reference_rollback() {
     let receipt = s.execute(&insert, deadline()).await.unwrap();
     assert_eq!(receipt, s.execute(&insert, deadline()).await.unwrap());
     assert_event(key.as_str(), insert.id.as_str(), 2, 10);
-    assert!(
+    assert!(matches!(
         s.execute(
             &req(&key, 2, Command::Insert(version(&key, "one", 2))),
             deadline()
         )
-        .await
-        .is_err()
-    );
+        .await,
+        Err(Error::Rejected(Rejection::IdentityConflict))
+    ));
     s.execute(&req(&key, 2, Command::Activate(id("one"))), deadline())
         .await
         .unwrap();
