@@ -80,6 +80,14 @@ def execute(fixture):
         registry_database=pool.database_config(root, fixture.database, 'mdm_tenant_registry', 'tenant-registry-fixture'),
         provisioning_database=pool.database_config(root, fixture.database, 'mdm_identity_provisioning', 'identity-provisioning-fixture'),
         fingerprint_key_file=str(private(root / 'tenant-operation-key', 'x' * 32)))
+    # The registry Audit pool is valid; only the independently configured provisioner is unsafe.
+    # Each failed serve must reject before readiness, and the normal host below proves repair.
+    for table in ('mdm_audit.receipts', 'rss_audit.records'):
+        sql(f'GRANT UPDATE ON {table} TO mdm_identity_provisioning')
+        try:
+            command('serve', config, accepted=False, reason='AuditAdmission')
+        finally:
+            sql(f'REVOKE UPDATE ON {table} FROM mdm_identity_provisioning')
     path = private(root / 'runtime.json', config)
     foreign = json.loads(json.dumps(config))
     foreign['identity']['tenant_id'] = management

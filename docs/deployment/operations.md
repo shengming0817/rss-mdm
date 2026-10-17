@@ -12,7 +12,7 @@
 
 Audit、Ledger 与产品 receipts 的完整结构/权限检查只在构造和显式启动验证执行。
 变更相关角色、函数或结构前，停止相关写实例并排空事务，再执行受控变更；使用 access、
-flow、command、software 和 Identity audit worker 各自实际连接重新验证，成功后才恢复接流。
+flow、command、software、租户注册、管理员初始化和 Identity audit worker 各自实际连接重新验证，成功后才恢复接流。
 验证失败保持停机。业务操作仍检查租户、必要隔离和持久材料一致性，并传播真实 SQL 权限失败；
 不承诺逐次调用发现管理员带外配置漂移，不支持滚动混跑旧、新契约。
 
