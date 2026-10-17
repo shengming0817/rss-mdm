@@ -569,6 +569,7 @@ async fn actual_worker_progress_and_readiness_share_the_same_projection() -> Res
         .iter()
         .find(|r| r.batch().id().as_str() == report.id.to_string())
         .unwrap();
+    // Delivery worker is bypassed here; the inventory projection worker below remains real.
     fixture.source.inventory.fixture_deliver(durable).await?;
     let delayed = component(&fixture.query().await?, "inventory");
     ensure!(delayed["queues"][0]["count"] == 0 && delayed["progress"]["sourceHead"].is_number());
