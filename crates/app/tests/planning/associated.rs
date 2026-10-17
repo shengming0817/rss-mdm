@@ -451,6 +451,11 @@ async fn agent_health_drives_mdm_configuration_assignment() -> anyhow::Result<()
                     .iter()
                     .any(|m| m["registrationId"] == registration.to_string()))
     );
+    let reverse=browser.call(&router,Method::GET,&format!("/api/v1/devices/{mdm}/groups"),None).await?;
+    ensure!(reverse.0==StatusCode::OK,"associated group reverse: {reverse:?}");
+    let item=reverse.1["items"].as_array().and_then(|items|items.iter().find(|v|v["id"]==group.to_string())).ok_or_else(||anyhow::anyhow!("associated group absent: {reverse:?}"))?;
+    ensure!(item["assetContext"]=="associated_device" && item["objects"][0]["kind"]=="association","association flattened: {item}");
+    ensure!(item["memberSet"].is_string() && item["evaluatedRuleVersion"].is_string() && item["inputCurrent"].is_boolean(),"missing membership basis: {item}");
     call(&mut browser,&router,&format!("/api/v1/scopes/{scope}"),0,json!({"action":"put","definition":{"targets":[{"kind":"group","id":group}],"limitations":null,"exclusions":[]}})).await?;
     native_configuration_resource(
         &mut browser,

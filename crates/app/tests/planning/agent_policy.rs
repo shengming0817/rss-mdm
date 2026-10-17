@@ -512,6 +512,13 @@ async fn script_preparation_is_shared_without_preview_effects() -> Result<()> {
         .await?
             == StatusCode::CREATED
     );
+    let newer=format!("#!/bin/sh\n# new {}\nprintf 'new'\n",Uuid::new_v4());
+    let newer_digest:[u8;32]=Sha256::digest(newer.as_bytes()).into();
+    resource(&mut fixture.author,&fixture.router,content_id,3,json!({"action":"version","version":"v2","kind":"script","variants":[{"platform":"macos","architecture":"aarch64","key":"default","declaration":{"kind":"script","artifact":{"reference":"new-script","length":newer.len(),"sha256":newer_digest},"definition":declaration}}]})).await?;
+    let cookie=fixture.author.cookies.iter().map(|(k,v)|format!("{k}={v}")).collect::<Vec<_>>().join("; ");
+    let request=Request::builder().method(Method::POST).uri(format!("/api/v1/resources/{content_id}/content?version=v2&variant=default&platform=macos&architecture=aarch64&operation={}",Uuid::new_v4())).header("host","mdm.example.test").header("origin","https://mdm.example.test").header("x-identity-request","1").header("x-csrf-token",fixture.author.csrf.as_ref().unwrap()).header("cookie",&cookie).body(Body::from(newer.clone()))?;
+    ensure!(fixture.router.clone().oneshot(request).await?.status()==StatusCode::CREATED);
+    resource(&mut fixture.author,&fixture.router,content_id,4,json!({"action":"activate","version":"v2"})).await?;
     let download=format!("/api/v1/resources/{content_id}/versions/v1/script?platform=macos&architecture=aarch64&variant=default");
     let cookie=fixture.author.cookies.iter().map(|(k,v)|format!("{k}={v}")).collect::<Vec<_>>().join("; ");
     for (range,expected_status,expected) in [(None,StatusCode::OK,bytes.as_bytes()),(Some("bytes=0-8"),StatusCode::PARTIAL_CONTENT,&bytes.as_bytes()[..9])] {

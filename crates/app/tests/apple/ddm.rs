@@ -248,6 +248,52 @@ async fn policy_coowners_share_native_publication_without_fabricating_removal() 
         manifest(&peer, None).await? == retained_manifest,
         "retain changed native collection"
     );
+    let summary_path = format!("/api/v1/devices/{}/ddm?limit=1", case_device());
+    let before = f
+        .browser
+        .call(&f.router, Method::GET, &summary_path, None)
+        .await?;
+    ensure!(
+        before.0 == StatusCode::OK,
+        "DDM page before generation change: {before:?}"
+    );
+    let cursor = before.1["nextCursor"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("missing DDM cursor: {before:?}"))?
+        .to_owned();
+    let original_registration: Uuid =
+        serde_json::from_value(before.1["items"][0]["registrationId"].clone())?;
+    let original_generation = before.1["items"][0]["generation"].as_i64().unwrap();
+    sqlx::query("UPDATE mdm_access.registrations SET generation=generation+1 WHERE tenant_id=$1::uuid AND id=$2").bind(case_tenant()).bind(original_registration).execute(&mut pg).await?;
+    let current = f
+        .browser
+        .call(&f.router, Method::GET, &summary_path, None)
+        .await?;
+    let stale = f
+        .browser
+        .call(
+            &f.router,
+            Method::GET,
+            &format!("{summary_path}&cursor={cursor}"),
+            None,
+        )
+        .await?;
+    sqlx::query(
+        "UPDATE mdm_access.registrations SET generation=$3 WHERE tenant_id=$1::uuid AND id=$2",
+    )
+    .bind(case_tenant())
+    .bind(original_registration)
+    .bind(original_generation)
+    .execute(&mut pg)
+    .await?;
+    ensure!(
+        current.0 == StatusCode::OK && current.1["items"] == json!([]),
+        "old-generation evidence leaked: {current:?}"
+    );
+    ensure!(
+        stale.0 == StatusCode::CONFLICT,
+        "old-generation cursor accepted: {stale:?}"
+    );
     crate::test_support::identity::set_grants(
         case_tenant(),
         crate::test_support::case::admin(),

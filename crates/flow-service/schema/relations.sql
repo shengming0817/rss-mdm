@@ -359,7 +359,7 @@ GRANT UPDATE(current_version) ON TABLE mdm_policy.policies TO mdm_policy_runtime
 
 GRANT UPDATE(version_number) ON TABLE mdm_policy.policies TO mdm_policy_runtime;
 
-GRANT UPDATE(enabled) ON TABLE mdm_policy.policies TO mdm_policy_runtime;
+GRANT UPDATE(state) ON TABLE mdm_policy.policies TO mdm_policy_runtime;
 
 GRANT UPDATE(definition) ON TABLE mdm_policy.policies TO mdm_policy_runtime;
 

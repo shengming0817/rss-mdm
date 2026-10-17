@@ -830,3 +830,71 @@ async fn collection_blueprints_instantiate_replay_and_keep_tenant_versions() -> 
 
     }).await
 }
+
+#[tokio::test]
+#[ignore = "make t2 MODULE=planning.http"]
+async fn reverse_memberships_revalidate_authority_after_request_snapshot() -> Result<()> {
+    let mut fixture = authority::Authority::open().await?;
+    let resources = std::mem::take(&mut fixture.resources);
+    resources
+        .finish(async {
+            let (router, app_resources) = app(&fixture.base).await?;
+            app_resources
+                .finish(async {
+                    let browser = fixture.browser("other")?;
+                    let subject = browser_subject(&browser, &router).await?;
+                    let mut grants = identity::device_grants(None, &["inventory_read"])?;
+                    grants.push(crate::authorization::Grant {
+                        operation: crate::authorization::Permission::GroupRead,
+                        scope: crate::authorization::Scope::Tenant,
+                    });
+                    identity::set_grants(case_tenant(), &subject, grants).await?;
+                    let proof =
+                        crate::device::test_support::admin(case_tenant(), "other-a").await?;
+                    proof.manage(crate::authorization::Permission::GroupRead)?;
+                    proof.require_all_devices(crate::authorization::Permission::InventoryRead)?;
+                    let planning = crate::planning::test_support::planning(
+                        crate::planning::test_support::tenant(),
+                    )
+                    .await;
+                    let groups = rss_mdm_inventory_service::groups::Groups {
+                        objects: planning.objects.clone(),
+                        tenant: planning.tenant,
+                        groups: planning.groups.clone(),
+                        cursor_key: ring::hmac::Key::new(ring::hmac::HMAC_SHA256, &[9; 32]),
+                        audit_store: planning.audit_store.clone(),
+                        runtime: planning.runtime.clone(),
+                        clock: Arc::new(crate::clock::InventoryClock(Arc::new(
+                            crate::clock::SystemClock,
+                        ))),
+                    };
+                    identity::set_grants(case_tenant(), &subject, vec![]).await?;
+                    // The same proof still contains both old grants. The transaction must reject before existence reads.
+                    let audit = rss_mdm_audit_integration::RequestAudit::new(
+                        case_tenant().into(),
+                        "management_read",
+                    );
+                    proof.bind_audit(&audit)?;
+                    let result = groups
+                        .memberships(
+                            &proof,
+                            "not-present",
+                            &rss_mdm_inventory_service::groups::memberships::Query {
+                                limit: 1,
+                                cursor: None,
+                            },
+                            &audit,
+                        )
+                        .await;
+                    audit.finalize(None);
+                    planning.runtime.close().await;
+                    ensure!(
+                        matches!(result, Err(rss_mdm_inventory_service::Error::Forbidden)),
+                        "stale request authority: {result:?}"
+                    );
+                    Ok(())
+                })
+                .await
+        })
+        .await
+}

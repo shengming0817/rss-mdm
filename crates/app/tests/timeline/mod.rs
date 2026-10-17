@@ -871,7 +871,7 @@ async fn resource_filters_bind_cursor_without_conflating_target_types() -> Resul
     let mut f = Fixture::open().await?;
     let resources = std::mem::take(&mut f.resources);
     resources.finish(async {
-        let proof=crate::device::test_support::admin(case_tenant(),"resource-history").await?;
+        let proof=crate::device::test_support::admin(case_tenant(),"admin-a").await?;
         let operation=Uuid::new_v4();
         f.append(&proof,operation,0..6,100,50).await?;
         let path=format!("/api/v1/audit-events?targetId={operation}&targetType=resource&from=100&until=101&limit=1");

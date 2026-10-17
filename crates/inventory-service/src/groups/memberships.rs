@@ -64,7 +64,15 @@ impl Groups {
         audit.set_action("management_read");
         run(&self.audit_store,&self.runtime,self.tenant,audit,(self,proof,device,query,audit,authority),|ctx,tx|Box::pin(async move {
             let (s,p,device,q,audit,authority)=ctx;
-            p.manage(Permission::GroupRead)?;p.require_all_devices(Permission::InventoryRead)?;
+            let tenant=p.tenant_id().to_owned();let instance=p.instance_id().to_owned();
+            let current=tx.with_connection(move|c|Box::pin(async move {
+                rss_mdm_authorization_service::lock_on(c,&tenant,&instance).await.map_err(|_|sqlx::Error::Protocol("authorization lock".into()))?;
+                Ok(rss_mdm_authorization_service::snapshot_on(c,&tenant,&instance).await)
+            })).await??;
+            current.require(p,Permission::GroupRead,None)?;current.require_all_devices(p,Permission::InventoryRead)?;
+            let current_binding=current.query_binding(p)?;
+            if current_binding!=*authority {return Err(Error::Conflict.into())}
+
             require_device(tx,device).await?;
             let tenant=s.tenant;
             let objects=s.objects.clone();let device_owned=device.to_string();

@@ -338,6 +338,25 @@ impl Timeline {
         query: &Query,
         token: Option<&cursor::Cursor>,
     ) -> Result<(Window, Vec<sqlx::postgres::PgRow>), Error> {
+        // Authorization is reloaded after acquiring the audit read transaction, before exposing facts.
+        rss_mdm_authorization_service::lock_on(c, proof.tenant_id(), proof.instance_id())
+            .await
+            .map_err(|_| Error::Forbidden)?;
+        let current =
+            rss_mdm_authorization_service::snapshot_on(c, proof.tenant_id(), proof.instance_id())
+                .await
+                .map_err(|_| Error::Forbidden)?;
+        current
+            .require(proof, Permission::AuthorizationRead, None)
+            .map_err(|_| Error::Forbidden)?;
+        if current.query_binding(proof).map_err(|_| Error::Forbidden)?
+            != proof
+                .authorization()
+                .and_then(|s| s.query_binding(proof))
+                .map_err(|_| Error::Forbidden)?
+        {
+            return Err(Error::Conflict);
+        }
         // Checkpoint and facts share one READ COMMITTED statement snapshot, including empty pages.
         let rows=sqlx::query("SELECT cp.position AS indexed,cp.source_through,cp.generation,f.document,f.digest,f.position,f.recorded_at FROM mdm_timeline.checkpoints cp LEFT JOIN LATERAL (SELECT document,digest,position,recorded_at FROM mdm_timeline.facts WHERE tenant_id=cp.tenant_id AND position<=COALESCE($2,cp.position) AND (instance_id=$3::uuid OR (instance_id IS NULL AND document->>'supported'='true' AND document->>'actorKind' IN ('service','device','unidentified'))) AND ($4::text IS NULL OR devices @> ARRAY[$4]) AND ($5::uuid IS NULL OR operation_id=$5 OR operations @> ARRAY[$5]) AND ($6::text IS NULL OR actor=$6) AND ($7::text IS NULL OR action=$7) AND ($8::text IS NULL OR outcome=$8) AND ($9::bigint IS NULL OR recorded_at>=$9) AND ($10::bigint IS NULL OR recorded_at<$10) AND ($14::text IS NULL OR document->'target'->>'id'=$14) AND ($15::text IS NULL OR document->'target'->>'type'=$15) AND ($11::bigint IS NULL OR (recorded_at,position)<($11,$12)) ORDER BY recorded_at DESC,position DESC LIMIT $13) f ON true WHERE cp.tenant_id=$1::uuid ORDER BY f.recorded_at DESC,f.position DESC")
             .bind(self.tenant.to_string()).bind(token.map(|v|v.through)).bind(proof.instance_id()).bind(&query.device).bind(query.operation_id)

@@ -76,6 +76,12 @@ async fn assignment_pagination_uses_published_scope_without_eager_execution() ->
         )
         .await?;
     }
+    call(browser,router,&group_path,2,json!({"action":"members","add":[],"remove":[{"kind":"endpoint","id":devices[1]}]})).await?;
+    let retained=browser.call(router,Method::GET,&format!("/api/v1/devices/{}/groups",devices[0]),None).await?;
+    ensure!(retained.0==StatusCode::OK && retained.1["items"][0]["id"]==group.to_string(),"sparse membership lost unchanged endpoint: {retained:?}");
+    let removed=browser.call(router,Method::GET,&format!("/api/v1/devices/{}/groups",devices[1]),None).await?;
+    ensure!(removed.0==StatusCode::OK && removed.1["items"]==json!([]),"removed endpoint retained: {removed:?}");
+    call(browser,router,&group_path,3,json!({"action":"members","add":[{"kind":"endpoint","id":devices[1]}],"remove":[]})).await?;
     call(browser,router,&format!("/api/v1/scopes/{scope}"),0,json!({"action":"put","definition":{"targets":[{"kind":"group","id":group}],"limitations":null,"exclusions":[]}})).await?;
     let definition = json!({"scope":scope,"action":{"resource":{"id":resource,"version":"v1","platform":"windows","architecture":"x86_64","variant":"default"},"kind":"configuration","exit":"retain"}});
     let before = pg(&format!(

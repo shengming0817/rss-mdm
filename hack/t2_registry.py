@@ -1990,3 +1990,5 @@ MODULES['installation.migration'] = replace(MODULES['installation.migration'], p
 consume(('crates/content-service/src/service/script.rs',), 'planning.agent_policy content.http')
 consume(('crates/group-postgres/src/memberships.rs','crates/inventory-service/src/groups/memberships.rs'), 'planning.policy planning.http group.generations')
 consume(('crates/execution-service/src/queries/ddm.rs',), 'apple.ddm')
+
+T1_INPUTS += ('crates/timeline-service/tests/model.rs',)
