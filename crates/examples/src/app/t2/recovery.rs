@@ -60,7 +60,10 @@ async fn rollback_and_unknown(a: &App) -> Result<()> {
             a.clock.deadline(),
         )
         .await;
-    assert!(result.is_err());
+    assert_eq!(
+        result.unwrap_err().kind(),
+        rss_observation::ErrorKind::CommitUnknown
+    );
     assert!(!inspect(a, "receipt-unknown").await?["receipt"].is_null());
     assert!(matches!(a.ingest(b).await?, ReceiveOutcome::Replay(_)));
     let control = Control::new(&a.clock, a.clock.cutoff(storage::BUDGET), &cancel);
@@ -77,11 +80,13 @@ async fn rollback_and_unknown(a: &App) -> Result<()> {
         .await?;
     a.projection
         .inject_next_fault(rss_projection_postgres::PgFault::CommitUnknownAfterAck);
-    assert!(
+    assert_eq!(
         execution
             .execute(checkpoint.position, &events[0], &control)
             .await
-            .is_err()
+            .unwrap_err()
+            .kind(),
+        rss_projection::ErrorKind::CommitUnknown
     );
     drop(execution);
     let committed = inspect(a, "receipt-unknown").await?;
@@ -98,18 +103,16 @@ async fn permissions_and_lifecycle() -> Result<()> {
         .fetch_one(&pool)
         .await?;
     assert_eq!(visible, 0);
-    assert!(
-        sqlx::query("CREATE TABLE public.forbidden(id int)")
-            .execute(&pool)
-            .await
-            .is_err()
-    );
-    assert!(
-        sqlx::query("DELETE FROM rss_observation.batches")
-            .execute(&pool)
-            .await
-            .is_err()
-    );
+    for statement in [
+        "CREATE TABLE public.forbidden(id int)",
+        "DELETE FROM rss_observation.batches",
+    ] {
+        let error = sqlx::query(statement).execute(&pool).await.unwrap_err();
+        assert_eq!(
+            error.as_database_error().and_then(|e| e.code()).as_deref(),
+            Some("42501")
+        );
+    }
     let mut tx = pool.begin().await?;
     sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
         .bind(case::tenant())
@@ -136,7 +139,15 @@ async fn permissions_and_lifecycle() -> Result<()> {
     let a = app(scope(1, "d1")).await?;
     let cancelled = CancellationToken::new();
     cancelled.cancel();
-    assert!(a.project(&cancelled).await.is_err());
+    assert_eq!(
+        a.project(&cancelled)
+            .await
+            .unwrap_err()
+            .downcast_ref::<rss_projection::Error>()
+            .unwrap()
+            .kind(),
+        rss_projection::ErrorKind::Cancelled
+    );
     a.close().await?;
     ensure!(a.observation.is_closed());
     assert!(a.inspect(&Id::new("first")?).await.is_err());
@@ -206,14 +217,26 @@ async fn admission_drift() -> Result<()> {
             "REVOKE TRIGGER ON mdm.inventory FROM mdm_runtime",
         ),
     ] {
+        app(scope(1, "d1")).await?.close().await?;
         sqlx::raw_sql(damage).execute(&owner).await?;
         let result = app(scope(1, "d1")).await;
         sqlx::raw_sql(restore).execute(&owner).await?;
-        if let Ok(a) = result {
-            a.close().await?;
-            anyhow::bail!("Inventory admission accepted {damage}");
-        }
+        let error = match result {
+            Ok(a) => {
+                a.close().await?;
+                anyhow::bail!("Inventory admission accepted {damage}");
+            }
+            Err(error) => error,
+        };
+        let report = crate::failure::report(error);
+        assert_eq!(
+            report["problems"][0],
+            serde_json::json!({"stage":"projection_open","component":"projection","kind":"Unavailable"}),
+            "{damage}: {report}"
+        );
+        app(scope(1, "d1")).await?.close().await?;
     }
+    app(scope(1, "d1")).await?.close().await?;
     sqlx::raw_sql("GRANT mdm_owner TO mdm_runtime")
         .execute(&admin)
         .await?;
@@ -221,7 +244,18 @@ async fn admission_drift() -> Result<()> {
     sqlx::raw_sql("REVOKE mdm_owner FROM mdm_runtime")
         .execute(&admin)
         .await?;
-    assert!(denied.is_err());
+    let error = match denied {
+        Ok(a) => {
+            a.close().await?;
+            anyhow::bail!("owner membership admitted");
+        }
+        Err(error) => error,
+    };
+    assert_eq!(
+        crate::failure::report(error)["problems"][0]["stage"],
+        "projection_open"
+    );
+    app(scope(1, "d1")).await?.close().await?;
     let source = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
     let offset = source.clone();
     let real = system_clock();
