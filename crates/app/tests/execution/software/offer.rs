@@ -6,9 +6,9 @@ use sqlx::Connection;
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 #[ignore = "make t2 MODULE=execution.software.offer"]
 async fn required_available_and_uninstall_delivery() -> Result<()> {
-    let mut fixture = Fixture::approved(Platform::MacOs)
+    let mut fixture = Fixture::authorized(Platform::MacOs)
         .await
-        .map_err(|e| anyhow::anyhow!("approved fixture: {e:#}"))?;
+        .map_err(|e| anyhow::anyhow!("authorized fixture: {e:#}"))?;
     let resources = std::mem::take(&mut fixture.resources);
     resources.finish(async {
     let stack = worker(&fixture.base, fixture.content.clone())
@@ -203,7 +203,7 @@ async fn required_available_and_uninstall_delivery() -> Result<()> {
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 #[ignore = "make t2 MODULE=execution.software.offer"]
 async fn windows_variant_delivery_and_detection() -> Result<()> {
-    let mut fixture = Fixture::approved(Platform::Windows).await?;
+    let mut fixture = Fixture::authorized(Platform::Windows).await?;
     let resources = std::mem::take(&mut fixture.resources);
     resources.finish(async {
     let stack = worker(&fixture.base, fixture.content.clone())

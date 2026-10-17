@@ -392,7 +392,7 @@ impl ExecutionService {
                 let op = storage::load(tx, &self.protection, id).await?;
                 let command = self.required_command(tx, &op).await?;
                 let is_remove = matches!(
-                    op.approval,
+                    op.authority,
                     authority::ExecutionAuthority::Policy { remove: true, .. }
                 );
                 let publication_withdrawn = self
@@ -480,7 +480,7 @@ impl ExecutionService {
         status: dc::Status,
     ) -> Result<bool> {
         if !matches!(
-            op.approval,
+            op.authority,
             authority::ExecutionAuthority::Policy { remove: true, .. }
         ) || status != dc::Status::Received
             || !matches!(&op.request.task, Task::Macos { request: rss_mdm_apple_mdm::native::request::Request::Declarations { declarations, .. } } if declarations.is_empty())
@@ -579,7 +579,7 @@ impl ExecutionService {
         }
         if previous == digest
             && (command.status() == dc::Status::Applied
-                || storage::approval_valid(&self.source, &self.protection, tx, &old, now).await?)
+                || storage::authority_valid(&self.source, &self.protection, tx, &old, now).await?)
             && !matches!(
                 command.status(),
                 dc::Status::TimedOut

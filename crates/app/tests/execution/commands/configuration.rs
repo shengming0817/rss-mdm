@@ -697,7 +697,7 @@ async fn associated_agent_health_executes_only_original_mdm_and_missing_channel_
         "automatic channel recovery: {page}"
     );
     let frozen: Value = sqlx::query_scalar(
-        "SELECT approval FROM mdm_commands.operations WHERE tenant_id=$1::uuid AND id=$2",
+        "SELECT authority FROM mdm_commands.operations WHERE tenant_id=$1::uuid AND id=$2",
     )
     .bind(case_tenant())
     .bind(operations[0])

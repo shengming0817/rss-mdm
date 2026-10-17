@@ -137,7 +137,7 @@ GRANT SELECT,INSERT ON TABLE mdm_commands.operations TO mdm_command_runtime;
 
 GRANT SELECT ON TABLE mdm_commands.operations TO mdm_flow_runtime;
 
-GRANT UPDATE(approval) ON TABLE mdm_commands.operations TO mdm_command_runtime;
+GRANT UPDATE(authority) ON TABLE mdm_commands.operations TO mdm_command_runtime;
 
 GRANT UPDATE(revision) ON TABLE mdm_commands.operations TO mdm_command_runtime;
 

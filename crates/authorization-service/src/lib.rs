@@ -1,4 +1,4 @@
-//! Product authorization owns grants, snapshots and durable user approval evidence.
+//! Product authorization owns grants, snapshots and durable user authorization evidence.
 mod authority;
 pub mod context;
 mod database;

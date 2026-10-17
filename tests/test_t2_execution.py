@@ -279,6 +279,55 @@ class ProcessOwnership(unittest.TestCase):
                     fixture_process.run([sys.executable, '-c', 'pass'], check=True)
                 self.assertFalse(processes.children)
 
+    def test_one_group_permission_error_does_not_abandon_other_children(self):
+        import errno
+        import os
+        import signal
+        import subprocess
+        from unittest.mock import patch
+        processes = Processes()
+        children = []
+        try:
+            with patch('t2_execution.lease_fds', return_value=()):
+                for _ in range(2):
+                    child = processes.spawn([sys.executable, '-c',
+                        'import time; print("ready", flush=True); time.sleep(30)'],
+                        stdout=subprocess.PIPE, text=True)
+                    children.append(child)
+                    self.assertEqual(child.stdout.readline().strip(), 'ready')
+            denied, other = list(processes.children)
+            original = os.killpg
+            attempts = []
+            def terminate(pid, sig):
+                attempts.append(pid)
+                if pid == denied.pid:
+                    raise PermissionError(errno.EPERM, 'injected group permission failure')
+                return original(pid, sig)
+            with patch('t2_execution.os.killpg', side_effect=terminate):
+                processes.cancel()
+                other.wait(timeout=3)
+                self.assertIn(other.pid, attempts)
+                self.assertIsNone(denied.poll())
+                processes.cancel()
+                self.assertEqual(attempts.count(denied.pid), 2)
+                with self.assertRaises(ExceptionGroup):
+                    processes.close()
+                self.assertEqual(processes.children, {denied})
+                receipt = processes.cleanup_receipt()
+                self.assertEqual(receipt['remainingPids'], [denied.pid])
+                self.assertTrue(any(e['errno'] == errno.EPERM for e in receipt['errors']))
+            processes.close()
+            self.assertFalse(processes.children)
+            self.assertIsNotNone(denied.poll())
+        finally:
+            for child in children:
+                try:
+                    os.killpg(child.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+                child.wait(timeout=5)
+                child.stdout.close()
+
     def test_build_protocol_stdout_is_separate_from_diagnostics(self):
         from unittest.mock import patch
         with patch('t2_execution.lease_fds', return_value=()):

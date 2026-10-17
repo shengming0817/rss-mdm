@@ -29,7 +29,7 @@ impl ExecutionService {
             target: NativeTarget::Device,
             task: package.native_task(operation_id)?,
         };
-        let approval = authority::ExecutionAuthority::AgentInstall {
+        let authority = authority::ExecutionAuthority::AgentInstall {
             source_objects: vec![],
             required: input.task.permissions()?,
             package: Box::new(package),
@@ -40,7 +40,7 @@ impl ExecutionService {
             operation: input.operation_id,
         };
         let now = storage::now(tx).await?;
-        let check = approval.clone();
+        let check = authority.clone();
         let protection = self.protection.clone();
         let source = self.source.clone();
         if !tx
@@ -70,7 +70,7 @@ impl ExecutionService {
                 tx,
                 device,
                 &input,
-                approval,
+                authority,
                 crate::protection::fingerprint(
                     &self.protection,
                     self.tenant,
@@ -161,7 +161,7 @@ impl ExecutionService {
         // One installation per source registration, shared across overlapping policies and revisions.
         // Repeated inventory and unknown delivery never create another installer execution.
         let tenant = tx.tenant_id().to_string();
-        let old=tx.with_connection(move|c|Box::pin(async move{sqlx::query_scalar::<_,bool>("SELECT EXISTS(SELECT 1 FROM mdm_commands.operations WHERE tenant_id=$1::uuid AND registration=$2 AND registration_generation=$3 AND approval->>'kind'='agent_install')").bind(tenant).bind(registration).bind(generation).fetch_one(c).await})).await?;
+        let old=tx.with_connection(move|c|Box::pin(async move{sqlx::query_scalar::<_,bool>("SELECT EXISTS(SELECT 1 FROM mdm_commands.operations WHERE tenant_id=$1::uuid AND registration=$2 AND registration_generation=$3 AND authority->>'kind'='agent_install')").bind(tenant).bind(registration).bind(generation).fetch_one(c).await})).await?;
         if old {
             return Ok(None);
         }
@@ -307,7 +307,7 @@ impl ExecutionService {
                 crate::transaction::lock(tx).await?;
                 let op = storage::load(tx, &s.protection, id).await?;
                 storage::lock(tx, &op.device).await?;
-                let Some(package) = op.approval.agent_package() else {
+                let Some(package) = op.authority.agent_package() else {
                     return Err(Error::NotFound.into());
                 };
                 let now = s.installation_authorization_time(storage::now(tx).await?);
@@ -324,7 +324,7 @@ impl ExecutionService {
                     )
                     .await?
                         != (op.registration, op.registration_generation)
-                    || !storage::approval_valid(&s.source, &s.protection, tx, &op, now).await?
+                    || !storage::authority_valid(&s.source, &s.protection, tx, &op, now).await?
                 {
                     return Err(Error::Forbidden.into());
                 }
@@ -356,12 +356,12 @@ impl ExecutionService {
     ) -> Result<()> {
         let tenant = tx.tenant_id().to_string();
         let name = device.to_owned();
-        let ids=tx.with_connection(move|c|Box::pin(async move{sqlx::query_scalar::<_,Uuid>("SELECT o.id FROM mdm_commands.operations o JOIN rss_device_command.commands d ON d.tenant_id=o.tenant_id AND d.command_id=o.id::text JOIN mdm_access.registrations r ON(r.tenant_id,r.id,r.generation)=(o.tenant_id,o.registration,o.registration_generation) WHERE o.tenant_id=$1::uuid AND o.device=$2 AND r.state='active' AND o.approval->>'kind'='agent_install' AND d.status IN('published','received') ORDER BY o.id LIMIT 64").bind(tenant).bind(name).fetch_all(c).await})).await?;
+        let ids=tx.with_connection(move|c|Box::pin(async move{sqlx::query_scalar::<_,Uuid>("SELECT o.id FROM mdm_commands.operations o JOIN rss_device_command.commands d ON d.tenant_id=o.tenant_id AND d.command_id=o.id::text JOIN mdm_access.registrations r ON(r.tenant_id,r.id,r.generation)=(o.tenant_id,o.registration,o.registration_generation) WHERE o.tenant_id=$1::uuid AND o.device=$2 AND r.state='active' AND o.authority->>'kind'='agent_install' AND d.status IN('published','received') ORDER BY o.id LIMIT 64").bind(tenant).bind(name).fetch_all(c).await})).await?;
         for id in ids {
             let op = storage::load(tx, &self.protection, id).await?;
             let now = storage::now(tx).await?;
             if now >= op.request.deadline
-                || !storage::approval_valid(&self.source, &self.protection, tx, &op, now).await?
+                || !storage::authority_valid(&self.source, &self.protection, tx, &op, now).await?
             {
                 continue;
             }
@@ -419,7 +419,7 @@ pub async fn installation_observation(
     agent: Arc<dyn channels::Agent>,
     op: &storage::Operation,
 ) -> Result<serde_json::Value> {
-    let Some(package) = op.approval.agent_package() else {
+    let Some(package) = op.authority.agent_package() else {
         return Err(Error::Malformed.into());
     };
     let tenant = tx.tenant_id();

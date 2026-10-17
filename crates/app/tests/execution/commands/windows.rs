@@ -36,7 +36,7 @@ async fn console_mixed_kind_cursor_and_device_visibility() -> anyhow::Result<()>
     // IDs belong to their original owners; equal IDs must not lose either kind.
     client.operation = id;
     client.known_windows_capability(case_device()).await?;
-    client.accept_approved().await?;
+    client.accept_authorized().await?;
     client.publish_operation(id).await?;
     let mut grants = fixture.grants.clone();
     grants.extend(identity::device_grants(None, &["operation_read"])?);

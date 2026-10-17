@@ -17,6 +17,7 @@ async fn selected(
     transaction::inspect(
         &app.runtime,
         app.tenant,
+        None,
         (proof, id, version, input),
         |ctx, tx| {
             Box::pin(async move {
@@ -58,6 +59,7 @@ pub async fn download(
     id: &str,
     version: &str,
     input: &ScriptSelection,
+    secret: &rss_identity_core::session::SessionSecret,
 ) -> Result<crate::Verified, Error> {
     proof.require(Permission::ResourceRead, None)?;
     audit.resource_target(rss_mdm_audit_integration::TargetKind::Resource, id);
@@ -65,7 +67,22 @@ pub async fn download(
     audit.require_request_settlement();
     let (digest, artifact) = selected(app, proof, id, version, input).await?;
     let verified = store(app)?.verify(&artifact).await?;
-    let (current, reference) = selected(app, proof, id, version, input).await?;
+    // The original browser session can be revoked while Content verifies the bytes.
+    // Reauthenticate within the remaining transfer deadline before the final reference check.
+    let (current, reference) = tokio::time::timeout_at(verified.deadline.instant().into(), async {
+        let secret = rss_identity_core::session::SessionSecret::parse(secret.expose().to_owned())
+            .map_err(|_| Error::Forbidden)?;
+        let fresh = app
+            .sessions
+            .authenticate(&app.authorization, secret)
+            .await?;
+        if fresh.user() != proof.user() || fresh.session_id() != proof.session_id() {
+            return Err(Error::Forbidden);
+        }
+        selected(app, &fresh, id, version, input).await
+    })
+    .await
+    .map_err(|_| crate::Error::Deadline)??;
     if digest != current
         || reference.digest() != artifact.digest()
         || reference.length() != artifact.length()

@@ -8,10 +8,12 @@ mod cleanup;
 mod journal;
 mod native;
 pub use cleanup::Garbage;
+mod budget;
 mod protected;
 mod reader;
 mod upload;
 pub use backend::{S3Storage, Storage};
+pub use budget::UploadBudget;
 pub use reader::Verified;
 use rss_mdm_resource::Artifact;
 use rss_request_context::{Clock, Deadline};
@@ -70,6 +72,7 @@ pub struct Store {
     timer: Arc<dyn Clock>,
     backend: backend::Backend,
     pool: sqlx::PgPool,
+    cleanup_tasks: tokio_util::task::TaskTracker,
 }
 fn storage() -> Error {
     Error::Storage
@@ -153,11 +156,14 @@ impl Store {
             timer,
             backend,
             pool,
+            cleanup_tasks: tokio_util::task::TaskTracker::new(),
         });
         store.journal_admit().await?;
         Ok(store)
     }
     pub async fn close(&self) {
+        self.cleanup_tasks.close();
+        self.cleanup_tasks.wait().await;
         self.pool.close().await;
     }
     fn deadline(&self) -> Result<Deadline, Error> {

@@ -142,7 +142,7 @@ impl WindowsDeviceTrust {
         .verify(&input, signer.signature.as_bytes())
         .map_err(|_| Error::CertificateRequest)?;
         let request = Csr::verify(csr)?;
-        if request.info.public_key == certificate.tbs_certificate.subject_public_key_info {
+        if *request.public_key() == certificate.tbs_certificate.subject_public_key_info {
             return Err(Error::CertificateRequest);
         }
         Ok(RenewalProof {

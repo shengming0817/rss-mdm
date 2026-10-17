@@ -112,7 +112,7 @@ pub async fn continue_on(
     response: &mut Message,
     peer_limits: &CodecLimits,
 ) -> Result<Continuation, Error> {
-    let row=sqlx::query("SELECT a.id,a.operation,a.platform,o.device,o.registration,o.registration_generation,o.input_context,o.request,o.approval::text,d.status AS command_status,(o.input_context->>'deadline')::bigint>extract(epoch FROM clock_timestamp()) AS within_deadline,a.ordinal=(SELECT max(b.ordinal) FROM mdm_commands.attempts b WHERE b.tenant_id=a.tenant_id AND b.operation=a.operation AND b.phase=a.phase) AS latest,f.command,f.end_byte,f.total_bytes,f.status,f.accepted FROM mdm_commands.attempts a JOIN mdm_commands.operations o ON(o.tenant_id,o.id)=(a.tenant_id,a.operation) JOIN rss_device_command.commands d ON d.tenant_id=o.tenant_id AND d.command_id=o.id::text JOIN LATERAL (SELECT * FROM mdm_commands.attempt_frames WHERE tenant_id=a.tenant_id AND attempt=a.id ORDER BY message DESC LIMIT 1) f ON true JOIN mdm_commands.attempt_items i ON(i.tenant_id,i.attempt,i.command)=(a.tenant_id,a.id,f.command) WHERE a.tenant_id=$1::uuid AND o.registration=$2 AND o.registration_generation=$3 AND a.credential=$4 AND a.session=$5 AND NOT coalesce(i.receipt_accepted,false) ORDER BY a.ordinal LIMIT 1")
+    let row=sqlx::query("SELECT a.id,a.operation,a.platform,o.device,o.registration,o.registration_generation,o.input_context,o.request,o.authority::text,d.status AS command_status,(o.input_context->>'deadline')::bigint>extract(epoch FROM clock_timestamp()) AS within_deadline,a.ordinal=(SELECT max(b.ordinal) FROM mdm_commands.attempts b WHERE b.tenant_id=a.tenant_id AND b.operation=a.operation AND b.phase=a.phase) AS latest,f.command,f.end_byte,f.total_bytes,f.status,f.accepted FROM mdm_commands.attempts a JOIN mdm_commands.operations o ON(o.tenant_id,o.id)=(a.tenant_id,a.operation) JOIN rss_device_command.commands d ON d.tenant_id=o.tenant_id AND d.command_id=o.id::text JOIN LATERAL (SELECT * FROM mdm_commands.attempt_frames WHERE tenant_id=a.tenant_id AND attempt=a.id ORDER BY message DESC LIMIT 1) f ON true JOIN mdm_commands.attempt_items i ON(i.tenant_id,i.attempt,i.command)=(a.tenant_id,a.id,f.command) WHERE a.tenant_id=$1::uuid AND o.registration=$2 AND o.registration_generation=$3 AND a.credential=$4 AND a.session=$5 AND NOT coalesce(i.receipt_accepted,false) ORDER BY a.ordinal LIMIT 1")
         .bind(p.tenant().to_string()).bind(p.registration()).bind(p.generation()).bind(p.credential()).bind(i64::from(response.header.session_id)).fetch_optional(&mut *c).await.map_err(db)?;
     let Some(row) = row else {
         return Ok(Continuation::None);
@@ -127,10 +127,10 @@ pub async fn continue_on(
         &row,
         "request",
     )?;
-    let approval: ExecutionAuthority =
-        serde_json::from_str(&row.try_get::<String, _>("approval").map_err(db)?)
+    let authority: ExecutionAuthority =
+        serde_json::from_str(&row.try_get::<String, _>("authority").map_err(db)?)
             .map_err(|_| protocol())?;
-    if !approval.dispatch_ready(source, c).await?
+    if !authority.dispatch_ready(source, c).await?
         || receipt_acceptance(source, c, key, p, &input, &row, true, None).await? != Some(true)
     {
         return Ok(Continuation::Abort);

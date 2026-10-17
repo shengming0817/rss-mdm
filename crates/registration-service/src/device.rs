@@ -452,7 +452,7 @@ impl DeviceService {
 pub(crate) async fn agent_in(
     c: &mut sqlx::PgConnection,
     tenant: TenantId,
-    peer: &rss_mdm_certificate::agent::VerifiedAgentPeer,
+    peer: &rss_mdm_device_trust::agent::VerifiedAgentPeer,
 ) -> Result<DevicePrincipal, Error> {
     use crate::database::db;
     use rss_mdm_agent_wire::enroll::ErrorCode as C;

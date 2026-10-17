@@ -78,7 +78,14 @@ impl Upload {
     }
 }
 impl Store {
-    pub async fn begin(&self, id: Uuid, binding: Binding, now: i64) -> Result<Upload, Error> {
+    pub async fn begin(
+        &self,
+        id: Uuid,
+        binding: Binding,
+        now: i64,
+        budget: UploadBudget,
+    ) -> Result<Upload, Error> {
+        budget.work(async {
         if id.is_nil()
             || now < 0
             || binding.actor.is_empty()
@@ -92,7 +99,7 @@ impl Store {
         {
             return Err(Error::Malformed);
         }
-        self.clean_orphans(now).await?;
+        budget.work(self.clean_orphans(now)).await?;
         binding.artifact()?;
         let expires = match &binding.purpose {
             Purpose::Resource(_) => now
@@ -143,6 +150,7 @@ impl Store {
         sqlx::query("INSERT INTO mdm_content.uploads(tenant_id,id,document,expires,reserved,complete) VALUES($1::uuid,$2,$3,$4,$5,false)").bind(self.tenant.to_string()).bind(key).bind(self.sign(&key.to_string(),&saved)?).bind(upload.expires).bind(reserved as i64).execute(&mut *tx).await.map_err(|e|journal::pg_error(concat!(file!(), ":", line!()),e))?;
         journal::commit(tx).await?;
         Ok(upload)
+        }).await
     }
     pub async fn status(&self, actor: &str, id: Uuid, now: i64) -> Result<Upload, Error> {
         Ok(self.saved(actor, id, now).await?.upload)
@@ -154,34 +162,52 @@ impl Store {
         offset: u64,
         now: i64,
         body: R,
+        budget: UploadBudget,
     ) -> Result<Upload, Error> {
-        self.clean_orphans(now).await?;
-        let _permit = self
+        budget.work(self.clean_orphans(now)).await?;
+        let permit = self
             .transfers
             .clone()
             .try_acquire_owned()
             .map_err(|_| Error::Conflict)?;
-        let deadline = self.deadline()?;
-        let (saved, epoch) = self.claim(actor, id, Some(offset), now).await?;
-        let key = saved.upload.storage_key();
-        let result = tokio::time::timeout_at(
-            deadline.instant().into(),
-            self.append_claimed(saved, epoch, body, deadline),
-        )
-        .await
-        .map_err(|_| Error::Deadline)
-        .and_then(|v| v);
-        if result.is_err() {
-            let _ = self.release(key, epoch).await;
+        let epoch = Uuid::new_v4();
+        let key = storage_key(actor, id);
+        let lease = crate::budget::UploadLease::new(self, key, epoch, budget, permit);
+        let commit_started = std::sync::atomic::AtomicBool::new(false);
+        let result = budget
+            .work(async {
+                let (saved, epoch) = self
+                    .claim(actor, id, Some(offset), now, epoch, budget)
+                    .await?;
+                self.append_claimed(saved, epoch, body, budget.operation, &commit_started)
+                    .await
+            })
+            .await;
+        match result {
+            Ok(value) => {
+                lease.complete();
+                Ok(value)
+            }
+            Err(error) => {
+                let _ = lease.release().await;
+                if matches!(error, Error::Deadline)
+                    && commit_started.load(std::sync::atomic::Ordering::Acquire)
+                {
+                    Err(Error::CommitUnknown)
+                } else {
+                    Err(error)
+                }
+            }
         }
-        result
     }
+
     async fn append_claimed<R: tokio::io::AsyncRead + Unpin + Send>(
         &self,
         mut saved: journal::Saved,
         epoch: Uuid,
         mut body: R,
         deadline: Deadline,
+        commit_started: &std::sync::atomic::AtomicBool,
     ) -> Result<Upload, Error> {
         use tokio::io::AsyncReadExt;
         use zeroize::Zeroizing;
@@ -287,23 +313,33 @@ impl Store {
                 .await?,
             );
         }
-        self.save_frontier(&saved, epoch, deadline).await?;
+        self.save_frontier(&saved, epoch, deadline, commit_started)
+            .await?;
         Ok(saved.upload)
     }
-    pub async fn finish(&self, actor: &str, id: Uuid, now: i64) -> Result<Upload, Error> {
-        let old = self.saved(actor, id, now).await?;
+    pub async fn finish(
+        &self,
+        actor: &str,
+        id: Uuid,
+        now: i64,
+        budget: UploadBudget,
+    ) -> Result<Upload, Error> {
+        let old = budget.work(self.saved(actor, id, now)).await?;
         if old.upload.complete {
             return Ok(old.upload);
         }
-        let _permit = self
+        let permit = self
             .transfers
             .clone()
             .try_acquire_owned()
             .map_err(|_| Error::Conflict)?;
-        let deadline = self.deadline()?;
-        let (mut saved, epoch) = self.claim(actor, id, None, now).await?;
-        let key = saved.upload.storage_key();
-        let result=async {
+        let deadline = budget.operation;
+        let epoch = Uuid::new_v4();
+        let key = storage_key(actor, id);
+        let lease = crate::budget::UploadLease::new(self, key, epoch, budget, permit);
+        let commit_started = std::sync::atomic::AtomicBool::new(false);
+        let result=budget.work(async {
+        let (mut saved, epoch) = self.claim(actor, id, None, now, epoch, budget).await?;
    if saved.upload.offset!=saved.upload.binding.length{return Err(Error::Conflict)}
    let a=saved.upload.binding.artifact()?;let c=saved.upload.binding.class();
    let (_,digest)=self.check_pieces(&saved.pieces,&a,c,deadline).await?;
@@ -316,11 +352,23 @@ impl Store {
    let state:String=sqlx::query_scalar("SELECT state FROM mdm_content.manifests WHERE tenant_id=$1::uuid AND class=$2 AND sha256=$3 AND length=$4 FOR UPDATE").bind(self.tenant.to_string()).bind(journal::class(c)).bind(a.digest().bytes().as_slice()).bind(a.length() as i64).fetch_one(&mut *tx).await.map_err(|e|journal::pg_error(concat!(file!(), ":", line!()),e))?;
    if state!="ready"{return Err(Error::Conflict)}saved.upload.complete=true;
    let changed=sqlx::query("UPDATE mdm_content.uploads SET complete=true,document=$4,epoch=NULL,held_until=0 WHERE tenant_id=$1::uuid AND id=$2 AND epoch=$3").bind(self.tenant.to_string()).bind(key).bind(epoch).bind(self.sign(&key.to_string(),&saved)?).execute(&mut *tx).await.map_err(|e|journal::pg_error(concat!(file!(), ":", line!()),e))?.rows_affected();if changed!=1{return Err(Error::Conflict)}
-   self.check_deadline(deadline)?;journal::commit(tx).await?;Ok(saved.upload)
-  }.await;
-        if result.is_err() {
-            let _ = self.release(key, epoch).await;
+   self.check_deadline(deadline)?;commit_started.store(true, std::sync::atomic::Ordering::Release);journal::commit(tx).await?;Ok(saved.upload)
+  }).await;
+        match result {
+            Ok(value) => {
+                lease.complete();
+                Ok(value)
+            }
+            Err(error) => {
+                let _ = lease.release().await;
+                if matches!(error, Error::Deadline)
+                    && commit_started.load(std::sync::atomic::Ordering::Acquire)
+                {
+                    Err(Error::CommitUnknown)
+                } else {
+                    Err(error)
+                }
+            }
         }
-        result
     }
 }

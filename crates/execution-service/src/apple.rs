@@ -1,4 +1,4 @@
-//! Apple tasks share the command reducer, approval, outbox and operation authority.
+//! Apple tasks share the command reducer, authority, outbox and operation authority.
 use super::*;
 use crate::device::DevicePrincipal;
 use rss_mdm_apple_mdm::native::evidence::Settlement;
@@ -234,7 +234,7 @@ async fn eligible(
             command.status(),
             dc::Status::Published | dc::Status::Received
         )
-        && storage::approval_valid(&service.source, &service.protection, tx, op, now).await?)
+        && storage::authority_valid(&service.source, &service.protection, tx, op, now).await?)
 }
 async fn receive(
     service: &ExecutionService,
@@ -255,7 +255,7 @@ async fn receive(
     let command = channels::AppleCommand {
         operation: op.id,
         authorized_declarations: Vec::new(),
-        owner: op.approval.apple_owner(op.id)?,
+        owner: op.authority.apple_owner(op.id)?,
         assets: Vec::new(),
         deadline: op.request.deadline,
         input_version: op.request.input_version.clone(),
@@ -361,11 +361,11 @@ async fn send(
             if !eligible(service, tx, p, &op).await? {
                 continue;
             }
-            let approval = op.approval.clone();
+            let authority = op.authority.clone();
             let source = service.source.clone();
             if !tx
                 .with_connection(move |c| {
-                    Box::pin(async move { Ok(approval.dispatch_ready(source.as_ref(), c).await) })
+                    Box::pin(async move { Ok(authority.dispatch_ready(source.as_ref(), c).await) })
                 })
                 .await??
             {
@@ -453,7 +453,7 @@ async fn send_one(
     let command = super::channels::AppleCommand {
         operation: op.id,
         authorized_declarations,
-        owner: op.approval.apple_owner(op.id)?,
+        owner: op.authority.apple_owner(op.id)?,
         assets,
         deadline: op.request.deadline,
         input_version: op.request.input_version.clone(),
@@ -493,7 +493,7 @@ async fn authorized_declarations(
             && op.registration == p.registration()
             && op.registration_generation == p.generation()
             && op.request.target.user_key() == user
-            && storage::approval_valid(&service.source, &service.protection, tx, &op, now).await?
+            && storage::authority_valid(&service.source, &service.protection, tx, &op, now).await?
         {
             if let Task::Macos { request } = &op.request.task {
                 match super::apple_assets::resolve(service, tx, request, &op.request.target).await {

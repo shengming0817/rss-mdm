@@ -404,3 +404,198 @@ async fn corrupt_uploads_have_no_binding_and_distinct_operations_bind_verified_c
     Ok(())
     }).await
 }
+
+async fn upload_resource(fixture: &Fixture, bytes: &[u8]) -> Result<Uuid> {
+    let mut user = fixture.user.clone();
+    let resource = Uuid::new_v4();
+    let path = format!("/api/v1/resources/{resource}");
+    write(
+        &mut user,
+        &fixture.router,
+        &path,
+        0,
+        json!({"action":"create","kind":"software"}),
+    )
+    .await?;
+    let definition =
+        publication_support::private_definition(fixture.registered["snapshot"].clone(), bytes);
+    write(&mut user, &fixture.router, &path, 1, json!({"action":"version","version":"v1","kind":"software","variants":[{"platform":"windows","architecture":"x86_64","key":"default","declaration":{"kind":"software","definition":definition}}]})).await?;
+    write(
+        &mut user,
+        &fixture.router,
+        &path,
+        2,
+        json!({"action":"activate","version":"v1"}),
+    )
+    .await?;
+    Ok(resource)
+}
+fn streaming_request(fixture: &Fixture, method: Method, path: &str) -> reqwest::RequestBuilder {
+    let cookie = fixture
+        .user
+        .cookies
+        .iter()
+        .map(|(k, v)| format!("{k}={v}"))
+        .collect::<Vec<_>>()
+        .join("; ");
+    fixture
+        .client
+        .request(method, format!("{}{path}", fixture.origin))
+        .header("host", "mdm.example.test")
+        .header("origin", "https://mdm.example.test")
+        .header("x-identity-request", "1")
+        .header("x-csrf-token", fixture.user.csrf.as_ref().unwrap())
+        .header("cookie", cookie)
+        .header("content-type", "application/octet-stream")
+}
+async fn streaming_path(
+    fixture: &Fixture,
+    resource: Uuid,
+    operation: Uuid,
+    append: bool,
+) -> Result<String> {
+    let selection = "version=v1&variant=default&platform=windows&architecture=x86_64";
+    if append {
+        let mut user = fixture.user.clone();
+        let begun = user
+            .call(
+                &fixture.router,
+                Method::POST,
+                &format!("/api/v1/resources/{resource}/uploads/{operation}?{selection}"),
+                None,
+            )
+            .await?;
+        ensure!(begun.0 == StatusCode::OK, "begin: {begun:?}");
+        Ok(format!(
+            "/api/v1/resources/{resource}/uploads/{operation}?offset=0"
+        ))
+    } else {
+        Ok(format!(
+            "/api/v1/resources/{resource}/content?{selection}&operation={operation}"
+        ))
+    }
+}
+#[tokio::test]
+#[ignore = "MODULE=content.http: both real streaming paths exceed the old management deadline"]
+async fn large_streams_use_content_budget_and_bind_exact_bytes() -> Result<()> {
+    let mut fixture = Fixture::with_transfer_seconds(120).await?;
+    let resources = std::mem::take(&mut fixture.resources);
+    resources.finish(async {
+        let length = 16 * 1024 * 1024 + 1;
+        let bytes = vec![7; length];
+        let resource = upload_resource(&fixture, &bytes).await?;
+        for append in [false, true] {
+            let operation = Uuid::new_v4();
+            let path = streaming_path(&fixture, resource, operation, append).await?;
+            let stream = futures::stream::unfold(0usize, move |offset| async move {
+                if offset == length { return None; }
+                if offset == 0 { tokio::time::sleep(std::time::Duration::from_secs(9)).await; }
+                let n = (length-offset).min(65536);
+                Some((Ok::<_, std::io::Error>(vec![7u8;n]), offset+n))
+            });
+            let response = streaming_request(&fixture, if append { Method::PATCH } else { Method::POST }, &path)
+                .body(reqwest::Body::wrap_stream(stream)).send().await?;
+            let status = response.status(); let body = response.text().await?;
+            ensure!(status == if append { StatusCode::OK } else { StatusCode::CREATED }, "stream: {status} {body}");
+            if append {
+                let completed = streaming_request(&fixture, Method::POST, &format!("/api/v1/resources/{resource}/uploads/{operation}/complete")).send().await?;
+                let status = completed.status(); let body = completed.text().await?;
+                ensure!(status == StatusCode::CREATED, "complete: {status} {body}");
+            }
+            let mut user = fixture.user.clone();
+            let receipt = user.call(&fixture.router, Method::GET, &format!("/api/v1/resources/{resource}/content/operations/{operation}"), None).await?;
+            ensure!(receipt.0 == StatusCode::OK && receipt.1["length"] == length);
+            let digest = rss_mdm_resource::Digest::of(&bytes).bytes();
+            ensure!(receipt.1["sha256"] == json!(digest.to_vec()));
+            ensure!(pg(&format!("SELECT count(*) FROM mdm_content.bindings WHERE tenant_id='{}' AND operation='{operation}'",case_tenant()))?.trim() == "1");
+            ensure!(audit_count(|r| r.source()=="mdm.business" && r.operation()==Some(operation.to_string().as_str()) && r.status()==201 && r.result()=="success")? == 1);
+        }
+        Ok(())
+    }).await
+}
+#[tokio::test]
+#[ignore = "MODULE=content.http: content deadline releases exact leases and permits request recovery"]
+async fn stalled_streams_expire_without_binding_and_release_their_leases() -> Result<()> {
+    let mut fixture = Fixture::with_transfer_seconds(4).await?;
+    let resources = std::mem::take(&mut fixture.resources);
+    resources.finish(async {
+        let bytes = b"deadline recovery";
+        let resource = upload_resource(&fixture, bytes).await?;
+        for append in [false, true] {
+            let operation = Uuid::new_v4();
+            let path = streaming_path(&fixture, resource, operation, append).await?;
+            let stream = futures::stream::pending::<Result<Vec<u8>, std::io::Error>>();
+            let response = streaming_request(&fixture, if append { Method::PATCH } else { Method::POST }, &path)
+                .body(reqwest::Body::wrap_stream(stream)).send().await?;
+            let status = response.status(); let body: Value = response.json().await?;
+            ensure!(status == StatusCode::SERVICE_UNAVAILABLE && body["code"] == "service_unavailable", "deadline: {status} {body}");
+            ensure!(pg(&format!("SELECT count(*) FROM mdm_content.bindings WHERE tenant_id='{}' AND operation='{operation}'",case_tenant()))?.trim() == "0");
+            ensure!(pg(&format!("SELECT count(*) FROM mdm_content.uploads WHERE tenant_id='{}' AND document->'value'->'upload'->>'id'='{operation}' AND epoch IS NULL AND held_until=0",case_tenant()))?.trim() == "1");
+            let recovered = streaming_request(&fixture, if append { Method::PATCH } else { Method::POST }, &path).body(bytes.to_vec()).send().await?;
+            let status = recovered.status(); let body = recovered.text().await?;
+            ensure!(status == if append { StatusCode::OK } else { StatusCode::CREATED }, "recovery: {status} {body}");
+        }
+        Ok(())
+    }).await
+}
+
+#[tokio::test]
+#[ignore = "MODULE=content.http: revoking rights or the browser session during streaming rejects completion"]
+async fn streaming_revalidates_permission_and_original_session_before_success() -> Result<()> {
+    let mut fixture = Fixture::with_transfer_seconds(60).await?;
+    let resources = std::mem::take(&mut fixture.resources);
+    resources.finish(async {
+        let bytes = b"revocation-boundary";
+        let resource = upload_resource(&fixture, bytes).await?;
+        for revoke_session in [false, true] {
+            let append = revoke_session;
+            let operation = Uuid::new_v4();
+            let path = streaming_path(&fixture, resource, operation, append).await?;
+            use futures::SinkExt;
+            let (mut sender, body) = futures::channel::mpsc::channel::<Result<Vec<u8>, std::io::Error>>(1);
+            let request = streaming_request(&fixture, if append { Method::PATCH } else { Method::POST }, &path)
+                .body(reqwest::Body::wrap_stream(body));
+            let request = tokio::spawn(async move { request.send().await });
+            sender.send(Ok(bytes[..1].to_vec())).await?;
+            // Async PG observation lets this current-thread runtime drive HTTP and DB I/O.
+            let observer = sqlx::postgres::PgPoolOptions::new().max_connections(1)
+                .connect_with(crate::device::test_support::options("postgres")?).await?;
+            let claimed = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+                loop {
+                    if sqlx::query_scalar::<_,i64>("SELECT count(*) FROM mdm_content.uploads WHERE tenant_id=$1::uuid AND document->'value'->'upload'->>'id'=$2 AND epoch IS NOT NULL")
+                        .bind(case_tenant()).bind(operation.to_string()).fetch_one(&observer).await? == 1 {
+                        break Ok::<_,anyhow::Error>(());
+                    }
+                    tokio::task::yield_now().await;
+                }
+            }).await;
+            observer.close().await;
+            let changed: Result<()> = async {
+                claimed??;
+                if revoke_session {
+                    let mut user = fixture.user.clone();
+                    let logged_out = user.call(&fixture.router, Method::POST, &format!("/api/v1/identity/tenants/{}/session/logout",case_tenant()), None).await?;
+                    ensure!(logged_out.0 == StatusCode::NO_CONTENT, "logout: {logged_out:?}");
+                } else {
+                    crate::test_support::identity::set_grants(case_tenant(), &fixture.subject, vec![]).await?;
+                }
+                sender.send(Ok(bytes[1..].to_vec())).await?;
+                Ok(())
+            }.await;
+            drop(sender);
+            let response = request.await?;
+            changed?;
+            let response = response?;
+            let status = response.status(); let body = response.text().await?;
+            ensure!(status == if revoke_session { StatusCode::UNAUTHORIZED } else { StatusCode::FORBIDDEN }, "revoked authority: {status} {body}");
+            ensure!(pg(&format!("SELECT count(*) FROM mdm_content.bindings WHERE tenant_id='{}' AND operation='{operation}'",case_tenant()))?.trim()=="0");
+            ensure!(audit_count(|r| r.source()=="mdm.business" && r.operation()==Some(operation.to_string().as_str()) && r.status()==201 && r.result()=="success")? == 0);
+            if !revoke_session {
+                let grants = [crate::authorization::Permission::ResourceRead, crate::authorization::Permission::ResourceWrite]
+                    .into_iter().map(|operation| crate::authorization::Grant {operation, scope:crate::authorization::Scope::Tenant}).collect();
+                crate::test_support::identity::set_grants(case_tenant(), &fixture.subject, grants).await?;
+            }
+        }
+        Ok(())
+    }).await
+}

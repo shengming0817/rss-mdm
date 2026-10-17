@@ -258,7 +258,7 @@ async fn registration_recovery_preserves_credential_rotation() -> Result<()> {
 
 #[tokio::test]
 #[ignore = "MODULE=agent.registration"]
-async fn browser_approval_quota_expiry_and_restart_are_durable() -> Result<()> {
+async fn browser_authorization_quota_expiry_and_restart_are_durable() -> Result<()> {
     let mut fixture = authority::Authority::open().await?;
     let fixture_resources = std::mem::take(&mut fixture.resources);
     fixture_resources.finish(async {
@@ -280,18 +280,18 @@ async fn browser_approval_quota_expiry_and_restart_are_durable() -> Result<()> {
     ensure!(
         service.issue(&sign, &a()).await.err().unwrap().code == wire::ErrorCode::PermissionDenied
     );
-    let approval = Uuid::new_v4();
-    let approved = service
-        .approve(&user, pending.grant_id, approval, &a())
+    let authorization = Uuid::new_v4();
+    let authorized = service
+        .authorize(&user, pending.grant_id, authorization, &a())
         .await?;
-    ensure!(approved.state == wire::GrantState::Available);
+    ensure!(authorized.state == wire::GrantState::Available);
     let mut second = input.clone();
     second.operation_id = Uuid::new_v4();
     second.platform = rss_mdm_agent_wire::runtime::TaskPlatform::Windows;
     let second_pending = service.request(&second, &a()).await?;
     ensure!(
         service
-            .approve(&user, second_pending.grant_id, Uuid::new_v4(), &a())
+            .authorize(&user, second_pending.grant_id, Uuid::new_v4(), &a())
             .await
             .err()
             .unwrap()
@@ -304,14 +304,14 @@ async fn browser_approval_quota_expiry_and_restart_are_durable() -> Result<()> {
         .await?;
     ensure!(
         service
-            .approve(&user, pending.grant_id, approval, &a())
+            .authorize(&user, pending.grant_id, authorization, &a())
             .await?
-            == approved,
-        "approval replay must retain the fixed result"
+            == authorized,
+        "authorization replay must retain the fixed result"
     );
     ensure!(service.issue(&sign, &a()).await.err().unwrap().code == wire::ErrorCode::GrantRevoked);
     let created = service
-        .approve(&user, second_pending.grant_id, Uuid::new_v4(), &a())
+        .authorize(&user, second_pending.grant_id, Uuid::new_v4(), &a())
         .await?;
     let restart = crate::test_support::agent::service(&fixture).await?;
     ensure!(restart.request(&second, &a()).await?.grant_id == created.grant_id);

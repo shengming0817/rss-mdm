@@ -137,7 +137,7 @@ CAPABILITY_INPUTS = {'identity.local': ('crates/app/src/identity.rs',),
      'crates/windows-channel/src/lib.rs', 'crates/windows-channel/src/linked.rs',
      'crates/windows-channel/src/boundary.rs', 'crates/windows-channel/src/management.rs',
      'crates/windows-channel/src/management/session.rs', 'crates/windows-channel/src/renewal.rs',
-     'crates/certificate/src/windows/linked.rs',
+     'crates/device-trust/src/windows/linked.rs',
      'crates/registration-service/src/device/linked.rs',
      'crates/registration-service/src/device/management.rs',
      'crates/registration-service/src/device/store.rs',
@@ -158,7 +158,7 @@ CAPABILITY_INPUTS = {'identity.local': ('crates/app/src/identity.rs',),
      'crates/windows-mdm/src/native/declared.rs',
      'crates/windows-mdm/src/native/verification.rs',
      'crates/windows-mdm/src/syncml.rs'),
- 'windows.issuance': ('crates/windows-channel/src/issuance.rs', 'crates/certificate/src/windows.rs'),
+ 'windows.issuance': ('crates/windows-channel/src/issuance.rs', 'crates/certificate/src/windows.rs', 'crates/device-trust/src/windows.rs'),
  'windows.enrollment': ('crates/windows-channel/src/lib.rs',
                         'crates/timeline-service/src/*',
                         'crates/management-http/src/timeline.rs'),
@@ -621,7 +621,7 @@ for name in ('apple.collection','apple.scep','apple.commands','apple.users','app
     MODULES[name] = replace(MODULES[name],scope='tenant',fixtures=(*MODULES[name].fixtures,'local_worker'))
 MODULES['apple.profile'] = replace(MODULES['apple.profile'], scope='tenant', fixtures=(*MODULES['apple.profile'].fixtures,'local_worker'))
 MODULES['apple.policy'] = replace(MODULES['apple.policy'], db_mode='reuse', scope='tenant', fixtures=(*MODULES['apple.policy'].fixtures,'local_worker'), policies=(
-    CasePolicy('apple::tests::policy::current_approval_and_deadlines', 'reuse', 'tenant'),
+    CasePolicy('apple::tests::policy::current_authorization_and_deadlines', 'reuse', 'tenant'),
 ))
 MODULES['apple.onboarding'] = replace(MODULES['apple.onboarding'], db_mode='reuse', scope='tenant', fixtures=(*MODULES['apple.onboarding'].fixtures,'local_worker'), support_inputs=(*MODULES['apple.onboarding'].support_inputs,'crates/app/tests/support/channel_onboarding.rs','crates/app/tests/support/software.rs','crates/app/tests/support/software_execution.rs'))
 MODULES['apple.renewal'] = replace(MODULES['apple.renewal'], db_mode='reuse', scope='tenant')
@@ -828,7 +828,7 @@ consume(('crates/windows-channel/src/collection.rs', 'crates/windows-channel/src
 consume(('crates/app/src/assembly/windows/*',), 'windows.enrollment windows.issuance windows.management windows.retention windows.limits native.tls')
 consume(('crates/inventory-service/src/collection*', 'crates/inventory-service/src/apple_collection.rs', 'crates/inventory-service/src/collection/*'), 'agent.reports windows.management windows.retention apple.collection apple.renewal inventory.runtime')
 consume(('crates/inventory-service/src/groups/*',), 'planning.http planning.group_scope assets.group_input compliance.group_input')
-consume(('crates/content-service/src/lib.rs', 'crates/content-service/src/bindings.rs', 'crates/content-service/src/service*', 'crates/content-service/src/transaction.rs', 'crates/content-service/src/admission.sql'), 'content.storage content.http content.mirror content.gc execution.agent.content execution.software.content software.http')
+consume(('crates/content-service/src/lib.rs', 'crates/content-service/src/budget.rs', 'crates/content-service/src/bindings.rs', 'crates/content-service/src/service*', 'crates/content-service/src/transaction.rs', 'crates/content-service/src/admission.sql'), 'content.storage content.http content.mirror content.gc execution.agent.content execution.software.content software.http')
 consume(('crates/content-service/src/catalog.sql', 'crates/content-service/src/catalog.json'),
         'catalog.contract content.http content.mirror content.gc execution.agent.content execution.software.content software.http')
 consume(('crates/flow-service/src/storage*',), 'planning.recovery assets.http compliance.http planning.http software.http content.http')
@@ -1073,7 +1073,7 @@ T1_INPUTS = (
     'crates/apple-channel/tests/apns.rs', 'crates/winget-source/tests/community.rs',
     'crates/app/tests/windows/unit.rs','fixtures/snapshot.json', 'crates/content-s3/tests/unit.rs', 'crates/inventory-service/tests/assets/unit.rs') + ('crates/app/tests/agent_pki/health.rs','crates/certificate/tests/agent.rs','crates/certificate/tests/apple.rs','crates/certificate/tests/windows.rs','crates/certificate-archive-service/tests/behavior.rs','crates/authorization-service/tests/unit.rs','crates/inventory-service/tests/runtime.rs','crates/software-service/tests/management/*') + tuple(f'crates/{name}/tests/*' for name in (
     'inventory', 'group', 'scope', 'policy', 'resource', 'software-release',
-    'compliance', 'agent-wire', 'windows-mdm', 'apple-mdm', 'content-service')) + (
+    'compliance', 'agent-wire', 'windows-mdm', 'apple-mdm', 'content-service', 'device-trust')) + (
     'crates/app/tests/agent/unit.rs',
     'crates/app/tests/apple/webhook_unit.rs',
     'crates/app/tests/assets/query_sort_unit.rs',
@@ -1183,7 +1183,7 @@ consume(('crates/execution-service/src/native/*', 'crates/execution-service/src/
 # Native Windows channel maintenance and retirement consumers.
 MODULES['windows.management'] = replace(MODULES['windows.management'], test_inputs=(*MODULES['windows.management'].test_inputs, 'crates/app/tests/windows/wns.rs'))
 consume(('crates/windows-channel/src/push*', 'crates/windows-channel/src/unenrollment.rs', 'crates/execution-service/src/windows_wake.rs'), 'windows.management device.revocation')
-consume(('crates/windows-channel/src/renewal.rs', 'crates/certificate/src/windows/*'), 'windows.issuance windows.management')
+consume(('crates/windows-channel/src/renewal.rs', 'crates/device-trust/src/windows/*'), 'windows.issuance windows.management')
 consume(('crates/execution-service/src/retirement*',), 'device.revocation windows.management apple.identity')
 consume(('crates/windows-mdm/src/provisioning/*',), 'windows.issuance windows.enrollment execution.commands.windows')
 
@@ -1992,3 +1992,4 @@ consume(('crates/group-postgres/src/memberships.rs','crates/inventory-service/sr
 consume(('crates/execution-service/src/queries/ddm.rs',), 'apple.ddm')
 
 T1_INPUTS += ('crates/timeline-service/tests/model.rs',)
+consume(('crates/device-trust/src/windows/*', 'crates/device-trust/fixtures/*'), 'windows.issuance windows.management')

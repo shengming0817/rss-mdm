@@ -137,7 +137,7 @@ impl ExecutionService {
                         return Err(Error::Unauthorized.into());
                     }
                     let now = storage::now(tx).await?;
-                    if !storage::approval_valid(&service.source, &service.protection, tx, &op, now)
+                    if !storage::authority_valid(&service.source, &service.protection, tx, &op, now)
                         .await?
                     {
                         return Err(Error::Forbidden.into());

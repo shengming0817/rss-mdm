@@ -405,7 +405,7 @@ impl Reconciler<rss_reconcile_postgres::PgClaim> for ExecutionService {
                     if !command.status().is_terminal(){
                         let operation=storage::load(tx,&service.protection,stored(Uuid::parse_str(command.spec().id().as_str()))?).await?;
                         let now=storage::now(tx).await?;
-                        if !storage::approval_valid(&service.source, &service.protection,tx,&operation,now).await? && service.store.cancel(tx,scope,command.spec().id(),command.spec().coordinate()).await?.outcome==dc::Outcome::OutOfOrder {return Err(Error::Conflict.into());}
+                        if !storage::authority_valid(&service.source, &service.protection,tx,&operation,now).await? && service.store.cancel(tx,scope,command.spec().id(),command.spec().coordinate()).await?.outcome==dc::Outcome::OutOfOrder {return Err(Error::Conflict.into());}
 
                     }
                 }

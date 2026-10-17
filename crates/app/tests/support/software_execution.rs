@@ -169,7 +169,7 @@ pub(crate) enum Platform {
     Windows,
 }
 
-/// A real authorized session, one Agent/Scope, and an approved dependency/root pair.
+/// A real authorized session, one Agent/Scope, and an authorized dependency/root pair.
 /// Action assertions belong to callers; only the requested platform is prepared.
 pub(crate) struct Fixture {
     pub(crate) resources: super::Resources,
@@ -193,7 +193,7 @@ pub(crate) struct Fixture {
     pub(crate) registration: Value,
 }
 impl Fixture {
-    pub(crate) async fn approved(platform: Platform) -> Result<Self> {
+    pub(crate) async fn authorized(platform: Platform) -> Result<Self> {
         let capabilities = match platform {
             Platform::Windows => json!(["inventory.collect.v1", "software.msi.system.v1"]),
             Platform::MacOs => json!(["inventory.collect.v1", "software.pkg.system.v1"]),

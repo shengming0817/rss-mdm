@@ -18,7 +18,7 @@ async fn current_credential_to_native_command_wiring() -> anyhow::Result<()> {
         .status()
             == axum::http::StatusCode::OK
     );
-    client.accept_approved().await?;
+    client.accept_authorized().await?;
     client.publish_operation(client.operation).await?;
     let opened = native::begin(&peer.mutual, &peer.url, &peer.message, &peer.ack, 2, None).await?;
     let report = native::report(&opened.first, &opened.gets, "10.0.22631.0", 200);
@@ -40,7 +40,7 @@ async fn current_credential_to_native_command_wiring() -> anyhow::Result<()> {
             rss_mdm_windows_mdm::syncml::Command::Exec { items, .. }
             if items.iter().any(|item| item.target.as_deref() == Some("./Device/Vendor/MSFT/Reboot/RebootNow"))
         )).count() == 1,
-        "approved command was not delivered after capability discovery: {message:?}, detail: {detail:?}"
+        "authorized command was not delivered after capability discovery: {message:?}, detail: {detail:?}"
     );
     host.close().await?;
     Ok(())

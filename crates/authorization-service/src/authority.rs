@@ -29,7 +29,7 @@ impl UserGrant {
     ) -> Result<Self, Error> {
         snapshot.require(proof, permission, Some(device))?;
         let scope = Scope::Device { id: device.into() };
-        let rules = snapshot.approval_bases(proof, &scope, permission)?;
+        let rules = snapshot.authorization_bases(proof, &scope, permission)?;
         Ok(Self {
             permission,
             user: proof.user(),
@@ -48,7 +48,7 @@ impl UserGrant {
         }
         snapshot.require(proof, permission, None)?;
         let scope = Scope::Tenant;
-        let rules = snapshot.approval_bases(proof, &scope, permission)?;
+        let rules = snapshot.authorization_bases(proof, &scope, permission)?;
         Ok(Self {
             permission,
             user: proof.user(),
@@ -64,7 +64,7 @@ impl UserGrant {
     ) -> Result<Self, Error> {
         snapshot.require_all_devices(proof, permission)?;
         let scope = Scope::AllDevices;
-        let rules = snapshot.approval_bases(proof, &scope, permission)?;
+        let rules = snapshot.authorization_bases(proof, &scope, permission)?;
         Ok(Self {
             permission,
             user: proof.user(),
@@ -128,7 +128,7 @@ impl UserGrant {
     }
 }
 impl Snapshot {
-    fn approval_bases(
+    fn authorization_bases(
         &self,
         proof: &AuthorizedPrincipal,
         scope: &Scope,

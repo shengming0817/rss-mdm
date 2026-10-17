@@ -41,10 +41,18 @@ async fn begin(
     Path((id, upload)): Path<(String, Uuid)>,
     Query(input): Query<Selection>,
 ) -> Result<Json<Upload>, Error> {
-    rss_mdm_content_service::service::begin_upload(&app, &auth.proof, &audit, &id, upload, &input)
-        .await
-        .map(Json)
-        .map_err(Into::into)
+    rss_mdm_content_service::service::begin_upload(
+        &app,
+        &auth.proof,
+        &audit,
+        &id,
+        upload,
+        &input,
+        rss_mdm_content_service::service::store(&app)?.upload_budget()?,
+    )
+    .await
+    .map(Json)
+    .map_err(Into::into)
 }
 async fn status(
     State(app): State<Arc<HttpState>>,
@@ -52,7 +60,17 @@ async fn status(
     Extension(audit): Extension<RequestAudit>,
     Path((id, upload)): Path<(String, Uuid)>,
 ) -> Result<Json<Upload>, Error> {
-    Ok(Json(current(&app, &auth.proof, &audit, &id, upload).await?))
+    Ok(Json(
+        current(
+            &app,
+            &auth.proof,
+            &audit,
+            &id,
+            upload,
+            rss_mdm_content_service::service::store(&app)?.upload_budget()?,
+        )
+        .await?,
+    ))
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -62,6 +80,7 @@ struct Offset {
 async fn append(
     State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
+    Extension(continuation): Extension<crate::http_operation::SessionContinuation>,
     Extension(audit): Extension<RequestAudit>,
     Path((id, upload)): Path<(String, Uuid)>,
     Query(offset): Query<Offset>,
@@ -72,7 +91,7 @@ async fn append(
         tokio_util::io::StreamReader::new(body.into_data_stream().map_err(std::io::Error::other));
     match rss_mdm_content_service::service::append_upload(
         &app,
-        &auth.proof,
+        rss_mdm_content_service::service::UploadSession::new(&auth.proof, continuation.secret()),
         &audit,
         &id,
         upload,
@@ -94,16 +113,24 @@ async fn append(
 async fn complete(
     State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
+    Extension(continuation): Extension<crate::http_operation::SessionContinuation>,
     Extension(audit): Extension<RequestAudit>,
     Path((id, upload)): Path<(String, Uuid)>,
 ) -> Result<StatusCode, Error> {
-    rss_mdm_content_service::service::complete_upload(&app, &auth.proof, &audit, &id, upload)
-        .await?;
+    rss_mdm_content_service::service::complete_upload(
+        &app,
+        rss_mdm_content_service::service::UploadSession::new(&auth.proof, continuation.secret()),
+        &audit,
+        &id,
+        upload,
+    )
+    .await?;
     Ok(StatusCode::CREATED)
 }
 async fn upload(
     State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
+    Extension(continuation): Extension<crate::http_operation::SessionContinuation>,
     Extension(audit): Extension<RequestAudit>,
     Path(id): Path<String>,
     Query(input): Query<Selection>,
@@ -111,8 +138,15 @@ async fn upload(
 ) -> Result<StatusCode, Error> {
     let reader =
         tokio_util::io::StreamReader::new(body.into_data_stream().map_err(std::io::Error::other));
-    rss_mdm_content_service::service::upload(&app, &auth.proof, &audit, &id, &input, reader)
-        .await?;
+    rss_mdm_content_service::service::upload(
+        &app,
+        rss_mdm_content_service::service::UploadSession::new(&auth.proof, continuation.secret()),
+        &audit,
+        &id,
+        &input,
+        reader,
+    )
+    .await?;
     Ok(StatusCode::CREATED)
 }
 /// Explicit bounded maintenance; every candidate is pinned against new upload/download readers.
@@ -131,14 +165,21 @@ async fn cleanup(
 async fn mirror(
     State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
+    Extension(continuation): Extension<crate::http_operation::SessionContinuation>,
     Extension(audit): Extension<RequestAudit>,
     Path(id): Path<String>,
     Query(input): Query<Selection>,
 ) -> Result<StatusCode, Error> {
-    rss_mdm_content_service::service::mirror(&app, &auth.proof, &audit, &id, &input)
-        .await
-        .map(|()| StatusCode::CREATED)
-        .map_err(Into::into)
+    rss_mdm_content_service::service::mirror(
+        &app,
+        rss_mdm_content_service::service::UploadSession::new(&auth.proof, continuation.secret()),
+        &audit,
+        &id,
+        &input,
+    )
+    .await
+    .map(|()| StatusCode::CREATED)
+    .map_err(Into::into)
 }
 
 /// Shared response framing for catalog and execution-authorized content.
@@ -237,6 +278,7 @@ async fn receipt(
 async fn script(
     State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
+    Extension(continuation): Extension<crate::http_operation::SessionContinuation>,
     Extension(audit): Extension<RequestAudit>,
     Path((id, version)): Path<(String, String)>,
     headers: axum::http::HeaderMap,
@@ -253,6 +295,7 @@ async fn script(
         &id,
         &version,
         &selection,
+        continuation.secret(),
     )
     .await?;
     let mut response = response(content, &headers).await?;

@@ -677,7 +677,7 @@ async fn production_agent_listener_bootstraps_activates_and_rechecks_revocation(
         .agent_enrollment
         .as_ref()
         .unwrap()
-        .approve(&p, receipt.grant_id, Uuid::new_v4(), &audit())
+        .authorize(&p, receipt.grant_id, Uuid::new_v4(), &audit())
         .await?;
     let (status, body) = agent_http(
         &mut anonymous,
@@ -1441,7 +1441,7 @@ pub(crate) async fn authorize_request(
         return Err(rss_mdm_registration_service::Error::Forbidden.into());
     }
     let request = s.request(g, a).await?;
-    s.approve(p, request.grant_id, g.operation_id, a).await
+    s.authorize(p, request.grant_id, g.operation_id, a).await
 }
 
 #[tokio::test]

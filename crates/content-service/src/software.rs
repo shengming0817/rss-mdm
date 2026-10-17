@@ -82,9 +82,10 @@ impl ManagementContentPort for SoftwareContent {
             sha256: input.artifact.sha256,
             actor: input.actor.to_owned(),
         };
+        let budget = self.store.upload_budget().map_err(error)?;
         let session = self
             .store
-            .begin(input.upload, binding, self.now()?)
+            .begin(input.upload, binding, self.now()?, budget)
             .await
             .map_err(error)?;
         if !session.complete {
@@ -98,6 +99,7 @@ impl ManagementContentPort for SoftwareContent {
                         session.offset,
                         self.now()?,
                         std::io::Cursor::new(tail),
+                        budget,
                     )
                     .await
                     .map_err(error)?;
@@ -105,7 +107,7 @@ impl ManagementContentPort for SoftwareContent {
         }
         let upload = self
             .store
-            .finish(input.actor, input.upload, self.now()?)
+            .finish(input.actor, input.upload, self.now()?, budget)
             .await
             .map_err(error)?;
         Ok(StagedImport { upload, artifact })

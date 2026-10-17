@@ -200,7 +200,7 @@ async fn native_push_routes_require_correlated_pfn_and_refresh_without_resetting
     let mut command =
         crate::execution::test_support::Client::start(host.browser.clone(), host.app.clone())
             .await?;
-    command.accept_approved().await?;
+    command.accept_authorized().await?;
     command.publish_operation(command.operation).await?;
     let before: i64 =
         sqlx::query_scalar("SELECT floor(extract(epoch FROM clock_timestamp()))::bigint")

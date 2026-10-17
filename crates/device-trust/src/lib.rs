@@ -456,7 +456,8 @@ impl DeviceTrust {
                 }
             }
             Purpose::Apple => {
-                apple_subject(&t.subject)?;
+                rss_mdm_certificate::apple::parse_subject(&t.subject)
+                    .map_err(|_| Error::Unauthorized)?;
                 if t.get::<SubjectAltName>().map_err(invalid)?.is_some() {
                     return Err(Error::Unauthorized);
                 }
@@ -734,32 +735,16 @@ pub fn agent_identity(
     Ok(identity)
 }
 
-pub fn apple_subject(name: &x509_cert::name::Name) -> Result<(uuid::Uuid, uuid::Uuid), Error> {
-    use x509_cert::der::Tagged;
-    if name.0.len() != 1 || name.0[0].0.len() != 1 {
-        return Err(Error::Unauthorized);
+pub mod agent;
+pub mod apple;
+pub mod windows;
+impl From<Error> for rss_mdm_certificate::Error {
+    fn from(e: Error) -> Self {
+        match e {
+            Error::Malformed => Self::Malformed,
+            Error::Unauthorized | Error::Revoked => Self::Unauthorized,
+            Error::Conflict => Self::Conflict,
+            Error::Expired => Self::Expired,
+        }
     }
-    let attribute = name.0[0].0.iter().next().ok_or(Error::Unauthorized)?;
-    if attribute.oid != ObjectIdentifier::new_unwrap("2.5.4.3")
-        || !matches!(
-            attribute.value.tag(),
-            x509_cert::der::Tag::Utf8String | x509_cert::der::Tag::PrintableString
-        )
-    {
-        return Err(Error::Unauthorized);
-    }
-    let value = std::str::from_utf8(attribute.value.value()).map_err(invalid)?;
-    if value.len() != 64
-        || !value
-            .bytes()
-            .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase())
-    {
-        return Err(Error::Unauthorized);
-    }
-    let enrollment = uuid::Uuid::parse_str(&value[..32]).map_err(invalid)?;
-    let attempt = uuid::Uuid::parse_str(&value[32..]).map_err(invalid)?;
-    if enrollment.is_nil() || attempt.is_nil() {
-        return Err(Error::Unauthorized);
-    }
-    Ok((enrollment, attempt))
 }

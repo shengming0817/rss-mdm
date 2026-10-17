@@ -368,7 +368,7 @@ pub async fn challenge(
 
 pub async fn notify(
     app: &HttpState,
-    leaf: &certificate::CheckedLeaf,
+    leaf: &rss_mdm_device_trust::apple::CheckedLeaf,
     csr: &certificate::Csr,
     transaction: &str,
     audit: &RequestAudit,
@@ -463,7 +463,11 @@ pub async fn notify(
     crate::operations::settle(outcome, audit)
 }
 
-fn verify(app: &HttpState, row: &PgRow, leaf: &certificate::CheckedLeaf) -> Result<(), Error> {
+fn verify(
+    app: &HttpState,
+    row: &PgRow,
+    leaf: &rss_mdm_device_trust::apple::CheckedLeaf,
+) -> Result<(), Error> {
     if row.try_get::<String, _>("state").map_err(db)? != "consumed"
         || rss_mdm_registration_service::enrollment::store::uuid(row, "enrollment")?
             != leaf.enrollment()
@@ -480,7 +484,7 @@ fn verify(app: &HttpState, row: &PgRow, leaf: &certificate::CheckedLeaf) -> Resu
 }
 pub async fn activate(
     app: &HttpState,
-    leaf: &certificate::CheckedLeaf,
+    leaf: &rss_mdm_device_trust::apple::CheckedLeaf,
     udid: &str,
 ) -> Result<(), Error> {
     let audit = RequestAudit::new(app.identity.tenant().to_string(), "apple_renewal");

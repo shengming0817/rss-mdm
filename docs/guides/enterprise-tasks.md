@@ -28,7 +28,7 @@ Resource.Script 和 Resource.Software 分别持有不可变执行定义。管理
 }
 ```
 
-`storage` 必须显式选择后端；卷模式的 `directory` 必须预先存在。内容以逻辑 SHA-256 和长度寻址，物理对象使用独立不可变身份，由 PostgreSQL 清单绑定。脚本与原生配置自身仍限制为 16MiB。`max_uploads` 限定活跃上传数量，并作为当前实例内容校验/传输并发上限；临时额度由 PostgreSQL 在同租户多实例间共享，配额不足拒绝，不建立无界等待队列。`transfer_seconds` 限制单次传输的绝对预算，`retention_seconds` 限制上传恢复窗口。单个软件产物硬上限为 1TiB，实际部署必须显式选择更小或相等的预算；网关正文上限与之配套。
+`storage` 必须显式选择后端；卷模式的 `directory` 必须预先存在。内容以逻辑 SHA-256 和长度寻址，物理对象使用独立不可变身份，由 PostgreSQL 清单绑定。脚本与原生配置自身仍限制为 16MiB。`max_uploads` 限定活跃上传数量，并作为当前实例内容校验/传输并发上限；临时额度由 PostgreSQL 在同租户多实例间共享，配额不足拒绝，不建立无界等待队列。`transfer_seconds` 限制单次内容操作的绝对总预算，覆盖资源检查、传输、校验、完成及绑定提交；各阶段共享截止时间，其中预留 `min(6秒, 总预算/4)` 用于结算和清理。流式上传与完成操作由内容服务持有此预算，普通管理请求维持 8 秒预算。取消后的清理只释放匹配 epoch 的租约，未确认的释放由持久化期限和恢复机制处理，不表示业务回滚成功，`retention_seconds` 限制上传恢复窗口。单个软件产物硬上限为 1TiB，实际部署必须显式选择更小或相等的预算；网关正文上限与之配套。
 
 同一 actor/上传 ID 的元数据由 PostgreSQL 持久化已确认 offset。续传从已确认清单恢复，未确认对象由登记意图保留并参与额度计算；多实例的 epoch 防止旧写者推进新 frontier。`POST /api/v1/software/content/cleanup` 需要 ResourceWrite，每轮有界检查过期且无有效引用、无活跃读写的候选。清理查询 ResourceStore 的全部产物引用索引，包括复用已有摘要但未重新上传的资源。归档不抹去批准、发布或执行证据；仍被引用的内容不会清理。删除屏障与新 Resource 引用串行，S3/卷 I/O 在事务外执行。不得手工删除内容控制状态或正在使用的物理对象。
 
@@ -138,3 +138,5 @@ Run 保存服务端选择的访问依据，用户模式只保存 Identity 签发
 访问撤回阻止未启动任务。已启动执行按原 attempt 和不可变材料记录完成证据，企业退出登录不产生新的执行许可。执行状态与可信 Inventory 投影分别判断。安装使用当前初始化 schema；当前版本内的任务恢复消费原 attempt 与不可变材料。
 
 契约由源码 owner 生成：管理 schema 见 `crates/management-http/schema/{PolicyWrite,Policy}.json`；调用 DTO 见 `crates/agent-wire/schema/runtime/self-service-*.json`；通用授权、资源坐标与签名任务以 task schema 为准。`agent-wire/examples/protocol_schema.rs` 从当前 Rust DTO 生成两族完整协议 schema；`hack/agent_wire_artifact.py --write` 物化 schema 并计算 fingerprint。协议包只提供规范签名字节；签名校验与本机执行条件由独立 Agent 持有，服务端执行资格和软件结果判定由产品 owner 持有。#2677/#2678 固定最终提交与契约指纹完成实际 Agent/员工 UI 集成；本 PR 的后端接缝结果不替代真机或浏览器闭环。软件本地检测及三 provider 产品验证继续归 #2657。
+
+长上传在最终内容核验后复核原浏览器会话与当前权限，保持租户、实例、用户和 session 不变；复核不续会话 idle、不轮换凭据。传输期间会话撤销或权限失效时不创建内容绑定。镜像响应头等待、传输及绑定同样使用内容操作预算。

@@ -21,7 +21,7 @@ Intel/T2 状态未知或不满足条件时不开放 Mac 擦除。平台事实必
 
 创建返回 202 和稳定 operation/command 身份；同请求 UUID、主体与内容重放原回执，异内容返回 409。PIN 进入现有加密原生输入，不出现在授权 JSON、查询、审计或 Debug 中。
 
-读取使用 `GET /operations/{id}`（operation_read）。取消使用 `POST /operations/{id}/cancel`，正文 requestId、expectedRevision（operation_cancel）。批准使用 `POST /operations/{id}/approve`，正文 requestId、expectedRevision；lock/wipe 另须 `confirmation:{confirmed:true,expectedRegistrationId,expectedGeneration}`。批准只刷新原动作权限，不修改动作、PIN、注册或 deadline。Policy 子命令由其 owner 取消，不接受此设备取消入口。
+读取使用 `GET /operations/{id}`（operation_read）。取消使用 `POST /operations/{id}/cancel`，正文 requestId、expectedRevision（operation_cancel）。重新授权使用 `POST /operations/{id}/reauthorize`，正文 requestId、expectedRevision；lock/wipe 另须 `confirmation:{confirmed:true,expectedRegistrationId,expectedGeneration}`。重新授权只刷新原动作权限，不修改动作、PIN、注册或 deadline。Policy 子命令由其 owner 取消，不接受此设备取消入口。
 
 ## 结果与恢复
 
@@ -73,3 +73,5 @@ Policy 引用精确资源版本/variant；它消费完整操作权限和多对�
 异常通过 `GET /devices/{device}/association-candidates?channel=mdm|agent` 选定当前主通道，使用 `POST /device-associations` 明确确认。请求携带 operationId、associationId（新建为 null）、expectedVersion、mdm/agent 的 device、channel、registrationId、generation，以及核实记录 evidence。两个端点均须有当前 inventory_read 和 device_association_write。撤销用 `POST /device-associations/{id}/revoke`，携带 operationId、expectedVersion 和 reason；成员立即释放，同一对端点不会自动合回，显式确认可恢复。重试保持相同 operationId 和请求内容。变化历史从 `GET /device-associations/changes` 读取原审计事实。`nextCursor` 继续当前固定上界的分页，末页返回 `checkpoint`；后续将 checkpoint 作为 cursor 参数传回，即从已扫描位置读取新变化，空页也保留 checkpoint。两者均绑定租户、用户与实时权限；权限变化后须重新查询。每条可见变化的 position 用于消费去重。
 
 字段沿用原有字段优先级策略，各端点的 Manual 值独立保留，同优先级不同值为 Conflict。列表显示每个端点来源的状态、证据及 cursor；以详情返回的来源 cursor 调用 `GET /device-views/{kind}/{id}/inventory-lists/{field}?cursor=...&limit=...`。分页不对不同来源的列表做集合拼接，采集完整性和失败信息保留在 inventorySources。游标签名绑定用户、权限和查询快照；响应 `device_view_cursor_invalidated` 时从第一页重新查询。
+
+重新授权由当前具备原动作权限的操作者执行，不需要第二位审批人。lock/wipe 的危险动作确认不产生额外权限。当前接口使用 `/reauthorize`、授权状态 `authorized` 和 `authorization_withdrawn`；旧 `/approve` 路由与旧状态编码已移除，调用方须同步切换。

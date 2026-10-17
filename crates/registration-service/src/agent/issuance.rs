@@ -1,5 +1,5 @@
 use super::*;
-use rss_mdm_certificate::agent::IssuedAgentCertificate;
+use rss_mdm_device_trust::agent::IssuedAgentCertificate;
 pub(crate) struct Signing {
     pub attempt: Uuid,
     pub issuer: [u8; 32],

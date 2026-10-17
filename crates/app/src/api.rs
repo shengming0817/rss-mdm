@@ -566,6 +566,11 @@ pub(crate) fn from_state(
             publications: state.flow.publications.clone(),
             software_catalog: software_access(&state),
             content: Arc::new(rss_mdm_content_service::service::Access {
+                sessions: rss_mdm_authorization_service::session::SessionAuthority::new(
+                    state.identity.authority.clone(),
+                    state.identity.tenant,
+                ),
+                authorization: state.access.authorization_store(),
                 catalog: Arc::new(rss_mdm_software_service::catalog::Reader::new(
                     state.identity.tenant,
                 )),

@@ -48,7 +48,7 @@ pub enum TaskAdmissionState {
     AmbiguousRegistration,
     UnsupportedCapability,
     MissingVariant,
-    ApprovalWithdrawn,
+    AuthorizationWithdrawn,
     PermissionWithdrawn,
     ChannelUnknown,
     AlreadySatisfied,
@@ -364,7 +364,7 @@ impl SoftwareAssignment {
             .await?
             .is_some())
     }
-    /// Management uses the same stage, profile and current approval checks as task admission.
+    /// Management uses the same stage, profile and current authority checks as task admission.
     pub async fn management_state_in(
         &self,
         service: &crate::queries::Admission,
@@ -477,7 +477,7 @@ impl SoftwareAssignment {
             .is_none()
         {
             return Ok(TaskAdmission::new(
-                TaskAdmissionState::ApprovalWithdrawn,
+                TaskAdmissionState::AuthorizationWithdrawn,
                 Some(index),
             ));
         }

@@ -83,7 +83,7 @@ async fn native_controls_are_closed_and_never_claim_effects() -> Result<()> {
         let mut pg =
             sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?)
                 .await?;
-        let (authority,sealed):(String,Vec<u8>)=sqlx::query_as("SELECT approval::text,request FROM mdm_commands.operations WHERE tenant_id=$1::uuid AND id=$2").bind(case_tenant()).bind(id).fetch_one(&mut pg).await?;
+        let (authority,sealed):(String,Vec<u8>)=sqlx::query_as("SELECT authority::text,request FROM mdm_commands.operations WHERE tenant_id=$1::uuid AND id=$2").bind(case_tenant()).bind(id).fetch_one(&mut pg).await?;
         ensure!(
             !authority.contains("781239") && !sealed.windows(6).any(|v| v == b"781239"),
             "PIN persisted in plaintext"

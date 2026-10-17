@@ -81,6 +81,7 @@ pub async fn run<C: Send, R: Send, F>(
     runtime: &PgRuntime,
     tenant: TenantId,
     audit: &RequestAudit,
+    budget: Option<crate::UploadBudget>,
     context: C,
     operation: F,
 ) -> std::result::Result<R, Error>
@@ -96,16 +97,33 @@ where
     let attempt = runtime
         .local_tx_with_context(
             tenant,
-            deadline(),
+            budget.map_or_else(deadline, |b| {
+                rss_transactional_messaging::policy::OperationDeadline::from_remaining(
+                    b.remaining().min(Duration::from_secs(6)),
+                )
+            }),
             (audit_store, context, Some(operation), audit, &failure),
-            |state, tx| {
+            move |state, tx| {
                 Box::pin(async move {
                     let (audit_store, context, operation, audit, failure) = state;
                     if let Err(error) = audit_store.lock_in(tx).await {
                         return Err(rejection(Error::from(error).into(), failure));
                     }
                     let f = operation.take().expect("one callback");
-                    match f(context, tx).await {
+                    let result = if let Some(budget) = budget {
+                        match tokio::time::timeout_at(
+                            budget.operation.instant().into(),
+                            f(context, tx),
+                        )
+                        .await
+                        {
+                            Ok(value) => value,
+                            Err(_) => Err(Error::from(crate::Error::Deadline).into()),
+                        }
+                    } else {
+                        f(context, tx).await
+                    };
+                    match result {
                         Ok(v) => {
                             audit.mark_commit_started();
                             Ok(v)
@@ -122,6 +140,7 @@ where
 pub async fn inspect<C: Send, R: Send, F>(
     runtime: &PgRuntime,
     tenant: TenantId,
+    budget: Option<crate::UploadBudget>,
     context: C,
     operation: F,
 ) -> std::result::Result<R, Error>
@@ -137,14 +156,26 @@ where
     let attempt = runtime
         .local_tx_with_context(
             tenant,
-            deadline(),
+            budget.map_or_else(deadline, |b| {
+                rss_transactional_messaging::policy::OperationDeadline::from_remaining(
+                    b.remaining().min(Duration::from_secs(6)),
+                )
+            }),
             (context, Some(operation), &failure),
-            |state, tx| {
+            move |state, tx| {
                 Box::pin(async move {
                     let (context, operation, failure) = state;
-                    operation.take().expect("one preflight")(context, tx)
-                        .await
-                        .map_err(|e| rejection(e, failure))
+                    let work = operation.take().expect("one preflight")(context, tx);
+                    let result = if let Some(budget) = budget {
+                        match tokio::time::timeout_at(budget.operation.instant().into(), work).await
+                        {
+                            Ok(value) => value,
+                            Err(_) => Err(Error::from(crate::Error::Deadline).into()),
+                        }
+                    } else {
+                        work.await
+                    };
+                    result.map_err(|e| rejection(e, failure))
                 })
             },
         )

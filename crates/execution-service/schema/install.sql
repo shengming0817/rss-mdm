@@ -10,7 +10,7 @@ CREATE FUNCTION mdm_commands.installation_status(p_operation uuid) RETURNS text
  SELECT d.status FROM mdm_commands.operations o
  JOIN rss_device_command.commands d ON(d.tenant_id,d.command_id)=(o.tenant_id,o.id::text)
  WHERE o.tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid
- AND o.id=p_operation AND o.approval->>'kind'='agent_install';
+ AND o.id=p_operation AND o.authority->>'kind'='agent_install';
 $$;
 
 REVOKE ALL ON FUNCTION mdm_commands.installation_status(uuid) FROM PUBLIC;
@@ -227,7 +227,7 @@ CREATE TABLE mdm_commands.operations (
     registration_generation bigint NOT NULL,
     generation bigint NOT NULL,
     epoch bigint NOT NULL,
-    approval jsonb NOT NULL,
+    authority jsonb NOT NULL,
     revision bigint DEFAULT 1 NOT NULL,
     dispatch_fingerprint bytea NOT NULL,
     dispatch_failure jsonb CHECK (dispatch_failure IS NULL OR (jsonb_typeof(dispatch_failure)='object' AND octet_length(dispatch_failure::text)<=8192)),
@@ -236,12 +236,12 @@ CREATE TABLE mdm_commands.operations (
     policy_version uuid,
     CONSTRAINT operation_authority_source CHECK (COALESCE(
 CASE source_kind
-    WHEN 'direct'::text THEN ((approval ->> 'kind'::text) = 'device_control'::text)
-    WHEN 'policy'::text THEN (((approval ->> 'kind'::text) IN ('policy'::text,'agent_install'::text)) AND ((approval ->> 'tenant'::text) = (tenant_id)::text) AND ((approval ->> 'device'::text) = device) AND ((approval ->> 'version'::text) = (policy_version)::text))
+    WHEN 'direct'::text THEN ((authority ->> 'kind'::text) = 'device_control'::text)
+    WHEN 'policy'::text THEN (((authority ->> 'kind'::text) IN ('policy'::text,'agent_install'::text)) AND ((authority ->> 'tenant'::text) = (tenant_id)::text) AND ((authority ->> 'device'::text) = device) AND ((authority ->> 'version'::text) = (policy_version)::text))
     ELSE NULL::boolean
 END, false)),
     CONSTRAINT operation_source CHECK (((source_kind = 'direct'::text) AND (policy_version IS NULL)) OR ((source_kind = 'policy'::text) AND (policy_version IS NOT NULL))),
-    CONSTRAINT operations_approval_check CHECK ((octet_length((approval)::text) <= 1048576)),
+    CONSTRAINT operations_authority_check CHECK ((octet_length((authority)::text) <= 1048576)),
     CONSTRAINT operations_dispatch_fingerprint_check CHECK ((octet_length(dispatch_fingerprint) = 32)),
     CONSTRAINT operations_epoch_check CHECK ((epoch > 0)),
     CONSTRAINT operations_fingerprint_check CHECK ((octet_length(fingerprint) = 32)),
@@ -469,7 +469,7 @@ CREATE POLICY tenant ON mdm_commands.attempt_frames USING (tenant_id=NULLIF(curr
 
 
 -- Wake eligibility reads published work without giving the Windows role access
--- to shared command storage. Approval and user scope remain checked in Rust.
+-- to shared command storage. Reauthorization and user scope remain checked in Rust.
 CREATE FUNCTION mdm_commands.windows_pending_operations(p_registration uuid, p_generation bigint, p_after uuid) RETURNS SETOF mdm_commands.operations
  LANGUAGE sql SECURITY DEFINER SET search_path TO 'pg_catalog'
  AS $$

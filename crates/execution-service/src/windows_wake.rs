@@ -34,7 +34,7 @@ impl ExecutionService {
         .then_some(registration);
         let mut after = Uuid::nil();
         loop {
-            let rows=sqlx::query("SELECT id,device,registration,registration_generation,input_context,request,approval::text FROM mdm_commands.windows_pending_operations($1,$2,$3)")
+            let rows=sqlx::query("SELECT id,device,registration,registration_generation,input_context,request,authority::text FROM mdm_commands.windows_pending_operations($1,$2,$3)")
                 .bind(registration).bind(generation).bind(after).fetch_all(&mut *c).await.map_err(database::db)?;
             let count = rows.len();
             for row in rows {
@@ -45,7 +45,8 @@ impl ExecutionService {
                     continue;
                 }
                 let authority: authority::ExecutionAuthority = serde_json::from_str(
-                    &row.try_get::<String, _>("approval").map_err(database::db)?,
+                    &row.try_get::<String, _>("authority")
+                        .map_err(database::db)?,
                 )
                 .map_err(|_| Error::Malformed)?;
                 let now: i64 = sqlx::query_scalar(

@@ -472,7 +472,7 @@ async fn native_unenrollment_notification_retires_only_its_authenticated_registr
     let mut work =
         crate::execution::test_support::Client::start(host.browser.clone(), host.app.clone())
             .await?;
-    work.accept_approved().await?;
+    work.accept_authorized().await?;
     work.publish_operation(work.operation).await?;
     let pool = sqlx::PgPool::connect_with(options("postgres")?).await?;
     let second_device = crate::test_support::case::name("unaffected-native-device");

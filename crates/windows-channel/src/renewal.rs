@@ -157,7 +157,7 @@ async fn issue_on(
     c: &mut sqlx::PgConnection,
     app: &HttpState,
     p: &DevicePrincipal,
-    proof: &certificate::RenewalProof,
+    proof: &rss_mdm_device_trust::windows::RenewalProof,
     digest: &[u8],
     issued: &PendingCertificate,
 ) -> Result<(Uuid, Vec<u8>, String, bool), Error> {
@@ -225,7 +225,7 @@ struct PendingCertificate {
 async fn prepare(
     app: &HttpState,
     p: &DevicePrincipal,
-    proof: &certificate::RenewalProof,
+    proof: &rss_mdm_device_trust::windows::RenewalProof,
     digest: &[u8],
 ) -> Result<Pending, Error> {
     let tenant = p.tenant().to_string();
@@ -281,7 +281,7 @@ async fn prepare(
 
 pub(crate) async fn activate(
     app: &HttpState,
-    leaf: &certificate::CheckedLeaf,
+    leaf: &rss_mdm_device_trust::windows::CheckedLeaf,
     device: &str,
     purpose: rss_mdm_registration_service::Purpose,
 ) -> Result<(), Error> {
@@ -347,7 +347,7 @@ pub(crate) async fn activate(
 async fn activate_on(
     c: &mut sqlx::PgConnection,
     app: &HttpState,
-    leaf: &certificate::CheckedLeaf,
+    leaf: &rss_mdm_device_trust::windows::CheckedLeaf,
     device: &str,
     audit: &RequestAudit,
     purpose: rss_mdm_registration_service::Purpose,

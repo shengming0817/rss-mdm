@@ -138,7 +138,7 @@ impl ExecutionService {
             .execute(&mut *c)
             .await
             .map_err(crate::database::db)?;
-        let row=sqlx::query("SELECT o.device,o.registration,o.registration_generation,o.request,o.input_context,o.approval,mdm_commands.installation_status(o.id) AS status FROM mdm_commands.operations o WHERE o.tenant_id=$1::uuid AND o.id=$2").bind(&tenant).bind(installation).fetch_optional(&mut *c).await.map_err(crate::database::db)?.ok_or(Error::Forbidden)?;
+        let row=sqlx::query("SELECT o.device,o.registration,o.registration_generation,o.request,o.input_context,o.authority,mdm_commands.installation_status(o.id) AS status FROM mdm_commands.operations o WHERE o.tenant_id=$1::uuid AND o.id=$2").bind(&tenant).bind(installation).fetch_optional(&mut *c).await.map_err(crate::database::db)?.ok_or(Error::Forbidden)?;
         if row
             .try_get::<Uuid, _>("registration")
             .map_err(crate::database::db)?
@@ -161,10 +161,10 @@ impl ExecutionService {
             &row,
             "request",
         )?;
-        let approval: authority::ExecutionAuthority =
-            serde_json::from_value(row.try_get("approval").map_err(crate::database::db)?)
+        let authority: authority::ExecutionAuthority =
+            serde_json::from_value(row.try_get("authority").map_err(crate::database::db)?)
                 .map_err(|_| Error::Malformed)?;
-        let package = approval.agent_package().ok_or(Error::Forbidden)?.clone();
+        let package = authority.agent_package().ok_or(Error::Forbidden)?.clone();
         if request.task.source() != source {
             return Err(Error::Forbidden);
         }
@@ -204,7 +204,7 @@ impl ExecutionService {
         {
             return Err(Error::Forbidden);
         }
-        if !approval
+        if !authority
             .valid(
                 self.source.as_ref(),
                 c,
@@ -216,7 +216,7 @@ impl ExecutionService {
         {
             return Err(Error::Forbidden);
         }
-        let authority::ExecutionAuthority::AgentInstall { version, .. } = approval else {
+        let authority::ExecutionAuthority::AgentInstall { version, .. } = authority else {
             return Err(Error::Forbidden);
         };
         let frozen: serde_json::Value = sqlx::query_scalar(
