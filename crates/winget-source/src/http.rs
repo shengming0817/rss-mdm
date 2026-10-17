@@ -279,7 +279,7 @@ fn transport(stage: RequestStage, e: reqwest::Error) -> Error {
 // ref: microsoft/winget-cli-restsource documentation/WinGet-1.0.0.yaml
 fn validate_information(source: &str, info: &[u8]) -> Result<(), Error> {
     let info: serde_json::Value =
-        serde_json::from_slice(&info).map_err(|_| Error::InvalidResponse)?;
+        serde_json::from_slice(info).map_err(|_| Error::InvalidResponse)?;
     if info["Data"]["SourceIdentifier"].as_str() != Some(source) {
         return Err(Error::IdentityMismatch);
     }

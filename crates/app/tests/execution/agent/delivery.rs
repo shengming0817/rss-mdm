@@ -41,7 +41,8 @@ async fn registration_capability_and_wire_gate() -> Result<()> {
     ensure!(old.status() == StatusCode::NOT_FOUND);
     let operation = Uuid::new_v4();
     let valid = json!({"wireVersion":1,"operationId":operation,"executionContext":crate::test_support::software_execution::context(crate::test_support::software_execution::Platform::MacOs),"environment":{"edition":null,"tools":{},"nativeEngines":{}},"profiles":["posix_sh","bash","power_shell7","osquery"]});
-    for version in [2] {
+    {
+        let version = 2;
         let mut retired = valid.clone();
         retired["wireVersion"] = json!(version);
         ensure!(
@@ -147,7 +148,8 @@ async fn offer_start_result_replay_and_inventory_projection() -> Result<()> {
         "collection was not frozen before Offer"
     );
     let event_operation = Uuid::new_v4();
-    for version in [2] {
+    {
+        let version = 2;
         let retired = json!({"wireVersion":version,"operationId":event_operation,"attemptId":task["payload"]["task"]["attemptId"],"executionContext":crate::test_support::software_execution::context(crate::test_support::software_execution::Platform::MacOs),"event":{"kind":"received"}});
         ensure!(
             agent_call(
@@ -803,7 +805,7 @@ async fn native_inventory_case(
                 w::NativeQueryResult {
                     query_digest: q.digest(),
                     collected_at: now,
-                    status: if all_failed { status.clone() } else if stage == 1 && (id == "network" || id == "receipts") {
+                    status: if all_failed { status } else if stage == 1 && (id == "network" || id == "receipts") {
                         w::NativeQueryStatus::Truncated
                     } else { w::NativeQueryStatus::Complete },
                     enumeration_complete: !(stage == 1 && id == "network"),

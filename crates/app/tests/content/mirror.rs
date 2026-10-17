@@ -34,7 +34,8 @@ async fn mirror_matrix(
     server: &publication_support::Server,
     runtime: &Arc<rss_transactional_messaging_postgres::PgRuntime>,
 ) -> Result<()> {
-    for (path, bytes) in [("wrong.msi", &b"abd"[..])] {
+    {
+        let (path, bytes) = ("wrong.msi", &b"abd"[..]);
         let (url, operation) =
             mirror_resource(user, router, definition, server, path, bytes).await?;
         let response = user.call(router, Method::POST, &url, None).await?;

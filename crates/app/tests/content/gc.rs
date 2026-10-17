@@ -225,21 +225,18 @@ async fn gc_reference_race(
     });
     let waiting = tokio::time::timeout(Duration::from_secs(3), async {
         loop {
-            if writer.is_finished() { break Ok::<_, anyhow::Error>(false); }
-            if pg(&format!("SELECT EXISTS(SELECT 1 FROM pg_locks WHERE locktype='advisory' AND NOT granted AND classid::bigint=((hashtextextended('{lock_key}',2388)>>32)&4294967295) AND objid::bigint=(hashtextextended('{lock_key}',2388)&4294967295))"))?.trim() == "t" { break Ok(true); }
+            if pg(&format!("SELECT EXISTS(SELECT 1 FROM pg_locks WHERE locktype='advisory' AND NOT granted AND classid::bigint=((hashtextextended('{lock_key}',2388)>>32)&4294967295) AND objid::bigint=(hashtextextended('{lock_key}',2388)&4294967295))"))?.trim() == "t" { break Ok::<_, anyhow::Error>(()); }
             tokio::task::yield_now().await;
         }
     }).await;
-    // Release GC even if the writer never reaches the expected lock.
-    if !matches!(waiting, Ok(Ok(true))) {
-        resume.notify_one();
-    }
-    ensure!(waiting??, "writer did not wait for the artifact lock");
+    let crossed_barrier = writer.is_finished();
+    // Release GC before reporting any observation failure.
+    resume.notify_one();
+    waiting??;
     ensure!(
-        !writer.is_finished(),
+        !crossed_barrier,
         "Resource crossed the held deletion barrier"
     );
-    resume.notify_one();
     gc.await??;
     let rejected = writer.await?;
     ensure!(
