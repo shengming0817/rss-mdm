@@ -69,6 +69,26 @@ impl Fixture {
             )),
         )
         .await?;
+        let mut db =
+            sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?)
+                .await?;
+        let mut settled = false;
+        for _ in 0..2 {
+            self.app
+                .execution
+                .settle_native_fixture(case_device())
+                .await?;
+            settled = sqlx::query_scalar("SELECT state->>'execution'='succeeded' AND result->>'collectionRun'=$2::text FROM mdm_commands.action_runs WHERE tenant_id=$1::uuid AND id=$2")
+                .bind(case_tenant()).bind(run).fetch_one(&mut db).await?;
+            if settled {
+                break;
+            }
+        }
+        ensure!(
+            settled,
+            "live backlog prevented the tail report from settling its ActionRun"
+        );
+        db.close().await?;
         Ok(())
     }
 }

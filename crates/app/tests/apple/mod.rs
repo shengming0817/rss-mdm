@@ -939,59 +939,68 @@ impl Fixture {
     ) -> Result<Vec<Uuid>> {
         use sqlx::Connection;
         ensure!(count > 0);
-        // One genuine publication provides the frozen template. Additional pending
-        // collections exercise queue scanning/retirement, not Policy admission.
+        // One frozen Policy version owns distinct pending occurrences. Queue through
+        // the production owner so fingerprints, outbox and source evidence stay real.
         let (_, first) = self.queue_collection(definition).await?;
         let mut db =
             sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?)
                 .await?;
-        let mut tx = db.begin().await?;
-        sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
-            .bind(case_tenant())
-            .execute(&mut *tx)
-            .await?;
-        let saved = crate::collection::store::load_on(&mut tx, case_tenant(), first).await?;
-        let template = crate::collection::native::template(&mut tx, case_tenant(), first)
-            .await?
-            .unwrap();
-        let (registration, generation): (Uuid, i64) = sqlx::query_as(
-            "SELECT r.id,r.generation FROM mdm_access.registrations r JOIN mdm_access.collection_runs c ON(c.tenant_id,c.registration)=(r.tenant_id,r.id) WHERE c.tenant_id=$1::uuid AND c.id=$2 AND r.state='active'")
-            .bind(case_tenant()).bind(first).fetch_one(&mut *tx).await?;
-        let target = crate::collection::native::Target {
-            tenant: saved.scope.tenant(),
-            device: case_device().into(),
-            registration,
-            generation,
-        };
+        let (version, registration, generation): (Uuid, Uuid, i64) = sqlx::query_as(
+            "SELECT policy_version,registration,generation FROM mdm_commands.action_runs WHERE tenant_id=$1::uuid AND id=$2")
+            .bind(case_tenant()).bind(first).fetch_one(&mut db).await?;
         let mut runs = vec![first];
-        for _ in 1..count {
-            let id = Uuid::new_v4();
-            crate::collection::native::start(
-                &mut tx,
-                &target,
-                id,
-                saved.attempts.definition().clone(),
-                template.clone(),
-                self.app.clock.unix_seconds()? + 1800,
-            )
-            .await?;
-            let facts = rss_mdm_apple_channel::collection::prepare_native(
-                &mut tx,
-                &self.app.protection,
-                case_tenant(),
-                id,
-            )
-            .await?;
-            ensure!(
-                facts.is_empty(),
-                "pending preparation unexpectedly completed a collection"
-            );
-            runs.push(id);
+        runs.extend((1..count).map(|_| Uuid::new_v4()));
+        if count > 1 {
+            let target = rss_mdm_execution_service::Target {
+                device: case_device().into(),
+                registration,
+                generation,
+            };
+            let pending = runs[1..].to_vec();
+            let now = self.app.clock.unix_seconds()?;
+            self.app.execution_runtime.local_tx_with_context(
+                rss_request_context::TenantId::parse(case_tenant())?,
+                // Only preparation is batched. settle_native_fixture below retains
+                // the unmodified production transaction budget.
+                rss_transactional_messaging::policy::OperationDeadline::from_remaining(Duration::from_secs(30)),
+                (&self.app.execution, &self.app.audit_store), |(service, audit), tx| Box::pin(async move {
+                    audit.lock_in(tx).await.map_err(|e| rss_transactional_messaging_postgres::PgError::from(sqlx::Error::Protocol(e.to_string())))?;
+                    for id in pending {
+                        rss_mdm_execution_service::actions::production::queue_run_in(service, tx,
+                            rss_mdm_execution_service::actions::production::RunInput {
+                                source: rss_mdm_execution_service::actions::storage::Source::Policy { version },
+                                target: &target, id, occurrence: format!("backlog:{id}"),
+                                available: now, deadline: now + 1800, now,
+                            }).await.map_err(|e| rss_transactional_messaging_postgres::PgError::from(sqlx::Error::Protocol(e.to_string())))?;
+                    }
+                    Ok(())
+                }),
+            ).await.fold(Ok, |e| Err(anyhow::anyhow!(e)), |e| Err(anyhow::anyhow!(e)),
+                |_| Err(anyhow::anyhow!("backlog preparation rollback unconfirmed")),
+                |_| Err(anyhow::anyhow!("backlog preparation commit unconfirmed")), |e| Err(anyhow::anyhow!(e)))?;
         }
-        let pending: i64 = sqlx::query_scalar("SELECT count(DISTINCT c.id) FROM mdm_access.collection_runs c JOIN mdm_apple.attempts a ON(a.tenant_id,a.collection)=(c.tenant_id,c.id) WHERE c.tenant_id=$1::uuid AND c.id=ANY($2) AND c.sealed_at IS NULL AND a.phase='collect_device' AND a.state='pending'")
-            .bind(case_tenant()).bind(&runs).fetch_one(&mut *tx).await?;
-        ensure!(pending == count as i64);
-        tx.commit().await?;
+        tokio::time::timeout(Duration::from_secs(30), async {
+            loop {
+                let accepted: i64 = sqlx::query_scalar("SELECT count(*) FROM mdm_commands.action_runs WHERE tenant_id=$1::uuid AND id=ANY($2) AND gateway_accepted AND state->>'execution' IN ('not_started','running') AND state->>'cancellation'='none'")
+                    .bind(case_tenant()).bind(&runs).fetch_one(&mut db).await?;
+                if accepted == count as i64 { return Ok::<_, anyhow::Error>(()); }
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        }).await??;
+        // #2758: exercise real device recovery only after the full live ActionRun
+        // workset exists. A CollectionRun count alone cannot prove this seam.
+        for _ in 0..count.div_ceil(64) {
+            self.app
+                .execution
+                .settle_native_fixture(case_device())
+                .await?;
+        }
+        let pending: i64 = sqlx::query_scalar("SELECT count(DISTINCT c.id) FROM mdm_commands.action_runs r JOIN mdm_access.collection_runs c USING(tenant_id,id) JOIN mdm_apple.attempts a ON(a.tenant_id,a.collection)=(c.tenant_id,c.id) WHERE c.tenant_id=$1::uuid AND c.id=ANY($2) AND c.sealed_at IS NULL AND a.phase='collect_device' AND a.state='pending' AND r.gateway_accepted AND r.state->>'execution' IN ('not_started','running') AND r.state->>'cancellation'='none'")
+            .bind(case_tenant()).bind(&runs).fetch_one(&mut db).await?;
+        ensure!(
+            pending == count as i64,
+            "recovery did not preserve the entire live backlog"
+        );
         db.close().await?;
         Ok(runs)
     }
