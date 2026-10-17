@@ -403,6 +403,11 @@ async fn collection_structure_budget_precedes_partial_field_acceptance() -> Resu
             "failed"
         };
         ensure!(pg(&format!("SELECT result FROM mdm_access.collection_runs WHERE tenant_id='{}' AND id='{attempt}'",case_tenant()))?.trim()==expected,"invalid collection outcome: {mode}");
+        if mode == "partial" {
+            let fields: Value = serde_json::from_str(pg(&format!("SELECT attempts::jsonb->'fields' FROM mdm_access.collection_runs WHERE tenant_id='{}' AND id='{attempt}'", case_tenant()))?.trim())?;
+            ensure!(fields["custom.corporate_agent.healthy"]["quality"] == "success");
+            ensure!(fields["custom.corporate_agent.version"]["quality"] == "missing");
+        }
         if mode != "partial" {
             let id = task["payload"]["task"]["taskId"].as_str().unwrap();
             ensure!(pg(&format!("SELECT state->>'execution' FROM mdm_commands.action_runs WHERE tenant_id='{}' AND id='{id}'",case_tenant()))?.trim()=="failed");
@@ -861,7 +866,14 @@ async fn native_inventory_case(
         );
             ensure!(body.len() > 256 * 1024);
         }
-        let terminal = serde_json::to_value(w::TaskEvent::CollectionResult(result.clone()))?;
+        let terminal = if large_raw && stage == 1 {
+            for (i, chunk) in body.chunks(w::OUTPUT_CHUNK_BYTES).enumerate() {
+                let chunk = w::TaskEvent::OutputChunk(w::OutputChunk::new(manifest.clone(), i as u16, chunk)?);
+                let response = agent_call(&f.router, Method::POST, &path, Some(case_credential()), Some(event(Uuid::new_v4(), serde_json::to_value(chunk)?))).await?;
+                ensure!(response.0 == StatusCode::OK);
+            }
+            terminal
+        } else { serde_json::to_value(w::TaskEvent::CollectionResult(result.clone()))? };
         let operation = Uuid::new_v4();
         let input = event(operation, terminal);
         let accepted = agent_call(

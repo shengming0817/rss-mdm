@@ -382,6 +382,8 @@ async fn s3_rejected_writes_release_quota_after_permission_recovery_and_expiry()
     let (secrets, storage) = s3_storage()?;
     let access = format!("quota-{}", case_tenant());
     let secret = Uuid::new_v4().to_string();
+    use futures::FutureExt;
+    let outcome = std::panic::AssertUnwindSafe(async {
     s3_workload_policy(&provider, &access, false).await?;
     s3_admin(
         &provider,
@@ -415,7 +417,7 @@ async fn s3_rejected_writes_release_quota_after_permission_recovery_and_expiry()
         })
     })
     .await?;
-    let result = resources.finish(async {
+    resources.finish(async {
     let bytes = vec![0x67; 4096];
     let b = binding(&bytes, StorageClass::Artifact);
     let now = crate::windows::test_support::now();
@@ -470,7 +472,8 @@ async fn s3_rejected_writes_release_quota_after_permission_recovery_and_expiry()
             == &bytes
     );
     Ok(())
-    }).await;
+    }).await
+    }).catch_unwind().await;
     let user_cleanup = s3_admin(
         &provider,
         &format!("remove-user?accessKey={access}"),
@@ -483,7 +486,19 @@ async fn s3_rejected_writes_release_quota_after_permission_recovery_and_expiry()
         json!({}),
     )
     .await;
-    result?;
-    user_cleanup?;
-    policy_cleanup
+    match outcome {
+        Ok(Ok(())) => {
+            user_cleanup?;
+            policy_cleanup
+        }
+        Ok(Err(error)) => Err(error.context(format!(
+            "S3 cleanup: user={user_cleanup:?}, policy={policy_cleanup:?}"
+        ))),
+        Err(panic) => {
+            if user_cleanup.is_err() || policy_cleanup.is_err() {
+                eprintln!("S3 cleanup failed: user={user_cleanup:?}, policy={policy_cleanup:?}");
+            }
+            std::panic::resume_unwind(panic)
+        }
+    }
 }

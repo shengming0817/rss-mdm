@@ -255,6 +255,9 @@ async fn chain(format: &str, bundle: bool, user: bool) -> Result<()> {
     // Bundle/container admission is proven by the signed frozen offer and exact content.
     // Result settlement uses the same native identity as the single-package anchors below.
     if bundle || format == "dmg_pkg" {
+        let frozen = serde_json::to_value(&root.action.behavior)?;
+        if format == "dmg_pkg" { ensure!(frozen["payload"] == behavior["payload"]); }
+        if bundle { ensure!(frozen["container"] == behavior["container"] && frozen["identity"] == behavior["identity"]); }
         crate::test_support::stop_worker(stack).await?;
         return Ok(());
     }

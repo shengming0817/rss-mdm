@@ -92,11 +92,12 @@ pub(super) async fn upload_recovery(
     let admission_path = format!("/api/v1/software/resources/{resource}/versions/v1");
     let enable =
         json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"enable"}});
+    let absent = user
+        .call(router, Method::POST, &admission_path, Some(enable.clone()))
+        .await?;
     ensure!(
-        user.call(router, Method::POST, &admission_path, Some(enable.clone()))
-            .await?
-            .0
-            .is_client_error()
+        absent.0 == StatusCode::FORBIDDEN && absent.1["code"] == "permission_denied",
+        "missing content: {absent:?}"
     );
     let operation = Uuid::new_v4();
     let upload_path = format!(
@@ -230,7 +231,10 @@ async fn lifecycle_contract(
         .call(router, Method::POST, admission_path, Some(enable.clone()))
         .await?;
     pg("GRANT INSERT ON mdm_audit.receipts TO mdm_flow_runtime")?;
-    ensure!(failed.0.is_server_error(), "audit failure: {failed:?}");
+    ensure!(
+        failed.0 == StatusCode::SERVICE_UNAVAILABLE && failed.1["code"] == "service_unavailable",
+        "audit failure: {failed:?}"
+    );
     let before = user.call(router, Method::GET, admission_path, None).await?;
     ensure!(
         before.0 == StatusCode::OK && before.1["lifecycle"].is_null(),

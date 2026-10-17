@@ -258,6 +258,7 @@ async fn unknown_withdrawal_only_settles_absence_after_original_cas_is_fenced() 
             .unwrap(),
         rel::PublicationOutcome::Reported(rel::PublicationResult::Unknown(_))
     ));
+    let original: serde_json::Value = serde_json::from_str(&sql(&format!("SELECT convert_from(document,'UTF8') FROM mdm_software_composition.targets WHERE tenant_id='{}' AND candidate='{}' AND left(id,2)='p:'", tenant(), second.candidate.value()))).unwrap();
     let request = request_for(&service, &second.candidate).await;
     assert_eq!(
         service
@@ -275,22 +276,40 @@ async fn unknown_withdrawal_only_settles_absence_after_original_cas_is_fenced() 
     std::fs::remove_file(lock).unwrap();
     git(&config, &["update-ref", "-d", "refs/heads/main"]);
     let service = server.service(runtime.clone(), config.clone()).await;
-    for work in service
+    let work = service
         .reconciliation_page("", 32, cutoff())
         .await
         .unwrap()
         .work
-    {
-        if work.withdrawal {
-            assert_eq!(
-                service
-                    .reconcile_withdrawal(work.publication, work.attempt, cutoff())
-                    .await
-                    .unwrap(),
-                Withdrawal::Complete
-            );
-        }
-    }
+        .into_iter()
+        .find(|w| w.withdrawal && w.publication == p.id() && w.attempt == p.attempt)
+        .expect("original withdrawal missing");
+    assert_eq!(
+        service
+            .reconcile_withdrawal(work.publication, work.attempt, cutoff())
+            .await
+            .unwrap(),
+        Withdrawal::Complete
+    );
+    let commit = original["commit"].as_str().unwrap();
+    let base = original["base"].as_str().unwrap();
+    let SourceConfig::Brew(source) = &config.test else {
+        panic!("Brew")
+    };
+    let replay = std::process::Command::new("/usr/bin/git")
+        .arg("--git-dir")
+        .arg(&source.repository)
+        .args(["update-ref", "refs/heads/main", commit, base])
+        .output()
+        .unwrap();
+    assert!(!replay.status.success(), "fenced original CAS succeeded");
+    assert!(
+        !git(
+            &config,
+            &["for-each-ref", "--format=%(refname)", "refs/namespaces"]
+        )
+        .contains(commit)
+    );
     assert_eq!(
         sql("SELECT count(*) FROM mdm_software_composition.slots WHERE operation IS NOT NULL"),
         "0"

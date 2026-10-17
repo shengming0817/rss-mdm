@@ -37,7 +37,7 @@ async fn publication_result_commit_unknown_recovers_one_projection_and_audit() {
         .collect::<String>();
     let committed = || {
         sql(&format!(
-            "SELECT jsonb_build_object('receipts',(SELECT jsonb_agg(to_jsonb(r) ORDER BY id) FROM mdm_software_release.requests r WHERE tenant_id='{}' AND owner='{}'),'projections',(SELECT jsonb_agg(to_jsonb(p) ORDER BY binding) FROM mdm_software_composition.projections p WHERE tenant_id='{}' AND publication=decode('{publication}','hex')))",
+            "SELECT jsonb_build_object('receipts',(SELECT jsonb_agg(to_jsonb(r) ORDER BY id) FROM mdm_software_release.requests r WHERE tenant_id='{}' AND owner='{}'),'slots',(SELECT jsonb_agg(to_jsonb(s) ORDER BY s.binding,s.coordinate) FROM mdm_software_composition.slots s JOIN mdm_software_composition.projections p USING(tenant_id,binding,coordinate) WHERE publication=decode('{publication}','hex')),'projections',(SELECT jsonb_agg(to_jsonb(p) ORDER BY binding) FROM mdm_software_composition.projections p WHERE tenant_id='{}' AND publication=decode('{publication}','hex')))",
             tenant(),
             input.candidate.value(),
             tenant()
@@ -53,6 +53,9 @@ async fn publication_result_commit_unknown_recovers_one_projection_and_audit() {
             .any(|r| r["id"].as_str().unwrap().starts_with("record/"))
     );
     assert_eq!(facts["projections"].as_array().unwrap().len(), 1);
+    assert_eq!(facts["slots"].as_array().unwrap().len(), 1);
+    assert!(facts["slots"][0]["operation"].is_null());
+    assert_publication_audit(&p, &input.candidate, "applied");
     assert_eq!(
         audit_records()
             .iter()
@@ -106,6 +109,7 @@ async fn publication_result_commit_unknown_recovers_one_projection_and_audit() {
         )),
         "1"
     );
+    assert_publication_audit(&p, &input.candidate, "applied");
     assert_eq!(
         committed(),
         before,

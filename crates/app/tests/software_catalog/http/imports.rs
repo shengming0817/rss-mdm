@@ -183,6 +183,12 @@ async fn exact_rest_community_and_brew_imports_preserve_evidence_and_replay() ->
                     .is_some_and(|files| files.len() == 3),
                 "complete multi-file source evidence: {declaration}"
             );
+            let files = declaration["provenance"]["files"].as_array().unwrap();
+            for (path, bytes) in &community_documents {
+                let file = files.iter().find(|f| f["path"] == *path).expect("missing source document");
+                ensure!(file["content"]["sha256"] == json!(<[u8;32]>::from(Sha256::digest(bytes))));
+            }
+
         }
         ensure!(
             declaration["provenance"]["files"][0]["content"]["sha256"]
@@ -197,7 +203,7 @@ async fn exact_rest_community_and_brew_imports_preserve_evidence_and_replay() ->
             .user
             .call(&f.router, Method::POST, &content_path, None)
             .await?;
-        ensure!(mirrored.0.is_success(), "mirror: {mirrored:?}");
+        ensure!(mirrored.0 == StatusCode::CREATED, "mirror: {mirrored:?}");
         if revision == "bottle" {
             let mirror=f.user.call(&f.router,Method::POST,&format!("/api/v1/resources/{resource}/content/mirror?version=v1&variant=default&platform=macos&architecture=x86_64&artifact=source&operation={}",Uuid::new_v4()),None).await?;
             ensure!(

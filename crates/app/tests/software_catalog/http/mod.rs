@@ -96,41 +96,52 @@ async fn private_formats(
         .send()
         .await?;
         ensure!(begin.status() == StatusCode::OK);
-        let half = bytes.len() / 2;
-        ensure!(
-            request(Method::PATCH, &format!("{session}?offset=0"))
-                .body(bytes[..half].to_vec())
+        if format == "bundle" {
+            let half = bytes.len() / 2;
+            ensure!(
+                request(Method::PATCH, &format!("{session}?offset=0"))
+                    .body(bytes[..half].to_vec())
+                    .send()
+                    .await?
+                    .status()
+                    == StatusCode::OK
+            );
+            let resumed: Value = request(Method::GET, &session).send().await?.json().await?;
+            ensure!(resumed["offset"] == half);
+            let conflict = request(Method::PATCH, &format!("{session}?offset=0"))
+                .body(vec![0])
                 .send()
-                .await?
-                .status()
-                == StatusCode::OK
-        );
-        let resumed: Value = request(Method::GET, &session).send().await?.json().await?;
-        ensure!(resumed["offset"] == half);
-        let conflict = request(Method::PATCH, &format!("{session}?offset=0"))
-            .body(vec![0])
+                .await?;
+            ensure!(conflict.status() == StatusCode::CONFLICT);
+            ensure!(conflict.json::<Value>().await?["offset"] == half);
+            let foreign = request(
+                Method::GET,
+                &format!(
+                    "{origin}/api/v1/resources/{}/uploads/{upload}",
+                    Uuid::new_v4()
+                ),
+            )
             .send()
             .await?;
-        ensure!(conflict.status() == StatusCode::CONFLICT);
-        ensure!(conflict.json::<Value>().await?["offset"] == half);
-        let foreign = request(
-            Method::GET,
-            &format!(
-                "{origin}/api/v1/resources/{}/uploads/{upload}",
-                Uuid::new_v4()
-            ),
-        )
-        .send()
-        .await?;
-        ensure!(foreign.status() == StatusCode::FORBIDDEN);
-        ensure!(
-            request(Method::PATCH, &format!("{session}?offset={half}"))
-                .body(bytes[half..].to_vec())
-                .send()
-                .await?
-                .status()
-                == StatusCode::OK
-        );
+            ensure!(foreign.status() == StatusCode::FORBIDDEN);
+            ensure!(
+                request(Method::PATCH, &format!("{session}?offset={half}"))
+                    .body(bytes[half..].to_vec())
+                    .send()
+                    .await?
+                    .status()
+                    == StatusCode::OK
+            );
+        } else {
+            ensure!(
+                request(Method::PATCH, &format!("{session}?offset=0"))
+                    .body(bytes.clone())
+                    .send()
+                    .await?
+                    .status()
+                    == StatusCode::OK
+            );
+        }
         let response = request(Method::POST, &format!("{session}/complete"))
             .send()
             .await?;
@@ -159,12 +170,35 @@ async fn dependency_denial_over_http(
     let mut input = definition.clone();
     input["dependencies"] = json!([{"resource":dependency,"version":"v1","sha256":digest}]);
     let (dependent, _) = create_software_version(user, router, input).await?;
+    for resource in [&dependency, &dependent] {
+        ensure!(
+            user.call(
+                router,
+                Method::GET,
+                &format!("/api/v1/resources/{resource}"),
+                None
+            )
+            .await?
+            .0 == StatusCode::OK
+        );
+    }
     let response = user.call(router, Method::POST, &format!("/api/v1/software/resources/{dependent}/versions/v1"),
         Some(json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"enable"}}))).await?;
     ensure!(
-        response.0 == StatusCode::FORBIDDEN,
+        response.0 == StatusCode::FORBIDDEN && response.1["code"] == "permission_denied",
         "dependency admission HTTP mapping: {response:?}"
     );
+    for resource in [&dependency, &dependent] {
+        let enabled = write(
+            user,
+            router,
+            &format!("/api/v1/software/resources/{resource}/versions/v1"),
+            0,
+            json!({"action":"enable"}),
+        )
+        .await?;
+        ensure!(enabled["lifecycle"]["state"] == "enabled");
+    }
     Ok(())
 }
 #[tokio::test]

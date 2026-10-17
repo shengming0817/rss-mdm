@@ -321,7 +321,10 @@ async fn resource_admission_rejects_schema_and_privilege_drift() {
         sql(change);
         let result = ResourceStore::new(runtime.clone(), tenant(), deadline()).await;
         sql(restore);
-        assert!(result.is_err(), "admitted drift: {change}");
+        assert!(
+            matches!(result, Err(Error::RolledBack(ref e)) if e.kind() == rss_transactional_messaging::error::MessagingErrorKind::Invariant),
+            "admitted drift: {change}"
+        );
         ResourceStore::new(runtime.clone(), tenant(), deadline())
             .await
             .unwrap_or_else(|e| panic!("failed to restore {change}: {e:?}"));
@@ -337,6 +340,9 @@ async fn admission_rejects_noninherited_switchable_privileges() {
     sql(&format!(
         "CREATE ROLE {role} NOLOGIN; CREATE ROLE {bridge} NOLOGIN; GRANT {role} TO {bridge} WITH INHERIT FALSE, SET TRUE; GRANT {bridge} TO mdm_resource_runtime WITH INHERIT FALSE, SET TRUE; GRANT USAGE ON SCHEMA mdm_resource TO {role};"
     ));
+    let roles = (role.clone(), bridge.clone());
+    let outcome = tokio::spawn(async move {
+    let (role, bridge) = roles;
     for membership in ["INHERIT FALSE, SET TRUE", "INHERIT TRUE, SET FALSE"] {
         sql(&format!("GRANT {role} TO {bridge} WITH {membership}"));
         for privilege in [
@@ -351,9 +357,10 @@ async fn admission_rejects_noninherited_switchable_privileges() {
             let result = ResourceStore::new(runtime.clone(), tenant(), deadline()).await;
             sql(&format!("REVOKE {privilege} FROM {role}"));
             assert!(
-                result.is_err(),
+                matches!(result, Err(Error::RolledBack(ref e)) if e.kind() == rss_transactional_messaging::error::MessagingErrorKind::Invariant),
                 "admitted switchable privilege: {privilege}"
             );
+            ResourceStore::new(runtime.clone(), tenant(), deadline()).await.unwrap();
         }
     }
     // Permitted column privileges in a switchable role remain admissible.
@@ -371,10 +378,12 @@ async fn admission_rejects_noninherited_switchable_privileges() {
         "GRANT {bridge} TO mdm_resource_runtime WITH INHERIT FALSE, SET FALSE; GRANT TRUNCATE ON mdm_resource.requests TO {role}"
     ));
     let dormant = ResourceStore::new(runtime, tenant(), deadline()).await;
+    dormant.unwrap();
+    }).await;
     sql(&format!(
         "REVOKE {bridge} FROM mdm_resource_runtime; REVOKE {role} FROM {bridge}; DROP OWNED BY {role}; DROP ROLE {bridge}; DROP ROLE {role};"
     ));
-    dormant.unwrap();
+    outcome.unwrap();
 }
 
 fn software(artifact: &r::Artifact) -> r::SoftwareDefinition {

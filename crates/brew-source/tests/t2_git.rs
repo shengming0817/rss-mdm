@@ -260,11 +260,12 @@ async fn conditional_removal_preserves_other_paths_and_old_commits() {
     r.read(remove.target(), &other).await.unwrap();
     r.read(first.target(), &doc).await.unwrap();
     assert!(r.contains_commit(first.target()).await.unwrap());
-    assert!(
+    assert!(matches!(
         r.prepare_remove(remove.target().clone(), doc, "again", now())
-            .await
-            .is_err()
-    );
+            .await,
+        Err(Error::NotFound)
+    ));
+    assert_eq!(r.head().await.unwrap().as_ref(), Some(remove.target()));
 }
 
 #[tokio::test]
@@ -372,9 +373,8 @@ async fn readonly_upload_pack_advertises_only_the_selected_snapshot() {
     assert!(!text.contains(second.target().as_str()));
     assert!(text.contains("refs/heads/main"));
     repo.withdraw_snapshot(first.target()).await.unwrap();
-    assert!(
-        repo.upload_pack(first.target(), true, false, &[])
-            .await
-            .is_err()
-    );
+    assert!(matches!(
+        repo.upload_pack(first.target(), true, false, &[]).await,
+        Err(Error::NotFound)
+    ));
 }

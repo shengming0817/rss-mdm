@@ -9,12 +9,12 @@ async fn full_version_publication_recovery_and_public_artifact_boundary() {
     let input = seed(runtime.clone(), &server, server.winget_document()).await;
     service.create_candidate(&input, cutoff()).await.unwrap();
     let p = submit_publication(&service, &input.candidate, rel::Ring::Test).await;
-    assert!(
+    assert!(matches!(
         service
             .published(rel::Ring::Test, p.id().digest().bytes(), cutoff())
-            .await
-            .is_err()
-    );
+            .await,
+        Err(Error::CandidateNotFound)
+    ));
     sql(
         "CREATE FUNCTION public.reject_release_result() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'fixture result failure'; END $$; CREATE TRIGGER reject_result BEFORE UPDATE ON mdm_software_release.aggregates FOR EACH ROW EXECUTE FUNCTION public.reject_release_result();",
     );
@@ -54,6 +54,27 @@ async fn full_version_publication_recovery_and_public_artifact_boundary() {
             .len(),
         2
     );
+    let installers = manifest["Versions"][0]["Installers"].as_array().unwrap();
+    let architectures = installers
+        .iter()
+        .map(|i| i["Architecture"].as_str().unwrap())
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(architectures, ["arm64", "x64"].into());
+    for installer in installers {
+        let artifact = served
+            .artifacts
+            .iter()
+            .find(|a| installer["InstallerUrl"] == a.url)
+            .expect("installer URL missing from hosted artifacts");
+        assert_eq!(
+            installer["InstallerSha256"],
+            artifact
+                .sha256
+                .iter()
+                .map(|b| format!("{b:02x}"))
+                .collect::<String>()
+        );
+    }
     assert_eq!(served.artifacts.len(), 1);
     assert_publication_audit(&p, &input.candidate, "applied");
     assert!(
@@ -73,12 +94,12 @@ async fn full_version_publication_recovery_and_public_artifact_boundary() {
             .outcome,
         Withdrawal::Complete
     );
-    assert!(
+    assert!(matches!(
         service
             .published(rel::Ring::Test, p.id().digest().bytes(), cutoff())
-            .await
-            .is_err()
-    );
+            .await,
+        Err(Error::CandidateNotFound)
+    ));
     assert_eq!(
         service
             .reconcile_withdrawal(p.id(), p.attempt, cutoff())

@@ -337,7 +337,7 @@ async fn known_failure_has_bounded_retries() -> Result<()> {
         exhausted.0 == StatusCode::OK && exhausted.1["task"].is_null(),
         "failed deployment exceeded bounded retries: {exhausted:?}"
     );
-    ensure!(pg(&format!("SELECT count(*) FROM mdm_commands.action_runs r JOIN mdm_policy.versions v ON (v.tenant_id,v.id)=(r.tenant_id,r.policy_version) WHERE r.tenant_id='{}' AND v.policy='{failed_policy}' AND r.result->>'effect'='failed'", case_tenant()))?.trim() == "3");
+    ensure!(pg(&format!("SELECT jsonb_build_array(count(*),count(DISTINCT r.id),count(*) FILTER(WHERE r.result->>'effect'='failed')) FROM mdm_commands.action_runs r JOIN mdm_policy.versions v ON (v.tenant_id,v.id)=(r.tenant_id,r.policy_version) WHERE r.tenant_id='{}' AND v.policy='{failed_policy}'", case_tenant()))?.trim() == "[3, 3, 3]");
     write(
         &mut author,
         &router,

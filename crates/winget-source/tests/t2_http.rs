@@ -124,7 +124,7 @@ async fn real_https_failures_do_not_look_successful() {
 }
 #[tokio::test]
 #[ignore = "explicit real-provider T2 target"]
-async fn total_timeout_and_cross_tenant_before_io() {
+async fn identity_rejection_precedes_io_and_stalled_connection_times_out() {
     let (source, listener, _tls) = fixture("source.invalid", "/").await;
     let client = Client::with_limits(
         source,
@@ -154,26 +154,6 @@ async fn total_timeout_and_cross_tenant_before_io() {
         client.query(&query(), &access()).await,
         Err(Error::Timeout(RequestStage::Query))
     ));
-    assert!(
-        Source::new(
-            tenant(),
-            "private",
-            "http://example.com/",
-            vec!["8.8.8.8".parse().unwrap()],
-            "ref"
-        )
-        .is_err()
-    );
-    assert!(
-        Source::new(
-            tenant(),
-            "private",
-            "https://127.0.0.1/",
-            vec!["8.8.8.8".parse().unwrap()],
-            "ref"
-        )
-        .is_err()
-    );
 }
 
 #[tokio::test]

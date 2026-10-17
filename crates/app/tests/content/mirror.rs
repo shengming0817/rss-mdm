@@ -39,7 +39,8 @@ async fn mirror_matrix(
             mirror_resource(user, router, definition, server, path, bytes).await?;
         let response = user.call(router, Method::POST, &url, None).await?;
         ensure!(
-            !response.0.is_success(),
+            response.0 == StatusCode::SERVICE_UNAVAILABLE
+                && response.1["code"] == "service_unavailable",
             "unsafe mirror succeeded: {response:?}"
         );
         ensure!(
@@ -55,7 +56,11 @@ async fn mirror_matrix(
     pg("REVOKE INSERT ON mdm_audit.receipts FROM mdm_flow_runtime")?;
     let failed = user.call(router, Method::POST, &url, None).await;
     pg("GRANT INSERT ON mdm_audit.receipts TO mdm_flow_runtime")?;
-    ensure!(failed?.0.is_server_error());
+    let failed = failed?;
+    ensure!(
+        failed.0 == StatusCode::SERVICE_UNAVAILABLE && failed.1["code"] == "service_unavailable",
+        "audit failure: {failed:?}"
+    );
     ensure!(
         pg(&format!(
             "SELECT count(*) FROM mdm_content.bindings WHERE operation='{operation}'"
