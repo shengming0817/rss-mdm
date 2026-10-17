@@ -69,12 +69,20 @@ impl Identity {
         policy: Arc<IdentityManagementPolicy>,
         acquire: impl FnMut(Box<rss_runtime::DynManagedResource<'static>>),
     ) -> Result<Self, Error> {
-        Self::connect_using(config, policy, acquire, OidcConfig::federation).await
+        Self::connect_using(
+            config,
+            policy,
+            acquire,
+            |authority| authority,
+            OidcConfig::federation,
+        )
+        .await
     }
     async fn connect_using(
         config: &Config,
         policy: Arc<IdentityManagementPolicy>,
         mut acquire: impl FnMut(Box<rss_runtime::DynManagedResource<'static>>),
+        configure_authority: impl FnOnce(Authority) -> Authority,
         federation: impl FnOnce(
             &OidcConfig,
             Authority,
@@ -119,6 +127,7 @@ impl Identity {
         )
         .await
         .map_err(failure)?;
+        let authority = configure_authority(authority);
         let tenant_administration =
             crate::tenant_registry::http::Service::connect(config, management_tenant, kdf, policy)
                 .await?;
@@ -167,12 +176,14 @@ impl Identity {
     pub(crate) async fn for_oidc_fixture(
         config: &Config,
         policy: Arc<IdentityManagementPolicy>,
+        fact_time: rss_identity_postgres::ControlledFactTime,
         acquire: impl FnMut(Box<rss_runtime::DynManagedResource<'static>>),
     ) -> Result<Self, Error> {
         Self::connect_using(
             config,
             policy,
             acquire,
+            |authority| authority.with_fact_time(fact_time),
             |config, authority, origin, instance, _tenant| {
                 let oidc = rss_identity_oidc::HttpOidc::for_loopback_test(config.profiles()?)
                     .map_err(|_| invalid())?;

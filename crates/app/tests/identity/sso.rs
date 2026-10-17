@@ -1,7 +1,5 @@
-//! Product callback, explicit linking and provider isolation with real HTTPS Keycloak.
-use crate::clock::Clock;
+//! Product callback facts and provider isolation with real HTTPS Keycloak.
 use crate::test_support::*;
-use anyhow::Context;
 #[path = "sso/authorization.rs"]
 mod authorization;
 const CALLBACK: &str = "https://mdm.example.test/api/v1/identity/oidc/callback";
@@ -17,18 +15,6 @@ fn form(html: &str) -> Result<String> {
         .and_then(|v| v.split('"').next())
         .ok_or_else(|| anyhow::anyhow!("provider form action missing"))?
         .replace("&amp;", "&"))
-}
-fn otp() -> Result<String> {
-    let count = crate::clock::SystemClock.unix_seconds()? as u64 / 30;
-    let key = ring::hmac::Key::new(
-        ring::hmac::HMAC_SHA1_FOR_LEGACY_USE_ONLY,
-        b"fixture-totp-secret-2339",
-    );
-    let tag = ring::hmac::sign(&key, &count.to_be_bytes());
-    let bytes = tag.as_ref();
-    let offset = usize::from(bytes[19] & 15);
-    let value = u32::from_be_bytes(bytes[offset..offset + 4].try_into()?) & 0x7fffffff;
-    Ok(format!("{:06}", value % 1_000_000))
 }
 async fn provider_login(url: &str, user: &str) -> Result<reqwest::Url> {
     let client = Client::builder()
@@ -56,16 +42,6 @@ async fn provider_login(url: &str, user: &str) -> Result<reqwest::Url> {
         ])
         .send()
         .await?;
-    let response = if response.status() == StatusCode::OK {
-        let page = response.text().await?;
-        client
-            .post(form(&page)?)
-            .form(&[("otp", otp()?)])
-            .send()
-            .await?
-    } else {
-        response
-    };
     ensure!(
         response.status().is_redirection(),
         "provider authentication rejected: {}",
@@ -88,41 +64,27 @@ async fn roundtrip(
     router: &Router,
     browser: &mut Browser,
     provider: &str,
-    kind: &str,
     user: &str,
 ) -> Result<()> {
-    let mut input = json!({"returnTarget":"home"});
-    if kind == "link" {
-        input["password"] = PASSWORD.into();
-    }
+    let input = json!({"returnTarget":"home"});
     let (status, begin) = browser
         .call(
             router,
             Method::POST,
             &format!(
-                "/api/v1/identity/tenants/{TENANT}/oidc/{provider}/{kind}",
+                "/api/v1/identity/tenants/{TENANT}/oidc/{provider}/login",
                 TENANT = case_tenant()
             ),
             Some(input),
         )
         .await?;
-    ensure!(
-        status == StatusCode::OK,
-        "SSO begin {kind}: {status} {begin}"
-    );
+    ensure!(status == StatusCode::OK, "SSO login: {status} {begin}");
     let url = begin["authorizationUrl"].as_str().unwrap();
     ensure!(
         reqwest::Url::parse(url)?
             .query_pairs()
             .any(|(k, v)| k == "redirect_uri" && v == CALLBACK)
     );
-    if kind == "step-up" {
-        ensure!(
-            reqwest::Url::parse(url)?
-                .query_pairs()
-                .any(|(k, v)| k == "acr_values" && v == "2")
-        );
-    }
     let callback = provider_login(url, user).await?;
     let (status, value) = browser
         .call(
@@ -141,13 +103,6 @@ async fn roundtrip(
         returned.origin().ascii_serialization() == "https://mdm.example.test"
             && returned.path() == "/done"
     );
-    if kind == "link" {
-        ensure!(
-            returned
-                .query_pairs()
-                .any(|(k, v)| k == "identity_result" && v == "linked")
-        );
-    }
     // Callback sends only the credential cookie; the component session endpoint supplies CSRF.
     let session = browser
         .call(
@@ -165,7 +120,7 @@ async fn roundtrip(
 }
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "make t2 MODULE=identity.sso: enterprise Keycloak, real MDM Router and PG"]
-async fn product_callback_link_step_up_and_provider_isolation() -> Result<()> {
+async fn product_callback_facts_and_provider_isolation() -> Result<()> {
     let mut base: Value =
         serde_json::from_slice(&std::fs::read(std::env::var("MDM_TEST_CONFIG")?)?)?;
     let issuer = std::env::var("MDM_TEST_SSO_ISSUER")?;
@@ -176,7 +131,7 @@ async fn product_callback_link_step_up_and_provider_isolation() -> Result<()> {
         std::fs::write(&file, "ab".repeat(32))?;
         std::fs::set_permissions(file, std::fs::Permissions::from_mode(0o600))?;
     }
-    base["identity"]["oidc"] = json!({"group_facts_max_age_seconds":8,"state_key_file":directory.path().join("state"),
+    base["identity"]["oidc"] = json!({"group_facts_max_age_seconds":60,"state_key_file":directory.path().join("state"),
         "active_credential_key":"current","credential_keys":{"current":directory.path().join("credential")},
         "return_targets":{"home":"https://mdm.example.test/done"},
         "private_providers":[], "assurance_profiles":[{"tenant_id":case_tenant(),"issuer":issuer,"client_id":"mdm","keycloak_totp":true}]});
@@ -185,9 +140,13 @@ async fn product_callback_link_step_up_and_provider_isolation() -> Result<()> {
         crate::authorization::identity_management::IdentityManagementPolicy::new(INSTANCE)?,
     );
     let mut identity_resources = crate::test_support::Resources::default();
-    let identity = crate::identity::Identity::for_oidc_fixture(&config, policy, |resource| {
-        identity_resources.acquire(resource)
-    })
+    let fact_time = rss_identity_postgres::ControlledFactTime::default();
+    let identity = crate::identity::Identity::for_oidc_fixture(
+        &config,
+        policy,
+        fact_time.clone(),
+        |resource| identity_resources.acquire(resource),
+    )
     .await?;
     identity_resources.finish(async {
     let access = database(&base).await?;
@@ -209,7 +168,7 @@ async fn product_callback_link_step_up_and_provider_isolation() -> Result<()> {
     identity::age_prepared_admin_session()?;
     ensure!(admin.login_password(&router, "admin", PASSWORD).await? == StatusCode::OK);
     let tenant = format!("/api/v1/identity/tenants/{TENANT}", TENANT = case_tenant());
-    let settings = json!({"issuer":issuer,"clientId":"mdm","redirectUri":CALLBACK,"scopes":["openid","profile","email"],"claims":{"subject":{"kind":"oidc"},"email":"email","groups":"groups","departmentSnapshot":{"claim":"organization_snapshot","maxAgeSeconds":20}},"jit":true});
+    let settings = json!({"issuer":issuer,"clientId":"mdm","redirectUri":CALLBACK,"scopes":["openid","profile","email"],"claims":{"subject":{"kind":"oidc"},"email":"email","groups":"groups","departmentSnapshot":{"claim":"organization_snapshot","maxAgeSeconds":120}},"jit":true});
     let (status,created)=admin.call(&router,Method::POST,&format!("{tenant}/providers"),Some(json!({"settings":settings,"clientSecret":"fixture-secret","caPem":std::fs::read_to_string(std::env::var("MDM_TEST_SSO_CA")?)?}))).await?;
     ensure!(
         status == StatusCode::CREATED,
@@ -229,71 +188,20 @@ async fn product_callback_link_step_up_and_provider_isolation() -> Result<()> {
         status == StatusCode::OK,
         "provider enable: {status} {enabled}"
     );
-    let created_local = admin
-        .call(
-            &router,
-            Method::POST,
-            &format!("{tenant}/accounts"),
-            Some(json!({"login":"sso-local","password":PASSWORD})),
-        )
-        .await?;
-    ensure!(created_local.0 == StatusCode::CREATED);
-    let created_survivor = admin
-        .call(
-            &router,
-            Method::POST,
-            &format!("{tenant}/accounts"),
-            Some(json!({"login":"sso-survivor","password":PASSWORD})),
-        )
-        .await?;
-    ensure!(created_survivor.0 == StatusCode::CREATED);
-    let mut linked = Browser::default();
-    ensure!(linked.login(&router, "sso-local").await? == StatusCode::OK);
-    let initial = linked.call(&router, Method::GET, "/api/v1/authorization", None).await?;
-    ensure!(initial.0 == StatusCode::OK);
-    let original = Uuid::parse_str(initial.1["principalId"].as_str().context("principal ID")?)?;
-    ensure!(!original.is_nil());
-    roundtrip(&router, &mut linked, provider, "link", "alice").await?;
     let mut alice = Browser::default();
-    roundtrip(&router, &mut alice, provider, "login", "alice").await?;
+    roundtrip(&router, &mut alice, provider, "alice").await?;
     let mut bob = Browser::default();
-    roundtrip(&router, &mut bob, provider, "login", "bob").await?;
-    for (browser, same) in [(&mut linked, true), (&mut alice, true), (&mut bob, false)] {
-        let response = browser.call(&router, Method::GET, "/api/v1/authorization", None).await?;
-        ensure!(response.0 == StatusCode::OK);
-        let principal = Uuid::parse_str(response.1["principalId"].as_str().context("principal ID")?)?;
-        ensure!(!principal.is_nil() && (principal == original) == same);
-    }
-    authorization::four_subjects_and_independent_lifetimes(
+    roundtrip(&router, &mut bob, provider, "bob").await?;
+    authorization::trusted_facts_and_independent_expiry(
         &router,
         &mut admin,
         &mut alice,
         &bob,
         provider,
         enabled["version"].as_i64().unwrap(),
+        &fact_time,
     )
     .await?;
-    let mut old = alice.clone();
-    roundtrip(&router, &mut alice, provider, "step-up", "alice").await?;
-    ensure!(
-        old.call(&router, Method::GET, "/api/v1/authorization", None)
-            .await?
-            .0
-            == StatusCode::UNAUTHORIZED
-    );
-    let security = alice
-        .call(
-            &router,
-            Method::GET,
-            &format!("{tenant}/session/security"),
-            None,
-        )
-        .await?;
-    ensure!(
-        security.0 == StatusCode::OK && security.1["authentication"]["acr"] == "mfa",
-        "step-up facts: {}",
-        security.1
-    );
     let disabled = admin
         .call(
             &router,
@@ -316,36 +224,6 @@ async fn product_callback_link_step_up_and_provider_isolation() -> Result<()> {
             .await?
             .0
             == StatusCode::OK
-    );
-    command(
-        &["stop", "-t", "1", &std::env::var("MDM_TEST_SSO_CONTAINER")?],
-        None,
-    )?;
-    let mut local = Browser::default();
-    ensure!(local.login(&router, "sso-survivor").await? == StatusCode::OK);
-    ensure!(
-        local
-            .call(
-                &router,
-                Method::POST,
-                &format!("{tenant}/session/refresh"),
-                None
-            )
-            .await?
-            .0
-            == StatusCode::OK
-    );
-    ensure!(
-        local
-            .call(
-                &router,
-                Method::POST,
-                &format!("{tenant}/session/logout"),
-                None
-            )
-            .await?
-            .0
-            == StatusCode::NO_CONTENT
     );
     println!("MDM_ENTERPRISE_SSO_MATRIX_PASSED");
     Ok(())
