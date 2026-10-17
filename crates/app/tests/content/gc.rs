@@ -190,11 +190,30 @@ async fn gc_reference_race(
             .fold(Ok, Err, Err, Err, Err, Err)
     });
     tokio::time::timeout(Duration::from_secs(5), checked.notified()).await?;
+    let digest = artifact
+        .digest()
+        .bytes()
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect::<String>();
+    let lock_key = format!("mdm_resource:{tenant}:artifact:{digest}");
     let mut writer = tokio::spawn(async move {
         resources
             .execute(&insert, rss_mdm_flow_service::transaction::deadline())
             .await
     });
+    let waiting = tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            if writer.is_finished() { break Ok::<_, anyhow::Error>(false); }
+            if pg(&format!("SELECT EXISTS(SELECT 1 FROM pg_locks WHERE locktype='advisory' AND NOT granted AND classid::bigint=((hashtextextended('{lock_key}',2388)>>32)&4294967295) AND objid::bigint=(hashtextextended('{lock_key}',2388)&4294967295))"))?.trim() == "t" { break Ok(true); }
+            tokio::task::yield_now().await;
+        }
+    }).await;
+    // Release GC even if the writer never reaches the expected lock.
+    if !matches!(waiting, Ok(Ok(true))) {
+        resume.notify_one();
+    }
+    ensure!(waiting??, "writer did not wait for the artifact lock");
     let early = tokio::time::timeout(Duration::from_millis(750), &mut writer).await;
     let raced = early.is_ok();
     resume.notify_one();
@@ -245,22 +264,32 @@ async fn reference_and_gc_are_serialized() -> Result<()> {
 }
 #[tokio::test]
 #[ignore = "MODULE=content.gc: executable inherited privilege is rejected"]
-async fn inherited_delete_privilege_fails_admission() -> Result<()> {
-    let mut fixture = Fixture::open(false).await?;
-    let resources = std::mem::take(&mut fixture.resources);
-    resources.finish(async {
+async fn switchable_delete_privilege_fails_admission() -> Result<()> {
+    let config: crate::config::Config =
+        serde_json::from_slice(&std::fs::read(std::env::var("MDM_TEST_CONFIG")?)?)?;
     let tenant = rss_request_context::TenantId::parse(case_tenant())?;
+    let storage = &config.flow.storage;
+    let runtime = crate::identity::open_runtime(
+        &storage.database,
+        &storage.target,
+        &storage.lineage,
+        &[(tenant, storage.epoch)],
+    )
+    .await?;
+    let result = async {
     pg(
         "CREATE ROLE mdm_content_drift; GRANT USAGE ON SCHEMA mdm_content TO mdm_content_drift; GRANT DELETE ON mdm_content.bindings TO mdm_content_drift; GRANT mdm_content_drift TO mdm_flow_runtime WITH INHERIT FALSE, SET TRUE",
     )?;
-    let rejected = crate::flow::admit_storage(&fixture.runtime, tenant).await;
+    let rejected = crate::flow::admit_storage(&runtime, tenant).await;
     pg(
         "REVOKE mdm_content_drift FROM mdm_flow_runtime; DROP OWNED BY mdm_content_drift; DROP ROLE mdm_content_drift",
     )?;
-    ensure!(rejected.is_err());
-    crate::flow::admit_storage(&fixture.runtime, tenant).await?;
+    ensure!(matches!(rejected, Err(crate::Error::Unavailable(crate::Failure::FlowAdmission))));
+    crate::flow::admit_storage(&runtime, tenant).await?;
     Ok(())
-    }).await
+    }.await;
+    runtime.close().await;
+    result
 }
 
 #[tokio::test]

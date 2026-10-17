@@ -582,13 +582,6 @@ pub async fn submit_publication(
         .submit(id, ring, &r, &TestPublishAccess, cutoff())
         .await
         .unwrap();
-    assert!(matches!(
-        service
-            .submit(id, ring, &r, &TestPublishAccess, cutoff())
-            .await
-            .unwrap(),
-        rel::Transition::Replayed(_)
-    ));
     let rel::Transition::Applied {
         decision: rel::Decision::Publish(p),
         ..

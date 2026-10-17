@@ -85,6 +85,7 @@ async fn fixed_controls_preserve_uncertainty() -> anyhow::Result<()> {
         );
     }
     let mut ids = Vec::new();
+    let mut approved_request = None;
     for kind in ["restart", "wipe"] {
         let id = Uuid::new_v4();
         let mut action = if kind == "restart" {
@@ -110,11 +111,15 @@ async fn fixed_controls_preserve_uncertainty() -> anyhow::Result<()> {
                 wrong.0 == StatusCode::CONFLICT,
                 "dangerous reapproval without confirmation: {wrong:?}"
             );
-            let approved=client.call(Method::POST,&format!("/{id}/approve"),Some(json!({"requestId":Uuid::new_v4(),"expectedRevision":1,"confirmation":confirmation}))).await?;
+            let body = json!({"requestId":Uuid::new_v4(),"expectedRevision":1,"confirmation":confirmation});
+            let approved = client
+                .call(Method::POST, &format!("/{id}/approve"), Some(body.clone()))
+                .await?;
             ensure!(
                 approved.0 == StatusCode::OK,
                 "wipe reapproval: {approved:?}"
             );
+            approved_request = Some((body, approved));
         }
         client.publish_operation(id).await?;
         ids.push(id);
@@ -202,6 +207,19 @@ async fn fixed_controls_preserve_uncertainty() -> anyhow::Result<()> {
             ))
         };
         let before = stored()?;
+        if *id == ids[1] {
+            let (body, response) = approved_request.as_ref().unwrap();
+            ensure!(
+                client
+                    .call(Method::POST, &format!("/{id}/approve"), Some(body.clone()))
+                    .await?
+                    == *response
+            );
+            ensure!(
+                stored()? == before,
+                "receipt replay changed authority/revision"
+            );
+        }
         let denied = client
             .call(Method::POST, &format!("/{id}/approve"), Some(approval))
             .await?;

@@ -66,7 +66,27 @@ async fn protocol_ack_loss_recovers_original_request() {
         let s = ReleaseStore::new(runtime.clone(), tenant(), deadline())
             .await
             .unwrap();
+        let committed = s
+            .operation(&id, deadline())
+            .await
+            .unwrap()
+            .expect("original COMMIT receipt missing before replay");
+        assert_eq!(
+            s.get(&request.snapshot().id, deadline())
+                .await
+                .unwrap()
+                .unwrap(),
+            request
+        );
+        assert_eq!(
+            sql(&format!(
+                "SELECT count(*) FROM rss_transactional_messaging.outbox WHERE message_id='software-release.v1:'||encode(sha256(convert_to('{}','UTF8')),'hex')",
+                id.value()
+            )),
+            "1"
+        );
         let first = s.create(&id, &request, deadline()).await.unwrap();
+        assert_eq!(first, committed);
         assert_eq!(first, s.create(&id, &request, deadline()).await.unwrap());
         assert_eq!(
             sql(&format!(

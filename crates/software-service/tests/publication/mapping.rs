@@ -2,7 +2,7 @@ use super::*;
 
 #[tokio::test]
 #[ignore = "real PG + HTTPS: make t2 MODULE=publication.mapping"]
-async fn complete_variant_mapping_and_resource_reference_protection() {
+async fn candidate_receipts_and_persisted_source_admission() {
     let audit_store = audit_store().await;
     let server = Server::new().await;
     let runtime = runtime().await;
@@ -26,21 +26,13 @@ async fn complete_variant_mapping_and_resource_reference_protection() {
         service.create_candidate(&input, cutoff()).await,
         Err(Error::Conflict)
     ));
+    input.candidate = rel::CandidateId::new(tenant(), unique()).unwrap();
+    input.request = rel::RequestId::new(tenant(), unique()).unwrap();
+    assert!(matches!(
+        service.create_candidate(&input, cutoff()).await,
+        Err(Error::Conflict)
+    ));
     input.expected_resource_revision -= 1;
-    let mut same = server.winget();
-    same.pilot = same.test.clone();
-    assert!(
-        PublicationService::connect(
-            host(runtime.clone(), audit_store.clone()).await,
-            tenant(),
-            server.logical.clone(),
-            same,
-            actors(),
-            cutoff()
-        )
-        .await
-        .is_err()
-    );
     let connect = || async {
         PublicationService::connect(
             host(runtime.clone(), audit_store.clone()).await,
@@ -56,10 +48,12 @@ async fn complete_variant_mapping_and_resource_reference_protection() {
     let extra = connect().await;
     sql("REVOKE SELECT ON mdm_access.credentials FROM mdm_software_driver");
     assert!(extra.is_err());
+    assert!(connect().await.is_ok());
     sql("GRANT INSERT ON mdm_audit.receipts TO mdm_software_driver WITH GRANT OPTION");
     let delegation = connect().await;
     sql("REVOKE GRANT OPTION FOR INSERT ON mdm_audit.receipts FROM mdm_software_driver");
     assert!(delegation.is_err());
+    assert!(connect().await.is_ok());
     sql("ALTER POLICY tenant ON mdm_audit.receipts USING(true) WITH CHECK(true)");
     let broad = connect().await;
     sql(

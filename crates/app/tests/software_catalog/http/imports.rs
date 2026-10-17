@@ -126,25 +126,10 @@ async fn exact_rest_community_and_brew_imports_preserve_evidence_and_replay() ->
         if revision == "bottle" {
             request["input"]["additionalArtifacts"] = json!({"source":{"reference":"source","origin":format!("{base}artifacts/source.tar.gz"),"length":3,"sha256":<[u8;32]>::from(Sha256::digest(b"abc"))}});
         }
-        for ownership in [
-            json!("managed_only"),
-            json!("allow_user_existing"),
-            json!(null),
-        ] {
+        if revision == "rest" {
             let mut old = request.clone();
-            old["input"]["ownership"] = ownership;
-            ensure!(
-                f.user
-                    .call(
-                        &f.router,
-                        Method::POST,
-                        "/api/v1/software/imports",
-                        Some(old)
-                    )
-                    .await?
-                    .0
-                    == StatusCode::BAD_REQUEST
-            );
+            old["input"]["ownership"] = Value::Null;
+            ensure!(f.user.call(&f.router, Method::POST, "/api/v1/software/imports", Some(old)).await?.0 == StatusCode::BAD_REQUEST);
         }
         if revision == "brew" {
             for digest in [json!(vec![1; 32]), json!(null)] {

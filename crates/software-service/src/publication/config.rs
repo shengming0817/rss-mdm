@@ -297,3 +297,39 @@ impl ExportSources {
         &self.bindings[index(ring)]
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    struct NoCredentials;
+    impl crate::Credentials for NoCredentials {
+        fn brew_read(&self, _: TenantId, _: &str, _: &str) -> Result<crate::BrewReadAccess> {
+            panic!("hosted Winget needs no source credentials")
+        }
+    }
+    #[tokio::test]
+    async fn rings_require_distinct_physical_sources() {
+        let source = |ring| {
+            SourceConfig::Winget(WingetConfig {
+                base: format!("https://mdm.example.test/{ring}/"),
+                artifacts_base: "https://mdm.example.test/artifacts/".into(),
+            })
+        };
+        let mut rings = RingSources {
+            test: source("test"),
+            pilot: source("pilot"),
+            production: source("production"),
+        };
+        let tenant = TenantId::parse("10000000-0000-0000-0000-000000000001").unwrap();
+        assert!(
+            Sources::new(tenant, "private".into(), rings.clone(), &NoCredentials)
+                .await
+                .is_ok()
+        );
+        rings.pilot = rings.test.clone();
+        assert!(matches!(
+            Sources::new(tenant, "private".into(), rings, &NoCredentials).await,
+            Err(Error::Identity)
+        ));
+    }
+}

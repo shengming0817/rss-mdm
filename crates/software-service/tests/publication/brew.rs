@@ -155,26 +155,55 @@ async fn attempted_publication_withdrawal_recovers_original_git_snapshot_after_r
         "DROP TRIGGER reject_result ON mdm_software_release.aggregates; DROP FUNCTION public.reject_brew_result();",
     );
     let snapshot = git(&config, &["rev-parse", "refs/heads/main"]);
+    let SourceConfig::Brew(source) = &config.test else {
+        panic!("Brew")
+    };
+    let lock = source.repository.join(format!(
+        "refs/namespaces/{}/refs/heads/main.lock",
+        snapshot.trim()
+    ));
+    std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&lock)
+        .unwrap();
+    let lock = tempfile::TempPath::try_from_path(lock).unwrap();
     let request = request_for(&service, &input.candidate).await;
     service
         .withdraw(&input.candidate, rel::Ring::Test, &request, cutoff())
         .await
         .unwrap();
+    assert_ne!(
+        service
+            .withdrawal_status(p.id(), p.attempt, cutoff())
+            .await
+            .unwrap(),
+        Some(Withdrawal::Complete)
+    );
+    assert!(
+        git(
+            &config,
+            &["for-each-ref", "--format=%(refname)", "refs/namespaces"]
+        )
+        .contains(snapshot.trim())
+    );
+    lock.close().unwrap();
     drop(service);
+    runtime.close().await;
+    let runtime = publication_support::pg::runtime().await;
     let service = server.service(runtime.clone(), config.clone()).await;
-    for work in service
+    let work = service
         .reconciliation_page("", 32, cutoff())
         .await
         .unwrap()
         .work
-    {
-        if work.withdrawal {
-            service
-                .reconcile_withdrawal(work.publication, work.attempt, cutoff())
-                .await
-                .unwrap();
-        }
-    }
+        .into_iter()
+        .find(|work| work.withdrawal && work.publication == p.id() && work.attempt == p.attempt)
+        .expect("original incomplete withdrawal missing after reopen");
+    service
+        .reconcile_withdrawal(work.publication, work.attempt, cutoff())
+        .await
+        .unwrap();
     assert_eq!(
         service
             .withdrawal_status(p.id(), p.attempt, cutoff())

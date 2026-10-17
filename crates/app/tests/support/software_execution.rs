@@ -190,6 +190,7 @@ pub(crate) struct Fixture {
     pub(crate) removal: Vec<u8>,
     pub(crate) windows_bytes: Vec<u8>,
     pub(crate) credential: String,
+    pub(crate) registration: Value,
 }
 impl Fixture {
     pub(crate) async fn approved(platform: Platform) -> Result<Self> {
@@ -197,22 +198,34 @@ impl Fixture {
             Platform::Windows => json!(["inventory.collect.v1", "software.msi.system.v1"]),
             Platform::MacOs => json!(["inventory.collect.v1", "software.pkg.system.v1"]),
         };
-        Self::with_profiles(platform, capabilities, context(platform)).await
+        Self::with_profiles(platform, capabilities, context(platform), true, true).await
     }
     pub(crate) async fn with_profiles(
         platform: Platform,
         capabilities: Value,
         execution_context: Value,
+        prepare_dependency: bool,
+        prepare_root: bool,
     ) -> Result<Self> {
         let base: Value =
             serde_json::from_slice(&std::fs::read(std::env::var("MDM_TEST_CONFIG")?)?)?;
-        Self::with_config(platform, capabilities, execution_context, base).await
+        Self::with_config(
+            platform,
+            capabilities,
+            execution_context,
+            base,
+            prepare_dependency,
+            prepare_root,
+        )
+        .await
     }
     pub(crate) async fn with_config(
         platform: Platform,
         capabilities: Value,
         execution_context: Value,
         base: Value,
+        prepare_dependency: bool,
+        prepare_root: bool,
     ) -> Result<Self> {
         let (resources, mut fixture) = crate::test_support::Resources::build(move |resources| Box::pin(async move {
         let setup_guard = super::software::content_setup_guard().await?;
@@ -321,6 +334,7 @@ impl Fixture {
             format!("controlled windows dependency msi {dependency}").into_bytes();
         let windows_dependency_digest: [u8; 32] = Sha256::digest(&windows_dependency_bytes).into();
         let windows_dependency_definition = json!({"source":registered["snapshot"],"package":"Private.WindowsDependency","version":"1","artifacts":{"package":{"reference":"dep-win-installer","length":windows_dependency_bytes.len(),"sha256":windows_dependency_digest}},"reboot":"report","downgrade":"deny","dependencies":[],"behavior":{"kind":"msi","installer":"package","scope":"system","install":{"runAs":"system","arguments":[],"environment":{},"timeoutSeconds":60,"outputBytes":4096,"exitCodes":{"success":[0],"reboot":[]}},"upgrade":"in_place","uninstall":null,"detect":{"kind":"msi_product","productCode":"{AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE}","version":"1"},"upgradeInvocation":{"runAs":"system","arguments":[],"environment":{},"timeoutSeconds":60,"outputBytes":4096,"exitCodes":{"success":[0],"reboot":[]}}},"signatures":[],"provenance":{"kind":"private"},"export":{"kind":"disabled"}});
+        let dependency_version = if prepare_dependency {
         let dependency_resource = seed_resource(
             &planning,
             dependency,
@@ -352,7 +366,8 @@ impl Fixture {
             &dependency_resource,
         )
         .await?;
-        let dependency_version = json!({"resourceDigest": dependency_resource.digest().bytes()});
+        json!({"resourceDigest": dependency_resource.digest().bytes()})
+        } else { Value::Null };
         let resource = Uuid::new_v4();
         let bytes = format!("controlled software package {resource}").into_bytes();
         let digest: [u8; 32] = Sha256::digest(&bytes).into();
@@ -362,6 +377,7 @@ impl Fixture {
         let windows_bytes = format!("controlled windows root msi {resource}").into_bytes();
         let windows_digest: [u8; 32] = Sha256::digest(&windows_bytes).into();
         let windows_definition = json!({"source":registered["snapshot"],"package":"Private.WindowsControlled","version":"1","artifacts":{"package":{"reference":"win-installer","length":windows_bytes.len(),"sha256":windows_digest}},"reboot":"report","downgrade":"deny","dependencies":[{"resource":dependency,"version":"v1","sha256":dependency_version["resourceDigest"]}],"behavior":{"kind":"msi","installer":"package","scope":"system","install":{"runAs":"system","arguments":[],"environment":{},"timeoutSeconds":60,"outputBytes":4096,"exitCodes":{"success":[0],"reboot":[]}},"upgrade":"in_place","uninstall":null,"detect":{"kind":"msi_product","productCode":"{BBBBBBBB-CCCC-DDDD-EEEE-FFFFFFFFFFFF}","version":"1"},"upgradeInvocation":{"runAs":"system","arguments":[],"environment":{},"timeoutSeconds":60,"outputBytes":4096,"exitCodes":{"success":[0],"reboot":[]}}},"signatures":[],"provenance":{"kind":"private"},"export":{"kind":"disabled"}});
+        if prepare_root {
         let root_resource = seed_resource(
             &planning,
             resource,
@@ -399,6 +415,7 @@ impl Fixture {
             &root_resource,
         )
         .await?;
+        }
 
         Ok(Self {
             resources: Default::default(),
@@ -419,6 +436,7 @@ impl Fixture {
             removal,
             windows_bytes,
             credential,
+            registration,
         })
 
         })).await?;

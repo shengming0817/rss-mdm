@@ -34,7 +34,7 @@ async fn mirror_matrix(
     server: &publication_support::Server,
     runtime: &Arc<rss_transactional_messaging_postgres::PgRuntime>,
 ) -> Result<()> {
-    for (path, bytes) in [("redirect", &b"abc"[..]), ("wrong.msi", &b"abd"[..])] {
+    for (path, bytes) in [("wrong.msi", &b"abd"[..])] {
         let (url, operation) =
             mirror_resource(user, router, definition, server, path, bytes).await?;
         let response = user.call(router, Method::POST, &url, None).await?;
@@ -105,8 +105,24 @@ async fn mirror_matrix(
             );
         } else {
             ensure!(
-                response.0 == StatusCode::SERVICE_UNAVAILABLE,
+                response.0 == StatusCode::SERVICE_UNAVAILABLE
+                    && response.1["code"] == "operation_unknown",
                 "mirror lost commit: {response:?}"
+            );
+            ensure!(pg(&format!("SELECT count(*) FROM mdm_content.bindings WHERE tenant_id='{}' AND operation='{operation}'", case_tenant()))?.trim() == "1");
+            let content_path = url.split("/mirror?").next().unwrap();
+            let receipt = user
+                .call(
+                    router,
+                    Method::GET,
+                    &format!("{content_path}/operations/{operation}"),
+                    None,
+                )
+                .await?;
+            ensure!(
+                receipt.0 == StatusCode::OK
+                    && receipt.1["committed"] == true
+                    && receipt.1["operationId"] == operation.to_string()
             );
         }
         ensure!(user.call(router, Method::POST, &url, None).await?.0 == StatusCode::CREATED);

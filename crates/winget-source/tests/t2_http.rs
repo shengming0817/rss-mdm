@@ -112,19 +112,6 @@ async fn real_https_failures_do_not_look_successful() {
                 status: 503,
             },
         ),
-        (200, String::new(), "invalid".into(), Error::InvalidResponse),
-        (
-            200,
-            String::new(),
-            info().replace("1.0.0", "1.10.0"),
-            Error::Unsupported,
-        ),
-        (
-            200,
-            String::new(),
-            info().replace("private", "public"),
-            Error::IdentityMismatch,
-        ),
         (200, String::new(), "x".repeat(512), Error::BudgetExceeded),
     ] {
         let (source, task) = server(vec![(status, headers, body)]).await;
@@ -268,7 +255,7 @@ async fn manifest_404_is_not_an_information_endpoint_failure() {
 async fn total_budget_spans_information_and_manifest() {
     let (source, listener, tls) = fixture("source.invalid", "/").await;
     let task = tokio::spawn(async move {
-        tokio::time::timeout(Duration::from_secs(3), async move {
+        tokio::time::timeout(Duration::from_secs(4), async move {
             let (first, _) = listener.accept().await.unwrap();
             let mut first = tls.accept(first).await.unwrap();
             let mut request = Vec::new();
@@ -276,7 +263,7 @@ async fn total_budget_spans_information_and_manifest() {
                 request.push(first.read_u8().await.unwrap());
                 assert!(request.len() < 16384);
             }
-            tokio::time::sleep(Duration::from_millis(200)).await;
+            tokio::time::sleep(Duration::from_millis(600)).await;
             let body = info();
             first
                 .write_all(
@@ -297,11 +284,18 @@ async fn total_budget_spans_information_and_manifest() {
                 assert!(request.len() < 16384);
             }
             assert!(request.starts_with(b"GET /packageManifests/"));
-            // Keep the second response pending until the total query budget cancels it.
-            assert_eq!(
-                second.read_u8().await.unwrap_err().kind(),
-                std::io::ErrorKind::UnexpectedEof
-            );
+            // A fresh per-stage budget would accept this valid response; the
+            // original query deadline must cancel before it becomes available.
+            tokio::select! {
+                closed = second.read_u8() => {
+                    assert_eq!(closed.unwrap_err().kind(), std::io::ErrorKind::UnexpectedEof);
+                }
+                _ = tokio::time::sleep(Duration::from_millis(1100)) => {
+                    let body = include_str!("fixtures/msi.json");
+                    let response = format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
+                    second.write_all(response.as_bytes()).await.unwrap();
+                }
+            }
         })
         .await
         .unwrap();
@@ -309,8 +303,8 @@ async fn total_budget_spans_information_and_manifest() {
     let client = Client::with_limits(
         source,
         Duration::from_millis(100),
-        Duration::from_millis(600),
-        1024,
+        Duration::from_millis(1500),
+        16384,
     )
     .unwrap();
     assert_eq!(

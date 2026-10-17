@@ -331,29 +331,3 @@ async fn device_capabilities_use_current_permissions_after_proof_capture() -> Re
         })
         .await
 }
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
-#[ignore = "make t2 MODULE=execution.agent.history"]
-async fn agent_registration_configuration_requires_task_signing() -> Result<()> {
-    let base: Value = serde_json::from_slice(&std::fs::read(std::env::var("MDM_TEST_CONFIG")?)?)?;
-    let mut unsigned_registration = base.clone();
-    unsigned_registration["task_signing"] = Value::Null;
-    let access = database(&unsigned_registration).await?;
-    let rejected = crate::api::application_fixture(
-        serde_json::from_value(unsigned_registration)?,
-        Arc::new(crate::clock::SystemClock),
-        monotonic(),
-        access.clone(),
-        None,
-        access
-            .audit_store(&crate::config::AuditConfig::Plain)
-            .await?,
-    )
-    .await;
-    ensure!(matches!(
-        rejected,
-        Err(crate::Error::Configuration(crate::ConfigIssue::AgentPki))
-    ));
-
-    Ok(())
-}

@@ -35,7 +35,7 @@ fn req(resource: &r::Id, revision: u64, command: Command) -> Request {
 }
 #[tokio::test]
 #[ignore = "real PostgreSQL: make t2 MODULE=resource.persistence"]
-async fn resource_immutable_versions_restart_and_reference_rollback() {
+async fn resource_immutable_versions_reopen_and_reference_rollback() {
     let runtime = runtime().await;
     let s = ResourceStore::new(runtime.clone(), tenant(), deadline())
         .await
@@ -169,7 +169,20 @@ async fn resource_cas_events_and_owner_admission() {
     let a = req(&key, 1, Command::Insert(version(&key, "one", 1)));
     let b = req(&key, 1, Command::Insert(version(&key, "two", 2)));
     let (a, b) = tokio::join!(s.execute(&a, deadline()), s.execute(&b, deadline()));
-    assert_ne!(a.is_ok(), b.is_ok());
+    let winner = match (a, b) {
+        (Ok(receipt), Err(Error::Rejected(Rejection::Conflict)))
+        | (Err(Error::Rejected(Rejection::Conflict)), Ok(receipt)) => receipt,
+        other => panic!("CAS must have one winner and one conflict: {other:?}"),
+    };
+    assert_eq!(winner.storage_revision, 2);
+    assert_eq!(
+        s.get(&key, deadline())
+            .await
+            .unwrap()
+            .unwrap()
+            .storage_revision,
+        2
+    );
     sql(
         "REVOKE EXECUTE ON FUNCTION rss_transactional_messaging.append_outbox(bytea,jsonb) FROM mdm_resource_runtime",
     );
@@ -178,7 +191,12 @@ async fn resource_cas_events_and_owner_admission() {
     sql(
         "GRANT EXECUTE ON FUNCTION rss_transactional_messaging.append_outbox(bytea,jsonb) TO mdm_resource_runtime",
     );
-    assert!(result.is_err());
+    assert!(matches!(
+        result,
+        Err(Error::RolledBack(
+            rss_transactional_messaging_postgres::PgError::PermissionDenied(_)
+        ))
+    ));
     assert!(
         s.version(&key, &id("three"), deadline())
             .await
@@ -189,21 +207,38 @@ async fn resource_cas_events_and_owner_admission() {
     let wrong = support::runtime().await;
     let result = wrong
         .local_tx_with_context(tenant(), deadline(), (&s, &r), |(s, r), tx| {
-            Box::pin(async move { s.execute_in(tx, r).await })
+            Box::pin(async move {
+                tx.prepare_outbox_partitions(&[s.partition(r.resource.as_str())?])
+                    .await?;
+                s.execute_in(tx, r).await
+            })
         })
         .await;
     assert!(result.fold(
         |_| false,
         |_| false,
-        |_| true,
+        |error| error.kind() == rss_transactional_messaging::error::MessagingErrorKind::Invariant,
         |_| false,
         |_| false,
         |_| false
     ));
-    sql("GRANT UPDATE(document) ON mdm_resource.immutable TO mdm_resource_runtime");
-    let bad = ResourceStore::new(runtime, tenant(), deadline()).await;
-    sql("REVOKE UPDATE(document) ON mdm_resource.immutable FROM mdm_resource_runtime");
-    assert!(bad.is_err());
+    let applied = runtime
+        .local_tx_with_context(tenant(), deadline(), (&s, &r), |(s, r), tx| {
+            Box::pin(async move {
+                tx.prepare_outbox_partitions(&[s.partition(r.resource.as_str())?])
+                    .await?;
+                s.execute_in(tx, r).await
+            })
+        })
+        .await;
+    assert!(applied.fold(
+        |r| r.is_ok(),
+        |_| false,
+        |_| false,
+        |_| false,
+        |_| false,
+        |_| false
+    ));
 }
 
 fn assert_event(id: &str, request: &str, revision: u64, occurred_at: i64) {

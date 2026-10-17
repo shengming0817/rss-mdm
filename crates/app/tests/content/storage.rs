@@ -46,22 +46,87 @@ fn s3_storage() -> Result<(tempfile::TempDir, Value)> {
     }
     Ok((private, storage))
 }
+async fn stores(
+    storage: Option<Value>,
+) -> Result<(
+    Resources,
+    Arc<rss_mdm_content_service::Store>,
+    Arc<rss_mdm_content_service::Store>,
+)> {
+    let mut config: Value =
+        serde_json::from_slice(&std::fs::read(std::env::var("MDM_TEST_CONFIG")?)?)?;
+    if let Some(storage) = storage {
+        config["content"]["storage"] = storage;
+    }
+    config["content"]["max_artifact_bytes"] = json!(160 * 1024 * 1024);
+    config["content"]["max_temporary_bytes"] = json!(512 * 1024 * 1024);
+    let config: crate::config::Config = serde_json::from_value(config)?;
+    let (resources, (first, second)) = Resources::build(|resources| {
+        Box::pin(async move {
+            let first =
+                crate::execution_assembly::open_content(&config, config.native_protector()?)
+                    .await?
+                    .unwrap();
+            resources.resource(crate::execution_assembly::ContentResource(first.clone()));
+            let second =
+                crate::execution_assembly::open_content(&config, config.native_protector()?)
+                    .await?
+                    .unwrap();
+            resources.resource(crate::execution_assembly::ContentResource(second.clone()));
+            Ok((first, second))
+        })
+    })
+    .await?;
+    Ok((resources, first, second))
+}
+
 #[tokio::test]
 #[ignore = "MODULE=content.storage: real S3 product HTTP range, authorization and settlement"]
 async fn s3_product_http_contract() -> Result<()> {
     let (_secrets, storage) = s3_storage()?;
     // HTTP authorization and recovery use a bounded payload within the host request budget.
     // Large provider pieces and cross-piece ranges are exercised separately below.
-    super::http::upload_contract(Fixture::with_storage(storage).await?, 1024 * 1024 + 1).await
+    let mut fixture = Fixture::with_storage(storage).await?;
+    let resources = std::mem::take(&mut fixture.resources);
+    resources
+        .finish(async {
+            let (path, bytes, enable) =
+                super::http::upload_recovery(&fixture, 1024 * 1024 + 1).await?;
+            let mut user = fixture.user.clone();
+            let enabled = user
+                .call(&fixture.router, Method::POST, &path, Some(enable))
+                .await?;
+            ensure!(enabled.0 == StatusCode::OK);
+            let download = super::http::download_contract(&fixture, &user, &path, &bytes).await?;
+            crate::test_support::identity::set_grants(case_tenant(), &fixture.subject, vec![])
+                .await?;
+            let cookie = user
+                .cookies
+                .iter()
+                .map(|(k, v)| format!("{k}={v}"))
+                .collect::<Vec<_>>()
+                .join("; ");
+            ensure!(
+                fixture
+                    .client
+                    .get(download)
+                    .header("host", "mdm.example.test")
+                    .header("cookie", cookie)
+                    .send()
+                    .await?
+                    .status()
+                    == StatusCode::FORBIDDEN
+            );
+            Ok(())
+        })
+        .await
 }
 #[tokio::test]
 #[ignore = "MODULE=content.storage: durable PG control, real S3 fixed chunks and native snapshots"]
 async fn s3_chunk_frontier_and_native_restart() -> Result<()> {
     let (_secrets, storage) = s3_storage()?;
-    let mut fixture = Fixture::with_storage(storage.clone()).await?;
-    let resources = std::mem::take(&mut fixture.resources);
+    let (resources, store, second) = stores(Some(storage)).await?;
     resources.finish(async {
-    let store = fixture.content.as_ref().unwrap();
     let now = crate::windows::test_support::now();
     let bytes = vec![0x67; 128 * 1024 * 1024 + 3];
     let b = binding(&bytes, StorageClass::Artifact);
@@ -77,15 +142,7 @@ async fn s3_chunk_frontier_and_native_restart() -> Result<()> {
             .offset
             == 65539
     );
-    let config: Value = serde_json::from_slice(&std::fs::read(std::env::var("MDM_TEST_CONFIG")?)?)?;
-    let mut config = config;
-    config["content"]["storage"] = storage;
-    config["content"]["max_artifact_bytes"] = json!(160 * 1024 * 1024);
-    config["content"]["max_temporary_bytes"] = json!(512 * 1024 * 1024);
-    let config: crate::config::Config = serde_json::from_value(config)?;
-    let second = crate::execution_assembly::open_content(&config, config.native_protector()?)
-        .await?
-        .unwrap();
+
     ensure!(second.status(actor, id, now).await?.offset == 65539);
     second
         .append(actor, id, 65539, now, &bytes[65539..])
@@ -132,17 +189,14 @@ async fn s3_chunk_frontier_and_native_restart() -> Result<()> {
             .await
             .is_err()
     );
-    second.close().await;
     Ok(())
     }).await
 }
 #[tokio::test]
 #[ignore = "MODULE=content.storage: real PG multi-instance epoch and failed-body frontier"]
 async fn volume_fences_a_stale_writer_and_keeps_failed_body_frontier() -> Result<()> {
-    let mut fixture = Fixture::open(false).await?;
-    let resources = std::mem::take(&mut fixture.resources);
+    let (resources, store, second) = stores(None).await?;
     resources.finish(async {
-    let store = fixture.content.as_ref().unwrap();
     let bytes = b"epoch-frontier-bytes";
     let b = binding(bytes, StorageClass::Artifact);
     let id = Uuid::new_v4();
@@ -163,11 +217,7 @@ async fn volume_fences_a_stale_writer_and_keeps_failed_body_frontier() -> Result
         case_tenant(),
         id
     ))?;
-    let cfg: crate::config::Config =
-        serde_json::from_slice(&std::fs::read(std::env::var("MDM_TEST_CONFIG")?)?)?;
-    let second = crate::execution_assembly::open_content(&cfg, cfg.native_protector()?)
-        .await?
-        .unwrap();
+
     second
         .append(&b.actor, id, 0, now, bytes.as_slice())
         .await?;
@@ -197,7 +247,6 @@ async fn volume_fences_a_stale_writer_and_keeps_failed_body_frontier() -> Result
         Err(rss_mdm_content_service::Error::Storage)
     ));
     ensure!(store.status(&b.actor, bad, now).await?.offset == 0);
-    second.close().await;
     Ok(())
     }).await
 }
@@ -206,19 +255,9 @@ async fn volume_fences_a_stale_writer_and_keeps_failed_body_frontier() -> Result
 #[ignore = "MODULE=content.storage: physical S3 snapshot survives failed PG frontier commit"]
 async fn s3_failed_frontier_commit_preserves_acknowledged_native_prefix() -> Result<()> {
     let (_secrets, storage) = s3_storage()?;
-    let mut fixture = Fixture::with_storage(storage.clone()).await?;
-    let resources = std::mem::take(&mut fixture.resources);
+    let (resources, store, second) = stores(Some(storage)).await?;
     resources.finish(async {
-    let store = fixture.content.as_ref().unwrap();
-    let mut config: Value =
-        serde_json::from_slice(&std::fs::read(std::env::var("MDM_TEST_CONFIG")?)?)?;
-    config["content"]["storage"] = storage;
-    config["content"]["max_artifact_bytes"] = json!(160 * 1024 * 1024);
-    config["content"]["max_temporary_bytes"] = json!(512 * 1024 * 1024);
-    let config: crate::config::Config = serde_json::from_value(config)?;
-    let second = crate::execution_assembly::open_content(&config, config.native_protector()?)
-        .await?
-        .unwrap();
+
     let bytes = b"confirmed-prefix-and-retry";
     let b = binding(bytes, StorageClass::NativeConfiguration);
     let id = Uuid::new_v4();
@@ -236,15 +275,19 @@ DEFERRABLE INITIALLY DEFERRED FOR EACH ROW WHEN (OLD.document IS DISTINCT FROM N
 EXECUTE FUNCTION public.content_frontier_fault();"#,
         case_tenant()
     ))?;
+    let observed = async {
     ensure!(matches!(
         store.append(&b.actor, id, 3, now, &bytes[3..]).await,
         Err(rss_mdm_content_service::Error::CommitUnknown)
     ));
     ensure!(second.status(&b.actor, id, now).await?.offset == 3);
     ensure!(pg(&format!("SELECT count(*) FROM mdm_content.objects o JOIN mdm_content.uploads u ON u.id=o.owner AND u.tenant_id=o.tenant_id WHERE u.tenant_id='{}' AND u.document->'value'->'upload'->>'id'='{}' AND o.state='ready' AND o.coordinate IS NOT NULL",case_tenant(),id))?.trim()=="2");
+    Ok::<_, anyhow::Error>(())
+    }.await;
     pg(
         "DROP TRIGGER content_frontier_fault ON mdm_content.uploads; DROP FUNCTION public.content_frontier_fault()",
     )?;
+    observed?;
     second.append(&b.actor, id, 3, now, &bytes[3..]).await?;
     second.finish(&b.actor, id, now).await?;
     ensure!(
@@ -254,7 +297,6 @@ EXECUTE FUNCTION public.content_frontier_fault();"#,
             .read_plaintext(bytes.len())?
             == bytes
     );
-    second.close().await;
     Ok(())
     }).await
 }
@@ -281,7 +323,11 @@ async fn s3_admin(provider: &Value, path: &str, body: Value) -> Result<()> {
         ))
         .args([
             "--request",
-            "PUT",
+            if path.starts_with("remove-") {
+                "DELETE"
+            } else {
+                "PUT"
+            },
             "--header",
             "Content-Type: application/json",
             "--data-binary",
@@ -352,9 +398,6 @@ async fn s3_rejected_writes_release_quota_after_permission_recovery_and_expiry()
     // Replace private file contents before host construction; no runtime secret mutation.
     std::fs::write(secrets.path().join("access"), access.as_bytes())?;
     std::fs::write(secrets.path().join("secret"), secret.as_bytes())?;
-    let mut fixture = Fixture::with_storage(storage.clone()).await?;
-    let resources = std::mem::take(&mut fixture.resources);
-    resources.finish(async {
     let mut cfg: Value =
         serde_json::from_slice(&std::fs::read(std::env::var("MDM_TEST_CONFIG")?)?)?;
     cfg["content"]["storage"] = storage;
@@ -362,9 +405,17 @@ async fn s3_rejected_writes_release_quota_after_permission_recovery_and_expiry()
     cfg["content"]["max_temporary_bytes"] = json!(8192);
     cfg["content"]["max_bundle_bytes"] = json!(4096);
     let cfg: crate::config::Config = serde_json::from_value(cfg)?;
-    let store = crate::execution_assembly::open_content(&cfg, cfg.native_protector()?)
-        .await?
-        .unwrap();
+    let (resources, store) = Resources::build(|resources| {
+        Box::pin(async move {
+            let store = crate::execution_assembly::open_content(&cfg, cfg.native_protector()?)
+                .await?
+                .unwrap();
+            resources.resource(crate::execution_assembly::ContentResource(store.clone()));
+            Ok(store)
+        })
+    })
+    .await?;
+    let result = resources.finish(async {
     let bytes = vec![0x67; 4096];
     let b = binding(&bytes, StorageClass::Artifact);
     let now = crate::windows::test_support::now();
@@ -418,8 +469,21 @@ async fn s3_rejected_writes_release_quota_after_permission_recovery_and_expiry()
             .read_plaintext(bytes.len())?
             == &bytes
     );
-    store.close().await;
-    drop(fixture);
     Ok(())
-    }).await
+    }).await;
+    let user_cleanup = s3_admin(
+        &provider,
+        &format!("remove-user?accessKey={access}"),
+        json!({}),
+    )
+    .await;
+    let policy_cleanup = s3_admin(
+        &provider,
+        &format!("remove-canned-policy?name={access}"),
+        json!({}),
+    )
+    .await;
+    result?;
+    user_cleanup?;
+    policy_cleanup
 }

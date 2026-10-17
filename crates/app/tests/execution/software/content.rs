@@ -116,7 +116,7 @@ async fn expiry_dependency_paths_and_withdrawal_fence() -> Result<()> {
 }
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 #[ignore = "make t2 MODULE=execution.software.content"]
-async fn uninstall_content_permission() -> Result<()> {
+async fn uninstall_content_selection() -> Result<()> {
     let mut fixture = Fixture::approved(Platform::MacOs).await?;
     let resources = std::mem::take(&mut fixture.resources);
     resources

@@ -3,13 +3,64 @@ use crate::test_support::*;
 #[tokio::test]
 #[ignore = "MODULE=content.http: real streamed HTTP, binding transactions and storage"]
 async fn upload_recovery_download_range_and_authorization() -> Result<()> {
-    // Exceed the default HTTP body limit while keeping fault recovery within the host budget.
-    // Large storage pieces have independent provider coverage.
-    upload_contract(Fixture::open(false).await?, 2 * 1024 * 1024 + 1).await
-}
-pub(super) async fn upload_contract(mut fixture: Fixture, length: usize) -> Result<()> {
+    let mut fixture = Fixture::open(false).await?;
     let resources = std::mem::take(&mut fixture.resources);
-    resources.finish(async {
+    resources
+        .finish(async {
+            let (admission_path, bytes, enable) =
+                upload_recovery(&fixture, 2 * 1024 * 1024 + 1).await?;
+            let mut user = fixture.user.clone();
+            let enabled = lifecycle_contract(&fixture, &mut user, &admission_path, &enable).await?;
+            let download = download_contract(&fixture, &user, &admission_path, &bytes).await?;
+            let client = &fixture.client;
+            let cookie = user
+                .cookies
+                .iter()
+                .map(|(k, v)| format!("{k}={v}"))
+                .collect::<Vec<_>>()
+                .join("; ");
+            write(
+                &mut user,
+                &fixture.router,
+                &admission_path,
+                1,
+                json!({"action":"withdraw"}),
+            )
+            .await?;
+            let read = user
+                .call(&fixture.router, Method::GET, &admission_path, None)
+                .await?;
+            ensure!(read.1["lifecycle"]["state"] == "withdrawn");
+            let denied = client
+                .get(&download)
+                .header("host", "mdm.example.test")
+                .header("cookie", &cookie)
+                .send()
+                .await?;
+            ensure!(denied.status() == StatusCode::FORBIDDEN);
+            let original = user
+                .call(&fixture.router, Method::POST, &admission_path, Some(enable))
+                .await?;
+            ensure!(
+                original.0 == StatusCode::OK && original.1 == enabled,
+                "recovery preserves the historical enable receipt without granting new access"
+            );
+            crate::test_support::identity::set_grants(case_tenant(), &fixture.subject, vec![])
+                .await?;
+            ensure!(
+                user.call(&fixture.router, Method::GET, &admission_path, None)
+                    .await?
+                    .0
+                    == StatusCode::FORBIDDEN
+            );
+            Ok(())
+        })
+        .await
+}
+pub(super) async fn upload_recovery(
+    fixture: &Fixture,
+    length: usize,
+) -> Result<(String, Vec<u8>, Value)> {
     let router = &fixture.router;
     let runtime = &fixture.runtime;
     let client = &fixture.client;
@@ -136,17 +187,7 @@ pub(super) async fn upload_contract(mut fixture: Fixture, length: usize) -> Resu
             && receipt.1["committed"] == true
             && receipt.1["operationId"] == operation.to_string()
     );
-    let enabled = lifecycle_contract(&fixture, &mut user, &admission_path, &enable).await?;
-    download_contract(
-        &fixture,
-        &mut user,
-        &admission_path,
-        &bytes,
-        enable,
-        enabled,
-    )
-    .await
-    }).await
+    Ok((admission_path, bytes, enable))
 }
 // Client EOF can precede the server's authorization/preflight transaction. Wait for
 // its committed upload intent so the injected runtime fault belongs to final binding.
@@ -205,18 +246,14 @@ async fn lifecycle_contract(
     ensure!(replay.0 == StatusCode::OK && replay.1 == enabled.1);
     Ok(enabled.1)
 }
-async fn download_contract(
+pub(super) async fn download_contract(
     fixture: &Fixture,
-    user: &mut Browser,
+    user: &Browser,
     admission_path: &str,
     bytes: &[u8],
-    enable: Value,
-    enabled: Value,
-) -> Result<()> {
-    let router = &fixture.router;
+) -> Result<String> {
     let client = &fixture.client;
     let origin = &fixture.origin;
-    let subject = &fixture.subject;
     let cookie = user
         .cookies
         .iter()
@@ -274,44 +311,14 @@ async fn download_contract(
         .send()
         .await?;
     ensure!(rejected.status() == StatusCode::RANGE_NOT_SATISFIABLE);
-    write(
-        user,
-        router,
-        admission_path,
-        1,
-        json!({"action":"withdraw"}),
-    )
-    .await?;
-    let read = user.call(router, Method::GET, admission_path, None).await?;
-    ensure!(read.1["lifecycle"]["state"] == "withdrawn");
-    let denied = client
-        .get(&download)
-        .header("host", "mdm.example.test")
-        .header("cookie", &cookie)
-        .send()
-        .await?;
-    ensure!(denied.status() == StatusCode::FORBIDDEN);
-    let original = user
-        .call(router, Method::POST, admission_path, Some(enable))
-        .await?;
-    ensure!(
-        original.0 == StatusCode::OK && original.1 == enabled,
-        "recovery preserves the historical enable receipt without granting new access"
-    );
-    crate::test_support::identity::set_grants(case_tenant(), subject, vec![]).await?;
-    ensure!(
-        user.call(router, Method::GET, admission_path, None)
-            .await?
-            .0
-            == StatusCode::FORBIDDEN
-    );
     ensure!(shared_budget, "shared content budget was not enforced");
-    Ok(())
+    Ok(download)
 }
 
 #[tokio::test]
 #[ignore = "MODULE=content.http: corrupt uploads reject and distinct operations reuse content"]
-async fn corrupt_uploads_have_no_binding_and_new_operations_reuse_verified_content() -> Result<()> {
+async fn corrupt_uploads_have_no_binding_and_distinct_operations_bind_verified_content()
+-> Result<()> {
     let mut fixture = Fixture::open(false).await?;
     let resources = std::mem::take(&mut fixture.resources);
     resources.finish(async {

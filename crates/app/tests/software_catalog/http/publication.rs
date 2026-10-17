@@ -21,6 +21,8 @@ async fn publication_http_authority_receipts_and_public_native_binding() -> Resu
         ]),
         local.clone(),
         cfg.clone(),
+        false,
+        false,
     )
     .await?;
     let subject = browser_subject(&f.author, &f.router).await?;
@@ -142,6 +144,16 @@ async fn publication_http_authority_receipts_and_public_native_binding() -> Resu
         replay.0 == StatusCode::OK && replay.1 == candidate.1,
         "candidate replay: {replay:?}"
     );
+    let catalog = f
+        .author
+        .call(
+            &f.router,
+            Method::GET,
+            &format!("/api/v1/software/resources/{resource}/versions/v1"),
+            None,
+        )
+        .await?;
+    ensure!(catalog.0 == StatusCode::OK);
     ensure!(
         catalog.1["lifecycle"].is_null(),
         "saving a draft enabled it: {catalog:?}"

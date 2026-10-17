@@ -537,8 +537,55 @@ async fn import_receipt_survives_unknown_commit_and_source_withdrawal() -> Resul
     fixture
         .runtime
         .inject_next_transaction_fault(PgTransactionFault::CommitUnknownAfterAck);
-    ensure!(run(Some(&prepared)).await.is_err());
+    let unknown = fixture
+        .runtime
+        .local_tx_with_context(
+            pg::tenant(),
+            pg::deadline(),
+            (&fixture.catalog, &resources, &audit, &op, &prepared),
+            |ctx, tx| {
+                Box::pin(async move {
+                    let (catalog, resources, audit, op, prepared) = *ctx;
+                    catalog
+                        .import_in(tx, resources, audit, op, Some(prepared))
+                        .await
+                        .map_err(|e| {
+                            rss_transactional_messaging_postgres::PgError::from(
+                                sqlx::Error::Protocol(e.to_string()),
+                            )
+                        })
+                })
+            },
+        )
+        .await;
+    ensure!(
+        unknown.fold(
+            |_| false,
+            |_| false,
+            |_| false,
+            |_| false,
+            |_| true,
+            |_| false
+        ),
+        "expected original import COMMIT uncertainty"
+    );
+    let committed_version = resources
+        .version(
+            prepared.version.resource(),
+            prepared.version.label(),
+            pg::deadline(),
+        )
+        .await?
+        .expect("original import resource absent before replay");
+    ensure!(committed_version == prepared.version);
+    let receipt_before = pg::sql(&format!(
+        "SELECT response::text FROM mdm_software.operations WHERE tenant_id='{}' AND id='{}'",
+        pg::tenant(),
+        op.operation_id
+    ));
+    ensure!(!receipt_before.trim().is_empty());
     let original = run(None).await?;
+    ensure!(serde_json::from_str::<Value>(&receipt_before)? == original);
     ensure!(original["resourceDigest"] == json!(prepared.version.digest().bytes()));
     fixture
         .source(

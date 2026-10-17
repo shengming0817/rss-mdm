@@ -560,7 +560,7 @@ MODULES['policy.recovery'] = replace(MODULES['policy.recovery'], db_mode='fresh'
 MODULES['resource.persistence'] = replace(MODULES['resource.persistence'], db_mode='instance', scope='objects', policies=(
     CasePolicy('artifact_reference_index_covers_reuse_without_another_upload_and_archive_rollback', 'reuse', 'objects'),
     CasePolicy('resource_cas_events_and_owner_admission', 'fresh', 'objects'),
-    CasePolicy('resource_immutable_versions_restart_and_reference_rollback', 'reuse', 'objects'),
+    CasePolicy('resource_immutable_versions_reopen_and_reference_rollback', 'reuse', 'objects'),
     CasePolicy('software_storage_v4_rejects_v3_without_rewriting_immutable_bytes', 'fresh', 'objects'),
 ))
 MODULES['resource.recovery'] = replace(MODULES['resource.recovery'], db_mode='fresh', scope='objects')
@@ -664,7 +664,7 @@ case_fixtures('compliance.recovery', 'compliance::t2::recovery::mutation_unknown
 case_fixtures('compliance.recovery', 'compliance::t2::recovery::rule_and_fact_revisions_fence_stale_publication', 'local_worker')
 case_fixtures('execution.agent.delivery', 'execution::t2::agent::delivery::registration_capability_and_wire_gate', None)
 MODULES['content.http'] = replace(MODULES['content.http'], policies=(
-    CasePolicy('content::t2::http::corrupt_uploads_have_no_binding_and_new_operations_reuse_verified_content', 'reuse', 'objects'),
+    CasePolicy('content::t2::http::corrupt_uploads_have_no_binding_and_distinct_operations_bind_verified_content', 'reuse', 'objects'),
 ))
 
 case_fixtures('execution.agent.delivery', 'execution::t2::agent::delivery::offer_start_result_replay_and_inventory_projection', 'local_worker')
@@ -1789,7 +1789,6 @@ for module_id, selector, materials, actors in (
     ('windows.issuance', 'windows::t2::issuance::native_renewal_preserves_registration_and_activates_only_after_new_tls_proof', ('windows-renewal',), None),
     ('windows.enrollment', 'windows::t2::enrollment::discovery_wstep_replay_and_tls_identity', ('windows-rogue-client',), None),
     ('windows.entra', 'windows::t2::entra::consent_native_issuance_replay_scope_and_revocation', ('windows-weak-csr', 'windows-renewal'), None),
-    ('execution.agent.history', 'execution::t2::agent::history::agent_registration_configuration_requires_task_signing', (), (('tenant', 'admin'),)),
 ):
     module = MODULES[module_id]
     policies = list(module.policies)

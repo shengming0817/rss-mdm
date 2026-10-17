@@ -208,6 +208,9 @@ impl Config {
             }
         }
         if let crate::agent_pki::Config::StepCa { endpoint, .. } = &self.agent_pki {
+            if self.task_signing.is_none() {
+                return Err(Error::Configuration(ConfigIssue::AgentPki));
+            }
             let origin = https_url(&endpoint.origin)
                 .map_err(|_| Error::Configuration(ConfigIssue::AgentPki))?;
             if origin.origin().ascii_serialization() != endpoint.origin

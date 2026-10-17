@@ -43,7 +43,28 @@ async fn protocol_ack_loss_recovers_original_request() {
         let s = ResourceStore::new(runtime.clone(), tenant(), deadline())
             .await
             .unwrap();
+        let committed = s
+            .operation(&request.id, deadline())
+            .await
+            .unwrap()
+            .expect("original COMMIT receipt missing before replay");
+        assert_eq!(
+            s.get(&request.resource, deadline())
+                .await
+                .unwrap()
+                .unwrap()
+                .storage_revision,
+            1
+        );
+        assert_eq!(
+            sql(&format!(
+                "SELECT count(*) FROM rss_transactional_messaging.outbox WHERE message_id='resource.v1:'||encode(sha256(convert_to('{}','UTF8')),'hex')",
+                id.as_str()
+            )),
+            "1"
+        );
         let first = s.execute(&request, deadline()).await.unwrap();
+        assert_eq!(first, committed);
         assert_eq!(first, s.execute(&request, deadline()).await.unwrap());
         assert_eq!(
             sql(&format!(

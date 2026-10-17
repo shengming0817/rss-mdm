@@ -161,6 +161,35 @@ async fn immutable_native_tap_is_consumed_by_git_and_homebrew_and_withdrawn() ->
                 .map(|b| format!("{b:02x}"))
                 .collect::<String>()
     );
+    let candidate = service
+        .candidate(&input.candidate, p::pg::cutoff())
+        .await?
+        .unwrap();
+    ensure!(!frozen.artifacts.is_empty(), "empty published artifacts");
+    let artifact_url = frozen.artifacts[0].url.clone();
+    ensure!(
+        frozen
+            .artifacts
+            .iter()
+            .all(|a| a.length == 3 && a.sha256 == rss_mdm_resource::Digest::of(b"abc").bytes())
+    );
+    let expected: std::collections::BTreeSet<_> = candidate
+        .snapshot()
+        .content
+        .variants()
+        .iter()
+        .flat_map(|v| v.artifacts().iter().map(|a| a.key()))
+        .collect();
+    let actual: std::collections::BTreeSet<_> =
+        frozen.artifacts.iter().map(|a| a.key.as_str()).collect();
+    ensure!(
+        actual == expected && actual.len() == frozen.artifacts.len(),
+        "published artifact set differs from frozen candidate"
+    );
+    ensure!(frozen.artifacts.iter().all(|a| {
+        a.url
+            .starts_with("https://mdm.example.test/api/v1/software/native/sources/")
+    }));
     for artifact in frozen.artifacts {
         let path = url::Url::parse(&artifact.url)?.path().to_owned();
         let fetched = client
@@ -183,6 +212,16 @@ async fn immutable_native_tap_is_consumed_by_git_and_homebrew_and_withdrawn() ->
     ensure!(
         client
             .get(format!("{url}/info/refs?service=git-upload-pack"))
+            .bearer_auth(token)
+            .send()
+            .await?
+            .status()
+            == StatusCode::NOT_FOUND
+    );
+    let artifact_path = url::Url::parse(&artifact_url)?.path().to_owned();
+    ensure!(
+        client
+            .get(format!("http://{address}{artifact_path}"))
             .bearer_auth(token)
             .send()
             .await?
