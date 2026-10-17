@@ -174,6 +174,7 @@ class Processes:
         self.lock = threading.RLock()
         self.children = set()
         self.started = 0
+        self.cleanup_errors = []
         self.local = threading.local()
 
     def check(self):
@@ -202,8 +203,13 @@ class Processes:
         with self.lock:
             if child not in self.children:
                 return
-            self.children.remove(child)
-        self.stop(child)
+        try:
+            self.stop(child)
+        except (OSError, subprocess.TimeoutExpired) as error:
+            self.record_cleanup_error(child, 'stop', error)
+            raise
+        with self.lock:
+            self.children.discard(child)
 
     def run_fixture(self, args, *, input=None, capture_output=False, timeout=None, check=False, **kwargs):
         if input is not None:
@@ -256,19 +262,21 @@ class Processes:
                         self.stop(child)
                         raise RuntimeError('T2 cancelled' if self.cancelled.is_set() else 'case execution deadline exceeded')
         finally:
-            # A successful parent must not leave owned descendants running.
-            self.stop(child)
-            for stream in (child.stdin, child.stdout, child.stderr):
-                if stream is not None:
-                    stream.close()
-            with self.lock:
-                self.children.discard(child)
+            # Retain ownership if termination failed, so close can retry.
+            try:
+                self.release(child)
+            finally:
+                for stream in (child.stdin, child.stdout, child.stderr):
+                    if stream is not None:
+                        stream.close()
 
     @staticmethod
     def stop(child):
+        # spawn/run create a new session: only signal the group this owner created.
         try:
             os.killpg(child.pid, signal.SIGTERM)
         except ProcessLookupError:
+            child.wait(timeout=5)
             return
         try:
             child.wait(timeout=5)
@@ -279,11 +287,14 @@ class Processes:
             os.killpg(child.pid, signal.SIGKILL)
         except ProcessLookupError:
             pass
-        child.wait()
+        child.wait(timeout=5)
+
+    def record_cleanup_error(self, child, action, error):
+        with self.lock:
+            self.cleanup_errors.append(dict(pid=child.pid, action=action,
+                error=type(error).__name__, errno=getattr(error, 'errno', None)))
 
     def cancel(self):
-        if self.cancelled.is_set():
-            return
         self.cancelled.set()
         with self.lock:
             children = list(self.children)
@@ -292,16 +303,31 @@ class Processes:
                 os.killpg(child.pid, signal.SIGTERM)
             except ProcessLookupError:
                 pass
+            except OSError as error:
+                # Signal handlers must finish dispatching cancellation to all children.
+                self.record_cleanup_error(child, 'cancel', error)
 
     def close(self):
         self.cancel()
+        failures = []
         with self.lock:
             children = list(self.children)
         for child in children:
-            self.release(child)
-            for stream in (child.stdin, child.stdout, child.stderr):
-                if stream is not None:
-                    stream.close()
+            try:
+                self.release(child)
+            except (OSError, subprocess.TimeoutExpired) as error:
+                failures.append(error)
+            finally:
+                for stream in (child.stdin, child.stdout, child.stderr):
+                    if stream is not None:
+                        stream.close()
+        if failures:
+            raise ExceptionGroup('T2 process cleanup incomplete', failures)
+
+    def cleanup_receipt(self):
+        with self.lock:
+            return dict(errors=list(self.cleanup_errors),
+                        remainingPids=sorted(child.pid for child in self.children))
 
 
 class Builds:
