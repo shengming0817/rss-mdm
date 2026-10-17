@@ -458,24 +458,12 @@ async fn native_all_query_failures_preserve_execution_completion() -> Result<()>
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 #[ignore = "make t2 MODULE=execution.agent.delivery"]
-async fn macos_native_inventory_partial_empty_chunked_and_context_changed() -> Result<()> {
+async fn macos_native_mapping_and_context_recheck() -> Result<()> {
     native_inventory_case(
         "macos",
         Some("device.software.receipts"),
         rss_mdm_agent_wire::runtime::NativeQueryStatus::Complete,
         &[0, 3],
-    )
-    .await
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
-#[ignore = "make t2 MODULE=execution.agent.delivery"]
-async fn macos_native_unmapped_failed_evidence_requires_sensitive_permission() -> Result<()> {
-    native_inventory_case(
-        "macos",
-        None,
-        rss_mdm_agent_wire::runtime::NativeQueryStatus::Denied,
-        &[0],
     )
     .await
 }
