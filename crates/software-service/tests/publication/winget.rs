@@ -9,12 +9,12 @@ async fn full_version_publication_recovery_and_public_artifact_boundary() {
     let input = seed(runtime.clone(), &server, server.winget_document()).await;
     service.create_candidate(&input, cutoff()).await.unwrap();
     let p = submit_publication(&service, &input.candidate, rel::Ring::Test).await;
-    assert!(
+    assert!(matches!(
         service
             .published(rel::Ring::Test, p.id().digest().bytes(), cutoff())
-            .await
-            .is_err()
-    );
+            .await,
+        Err(Error::CandidateNotFound)
+    ));
     sql(
         "CREATE FUNCTION public.reject_release_result() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'fixture result failure'; END $$; CREATE TRIGGER reject_result BEFORE UPDATE ON mdm_software_release.aggregates FOR EACH ROW EXECUTE FUNCTION public.reject_release_result();",
     );
@@ -22,7 +22,7 @@ async fn full_version_publication_recovery_and_public_artifact_boundary() {
     sql(
         "DROP TRIGGER reject_result ON mdm_software_release.aggregates; DROP FUNCTION public.reject_release_result();",
     );
-    assert!(failed.is_err());
+    assert!(matches!(failed, Err(Error::RolledBack(_))), "{failed:?}");
     assert_eq!(server.state.lock().unwrap().posts, 0);
     let page = service.reconciliation_page("", 32, cutoff()).await.unwrap();
     assert!(
@@ -54,6 +54,27 @@ async fn full_version_publication_recovery_and_public_artifact_boundary() {
             .len(),
         2
     );
+    let installers = manifest["Versions"][0]["Installers"].as_array().unwrap();
+    let architectures = installers
+        .iter()
+        .map(|i| i["Architecture"].as_str().unwrap())
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(architectures, ["arm64", "x64"].into());
+    for installer in installers {
+        let artifact = served
+            .artifacts
+            .iter()
+            .find(|a| installer["InstallerUrl"] == a.url)
+            .expect("installer URL missing from hosted artifacts");
+        assert_eq!(
+            installer["InstallerSha256"],
+            artifact
+                .sha256
+                .iter()
+                .map(|b| format!("{b:02x}"))
+                .collect::<String>()
+        );
+    }
     assert_eq!(served.artifacts.len(), 1);
     assert_publication_audit(&p, &input.candidate, "applied");
     assert!(
@@ -73,12 +94,12 @@ async fn full_version_publication_recovery_and_public_artifact_boundary() {
             .outcome,
         Withdrawal::Complete
     );
-    assert!(
+    assert!(matches!(
         service
             .published(rel::Ring::Test, p.id().digest().bytes(), cutoff())
-            .await
-            .is_err()
-    );
+            .await,
+        Err(Error::CandidateNotFound)
+    ));
     assert_eq!(
         service
             .reconcile_withdrawal(p.id(), p.attempt, cutoff())
@@ -157,13 +178,16 @@ async fn draft_publication_rolls_back_every_write_and_replay_rechecks_access() {
         )
     };
     let before = counts();
+    sql(
+        "CREATE SEQUENCE public.draft_fault_reached; GRANT USAGE ON SEQUENCE public.draft_fault_reached TO mdm_software_driver",
+    );
     // Reject after catalog writes, once via a SQL error and once via a domain rejection.
-    for body in [
+    for (index, body) in [
         "RAISE EXCEPTION 'publication fixture rollback';",
         "UPDATE mdm_software.versions SET lifecycle=jsonb_set(lifecycle,'{state}','\"withdrawn\"') WHERE tenant_id=NEW.tenant_id AND resource=NEW.resource AND version=NEW.version;",
-    ] {
+    ].into_iter().enumerate() {
         sql(&format!(
-            "CREATE FUNCTION public.reject_draft_publication() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN {body} RETURN NEW; END $$; CREATE TRIGGER reject_draft AFTER INSERT ON mdm_software.versions FOR EACH ROW EXECUTE FUNCTION public.reject_draft_publication();"
+            "CREATE FUNCTION public.reject_draft_publication() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN PERFORM nextval('public.draft_fault_reached'); {body} RETURN NEW; END $$; CREATE TRIGGER reject_draft AFTER INSERT ON mdm_software.versions FOR EACH ROW EXECUTE FUNCTION public.reject_draft_publication();"
         ));
         let result = service
             .submit(
@@ -177,7 +201,11 @@ async fn draft_publication_rolls_back_every_write_and_replay_rechecks_access() {
         sql(
             "DROP TRIGGER reject_draft ON mdm_software.versions; DROP FUNCTION public.reject_draft_publication();",
         );
-        assert!(result.is_err(), "{result:?}");
+        assert!(matches!(result, Err(Error::Content)), "{result:?}");
+        // The publication boundary deliberately maps catalog failures to Content.
+        // Sequence advancement survives rollback and proves this trigger was reached.
+        assert_eq!(sql("SELECT last_value FROM public.draft_fault_reached"), (index + 1).to_string());
+        assert_eq!(sql("SELECT is_called FROM public.draft_fault_reached"), "t");
         assert_eq!(
             counts(),
             before,
@@ -192,7 +220,8 @@ async fn draft_publication_rolls_back_every_write_and_replay_rechecks_access() {
             original
         );
     }
-    service
+    sql("DROP SEQUENCE public.draft_fault_reached");
+    let applied = service
         .submit(
             &input.candidate,
             rel::Ring::Test,
@@ -209,6 +238,53 @@ async fn draft_publication_rolls_back_every_write_and_replay_rechecks_access() {
         )),
         "1"
     );
+    let rel::Transition::Applied { next, receipt, .. } = applied else {
+        panic!("first successful submit must apply");
+    };
+    let persisted_receipt = || {
+        sql(&format!(
+            "SELECT to_jsonb(r) FROM mdm_software_release.requests r WHERE tenant_id='{}' AND id='{}'",
+            tenant(),
+            request.id.value()
+        ))
+    };
+    let original_receipt = persisted_receipt();
+    assert!(!original_receipt.is_empty());
+    let publish_audits = || {
+        audit_records()
+            .iter()
+            .filter(|r| {
+                r.event().facts().action().as_str() == "software_publish"
+                    && r.event().facts().resource().id().as_str() == input.candidate.value()
+            })
+            .count()
+    };
+    assert_eq!(publish_audits(), 1);
+    let after = counts();
+    assert_eq!(
+        service
+            .submit(
+                &input.candidate,
+                rel::Ring::Test,
+                &request,
+                &TestPublishAccess,
+                cutoff()
+            )
+            .await
+            .unwrap(),
+        rel::Transition::Replayed(receipt)
+    );
+    assert_eq!(
+        service
+            .candidate(&input.candidate, cutoff())
+            .await
+            .unwrap()
+            .unwrap(),
+        *next
+    );
+    assert_eq!(persisted_receipt(), original_receipt);
+    assert_eq!(publish_audits(), 1);
+    assert_eq!(counts(), after);
     struct Revoked;
     impl PublishAccess for Revoked {
         fn check<'a, 'c>(
@@ -219,7 +295,6 @@ async fn draft_publication_rolls_back_every_write_and_replay_rechecks_access() {
             Box::pin(async { Err(Error::Identity) })
         }
     }
-    let after = counts();
     assert!(matches!(
         service
             .submit(

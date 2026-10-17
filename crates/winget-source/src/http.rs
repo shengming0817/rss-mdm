@@ -222,24 +222,7 @@ impl Client {
                 RequestStage::Information,
             )
             .await?;
-        let info: serde_json::Value =
-            serde_json::from_slice(&info).map_err(|_| Error::InvalidResponse)?;
-        if info["Data"]["SourceIdentifier"].as_str() != Some(self.source.id.as_str()) {
-            return Err(Error::IdentityMismatch);
-        }
-        let versions = info["Data"]["ServerSupportedVersions"]
-            .as_array()
-            .ok_or(Error::InvalidResponse)?;
-        if !versions
-            .iter()
-            .any(|v| v.as_str() == Some(CONTRACT_VERSION))
-        {
-            return Err(Error::Unsupported);
-        }
-        // Authentication modes requiring later REST versions are not silently ignored.
-        if info["Data"].get("Authentication").is_some() {
-            return Err(Error::Unsupported);
-        }
+        validate_information(&self.source.id, &info)?;
         let mut url = self
             .source
             .base
@@ -290,5 +273,70 @@ fn transport(stage: RequestStage, e: reqwest::Error) -> Error {
         Error::Timeout(RequestStage::Query)
     } else {
         Error::Transport(stage)
+    }
+}
+
+// ref: microsoft/winget-cli-restsource documentation/WinGet-1.0.0.yaml
+fn validate_information(source: &str, info: &[u8]) -> Result<(), Error> {
+    let info: serde_json::Value =
+        serde_json::from_slice(info).map_err(|_| Error::InvalidResponse)?;
+    if info["Data"]["SourceIdentifier"].as_str() != Some(source) {
+        return Err(Error::IdentityMismatch);
+    }
+    let versions = info["Data"]["ServerSupportedVersions"]
+        .as_array()
+        .ok_or(Error::InvalidResponse)?;
+    if !versions
+        .iter()
+        .any(|v| v.as_str() == Some(CONTRACT_VERSION))
+    {
+        return Err(Error::Unsupported);
+    }
+    // Authentication modes requiring later REST versions are not silently ignored.
+    if info["Data"].get("Authentication").is_some() {
+        return Err(Error::Unsupported);
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn information_requires_exact_identity_and_supported_contract() {
+        let valid = serde_json::json!({"Data":{"SourceIdentifier":"private","ServerSupportedVersions":["1.0.0"]}});
+        assert_eq!(
+            validate_information("private", &serde_json::to_vec(&valid).unwrap()),
+            Ok(())
+        );
+        assert_eq!(
+            validate_information("private", b"invalid"),
+            Err(Error::InvalidResponse)
+        );
+        for (field, value, error) in [
+            (
+                "SourceIdentifier",
+                serde_json::json!("other"),
+                Error::IdentityMismatch,
+            ),
+            (
+                "ServerSupportedVersions",
+                serde_json::json!(["1.10.0"]),
+                Error::Unsupported,
+            ),
+            (
+                "ServerSupportedVersions",
+                serde_json::Value::Null,
+                Error::InvalidResponse,
+            ),
+            ("Authentication", serde_json::json!({}), Error::Unsupported),
+        ] {
+            let mut input = valid.clone();
+            input["Data"][field] = value;
+            assert_eq!(
+                validate_information("private", &serde_json::to_vec(&input).unwrap()),
+                Err(error)
+            );
+        }
     }
 }

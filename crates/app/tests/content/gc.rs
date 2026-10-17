@@ -1,5 +1,29 @@
 use crate::test_support::software::Fixture;
 use crate::test_support::*;
+fn assert_volume_removed(artifact: &rss_mdm_resource::Artifact) -> Result<()> {
+    let digest = artifact
+        .digest()
+        .bytes()
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect::<String>();
+    let manifest: Value = serde_json::from_str(pg(&format!("SELECT jsonb_build_object('state',state,'pieces',document->'value'->'pieces') FROM mdm_content.manifests WHERE tenant_id='{}' AND class='artifact' AND sha256=decode('{digest}','hex') AND length={}", case_tenant(), artifact.length()))?.trim())?;
+    ensure!(manifest["state"] == "deleted");
+    let pieces = manifest["pieces"].as_array().unwrap();
+    ensure!(!pieces.is_empty());
+    let config: Value = serde_json::from_slice(&std::fs::read(std::env::var("MDM_TEST_CONFIG")?)?)?;
+    let root = std::path::Path::new(config["content"]["storage"]["directory"].as_str().unwrap())
+        .join(case_tenant());
+    for piece in pieces {
+        ensure!(piece["coordinate"]["kind"] == "volume");
+        ensure!(
+            !root
+                .join(piece["coordinate"]["id"].as_str().unwrap())
+                .try_exists()?
+        );
+    }
+    Ok(())
+}
 async fn cleanup_preserves_resource_references(
     user: &mut Browser,
     router: &Router,
@@ -55,10 +79,7 @@ async fn cleanup_preserves_resource_references(
         cleanup.0 == StatusCode::OK,
         "cleanup retained references: {cleanup:?}"
     );
-    ensure!(
-        store.verify(&artifact).await.is_err(),
-        "unreferenced object survived cleanup"
-    );
+    assert_volume_removed(&artifact)?;
     store.verify(retained).await?;
     Ok(())
 }
@@ -190,29 +211,42 @@ async fn gc_reference_race(
             .fold(Ok, Err, Err, Err, Err, Err)
     });
     tokio::time::timeout(Duration::from_secs(5), checked.notified()).await?;
-    let mut writer = tokio::spawn(async move {
+    let digest = artifact
+        .digest()
+        .bytes()
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect::<String>();
+    let lock_key = format!("mdm_resource:{tenant}:artifact:{digest}");
+    let writer = tokio::spawn(async move {
         resources
             .execute(&insert, rss_mdm_flow_service::transaction::deadline())
             .await
     });
-    let early = tokio::time::timeout(Duration::from_millis(750), &mut writer).await;
-    let raced = early.is_ok();
+    let waiting = tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            if pg(&format!("SELECT EXISTS(SELECT 1 FROM pg_locks WHERE locktype='advisory' AND NOT granted AND classid::bigint=((hashtextextended('{lock_key}',2388)>>32)&4294967295) AND objid::bigint=(hashtextextended('{lock_key}',2388)&4294967295))"))?.trim() == "t" { break Ok::<_, anyhow::Error>(()); }
+            tokio::task::yield_now().await;
+        }
+    }).await;
+    let crossed_barrier = writer.is_finished();
+    // Release GC before reporting any observation failure.
     resume.notify_one();
-    gc.await??;
-    deletion.remove().await?;
-    match early {
-        Ok(result) => {
-            ensure!(result?.is_err());
-        }
-        Err(_) => {
-            ensure!(writer.await?.is_err(), "writer crossed deletion barrier");
-        }
-    }
+    waiting??;
     ensure!(
-        !raced,
-        "Resource reference committed between GC inspection and file deletion"
+        !crossed_barrier,
+        "Resource crossed the held deletion barrier"
     );
-    ensure!(content.verify(&artifact).await.is_err());
+    gc.await??;
+    let rejected = writer.await?;
+    ensure!(
+        matches!(rejected, Err(rp::Error::RolledBack(ref error)) if error.kind() == rss_transactional_messaging::error::MessagingErrorKind::Transient),
+        "writer did not observe deletion barrier: {rejected:?}"
+    );
+    ensure!(pg(&format!("SELECT count(*) FROM mdm_resource.artifact_refs WHERE tenant_id='{tenant}' AND owner='{}'", resource.as_str()))?.trim() == "0");
+    ensure!(pg(&format!("SELECT count(*) FROM mdm_resource.immutable WHERE tenant_id='{tenant}' AND owner='{}' AND kind='version'", resource.as_str()))?.trim() == "0");
+    deletion.remove().await?;
+    assert_volume_removed(&artifact)?;
     Ok(())
 }
 #[tokio::test]
@@ -245,22 +279,32 @@ async fn reference_and_gc_are_serialized() -> Result<()> {
 }
 #[tokio::test]
 #[ignore = "MODULE=content.gc: executable inherited privilege is rejected"]
-async fn inherited_delete_privilege_fails_admission() -> Result<()> {
-    let mut fixture = Fixture::open(false).await?;
-    let resources = std::mem::take(&mut fixture.resources);
-    resources.finish(async {
+async fn switchable_delete_privilege_fails_admission() -> Result<()> {
+    let config: crate::config::Config =
+        serde_json::from_slice(&std::fs::read(std::env::var("MDM_TEST_CONFIG")?)?)?;
     let tenant = rss_request_context::TenantId::parse(case_tenant())?;
+    let storage = &config.flow.storage;
+    let runtime = crate::identity::open_runtime(
+        &storage.database,
+        &storage.target,
+        &storage.lineage,
+        &[(tenant, storage.epoch)],
+    )
+    .await?;
+    let result = async {
     pg(
         "CREATE ROLE mdm_content_drift; GRANT USAGE ON SCHEMA mdm_content TO mdm_content_drift; GRANT DELETE ON mdm_content.bindings TO mdm_content_drift; GRANT mdm_content_drift TO mdm_flow_runtime WITH INHERIT FALSE, SET TRUE",
     )?;
-    let rejected = crate::flow::admit_storage(&fixture.runtime, tenant).await;
+    let rejected = crate::flow::admit_storage(&runtime, tenant).await;
     pg(
         "REVOKE mdm_content_drift FROM mdm_flow_runtime; DROP OWNED BY mdm_content_drift; DROP ROLE mdm_content_drift",
     )?;
-    ensure!(rejected.is_err());
-    crate::flow::admit_storage(&fixture.runtime, tenant).await?;
+    ensure!(matches!(rejected, Err(crate::Error::Unavailable(crate::Failure::FlowAdmission))));
+    crate::flow::admit_storage(&runtime, tenant).await?;
     Ok(())
-    }).await
+    }.await;
+    runtime.close().await;
+    result
 }
 
 #[tokio::test]

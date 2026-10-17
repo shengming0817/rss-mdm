@@ -260,19 +260,38 @@ async fn conditional_removal_preserves_other_paths_and_old_commits() {
     r.read(remove.target(), &other).await.unwrap();
     r.read(first.target(), &doc).await.unwrap();
     assert!(r.contains_commit(first.target()).await.unwrap());
-    assert!(
+    assert!(matches!(
         r.prepare_remove(remove.target().clone(), doc, "again", now())
-            .await
-            .is_err()
-    );
+            .await,
+        Err(Error::NotFound)
+    ));
+    assert_eq!(r.head().await.unwrap().as_ref(), Some(remove.target()));
 }
 
 #[tokio::test]
 #[ignore = "explicit real-provider T2 target"]
 async fn immutable_snapshot_has_only_frozen_documents_and_replays_after_later_publish() {
     let (dir, repo) = repository().await;
+    let old = Cask::new(
+        PackageKey::new(tenant(), "acme/private", "retired").unwrap(),
+        "1",
+        "Retired",
+        "Old app",
+        "https://acme.example/",
+        vec![(
+            Architecture::Arm64,
+            Artifact::new("https://files.example/old.pkg", [2; 32]).unwrap(),
+        )],
+        CaskArtifact::Pkg {
+            path: "Old.pkg".into(),
+            receipts: vec!["com.acme.old".into()],
+        },
+    )
+    .unwrap()
+    .render()
+    .unwrap();
     let first = repo
-        .prepare_snapshot(None, vec![document("1")], "first", now())
+        .prepare_snapshot(None, vec![document("1"), old.clone()], "first", now())
         .await
         .unwrap();
     repo.apply(&first).await.unwrap();
@@ -298,6 +317,28 @@ async fn immutable_snapshot_has_only_frozen_documents_and_replays_after_later_pu
         .unwrap();
     assert!(history.status.success());
     assert_eq!(history.stdout, b"1\n");
+    let tree = Command::new("/usr/bin/git")
+        .arg("--git-dir")
+        .arg(dir.path())
+        .args(["ls-tree", "-r", "--name-only", second.target().as_str()])
+        .output()
+        .unwrap();
+    assert!(tree.status.success());
+    assert_eq!(
+        String::from_utf8(tree.stdout).unwrap(),
+        format!("{}\n", document("2").path())
+    );
+    assert_eq!(
+        repo.read(second.target(), &document("2"))
+            .await
+            .unwrap()
+            .digest(),
+        document("2").digest()
+    );
+    assert!(matches!(
+        repo.read(second.target(), &old).await,
+        Err(Error::NotFound)
+    ));
     assert!(repo.snapshot_exists(first.target()).await.unwrap());
     repo.withdraw_snapshot(first.target()).await.unwrap();
     assert!(!repo.snapshot_exists(first.target()).await.unwrap());
@@ -332,9 +373,8 @@ async fn readonly_upload_pack_advertises_only_the_selected_snapshot() {
     assert!(!text.contains(second.target().as_str()));
     assert!(text.contains("refs/heads/main"));
     repo.withdraw_snapshot(first.target()).await.unwrap();
-    assert!(
-        repo.upload_pack(first.target(), true, false, &[])
-            .await
-            .is_err()
-    );
+    assert!(matches!(
+        repo.upload_pack(first.target(), true, false, &[]).await,
+        Err(Error::NotFound)
+    ));
 }

@@ -161,6 +161,46 @@ async fn immutable_native_tap_is_consumed_by_git_and_homebrew_and_withdrawn() ->
                 .map(|b| format!("{b:02x}"))
                 .collect::<String>()
     );
+    let digest = rss_mdm_resource::Digest::of(b"abc")
+        .bytes()
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect::<String>();
+    let resource_digest = input
+        .resource_digest
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect::<String>();
+    let prefix = format!(
+        "https://mdm.example.test/api/v1/software/native/sources/{}/artifacts/{}/{}/{resource_digest}/",
+        peer.logical,
+        input.resource.as_str(),
+        input.version.as_str()
+    );
+    let expected: std::collections::BTreeSet<_> = [
+        format!("{digest}.source.tar.gz"),
+        "tool-1.arm64_sonoma.bottle.tar.gz".into(),
+        "tool-1.sonoma.bottle.tar.gz".into(),
+    ]
+    .into_iter()
+    .map(|file| (format!("content.{digest}"), format!("{prefix}{file}")))
+    .collect();
+    let actual: std::collections::BTreeSet<_> = frozen
+        .artifacts
+        .iter()
+        .map(|a| (a.key.clone(), a.url.clone()))
+        .collect();
+    ensure!(
+        actual == expected && actual.len() == frozen.artifacts.len(),
+        "published artifacts differ: {actual:?}, expected {expected:?}"
+    );
+    ensure!(
+        frozen
+            .artifacts
+            .iter()
+            .all(|a| a.length == 3 && a.sha256 == rss_mdm_resource::Digest::of(b"abc").bytes())
+    );
+    let artifact_url = frozen.artifacts[0].url.clone();
     for artifact in frozen.artifacts {
         let path = url::Url::parse(&artifact.url)?.path().to_owned();
         let fetched = client
@@ -183,6 +223,16 @@ async fn immutable_native_tap_is_consumed_by_git_and_homebrew_and_withdrawn() ->
     ensure!(
         client
             .get(format!("{url}/info/refs?service=git-upload-pack"))
+            .bearer_auth(token)
+            .send()
+            .await?
+            .status()
+            == StatusCode::NOT_FOUND
+    );
+    let artifact_path = url::Url::parse(&artifact_url)?.path().to_owned();
+    ensure!(
+        client
+            .get(format!("http://{address}{artifact_path}"))
             .bearer_auth(token)
             .send()
             .await?

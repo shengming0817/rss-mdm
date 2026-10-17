@@ -165,11 +165,34 @@ async fn release_publication_unknown_retry_history_and_late_results() {
         .attempt_history(&c.snapshot().id, None, 100, deadline())
         .await
         .unwrap();
-    assert!(history.iter().any(|h| h.publication.attempt == 1
-        && matches!(
-            h.publication.outcome,
-            r::PublicationOutcome::Reported(r::PublicationResult::NotApplied(_))
-        )));
+    let observed = history
+        .iter()
+        .map(|h| {
+            assert_eq!(h.publication.id(), p.id());
+            (
+                h.publication.attempt,
+                match h.publication.outcome {
+                    r::PublicationOutcome::Pending => "pending",
+                    r::PublicationOutcome::Reported(r::PublicationResult::Unknown(_)) => "unknown",
+                    r::PublicationOutcome::Reported(r::PublicationResult::NotApplied(_)) => {
+                        "not_applied"
+                    }
+                    r::PublicationOutcome::Reported(r::PublicationResult::Applied(_)) => "applied",
+                },
+            )
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        observed,
+        [
+            (1, "pending"),
+            (1, "unknown"),
+            (1, "not_applied"),
+            (2, "pending"),
+            (2, "pending"),
+            (2, "applied")
+        ]
+    );
     let foreign_store = ReleaseStore::new(runtime, foreign(), deadline())
         .await
         .unwrap();
@@ -209,14 +232,28 @@ async fn release_immutable_version_request_uniqueness_and_rollback() {
             .unwrap()
             .is_none()
     );
-    assert!(s.create(&id, &candidate(), deadline()).await.is_err());
+    assert!(matches!(
+        s.create(&id, &candidate(), deadline()).await,
+        Err(Error::Rejected(Rejection::IdentityConflict))
+    ));
     let a = request(&c, "operator", r::Operation::Quarantine);
     let b = request(&c, "operator", r::Operation::Deprecate);
     let (a, b) = tokio::join!(
         s.transition(&c.snapshot().id, &a, deadline()),
         s.transition(&c.snapshot().id, &b, deadline())
     );
-    assert_ne!(a.is_ok(), b.is_ok());
+    let next = match (a, b) {
+        (Ok(r::Transition::Applied { next, .. }), Err(Error::Rejected(Rejection::Conflict)))
+        | (Err(Error::Rejected(Rejection::Conflict)), Ok(r::Transition::Applied { next, .. })) => {
+            next
+        }
+        other => panic!("CAS must have one winner and one conflict: {other:?}"),
+    };
+    assert_eq!(next.snapshot().revision, 1);
+    assert_eq!(
+        s.get(&c.snapshot().id, deadline()).await.unwrap(),
+        Some(*next)
+    );
     let fresh = candidate();
     s.create(&request_id(), &fresh, deadline()).await.unwrap();
     let change = request(&fresh, "operator", r::Operation::Quarantine);
@@ -267,27 +304,40 @@ async fn release_event_failure_and_runtime_admission() {
     sql(
         "GRANT EXECUTE ON FUNCTION rss_transactional_messaging.append_outbox(bytea,jsonb) TO mdm_software_release_runtime",
     );
-    assert!(result.is_err());
+    assert!(matches!(
+        result,
+        Err(Error::RolledBack(ref error)) if error.kind() == rss_transactional_messaging::error::MessagingErrorKind::Permanent
+    ));
     assert!(s.operation(&id, deadline()).await.unwrap().is_none());
     assert!(s.get(&c.snapshot().id, deadline()).await.unwrap().is_none());
     let other = support::runtime().await;
     let result = other
         .local_tx_with_context(tenant(), deadline(), (&s, &c, &id), |(s, c, id), tx| {
-            Box::pin(async move { s.create_in(tx, id, c).await })
+            Box::pin(async move {
+                tx.prepare_outbox_partitions(&[s.partition(c.snapshot().id.value())?])
+                    .await?;
+                s.create_in(tx, id, c).await
+            })
         })
         .await;
     assert!(result.fold(
         |_| false,
         |_| false,
-        |_| true,
+        |error| error.kind() == rss_transactional_messaging::error::MessagingErrorKind::Invariant,
         |_| false,
         |_| false,
         |_| false
     ));
+    let committed = s.create(&id, &c, deadline()).await.unwrap();
+    assert_eq!(s.operation(&id, deadline()).await.unwrap(), Some(committed));
+    assert_event(c.snapshot().id.value(), id.value(), 0, 1);
     sql("ALTER TABLE mdm_software_release.aggregates NO FORCE ROW LEVEL SECURITY");
-    let result = ReleaseStore::new(runtime, tenant(), deadline()).await;
+    let result = ReleaseStore::new(runtime.clone(), tenant(), deadline()).await;
     sql("ALTER TABLE mdm_software_release.aggregates FORCE ROW LEVEL SECURITY");
     assert!(result.is_err());
+    ReleaseStore::new(runtime, tenant(), deadline())
+        .await
+        .unwrap();
 }
 
 fn assert_event(id: &str, request: &str, revision: u64, occurred_at: i64) {
@@ -344,6 +394,9 @@ async fn admission_rejects_noninherited_switchable_privileges() {
     sql(&format!(
         "CREATE ROLE {role} NOLOGIN; CREATE ROLE {bridge} NOLOGIN; GRANT {role} TO {bridge} WITH INHERIT FALSE, SET TRUE; GRANT {bridge} TO mdm_software_release_runtime WITH INHERIT FALSE, SET TRUE; GRANT USAGE ON SCHEMA mdm_software_release TO {role};"
     ));
+    let roles = (role.clone(), bridge.clone());
+    let outcome = tokio::spawn(async move {
+    let (role, bridge) = roles;
     for membership in ["INHERIT FALSE, SET TRUE", "INHERIT TRUE, SET FALSE"] {
         sql(&format!("GRANT {role} TO {bridge} WITH {membership}"));
         for privilege in [
@@ -358,9 +411,10 @@ async fn admission_rejects_noninherited_switchable_privileges() {
             let result = ReleaseStore::new(runtime.clone(), tenant(), deadline()).await;
             sql(&format!("REVOKE {privilege} FROM {role}"));
             assert!(
-                result.is_err(),
+                matches!(result, Err(Error::RolledBack(ref e)) if e.kind() == rss_transactional_messaging::error::MessagingErrorKind::Invariant),
                 "admitted switchable privilege: {privilege}"
             );
+            ReleaseStore::new(runtime.clone(), tenant(), deadline()).await.unwrap();
         }
     }
     // Permitted column privileges in a switchable role remain admissible.
@@ -378,8 +432,10 @@ async fn admission_rejects_noninherited_switchable_privileges() {
         "GRANT {bridge} TO mdm_software_release_runtime WITH INHERIT FALSE, SET FALSE; GRANT TRUNCATE ON mdm_software_release.requests TO {role}"
     ));
     let dormant = ReleaseStore::new(runtime, tenant(), deadline()).await;
+    dormant.unwrap();
+    }).await;
     sql(&format!(
         "REVOKE {bridge} FROM mdm_software_release_runtime; REVOKE {role} FROM {bridge}; DROP OWNED BY {role}; DROP ROLE {bridge}; DROP ROLE {role};"
     ));
-    dormant.unwrap();
+    outcome.unwrap();
 }

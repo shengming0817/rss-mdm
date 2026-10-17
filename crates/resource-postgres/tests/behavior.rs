@@ -35,7 +35,7 @@ fn req(resource: &r::Id, revision: u64, command: Command) -> Request {
 }
 #[tokio::test]
 #[ignore = "real PostgreSQL: make t2 MODULE=resource.persistence"]
-async fn resource_immutable_versions_restart_and_reference_rollback() {
+async fn resource_immutable_versions_reopen_and_reference_rollback() {
     let runtime = runtime().await;
     let s = ResourceStore::new(runtime.clone(), tenant(), deadline())
         .await
@@ -51,14 +51,14 @@ async fn resource_immutable_versions_restart_and_reference_rollback() {
     let receipt = s.execute(&insert, deadline()).await.unwrap();
     assert_eq!(receipt, s.execute(&insert, deadline()).await.unwrap());
     assert_event(key.as_str(), insert.id.as_str(), 2, 10);
-    assert!(
+    assert!(matches!(
         s.execute(
             &req(&key, 2, Command::Insert(version(&key, "one", 2))),
             deadline()
         )
-        .await
-        .is_err()
-    );
+        .await,
+        Err(Error::Rejected(Rejection::IdentityConflict))
+    ));
     s.execute(&req(&key, 2, Command::Activate(id("one"))), deadline())
         .await
         .unwrap();
@@ -169,7 +169,20 @@ async fn resource_cas_events_and_owner_admission() {
     let a = req(&key, 1, Command::Insert(version(&key, "one", 1)));
     let b = req(&key, 1, Command::Insert(version(&key, "two", 2)));
     let (a, b) = tokio::join!(s.execute(&a, deadline()), s.execute(&b, deadline()));
-    assert_ne!(a.is_ok(), b.is_ok());
+    let winner = match (a, b) {
+        (Ok(receipt), Err(Error::Rejected(Rejection::Conflict)))
+        | (Err(Error::Rejected(Rejection::Conflict)), Ok(receipt)) => receipt,
+        other => panic!("CAS must have one winner and one conflict: {other:?}"),
+    };
+    assert_eq!(winner.storage_revision, 2);
+    assert_eq!(
+        s.get(&key, deadline())
+            .await
+            .unwrap()
+            .unwrap()
+            .storage_revision,
+        2
+    );
     sql(
         "REVOKE EXECUTE ON FUNCTION rss_transactional_messaging.append_outbox(bytea,jsonb) FROM mdm_resource_runtime",
     );
@@ -178,7 +191,10 @@ async fn resource_cas_events_and_owner_admission() {
     sql(
         "GRANT EXECUTE ON FUNCTION rss_transactional_messaging.append_outbox(bytea,jsonb) TO mdm_resource_runtime",
     );
-    assert!(result.is_err());
+    assert!(matches!(
+        result,
+        Err(Error::RolledBack(ref error)) if error.kind() == rss_transactional_messaging::error::MessagingErrorKind::Permanent
+    ));
     assert!(
         s.version(&key, &id("three"), deadline())
             .await
@@ -189,21 +205,38 @@ async fn resource_cas_events_and_owner_admission() {
     let wrong = support::runtime().await;
     let result = wrong
         .local_tx_with_context(tenant(), deadline(), (&s, &r), |(s, r), tx| {
-            Box::pin(async move { s.execute_in(tx, r).await })
+            Box::pin(async move {
+                tx.prepare_outbox_partitions(&[s.partition(r.resource.as_str())?])
+                    .await?;
+                s.execute_in(tx, r).await
+            })
         })
         .await;
     assert!(result.fold(
         |_| false,
         |_| false,
-        |_| true,
+        |error| error.kind() == rss_transactional_messaging::error::MessagingErrorKind::Invariant,
         |_| false,
         |_| false,
         |_| false
     ));
-    sql("GRANT UPDATE(document) ON mdm_resource.immutable TO mdm_resource_runtime");
-    let bad = ResourceStore::new(runtime, tenant(), deadline()).await;
-    sql("REVOKE UPDATE(document) ON mdm_resource.immutable FROM mdm_resource_runtime");
-    assert!(bad.is_err());
+    let applied = runtime
+        .local_tx_with_context(tenant(), deadline(), (&s, &r), |(s, r), tx| {
+            Box::pin(async move {
+                tx.prepare_outbox_partitions(&[s.partition(r.resource.as_str())?])
+                    .await?;
+                s.execute_in(tx, r).await
+            })
+        })
+        .await;
+    assert!(applied.fold(
+        |r| r.is_ok(),
+        |_| false,
+        |_| false,
+        |_| false,
+        |_| false,
+        |_| false
+    ));
 }
 
 fn assert_event(id: &str, request: &str, revision: u64, occurred_at: i64) {
@@ -286,7 +319,10 @@ async fn resource_admission_rejects_schema_and_privilege_drift() {
         sql(change);
         let result = ResourceStore::new(runtime.clone(), tenant(), deadline()).await;
         sql(restore);
-        assert!(result.is_err(), "admitted drift: {change}");
+        assert!(
+            matches!(result, Err(Error::RolledBack(ref e)) if e.kind() == rss_transactional_messaging::error::MessagingErrorKind::Invariant),
+            "admitted drift: {change}"
+        );
         ResourceStore::new(runtime.clone(), tenant(), deadline())
             .await
             .unwrap_or_else(|e| panic!("failed to restore {change}: {e:?}"));
@@ -302,6 +338,9 @@ async fn admission_rejects_noninherited_switchable_privileges() {
     sql(&format!(
         "CREATE ROLE {role} NOLOGIN; CREATE ROLE {bridge} NOLOGIN; GRANT {role} TO {bridge} WITH INHERIT FALSE, SET TRUE; GRANT {bridge} TO mdm_resource_runtime WITH INHERIT FALSE, SET TRUE; GRANT USAGE ON SCHEMA mdm_resource TO {role};"
     ));
+    let roles = (role.clone(), bridge.clone());
+    let outcome = tokio::spawn(async move {
+    let (role, bridge) = roles;
     for membership in ["INHERIT FALSE, SET TRUE", "INHERIT TRUE, SET FALSE"] {
         sql(&format!("GRANT {role} TO {bridge} WITH {membership}"));
         for privilege in [
@@ -316,9 +355,10 @@ async fn admission_rejects_noninherited_switchable_privileges() {
             let result = ResourceStore::new(runtime.clone(), tenant(), deadline()).await;
             sql(&format!("REVOKE {privilege} FROM {role}"));
             assert!(
-                result.is_err(),
+                matches!(result, Err(Error::RolledBack(ref e)) if e.kind() == rss_transactional_messaging::error::MessagingErrorKind::Invariant),
                 "admitted switchable privilege: {privilege}"
             );
+            ResourceStore::new(runtime.clone(), tenant(), deadline()).await.unwrap();
         }
     }
     // Permitted column privileges in a switchable role remain admissible.
@@ -336,10 +376,12 @@ async fn admission_rejects_noninherited_switchable_privileges() {
         "GRANT {bridge} TO mdm_resource_runtime WITH INHERIT FALSE, SET FALSE; GRANT TRUNCATE ON mdm_resource.requests TO {role}"
     ));
     let dormant = ResourceStore::new(runtime, tenant(), deadline()).await;
+    dormant.unwrap();
+    }).await;
     sql(&format!(
         "REVOKE {bridge} FROM mdm_resource_runtime; REVOKE {role} FROM {bridge}; DROP OWNED BY {role}; DROP ROLE {bridge}; DROP ROLE {role};"
     ));
-    dormant.unwrap();
+    outcome.unwrap();
 }
 
 fn software(artifact: &r::Artifact) -> r::SoftwareDefinition {

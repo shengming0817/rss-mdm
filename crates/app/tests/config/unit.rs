@@ -257,3 +257,37 @@ fn standard_agent_lifetime_rejects_extra_fields() {
         .is_ok()
     );
 }
+
+#[test]
+fn agent_registration_requires_task_signing_before_assembly() {
+    let mut value: serde_json::Value =
+        serde_json::from_str(include_str!("../../../../fixtures/mdm-config.example.json")).unwrap();
+    let root = independent_secrets(&mut value);
+    let endpoint = serde_json::json!({"listen":"127.0.0.1:9445","origin":"https://agent.example.test","certificate_file":"unused.pem","private_key_file":"unused.key"});
+    for enabled in [false, true] {
+        for signed in [false, true] {
+            value["agent_pki"] = if enabled {
+                serde_json::json!({"mode":"step_ca","endpoint":endpoint,"trust_file":"unused.json"})
+            } else {
+                serde_json::json!({"mode":"disabled"})
+            };
+            value["task_signing"] = if signed {
+                serde_json::json!({"private_key_file":"unused.key","key_id":"test","trusted_keys":{}})
+            } else {
+                serde_json::Value::Null
+            };
+            let result = serde_json::from_value::<Config>(value.clone())
+                .unwrap()
+                .compile();
+            if enabled && !signed {
+                assert!(matches!(
+                    result,
+                    Err(Error::Configuration(ConfigIssue::AgentPki))
+                ));
+            } else {
+                assert!(result.is_ok(), "enabled={enabled}, signed={signed}");
+            }
+        }
+    }
+    std::fs::remove_dir_all(root).unwrap();
+}

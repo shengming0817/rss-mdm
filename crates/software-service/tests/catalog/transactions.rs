@@ -82,12 +82,19 @@ impl Fixture {
     async fn source_allowed(&self, snapshot: r::SoftwareSource) -> Result<()> {
         transaction(&self.runtime, (&self.catalog, snapshot), |context, tx| {
             Box::pin(async move {
-                context
+                let result = context
                     .0
                     .reader()
                     .source_admitted_in(tx, &context.1)
                     .await
-                    .map(|_| ())
+                    .map(|_| ());
+                if let Err(error) = &result {
+                    assert!(
+                        matches!(error, catalog::Error::NotAdmitted),
+                        "wrong source admission error: {error:?}"
+                    );
+                }
+                result
             })
         })
         .await
@@ -97,17 +104,25 @@ impl Fixture {
         version: &r::Version,
         operation: &Operation<VersionChange>,
         digest: [u8; 32],
+        expected_error: Option<catalog::Error>,
     ) -> Result<Value> {
         let audit = RequestAudit::new(pg::tenant().to_string(), "software_version_write");
         audit.set_principal("operator", materials::INSTANCE);
         let content = Content(digest);
         let result = transaction(
             &self.runtime,
-            (&self.catalog, &audit, version, operation, &content),
+            (
+                &self.catalog,
+                &audit,
+                version,
+                operation,
+                &content,
+                expected_error.as_ref(),
+            ),
             |context, tx| {
                 Box::pin(async move {
-                    let (catalog, audit, version, operation, content) = *context;
-                    catalog
+                    let (catalog, audit, version, operation, content, expected_error) = *context;
+                    let result = catalog
                         .version_change_in(
                             tx,
                             audit,
@@ -116,7 +131,16 @@ impl Fixture {
                             operation,
                             Some(content),
                         )
-                        .await
+                        .await;
+                    if let Some(expected) = expected_error {
+                        let actual = result.as_ref().expect_err("expected catalog rejection");
+                        assert_eq!(
+                            std::mem::discriminant(actual),
+                            std::mem::discriminant(expected),
+                            "wrong catalog rejection: {actual:?}"
+                        );
+                    }
+                    result
                 })
             },
         )
@@ -220,6 +244,12 @@ async fn source_receipts_follow_the_borrowed_transaction() -> Result<()> {
         "SELECT encode(canonical,'hex') FROM rss_audit.records WHERE tenant_id='{tenant}' ORDER BY position"
     );
     let audit_before = pg::sql(&audit_sql);
+    let outbox = || {
+        pg::sql(&format!(
+            "SELECT count(*) FROM rss_transactional_messaging.outbox WHERE tenant_id='{tenant}' AND message_id='software.v1:{}'",
+            operation.operation_id
+        ))
+    };
     ensure!(fixture.source(&operation, true).await.is_err());
     ensure!(
         pg::sql(&format!(
@@ -234,14 +264,47 @@ async fn source_receipts_follow_the_borrowed_transaction() -> Result<()> {
         )) == "0"
     );
     ensure!(pg::sql(&audit_sql) == audit_before);
+    ensure!(outbox() == "0");
     fixture
         .runtime
         .inject_next_transaction_fault(PgTransactionFault::CommitUnknownAfterAck);
-    ensure!(fixture.source(&operation, false).await.is_err());
+    let audit = RequestAudit::new(pg::tenant().to_string(), "software_source_write");
+    audit.set_principal("operator", materials::INSTANCE);
+    let unknown = fixture
+        .runtime
+        .local_tx_with_context(
+            pg::tenant(),
+            pg::deadline(),
+            (&fixture.catalog, &audit, &operation),
+            |ctx, tx| {
+                Box::pin(async move {
+                    let (catalog, audit, operation) = *ctx;
+                    catalog
+                        .source_in(tx, audit, pg::case::name("private-fixture"), "1", operation)
+                        .await
+                        .map_err(|e| {
+                            rss_transactional_messaging_postgres::PgError::from(
+                                sqlx::Error::Protocol(e.to_string()),
+                            )
+                        })
+                })
+            },
+        )
+        .await;
+    audit.finalize(None);
+    ensure!(unknown.fold(
+        |_| false,
+        |_| false,
+        |_| false,
+        |_| false,
+        |_| true,
+        |_| false
+    ));
     let original: Value = serde_json::from_str(&pg::sql(&format!(
         "SELECT response FROM mdm_software.operations WHERE tenant_id='{tenant}' AND id='{}'",
         operation.operation_id
     )))?;
+    ensure!(outbox() == "1");
     let first_audit = pg::sql(&audit_sql);
     ensure!(first_audit.lines().count() == audit_before.lines().count() + 1);
     let replayed = fixture.source(&operation, false).await?;
@@ -305,7 +368,12 @@ async fn dependency_admission_uses_exact_current_enablement() -> Result<()> {
     let enablement = enable(0);
     ensure!(
         fixture
-            .change(&dependent, &enablement, dependent.digest().bytes())
+            .change(
+                &dependent,
+                &enablement,
+                dependent.digest().bytes(),
+                Some(catalog::Error::NotAdmitted)
+            )
             .await
             .is_err()
     );
@@ -325,16 +393,21 @@ async fn dependency_admission_uses_exact_current_enablement() -> Result<()> {
     );
     ensure!(
         fixture
-            .change(&dependency, &enable(0), [0; 32])
+            .change(
+                &dependency,
+                &enable(0),
+                [0; 32],
+                Some(catalog::Error::Content)
+            )
             .await
             .is_err()
     );
     fixture
-        .change(&dependency, &enable(0), dependency.digest().bytes())
+        .change(&dependency, &enable(0), dependency.digest().bytes(), None)
         .await
         .context("dependency enablement")?;
     fixture
-        .change(&dependent, &enablement, dependent.digest().bytes())
+        .change(&dependent, &enablement, dependent.digest().bytes(), None)
         .await
         .context("dependent enablement")?;
     fixture
@@ -379,7 +452,10 @@ async fn dependency_admission_uses_exact_current_enablement() -> Result<()> {
                     targets,
                 };
                 let lifecycle = preparation.freeze_in(tx, request(false)).await?;
-                ensure_catalog(preparation.resolve_in(tx, binding, target).await.is_err())?;
+                ensure_catalog(matches!(
+                    preparation.resolve_in(tx, binding, target).await,
+                    Err(catalog::Error::Conflict)
+                ))?;
                 let binding = &Selection {
                     lifecycle,
                     ..*binding
@@ -414,7 +490,12 @@ async fn dependency_admission_uses_exact_current_enablement() -> Result<()> {
     let wrong = fixture.version(wrong).await?;
     ensure!(
         fixture
-            .change(&wrong, &enable(0), wrong.digest().bytes())
+            .change(
+                &wrong,
+                &enable(0),
+                wrong.digest().bytes(),
+                Some(catalog::Error::NotAdmitted)
+            )
             .await
             .is_err()
     );
@@ -424,7 +505,7 @@ async fn dependency_admission_uses_exact_current_enablement() -> Result<()> {
         input: VersionChange::Withdraw,
     };
     fixture
-        .change(&dependency, &withdrawal, dependency.digest().bytes())
+        .change(&dependency, &withdrawal, dependency.digest().bytes(), None)
         .await?;
     ensure!(fixture.resolve(&dependent).await.is_err());
     transaction(
@@ -454,12 +535,17 @@ async fn dependency_admission_uses_exact_current_enablement() -> Result<()> {
     let after = fixture.version(dependent_definition).await?;
     ensure!(
         fixture
-            .change(&after, &enable(0), after.digest().bytes())
+            .change(
+                &after,
+                &enable(0),
+                after.digest().bytes(),
+                Some(catalog::Error::NotAdmitted)
+            )
             .await
             .is_err()
     );
     fixture
-        .change(&dependency, &enable(2), dependency.digest().bytes())
+        .change(&dependency, &enable(2), dependency.digest().bytes(), None)
         .await?;
     transaction(
         &fixture.runtime,
@@ -534,11 +620,103 @@ async fn import_receipt_survives_unknown_commit_and_source_withdrawal() -> Resul
             },
         )
     };
+    let rollback = fixture
+        .runtime
+        .local_tx_with_context(
+            pg::tenant(),
+            pg::deadline(),
+            (&fixture.catalog, &resources, &audit, &op, &prepared),
+            |ctx, tx| {
+                Box::pin(async move {
+                    let (catalog, resources, audit, op, prepared) = *ctx;
+                    catalog
+                        .import_in(tx, resources, audit, op, Some(prepared))
+                        .await
+                        .map_err(|e| {
+                            rss_transactional_messaging_postgres::PgError::from(
+                                sqlx::Error::Protocol(e.to_string()),
+                            )
+                        })?;
+                    Err::<Value, _>(rss_transactional_messaging_postgres::PgError::from(
+                        sqlx::Error::RowNotFound,
+                    ))
+                })
+            },
+        )
+        .await;
+    ensure!(rollback.fold(
+        |_| false,
+        |_| false,
+        |_| true,
+        |_| false,
+        |_| false,
+        |_| false
+    ));
+    ensure!(
+        resources
+            .get(prepared.version.resource(), pg::deadline())
+            .await?
+            .is_none()
+    );
+    ensure!(
+        pg::sql(&format!(
+            "SELECT count(*) FROM mdm_software.operations WHERE tenant_id='{}' AND id='{}'",
+            pg::tenant(),
+            op.operation_id
+        )) == "0"
+    );
     fixture
         .runtime
         .inject_next_transaction_fault(PgTransactionFault::CommitUnknownAfterAck);
-    ensure!(run(Some(&prepared)).await.is_err());
+    let unknown = fixture
+        .runtime
+        .local_tx_with_context(
+            pg::tenant(),
+            pg::deadline(),
+            (&fixture.catalog, &resources, &audit, &op, &prepared),
+            |ctx, tx| {
+                Box::pin(async move {
+                    let (catalog, resources, audit, op, prepared) = *ctx;
+                    catalog
+                        .import_in(tx, resources, audit, op, Some(prepared))
+                        .await
+                        .map_err(|e| {
+                            rss_transactional_messaging_postgres::PgError::from(
+                                sqlx::Error::Protocol(e.to_string()),
+                            )
+                        })
+                })
+            },
+        )
+        .await;
+    ensure!(
+        unknown.fold(
+            |_| false,
+            |_| false,
+            |_| false,
+            |_| false,
+            |_| true,
+            |_| false
+        ),
+        "expected original import COMMIT uncertainty"
+    );
+    let committed_version = resources
+        .version(
+            prepared.version.resource(),
+            prepared.version.label(),
+            pg::deadline(),
+        )
+        .await?
+        .expect("original import resource absent before replay");
+    ensure!(committed_version == prepared.version);
+    let receipt_before = pg::sql(&format!(
+        "SELECT response::text FROM mdm_software.operations WHERE tenant_id='{}' AND id='{}'",
+        pg::tenant(),
+        op.operation_id
+    ));
+    ensure!(!receipt_before.trim().is_empty());
     let original = run(None).await?;
+    ensure!(serde_json::from_str::<Value>(&receipt_before)? == original);
     ensure!(original["resourceDigest"] == json!(prepared.version.digest().bytes()));
     fixture
         .source(

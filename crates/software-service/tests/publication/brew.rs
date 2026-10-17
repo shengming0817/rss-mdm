@@ -17,7 +17,23 @@ async fn brew_immutable_tap_recovery_and_version_specific_withdrawal() {
     sql(
         "DROP TRIGGER reject_result ON mdm_software_release.aggregates; DROP FUNCTION public.reject_brew_result();",
     );
-    assert!(failed.is_err());
+    assert!(matches!(failed, Err(Error::RolledBack(_))), "{failed:?}");
+    let snapshot = git(&config, &["rev-parse", "refs/heads/main"]);
+    assert!(
+        git(
+            &config,
+            &["for-each-ref", "--format=%(refname)", "refs/namespaces"]
+        )
+        .contains(snapshot.trim())
+    );
+    let pending = service
+        .candidate(&first.candidate, cutoff())
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(
+        matches!(&pending.snapshot().rings[0], rel::RingState::Publication(p) if p.id() == p1.id() && matches!(p.outcome, rel::PublicationOutcome::Pending))
+    );
     // Re-enabling the source changes its generation while the external result is unknown.
     sql(&format!(
         "UPDATE mdm_software.sources SET lifecycle=jsonb_set(lifecycle,'{{revision}}',to_jsonb((lifecycle->>'revision')::bigint+2)) WHERE tenant_id='{}' AND id='{}'",
@@ -33,12 +49,12 @@ async fn brew_immutable_tap_recovery_and_version_specific_withdrawal() {
             .unwrap(),
         rel::PublicationOutcome::Reported(rel::PublicationResult::Applied(_))
     ));
-    assert!(
+    assert!(matches!(
         service
             .published(rel::Ring::Test, p1.id().digest().bytes(), cutoff())
-            .await
-            .is_err()
-    );
+            .await,
+        Err(Error::Content)
+    ));
     let old = git(&config, &["rev-parse", "refs/heads/main"]);
     let other = seed(runtime.clone(), &server, formula(&server)).await;
     service.create_candidate(&other, cutoff()).await.unwrap();
@@ -97,18 +113,18 @@ async fn brew_immutable_tap_recovery_and_version_specific_withdrawal() {
             .await
             .is_ok()
     );
-    assert!(
+    assert!(matches!(
         service
             .published(rel::Ring::Test, p1.id().digest().bytes(), cutoff())
-            .await
-            .is_err()
-    );
-    assert!(
+            .await,
+        Err(Error::CandidateNotFound)
+    ));
+    assert!(matches!(
         service
             .published(rel::Ring::Test, p3.id().digest().bytes(), cutoff())
-            .await
-            .is_err()
-    );
+            .await,
+        Err(Error::CandidateNotFound)
+    ));
     assert_eq!(
         git(
             &config,
@@ -155,26 +171,55 @@ async fn attempted_publication_withdrawal_recovers_original_git_snapshot_after_r
         "DROP TRIGGER reject_result ON mdm_software_release.aggregates; DROP FUNCTION public.reject_brew_result();",
     );
     let snapshot = git(&config, &["rev-parse", "refs/heads/main"]);
+    let SourceConfig::Brew(source) = &config.test else {
+        panic!("Brew")
+    };
+    let lock = source.repository.join(format!(
+        "refs/namespaces/{}/refs/heads/main.lock",
+        snapshot.trim()
+    ));
+    std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&lock)
+        .unwrap();
+    let lock = tempfile::TempPath::try_from_path(lock).unwrap();
     let request = request_for(&service, &input.candidate).await;
     service
         .withdraw(&input.candidate, rel::Ring::Test, &request, cutoff())
         .await
         .unwrap();
+    assert_ne!(
+        service
+            .withdrawal_status(p.id(), p.attempt, cutoff())
+            .await
+            .unwrap(),
+        Some(Withdrawal::Complete)
+    );
+    assert!(
+        git(
+            &config,
+            &["for-each-ref", "--format=%(refname)", "refs/namespaces"]
+        )
+        .contains(snapshot.trim())
+    );
+    lock.close().unwrap();
     drop(service);
+    runtime.close().await;
+    let runtime = publication_support::pg::runtime().await;
     let service = server.service(runtime.clone(), config.clone()).await;
-    for work in service
+    let work = service
         .reconciliation_page("", 32, cutoff())
         .await
         .unwrap()
         .work
-    {
-        if work.withdrawal {
-            service
-                .reconcile_withdrawal(work.publication, work.attempt, cutoff())
-                .await
-                .unwrap();
-        }
-    }
+        .into_iter()
+        .find(|work| work.withdrawal && work.publication == p.id() && work.attempt == p.attempt)
+        .expect("original incomplete withdrawal missing after reopen");
+    service
+        .reconcile_withdrawal(work.publication, work.attempt, cutoff())
+        .await
+        .unwrap();
     assert_eq!(
         service
             .withdrawal_status(p.id(), p.attempt, cutoff())
@@ -229,6 +274,7 @@ async fn unknown_withdrawal_only_settles_absence_after_original_cas_is_fenced() 
             .unwrap(),
         rel::PublicationOutcome::Reported(rel::PublicationResult::Unknown(_))
     ));
+    let original: serde_json::Value = serde_json::from_str(&sql(&format!("SELECT convert_from(document,'UTF8') FROM mdm_software_composition.targets WHERE tenant_id='{}' AND candidate='{}' AND left(id,2)='p:'", tenant(), second.candidate.value()))).unwrap();
     let request = request_for(&service, &second.candidate).await;
     assert_eq!(
         service
@@ -246,22 +292,40 @@ async fn unknown_withdrawal_only_settles_absence_after_original_cas_is_fenced() 
     std::fs::remove_file(lock).unwrap();
     git(&config, &["update-ref", "-d", "refs/heads/main"]);
     let service = server.service(runtime.clone(), config.clone()).await;
-    for work in service
+    let work = service
         .reconciliation_page("", 32, cutoff())
         .await
         .unwrap()
         .work
-    {
-        if work.withdrawal {
-            assert_eq!(
-                service
-                    .reconcile_withdrawal(work.publication, work.attempt, cutoff())
-                    .await
-                    .unwrap(),
-                Withdrawal::Complete
-            );
-        }
-    }
+        .into_iter()
+        .find(|w| w.withdrawal && w.publication == p.id() && w.attempt == p.attempt)
+        .expect("original withdrawal missing");
+    assert_eq!(
+        service
+            .reconcile_withdrawal(work.publication, work.attempt, cutoff())
+            .await
+            .unwrap(),
+        Withdrawal::Complete
+    );
+    let commit = original["commit"].as_str().unwrap();
+    let base = original["base"].as_str().unwrap();
+    let SourceConfig::Brew(source) = &config.test else {
+        panic!("Brew")
+    };
+    let replay = std::process::Command::new("/usr/bin/git")
+        .arg("--git-dir")
+        .arg(&source.repository)
+        .args(["update-ref", "refs/heads/main", commit, base])
+        .output()
+        .unwrap();
+    assert!(!replay.status.success(), "fenced original CAS succeeded");
+    assert!(
+        !git(
+            &config,
+            &["for-each-ref", "--format=%(refname)", "refs/namespaces"]
+        )
+        .contains(commit)
+    );
     assert_eq!(
         sql("SELECT count(*) FROM mdm_software_composition.slots WHERE operation IS NOT NULL"),
         "0"

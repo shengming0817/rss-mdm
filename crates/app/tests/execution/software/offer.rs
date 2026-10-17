@@ -73,7 +73,7 @@ async fn required_available_and_uninstall_delivery() -> Result<()> {
         )
         .await?;
     ensure!(
-        runs.1["items"][0]["effect"] == "verified",
+        runs.0 == StatusCode::OK && runs.1["items"].as_array().unwrap().iter().any(|r| r["taskId"] == task["payload"]["task"]["taskId"] && r["effect"] == "verified"),
         "run list effect: {runs:?}"
     );
     let detail = author
@@ -88,7 +88,7 @@ async fn required_available_and_uninstall_delivery() -> Result<()> {
         )
         .await?;
     ensure!(
-        detail.1["effect"] == "verified",
+        detail.0 == StatusCode::OK && detail.1["taskId"] == task["payload"]["task"]["taskId"] && detail.1["effect"] == "verified",
         "run detail effect: {detail:?}"
     );
     let mut owner =
@@ -106,9 +106,10 @@ async fn required_available_and_uninstall_delivery() -> Result<()> {
     )
     .await?;
     ensure!(
-        repeated.1["task"].is_null(),
+        repeated.0 == StatusCode::OK && repeated.1["task"].is_null(),
         "verified software was scheduled again: {repeated:?}"
     );
+    ensure!(pg(&format!("SELECT count(*) FROM mdm_commands.action_runs r JOIN mdm_policy.versions v ON (v.tenant_id,v.id)=(r.tenant_id,r.policy_version) WHERE r.tenant_id='{}' AND v.policy='{policy}'",case_tenant()))?.trim() == "1");
     write(
         &mut author,
         &router,
@@ -240,6 +241,23 @@ async fn windows_variant_delivery_and_detection() -> Result<()> {
             && windows_task["payload"]["task"]["steps"][1]["action"]["behavior"]["kind"] == "msi",
         "windows variant: {windows_task}"
     );
+    let windows_content = Request::builder()
+        .method(Method::GET)
+        .uri(format!(
+            "/api/v1/agent/runtime/tasks/{}/content?attempt={}&artifact=1%2Fpackage",
+            windows_task["payload"]["task"]["taskId"].as_str().unwrap(),
+            windows_task["payload"]["task"]["attemptId"]
+                .as_str()
+                .unwrap()
+        ))
+        .header("host", "mdm.example.test:9445")
+        .extension(
+            crate::test_support::agent::evidence(&windows_credential).expect("registered TLS peer"),
+        )
+        .body(Body::empty())?;
+    let windows_content = router.clone().oneshot(windows_content).await?;
+    ensure!(windows_content.status() == StatusCode::OK);
+    ensure!(windows_content.into_body().collect().await?.to_bytes() == fixture.windows_bytes);
     ensure!(
         event_with(
             &router,

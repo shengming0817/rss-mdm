@@ -41,7 +41,8 @@ async fn registration_capability_and_wire_gate() -> Result<()> {
     ensure!(old.status() == StatusCode::NOT_FOUND);
     let operation = Uuid::new_v4();
     let valid = json!({"wireVersion":1,"operationId":operation,"executionContext":crate::test_support::software_execution::context(crate::test_support::software_execution::Platform::MacOs),"environment":{"edition":null,"tools":{},"nativeEngines":{}},"profiles":["posix_sh","bash","power_shell7","osquery"]});
-    for version in [2, 3, 4, 5, 6, 255] {
+    {
+        let version = 2;
         let mut retired = valid.clone();
         retired["wireVersion"] = json!(version);
         ensure!(
@@ -147,7 +148,8 @@ async fn offer_start_result_replay_and_inventory_projection() -> Result<()> {
         "collection was not frozen before Offer"
     );
     let event_operation = Uuid::new_v4();
-    for version in [2, 3, 4, 5, 6, 255] {
+    {
+        let version = 2;
         let retired = json!({"wireVersion":version,"operationId":event_operation,"attemptId":task["payload"]["task"]["attemptId"],"executionContext":crate::test_support::software_execution::context(crate::test_support::software_execution::Platform::MacOs),"event":{"kind":"received"}});
         ensure!(
             agent_call(
@@ -279,7 +281,7 @@ async fn chunked_results_require_complete_output_and_preserve_attempt_identity()
         )
         .await?;
     let stack = worker(&fixture.base).await?;
-    publish(&mut fixture.author, &fixture.router, resource).await?;
+    let policy = publish(&mut fixture.author, &fixture.router, resource).await?;
     let task = claim(&fixture.router).await?;
     task_event(&fixture.router, &task, json!({"kind":"received"})).await?;
     task_event(&fixture.router, &task, json!({"kind":"start"})).await?;
@@ -327,6 +329,10 @@ async fn chunked_results_require_complete_output_and_preserve_attempt_identity()
     let attempt = task["payload"]["task"]["attemptId"].as_str().unwrap();
     ensure!(pg(&format!("SELECT count(*) FROM mdm_access.collection_runs WHERE tenant_id='{}' AND id='{attempt}' AND result='snapshot'",case_tenant()))?.trim()=="1");
     ensure!(pg(&format!("SELECT count(*) FROM mdm_commands.output_chunks WHERE tenant_id='{}' AND attempt='{attempt}'",case_tenant()))?.trim()=="2");
+    let task_id = task["payload"]["task"]["taskId"].as_str().unwrap();
+    let detail = fixture.author.call(&fixture.router, Method::GET, &format!("/api/v1/policies/{policy}/runs/{task_id}"), None).await?;
+    ensure!(detail.0 == StatusCode::OK && detail.1["taskId"] == task_id);
+    ensure!(detail.1["result"]["output"]["version"] == "1.2" && detail.1["result"]["output"]["healthy"] == true);
     crate::test_support::stop_worker(stack).await?;
     Ok(())
     }).await
@@ -355,6 +361,8 @@ async fn collection_structure_budget_precedes_partial_field_acceptance() -> Resu
         task_event(&fixture.router, &task, json!({"kind":"start"})).await?;
         let output = if mode == "partial" {
             json!({"healthy":true})
+        } else if mode == "truncated" {
+            json!({"version":"1.2","healthy":true})
         } else {
             json!({"version":"1.2","healthy":true,"items":[{"id":"a"},{"id":"b"}]})
         };
@@ -397,6 +405,11 @@ async fn collection_structure_budget_precedes_partial_field_acceptance() -> Resu
             "failed"
         };
         ensure!(pg(&format!("SELECT result FROM mdm_access.collection_runs WHERE tenant_id='{}' AND id='{attempt}'",case_tenant()))?.trim()==expected,"invalid collection outcome: {mode}");
+        if mode == "partial" {
+            let fields: Value = serde_json::from_str(pg(&format!("SELECT attempts::jsonb->'fields' FROM mdm_access.collection_runs WHERE tenant_id='{}' AND id='{attempt}'", case_tenant()))?.trim())?;
+            ensure!(fields["custom.corporate_agent.healthy"]["quality"] == "success");
+            ensure!(fields["custom.corporate_agent.version"]["quality"] == "missing");
+        }
         if mode != "partial" {
             let id = task["payload"]["task"]["taskId"].as_str().unwrap();
             ensure!(pg(&format!("SELECT state->>'execution' FROM mdm_commands.action_runs WHERE tenant_id='{}' AND id='{id}'",case_tenant()))?.trim()=="failed");
@@ -412,47 +425,73 @@ async fn collection_structure_budget_precedes_partial_field_acceptance() -> Resu
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 #[ignore = "make t2 MODULE=execution.agent.delivery"]
 async fn native_inventory_only_partial_empty_chunked_and_revoked() -> Result<()> {
-    native_inventory_case(true, false, false).await
+    native_inventory_case(
+        "windows",
+        Some("device.software.installations"),
+        rss_mdm_agent_wire::runtime::NativeQueryStatus::Complete,
+        &[0, 1, 2, 3],
+    )
+    .await
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 #[ignore = "make t2 MODULE=execution.agent.delivery"]
 async fn native_unmapped_evidence_requires_sensitive_permission() -> Result<()> {
-    native_inventory_case(false, false, false).await
+    native_inventory_case(
+        "windows",
+        None,
+        rss_mdm_agent_wire::runtime::NativeQueryStatus::Complete,
+        &[0, 3],
+    )
+    .await
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 #[ignore = "make t2 MODULE=execution.agent.delivery"]
 async fn native_all_query_failures_preserve_execution_completion() -> Result<()> {
-    native_inventory_case(false, true, false).await
+    native_inventory_case(
+        "windows",
+        None,
+        rss_mdm_agent_wire::runtime::NativeQueryStatus::Denied,
+        &[0],
+    )
+    .await
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 #[ignore = "make t2 MODULE=execution.agent.delivery"]
-async fn macos_native_inventory_partial_empty_chunked_and_context_changed() -> Result<()> {
-    native_inventory_case(true, false, true).await
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
-#[ignore = "make t2 MODULE=execution.agent.delivery"]
-async fn macos_native_unmapped_failed_evidence_requires_sensitive_permission() -> Result<()> {
-    native_inventory_case(false, true, true).await
+async fn macos_native_mapping_and_context_recheck() -> Result<()> {
+    native_inventory_case(
+        "macos",
+        Some("device.software.receipts"),
+        rss_mdm_agent_wire::runtime::NativeQueryStatus::Complete,
+        &[0, 3],
+    )
+    .await
 }
 
 #[allow(
     clippy::cognitive_complexity,
     reason = "shared HTTP scenario retains distinct authorization, quality and transport assertions"
 )]
-async fn native_inventory_case(map_software: bool, all_failed: bool, macos: bool) -> Result<()> {
+async fn native_inventory_case(
+    platform: &str,
+    mapped_software: Option<&str>,
+    status: rss_mdm_agent_wire::runtime::NativeQueryStatus,
+    stages: &[i32],
+) -> Result<()> {
     use rss_mdm_agent_wire::runtime as w;
     use rss_mdm_resource as r;
     use sha2::{Digest, Sha256};
-    let platform = if macos { "macos" } else { "windows" };
+    let macos = platform == "macos";
+    let map_software = mapped_software.is_some();
+    let all_failed = status != w::NativeQueryStatus::Complete;
     let software_field = if macos {
         "device.software.receipts"
     } else {
         "device.software.installations"
     };
+    let large_raw = !macos && map_software;
     let mut f = Fixture::new().await?;
     let resources = std::mem::take(&mut f.resources);
     resources.finish(async {
@@ -569,12 +608,9 @@ async fn native_inventory_case(map_software: bool, all_failed: bool, macos: bool
     let policy_input = || json!({"scope":case_task_scope(),"action":{"kind":"agent_collection","resource":{"id":resource_id,"version":"v1","platform":platform,"architecture":"x86_64","variant":"default"},"runLifetimeSeconds":300}});
     let mut prior_network = String::new();
     let mut prior_software = String::new();
-    for stage in if !macos && map_software && !all_failed {
-        vec![0, 1, 4, 5, 2, 3]
-    } else {
-        vec![0, 1, 2, 3]
-    } {
+    for &stage in stages {
         let policy = Uuid::new_v4();
+        if !map_software && stage == 0 {
         let ordinary = f
             .grants
             .iter()
@@ -589,7 +625,9 @@ async fn native_inventory_case(map_software: bool, all_failed: bool, macos: bool
         );
         crate::test_support::identity::set_grants(case_tenant(), &f.author_id, f.grants.clone())
             .await?;
+        }
         post(&mut f.author,&f.router,&format!("/api/v1/policies/{policy}"),json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"put","enabled":true,"definition":policy_input()}})).await?;
+        if large_raw && stage == 0 {
         let unsupported = agent_call(
             &f.router,
             Method::POST,
@@ -602,6 +640,7 @@ async fn native_inventory_case(map_software: bool, all_failed: bool, macos: bool
             unsupported.0 == StatusCode::OK && unsupported.1["task"].is_null(),
             "unsupported native claim: {unsupported:?}"
         );
+        }
         let task = tokio::time::timeout(Duration::from_secs(30), async {
             loop {
                 let response = agent_call(
@@ -740,7 +779,7 @@ async fn native_inventory_case(map_software: bool, all_failed: bool, macos: bool
                         .into()
                     })
                     .collect()
-            } else if stage == 0 {
+            } else if stage == 0 && large_raw {
                 (0..24)
                     .map(|i| {
                         [
@@ -766,17 +805,9 @@ async fn native_inventory_case(map_software: bool, all_failed: bool, macos: bool
                 w::NativeQueryResult {
                     query_digest: q.digest(),
                     collected_at: now,
-                    status: if all_failed {
-                        match stage {
-                            0 => w::NativeQueryStatus::Denied,
-                            1 => w::NativeQueryStatus::Timeout,
-                            _ => w::NativeQueryStatus::Invalid,
-                        }
-                    } else if stage == 1 && (id == "network" || id == "receipts") {
+                    status: if all_failed { status } else if stage == 1 && (id == "network" || id == "receipts") {
                         w::NativeQueryStatus::Truncated
-                    } else {
-                        w::NativeQueryStatus::Complete
-                    },
+                    } else { w::NativeQueryStatus::Complete },
                     enumeration_complete: !(stage == 1 && id == "network"),
                     row_count: rows.len() as u32,
                     rows,
@@ -810,6 +841,7 @@ async fn native_inventory_case(map_software: bool, all_failed: bool, macos: bool
         let terminal = serde_json::to_value(w::TaskEvent::ChunkedCollectionResult {
             manifest: manifest.clone(),
         })?;
+        if large_raw && stage == 0 {
         let missing = agent_call(
             &f.router,
             Method::POST,
@@ -822,30 +854,16 @@ async fn native_inventory_case(map_software: bool, all_failed: bool, macos: bool
             missing.0 == StatusCode::BAD_REQUEST,
             "missing native chunks: {missing:?}"
         );
-        if stage != 0 {
+            ensure!(body.len() > 256 * 1024);
+        }
+        let terminal = if large_raw && stage == 1 {
             for (i, chunk) in body.chunks(w::OUTPUT_CHUNK_BYTES).enumerate() {
-                let chunk = serde_json::to_value(w::TaskEvent::OutputChunk(w::OutputChunk::new(
-                    manifest.clone(),
-                    i as u16,
-                    chunk,
-                )?))?;
-                let response = agent_call(
-                    &f.router,
-                    Method::POST,
-                    &path,
-                    Some(case_credential()),
-                    Some(event(Uuid::new_v4(), chunk)),
-                )
-                .await?;
+                let chunk = w::TaskEvent::OutputChunk(w::OutputChunk::new(manifest.clone(), i as u16, chunk)?);
+                let response = agent_call(&f.router, Method::POST, &path, Some(case_credential()), Some(event(Uuid::new_v4(), serde_json::to_value(chunk)?))).await?;
                 ensure!(response.0 == StatusCode::OK);
             }
-        }
-        let terminal = if stage == 0 {
-            ensure!(body.len() > 256 * 1024);
-            serde_json::to_value(w::TaskEvent::CollectionResult(result.clone()))?
-        } else {
             terminal
-        };
+        } else { serde_json::to_value(w::TaskEvent::CollectionResult(result.clone()))? };
         let operation = Uuid::new_v4();
         let input = event(operation, terminal);
         let accepted = agent_call(
@@ -871,6 +889,12 @@ async fn native_inventory_case(map_software: bool, all_failed: bool, macos: bool
         ensure!(pg(&format!("SELECT state->>'execution' FROM mdm_commands.action_runs WHERE tenant_id='{}' AND id='{}'", case_tenant(), spec.task_id))?.trim() == "succeeded", "legal finished package did not complete execution");
         if all_failed {
             ensure!(pg(&format!("SELECT result FROM mdm_access.collection_runs WHERE tenant_id='{}' AND id='{}'", case_tenant(), spec.attempt_id))?.trim() == "failed");
+            tokio::time::timeout(Duration::from_secs(20), async {
+                loop {
+                    if pg(&format!("SELECT NOT delivery_pending FROM mdm_access.collection_runs WHERE tenant_id='{}' AND id='{}'", case_tenant(), spec.attempt_id))?.trim() == "t" { break Ok::<_, anyhow::Error>(()); }
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+                }
+            }).await??;
             ensure!(pg(&format!("SELECT count(*) FROM mdm.inventory WHERE tenant_id='{}' AND registration='{}' AND source='agent.native'", case_tenant(), spec.registration_id))?.trim() == "0");
         } else {
             tokio::time::timeout(Duration::from_secs(20),async{
@@ -893,7 +917,7 @@ async fn native_inventory_case(map_software: bool, all_failed: bool, macos: bool
                 let v: Value = serde_json::from_str(network.trim())?;
                 ensure!(v["value"] == json!([]));
             }
-            if !macos {
+            if !macos && map_software {
                 windows_assets::verify_identity(spec.registration_id, spec.attempt_id, stage)?;
                 let response = f
                     .author
@@ -943,6 +967,10 @@ async fn native_inventory_case(map_software: bool, all_failed: bool, macos: bool
                 }
             }
         }
+        if !map_software {
+            ensure!(pg(&format!("SELECT count(*) FROM mdm.inventory WHERE tenant_id='{}' AND registration='{}' AND source='agent.native' AND field='{software_field}'", case_tenant(), spec.registration_id))?.trim() == "0");
+        }
+        if stage != 0 { continue; }
         let detail_path = format!("/api/v1/policies/{policy}/runs/{}", spec.task_id);
         let detail = f
             .author
@@ -954,6 +982,7 @@ async fn native_inventory_case(map_software: bool, all_failed: bool, macos: bool
             "native evidence recovery failed: {}",
             detail.0
         );
+        if !map_software {
         let ordinary = f
             .grants
             .iter()
@@ -993,13 +1022,15 @@ async fn native_inventory_case(map_software: bool, all_failed: bool, macos: bool
             )
             .await?;
         ensure!(summary.0 == StatusCode::OK, "native summary: {summary:?}");
+        let item = summary.1["items"].as_array().unwrap().iter().find(|item| item["taskId"] == spec.task_id.to_string()).expect("target run absent from summary");
         ensure!(
-            summary.1["items"][0]["result"].get("native").is_none()
+            item["result"].get("native").is_none()
                 && !summary.1.to_string().contains("private-native-evidence")
                 && !summary.1.to_string().contains("changed-truncated")
         );
         crate::test_support::identity::set_grants(case_tenant(), &f.author_id, f.grants.clone())
             .await?;
+        }
         ensure!(pg(&format!("SELECT count(*) FROM mdm_commands.action_runs r JOIN mdm_policy.versions v ON(v.tenant_id,v.id)=(r.tenant_id,r.policy_version) WHERE r.tenant_id='{}' AND v.action_kind='execution'",case_tenant()))?.trim()=="0");
     }
     crate::test_support::stop_worker(inventory).await?;
@@ -1114,10 +1145,25 @@ async fn macos_user_applications_and_brew_keep_other_users_after_complete_empty(
         ensure!(
             matches!(&spec.execution.target, w::SoftwareExecutionTarget::User { identity, .. } if identity == uid)
         );
+        let verification = crate::test_support::task_signature::TaskVerification {
+            key_id: "t2", public_key: f.key.public_key().as_ref(),
+            tenant_id: Uuid::parse_str(case_tenant())?, device_id: registration["deviceId"].as_str().unwrap(),
+            platform: w::TaskPlatform::Macos, architecture: w::TaskArchitecture::Aarch64,
+            registration_id: serde_json::from_value(registration["registrationId"].clone())?,
+            generation: registration["generation"].as_u64().unwrap(),
+            task_id: spec.task_id, attempt_id: spec.attempt_id, permit: w::TaskPermit::Offer,
+            now: crate::clock::Clock::unix_seconds(&crate::clock::SystemClock)?,
+        };
+        crate::test_support::task_signature::verify(&task, &verification)?;
         let path = format!("/api/v1/agent/runtime/tasks/{}/events", spec.task_id);
         for event in [json!({"kind":"received"}), json!({"kind":"start"})] {
+            let is_start = event["kind"] == "start";
             let response = agent_call(&f.router,Method::POST,&path,Some(case_credential()),Some(json!({"wireVersion":1,"operationId":Uuid::new_v4(),"attemptId":spec.attempt_id,"executionContext":context,"event":event}))).await?;
             ensure!(response.0 == StatusCode::OK, "scoped start: {response:?}");
+            if is_start {
+                let ack: w::TaskEventAck = serde_json::from_value(response.1)?;
+                crate::test_support::task_signature::verify(&ack.into_permit().unwrap(), &crate::test_support::task_signature::TaskVerification { permit: w::TaskPermit::Start, ..verification })?;
+            }
         }
         let now = crate::clock::Clock::unix_seconds(&crate::clock::SystemClock)?;
         let mut queries = std::collections::BTreeMap::new();

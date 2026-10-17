@@ -87,7 +87,8 @@ async fn chain(format: &str, bundle: bool, user: bool) -> Result<()> {
         ]),
         _ => anyhow::bail!("unknown matrix entry"),
     };
-    let mut f = Fixture::with_profiles(platform, profiles, local.clone()).await?;
+    let mut f =
+        Fixture::with_profiles(platform, profiles, local.clone(), format != "msix", false).await?;
     let resources = std::mem::take(&mut f.resources);
     resources.finish(async {
     let stack = worker(&f.base, f.content.clone()).await?;
@@ -199,10 +200,10 @@ async fn chain(format: &str, bundle: bool, user: bool) -> Result<()> {
         } else {
             crate::test_support::software_execution::case_device()
         },
-        platform: spec.platform,
-        architecture: spec.architecture,
-        registration_id: spec.registration_id,
-        generation: spec.generation,
+        platform: serde_json::from_value(json!(os))?,
+        architecture: serde_json::from_value(json!(arch))?,
+        registration_id: serde_json::from_value(f.registration["registrationId"].clone())?,
+        generation: f.registration["generation"].as_u64().unwrap(),
         task_id: spec.task_id,
         attempt_id: spec.attempt_id,
         permit: rss_mdm_agent_wire::runtime::TaskPermit::Offer,
@@ -254,6 +255,9 @@ async fn chain(format: &str, bundle: bool, user: bool) -> Result<()> {
     // Bundle/container admission is proven by the signed frozen offer and exact content.
     // Result settlement uses the same native identity as the single-package anchors below.
     if bundle || format == "dmg_pkg" {
+        let frozen = serde_json::to_value(&root.action.behavior)?;
+        if format == "dmg_pkg" { ensure!(frozen["payload"] == behavior["payload"]); }
+        if bundle { ensure!(frozen["container"] == behavior["container"] && frozen["identity"] == behavior["identity"]); }
         crate::test_support::stop_worker(stack).await?;
         return Ok(());
     }
@@ -274,7 +278,7 @@ async fn chain(format: &str, bundle: bool, user: bool) -> Result<()> {
     let mut result = result_event(&task, "install", Some(0), "present", false)?;
     let output_marker = "private installer stdout marker";
     if format == "exe" {
-        result["steps"][0]["diagnostics"]["stdout"] = json!(output_marker);
+        result["steps"].as_array_mut().unwrap().last_mut().unwrap()["diagnostics"]["stdout"] = json!(output_marker);
     }
     if format == "msix" {
         let mut wrong = result.clone();
@@ -287,7 +291,7 @@ async fn chain(format: &str, bundle: bool, user: bool) -> Result<()> {
             event_with(&f.router, &f.credential, &task, wrong)
                 .await?
                 .0
-                .is_client_error(),
+                == StatusCode::BAD_REQUEST,
             "wrong native effect accepted"
         );
     }
@@ -320,6 +324,8 @@ async fn chain(format: &str, bundle: bool, user: bool) -> Result<()> {
             .author
             .call(&f.router, Method::GET, &format!("{policy_path}/runs"), None)
             .await?;
+        ensure!(runs.0 == StatusCode::OK);
+        ensure!(runs.1["items"].as_array().unwrap().iter().any(|run| run["taskId"] == spec.task_id.to_string()));
         ensure!(
             !runs.1.to_string().contains(output_marker),
             "software list exposed complete process output"

@@ -175,6 +175,20 @@ fn plaintext_source_is_rejected() {
 }
 
 #[test]
+fn literal_address_must_match_pinned_addresses() {
+    assert!(matches!(
+        Source::new(
+            tenant(),
+            "private",
+            "https://127.0.0.1/",
+            vec!["8.8.8.8".parse().unwrap()],
+            "ref"
+        ),
+        Err(Error::AddressDenied)
+    ));
+}
+
+#[test]
 fn missing_private_bearer_is_rejected() {
     for bearer in ["", " ", "token with spaces", "token\r\nInjected: value"] {
         assert!(Access::new(tenant(), "private", "ref", bearer).is_err());

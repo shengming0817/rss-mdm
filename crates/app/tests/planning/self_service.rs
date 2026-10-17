@@ -1654,6 +1654,8 @@ async fn software_unknown_survives_same_account_relogin_and_keeps_other_accounts
             "software.msi.user.v1"
         ]),
         local.clone(),
+        false,
+        false,
     )
     .await?;
     let resources = std::mem::take(&mut f.resources);

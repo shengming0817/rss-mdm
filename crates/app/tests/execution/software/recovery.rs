@@ -326,6 +326,7 @@ async fn known_failure_has_bounded_retries() -> Result<()> {
             .unwrap()
             .to_owned();
     }
+    pg(&format!("UPDATE mdm_commands.action_runs SET created_at=created_at-600 WHERE tenant_id='{}' AND id='{previous_failure}'", case_tenant()))?;
     let exhausted = agent(
         &router,
         "/api/v1/agent/runtime/tasks/claim",
@@ -333,9 +334,10 @@ async fn known_failure_has_bounded_retries() -> Result<()> {
     )
     .await?;
     ensure!(
-        exhausted.1["task"].is_null(),
+        exhausted.0 == StatusCode::OK && exhausted.1["task"].is_null(),
         "failed deployment exceeded bounded retries: {exhausted:?}"
     );
+    ensure!(pg(&format!("SELECT jsonb_build_array(count(*),count(DISTINCT r.id),count(*) FILTER(WHERE r.result->>'effect'='failed')) FROM mdm_commands.action_runs r JOIN mdm_policy.versions v ON (v.tenant_id,v.id)=(r.tenant_id,r.policy_version) WHERE r.tenant_id='{}' AND v.policy='{failed_policy}'", case_tenant()))?.trim() == "[3, 3, 3]");
     write(
         &mut author,
         &router,
@@ -408,6 +410,8 @@ async fn reboot_waits_for_detection() -> Result<()> {
         reboot_detail.1["effect"] == "waiting_reboot",
         "pending reboot: {reboot_detail:?}"
     );
+    let reboot_run = reboot_task["payload"]["task"]["taskId"].as_str().unwrap();
+    pg(&format!("UPDATE mdm_commands.action_runs SET created_at=created_at-600 WHERE tenant_id='{}' AND id='{reboot_run}'", case_tenant()))?;
     let reboot_retry = agent(
         &router,
         "/api/v1/agent/runtime/tasks/claim",
@@ -415,7 +419,7 @@ async fn reboot_waits_for_detection() -> Result<()> {
     )
     .await?;
     ensure!(
-        reboot_retry.1["task"].is_null(),
+        reboot_retry.0 == StatusCode::OK && reboot_retry.1["task"].is_null(),
         "reboot caused blind retry: {reboot_retry:?}"
     );
     ensure!(
@@ -427,6 +431,11 @@ async fn reboot_waits_for_detection() -> Result<()> {
         .await?
         .0 == StatusCode::OK
     );
+    let resolved = author.call(&router, Method::GET, &format!("/api/v1/policies/{reboot_policy}/runs/{reboot_run}"), None).await?;
+    ensure!(resolved.0 == StatusCode::OK && resolved.1["effect"] == "verified");
+    let rollout = ready_rollout(&mut author, &router, reboot_policy).await?;
+    ensure!(rollout.1["stages"][0]["waitingReboot"] == 0 && rollout.1["stages"][0]["verifiedSuccess"] == 1);
+    ensure!(pg(&format!("SELECT count(*) FROM mdm_commands.action_runs r JOIN mdm_policy.versions v ON (v.tenant_id,v.id)=(r.tenant_id,r.policy_version) WHERE r.tenant_id='{}' AND v.policy='{reboot_policy}'", case_tenant()))?.trim() == "1");
     write(
         &mut author,
         &router,
@@ -494,6 +503,8 @@ async fn unknown_effect_survives_credential_recovery() -> Result<()> {
     .await?;
     assert_no_software_run(&router, opposing).await?;
     let registration: String = pg(&format!("SELECT id FROM mdm_access.registrations WHERE tenant_id='{}' AND device='{}' AND channel='agent' AND state='active'",case_tenant(),case_device()))?.trim().into();
+    let old_generation: u64 = pg(&format!("SELECT generation FROM mdm_access.registrations WHERE tenant_id='{}' AND id='{registration}'", case_tenant()))?.trim().parse()?;
+    let old_credential = pg(&format!("SELECT id FROM mdm_access.credentials WHERE tenant_id='{}' AND registration='{registration}' AND state='active'", case_tenant()))?.trim().to_owned();
     let secret = credential("recovery-software");
     set_device_grants(
         &mut author,
@@ -529,6 +540,13 @@ async fn unknown_effect_survives_credential_recovery() -> Result<()> {
         crate::test_support::agent::complete_grant(&service, &grant.1, &signing, next_credential)
             .await?;
     ensure!(next_registration["registrationId"] == registration);
+    // Credential recovery preserves the registration/runtime identity and fences the predecessor credential.
+    ensure!(next_registration["generation"].as_u64().unwrap() == old_generation);
+    let current_credential = pg(&format!("SELECT id FROM mdm_access.credentials WHERE tenant_id='{}' AND registration='{registration}' AND state='active'", case_tenant()))?.trim().to_owned();
+    ensure!(!current_credential.is_empty() && current_credential != old_credential);
+    ensure!(pg(&format!("SELECT state FROM mdm_access.credentials WHERE tenant_id='{}' AND id='{old_credential}'", case_tenant()))?.trim() == "superseded");
+    let old = agent(&router, "/api/v1/agent/runtime/tasks/claim", Some(json!({"wireVersion":1,"executionContext":context(Platform::MacOs),"environment":{"edition":null,"tools":{},"nativeEngines":{}},"profiles":["posix_sh"],"operationId":Uuid::new_v4()}))).await?;
+    ensure!(old.0 == StatusCode::UNAUTHORIZED || old.0 == StatusCode::FORBIDDEN, "old credential still authorized: {old:?}");
     let after_reenroll = agent_call(
         &router,
         Method::POST,
@@ -541,6 +559,7 @@ async fn unknown_effect_survives_credential_recovery() -> Result<()> {
         after_reenroll.0 == StatusCode::OK && after_reenroll.1["task"].is_null(),
         "unknown side effect retried after registration replacement: {after_reenroll:?}"
     );
+    ensure!(pg(&format!("SELECT count(*) FROM mdm_commands.action_runs r JOIN mdm_policy.versions v ON (v.tenant_id,v.id)=(r.tenant_id,r.policy_version) WHERE r.tenant_id='{}' AND v.policy='{unknown_policy}'",case_tenant()))?.trim() == "1");
     ensure!(pg(&format!("SELECT count(*) FROM mdm_commands.action_runs r JOIN mdm_policy.versions v ON (v.tenant_id,v.id)=(r.tenant_id,r.policy_version) WHERE r.tenant_id='{}' AND v.policy='{opposing}'",case_tenant()))?.trim() == "0", "opposing intent bypassed Unknown after credential generation changed");
 
     Ok(())
@@ -605,6 +624,8 @@ async fn unknown_result_replay_and_late_detection() -> Result<()> {
             && uncertainty.1["stages"][0]["verifiedSuccess"] == 0,
         "unknown denominator: {uncertainty:?}"
     );
+    let task_id = task["payload"]["task"]["taskId"].as_str().unwrap();
+    pg(&format!("UPDATE mdm_commands.action_runs SET created_at=created_at-600 WHERE tenant_id='{}' AND id='{task_id}'", case_tenant()))?;
     let no_retry = agent(
         &router,
         "/api/v1/agent/runtime/tasks/claim",
@@ -615,6 +636,7 @@ async fn unknown_result_replay_and_late_detection() -> Result<()> {
         no_retry.0 == StatusCode::OK && no_retry.1["task"].is_null(),
         "unknown effect was blindly retried: {no_retry:?}"
     );
+    ensure!(pg(&format!("SELECT count(*) FROM mdm_commands.action_runs r JOIN mdm_policy.versions v ON (v.tenant_id,v.id)=(r.tenant_id,r.policy_version) WHERE r.tenant_id='{}' AND v.policy='{policy}'",case_tenant()))?.trim() == "1");
     let late = event(
         &router,
         &task,
@@ -676,6 +698,10 @@ async fn withdrawn_software_does_not_poison_claims_for_other_policies_or_outside
         ),
         "withdrawal blocked unrelated valid policy: {task}"
     );
+    ensure!(task["payload"]["task"]["authorization"]["policyId"] == ids[2].to_string());
+    for policy in &ids[..2] {
+        ensure!(pg(&format!("SELECT count(*) FROM mdm_commands.action_runs r JOIN mdm_policy.versions v ON (v.tenant_id,v.id)=(r.tenant_id,r.policy_version) WHERE r.tenant_id='{}' AND v.policy='{policy}'",case_tenant()))?.trim() == "0");
+    }
     let page = f
         .author
         .call(
