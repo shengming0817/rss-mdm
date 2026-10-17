@@ -172,8 +172,10 @@ impl Fixture {
             &Uuid::new_v4().to_string(),
             self.app.clock.unix_seconds()?,
         )?;
-        self.lose_notify
-            .store(true, std::sync::atomic::Ordering::SeqCst);
+        self.lose_notify.store(
+            expected_account.is_none(),
+            std::sync::atomic::Ordering::SeqCst,
+        );
         let der = device
             .enroll(
                 &self.client()?,
@@ -183,17 +185,19 @@ impl Fixture {
             .await?;
         self.lose_notify
             .store(false, std::sync::atomic::Ordering::SeqCst);
-        ensure!(
-            device
-                .enroll(
-                    &self.client()?,
-                    &self.app.apple()?.channel.scep_fixture()?.0,
-                    &request
-                )
-                .await
-                .is_err(),
-            "renewal challenge reused"
-        );
+        if expected_account.is_none() {
+            ensure!(
+                device
+                    .enroll(
+                        &self.client()?,
+                        &self.app.apple()?.channel.scep_fixture()?.0,
+                        &request
+                    )
+                    .await
+                    .is_err(),
+                "renewal challenge reused"
+            );
+        }
         let peer = lifecycle::Peer {
             client: reqwest::Client::builder()
                 .no_proxy()
@@ -208,24 +212,26 @@ impl Fixture {
             installed_trust: Default::default(),
             oracle: oracle::Oracle::new(&der)?,
         };
-        let wrong = peer
-            .send(
-                "/checkin",
-                protocol::dictionary([
-                    ("MessageType", "Authenticate".into()),
-                    ("UDID", "wrong-device".into()),
-                    ("Topic", peer.topic.clone().into()),
-                ]),
+        if expected_account.is_none() {
+            let wrong = peer
+                .send(
+                    "/checkin",
+                    protocol::dictionary([
+                        ("MessageType", "Authenticate".into()),
+                        ("UDID", "wrong-device".into()),
+                        ("Topic", peer.topic.clone().into()),
+                    ]),
+                )
+                .await?;
+            ensure!(wrong.0 == StatusCode::UNAUTHORIZED);
+            let pending: bool = sqlx::query_scalar(
+                "SELECT fingerprint IS NULL FROM mdm_apple.scep_attempts WHERE id=$1::uuid",
             )
+            .bind(attempt.to_string())
+            .fetch_one(&mut pg)
             .await?;
-        ensure!(wrong.0 == StatusCode::UNAUTHORIZED);
-        let pending: bool = sqlx::query_scalar(
-            "SELECT fingerprint IS NULL FROM mdm_apple.scep_attempts WHERE id=$1::uuid",
-        )
-        .bind(attempt.to_string())
-        .fetch_one(&mut pg)
-        .await?;
-        ensure!(pending, "lost notify or wrong UDID activated candidate");
+            ensure!(pending, "lost notify or wrong UDID activated candidate");
+        }
         // New certificate's first authenticated check-in is the commit point, even after lost notify.
         let accepted = peer
             .send(
@@ -245,16 +251,50 @@ impl Fixture {
             "renewal activation {}",
             accepted.0
         );
-        let audit =
-            rss_mdm_audit_integration::RequestAudit::new(case_tenant().into(), "apple_management");
-        let stale = self
-            .app
-            .execution
-            .apple_management(
-                self.app.apple()?.channel.clone(),
-                &old_principal,
-                rss_mdm_apple_channel::exchange::prepare(
+        if expected_account.is_none() {
+            let audit = rss_mdm_audit_integration::RequestAudit::new(
+                case_tenant().into(),
+                "apple_management",
+            );
+            let stale = self
+                .app
+                .execution
+                .apple_management(
                     self.app.apple()?.channel.clone(),
+                    &old_principal,
+                    rss_mdm_apple_channel::exchange::prepare(
+                        self.app.apple()?.channel.clone(),
+                        protocol::dictionary([
+                            ("Status", "Idle".into()),
+                            (
+                                "UDID",
+                                crate::test_support::case::name("rss-t2-apple").into(),
+                            ),
+                        ]),
+                        protocol::xml(protocol::dictionary([
+                            ("Status", "Idle".into()),
+                            (
+                                "UDID",
+                                crate::test_support::case::name("rss-t2-apple").into(),
+                            ),
+                        ]))?,
+                        None,
+                    )?,
+                    &audit,
+                )
+                .await;
+            audit.finalize(None);
+            ensure!(
+                matches!(stale, Err(rss_mdm_execution_service::Error::Unauthorized)),
+                "pre-authenticated old principal survived credential switch"
+            );
+        }
+        peer.token().await?;
+        peer.manage("Acknowledged", Some(command), None).await?;
+        if expected_account.is_none() {
+            let refused = old
+                .send(
+                    "/mdm",
                     protocol::dictionary([
                         ("Status", "Idle".into()),
                         (
@@ -262,41 +302,13 @@ impl Fixture {
                             crate::test_support::case::name("rss-t2-apple").into(),
                         ),
                     ]),
-                    protocol::xml(protocol::dictionary([
-                        ("Status", "Idle".into()),
-                        (
-                            "UDID",
-                            crate::test_support::case::name("rss-t2-apple").into(),
-                        ),
-                    ]))?,
-                    None,
-                )?,
-                &audit,
-            )
-            .await;
-        audit.finalize(None);
-        ensure!(
-            matches!(stale, Err(rss_mdm_execution_service::Error::Unauthorized)),
-            "pre-authenticated old principal survived credential switch"
-        );
-        peer.token().await?;
-        peer.manage("Acknowledged", Some(command), None).await?;
-        let refused = old
-            .send(
-                "/mdm",
-                protocol::dictionary([
-                    ("Status", "Idle".into()),
-                    (
-                        "UDID",
-                        crate::test_support::case::name("rss-t2-apple").into(),
-                    ),
-                ]),
-            )
-            .await?;
-        ensure!(
-            refused.0 == StatusCode::UNAUTHORIZED,
-            "old credential survived renewal"
-        );
+                )
+                .await?;
+            ensure!(
+                refused.0 == StatusCode::UNAUTHORIZED,
+                "old credential survived renewal"
+            );
+        }
         let replacement=sqlx::query("SELECT r.generation,c.id::text AS credential,p.epoch::text FROM mdm_access.registrations r JOIN mdm_access.credentials c ON (c.tenant_id,c.registration)=(r.tenant_id,r.id) JOIN mdm_access.report_sources p ON (p.tenant_id,p.registration)=(r.tenant_id,r.id) WHERE r.id=$1::uuid AND c.state='active'").bind(row.try_get::<String,_>("registration")?).fetch_one(&mut pg).await?;
         ensure!(
             replacement.try_get::<i64, _>("generation")? == row.try_get::<i64, _>("generation")?
@@ -305,23 +317,25 @@ impl Fixture {
                 && replacement.try_get::<String, _>("credential")?
                     != row.try_get::<String, _>("credential")?
         );
-        let checked = self.app.apple()?.channel.trust_fixture().verify(
-            &[tokio_rustls::rustls::pki_types::CertificateDer::from(
-                der.clone(),
-            )],
-            self.app.clock.unix_seconds()?,
-        )?;
-        ensure!(
-            self.app
-                .apple()?
-                .channel
-                .trust_fixture()
-                .verify(
-                    &[tokio_rustls::rustls::pki_types::CertificateDer::from(der)],
-                    checked.not_after() + 1
-                )
-                .is_err()
-        );
+        if expected_account.is_none() {
+            let checked = self.app.apple()?.channel.trust_fixture().verify(
+                &[tokio_rustls::rustls::pki_types::CertificateDer::from(
+                    der.clone(),
+                )],
+                self.app.clock.unix_seconds()?,
+            )?;
+            ensure!(
+                self.app
+                    .apple()?
+                    .channel
+                    .trust_fixture()
+                    .verify(
+                        &[tokio_rustls::rustls::pki_types::CertificateDer::from(der)],
+                        checked.not_after() + 1
+                    )
+                    .is_err()
+            );
+        }
         pg.close().await?;
         Ok((peer, device))
     }

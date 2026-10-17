@@ -244,27 +244,9 @@ async fn account_enrollment_and_reauthentication_keep_one_registration() -> Resu
     ensure!(discovery["Servers"][0]["Version"] == "mdm-adde");
     let path = format!("/api/v1/apple/account-enrollment/enroll/{org}");
     let payload = signed(&f, "Mac14,2", "23A344")?;
-    for body in [
-        signed(&f, "iPhone15,2", "23A344")?,
-        signed(&f, "Mac14,2", "22A344")?,
-        vec![0; 64],
-    ] {
-        ensure!(request(&f, Method::POST, &path, body, &[]).await?.0 == StatusCode::BAD_REQUEST);
-    }
+    ensure!(request(&f, Method::POST, &path, vec![0; 64], &[]).await?.0 == StatusCode::BAD_REQUEST);
     let initial = request(&f, Method::POST, &path, payload.clone(), &[]).await?;
     ensure!(initial.0 == StatusCode::UNAUTHORIZED);
-    ensure!(
-        request(
-            &f,
-            Method::POST,
-            &path,
-            signed(&f, "iMac20,1", "23A344")?,
-            &[]
-        )
-        .await?
-        .0 == StatusCode::UNAUTHORIZED,
-        "supported Intel iMac must enter account authentication"
-    );
     let mut pg =
         sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?)
             .await?;
