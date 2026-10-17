@@ -142,6 +142,7 @@ pub fn catalog() -> Vec<Blueprint> {
     out.extend(windows::catalog());
     out.extend(agent_windows::catalog());
     out.extend(agent_macos::catalog());
+    out.extend(agent_system::catalog());
     out.extend(apple::status_catalog());
     out
 }
@@ -156,4 +157,5 @@ mod apple;
 mod windows;
 
 mod agent_macos;
+mod agent_system;
 mod agent_windows;

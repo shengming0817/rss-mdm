@@ -24,6 +24,10 @@ pub async fn append(
     run: &Run,
     chunk: &wire::OutputChunk,
 ) -> Result<()> {
+    if matches!(plan,ScheduledPolicy::AgentCollection(v) if v.frozen.definition.spec().plan.requires_inline())
+    {
+        return Err(Error::Malformed.into());
+    }
     collection(plan, chunk.manifest().bytes())?;
     append_checked(tx, run, chunk).await
 }

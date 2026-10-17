@@ -71,7 +71,7 @@ pub async fn preview(
                     Some(software::TaskAdmission::new(match state {crate::script_eligibility::Eligibility::Eligible=>software::TaskAdmissionState::Eligible,crate::script_eligibility::Eligibility::Ineligible=>software::TaskAdmissionState::UnsupportedCapability,crate::script_eligibility::Eligibility::Unknown=>software::TaskAdmissionState::ChannelUnknown},None))
                 } else if let PreviewInputs::AgentCollection{definition,platform,architecture}=&prepared {
                     let candidate=crate::Target{device:target.device.clone(),registration:target.registration_id,generation:target.generation};
-                    let allowed=crate::agent_collection_eligibility::check_in(tx,s.agent_store.clone(),&candidate,*platform,*architecture,&definition.spec().plan).await?;
+                    let allowed=crate::agent_collection_eligibility::check_in(tx,s.agent_store.clone(),&candidate,*platform,*architecture,definition).await?;
                     Some(software::TaskAdmission::new(if allowed{software::TaskAdmissionState::Eligible}else{software::TaskAdmissionState::UnsupportedCapability},None))
                 } else if let PreviewInputs::Native(template) = &prepared {
                     let needs_context = template.spec().adapter != rss_mdm_resource::NativeAdapter::WindowsRead;

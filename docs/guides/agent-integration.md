@@ -83,3 +83,8 @@ Agent HTTPS 监听器公开 `GET /api/v1/agent/enroll/packages`、`GET .../packa
 本次移除旧 agent-grants 创建、管理状态、preview / approve 路由和普通请求 lifetimeSeconds / 可选 CSR，不提供别名或兼容解码；保留的是既有设备身份、不可变回执和 Unknown 恢复事实。
 
 原生声明式采集使用 `agent_collection` 资源及 Collection 任务，协议形态、引擎要求和固定签名向量见 [wire 契约](../../crates/agent-wire/README.md#原生采集契约2739)，配置及质量语义见[资产指南](assets.md#windows-agent-声明式采集)。当前 task payload 显式携带 kind/task，claim environment 必须包含 nativeEngines；不兼容旧包络，不使用脚本兜底。
+
+安全、账户、证书和更新由同一原生 Collection V3 契约承载，见 [wire 契约](../../crates/agent-wire/README.md#安全账户证书与更新)
+和 [标准包操作](assets.md#agent-安全账户证书与更新标准包)。Agent 必须固定交付的完整 revision，
+更新当前用户 GeneratedUID、精确引擎声明及 scan 证据；不沿用旧 Collection V2 或省略新增必填成员。
+本候选只接纳匹配的精确安装 manifest，不承诺旧数据库原地升级。旧实例按原版本结算任务并保留注册、journal、审计和历史资产，不清库或重新注册绕过安装拒绝；任务排空不等于持久格式迁移完成。

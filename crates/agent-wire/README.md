@@ -1,6 +1,6 @@
 # Agent 协议
 
-`rss-mdm-agent-wire` 是独立可消费的纯协议 crate，版本 `1.0.0`，最低 Rust `1.96.0`。`enroll` 持有注册生命周期 DTO；`runtime` 持有运行消息、采集定义与值、任务 DTO、静态约束、规范签名字节及内容摘要；`pki` 持有共享设备信任与安装确认 DTO、静态约束及规范安装摘要。当前 HTTP API、消息 wireVersion、capability 与 PKI 格式保持 V1；Collection 任务格式及签名域为 V2，其它任务签名域保持 V1；注册族只维护当前 CSR 必填请求与完整签名配置文件，旧普通请求期限字段及 AuthorizationRequest shape 已退出。V1 标识不代表跨 revision 的结构兼容；采集 scope 与 claim environment 是本次必填契约，相关采集指纹与报告摘要随之改变。PKI 的编码与安装摘要不受本次变更影响。
+`rss-mdm-agent-wire` 是独立可消费的纯协议 crate，版本 `1.0.0`，最低 Rust `1.96.0`。`enroll` 持有注册生命周期 DTO；`runtime` 持有运行消息、采集定义与值、任务 DTO、静态约束、规范签名字节及内容摘要；`pki` 持有共享设备信任与安装确认 DTO、静态约束及规范安装摘要。当前 HTTP API、消息 wireVersion、capability 与 PKI 格式保持 V1；Collection 任务格式及签名域为 V3，其它任务签名域保持 V1；注册族只维护当前 CSR 必填请求与完整签名配置文件，旧普通请求期限字段及 AuthorizationRequest shape 已退出。V1 标识不代表跨 revision 的结构兼容；采集 scope 与 claim environment 是本次必填契约，相关采集指纹与报告摘要随之改变。PKI 的编码与安装摘要不受本次变更影响。
 
 采集 DTO 由本包拥有，服务端在 Agent ingress 转成 Inventory 值。执行资格、当前凭据可用性和软件结果判定由 software-service 持有，上下文 revision 的更新规则由 agent-channel 持有。协议包不依赖 RSS、Identity 或 MDM 业务 crate，不执行设备操作、网络请求或运行时 schema 验证。CI 校验正常、build、可选及平台条件生产依赖；开发测试中的签名验证不进入交付闭包。
 
@@ -22,7 +22,7 @@ PKI 只导出两个 HTTP 根 schema：Trust 与 Acknowledgement，其引用的 I
 
 详见 [Agent 接入指南](../../docs/guides/agent-integration.md)。
 
-采集定义必须显式携带 scope，当前只允许 device；其它范围不会降级为设备值。TaskClaimRequest 必须携带 environment（edition 可为 null、tools 为版本字典），OS/build 继续从 executionContext.osVersion 取得。旧缺失结构拒绝解码。需由独立 Agent 仓固定本次交付 rev/schema 指纹后实现，服务端测试不代表设备实测完成。
+普通注册采集定义必须显式携带 scope，当前只允许 device；原生 Collection 任务按冻结 recipe 和签名执行主体确定字段范围，其它范围不会降级为设备值。TaskClaimRequest 必须携带 environment（edition 可为 null、tools 为版本字典），OS/build 继续从 executionContext.osVersion 取得。旧缺失结构拒绝解码。需由独立 Agent 仓固定本次交付 rev/schema 指纹后实现，服务端测试不代表设备实测完成。
 
 ## 原生采集契约（#2739）
 
@@ -32,7 +32,7 @@ PKI 只导出两个 HTTP 根 schema：Trust 与 Acknowledgement，其引用的 I
 
 Collection 使用独立签名域，Offer 与 Start 均签入 plan、预算、范围及完整任务坐标。结果逐 query 携带身份、时间、闭合状态、枚举结束和覆盖证据；共享 OutputChunk/OutputManifest 仅证明完整传输。原生结果没有 exitCode，查询失败不影响其他完整 query。大整数为带类型声明的规范十进制文本，禁止浮点降精度。
 
-`tests/fixtures/native-v2-vectors.json` 包含 plan/result 指纹及 Collection Offer/Start 签名，`examples/native_collection_vectors.rs` 为可重复生成入口。schema 仍由当前 Rust DTO 统一派生。固定消费使用合入后的完整 Git rev，并核对当前 schema 指纹；不支持旧请求、旧签名形状或持久任务格式的兼容读取，不得清空 journal 或重新注册来跳过未决任务。
+`tests/fixtures/native-v3-vectors.json` 包含 plan/result 指纹及 Collection Offer/Start 签名，`examples/native_collection_vectors.rs` 为可重复生成入口。schema 仍由当前 Rust DTO 统一派生。固定消费使用合入后的完整 Git rev，并核对当前 schema 指纹；不支持旧请求、旧签名形状或持久任务格式的兼容读取，不得清空 journal 或重新注册来跳过未决任务。
 
 服务端保留完整 query 原始证据，范围可能超出映射字段（含未映射 query/property）。因此原生采集的预览、发布/执行和运行详情统一要求现有 InventorySensitiveRead 权限；InventoryCollect、资源/设备范围及 InventoryRead 仍各自校验。字段投影后的读取继续沿用字段敏感配置。正常执行结束并提交合法结果包时任务为 Succeeded，包括 query 全部 Denied/Timeout 的情况；采集失败/部分质量由 CollectionProgress 与 CollectionRun 独立表达。
 
@@ -48,7 +48,7 @@ Resource 可发布这些声明；服务端从同一 signed execution binding 冻
 按实际 UID、批准根或 prefix/tap/package 分开投影，完整空列表只替换该字段范围。
 批准根、扫描参数和执行 UID 是采集材料，不自行授予 Inventory 范围权威。
 
-Collection `wireVersion=2`、签名域 `rss-mdm-agent-collection-task-v2-ed25519` 强制携带
+Collection `wireVersion=3`、签名域 `rss-mdm-agent-collection-task-v3-ed25519` 强制携带
 `execution`，绑定 System/LoggedInUser、context revision 与设备或登录会话。
 Brew 和 UserApplications 只允许当前 helper 绑定的规范非零 UID；禁止 root、离线切换用户、
 任意程序、脚本、环境覆盖或提权参数。消费方在 Offer/Start 验签后用
@@ -58,14 +58,51 @@ Brew 引擎仅接受 v2：只读批准 prefix 下 Cellar/Caskroom 的安装记�
 数据可以由用户拥有，但必须作为不可信输入有界解析；不跟随逃出批准根的链接。
 缺失、无权限、格式不支持、超时、截断或扫描期间变化分别保留失败证据，不能当完整空清单。
 旧 Brew 引擎 v1 和旧内置 Brew 蓝图版本不再接纳；其他引擎版本保持原契约。
-服务端与 Agent 应在旧任务结算后协调升级，保留 journal；不能用旧引擎回退或清除状态绕过升级。
+新固定候选只接纳匹配安装 manifest 的服务端与 Agent；旧实例继续按原版本结算任务并保留 journal，不通过旧引擎回退或清除状态切换。
 
 Mac 软件行的 origin 分别为 `application`、`pkg_receipt`、`homebrew`；Brew 行必须匹配声明的
 prefix、tap 与 package_kind，用户 UID 必须非零。签名状态为 signed/unsigned/invalid/unknown。
 完整空收据列表可发布；失败或截断保留旧值。所有原始证据，包括失败和未映射内容，仍要求
 InventoryRead 与 InventorySensitiveRead。设备执行与真机支持矩阵由独立 Agent #2723 验证。
 
-升级前停止签发旧 Collection 任务并等待其终态，保留审计与 journal；再协调切换服务端与固定 rev
-的 Agent。旧 Collection v1 不解码、不执行，不清空 journal 或重新注册绕过未决任务。
+本候选不提供旧实例原地升级；安装器及运行期只接纳精确安装 manifest。
+旧数据库中的执行上下文、冻结 Resource、查询及规则不能因任务排空就切换为新结构。
+旧实例应由原版本按原生命周期结算，保留注册、journal、审计与资产；不清库或重新注册绕过。
+如需原地升级，应先交付独立验证的精确基线迁移。本次运行路径只接受 Collection V3。
 固定候选完整 rev 和 schema 指纹以当前契约 PR 的交接制品为准；独立 Agent 应固定同一候选，
 不能继续沿用旧 Brew 命令契约的源码或签名向量。
+
+### 安全、账户、证书与更新
+
+`NativeQueryDefinition::System` 的封闭 `NativeSystemQuery` 持有两平台专用只读 recipe；
+类型、输出列、引擎和版本以 [Rust 声明](src/native_collection/system.rs) 及派生 schema 为准。
+已有 WMI/Registry 继续承载可完整表达的事实；DeviceGuard 保留配置/运行数组和 VBS 原值，
+成员解释不使用位掩码或“数组非空”。专用 BitLocker recipe 只允许固定只读方法，不能提交方法名。
+
+macOS 当前交互用户在现有 executionContext 中必须显式提供规范 GeneratedUID；Windows 为 null。
+Collection V3 在原有 UID/SID、会话和 context revision 外签入稳定账户身份，Start 必须重新匹配。
+新 macOS 用户字段的范围包含 UID/GeneratedUID；Apple MDM 用户 UUID 与此身份不同。
+同一资源的 dataset 包含稳定账户身份，不包含会话、执行时间或扫描模式。
+
+证书仅输出 SHA-256 指纹及批准元数据。每次只读一个设备或当前用户 store；不加载离线 hive、
+解锁 keychain、提示用户授权或遍历历史用户。用户缺席、权限不足与 store 不可访问不是完整空列表。
+所有新 recipe 的失败/部分结果也校验封闭输出；错误 owner 的结果拒绝接收，不进入资产事实。
+
+更新查询默认 Local，Online 为单独标准包。Windows 使用现有 WUA 配置，必须关闭自动 WUA 升级，
+不注册/更改更新服务、不下载、不安装、不重启。macOS 只执行版本可核实的只读查询。
+每个更新结果都必须携带 `scan`，包括失败和空列表；本地缓存保留原扫描区间，未扫描不得编造时间。
+源使用无凭据的标识，不上传更新源 URL 或凭据；行的 origin 与扫描源一致。
+完整空结果需要真实完成证据；NotScanned、源不可用、失败、部分和截断保留旧事实。
+
+指定安全应用只允许 Agent 自身或明确的签名应用身份，不接受命令、任意路径或全量 TCC 查询。
+安装、签名、配置、运行和健康分别表达；没有厂商可验证的健康 API 时 health 为 unknown。
+FileVault、硬件加密、Secure Token、Bootstrap Token 的本地状态不证明恢复材料或 Token 已由服务器托管。
+固定候选的完整 Git revision 由交付评论提供；服务端受控样本不证明真实平台执行效果。
+
+BitLocker conversion/lock 沿用既有 Inventory 闭合词汇，无法读取时省略该列并报告 Partial，
+不新增同义字段或改写历史字段类型。完整列表要求每卷必要列齐全；未知保护状态仍用既有 unknown。
+部分卷证据可留作诊断，但不能将不完整列表发布为当前完整卷清单。
+
+包含 System recipe 的计划总输出上限为 1 MiB，只接受 inline CollectionResult。
+原始 OutputChunk 和 ChunkedCollectionResult 在写入前拒绝；验证通过的大结果仍可由服务端沿现有存储分块保留。
+Agent 达到预算须返回 Truncated 的有界结果，保留旧事实，不能偷偷切换到未校验分块。

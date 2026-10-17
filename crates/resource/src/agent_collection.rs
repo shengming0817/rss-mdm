@@ -29,6 +29,8 @@ pub struct AgentCollectionMapping {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AgentCollectionSpec {
+    /// Frozen platform prerequisites, checked by the same preview/Offer/Start admission.
+    pub applicability: crate::Applicability,
     /// Immutable native execution plan.
     pub plan: NativeCollectionPlan,
     /// Unique field bindings, resolved against Inventory at publication.
@@ -52,6 +54,7 @@ impl TryFrom<AgentCollectionSpec> for AgentCollectionDefinition {
 impl AgentCollectionDefinition {
     /// Validate static mappings; field permissions and Inventory types are checked by publication.
     pub fn new(spec: AgentCollectionSpec) -> Result<Self, Error> {
+        spec.applicability.validate()?;
         if spec.mappings.is_empty() || spec.mappings.len() > 64 {
             return Err(Error::InvalidInput);
         }
@@ -130,6 +133,9 @@ fn validate_mapping(
     use crate::Conversion;
     if match &m.conversion {
         Conversion::Identity => false,
+        Conversion::ArrayMember { .. } => {
+            !matches!(ty, NativeType::Array {items} if **items==NativeType::Integer)
+        }
         Conversion::CimTime => !matches!(ty, NativeType::CimTime),
         Conversion::Integer => !matches!(
             ty,

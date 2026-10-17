@@ -10,7 +10,8 @@ pub enum ScopeSelector {
         scope: Box<rss_mdm_inventory::CollectionScope>,
     },
     LocalUser {
-        uid: u32,
+        platform: rss_mdm_inventory::Platform,
+        identity: String,
     },
     AllAuthorized,
 }
@@ -42,8 +43,19 @@ impl InventoryCondition {
                     return Err(Error::Malformed.into());
                 }
             }
-            ScopeSelector::LocalUser { uid } => {
-                if *uid == 0 || self.quantifier == ScopeQuantifier::One {
+            ScopeSelector::LocalUser { platform, identity } => {
+                let valid = match platform {
+                    rss_mdm_inventory::Platform::Windows => {
+                        rss_mdm_inventory::LocalAccountIdentity::Windows {
+                            sid: identity.clone(),
+                        }
+                        .validate()
+                    }
+                    rss_mdm_inventory::Platform::Macos => identity
+                        .parse::<u32>()
+                        .is_ok_and(|uid| uid > 0 && uid.to_string() == *identity),
+                };
+                if !valid || self.quantifier == ScopeQuantifier::One {
                     return Err(Error::Malformed.into());
                 }
             }

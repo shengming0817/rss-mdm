@@ -74,6 +74,17 @@
           },
           "type": "array"
         },
+        "scan": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/NativeScanEvidence"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Required for update queries, including empty and unsuccessful results; absent otherwise."
+        },
         "status": {
           "$ref": "#/$defs/NativeQueryStatus",
           "description": "Query outcome."
@@ -91,6 +102,7 @@
         }
       },
       "required": [
+        "scan",
         "queryDigest",
         "collectedAt",
         "status",
@@ -103,6 +115,36 @@
     "NativeQueryStatus": {
       "description": "Closed query completion status; it never denotes script exit success.",
       "oneOf": [
+        {
+          "const": "failed",
+          "description": "A provider read failed.",
+          "type": "string"
+        },
+        {
+          "const": "partial",
+          "description": "Only part of the approved set could be read.",
+          "type": "string"
+        },
+        {
+          "const": "not_scanned",
+          "description": "No scan was performed; not a successful empty set.",
+          "type": "string"
+        },
+        {
+          "const": "source_unavailable",
+          "description": "The configured update source could not be reached.",
+          "type": "string"
+        },
+        {
+          "const": "user_absent",
+          "description": "Required user is no longer present.",
+          "type": "string"
+        },
+        {
+          "const": "store_unavailable",
+          "description": "Approved certificate store is inaccessible.",
+          "type": "string"
+        },
         {
           "const": "complete",
           "description": "Complete enumeration.",
@@ -139,6 +181,43 @@
           "type": "string"
         }
       ]
+    },
+    "NativeScanEvidence": {
+      "additionalProperties": false,
+      "description": "Update scan provenance survives empty lists and failed queries.",
+      "properties": {
+        "finishedAt": {
+          "description": "Actual scan finish time. Local cache reads retain the original scan interval.",
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "mode": {
+          "$ref": "#/$defs/UpdateScanMode",
+          "description": "Exact requested read mode."
+        },
+        "source": {
+          "description": "Observed source identifier, never a credential-bearing URL. None means unavailable.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "startedAt": {
+          "description": "Actual scan start time, not report upload time. None means not scanned.",
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "mode"
+      ],
+      "type": "object"
     },
     "NativeUserCoverage": {
       "additionalProperties": false,
@@ -550,6 +629,13 @@
           "description": "Privilege needed by the exact native profile, not a generic authorization grant.",
           "type": "boolean"
         },
+        "generatedUid": {
+          "description": "macOS GeneratedUID for this live account; Windows must explicitly report null.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "identity": {
           "description": "Windows SID or macOS numeric UID.",
           "maxLength": 184,
@@ -568,6 +654,7 @@
         }
       },
       "required": [
+        "generatedUid",
         "identity",
         "sessionId",
         "administrator"
@@ -1684,6 +1771,21 @@
         {
           "const": "capture_failed",
           "description": "The executor could not capture a complete result.",
+          "type": "string"
+        }
+      ]
+    },
+    "UpdateScanMode": {
+      "description": "Read mode is execution evidence, not an asset namespace or permission to install.",
+      "oneOf": [
+        {
+          "const": "local",
+          "description": "Read locally available evidence; no online refresh.",
+          "type": "string"
+        },
+        {
+          "const": "online",
+          "description": "Explicit read-only online discovery through the existing configured source.",
           "type": "string"
         }
       ]

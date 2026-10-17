@@ -833,14 +833,14 @@ impl TaskSpec {
         Ok(bytes)
     }
 }
-/// Current Collection task format. Version 1 cannot authorize the required identity binding.
-pub const COLLECTION_TASK_VERSION: u8 = 2;
+/// Current Collection task format; prior formats do not bind the stable local account identity.
+pub const COLLECTION_TASK_VERSION: u8 = 3;
 /// Signed immutable native collection task, never a process invocation.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CollectionTaskSpec {
     /// Exact wire major.
-    #[schemars(extend("const" = 2))]
+    #[schemars(extend("const" = 3))]
     pub wire_version: u8,
     /// Server-selected tenant.
     #[serde(with = "strict_uuid")]
@@ -941,7 +941,7 @@ impl CollectionTaskSpec {
         {
             return Err(WireError::InvalidValue);
         }
-        let mut bytes = b"rss-mdm-agent-collection-task-v2-ed25519\0".to_vec();
+        let mut bytes = b"rss-mdm-agent-collection-task-v3-ed25519\0".to_vec();
         bytes.extend((key_id.len() as u32).to_be_bytes());
         bytes.extend(key_id.as_bytes());
         bytes.extend(serde_json::to_vec(self).map_err(|_| WireError::InvalidValue)?);

@@ -30,6 +30,7 @@ fn hardware(section: MacosHardwareSection) -> NativeQuery {
 }
 fn answer(q: &NativeQuery, rows: Vec<serde_json::Value>) -> NativeQueryResult {
     NativeQueryResult {
+        scan: None,
         query_digest: q.digest(),
         collected_at: 10,
         status: NativeQueryStatus::Complete,
@@ -311,6 +312,7 @@ fn context() -> SoftwareExecutionContext {
         system_broker: true,
         user_helper: true,
         interactive_user: Some(SoftwareInteractiveUser {
+            generated_uid: Some("00000000-0000-0000-0000-000000000501".into()),
             identity: "501".into(),
             session_id: uuid::Uuid::from_u128(1),
             administrator: false,

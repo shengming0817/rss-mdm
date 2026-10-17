@@ -15,6 +15,7 @@ fn task() -> SoftwareTaskSpec {
         user_helper: true,
         system_broker: true,
         interactive_user: Some(SoftwareInteractiveUser {
+            generated_uid: None,
             identity: "S-1-5-21-1-2-3-1001".into(),
             session_id: id,
             administrator: false,

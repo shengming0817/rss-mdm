@@ -75,6 +75,7 @@ fn pack(
         platform: Platform::MacOS,
         definition: Definition::AgentCollection {
             template: AgentCollectionDefinition::new(AgentCollectionSpec {
+                applicability: Default::default(),
                 plan: w::NativeCollectionPlan::new(w::NativePlanSpec {
                     version: 1,
                     scope: CollectionScope::Device,

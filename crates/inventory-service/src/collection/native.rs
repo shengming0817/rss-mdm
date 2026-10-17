@@ -114,6 +114,9 @@ pub fn validate_mapping(
         } else {
             let valid = match &mapping.conversion {
                 Conversion::Identity => true,
+                Conversion::ArrayMember {
+                    present, absent, ..
+                } => ty.decode_json(present).is_ok() && ty.decode_json(absent).is_ok(),
                 Conversion::CimTime => matches!(ty, ValueType::Time),
                 Conversion::Integer | Conversion::Scale { .. } => {
                     matches!(ty, ValueType::Integer | ValueType::Time)
@@ -262,6 +265,43 @@ pub fn validate_agent_mapping(
     use rss_mdm_agent_wire::runtime::{NativeCardinality, NativeType as N};
     use rss_mdm_resource::{Conversion as C, NativeMissing};
     validate_mapping(field, &binding.mapping)?;
+    let query = &definition.spec().plan.spec().queries[&binding.query];
+    if !system_field_matches(field.key.as_str(), &query.definition) {
+        return Err(Error::Malformed);
+    }
+    if matches!(
+        query.definition,
+        rss_mdm_agent_wire::runtime::NativeQueryDefinition::System { .. }
+    ) && !field.key.as_str().starts_with("custom.")
+    {
+        // Standard native facts preserve canonical columns; an editable Resource cannot
+        // rewrite owner/store, turn presence into health, or delete an unknown observation.
+        let m = &binding.mapping;
+        let canonical = if m.columns.is_empty() {
+            let pointer = if field.key.as_str() == "device.security.application.permissions" {
+                "/permissions"
+            } else {
+                "/state"
+            };
+            m.pointer == pointer && m.conversion == C::Identity
+        } else {
+            m.pointer.is_empty()
+                && m.conversion == C::Identity
+                && m.columns.iter().all(|(name, column)| {
+                    column.pointer == format!("/{name}")
+                        && column.columns.is_empty()
+                        && column.conversion
+                            == if matches!(name.as_str(), "not_before" | "not_after") {
+                                C::Integer
+                            } else {
+                                C::Identity
+                            }
+                })
+        };
+        if !canonical || binding.missing != NativeMissing::Missing {
+            return Err(Error::Malformed);
+        }
+    }
     if binding.missing == NativeMissing::Null && !field.nullable {
         return Err(Error::Malformed);
     }
@@ -327,6 +367,13 @@ pub fn validate_agent_mapping(
             C::Integer | C::Scale { .. } => matches!(t, ValueType::Integer | ValueType::Time),
             C::Number => matches!(t, ValueType::Number),
             C::Enum { values } => values.values().all(|v| t.decode_json(v).is_ok()),
+            C::ArrayMember {
+                present, absent, ..
+            } => {
+                matches!(n,N::Array {items} if **items==N::Integer)
+                    && t.decode_json(present).is_ok()
+                    && t.decode_json(absent).is_ok()
+            }
             C::Bitmask { flags } => t
                 .decode_json(&serde_json::json!(flags.values().collect::<Vec<_>>()))
                 .is_ok(),
@@ -341,6 +388,186 @@ pub fn validate_agent_mapping(
         return Err(Error::Malformed);
     }
     Ok(())
+}
+
+// Only the closed declared native source can assert full account/store/update evidence.
+fn system_field_matches(
+    field: &str,
+    query: &rss_mdm_agent_wire::runtime::NativeQueryDefinition,
+) -> bool {
+    use rss_mdm_agent_wire::runtime::{
+        AccountSection as A, MacosSecuritySection as M, NativeQueryDefinition as D,
+        NativeSystemQuery as Q, UpdateSection as U,
+    };
+    let q = if let D::System { query } = query {
+        Some(query)
+    } else {
+        None
+    };
+    match field {
+        "device.certificates.metadata" => matches!(
+            q,
+            Some(Q::WindowsCertificates { .. } | Q::MacosCertificates { .. })
+        ),
+        "device.accounts.windows.identities" => matches!(
+            q,
+            Some(Q::WindowsAccounts {
+                section: A::Accounts,
+                ..
+            })
+        ),
+        "device.accounts.macos.identities" => matches!(
+            q,
+            Some(Q::MacosAccounts {
+                section: A::Accounts,
+                ..
+            })
+        ),
+        "device.accounts.administrators.direct" => matches!(
+            q,
+            Some(
+                Q::WindowsAccounts {
+                    section: A::Administrators,
+                    ..
+                } | Q::MacosAccounts {
+                    section: A::Administrators,
+                    ..
+                }
+            )
+        ),
+        "device.accounts.sessions" => matches!(
+            q,
+            Some(
+                Q::WindowsAccounts {
+                    section: A::Sessions,
+                    ..
+                } | Q::MacosAccounts {
+                    section: A::Sessions,
+                    ..
+                }
+            )
+        ),
+        "device.accounts.windows.join" => matches!(q, Some(Q::WindowsJoin)),
+        "device.updates.available" => matches!(
+            q,
+            Some(
+                Q::WindowsUpdates {
+                    section: U::Available,
+                    ..
+                } | Q::MacosUpdates {
+                    section: U::Available,
+                    ..
+                }
+            )
+        ),
+        "device.updates.installed" => matches!(
+            q,
+            Some(
+                Q::WindowsUpdates {
+                    section: U::Installed,
+                    ..
+                } | Q::MacosUpdates {
+                    section: U::Installed,
+                    ..
+                }
+            )
+        ),
+        "device.updates.history" => matches!(
+            q,
+            Some(
+                Q::WindowsUpdates {
+                    section: U::History,
+                    ..
+                } | Q::MacosUpdates {
+                    section: U::History,
+                    ..
+                }
+            )
+        ),
+        "device.updates.scan" => matches!(
+            q,
+            Some(
+                Q::WindowsUpdates {
+                    section: U::Scan,
+                    ..
+                } | Q::MacosUpdates {
+                    section: U::Scan,
+                    ..
+                }
+            )
+        ),
+        "device.updates.reboot_observation" => matches!(
+            q,
+            Some(
+                Q::WindowsUpdates {
+                    section: U::Reboot,
+                    ..
+                } | Q::MacosUpdates {
+                    section: U::Reboot,
+                    ..
+                }
+            )
+        ),
+        "device.security.windows.bitlocker.volumes" => matches!(q, Some(Q::WindowsBitlocker)),
+        "device.security.windows.firewall.profiles" => matches!(q, Some(Q::WindowsFirewall)),
+        "device.security.windows.defender.observation" => matches!(q, Some(Q::WindowsDefender)),
+        "device.security.windows.secure_boot" => matches!(q, Some(Q::WindowsSecureBoot)),
+        "device.security.application.observation" => matches!(
+            q,
+            Some(Q::WindowsApplication { .. } | Q::MacosApplication { .. })
+        ),
+        "device.security.application.permissions" => matches!(q, Some(Q::MacosApplication { .. })),
+        "device.security.macos.gatekeeper_observation" => matches!(
+            q,
+            Some(Q::MacosSecurity {
+                section: M::Gatekeeper
+            })
+        ),
+        "device.security.macos.xprotect.observation" => matches!(
+            q,
+            Some(Q::MacosSecurity {
+                section: M::Xprotect
+            })
+        ),
+        "device.security.macos.system_extensions" => matches!(
+            q,
+            Some(Q::MacosSecurity {
+                section: M::SystemExtensions
+            })
+        ),
+        "device.security.macos.filevault" => matches!(
+            q,
+            Some(Q::MacosSecurity {
+                section: M::Filevault
+            })
+        ),
+        "device.security.macos.firewall" => matches!(
+            q,
+            Some(Q::MacosSecurity {
+                section: M::Firewall
+            })
+        ),
+        "device.security.macos.sip" => matches!(q, Some(Q::MacosSecurity { section: M::Sip })),
+        "device.security.macos.hardware_encryption" => matches!(
+            q,
+            Some(Q::MacosSecurity {
+                section: M::HardwareEncryption
+            })
+        ),
+        "device.security.macos.secure_token.local" => matches!(
+            q,
+            Some(Q::MacosSecurity {
+                section: M::SecureToken
+            })
+        ),
+        "device.security.macos.bootstrap_token.local" => matches!(
+            q,
+            Some(Q::MacosSecurity {
+                section: M::BootstrapToken
+            })
+        ),
+        _ => !matches!(query, D::System { .. }) || field.starts_with("custom."),
+    }
 }
 
 #[cfg(test)]
@@ -686,5 +913,30 @@ mod mapping_tests {
         };
         mapping.validate().unwrap();
         assert!(validate_mapping(&field, &mapping).is_err());
+    }
+    #[test]
+    fn system_standard_columns_cannot_rewrite_owner_or_health() {
+        use rss_mdm_resource::blueprints;
+        let blueprints::Definition::AgentCollection { template } =
+            blueprints::get("windows.agent.certificates_device_my", "1")
+                .unwrap()
+                .definition
+        else {
+            unreachable!()
+        };
+        let field = builtin::fields()
+            .into_iter()
+            .find(|f| f.key.as_str() == "device.certificates.metadata")
+            .unwrap();
+        let original = template.spec().mappings[field.key.as_str()].clone();
+        assert!(validate_agent_mapping(&field, &template, &original).is_ok());
+        for (name, other) in [("owner", "subject"), ("store", "issuer"), ("id", "owner")] {
+            let mut changed = original.clone();
+            changed.mapping.columns.get_mut(name).unwrap().pointer = format!("/{other}");
+            assert!(validate_agent_mapping(&field, &template, &changed).is_err());
+        }
+        let mut changed = original;
+        changed.missing = rss_mdm_resource::NativeMissing::Delete;
+        assert!(validate_agent_mapping(&field, &template, &changed).is_err());
     }
 }

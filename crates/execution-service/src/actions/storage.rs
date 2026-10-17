@@ -171,7 +171,7 @@ impl ScheduledPolicy {
                 target,
                 v.frozen.input.platform,
                 v.frozen.input.architecture,
-                &v.frozen.definition.spec().plan,
+                &v.frozen.definition,
             )
             .await?
                 && v.frozen.authorized_in(tx, target, now).await?

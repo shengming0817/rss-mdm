@@ -175,11 +175,39 @@ APFS container 原始证据与卷关联保留在受限运行详情中，共享�
 
 用户应用与 Brew 只在可信执行上下文的当前非 root 登录用户下派发；固定 UID 等待该用户匹配。历史用户的事实仍可按 scope 查询、用于规则，读取不要求该用户现在登录。Offer 只构建一次 payload，从同一执行绑定冻结 UID/字段 scope、预留 CollectionRun，再签名；发布阶段不注册未绑定用户的完整采集定义。
 
-字段 scope 支持 `device`、`apple_user`、`macos_applications`、`macos_brew`。应用 scope 包含 root（local/system/user）和 uid（仅 user 非空）；Brew 包含 uid、prefix、package（formula/cask）、taps。dataset 绑定 Resource/variant/实际 UID，不包含版本、会话或预算；变更某字段 root/prefix/taps 只创建该字段的新范围，不自动删除旧范围。
+字段 scope 支持 `device`、`apple_user`、`macos_applications`、`macos_brew`。应用 scope 包含 root（local/system/user）和 uid（仅 user 非空）；Brew 包含 uid、prefix、package（formula/cask）、taps。dataset 绑定 Resource/variant/实际用户及稳定 GeneratedUID（适用时），不包含版本、会话或预算；变更某字段 root/prefix/taps 只创建该字段的新范围，不自动删除旧范围。
 
 详情、清单和运行详情通过 `scope=<URL 编码的 scope JSON>` 显式选择范围，省略则 Device。运行详情提供 frozen fingerprint/coverage、逐字段 scope/reason、完整性，以及实时 Observation receipt/projection 状态。固定水位质量记录不会被实时状态改写；quality.runId 是最近尝试，sources.evidence.snapshotId 是当前可信事实的原始 run，lastKnown 继续保留原始证据。失败和部分尝试不清空此前 Known；显式 Unknown 不通过规则。
 
-查询、保存查询、智能组及合规的 criteria 使用同一 `{selector,quantifier,criteria}`。selector 为 `{"kind":"device"}`、`{"kind":"exact","scope":…}`、`{"kind":"local_user","uid":501}` 或 `{"kind":"all_authorized"}`。前两种 quantifier 必须 one，多范围必须 any/all。多范围集合只包含固定水位下已冻结、且调用者有权读取的资产范围；all_authorized 不表示已枚举设备上的所有真实用户。整个内层条件先在每个 scope 独立求值，再归约成设备结果；不拼接不同用户事实。空集合为 Unknown，集合不完整时 all 不能通过，字节、访问和解释预算跨所有上下文累计。授权仍独立限制设备和敏感字段。Group scope 元数据与核心 rule_version 同事务冻结，核心继续拥有条件和实际分页求值。
+查询、保存查询、智能组及合规的 criteria 使用同一 `{selector,quantifier,criteria}`。selector 为 `{"kind":"device"}`、`{"kind":"exact","scope":…}`、`{"kind":"local_user","platform":"macos","identity":"501"}` 或 `{"kind":"all_authorized"}`。前两种 quantifier 必须 one，多范围必须 any/all。多范围集合只包含固定水位下已冻结、且调用者有权读取的资产范围；all_authorized 不表示已枚举设备上的所有真实用户。整个内层条件先在每个 scope 独立求值，再归约成设备结果；不拼接不同用户事实。空集合为 Unknown，集合不完整时 all 不能通过，字节、访问和解释预算跨所有上下文累计。授权仍独立限制设备和敏感字段。Group scope 元数据与核心 rule_version 同事务冻结，核心继续拥有条件和实际分页求值。
 
 旧定义、结果、事实历史、冻结策略或待执行旧任务存在时，新增安装迁移拒绝继续；不转换旧格式、清库或改写历史 migration digest。新的投影 generation 只重放新格式。
 协议身份、支持边界与 Agent 接入见 [wire 契约](../../crates/agent-wire/README.md#macos-原生采集2737)。
+
+### Agent 安全、账户、证书与更新标准包
+
+蓝图目录中的 `windows.agent.*` / `macos.agent.*` 安全、身份与更新包仍通过普通 Resource 实例化、
+修改、发布和 Policy 分配。设备包与用户证书包分别选择；用户包等待当前已绑定 helper，
+不会切换到离线用户或以 System 身份伪装用户授权。具体清单及适用要求由蓝图目录返回。
+新包的操作系统门槛和 BitLocker edition 条件只用于任务准入；实际支持仍须经过产品真机验收。
+
+证书字段范围为 `native_certificates`，显式携带 platform、owner 和 store；owner 为 null 表示机器，
+Windows 用户为 `{kind:"windows",sid:…}`，macOS 用户为 `{kind:"macos",uid:…,generated_uid:…}`。
+账户批准集合、指定应用和用户 Token 分别使用自己的 native 范围，不借用软件范围或 Device。
+同一证书出现在两个 store 属于两个独立事实。合法完整空仅替换对应范围；失败、部分和截断保留旧值。
+
+`local_user` 选择器显式提供 platform 与 identity：Windows 为 SID，macOS 为规范数字 UID。
+macOS UID 查询可以返回该 UID 下多个独立历史范围，不能据此认定相同 GeneratedUID；需要一个确定账户
+时使用 exact 范围。多范围规则仍逐范围求值，不能拼接不同账户或不同 store 的事实。
+
+更新默认选择 `_local` 包；主动只读联网查询选择 `_online` 包，二者都不授权更新部署。
+查看实际来源、模式、扫描区间和质量，不能把缓存或失败的空输出解读为没有可用更新。
+配置/运行、FileVault/硬件加密/Token 和本地注册/有效管理保持独立语义，MDM/DDM 来源继续分别保留。
+账户、证书、会话、应用权限和用户 Token 证据需要敏感权限；原始运行证据仍执行相同限制。
+
+包含 System recipe 的新标准包总输出最多 1 MiB，只接受校验后的 inline 结果。达到预算报告 Truncated，
+保留旧事实；不接受原始分块绕过字段检查。本候选只用于匹配安装 manifest 的实例，旧查询/规则/资源
+不能直接原地切换；不通过清库或重新注册绕过安装拒绝。
+
+System 标准字段保持规范映射，不能将 subject 改写为 owner、替换 store、将安装存在映射为健康，
+或把缺失观察改成删除。需要派生解释时使用自定义字段。Windows 系统服务账户不能作为用户采集的交互绑定。

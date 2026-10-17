@@ -87,6 +87,8 @@ async fn fresh_installation_replay_and_mismatch_rejection() -> Result<()> {
     for statement in [
         "UPDATE public.mdm_migrations SET digest=repeat('0',64) WHERE name='transactional-messaging-v1'",
         "UPDATE public.mdm_migrations SET complete=false WHERE name='transactional-messaging-v1'",
+        // An older catalog/contract candidate cannot attach to the current binary.
+        "UPDATE public.mdm_migrations SET digest=repeat('0',64) WHERE name='inventory-tenant-seed-v1'",
     ] {
         sqlx::raw_sql(statement).execute(&mut owner).await?;
         rejected(
@@ -102,7 +104,13 @@ async fn fresh_installation_replay_and_mismatch_rejection() -> Result<()> {
         // Only this disposable test repairs its injected damage; the installer never does.
         let original = before
             .iter()
-            .find(|r| r.0 == "transactional-messaging-v1")
+            .find(|r| {
+                r.0 == if statement.contains("inventory-tenant-seed-v1") {
+                    "inventory-tenant-seed-v1"
+                } else {
+                    "transactional-messaging-v1"
+                }
+            })
             .unwrap();
         sqlx::query("UPDATE public.mdm_migrations SET digest=$1,complete=true WHERE name=$2")
             .bind(&original.1)

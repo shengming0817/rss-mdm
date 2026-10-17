@@ -9,6 +9,7 @@ fn context() -> SoftwareExecutionContext {
         user_helper: true,
         system_broker: true,
         interactive_user: Some(SoftwareInteractiveUser {
+            generated_uid: None,
             identity: "S-1-5-21-1-2-3-1001".into(),
             session_id: Uuid::new_v4(),
             administrator: false,
@@ -76,6 +77,8 @@ fn brew_requires_a_non_root_interactive_account() {
     let mut live = context();
     live.msix_sideload = false;
     live.msix_unsigned = false;
+    live.interactive_user.as_mut().unwrap().generated_uid =
+        Some("00000000-0000-0000-0000-000000000501".into());
     for uid in ["501", "0", "000"] {
         live.interactive_user.as_mut().unwrap().identity = uid.into();
         assert_eq!(

@@ -803,6 +803,19 @@ async fn collection_blueprints_instantiate_replay_and_keep_tenant_versions() -> 
         )
         .await?;
     ensure!(directory.0 == StatusCode::OK && directory.1["items"].as_array().unwrap().len() == 2);
+    for id in ["windows.agent.certificates_device_my","macos.agent.certificates_system"] {
+        let target=format!("/api/v1/resources/{}",uuid::Uuid::new_v4());
+        let input=json!({"operationId":uuid::Uuid::new_v4(),"expectedRevision":0,"input":{"action":"instantiate","blueprint":id,"version":"1"}});
+        let created=settled_write(&mut browser,&router,&target,input.clone()).await?;
+        ensure!(created.0==StatusCode::OK,"Agent blueprint: {created:?}");
+        ensure!(settled_write(&mut browser,&router,&target,input).await?==created);
+        let variants=created.1["versions"][0]["variants"].clone();
+        call(&mut browser,&router,&target,2,json!({"action":"version","kind":"agent_collection","version":"tenant-copy","variants":variants})).await?;
+        let customized=browser.call(&router,Method::GET,&target,None).await?;
+        let another=format!("/api/v1/resources/{}",uuid::Uuid::new_v4());
+        call(&mut browser,&router,&another,0,json!({"action":"instantiate","blueprint":id,"version":"1"})).await?;
+        ensure!(browser.call(&router,Method::GET,&target,None).await?==customized);
+    }
     set_management_grants(&subject, json!([])).await?;
     ensure!(
         browser

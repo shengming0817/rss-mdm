@@ -86,4 +86,4 @@ mod progress;
 pub use progress::{CollectionProgress, FieldAttempt, NativeValue, Quality};
 
 mod collection_scope;
-pub use collection_scope::{ApplicationRoot, BrewPackage, CollectionScope};
+pub use collection_scope::{ApplicationRoot, BrewPackage, CollectionScope, LocalAccountIdentity};

@@ -7,6 +7,7 @@ fn spec(ty: w::CimType) -> AgentCollectionSpec {
         max_rows: 1,
     };
     AgentCollectionSpec {
+        applicability: Default::default(),
         plan: w::NativeCollectionPlan::new(w::NativePlanSpec {
             version: 1,
             scope: CollectionScope::Device,

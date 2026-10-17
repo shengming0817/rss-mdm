@@ -101,6 +101,12 @@ impl TryFrom<Document> for CollectionProgress {
                     "invalid",
                     "untrusted",
                     "owner_mismatch",
+                    "failed",
+                    "partial",
+                    "not_scanned",
+                    "source_unavailable",
+                    "user_absent",
+                    "store_unavailable",
                     "incomplete",
                 ]
                 .contains(&r)
@@ -280,6 +286,12 @@ impl CollectionProgress {
             "invalid",
             "untrusted",
             "owner_mismatch",
+            "failed",
+            "partial",
+            "not_scanned",
+            "source_unavailable",
+            "user_absent",
+            "store_unavailable",
             "incomplete",
         ]
         .contains(&reason)
