@@ -604,6 +604,13 @@ async fn planning_routes_and_derived_result_authorization() -> Result<()> {
             identity::set_grants(case_tenant(), &member, grants).await?;
             let policy_path = format!("/api/v1/policies/{policy}");
             call(&mut browser,&router,&policy_path,0,json!({"action":"put","enabled":true,"definition":{"scope":scope,"action":{"resource":{"id":resource,"version":"v1","platform":"windows","architecture":"x86_64","variant":"default"},"kind":"configuration","exit":"retain"}}})).await?;
+            let referenced_scope = format!("SELECT json_build_array(s.deleted,s.revision,p.definition->>'scope') FROM mdm_planning.scopes s JOIN mdm_policy.policies p ON p.tenant_id=s.tenant_id AND p.id='{policy}' WHERE s.tenant_id='{}' AND s.id='{scope}'", case_tenant());
+            let before: Value = serde_json::from_str(pg(&referenced_scope)?.trim())?;
+            ensure!(before == json!([false, 1, scope.to_string()]), "referenced scope fixture: {before}");
+            let denied = browser.call(&router, Method::POST, &format!("/api/v1/scopes/{scope}"), Some(json!({"operationId":Uuid::new_v4(),"expectedRevision":1,"input":{"action":"delete"}}))).await?;
+            ensure!(denied.0 == StatusCode::CONFLICT, "referenced scope deletion: {denied:?}");
+            let after: Value = serde_json::from_str(pg(&referenced_scope)?.trim())?;
+            ensure!(after == before, "rejected deletion changed scope or policy reference: {after}");
             derived_result_authorization(&mut browser,&router,&member,&group_path,accepted["task"].as_str().unwrap(),scope,scoped["task"].as_str().unwrap(),&policy_path).await?;
             Ok(())
         }).await?;
