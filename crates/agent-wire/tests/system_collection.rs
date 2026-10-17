@@ -127,6 +127,99 @@ fn updates_require_real_scan_provenance_even_for_empty_sets() {
     );
 }
 #[test]
+fn reboot_observations_do_not_require_a_completed_scan() {
+    for recipe in [
+        NativeSystemQuery::WindowsUpdates {
+            section: UpdateSection::Reboot,
+            mode: UpdateScanMode::Local,
+        },
+        NativeSystemQuery::MacosUpdates {
+            section: UpdateSection::Reboot,
+            mode: UpdateScanMode::Local,
+        },
+    ] {
+        let q = query(recipe);
+        let p = plan(q.clone());
+        let envelope = |r| NativeCollectionResult {
+            plan_digest: p.digest(),
+            collected_at: 100,
+            queries: [("facts".into(), r)].into(),
+        };
+        for state in ["required", "not_required", "unknown"] {
+            let mut r = answer(&q, json!([{"state": state}]));
+            r.scan = Some(NativeScanEvidence {
+                mode: UpdateScanMode::Local,
+                source: None,
+                started_at: None,
+                finished_at: None,
+            });
+            assert!(r.complete_for(&q, 100));
+            assert!(envelope(r.clone()).validate_for(&p, 100).is_ok());
+            let encoded = serde_json::to_value(&r).unwrap();
+            for invalid_scan in [
+                serde_json::Value::Null,
+                json!({"mode":"online"}),
+                json!({"mode":"local","source":"https://user:secret@host/"}),
+                json!({"mode":"local","startedAt":0}),
+                json!({"mode":"local","startedAt":101}),
+                json!({"mode":"local","finishedAt":90}),
+                json!({"mode":"local","startedAt":90,"finishedAt":80}),
+                json!({"mode":"local","startedAt":80,"finishedAt":101}),
+            ] {
+                let mut bad = encoded.clone();
+                bad["scan"] = invalid_scan;
+                let bad: NativeQueryResult = serde_json::from_value(bad).unwrap();
+                assert!(!bad.complete_for(&q, 100));
+                assert!(envelope(bad).validate_for(&p, 100).is_err());
+            }
+        }
+    }
+}
+#[test]
+fn scan_backed_sections_still_require_completed_scan_evidence() {
+    for section in [
+        UpdateSection::Scan,
+        UpdateSection::Available,
+        UpdateSection::Installed,
+        UpdateSection::History,
+    ] {
+        for recipe in [
+            NativeSystemQuery::WindowsUpdates {
+                section,
+                mode: UpdateScanMode::Local,
+            },
+            NativeSystemQuery::MacosUpdates {
+                section,
+                mode: UpdateScanMode::Local,
+            },
+        ] {
+            let q = query(recipe);
+            let p = plan(q.clone());
+            let mut r = answer(&q, json!([]));
+            r.scan = Some(NativeScanEvidence {
+                mode: UpdateScanMode::Local,
+                source: None,
+                started_at: None,
+                finished_at: None,
+            });
+            let envelope = |r| NativeCollectionResult {
+                plan_digest: p.digest(),
+                collected_at: 100,
+                queries: [("facts".into(), r)].into(),
+            };
+            assert!(!r.complete_for(&q, 100));
+            assert!(envelope(r.clone()).validate_for(&p, 100).is_err());
+            r.scan = Some(NativeScanEvidence {
+                mode: UpdateScanMode::Local,
+                source: Some("configured-source".into()),
+                started_at: Some(80),
+                finished_at: Some(90),
+            });
+            assert!(envelope(r).validate_for(&p, 100).is_ok());
+        }
+    }
+}
+#[test]
 fn windows_sid_and_macos_generated_uid_bind_the_current_session() {
     for (platform, recipe, identity, guid) in [
         (

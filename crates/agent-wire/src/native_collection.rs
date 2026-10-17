@@ -1140,41 +1140,35 @@ fn required_scan<'de, D: serde::Deserializer<'de>>(
 impl NativeQueryResult {
     /// Reject missing, extra or mismatched update provenance independently of result success.
     pub fn evidence_matches(&self, query: &NativeQuery) -> bool {
-        let mode = match &query.definition {
-            NativeQueryDefinition::System { query } => query.scan_mode(),
+        let update = match &query.definition {
+            NativeQueryDefinition::System {
+                query:
+                    NativeSystemQuery::WindowsUpdates { section, mode }
+                    | NativeSystemQuery::MacosUpdates { section, mode },
+            } => Some((*section, *mode)),
             _ => None,
         };
-        match (mode, &self.scan) {
+        match (update, &self.scan) {
             (None, None) => true,
-            (Some(mode), Some(scan)) => {
-                let provenance = match &query.definition {
-                    NativeQueryDefinition::System {
-                        query:
-                            NativeSystemQuery::WindowsUpdates { section, .. }
-                            | NativeSystemQuery::MacosUpdates { section, .. },
-                    } => match section {
-                        UpdateSection::Scan => self.rows.iter().all(|r| {
-                            r.get("source").and_then(|v| v.as_str()) == scan.source.as_deref()
-                                && r.get("scan_started_at").and_then(|v| v.as_i64())
-                                    == scan.started_at
-                                && r.get("scan_finished_at").and_then(|v| v.as_i64())
-                                    == scan.finished_at
-                        }),
-                        UpdateSection::Available
-                        | UpdateSection::Installed
-                        | UpdateSection::History => self.rows.iter().all(|r| {
-                            r.get("origin").and_then(|v| v.as_str()) == scan.source.as_deref()
-                        }),
-                        UpdateSection::Reboot => true,
-                    },
-                    _ => false,
+            (Some((section, mode)), Some(scan)) => {
+                let provenance = match section {
+                    UpdateSection::Scan => self.rows.iter().all(|r| {
+                        r.get("source").and_then(|v| v.as_str()) == scan.source.as_deref()
+                            && r.get("scan_started_at").and_then(|v| v.as_i64()) == scan.started_at
+                            && r.get("scan_finished_at").and_then(|v| v.as_i64())
+                                == scan.finished_at
+                    }),
+                    UpdateSection::Available
+                    | UpdateSection::Installed
+                    | UpdateSection::History => self.rows.iter().all(|r| {
+                        r.get("origin").and_then(|v| v.as_str()) == scan.source.as_deref()
+                    }),
+                    UpdateSection::Reboot => true,
                 };
-                provenance
-                    && scan.mode == mode
-                    && scan.valid(
-                        self.collected_at,
-                        self.status == NativeQueryStatus::Complete,
-                    )
+                // Reading pending reboot state does not perform an update scan.
+                let complete_scan =
+                    self.status == NativeQueryStatus::Complete && section != UpdateSection::Reboot;
+                provenance && scan.mode == mode && scan.valid(self.collected_at, complete_scan)
             }
             _ => false,
         }
