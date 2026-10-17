@@ -43,6 +43,8 @@ class Policies(unittest.TestCase):
             resolve_cases(module, ['new_test'])
 
     def test_empty_installers_cannot_reuse_a_migrated_database(self):
+        registry = MODULES['installation.registry']
+        self.assertEqual((registry.profile, registry.db_mode, registry.fixtures), ('product', 'fresh', ()))
         module = replace(MODULES['installation.migration'], policies=())
         for mode in ('fresh', 'instance'):
             resolved, = resolve_cases(replace(module, db_mode=mode), ['installer'])

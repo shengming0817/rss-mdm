@@ -3,6 +3,12 @@ use anyhow::{Result, ensure};
 use sqlx::Executor;
 use std::str::FromStr;
 
+fn rejected(result: super::Result<()>, phase: &str) {
+    let error = result.expect_err("injected migration fault must be rejected");
+    assert_eq!(error.unit, "installation");
+    assert_eq!(error.phase, phase);
+}
+
 #[tokio::test]
 #[ignore = "make t2: fresh installation and rejected ledger in a disposable database"]
 async fn fresh_installation_replay_and_mismatch_rejection() -> Result<()> {
@@ -24,8 +30,16 @@ async fn fresh_installation_replay_and_mismatch_rejection() -> Result<()> {
             .await?;
     ensure!(before.len() == units().len() && before.iter().all(|r| r.2));
     migrate_on(&mut owner, &installation).await?;
+    let replay: Vec<(String, String, bool)> =
+        sqlx::query_as("SELECT name,digest,complete FROM public.mdm_migrations ORDER BY name")
+            .fetch_all(&mut owner)
+            .await?;
+    ensure!(replay == before);
     owner.execute("UPDATE public.mdm_migrations SET name='windows-channel-schema-v1' WHERE name='windows-channel-schema-v2'").await?;
-    ensure!(migrate_on(&mut owner, &installation).await.is_err());
+    rejected(
+        migrate_on(&mut owner, &installation).await,
+        "existing ledger differs or is incomplete",
+    );
     owner.execute("UPDATE public.mdm_migrations SET name='windows-channel-schema-v2' WHERE name='windows-channel-schema-v1'").await?;
     migrate_on(&mut owner, &installation).await?;
     for field in ["instance_id", "target", "lineage", "audit_mode"] {
@@ -37,7 +51,10 @@ async fn fresh_installation_replay_and_mismatch_rejection() -> Result<()> {
             _ => serde_json::json!(vec![4; 16]),
         };
         let changed: Installation = serde_json::from_value(changed)?;
-        ensure!(migrate_on(&mut owner, &changed).await.is_err());
+        rejected(
+            migrate_on(&mut owner, &changed).await,
+            "instance, storage binding or runtime profiles differ",
+        );
     }
     for (grant, revoke) in [
         (
@@ -58,8 +75,12 @@ async fn fresh_installation_replay_and_mismatch_rejection() -> Result<()> {
         ),
     ] {
         sqlx::raw_sql(grant).execute(&mut owner).await?;
-        ensure!(migrate_on(&mut owner, &installation).await.is_err());
+        rejected(
+            migrate_on(&mut owner, &installation).await,
+            "instance, storage binding or runtime profiles differ",
+        );
         sqlx::raw_sql(revoke).execute(&mut owner).await?;
+        migrate_on(&mut owner, &installation).await?;
     }
     migrate_on(&mut owner, &installation).await?;
     owner.execute("CREATE TABLE public.installation_evidence(value text); INSERT INTO public.installation_evidence VALUES('preserve')").await?;
@@ -68,7 +89,10 @@ async fn fresh_installation_replay_and_mismatch_rejection() -> Result<()> {
         "UPDATE public.mdm_migrations SET complete=false WHERE name='transactional-messaging-v1'",
     ] {
         sqlx::raw_sql(statement).execute(&mut owner).await?;
-        ensure!(migrate_on(&mut owner, &installation).await.is_err());
+        rejected(
+            migrate_on(&mut owner, &installation).await,
+            "existing ledger differs or is incomplete",
+        );
         ensure!(
             sqlx::query_scalar::<_, String>("SELECT value FROM public.installation_evidence")
                 .fetch_one(&mut owner)
@@ -85,12 +109,16 @@ async fn fresh_installation_replay_and_mismatch_rejection() -> Result<()> {
             .bind(&original.0)
             .execute(&mut owner)
             .await?;
+        migrate_on(&mut owner, &installation).await?;
     }
     // Missing current schema units must fail without repairing the ledger.
     owner
         .execute("DELETE FROM public.mdm_migrations WHERE name IN ('inventory-v2','inventory-service-schema-v1')")
         .await?;
-    ensure!(migrate_on(&mut owner, &installation).await.is_err());
+    rejected(
+        migrate_on(&mut owner, &installation).await,
+        "existing ledger differs or is incomplete",
+    );
     ensure!(
         sqlx::query_scalar::<_, i64>("SELECT count(*) FROM public.mdm_migrations")
             .fetch_one(&mut owner)
@@ -113,14 +141,28 @@ async fn fresh_installation_replay_and_mismatch_rejection() -> Result<()> {
                 .await?;
         }
     }
+    migrate_on(&mut owner, &installation).await?;
     owner.execute("INSERT INTO public.mdm_migrations VALUES('unrecognized-installation',repeat('a',64),true)").await?;
-    ensure!(migrate_on(&mut owner, &installation).await.is_err());
+    rejected(
+        migrate_on(&mut owner, &installation).await,
+        "existing ledger differs or is incomplete",
+    );
     ensure!(
         sqlx::query_scalar::<_, i64>("SELECT count(*) FROM public.mdm_migrations")
             .fetch_one(&mut owner)
             .await?
             == before.len() as i64 + 1
     );
+    ensure!(
+        sqlx::query_scalar::<_, String>("SELECT value FROM public.installation_evidence")
+            .fetch_one(&mut owner)
+            .await?
+            == "preserve"
+    );
+    owner
+        .execute("DELETE FROM public.mdm_migrations WHERE name='unrecognized-installation'")
+        .await?;
+    migrate_on(&mut owner, &installation).await?;
     owner.close().await?;
     Ok(())
 }
@@ -239,11 +281,9 @@ async fn audit_privilege_drift(
         sqlx::raw_sql(sqlx::AssertSqlSafe(grant.clone()))
             .execute(&mut *observer)
             .await?;
-        ensure!(
-            crate::migration::migrate(options, installation)
-                .await
-                .is_err(),
-            "installer accepted {grant}"
+        rejected(
+            crate::migration::migrate(options, installation).await,
+            "instance, storage binding or runtime profiles differ",
         );
         sqlx::raw_sql(sqlx::AssertSqlSafe(revoke))
             .execute(&mut *observer)
@@ -266,10 +306,9 @@ async fn audit_privilege_drift(
             ),
         ] {
             sqlx::raw_sql(grant).execute(&mut *observer).await?;
-            ensure!(
-                crate::migration::migrate(options, installation)
-                    .await
-                    .is_err()
+            rejected(
+                crate::migration::migrate(options, installation).await,
+                "instance, storage binding or runtime profiles differ",
             );
             sqlx::raw_sql(revoke).execute(&mut *observer).await?;
             crate::migration::migrate(options, installation).await?;

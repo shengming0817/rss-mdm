@@ -19,16 +19,16 @@ async fn projection_and_tenant_scopes() -> Result<()> {
     assert_eq!(a.project(&cancel).await?["applied"], 1);
     let original = inspect(&a, "first").await?;
     assert_eq!(original["projection"], "projected");
-    assert_eq!(original["assets"].as_array().unwrap().len(), 2);
+    known(&original, &scope(1, "d1"), "first", "Model-A");
     assert!(matches!(
         a.ingest(first.clone()).await?,
         ReceiveOutcome::Replay(_)
     ));
-    assert!(
-        a.ingest(batch("first", 0, Body::Snapshot(facts("Conflict"))))
-            .await
-            .is_err()
-    );
+    let conflict = a
+        .ingest(batch("first", 0, Body::Snapshot(facts("Conflict"))))
+        .await
+        .unwrap_err();
+    assert_eq!(conflict.to_string(), "collection result conflict");
     assert_eq!(a.project(&cancel).await?["applied"], 0);
     assert_eq!(inspect(&a, "first").await?, original);
     for (i, body) in [
@@ -94,28 +94,24 @@ async fn projection_and_tenant_scopes() -> Result<()> {
     sibling.project(&cancel).await?;
     a.ingest(batch("empty", 5, Body::Snapshot(vec![]))).await?;
     a.project(&cancel).await?;
-    let empty = inspect(&a, "empty").await?;
-    assert_eq!(empty["assets"].as_array().unwrap().len(), 2);
+    let own = inspect(&a, "empty").await?;
+    assert_eq!(own["projection"], "projected");
     assert!(
-        empty["assets"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .all(|a| a["fact"]["state"]["kind"] == "deleted" && !a["fact"]["lastKnown"].is_null())
+        fields(&own)
+            .values()
+            .all(|row| row["fact"]["state"]["kind"] == "deleted")
     );
-    assert_eq!(
-        inspect(&other, "first").await?["assets"]
-            .as_array()
-            .unwrap()
-            .len(),
-        2
+    known(
+        &inspect(&other, "first").await?,
+        &scope(2, "d1"),
+        "first",
+        "Tenant-B",
     );
-    assert_eq!(
-        inspect(&sibling, "sibling-first").await?["assets"]
-            .as_array()
-            .unwrap()
-            .len(),
-        2
+    known(
+        &inspect(&sibling, "sibling-first").await?,
+        &scope(1, "d2"),
+        "sibling-first",
+        "Sibling",
     );
     other.close().await?;
     sibling.close().await?;
@@ -139,82 +135,78 @@ impl rss_observation::Authority for JournalFixture {
         }
     }
 }
-#[allow(
-    clippy::disallowed_methods,
-    reason = "Real PG poison fixture timestamp must track server wall time"
-)]
 #[tokio::test]
 #[ignore = "MODULE=inventory.projection: real PostgreSQL"]
-async fn unregistered_dataset_and_poison_are_rejected() -> Result<()> {
-    let a = app(scope(4, "validation")).await?;
-    let s = scope(4, "not-inventory");
-    let s: Scope = serde_json::from_str(
-        &s.encode()?
-            .replace("\"dataset\":\"inventory\"", "\"dataset\":\"other\""),
-    )?;
-    let producer = JournalFixture(s.clone());
-    a.observation
-        .activate(
-            &rss_observation::LifecycleGrant::verify(&producer, s.clone())?,
-            None,
-            &rss_observation::Policy::new(86400, 3600, 3600)?,
-            a.clock.deadline(),
-        )
-        .await?;
-    a.observation
-        .receive(
-            &VerifiedBatch::verify(
-                &producer,
-                s,
-                batch("other", 0, Body::Snapshot(facts("Other"))),
-            )?,
-            a.clock.deadline(),
-        )
-        .await?;
+async fn missing_collection_and_corrupt_result_preserve_projection() -> Result<()> {
+    let stream = scope(1, "validation");
+    let a = app(stream.clone()).await?;
     let cancel = CancellationToken::new();
-    assert!(
-        a.project(&cancel).await.is_err(),
-        "unregistered dataset was accepted"
-    );
-    a.close().await?;
-    let a = app(scope(1, "validation")).await?;
-    let s = scope(1, "validation");
-    let producer = JournalFixture(s.clone());
-    a.observation
-        .activate(
-            &rss_observation::LifecycleGrant::verify(&producer, s.clone())?,
-            None,
-            &rss_observation::Policy::new(86400, 3600, 3600)?,
-            a.clock.deadline(),
-        )
+    a.ingest(batch("control", 0, Body::Snapshot(facts("Control"))))
         .await?;
-    let bad = rss_observation::Coverage::new(
-        Id::new("device-basics")?,
-        Id::new("2")?,
-        Id::new("model-os")?,
-        Id::new("unknown")?,
+    a.project(&cancel).await?;
+    known(
+        &inspect(&a, "control").await?,
+        &stream,
+        "control",
+        "Control",
     );
-    let b = Batch::new(
-        Id::new("poison")?,
-        0,
-        i64::try_from(
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
+    use sqlx::Connection;
+    let mut owner = sqlx::PgConnection::connect_with(&url("MDM_OWNER_URL")?).await?;
+    sqlx::query("SELECT set_config('rss.tenant_id',$1,false)")
+        .bind(stream.tenant().to_string())
+        .execute(&mut owner)
+        .await?;
+    for (sequence, id) in [(1, "missing-definition"), (2, "corrupt-result")] {
+        a.ingest(batch(id, sequence, Body::Snapshot(facts("Recovered"))))
+            .await?;
+        let before = inspect(&a, id).await?;
+        assert_eq!(before["projection"], "not_projected");
+        let saved: String = if sequence == 1 {
+            sqlx::query_scalar("DELETE FROM mdm.collection_definitions d WHERE tenant_id=$1::uuid AND dataset='inventory' AND source='agent.builtin' RETURNING to_jsonb(d)::text")
+                .bind(stream.tenant().to_string()).fetch_one(&mut owner).await?
+        } else {
+            let digest: String = sqlx::query_scalar(
+                "SELECT digest FROM mdm.collection_results WHERE tenant_id=$1::uuid AND run=$2",
+            )
+            .bind(stream.tenant().to_string())
+            .bind(id)
+            .fetch_one(&mut owner)
+            .await?;
+            let changed = sqlx::query("UPDATE mdm.collection_results SET digest=repeat('0',64) WHERE tenant_id=$1::uuid AND run=$2")
+                .bind(stream.tenant().to_string()).bind(id).execute(&mut owner).await?;
+            assert_eq!(changed.rows_affected(), 1);
+            digest
+        };
+        let rejected = a.project(&cancel).await;
+        // Restore precisely the damaged source material; retry the original received batch.
+        if sequence == 1 {
+            sqlx::query("INSERT INTO mdm.collection_definitions SELECT * FROM jsonb_populate_record(NULL::mdm.collection_definitions,$1::jsonb)")
+                .bind(saved).execute(&mut owner).await?;
+        } else {
+            sqlx::query(
+                "UPDATE mdm.collection_results SET digest=$3 WHERE tenant_id=$1::uuid AND run=$2",
+            )
+            .bind(stream.tenant().to_string())
+            .bind(id)
+            .bind(saved)
+            .execute(&mut owner)
+            .await?;
+        }
+        assert_eq!(
+            rejected
+                .unwrap_err()
+                .downcast_ref::<rss_projection::Error>()
                 .unwrap()
-                .as_secs(),
-        )
-        .unwrap()
-        .try_into()
-        .unwrap(),
-        bad,
-        Body::Snapshot(facts("Invalid")),
-    )?;
-    a.observation
-        .receive(&VerifiedBatch::verify(&producer, s, b)?, a.clock.deadline())
-        .await?;
-    let before = inspect(&a, "poison").await?;
-    assert!(a.project(&cancel).await.is_err());
-    assert_eq!(inspect(&a, "poison").await?, before);
+                .kind(),
+            rss_projection::ErrorKind::Rejected
+        );
+        assert_eq!(inspect(&a, id).await?, before);
+        assert_eq!(a.project(&cancel).await?["applied"], 1);
+        let recovered = inspect(&a, id).await?;
+        assert_eq!(recovered["projection"], "projected");
+        known(&recovered, &stream, id, "Recovered");
+    }
+    owner.close().await?;
     a.close().await?;
     Ok(())
 }
@@ -222,14 +214,63 @@ async fn unregistered_dataset_and_poison_are_rejected() -> Result<()> {
 #[ignore = "MODULE=inventory.projection: real PostgreSQL"]
 async fn invocation_horizon() -> Result<()> {
     let a = std::sync::Arc::new(app(scope(6, "window")).await?);
+    use sqlx::Connection;
+    let mut connection = sqlx::PgConnection::connect_with(&storage::collection_options()?).await?;
+    let stream = scope(6, "window");
+    let authority = FixtureAuthority::new(stream.clone());
+    let definition = crate::fixture::definition();
+    a.observation
+        .activate(
+            &rss_observation::LifecycleGrant::verify(&authority, stream.clone())?,
+            None,
+            &rss_observation::Policy::new(86400, 3600, 3600)?,
+            a.clock.deadline(),
+        )
+        .await?;
     for sequence in 0..257 {
-        a.ingest(batch(
+        let batch = batch(
             &format!("window-{sequence}"),
             sequence,
             Body::Snapshot(facts("Window")),
-        ))
+        );
+        let progress = model::CollectionProgress::reported(
+            definition.clone(),
+            batch.body(),
+            batch.observed_at_seconds(),
+        )?;
+        let mut tx = connection.begin().await?;
+        sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
+            .bind(stream.tenant().to_string())
+            .execute(&mut *tx)
+            .await?;
+        if sequence == 0 {
+            rss_mdm_inventory_postgres::register_collection_in(
+                &mut tx,
+                stream.tenant(),
+                &definition,
+            )
+            .await?;
+        }
+        let sealed = rss_mdm_inventory_postgres::seal_collection_in(
+            &mut tx,
+            rss_mdm_inventory_postgres::CollectionCompletion {
+                scope: &stream,
+                run: batch.id().as_str(),
+                sequence,
+                observed_at: batch.observed_at_seconds(),
+                progress: &progress,
+            },
+        )
         .await?;
+        tx.commit().await?;
+        a.observation
+            .receive(
+                &VerifiedBatch::verify(&authority, stream.clone(), sealed)?,
+                a.clock.deadline(),
+            )
+            .await?;
     }
+    connection.close().await?;
     let owner = storage::pool(&url("MDM_OWNER_URL")?).await?;
     let admin = storage::pool(&url("MDM_ADMIN_URL")?).await?;
     sqlx::raw_sql("CREATE FUNCTION mdm.window_pause() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.batch_id='window-0' THEN PERFORM pg_advisory_xact_lock(2346002); PERFORM pg_sleep(0.3); END IF; RETURN NEW; END $$; CREATE TRIGGER window_pause AFTER INSERT ON mdm.inventory FOR EACH ROW EXECUTE FUNCTION mdm.window_pause();").execute(&owner).await?;
@@ -251,7 +292,17 @@ async fn invocation_horizon() -> Result<()> {
     let first = tokio::time::timeout(Duration::from_secs(30), worker).await???;
     assert_eq!(first["applied"], 257);
     assert_eq!(first["position"], first["through"]);
+    assert_eq!(
+        inspect(&a, "window-later").await?["projection"],
+        "not_projected"
+    );
     assert_eq!(a.project(&CancellationToken::new()).await?["applied"], 1);
+    known(
+        &inspect(&a, "window-later").await?,
+        &stream,
+        "window-later",
+        "NextInvocation",
+    );
     sqlx::raw_sql("DROP TRIGGER window_pause ON mdm.inventory; DROP FUNCTION mdm.window_pause();")
         .execute(&owner)
         .await?;
@@ -289,12 +340,28 @@ async fn empty_and_delete() -> Result<()> {
     a.ingest(batch("populated", 1, Body::Snapshot(facts("Delete"))))
         .await?;
     a.project(&cancel).await?;
+    a.ingest(batch("empty-after-value", 2, Body::Snapshot(vec![])))
+        .await?;
+    a.project(&cancel).await?;
+    let emptied = inspect(&a, "empty-after-value").await?;
+    for (key, value) in [("device.model", "Delete"), ("device.os.version", "1")] {
+        let fact = &fields(&emptied)[key]["fact"];
+        assert_eq!(fact["state"]["kind"], "deleted");
+        assert_eq!(
+            fact["lastKnown"]["value"],
+            serde_json::json!({"kind":"string","value":value})
+        );
+        assert_eq!(fact["lastKnown"]["evidence"]["snapshotId"], "populated");
+    }
+    a.ingest(batch("populated-again", 3, Body::Snapshot(facts("Delete"))))
+        .await?;
+    a.project(&cancel).await?;
     a.ingest(batch(
         "delete",
-        2,
+        4,
         Body::Delta {
-            baseline: Id::new("populated")?,
-            previous: 1,
+            baseline: Id::new("populated-again")?,
+            previous: 3,
             changes: vec![
                 Change::delete(Id::new("device.model")?),
                 Change::delete(Id::new("device.os.version")?),
@@ -347,6 +414,7 @@ async fn narrower_snapshot_preserves_unselected_fields_in_the_same_source_scope(
             .collect()
     })?;
     let mut c = sqlx::PgConnection::connect_with(&storage::collection_options()?).await?;
+    let mut wide_os = None;
     for (sequence, (id, definition, values)) in [
         ("wide", &base, facts("first")),
         ("narrow", &narrow, vec![facts("second").remove(0)]),
@@ -383,8 +451,34 @@ async fn narrower_snapshot_preserves_unselected_fields_in_the_same_source_scope(
             )
             .await?;
         a.project(&CancellationToken::new()).await?;
+        let view = inspect(&a, id).await?;
+        let map = fields(&view);
+        if id == "wide" {
+            wide_os = Some(map["device.os.version"].clone());
+        } else {
+            assert_eq!(Some(map["device.os.version"]), wide_os.as_ref());
+        }
+        assert_eq!(
+            map["device.os.version"]["fact"]["state"]["value"],
+            serde_json::json!({"kind":"string","value":"1"})
+        );
+        assert_eq!(
+            map["device.os.version"]["fact"]["evidence"]["snapshotId"],
+            "wide"
+        );
+        assert_eq!(map["device.os.version"]["scope"], s.encode()?);
+        if id == "narrow" {
+            assert_eq!(
+                map["device.model"]["fact"]["state"]["value"],
+                serde_json::json!({"kind":"string","value":"second"})
+            );
+        }
     }
     let view = inspect(&a, "empty-narrow").await?;
+    assert_eq!(
+        fields(&view)["device.model"]["fact"]["lastKnown"]["value"],
+        serde_json::json!({"kind":"string","value":"second"})
+    );
     let assets = view["assets"].as_array().unwrap();
     assert!(
         assets

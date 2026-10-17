@@ -81,33 +81,21 @@ async fn reader_is_exact_tenant_scoped_and_read_only() -> anyhow::Result<()> {
             .is_err()
     );
     let reader = InventoryReader::connect(options("mdm_api")?).await?;
-    {
+    for (tenant, source, value) in [
+        (a, "mdm.windows", "A"),
+        (b, "mdm.windows", "B"),
+        (a, "agent.builtin", "C"),
+    ] {
+        let selected = scope(tenant, source);
+        let rows = reader
+            .read(selected.tenant(), std::slice::from_ref(&selected))
+            .await?;
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].scope, selected.encode()?);
+        assert_eq!(rows[0].field, rss_mdm_inventory::builtin::MODEL);
         assert_eq!(
-            reader
-                .read(scope(a, "mdm.windows").tenant(), &[scope(a, "mdm.windows")])
-                .await?[0]
-                .fact
-                .state,
-            rss_mdm_inventory::State::Known(rss_mdm_inventory::Scalar::String("A".into()))
-        );
-        assert_eq!(
-            reader
-                .read(scope(b, "mdm.windows").tenant(), &[scope(b, "mdm.windows")])
-                .await?[0]
-                .fact
-                .state,
-            rss_mdm_inventory::State::Known(rss_mdm_inventory::Scalar::String("B".into()))
-        );
-        assert_eq!(
-            reader
-                .read(
-                    scope(a, "agent.builtin").tenant(),
-                    &[scope(a, "agent.builtin")]
-                )
-                .await?[0]
-                .fact
-                .state,
-            rss_mdm_inventory::State::Known(rss_mdm_inventory::Scalar::String("C".into()))
+            rows[0].fact.state,
+            rss_mdm_inventory::State::Known(rss_mdm_inventory::Scalar::String(value.into()))
         );
     }
     assert!(
@@ -123,59 +111,93 @@ async fn reader_is_exact_tenant_scoped_and_read_only() -> anyhow::Result<()> {
             .await?,
         0
     );
-    assert!(api.execute("DELETE FROM mdm.inventory").await.is_err());
-    assert!(
-        api.execute("SELECT * FROM rss_observation.batches")
-            .await
-            .is_err()
-    );
+    for statement in [
+        "DELETE FROM mdm.inventory",
+        "SELECT * FROM rss_observation.batches",
+    ] {
+        let error = api.execute(statement).await.unwrap_err();
+        assert_eq!(
+            error.as_database_error().and_then(|e| e.code()).as_deref(),
+            Some("42501")
+        );
+    }
     let owner: PgConnectOptions = std::env::var("MDM_OWNER_URL")?
         .parse::<PgConnectOptions>()?
         .ssl_mode(PgSslMode::VerifyFull)
         .ssl_root_cert(std::env::var("PG_CA_FILE")?);
     let mut owner = PgConnection::connect_with(&owner).await?;
-    for (grant, revoke) in [
+    for (grant, revoke, field) in [
         (
             "GRANT INSERT ON public.mdm_migrations TO mdm_api",
             "REVOKE INSERT ON public.mdm_migrations FROM mdm_api",
+            "dml",
         ),
         (
             "GRANT SELECT ON public.mdm_migrations TO mdm_api",
             "REVOKE SELECT ON public.mdm_migrations FROM mdm_api",
+            "dml",
         ),
         (
             "REVOKE USAGE ON SCHEMA mdm FROM mdm_api",
             "GRANT USAGE ON SCHEMA mdm TO mdm_api",
+            "42501",
         ),
         (
             "GRANT INSERT ON mdm.inventory TO mdm_api",
             "REVOKE INSERT ON mdm.inventory FROM mdm_api",
+            "dml",
         ),
         (
             "GRANT SELECT(scope) ON rss_observation.batches TO mdm_api",
             "REVOKE SELECT(scope) ON rss_observation.batches FROM mdm_api",
+            "dml",
         ),
         (
             "DROP INDEX mdm.inventory_source",
             "CREATE INDEX inventory_source ON mdm.inventory(tenant_id,registration,source,epoch)",
+            "assets",
         ),
         (
             "ALTER TABLE mdm.inventory ALTER COLUMN epoch DROP NOT NULL",
             "ALTER TABLE mdm.inventory ALTER COLUMN epoch SET NOT NULL",
+            "assets",
         ),
         (
             "ALTER TABLE mdm.inventory DROP CONSTRAINT inventory_value_state; ALTER TABLE mdm.inventory ADD CONSTRAINT inventory_value_state CHECK(true)",
             "ALTER TABLE mdm.inventory DROP CONSTRAINT inventory_value_state; ALTER TABLE mdm.inventory ADD CONSTRAINT inventory_value_state CHECK((state='known')=(value IS NOT NULL))",
+            "assets",
         ),
         (
             "ALTER TABLE mdm.inventory NO FORCE ROW LEVEL SECURITY",
             "ALTER TABLE mdm.inventory FORCE ROW LEVEL SECURITY",
+            "rls",
         ),
     ] {
+        normal_reader().await?;
         owner.execute(grant).await?;
-        let rejected = InventoryReader::connect(options("mdm_api")?).await.is_err();
+        let rejected = InventoryReader::connect(options("mdm_api")?)
+            .await
+            .err()
+            .expect("damaged admission must reject");
         owner.execute(revoke).await?;
-        assert!(rejected, "reader accepted privilege drift");
+        if field == "42501" {
+            assert_eq!(
+                rejected
+                    .downcast_ref::<sqlx::Error>()
+                    .and_then(|e| e.as_database_error())
+                    .and_then(|e| e.code())
+                    .as_deref(),
+                Some("42501"),
+                "{grant}: {rejected:#}"
+            );
+        } else {
+            assert_eq!(
+                rejected.to_string(),
+                format!("Inventory admission rejected: {field}"),
+                "{grant}"
+            );
+        }
+        normal_reader().await?;
     }
     for (create, drop) in [
         (
@@ -187,13 +209,18 @@ async fn reader_is_exact_tenant_scoped_and_read_only() -> anyhow::Result<()> {
             "DROP FUNCTION mdm.reader_test_function()",
         ),
     ] {
+        normal_reader().await?;
         sqlx::raw_sql(create).execute(&mut owner).await?;
-        let rejected = InventoryReader::connect(options("mdm_api")?).await.is_err();
+        let rejected = InventoryReader::connect(options("mdm_api")?)
+            .await
+            .err()
+            .expect("damaged admission must reject");
         owner.execute(drop).await?;
         assert!(
-            rejected,
-            "reader accepted additional sequence/function privilege"
+            rejected.to_string() == "Inventory admission rejected: dml",
+            "unexpected rejection: {rejected:#}"
         );
+        normal_reader().await?;
     }
     let administrator: PgConnectOptions = std::env::var("MDM_ADMIN_URL")?
         .parse::<PgConnectOptions>()?
@@ -213,27 +240,37 @@ async fn reader_is_exact_tenant_scoped_and_read_only() -> anyhow::Result<()> {
             "REVOKE CREATE ON SCHEMA public FROM mdm_api",
         ),
     ] {
+        normal_reader().await?;
         sqlx::raw_sql(sqlx::AssertSqlSafe(grant))
             .execute(&mut administrator)
             .await?;
-        let rejected = InventoryReader::connect(options("mdm_api")?).await.is_err();
+        let rejected = InventoryReader::connect(options("mdm_api")?)
+            .await
+            .err()
+            .expect("damaged admission must reject");
         sqlx::raw_sql(sqlx::AssertSqlSafe(revoke))
             .execute(&mut administrator)
             .await?;
-        assert!(rejected, "reader accepted CREATE privilege");
+        assert_eq!(rejected.to_string(), "Inventory admission rejected: dml");
+        normal_reader().await?;
     }
+    normal_reader().await?;
     administrator
         .execute("CREATE ROLE reader_inheritor LOGIN")
         .await?;
     administrator
         .execute("GRANT mdm_api TO reader_inheritor")
         .await?;
-    let rejected = InventoryReader::connect(options("mdm_api")?).await.is_err();
+    let rejected = InventoryReader::connect(options("mdm_api")?)
+        .await
+        .err()
+        .expect("damaged admission must reject");
     administrator
         .execute("REVOKE mdm_api FROM reader_inheritor")
         .await?;
     administrator.execute("DROP ROLE reader_inheritor").await?;
-    assert!(rejected, "reader accepted incoming role membership");
+    assert_eq!(rejected.to_string(), "Inventory admission rejected: dml");
+    normal_reader().await?;
     administrator.close().await?;
     owner.close().await?;
     api.close().await?;
@@ -256,12 +293,31 @@ async fn watermark_fence_rejects_unrelated_grantee() -> anyhow::Result<()> {
         .await?;
     let rejected = rss_mdm_inventory_postgres::verify_watermark_fence(&mut connection)
         .await
-        .is_err();
+        .unwrap_err();
     root.execute("REVOKE EXECUTE ON FUNCTION mdm.lock_asset_watermark(uuid) FROM mdm_api")
         .await?;
-    anyhow::ensure!(rejected, "watermark fence accepted an unrelated grantee");
+    assert!(
+        matches!(rejected, sqlx::Error::Protocol(ref reason) if reason == "asset watermark fence contract")
+    );
     rss_mdm_inventory_postgres::verify_watermark_fence(&mut connection).await?;
     root.close().await?;
     connection.close().await?;
+    Ok(())
+}
+
+async fn normal_reader() -> anyhow::Result<()> {
+    let reader = InventoryReader::connect(options("mdm_api")?).await?;
+    let selected = scope(case::tenant(), "mdm.windows");
+    let rows = reader
+        .read(selected.tenant(), std::slice::from_ref(&selected))
+        .await;
+    reader.close().await;
+    let rows = rows?;
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].scope, selected.encode()?);
+    assert_eq!(
+        rows[0].fact.state,
+        rss_mdm_inventory::State::Known(rss_mdm_inventory::Scalar::String("A".into()))
+    );
     Ok(())
 }

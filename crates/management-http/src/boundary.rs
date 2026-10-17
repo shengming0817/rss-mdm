@@ -319,8 +319,21 @@ mod tests {
             let response = Error::from(error).into_response();
             assert_eq!(response.status().as_u16(), status);
             assert_eq!(classify(response.extensions().get::<Error>()), expected);
-            let id = uuid::Uuid::new_v4();
+            if expected == Some(ResponseFailure::Deadline) {
+                assert!(matches!(
+                    response.extensions().get::<Error>(),
+                    Some(Error::Unavailable(Failure::RequestDeadline))
+                ));
+            }
+            let audit = RequestAudit::new(
+                "11111111-1111-4111-8111-111111111111".into(),
+                "protected_request",
+            );
+            let id = audit.request_id();
             let response = secure(response, id);
+            assert!(
+                uuid::Uuid::parse_str(response.headers()["x-request-id"].to_str().unwrap()).is_ok()
+            );
             assert_eq!(response.headers()["x-request-id"], id.to_string());
             assert_eq!(response.headers()[header::CACHE_CONTROL], "no-store");
             assert_eq!(response.headers()[header::REFERRER_POLICY], "no-referrer");
@@ -332,8 +345,8 @@ mod tests {
                 .await
                 .unwrap();
             assert_eq!(
-                serde_json::from_slice::<serde_json::Value>(&body).unwrap()["code"],
-                code
+                serde_json::from_slice::<serde_json::Value>(&body).unwrap(),
+                serde_json::json!({"code": code})
             );
         }
     }

@@ -248,6 +248,7 @@ class ModuleImpactTests(unittest.TestCase):
         selection = select_inputs(['hack/t2_modules/installation.py'])
         self.assertEqual(selection.modules, ('installation.migration',))
         self.assertIn('test_t2_guards', selection.tools)
+        self.assertEqual(select_inputs(['crates/app/tests/tenant_registry/business.rs']).modules, ('installation.registry',))
 
     def test_cluster_role_admission_owns_an_instance(self):
         self.assertEqual(MODULES['inventory.reader'].db_mode, 'instance')
