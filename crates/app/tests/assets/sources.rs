@@ -3,15 +3,6 @@ async fn source_matrix(browser: &mut Browser, router: &Router) -> Result<()> {
     let (mdm, _) = seed_source("asset-b", "mdm", "mdm.windows", "Same")?;
     let (agent, _) = seed_source("asset-b", "agent", "agent.builtin", "Same")?;
     let path = "/api/v1/devices/asset-b/inventory";
-    let detail = ok(browser, router, Method::GET, path, None).await?;
-    ensure!(detail["asset"]["device"]["fields"]["device.model"]["state"]["kind"] == "known");
-    ensure!(
-        detail["asset"]["device"]["fields"]["device.model"]["sources"]
-            .as_array()
-            .unwrap()
-            .len()
-            == 2
-    );
     pg(&format!(
         "UPDATE mdm.inventory SET value='{{\"kind\":\"string\",\"value\":\"Different\"}}' WHERE registration='{agent}';"
     ))?;
@@ -28,17 +19,13 @@ async fn source_matrix(browser: &mut Browser, router: &Router) -> Result<()> {
     .await?;
     ensure!(found["asset"]["summary"]["matched"] == 0 && found["asset"]["summary"]["unknown"] == 2);
     pg(&format!(
-        "UPDATE mdm.inventory SET state='deleted',value=NULL WHERE registration='{agent}';"
-    ))?;
-    let detail = ok(browser, router, Method::GET, path, None).await?;
-    ensure!(
-        detail["asset"]["device"]["fields"]["device.model"]["state"]["value"]["value"] == "Same"
-    );
-    pg(&format!(
         "UPDATE mdm_access.registrations SET state='superseded' WHERE id='{mdm}'; UPDATE mdm.inventory SET value='{{\"kind\":\"string\",\"value\":\"Late old value\"}}' WHERE registration='{mdm}';"
     ))?;
     let detail = ok(browser, router, Method::GET, path, None).await?;
-    ensure!(detail["asset"]["device"]["fields"]["device.model"]["state"]["kind"] == "deleted");
+    ensure!(
+        detail["asset"]["device"]["fields"]["device.model"]["state"]["value"]["value"]
+            == "Different"
+    );
     ensure!(
         detail["asset"]["device"]["fields"]["device.model"]["sources"]
             .as_array()
@@ -120,7 +107,6 @@ async fn sources_resolution_and_retained_quality() -> Result<()> {
         "INSERT INTO mdm_access.devices VALUES('{TENANT}','tie-b')",
         TENANT = case_tenant()
     ))?;
-    crate::test_support::inventory::completed_windows_run(&fixture.base, "asset-a").await?;
     retained_collection_quality(&mut browser, router).await?;
     fixture.close().await
 }

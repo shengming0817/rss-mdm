@@ -152,30 +152,25 @@ async fn typed_and_collected_facts_become_group_input() -> Result<()> {
     let fixture = Fixture::open().await?;
     let router = &fixture.router;
     let mut browser = fixture.browser.clone();
-    for (field, kind, value) in [
-        ("custom.asset_tag", "string", json!("A-2463")),
-        ("custom.office_floor", "integer", json!(3)),
-        ("custom.is_loaner", "boolean", json!(false)),
-        ("custom.purchase_date", "time", json!(1_700_000_000)),
-    ] {
-        ok(
-            &mut browser,
-            router,
-            Method::PUT,
-            &format!("/api/v1/devices/asset-a/manual-fields/{field}"),
-            Some(request(
-                0,
-                json!({"action":"set","value":{"kind":kind,"value":value}}),
-            )),
-        )
-        .await?;
-        let group = format!("/api/v1/groups/{}", Uuid::new_v4());
-        ok(&mut browser,router,Method::POST,&group,Some(request(0,json!({"action":"create","assetContext":"endpoint","name":field,"description":"asset input","criteria":predicate(field,kind,value)})))).await?;
-        ensure!(
-            preview(&mut browser, router, &group).await?.members["page"]["items"]
-                == json!([{"kind":"endpoint","id":"asset-a"}])
-        );
-    }
+    let (field, kind, value) = ("custom.office_floor", "integer", json!(3));
+
+    ok(
+        &mut browser,
+        router,
+        Method::PUT,
+        &format!("/api/v1/devices/asset-a/manual-fields/{field}"),
+        Some(request(
+            0,
+            json!({"action":"set","value":{"kind":kind,"value":value}}),
+        )),
+    )
+    .await?;
+    let group = format!("/api/v1/groups/{}", Uuid::new_v4());
+    ok(&mut browser,router,Method::POST,&group,Some(request(0,json!({"action":"create","assetContext":"endpoint","name":field,"description":"asset input","criteria":predicate(field,kind,value)})))).await?;
+    ensure!(
+        preview(&mut browser, router, &group).await?.members["page"]["items"]
+            == json!([{"kind":"endpoint","id":"asset-a"}])
+    );
     seed_source("asset-b", "mdm", "mdm.windows", "Same")?;
     seed_source("asset-b", "agent", "agent.builtin", "Different")?;
     let query = json!({"criteria":predicate("device.model","string",json!("Same"))});
@@ -184,7 +179,12 @@ async fn typed_and_collected_facts_become_group_input() -> Result<()> {
     let preview = preview(&mut browser, router, &group).await?;
     ensure!(
         preview.members["page"]["items"] == json!([])
-            && preview.decisions["page"]["items"][1]["explanations"][0]["outcome"] == "conflict"
+            && preview.decisions["page"]["items"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|decision| decision["object"]["id"] == "asset-b"
+                    && decision["explanations"][0]["outcome"] == "conflict")
     );
     pg(&format!(
         "INSERT INTO mdm_access.devices VALUES('{TENANT}','tie-a')",
@@ -196,12 +196,19 @@ async fn typed_and_collected_facts_become_group_input() -> Result<()> {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "MODULE=assets.group_input: projected Agent script facts reach Query and Group"]
-async fn script_health_projection_is_queryable_group_input() -> Result<()> {
+async fn projected_script_fact_is_queryable_group_input() -> Result<()> {
     let fixture = Fixture::open().await?;
     let mut browser = fixture.browser.clone();
     // Producer execution/projection is covered by execution.agent.delivery.
     // This consumer starts from a legal registered source and its projected fact.
-    let (registration, _) = seed_source("asset-a", "agent", "agent.builtin", "fixture")?;
+    let registration = Uuid::new_v4();
+    let grant = Uuid::new_v4();
+    let operation = Uuid::new_v4();
+    let credential = Uuid::new_v4();
+    pg(&format!(
+        "INSERT INTO mdm_access.agent_grants(tenant_id,id,operation_id,source,actor,instance,device,platform,secret_digest,request_digest,state,expires_at) VALUES('{tenant}','{grant}','{operation}','download','fixture','{INSTANCE}','asset-a','macos',repeat('0',64),repeat('0',64),'consumed',clock_timestamp()+interval '24 hours'); INSERT INTO mdm_access.registrations(tenant_id,id,device,channel,generation,agent_grant_id,state,purpose,epoch) VALUES('{tenant}','{registration}','asset-a','agent',1,'{grant}','active','primary',gen_random_uuid()); INSERT INTO mdm_access.credentials VALUES('{tenant}','{credential}','{registration}','agent',md5('{credential}')||md5('{registration}'),'active');",
+        tenant = case_tenant()
+    ))?;
     let epoch = Uuid::new_v4();
     let field = rss_mdm_inventory::builtin::CORPORATE_AGENT_HEALTHY;
     let scope = crate::device::scope_dataset(

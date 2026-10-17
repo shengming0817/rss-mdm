@@ -214,14 +214,24 @@ async fn durable_report_recovery_and_projection() -> Result<()> {
     crate::test_support::stop_worker(owner).await?;
     let reader =
         Arc::new(rss_mdm_inventory_postgres::InventoryReader::connect(options("mdm_api")?).await?);
-    ensure!(
-        reader
-            .read(first.scope.tenant(), std::slice::from_ref(&first.scope))
-            .await?[0]
-            .fact
-            .state
-            == rss_mdm_inventory::State::Known(rss_mdm_inventory::Scalar::String("First".into()))
-    );
+    let projected = reader
+        .read(first.scope.tenant(), std::slice::from_ref(&first.scope))
+        .await?;
+    ensure!(projected.len() == 2);
+    let by_key: std::collections::BTreeMap<_, _> = projected
+        .iter()
+        .map(|row| (row.field.as_str(), row))
+        .collect();
+    ensure!(by_key.keys().copied().collect::<Vec<_>>() == ["device.model", "device.os.version"]);
+    for (key, value) in [("device.model", "First"), ("device.os.version", "10")] {
+        let row = by_key[key];
+        ensure!(row.scope == first.scope.encode()?);
+        ensure!(
+            row.fact.state
+                == rss_mdm_inventory::State::Known(rss_mdm_inventory::Scalar::String(value.into()))
+        );
+        ensure!(row.fact.evidence.snapshot_id == first.id.to_string());
+    }
     runtime.close_fixture().await?;
 
     // Fresh epoch: confirmed partial fields project; failed fields retain trusted values.

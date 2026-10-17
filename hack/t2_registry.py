@@ -505,7 +505,7 @@ MODULES['inventory.reader'] = replace(MODULES['inventory.reader'], db_mode='inst
     CasePolicy('watermark_fence_rejects_unrelated_grantee', 'fresh', 'objects'),
 ))
 MODULES['inventory.projection'] = replace(MODULES['inventory.projection'], db_mode='reuse', scope='pair', policies=(
-    CasePolicy('app::t2::projection::unregistered_dataset_and_poison_are_rejected', 'fresh', 'objects'),
+    CasePolicy('app::t2::projection::missing_collection_and_corrupt_result_preserve_projection', 'fresh', 'objects'),
     CasePolicy('app::t2::projection::invocation_horizon', 'fresh', 'objects'),
 ))
 MODULES['inventory.recovery'] = replace(MODULES['inventory.recovery'], db_mode='reuse', scope='tenant', policies=(
@@ -513,7 +513,7 @@ MODULES['inventory.recovery'] = replace(MODULES['inventory.recovery'], db_mode='
 ))
 MODULES['inventory.process'] = replace(MODULES['inventory.process'], db_mode='fresh', scope='objects')
 MODULES['inventory.runtime'] = replace(MODULES['inventory.runtime'], db_mode='fresh', scope='objects')
-MODULES['examples.cli'] = replace(MODULES['examples.cli'], db_mode='reuse', scope='tenant')
+MODULES['examples.cli'] = replace(MODULES['examples.cli'], db_mode='fresh', scope='tenant')
 MODULES['api.identity_context'] = replace(MODULES['api.identity_context'], db_mode='reuse', scope='tenant')
 MODULES['host.lifecycle'] = replace(MODULES['host.lifecycle'], db_mode='fresh', scope='objects')
 MODULES['assets.http'] = replace(MODULES['assets.http'], db_mode='fresh', scope='objects', policies=(

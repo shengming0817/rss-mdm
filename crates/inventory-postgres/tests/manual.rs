@@ -49,10 +49,12 @@ async fn public_manual_cas_rollback_and_tenant_isolation() -> Result<(), Box<dyn
         .bind(tenant.to_string())
         .execute(&mut *tx)
         .await?;
-    assert!(
+    assert_eq!(
         pg::manual_in(&mut tx, foreign, &["manual-device".into()])
             .await
-            .is_err()
+            .unwrap_err()
+            .to_string(),
+        "asset transaction tenant mismatch"
     );
     assert_eq!(
         pg::assign_in(
@@ -171,11 +173,18 @@ async fn field_catalog_cas_history_and_rollback_are_atomic()
     assert!(!pg::publish_field_in(&mut tx, tenant, 2, &field).await?);
     // Retired identities stay reserved without consuming the active catalog budget.
     field.version = 1;
-    for index in 0..1025 {
-        field.key = rss_mdm_inventory::FieldKey::parse(&format!("custom.retired_{index}"))?;
-        assert!(pg::publish_field_in(&mut tx, tenant, 0, &field).await?);
-        assert!(pg::retire_field_in(&mut tx, tenant, field.key, 1).await?);
-    }
+    // Batch legitimate v1 publications and v2 retirements through the schema owner primitive.
+    // Only the final active publication is the capacity operation under test.
+    let document = serde_json::to_string(&field)?.replace('\'', "''");
+    let seed = format!(
+        "DO $seed$ DECLARE i integer; f text; BEGIN FOR i IN 0..1024 LOOP f='custom.retired_'||i; PERFORM mdm.append_field_version('{tenant}'::uuid,f,1,jsonb_set('{document}'::jsonb,'{{key}}',to_jsonb(f))); PERFORM mdm.append_field_version('{tenant}'::uuid,f,2,NULL); END LOOP; END $seed$"
+    );
+    sqlx::raw_sql(sqlx::AssertSqlSafe(seed.as_str()))
+        .execute(&mut *tx)
+        .await?;
+    let retired: i64 = sqlx::query_scalar("SELECT count(*) FROM mdm.field_versions WHERE tenant_id=$1::uuid AND field LIKE 'custom.retired_%' AND version=2 AND definition IS NULL")
+        .bind(tenant.to_string()).fetch_one(&mut *tx).await?;
+    assert_eq!(retired, 1025);
     field.key = rss_mdm_inventory::FieldKey::parse("custom.after_retirement")?;
     assert!(pg::publish_field_in(&mut tx, tenant, 0, &field).await?);
     assert_eq!(
@@ -236,7 +245,17 @@ async fn seed_retirement_and_reinitialization_preserve_tenant_catalog()
             .is_ok()
     );
     let core = rss_mdm_inventory::FieldKey::parse("device.hardware_uuid")?;
-    assert!(pg::retire_field_in(&mut tx, tenant, core, 1).await.is_err());
+    assert_eq!(
+        pg::retire_field_in(&mut tx, tenant, core, 1)
+            .await
+            .unwrap_err()
+            .to_string(),
+        "system field cannot be removed"
+    );
+    assert_eq!(
+        pg::catalog_in(&mut tx, tenant).await?.definition(core)?.key,
+        core
+    );
     tx.rollback().await?;
     Ok(())
 }

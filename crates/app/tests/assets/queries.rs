@@ -18,7 +18,7 @@ async fn query_snapshots_saved_ownership_and_stable_pagination() -> Result<()> {
         )),
     )
     .await?;
-    let query = json!({"sort":{"field":"custom.office_floor"}});
+    let query = json!({"sort":{"field":"custom.office_floor"},"select":["custom.office_floor"]});
     let result = ok(
         &mut browser,
         router,
@@ -42,6 +42,11 @@ async fn query_snapshots_saved_ownership_and_stable_pagination() -> Result<()> {
     ensure!(
         first["asset"]["summary"]["total"] == 2
             && first["asset"]["items"][0]["device"] == "asset-a"
+    );
+    let frozen = first["asset"]["items"].clone();
+    ensure!(
+        frozen[0]["fields"]["custom.office_floor"]["state"]["value"]
+            == json!({"kind":"integer","value":3})
     );
     let second = format!(
         "{items_path}?limit=1&cursor={}",
@@ -179,7 +184,24 @@ async fn query_snapshots_saved_ownership_and_stable_pagination() -> Result<()> {
         )),
     )
     .await?;
-    ensure!(browser.call(router, Method::GET, &second, None).await?.0 == StatusCode::OK);
+    let old = ok(
+        &mut browser,
+        router,
+        Method::GET,
+        &format!("{items_path}?limit=1"),
+        None,
+    )
+    .await?;
+    ensure!(old["asset"]["items"] == frozen);
+    let fresh = ok(&mut browser, router, Method::POST, "/api/v1/device-queries",
+        Some(json!({"criteria":predicate("custom.office_floor","integer",json!(4)),"select":["custom.office_floor"]}))).await?;
+    ensure!(fresh["asset"]["items"].as_array().unwrap().len() == 1);
+    ensure!(fresh["asset"]["items"][0]["device"] == "asset-a");
+    ensure!(
+        fresh["asset"]["items"][0]["fields"]["custom.office_floor"]["state"]["value"]
+            == json!({"kind":"integer","value":4})
+    );
+
     let deletion = request(1, json!({"action":"delete"}));
     ok(
         &mut browser,

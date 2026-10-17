@@ -96,3 +96,29 @@ mod cli;
 mod process;
 mod projection;
 mod recovery;
+
+// Exact two-field fixture output; callers assert the transition-specific state separately.
+fn fields(view: &serde_json::Value) -> std::collections::BTreeMap<&str, &serde_json::Value> {
+    let rows = view["assets"].as_array().unwrap();
+    let fields: std::collections::BTreeMap<_, _> = rows
+        .iter()
+        .map(|row| (row["field"].as_str().unwrap(), row))
+        .collect();
+    assert_eq!(rows.len(), 2);
+    assert_eq!(
+        fields.keys().copied().collect::<Vec<_>>(),
+        ["device.model", "device.os.version"]
+    );
+    fields
+}
+fn known(view: &serde_json::Value, scope: &Scope, batch: &str, model: &str) {
+    for (key, value) in [("device.model", model), ("device.os.version", "1")] {
+        let row = fields(view)[key];
+        assert_eq!(row["scope"], scope.encode().unwrap());
+        assert_eq!(
+            row["fact"]["state"],
+            serde_json::json!({"kind":"known","value":{"kind":"string","value":value}})
+        );
+        assert_eq!(row["fact"]["evidence"]["snapshotId"], batch);
+    }
+}

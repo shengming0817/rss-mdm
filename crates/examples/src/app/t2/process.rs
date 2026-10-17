@@ -1,7 +1,7 @@
 use super::*;
 #[tokio::test]
 #[ignore = "MODULE=inventory.process: real PostgreSQL"]
-async fn process_death() -> Result<()> {
+async fn client_and_backend_termination_roll_back_projection() -> Result<()> {
     let executable = &std::env::var("MDM_FIXTURE_BIN")?;
     let a = app(scope(3, "crash")).await?;
     a.ingest(batch("crash", 0, Body::Snapshot(facts("AfterRestart"))))
@@ -41,6 +41,10 @@ async fn process_death() -> Result<()> {
         restart.project(&CancellationToken::new()).await?["applied"],
         1
     );
+    let recovered = inspect(&restart, "crash").await?;
+    assert_eq!(recovered["projection"], "projected");
+    assert_eq!(recovered["receipt"]["batchId"], "crash");
+    known(&recovered, &scope(3, "crash"), "crash", "AfterRestart");
     restart.close().await?;
     storage::close_pool(&admin).await?;
     storage::close_pool(&owner).await?;
