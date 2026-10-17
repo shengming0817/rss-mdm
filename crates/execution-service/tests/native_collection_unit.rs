@@ -403,6 +403,27 @@ fn native_admission_requires_current_os_edition_engine_and_architecture() {
     agent.architecture = "aarch64".into();
     assert!(!allowed(&agent, &environment));
     agent.architecture = "x86_64".into();
+    let mut extra = template.spec().clone();
+    extra.applicability.capabilities =
+        ["windows.accounts".into(), "inventory.native.v1".into()].into();
+    let extra = rss_mdm_resource::AgentCollectionDefinition::new(extra).unwrap();
+    assert!(!crate::agent_collection_eligibility::matches(
+        &agent,
+        Platform::Windows,
+        Architecture::X86_64,
+        &extra,
+        &environment
+    ));
+    environment
+        .native_engines
+        .insert(w::NativeEngine::WindowsAccounts, 1);
+    assert!(crate::agent_collection_eligibility::matches(
+        &agent,
+        Platform::Windows,
+        Architecture::X86_64,
+        &extra,
+        &environment
+    ));
     environment.native_engines.clear();
     assert!(!allowed(&agent, &environment));
 }

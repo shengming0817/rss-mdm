@@ -25,8 +25,8 @@ pub fn matches(
         edition: environment.edition.clone(),
         tools: environment.tools.clone(),
     };
-    let capabilities = plan
-        .requirements()
+    let capabilities = environment
+        .native_engines
         .keys()
         .map(|e| {
             serde_json::to_value(e)
@@ -35,6 +35,13 @@ pub fn matches(
                 .expect("engine name")
                 .to_owned()
         })
+        .chain(binding.capabilities.iter().map(|capability| {
+            serde_json::to_value(capability)
+                .expect("closed capability")
+                .as_str()
+                .expect("capability name")
+                .to_owned()
+        }))
         .collect();
     definition
         .spec()
