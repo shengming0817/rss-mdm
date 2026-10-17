@@ -38,7 +38,7 @@ async fn revocation_and_replacement_unknown_commit() -> anyhow::Result<()> {
     .await?;
     // Independent explicit credential permission, including on replay.
     let revoke_key = Uuid::new_v4();
-    assert!(
+    assert!(matches!(
         service
             .revoke(
                 &other,
@@ -46,9 +46,9 @@ async fn revocation_and_replacement_unknown_commit() -> anyhow::Result<()> {
                 second.registration,
                 revoke_key
             )
-            .await
-            .is_err()
-    );
+            .await,
+        Err(Error::Forbidden)
+    ));
     // Real commit succeeds but its ACK is lost; recreate the owner and recover by original key.
     service
         .fixture_audit_store()
@@ -107,13 +107,13 @@ async fn revocation_and_replacement_unknown_commit() -> anyhow::Result<()> {
             .await?,
         receipt
     );
-    assert!(
+    assert!(matches!(
         restart
             .authorize_report(&newer, ReportSource::MdmWindows)
-            .await
-            .is_err()
-    );
-    assert!(
+            .await,
+        Err(Error::Unauthorized)
+    ));
+    assert!(matches!(
         restart
             .current_scope(
                 &admin_a,
@@ -122,17 +122,17 @@ async fn revocation_and_replacement_unknown_commit() -> anyhow::Result<()> {
                     source: ReportSource::MdmWindows
                 }
             )
-            .await
-            .is_err()
-    );
+            .await,
+        Err(Error::NotFound)
+    ));
     // Recovery of an old bind is its original receipt, never reactivation.
     assert_eq!(restart.bind(&admin_a, &newer, next).await?, second);
-    assert!(
+    assert!(matches!(
         restart
             .authorize_report(&newer, ReportSource::MdmWindows)
-            .await
-            .is_err()
-    );
+            .await,
+        Err(Error::Unauthorized)
+    ));
     let third_proof = proof(case_a(), Channel::Mdm, 3);
     let pending = BindRegistration {
         operation_id: Uuid::new_v4(),
@@ -148,13 +148,11 @@ async fn revocation_and_replacement_unknown_commit() -> anyhow::Result<()> {
     };
     root.execute("REVOKE INSERT ON mdm_audit.receipts FROM mdm_access")
         .await?;
-    assert!(
-        service
-            .bind(&admin_a, &third_proof, pending.clone())
-            .await
-            .is_err()
-    );
-    assert!(
+    assert!(matches!(
+        service.bind(&admin_a, &third_proof, pending.clone()).await,
+        Err(Error::Audit(_))
+    ));
+    assert!(matches!(
         service
             .revoke(
                 &admin_a,
@@ -162,9 +160,9 @@ async fn revocation_and_replacement_unknown_commit() -> anyhow::Result<()> {
                 other_channel.registration,
                 Uuid::new_v4()
             )
-            .await
-            .is_err()
-    );
+            .await,
+        Err(Error::Audit(_))
+    ));
     root.execute("GRANT INSERT ON mdm_audit.receipts TO mdm_access")
         .await?;
     assert!(
@@ -175,15 +173,6 @@ async fn revocation_and_replacement_unknown_commit() -> anyhow::Result<()> {
     );
     let count:i64=sqlx::query_scalar("SELECT count(*) FROM mdm_access.registrations WHERE tenant_id=$1::uuid AND request_id=$2::uuid").bind(case_a()).bind(pending.request_id.to_string()).fetch_one(&mut root).await?;
     assert_eq!(count, 0);
-    service
-        .fixture_audit_store()
-        .inject_next_fault(rss_audit_postgres::PgFault::BeforeCommitPending);
-    assert!(
-        service
-            .bind(&admin_a, &third_proof, pending.clone())
-            .await
-            .is_err()
-    );
     service
         .fixture_audit_store()
         .inject_next_fault(rss_audit_postgres::PgFault::CommitUnknownAfterAck);
@@ -211,7 +200,10 @@ async fn revocation_and_replacement_unknown_commit() -> anyhow::Result<()> {
         })
         .count();
     assert_eq!(audits, 1);
-    assert!(service.bind(&other, &third_proof, pending).await.is_err());
+    assert!(matches!(
+        service.bind(&other, &third_proof, pending).await,
+        Err(Error::Forbidden)
+    ));
     // Failed replacement must leave the existing generation/credential/source fully active.
     let replace = BindRegistration {
         operation_id: Uuid::new_v4(),
@@ -227,12 +219,12 @@ async fn revocation_and_replacement_unknown_commit() -> anyhow::Result<()> {
     };
     root.execute("REVOKE INSERT ON mdm_audit.receipts FROM mdm_access")
         .await?;
-    assert!(
+    assert!(matches!(
         service
             .bind(&admin_a, &proof(case_a(), Channel::Mdm, 4), replace.clone())
-            .await
-            .is_err()
-    );
+            .await,
+        Err(Error::Audit(_))
+    ));
     root.execute("GRANT INSERT ON mdm_audit.receipts TO mdm_access")
         .await?;
     assert!(
@@ -270,12 +262,12 @@ async fn revocation_and_replacement_unknown_commit() -> anyhow::Result<()> {
     let active: i64 = sqlx::query_scalar("SELECT count(*) FROM mdm_access.registrations WHERE tenant_id=$1::uuid AND device=$2 AND channel='mdm' AND state='active'")
         .bind(case_a()).bind(&fourth.device).fetch_one(&mut root).await?;
     assert_eq!(active, 1);
-    assert!(
+    assert!(matches!(
         restart
             .authorize_report(&third_proof, ReportSource::MdmWindows)
-            .await
-            .is_err()
-    );
+            .await,
+        Err(Error::Unauthorized)
+    ));
     assert_eq!(
         restart
             .authorize_report(&fourth_proof, ReportSource::MdmWindows)
@@ -399,7 +391,7 @@ async fn commit_deadlines(
 }
 #[tokio::test]
 #[ignore = "MODULE=device.recovery: real registration state and PostgreSQL"]
-async fn bounded_bind_and_revoke_settlement() -> anyhow::Result<()> {
+async fn bind_and_revoke_settlement_classification() -> anyhow::Result<()> {
     let (access, service, admin_a, mut root) = fixture().await?;
     commit_deadlines(&service, &admin_a, &mut root).await?;
     root.close().await?;

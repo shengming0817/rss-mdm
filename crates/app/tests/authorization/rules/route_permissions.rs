@@ -116,11 +116,7 @@ async fn each_route_requires_its_exact_capability() -> Result<()> {
             op(json!({"action":"recover","ring":"test","publication":vec![0;32],"attempt":1})),
         ),
     ]);
-    let grants = cases
-        .iter()
-        .map(|c| c.0)
-        .collect::<std::collections::BTreeSet<_>>();
-    let expected_denied = cases.len() * (grants.len() - 1);
+    let expected_denied = cases.len();
     let counts = || {
         pg(&format!(
             "SELECT jsonb_build_array((SELECT count(*) FROM mdm_group.groups WHERE tenant_id='{tenant}'),(SELECT count(*) FROM mdm_planning.operations WHERE tenant_id='{tenant}')+(SELECT count(*) FROM mdm_assets.operations WHERE tenant_id='{tenant}')+(SELECT count(*) FROM mdm_resource_catalog.operations WHERE tenant_id='{tenant}')+(SELECT count(*) FROM mdm_publication.operations WHERE tenant_id='{tenant}'),(SELECT count(*) FROM mdm_planning.scope_versions WHERE tenant_id='{tenant}'),(SELECT count(*) FROM mdm_automation.automation_jobs WHERE tenant_id='{tenant}'),(SELECT count(*) FROM mdm_policy.policies WHERE tenant_id='{tenant}'),(SELECT count(*) FROM mdm_software_composition.subjects WHERE tenant_id='{tenant}'))::text",
@@ -148,49 +144,36 @@ async fn each_route_requires_its_exact_capability() -> Result<()> {
         )),
         ..session.clone()
     };
-    for grant in &grants {
-        set_management_grants(&member, json!([grant])).await?;
-        set_management_grants(case_admin(), json!(["release_publish"])).await?;
+    for (needed, method, path, body) in &cases {
+        let wrong = match *needed {
+            "group_read" => "group_write",
+            "group_write" | "group_recompute" => "group_read",
+            "scope_read" => "scope_write",
+            "scope_write" => "scope_read",
+            "policy_read" => "policy_write",
+            "policy_write" => "policy_read",
+            "resource_read" => "resource_write",
+            "resource_write" => "resource_read",
+            "release_read" => "release_write",
+            "release_write" | "release_publish" | "release_withdraw" | "release_recover" => "release_read",
+            _ => unreachable!(),
+        };
+        set_management_grants(&member, json!([wrong])).await?;
         let before = counts()?;
-        for (needed, method, path, body) in &cases {
-            if grant == needed {
-                continue;
-            }
-            let (status, _) = browser
-                .call(&router, method.clone(), path, body.clone())
-                .await?;
-            ensure!(
-                status == StatusCode::FORBIDDEN,
-                "grant {grant} allowed {needed}: {status}"
-            );
-        }
-        ensure!(
-            before == counts()?,
-            "denied capability mutated product state"
-        );
-        for (_, method, path, body) in cases.iter().filter(|c| c.0 == *grant) {
-            let (status, result) = browser
-                .call(&router, method.clone(), path, body.clone())
-                .await?;
-            ensure!(
-                matches!(status, StatusCode::NOT_FOUND | StatusCode::CONFLICT),
-                "grant {grant} failed to reach domain validation: {status} {result}"
-            );
-            if *method == Method::GET {
-                let code = match *grant {
-                    "group_read" => "group_not_found",
-                    "scope_read" => "scope_not_found",
-                    "policy_read" => "policy_not_found",
-                    "resource_read" => "resource_not_found",
-                    "release_read" => "software_candidate_not_found",
-                    _ => unreachable!(),
-                };
-                ensure!(
-                    status == StatusCode::NOT_FOUND && result["code"] == code,
-                    "wrong missing-object contract: {result}"
-                );
-            }
-        }
+        let denied = browser.call(&router, method.clone(), path, body.clone()).await?;
+        ensure!(denied.0 == StatusCode::FORBIDDEN && denied.1["code"] == "permission_denied", "{wrong} allowed {needed}: {denied:?}");
+        ensure!(before == counts()?, "denied capability mutated product state");
+        set_management_grants(&member, json!([needed])).await?;
+        let accepted = browser.call(&router, method.clone(), path, body.clone()).await?;
+        let (status, code) = match (*needed, method == Method::GET) {
+            ("group_read" | "group_recompute", _) => (StatusCode::NOT_FOUND, "group_not_found"),
+            ("scope_read" | "scope_write", _) => (StatusCode::NOT_FOUND, "scope_not_found"),
+            ("policy_read", _) => (StatusCode::NOT_FOUND, "policy_not_found"),
+            ("resource_read", _) => (StatusCode::NOT_FOUND, "resource_not_found"),
+            ("release_read" | "release_publish" | "release_withdraw" | "release_recover", _) => (StatusCode::NOT_FOUND, "software_candidate_not_found"),
+            _ => (StatusCode::CONFLICT, "operation_conflict"),
+        };
+        ensure!(accepted.0 == status && accepted.1["code"] == code, "{needed} wrong domain result: {accepted:?}");
     }
     ensure!(
         audit_count(|r| r.target() == id.to_string()

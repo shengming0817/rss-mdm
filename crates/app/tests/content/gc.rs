@@ -269,7 +269,7 @@ async fn catalog_evidence_retains_pin_without_reserving_transfer() -> Result<()>
     use rss_mdm_resource as r;
     use rss_mdm_software_service::catalog::ContentPort;
     let fixture = Fixture::with_peer_and_uploads(None, Some(1)).await?;
-    let bytes = case::name("catalog pin lifetime").as_bytes();
+    let bytes = &[0x4e; 128 * 1024 + 3];
     let artifact = fixture.seed_content(bytes).await?;
     let store = fixture.content.as_ref().unwrap();
     let version = r::Version::new(
@@ -292,12 +292,26 @@ async fn catalog_evidence_retains_pin_without_reserving_transfer() -> Result<()>
     let evidence = ContentPort::verify(store.as_ref(), &version).await?;
     ensure!(evidence.resource_digest() == version.digest().bytes());
     // A held catalog receipt must not self-compete with a subsequent download.
-    let download = store.verify(&artifact).await?;
+    use futures::StreamExt;
+    let mut bounded = store.as_ref().clone();
+    bounded.config.transfer_seconds = 1;
+    let bounded = Arc::new(bounded);
+    let download = bounded.verify(&artifact).await?;
+    let mut body = download.stream(0, artifact.length()).await?;
+    ensure!(body.next().await.transpose()?.is_some());
+    ensure!(matches!(
+        bounded.verify(&artifact).await,
+        Err(rss_mdm_content_service::Error::Conflict)
+    ));
+    tokio::time::sleep(Duration::from_millis(1100)).await;
+    let next = bounded.verify(&artifact).await?;
+    ensure!(next.matches(&artifact));
     ensure!(
-        store.verify(&artifact).await.is_err(),
-        "active download lost its permit"
+        body.next().await.transpose().is_err(),
+        "expired stream resumed reading"
     );
-    drop(download);
+    drop(body);
+    drop(next);
     use crate::clock::Clock;
     let now = crate::clock::SystemClock.unix_seconds()?;
     let digest = artifact.digest().bytes();

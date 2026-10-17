@@ -68,7 +68,7 @@ async fn permission_drift_corrupt_policy_and_stalled_postgres() -> Result<()> {
         "permission drift leaked grants: {denied:?}"
     );
     ensure!(
-        reconnect.is_err(),
+        matches!(reconnect, Err(crate::Error::Unavailable(crate::Failure::AccessAdmission))),
         "permission drift admitted a new access store"
     );
     ensure!(
@@ -131,11 +131,10 @@ async fn permission_drift_corrupt_policy_and_stalled_postgres() -> Result<()> {
         ),
     ] {
         pg(drift)?;
-        let rejected = crate::Database::connect(config.access_database.options()?)
-            .await
-            .is_err();
+        let rejected = crate::Database::connect(config.access_database.options()?).await;
         pg(restore)?;
-        ensure!(rejected, "undeclared access privilege admitted");
+        ensure!(matches!(rejected, Err(crate::Error::Unavailable(crate::Failure::AccessAdmission))), "undeclared access privilege admitted");
+        crate::Database::connect(config.access_database.options()?).await?.close().await;
     }
     let (identity, identity_resources) =
         crate::test_support::identity::identity(case_tenant()).await?;

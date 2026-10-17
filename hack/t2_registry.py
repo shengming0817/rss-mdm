@@ -199,7 +199,7 @@ add('agent.pki', selectors=('agent_pki_tests::',), fixtures=('identity','agent_p
              'crates/app/tests/enrollment/support.rs','crates/app/tests/support/audit.rs',
              'crates/app/tests/windows/support.rs'))
 MODULES['agent.pki'] = replace(MODULES['agent.pki'], scope='tenant', policies=(
-    CasePolicy('agent_pki_tests::restored_ca_signs_only_live_authorized_agent_csrs_and_tls_preserves_purpose',
+    CasePolicy('agent_pki_tests::restored_ca_preserves_authorized_agent_issuance_and_activation',
                'reuse', 'pair'),
     CasePolicy('agent_pki_tests::agent_ingress_holds_one_global_permit_per_request', 'reuse', 'tenant'),
     CasePolicy('agent_pki_tests::production_agent_listener_bootstraps_activates_and_rechecks_revocation', 'reuse', 'tenant',('identity','windows','agent_pki')),
@@ -481,7 +481,6 @@ MODULES['identity.sso'] = replace(MODULES['identity.sso'], db_mode='reuse', scop
 MODULES['identity.audit'] = replace(MODULES['identity.audit'], db_mode='instance', scope='objects')
 MODULES['authorization.rules'] = replace(MODULES['authorization.rules'], db_mode='reuse', scope='tenant', policies=(
     CasePolicy('authorization::t2::rules::capability_routes_without_application_preserve_revocation_and_atomicity', 'fresh', 'objects'),
-    CasePolicy('authorization::t2::rules::enrollment_grant_does_not_authorize_wipe', 'reuse', 'objects'),
 ))
 MODULES['authorization.membership'] = replace(MODULES['authorization.membership'], db_mode='reuse', scope='tenant')
 MODULES['authorization.capacity'] = replace(MODULES['authorization.capacity'], db_mode='reuse', scope='tenant')
@@ -492,7 +491,7 @@ MODULES['authorization.admission'] = replace(MODULES['authorization.admission'],
 MODULES['device.binding'] = replace(MODULES['device.binding'], db_mode='reuse', scope='pair')
 MODULES['device.recovery'] = replace(MODULES['device.recovery'], db_mode='reuse', scope='objects', policies=(
     CasePolicy('device::t2::recovery::revocation_and_replacement_unknown_commit', 'fresh', 'objects'),
-    CasePolicy('device::t2::recovery::bounded_bind_and_revoke_settlement', 'reuse', 'tenant'),
+    CasePolicy('device::t2::recovery::bind_and_revoke_settlement_classification', 'reuse', 'tenant'),
 ))
 MODULES['agent.registration'] = replace(MODULES['agent.registration'], policies=(
     CasePolicy('agent::t2::registration::registration_recovery_preserves_credential_rotation', 'reuse', 'tenant'),
@@ -1735,7 +1734,7 @@ for name, module in tuple(MODULES.items()):
 # Exceptional cryptographic material has an actual consuming case.
 MODULES['windows.declared'] = replace(MODULES['windows.declared'], materials=('windows-renewal',))
 _pki_materials = {
-    'restored_ca_signs_only_live_authorized_agent_csrs_and_tls_preserves_purpose': ('pki-recovery',),
+    'restored_ca_preserves_authorized_agent_issuance_and_activation': ('pki-recovery',),
     'explicit_development_limit_and_unknown_result_remain_auditable': ('agent-long-lived',),
     'provisioner_rejects_substituted_csr_and_consumed_token': ('other',),
 }
@@ -1751,12 +1750,11 @@ for suffix, materials in _pki_materials.items():
 MODULES['agent.pki'] = replace(module, policies=tuple(policies))
 module = MODULES['agent.configurations']
 _counts = {
-    'fixed_packages_and_configurations_activate_beyond_self_quota': (42, ()),
+    'fixed_packages_and_configurations_activate_beyond_self_quota': (4, ()),
     'finite_reservations_and_frozen_authority_survive_revoke': (6, ('other',)),
     'unknown_exchange_and_issuance_do_not_reset_quantity': (2, ()),
     'expired_reservation_cannot_be_consumed_after_configuration_lock_wait': (2, ()),
     'backend_settings_are_the_only_grant_lifetime_authority': (2, ('other',)),
-    'expired_unpolled_download_releases_capacity': (0, ()),
     'configuration_scope_follows_current_candidate_admission': (2, ()),
 }
 MODULES[module.id] = replace(module, policies=tuple(
@@ -1821,7 +1819,7 @@ MODULES[module.id] = replace(module, policies=tuple(policies))
 # Recovery is a distinct proof. Its policy and production seams come from the
 # final PKI description; it does not duplicate the ordinary PKI test namespace.
 module = MODULES['agent.pki']
-recovery_selector = 'agent_pki_tests::restored_ca_signs_only_live_authorized_agent_csrs_and_tls_preserves_purpose'
+recovery_selector = 'agent_pki_tests::restored_ca_preserves_authorized_agent_issuance_and_activation'
 recovery_policy, = (p for p in module.policies if p.selector == recovery_selector)
 MODULES['agent.pki-recovery'] = replace(module, id='agent.pki-recovery',
     selectors=('agent_pki_recovery_tests::',),

@@ -160,3 +160,18 @@ fn health(expires: i64, now: i64, required: i64) -> &'static str {
 #[cfg(test)]
 #[path = "../tests/agent_pki/health.rs"]
 mod tests;
+
+#[cfg(test)]
+mod lifetime_tests {
+    #[test]
+    fn deployment_lifetime_has_a_closed_upper_bound() {
+        assert_eq!(
+            super::Lifetime::Development { days: 3650 }.days().unwrap(),
+            3650
+        );
+        assert!(matches!(
+            super::Lifetime::Development { days: 3651 }.days(),
+            Err(crate::Error::Configuration(crate::ConfigIssue::AgentPki))
+        ));
+    }
+}

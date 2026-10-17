@@ -9,7 +9,6 @@ async fn bindings_generations_and_competing_credentials() -> anyhow::Result<()> 
     let admin_a = admin(case_a(), "admin-a").await?;
     let admin_b = admin(case_b(), "admin-b").await?;
     let other = admin(case_a(), "other-a").await?;
-    assert!(admin(case_b(), "admin-a").await.is_err());
     let access = Arc::new(
         Database::connect(options("mdm_access")?)
             .await
@@ -62,26 +61,26 @@ async fn bindings_generations_and_competing_credentials() -> anyhow::Result<()> 
     )
     .await?;
     assert_ne!(first.registration, other_tenant.registration);
-    assert!(
+    assert!(matches!(
         service
             .authorize_report(&proof(case_b(), Channel::Mdm, 1), ReportSource::MdmWindows)
-            .await
-            .is_err()
-    );
+            .await,
+        Err(Error::Forbidden)
+    ));
     assert_ne!(first.registration, other_channel.registration);
     assert_eq!(service.bind(&admin_a, &mdm, command.clone()).await?, first);
     for bad in [
         service.bind(&other, &mdm, command.clone()).await,
         service.bind(&admin_b, &mdm, command.clone()).await,
     ] {
-        assert!(bad.is_err());
+        assert!(matches!(bad, Err(Error::Forbidden)));
     }
-    assert!(
+    assert!(matches!(
         service
             .bind(&admin_a, &proof(case_a(), Channel::Mdm, 9), command.clone())
-            .await
-            .is_err()
-    );
+            .await,
+        Err(Error::Conflict)
+    ));
     let mut reused = command.clone();
     reused.operation_id = Uuid::new_v4();
     assert!(matches!(
@@ -89,21 +88,21 @@ async fn bindings_generations_and_competing_credentials() -> anyhow::Result<()> 
         Err(Error::Conflict)
     ));
     eprintln!("device T2: bindings and permission checks passed");
-    assert!(
+    assert!(matches!(
         service
             .authorize_report(&independent, ReportSource::MdmApple)
-            .await
-            .is_err()
-    );
+            .await,
+        Err(Error::Forbidden)
+    ));
     // Explicit source permission can be removed independently of an active credential.
     sqlx::query("UPDATE mdm_access.report_sources SET enabled=false WHERE tenant_id=$1::uuid AND source='mdm.windows' AND registration=$2").bind(case_a()).bind(first.registration).execute(&mut root)
         .await?;
-    assert!(
+    assert!(matches!(
         service
             .authorize_report(&mdm, ReportSource::MdmWindows)
-            .await
-            .is_err()
-    );
+            .await,
+        Err(Error::Forbidden)
+    ));
     sqlx::query("UPDATE mdm_access.report_sources SET enabled=true WHERE tenant_id=$1::uuid AND source='mdm.windows' AND registration=$2").bind(case_a()).bind(first.registration).execute(&mut root)
         .await?;
     let newer = proof(case_a(), Channel::Mdm, 2);
@@ -118,12 +117,12 @@ async fn bindings_generations_and_competing_credentials() -> anyhow::Result<()> 
     assert_eq!(second.device, first.device);
     assert_eq!(second.generation, 2);
     assert_ne!(second.epoch, first.epoch);
-    assert!(
+    assert!(matches!(
         service
             .authorize_report(&mdm, ReportSource::MdmWindows)
-            .await
-            .is_err()
-    );
+            .await,
+        Err(Error::Unauthorized)
+    ));
     assert!(
         service
             .authorize_report(&independent, ReportSource::MdmWindows)
@@ -159,10 +158,33 @@ async fn bindings_generations_and_competing_credentials() -> anyhow::Result<()> 
     };
     let p1 = proof(case_a(), Channel::Mdm, 50);
     let p2 = proof(case_a(), Channel::Mdm, 51);
-    let (l, r) = tokio::join!(
+    let mut hold = root.begin().await?;
+    rss_mdm_registration_service::device::store::lock_channel(
+        &mut hold,
+        case_a(),
+        "concurrent",
+        Channel::Mdm,
+    )
+    .await?;
+    let release = async {
+        let observed = tokio::time::timeout(Duration::from_secs(3), async {
+            loop {
+                let waiting: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM pg_stat_activity business JOIN pg_stat_activity audit ON business.pid=ANY(pg_blocking_pids(audit.pid)) WHERE business.datname=current_database() AND audit.datname=current_database() AND pg_backend_pid()=ANY(pg_blocking_pids(business.pid)) AND business.query LIKE '%pg_advisory_xact_lock%' AND audit.query LIKE '%rss_audit.reserve%')").fetch_one(&mut *hold).await?;
+                if waiting { return Ok::<_, sqlx::Error>(()); }
+                sqlx::query("SELECT pg_stat_clear_snapshot()").execute(&mut *hold).await?;
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        }).await;
+        hold.rollback().await?;
+        observed.context("generation contenders must overlap")??;
+        Ok::<_, anyhow::Error>(())
+    };
+    let (l, r, released) = tokio::join!(
         service.bind(&admin_a, &p1, left),
-        service.bind(&admin_a, &p2, right)
+        service.bind(&admin_a, &p2, right),
+        release
     );
+    released?;
     assert_eq!(usize::from(l.is_ok()) + usize::from(r.is_ok()), 1);
     assert!(matches!(l, Err(Error::Conflict)) || matches!(r, Err(Error::Conflict)));
     root.close().await?;

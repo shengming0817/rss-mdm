@@ -181,3 +181,28 @@ async fn initialize_owned(
 }
 
 use rss_mdm_audit_integration::{FailureReason, RequestAudit};
+
+#[cfg(test)]
+mod tests {
+    #[tokio::test]
+    async fn pending_initialization_projects_request_deadline() {
+        let audit =
+            super::RequestAudit::new(uuid::Uuid::new_v4().to_string(), "authorization_initialize");
+        let deadline = rss_request_context::Deadline::from_timeout(
+            &crate::lifecycle::RuntimeTimer,
+            std::time::Duration::ZERO,
+        )
+        .unwrap();
+        let result = super::bounded(
+            &audit,
+            deadline,
+            std::future::pending::<Result<(), crate::Error>>(),
+        )
+        .await;
+        assert!(matches!(
+            result,
+            Err(crate::Error::Unavailable(crate::Failure::RequestDeadline))
+        ));
+        audit.finalize(Some(super::FailureReason::Transaction));
+    }
+}

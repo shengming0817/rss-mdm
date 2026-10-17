@@ -161,11 +161,14 @@ async fn automatic_match_duplicate_detection_and_revocation_suppression() -> any
         .await?;
     assert_eq!(result.state, State::Confirmed);
     assert_eq!(s.get(&admin, id).await?.state, State::Confirmed);
-    assert!(
-        s.revoke(&admin, id, &request, &audit("device_association_revoke"))
-            .await
-            .is_ok()
-    ); // exact replay returns its immutable receipt
+    assert_eq!(
+        serde_json::to_value(
+            s.revoke(&admin, id, &request, &audit("device_association_revoke"))
+                .await?
+        )?,
+        serde_json::to_value(revoked)?
+    );
+    assert_eq!(s.get(&admin, id).await?.state, State::Confirmed);
     let mut wrong = restore.clone();
     wrong.evidence = "changed operation".into();
     assert!(matches!(
@@ -320,11 +323,11 @@ async fn confirmation_and_worker_recover_unknown_commit_without_duplicate_facts(
         evidence: "physically verified".into(),
     };
     store.inject_next_fault(rss_audit_postgres::PgFault::BeforeCommitPending);
-    assert!(
+    assert!(matches!(
         s.confirm(&admin, &request, &audit("device_association_confirm"))
-            .await
-            .is_err()
-    );
+            .await,
+        Err(rss_mdm_device_service::Error::RollbackFailed)
+    ));
     let count: i64 = sqlx::query_scalar(
         "SELECT count(*) FROM mdm_devices.associations WHERE tenant_id=$1::uuid",
     )
@@ -338,12 +341,19 @@ async fn confirmation_and_worker_recover_unknown_commit_without_duplicate_facts(
             .fetch_one(&mut c)
             .await?;
     assert_eq!(receipts, 0);
+    let members: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM mdm_devices.members WHERE tenant_id=$1::uuid")
+            .bind(case_a())
+            .fetch_one(&mut c)
+            .await?;
+    assert_eq!(members, 0);
     store.inject_next_fault(rss_audit_postgres::PgFault::CommitUnknownAfterAck);
     assert!(matches!(
         s.confirm(&admin, &request, &audit("device_association_confirm"))
             .await,
         Err(rss_mdm_device_service::Error::CommitUnknown)
     ));
+    let s = Associations::new(store.clone(), TenantId::parse(case_a())?, &[7; 32])?;
     let recovered = s
         .confirm(&admin, &request, &audit("device_association_confirm"))
         .await?;

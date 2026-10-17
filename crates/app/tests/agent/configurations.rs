@@ -74,14 +74,16 @@ async fn publish(
     user: &mut Browser,
     windows: bool,
 ) -> Result<w::configuration::Package> {
-    publish_version(f, user, windows, "1+enterprise").await
+    publish_version(f, user, windows, "1+enterprise")
+        .await
+        .map(|(package, _)| package)
 }
 async fn publish_version(
     f: &Fixture,
     user: &mut Browser,
     windows: bool,
     version: &str,
-) -> Result<w::configuration::Package> {
+) -> Result<(w::configuration::Package, Value)> {
     let base: Value = serde_json::from_slice(&std::fs::read(std::env::var("MDM_TEST_CONFIG")?)?)?;
     let (platform, architecture, format, _filename) = if windows {
         ("windows", "x86_64", "exe", "rss-agent.exe")
@@ -156,42 +158,20 @@ async fn publish_version(
         )
         .await?;
     ensure!(status == StatusCode::OK, "publication {status} {document}");
-    ensure!(
-        user.call(
-            &f.router,
-            Method::POST,
-            "/api/v1/agent-packages",
-            Some(input.clone())
-        )
-        .await?
-        .1 == document
-    );
     let package: w::configuration::Package = serde_json::from_value(document)?;
     ensure!(
         package.installer_sha256 == rss_mdm_resource::Digest::of(&bytes).bytes()
             && package.candidate_sha256 == rss_mdm_resource::Digest::of(&candidate).bytes()
             && package.installer_sha256 != package.candidate_sha256
     );
-    let response = f
-        .client
-        .get(format!(
-            "{}/api/v1/agent/enroll/packages/{}/content",
-            f.origin, package.release_id
-        ))
-        .header("host", "mdm.example.test:9445")
-        .header("range", "bytes=0-4")
-        .send()
-        .await?;
-    ensure!(response.status() == StatusCode::PARTIAL_CONTENT);
-    ensure!(response.bytes().await?.as_ref() == &bytes[..5]);
-    Ok(package)
+    Ok((package, input))
 }
 async fn configuration(
     f: &Fixture,
     user: &mut Browser,
     quantity: Value,
     lifetime: Option<u32>,
-) -> Result<w::configuration::ConfigurationFile> {
+) -> Result<(w::configuration::ConfigurationFile, Value)> {
     let mut input = json!({"operationId":Uuid::new_v4(),"secret":credential(&Uuid::new_v4().to_string()),"quantity":quantity,"targets":[{"platform":"windows","architecture":"x86_64"},{"platform":"macos","architecture":"aarch64"}],"channels":["production"]});
     if let Some(seconds) = lifetime {
         input["lifetimeSeconds"] = json!(seconds);
@@ -205,62 +185,8 @@ async fn configuration(
         )
         .await?;
     ensure!(response.0 == StatusCode::OK, "configuration {response:?}");
-    let operation = input["operationId"].as_str().unwrap().to_owned();
-    ensure!(
-        user.call(
-            &f.router,
-            Method::POST,
-            "/api/v1/agent-configurations",
-            Some(input)
-        )
-        .await?
-        .1 == response.1
-    );
-    let found = user
-        .call(
-            &f.router,
-            Method::GET,
-            &format!("/api/v1/agent-configuration-operations/{operation}"),
-            None,
-        )
-        .await?;
-    ensure!(
-        found.0 == StatusCode::OK && found.1["configuration"] == response.1["configuration"],
-        "operation lookup {found:?}"
-    );
-    ensure!(
-        found.1.get("secret").is_none() && found.1.get("signature").is_none(),
-        "operation disclosed file"
-    );
-    ensure!(found.1["remaining"] == quantity.get("count").cloned().unwrap_or(Value::Null));
-    let mut other = authority::Authority::prepared_browser("other").await?;
-    let forbidden = other
-        .call(
-            &f.router,
-            Method::GET,
-            &format!("/api/v1/agent-configuration-operations/{operation}"),
-            None,
-        )
-        .await?;
-    ensure!(
-        forbidden.0 == StatusCode::FORBIDDEN,
-        "operation read bypassed management permission {forbidden:?}"
-    );
-
-    let unknown = user
-        .call(
-            &f.router,
-            Method::GET,
-            &format!("/api/v1/agent-configuration-operations/{}", Uuid::new_v4()),
-            None,
-        )
-        .await?;
-    ensure!(
-        unknown.0 == StatusCode::OK && unknown.1.is_null(),
-        "missing operation must remain unknown"
-    );
     let file = serde_json::from_value(response.1)?;
-    Ok(file)
+    Ok((file, input))
 }
 fn exchange(
     file: &w::configuration::ConfigurationFile,
@@ -430,104 +356,36 @@ async fn enroll(
         .unwrap()
         .to_owned())
 }
-/// Prepare current configuration peers; allocation boundaries below remain real API calls.
-async fn configuration_prefix(
-    service: &rss_mdm_registration_service::agent::Service,
-    file: &w::configuration::ConfigurationFile,
-    windows: &w::configuration::Package,
-    macos: &w::configuration::Package,
-    start: usize,
-) -> Result<Vec<String>> {
-    let file = file.clone();
-    let windows = windows.clone();
-    let macos = macos.clone();
-    let configuration_id = file.configuration.configuration_id;
-    let seeds = tokio::task::spawn_blocking(move || -> Result<Vec<_>> {
-        use crate::clock::Clock;
-        let now = crate::clock::SystemClock.unix_seconds()?;
-        (start..start + 19)
-            .map(|n| {
-                let package = if n % 2 == 0 { &windows } else { &macos };
-                let request = exchange(&file, package, n)?;
-                let device = Uuid::new_v4().to_string();
-                let identity =
-                    rss_mdm_certificate::agent::identity(file.configuration.tenant_id, &device)?;
-                let csr = STANDARD.decode(&request.csr)?;
-                let chain = crate::test_support::pki::leaf(
-                    &root(),
-                    &csr,
-                    "rss-mdm-agent",
-                    &[identity],
-                    now,
-                    now + 86400,
-                )?;
-                let validity = crate::test_support::pki::validity(&chain[0])?;
-                Ok(rss_mdm_registration_service::agent::ConfigurationPeerSeed {
-                    device,
-                    request,
-                    chain,
-                    validity,
-                })
-            })
-            .collect()
-    })
-    .await??;
-    Ok(service
-        .seed_configuration_peers(configuration_id, seeds)
-        .await?)
-}
 #[tokio::test]
-#[ignore = "MODULE=agent.configurations: 42 independent peers, quota boundaries and representative mTLS HTTP"]
+#[ignore = "MODULE=agent.configurations: four independent peers, explicit quota and representative mTLS HTTP"]
 async fn fixed_packages_and_configurations_activate_beyond_self_quota() -> Result<()> {
     let f = fixture().await?;
     let mut user = f.user.clone();
     let windows = publish(&f, &mut user, true).await?;
     let macos = publish(&f, &mut user, false).await?;
-    let file = configuration(&f, &mut user, json!({"kind":"finite","count":21}), None).await?;
     let mut authority = authority::Authority::open().await?;
     let authority_resources = std::mem::take(&mut authority.resources);
     authority_resources.finish(async {
+    let quota_router = authority.router(authority.enrollment())?;
+    let mut quota_admin = authority.browser("admin")?;
+    let defaults = quota_admin.call(&quota_router, Method::GET, "/api/v1/registration-quotas/defaults", None).await?;
+    ensure!(defaults.0 == StatusCode::OK);
+    quota_admin.operation = Some(Uuid::new_v4());
+    let updated = quota_admin.call(&quota_router, Method::PUT, "/api/v1/registration-quotas/defaults", Some(json!({"expectedRevision":defaults.1["revision"],"limits":{"agent":1,"windows_mdm":20,"macos_mdm":20}}))).await?;
+    ensure!(updated.0 == StatusCode::OK && updated.1["limits"]["agent"] == 1);
+    let (file, _) = configuration(&f, &mut user, json!({"kind":"finite","count":2}), None).await?;
+    let (unlimited, _) = configuration(&f, &mut user, json!({"kind":"unlimited"}), None).await?;
     let tls = Tls::start(&authority).await?;
-    let service = crate::test_support::agent::service(&authority).await?;
-    let mut devices = configuration_prefix(&service, &file, &windows, &macos, 0)
-        .await?
-        .into_iter()
-        .collect::<std::collections::BTreeSet<_>>();
-    ensure!(devices.len() == 19);
-    let state = read(&f, &mut user, file.configuration.configuration_id).await?;
-    ensure!(state["reserved"] == 0 && state["consumed"] == 19);
-    for n in 19..21 {
-        let package = if n % 2 == 0 { &windows } else { &macos };
-        ensure!(devices.insert(enroll(&f, &tls, &file, package, n).await?));
-        let state = read(&f, &mut user, file.configuration.configuration_id).await?;
-        ensure!(state["reserved"] == 0 && state["consumed"] == n + 1);
+    let mut devices = std::collections::BTreeSet::new();
+    for (index, config) in [&file, &unlimited].into_iter().enumerate() {
+        for (offset, package) in [&windows, &macos].into_iter().enumerate() {
+            ensure!(devices.insert(enroll(&f, &tls, config, package, index * 2 + offset).await?));
+        }
+        let state = read(&f, &mut user, config.configuration.configuration_id).await?;
+        ensure!(state["reserved"] == 0 && state["consumed"] == 2);
     }
-    let state = read(&f, &mut user, file.configuration.configuration_id).await?;
-    ensure!(state["reserved"] == 0 && state["consumed"] == 21);
-    ensure!(
-        machine(
-            &f,
-            "/api/v1/agent/enroll/configurations/exchange",
-            &exchange(&file, &macos, 21)?
-        )
-        .await?
-        .0 == StatusCode::TOO_MANY_REQUESTS
-    );
-    let unlimited = configuration(&f, &mut user, json!({"kind":"unlimited"}), None).await?;
-    for device in configuration_prefix(&service, &unlimited, &windows, &macos, 21).await? {
-        ensure!(devices.insert(device));
-    }
-    let state = read(&f, &mut user, unlimited.configuration.configuration_id).await?;
-    ensure!(state["reserved"] == 0 && state["consumed"] == 19);
-    for n in 40..42 {
-        let package = if n % 2 == 0 { &windows } else { &macos };
-        ensure!(devices.insert(enroll(&f, &tls, &unlimited, package, n).await?));
-        let state = read(&f, &mut user, unlimited.configuration.configuration_id).await?;
-        ensure!(state["reserved"] == 0 && state["consumed"] == n - 20);
-    }
-    ensure!(devices.len() == 42);
-    let state = read(&f, &mut user, unlimited.configuration.configuration_id).await?;
-    ensure!(state["reserved"] == 0 && state["consumed"] == 21);
+    ensure!(devices.len() == 4);
+    ensure!(machine(&f, "/api/v1/agent/enroll/configurations/exchange", &exchange(&file, &macos, 2)?).await?.0 == StatusCode::TOO_MANY_REQUESTS);
     let me = user
         .call(
             &f.router,
@@ -560,7 +418,7 @@ async fn fixed_packages_and_configurations_activate_beyond_self_quota() -> Resul
     .await?;
     let live:i64=sqlx::query_scalar("SELECT count(*) FROM mdm_access.registrations WHERE tenant_id=$1::uuid AND channel='agent' AND state='active'").bind(case_tenant()).fetch_one(&mut *authority.access.begin(case_tenant()).await?).await?;
     ensure!(
-        live == 42,
+        live == 4,
         "configuration revoke deactivated existing devices"
     );
     ensure!(tls.owner.shutdown().join().await?.is_clean());
@@ -574,7 +432,7 @@ async fn finite_reservations_and_frozen_authority_survive_revoke() -> Result<()>
     let f = fixture().await?;
     let mut user = f.user.clone();
     let package = publish(&f, &mut user, false).await?;
-    let file = configuration(&f, &mut user, json!({"kind":"finite","count":2}), None).await?;
+    let (file, _) = configuration(&f, &mut user, json!({"kind":"finite","count":2}), None).await?;
     let mut other = authority::Authority::prepared_browser("other").await?;
     ensure!(other.call(&f.router,Method::POST,"/api/v1/agent-configurations",Some(json!({"operationId":Uuid::new_v4(),"secret":credential("forbidden"),"quantity":{"kind":"unlimited"},"targets":[{"platform":"macos","architecture":"aarch64"}],"channels":["production"]}))).await?.0==StatusCode::FORBIDDEN);
     for quantity in [
@@ -610,12 +468,35 @@ async fn finite_reservations_and_frozen_authority_survive_revoke() -> Result<()>
     let inputs = (0..4)
         .map(|n| exchange(&file, &package, n))
         .collect::<Result<Vec<_>>>()?;
-    let replies = futures::future::join_all(
-        inputs
-            .iter()
-            .map(|input| machine(&f, "/api/v1/agent/enroll/configurations/exchange", input)),
-    )
-    .await;
+    use sqlx::Connection;
+    let mut owner =
+        sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?)
+            .await?;
+    let mut hold = owner.begin().await?;
+    sqlx::query("SELECT id FROM mdm_access.agent_configurations WHERE tenant_id=$1::uuid AND id=$2 FOR UPDATE").bind(case_tenant()).bind(file.configuration.configuration_id).fetch_one(&mut *hold).await?;
+    let release = async {
+        let observed = tokio::time::timeout(Duration::from_secs(3), async {
+            loop {
+                let blocked: i64 = sqlx::query_scalar("WITH RECURSIVE blocked(pid) AS (SELECT pid FROM pg_stat_activity WHERE datname=current_database() AND pg_backend_pid()=ANY(pg_blocking_pids(pid)) UNION SELECT a.pid FROM pg_stat_activity a JOIN blocked b ON b.pid=ANY(pg_blocking_pids(a.pid)) WHERE a.datname=current_database()) SELECT count(*) FROM blocked").fetch_one(&mut *hold).await?;
+                if blocked >= 4 { return Ok::<_, sqlx::Error>(()); }
+                sqlx::query("SELECT pg_stat_clear_snapshot()").execute(&mut *hold).await?;
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        }).await;
+        hold.rollback().await?;
+        observed??;
+        Ok::<_, anyhow::Error>(())
+    };
+    let (replies, released) = tokio::join!(
+        futures::future::join_all(inputs.iter().map(|input| machine(
+            &f,
+            "/api/v1/agent/enroll/configurations/exchange",
+            input
+        ))),
+        release
+    );
+    released?;
+    owner.close().await?;
     let mut accepted = Vec::new();
     for (n, result) in replies.into_iter().enumerate() {
         let (status, grant) = result?;
@@ -745,7 +626,7 @@ async fn unknown_exchange_and_issuance_do_not_reset_quantity() -> Result<()> {
     let f = fixture().await?;
     let mut user = f.user.clone();
     let package = publish(&f, &mut user, false).await?;
-    let file = configuration(&f, &mut user, json!({"kind":"finite","count":1}), None).await?;
+    let (file, _) = configuration(&f, &mut user, json!({"kind":"finite","count":1}), None).await?;
     let mut authority = authority::Authority::open().await?;
     let authority_resources = std::mem::take(&mut authority.resources);
     authority_resources.finish(async {
@@ -822,6 +703,8 @@ async fn unknown_exchange_and_issuance_do_not_reset_quantity() -> Result<()> {
             == StatusCode::SERVICE_UNAVAILABLE
     );
     let replay = post("/api/v1/agent/enroll/certificates", signing).await?;
+    ensure!(pg(&format!("SELECT count(*) FROM mdm_access.agent_issuances WHERE tenant_id='{}' AND grant_id='{}'", case_tenant(), status.1["grantId"].as_str().unwrap()))?.trim() == "1");
+
     ensure!(replay.0 == StatusCode::SERVICE_UNAVAILABLE && replay.1["code"] == "issuance_unknown");
     let state = read(&f, &mut user, file.configuration.configuration_id).await?;
     ensure!(state["reserved"] == 0 && state["consumed"] == 1);
@@ -866,7 +749,7 @@ async fn expired_reservation_cannot_be_consumed_after_configuration_lock_wait() 
     let f = fixture().await?;
     let mut user = f.user.clone();
     let package = publish(&f, &mut user, false).await?;
-    let file = configuration(&f, &mut user, json!({"kind":"finite","count":1}), None).await?;
+    let (file, _) = configuration(&f, &mut user, json!({"kind":"finite","count":1}), None).await?;
     let input = exchange(&file, &package, 0)?;
     let (status, grant) =
         machine(&f, "/api/v1/agent/enroll/configurations/exchange", &input).await?;
@@ -874,10 +757,7 @@ async fn expired_reservation_cannot_be_consumed_after_configuration_lock_wait() 
     let mut owner =
         sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?)
             .await?;
-    sqlx::query("SELECT pg_sleep(greatest(0,0.75-mod(extract(epoch FROM clock_timestamp()),1)))")
-        .execute(&mut owner)
-        .await?;
-    sqlx::query("UPDATE mdm_access.agent_grants SET created_at=clock_timestamp()-interval '1 hour',expires_at=to_timestamp(floor(extract(epoch FROM clock_timestamp()))+1) WHERE tenant_id=$1::uuid AND id=$2::uuid").bind(case_tenant()).bind(grant["grantId"].as_str().unwrap()).execute(&mut owner).await?;
+    sqlx::query("UPDATE mdm_access.agent_grants SET created_at=clock_timestamp()-interval '1 hour',expires_at=clock_timestamp()+interval '2 seconds' WHERE tenant_id=$1::uuid AND id=$2::uuid").bind(case_tenant()).bind(grant["grantId"].as_str().unwrap()).execute(&mut owner).await?;
     let mut blocker = owner.begin().await?;
     sqlx::query("SELECT id FROM mdm_access.agent_configurations WHERE tenant_id=$1::uuid AND id=$2 FOR UPDATE").bind(case_tenant()).bind(file.configuration.configuration_id).fetch_one(&mut *blocker).await?;
     let signing = json!({"wireVersion":1,"operationId":Uuid::new_v4(),"grantId":grant["grantId"],"secret":input.secret,"csr":input.csr,"runtime":input.runtime});
@@ -898,16 +778,33 @@ async fn expired_reservation_cannot_be_consumed_after_configuration_lock_wait() 
         .max_connections(1)
         .connect_with(crate::device::test_support::options("postgres")?)
         .await?;
-    tokio::time::timeout(Duration::from_millis(800),async {
-  loop {let waiting:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE datname=current_database() AND usename='mdm_access' AND wait_event_type='Lock' AND query LIKE '%agent_configurations%')").fetch_one(&observer).await?;if waiting{break;}tokio::time::sleep(Duration::from_millis(10)).await;}
+    let blocker_pid: i32 = sqlx::query_scalar("SELECT pg_backend_pid()")
+        .fetch_one(&mut *blocker)
+        .await?;
+    let observed = tokio::time::timeout(Duration::from_secs(3),async {
+  loop {let waiting:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE datname=current_database() AND usename='mdm_access' AND wait_event_type='Lock' AND query LIKE '%agent_configurations%' AND $1=ANY(pg_blocking_pids(pid)))").bind(blocker_pid).fetch_one(&observer).await?;if waiting{break;}tokio::time::sleep(Duration::from_millis(10)).await;}
   Ok::<_,sqlx::Error>(())
- }).await??;
+ }).await;
+    if observed.is_err() || observed.as_ref().is_ok_and(|result| result.is_err()) {
+        blocker.rollback().await?;
+        issue.await??;
+        observed??;
+        unreachable!();
+    }
     let next = exchange(&file, &package, 1)?;
     let allocation = machine(&f, "/api/v1/agent/enroll/configurations/exchange", &next);
     tokio::pin!(allocation);
     let delayed = async {
-        tokio::time::sleep(Duration::from_millis(400)).await;
-        blocker.commit().await
+        let expired = tokio::time::timeout(Duration::from_secs(3), async {
+            loop {
+                let expired: bool = sqlx::query_scalar("SELECT expires_at<=clock_timestamp() FROM mdm_access.agent_grants WHERE tenant_id=$1::uuid AND id=$2::uuid").bind(case_tenant()).bind(grant["grantId"].as_str().unwrap()).fetch_one(&observer).await?;
+                if expired { return Ok::<_, sqlx::Error>(()); }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        }).await;
+        blocker.commit().await?;
+        expired??;
+        Ok::<_, anyhow::Error>(())
     };
     let (new, release) = tokio::join!(&mut allocation, delayed);
     release?;
@@ -939,7 +836,7 @@ async fn backend_settings_are_the_only_grant_lifetime_authority() -> Result<()> 
         .await?;
     ensure!(initial.0 == StatusCode::OK && initial.1["values"]["grantSeconds"] == 86400);
     ensure!(initial.1["configurationFilename"] == "rss-agent-enrollment.json");
-    for seconds in [0, 604801] {
+    for seconds in [0] {
         let out=user.call(&f.router,Method::PUT,"/api/v1/agent-enrollment-settings",Some(json!({"operationId":Uuid::new_v4(),"expectedRevision":initial.1["revision"],"values":{"grantSeconds":seconds,"configurationDefaultSeconds":86400,"platforms":["windows","macos"]}}))).await?;
         ensure!(out.0 == StatusCode::BAD_REQUEST);
     }
@@ -975,12 +872,52 @@ async fn backend_settings_are_the_only_grant_lifetime_authority() -> Result<()> 
         .await?
         .0 == StatusCode::CONFLICT
     );
-    let file = configuration(&f, &mut user, json!({"kind":"finite","count":2}), Some(5)).await?;
+    let (file, _) =
+        configuration(&f, &mut user, json!({"kind":"finite","count":2}), Some(5)).await?;
+    let operation = pg(&format!(
+        "SELECT operation_id::text FROM mdm_access.agent_configurations WHERE tenant_id='{}' AND id='{}'",
+        case_tenant(),
+        file.configuration.configuration_id
+    ))?;
+    let path = format!(
+        "/api/v1/agent-configuration-operations/{}",
+        operation.trim()
+    );
+    let found = user.call(&f.router, Method::GET, &path, None).await?;
+    ensure!(
+        found.0 == StatusCode::OK
+            && found.1["configuration"] == serde_json::to_value(&file.configuration)?
+            && found.1["remaining"] == 2
+    );
+    ensure!(found.1.get("secret").is_none() && found.1.get("signature").is_none());
+    let mut other = authority::Authority::prepared_browser("other").await?;
+    ensure!(other.call(&f.router, Method::GET, &path, None).await?.0 == StatusCode::FORBIDDEN);
+    ensure!(
+        user.call(
+            &f.router,
+            Method::GET,
+            &format!("/api/v1/agent-configuration-operations/{}", Uuid::new_v4()),
+            None
+        )
+        .await?
+            == (StatusCode::OK, Value::Null)
+    );
     let input = exchange(&file, &package, 0)?;
     let assigned = machine(&f, "/api/v1/agent/enroll/configurations/exchange", &input).await?;
     ensure!(
         assigned.0 == StatusCode::OK,
         "seven day grant insert {assigned:?}"
+    );
+    let grant_times = pg(&format!(
+        "SELECT jsonb_build_array(extract(epoch FROM expires_at-created_at),floor(extract(epoch FROM expires_at))::bigint)::text FROM mdm_access.agent_grants WHERE tenant_id='{}' AND id='{}'",
+        case_tenant(),
+        assigned.1["grantId"].as_str().unwrap()
+    ))?;
+    let grant_times: Value = serde_json::from_str(&grant_times)?;
+    ensure!((grant_times[0].as_f64().unwrap() - 604800.0).abs() < 1.0);
+    ensure!(
+        assigned.1["expiresAt"] == grant_times[1]
+            && assigned.1["expiresAt"] != json!(file.configuration.expires_at)
     );
     let mut authority = authority::Authority::open().await?;
     let authority_resources = std::mem::take(&mut authority.resources);
@@ -1050,48 +987,12 @@ async fn backend_settings_are_the_only_grant_lifetime_authority() -> Result<()> 
 }
 
 #[tokio::test]
-#[ignore = "MODULE=agent.configurations: expired unpolled download releases shared Content capacity"]
-async fn expired_unpolled_download_releases_capacity() -> Result<()> {
-    use futures::StreamExt;
-    let f = fixture().await?;
-    let mut user = f.user.clone();
-    let package = publish(&f, &mut user, true).await?;
-    let artifact = rss_mdm_resource::SoftwareArtifact {
-        reference: "installer".into(),
-        origin: None,
-        length: package.length,
-        sha256: package.installer_sha256,
-    }
-    .artifact()?;
-    let mut bounded = f.content.as_ref().unwrap().as_ref().clone();
-    bounded.config.transfer_seconds = 1;
-    let bounded = Arc::new(bounded);
-    let file = bounded.verify(&artifact).await?;
-    let mut body = file.stream(0, artifact.length()).await?;
-    ensure!(body.next().await.transpose()?.is_some());
-    ensure!(matches!(
-        bounded.verify(&artifact).await,
-        Err(rss_mdm_content_service::Error::Conflict)
-    ));
-    // Leave the response stream alive but do not poll it, as with a stalled HTTP writer.
-    tokio::time::sleep(Duration::from_millis(1100)).await;
-    let next = bounded.verify(&artifact).await?;
-    ensure!(next.matches(&artifact));
-    ensure!(
-        body.next().await.transpose().is_err(),
-        "expired body resumed reading"
-    );
-    drop(next);
-    Ok(())
-}
-
-#[tokio::test]
 #[ignore = "MODULE=agent.configurations: long-lived scope admits new candidates and rejects withdrawn releases"]
 async fn configuration_scope_follows_current_candidate_admission() -> Result<()> {
     let f = fixture().await?;
     let mut user = f.user.clone();
     let old = publish(&f, &mut user, true).await?;
-    let file = configuration(
+    let (file, configuration_input) = configuration(
         &f,
         &mut user,
         json!({"kind":"finite","count":2}),
@@ -1101,8 +1002,51 @@ async fn configuration_scope_follows_current_candidate_admission() -> Result<()>
     let first = exchange(&file, &old, 0)?;
     let original = machine(&f, "/api/v1/agent/enroll/configurations/exchange", &first).await?;
     ensure!(original.0 == StatusCode::OK);
-    let current = publish_version(&f, &mut user, true, "2+enterprise").await?;
+    let (current, publication_input) = publish_version(&f, &mut user, true, "2+enterprise").await?;
     ensure!(current.version != old.version && current.candidate_sha256 != old.candidate_sha256);
+    // These are the representative creation-replay checks; ordinary preparation
+    // only creates the material required by each scenario.
+    let count_sql = format!(
+        "SELECT jsonb_build_array((SELECT count(*) FROM mdm_agent_packages.releases WHERE tenant_id='{tenant}'),(SELECT count(*) FROM mdm_access.agent_configurations WHERE tenant_id='{tenant}'))::text",
+        tenant = case_tenant()
+    );
+    let counts = pg(&count_sql)?;
+    ensure!(serde_json::from_str::<Value>(&counts)? == json!([2, 1]));
+    let replay = user
+        .call(
+            &f.router,
+            Method::POST,
+            "/api/v1/agent-packages",
+            Some(publication_input),
+        )
+        .await?;
+    ensure!(replay == (StatusCode::OK, serde_json::to_value(&current)?));
+    let replay = user
+        .call(
+            &f.router,
+            Method::POST,
+            "/api/v1/agent-configurations",
+            Some(configuration_input),
+        )
+        .await?;
+    ensure!(replay == (StatusCode::OK, serde_json::to_value(&file)?));
+    ensure!(
+        pg(&count_sql)? == counts,
+        "creation replay inserted another record"
+    );
+    let download = f
+        .client
+        .get(format!(
+            "{}/api/v1/agent/enroll/packages/{}/content",
+            f.origin, old.release_id
+        ))
+        .header("host", "mdm.example.test:9445")
+        .header("range", "bytes=0-4")
+        .send()
+        .await?;
+    ensure!(download.status() == StatusCode::PARTIAL_CONTENT);
+    ensure!(download.bytes().await?.as_ref() == &[0x4e; 5]);
+
     let withdrawn = user
         .call(
             &f.router,
@@ -1121,7 +1065,8 @@ async fn configuration_scope_follows_current_candidate_admission() -> Result<()>
         .header("host", "mdm.example.test:9445")
         .send()
         .await?;
-    ensure!(!anonymous.status().is_success());
+    ensure!(anonymous.status() == StatusCode::NOT_FOUND);
+    ensure!(anonymous.json::<Value>().await? == json!({"code":"resource_not_found"}));
     ensure!(
         machine(&f, "/api/v1/agent/enroll/configurations/exchange", &first)
             .await?

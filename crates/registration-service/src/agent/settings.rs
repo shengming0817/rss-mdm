@@ -164,3 +164,19 @@ impl Service {
         })).await.map_err(Into::into)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn grant_lifetime_rejects_above_seven_days() {
+        let mut values = Values {
+            grant_seconds: 604800,
+            ..Values::default()
+        };
+        assert!(values.validate().is_ok());
+        values.grant_seconds = 604801;
+        assert!(matches!(values.validate(), Err(Error::Malformed)));
+    }
+}

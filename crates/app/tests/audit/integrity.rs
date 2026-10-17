@@ -25,7 +25,7 @@ async fn reject_damaged_receipt(
     store: &AuditStore,
     tenant: TenantId,
     fact: &Fact,
-    control: &Control<'_, crate::lifecycle::RuntimeTimer>,
+    _control: &Control<'_, crate::lifecycle::RuntimeTimer>,
 ) -> Result<()> {
     use sqlx::Connection;
     let options = PgConnectOptions::from_str(&std::env::var("MDM_OWNER_URL")?)?
@@ -37,10 +37,30 @@ async fn reject_damaged_receipt(
         .bind(tenant.to_string())
         .execute(&mut owner)
         .await?;
+    let canonical: Vec<u8> =
+        sqlx::query_scalar("SELECT canonical FROM mdm_audit.receipts WHERE tenant_id=$1::uuid")
+            .bind(tenant.to_string())
+            .fetch_one(&mut owner)
+            .await?;
     for damage in [
         "UPDATE mdm_audit.receipts SET canonical=decode('01','hex') WHERE tenant_id=$1::uuid",
         "DELETE FROM mdm_audit.receipts WHERE tenant_id=$1::uuid",
     ] {
+        let timer = crate::lifecycle::RuntimeTimer;
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let deadline = Deadline::from_timeout(&timer, Duration::from_secs(10))?;
+        let control = &Control::new(&timer, deadline, deadline, &cancel);
+        sqlx::query("UPDATE mdm_audit.receipts SET canonical=$2 WHERE tenant_id=$1::uuid")
+            .bind(tenant.to_string())
+            .bind(&canonical)
+            .execute(&mut owner)
+            .await?;
+        let normal = store
+            .write(tenant, control, (store, fact), |(store, fact), tx| {
+                Box::pin(async move { store.append(tx, fact, true).await })
+            })
+            .await;
+        ensure!(state(normal) == "committed");
         sqlx::query(damage)
             .bind(tenant.to_string())
             .execute(&mut owner)
@@ -50,7 +70,14 @@ async fn reject_damaged_receipt(
                 Box::pin(async move { store.append(tx, fact, true).await })
             })
             .await;
-        ensure!(state(attempt) == "rolled_back");
+        ensure!(attempt.fold(
+            |_| false,
+            |_| false,
+            |e| matches!(e, TransactionError::Operation(Error::Receipt)),
+            |_| false,
+            |_| false,
+            |_| false
+        ));
         let records: i64 =
             sqlx::query_scalar("SELECT count(*) FROM rss_audit.records WHERE tenant_id=$1::uuid")
                 .bind(tenant.to_string())
@@ -72,7 +99,14 @@ async fn startup_integrity(
     store.validate_tenant(tenant, control).await?;
     let opposite = AuditStore::new(pool.clone(), integrity(!ledger)?, control).await?;
     ensure!(
-        opposite.validate_tenant(tenant, control).await.is_err(),
+        matches!(
+            opposite
+                .validate_tenant(tenant, control)
+                .await
+                .unwrap_err()
+                .class(),
+            rss_mdm_audit_integration::ErrorClass::AuditIntegrity
+        ),
         "configured integrity cannot silently switch"
     );
     if ledger {
@@ -86,7 +120,14 @@ async fn startup_integrity(
         )
         .await?;
         ensure!(
-            wrong.validate_tenant(tenant, control).await.is_err(),
+            matches!(
+                wrong
+                    .validate_tenant(tenant, control)
+                    .await
+                    .unwrap_err()
+                    .class(),
+                rss_mdm_audit_integration::ErrorClass::AuditIntegrity
+            ),
             "same ID with wrong secret must fail before serving requests"
         );
     }

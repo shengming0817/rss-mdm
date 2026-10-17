@@ -21,7 +21,7 @@ async fn registration_binding_and_replay() -> Result<()> {
         Some(agent.request.clone()),
     )
     .await?;
-    ensure!(replay.0 == StatusCode::OK);
+    ensure!(replay.0 == StatusCode::OK && replay.1 == agent.candidate);
     let mut changed = agent.request.clone();
     changed["operationId"] = json!(Uuid::new_v4());
     ensure!(
@@ -218,7 +218,10 @@ async fn registration_recovery_preserves_credential_rotation() -> Result<()> {
     fixture
         .audit
         .inject_next_fault(rss_audit_postgres::PgFault::BeforeCommitPending);
-    ensure!(service.activate(&peer, &input, &a()).await.is_err());
+    let failure = service.activate(&peer, &input, &a()).await.unwrap_err();
+    ensure!(failure.code == wire::ErrorCode::ActivationUnknown && matches!(failure.source, Some(rss_mdm_registration_service::Error::RollbackFailed)));
+    ensure!(pg(&format!("SELECT count(*) FROM mdm_access.credentials WHERE tenant_id='{}' AND registration='{registration}' AND state='active'", case_tenant()))?.trim() == "1");
+    ensure!(pg(&format!("SELECT count(*) FROM mdm_access.agent_issuances WHERE tenant_id='{}' AND id='{}' AND credential IS NULL AND activation_result IS NULL", case_tenant(), input.issuance_id))?.trim() == "1");
     ensure!(
         service
             .authenticate(&crate::test_support::agent::evidence(agent.credential).unwrap())
@@ -228,7 +231,10 @@ async fn registration_recovery_preserves_credential_rotation() -> Result<()> {
     fixture
         .audit
         .inject_next_fault(rss_audit_postgres::PgFault::CommitUnknownAfterAck);
-    ensure!(service.activate(&peer, &input, &a()).await.is_err());
+    let failure = service.activate(&peer, &input, &a()).await.unwrap_err();
+    ensure!(failure.code == wire::ErrorCode::ActivationUnknown && matches!(failure.source, Some(rss_mdm_registration_service::Error::CommitUnknown)));
+    ensure!(pg(&format!("SELECT jsonb_build_array(count(*) FILTER(WHERE state='active'),count(*) FILTER(WHERE state='superseded'))::text FROM mdm_access.credentials WHERE tenant_id='{}' AND registration='{registration}'", case_tenant()))?.trim() == "[1, 1]");
+    ensure!(pg(&format!("SELECT count(*) FROM mdm_access.agent_issuances WHERE tenant_id='{}' AND id='{}' AND credential IS NOT NULL AND activation_result IS NOT NULL", case_tenant(), input.issuance_id))?.trim() == "1");
     let recovered = service.activate(&peer, &input, &a()).await?;
     ensure!(
         serde_json::to_value(&recovered.runtime)? == agent.registration,
@@ -309,8 +315,6 @@ async fn browser_approval_quota_expiry_and_restart_are_durable() -> Result<()> {
         .await?;
     let restart = crate::test_support::agent::service(&fixture).await?;
     ensure!(restart.request(&second, &a()).await?.grant_id == created.grant_id);
-    let invalid = json!({"wireVersion":1,"operationId":Uuid::new_v4(),"secret":second.secret,"platform":"windows","csr":second.csr,"lifetimeSeconds":604801});
-    ensure!(serde_json::from_value::<wire::GrantRequest>(invalid).is_err());
     pg(&format!(
         "UPDATE mdm_access.agent_grants SET created_at=clock_timestamp()-interval '25 hours',expires_at=clock_timestamp()-interval '1 hour' WHERE tenant_id='{}' AND id='{}'",
         case_tenant(),
@@ -347,7 +351,7 @@ async fn admission_pause_preserves_candidate_and_existing_identity() -> Result<(
         Some(request.clone()),
     )
     .await?;
-    ensure!(status.is_success());
+    ensure!(status == StatusCode::OK);
     owner.operation = Some(Uuid::new_v4());
     let (status, _) = owner
         .call(
@@ -360,7 +364,7 @@ async fn admission_pause_preserves_candidate_and_existing_identity() -> Result<(
             Some(json!({"operationId":Uuid::new_v4()})),
         )
         .await?;
-    ensure!(status.is_success());
+    ensure!(status == StatusCode::OK);
     let issue = json!({"wireVersion":1,"operationId":Uuid::new_v4(),"grantId":grant["grantId"],"secret":secret,"csr":csr,"runtime":{"capabilities":["inventory.collect.v1"],"platform":"macos","architecture":"aarch64","executionContext":software_execution::context(software_execution::Platform::MacOs)}});
     let (status, candidate) = agent_call(
         &router,
@@ -370,7 +374,7 @@ async fn admission_pause_preserves_candidate_and_existing_identity() -> Result<(
         Some(issue.clone()),
     )
     .await?;
-    ensure!(status.is_success());
+    ensure!(status == StatusCode::OK);
     let channel = "/api/v1/registration-channels/agent/admission";
     admin.operation = Some(Uuid::new_v4());
     let (status, _) = admin
@@ -381,8 +385,8 @@ async fn admission_pause_preserves_candidate_and_existing_identity() -> Result<(
             Some(json!({"expectedRevision":0,"admission":"paused"})),
         )
         .await?;
-    ensure!(status.is_success());
-    let (_, replayed) = agent_call(
+    ensure!(status == StatusCode::OK);
+    let (status, replayed) = agent_call(
         &router,
         Method::POST,
         "/api/v1/agent/enroll/certificates",
@@ -390,7 +394,7 @@ async fn admission_pause_preserves_candidate_and_existing_identity() -> Result<(
         Some(issue.clone()),
     )
     .await?;
-    ensure!(candidate == replayed);
+    ensure!(status == StatusCode::OK && candidate == replayed);
     let mut fresh = request;
     fresh["operationId"] = json!(Uuid::new_v4());
     let (status, error) = agent_call(
@@ -431,6 +435,7 @@ async fn admission_pause_preserves_candidate_and_existing_identity() -> Result<(
             .code
             == wire::ErrorCode::EnrollmentPaused
     );
+    ensure!(pg(&format!("SELECT count(*) FROM mdm_access.registrations WHERE tenant_id='{}' AND state='active'", case_tenant()))?.trim() == "0");
     admin.operation = Some(Uuid::new_v4());
     let (status, _) = admin
         .call(
@@ -440,7 +445,7 @@ async fn admission_pause_preserves_candidate_and_existing_identity() -> Result<(
             Some(json!({"expectedRevision":1,"admission":"allowed"})),
         )
         .await?;
-    ensure!(status.is_success());
+    ensure!(status == StatusCode::OK);
     let receipt = service.activate(&peer, &activation, &audit()).await?;
     admin.operation = Some(Uuid::new_v4());
     let (status, _) = admin
@@ -451,7 +456,7 @@ async fn admission_pause_preserves_candidate_and_existing_identity() -> Result<(
             Some(json!({"expectedRevision":2,"admission":"paused"})),
         )
         .await?;
-    ensure!(status.is_success());
+    ensure!(status == StatusCode::OK);
     ensure!(
         serde_json::to_value(service.activate(&peer, &activation, &audit()).await?)?
             == serde_json::to_value(receipt)?

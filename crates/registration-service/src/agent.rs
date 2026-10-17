@@ -306,5 +306,3 @@ async fn authorize_on(
 
 #[cfg(feature = "integration")]
 mod fixture;
-#[cfg(feature = "integration")]
-pub use fixture::ConfigurationPeerSeed;

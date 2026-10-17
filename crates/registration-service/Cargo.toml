@@ -37,6 +37,9 @@ zeroize.workspace = true
 subtle.workspace = true
 tokio = { workspace = true, features = ["time"] }
 
+[dev-dependencies]
+rss-mdm-audit-integration = { workspace = true, features = ["integration"] }
+
 [features]
 default = []
 integration = ["rss-mdm-audit-integration/integration"]

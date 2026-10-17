@@ -242,7 +242,8 @@ async fn durable_reports_and_projection() -> Result<()> {
             .0 == StatusCode::ACCEPTED
         );
     }
-    ensure!(pg(&format!("SELECT count(*) FROM mdm_access.collection_runs WHERE tenant_id='{TENANT}' AND registration='{}' AND source='agent.builtin' AND NOT delivery_pending", registration["registrationId"].as_str().unwrap(), TENANT = case_tenant()))?.trim().parse::<i64>()? <= 224, "delivered Agent retention was not enforced");
+    ensure!(pg(&format!("SELECT count(*) FROM mdm_access.collection_runs WHERE tenant_id='{TENANT}' AND registration='{}' AND source='agent.builtin' AND NOT delivery_pending", registration["registrationId"].as_str().unwrap(), TENANT = case_tenant()))?.trim().parse::<i64>()? == 224, "delivered Agent retention was not enforced");
+    ensure!(pg(&format!("SELECT count(*) FROM mdm_access.collection_runs WHERE tenant_id='{}' AND id IN ('{report_id}','{partial_id}','{failed_id}')", case_tenant()))?.trim() == "3", "retention removed latest or pending reports");
     pg(&format!(
         "INSERT INTO mdm_access.collection_runs(tenant_id,id,registration,source,epoch,scope,sequence,started_at,attempts,result,reason,batch,digest,sealed_at,delivery_pending) SELECT tenant_id,gen_random_uuid(),registration,source,epoch,scope,1000+g,started_at,attempts,result,reason,batch,digest,sealed_at,true FROM mdm_access.collection_runs CROSS JOIN generate_series(1,29) g WHERE tenant_id='{TENANT}' AND id='{partial_id}'",
         TENANT = case_tenant()

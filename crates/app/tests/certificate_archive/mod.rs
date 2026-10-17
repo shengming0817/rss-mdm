@@ -305,6 +305,11 @@ async fn permissions_rls_immutable_versions_and_tampering_are_enforced() -> Resu
         .0 == StatusCode::FORBIDDEN
     );
     let mut connection = f.authority.access.archive_pool().acquire().await?;
+    let mut own = connection.begin().await?;
+    sqlx::query("SELECT set_config('rss.tenant_id',$1,true)").bind(case_tenant()).execute(&mut *own).await?;
+    let visible: i64 = sqlx::query_scalar("SELECT count(*) FROM mdm_certificate_archive.versions").fetch_one(&mut *own).await?;
+    ensure!(visible == 1);
+    own.rollback().await?;
     let mut tx = connection.begin().await?;
     sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
         .bind(case::peer())
@@ -323,8 +328,7 @@ async fn permissions_rls_immutable_versions_and_tampering_are_enforced() -> Resu
     ensure!(
         sqlx::query("DELETE FROM mdm_certificate_archive.versions")
             .execute(&mut *tx)
-            .await
-            .is_err()
+            .await.unwrap_err().as_database_error().and_then(|e| e.code()).as_deref() == Some("42501")
     );
     tx.rollback().await?;
     let mut tx = connection.begin().await?;
@@ -335,8 +339,7 @@ async fn permissions_rls_immutable_versions_and_tampering_are_enforced() -> Resu
     ensure!(
         sqlx::query("UPDATE mdm_certificate_archive.versions SET metadata='{}'")
             .execute(&mut *tx)
-            .await
-            .is_err()
+            .await.unwrap_err().as_database_error().and_then(|e| e.code()).as_deref() == Some("42501")
     );
     tx.rollback().await?;
     drop(connection);
@@ -356,19 +359,16 @@ async fn permissions_rls_immutable_versions_and_tampering_are_enforced() -> Resu
         .collect(),
     )
     .await?;
+    f.admin.operation = Some(Uuid::new_v4());
+    let exported = f.ok(Method::POST, "/export", Some(json!({"entryId":entry,"version":1}))).await?;
+    ensure!(!exported.is_null());
     pg(&format!(
         "UPDATE mdm_certificate_archive.versions SET sealed=set_byte(sealed,octet_length(sealed)-1,get_byte(sealed,octet_length(sealed)-1)#1) WHERE tenant_id='{}' AND entry_id='{entry}'",
         case_tenant()
     ))?;
-    ensure!(
-        f.call(
-            Method::POST,
-            "/export",
-            Some(json!({"entryId":entry,"version":1}))
-        )
-        .await?
-        .0 == StatusCode::INTERNAL_SERVER_ERROR
-    );
+    f.admin.operation = Some(Uuid::new_v4());
+    let damaged = f.call(Method::POST, "/export", Some(json!({"entryId":entry,"version":1}))).await?;
+    ensure!(damaged.0 == StatusCode::INTERNAL_SERVER_ERROR && damaged.1["code"] == "archive_integrity_error");
     let (_, v) = f.call(Method::GET, "/entries", None).await?;
     ensure!(v["items"].as_array().unwrap().len() == 1);
     Ok(())
@@ -399,18 +399,11 @@ async fn generation_alerts_and_two_sessions_use_one_tenant_identity() -> Result<
         .collect(),
     )
     .await?;
-    ensure!(
-        other
-            .call(
-                &f.router,
-                Method::GET,
-                "/api/v1/certificate-archive/vault",
-                None
-            )
-            .await?
-            .1["unlockedUntil"]
-            .is_null()
-    );
+    let own = f.ok(Method::GET, "/vault", None).await?;
+    let peer = other.call(&f.router, Method::GET, "/api/v1/certificate-archive/vault", None).await?;
+    ensure!(peer.0 == StatusCode::OK && peer.1["initialized"] == true);
+    ensure!(peer.1["generation"] == own["generation"] && !own["generation"].is_null());
+    ensure!(peer.1["unlockedUntil"].is_null());
     let ca = Uuid::new_v4();
     let mut input = json!({"entryId":ca,"expectedRevision":0,"metadata":metadata("CA"),"profile":"ca","algorithm":"rsa2048","commonName":"Archive Test CA","organization":"Test","sans":[],"days":3650,"issuer":null,"scepUrl":null});
     f.write("/generate", input.clone()).await?;
@@ -441,7 +434,7 @@ async fn generation_alerts_and_two_sessions_use_one_tenant_identity() -> Result<
 
 #[tokio::test]
 #[ignore = "make t2 MODULE=certificate-archive.http"]
-async fn issued_results_keep_exact_request_versions_and_pem_work_drains() -> Result<()> {
+async fn issued_results_keep_exact_request_versions_across_clean_shutdown() -> Result<()> {
     use base64::{Engine, engine::general_purpose::STANDARD};
     let mut f = Fixture::open().await?;
     let resources = std::mem::take(&mut f.authority.resources);
@@ -587,6 +580,9 @@ async fn issued_results_keep_exact_request_versions_and_pem_work_drains() -> Res
     let history = f
         .ok(Method::GET, &format!("/entries/{request}/versions"), None)
         .await?;
+    let versions = history.as_array().unwrap();
+    ensure!(versions.len() == 2);
+    ensure!(versions.iter().any(|v| v["version"] == 1) && versions.iter().any(|v| v["version"] == 2));
     ensure!(
         history
             .as_array()

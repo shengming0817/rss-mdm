@@ -134,6 +134,48 @@ async fn exercise(ledger: bool) -> Result<()> {
             .fetch_all(&observer)
             .await?;
     ensure!(original.len() == expected as usize);
+    let mut actions = std::collections::BTreeSet::new();
+    for canonical in &original {
+        let decoded = rss_audit_core::decode_untrusted(canonical)?;
+        let event = decoded.event();
+        if event.identity().tenant().to_string() != case_tenant() {
+            continue;
+        }
+        ensure!(
+            event.identity().source().source_id().as_str()
+                == format!("identity.{}", crate::test_support::identity::INSTANCE)
+        );
+        let action = event.facts().action().as_str();
+        match action {
+            "identity.account.account_created" => {
+                ensure!(
+                    event.facts().actor().kind().as_str() == "maintenance"
+                        && event.facts().actor().id().as_str()
+                            == crate::test_support::identity::INSTANCE
+                );
+                ensure!(
+                    event.facts().resource().id().as_str() == crate::test_support::case::admin()
+                );
+            }
+            "identity.session.created" => {
+                ensure!(
+                    event.facts().actor().kind().as_str() == "principal"
+                        && event.facts().actor().id().as_str()
+                            == crate::test_support::case::admin()
+                );
+            }
+            _ => anyhow::bail!("unexpected initial identity event: {action}"),
+        }
+        ensure!(actions.insert(action.to_owned()));
+    }
+    ensure!(
+        actions
+            == std::collections::BTreeSet::from([
+                "identity.account.account_created".to_owned(),
+                "identity.session.created".to_owned()
+            ])
+    );
+
     let linked: i64 = sqlx::query_scalar(
         "SELECT count(*) FROM rss_audit.records WHERE ledger_sequence IS NOT NULL",
     )
@@ -356,6 +398,14 @@ async fn verify_ledger_privileges(
             "installer accepted {grant}"
         );
         sqlx::raw_sql(revoke).execute(observer).await?;
+        let mut resources = Vec::new();
+        Worker::open(config, Arc::default(), Arc::default(), |r| {
+            resources.push(r)
+        })
+        .await?;
+        for resource in resources.into_iter().rev() {
+            resource.shutdown().await?;
+        }
     }
     if !ledger {
         for (grant, revoke) in [
@@ -380,6 +430,14 @@ async fn verify_ledger_privileges(
                     .is_err()
             );
             sqlx::raw_sql(revoke).execute(observer).await?;
+            let mut resources = Vec::new();
+            Worker::open(config, Arc::default(), Arc::default(), |r| {
+                resources.push(r)
+            })
+            .await?;
+            for resource in resources.into_iter().rev() {
+                resource.shutdown().await?;
+            }
         }
     }
     crate::migration::migrate(options, installation).await?;
@@ -408,7 +466,10 @@ async fn rejected(config: &Config) -> Result<()> {
         resources.push(r)
     })
     .await;
-    ensure!(result.is_err());
+    ensure!(matches!(
+        result,
+        Err(Error::Unavailable(Failure::IdentityStorage))
+    ));
     for resource in resources.into_iter().rev() {
         resource.shutdown().await?;
     }
