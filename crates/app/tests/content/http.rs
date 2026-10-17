@@ -528,12 +528,73 @@ async fn stalled_streams_expire_without_binding_and_release_their_leases() -> Re
             let response = streaming_request(&fixture, if append { Method::PATCH } else { Method::POST }, &path)
                 .body(reqwest::Body::wrap_stream(stream)).send().await?;
             let status = response.status(); let body: Value = response.json().await?;
-            ensure!(status == StatusCode::SERVICE_UNAVAILABLE && body["code"] == "content_deadline", "deadline: {status} {body}");
+            ensure!(status == StatusCode::SERVICE_UNAVAILABLE && body["code"] == "service_unavailable", "deadline: {status} {body}");
             ensure!(pg(&format!("SELECT count(*) FROM mdm_content.bindings WHERE tenant_id='{}' AND operation='{operation}'",case_tenant()))?.trim() == "0");
-            ensure!(pg(&format!("SELECT count(*) FROM mdm_content.uploads WHERE tenant_id='{}' AND document->'value'->'upload'->>'id'='{operation}' AND (epoch IS NOT NULL OR held_until<>0)",case_tenant()))?.trim() == "0");
+            ensure!(pg(&format!("SELECT count(*) FROM mdm_content.uploads WHERE tenant_id='{}' AND document->'value'->'upload'->>'id'='{operation}' AND epoch IS NULL AND held_until=0",case_tenant()))?.trim() == "1");
             let recovered = streaming_request(&fixture, if append { Method::PATCH } else { Method::POST }, &path).body(bytes.to_vec()).send().await?;
             let status = recovered.status(); let body = recovered.text().await?;
             ensure!(status == if append { StatusCode::OK } else { StatusCode::CREATED }, "recovery: {status} {body}");
+        }
+        Ok(())
+    }).await
+}
+
+#[tokio::test]
+#[ignore = "MODULE=content.http: revoking rights or the browser session during streaming rejects completion"]
+async fn streaming_revalidates_permission_and_original_session_before_success() -> Result<()> {
+    let mut fixture = Fixture::with_transfer_seconds(60).await?;
+    let resources = std::mem::take(&mut fixture.resources);
+    resources.finish(async {
+        let bytes = b"revocation-boundary";
+        let resource = upload_resource(&fixture, bytes).await?;
+        for revoke_session in [false, true] {
+            let append = revoke_session;
+            let operation = Uuid::new_v4();
+            let path = streaming_path(&fixture, resource, operation, append).await?;
+            use futures::SinkExt;
+            let (mut sender, body) = futures::channel::mpsc::channel::<Result<Vec<u8>, std::io::Error>>(1);
+            let request = streaming_request(&fixture, if append { Method::PATCH } else { Method::POST }, &path)
+                .body(reqwest::Body::wrap_stream(body));
+            let request = tokio::spawn(async move { request.send().await });
+            sender.send(Ok(bytes[..1].to_vec())).await?;
+            // Async PG observation lets this current-thread runtime drive HTTP and DB I/O.
+            let observer = sqlx::postgres::PgPoolOptions::new().max_connections(1)
+                .connect_with(crate::device::test_support::options("postgres")?).await?;
+            let claimed = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+                loop {
+                    if sqlx::query_scalar::<_,i64>("SELECT count(*) FROM mdm_content.uploads WHERE tenant_id=$1::uuid AND document->'value'->'upload'->>'id'=$2 AND epoch IS NOT NULL")
+                        .bind(case_tenant()).bind(operation.to_string()).fetch_one(&observer).await? == 1 {
+                        break Ok::<_,anyhow::Error>(());
+                    }
+                    tokio::task::yield_now().await;
+                }
+            }).await;
+            observer.close().await;
+            let changed: Result<()> = async {
+                claimed??;
+                if revoke_session {
+                    let mut user = fixture.user.clone();
+                    let logged_out = user.call(&fixture.router, Method::POST, &format!("/api/v1/identity/tenants/{}/session/logout",case_tenant()), None).await?;
+                    ensure!(logged_out.0 == StatusCode::NO_CONTENT, "logout: {logged_out:?}");
+                } else {
+                    crate::test_support::identity::set_grants(case_tenant(), &fixture.subject, vec![]).await?;
+                }
+                sender.send(Ok(bytes[1..].to_vec())).await?;
+                Ok(())
+            }.await;
+            drop(sender);
+            let response = request.await?;
+            changed?;
+            let response = response?;
+            let status = response.status(); let body = response.text().await?;
+            ensure!(status == if revoke_session { StatusCode::UNAUTHORIZED } else { StatusCode::FORBIDDEN }, "revoked authority: {status} {body}");
+            ensure!(pg(&format!("SELECT count(*) FROM mdm_content.bindings WHERE tenant_id='{}' AND operation='{operation}'",case_tenant()))?.trim()=="0");
+            ensure!(audit_count(|r| r.source()=="mdm.business" && r.operation()==Some(operation.to_string().as_str()) && r.status()==201 && r.result()=="success")? == 0);
+            if !revoke_session {
+                let grants = [crate::authorization::Permission::ResourceRead, crate::authorization::Permission::ResourceWrite]
+                    .into_iter().map(|operation| crate::authorization::Grant {operation, scope:crate::authorization::Scope::Tenant}).collect();
+                crate::test_support::identity::set_grants(case_tenant(), &fixture.subject, grants).await?;
+            }
         }
         Ok(())
     }).await

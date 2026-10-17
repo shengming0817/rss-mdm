@@ -12,7 +12,12 @@ pub(crate) enum BodyPolicy {
 /// Completion verifies the stored stream, so it shares the content lifecycle budget.
 pub(crate) fn content_owned(route: &str, method: &Method) -> bool {
     matches!(for_route(route, method), BodyPolicy::Streaming)
-        || (method == Method::POST && route == "/api/v1/resources/{id}/uploads/{upload}/complete")
+        || (method == Method::POST
+            && matches!(
+                route,
+                "/api/v1/resources/{id}/uploads/{upload}/complete"
+                    | "/api/v1/resources/{id}/content/mirror"
+            ))
 }
 
 pub(crate) fn for_route(route: &str, method: &Method) -> BodyPolicy {

@@ -1,6 +1,6 @@
 pub(crate) use rss_mdm_flow_service::operation::Operation;
 
-/// Enrollment-only continuation of the authenticated browser session.
+/// Request-local continuation for enrollment and long content-operation revalidation.
 #[derive(Clone)]
 pub struct SessionContinuation(std::sync::Arc<rss_identity_core::session::SessionSecret>);
 impl SessionContinuation {

@@ -138,3 +138,5 @@ Run 保存服务端选择的访问依据，用户模式只保存 Identity 签发
 访问撤回阻止未启动任务。已启动执行按原 attempt 和不可变材料记录完成证据，企业退出登录不产生新的执行许可。执行状态与可信 Inventory 投影分别判断。安装使用当前初始化 schema；当前版本内的任务恢复消费原 attempt 与不可变材料。
 
 契约由源码 owner 生成：管理 schema 见 `crates/management-http/schema/{PolicyWrite,Policy}.json`；调用 DTO 见 `crates/agent-wire/schema/runtime/self-service-*.json`；通用授权、资源坐标与签名任务以 task schema 为准。`agent-wire/examples/protocol_schema.rs` 从当前 Rust DTO 生成两族完整协议 schema；`hack/agent_wire_artifact.py --write` 物化 schema 并计算 fingerprint。协议包只提供规范签名字节；签名校验与本机执行条件由独立 Agent 持有，服务端执行资格和软件结果判定由产品 owner 持有。#2677/#2678 固定最终提交与契约指纹完成实际 Agent/员工 UI 集成；本 PR 的后端接缝结果不替代真机或浏览器闭环。软件本地检测及三 provider 产品验证继续归 #2657。
+
+长上传在最终内容核验后复核原浏览器会话与当前权限，保持租户、实例、用户和 session 不变；复核不续会话 idle、不轮换凭据。传输期间会话撤销或权限失效时不创建内容绑定。镜像响应头等待、传输及绑定同样使用内容操作预算。

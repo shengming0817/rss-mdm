@@ -3789,6 +3789,7 @@ dependencies = [
  "libc",
  "quick-xml 0.42.0",
  "rss-contract",
+ "rss-identity-core",
  "rss-mdm-audit-integration",
  "rss-mdm-authorization-service",
  "rss-mdm-content-s3",

@@ -13,6 +13,8 @@ use serde::Deserialize;
 use std::sync::Arc;
 use uuid::Uuid;
 pub struct Access {
+    pub sessions: rss_mdm_authorization_service::session::SessionAuthority,
+    pub authorization: Arc<rss_mdm_authorization_service::Store>,
     pub runtime: Arc<PgRuntime>,
     pub audit_store: Arc<rss_mdm_audit_integration::AuditStore>,
     pub tenant: TenantId,
@@ -20,6 +22,47 @@ pub struct Access {
     pub clock: Arc<dyn Clock>,
     pub catalog: Arc<rss_mdm_software_service::catalog::Reader>,
 }
+/// Request-local continuation of an authenticated browser identity. Never persisted.
+#[derive(Clone, Copy)]
+pub struct UploadSession<'a> {
+    proof: &'a AuthorizedPrincipal,
+    secret: &'a rss_identity_core::session::SessionSecret,
+}
+impl<'a> UploadSession<'a> {
+    pub fn new(
+        proof: &'a AuthorizedPrincipal,
+        secret: &'a rss_identity_core::session::SessionSecret,
+    ) -> Self {
+        Self { proof, secret }
+    }
+    async fn refresh(
+        self,
+        app: &Access,
+        budget: UploadBudget,
+    ) -> Result<AuthorizedPrincipal, Error> {
+        let fresh = budget
+            .work(async {
+                let secret = rss_identity_core::session::SessionSecret::parse(
+                    self.secret.expose().to_owned(),
+                )
+                .map_err(|_| Error::Forbidden)?;
+                app.sessions
+                    .authenticate(&app.authorization, secret)
+                    .await
+                    .map_err(Error::from)
+            })
+            .await?;
+        if fresh.tenant_id() != self.proof.tenant_id()
+            || fresh.instance_id() != self.proof.instance_id()
+            || fresh.principal_id() != self.proof.principal_id()
+            || fresh.session_id() != self.proof.session_id()
+        {
+            return Err(Error::Forbidden);
+        }
+        Ok(fresh)
+    }
+}
+
 #[derive(Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Selection {
@@ -246,7 +289,7 @@ pub async fn current(
 }
 pub async fn record(
     app: &Access,
-    proof: &AuthorizedPrincipal,
+    session: UploadSession<'_>,
     audit: &RequestAudit,
     upload: &Upload,
     source_catalog: Option<&rss_mdm_software_service::catalog::Reader>,
@@ -260,6 +303,8 @@ pub async fn record(
             budget.operation,
         ))
         .await?;
+    let fresh = session.refresh(app, budget).await?;
+    let proof = &fresh;
     transaction::run(
         &app.audit_store,
         &app.runtime,
@@ -394,11 +439,12 @@ pub async fn cleanup(
 }
 pub async fn mirror(
     app: &Access,
-    proof: &AuthorizedPrincipal,
+    session: UploadSession<'_>,
     audit: &RequestAudit,
     id: &str,
     input: &Selection,
 ) -> Result<(), Error> {
+    let proof = session.proof;
     let budget = store(app)?.upload_budget()?;
     let operation = input.operation.ok_or(Error::Malformed)?;
     audit.operation(operation, "management_write");
@@ -437,11 +483,11 @@ pub async fn mirror(
     )
     .map_err(|_| Error::Malformed)?;
     let now = app.clock.unix_seconds().ok_or(Error::Clock)?;
-    let session = content
+    let staged = content
         .begin(operation, binding.clone(), now, budget)
         .await?;
-    if !session.complete {
-        if session.offset != 0 {
+    if !staged.complete {
+        if staged.offset != 0 {
             return Err(Error::Conflict);
         }
         let response = budget
@@ -463,18 +509,18 @@ pub async fn mirror(
             response.bytes_stream().map_err(std::io::Error::other),
         );
         content
-            .append(&session.binding.actor, operation, 0, now, stream, budget)
+            .append(&staged.binding.actor, operation, 0, now, stream, budget)
             .await?;
     }
     let result = content
         .finish(
-            &session.binding.actor,
+            &staged.binding.actor,
             operation,
             app.clock.unix_seconds().ok_or(Error::Clock)?,
             budget,
         )
         .await?;
-    record(app, proof, audit, &result, Some(catalog), budget).await?;
+    record(app, session, audit, &result, Some(catalog), budget).await?;
     Ok(())
 }
 pub async fn receipt(
@@ -543,13 +589,14 @@ pub enum Append {
 }
 pub async fn append_upload<R: tokio::io::AsyncRead + Unpin + Send>(
     app: &Access,
-    proof: &AuthorizedPrincipal,
+    session: UploadSession<'_>,
     audit: &RequestAudit,
     id: &str,
     upload: Uuid,
     offset: u64,
     reader: R,
 ) -> Result<Append, Error> {
+    let proof = session.proof;
     let budget = store(app)?.upload_budget()?;
     let old = current(app, proof, audit, id, upload, budget).await?;
     if old.offset != offset {
@@ -565,16 +612,18 @@ pub async fn append_upload<R: tokio::io::AsyncRead + Unpin + Send>(
             budget,
         )
         .await?;
-    proof.check_live()?;
+    let fresh = session.refresh(app, budget).await?;
+    current(app, &fresh, audit, id, upload, budget).await?;
     Ok(Append::Written(Box::new(result)))
 }
 pub async fn complete_upload(
     app: &Access,
-    proof: &AuthorizedPrincipal,
+    session: UploadSession<'_>,
     audit: &RequestAudit,
     id: &str,
     upload: Uuid,
 ) -> Result<(), Error> {
+    let proof = session.proof;
     let budget = store(app)?.upload_budget()?;
     let old = current(app, proof, audit, id, upload, budget).await?;
     let result = store(app)?
@@ -585,23 +634,24 @@ pub async fn complete_upload(
             budget,
         )
         .await?;
-    record(app, proof, audit, &result, None, budget).await
+    record(app, session, audit, &result, None, budget).await
 }
 pub async fn upload<R: tokio::io::AsyncRead + Unpin + Send>(
     app: &Access,
-    proof: &AuthorizedPrincipal,
+    session: UploadSession<'_>,
     audit: &RequestAudit,
     id: &str,
     input: &Selection,
     reader: R,
 ) -> Result<(), Error> {
+    let proof = session.proof;
     let budget = store(app)?.upload_budget()?;
     let operation = input.operation.ok_or(Error::Malformed)?;
-    let session = begin_upload(app, proof, audit, id, operation, input, budget).await?;
-    if !session.complete && session.offset != session.binding.length {
+    let staged = begin_upload(app, proof, audit, id, operation, input, budget).await?;
+    if !staged.complete && staged.offset != staged.binding.length {
         let written = store(app)?
             .append(
-                &session.binding.actor,
+                &staged.binding.actor,
                 operation,
                 0,
                 app.clock.unix_seconds().ok_or(Error::Clock)?,
@@ -615,13 +665,13 @@ pub async fn upload<R: tokio::io::AsyncRead + Unpin + Send>(
     }
     let complete = store(app)?
         .finish(
-            &session.binding.actor,
+            &staged.binding.actor,
             operation,
             app.clock.unix_seconds().ok_or(Error::Clock)?,
             budget,
         )
         .await?;
-    record(app, proof, audit, &complete, None, budget).await
+    record(app, session, audit, &complete, None, budget).await
 }
 
 pub trait Clock: Send + Sync {
