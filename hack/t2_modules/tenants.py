@@ -146,7 +146,7 @@ def execute(fixture):
         identityDatabase=pool.database_config(root,fixture.database,'mdm_identity_runtime','identity-runtime-fixture'),
         audit={'mode':'plain'}, installation=installation(), expectedEpoch=1, login='admin',
         passwordFile=str(root/'account-password'), operationId=str(uuid.uuid4()),
-        user=dict(instanceId=INSTANCE,tenantId=d,principalId=ADMIN)), accepted=False, reason='host identity rejected')
+        user=dict(instanceId=INSTANCE,tenantId=d,principalId=ADMIN)), accepted=False, reason='authorization.initialize: owner=authorization Unauthorized')
     command('tenant-delete', dict(**common, tenant_id=d, expected_revision=1, operation_id=str(uuid.uuid4())), accepted=False, reason='tenant already used')
     configs, rules = [], []
     for tenant in (a,b):
