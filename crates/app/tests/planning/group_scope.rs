@@ -420,7 +420,7 @@ async fn group_scope_replay_and_audit_atomicity() {
 
 #[tokio::test]
 #[ignore = "MODULE=planning.group_scope: real capability storage and transactions"]
-async fn initial_empty_group_scope_and_revision_competition() {
+async fn group_scope_revision_competition() {
     let m = planning(tenant()).await;
     let g = Uuid::new_v4();
     execute(
@@ -475,6 +475,10 @@ async fn initial_empty_group_scope_and_revision_competition() {
     };
     let (a, b) = tokio::join!(execute(&m, &a), execute(&m, &b));
     assert_ne!(a.is_ok(), b.is_ok());
+    let (winner, loser) = if a.is_ok() { (a.unwrap(), b) } else { (b.unwrap(), a) };
+    assert!(matches!(loser, Err(Error::Flow(rss_mdm_flow_service::Error::Conflict))));
+    assert_eq!(winner["revision"], 2);
+    assert_eq!(sql(&format!("SELECT revision FROM mdm_planning.scopes WHERE tenant_id='{}' AND id='{s}'", tenant())), "2");
     m.runtime.close().await;
 }
 
@@ -557,6 +561,8 @@ async fn registration_replacement_invalidates_direct_and_group_admission() {
             &id.to_string(),
         )
         .await;
+        assert!(matches!(scope_admission(&m, id, rss_mdm_inventory::Channel::Mdm, &device).await,
+            rss_mdm_execution_service::source_authority::ScopeAdmission::Eligible { .. }));
         pending.push(id);
     }
     running.stop().await;

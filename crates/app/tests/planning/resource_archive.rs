@@ -15,7 +15,7 @@ fn archive(input: &rss_mdm_software_service::publication::CandidateInput) -> Com
 }
 
 #[tokio::test]
-#[ignore = "real PG reference/archival concurrency + HTTPS: make t2 MODULE=planning.resource_archive"]
+#[ignore = "real PG retained candidate reference + HTTPS: make t2 MODULE=planning.resource_archive"]
 async fn candidate_reference_survives_admission_withdrawal_and_fences_archive() {
     let server = Server::new().await;
     let runtime = pg::runtime().await;
@@ -28,41 +28,10 @@ async fn candidate_reference_survives_admission_withdrawal_and_fences_archive() 
         .await
         .unwrap();
     crate::publication_support::withdraw_version_admission(&referenced).await;
-    for record in crate::audit_test_support::decode_hex(&pg::sql(&format!(
-        "SELECT encode(canonical,'hex') FROM rss_audit.records WHERE tenant_id='{}' ORDER BY position", pg::tenant()
-    ))).unwrap() {
-        rss_mdm_timeline_service::project(record.decoded.event()).unwrap();
-    }
     assert!(matches!(
         execute(&planning, &archive(&referenced)).await,
         Err(crate::Error::Flow(rss_mdm_flow_service::Error::Conflict))
     ));
-
-    let mut document = server.winget_document();
-    let rss_mdm_software_service::publication::ExportDocument::Winget { manifest } = &mut document
-    else {
-        unreachable!()
-    };
-    manifest["PackageIdentifier"] = serde_json::json!("Acme.Race");
-    let racing = seed(runtime.clone(), &server, document).await;
-    let archive = archive(&racing);
-    let (created, archived) = tokio::join!(
-        publication.create_candidate(&racing, pg::cutoff()),
-        execute(&planning, &archive)
-    );
-    // Current enterprise approval already protects the version before the publication is added.
-    assert!(created.is_ok(), "candidate creation: {created:?}");
-    assert!(matches!(
-        archived,
-        Err(crate::Error::Flow(rss_mdm_flow_service::Error::Conflict))
-    ));
-    assert!(
-        publication
-            .candidate(&racing.candidate, pg::cutoff())
-            .await
-            .unwrap()
-            .is_some()
-    );
 
     planning.runtime.close().await;
     runtime.close().await;

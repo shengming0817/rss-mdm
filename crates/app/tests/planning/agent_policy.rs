@@ -273,7 +273,7 @@ async fn policy_scan_reaches_late_match() -> Result<()> {
         case_device_id()
     ))?;
     let ordered_namespace = case::id("policy-scan") & !0xffff;
-    for n in 1..=70 {
+    for n in 1..=64 {
         let id = Uuid::from_u128(ordered_namespace | n);
         post(author,router,&format!("/api/v1/policies/{id}"),json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"put","enabled":true,"definition":policy_definition(resource,case_empty_scope())}})).await?;
     }

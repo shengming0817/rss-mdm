@@ -94,44 +94,31 @@ async fn scope_history_survives_deletion() {
     )
     .await;
     running.stop().await;
-    for projection in [
-        pages::ScopePageKind::Members,
-        pages::ScopePageKind::Decisions,
-    ] {
-        let query = |cursor| Command::ScopePage {
-            scope,
-            result,
-            projection,
-            query: pages::PageQuery {
-                channel: rss_mdm_inventory::Channel::Mdm,
-                limit: 1,
-                cursor,
-            },
-        };
-        let before = execute(&service, &query(None)).await.unwrap();
-        if projection == pages::ScopePageKind::Members {
-            execute(
-                &service,
-                &Command::Scope {
-                    id: scope,
-                    change: operation(1, ScopeChange::Delete),
-                },
-            )
-            .await
-            .unwrap();
-        }
-        let first = execute(&service, &query(None)).await.unwrap();
-        assert_eq!(first["current"], false);
-        assert_eq!(first["page"], before["page"]);
-        let mut next = first["nextCursor"].as_str().map(str::to_owned);
-        let mut count = first["page"]["items"].as_array().unwrap().len();
-        while let Some(cursor) = next {
-            let page = execute(&service, &query(Some(cursor))).await.unwrap();
+    let projections = [pages::ScopePageKind::Members, pages::ScopePageKind::Decisions];
+    let mut histories = Vec::new();
+    for projection in projections {
+        let before = execute(&service, &Command::ScopePage {
+            scope, result, projection,
+            query: pages::PageQuery { channel: rss_mdm_inventory::Channel::Mdm, limit: 100, cursor: None },
+        }).await.unwrap();
+        assert_eq!(before["page"]["items"].as_array().unwrap().len(), 2);
+        histories.push(before["page"]["items"].as_array().unwrap().clone());
+    }
+    execute(&service, &Command::Scope { id: scope, change: operation(1, ScopeChange::Delete) }).await.unwrap();
+    for (projection, expected) in projections.into_iter().zip(histories) {
+        let mut cursor = None;
+        let mut items = Vec::new();
+        loop {
+            let page = execute(&service, &Command::ScopePage { scope, result, projection,
+                query: pages::PageQuery { channel: rss_mdm_inventory::Channel::Mdm, limit: 1, cursor },
+            }).await.unwrap();
             assert_eq!(page["current"], false);
-            count += page["page"]["items"].as_array().unwrap().len();
-            next = page["nextCursor"].as_str().map(str::to_owned);
+            items.extend(page["page"]["items"].as_array().unwrap().iter().cloned());
+            cursor = page["nextCursor"].as_str().map(str::to_owned);
+            if cursor.is_none() { break; }
+            assert!(items.len() <= expected.len(), "history cursor repeated results");
         }
-        assert_eq!(count, 2);
+        assert_eq!(items, expected);
     }
     service.runtime.close().await;
 }
