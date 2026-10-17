@@ -526,12 +526,15 @@ async fn script_preparation_is_shared_without_preview_effects() -> Result<()> {
         if let Some(range)=range {request=request.header("range",range);}
         let response=fixture.router.clone().oneshot(request.body(Body::empty())?).await?;
         ensure!(response.status()==expected_status,"script download: {}",response.status());
-        ensure!(response.headers()["cache-control"]=="private, no-store");
+        ensure!(response.headers()["cache-control"]=="no-store");
         ensure!(response.headers().contains_key("content-disposition"));
         ensure!(axum::body::to_bytes(response.into_body(),16777216).await?.as_ref()==expected);
     }
     let denied=fixture.router.clone().oneshot(Request::builder().uri(&download).header("host","mdm.example.test").body(Body::empty())?).await?;
     ensure!(denied.status()==StatusCode::UNAUTHORIZED);
+    // The old-version download proof is complete; restore the original active input
+    // before testing the independent corruption rejection at Policy entrances.
+    resource(&mut fixture.author,&fixture.router,content_id,5,json!({"action":"activate","version":"v1"})).await?;
     let hex: String = digest.iter().map(|b| format!("{b:02x}")).collect();
     let path = std::path::Path::new(fixture.base["content"]["storage"]["directory"].as_str().unwrap())
         .join(case_tenant())

@@ -239,11 +239,14 @@ async fn execution_first_scan_failure_recovers_only_after_real_success() -> Resu
         let failed = tokio::time::timeout(Duration::from_secs(15), async {
             loop {
                 let state = fixture.source.execution.health();
-                if state.recovery
-                    == rss_mdm_execution_service::health::Phase::Failed(
-                        rss_reconcile::ErrorKind::Deadline,
+                // The timer can win (Deadline), or PostgreSQL can report its lock/statement
+                // timeout first (Transient). Both are failed scans, never readiness evidence.
+                if matches!(
+                    state.recovery,
+                    rss_mdm_execution_service::health::Phase::Failed(
+                        rss_reconcile::ErrorKind::Deadline | rss_reconcile::ErrorKind::Transient
                     )
-                {
+                ) {
                     ensure!(
                         state.task == Some(rss_runtime::TaskState::Running) && !state.is_ready()
                     );
@@ -264,7 +267,7 @@ async fn execution_first_scan_failure_recovers_only_after_real_success() -> Resu
         })
         .await;
         blocked.rollback().await?;
-        failed.context("execution recovery did not report the blocked scan deadline")??;
+        failed.context("execution recovery did not report the blocked scan failure")??;
         signals.command_recovery().notify_one();
         tokio::time::timeout(Duration::from_secs(15), async {
             loop {

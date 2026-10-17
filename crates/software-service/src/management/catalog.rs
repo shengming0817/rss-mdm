@@ -117,7 +117,7 @@ pub async fn read_version<C: ManagementContentPort>(
 ) -> Result<Value, Error> {
     auth.require(Permission::SoftwareRead, None)?;
     audit.set_action("management_read");
-    audit.target(&id);
+    audit.resource_target(rss_mdm_audit_integration::TargetKind::Resource, &id);
     transaction::run(
         &app.audit,
         &app.runtime,
@@ -157,7 +157,7 @@ pub async fn write_version<C: ManagementContentPort>(
     };
     auth.require(permission, None)?;
     audit.set_action("management_write");
-    audit.target(&id);
+    audit.resource_target(rss_mdm_audit_integration::TargetKind::Resource, &id);
     audit.operation(op.operation_id, "management_write");
     audit.require_request_settlement();
     let verified = if matches!(op.input, VersionChange::Enable) {
@@ -235,7 +235,7 @@ pub async fn download<C: ManagementContentPort>(
     auth.require(Permission::SoftwareRead, None)?;
     audit.require_request_settlement();
     audit.set_action("management_read");
-    audit.target(&id);
+    audit.resource_target(rss_mdm_audit_integration::TargetKind::Resource, &id);
     let frozen = transaction::inspect(
         &app.runtime,
         app.tenant,
@@ -313,7 +313,10 @@ pub async fn import<C: ManagementContentPort>(
     auth.require(Permission::SoftwareWrite, None)?;
     auth.require(Permission::ResourceWrite, None)?;
     audit.set_action("management_write");
-    audit.target(&op.input.resource);
+    audit.resource_target(
+        rss_mdm_audit_integration::TargetKind::Resource,
+        &op.input.resource,
+    );
     audit.operation(op.operation_id, "management_write");
     audit.require_request_settlement();
     let source = transaction::inspect(

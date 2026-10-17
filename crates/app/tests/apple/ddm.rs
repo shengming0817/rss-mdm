@@ -264,6 +264,10 @@ async fn policy_coowners_share_native_publication_without_fabricating_removal() 
     let original_registration: Uuid =
         serde_json::from_value(before.1["items"][0]["registrationId"].clone())?;
     let original_generation = before.1["items"][0]["generation"].as_i64().unwrap();
+    sqlx::query("SELECT set_config('rss.tenant_id',$1,false)")
+        .bind(case_tenant())
+        .execute(&mut pg)
+        .await?;
     sqlx::query("UPDATE mdm_access.registrations SET generation=generation+1 WHERE tenant_id=$1::uuid AND id=$2").bind(case_tenant()).bind(original_registration).execute(&mut pg).await?;
     let current = f
         .browser

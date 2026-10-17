@@ -46,7 +46,9 @@ impl Groups {
                 rss_mdm_audit_integration::TargetKind::Group,
                 &group.to_string(),
             ),
-            Command::TaskRead { .. } => {}
+            Command::TaskRead { target, .. } => {
+                audit.resource_target(rss_mdm_audit_integration::TargetKind::Group, target)
+            }
         }
         authorize()?;
         crate::transaction::run(

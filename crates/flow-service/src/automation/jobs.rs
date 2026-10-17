@@ -120,8 +120,8 @@ pub async fn finish_job_in(
         "success"
     };
     let failure_owned = failure.map(str::to_owned);
-    let target:Option<String>=tx.with_connection(move |c|Box::pin(async move {
-            sqlx::query_scalar("UPDATE mdm_automation.automation_jobs SET completed=true,failure=$3 WHERE tenant_id=$1::uuid AND id=$2::uuid AND NOT completed RETURNING target")
+    let target:Option<(String,String)>=tx.with_connection(move |c|Box::pin(async move {
+            sqlx::query_as("UPDATE mdm_automation.automation_jobs SET completed=true,failure=$3 WHERE tenant_id=$1::uuid AND id=$2::uuid AND NOT completed RETURNING target,kind")
                 .bind(tenant).bind(id.to_string()).bind(failure_owned).fetch_optional(c).await
         })).await?;
     if target.is_none() {
@@ -134,10 +134,19 @@ pub async fn finish_job_in(
             return Err(Error::NotFound.into());
         }
     }
-    if let Some(target) = target {
+    if let Some((target, kind)) = target {
         let audit = RequestAudit::new(tx.tenant_id().to_string(), action);
         audit.identify_service("service:asset-automation");
-        audit.target(&target);
+        match kind.as_str() {
+            "group" | "group_preview" => {
+                audit.resource_target(rss_mdm_audit_integration::TargetKind::Group, &target)
+            }
+            "scope" => audit.resource_target(rss_mdm_audit_integration::TargetKind::Scope, &target),
+            "policy_reconcile" => {
+                audit.resource_target(rss_mdm_audit_integration::TargetKind::Policy, &target)
+            }
+            _ => audit.target(&target),
+        }
         audit.operation(id, action);
         let fingerprint =
             serde_json::to_vec(&(id, &target, failure)).expect("closed automation result");

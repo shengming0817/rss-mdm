@@ -90,6 +90,11 @@ impl Planning {
                 rss_mdm_audit_integration::TargetKind::Scope,
                 &scope.to_string(),
             ),
+            Command::TaskRead {
+                target,
+                family: crate::automation::TaskKind::Scope,
+                ..
+            } => audit.resource_target(rss_mdm_audit_integration::TargetKind::Scope, target),
             Command::TaskRead { .. } => {}
         }
         authorize()?;

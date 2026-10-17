@@ -17,7 +17,10 @@ pub async fn assignments(
     after: Option<String>,
 ) -> std::result::Result<super::records::AssignmentPage, crate::queries::QueryError> {
     audit.set_action("management_read");
-    audit.target(&id.to_string());
+    audit.resource_target(
+        rss_mdm_audit_integration::TargetKind::Policy,
+        &id.to_string(),
+    );
     auth.manage(Permission::PolicyRead)?;
     auth.require_all_devices(Permission::InventoryRead)?;
     run(&service.audit_store,&service.runtime,service.tenant,audit,(&service,&auth,audit,after),|ctx,tx|Box::pin(async move {

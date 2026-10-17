@@ -45,7 +45,9 @@ async fn run(
             rss_mdm_audit_integration::TargetKind::Scope,
             &id.to_string(),
         ),
-        Command::TaskRead { id, .. } => audit.target(&id.to_string()),
+        Command::TaskRead { target, .. } => {
+            audit.resource_target(rss_mdm_audit_integration::TargetKind::Scope, target)
+        }
         Command::ScopePage { scope, .. } => audit.resource_target(
             rss_mdm_audit_integration::TargetKind::Scope,
             &scope.to_string(),
@@ -331,11 +333,13 @@ async fn run_group(
             );
             audit.operation(*operation, "management_read");
         }
-        GroupCommand::GroupRead { id } | GroupCommand::TaskRead { id, .. } => audit
-            .resource_target(
-                rss_mdm_audit_integration::TargetKind::Group,
-                &id.to_string(),
-            ),
+        GroupCommand::TaskRead { target, .. } => {
+            audit.resource_target(rss_mdm_audit_integration::TargetKind::Group, target)
+        }
+        GroupCommand::GroupRead { id } => audit.resource_target(
+            rss_mdm_audit_integration::TargetKind::Group,
+            &id.to_string(),
+        ),
         GroupCommand::GroupPage { group, .. } => audit.resource_target(
             rss_mdm_audit_integration::TargetKind::Group,
             &group.to_string(),

@@ -341,19 +341,19 @@ impl Timeline {
         // Authorization is reloaded after acquiring the audit read transaction, before exposing facts.
         rss_mdm_authorization_service::lock_on(c, proof.tenant_id(), proof.instance_id())
             .await
-            .map_err(|_| Error::Forbidden)?;
+            .map_err(authorization_error)?;
         let current =
             rss_mdm_authorization_service::snapshot_on(c, proof.tenant_id(), proof.instance_id())
                 .await
-                .map_err(|_| Error::Forbidden)?;
+                .map_err(authorization_error)?;
         current
             .require(proof, Permission::AuthorizationRead, None)
-            .map_err(|_| Error::Forbidden)?;
-        if current.query_binding(proof).map_err(|_| Error::Forbidden)?
+            .map_err(|e| authorization_error(e.into()))?;
+        if current.query_binding(proof).map_err(authorization_error)?
             != proof
                 .authorization()
                 .and_then(|s| s.query_binding(proof))
-                .map_err(|_| Error::Forbidden)?
+                .map_err(authorization_error)?
         {
             return Err(Error::Conflict);
         }
@@ -586,6 +586,18 @@ fn limited_transaction<R>(
     match transaction_error::<()>(error).expect_err("transaction failure") {
         Error::Deadline => Ok(None),
         error => Err(error),
+    }
+}
+
+fn authorization_error(error: rss_mdm_authorization_service::Error) -> Error {
+    use rss_mdm_authorization_service::Error as A;
+    match error {
+        A::Unauthorized | A::Forbidden => Error::Forbidden,
+        A::Malformed => Error::Malformed,
+        A::Corrupt | A::Configuration => Error::Integrity,
+        A::Deadline => Error::Deadline,
+        A::Conflict => Error::Conflict,
+        A::Storage | A::CommitUnknown | A::RollbackFailed | A::Audit(_) => Error::Storage,
     }
 }
 

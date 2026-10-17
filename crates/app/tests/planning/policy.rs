@@ -96,11 +96,14 @@ async fn assignment_pagination_uses_published_scope_without_eager_execution() ->
         json!({"action":"put","enabled":true,"definition":definition}),
     )
     .await?;
+    // Scope publication is the fixture prerequisite. Stop its producer before the
+    // bounded read/CAS checks, which do not measure background reconciliation throughput.
+    crate::test_support::stop_worker(automation).await?;
     let membership_path=format!("/api/v1/devices/{}-1/groups?limit=1",prefix);
     let (status,memberships)=browser.call(router,Method::GET,&membership_path,None).await?;
     ensure!(status==StatusCode::OK && memberships["items"].as_array().is_some_and(|items|items.iter().any(|item|item["id"]==group.to_string())),"reverse memberships: {status} {memberships}");
     let deletion=json!({"operationId":Uuid::new_v4(),"expectedRevision":1});
-    let rejected=browser.call(router,Method::DELETE,policy,Some(deletion)).await?;
+    let rejected=settled_delete(browser,router,policy,deletion).await?;
     ensure!(rejected.0==StatusCode::CONFLICT,"enabled delete: {rejected:?}");
     let other_policy=Uuid::new_v4();
     call(browser,router,&format!("/api/v1/policies/{other_policy}"),0,json!({"action":"put","enabled":false,"definition":definition})).await?;
@@ -148,11 +151,11 @@ async fn assignment_pagination_uses_published_scope_without_eager_execution() ->
     );
     call(browser,router,policy,1,json!({"action":"disable"})).await?;
     let deletion=json!({"operationId":Uuid::new_v4(),"expectedRevision":2});
-    let deleted=browser.call(router,Method::DELETE,policy,Some(deletion.clone())).await?;
+    let deleted=settled_delete(browser,router,policy,deletion.clone()).await?;
     ensure!(deleted.0==StatusCode::OK && deleted.1["state"]=="archived","disabled delete: {deleted:?}");
-    let replay=browser.call(router,Method::DELETE,policy,Some(deletion)).await?;
+    let replay=settled_delete(browser,router,policy,deletion).await?;
     ensure!(replay==deleted,"delete replay changed receipt");
-    let enabled=browser.call(router,Method::POST,policy,Some(json!({"operationId":Uuid::new_v4(),"expectedRevision":3,"input":{"action":"enable"}}))).await?;
+    let enabled=settled_write(browser,router,policy,json!({"operationId":Uuid::new_v4(),"expectedRevision":3,"input":{"action":"enable"}})).await?;
     ensure!(enabled.0==StatusCode::CONFLICT,"archived enable: {enabled:?}");
     let directory=browser.call(router,Method::GET,&format!("/api/v1/policies?resource={resource}"),None).await?;
     ensure!(directory.0==StatusCode::OK && directory.1["items"].as_array().is_some_and(|v|v.len()==1) && directory.1["items"][0]["id"]==other_policy.to_string());
@@ -162,10 +165,33 @@ async fn assignment_pagination_uses_published_scope_without_eager_execution() ->
     ensure!(legacy.0==StatusCode::BAD_REQUEST);
     let retained:Value=serde_json::from_str(&pg(&format!("SELECT jsonb_build_array(count(*),count(resource)) FROM mdm_policy.versions WHERE tenant_id='{}' AND policy='{id}'",case_tenant()))?)?;
     ensure!(retained==json!([1,1]),"archive lost immutable references: {retained}");
-    crate::test_support::stop_worker(automation).await?;
+
 
     Ok(())
     }).await
 
     }).await
+}
+
+async fn settled_delete(
+    browser: &mut Browser,
+    router: &Router,
+    path: &str,
+    body: Value,
+) -> Result<(StatusCode, Value)> {
+    tokio::time::timeout(Duration::from_secs(30), async {
+        loop {
+            let response = browser
+                .call(router, Method::DELETE, path, Some(body.clone()))
+                .await?;
+            if response.0 != StatusCode::SERVICE_UNAVAILABLE {
+                return Ok(response);
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .map_err(|_| {
+        anyhow::anyhow!("policy delete did not settle using its original operation identity")
+    })?
 }
