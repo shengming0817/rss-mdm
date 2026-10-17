@@ -16,7 +16,7 @@ pub async fn active(tx: &mut PgTransaction<'_>, id: Uuid) -> Result<bool> {
     let tenant = tx.tenant_id().to_string();
     let kinds = rss_mdm_policy::AssignmentBehavior::NativeCollectionRecovery.kinds();
     Ok(tx.with_connection(move|c|Box::pin(async move {
-        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_policy.policies p WHERE p.tenant_id=$1::uuid AND p.id=$2::uuid AND p.enabled AND (p.definition->'action'->>'kind'=ANY($3::text[]) OR p.definition->'action'->>'kind'='software')) OR EXISTS(SELECT 1 FROM mdm_commands.action_runs r JOIN mdm_policy.versions v ON(v.tenant_id,v.id)=(r.tenant_id,r.policy_version) JOIN mdm_policy.policies p ON(p.tenant_id,p.id)=(v.tenant_id,v.policy) WHERE r.tenant_id=$1::uuid AND v.policy=$2::uuid AND ((r.state->>'execution'='not_started' AND r.state->>'cancellation'<>'confirmed') OR r.state->>'execution'='running' OR (r.state->>'execution'='unknown' AND r.state->>'cancellation'='none' AND (NOT p.enabled OR p.current_version<>v.id))))").bind(tenant).bind(id.to_string()).bind(kinds).fetch_one(c).await
+        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_policy.policies p WHERE p.tenant_id=$1::uuid AND p.id=$2::uuid AND (p.state='enabled') AND (p.definition->'action'->>'kind'=ANY($3::text[]) OR p.definition->'action'->>'kind'='software')) OR EXISTS(SELECT 1 FROM mdm_commands.action_runs r JOIN mdm_policy.versions v ON(v.tenant_id,v.id)=(r.tenant_id,r.policy_version) JOIN mdm_policy.policies p ON(p.tenant_id,p.id)=(v.tenant_id,v.policy) WHERE r.tenant_id=$1::uuid AND v.policy=$2::uuid AND ((r.state->>'execution'='not_started' AND r.state->>'cancellation'<>'confirmed') OR r.state->>'execution'='running' OR (r.state->>'execution'='unknown' AND r.state->>'cancellation'='none' AND (NOT (p.state='enabled') OR p.current_version<>v.id))))").bind(tenant).bind(id.to_string()).bind(kinds).fetch_one(c).await
     })).await?)
 }
 pub async fn recover(
@@ -90,7 +90,7 @@ pub async fn audit_recovery(
         audit.identify_service("command-recovery");
         audit.operation(run.id, "command_reconcile");
         run.source.audit(&audit);
-        audit.target(&run.target.device);
+        audit.target_device(&run.target.device);
         audit.registration(run.target.registration);
         let bytes = crate::checked_input(serde_json::to_vec(&(&previous, &run.state)))?;
         use sha2::Digest;

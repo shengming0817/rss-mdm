@@ -73,6 +73,14 @@ impl Fixture {
         let mut records = Vec::new();
         let mut ids = Vec::new();
         for index in indices {
+            audit.resource_target(
+                if index % 2 == 0 {
+                    rss_mdm_audit_integration::TargetKind::Resource
+                } else {
+                    rss_mdm_audit_integration::TargetKind::Policy
+                },
+                &operation.to_string(),
+            );
             let fact = Fact::business(
                 &audit,
                 &format!("time-fixture:{operation}:{index}"),
@@ -854,5 +862,34 @@ async fn corrupt_source_is_rejected_without_advancing_the_index() -> Result<()> 
     );
     Ok(())
 
+    }).await
+}
+
+#[tokio::test]
+#[ignore = "make t2 MODULE=timeline.http"]
+async fn resource_filters_bind_cursor_without_conflating_target_types() -> Result<()> {
+    let mut f = Fixture::open().await?;
+    let resources = std::mem::take(&mut f.resources);
+    resources.finish(async {
+        let proof=crate::device::test_support::admin(case_tenant(),"resource-history").await?;
+        let operation=Uuid::new_v4();
+        f.append(&proof,operation,0..6,100,50).await?;
+        let path=format!("/api/v1/audit-events?targetId={operation}&targetType=resource&from=100&until=101&limit=1");
+        let mut page=f.get(&path).await?;let mut seen=std::collections::BTreeSet::new();
+        loop {
+            for item in page["items"].as_array().unwrap() {
+                ensure!(item["target"]==json!({"type":"resource","id":operation}));
+                ensure!(item["recordedAt"]==100 && item["observedAt"]==50);
+                ensure!(seen.insert(item["eventId"].as_str().unwrap().to_owned()));
+            }
+            let Some(cursor)=page["nextCursor"].as_str() else {break};
+            let mismatch=f.admin.call(&f.router,Method::GET,&format!("{}&cursor={cursor}",path.replace("targetType=resource","targetType=policy")),None).await?;
+            ensure!(mismatch.0==StatusCode::CONFLICT);
+            page=f.get(&format!("{path}&cursor={cursor}")).await?;
+        }
+        ensure!(seen.len()==3);
+        let absent=f.get(&format!("/api/v1/audit-events?targetId={operation}&targetType=group")).await?;
+        ensure!(absent["items"]==json!([]));
+        Ok(())
     }).await
 }

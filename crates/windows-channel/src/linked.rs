@@ -195,7 +195,7 @@ async fn issue_message(
     }
     audit.identify_device(parent.registration());
     audit.registration(parent.registration());
-    audit.target(parent.device());
+    audit.target_device(parent.device());
     audit.operation(operation, "enrollment_issue");
     let soap::CertificateRequest::Pkcs10(csr) = &input.request else {
         return Err(Error::Malformed);

@@ -69,7 +69,7 @@ pub(crate) async fn issue(
     }
     audit.identify_device(principal.registration());
     audit.registration(principal.registration());
-    audit.target(principal.device());
+    audit.target_device(principal.device());
     let digest = app
         .protection
         .mac(
@@ -401,6 +401,6 @@ async fn activate_on(
     .map_err(db)?;
     audit.identify_device(registration);
     audit.registration(registration);
-    audit.target(device);
+    audit.target_device(device);
     Ok(Some(id))
 }

@@ -188,7 +188,7 @@ pub async fn resolve(
 ) -> Result<Binding, Error> {
     audit.require_request_settlement();
     proof.require(Permission::ResourceWrite, None)?;
-    audit.target(id);
+    audit.resource_target(rss_mdm_audit_integration::TargetKind::Resource, id);
     audit.set_action("management_write");
     transaction::inspect(&app.runtime, app.tenant, (proof, id, input), |ctx, tx| {
         Box::pin(async move {
@@ -452,7 +452,7 @@ pub async fn receipt(
 ) -> Result<serde_json::Value, Error> {
     proof.require(Permission::ResourceRead, None)?;
     audit.set_action("management_read");
-    audit.target(id);
+    audit.resource_target(rss_mdm_audit_integration::TargetKind::Resource, id);
     transaction::run(
         &app.audit_store,
         &app.runtime,
@@ -583,3 +583,5 @@ pub async fn upload<R: tokio::io::AsyncRead + Unpin + Send>(
 pub trait Clock: Send + Sync {
     fn unix_seconds(&self) -> Option<i64>;
 }
+
+pub mod script;

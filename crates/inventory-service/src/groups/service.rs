@@ -35,6 +35,19 @@ impl Groups {
         authorize: &(dyn Fn() -> std::result::Result<(), Error> + Sync),
         flow: &dyn Flow,
     ) -> std::result::Result<Value, Error> {
+        match command {
+            Command::Group { id, .. }
+            | Command::GroupRead { id }
+            | Command::GroupPreview { id, .. } => audit.resource_target(
+                rss_mdm_audit_integration::TargetKind::Group,
+                &id.to_string(),
+            ),
+            Command::GroupPage { group, .. } => audit.resource_target(
+                rss_mdm_audit_integration::TargetKind::Group,
+                &group.to_string(),
+            ),
+            Command::TaskRead { .. } => {}
+        }
         authorize()?;
         crate::transaction::run(
             &self.audit_store,

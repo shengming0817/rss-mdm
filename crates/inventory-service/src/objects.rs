@@ -22,7 +22,19 @@ pub struct ObjectSnapshot {
     pub version: String,
 }
 /// Borrow the caller's fenced transaction. No transaction, scheduler or credentials are owned here.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct MembershipObjects {
+    pub objects: Vec<ObjectRef>,
+    pub current: bool,
+}
 pub trait ObjectReader: Send + Sync {
+    fn memberships<'a>(
+        &'a self,
+        c: &'a mut PgConnection,
+        tenant: TenantId,
+        device: &'a str,
+    ) -> Pending<'a, MembershipObjects>;
+
     fn changes<'a>(
         &'a self,
         tenant: TenantId,

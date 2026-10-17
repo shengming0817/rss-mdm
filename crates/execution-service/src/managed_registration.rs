@@ -19,7 +19,7 @@ impl ExecutionService {
             return Err(Error::Forbidden);
         }
         audit.identify_device(p.registration());
-        audit.target(p.device());
+        audit.target_device(p.device());
         audit.operation(input.operation_id, "agent_native_grant");
         let budget = rss_mdm_audit_integration::budget::AuditBudget::new(Duration::from_secs(6));
         let control = budget.control();

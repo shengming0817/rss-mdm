@@ -54,7 +54,7 @@ async fn registrations(
 ) -> Result<Json<crate::enrollment::read::Registrations>, Error> {
     let Path(device) = path.map_err(|_| Error::Malformed)?;
     let Query(page) = query.map_err(|_| Error::Malformed)?;
-    audit.target(&device);
+    audit.target_device(&device);
     app.service
         .registrations(&auth.proof, &device, page)
         .await
@@ -116,7 +116,7 @@ async fn revoke_registration(
     let Path((device, registration)) = path.map_err(|_| Error::Malformed)?;
     let Json(EmptyRequest {}) = input.map_err(Error::from)?;
     let key = write_key(&headers, &audit, "credential_revoke")?;
-    audit.target(&device);
+    audit.target_device(&device);
     app.devices
         .revoke_inner(&auth.proof, &device, registration, key, &audit)
         .await

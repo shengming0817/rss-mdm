@@ -1069,6 +1069,26 @@
       ],
       "type": "object"
     },
+    "State": {
+      "description": "The one Policy lifecycle; archived policies cannot be edited or enabled.",
+      "oneOf": [
+        {
+          "const": "enabled",
+          "description": "Open to current assignment admission.",
+          "type": "string"
+        },
+        {
+          "const": "disabled",
+          "description": "Explicitly stopped; existing execution recovery remains active.",
+          "type": "string"
+        },
+        {
+          "const": "archived",
+          "description": "Permanently closed while all history remains referenced.",
+          "type": "string"
+        }
+      ]
+    },
     "Trigger": {
       "description": "A closed event or calendar trigger evaluated against an explicit clock.",
       "oneOf": [
@@ -1256,10 +1276,6 @@
       "$ref": "#/$defs/Definition",
       "description": "Complete authored definition, with normalized stored self-service defaults."
     },
-    "enabled": {
-      "description": "Automatic and self-service assignment enablement.",
-      "type": "boolean"
-    },
     "id": {
       "description": "Stable Policy identity.",
       "format": "uuid",
@@ -1269,6 +1285,10 @@
       "description": "Configuration CAS.",
       "format": "int64",
       "type": "integer"
+    },
+    "state": {
+      "$ref": "#/$defs/State",
+      "description": "Automatic and self-service assignment lifecycle."
     },
     "version": {
       "description": "Display execution version number.",
@@ -1286,7 +1306,7 @@
     "revision",
     "version",
     "versionId",
-    "enabled",
+    "state",
     "definition"
   ],
   "title": "View",

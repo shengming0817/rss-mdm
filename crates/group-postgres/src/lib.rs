@@ -40,3 +40,5 @@ pub const REVERSE_INDEX_MIGRATION_SQL: &str =
 
 mod delta;
 mod history;
+
+mod memberships;

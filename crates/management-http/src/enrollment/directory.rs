@@ -54,7 +54,7 @@ async fn detail(
     Path(device): Path<String>,
 ) -> Result<Json<Value>, Error> {
     audit.set_action("management_read");
-    audit.target(&device);
+    audit.target_device(&device);
     let mut item = s.devices.directory_device(&auth.proof, &device).await?;
     let present = s
         .assets

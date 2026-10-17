@@ -32,7 +32,9 @@ async fn run(s: &Compliance, a: &RequestAuth, audit: &RequestAudit, c: Command) 
         "compliance_read"
     });
     match &c {
-        Command::Current { device } | Command::History { device, .. } => audit.target(device),
+        Command::Current { device } | Command::History { device, .. } => {
+            audit.target_device(device)
+        }
         Command::Read { id }
         | Command::Version { id, .. }
         | Command::Put { id, .. }

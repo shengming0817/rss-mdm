@@ -38,7 +38,7 @@ pub async fn assignments(
         for mut object in objects {
             let mut operations=Vec::new();let mut task_admission=None;
             if !readable {object.availability=crate::source_authority::Availability::Unavailable;object.reason=Some("source_forbidden".into());}
-            if !p.enabled && readable {object.availability=crate::source_authority::Availability::Unavailable;object.reason=Some("policy_disabled".into());}
+            if !p.state.is_enabled() && readable {object.availability=crate::source_authority::Availability::Unavailable;object.reason=Some("policy_disabled".into());}
             if let Some(target)=&object.target {
                 let device=&target.device;
                 let eligible=crate::sources::storage::eligible_in(&s.source,tx,&p,device).await?.is_some();

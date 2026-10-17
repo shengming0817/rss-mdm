@@ -27,39 +27,43 @@ pub async fn write_in(
     store: &rss_mdm_policy_postgres::PolicyStore,
     tx: &mut PgTransaction<'_>,
     p: &Policy,
+    change: &Change,
     frozen: Option<&Frozen>,
     proof: &AuthorizedPrincipal,
     now: i64,
 ) -> Result<()> {
-    {
-        let id = p.definition.scope;
-        let tenant = tx.tenant_id().to_string();
-        let exists=tx.with_connection(move|c|Box::pin(async move {
+    if !matches!(change, Change::Archive) {
+        {
+            let id = p.definition.scope;
+            let tenant = tx.tenant_id().to_string();
+            let exists=tx.with_connection(move|c|Box::pin(async move {
             sqlx::query_scalar::<_,bool>("SELECT EXISTS(SELECT 1 FROM mdm_planning.scopes WHERE tenant_id=$1::uuid AND id=$2::uuid AND NOT deleted)").bind(tenant).bind(id.to_string()).fetch_one(c).await
         })).await?;
-        if !exists {
-            return Err(Error::NotFound.into());
+            if !exists {
+                return Err(Error::NotFound.into());
+            }
         }
-    }
-    if let Action::Software { rollout, .. } = &p.definition.action {
-        let tenant = tx.tenant_id().to_string();
-        let scopes: Vec<Uuid> = rollout.stages.iter().map(|s| s.scope).collect();
-        let count: i64 = tx.with_connection(move |c| Box::pin(async move {
+        if let Action::Software { rollout, .. } = &p.definition.action {
+            let tenant = tx.tenant_id().to_string();
+            let scopes: Vec<Uuid> = rollout.stages.iter().map(|s| s.scope).collect();
+            let count: i64 = tx.with_connection(move |c| Box::pin(async move {
             sqlx::query_scalar("SELECT count(*) FROM mdm_planning.scopes WHERE tenant_id=$1::uuid AND id=ANY($2::uuid[]) AND NOT deleted")
                 .bind(tenant).bind(scopes).fetch_one(c).await
         })).await?;
-        if count != rollout.stages.len() as i64 {
-            return Err(Error::NotFound.into());
+            if count != rollout.stages.len() as i64 {
+                return Err(Error::NotFound.into());
+            }
+        }
+        if let Some(config) = &p.definition.self_service {
+            rss_mdm_execution_service::self_service::validate_access(
+                config,
+                proof.tenant_id(),
+                proof.instance_id(),
+            )?;
         }
     }
-    if let Some(config) = &p.definition.self_service {
-        rss_mdm_execution_service::self_service::validate_access(
-            config,
-            proof.tenant_id(),
-            proof.instance_id(),
-        )?;
-    }
     let publication = rss_mdm_policy_postgres::Publication {
+        change: change.clone(),
         policy: p.clone(),
         frozen: frozen
             .map(|value| checked_input(serde_json::to_value(value)))

@@ -16,6 +16,7 @@ pub fn routes(queries: Arc<rss_mdm_execution_service::queries::Queries>) -> Rout
         .merge(
             Router::new()
                 .route("/operations", get(directory))
+                .route("/devices/{device}/ddm", get(ddm))
                 .route("/devices/{device}/operations/{id}", get(read))
                 .with_state(queries),
         )
@@ -47,7 +48,7 @@ async fn create(
 ) -> std::result::Result<(StatusCode, Json<Value>), Error> {
     let input = input.map_err(Error::from)?.0;
     audit.operation(input.operation_id, "command_accept");
-    audit.target(&device);
+    audit.target_device(&device);
     app.execution
         .create_control(&auth.proof, &device, &input, &audit)
         .await
@@ -61,7 +62,7 @@ async fn read(
     Path((device, id)): Path<(String, Uuid)>,
 ) -> std::result::Result<Json<Value>, Error> {
     audit.operation(id, "command_read");
-    audit.target(&device);
+    audit.target_device(&device);
     app.read(&auth.proof, &device, id, &audit)
         .await
         .map(|v| Json(crate::execution::projection::command(v)))
@@ -76,7 +77,7 @@ async fn cancel(
 ) -> std::result::Result<Json<Value>, Error> {
     let change = input.map_err(Error::from)?.0;
     audit.operation(change.request_id, "command_cancel");
-    audit.target(&device);
+    audit.target_device(&device);
     app.execution
         .change(&auth.proof, &device, id, &change, None, &audit)
         .await
@@ -96,7 +97,7 @@ async fn approve(
         expected_revision: change.expected_revision,
     };
     audit.operation(change.request_id, "command_approve");
-    audit.target(&device);
+    audit.target_device(&device);
     app.execution
         .change(&auth.proof, &device, id, &revision, Some(&change), &audit)
         .await
@@ -118,4 +119,20 @@ impl HttpState {
     pub fn windows(&self) -> std::result::Result<(), crate::Error> {
         self.windows.then_some(()).ok_or(crate::Error::Unsupported)
     }
+}
+
+async fn ddm(
+    State(s): State<Arc<rss_mdm_execution_service::queries::Queries>>,
+    Extension(auth): Extension<RequestAuth>,
+    Extension(audit): Extension<RequestAudit>,
+    Path(device): Path<String>,
+    query: Result<
+        Query<rss_mdm_execution_service::queries::ddm::Query>,
+        axum::extract::rejection::QueryRejection,
+    >,
+) -> Result<Json<Value>, Error> {
+    let Query(query) = query.map_err(|_| Error::Malformed)?;
+    Ok(Json(crate::execution::projection::ddm(
+        s.ddm(&auth.proof, &device, &query, &audit).await?,
+    )))
 }

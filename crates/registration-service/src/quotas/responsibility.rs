@@ -46,7 +46,7 @@ impl Quotas {
         }
         p.bind_audit(audit)?;
         audit.operation(key, "registration_user_change");
-        audit.target(device);
+        audit.target_device(device);
         let digest = crate::enrollment::digest(&(
             "registration_user.v1",
             device,

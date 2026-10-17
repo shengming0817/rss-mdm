@@ -193,3 +193,8 @@ mod tests {
         assert_eq!(observation(&facts)["result"], "matched");
     }
 }
+
+pub fn ddm(page: rss_mdm_execution_service::queries::ddm::Page) -> Value {
+    let items=page.items.into_iter().map(|item|json!({"operationId":item.operation,"registrationId":item.registration,"generation":item.generation,"channel":"mdm.apple","userKey":item.user,"nativeValuesRedacted":item.redacted,"observation":observation(&item.observation)})).collect::<Vec<_>>();
+    json!({"items":items,"nextCursor":page.next_cursor,"availability":if page.current_registration {"current_registration"} else {"no_current_registration"},"effect":"unverified","compliance":"unknown"})
+}

@@ -1985,3 +1985,8 @@ MODULES['installation.migration'] = replace(MODULES['installation.migration'], p
     CasePolicy('migration::tests::fresh_installation_replay_and_mismatch_rejection', 'instance', 'objects'),
     CasePolicy('migration::tests::ledger_installation_rejects_audit_privilege_drift', 'instance', 'objects'),
 ))
+
+# Management query seams: reuse the owning behavioral carriers.
+consume(('crates/content-service/src/service/script.rs',), 'planning.agent_policy content.http')
+consume(('crates/group-postgres/src/memberships.rs','crates/inventory-service/src/groups/memberships.rs'), 'planning.policy planning.http group.generations')
+consume(('crates/execution-service/src/queries/ddm.rs',), 'apple.ddm')

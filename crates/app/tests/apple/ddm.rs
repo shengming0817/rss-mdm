@@ -140,6 +140,31 @@ async fn policy_coowners_share_native_publication_without_fabricating_removal() 
     // Unordered quality belongs to apple-mdm Projection T1; this seam owns one persisted replay.
     inventory_db.close().await?;
     ensure!(f.operation(applied).await?["commandStatus"] == "applied");
+    let summary = f
+        .browser
+        .call(
+            &f.router,
+            Method::GET,
+            &format!("/api/v1/devices/{}/ddm?limit=1", case_device()),
+            None,
+        )
+        .await?;
+    ensure!(summary.0 == StatusCode::OK, "DDM summary: {summary:?}");
+    let item = &summary.1["items"][0];
+    ensure!(
+        item["operationId"] == applied.to_string() && item["channel"] == "mdm.apple",
+        "DDM identity: {item}"
+    );
+    ensure!(
+        item["observation"]["effect"] == "unverified"
+            && item["observation"]["compliance"] == "unknown",
+        "DDM effect: {item}"
+    );
+    ensure!(
+        item["observation"]["nativeStatus"].is_object(),
+        "missing native status: {item}"
+    );
+
     f.policy_post(
         &format!("/api/v1/policies/{second}"),
         0,

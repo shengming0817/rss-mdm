@@ -5,7 +5,7 @@ CREATE TABLE mdm_policy.policies (
  tenant_id uuid NOT NULL, id uuid NOT NULL, revision bigint NOT NULL CHECK(revision>0),
  current_version uuid NOT NULL, version_number bigint NOT NULL CHECK(version_number>0),
  execution_binding bytea CHECK(execution_binding IS NULL OR octet_length(execution_binding)=32),
- enabled boolean NOT NULL, definition jsonb NOT NULL CHECK(octet_length(definition::text)<=4194304),
+ state text NOT NULL CHECK(state IN ('enabled','disabled','archived')), definition jsonb NOT NULL CHECK(octet_length(definition::text)<=4194304),
  author jsonb NOT NULL, updated_at bigint NOT NULL CHECK(updated_at>=0), PRIMARY KEY(tenant_id,id)
 );
 CREATE TABLE mdm_policy.versions (
@@ -39,5 +39,5 @@ DO $$ DECLARE t text; BEGIN
  END LOOP;
 END $$;
 GRANT USAGE ON SCHEMA mdm_policy TO mdm_policy_runtime;
-GRANT UPDATE(revision,current_version,version_number,enabled,definition,author,updated_at,execution_binding) ON mdm_policy.policies TO mdm_policy_runtime;
+GRANT UPDATE(revision,current_version,version_number,state,definition,author,updated_at,execution_binding) ON mdm_policy.policies TO mdm_policy_runtime;
 COMMIT;

@@ -39,6 +39,8 @@ impl From<rss_mdm_audit_integration::Error> for Error {
 #[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Query {
+    pub target_id: Option<String>,
+    pub target_type: Option<String>,
     pub device: Option<String>,
     pub operation_id: Option<Uuid>,
     pub actor: Option<String>,
@@ -57,10 +59,16 @@ impl Query {
             || self.until.is_some_and(|v| v < 0)
             || self.from.zip(self.until).is_some_and(|(a, b)| a >= b)
             || self.cursor.as_ref().is_some_and(|v| v.len() > 4096)
-            || [&self.device, &self.actor, &self.action]
-                .into_iter()
-                .flatten()
-                .any(|v| !identifier(v))
+            || [
+                &self.device,
+                &self.actor,
+                &self.action,
+                &self.target_id,
+                &self.target_type,
+            ]
+            .into_iter()
+            .flatten()
+            .any(|v| !identifier(v))
             || self
                 .outcome
                 .as_deref()
@@ -92,7 +100,7 @@ pub struct FactView {
     pub actor_kind: String,
     pub actor: String,
     pub action: String,
-    pub target: Option<String>,
+    pub target: Target,
     pub device_id: Option<String>,
     pub operation_id: Option<Uuid>,
     pub related_operation_ids: Vec<Uuid>,
@@ -122,4 +130,12 @@ pub struct Page {
     pub items: Vec<FactView>,
     pub next_cursor: Option<String>,
     pub coverage: Coverage,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct Target {
+    #[serde(rename = "type")]
+    pub kind: String,
+    pub id: String,
 }

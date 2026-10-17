@@ -35,6 +35,23 @@ pub(super) struct Observation {
     source_revision: Option<String>,
 }
 impl Snapshot {
+    /// Deterministic query binding for a live principal and its effective authority.
+    pub fn query_binding(&self, proof: &AuthorizedPrincipal) -> Result<String, Error> {
+        use sha2::{Digest, Sha256};
+        let mut grants = self
+            .effective(proof)?
+            .into_iter()
+            .map(|grant| serde_json::to_string(&grant).map_err(|_| Error::Malformed))
+            .collect::<Result<Vec<_>, _>>()?;
+        grants.sort();
+        Ok(format!(
+            "{:x}",
+            Sha256::digest(
+                serde_json::to_vec(&(proof.user(), grants)).map_err(|_| Error::Malformed)?
+            )
+        ))
+    }
+
     pub fn validate(&self, tenant: &str, instance: &str) -> Result<(), AuthorizationError> {
         let invalid = || AuthorizationError::Corrupt;
         if self.rules.len() > 10000 || self.groups.len() > 10000 {

@@ -520,6 +520,8 @@ impl ResourceCatalog {
         audit: &RequestAudit,
         authorize: &(dyn Fn() -> std::result::Result<(), Error> + Sync),
     ) -> std::result::Result<Value, Error> {
+        let (Command::Resource { id, .. } | Command::ResourceRead { id }) = command;
+        audit.resource_target(rss_mdm_audit_integration::TargetKind::Resource, id);
         authorize()?;
         crate::transaction::run(
             &self.audit_store,

@@ -181,7 +181,7 @@ impl SourceAuthority for ExecutionSource {
     ) -> Pending<'a, bool> {
         let kinds = rss_mdm_policy::AssignmentBehavior::NativeDesired.kinds();
         Box::pin(async move {
-            Ok(sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_policy.policies p JOIN mdm_planning.policy_assignments a ON(a.tenant_id,a.policy,a.version)=(p.tenant_id,p.id,p.current_version) WHERE p.tenant_id=$1::uuid AND p.enabled AND p.definition->'action'->>'kind'=ANY($3::text[]) AND a.channel='mdm' AND a.target->>'device'=$2 AND a.input->'admission'->>'state'<>'excluded')")
+            Ok(sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_policy.policies p JOIN mdm_planning.policy_assignments a ON(a.tenant_id,a.policy,a.version)=(p.tenant_id,p.id,p.current_version) WHERE p.tenant_id=$1::uuid AND (p.state='enabled') AND p.definition->'action'->>'kind'=ANY($3::text[]) AND a.channel='mdm' AND a.target->>'device'=$2 AND a.input->'admission'->>'state'<>'excluded')")
                 .bind(tenant.to_string()).bind(device).bind(kinds).fetch_one(connection).await?)
         })
     }
@@ -211,7 +211,7 @@ impl SourceAuthority for ExecutionSource {
         after: Uuid,
     ) -> Pending<'a, CandidatePage> {
         Box::pin(async move {
-            let rows=sqlx::query("SELECT id,current_version,(definition->>'scope')::uuid AS scope FROM mdm_policy.policies WHERE tenant_id=$1::uuid AND enabled AND id>$2 AND definition->'action'->>'kind'=$3 ORDER BY id LIMIT 17").bind(tenant.to_string()).bind(after).bind(kind.as_str()).fetch_all(&mut *c).await?;
+            let rows=sqlx::query("SELECT id,current_version,(definition->>'scope')::uuid AS scope FROM mdm_policy.policies WHERE tenant_id=$1::uuid AND (state='enabled') AND id>$2 AND definition->'action'->>'kind'=$3 ORDER BY id LIMIT 17").bind(tenant.to_string()).bind(after).bind(kind.as_str()).fetch_all(&mut *c).await?;
             let has_more = rows.len() > 16;
             let mut scanned_after = after;
             let mut items = Vec::new();

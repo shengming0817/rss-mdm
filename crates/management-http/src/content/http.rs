@@ -17,6 +17,10 @@ use uuid::Uuid;
 pub fn routes() -> Router<Arc<HttpState>> {
     Router::new()
         .route(
+            "/resources/{id}/versions/{version}/script",
+            axum::routing::get(script),
+        )
+        .route(
             "/resources/{id}/content/operations/{operation}",
             axum::routing::get(receipt),
         )
@@ -228,4 +232,33 @@ async fn receipt(
         .await
         .map(Json)
         .map_err(Into::into)
+}
+
+async fn script(
+    State(app): State<Arc<HttpState>>,
+    Extension(auth): Extension<RequestAuth>,
+    Extension(audit): Extension<RequestAudit>,
+    Path((id, version)): Path<(String, String)>,
+    headers: axum::http::HeaderMap,
+    query: Result<
+        Query<rss_mdm_content_service::service::script::ScriptSelection>,
+        axum::extract::rejection::QueryRejection,
+    >,
+) -> Result<axum::response::Response, Error> {
+    let Query(selection) = query.map_err(|_| Error::Malformed)?;
+    let content = rss_mdm_content_service::service::script::download(
+        &app,
+        &auth.proof,
+        &audit,
+        &id,
+        &version,
+        &selection,
+    )
+    .await?;
+    let mut response = response(content, &headers).await?;
+    response.headers_mut().insert(
+        axum::http::header::CONTENT_DISPOSITION,
+        axum::http::HeaderValue::from_static("attachment; filename=\"script.txt\""),
+    );
+    Ok(response)
 }

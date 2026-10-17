@@ -22,6 +22,7 @@ pub fn publication(id: Uuid, old: Option<&Policy>, change: Change) -> Publicatio
     )
     .unwrap();
     Publication {
+        change,
         policy: changed.policy,
         frozen: changed
             .semantic_changed

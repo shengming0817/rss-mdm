@@ -54,7 +54,7 @@ pub async fn asset(
         .management_principal(&app.mount.credential(leaf.fingerprint())?)
         .await?;
     audit.identify_device(p.registration());
-    audit.target(p.device());
+    audit.target_device(p.device());
     audit.registration(p.registration());
     let mut tx = app.access.begin_read(&p.tenant().to_string()).await?;
     let user:Option<String>=sqlx::query_scalar("SELECT user_key FROM mdm_apple.declarations WHERE tenant_id=$1::uuid AND operation=$2 AND registration=$3 AND generation=$4 AND retired_at IS NULL")

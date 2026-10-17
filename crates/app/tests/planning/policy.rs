@@ -90,6 +90,21 @@ async fn assignment_pagination_uses_published_scope_without_eager_execution() ->
         json!({"action":"put","enabled":true,"definition":definition}),
     )
     .await?;
+    let membership_path=format!("/api/v1/devices/{}-1/groups?limit=1",prefix);
+    let (status,memberships)=browser.call(router,Method::GET,&membership_path,None).await?;
+    ensure!(status==StatusCode::OK && memberships["items"].as_array().is_some_and(|items|items.iter().any(|item|item["id"]==group.to_string())),"reverse memberships: {status} {memberships}");
+    let deletion=json!({"operationId":Uuid::new_v4(),"expectedRevision":1});
+    let rejected=browser.call(router,Method::DELETE,policy,Some(deletion)).await?;
+    ensure!(rejected.0==StatusCode::CONFLICT,"enabled delete: {rejected:?}");
+    let other_policy=Uuid::new_v4();
+    call(browser,router,&format!("/api/v1/policies/{other_policy}"),0,json!({"action":"put","enabled":false,"definition":definition})).await?;
+    let first=browser.call(router,Method::GET,&format!("/api/v1/policies?resource={resource}&limit=1"),None).await?;
+    ensure!(first.0==StatusCode::OK,"policy directory: {first:?}");
+    let token=first.1["nextCursor"].as_str().ok_or_else(||anyhow::anyhow!("policy cursor missing: {first:?}"))?;
+    let second=browser.call(router,Method::GET,&format!("/api/v1/policies?resource={resource}&limit=1&cursor={token}"),None).await?;
+    ensure!(second.0==StatusCode::OK && second.1["nextCursor"].is_null() && first.1["items"][0]["id"]!=second.1["items"][0]["id"],"policy paging: {second:?}");
+    let changed=browser.call(router,Method::GET,&format!("/api/v1/policies?resource={resource}&state=disabled&limit=1&cursor={token}"),None).await?;
+    ensure!(changed.0==StatusCode::CONFLICT,"changed cursor filter: {changed:?}");
     let mut cursor = None;
     let mut seen = std::collections::BTreeSet::new();
     loop {
@@ -125,6 +140,22 @@ async fn assignment_pagination_uses_published_scope_without_eager_execution() ->
             case_tenant()
         ))? == before
     );
+    call(browser,router,policy,1,json!({"action":"disable"})).await?;
+    let deletion=json!({"operationId":Uuid::new_v4(),"expectedRevision":2});
+    let deleted=browser.call(router,Method::DELETE,policy,Some(deletion.clone())).await?;
+    ensure!(deleted.0==StatusCode::OK && deleted.1["state"]=="archived","disabled delete: {deleted:?}");
+    let replay=browser.call(router,Method::DELETE,policy,Some(deletion)).await?;
+    ensure!(replay==deleted,"delete replay changed receipt");
+    let enabled=browser.call(router,Method::POST,policy,Some(json!({"operationId":Uuid::new_v4(),"expectedRevision":3,"input":{"action":"enable"}}))).await?;
+    ensure!(enabled.0==StatusCode::CONFLICT,"archived enable: {enabled:?}");
+    let directory=browser.call(router,Method::GET,&format!("/api/v1/policies?resource={resource}"),None).await?;
+    ensure!(directory.0==StatusCode::OK && directory.1["items"].as_array().is_some_and(|v|v.len()==1) && directory.1["items"][0]["id"]==other_policy.to_string());
+    let directory=browser.call(router,Method::GET,&format!("/api/v1/policies?state=archived&resource={resource}"),None).await?;
+    ensure!(directory.0==StatusCode::OK && directory.1["items"][0]["id"]==id.to_string());
+    let legacy=browser.call(router,Method::GET,&format!("/api/v1/policies?after={id}"),None).await?;
+    ensure!(legacy.0==StatusCode::BAD_REQUEST);
+    let retained:Value=serde_json::from_str(&pg(&format!("SELECT jsonb_build_array(count(*),count(resource)) FROM mdm_policy.versions WHERE tenant_id='{}' AND policy='{id}'",case_tenant()))?)?;
+    ensure!(retained==json!([1,1]),"archive lost immutable references: {retained}");
     crate::test_support::stop_worker(automation).await?;
 
     Ok(())

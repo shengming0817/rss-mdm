@@ -81,6 +81,17 @@ impl Planning {
         audit: &RequestAudit,
         authorize: &(dyn Fn() -> std::result::Result<(), Error> + Sync),
     ) -> std::result::Result<Value, Error> {
+        match command {
+            Command::Scope { id, .. } | Command::ScopeRead { id } => audit.resource_target(
+                rss_mdm_audit_integration::TargetKind::Scope,
+                &id.to_string(),
+            ),
+            Command::ScopePage { scope, .. } => audit.resource_target(
+                rss_mdm_audit_integration::TargetKind::Scope,
+                &scope.to_string(),
+            ),
+            Command::TaskRead { .. } => {}
+        }
         authorize()?;
         crate::transaction::run(
             &self.audit_store,

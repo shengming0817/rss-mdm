@@ -52,7 +52,7 @@ async fn empty_candidate_page_preserves_progress_to_the_next_matching_policy() -
             let definition = serde_json::from_value(json!({"scope":if index == 17 {included} else {excluded},"action":{"kind":"configuration","resource":{"id":resource,"version":"1","platform":"windows","architecture":"x86_64","variant":"native"},"exit":"retain"}}))?;
             let policy = rss_mdm_policy::Policy::apply(id, None, 0, &rss_mdm_policy::Change::Put { definition: Box::new(definition), enabled: true }, Uuid::new_v4(), None)?.policy;
             let frozen = Frozen::Configuration { native: Protected::seal(&key, tenant, Owner::Policy { policy: id, version: policy.version }, &native)?, grants: std::collections::BTreeMap::from([("*".into(), vec![write.clone()])]), platform: rss_mdm_execution_service::action_contract::Platform::Windows, exit: rss_mdm_policy::Exit::Retain, resource_digest: version.digest().bytes() };
-            publications.push(rss_mdm_policy_postgres::Publication { policy, frozen: Some(serde_json::to_value(frozen)?), author: serde_json::to_value(proof.user())?, at: 1 });
+            publications.push(rss_mdm_policy_postgres::Publication { change: rss_mdm_policy::Change::Put { definition: Box::new(policy.definition.clone()), enabled: policy.state.is_enabled() }, policy, frozen: Some(serde_json::to_value(frozen)?), author: serde_json::to_value(proof.user())?, at: 1 });
         }
         let store = planning.policy_store.clone();
         let read = serde_json::to_value(read)?;

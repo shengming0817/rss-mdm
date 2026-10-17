@@ -18,6 +18,7 @@ struct State {
 /// Frozen, credential-free product facts used to create one immutable event.
 #[derive(Clone)]
 pub struct Snapshot {
+    pub target_type: &'static str,
     pub actor: Option<String>,
     pub actor_kind: &'static str,
     pub instance: Option<String>,
@@ -90,6 +91,7 @@ impl RequestAudit {
             tenant,
             state: Mutex::new(State {
                 snapshot: Snapshot {
+                    target_type: "mdm",
                     actor: None,
                     actor_kind: "unidentified",
                     instance: None,
@@ -172,10 +174,23 @@ impl RequestAudit {
     /// Set a bounded, non-control-character target; invalid optional targets are omitted.
     pub fn target(&self, target: &str) {
         let mut state = self.0.state.lock().expect("audit lock");
+        state.snapshot.target_type = "mdm";
         state.snapshot.device_target = None;
         state.snapshot.target =
             (target.len() <= 256 && !target.is_empty() && !target.chars().any(char::is_control))
                 .then(|| target.to_owned());
+    }
+    /// Attach an explicit producer-owned resource kind; never inferred from its ID.
+    pub fn resource_target(&self, kind: TargetKind, target: &str) {
+        let mut state = self.0.state.lock().expect("audit lock");
+        state.snapshot.target_type = kind.as_str();
+        state.snapshot.device_target = None;
+        state.snapshot.target =
+            (!target.is_empty() && target.len() <= 256 && !target.chars().any(char::is_control))
+                .then(|| target.to_owned());
+        if kind == TargetKind::Device {
+            state.snapshot.device_target = state.snapshot.target.clone();
+        }
     }
     /// Source-owned device target, distinct from a generic management resource ID.
     /// Neutral audit coordinates, never authentication or an authorization grant.
@@ -184,6 +199,7 @@ impl RequestAudit {
         let value =
             (device.len() <= 256 && !device.is_empty() && !device.chars().any(char::is_control))
                 .then(|| device.to_owned());
+        state.snapshot.target_type = "device";
         state.snapshot.target = value.clone();
         state.snapshot.device_target = value;
     }
@@ -352,5 +368,26 @@ mod tests {
             assert!(!event.to_string().contains("sensitive-instance"));
         }
         a.finalize(None);
+    }
+}
+
+/// Business resource namespace, independent of an identifier's spelling.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TargetKind {
+    Resource,
+    Policy,
+    Group,
+    Scope,
+    Device,
+}
+impl TargetKind {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Resource => "resource",
+            Self::Policy => "policy",
+            Self::Group => "group",
+            Self::Scope => "scope",
+            Self::Device => "device",
+        }
     }
 }

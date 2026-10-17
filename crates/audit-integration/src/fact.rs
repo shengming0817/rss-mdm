@@ -116,6 +116,7 @@ impl Fact {
             snapshot.actor.as_deref(),
             snapshot.actor_kind,
             snapshot.action,
+            snapshot.target_type,
             snapshot.target.as_deref(),
             &payload,
         ))
@@ -179,7 +180,8 @@ impl Fact {
                 ),
                 Action::parse(self.snapshot.action).map_err(|_| InvalidFact::Action)?,
                 ResourceRef::new(
-                    ResourceKind::parse("mdm").map_err(|_| InvalidFact::Resource)?,
+                    ResourceKind::parse(self.snapshot.target_type)
+                        .map_err(|_| InvalidFact::Resource)?,
                     ResourceId::parse(resource).map_err(|_| InvalidFact::Resource)?,
                 ),
                 self.outcome,
