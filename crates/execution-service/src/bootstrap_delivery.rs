@@ -72,7 +72,7 @@ impl ExecutionService {
         let fact = audit.transaction_copy();
         fact.identify_service("agent-bootstrap-policy");
         fact.operation(delivery, "command_accept");
-        fact.target(device);
+        fact.target_device(device);
         let fingerprint = crate::protection::fingerprint(
             &self.protection,
             tenant,
@@ -252,7 +252,7 @@ impl ExecutionService {
             let fact = audit.transaction_copy();
             fact.identify_service("agent-bootstrap-cleanup");
             fact.operation(delivery, "command_accept");
-            fact.target(device);
+            fact.target_device(device);
             let result = self
                 .queue_authorized_in(tx, device, &input, authority, fingerprint, &fact)
                 .await;
