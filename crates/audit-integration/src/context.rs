@@ -183,11 +183,15 @@ impl RequestAudit {
     /// Attach an explicit producer-owned resource kind; never inferred from its ID.
     pub fn resource_target(&self, kind: TargetKind, target: &str) {
         let mut state = self.0.state.lock().expect("audit lock");
-        state.snapshot.target_type = kind.as_str();
         state.snapshot.device_target = None;
         state.snapshot.target =
             (!target.is_empty() && target.len() <= 256 && !target.chars().any(char::is_control))
                 .then(|| target.to_owned());
+        state.snapshot.target_type = if state.snapshot.target.is_some() {
+            kind.as_str()
+        } else {
+            "mdm"
+        };
         if kind == TargetKind::Device {
             state.snapshot.device_target = state.snapshot.target.clone();
         }
@@ -199,7 +203,7 @@ impl RequestAudit {
         let value =
             (device.len() <= 256 && !device.is_empty() && !device.chars().any(char::is_control))
                 .then(|| device.to_owned());
-        state.snapshot.target_type = "device";
+        state.snapshot.target_type = if value.is_some() { "device" } else { "mdm" };
         state.snapshot.target = value.clone();
         state.snapshot.device_target = value;
     }

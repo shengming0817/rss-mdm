@@ -99,3 +99,54 @@ fn resource_namespace_is_part_of_identity_and_projection() {
     );
     audit.finalize(None);
 }
+
+#[test]
+fn omitted_invalid_targets_never_invent_a_typed_request_resource() {
+    use rss_mdm_audit_integration::TargetKind;
+    let audit = RequestAudit::new(TENANT.into(), "management_read");
+    for invalid in ["".to_owned(), "\n".to_owned(), "x".repeat(257)] {
+        for kind in [TargetKind::Resource, TargetKind::Policy, TargetKind::Device] {
+            audit.resource_target(kind, &invalid);
+            let fact = Fact::business(
+                &audit,
+                "invalid-target",
+                b"invalid-input",
+                400,
+                "failed",
+                None,
+            )
+            .unwrap();
+            let view = project(
+                &fact
+                    .event(rss_contract::Timepoint::try_from(5i64).unwrap())
+                    .unwrap(),
+            )
+            .unwrap();
+            assert_eq!(
+                serde_json::to_value(view).unwrap()["target"],
+                serde_json::json!({"type":"mdm","id":"request"})
+            );
+        }
+        audit.target_device(&invalid);
+        let fact = Fact::business(
+            &audit,
+            "invalid-device",
+            b"invalid-input",
+            400,
+            "failed",
+            None,
+        )
+        .unwrap();
+        let view = project(
+            &fact
+                .event(rss_contract::Timepoint::try_from(5i64).unwrap())
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            serde_json::to_value(view).unwrap()["target"],
+            serde_json::json!({"type":"mdm","id":"request"})
+        );
+    }
+    audit.finalize(None);
+}
