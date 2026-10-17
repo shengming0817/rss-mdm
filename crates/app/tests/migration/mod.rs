@@ -15,8 +15,9 @@ async fn fresh_installation_replay_and_mismatch_rejection() -> Result<()> {
         target: [1; 16],
         lineage: [2; 16],
     };
+    migrate(&options, &installation).await?;
+    audit_privilege_drift(&options, &installation, false).await?;
     let mut owner = PgConnection::connect_with(&options).await?;
-    migrate_on(&mut owner, &installation).await?;
     let before: Vec<(String, String, bool)> =
         sqlx::query_as("SELECT name,digest,complete FROM public.mdm_migrations ORDER BY name")
             .fetch_all(&mut owner)
@@ -60,7 +61,6 @@ async fn fresh_installation_replay_and_mismatch_rejection() -> Result<()> {
         ensure!(migrate_on(&mut owner, &installation).await.is_err());
         sqlx::raw_sql(revoke).execute(&mut owner).await?;
     }
-    audit_privilege_drift(&options, &installation, false).await?;
     migrate_on(&mut owner, &installation).await?;
     owner.execute("CREATE TABLE public.installation_evidence(value text); INSERT INTO public.installation_evidence VALUES('preserve')").await?;
     for statement in [

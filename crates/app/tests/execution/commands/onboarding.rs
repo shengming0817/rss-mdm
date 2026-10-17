@@ -842,7 +842,6 @@ async fn schedule_expiry_caps_installation_and_blocks_new_agent_registration() -
     client
         .app
         .execution
-        .service
         .advance_installation_authorization_to(until)?;
     let url = peer.url.replace(
         "/ManagementServer/MDM.svc",
