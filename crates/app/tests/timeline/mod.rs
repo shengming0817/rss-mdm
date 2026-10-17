@@ -362,7 +362,7 @@ async fn fixed_watermark_pagination_survives_new_events_and_rebuild_rejects_old_
     for (path, expected) in [
         (format!("/api/v1/audit-events?action=inventory_read&cursor={stale}"), StatusCode::CONFLICT),
         (format!("/api/v1/devices/absent/timeline?cursor={stale}"), StatusCode::CONFLICT),
-        ("/api/v1/audit-events?cursor=invalid".into(), StatusCode::CONFLICT),
+        ("/api/v1/audit-events?cursor=invalid".into(), StatusCode::BAD_REQUEST),
         ("/api/v1/audit-events?limit=201".into(), StatusCode::BAD_REQUEST),
     ] {
         let status = f.admin.call(&f.router, Method::GET, &path, None).await?.0;
@@ -706,7 +706,7 @@ async fn wait_for_projection_locks(owner: &mut sqlx::PgConnection, expected: i64
         loop {
             // Each poll must observe fresh activity while the checkpoint lock transaction stays open.
             sqlx::query("SELECT pg_stat_clear_snapshot()").execute(&mut *owner).await?;
-            let waiting:i64=sqlx::query_scalar("SELECT count(*) FROM pg_stat_activity WHERE datname=current_database() AND pid<>pg_backend_pid() AND wait_event_type='Lock' AND pg_backend_pid()=ANY(pg_blocking_pids(pid)) AND query LIKE '%mdm_timeline.checkpoints%'").fetch_one(&mut *owner).await?;
+            let waiting:i64=sqlx::query_scalar("WITH RECURSIVE blocked(pid) AS (SELECT pid FROM pg_stat_activity WHERE datname=current_database() AND pg_backend_pid()=ANY(pg_blocking_pids(pid)) UNION SELECT a.pid FROM pg_stat_activity a JOIN blocked b ON b.pid=ANY(pg_blocking_pids(a.pid)) WHERE a.datname=current_database()) SELECT count(*) FROM blocked JOIN pg_stat_activity USING(pid) WHERE query LIKE '%mdm_timeline.checkpoints%'").fetch_one(&mut *owner).await?;
             if waiting >= expected {return Ok::<_,anyhow::Error>(())}
             tokio::time::sleep(Duration::from_millis(5)).await;
         }

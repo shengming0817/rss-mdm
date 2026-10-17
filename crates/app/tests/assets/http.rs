@@ -136,12 +136,18 @@ mod storage {
     pub(super) async fn independent_assets(
         runtime: Arc<PgRuntime>,
         tenant: TenantId,
+        resources: &mut crate::test_support::Resources,
     ) -> Arc<assets::AssetService> {
         let key = rss_mdm_flow_service::storage::cursor_key(&runtime, tenant)
             .await
             .unwrap();
+        resources.resource(runtime.clone());
+        let inventory = inventory_runtime(tenant).await;
+        resources.resource(crate::test_support::InventoryFixtureResource(
+            inventory.clone(),
+        ));
         Arc::new(assets::AssetService::new(
-            inventory_runtime(tenant).await,
+            inventory,
             audit_store_with_integrity(rss_audit_postgres::Integrity::Plain).await,
             runtime,
             tenant,
@@ -167,7 +173,8 @@ mod storage {
     async fn asset_commit_unknown_recovers_original_receipts() {
         use assets::{Command as AssetCommand, Owner, Query, SavedChange, SavedDefinition};
         let runtime = runtime(tenant()).await;
-        let service = independent_assets(runtime.clone(), tenant()).await;
+        let mut resources = crate::test_support::Resources::default();
+        let service = independent_assets(runtime.clone(), tenant(), &mut resources).await;
         let id = Uuid::new_v4();
         let command = AssetCommand::SavedWrite {
             id,
@@ -201,14 +208,15 @@ mod storage {
             )),
             "1"
         );
-        runtime.close().await;
+        resources.finish(async { Ok(()) }).await.unwrap();
     }
 
     #[tokio::test]
     #[ignore = "MODULE=assets.http: real capability storage and transactions"]
     async fn asset_storage_failures_are_not_malformed() {
         let runtime = runtime(tenant()).await;
-        let service = independent_assets(runtime.clone(), tenant()).await;
+        let mut resources = crate::test_support::Resources::default();
+        let service = independent_assets(runtime.clone(), tenant(), &mut resources).await;
         let device = format!("storage-stages-{}", Uuid::new_v4());
         seed_device(&device);
         let command = assets::Command::Detail {
@@ -238,7 +246,7 @@ mod storage {
                 json!({"kind":"unavailable","reason":expected})
             );
         }
-        runtime.close().await;
+        resources.finish(async { Ok(()) }).await.unwrap();
     }
 
     #[cfg(feature = "integration")]
@@ -599,7 +607,7 @@ mod manual {
         );
         let failed_id = failed_write["operationId"].as_str().unwrap();
         let business_before = pg(&format!(
-            "SELECT encode(canonical,'hex') FROM mdm_audit.receipts WHERE tenant_id='{}' ORDER BY source_id,event_id",
+            "SELECT encode(canonical,'hex') FROM (SELECT canonical FROM mdm_audit.receipts WHERE tenant_id='{0}' UNION ALL SELECT canonical FROM rss_audit.records WHERE tenant_id='{0}') records ORDER BY encode(canonical,'hex')",
             case_tenant()
         ))?;
         let rejected = browser
@@ -612,7 +620,7 @@ mod manual {
         ensure!(pg(&format!("SELECT count(*) FROM mdm_assets.operations WHERE tenant_id='{}' AND id='{failed_id}'", case_tenant()))?.trim() == "0");
         // Receipt rows include request facts too; compare only business identities.
         let business_after = pg(&format!(
-            "SELECT encode(canonical,'hex') FROM mdm_audit.receipts WHERE tenant_id='{}' ORDER BY source_id,event_id",
+            "SELECT encode(canonical,'hex') FROM (SELECT canonical FROM mdm_audit.receipts WHERE tenant_id='{0}' UNION ALL SELECT canonical FROM rss_audit.records WHERE tenant_id='{0}') records ORDER BY encode(canonical,'hex')",
             case_tenant()
         ))?;
         let business = |text: &str| -> Result<Vec<String>> {
@@ -838,12 +846,13 @@ async fn typed_list_pages_remain_frozen_across_field_updates() -> Result<()> {
         current.0 == StatusCode::OK && current.1["asset"]["total"] == 0,
         "empty complete list: {current:?}"
     );
+    let forged_cursor = format!("{}{}", if cursor.starts_with('A') { "B" } else { "A" }, &cursor[1..]);
     let forged = f
         .author
         .call(
             &f.router,
             Method::GET,
-            &format!("{list_path}?cursor={cursor}x"),
+            &format!("{list_path}?cursor={forged_cursor}"),
             None,
         )
         .await?;

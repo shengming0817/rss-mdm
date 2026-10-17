@@ -94,7 +94,13 @@ async fn projection_and_tenant_scopes() -> Result<()> {
     sibling.project(&cancel).await?;
     a.ingest(batch("empty", 5, Body::Snapshot(vec![]))).await?;
     a.project(&cancel).await?;
-    assert_eq!(inspect(&a, "empty").await?["projection"], "projected");
+    let own = inspect(&a, "empty").await?;
+    assert_eq!(own["projection"], "projected");
+    assert!(
+        fields(&own)
+            .values()
+            .all(|row| row["fact"]["state"]["kind"] == "deleted")
+    );
     known(
         &inspect(&other, "first").await?,
         &scope(2, "d1"),
@@ -187,7 +193,7 @@ async fn missing_collection_and_corrupt_result_preserve_projection() -> Result<(
                 .downcast_ref::<rss_projection::Error>()
                 .unwrap()
                 .kind(),
-            rss_projection::ErrorKind::StorageContract
+            rss_projection::ErrorKind::Rejected
         );
         assert_eq!(inspect(&a, id).await?, before);
         assert_eq!(a.project(&cancel).await?["applied"], 1);
@@ -403,6 +409,7 @@ async fn narrower_snapshot_preserves_unselected_fields_in_the_same_source_scope(
             .collect()
     })?;
     let mut c = sqlx::PgConnection::connect_with(&storage::collection_options()?).await?;
+    let mut wide_os = None;
     for (sequence, (id, definition, values)) in [
         ("wide", &base, facts("first")),
         ("narrow", &narrow, vec![facts("second").remove(0)]),
@@ -441,6 +448,11 @@ async fn narrower_snapshot_preserves_unselected_fields_in_the_same_source_scope(
         a.project(&CancellationToken::new()).await?;
         let view = inspect(&a, id).await?;
         let map = fields(&view);
+        if id == "wide" {
+            wide_os = Some(map["device.os.version"].clone());
+        } else {
+            assert_eq!(Some(map["device.os.version"]), wide_os.as_ref());
+        }
         assert_eq!(
             map["device.os.version"]["fact"]["state"]["value"],
             serde_json::json!({"kind":"string","value":"1"})
