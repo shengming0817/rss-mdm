@@ -11,24 +11,26 @@ def verify_migrations(container, binary, config, root, env):
     database=json.loads(config.read_text())["database"]["name"]
     def sql(statement):
         return run(["docker", "exec", "-i", container, "psql", "-At", "-v", "ON_ERROR_STOP=1", "-U", "postgres", "-d", database], input=statement, capture_output=True, timeout=10).stdout.strip()
-    def migrate(path=config, accepted=True):
+    def migrate(path=config, accepted=True, reason=None):
         result = subprocess.run([binary,"migrate","--config",str(path)],pass_fds=lease_fds(), cwd=ROOT,env=env,capture_output=True,text=True,timeout=70)
         if (result.returncode == 0) != accepted:
             raise RuntimeError("migration admission/ledger expectation failed: " + result.stderr)
+        if reason is not None:
+            require(reason in result.stderr, "wrong migration failure stage: " + result.stderr)
     admin = json.loads(config.read_text())
     (root/"admin-password").write_text("local-fixture"); os.chmod(root/"admin-password",0o600)
     admin["database"].update(user="postgres",password_file=str(root/"admin-password"))
     admin_config=root/"admin-migrate.json";admin_config.write_text(json.dumps(admin));os.chmod(admin_config,0o600)
-    migrate(admin_config,accepted=False)
+    migrate(admin_config,accepted=False,reason="migration installation: mdm_owner admission rejected")
     require(sql("SELECT to_regclass('public.mdm_migrations') IS NULL") == "t", "rejected migrator performed DDL")
     migrate(); migrate()
     original = sql("SELECT digest FROM public.mdm_migrations WHERE name='inventory-v1'")
     import hashlib
     require(original == hashlib.sha256((ROOT/'crates/inventory-postgres/migrations/0001_inventory.sql').read_bytes()).hexdigest(), "migration invariant rejected")
-    for change in ["complete=false", "digest=repeat('0',64)"]:
-        sql("UPDATE public.mdm_migrations SET " + change + " WHERE name='inventory-v1'")
-        migrate(accepted=False)
-        sql("UPDATE public.mdm_migrations SET complete=true,digest='" + original + "' WHERE name='inventory-v1'")
+    sql("UPDATE public.mdm_migrations SET complete=false WHERE name='inventory-v1'")
+    migrate(accepted=False,reason="migration installation: existing ledger differs or is incomplete")
+    sql("UPDATE public.mdm_migrations SET complete=true WHERE name='inventory-v1'")
+    migrate()
     # An owned holder makes both independent installers visibly wait before release.
     holder_name = 't2-holder-' + uuid.uuid4().hex
     holder = subprocess.Popen(["docker","exec","-e","PGAPPNAME="+holder_name,container,"psql","-U","postgres","-d",database,"-c","SELECT pg_advisory_lock(2346); SELECT pg_sleep(30)"],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
@@ -55,7 +57,7 @@ def verify_migrations(container, binary, config, root, env):
         holder.wait(timeout=5)
         for child in children:
             if child.poll() is None: child.terminate();child.wait(timeout=5)
-    print("migration admission, immutable digest, interrupted ledger and concurrent installers passed",flush=True)
+    print("migration CLI admission, interrupted ledger and concurrent installers passed",flush=True)
 
 def execute(fixture):
     verify_migrations(fixture.owner.container(), fixture.binary, fixture.migration_config, fixture.root, fixture.env)

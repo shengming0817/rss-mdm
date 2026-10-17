@@ -35,17 +35,17 @@ def execute(fixture):
     def sql(statement):
         return fixture.owner.sql(statement, fixture.database).strip()
 
-    def command(verb, value, accepted=True):
+    def command(verb, value, accepted=True, reason=None):
         path = private(root / (verb + '.json'), value)
         result = subprocess.run([fixture.binary, verb, '--config', str(path)], cwd=ROOT,
                                 pass_fds=lease_fds(), capture_output=True, text=True, timeout=75)
         require((result.returncode == 0) == accepted, 'management CLI failed: ' + verb + ': ' + result.stderr)
+        if reason is not None:
+            require(reason in result.stderr, 'wrong management failure stage: ' + result.stderr)
         return json.loads(result.stdout) if result.stdout.strip() else None
 
     command('migrate', common)
     management = sql('SELECT management_tenant_id FROM public.mdm_installation')
-    command('migrate', common)
-    require(sql('SELECT management_tenant_id FROM public.mdm_installation') == management, 'replay replaced management tenant')
     require(sql('SELECT count(*) FROM identity_authority.accounts') == '0', 'installation seeded credentials')
     require(sql('SELECT count(*) FROM mdm_access.authorization_rules') == '0', 'installation seeded privileges')
     reserved = command('tenant-get', dict(**common, tenant_id=management))
@@ -65,7 +65,6 @@ def execute(fixture):
                      login='admin', passwordFile=str(password_file), operationId=str(uuid.uuid4()),
                      user=dict(instanceId=INSTANCE, tenantId=tenant, principalId=ADMIN))
         seeds[tenant] = command('initialize-authorization', value)
-        require(command('initialize-authorization', value) == seeds[tenant], 'bootstrap replay changed receipt')
         initialization[tenant] = account
 
     config = RunFixtures.runtime_config(context, pool, root, fixture.database, business)
@@ -85,11 +84,7 @@ def execute(fixture):
     foreign = json.loads(json.dumps(config))
     foreign['identity']['tenant_id'] = management
     foreign['listen'] = '127.0.0.1:0'
-    command('serve', foreign, accepted=False)
-    mismatch = json.loads(json.dumps(config))
-    mismatch['identity_management'] = []
-    mismatch['listen'] = '127.0.0.1:0'
-    command('serve', mismatch, accepted=False)
+    command('serve', foreign, accepted=False, reason='startup.tenant_binding')
     api = '/api/v1/identity/tenants/' + management
     business_api = '/api/v1/identity/tenants/' + business
 

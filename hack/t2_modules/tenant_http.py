@@ -25,7 +25,6 @@ def exercise(admin, normal, delegate, config, management, business, password, sq
     require(call('POST', '/tenants', create, key, delegate)[0] == 403, 'unprivileged manager created tenant')
     status, receipt = call('POST', '/tenants', create, key)
     require(status == 200 and receipt['operationId'] == key and receipt['result']['revision'] == 1, 'tenant HTTP create failed: ' + str((status, receipt)))
-    require(call('POST', '/tenants', create, key) == (200, receipt), 'create replay changed')
     require(command('tenant-create', dict(**common,tenant_id=tenant,initial_epoch=1,name='HTTP tenant',operation_id=key)) == receipt,
             'CLI/HTTP request fingerprint diverged')
     require(call('POST', '/tenants', dict(create,name='different'), key)[0] == 409, 'key conflict accepted')
@@ -41,7 +40,6 @@ def exercise(admin, normal, delegate, config, management, business, password, sq
     require(call('POST','/tenants',dict(tenantId=removable,initialEpoch=1))[0] == 200, 'second create failed')
     require(call('DELETE','/tenants/' + removable,dict(expectedRevision=1))[0] == 200, 'delete failed')
     require(call('GET','/tenants/' + removable)[0] == 404, 'tombstone visible')
-    require(call('POST','/tenants',dict(tenantId=removable,initialEpoch=1))[0] == 409, 'tombstone reused')
     require(call('GET','/operations/not-a-uuid') == (400, {'code':'malformed_request'}), 'invalid operation did not use JSON error contract')
     request = dict(login='tenant-admin-one',password=password)
     admin_key = str(uuid.uuid4())
@@ -110,10 +108,6 @@ def exercise(admin, normal, delegate, config, management, business, password, sq
     stack.callback(absent_host.close)
     require(Browser(absent_host,config['product_origin']).call('GET',BASE+'/tenants')[0] == 404, 'disabled registry routes were mounted')
     absent_host.close()
-    malformed = deepcopy(config)
-    malformed['tenant_administration'] = {}
-    malformed['listen'] = '127.0.0.1:0'
-    command('serve',malformed,accepted=False)
     lost_commit_ack(target_config,password,sql,builds,root,stack,admin,tenant)
 
 

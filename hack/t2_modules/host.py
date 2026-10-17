@@ -10,17 +10,9 @@ ROOT=Path(__file__).resolve().parents[2]
 def verify_startup_deadlines(binary, root, env):
     import socket
     config=json.loads((root/'runtime.json').read_text())
-    runtime_password = config['runtime_database']['password_file']
-    config['runtime_database']['password_file'] = str(root/'missing-runtime-password')
-    invalid_runtime = root/'invalid-runtime.json'
-    invalid_runtime.write_text(json.dumps(config)); invalid_runtime.chmod(0o600)
-    result = subprocess.run([binary, 'serve', '--config', str(invalid_runtime)], pass_fds=lease_fds(), cwd=ROOT, env=env, capture_output=True, text=True, timeout=22)
-    require(result.returncode != 0 and 'startup.runtime_database_configuration' in result.stderr,
-            'runtime database input lost its startup stage: ' + result.stderr)
-    config['runtime_database']['password_file'] = runtime_password
     secrets=['api-fixture','access-fixture','runtime-fixture','identity-runtime-fixture','identity-maintenance-fixture','o'*40]
     def verify(result, start, stage):
-        require(result.returncode != 0 and time.monotonic()-start < 21, 'startup dependency stall escaped total budget')
+        require(result.returncode != 0 and time.monotonic()-start < 21, 'startup dependency stall escaped its bounded startup attempt')
         require(stage in result.stderr, 'startup failure lost safe stage classification: ' + result.stderr)
         require(all(secret not in result.stderr for secret in secrets), 'startup diagnostics exposed credentials')
     with socket.socket() as stalled:

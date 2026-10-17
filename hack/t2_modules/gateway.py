@@ -199,8 +199,11 @@ def verify_business(context, fixture):
                         status,page=browser.call('GET',path+f'/members?offset={offset}&expectedRevision=1')
                         require(status==200 and page['revision']==1,'gateway member page failed')
                         seen.extend(page['items'])
-                        offset=page['nextOffset']
-                        if offset is None:break
+                        next_offset=page['nextOffset']
+                        require(len(seen)<=len(members), 'gateway member pagination exceeded expected members')
+                        if next_offset is None:break
+                        require(type(next_offset) is int and offset<next_offset<len(members), 'gateway member pagination did not advance within bounds')
+                        offset=next_offset
                     require(len(seen)==len(members) and {m['principalId'] for m in seen}=={m['principalId'] for m in members},'gateway member pagination lost or duplicated identities')
                     query="SELECT revision::text || ':' || document::text FROM mdm_access.user_groups WHERE id='"+path.rsplit('/',1)[1]+"'"
                     before=fixture.owner.sql(query,fixture.database)
@@ -214,7 +217,7 @@ def verify_business(context, fixture):
                         require(response.status==413,'gateway business overflow not rejected')
                     finally:connection.close()
                     require(fixture.owner.sql(query,fixture.database)==before,'gateway overflow changed business state')
-                    require(browser.call('PUT',path,update)==(status,receipt),'gateway did not recover after overflow')
+                    require(browser.call('PUT',path,update)==(200,receipt),'gateway did not recover after overflow')
             finally:relay.shutdown();thread.join(timeout=5)
     finally:host.close()
 
