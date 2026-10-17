@@ -201,10 +201,13 @@ async fn projected_script_fact_is_queryable_group_input() -> Result<()> {
     let mut browser = fixture.browser.clone();
     // Producer execution/projection is covered by execution.agent.delivery.
     // This consumer starts from a legal registered source and its projected fact.
-    let (registration, _) = seed_source("asset-a", "agent", "agent.builtin", "fixture")?;
+    let registration = Uuid::new_v4();
+    let grant = Uuid::new_v4();
+    let operation = Uuid::new_v4();
+    let credential = Uuid::new_v4();
     pg(&format!(
-        "DELETE FROM mdm.inventory WHERE tenant_id='{}' AND registration='{registration}' AND field='device.model'",
-        case_tenant()
+        "INSERT INTO mdm_access.agent_grants(tenant_id,id,operation_id,source,actor,instance,device,platform,secret_digest,request_digest,state,expires_at) VALUES('{tenant}','{grant}','{operation}','download','fixture','{INSTANCE}','asset-a','macos',repeat('0',64),repeat('0',64),'consumed',clock_timestamp()+interval '24 hours'); INSERT INTO mdm_access.registrations(tenant_id,id,device,channel,generation,agent_grant_id,state,purpose,epoch) VALUES('{tenant}','{registration}','asset-a','agent',1,'{grant}','active','primary',gen_random_uuid()); INSERT INTO mdm_access.credentials VALUES('{tenant}','{credential}','{registration}','agent',md5('{credential}')||md5('{registration}'),'active');",
+        tenant = case_tenant()
     ))?;
     let epoch = Uuid::new_v4();
     let field = rss_mdm_inventory::builtin::CORPORATE_AGENT_HEALTHY;
