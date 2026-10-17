@@ -1,13 +1,27 @@
 use crate::test_support::software::write;
 use crate::test_support::software_execution::*;
 use crate::test_support::*;
+use anyhow::Context;
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 #[ignore = "make t2 MODULE=planning.software"]
 async fn rollout_time_success_gates_and_stage_evidence() -> Result<()> {
-    let mut fixture = Fixture::approved(Platform::MacOs).await?;
+    let mut fixture = Fixture::with_profiles(
+        Platform::MacOs,
+        json!(["inventory.collect.v1", "software.pkg.system.v1"]),
+        context(Platform::MacOs),
+        false,
+        true,
+    )
+    .await?;
     let resources = std::mem::take(&mut fixture.resources);
     resources.finish(async {
     let empty_scope = prepared_scope(&fixture.planning, &[]).await?;
+    let first_device = case::name("rollout-first");
+    let first_credential = crate::test_support::credential("rollout-first");
+    crate::test_support::agent::seed_profile(&fixture.base, fixture.execution.clone(), &first_credential, first_device,
+        json!({"capabilities":["inventory.collect.v1","software.pkg.system.v1"],"platform":"macos","architecture":"aarch64","executionContext":context(Platform::MacOs)})).await?;
+    let first_scope = prepared_scope(&fixture.planning, &[first_device]).await?;
+    let root_scope = prepared_scope(&fixture.planning, &[first_device, crate::test_support::software_execution::case_device()]).await?;
     let content = fixture.content.clone();
     let base = fixture.base;
     let router = fixture.router;
@@ -18,7 +32,7 @@ async fn rollout_time_success_gates_and_stage_evidence() -> Result<()> {
     let future = Uuid::new_v4();
     let future_path = format!("/api/v1/policies/{future}");
     let now = crate::clock::Clock::unix_seconds(&crate::clock::SystemClock)?;
-    let future_definition = |opens_at: i64, minimum: Option<u8>| json!({"scope":scope,"action": {"resource": {"kind":"software","id":resource,"version":"v1","variants":{"macos_aarch64":"default"}},"kind":"software","intent":"required_install","delivery":{"kind":"direct"},"runLifetimeSeconds":600,"rollout":{"stages":[{"scope":empty_scope,"opensAt":0},{"scope":scope,"opensAt":opens_at,"minimumVerifiedPercent":minimum}]}}});
+    let future_definition = |opens_at: i64, minimum: Option<u8>| json!({"scope":root_scope,"action": {"resource": {"kind":"software","id":resource,"version":"v1","variants":{"macos_aarch64":"default"}},"kind":"software","intent":"required_install","delivery":{"kind":"direct"},"runLifetimeSeconds":600,"rollout":{"stages":[{"scope":first_scope,"opensAt":0},{"scope":scope,"opensAt":opens_at,"minimumVerifiedPercent":minimum}]}}});
     let future_policy = write(
         &mut author,
         &router,
@@ -37,12 +51,12 @@ async fn rollout_time_success_gates_and_stage_evidence() -> Result<()> {
         )
         .await?;
     ensure!(
-        device_page.1["items"][0]["taskAdmission"]["state"] == "scheduled",
+        device_page.1["items"].as_array().unwrap().iter().find(|item| item["object"]["id"] == crate::test_support::software_execution::case_device()).expect("later-stage target missing")["taskAdmission"]["state"] == "scheduled",
         "device page misstates execution eligibility: {device_page:?}"
     );
     let preview=author.call(&router,Method::POST,"/api/v1/policies/previews",Some(json!({"definition":future_definition(now+3600,None),"after":null,"scopeResult":null}))).await?;
     ensure!(
-        preview.1["items"][0]["taskAdmission"]["state"] == "scheduled",
+        preview.1["items"].as_array().unwrap().iter().find(|item| item["object"]["id"] == crate::test_support::software_execution::case_device()).expect("later-stage target missing")["taskAdmission"]["state"] == "scheduled",
         "preview misstates execution eligibility: {preview:?}"
     );
     let draft_gate = future_definition(1, Some(80));
@@ -56,7 +70,7 @@ async fn rollout_time_success_gates_and_stage_evidence() -> Result<()> {
         .await?;
     ensure!(
         draft_gate.0 == StatusCode::OK
-            && draft_gate.1["items"][0]["taskAdmission"]["state"] == "success_gate",
+            && draft_gate.1["items"].as_array().unwrap().iter().find(|item| item["object"]["id"] == crate::test_support::software_execution::case_device()).expect("later-stage target missing")["taskAdmission"]["state"] == "success_gate",
         "draft gate must use actual denominator and zero historical success: {draft_gate:?}"
     );
     let pending = author
@@ -135,18 +149,17 @@ async fn rollout_time_success_gates_and_stage_evidence() -> Result<()> {
         gated.0 == StatusCode::OK && gated.1["task"].is_null(),
         "optional success gate: {gated:?}"
     );
-    let resumed = write(
-        &mut author,
-        &router,
-        &future_path,
-        4,
-        json!({"action":"put","enabled":true,"definition":future_definition(1,None)}),
-    )
-    .await?;
-    ensure!(resumed["versionId"] == frozen_version);
-    let resumed_task = claim(&router).await?;
+    let first_task = claim_with(&router, &first_credential, Platform::MacOs).await.context("first-stage offer")?;
+    for kind in [json!({"kind":"received"}), json!({"kind":"start"}), result_event(&first_task, "install", Some(0), "present", false)?] {
+        ensure!(event_with(&router, &first_credential, &first_task, kind).await?.0 == StatusCode::OK);
+    }
+    let progress = ready_rollout(&mut author, &router, future).await?;
+    ensure!(progress.1["stages"][0]["verifiedSuccess"] == 1, "{progress:?}");
+    let eligible = author.call(&router, Method::GET, &format!("/api/v1/policies/{future}/assignments"), None).await?;
+    ensure!(eligible.0 == StatusCode::OK && eligible.1["items"].as_array().unwrap().iter().find(|item| item["object"]["id"] == crate::test_support::software_execution::case_device()).unwrap()["taskAdmission"]["state"] == "eligible", "completed first stage did not open the second: {eligible:?}; progress={progress:?}");
+    let resumed_task = claim(&router).await.map_err(|e| anyhow::anyhow!("second-stage offer: {e:#}; runs={:?}", pg(&format!("SELECT jsonb_agg(jsonb_build_object('device',device,'state',state,'occurrence',occurrence)) FROM mdm_commands.action_runs WHERE tenant_id='{}'",case_tenant()))))?;
     ensure!(
-        resumed_task["payload"]["task"]["steps"][1]["action"]["package"] == "Private.Controlled",
+        resumed_task["payload"]["task"]["steps"][0]["action"]["package"] == "Private.Controlled",
         "resume: {resumed_task}"
     );
     ensure!(
@@ -170,7 +183,7 @@ async fn rollout_time_success_gates_and_stage_evidence() -> Result<()> {
         .await?
         .0 == StatusCode::OK
     );
-    let reordered=write(&mut author,&router,&future_path,5,json!({"action":"put","enabled":true,
+    let reordered=write(&mut author,&router,&future_path,4,json!({"action":"put","enabled":true,
         "definition":{"scope":scope,
         "action": {"resource": {"kind":"software","id":resource,"version":"v1","variants":{"macos_aarch64":"default"}},"kind":"software","intent":"required_install","delivery":{"kind":"direct"},"runLifetimeSeconds":600,
         "rollout":{"stages":[{"scope":scope,"opensAt":0},{"scope":empty_scope,"opensAt":1}]}}}})).await?;
@@ -199,7 +212,7 @@ async fn rollout_time_success_gates_and_stage_evidence() -> Result<()> {
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
     })
-    .await??;
+    .await.context("reordered stage statistics")??;
     ensure!(
         reordered_status.1["stages"][0]["verifiedSuccess"] == 1
             && reordered_status.1["stages"][1]["verifiedSuccess"] == 0,
@@ -212,11 +225,17 @@ async fn rollout_time_success_gates_and_stage_evidence() -> Result<()> {
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 #[ignore = "make t2 MODULE=planning.software"]
 async fn new_approval_changes_execution_version() -> Result<()> {
-    let mut fixture = Fixture::approved(Platform::MacOs).await?;
+    let mut fixture = Fixture::with_profiles(
+        Platform::MacOs,
+        json!(["inventory.collect.v1", "software.pkg.system.v1"]),
+        context(Platform::MacOs),
+        false,
+        true,
+    )
+    .await?;
     let resources = std::mem::take(&mut fixture.resources);
     resources
         .finish(async {
-            let stack = worker(&fixture.base, fixture.content.clone()).await?;
             let router = fixture.router;
             let mut author = fixture.author;
             let resource = fixture.resource;
@@ -234,11 +253,25 @@ async fn new_approval_changes_execution_version() -> Result<()> {
             )
             .await?;
             ensure!(published["version"] == 1, "publish: {published}");
-            write(
+            let unchanged = write(
                 &mut author,
                 &router,
                 &policy_path,
                 1,
+                json!({"action":"put","enabled":true,"definition":authored("required_install")}),
+            )
+            .await?;
+            ensure!(unchanged["versionId"] == published["versionId"]);
+            let frozen = pg(&format!(
+                "SELECT frozen FROM mdm_policy.versions WHERE tenant_id='{}' AND id='{}'",
+                case_tenant(),
+                published["versionId"].as_str().unwrap()
+            ))?;
+            write(
+                &mut author,
+                &router,
+                &policy_path,
+                2,
                 json!({"action":"disable"}),
             )
             .await?;
@@ -263,7 +296,7 @@ async fn new_approval_changes_execution_version() -> Result<()> {
                 &mut author,
                 &router,
                 &policy_path,
-                2,
+                3,
                 json!({"action":"put","enabled":false,"definition":authored("required_install")}),
             )
             .await?;
@@ -271,7 +304,13 @@ async fn new_approval_changes_execution_version() -> Result<()> {
                 rebound["versionId"] != published["versionId"],
                 "reapproval must create a new execution version: {rebound}"
             );
-            crate::test_support::stop_worker(stack).await?;
+            ensure!(
+                pg(&format!(
+                    "SELECT frozen FROM mdm_policy.versions WHERE tenant_id='{}' AND id='{}'",
+                    case_tenant(),
+                    rebound["versionId"].as_str().unwrap()
+                ))? != frozen
+            );
             Ok(())
         })
         .await
@@ -280,33 +319,28 @@ async fn new_approval_changes_execution_version() -> Result<()> {
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 #[ignore = "make t2 MODULE=planning.software"]
 async fn rollout_statistics_checkpoint_excluded_pages_and_reject_stale_inputs() -> Result<()> {
-    let mut f = Fixture::approved(Platform::MacOs).await?;
+    let mut f = Fixture::with_profiles(
+        Platform::MacOs,
+        json!(["inventory.collect.v1", "software.pkg.system.v1"]),
+        context(Platform::MacOs),
+        false,
+        true,
+    )
+    .await?;
     let resources = std::mem::take(&mut f.resources);
     resources.finish(async {
-    let mut devices = Vec::new();
-    for i in 0..20 {
-        let device = format!(
-            "{}-stats-{i:02}",
-            crate::test_support::case::name("rollout")
-        );
-        crate::test_support::inventory::seed_source(&device, "agent", "agent.builtin", "stats")?;
-        devices.push(device);
-    }
+    let prefix = case::name("rollout");
+    let devices: Vec<_> = (0..20).map(|i| format!("{prefix}-stats-{i:02}")).collect();
+    // Only registration/channel presence is consumed here; Inventory facts and enrollment are not under test.
+    pg(&format!("BEGIN; CREATE TEMP TABLE rollout_devices AS SELECT '{prefix}-stats-'||lpad(n::text,2,'0') AS device,gen_random_uuid() AS grant_id,gen_random_uuid() AS registration,gen_random_uuid() AS credential,gen_random_uuid() AS epoch FROM generate_series(0,19) n; INSERT INTO mdm_access.devices SELECT '{tenant}',device FROM rollout_devices; INSERT INTO mdm_access.agent_grants(tenant_id,id,operation_id,source,actor,instance,device,platform,secret_digest,request_digest,state,expires_at) SELECT '{tenant}',grant_id,gen_random_uuid(),'download','fixture','{instance}',device,'macos',repeat('0',64),repeat('0',64),'consumed',clock_timestamp()+interval '24 hours' FROM rollout_devices; INSERT INTO mdm_access.registrations(tenant_id,id,device,channel,generation,agent_grant_id,state,purpose,epoch) SELECT '{tenant}',registration,device,'agent',1,grant_id,'active','primary',epoch FROM rollout_devices; INSERT INTO mdm_access.credentials SELECT '{tenant}',credential,registration,'agent',md5(credential::text)||md5(registration::text),'active' FROM rollout_devices; INSERT INTO mdm_access.report_sources SELECT '{tenant}',registration,'agent.builtin',epoch,true FROM rollout_devices; COMMIT;", tenant=case_tenant(), instance=INSTANCE))?;
     let refs: Vec<&str> = devices.iter().map(String::as_str).collect();
     let root = prepared_scope(&f.planning, &refs).await?;
     let stage = Uuid::new_v4();
-    let automation = start_automation(&f.base).await?;
-    let created=write(&mut f.author,&f.router,&format!("/api/v1/scopes/{stage}"),0,json!({"action":"put","definition":{"targets":devices.iter().map(|d|json!({"kind":"device","id":d})).collect::<Vec<_>>(),"limitations":null,"exclusions":devices[..16].iter().map(|d|json!({"kind":"device","id":d})).collect::<Vec<_>>()}})).await?;
-    await_task(
-        &mut f.author,
-        &f.router,
-        &format!(
-            "/api/v1/scopes/{stage}/tasks/{}",
-            created["task"].as_str().unwrap()
-        ),
-    )
-    .await?;
-    crate::test_support::stop_worker(automation).await?;
+    let definition: crate::planning::ScopeDefinition = serde_json::from_value(json!({"targets":devices.iter().map(|d|json!({"kind":"device","id":d})).collect::<Vec<_>>(),"limitations":null,"exclusions":devices[..16].iter().map(|d|json!({"kind":"device","id":d})).collect::<Vec<_>>()}))?;
+    f.planning.runtime.local_tx_with_context(f.planning.tenant, crate::identity::deadline(), (f.planning.as_ref(), definition), |(planning, definition), tx| {
+        let definition = definition.clone();
+        Box::pin(async move { planning.seed_scope_in(tx, stage, definition).await.map_err(|e| rss_transactional_messaging_postgres::PgError::from(sqlx::Error::Protocol(e.to_string()))) })
+    }).await.fold(|_| (),|e|panic!("{e:?}"),|e|panic!("{e:?}"),|e|panic!("{e:?}"),|e|panic!("{e:?}"),|e|panic!("{e:?}"));
     let policy = Uuid::new_v4();
     let mut definition = authored(f.resource, root, "required_install");
     definition["action"]["rollout"] = json!({"stages":[{"scope":stage,"opensAt":0}]});

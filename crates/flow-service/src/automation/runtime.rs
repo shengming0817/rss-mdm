@@ -118,6 +118,16 @@ fn reconcile_error(error: Error) -> rss_reconcile::Error {
         _ => rss_reconcile::ErrorKind::Transient,
     })
 }
+// Preserve provider ownership loss independently of the transaction settlement.
+fn storage_error(error: PgError) -> rss_reconcile::Error {
+    rss_reconcile::Error::new(
+        if error.kind() == rss_transactional_messaging::error::MessagingErrorKind::OwnershipLost {
+            rss_reconcile::ErrorKind::Fenced
+        } else {
+            rss_reconcile::ErrorKind::Transient
+        },
+    )
+}
 fn fault(error: Fault, reason: &Mutex<Option<Error>>) -> PgError {
     match error {
         Fault::Request(error) => {
@@ -323,6 +333,9 @@ impl Reconciler<rss_reconcile_postgres::PgClaim> for Automation {
                     |_| Ok(None),
                     |_| Err(Error::Unavailable(Failure::AutomationStorage)),
                     |error| {
+                        if error.kind() == rss_transactional_messaging::error::MessagingErrorKind::OwnershipLost {
+                            return Err(Error::Conflict);
+                        }
                         eprintln!("{}",serde_json::json!({"event":"mdm_automation_rollback","target":claim.target().entity(),"diagnostic":format!("{error:?}")}));
                         failure
                             .lock()
@@ -333,7 +346,7 @@ impl Reconciler<rss_reconcile_postgres::PgClaim> for Automation {
                     },
                     |_| Err(Error::CommitUnknown),
                     |_| Err(Error::CommitUnknown),
-                    |_| Err(Error::Unavailable(Failure::AutomationStorage)),
+                    |_| Err(Error::Conflict),
                 )
                 .map_err(reconcile_error)?;
             let terminal = match rejection {
@@ -411,16 +424,8 @@ impl Reconciler<rss_reconcile_postgres::PgClaim> for Automation {
                 .await
                 .fold(
                     Ok,
-                    |_| {
-                        Err(rss_reconcile::Error::new(
-                            rss_reconcile::ErrorKind::Transient,
-                        ))
-                    },
-                    |_| {
-                        Err(rss_reconcile::Error::new(
-                            rss_reconcile::ErrorKind::Transient,
-                        ))
-                    },
+                    |error| Err(storage_error(error)),
+                    |error| Err(storage_error(error)),
                     |_| {
                         Err(rss_reconcile::Error::new(
                             rss_reconcile::ErrorKind::CommitUnknown,
@@ -431,11 +436,7 @@ impl Reconciler<rss_reconcile_postgres::PgClaim> for Automation {
                             rss_reconcile::ErrorKind::CommitUnknown,
                         ))
                     },
-                    |_| {
-                        Err(rss_reconcile::Error::new(
-                            rss_reconcile::ErrorKind::Transient,
-                        ))
-                    },
+                    |error| Err(storage_error(error)),
                 )
         })
     }

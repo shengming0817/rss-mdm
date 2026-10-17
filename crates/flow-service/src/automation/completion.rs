@@ -108,11 +108,11 @@ impl DurableStore for Automation {
                     .await
                     .fold(
                         Ok,
-                        |_| Err(ReconcileError::new(ErrorKind::Transient)),
-                        |_| Err(ReconcileError::new(ErrorKind::Transient)),
+                        |error| Err(storage_error(error)),
+                        |error| Err(storage_error(error)),
                         |_| Err(ReconcileError::new(ErrorKind::CommitUnknown)),
                         |_| Err(ReconcileError::new(ErrorKind::CommitUnknown)),
-                        |_| Err(ReconcileError::new(ErrorKind::Transient)),
+                        |error| Err(storage_error(error)),
                     )?;
             }
             self.store.finish(claim, completion, control).await?;

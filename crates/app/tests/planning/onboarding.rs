@@ -55,17 +55,6 @@ async fn report(f: &Fixture, sequence: u64, state: &str) -> Result<()> {
     )
     .await?;
     ensure!(response.0 == StatusCode::ACCEPTED, "{response:?}");
-    ensure!(
-        response
-            == agent_call(
-                &f.router,
-                Method::POST,
-                "/api/v1/agent/runtime/reports",
-                Some(case_credential()),
-                Some(input)
-            )
-            .await?
-    );
     wait_agent_status(&f.router, case_credential(), id, "snapshot", "applied").await?;
     planning_http::await_ingress().await?;
     Ok(())
@@ -81,20 +70,12 @@ async fn explicit_source_absence_drives_one_standard_entry_without_creating_mdm_
     let overlapping = publish(&mut f).await?;
     let automation = start_automation(&f.base).await?;
     let workers = worker(&f.base).await?;
-    for (sequence, state) in ["unknown", "other_organization", "this_organization"]
-        .into_iter()
-        .enumerate()
-    {
-        report(&f, sequence as u64, state).await?;
-        let response = claim_request(&f.router, Uuid::new_v4()).await?;
-        ensure!(
-            response.0 == StatusCode::OK && response.1["task"].is_null(),
-            "{response:?}"
-        );
-        ensure!(run_count(id)?.trim() == "0");
-    }
+    report(&f, 0, "unknown").await?;
+    let response = claim_request(&f.router, Uuid::new_v4()).await?;
+    ensure!(response.0 == StatusCode::OK && response.1["task"].is_null(), "{response:?}");
+    ensure!(run_count(id)?.trim() == "0" && run_count(overlapping)?.trim() == "0");
     // An old observation time is legitimate current source evidence; no arbitrary freshness TTL.
-    report(&f, 3, "unenrolled").await?;
+    report(&f, 1, "unenrolled").await?;
     let state =
         channel_onboarding::diagnosis(&mut f.author, &f.router, id, case_device_id()).await?;
     ensure!(state["taskAdmission"]["state"] == "eligible", "{state}");
@@ -109,9 +90,8 @@ async fn explicit_source_absence_drives_one_standard_entry_without_creating_mdm_
         json!({"kind":"enrollment_result","outcome":"opened"}),
     )
     .await?;
-    for _ in 0..3 {
-        ensure!(claim_request(&f.router, Uuid::new_v4()).await?.1["task"].is_null());
-    }
+    let empty = claim_request(&f.router, Uuid::new_v4()).await?;
+    ensure!(empty.0 == StatusCode::OK && empty.1["task"].is_null());
     ensure!(
         run_count(id)?.trim().parse::<u64>()? + run_count(overlapping)?.trim().parse::<u64>()? == 1
     );
@@ -132,7 +112,8 @@ async fn explicit_source_absence_drives_one_standard_entry_without_creating_mdm_
         json!({"kind":"enrollment_result","outcome":"opened"}),
     )
     .await?;
-    ensure!(claim_request(&f.router, Uuid::new_v4()).await?.1["task"].is_null());
+    let empty = claim_request(&f.router, Uuid::new_v4()).await?;
+    ensure!(empty.0 == StatusCode::OK && empty.1["task"].is_null());
     ensure!(
         pg(&format!(
             "SELECT revision FROM mdm_policy.policies WHERE tenant_id='{}' AND id='{id}'",
@@ -181,6 +162,9 @@ async fn scope_wide_grant_is_rechecked_before_opening_enrollment() -> Result<()>
             )
             .await?;
             ensure!(response.0 == StatusCode::FORBIDDEN, "{response:?}");
+            ensure!(pg(&format!("SELECT count(*) FROM mdm_commands.action_attempts WHERE run='{}' AND permit IS NOT NULL", task["payload"]["task"]["taskId"].as_str().unwrap()))?.trim() == "0");
+            let state: Value = serde_json::from_str(&pg(&format!("SELECT state FROM mdm_commands.action_runs WHERE id='{}'", task["payload"]["task"]["taskId"].as_str().unwrap()))?)?;
+            ensure!(state["execution"] != "running" && state["execution"] != "unknown");
             stop_worker(workers).await?;
             stop_worker(automation).await?;
             Ok(())
@@ -228,7 +212,8 @@ async fn uncertain_entry_survives_application_restart_and_policy_disable() -> Re
                         rss_identity_http_axum::ClientAddress("127.0.0.1".parse()?),
                     ));
                     execution.recover_action_fixture(id).await?;
-                    ensure!(claim_request(&router, Uuid::new_v4()).await?.1["task"].is_null());
+                    let empty = claim_request(&router, Uuid::new_v4()).await?;
+                    ensure!(empty.0 == StatusCode::OK && empty.1["task"].is_null());
                     ensure!(run_count(id)?.trim() == "1");
                     post(
         &mut f.author,

@@ -264,45 +264,47 @@ async fn installation_fallback_and_scope_pages_do_not_repeat_wakes() {
         "INSERT INTO mdm_planning.configuration_devices(tenant_id,device) VALUES('{}','{device}')",
         tenant()
     ));
-    let preparer = RunningAutomation::start(service.clone()).await;
-    let mut initial_tasks = Vec::new();
-    for _ in 0..33 {
-        let scope = Uuid::new_v4();
-        let accepted = execute(
-            &service,
-            &Command::Scope {
-                id: scope,
-                change: operation(
-                    0,
-                    ScopeChange::Put {
-                        definition: ScopeDefinition {
-                            targets: [Reference::Device(device.clone())].into_iter().collect(),
-                            limitations: None,
-                            exclusions: Default::default(),
-                        },
-                    },
-                ),
+    service
+        .runtime
+        .local_tx_with_context(
+            tenant(),
+            deadline(),
+            (service.as_ref(), &device),
+            |(service, seeded_device), tx| {
+                Box::pin(async move {
+                    for _ in 0..33 {
+                        service
+                            .seed_scope_in(
+                                tx,
+                                Uuid::new_v4(),
+                                ScopeDefinition {
+                                    targets: [Reference::Device(seeded_device.clone())]
+                                        .into_iter()
+                                        .collect(),
+                                    limitations: None,
+                                    exclusions: Default::default(),
+                                },
+                            )
+                            .await
+                            .map_err(|e| {
+                                rss_transactional_messaging_postgres::PgError::from(
+                                    sqlx::Error::Protocol(e.to_string()),
+                                )
+                            })?;
+                    }
+                    Ok(())
+                })
             },
         )
         .await
-        .unwrap();
-        initial_tasks.push((
-            scope,
-            Uuid::parse_str(accepted["task"].as_str().unwrap()).unwrap(),
-        ));
-    }
-    // Publish initial Scope work so new invalidation creates new jobs rather
-    // than being absorbed by the legitimate pending-job deduplication.
-    for (scope, task) in initial_tasks {
-        wait_task(
-            &service,
-            task,
-            crate::automation::TaskKind::Scope,
-            &scope.to_string(),
-        )
-        .await;
-    }
-    preparer.stop().await;
+        .fold(
+            |_| (),
+            |e| panic!("{e:?}"),
+            |e| panic!("{e:?}"),
+            |e| panic!("{e:?}"),
+            |e| panic!("{e:?}"),
+            |e| panic!("{e:?}"),
+        );
     let devices = vec![device];
     let initial_revision = revisions(&devices)[0];
     // Start after registration ingress; only the real inventory trigger supplies

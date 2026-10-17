@@ -243,17 +243,27 @@ async fn expired_guard_after_lock_rejects_mutation_and_replay() {
             .unwrap();
         let audit = RequestAudit::new(tenant().to_string(), "management_write");
         audit.set_principal("operator", crate::test_support::INSTANCE);
-        let expires = rss_request_context::Clock::now(&crate::lifecycle::RuntimeTimer)
-            + Duration::from_millis(150);
+        let allowed = std::sync::atomic::AtomicBool::new(true);
         let authorize = || {
-            if rss_request_context::Clock::now(&crate::lifecycle::RuntimeTimer) < expires {
+            if allowed.load(std::sync::atomic::Ordering::SeqCst) {
                 Ok(())
             } else {
                 Err(rss_mdm_inventory_service::Error::Forbidden)
             }
         };
+        let before = sql(&format!(
+            "SELECT count(*) FROM rss_audit.records WHERE tenant_id='{}'",
+            tenant()
+        ));
         let release = async {
-            tokio::time::sleep(Duration::from_millis(300)).await;
+            tokio::time::timeout(Duration::from_secs(8), async {
+                loop {
+                    let waiting: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE datname=current_database() AND pg_backend_pid()=ANY(pg_blocking_pids(pid)))").fetch_one(&mut holder).await.unwrap();
+                    if waiting { break; }
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            }).await.expect("request never reached the held lock");
+            allowed.store(false, std::sync::atomic::Ordering::SeqCst);
             sqlx::query("SELECT pg_advisory_unlock(hashtextextended($1,2390))")
                 .bind(tenant().to_string())
                 .execute(&mut holder)
@@ -269,6 +279,13 @@ async fn expired_guard_after_lock_rejects_mutation_and_replay() {
             result,
             Err(rss_mdm_inventory_service::Error::Forbidden)
         ));
+        assert_eq!(
+            sql(&format!(
+                "SELECT count(*) FROM rss_audit.records WHERE tenant_id='{}'",
+                tenant()
+            )),
+            before
+        );
         let read = execute(&m, &GroupCommand::GroupRead { id }).await;
         assert_eq!(
             read.is_ok(),
@@ -392,9 +409,9 @@ async fn live_checkpoint_restart_fences_old_worker() {
     )
     .await
     .unwrap();
-    let task = query_job(&first, 256).await;
+    let task = query_job(&first, 129).await;
     // This verifies persisted fencing, not a two-second throughput guarantee for 128 rows.
-    let lease = Duration::from_secs(30);
+    let lease = Duration::from_secs(300);
     let stale = claim_job(&old, task, lease).await;
     let timer = automation::Timer::new();
     let cancel = tokio_util::sync::CancellationToken::new();
@@ -406,7 +423,7 @@ async fn live_checkpoint_restart_fences_old_worker() {
     rss_runtime::ManagedResource::shutdown(&crate::automation::Resource(old.clone()))
         .await
         .unwrap();
-    tokio::time::sleep(lease + Duration::from_millis(100)).await;
+
     let second = Arc::new(planning(tenant()).await);
     let resumed = crate::automation::Automation::connect(
         second.clone(),
@@ -416,17 +433,55 @@ async fn live_checkpoint_restart_fences_old_worker() {
     )
     .await
     .unwrap();
-    let current = claim_job(&resumed, task, lease).await;
-    assert!(current.epoch() > stale.epoch());
-    assert!(old.apply(&stale, diff(), &control).await.is_err());
-    assert!(
-        old.finish(
-            &stale,
-            rss_reconcile::Completion::Suspended { failures: 1 },
-            &control
+    let claims = resumed
+        .claim_due(
+            &rss_reconcile::Scope::new(tenant(), "mdm.assets").unwrap(),
+            64,
+            lease,
+            &control,
         )
         .await
-        .is_err()
+        .unwrap();
+    assert!(
+        !claims
+            .iter()
+            .any(|c| c.target().entity() == format!("job:{task}")),
+        "unexpired claim was stolen"
+    );
+    let token = sql(&format!(
+        "SELECT token FROM rss_reconcile.targets WHERE tenant_id='{}' AND reconciler='mdm.assets' AND entity='job:{task}' AND epoch={}",
+        tenant(),
+        stale.epoch()
+    ));
+    assert_eq!(
+        sql(&format!(
+            "WITH expired AS (UPDATE rss_reconcile.targets SET lease_until=clock_timestamp()-interval '1 second' WHERE tenant_id='{}' AND reconciler='mdm.assets' AND entity='job:{task}' AND epoch={} AND token='{token}' RETURNING 1) SELECT count(*) FROM expired",
+            tenant(),
+            stale.epoch()
+        )),
+        "1"
+    );
+    let current = claim_job(&resumed, task, lease).await;
+    assert!(current.epoch() > stale.epoch());
+    assert_eq!(
+        resumed
+            .apply(&stale, diff(), &control)
+            .await
+            .unwrap_err()
+            .kind(),
+        rss_reconcile::ErrorKind::Fenced
+    );
+    assert_eq!(
+        resumed
+            .finish(
+                &stale,
+                rss_reconcile::Completion::Suspended { failures: 1 },
+                &control
+            )
+            .await
+            .unwrap_err()
+            .kind(),
+        rss_reconcile::ErrorKind::Fenced
     );
     assert_eq!(
         snapshot(task),
@@ -436,8 +491,8 @@ async fn live_checkpoint_restart_fences_old_worker() {
     resumed.apply(&current, diff(), &control).await.unwrap();
     let completed: Value = serde_json::from_str(&snapshot(task)).unwrap();
     assert_eq!(completed[1], true);
-    assert_eq!(completed[3], 256);
-    assert_eq!(completed[4], 256);
+    assert_eq!(completed[3], 129);
+    assert_eq!(completed[4], 129);
     resumed
         .finish(&current, rss_reconcile::Completion::Converged, &control)
         .await
@@ -793,6 +848,20 @@ async fn corrupt_background_query_is_not_client_input() {
             "0"
         );
     }
+    sql(&format!(
+        "UPDATE mdm_automation.automation_jobs SET input='{original}',cursor=NULL WHERE id='{task}'"
+    ));
+    worker
+        .apply(
+            &claim,
+            ReconcileDiff::between(DesiredState::present(false), ActualState::present(true)),
+            &control,
+        )
+        .await
+        .unwrap();
+    let completed: Value = serde_json::from_str(&snapshot(task)).unwrap();
+    assert_eq!(completed[1], true);
+    assert_eq!(completed[4], 1);
     rss_runtime::ManagedResource::shutdown(&crate::automation::Resource(worker))
         .await
         .unwrap();

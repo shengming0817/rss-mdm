@@ -54,9 +54,18 @@ pub async fn prepare(
     r: &BuildRequest,
     page: &FixturePage,
 ) -> Result<MemberBuild, Error> {
+    let build = begin(runtime, s, r).await?;
+    resume(runtime, s, build, page).await
+}
+pub async fn resume(
+    runtime: &PgRuntime,
+    s: &GroupStore,
+    build: MemberBuild,
+    page: &FixturePage,
+) -> Result<MemberBuild, Error> {
+    let r = &build.request;
     let id = r.id;
     let count = page.objects.len();
-    let build = begin(runtime, s, r).await?;
     if !build.input_sealed {
         if r.patch.is_some() {
             settle(

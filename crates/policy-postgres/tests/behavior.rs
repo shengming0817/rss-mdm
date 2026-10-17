@@ -38,6 +38,15 @@ async fn configuration_cas_replay_and_runtime_isolation() {
         execute(&runtime, &store, Uuid::new_v4(), &b, deadline())
     );
     assert_ne!(a.is_ok(), b.is_ok());
+    let (winner, loser) = match a {
+        Ok(winner) => (winner, b),
+        Err(error) => (b.unwrap(), Err(error)),
+    };
+    assert!(matches!(loser, Err(Error::Rejected(Rejection::Conflict))));
+    assert_eq!(
+        serde_json::to_value(store.get(id, deadline()).await.unwrap().unwrap()).unwrap(),
+        winner
+    );
     assert_eq!(
         store.get(id, deadline()).await.unwrap().unwrap().revision,
         2
@@ -90,6 +99,11 @@ async fn scope_changes_preserve_execution_version() {
     execute(&runtime, &store, Uuid::new_v4(), &first, deadline())
         .await
         .unwrap();
+    let frozen = sql(&format!(
+        "SELECT to_jsonb(v) FROM mdm_policy.versions v WHERE tenant_id='{}' AND id='{}'",
+        tenant(),
+        first.policy.version
+    ));
     definition.scope = Uuid::new_v4();
     let second = publication(
         id,
@@ -102,8 +116,19 @@ async fn scope_changes_preserve_execution_version() {
     execute(&runtime, &store, Uuid::new_v4(), &second, deadline())
         .await
         .unwrap();
-    assert_eq!(first.policy.version, second.policy.version);
-    assert_eq!(second.policy.number, 1);
+    let stored = store.get(id, deadline()).await.unwrap().unwrap();
+    assert_eq!(stored.revision, 2);
+    assert_eq!(stored.definition.scope, second.policy.definition.scope);
+    assert_eq!(stored.version, first.policy.version);
+    assert_eq!(stored.number, 1);
+    assert_eq!(
+        sql(&format!(
+            "SELECT to_jsonb(v) FROM mdm_policy.versions v WHERE tenant_id='{}' AND id='{}'",
+            tenant(),
+            stored.version
+        )),
+        frozen
+    );
     assert_eq!(
         sql(&format!(
             "SELECT count(*) FROM mdm_policy.versions WHERE tenant_id='{}' AND policy='{id}'",
@@ -111,10 +136,6 @@ async fn scope_changes_preserve_execution_version() {
         )),
         "1"
     );
-    let disabled = publication(id, Some(&second.policy), Change::Disable);
-    execute(&runtime, &store, Uuid::new_v4(), &disabled, deadline())
-        .await
-        .unwrap();
     runtime.close().await;
 }
 #[tokio::test]
@@ -216,6 +237,7 @@ async fn explicit_trigger_does_not_edit_configuration() {
     execute(&runtime, &store, Uuid::new_v4(), &first, deadline())
         .await
         .unwrap();
+    let before = serde_json::to_value(store.get(id, deadline()).await.unwrap().unwrap()).unwrap();
     let op = Uuid::new_v4();
     let version = first.policy.version;
     let result = runtime
@@ -232,9 +254,11 @@ async fn explicit_trigger_does_not_edit_configuration() {
         |_| false
     ));
     assert_eq!(
-        store.get(id, deadline()).await.unwrap().unwrap().revision,
-        1
+        serde_json::to_value(store.get(id, deadline()).await.unwrap().unwrap()).unwrap(),
+        before
     );
+    let trigger: serde_json::Value = serde_json::from_str(&sql(&format!("SELECT jsonb_agg(jsonb_build_array(version,created_at,deadline)) FROM mdm_policy.triggers WHERE tenant_id='{}' AND id='{op}'", tenant()))).unwrap();
+    assert_eq!(trigger, serde_json::json!([[version, 10, 100]]));
     runtime.close().await;
 }
 
@@ -281,7 +305,13 @@ async fn borrowed_reads_reject_foreign_runtime_and_tenant() {
             read.fold(
                 |_| false,
                 |_| false,
-                |_| true,
+                |e| {
+                    assert!(
+                        e.kind()
+                            == rss_transactional_messaging::error::MessagingErrorKind::Invariant
+                    );
+                    true
+                },
                 |_| false,
                 |_| false,
                 |_| false
@@ -317,15 +347,14 @@ async fn borrowed_reads_reject_foreign_runtime_and_tenant() {
             .local_tx_with_context(tenant(), deadline(), store.reader(), |reader, tx| {
                 Box::pin(async move {
                     if version {
-                        reader
-                            .version_in(tx, selected)
-                            .await
-                            .map(|v| v.map(|p| p.is_some()))
+                        reader.version_in(tx, selected).await.map(|v| {
+                            v.map(|p| p.is_some_and(|p| p.policy == id && p.id == selected))
+                        })
                     } else {
                         reader
                             .read_in(tx, selected)
                             .await
-                            .map(|v| v.map(|p| p.is_some()))
+                            .map(|v| v.map(|p| p.is_some_and(|p| p.id == id)))
                     }
                 })
             })

@@ -53,9 +53,17 @@ async fn protocol_ack_loss_recovers_original_request() {
         let store = PolicyStore::new(runtime.clone(), tenant(), deadline())
             .await
             .unwrap();
+        let persisted: serde_json::Value = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                let row = sql(&format!("SELECT receipt FROM mdm_policy.requests WHERE tenant_id='{}' AND id='{request}'", tenant()));
+                if !row.is_empty() { break serde_json::from_str(&row).unwrap(); }
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+        }).await.expect("original commit was not durable");
         let recovered = execute(&runtime, &store, request, &input, deadline())
             .await
             .unwrap();
+        assert_eq!(recovered, persisted);
         assert_eq!(
             recovered,
             execute(&runtime, &store, request, &input, deadline())

@@ -40,20 +40,9 @@ async fn assignment_pagination_uses_published_scope_without_eager_execution() ->
         windows_configuration(),
     )
     .await?;
-    let scope = Uuid::new_v4();
-    call(
-        &mut browser,
-        &router,
-        &format!("/api/v1/scopes/{scope}"),
-        0,
-        json!({"action":"put","definition":{"targets":[],"limitations":null,"exclusions":[]}}),
-    )
-    .await?;
     let id = Uuid::new_v4();
     let path = format!("/api/v1/policies/{id}");
-    call(&mut browser,&router,&path,0,json!({"action":"put","enabled":true,"definition":{"scope":scope,"action": {"resource": {"id":resource,"version":"v1","platform":"windows","architecture":"x86_64","variant":"default"},"kind":"configuration","exit":"retain"}}})).await?;
     let policy = path.as_str();
-    let revision = 1;
     let browser = &mut browser;
     let router = &router;
     let prefix = uuid::Uuid::new_v4();
@@ -88,31 +77,7 @@ async fn assignment_pagination_uses_published_scope_without_eager_execution() ->
         .await?;
     }
     call(browser,router,&format!("/api/v1/scopes/{scope}"),0,json!({"action":"put","definition":{"targets":[{"kind":"group","id":group}],"limitations":null,"exclusions":[]}})).await?;
-    let current = browser.call(router, Method::GET, policy, None).await?.1;
-    let mut definition = current["definition"].clone();
-    definition["scope"] = json!(scope);
-    // This fixture grants publish authority separately from scope/member read authority.
-    let member = browser_subject(browser, router).await?;
-    let grants = crate::test_support::identity::device_grants(
-        None,
-        &["configuration_write", "inventory_read"],
-    )?;
-    let mut grants = grants;
-    for permission in [
-        crate::authorization::Permission::PolicyRead,
-        crate::authorization::Permission::PolicyWrite,
-        crate::authorization::Permission::ScopeRead,
-        crate::authorization::Permission::ResourceRead,
-        crate::authorization::Permission::ResourceWrite,
-        crate::authorization::Permission::GroupRead,
-        crate::authorization::Permission::GroupWrite,
-    ] {
-        grants.push(crate::authorization::Grant {
-            operation: permission,
-            scope: crate::authorization::Scope::Tenant,
-        });
-    }
-    crate::test_support::identity::set_grants(case_tenant(), &member, grants).await?;
+    let definition = json!({"scope":scope,"action":{"resource":{"id":resource,"version":"v1","platform":"windows","architecture":"x86_64","variant":"default"},"kind":"configuration","exit":"retain"}});
     let before = pg(&format!(
         "SELECT count(*) FROM mdm_commands.action_runs WHERE tenant_id='{}'",
         case_tenant()
@@ -121,7 +86,7 @@ async fn assignment_pagination_uses_published_scope_without_eager_execution() ->
         browser,
         router,
         policy,
-        revision,
+        0,
         json!({"action":"put","enabled":true,"definition":definition}),
     )
     .await?;
