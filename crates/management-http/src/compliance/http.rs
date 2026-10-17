@@ -106,7 +106,7 @@ async fn put(
             sensitive: rss_mdm_inventory_service::assets::ReadScope::from_proof(&a.proof)?
                 .sensitive,
             id,
-            request: body.map_err(Error::from)?.0,
+            request: Box::new(body.map_err(Error::from)?.0),
         },
     )
     .await

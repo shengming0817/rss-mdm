@@ -3,7 +3,10 @@
 use super::*;
 fn object(names: &[&str]) -> ValueType {
     ValueType::Object {
-        properties: names.iter().map(|k| ((*k).into(), text())).collect(),
+        properties: names
+            .iter()
+            .map(|k| ((*k).into(), if *k == "id" { string() } else { text() }))
+            .collect(),
     }
 }
 fn integers(mut ty: ValueType, names: &[&str]) -> ValueType {
@@ -120,7 +123,7 @@ pub(super) fn fields() -> Vec<FieldDefinition> {
         true,
     );
     for key in [
-        "device.security.macos.gatekeeper.observation",
+        "device.security.macos.gatekeeper_observation",
         "device.security.macos.xprotect.observation",
     ] {
         add(

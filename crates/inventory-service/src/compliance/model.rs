@@ -61,7 +61,7 @@ pub enum Command {
     Put {
         sensitive: bool,
         id: Uuid,
-        request: crate::operation::Operation<Definition>,
+        request: Box<crate::operation::Operation<Definition>>,
     },
     Recompute {
         id: Uuid,

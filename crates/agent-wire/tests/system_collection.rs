@@ -243,3 +243,17 @@ fn system_plan_requires_bounded_inline_output_and_does_not_downgrade_to_chunks()
     input.budget.output_bytes = NATIVE_SYSTEM_MAX_BYTES + 1;
     assert!(NativeCollectionPlan::new(input).is_err());
 }
+
+#[test]
+fn complete_application_probe_cannot_omit_or_duplicate_requested_permissions() {
+    let q = query(NativeSystemQuery::MacosApplication {
+        target: MacosApplicationTarget::Agent,
+        permissions: [ApplicationPermission::FullDiskAccess].into(),
+    });
+    let mut row = json!({"identity":"io.rss.agent","signer":"RSS","presence":"present","signature":"unknown","running":"unknown","health":"unknown","permissions":[]});
+    assert!(!answer(&q, json!([row])).complete_for(&q, 100));
+    row["permissions"] = json!(["full_disk_access:unknown"]);
+    assert!(answer(&q, json!([row])).complete_for(&q, 100));
+    row["permissions"] = json!(["full_disk_access:unknown", "full_disk_access:granted"]);
+    assert!(!answer(&q, json!([row])).complete_for(&q, 100));
+}

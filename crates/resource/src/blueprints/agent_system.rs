@@ -197,7 +197,7 @@ pub(super) fn catalog() -> Vec<Blueprint> {
         (
             M::Gatekeeper,
             "gatekeeper",
-            "device.security.macos.gatekeeper.observation",
+            "device.security.macos.gatekeeper_observation",
         ),
         (
             M::Xprotect,

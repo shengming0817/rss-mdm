@@ -357,6 +357,186 @@ pub fn validate_agent_mapping(
     Ok(())
 }
 
+// Only the closed declared native source can assert full account/store/update evidence.
+fn system_field_matches(
+    field: &str,
+    query: &rss_mdm_agent_wire::runtime::NativeQueryDefinition,
+) -> bool {
+    use rss_mdm_agent_wire::runtime::{
+        AccountSection as A, MacosSecuritySection as M, NativeQueryDefinition as D,
+        NativeSystemQuery as Q, UpdateSection as U,
+    };
+    let q = if let D::System { query } = query {
+        Some(query)
+    } else {
+        None
+    };
+    match field {
+        "device.certificates.metadata" => matches!(
+            q,
+            Some(Q::WindowsCertificates { .. } | Q::MacosCertificates { .. })
+        ),
+        "device.accounts.windows.identities" => matches!(
+            q,
+            Some(Q::WindowsAccounts {
+                section: A::Accounts,
+                ..
+            })
+        ),
+        "device.accounts.macos.identities" => matches!(
+            q,
+            Some(Q::MacosAccounts {
+                section: A::Accounts,
+                ..
+            })
+        ),
+        "device.accounts.administrators.direct" => matches!(
+            q,
+            Some(
+                Q::WindowsAccounts {
+                    section: A::Administrators,
+                    ..
+                } | Q::MacosAccounts {
+                    section: A::Administrators,
+                    ..
+                }
+            )
+        ),
+        "device.accounts.sessions" => matches!(
+            q,
+            Some(
+                Q::WindowsAccounts {
+                    section: A::Sessions,
+                    ..
+                } | Q::MacosAccounts {
+                    section: A::Sessions,
+                    ..
+                }
+            )
+        ),
+        "device.accounts.windows.join" => matches!(q, Some(Q::WindowsJoin)),
+        "device.updates.available" => matches!(
+            q,
+            Some(
+                Q::WindowsUpdates {
+                    section: U::Available,
+                    ..
+                } | Q::MacosUpdates {
+                    section: U::Available,
+                    ..
+                }
+            )
+        ),
+        "device.updates.installed" => matches!(
+            q,
+            Some(
+                Q::WindowsUpdates {
+                    section: U::Installed,
+                    ..
+                } | Q::MacosUpdates {
+                    section: U::Installed,
+                    ..
+                }
+            )
+        ),
+        "device.updates.history" => matches!(
+            q,
+            Some(
+                Q::WindowsUpdates {
+                    section: U::History,
+                    ..
+                } | Q::MacosUpdates {
+                    section: U::History,
+                    ..
+                }
+            )
+        ),
+        "device.updates.scan" => matches!(
+            q,
+            Some(
+                Q::WindowsUpdates {
+                    section: U::Scan,
+                    ..
+                } | Q::MacosUpdates {
+                    section: U::Scan,
+                    ..
+                }
+            )
+        ),
+        "device.updates.reboot_observation" => matches!(
+            q,
+            Some(
+                Q::WindowsUpdates {
+                    section: U::Reboot,
+                    ..
+                } | Q::MacosUpdates {
+                    section: U::Reboot,
+                    ..
+                }
+            )
+        ),
+        "device.security.windows.bitlocker.volumes" => matches!(q, Some(Q::WindowsBitlocker)),
+        "device.security.windows.firewall.profiles" => matches!(q, Some(Q::WindowsFirewall)),
+        "device.security.windows.defender.observation" => matches!(q, Some(Q::WindowsDefender)),
+        "device.security.windows.secure_boot" => matches!(q, Some(Q::WindowsSecureBoot)),
+        "device.security.application.observation" => matches!(
+            q,
+            Some(Q::WindowsApplication { .. } | Q::MacosApplication { .. })
+        ),
+        "device.security.application.permissions" => matches!(q, Some(Q::MacosApplication { .. })),
+        "device.security.macos.gatekeeper_observation" => matches!(
+            q,
+            Some(Q::MacosSecurity {
+                section: M::Gatekeeper
+            })
+        ),
+        "device.security.macos.xprotect.observation" => matches!(
+            q,
+            Some(Q::MacosSecurity {
+                section: M::Xprotect
+            })
+        ),
+        "device.security.macos.system_extensions" => matches!(
+            q,
+            Some(Q::MacosSecurity {
+                section: M::SystemExtensions
+            })
+        ),
+        "device.security.macos.filevault" => matches!(
+            q,
+            Some(Q::MacosSecurity {
+                section: M::Filevault
+            })
+        ),
+        "device.security.macos.firewall" => matches!(
+            q,
+            Some(Q::MacosSecurity {
+                section: M::Firewall
+            })
+        ),
+        "device.security.macos.sip" => matches!(q, Some(Q::MacosSecurity { section: M::Sip })),
+        "device.security.macos.hardware_encryption" => matches!(
+            q,
+            Some(Q::MacosSecurity {
+                section: M::HardwareEncryption
+            })
+        ),
+        "device.security.macos.secure_token.local" => matches!(
+            q,
+            Some(Q::MacosSecurity {
+                section: M::SecureToken
+            })
+        ),
+        "device.security.macos.bootstrap_token.local" => matches!(
+            q,
+            Some(Q::MacosSecurity {
+                section: M::BootstrapToken
+            })
+        ),
+        _ => true,
+    }
+}
+
 #[cfg(test)]
 mod mapping_tests {
     use super::*;
@@ -700,185 +880,5 @@ mod mapping_tests {
         };
         mapping.validate().unwrap();
         assert!(validate_mapping(&field, &mapping).is_err());
-    }
-}
-
-// Only the closed declared native source can assert full account/store/update evidence.
-fn system_field_matches(
-    field: &str,
-    query: &rss_mdm_agent_wire::runtime::NativeQueryDefinition,
-) -> bool {
-    use rss_mdm_agent_wire::runtime::{
-        AccountSection as A, MacosSecuritySection as M, NativeQueryDefinition as D,
-        NativeSystemQuery as Q, UpdateSection as U,
-    };
-    let q = if let D::System { query } = query {
-        Some(query)
-    } else {
-        None
-    };
-    match field {
-        "device.certificates.metadata" => matches!(
-            q,
-            Some(Q::WindowsCertificates { .. } | Q::MacosCertificates { .. })
-        ),
-        "device.accounts.windows.identities" => matches!(
-            q,
-            Some(Q::WindowsAccounts {
-                section: A::Accounts,
-                ..
-            })
-        ),
-        "device.accounts.macos.identities" => matches!(
-            q,
-            Some(Q::MacosAccounts {
-                section: A::Accounts,
-                ..
-            })
-        ),
-        "device.accounts.administrators.direct" => matches!(
-            q,
-            Some(
-                Q::WindowsAccounts {
-                    section: A::Administrators,
-                    ..
-                } | Q::MacosAccounts {
-                    section: A::Administrators,
-                    ..
-                }
-            )
-        ),
-        "device.accounts.sessions" => matches!(
-            q,
-            Some(
-                Q::WindowsAccounts {
-                    section: A::Sessions,
-                    ..
-                } | Q::MacosAccounts {
-                    section: A::Sessions,
-                    ..
-                }
-            )
-        ),
-        "device.accounts.windows.join" => matches!(q, Some(Q::WindowsJoin)),
-        "device.updates.available" => matches!(
-            q,
-            Some(
-                Q::WindowsUpdates {
-                    section: U::Available,
-                    ..
-                } | Q::MacosUpdates {
-                    section: U::Available,
-                    ..
-                }
-            )
-        ),
-        "device.updates.installed" => matches!(
-            q,
-            Some(
-                Q::WindowsUpdates {
-                    section: U::Installed,
-                    ..
-                } | Q::MacosUpdates {
-                    section: U::Installed,
-                    ..
-                }
-            )
-        ),
-        "device.updates.history" => matches!(
-            q,
-            Some(
-                Q::WindowsUpdates {
-                    section: U::History,
-                    ..
-                } | Q::MacosUpdates {
-                    section: U::History,
-                    ..
-                }
-            )
-        ),
-        "device.updates.scan" => matches!(
-            q,
-            Some(
-                Q::WindowsUpdates {
-                    section: U::Scan,
-                    ..
-                } | Q::MacosUpdates {
-                    section: U::Scan,
-                    ..
-                }
-            )
-        ),
-        "device.updates.reboot_observation" => matches!(
-            q,
-            Some(
-                Q::WindowsUpdates {
-                    section: U::Reboot,
-                    ..
-                } | Q::MacosUpdates {
-                    section: U::Reboot,
-                    ..
-                }
-            )
-        ),
-        "device.security.windows.bitlocker.volumes" => matches!(q, Some(Q::WindowsBitlocker)),
-        "device.security.windows.firewall.profiles" => matches!(q, Some(Q::WindowsFirewall)),
-        "device.security.windows.defender.observation" => matches!(q, Some(Q::WindowsDefender)),
-        "device.security.windows.secure_boot" => matches!(q, Some(Q::WindowsSecureBoot)),
-        "device.security.application.observation" => matches!(
-            q,
-            Some(Q::WindowsApplication { .. } | Q::MacosApplication { .. })
-        ),
-        "device.security.application.permissions" => matches!(q, Some(Q::MacosApplication { .. })),
-        "device.security.macos.gatekeeper.observation" => matches!(
-            q,
-            Some(Q::MacosSecurity {
-                section: M::Gatekeeper
-            })
-        ),
-        "device.security.macos.xprotect.observation" => matches!(
-            q,
-            Some(Q::MacosSecurity {
-                section: M::Xprotect
-            })
-        ),
-        "device.security.macos.system_extensions" => matches!(
-            q,
-            Some(Q::MacosSecurity {
-                section: M::SystemExtensions
-            })
-        ),
-        "device.security.macos.filevault" => matches!(
-            q,
-            Some(Q::MacosSecurity {
-                section: M::Filevault
-            })
-        ),
-        "device.security.macos.firewall" => matches!(
-            q,
-            Some(Q::MacosSecurity {
-                section: M::Firewall
-            })
-        ),
-        "device.security.macos.sip" => matches!(q, Some(Q::MacosSecurity { section: M::Sip })),
-        "device.security.macos.hardware_encryption" => matches!(
-            q,
-            Some(Q::MacosSecurity {
-                section: M::HardwareEncryption
-            })
-        ),
-        "device.security.macos.secure_token.local" => matches!(
-            q,
-            Some(Q::MacosSecurity {
-                section: M::SecureToken
-            })
-        ),
-        "device.security.macos.bootstrap_token.local" => matches!(
-            q,
-            Some(Q::MacosSecurity {
-                section: M::BootstrapToken
-            })
-        ),
-        _ => true,
     }
 }

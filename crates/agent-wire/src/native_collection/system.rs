@@ -542,6 +542,31 @@ impl NativeSystemQuery {
             _ => None,
         }
     }
+    /// Complete rows cover every declared observation; permission probes cannot omit a requested permission.
+    pub(super) fn complete_row(&self, row: &BTreeMap<String, serde_json::Value>) -> bool {
+        if self.properties().keys().any(|k| !row.contains_key(k)) {
+            return false;
+        }
+        if let Self::MacosApplication { permissions, .. } = self {
+            let Some(values) = row.get("permissions").and_then(|v| v.as_array()) else {
+                return false;
+            };
+            let keys: BTreeSet<_> = values
+                .iter()
+                .filter_map(|v| v.as_str()?.split_once(':').map(|p| p.0))
+                .collect();
+            let expected: BTreeSet<_> = permissions
+                .iter()
+                .map(|p| match p {
+                    ApplicationPermission::FullDiskAccess => "full_disk_access",
+                    ApplicationPermission::Accessibility => "accessibility",
+                    ApplicationPermission::ScreenCapture => "screen_capture",
+                })
+                .collect();
+            return keys == expected && values.len() == expected.len();
+        }
+        true
+    }
     /// Validate all present data, including partial/failed evidence, before persistence.
     pub fn accepts_row(&self, row: &BTreeMap<String, serde_json::Value>) -> bool {
         let schema = self.properties();

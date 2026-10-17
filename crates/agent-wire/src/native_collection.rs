@@ -1231,8 +1231,8 @@ impl NativeQueryResult {
             {
                 return false;
             }
-            if matches!(q.definition, NativeQueryDefinition::System { .. })
-                && schema.keys().any(|k| !row.contains_key(k))
+            if let NativeQueryDefinition::System { query } = &q.definition
+                && !query.complete_row(row)
             {
                 return false;
             }

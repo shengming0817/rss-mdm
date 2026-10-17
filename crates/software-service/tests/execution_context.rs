@@ -77,6 +77,8 @@ fn brew_requires_a_non_root_interactive_account() {
     let mut live = context();
     live.msix_sideload = false;
     live.msix_unsigned = false;
+    live.interactive_user.as_mut().unwrap().generated_uid =
+        Some("00000000-0000-0000-0000-000000000501".into());
     for uid in ["501", "0", "000"] {
         live.interactive_user.as_mut().unwrap().identity = uid.into();
         assert_eq!(

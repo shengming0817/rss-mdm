@@ -627,7 +627,7 @@ async fn native_inventory_case(
     let policy_input = || json!({"scope":case_task_scope(),"action":{"kind":"agent_collection","resource":{"id":resource_id,"version":"v1","platform":platform,"architecture":"x86_64","variant":"default"},"runLifetimeSeconds":300}});
     let mut prior_network = String::new();
     let mut prior_software = String::new();
-    let mut prior_updates = String::new();
+    let mut prior_updates = Value::Null;
     for &stage in stages {
         let policy = Uuid::new_v4();
         if !map_software && stage == 0 {
@@ -951,10 +951,10 @@ async fn native_inventory_case(
                 ensure!(certificates["value"].as_array().unwrap().len()==if stage==2 {0}else{1},"certificate partial/empty replacement failed: {certificates}");
                 let updates:Value=serde_json::from_str(pg(&format!("SELECT value::text FROM mdm.inventory WHERE tenant_id='{}' AND registration='{}' AND field='device.updates.available' AND source='agent.native'",case_tenant(),spec.registration_id))?.trim())?;
                 ensure!(updates["value"].as_array().unwrap().len()==if stage==2 {0}else{1});
-                if stage==0 {prior_updates=updates.to_string();}
-                if stage==1 {ensure!(updates.to_string()==prior_updates,"truncated update replaced prior complete discovery");}
+                if stage==0 {prior_updates=updates.clone();}
+                if stage==1 {ensure!(updates==prior_updates,"truncated update replaced prior complete discovery");}
                 if stage==0 {
-                    let security=if macos {"device.security.macos.gatekeeper.observation"}else{"device.security.windows.defender.observation"};
+                    let security=if macos {"device.security.macos.gatekeeper_observation"}else{"device.security.windows.defender.observation"};
                     let evidence=pg(&format!("SELECT value::text FROM mdm.inventory WHERE tenant_id='{}' AND registration='{}' AND field='{security}'",case_tenant(),spec.registration_id))?;
                     ensure!(evidence.contains(if macos {"unknown"}else{"passive"}),"security observation not projected: {evidence}");
                 }
