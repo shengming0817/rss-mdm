@@ -39,13 +39,6 @@ async fn durable_corruption_is_distinct_from_interruption() {
             "audit_contract_error",
             Failure::AuditContract,
         ),
-        (
-            rss_mdm_audit_integration::Error::from(sqlx::Error::Protocol(
-                "private fixture diagnostic".into(),
-            )),
-            "audit_contract_error",
-            Failure::AuditContract,
-        ),
     ] {
         let projected = Error::from(&cause);
         let diagnostic =

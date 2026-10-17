@@ -988,7 +988,44 @@ async fn renew(
             .body(wire.clone())
             .send()
     };
-    let response = send().await?;
+    // Hold the production channel lock until the request has actually sampled its clock,
+    // then cross a wall-clock second before profile preparation. This exposes stale signing time.
+    use sha2::Digest;
+    let mut blocker = PgConnection::connect_with(&options("postgres")?).await?;
+    let pid: i32 = sqlx::query_scalar("SELECT pg_backend_pid()")
+        .fetch_one(&mut blocker)
+        .await?;
+    let device: String = sqlx::query_scalar("SELECT r.device FROM mdm_access.registrations r JOIN mdm_access.credentials c ON (c.tenant_id,c.registration)=(r.tenant_id,r.id) WHERE c.tenant_id=$1::uuid AND c.locator=$2")
+        .bind(case_tenant()).bind(format!("{:x}",sha2::Sha256::digest(certificate))).fetch_one(&mut blocker).await?;
+    let mut lock = blocker.begin().await?;
+    rss_mdm_registration_service::device::store::lock_channel(
+        &mut lock,
+        case_tenant(),
+        &device,
+        rss_mdm_inventory::Channel::Mdm,
+    )
+    .await?;
+    let unlock = async {
+        let mut monitor = PgConnection::connect_with(&options("postgres")?).await?;
+        let wait = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                let blocked: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE $1=ANY(pg_blocking_pids(pid)))")
+                    .bind(pid).fetch_one(&mut monitor).await?;
+                if blocked { break; }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+            let sampled = now();
+            while now() == sampled { tokio::time::sleep(std::time::Duration::from_millis(10)).await; }
+            Ok::<_, anyhow::Error>(())
+        }).await;
+        lock.rollback().await?;
+        wait??;
+        monitor.close().await?;
+        Ok::<_, anyhow::Error>(())
+    };
+    let (response, unlocked) = tokio::join!(send(), unlock);
+    unlocked?;
+    let response = response?;
     ensure!(
         response.status() == StatusCode::OK,
         "renewal: {}",

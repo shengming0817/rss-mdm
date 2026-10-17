@@ -27,7 +27,17 @@ pub enum Error {
 }
 impl From<sqlx::Error> for Error {
     fn from(e: sqlx::Error) -> Self {
-        Self::Audit(e.into())
+        // A real SQL permission denial retains the permission diagnosis after startup probes
+        // leave the hot path. Other storage failures (including closed pools) stay distinct.
+        if e.as_database_error()
+            .and_then(|error| error.code())
+            .as_deref()
+            == Some("42501")
+        {
+            Self::Admission
+        } else {
+            Self::Audit(e.into())
+        }
     }
 }
 impl From<Error> for PgError {
@@ -521,10 +531,6 @@ impl Error {
                         rss_ledger_postgres::Error::Admission(_) => ErrorClass::AuditAdmission,
                         _ => ErrorClass::AuditIntegrity,
                     },
-                    Audit::Storage {
-                        kind: rss_audit_postgres::StorageFailure::Permanent,
-                        ..
-                    } => ErrorClass::AuditContract,
                     Audit::InvalidBound
                     | Audit::ScopeMismatch
                     | Audit::Protocol(_)
