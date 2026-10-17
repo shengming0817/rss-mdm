@@ -85,6 +85,36 @@ async fn reject_damaged_receipt(
                 .await?;
         ensure!(records == 1);
     }
+    // The opposite one-sided loss is also corruption, never permission to recreate Audit.
+    let id = fact.identity();
+    sqlx::query("INSERT INTO mdm_audit.receipts(tenant_id,source_id,event_id,fingerprint,canonical) VALUES($1::uuid,$2,$3,$4,$5)")
+        .bind(tenant.to_string()).bind(id.source().source_id().as_str()).bind(id.event_id().as_str())
+        .bind(fact.fingerprint().as_slice()).bind(&canonical).execute(&mut owner).await?;
+    crate::planning::test_support::sql(&format!(
+        "DELETE FROM rss_audit.records WHERE tenant_id='{tenant}'"
+    ));
+    let attempt = store
+        .write(tenant, _control, (store, fact), |(store, fact), tx| {
+            Box::pin(async move { store.append(tx, fact, true).await })
+        })
+        .await;
+    ensure!(attempt.fold(
+        |_| false,
+        |_| false,
+        |e| matches!(e, TransactionError::Operation(Error::Receipt)),
+        |_| false,
+        |_| false,
+        |_| false
+    ));
+    let records: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM rss_audit.records WHERE tenant_id=$1::uuid")
+            .bind(tenant.to_string())
+            .fetch_one(&mut owner)
+            .await?;
+    ensure!(
+        records == 0,
+        "missing Audit must not be automatically repaired"
+    );
     owner.close().await?;
     Ok(())
 }

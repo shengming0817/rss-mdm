@@ -29,6 +29,7 @@ async fn exercise(pool: &PgPool, ledger: bool) -> Result<()> {
     ensure!(state(first) == "committed");
     let original = bytes(pool, tenant).await?;
     ensure!(original.len() == 1);
+    tokio::time::sleep(Duration::from_millis(1100)).await;
     let replay = store
         .write(tenant, &control, (&store, &fact), |(store, fact), tx| {
             Box::pin(async move { store.append(tx, fact, true).await })
