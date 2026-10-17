@@ -236,27 +236,15 @@ impl ExecutionService {
         for (id, installation) in rows {
             let op = storage::load(tx, &self.protection, installation).await?;
             let delivery = Uuid::new_v4();
-            let task = match op.request.task.source() {
-                rss_mdm_inventory::ReportSource::MdmWindows => Task::Windows {
-                    request: rss_mdm_windows_mdm::native::Execution::SyncMl {
-                        request: rss_mdm_windows_mdm::native::Request::Atomic {
-                            operations: vec![rss_mdm_windows_mdm::native::Request::Node {
-                                node: "./Device/Vendor/MSFT/ClientCertificateInstall/SCEP/*".into(),
-                                instance: vec![id.to_string()],
-                                operation: rss_mdm_windows_mdm::native::Verb::Delete,
-                                value: None,
-                            }],
-                        },
-                    },
-                },
-                rss_mdm_inventory::ReportSource::MdmApple => Task::Macos {
-                    request: rss_mdm_apple_mdm::native::request::Request::RemoveProfile {
-                        identifier: format!("com.rss-mdm.agent.bootstrap.{id}"),
-                        uuid: id,
-                    },
-                },
-                _ => return Err(Error::Forbidden.into()),
-            };
+            let task = cleanup_task(
+                op.authority
+                    .agent_package()
+                    .ok_or(Error::Forbidden)?
+                    .target
+                    .parts()
+                    .0,
+                id,
+            );
             let input = Create {
                 operation_id: delivery,
                 deadline: now + 300,
@@ -271,7 +259,7 @@ impl ExecutionService {
             else {
                 return Err(Error::Forbidden.into());
             };
-            *stage = AgentInstallStage::Cleanup;
+            *stage = AgentInstallStage::Cleanup { bootstrap: id };
             *required = input.task.permissions()?;
             let fingerprint = crate::protection::fingerprint(
                 &self.protection,
@@ -299,5 +287,29 @@ impl ExecutionService {
             })).await?;
         }
         Ok(())
+    }
+}
+
+/// The cleanup authority permits exactly this bootstrap object's native removal.
+pub(crate) fn cleanup_task(platform: rss_mdm_policy::Platform, id: Uuid) -> Task {
+    match platform {
+        rss_mdm_policy::Platform::Windows => Task::Windows {
+            request: rss_mdm_windows_mdm::native::Execution::SyncMl {
+                request: rss_mdm_windows_mdm::native::Request::Atomic {
+                    operations: vec![rss_mdm_windows_mdm::native::Request::Node {
+                        node: "./Device/Vendor/MSFT/ClientCertificateInstall/SCEP/*".into(),
+                        instance: vec![id.to_string()],
+                        operation: rss_mdm_windows_mdm::native::Verb::Delete,
+                        value: None,
+                    }],
+                },
+            },
+        },
+        rss_mdm_policy::Platform::Macos => Task::Macos {
+            request: rss_mdm_apple_mdm::native::request::Request::RemoveProfile {
+                identifier: format!("com.rss-mdm.agent.bootstrap.{id}"),
+                uuid: id,
+            },
+        },
     }
 }

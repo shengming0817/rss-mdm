@@ -1869,6 +1869,7 @@ for name in ('agent.registration', 'windows.declared', 'windows.issuance', 'wind
 for module_id, selector, fixture in (
     ('apple.onboarding', 'apple::tests::onboarding::absent_agent_group_installs_fixed_package_and_registers_independently', 'ca_agent'),
     ('execution.commands.onboarding', 'execution::t2::commands::onboarding::windows_policy_install_register_and_replay_use_independent_identity', 'ca_agent'),
+    ('execution.commands.onboarding', 'execution::t2::commands::onboarding::historical_bootstrap_cleanup_survives_current_identity_completion', 'ca_agent'),
     ('execution.commands.onboarding', 'execution::t2::commands::onboarding::windows_policy_install_register_and_replay_use_independent_identity', 'ca_windows'),
     ('execution.commands.onboarding', 'execution::t2::commands::onboarding::replacement_rejects_old_installation_and_requires_current_epoch_absence', 'ca_windows'),
     ('execution.commands.configuration', 'execution::t2::commands::configuration::native_object_sets_share_a_device_and_withdraw_only_their_own_objects', 'ca_windows'),

@@ -1557,3 +1557,205 @@ async fn expired_known_bootstrap_recovers_without_reinstall_or_unknown_resigning
     ensure!(owner.shutdown().join().await?.is_clean());
     host.close().await
 }
+
+fn cleanup_reply(initial: &s::Message, response: &s::Message, fail: Option<Uuid>) -> s::Message {
+    let mut out = reply(initial, response, false);
+    fn visit(
+        commands: &[s::Command],
+        fail: Option<Uuid>,
+        out: &mut s::Message,
+        message: u32,
+    ) -> bool {
+        let mut failed = false;
+        for command in commands {
+            match command {
+                s::Command::Get { id, items, .. }
+                    if items.iter().all(|item| {
+                        item.target.as_deref().is_some_and(|uri| {
+                            uri.contains("/ClientCertificateInstall/SCEP/")
+                                && uri
+                                    .rsplit('/')
+                                    .next()
+                                    .is_some_and(|key| Uuid::parse_str(key).is_ok())
+                        })
+                    }) =>
+                {
+                    let still_present = fail.is_some_and(|id| {
+                        items.iter().any(|i| {
+                            i.target
+                                .as_ref()
+                                .is_some_and(|uri| uri.ends_with(&id.to_string()))
+                        })
+                    });
+                    if !still_present {
+                        out.commands.retain(|entry|!matches!(entry,s::Command::Results(r) if r.command_ref==Some(*id)));
+                        for entry in &mut out.commands {
+                            if let s::Command::Status(status) = entry
+                                && status.command_ref == *id
+                            {
+                                status.code = 404;
+                            }
+                        }
+                    }
+                }
+                s::Command::Delete { id, items, .. } => {
+                    let rejected = fail.is_some_and(|id| {
+                        items.iter().any(|i| {
+                            i.target
+                                .as_ref()
+                                .is_some_and(|uri| uri.contains(&id.to_string()))
+                        })
+                    });
+                    out.commands.push(s::Command::Status(s::Status {
+                        id: out.commands.len() as u32 + 1,
+                        message_ref: message,
+                        command_ref: *id,
+                        command: s::CommandName::Delete,
+                        target_refs: vec![],
+                        source_refs: vec![],
+                        code: if rejected { 500 } else { 200 },
+                        items: vec![],
+                        challenge: None,
+                        credential: None,
+                    }));
+                    failed |= rejected;
+                }
+                s::Command::Atomic { id, commands } | s::Command::Sequence { id, commands }
+                    if visit(commands, fail, out, message) =>
+                {
+                    for entry in &mut out.commands {
+                        if let s::Command::Status(status) = entry
+                            && status.command_ref == *id
+                        {
+                            status.code = 500;
+                        }
+                    }
+                    failed = true;
+                }
+                _ => (),
+            }
+        }
+        failed
+    }
+    visit(
+        &response.commands,
+        fail,
+        &mut out,
+        response.header.message_id,
+    );
+    out
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+#[ignore = "make t2 MODULE=execution.commands.onboarding"]
+async fn historical_bootstrap_cleanup_survives_current_identity_completion() -> Result<()> {
+    let (host, mut client, peer, commands, owner, policy, operation) = start_fixture().await?;
+    let (initial, execute, wire) =
+        installation(&peer, &mut client, policy, operation, AttemptPhase::Execute).await?;
+    bootstrap::issue_windows(
+        &host.app,
+        &client.router,
+        &host.root,
+        operation,
+        wire.as_ref().context("initial identity")?,
+    )
+    .await?;
+    post(&peer, &reply(&initial, &execute, false)).await?;
+    let old:Uuid=Uuid::parse_str(pg(&format!("SELECT id FROM mdm_access.agent_bootstraps WHERE tenant_id='{}' AND installation='{operation}' AND active",case_tenant()))?.trim())?;
+    pg(&format!(
+        "UPDATE mdm_access.agent_bootstraps SET deadline=floor(extract(epoch FROM clock_timestamp()))::bigint-1 WHERE tenant_id='{}' AND id='{old}'",
+        case_tenant()
+    ))?;
+    let mut replacement = None;
+    for session in 2500..2540 {
+        let (start, wire) = begin(&peer, session).await?;
+        if !bootstrap::windows_fields(&wire.commands).is_empty() {
+            replacement = Some(
+                bootstrap::issue_windows(&host.app, &client.router, &host.root, operation, &wire)
+                    .await?,
+            );
+            post(&peer, &reply(&start, &wire, false)).await?;
+            break;
+        }
+        post(&peer, &reply(&start, &wire, false)).await?;
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    let replacement = replacement.context("replacement identity was not delivered")?;
+    let current = pg(&format!(
+        "SELECT id FROM mdm_access.agent_bootstraps WHERE tenant_id='{}' AND installation='{operation}' AND active",
+        case_tenant()
+    ))?;
+    let current = current.trim();
+    let secret = credential("independent-cleanup");
+    let input = json!({"wireVersion":1,"operationId":Uuid::new_v4(),"installationOperation":operation,"secret":secret,"csr":crate::test_support::agent::csr()?,"runtime":{"executionContext":crate::test_support::software_execution::context(crate::test_support::software_execution::Platform::Windows),"platform":"windows","architecture":"x86_64","capabilities":["inventory.collect.v1","task.execute.v1"]}});
+    let response = bootstrap::grant(&client.router, &replacement, &input).await?;
+    ensure!(response.status() == StatusCode::OK);
+    let grant: Value = response.json().await?;
+    crate::test_support::agent::complete_grant(
+        host.app.agent_enrollment.as_ref().unwrap(),
+        &grant,
+        &input,
+        &secret,
+    )
+    .await?;
+    let mut completed = false;
+    for session in 2600..2640 {
+        let (start, wire) = begin(&peer, session).await?;
+        post(&peer, &cleanup_reply(&start, &wire, Some(old))).await?;
+        let state = pg(&format!(
+            "SELECT cleanup_complete FROM mdm_access.agent_bootstraps WHERE tenant_id='{}' AND id='{current}'",
+            case_tenant()
+        ))?;
+        if state.trim() == "t" {
+            completed = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    ensure!(
+        completed,
+        "current identity cleanup did not complete: {}",
+        pg(&format!(
+            "SELECT jsonb_agg(jsonb_build_object('id',b.id,'complete',b.cleanup_complete,'cleanup',b.cleanup,'status',mdm_commands.installation_status(b.cleanup),'failure',o.dispatch_failure)) FROM mdm_access.agent_bootstraps b LEFT JOIN mdm_commands.operations o ON(o.tenant_id,o.id)=(b.tenant_id,b.cleanup) WHERE b.tenant_id='{}' AND b.installation='{operation}'",
+            case_tenant()
+        ))?
+    );
+    let original = pg(&format!(
+        "SELECT cleanup FROM mdm_access.agent_bootstraps WHERE tenant_id='{}' AND id='{old}' AND NOT cleanup_complete",
+        case_tenant()
+    ))?;
+    let original = Uuid::parse_str(original.trim()).context("historical cleanup stays pending")?;
+    host.app.execution.advance_installation_authorization_to(
+        crate::clock::Clock::unix_seconds(&crate::clock::SystemClock)? + 301,
+    )?;
+    let mut recovered = false;
+    for session in 2700..2740 {
+        let (start, wire) = begin(&peer, session).await?;
+        post(&peer, &cleanup_reply(&start, &wire, None)).await?;
+        let state = pg(&format!(
+            "SELECT cleanup_complete FROM mdm_access.agent_bootstraps WHERE tenant_id='{}' AND id='{old}'",
+            case_tenant()
+        ))?;
+        if state.trim() == "t" {
+            recovered = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    ensure!(
+        recovered,
+        "new identity completion must not revoke the old object's cleanup duty"
+    );
+    ensure!(
+        pg(&format!(
+            "SELECT count(*) FROM mdm_commands.operations WHERE tenant_id='{}' AND id='{original}'",
+            case_tenant()
+        ))?
+        .trim()
+            == "1"
+    );
+    ensure!(pg(&format!("SELECT count(*) FROM mdm_commands.operations WHERE tenant_id='{}' AND authority->>'stage'='install'",case_tenant()))?.trim()=="1");
+    ensure!(commands.shutdown().join().await?.is_clean());
+    ensure!(owner.shutdown().join().await?.is_clean());
+    host.close().await
+}

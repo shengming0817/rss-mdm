@@ -586,7 +586,7 @@ pub(crate) async fn cleanup_authorized_on(
     authority: &crate::authority::ExecutionAuthority,
 ) -> std::result::Result<bool, Error> {
     let crate::authority::ExecutionAuthority::AgentInstall {
-        stage: crate::authority::AgentInstallStage::Cleanup,
+        stage: crate::authority::AgentInstallStage::Cleanup { bootstrap },
         tenant,
         operation,
         device,
@@ -595,5 +595,5 @@ pub(crate) async fn cleanup_authorized_on(
     else {
         return Ok(false);
     };
-    sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_access.agent_bootstraps b JOIN mdm_commands.operations o ON(o.tenant_id,o.id)=(b.tenant_id,b.installation) WHERE b.tenant_id=$1::uuid AND b.installation=$2 AND o.device=$3 AND b.state='consumed' AND NOT b.cleanup_complete AND EXISTS(SELECT 1 FROM mdm_access.registrations native WHERE native.tenant_id=o.tenant_id AND native.id=o.registration AND native.generation=o.registration_generation AND native.state='active') AND EXISTS(SELECT 1 FROM mdm_access.agent_grants g JOIN mdm_access.registrations r ON(r.tenant_id,r.agent_grant_id)=(g.tenant_id,g.id) WHERE g.tenant_id=b.tenant_id AND g.native_authority->>'bootstrap'=b.id::text))").bind(tenant).bind(operation).bind(device).fetch_one(c).await.map_err(crate::database::db)
+    sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_access.agent_bootstraps b JOIN mdm_commands.operations o ON(o.tenant_id,o.id)=(b.tenant_id,b.installation) WHERE b.tenant_id=$1::uuid AND b.installation=$2 AND o.device=$3 AND b.id=$4 AND b.state IN('issued','consumed') AND NOT b.cleanup_complete AND EXISTS(SELECT 1 FROM mdm_access.registrations native WHERE native.tenant_id=o.tenant_id AND native.id=o.registration AND native.generation=o.registration_generation AND native.state='active') AND EXISTS(SELECT 1 FROM mdm_access.agent_grants g JOIN mdm_access.registrations r ON(r.tenant_id,r.agent_grant_id)=(g.tenant_id,g.id) WHERE g.tenant_id=b.tenant_id AND g.native_authority->>'installation'=b.installation::text))").bind(tenant).bind(operation).bind(device).bind(bootstrap).fetch_one(c).await.map_err(crate::database::db)
 }
