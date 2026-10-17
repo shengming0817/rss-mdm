@@ -192,6 +192,7 @@ impl ExecutionService {
                 .fetch_one(&mut *c)
                 .await
                 .map_err(crate::database::db)?;
+        let now = self.installation_authorization_time(now);
         if now >= request.deadline
             || !matches!(
                 row.try_get::<String, _>("status")

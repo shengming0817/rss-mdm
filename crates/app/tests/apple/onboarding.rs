@@ -24,7 +24,7 @@ async fn absent_agent_group_installs_fixed_package_and_registers_independently()
     let mut launch = startup.commit();
     launch.stage_deferred_task_with_token(automation.registration(f.signals.flow()).critical());
     launch.finish();
-    let policy = setup::publish(&mut f.browser, &f.router, case_device(), false).await?;
+    let policy = setup::publish(&mut f.browser, &f.router, case_device(), &f.app, false).await?;
     let (platform, payload) = peer.next("DeviceInformation").await?;
     ensure!(
         payload["Queries"]

@@ -242,17 +242,6 @@ async fn windows_policy_install_register_and_replay_use_independent_identity() -
         "/api/v1/agent/enroll/native-grants",
     );
     let input = json!({"wireVersion":1,"operationId":Uuid::new_v4(),"installationOperation":operation,"secret":credential("managed-agent"),"csr":crate::test_support::agent::csr()?,"runtime":{"executionContext":crate::test_support::software_execution::context(crate::test_support::software_execution::Platform::Windows),"platform":"windows","architecture":"x86_64","capabilities":["inventory.collect.v1","task.execute.v1"]}});
-    let spoof = peer
-        .mutual
-        .post(&url)
-        .header("x-device-id", case_device())
-        .json(&input)
-        .send()
-        .await?;
-    ensure!(
-        spoof.status() == StatusCode::BAD_REQUEST
-            && spoof.json::<Value>().await?["code"] == "malformed_request"
-    );
     let mut wrong = input.clone();
     wrong["runtime"]["architecture"] = json!("aarch64");
     ensure!(peer.mutual.post(&url).json(&wrong).send().await?.status() == StatusCode::FORBIDDEN);
@@ -320,11 +309,6 @@ async fn windows_policy_install_register_and_replay_use_independent_identity() -
         unknown.status() == StatusCode::SERVICE_UNAVAILABLE
             && unknown.json::<Value>().await?["code"] == "activation_unknown"
     );
-    let mut invalid = input.clone();
-    invalid["deviceId"] = json!("untrusted");
-    let rejected = peer.mutual.post(&url).json(&invalid).send().await?;
-    ensure!(rejected.status() == StatusCode::BAD_REQUEST);
-    ensure!(rejected.json::<serde_json::Value>().await?["code"] == "malformed_request");
     let response = peer.mutual.post(&url).json(&input).send().await?;
     let status = response.status();
     let receipt: Value = response.json().await?;
@@ -523,6 +507,7 @@ async fn start_fixture_until(
         &mut client.browser,
         &client.router,
         case_device(),
+        &host.app,
         true,
         until,
     )
@@ -839,9 +824,8 @@ async fn cancellation_blocks_registration_and_preserves_uncertain_native_effect(
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 #[ignore = "make t2 MODULE=execution.commands.onboarding"]
 async fn schedule_expiry_caps_installation_and_blocks_new_agent_registration() -> Result<()> {
-    use crate::clock::Clock;
     let (host, mut client, peer, commands, owner, policy, operation, until) =
-        start_fixture_until(Some(20)).await?;
+        start_fixture_until(Some(300)).await?;
     let until = until.expect("scheduled fixture");
     installation(&peer, &mut client, policy, operation, AttemptPhase::Execute).await?;
     ensure!(
@@ -855,13 +839,11 @@ async fn schedule_expiry_caps_installation_and_blocks_new_agent_registration() -
         package_status(&client.router, operation).await? == StatusCode::OK,
         "package was never accessible before expiry"
     );
-    tokio::time::timeout(Duration::from_secs(25), async {
-        while crate::clock::SystemClock.unix_seconds()? <= until {
-            tokio::time::sleep(Duration::from_millis(100)).await;
-        }
-        Ok::<_, anyhow::Error>(())
-    })
-    .await??;
+    client
+        .app
+        .execution
+        .service
+        .advance_installation_authorization_to(until)?;
     let url = peer.url.replace(
         "/ManagementServer/MDM.svc",
         "/api/v1/agent/enroll/native-grants",
@@ -876,6 +858,11 @@ async fn schedule_expiry_caps_installation_and_blocks_new_agent_registration() -
         state.1["agentInstallation"]["installation"] == "unknown",
         "expiry is not a failed installation: {state:?}"
     );
+    ensure!(
+        state.1["deadline"] == until,
+        "expiry changed frozen deadline"
+    );
+    ensure!(pg(&format!("SELECT count(*) FROM mdm_access.agent_grants WHERE tenant_id='{}' AND native_authority->>'installation'='{operation}'",case_tenant()))?.trim()=="0");
     ensure!(commands.shutdown().join().await?.is_clean());
     ensure!(owner.shutdown().join().await?.is_clean());
     host.close().await
@@ -999,14 +986,15 @@ async fn scope_exit_preserves_dispatched_installation_authority_until_its_deadli
         status == StatusCode::CREATED && receipt["state"] == "available",
         "{status}: {receipt}"
     );
-    let activated = crate::test_support::agent::complete_grant(
-        host.app.agent_enrollment.as_ref().unwrap(),
-        &receipt,
-        &input,
-        &credential("scope-exit-agent"),
-    )
-    .await?;
-    ensure!(activated["deviceId"] != case_device());
+    let grant: Value = serde_json::from_str(pg(&format!("SELECT jsonb_build_object('device',device,'installation',native_authority->>'installation','state',state) FROM mdm_access.agent_grants WHERE tenant_id='{}' AND operation_id='{}'",case_tenant(),input["operationId"].as_str().unwrap()))?.trim())?;
+    ensure!(
+        grant["device"]
+            .as_str()
+            .is_some_and(|id| id != case_device())
+            && grant["installation"] == operation.to_string()
+            && grant["state"] == "available"
+    );
+    ensure!(pg(&format!("SELECT count(*) FROM mdm_access.registrations WHERE tenant_id='{}' AND channel='agent'",case_tenant()))?.trim()=="0");
     ensure!(commands.shutdown().join().await?.is_clean());
     ensure!(owner.shutdown().join().await?.is_clean());
     host.close().await

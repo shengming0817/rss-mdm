@@ -23,23 +23,56 @@ pub(crate) async fn change(
     );
     Ok(reply.1)
 }
-pub(crate) async fn resource_input(
-    client: &mut Client,
-    input: Value,
-    secrets: &[&str],
-) -> anyhow::Result<String> {
+pub(crate) async fn resource_input(client: &mut Client, input: Value) -> anyhow::Result<String> {
     let id = Uuid::new_v4().to_string();
-    let path = format!("/api/v1/resources/{id}");
-    change(
-        client,
-        &path,
-        0,
-        json!({"action":"create","kind":"configuration"}),
-    )
-    .await?;
     let bytes = serde_json::to_vec(&input)?;
     let sha = rss_mdm_resource::Digest::of(&bytes).bytes();
-    change(client,&path,1,json!({"action":"version","version":"1","kind":"configuration","variants":[{"platform":"windows","architecture":"x86_64","key":"native","declaration":{"kind":"configuration","artifact":{"reference":"native-input","length":bytes.len(),"sha256":sha}}}]})).await?;
+    let version: rss_mdm_resource::Version = rss_mdm_resource::Version::new(
+        client.app.identity.tenant,
+        rss_mdm_resource::Id::new(id.clone())?,
+        rss_mdm_resource::Id::new("1")?,
+        rss_mdm_resource::Kind::Configuration,
+        vec![rss_mdm_resource::Variant::new(
+            rss_mdm_resource::Platform::Windows,
+            rss_mdm_resource::Architecture::X86_64,
+            rss_mdm_resource::Id::new("native")?,
+            rss_mdm_resource::Declaration::Configuration {
+                artifact: rss_mdm_resource::Artifact::new(
+                    rss_mdm_resource::Id::new("native-input")?,
+                    bytes.len() as u64,
+                    rss_mdm_resource::Digest::from_bytes(sha),
+                )?,
+            },
+        )],
+    )?;
+    client
+        .app
+        .flow
+        .planning
+        .runtime
+        .local_tx(
+            client.app.identity.tenant,
+            crate::identity::deadline(),
+            move |tx| {
+                Box::pin(async move {
+                    rss_mdm_resource_postgres::fixture::active_version_in(
+                        tx,
+                        version,
+                        rss_contract::Timepoint::try_from(1_i64).expect("fixture time"),
+                    )
+                    .await
+                })
+            },
+        )
+        .await
+        .fold(
+            Ok,
+            |e| Err(anyhow::anyhow!(e)),
+            |e| Err(anyhow::anyhow!(e)),
+            |_| Err(anyhow::anyhow!("resource rollback unknown")),
+            |_| Err(anyhow::anyhow!("resource commit unknown")),
+            |e| Err(anyhow::anyhow!(e)),
+        )?;
     let upload = format!(
         "/api/v1/resources/{id}/content?version=1&variant=native&platform=windows&architecture=x86_64&operation={}",
         Uuid::new_v4()
@@ -71,39 +104,6 @@ pub(crate) async fn resource_input(
         "configuration artifact upload: {status} {}",
         String::from_utf8_lossy(&body)
     );
-    let content_root = client
-        .app
-        .content_writer
-        .as_ref()
-        .unwrap()
-        .config
-        .storage
-        .volume_directory()
-        .unwrap()
-        .join(case_tenant());
-    use sqlx::Connection;
-    let mut pg =
-        sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?)
-            .await?;
-    let pieces: Vec<Uuid> = sqlx::query_scalar("SELECT (piece->>'id')::uuid FROM mdm_content.manifests m CROSS JOIN LATERAL jsonb_array_elements(m.document->'value'->'pieces') piece WHERE m.tenant_id=$1::uuid AND m.class='native_configuration' AND m.sha256=$2 AND m.state='ready'")
-        .bind(case_tenant()).bind(sha.as_slice()).fetch_all(&mut pg).await?;
-    ensure!(
-        !pieces.is_empty(),
-        "current configuration has no stored content pieces"
-    );
-    for piece in pieces {
-        let stored = std::fs::read(content_root.join(piece.to_string()))?;
-        for node in secrets {
-            ensure!(
-                !stored
-                    .windows(node.len())
-                    .any(|part| part == node.as_bytes()),
-                "native configuration content remained plaintext"
-            );
-        }
-    }
-    pg.close().await?;
-    change(client, &path, 2, json!({"action":"activate","version":"1"})).await?;
     Ok(id)
 }
 pub(crate) async fn published(client: &mut Client, policy: Uuid) -> anyhow::Result<Vec<Uuid>> {

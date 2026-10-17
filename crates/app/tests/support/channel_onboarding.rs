@@ -51,33 +51,28 @@ pub(crate) async fn grants(user: &Browser, router: &Router) -> Result<()> {
 pub(crate) async fn publish(
     user: &mut Browser,
     router: &Router,
-    _device: &str,
+    device: &str,
+    app: &crate::api::Assembly,
     windows: bool,
 ) -> Result<Uuid> {
-    publish_until(user, router, _device, windows, None).await
+    publish_until(user, router, device, app, windows, None).await
 }
 pub(crate) async fn publish_until(
     user: &mut Browser,
     router: &Router,
-    _device: &str,
+    device: &str,
+    app: &crate::api::Assembly,
     windows: bool,
     until: Option<i64>,
 ) -> Result<Uuid> {
     use software::write;
+    let planning = &app.flow.planning;
+    let content = app.content_writer.as_ref().expect("installation content");
     grants(user, router).await?;
     let source = Uuid::new_v4();
     let source_path = format!("/api/v1/software/sources/{source}/revisions/1");
     let registered=write(user,router,&source_path,0,json!({"action":"register","definition":{"id":source,"revision":"1","protocol":{"kind":"private"}}})).await?;
     let resource = Uuid::new_v4();
-    let path = format!("/api/v1/resources/{resource}");
-    write(
-        user,
-        router,
-        &path,
-        0,
-        json!({"action":"create","kind":"software"}),
-    )
-    .await?;
     let platform = if windows { "windows" } else { "macos" };
     let arch = if windows { "x86_64" } else { "aarch64" };
     let detect = if windows {
@@ -86,7 +81,8 @@ pub(crate) async fn publish_until(
         json!({"kind":"pkg_receipt","receipt":"com.rss.agent.pkg","version":"1.2.3"})
     };
     let definition = json!({"source":registered["snapshot"],"package":"RSS.Agent","version":"1.2.3","artifacts":{"package":{"reference":"agent-installer","length":bytes().len(),"sha256":Sha256::digest(bytes()).to_vec()}},"reboot":"report","downgrade":"deny","dependencies":[],"behavior":{"kind":if windows{"msi"}else{"pkg"},"installer":"package","scope":"system","install":{"runAs":"system","arguments":[],"environment":{},"timeoutSeconds":60,"outputBytes":4096,"exitCodes":{"success":[0],"reboot":[]}},"upgrade":"in_place","uninstall":null,"detect":detect,"upgradeInvocation":{"runAs":"system","arguments":[],"environment":{},"timeoutSeconds":60,"outputBytes":4096,"exitCodes":{"success":[0],"reboot":[]}}},"signatures":[],"provenance":{"kind":"private"},"export":{"kind":"disabled"}});
-    write(user,router,&path,1,json!({"action":"version","version":"v1","kind":"software","variants":[{"platform":platform,"architecture":arch,"key":"default","declaration":{"kind":"software","definition":definition}}]})).await?;
+    let version =
+        software_execution::seed_resource(planning, resource, platform, arch, definition).await?;
     let request=Request::builder().method(Method::POST).uri(format!("/api/v1/resources/{resource}/content?version=v1&variant=default&platform={platform}&architecture={arch}&operation={}",Uuid::new_v4()))
         .header("host","mdm.example.test").header("origin","https://mdm.example.test").header("x-identity-request","1").header("x-csrf-token",user.csrf.as_ref().unwrap())
         .header("cookie",user.cookies.iter().map(|(k,v)|format!("{k}={v}")).collect::<Vec<_>>().join("; ")).header("content-type","application/octet-stream").body(Body::from(bytes()))?;
@@ -99,26 +95,16 @@ pub(crate) async fn publish_until(
             response.status()
         );
     }
-    write(
-        user,
-        router,
-        &path,
-        2,
-        json!({"action":"activate","version":"v1"}),
-    )
-    .await?;
-    write(
-        user,
-        router,
-        &format!("/api/v1/software/resources/{resource}/versions/v1"),
-        0,
-        json!({"action":"enable"}),
-    )
-    .await?;
-    let group = Uuid::new_v4();
-    crate::test_support::planning_http::call(user,router,&format!("/api/v1/groups/{group}"),0,json!({"action":"create","assetContext":"endpoint","name":"Agent missing","description":"","criteria":{"selector":{"kind":"device"},"quantifier":"one","criteria":{"kind":"predicate","field":"channel.agent.installation","op":"eq","value":{"kind":"string","value":"absent"}}}})).await?;
+    software_execution::seed_enabled(planning, content, &version).await?;
     let scope = Uuid::new_v4();
-    write(user,router,&format!("/api/v1/scopes/{scope}"),0,json!({"action":"put","definition":{"targets":[{"kind":"group","id":group}],"limitations":null,"exclusions":[]}})).await?;
+    if windows {
+        agent_execution::seed_scope(planning, scope, json!([{"kind":"device","id":device}]))
+            .await?;
+    } else {
+        let group = Uuid::new_v4();
+        crate::test_support::planning_http::call(user,router,&format!("/api/v1/groups/{group}"),0,json!({"action":"create","assetContext":"endpoint","name":"Agent missing","description":"","criteria":{"selector":{"kind":"device"},"quantifier":"one","criteria":{"kind":"predicate","field":"channel.agent.installation","op":"eq","value":{"kind":"string","value":"absent"}}}})).await?;
+        write(user,router,&format!("/api/v1/scopes/{scope}"),0,json!({"action":"put","definition":{"targets":[{"kind":"group","id":group}],"limitations":null,"exclusions":[]}})).await?;
+    }
     let policy = Uuid::new_v4();
     let mut input = json!({"action":"put","enabled":true,"definition":{"scope":scope,"action":{"kind":"ensure_agent_installed","resource":{"kind":"software","id":resource,"version":"v1","variants":{if windows{"windows_x86_64"}else{"macos_aarch64"}:"default"}},"runLifetimeSeconds":600}}});
     if let Some(until) = until {
