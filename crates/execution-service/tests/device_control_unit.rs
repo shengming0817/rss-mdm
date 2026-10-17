@@ -74,7 +74,7 @@ fn apple_matrix_requires_known_safe_hardware_and_version() {
         enrollment: Enrollment::Device,
         supervised: None,
         automated_enrollment: None,
-        user_authorized: None,
+        user_approved: None,
         apple_silicon: Some(true),
     };
     assert!(Kind::Wipe.supports_apple(&context));

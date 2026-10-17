@@ -239,7 +239,7 @@ async fn volume_fences_a_stale_writer_and_keeps_failed_body_frontier() -> Result
             tokio::task::yield_now().await;
         }
     }).await??;
-    writer.abort(); ensure!(writer.await.unwrap_err().is_cancelled()); drop(producer);
+    writer.abort(); ensure!(matches!(writer.await, Err(error) if error.is_cancelled())); drop(producer);
     tokio::time::timeout(Duration::from_secs(7), async {
         loop {
             if pg(&format!("SELECT count(*) FROM mdm_content.uploads WHERE tenant_id='{}' AND document->'value'->'upload'->>'id'='{cancelled}' AND epoch IS NULL AND held_until=0",case_tenant()))?.trim()=="1" {break Ok::<_,anyhow::Error>(());}

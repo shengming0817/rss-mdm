@@ -126,11 +126,8 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            budget
-                .total
-                .instant()
-                .duration_since(budget.operation.instant()),
-            Duration::from_secs(3)
+            budget.operation.instant() + Duration::from_secs(3),
+            budget.total.instant()
         );
         budget
             .work(async {
