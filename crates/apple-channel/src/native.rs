@@ -221,6 +221,7 @@ impl crate::Apple {
         let (registration, generation): (Uuid, i64) = sqlx::query_as(
             "SELECT registration,registration_generation FROM mdm_commands.operations WHERE tenant_id=$1::uuid AND id=$2")
             .bind(tenant).bind(operation).fetch_one(&mut *c).await.map_err(db)?;
+        let mut device_report = None;
         for (phase, request, root, fields) in [
             (
                 "resolve_device",
@@ -259,11 +260,25 @@ impl crate::Apple {
                 );
             }
             let request = protocol::command(id, payload)?;
-            let response = protocol::xml(protocol::dictionary([
+            let report = protocol::dictionary([
                 ("Status", "Acknowledged".into()),
                 ("CommandUUID", id.to_string().into()),
                 (root, Value::Dictionary(fields)),
-            ]))?;
+            ]);
+            let context = if phase == "resolve_device" {
+                device_report = Some(report.clone());
+                None
+            } else {
+                Some(
+                    serde_json::to_value(Context::from_reports(
+                        device_report.as_ref().ok_or(Error::Malformed)?,
+                        Some(&report),
+                        Channel::Device,
+                    )?)
+                    .map_err(|_| Error::Malformed)?,
+                )
+            };
+            let response = protocol::xml(report)?;
             let sealed_request = protection::seal(
                 &self.protection,
                 tenant,
@@ -289,9 +304,9 @@ impl crate::Apple {
                     &protection::aad(tenant, registration, generation, id, Part::Replay)?,
                 )
                 .map_err(|_| Error::Unavailable(crate::Failure::AppleStorage))?;
-            sqlx::query("INSERT INTO mdm_apple.attempts(tenant_id,id,registration,generation,operation,phase,request,response,response_digest,received_at,state,accepted,deadline) VALUES($1::uuid,$2,$3,$4,$5,$6,$7,$8,$9,floor(extract(epoch FROM clock_timestamp()))::bigint,'acknowledged',true,clock_timestamp()+interval '300 seconds')")
+            sqlx::query("INSERT INTO mdm_apple.attempts(tenant_id,id,registration,generation,operation,phase,request,response,response_digest,received_at,state,accepted,deadline,context) VALUES($1::uuid,$2,$3,$4,$5,$6,$7,$8,$9,floor(extract(epoch FROM clock_timestamp()))::bigint,'acknowledged',true,clock_timestamp()+interval '300 seconds',$10)")
                 .bind(tenant).bind(id).bind(registration).bind(generation).bind(operation).bind(phase)
-                .bind(sealed_request).bind(sealed_response).bind(digest.to_vec()).execute(&mut *c).await.map_err(db)?;
+                .bind(sealed_request).bind(sealed_response).bind(digest.to_vec()).bind(context).execute(&mut *c).await.map_err(db)?;
         }
         Ok(())
     }
