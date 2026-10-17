@@ -128,7 +128,9 @@ async fn rules_cas_replay_revocation_and_escalation() -> Result<()> {
     );
     released?;
     root.close().await?;
-    ensure!(admin.call(&router, Method::GET, &path, None).await?.1["revision"] == 2);
+    let current = admin.call(&router, Method::GET, "/api/v1/authorization/rules", None).await?;
+    ensure!(current.0 == StatusCode::OK);
+    ensure!(current.1["items"].as_array().unwrap().iter().find(|r| r["id"] == json!(rule_id)).context("CAS rule")?["revision"] == 2);
     let mut statuses = [first?.0.as_u16(), second?.0.as_u16()];
     statuses.sort();
     ensure!(statuses == [200, 409]);
@@ -266,8 +268,8 @@ async fn rules_cas_replay_revocation_and_escalation() -> Result<()> {
     )
     .await?;
     let escalation_denied = escalation.0 == StatusCode::FORBIDDEN;
-    let group = admin.call(&router, Method::GET, &privilege_group_path, None).await?;
-    ensure!(group.0 == StatusCode::OK && group.1["revision"] == 1 && group.1["value"]["members"] == json!([]));
+    let group = admin.call(&router, Method::GET, &format!("{privilege_group_path}/members"), None).await?;
+    ensure!(group.0 == StatusCode::OK && group.1["revision"] == 1 && group.1["items"] == json!([]));
     for operation in [stale_key, escalation_key] {
         ensure!(pg(&format!("SELECT count(*) FROM mdm_access.authorization_operations WHERE tenant_id='{}' AND operation_id='{operation}'", case_tenant()))?.trim() == "0");
         ensure!(audit_count(|r| r.source() == "mdm.business" && r.operation() == Some(operation.to_string().as_str()) && r.result() == "success")? == 0);

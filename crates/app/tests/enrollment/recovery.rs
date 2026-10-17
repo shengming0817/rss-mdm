@@ -57,7 +57,7 @@ async fn immutable_receipts_and_authorization_coordinates() -> anyhow::Result<()
             &password
         )
         .await,
-        Err(Error::Unauthorized)
+        Err(Error::Forbidden)
     ));
     ensure!(matches!(
         crate::enrollment::store::enrollment_authorization(
@@ -79,7 +79,7 @@ async fn immutable_receipts_and_authorization_coordinates() -> anyhow::Result<()
     ensure!(
         auth.device == "windows-device"
             && auth.source == rss_mdm_inventory::ReportSource::MdmWindows
-            && auth.windows_profile == Some(crate::enrollment::WindowsProfile::Device)
+            && auth.windows_profile == Some(crate::enrollment::WindowsProfile::Full)
     );
     store.close().await;
     Ok(())

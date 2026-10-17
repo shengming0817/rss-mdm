@@ -359,12 +359,14 @@ async fn permissions_rls_immutable_versions_and_tampering_are_enforced() -> Resu
         .collect(),
     )
     .await?;
+    f.admin.operation = Some(Uuid::new_v4());
     let exported = f.ok(Method::POST, "/export", Some(json!({"entryId":entry,"version":1}))).await?;
     ensure!(!exported.is_null());
     pg(&format!(
         "UPDATE mdm_certificate_archive.versions SET sealed=set_byte(sealed,octet_length(sealed)-1,get_byte(sealed,octet_length(sealed)-1)#1) WHERE tenant_id='{}' AND entry_id='{entry}'",
         case_tenant()
     ))?;
+    f.admin.operation = Some(Uuid::new_v4());
     let damaged = f.call(Method::POST, "/export", Some(json!({"entryId":entry,"version":1}))).await?;
     ensure!(damaged.0 == StatusCode::INTERNAL_SERVER_ERROR && damaged.1["code"] == "archive_integrity_error");
     let (_, v) = f.call(Method::GET, "/entries", None).await?;

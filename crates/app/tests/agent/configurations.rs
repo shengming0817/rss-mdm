@@ -383,7 +383,7 @@ async fn fixed_packages_and_configurations_activate_beyond_self_quota() -> Resul
         ensure!(state["reserved"] == 0 && state["consumed"] == 2);
     }
     ensure!(devices.len() == 4);
-    ensure!(machine(&f, "/api/v1/agent/enroll/configurations/exchange", &exchange(&file, &macos, 0)?).await?.0 == StatusCode::TOO_MANY_REQUESTS);
+    ensure!(machine(&f, "/api/v1/agent/enroll/configurations/exchange", &exchange(&file, &macos, 2)?).await?.0 == StatusCode::TOO_MANY_REQUESTS);
     let me = user
         .call(
             &f.router,

@@ -142,14 +142,16 @@ async fn exercise(ledger: bool) -> Result<()> {
             continue;
         }
         ensure!(
-            event.identity().source().source_id().as_str() == format!("identity.{}", case_tenant())
+            event.identity().source().source_id().as_str()
+                == format!("identity.{}", crate::test_support::identity::INSTANCE)
         );
         let action = event.facts().action().as_str();
         match action {
-            "identity.account.initialized" => {
+            "identity.account.account_created" => {
                 ensure!(
                     event.facts().actor().kind().as_str() == "maintenance"
-                        && event.facts().actor().id().as_str() == case_tenant()
+                        && event.facts().actor().id().as_str()
+                            == crate::test_support::identity::INSTANCE
                 );
                 ensure!(
                     event.facts().resource().id().as_str() == crate::test_support::case::admin()
@@ -169,7 +171,7 @@ async fn exercise(ledger: bool) -> Result<()> {
     ensure!(
         actions
             == std::collections::BTreeSet::from([
-                "identity.account.initialized".to_owned(),
+                "identity.account.account_created".to_owned(),
                 "identity.session.created".to_owned()
             ])
     );

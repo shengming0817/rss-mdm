@@ -166,8 +166,8 @@ async fn each_route_requires_its_exact_capability() -> Result<()> {
         set_management_grants(&member, json!([needed])).await?;
         let accepted = browser.call(&router, method.clone(), path, body.clone()).await?;
         let (status, code) = match (*needed, method == Method::GET) {
-            ("group_read", _) => (StatusCode::NOT_FOUND, "group_not_found"),
-            ("scope_read", _) => (StatusCode::NOT_FOUND, "scope_not_found"),
+            ("group_read" | "group_recompute", _) => (StatusCode::NOT_FOUND, "group_not_found"),
+            ("scope_read" | "scope_write", _) => (StatusCode::NOT_FOUND, "scope_not_found"),
             ("policy_read", _) => (StatusCode::NOT_FOUND, "policy_not_found"),
             ("resource_read", _) => (StatusCode::NOT_FOUND, "resource_not_found"),
             ("release_read" | "release_publish" | "release_withdraw" | "release_recover", _) => (StatusCode::NOT_FOUND, "software_candidate_not_found"),
