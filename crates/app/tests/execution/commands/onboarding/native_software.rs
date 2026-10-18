@@ -54,6 +54,7 @@ async fn native_case(agent_unknown: bool) -> Result<()> {
     for resource in [resource, alias] {
         let mut definition = definition.clone();
         if agent_unknown && resource == alias {
+            definition["package"] = json!("Acme.Other");
             definition["behavior"]["detect"]["productCode"] =
                 json!("{22345678-1234-4234-8234-123456789abc}");
         }
@@ -85,15 +86,17 @@ async fn native_case(agent_unknown: bool) -> Result<()> {
             host.app.content_writer.as_ref().unwrap(),
             &version,
         )
-        .await?;
+        .await
+        .context("enable reviewed fixture resource")?;
     }
     let scope = if agent_unknown {
         let label = crate::test_support::credential("native-conflicting-agent");
         let device = crate::test_support::case::name("native-conflicting-agent");
-        let registered=crate::test_support::agent::seed_service(host.app.agent_enrollment.as_ref().context("agent enrollment")?,&label,device,json!({"platform":"windows","architecture":"x86_64","capabilities":["inventory.collect.v1","software.msi.system.v1"],"executionContext":software_execution::context(Platform::Windows)})).await?;
+        let registered=crate::test_support::agent::seed_service(host.app.agent_enrollment.as_ref().context("agent enrollment")?,&label,device,json!({"platform":"windows","architecture":"x86_64","capabilities":["inventory.collect.v1","software.msi.system.v1"],"executionContext":software_execution::context(software_execution::Platform::Windows)})).await.context("seed conflicting Agent peer")?;
         let device = registered["deviceId"].as_str().context("agent device")?;
-        let agent_scope =
-            software_execution::prepared_scope(&host.app.flow.planning, &[device]).await?;
+        let agent_scope = software_execution::prepared_scope(&host.app.flow.planning, &[device])
+            .await
+            .context("prepare Agent scope")?;
         let agent_policy = Uuid::new_v4();
         let mut definition =
             software_execution::authored(resource, agent_scope, "required_install");
@@ -106,8 +109,12 @@ async fn native_case(agent_unknown: bool) -> Result<()> {
             json!({"action":"put","enabled":true,"definition":definition}),
         )
         .await?;
-        let task =
-            software_execution::claim_with(&client.router, &label, Platform::Windows).await?;
+        let task = software_execution::claim_with(
+            &client.router,
+            &label,
+            software_execution::Platform::Windows,
+        )
+        .await?;
         for event in [
             json!({"kind":"received"}),
             json!({"kind":"start"}),
@@ -122,6 +129,10 @@ async fn native_case(agent_unknown: bool) -> Result<()> {
         let mut conn =
             sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?)
                 .await?;
+        sqlx::query("SELECT set_config('rss.tenant_id',$1,false)")
+            .bind(case_tenant())
+            .execute(&mut conn)
+            .await?;
         let association = Uuid::new_v4();
         let empty = json!({"serial":[],"uuid":[],"manufacturer":[],"sources":[]});
         let hardware = json!({"mdm":empty,"agent":empty});
@@ -132,7 +143,7 @@ async fn native_case(agent_unknown: bool) -> Result<()> {
         crate::test_support::agent_execution::seed_scope(
             &host.app.flow.planning,
             scope,
-            json!([{"kind":"association","id":association}]),
+            json!([{"kind":"device","id":case_device()}]),
         )
         .await?;
         scope
@@ -152,7 +163,7 @@ async fn native_case(agent_unknown: bool) -> Result<()> {
     b?;
     let mut executes = 0;
     let mut saw_observe = false;
-    tokio::time::timeout(Duration::from_secs(90),async {
+    let outcome=tokio::time::timeout(Duration::from_secs(90),async {
         for session in 1900..2000 {
             let (initial,mut response)=begin(&peer,session).await?;
             for _ in 0..12 {
@@ -163,9 +174,9 @@ async fn native_case(agent_unknown: bool) -> Result<()> {
                                 let location=xml.0.split_once("<ContentURL>").and_then(|(_,v)|v.split_once("</ContentURL>")).context("native download URL")?.0;
                                 let location=url::Url::parse(location)?;
                                 let path=format!("{}?{}",location.path(),location.query().context("download grant")?);
-                                let download=client.router.clone().oneshot(Request::builder().uri(&path).body(Body::empty())?).await?;
+                                let download=client.router.clone().oneshot(Request::builder().uri(&path).header("host","mdm.example.test").body(Body::empty())?).await?;
                                 ensure!(download.status()==StatusCode::OK,"native content {}",download.status());
-                                let wrong=client.router.clone().oneshot(Request::builder().uri(format!("{}?token={}",location.path(),"0".repeat(64))).body(Body::empty())?).await?;
+                                let wrong=client.router.clone().oneshot(Request::builder().uri(format!("{}?token={}",location.path(),"0".repeat(64))).header("host","mdm.example.test").body(Body::empty())?).await?;
                                 ensure!(wrong.status()==StatusCode::FORBIDDEN,"invalid grant {}",wrong.status());
                             }
                         }
@@ -175,7 +186,7 @@ async fn native_case(agent_unknown: bool) -> Result<()> {
                 executes += response.commands.iter().filter(|c|matches!(c,s::Command::Exec {items,..} if items.iter().any(|i|i.target.as_deref().is_some_and(|u|u.ends_with("/DownloadInstall"))))).count();
                 saw_observe |= response.commands.iter().any(|c|matches!(c,s::Command::Get {items,..} if items.iter().any(|i|i.target.as_deref().is_some_and(|u|u.contains("EnterpriseDesktopAppManagement") && u.ends_with("/Version")))));
                 if response.commands.iter().all(|c|matches!(c,s::Command::Status(_))) { break; }
-                response=post(&peer,&reply(&initial,&response,true)).await?;
+                response=post(&peer,&native_reply(&initial,&response)).await?;
             }
             host.app.execution.recover_action_fixture(policy).await?;
             host.app.execution.recover_action_fixture(competing).await?;
@@ -186,7 +197,19 @@ async fn native_case(agent_unknown: bool) -> Result<()> {
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
         anyhow::bail!("native software never reached verified effect")
-    }).await??;
+    }).await;
+    if outcome.is_err() {
+        use sqlx::Connection;
+        let mut conn =
+            sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?)
+                .await?;
+        let state:Vec<Value>=sqlx::query_scalar("SELECT jsonb_build_object('run',r.id,'state',r.state,'operation',o.id,'status',d.status,'dispatchFailure',o.dispatch_failure,'attempts',(SELECT jsonb_agg(jsonb_build_object('phase',a.phase,'ordinal',a.ordinal,'items',(SELECT jsonb_agg(jsonb_build_object('kind',i.kind,'status',i.status,'accepted',i.receipt_accepted,'result',i.result_accepted)) FROM mdm_commands.attempt_items i WHERE i.tenant_id=a.tenant_id AND i.attempt=a.id))) FROM mdm_commands.attempts a WHERE a.tenant_id=o.tenant_id AND a.operation=o.id)) FROM mdm_commands.action_runs r LEFT JOIN mdm_commands.operations o ON(o.tenant_id,o.id)=(r.tenant_id,r.id) LEFT JOIN rss_device_command.commands d ON(d.tenant_id,d.command_id)=(o.tenant_id,o.id::text) WHERE r.tenant_id=$1::uuid").bind(case_tenant()).fetch_all(&mut conn).await?;
+        conn.close().await?;
+        anyhow::bail!(
+            "native timeout, executes={executes}, observed={saw_observe}, state={state:?}"
+        );
+    }
+    outcome??;
     ensure!(
         executes == 1 && saw_observe,
         "must execute once then verify read-only"
@@ -220,4 +243,33 @@ async fn native_case(agent_unknown: bool) -> Result<()> {
     ensure!(owner.shutdown().join().await?.is_clean());
     host.close().await?;
     Ok(())
+}
+
+fn native_reply(initial: &s::Message, response: &s::Message) -> s::Message {
+    let mut reply = super::reply(initial, response, true);
+    for command in &mut reply.commands {
+        let s::Command::Results(results) = command else {
+            continue;
+        };
+        let Some(items) = response.commands.iter().find_map(|command| match command {
+            s::Command::Get { id, items, .. } if Some(*id) == results.command_ref => Some(items),
+            _ => None,
+        }) else {
+            continue;
+        };
+        results.items = items
+            .iter()
+            .map(|item| {
+                let uri = item.target.as_deref().expect("requested URI");
+                s::Item {
+                    more_data: false,
+                    target: None,
+                    source: Some(uri.into()),
+                    meta: None,
+                    data: Some(Secret(reported_value(uri, response).into())),
+                }
+            })
+            .collect();
+    }
+    reply
 }

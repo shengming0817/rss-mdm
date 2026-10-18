@@ -18,6 +18,8 @@ Execution 的 `ResourcePreparation` 是四类资源预检输入，`PublicationIn
 
 预览复用资源和内容校验，但不登记采集定义、不封存配置、不发布版本或执行任务。软件草稿只持有 Scope、rollout 和冻结内容，历史版本为 `None`；阶段分母仍读取当前真实 Scope，成功事实为零。持久软件分配使用真实版本并共享准入计算。
 
+软件副作用防重从设备 owner 读取尚未释放的关联端点，独立于 Policy 的 Scope 写法；此读取只扩大冲突检查边界，不赋予目标授权。关联身份待复核时保留阻断，同包依赖、资源别名和跨通道 Unknown 均不能绕过。原生投递登记现有设备命令恢复任务，协议操作与共享 Run 使用同一身份。
+
 当前软件定义要求持久化显式 channel；仅管理输入省略 channel 时规范化为 Agent。Action 自身持有指纹材料；软件指纹包含 channel 和完整变体选择而排除 rollout，Scope 变化也不产生新执行版本。固定的六类身份 fixture 验证此约束，不保留旧 ResourceBinding 或冻结接口。
 
 Execution 不依赖 Flow。App 注入 Flow 实现的 `SourceAuthority`，在执行方原事务连接上读取类型化 Scope 准入、预览和分配设备页及 Policy 候选；不创建第二事务，也不传递完整 Flow 对象或授权黑盒。原生交付、回执及 Windows 缓存重放都重验当前来源、世代和授权。分配页锁定当前不可变 Scope 结果，在执行方合并有界来源页与自有执行记录。软件阶段计数保留单 SQL 的声明级快照，避免拆查询造成分母与 Run 事实不一致。

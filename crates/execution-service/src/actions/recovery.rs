@@ -163,6 +163,19 @@ impl ExecutionService {
             |ctx, tx| {
                 Box::pin(async move {
                     let (service, id) = *ctx;
+                    crate::sources::storage::lock(tx, id).await?;
+                    if let Some(policy) =
+                        crate::sources::storage::read_in(&service.policy_reader, tx, id).await?
+                        && matches!(
+                            policy.definition.action,
+                            rss_mdm_policy::Action::Software {
+                                channel: rss_mdm_policy::SoftwareChannel::Mdm,
+                                ..
+                            }
+                        )
+                    {
+                        super::native_software::admit_policy(service, tx, id).await?;
+                    }
                     recover(service, tx, id).await
                 })
             },

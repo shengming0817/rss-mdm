@@ -182,6 +182,7 @@ pub async fn receive(
     Ok(Some(AppleReception::Collection { facts, run: None }))
 }
 pub async fn send(
+    mdm_software_enabled: bool,
     c: &mut PgConnection,
     protection: &rss_mdm_native_protection::Protector,
     p: &DevicePrincipal,
@@ -201,6 +202,9 @@ pub async fn send(
             _ => None,
         })
         .collect();
+    if bundles.is_empty() && !mdm_software_enabled {
+        return Ok((vec![], vec![]));
+    }
     let tenant = p.tenant().to_string();
     let allowed:bool=sqlx::query_scalar("SELECT access_rights & $3 = $3 FROM mdm_apple.devices WHERE tenant_id=$1::uuid AND registration=$2 AND state='active'").bind(&tenant).bind(p.registration()).bind(if bundles.is_empty(){16_i64}else{272_i64}).fetch_one(&mut *c).await.map_err(db)?;
     if !allowed {

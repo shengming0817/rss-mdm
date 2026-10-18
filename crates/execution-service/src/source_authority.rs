@@ -71,6 +71,13 @@ pub enum SourceError {
 }
 /// Implementations use this connection's snapshot and locks; they never settle a transaction.
 pub trait SourceAuthority: Send + Sync {
+    fn effect_devices_on<'a>(
+        &'a self,
+        c: &'a mut PgConnection,
+        tenant: TenantId,
+        device: &'a str,
+    ) -> Pending<'a, Vec<String>>;
+
     fn mdm_software_enabled(&self) -> bool {
         false
     }

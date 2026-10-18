@@ -18,6 +18,25 @@ fn storage<E>(_: E) -> sqlx::Error {
     sqlx::Error::Protocol("device input unavailable".into())
 }
 impl ObjectReader for PlanningObjects {
+    fn effect_devices<'a>(
+        &'a self,
+        c: &'a mut PgConnection,
+        tenant: TenantId,
+        device: &'a str,
+    ) -> Pending<'a, Vec<String>> {
+        Box::pin(async move {
+            rss_mdm_inventory_postgres::lock_watermark_in(c, tenant).await?;
+            let mut devices:Vec<String>=sqlx::query_scalar("SELECT peer.device FROM mdm_devices.members anchor JOIN mdm_devices.associations a ON(a.tenant_id,a.id)=(anchor.tenant_id,anchor.association_id) JOIN mdm_devices.members peer ON(peer.tenant_id,peer.association_id)=(a.tenant_id,a.id) WHERE anchor.tenant_id=$1::uuid AND anchor.device=$2 AND NOT anchor.released AND NOT peer.released AND a.state<>'revoked' ORDER BY peer.device LIMIT 3").bind(tenant.to_string()).bind(device).fetch_all(c).await?;
+            if devices.len() > 2 {
+                return Err(storage("association effect boundary"));
+            }
+            devices.push(device.to_owned());
+            devices.sort();
+            devices.dedup();
+            Ok(devices)
+        })
+    }
+
     fn memberships<'a>(
         &'a self,
         c: &'a mut sqlx::PgConnection,

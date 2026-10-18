@@ -316,6 +316,7 @@ pub async fn receive(
     })
 }
 pub async fn send(
+    mdm_software_enabled: bool,
     c: &mut PgConnection,
     protection: &rss_mdm_native_protection::Protector,
     p: &DevicePrincipal,
@@ -352,6 +353,9 @@ pub async fn send(
             ReportSource::MdmWindows,
         )
         .await?;
+        if catalog.identities.is_empty() && catalog.win32.is_empty() && !mdm_software_enabled {
+            return Ok(false);
+        }
         let query = query(catalog)?;
         let state = query.plans[query.batch]
             .start("agent-observation")

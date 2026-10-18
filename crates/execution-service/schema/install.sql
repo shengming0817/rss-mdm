@@ -260,7 +260,7 @@ CREATE TABLE mdm_commands.operations (
     CONSTRAINT operation_authority_source CHECK (COALESCE(
 CASE source_kind
     WHEN 'direct'::text THEN ((authority ->> 'kind'::text) IN ('device_control'::text,'credential'::text))
-    WHEN 'policy'::text THEN (((authority ->> 'kind'::text) IN ('policy'::text,'agent_install'::text)) AND ((authority ->> 'tenant'::text) = (tenant_id)::text) AND ((authority ->> 'device'::text) = device) AND ((authority ->> 'version'::text) = (policy_version)::text))
+    WHEN 'policy'::text THEN (((authority ->> 'kind'::text) IN ('policy'::text,'agent_install'::text,'software'::text)) AND ((authority ->> 'tenant'::text) = (tenant_id)::text) AND ((authority ->> 'device'::text) = device) AND ((authority ->> 'version'::text) = (policy_version)::text) AND ((authority ->> 'kind') <> 'software' OR (authority ->> 'operation') = id::text))
     ELSE NULL::boolean
 END, false)),
     CONSTRAINT operation_source CHECK (((source_kind = 'direct'::text) AND (policy_version IS NULL)) OR ((source_kind = 'policy'::text) AND (policy_version IS NOT NULL))),

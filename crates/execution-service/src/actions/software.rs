@@ -140,28 +140,14 @@ pub async fn slot_in(
         })
     })
     .await?;
-    let (authored, _) =
-        crate::sources::storage::version_in(&service.policy_reader, tx, policy.id).await?;
     let source = service.source.clone();
     let tenant_id = tx.tenant_id();
-    let scope = authored.definition.scope;
-    let channel = policy.assignment.channel();
     let device = target.device.clone();
-    let objects = tx
+    let devices = tx
         .with_connection(move |c| {
-            Box::pin(async move {
-                Ok(source
-                    .evidence_on(c, tenant_id, scope, channel, &device)
-                    .await)
-            })
+            Box::pin(async move { Ok(source.effect_devices_on(c, tenant_id, &device).await) })
         })
         .await??;
-    let mut devices = vec![target.device.clone()];
-    for object in objects {
-        devices.extend(object.members.into_iter().map(|member| member.device));
-    }
-    devices.sort();
-    devices.dedup();
     // The transaction admission fence serializes conflicting effects across associated endpoints.
     let tenant = tx.tenant_id().to_string();
     let device = devices;
@@ -178,14 +164,15 @@ pub async fn slot_in(
             WITH effects AS (
                 SELECT r.* FROM mdm_commands.action_runs r
                 WHERE r.tenant_id=$1::uuid AND r.device=ANY($3::text[])
-                  AND ((r.software_effect->'resource'=$2::jsonb->'resource' AND r.software_effect->'target'=$2::jsonb->'target') OR EXISTS(SELECT 1 FROM jsonb_array_elements_text(r.software_effect->'packages') a JOIN jsonb_array_elements_text($2::jsonb->'packages') b ON a.value=b.value))
+                  AND r.software_effect->'target'=$2::jsonb->'target'
+                  AND (r.software_effect->'resource'=$2::jsonb->'resource' OR EXISTS(SELECT 1 FROM jsonb_array_elements_text(r.software_effect->'packages') a JOIN jsonb_array_elements_text($2::jsonb->'packages') b ON a.value=b.value))
             )
             SELECT coalesce(bool_or(state->>'execution' IN ('unknown','waiting_reboot')
                        OR ((state->>'execution'='running'
                             OR (state->>'execution'='not_started' AND deadline>$5))
                            AND state->>'cancellation'<>'confirmed')),false),
                    max(created_at) FILTER(WHERE software_effect=$2 AND policy_version=$4 AND occurrence LIKE $6),
-                   coalesce((SELECT (software_effect=$2 OR (software_effect->'target'=$2::jsonb->'target' AND software_effect->'intent'=$2::jsonb->'intent' AND $2::jsonb->'packageVersions'<>'{}'::jsonb AND software_effect->'packageVersions' @> $2::jsonb->'packageVersions')) AND result->>'effect'='verified'
+                   coalesce((SELECT (software_effect=$2 OR (software_effect->'target'=$2::jsonb->'target' AND software_effect->'intent'=$2::jsonb->'intent' AND $2::jsonb->'packageVersions'<>'{}'::jsonb AND (software_effect->'packageVersions') @> ($2::jsonb->'packageVersions'))) AND result->>'effect'='verified'
                              FROM effects
                              WHERE software_effect->'generation'=$2::jsonb->'generation'
                                AND result->>'effect' IN ('verified','failed')

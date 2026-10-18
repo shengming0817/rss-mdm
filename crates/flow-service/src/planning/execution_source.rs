@@ -20,6 +20,15 @@ impl ExecutionSource {
     }
 }
 impl SourceAuthority for ExecutionSource {
+    fn effect_devices_on<'a>(
+        &'a self,
+        c: &'a mut PgConnection,
+        tenant: TenantId,
+        device: &'a str,
+    ) -> Pending<'a, Vec<String>> {
+        Box::pin(async move { Ok(self.objects.effect_devices(c, tenant, device).await?) })
+    }
+
     fn mdm_software_enabled(&self) -> bool {
         self.mdm_software_enabled
     }

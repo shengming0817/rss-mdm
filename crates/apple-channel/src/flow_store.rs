@@ -454,7 +454,7 @@ impl channels::Apple for super::Apple {
     ) -> Pending<'a, channels::Reply> {
         Box::pin(async move {
             let (mut bytes, mut facts) = if user_key.is_empty() {
-                crate::agent_collection::send(c, &self.protection, p)
+                crate::agent_collection::send(source.mdm_software_enabled(), c, &self.protection, p)
                     .await
                     .map_err(channels::Rejection::from)?
             } else {

@@ -259,7 +259,13 @@ pub async fn advance_run(
     audit.operation(run.id, "command_accept");
     audit.plan(policy.id);
     audit.target_device(&run.target.device);
-    let fingerprint = crate::checked_input(serde_json::to_vec(&input))?;
+    let fingerprint = crate::protection::fingerprint(
+        &service.protection,
+        service.tenant,
+        &run.target.device,
+        "software-install-command/v1",
+        &(&input, policy.id),
+    )?;
     service
         .queue_authorized_in(
             tx,
@@ -269,6 +275,9 @@ pub async fn advance_run(
             fingerprint,
             &audit,
         )
+        .await?;
+    let target = crate::service::target(tx.tenant_id(), &run.target.device);
+    rss_reconcile_postgres::messaging::wake_in(tx, &target, (), |_, _| Box::pin(async { Ok(()) }))
         .await?;
     audit.finalize(None);
     run.state.claim(run.id, now)?;
