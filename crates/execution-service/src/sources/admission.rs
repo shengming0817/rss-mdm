@@ -122,3 +122,22 @@ pub async fn agent_collection_in(
         policy,
     })
 }
+
+pub async fn credential_in(
+    reader: &rss_mdm_policy_postgres::PolicyReader,
+    tx: &mut PgTransaction<'_>,
+    id: Uuid,
+) -> Result<ExecutionPolicy<crate::credential_tasks::FrozenCredential>> {
+    let (policy, frozen) = storage::version_in(reader, tx, id).await?;
+    let Frozen::Credential { action, frequency } = frozen else {
+        return Err(Error::Unsupported.into());
+    };
+    Ok(ExecutionPolicy {
+        id,
+        owner: policy.id,
+        frozen: *action,
+        frequency,
+        active: policy.state.is_enabled() && policy.version == id,
+        policy,
+    })
+}

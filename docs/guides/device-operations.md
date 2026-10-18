@@ -75,3 +75,17 @@ Policy 引用精确资源版本/variant；它消费完整操作权限和多对�
 字段沿用原有字段优先级策略，各端点的 Manual 值独立保留，同优先级不同值为 Conflict。列表显示每个端点来源的状态、证据及 cursor；以详情返回的来源 cursor 调用 `GET /device-views/{kind}/{id}/inventory-lists/{field}?cursor=...&limit=...`。分页不对不同来源的列表做集合拼接，采集完整性和失败信息保留在 inventorySources。游标签名绑定用户、权限和查询快照；响应 `device_view_cursor_invalidated` 时从第一页重新查询。
 
 重新授权由当前具备原动作权限的操作者执行，不需要第二位审批人。lock/wipe 的危险动作确认不产生额外权限。当前接口使用 `/reauthorize`、授权状态 `authorized` 和 `authorization_withdrawn`；旧 `/approve` 路由与旧状态编码已移除，调用方须同步切换。
+
+## 恢复凭据
+
+恢复凭据按租户、设备、注册世代和材料对象独立托管。BitLocker 使用稳定卷 ID 与 protector ID，本地管理员密码使用 SID；FileVault PRK、Recovery Lock 和锁定 PIN 保留各自语义。普通资产和操作结果不包含秘密，Bootstrap Token 继续由 Apple check-in 唯一持有，不提供人工明文查询。
+
+`GET /api/v1/devices/{device}/recovery-credentials` 返回版本元数据，使用现有设备读取权限；最多返回 100 项，通过末项的 `id/version` 作为 `afterId/afterVersion` 继续。`escrowed`、`validity`、`current` 分别表示材料是否存在、核实情况和是否为当前已核实版本。轮换后未核实的材料不会覆盖当前版本；Unknown 不表示旧密码仍然有效。
+
+`GET /api/v1/devices/{device}/recovery-credentials/{id}/versions/{version}/secret` 直接返回对应材料，只要求有效登录和该设备的 `credentials` 权限。没有额外 MFA、近期认证时限、原因填写、解锁票据或审批。响应禁止缓存，审计结算失败不返回秘密。撤销使用同一路径前缀下的 `POST .../revoke`，账户材料使用 `account_write`，锁定 PIN 使用 `device_control`，其余材料使用 `security_operate`。撤销托管访问不等于删除端上的密码或 protector。
+
+Apple 操作入口为 `POST /api/v1/devices/{device}/recovery-credentials/operations`，携带 `operationId`、`registration`、`generation`、Unix 秒 `deadline` 和类型化 `action`。FileVault 原生命令只针对启动卷，不接受调用方指定任意卷。可配置 FileVault escrow、采集或轮换 PRK、重新核对已有 PRK 候选、设置/清除及验证 Recovery Lock。轮换 PRK 的 `unlockPassword` 只用于官方原生命令；缺少平台前提不自动改走脚本。`reconcile_filevault` 和 `verify_recovery_lock` 引用已有 `material: {id,version}`，核实 Unknown，不重新生成秘密。Recovery Lock 候选未生效时，在原设置操作结束后使用 `reconcile_recovery_lock`，提供原 `operation` 与待核实的 `material`；只有平台确认密码有效才结束未决候选，单次验证 false 不解除保护。FileVault 采集可指定已配置的历史 `recipient` 指纹。
+
+macOS 锁定继续使用原 `lock` 动作，其 PIN 同事务进入托管。部署需先配置恢复凭据密钥和接收证书。原生 ACK、已托管、平台核实与实际恢复效果分别记录；真实 Windows/macOS 恢复效果由独立产品 T3 提供证据。
+
+Agent 核实策略会绑定同一注册世代中匹配的 Unknown 轮换 task/attempt。Agent 必须先停止原操作的本地执行，再从受保护 journal 核实“原状态未变”或“新材料已生效”，将密文与核实结果持久回传；没有收到任何材料的原操作也可恢复。若受保护日志证明原操作尚未发起 OS 变更且已停止，返回 `not_attempted`，原操作按未执行成功结算；不会要求读取未知旧密码，也不宣称密码已核实或 OS 已回滚。核实完成前不会解除轮换保护，取消不表示 OS 变更已回滚。

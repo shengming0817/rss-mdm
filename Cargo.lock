@@ -3461,6 +3461,7 @@ dependencies = [
  "jsonschema",
  "libc",
  "md-5 0.10.6",
+ "openssl",
  "plist",
  "rand 0.8.8",
  "reqwest",
@@ -3504,6 +3505,7 @@ dependencies = [
  "rss-mdm-pki-service",
  "rss-mdm-policy",
  "rss-mdm-policy-postgres",
+ "rss-mdm-recovery-credentials",
  "rss-mdm-registration-service",
  "rss-mdm-resource",
  "rss-mdm-resource-postgres",
@@ -3574,6 +3576,7 @@ dependencies = [
  "rss-mdm-inventory-service",
  "rss-mdm-native-protection",
  "rss-mdm-pki-service",
+ "rss-mdm-recovery-credentials",
  "rss-mdm-registration-service",
  "rss-mdm-resource",
  "rss-mdm-software-service",
@@ -3916,6 +3919,7 @@ dependencies = [
  "rss-mdm-native-protection",
  "rss-mdm-policy",
  "rss-mdm-policy-postgres",
+ "rss-mdm-recovery-credentials",
  "rss-mdm-registration-service",
  "rss-mdm-resource",
  "rss-mdm-resource-postgres",
@@ -4112,6 +4116,7 @@ dependencies = [
  "rss-mdm-inventory-service",
  "rss-mdm-pki-service",
  "rss-mdm-policy",
+ "rss-mdm-recovery-credentials",
  "rss-mdm-registration-service",
  "rss-mdm-resource",
  "rss-mdm-software-release",
@@ -4215,6 +4220,32 @@ dependencies = [
  "thiserror 2.0.20",
  "tokio",
  "uuid",
+]
+
+[[package]]
+name = "rss-mdm-recovery-credentials"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "openssl",
+ "ring",
+ "rss-audit-postgres",
+ "rss-mdm-audit-integration",
+ "rss-mdm-authorization-service",
+ "rss-mdm-inventory",
+ "rss-mdm-native-protection",
+ "rss-mdm-registration-service",
+ "rss-request-context",
+ "rss-runtime",
+ "rss-transactional-messaging",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "subtle",
+ "thiserror 2.0.20",
+ "tokio",
+ "uuid",
+ "zeroize",
 ]
 
 [[package]]

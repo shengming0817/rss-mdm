@@ -107,3 +107,5 @@ COMMIT;
 
 -- Inventory user views may inspect channel liveness, never push or credential material.
 GRANT SELECT(tenant_id,registration,generation,user_key,state) ON mdm_apple.channels TO mdm_flow_runtime;
+
+GRANT UPDATE(request) ON mdm_apple.attempts TO mdm_command_runtime;

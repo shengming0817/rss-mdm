@@ -38,6 +38,14 @@ impl Configuration {
         use rss_mdm_apple_mdm::native::request::Request as A;
         use rss_mdm_windows_mdm::native::Execution as W;
         self.target.validate()?;
+        if crate::recovery_credentials::requires_owner(&self.apply)
+            || self
+                .remove
+                .as_ref()
+                .is_some_and(crate::recovery_credentials::requires_owner)
+        {
+            return Err(Error::Unsupported);
+        }
         let owned = self.objects()?;
         if self
             .apply

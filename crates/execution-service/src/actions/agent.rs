@@ -86,6 +86,7 @@ impl ExecutionService {
                 let policy=db::load_policy_version(&service.policy_reader,tx,id).await?;
                 let target=crate::Target {device:p.device().into(),registration:p.registration(),generation:p.generation()};
                 match &policy {
+                    db::ScheduledPolicy::Credential(v) if crate::credential_tasks::capable(&binding,v.frozen.input.architecture) => super::production::accept_for_device(service,tx,&policy,&target,super::production::AdmissionTrigger::Agent(input.operation_id()),now).await?,
                     db::ScheduledPolicy::AgentCollection(v) if crate::agent_collection_eligibility::matches(&binding,v.frozen.input.platform,v.frozen.input.architecture,&v.frozen.definition,input.environment()) => super::production::accept_for_device(service,tx,&policy,&target,super::production::AdmissionTrigger::Agent(input.operation_id()),now).await?,
                     db::ScheduledPolicy::Enrollment(_) if enrollment_capable => super::production::accept_for_device(service,tx,&policy,&target,super::production::AdmissionTrigger::Agent(input.operation_id()),now).await?,
                     db::ScheduledPolicy::Script(script) if crate::script_eligibility::matches(&binding,script.frozen.input.platform,script.frozen.input.architecture,script.frozen.executor_profile(),input.profiles()) => super::production::accept_for_device(service,tx,&policy,&target,super::production::AdmissionTrigger::Agent(input.operation_id()),now).await?,
@@ -99,7 +100,7 @@ impl ExecutionService {
                 let mut run=db::load_run(tx,stored(Uuid::parse_str(&id))?).await?;belongs(&run,p)?;let plan=db::load_source(&service.policy_reader,tx,run.source).await?;
                 let previous=run.state.clone();
                 run.state.expire(now,plan.timeout_seconds());
-                let capable=match &plan { db::ScheduledPolicy::Native(_) => false, db::ScheduledPolicy::AgentCollection(v) => crate::agent_collection_eligibility::matches(&binding,v.frozen.input.platform,v.frozen.input.architecture,&v.frozen.definition,input.environment()), db::ScheduledPolicy::Script(script) => crate::script_eligibility::matches(&binding,script.frozen.input.platform,script.frozen.input.architecture,script.frozen.executor_profile(),input.profiles()), db::ScheduledPolicy::Software(software) => software.assignment.supported_in(&service.admission(),tx,&binding).await?, db::ScheduledPolicy::Enrollment(_) => enrollment_capable };
+                let capable=match &plan { db::ScheduledPolicy::Credential(v) => crate::credential_tasks::capable(&binding,v.frozen.input.architecture), db::ScheduledPolicy::Native(_) => false, db::ScheduledPolicy::AgentCollection(v) => crate::agent_collection_eligibility::matches(&binding,v.frozen.input.platform,v.frozen.input.architecture,&v.frozen.definition,input.environment()), db::ScheduledPolicy::Script(script) => crate::script_eligibility::matches(&binding,script.frozen.input.platform,script.frozen.input.architecture,script.frozen.executor_profile(),input.profiles()), db::ScheduledPolicy::Software(software) => software.assignment.supported_in(&service.admission(),tx,&binding).await?, db::ScheduledPolicy::Enrollment(_) => enrollment_capable };
                 let allowed=capable && plan.authorized_run_in(service,tx,&run,now).await?;
                 if (!allowed && run.invocation.is_some()) || plan.withdrawn_in(service,tx,&run.target,now).await?{run.state.cancel();}
                 super::recovery::audit_recovery(service,tx,&run,&previous).await?;
@@ -159,6 +160,25 @@ impl ExecutionService {
             let mut permit=None;
             let mut software_audit=None;
             match input.event() {
+                wire::TaskEvent::CredentialEscrow(value) => {
+                    if !matches!(plan,db::ScheduledPolicy::Credential(_)) || !effect_allowed || !matches!(run.state.execution,Execution::Running|Execution::Unknown) || run.state.started_at.is_none() { return Err(Error::Forbidden.into()); }
+                    crate::credential_tasks::escrow(service,tx,&run,input.attempt_id(),value).await?;
+                    if !run.state.trusts_result(now,plan.timeout_seconds()) {
+                        run.state.uncertain_result(input.attempt_id())?;
+                        let tenant=checked_input(Uuid::parse_str(&service.tenant.to_string()))?;
+                        tx.with_connection(move|c|Box::pin(async move{Ok(rss_mdm_recovery_credentials::storage::unknown_in(c,tenant,id).await)})).await?.map_err(crate::recovery_credentials::error)?;
+                    }
+                },
+                wire::TaskEvent::CredentialResult(value) => {
+                    if !matches!(plan,db::ScheduledPolicy::Credential(_)) || !effect_allowed || !matches!(run.state.execution,Execution::Running|Execution::Unknown) || run.state.started_at.is_none() || !run.state.trusts_result(now,plan.timeout_seconds()) { return Err(Error::Forbidden.into()); }
+                    match crate::credential_tasks::finish(service,tx,&run,input.attempt_id(),value).await? {
+                        Execution::Unknown=>run.state.uncertain_result(input.attempt_id())?,
+                        Execution::Succeeded=>run.state.result(input.attempt_id(),true)?,
+                        Execution::Failed=>run.state.result(input.attempt_id(),false)?,
+                        _=>return Err(Error::Conflict.into()),
+                    }
+                    run.result=Some(checked_input(serde_json::to_value(value))?);
+                },
                 wire::TaskEvent::EnrollmentResult { outcome } => {
                     if !matches!(plan,db::ScheduledPolicy::Enrollment(_)) { return Err(Error::Malformed.into()); }
                     if *outcome==wire::EnrollmentEntryOutcome::Unknown {
@@ -171,7 +191,7 @@ impl ExecutionService {
                 wire::TaskEvent::Received=>run.state.received(input.attempt_id(),now)?,
                 wire::TaskEvent::Start=>{
                     if run.state.execution!=Execution::NotStarted{return Err(Error::Conflict.into());}
-                    if matches!(&plan,db::ScheduledPolicy::Script(_) | db::ScheduledPolicy::AgentCollection(_)) {
+                    if matches!(&plan,db::ScheduledPolicy::Credential(_) | db::ScheduledPolicy::Script(_) | db::ScheduledPolicy::AgentCollection(_)) {
                         let tenant=tx.tenant_id().to_string();let attempt=input.attempt_id();let run_id=id;
                         let offer:Value=tx.with_connection(move|c|Box::pin(async move{sqlx::query_scalar("SELECT offer FROM mdm_commands.action_attempts WHERE tenant_id=$1::uuid AND id=$2 AND run=$3").bind(tenant).bind(attempt).bind(run_id).fetch_one(c).await})).await?;
                         let offered:wire::SignedTask=stored(serde_json::from_value(offer))?;
@@ -187,6 +207,7 @@ impl ExecutionService {
                         let wire::TaskPayload::Software(current)=current else {return Err(Error::Malformed.into());};
                         if current.steps!=offered.steps || current.definition_digest!=offered.definition_digest || current.execution_context!=offered.execution_context {return Err(Error::Forbidden.into());}
                     }
+                    if matches!(plan,db::ScheduledPolicy::Credential(_)) {crate::credential_tasks::start(service,tx,&run,input.attempt_id()).await?;}
                     run.state.start(input.attempt_id(),now)?;
                     let signed=service.signer.as_ref().ok_or(Error::Unsupported)?.sign(plan.task(service,tx,&run.target,db::TaskIssue { run:id,attempt:input.attempt_id(),permit:wire::TaskPermit::Start,expiry:(now+15).min(run.deadline) }).await?)?;
                     let tenant=tx.tenant_id().to_string();let attempt=input.attempt_id().to_string();let value=checked_input(serde_json::to_value(&signed))?;
@@ -300,7 +321,7 @@ impl ExecutionService {
             if now>=expiry { return Err(Error::Forbidden.into()); }
             match plan {
                 db::ScheduledPolicy::Enrollment(_) => Err(Error::NotFound.into()),
-                db::ScheduledPolicy::Native(_) | db::ScheduledPolicy::AgentCollection(_) => Err(Error::Forbidden.into()),
+                db::ScheduledPolicy::Credential(_) | db::ScheduledPolicy::Native(_) | db::ScheduledPolicy::AgentCollection(_) => Err(Error::Forbidden.into()),
                 db::ScheduledPolicy::Script(script) => {
                     if key.is_some() { return Err(Error::Malformed.into()); }
                     script.frozen.artifact().map_err(Into::into)

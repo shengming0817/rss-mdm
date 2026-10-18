@@ -236,3 +236,19 @@ fn frozen_windows_collection_permissions_match_real_query_authorization() {
         .is_err()
     );
 }
+
+#[test]
+fn ordinary_ddm_configuration_cannot_replace_credential_escrow_recipient() {
+    let make = |schema: &str| -> crate::configuration::Configuration {
+        serde_json::from_value(json!({"target":{"kind":"device"},"apply":{"platform":"macos","request":{"kind":"declarations","declarations":[{"identifier":"legacy","declarationType":"com.apple.configuration.legacy","payload":{}}],"assets":[{"identifier":"legacy","resource":"profile","version":"v1","variant":"default","versionDigest":vec![1u8;32],"contentType":"application/x-apple-aspen-config","profileSchemas":[schema]}]}},"remove":null})).unwrap()
+    };
+    assert!(
+        make("mdm/profiles/com.apple.security.firewall.yaml")
+            .validate()
+            .is_ok()
+    );
+    assert!(matches!(
+        make("mdm/profiles/com.apple.security.FDERecoveryKeyEscrow.yaml").validate(),
+        Err(crate::Error::Unsupported)
+    ));
+}

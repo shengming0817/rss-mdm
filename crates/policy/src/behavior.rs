@@ -5,6 +5,8 @@ use serde::{Deserialize, Serialize};
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ActionKind {
+    /// Native recovery material management.
+    Credential,
     /// Agent script or collection.
     Execution,
     /// Native MDM collection.
@@ -32,7 +34,8 @@ pub enum AssignmentBehavior {
 }
 impl ActionKind {
     /// Complete closed set for deriving database predicates.
-    pub const ALL: [Self; 7] = [
+    pub const ALL: [Self; 8] = [
+        Self::Credential,
         Self::Execution,
         Self::NativeCollection,
         Self::AgentCollection,
@@ -44,7 +47,8 @@ impl ActionKind {
     /// Original endpoint channel selected by this action; no peer broadcast is permitted.
     pub const fn target_channel(self) -> &'static str {
         match self {
-            Self::AgentCollection
+            Self::Credential
+            | Self::AgentCollection
             | Self::Execution
             | Self::Software
             | Self::RequestMdmEnrollment => "agent",
@@ -54,6 +58,7 @@ impl ActionKind {
     /// Persisted discriminator.
     pub const fn as_str(self) -> &'static str {
         match self {
+            Self::Credential => "credential",
             Self::Execution => "execution",
             Self::NativeCollection => "native_collection",
             Self::AgentCollection => "agent_collection",
@@ -66,7 +71,8 @@ impl ActionKind {
     /// Select the existing assignment driver.
     pub const fn assignment_behavior(self) -> AssignmentBehavior {
         match self {
-            Self::AgentCollection
+            Self::Credential
+            | Self::AgentCollection
             | Self::Execution
             | Self::Software
             | Self::RequestMdmEnrollment => AssignmentBehavior::AgentCheckIn,
@@ -78,7 +84,7 @@ impl ActionKind {
     pub const fn supports_rerun(self) -> bool {
         matches!(
             self,
-            Self::AgentCollection | Self::Execution | Self::RequestMdmEnrollment
+            Self::Credential | Self::AgentCollection | Self::Execution | Self::RequestMdmEnrollment
         )
     }
 }

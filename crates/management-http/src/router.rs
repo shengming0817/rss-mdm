@@ -16,6 +16,7 @@ pub struct Services {
     pub pki: Arc<rss_mdm_pki_service::registry::Registry>,
     pub pki_clock: Arc<dyn rss_mdm_registration_service::agent_pki::Clock>,
     pub agent_enrollment: Option<Arc<rss_mdm_registration_service::agent::Service>>,
+    pub recovery_credentials: Option<Arc<rss_mdm_recovery_credentials::Credentials>>,
     pub certificate_archive: Arc<rss_mdm_certificate_archive_service::Archive>,
     pub timeline: Arc<rss_mdm_timeline_service::Timeline>,
     pub diagnostics: Arc<dyn crate::runtime_diagnostics::Source>,
@@ -96,6 +97,9 @@ pub fn router(state: Services, envelope: crate::boundary::Envelope) -> Router {
             })),
         )
         .merge(crate::certificate_archive::routes().with_state(state.certificate_archive))
+        .merge(crate::recovery_credentials::routes(
+            state.recovery_credentials,
+        ))
         .merge(
             crate::software_publication::http::routes().with_state(Arc::new(
                 crate::software_publication::http::HttpState {

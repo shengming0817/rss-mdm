@@ -295,6 +295,26 @@ impl channels::AppleCollections for Store {
     }
 }
 impl channels::AppleResults for Store {
+    fn purge_credential_inputs<'a>(
+        &'a self,
+        c: &'a mut PgConnection,
+        tenant: String,
+        operation: Uuid,
+        terminal: bool,
+    ) -> Pending<'a, bool> {
+        Box::pin(async move {
+            crate::recovery_credentials::purge_inputs(
+                c,
+                &self.protection,
+                &tenant,
+                operation,
+                terminal,
+            )
+            .await
+            .map_err(Into::into)
+        })
+    }
+
     fn declaration_page<'a>(
         &'a self,
         c: &'a mut PgConnection,

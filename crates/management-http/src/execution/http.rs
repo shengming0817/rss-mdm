@@ -13,6 +13,10 @@ use rss_mdm_execution_service::{
 use serde_json::Value;
 pub fn routes(queries: Arc<rss_mdm_execution_service::queries::Queries>) -> Router<Arc<HttpState>> {
     Router::new()
+        .route(
+            "/devices/{device}/recovery-credentials/operations",
+            post(create_recovery),
+        )
         .merge(
             Router::new()
                 .route("/operations", get(directory))
@@ -138,4 +142,22 @@ async fn ddm(
     Ok(Json(crate::execution::projection::ddm(
         s.ddm(&auth.proof, &device, &query, &audit).await?,
     )))
+}
+
+async fn create_recovery(
+    State(app): State<Arc<HttpState>>,
+    Extension(auth): Extension<RequestAuth>,
+    Extension(audit): Extension<RequestAudit>,
+    Path(device): Path<String>,
+    input: Result<
+        Json<rss_mdm_execution_service::recovery_credentials::Input>,
+        axum::extract::rejection::JsonRejection,
+    >,
+) -> Result<(StatusCode, Json<Value>), Error> {
+    let input = input.map_err(Error::from)?.0;
+    app.execution
+        .create_recovery_credential(&auth.proof, &device, &input, &audit)
+        .await
+        .map(|v| (StatusCode::ACCEPTED, Json(v)))
+        .map_err(Error::from)
 }

@@ -208,3 +208,9 @@ mod agent_pki_tests;
 mod device_pki;
 
 mod agent_configurations;
+
+mod recovery_credentials;
+
+#[cfg(test)]
+#[path = "../tests/recovery_credentials/mod.rs"]
+mod recovery_credentials_tests;
