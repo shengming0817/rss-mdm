@@ -867,8 +867,13 @@ impl PublicationService {
                                     .map_err(|cause| Error::Identity
                                         .context("driver::withdrawal_status", cause))
                             );
-                            let c = input!(s.releases.get_in(tx, &record).await?
-                                .map_err(|_| Error::Conflict)).ok_or_else(db::fault)?;
+                            let c = input!(
+                                s.releases
+                                    .get_in(tx, &record)
+                                    .await?
+                                    .map_err(|_| Error::Conflict)
+                            )
+                            .ok_or_else(db::fault)?;
                             let status = input!(withdrawal_state(&c, &call));
                             Ok(Ok(Some(status)))
                         })
@@ -1376,7 +1381,7 @@ impl PublicationService {
                                     &db::encode(t)?,
                                 )?;
                                 s.audit_store
-                                    .append_in(tx, &fact, false)
+                                    .append_in(tx, &fact, call.complete)
                                     .await
                                     .map_err(rss_transactional_messaging_postgres::PgError::from)?;
                                 Ok(Ok(()))
@@ -1487,7 +1492,7 @@ impl PublicationService {
                             &db::encode(t)?,
                         )?;
                         s.audit_store
-                            .append_in(tx, &fact, call.complete)
+                            .append_in(tx, &fact, false)
                             .await
                             .map_err(rss_transactional_messaging_postgres::PgError::from)?;
                         Ok(Ok(()))

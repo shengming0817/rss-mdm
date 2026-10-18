@@ -22,12 +22,24 @@ impl PublicationService {
         tx: &mut rss_transactional_messaging_postgres::PgTransaction<'_>,
         id: &rel::PublicationKey,
     ) -> InTransaction<(rel::Publication, Option<Withdrawal>)> {
-        let record = input!(self.releases.get_in(tx, id).await?
-            .map_err(|_| Error::Conflict)).ok_or_else(db::fault)?;
+        if id.tenant() != self.tenant() {
+            return Ok(Err(Error::Identity));
+        }
+        let record = input!(
+            rss_mdm_software_release_postgres::lock_publication_reference_in(tx, id)
+                .await?
+                .map_err(|_| Error::Conflict)
+        );
         let attempt = &record.snapshot().attempt;
-        let key = format!("w:{}:{}", hex(&attempt.id().digest().bytes()), attempt.attempt);
-        let withdrawal = db::call(tx, db::Table::Withdraw, &key).await?
-            .map(|call| super::driver::withdrawal_state(&record, &call)).transpose();
+        let key = format!(
+            "w:{}:{}",
+            hex(&attempt.id().digest().bytes()),
+            attempt.attempt
+        );
+        let withdrawal = db::call(tx, db::Table::Withdraw, &key)
+            .await?
+            .map(|call| super::driver::withdrawal_state(&record, &call))
+            .transpose();
         Ok(Ok((record, input!(withdrawal))))
     }
     pub fn public_base(&self) -> &str {

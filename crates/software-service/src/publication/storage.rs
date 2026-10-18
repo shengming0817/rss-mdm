@@ -363,8 +363,7 @@ pub(super) async fn authority(
         })
         .await?;
 
-    row.map(|r| r.try_get("record"))
-        .transpose()
+    Ok(row.map(|r| r.try_get("record")).transpose()?)
 }
 pub(super) async fn set_authority(
     tx: &mut PgTransaction<'_>,

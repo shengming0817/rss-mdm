@@ -84,10 +84,18 @@ async fn read_view(
             super::error::PublicationError::MissingPublication,
         ))?;
     let p = &record.snapshot().attempt;
-    let withdrawal = service.withdrawal_status(p.id(), p.attempt, cutoff())
-        .await.map_err(failure)?;
+    let withdrawal = service
+        .withdrawal_status(p.id(), p.attempt, cutoff())
+        .await
+        .map_err(failure)?;
     let document = Some(service.document(&key, cutoff()).await.map_err(failure)?);
-    view(id, (target, resource, version), &record, withdrawal, document)
+    view(
+        id,
+        (target, resource, version),
+        &record,
+        withdrawal,
+        document,
+    )
 }
 fn view(
     id: String,
