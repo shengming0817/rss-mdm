@@ -2,7 +2,7 @@
 use rss_mdm_agent_wire::{enroll, pki, runtime};
 fn main() {
     let schemas = serde_json::json!({
-        "taskTrust": {
+        "task_trust": {
             "Trust": schemars::schema_for!(rss_mdm_agent_wire::task_trust::Trust),
             "Acknowledgement": schemars::schema_for!(rss_mdm_agent_wire::task_trust::Acknowledgement),
         },

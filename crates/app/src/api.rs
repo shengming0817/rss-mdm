@@ -355,6 +355,23 @@ pub(crate) async fn from_compiled(
         trusts,
         providers,
     ));
+    let configuration_signer = if agent_pki.is_some() {
+        Some(Arc::new(
+            crate::task_signing::open(
+                config
+                    .task_signing
+                    .as_ref()
+                    .ok_or(Error::Configuration(ConfigIssue::AgentPki))?,
+                &config.access_database,
+                identity.tenant,
+                &protection,
+            )
+            .await?
+            .configuration,
+        ))
+    } else {
+        None
+    };
     let agent_enrollment = agent_pki
         .as_ref()
         .map(|pki| {
@@ -369,12 +386,9 @@ pub(crate) async fn from_compiled(
                     native: execution.clone(),
                     bootstrap: pki.bootstrap.clone(),
                     origin: pki.origin.clone(),
-                    configuration_signer: Arc::new(crate::agent_configurations::signer(
-                        config
-                            .task_signing
-                            .as_ref()
-                            .ok_or(Error::Configuration(ConfigIssue::AgentPki))?,
-                    )?),
+                    configuration_signer: configuration_signer
+                        .clone()
+                        .ok_or(Error::Configuration(ConfigIssue::AgentPki))?,
                     installations: Arc::new(crate::agent_configurations::Installations),
                 },
             )

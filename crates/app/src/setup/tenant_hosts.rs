@@ -49,6 +49,10 @@ pub async fn reconcile(input: &Input) -> Result<usize> {
     )
     .await
     .map_err(|_| Error::Storage)?;
+    sqlx::raw_sql("SET statement_timeout='10s'; SET lock_timeout='6s'")
+        .execute(&mut c)
+        .await
+        .map_err(|_| Error::Storage)?;
     if !crate::migration::owner_admitted(&mut c)
         .await
         .map_err(|_| Error::Storage)?
@@ -115,7 +119,8 @@ pub async fn reconcile(input: &Input) -> Result<usize> {
                             progress.host_id,
                             progress.tenant_id,
                             &slot.origin,
-                            slot.listen
+                            slot.listen,
+                            &candidate
                         ))
                         .map_err(|_| Error::Input)?
                     )
@@ -145,8 +150,12 @@ pub async fn reconcile(input: &Input) -> Result<usize> {
     Ok(completed)
 }
 
-fn validate_slots(input: &Input) -> Result<()> {
+pub(super) fn validate_slots(input: &Input) -> Result<()> {
     let mut origins = std::collections::BTreeSet::from([input.origin.clone()]);
+    let mut ports = std::collections::BTreeSet::from([url::Url::parse(&input.origin)
+        .map_err(|_| Error::Input)?
+        .port_or_known_default()
+        .ok_or(Error::Input)?]);
     let mut listeners = std::collections::BTreeSet::from([input.listen]);
     if input.additional_hosts.len() > 1023 {
         return Err(Error::Input);
@@ -159,6 +168,7 @@ fn validate_slots(input: &Input) -> Result<()> {
             || url.password().is_some()
             || !slot.listen.ip().is_loopback()
             || slot.listen.port() == 0
+            || !ports.insert(url.port_or_known_default().ok_or(Error::Input)?)
             || !origins.insert(slot.origin.clone())
             || !listeners.insert(slot.listen)
         {

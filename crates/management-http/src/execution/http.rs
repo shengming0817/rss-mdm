@@ -13,6 +13,11 @@ use rss_mdm_execution_service::{
 use serde_json::Value;
 pub fn routes(queries: Arc<rss_mdm_execution_service::queries::Queries>) -> Router<Arc<HttpState>> {
     Router::new()
+        .route("/task-signing/operations/{id}", get(task_trust_operation))
+        .route(
+            "/task-signing/trust",
+            get(task_trust).post(change_task_trust),
+        )
         .route(
             "/devices/{device}/recovery-credentials/operations",
             post(create_recovery),
@@ -159,5 +164,48 @@ async fn create_recovery(
         .create_recovery_credential(&auth.proof, &device, &input, &audit)
         .await
         .map(|v| (StatusCode::ACCEPTED, Json(v)))
+        .map_err(Error::from)
+}
+
+async fn task_trust(
+    State(app): State<Arc<HttpState>>,
+    Extension(auth): Extension<RequestAuth>,
+    Extension(audit): Extension<RequestAudit>,
+) -> std::result::Result<Json<rss_mdm_agent_wire::task_trust::Trust>, Error> {
+    app.execution
+        .task_trust(&auth.proof, &audit)
+        .await
+        .map(Json)
+        .map_err(Error::from)
+}
+async fn change_task_trust(
+    State(app): State<Arc<HttpState>>,
+    Extension(auth): Extension<RequestAuth>,
+    Extension(audit): Extension<RequestAudit>,
+    headers: axum::http::HeaderMap,
+    input: std::result::Result<
+        Json<rss_mdm_execution_service::task_signing::service::Change>,
+        axum::extract::rejection::JsonRejection,
+    >,
+) -> std::result::Result<Json<rss_mdm_agent_wire::task_trust::Trust>, Error> {
+    let operation = crate::api::write_key(&headers, &audit, "task_signing_change")?;
+    let input = input.map_err(Error::from)?.0;
+    app.execution
+        .change_task_trust(&auth.proof, &audit, operation, &input)
+        .await
+        .map(Json)
+        .map_err(Error::from)
+}
+
+async fn task_trust_operation(
+    State(app): State<Arc<HttpState>>,
+    Extension(auth): Extension<RequestAuth>,
+    Extension(audit): Extension<RequestAudit>,
+    Path(id): Path<Uuid>,
+) -> std::result::Result<Json<rss_mdm_agent_wire::task_trust::Trust>, Error> {
+    app.execution
+        .task_trust_operation(&auth.proof, &audit, id)
+        .await
+        .map(Json)
         .map_err(Error::from)
 }

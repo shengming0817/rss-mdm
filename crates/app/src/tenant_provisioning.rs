@@ -119,7 +119,7 @@ impl Service {
             &format!("tenant-provision:{operation}"),
             digest.as_bytes(),
             202,
-            "pending",
+            "success",
             None,
         )
         .map_err(|_| Error::Malformed)?;

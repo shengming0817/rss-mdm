@@ -59,21 +59,29 @@ async fn execute() -> Result<(), ProcessError> {
         #[cfg(unix)]
         "provision-hosts" => {
             let input = config::load(path)?;
+            let shutdown = rss_mdm_app::signal();
+            tokio::pin!(shutdown);
+            let mut failed = false;
             loop {
-                if rss_mdm_app::setup::tenant_hosts::reconcile(&input)
-                    .await
-                    .is_err()
-                {
+                let result = tokio::select! {
+                    biased;
+                    result=&mut shutdown=>return result.map_err(|_|ProcessError::Stage {stage:"deployment.signal",kind:"shutdown signal unavailable"}),
+                    result=rss_mdm_app::setup::tenant_hosts::reconcile(&input)=>result,
+                };
+                if result.is_err() != failed {
+                    failed = result.is_err();
                     eprintln!(
-                        "tenant host reconciliation unavailable; original operations retained"
+                        "{}",
+                        serde_json::json!({"event":"tenant_deployment_health","available":!failed})
                     );
                 }
                 tokio::select! {
-                    result = rss_mdm_app::signal() => { return result.map_err(|_| ProcessError::Stage { stage: "deployment.signal", kind: "shutdown signal unavailable" }); }
-                    () = tokio::time::sleep(std::time::Duration::from_secs(5)) => {}
+                    result=&mut shutdown=>return result.map_err(|_|ProcessError::Stage {stage:"deployment.signal",kind:"shutdown signal unavailable"}),
+                    ()=tokio::time::sleep(std::time::Duration::from_secs(5))=>{},
                 }
             }
         }
+
         "serve" => {
             rss_mdm_app::serve(config::load(path)?, rss_mdm_app::signal(), monotonic()).await
         }

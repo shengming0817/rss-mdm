@@ -295,5 +295,9 @@ pub(super) fn units() -> Vec<(&'static str, &'static str)> {
             "apple-runtime-materials-v1",
             rss_mdm_apple_channel::runtime_materials::INSTALL_SQL,
         ),
+        (
+            "task-signing-trust-v1",
+            rss_mdm_execution_service::task_signing::trust::INSTALL_SQL,
+        ),
     ]
 }

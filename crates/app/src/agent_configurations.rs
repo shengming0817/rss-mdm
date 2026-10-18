@@ -1,15 +1,25 @@
 //! Host mapping between registration authority and fixed software publication admission.
-use crate::{Error, task_signing};
+
 use rss_mdm_registration_service::{
     Error as RegistrationError,
     agent::{Pending, configurations},
 };
-pub(crate) fn signer(c: &task_signing::Config) -> Result<configurations::Signer, Error> {
-    let private = crate::config::read(&c.private_key_file, 4096, true)?;
-    configurations::Signer::new(&private, &c.key_id, &c.trusted_keys).map_err(Into::into)
-}
 pub(crate) struct Installations;
 impl configurations::InstallationAdmission for Installations {
+    fn verify_signer<'a>(
+        &'a self,
+        c: &'a mut sqlx::PgConnection,
+        tenant: &'a str,
+        key_id: &'a str,
+    ) -> Pending<'a, ()> {
+        Box::pin(async move {
+            let tenant = rss_request_context::TenantId::parse(tenant)
+                .map_err(|_| RegistrationError::Configuration)?;
+            rss_mdm_execution_service::task_signing::trust::require_active_key(c, tenant, key_id)
+                .await
+                .map_err(|_| RegistrationError::Conflict)
+        })
+    }
     fn verify<'a>(
         &'a self,
         c: &'a mut sqlx::PgConnection,

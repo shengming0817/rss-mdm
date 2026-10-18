@@ -1,0 +1,7 @@
+{
+  "apiVersion": 1,
+  "schemas": [
+    {"type": "Trust", "file": "trust-v1.schema.json"},
+    {"type": "Acknowledgement", "file": "acknowledgement-v1.schema.json"}
+  ]
+}

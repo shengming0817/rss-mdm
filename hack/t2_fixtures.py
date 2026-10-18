@@ -228,7 +228,8 @@ class RunFixtures:
         config = self.runtime_config(pool, root, database, context['tenant'],
             native_key=self.native_key, recovery_credentials=self.recovery_config())
         config['content'] = json.loads((shared / 'content.json').read_text())
-        config['task_signing'] = json.loads((shared / 'task-signing.json').read_text())
+        config['task_signing'] = {'revision':1}
+        private(root / 'task-signing-fixture.json', json.loads((shared / 'task-signing.json').read_text()))
         private(root / 'runtime.json', config)
         private(root / 'account-password', (shared / 'account-password').read_text())
         pool.database_config(root, database, 'mdm_identity_maintenance', 'identity-maintenance-fixture')

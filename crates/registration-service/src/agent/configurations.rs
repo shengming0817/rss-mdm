@@ -87,6 +87,13 @@ impl Signer {
 }
 /// Publication owner checks the exact current release in this same tenant transaction.
 pub trait InstallationAdmission: Send + Sync {
+    /// Prevent a stale process from issuing configurations with a key that left active use.
+    fn verify_signer<'a>(
+        &'a self,
+        c: &'a mut PgConnection,
+        tenant: &'a str,
+        key_id: &'a str,
+    ) -> Pending<'a, ()>;
     fn verify<'a>(
         &'a self,
         c: &'a mut PgConnection,
@@ -243,6 +250,7 @@ impl Service {
             for target in &input.targets {defaults=Some(settings::admit_on(c,&tenant,target.platform).await?);}
             let seconds=input.lifetime_seconds.unwrap_or(defaults.ok_or(Error::Malformed)?.configuration_default_seconds);
             if !(1..=settings::CONFIGURATION_MAX_SECONDS).contains(&seconds){return Err(Error::Malformed);}
+            service.installations.verify_signer(c,&tenant,&service.configuration_signer.key_id).await?;
             let id=Uuid::new_v4();let expires_at=now(c).await?+i64::from(seconds);
             let config=wire_config::Configuration{wire_version:1,configuration_id:id,tenant_id:Uuid::parse_str(&tenant).map_err(|_|Error::Configuration)?,origin:service.origin.clone(),targets:input.targets.clone(),channels:input.channels.clone(),expires_at,quantity:input.quantity.clone(),key_id:service.configuration_signer.key_id.clone()};
             config.signing_bytes(&input.secret).map_err(|_|Error::Configuration)?;

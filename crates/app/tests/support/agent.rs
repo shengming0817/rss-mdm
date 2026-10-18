@@ -127,6 +127,7 @@ pub(crate) async fn complete_grant(
             &audit(),
         )
         .await?;
+    super::task_signing::acknowledge(service, &peer).await?;
     remember(label, peer, receipt.runtime.device_id.clone());
     Ok(serde_json::to_value(receipt.runtime)?)
 }
@@ -404,7 +405,28 @@ COMMIT;
 
 pub(crate) fn fixture_signer() -> Result<rss_mdm_registration_service::agent::configurations::Signer>
 {
-    let base: Value = serde_json::from_slice(&std::fs::read(std::env::var("MDM_TEST_CONFIG")?)?)?;
-    let config: crate::task_signing::Config = serde_json::from_value(base["task_signing"].clone())?;
-    Ok(crate::agent_configurations::signer(&config)?)
+    let input = fixture_signing_input()?;
+    let private = crate::config::read(
+        std::path::Path::new(
+            input["private_key_file"]
+                .as_str()
+                .ok_or_else(|| anyhow::anyhow!("fixture private key"))?,
+        ),
+        4096,
+        true,
+    )?;
+    Ok(
+        rss_mdm_registration_service::agent::configurations::Signer::new(
+            &private,
+            input["key_id"].as_str().unwrap(),
+            &serde_json::from_value(input["trusted_keys"].clone())?,
+        )?,
+    )
+}
+
+pub(crate) fn fixture_signing_input() -> Result<Value> {
+    let config = std::path::PathBuf::from(std::env::var("MDM_TEST_CONFIG")?);
+    Ok(serde_json::from_slice(&std::fs::read(
+        config.parent().unwrap().join("task-signing-fixture.json"),
+    )?)?)
 }

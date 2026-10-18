@@ -814,3 +814,5 @@ async fn fixture_resources_preserve_failures_and_close_during_initialization() {
     .await
     .expect("RSS drop drain closes the abandoned fixture");
 }
+
+pub(crate) mod task_signing;

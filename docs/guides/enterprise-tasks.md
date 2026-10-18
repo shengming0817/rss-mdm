@@ -21,9 +21,7 @@ Resource.Script 和 Resource.Software 分别持有不可变执行定义。管理
     "max_expansion_ratio": 100
   },
   "task_signing": {
-    "private_key_file": "/run/secrets/task-signing.pk8",
-    "key_id": "enterprise-2026-09",
-    "trusted_keys": {"enterprise-2026-09": "<32-byte Ed25519 public key, unpadded base64url>"}
+    "revision": 1
   }
 }
 ```

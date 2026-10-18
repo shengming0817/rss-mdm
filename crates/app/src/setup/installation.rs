@@ -91,6 +91,7 @@ fn invalid<T>(_: T) -> Error {
 }
 impl Input {
     fn validate(&self) -> Result<()> {
+        super::tenant_hosts::validate_slots(self)?;
         let u = url::Url::parse(&self.origin).map_err(invalid)?;
         if u.scheme() != "https"
             || u.host_str().is_none()
@@ -300,7 +301,9 @@ pub async fn install(input: Input) -> Result<Receipt> {
         journal.save("installation.json", &saved)?;
         saved
     };
-    super::postgres::prepare(&input, saved.receipt.instance_id).await?;
+    if saved.receipt.stage == Stage::Prepared {
+        super::postgres::prepare(&input, saved.receipt.instance_id).await?;
+    }
     crate::migration::migrate(
         &input.database("mdm_owner")?.options().map_err(invalid)?,
         &coordinates(&input, &saved),

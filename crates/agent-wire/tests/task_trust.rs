@@ -77,3 +77,30 @@ fn ambiguous_keys_and_noncanonical_origins_are_rejected() {
     value.revision = 0;
     assert!(value.validate().is_err());
 }
+
+#[test]
+fn activation_cannot_skip_installed_preparation_or_reactivate_verify_only_keys() {
+    let initial = trust();
+    let mut prepared = initial.clone();
+    prepared.revision = 2;
+    prepared.keys.push(PublicKey {
+        id: "second".into(),
+        public_key: base64::engine::general_purpose::URL_SAFE_NO_PAD.encode([2; 32]),
+        state: KeyState::Prepared,
+    });
+    let mut active = prepared.clone();
+    active.revision = 3;
+    active.keys[0].state = KeyState::VerifyOnly;
+    active.keys[1].state = KeyState::Active;
+    assert!(active.validate_successor(&initial).is_err());
+    active.validate_successor(&prepared).unwrap();
+    let mut rollback = active.clone();
+    rollback.revision = 4;
+    rollback.keys[0].state = KeyState::Active;
+    rollback.keys[1].state = KeyState::VerifyOnly;
+    assert!(rollback.validate_successor(&active).is_err());
+    let mut retired = active.clone();
+    retired.revision = 4;
+    retired.keys.remove(0);
+    retired.validate_successor(&active).unwrap();
+}

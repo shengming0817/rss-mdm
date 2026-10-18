@@ -208,12 +208,15 @@ pub(crate) async fn open(
         let apple_store = Arc::new(rss_mdm_apple_channel::flow_store::Store {
             protection: protection.clone(),
         });
-        let signer = config
-            .task_signing
-            .as_ref()
-            .map(crate::task_signing::open)
-            .transpose()?
-            .map(Arc::new);
+        let signer = if let Some(signing) = &config.task_signing {
+            Some(Arc::new(
+                crate::task_signing::open(signing, &config.access_database, tenant, &protection)
+                    .await?
+                    .task,
+            ))
+        } else {
+            None
+        };
         let software = Arc::new(rss_mdm_software_service::preparation::Preparation::new(
             rss_mdm_software_service::catalog::Reader::new(tenant),
             exports

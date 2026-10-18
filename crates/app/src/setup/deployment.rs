@@ -116,13 +116,23 @@ fn project(
     }
     Ok(())
 }
-fn project_file(value: &mut Value, journal: &Journal, mounts: &mut BTreeMap<String,PathBuf>, private: bool) -> Result<()> {
+fn project_file(
+    value: &mut Value,
+    journal: &Journal,
+    mounts: &mut BTreeMap<String, PathBuf>,
+    private: bool,
+) -> Result<()> {
     let source = Path::new(value.as_str().ok_or(Error::Input)?);
-    if !source.is_absolute() { return Err(Error::Input); }
-    let bytes = crate::config::read(source,1024*1024,private).map_err(|_|Error::Input)?;
-    let filename = format!("input-{:x}",Sha256::digest(source.as_os_str().as_encoded_bytes()));
-    let path = journal.secret(&filename,&bytes)?;
-    mounts.insert(filename.clone(),path);
+    if !source.is_absolute() {
+        return Err(Error::Input);
+    }
+    let bytes = crate::config::read(source, 1024 * 1024, private).map_err(|_| Error::Input)?;
+    let filename = format!(
+        "input-{:x}",
+        Sha256::digest(source.as_os_str().as_encoded_bytes())
+    );
+    let path = journal.secret(&filename, &bytes)?;
+    mounts.insert(filename.clone(), path);
     *value = Value::String(format!("/run/mdm/{filename}"));
     Ok(())
 }

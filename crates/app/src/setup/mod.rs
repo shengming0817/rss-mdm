@@ -11,6 +11,8 @@ pub mod model;
 #[cfg(unix)]
 mod postgres;
 #[cfg(unix)]
+pub mod source;
+#[cfg(unix)]
 mod supervisor;
 #[cfg(unix)]
 pub mod tenant_hosts;

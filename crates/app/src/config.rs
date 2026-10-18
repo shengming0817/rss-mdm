@@ -154,6 +154,13 @@ impl Config {
     }
     pub(crate) fn compile(self) -> Result<Compiled, Error> {
         self.runtime_binding.validate()?;
+        if self
+            .task_signing
+            .as_ref()
+            .is_some_and(|s| s.revision == 0 || s.revision > i64::MAX as u64)
+        {
+            return Err(Error::Configuration(ConfigIssue::AgentPki));
+        }
         if self.apple_material_roots.len() > 16 {
             return Err(Error::Configuration(ConfigIssue::AppleProfileSigner));
         }

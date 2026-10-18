@@ -104,6 +104,7 @@ CAPABILITY_INPUTS = {'identity.local': ('crates/app/src/identity.rs',),
                          'crates/inventory-service/src/compliance/freshness.rs'),
  'compliance.group_input': ('crates/inventory-service/src/compliance/evaluation.rs',
                             'crates/inventory-service/src/compliance/freshness.rs'),
+ 'execution.agent.task_trust': ('crates/execution-service/src/task_signing/*','crates/agent-channel/src/tasks.rs','crates/management-http/src/execution/http.rs','crates/agent-wire/src/task_trust.rs'),
  'execution.agent.delivery': ('crates/execution-service/src/actions/agent.rs',
                               'crates/execution-service/src/actions/production.rs',
                               'crates/execution-service/src/actions/collection.rs'),
@@ -363,7 +364,7 @@ app_family('execution.software',
 for name in ('execution.software.offer', 'execution.software.content', 'execution.software.recovery', 'planning.software'):
     MODULES[name] = replace(MODULES[name], support_inputs=MODULES[name].support_inputs +
         ('crates/app/tests/support/software_execution.rs',))
-for name in ('execution.agent.delivery', 'execution.agent.content', 'execution.agent.history', 'execution.agent.poll', 'execution.agent.recovery', 'planning.agent_policy', 'planning.frequency', 'planning.onboarding'):
+for name in ('execution.agent.task_trust', 'execution.agent.delivery', 'execution.agent.content', 'execution.agent.history', 'execution.agent.poll', 'execution.agent.recovery', 'planning.agent_policy', 'planning.frequency', 'planning.onboarding'):
     MODULES[name] = replace(MODULES[name], support_inputs=MODULES[name].support_inputs +
         ('crates/app/tests/support/agent_execution.rs',))
 add('software.catalog', build=Build('rss-mdm-software-service', 'test', 'catalog_t2'), selectors=('',),
@@ -914,7 +915,7 @@ for name, path in (('apple.push','push_cycle'), ('apple.host','production')):
     MODULES[name] = replace(MODULES[name], test_inputs=(f'crates/app/tests/apple/{path}.rs',))
 
 # Runtime fixture consumers sign durable candidates and use completed TLS peers.
-AGENT_FIXTURE_CONSUMERS = tuple(('planning.self_service agent.registration agent.reports execution.agent.delivery execution.agent.poll execution.agent.content execution.agent.recovery execution.agent.history execution.software.offer execution.software.content execution.software.recovery planning.onboarding execution.commands.onboarding apple.onboarding planning.agent_policy planning.frequency planning.http assets.http planning.software').split())
+AGENT_FIXTURE_CONSUMERS = tuple(('execution.agent.task_trust planning.self_service agent.registration agent.reports execution.agent.delivery execution.agent.poll execution.agent.content execution.agent.recovery execution.agent.history execution.software.offer execution.software.content execution.software.recovery planning.onboarding execution.commands.onboarding apple.onboarding planning.agent_policy planning.frequency planning.http assets.http planning.software').split())
 AGENT_FIXTURES = ('identity','agent_pki')
 AGENT_FIXTURE_INPUTS = ('crates/app/tests/support/agent.rs','crates/app/tests/support/agent_tls.rs','hack/agent_pki_fixtures.py','hack/pki_fixtures.py','hack/pki_ca.py')
 for name in AGENT_FIXTURE_CONSUMERS:
@@ -2073,3 +2074,5 @@ consume_dependencies("webhooks.product", normal="ipnet rss-mdm-webhook-service r
 consume(('crates/apple-channel/src/runtime_materials/*','crates/apple-channel/schema/runtime-materials.sql'), 'apple.host')
 consume(('crates/app/src/setup/host.rs',), 'api.diagnostics apple.host')
 consume(('crates/app/src/tenant_provisioning.rs','crates/app/schema/provisioning.sql'), 'deployment.management-tenant')
+
+consume(('crates/app/tests/support/task_signing.rs',), 'execution.agent.task_trust execution.agent.delivery')

@@ -6,6 +6,11 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
+/// Fingerprint of the generated, fixed public schema artifact.
+pub const SCHEMA_FINGERPRINT: &str =
+    "2f56d707531fb0e6dd2820359e8d1dd3ccccc71f982cbaecaddf0999518e4c0e";
+/// Canonical manifest for fixed consumer artifacts.
+pub const SCHEMA_MANIFEST: &str = include_str!("../schema/task_trust/manifest.json");
 /// Task-signing trust protocol version.
 pub const API_VERSION: u8 = 1;
 /// Maximum number of concurrently retained task-signing public keys.
@@ -124,13 +129,21 @@ impl Trust {
             return Err(WireError::InvalidValue);
         }
         for previous in &installed.keys {
-            if self
-                .keys
-                .iter()
-                .any(|key| key.id == previous.id && key.public_key != previous.public_key)
-            {
+            let next = self.keys.iter().find(|key| key.id == previous.id);
+            if next.is_some_and(|key| key.public_key != previous.public_key) {
                 return Err(WireError::InvalidValue);
             }
+            match (previous.state, next.map(|key| key.state)) {
+                (KeyState::Active, Some(KeyState::Active | KeyState::VerifyOnly))
+                | (KeyState::Prepared, Some(KeyState::Prepared | KeyState::Active) | None)
+                | (KeyState::VerifyOnly, Some(KeyState::VerifyOnly) | None) => (),
+                _ => return Err(WireError::InvalidValue),
+            }
+        }
+        if self.keys.iter().any(|key| {
+            !installed.keys.iter().any(|old| old.id == key.id) && key.state != KeyState::Prepared
+        }) {
+            return Err(WireError::InvalidValue);
         }
         Ok(())
     }

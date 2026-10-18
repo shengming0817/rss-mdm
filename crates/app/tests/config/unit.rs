@@ -287,7 +287,7 @@ fn agent_registration_requires_task_signing_before_assembly() {
                 serde_json::json!({"mode":"disabled"})
             };
             value["task_signing"] = if signed {
-                serde_json::json!({"private_key_file":"unused.key","key_id":"test","trusted_keys":{}})
+                serde_json::json!({"revision":1})
             } else {
                 serde_json::Value::Null
             };

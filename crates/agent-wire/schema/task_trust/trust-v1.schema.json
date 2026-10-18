@@ -1,0 +1,96 @@
+{
+  "$defs": {
+    "KeyState": {
+      "description": "Exact task-signing key lifecycle. Retirement removes a key from the next complete set.",
+      "oneOf": [
+        {
+          "const": "prepared",
+          "description": "Installed before the server starts signing with this key.",
+          "type": "string"
+        },
+        {
+          "const": "active",
+          "description": "The sole key used for newly signed tasks.",
+          "type": "string"
+        },
+        {
+          "const": "verify_only",
+          "description": "Retained to authenticate previously issued tasks.",
+          "type": "string"
+        }
+      ]
+    },
+    "PublicKey": {
+      "additionalProperties": false,
+      "description": "Ed25519 public material. Private keys never appear in this contract.",
+      "properties": {
+        "id": {
+          "description": "Stable, never reused key identifier.",
+          "type": "string"
+        },
+        "public_key": {
+          "description": "Exactly 32 public-key bytes encoded as canonical unpadded base64url.",
+          "type": "string"
+        },
+        "state": {
+          "$ref": "#/$defs/KeyState",
+          "description": "Approved use of this key."
+        }
+      },
+      "required": [
+        "id",
+        "public_key",
+        "state"
+      ],
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Complete server-authorized task-signing trust for one tenant and runtime origin.",
+  "properties": {
+    "keys": {
+      "description": "Full key set, strictly sorted by key ID for a unique digest.",
+      "items": {
+        "$ref": "#/$defs/PublicKey"
+      },
+      "type": "array"
+    },
+    "origin": {
+      "description": "Canonical HTTPS runtime origin, with no path, query or fragment.",
+      "type": "string"
+    },
+    "revision": {
+      "description": "Monotonically increasing revision, never inferred from a timestamp.",
+      "format": "uint64",
+      "minimum": 0,
+      "type": "integer"
+    },
+    "tenant": {
+      "description": "Tenant owning the authenticated Agent channel.",
+      "format": "uuid",
+      "not": {
+        "const": "00000000-0000-0000-0000-000000000000"
+      },
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+      "type": "string"
+    },
+    "version": {
+      "description": "Exact protocol version.",
+      "format": "uint8",
+      "maximum": 255,
+      "minimum": 0,
+      "type": "integer"
+    }
+  },
+  "required": [
+    "version",
+    "origin",
+    "tenant",
+    "revision",
+    "keys"
+  ],
+  "title": "Trust",
+  "type": "object",
+  "$id": "https://rss.example/agent/task-trust/v1/Trust"
+}

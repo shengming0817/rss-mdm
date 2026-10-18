@@ -377,7 +377,7 @@ async fn write(
             storage::save(c,p.tenant_id(),*id,app.protection.id(),fingerprint,&value).await?;
             p.check_live()?;Ok::<_,Error>((value,false,*fingerprint))
         })).await?;
-        let fact=Fact::business(audit,&format!("apple-runtime:{id}"),&original_fingerprint,200,"saved",None).map_err(|_|Error::Malformed)?;
+        let fact=Fact::business(audit,&format!("apple-runtime:{id}"),&original_fingerprint,200,"success",None).map_err(|_|Error::Malformed)?;
         app.audit_store.append(tx,&fact,replayed).await?;
         if replayed {audit.management_result(rss_mdm_audit_integration::ManagementResult::Replayed);}
         audit.mark_commit_started();Ok(value)

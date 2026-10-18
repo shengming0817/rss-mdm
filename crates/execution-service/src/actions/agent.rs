@@ -113,6 +113,7 @@ impl ExecutionService {
                         let payload=plan.task(service,tx,&run.target,db::TaskIssue { run:run.id,attempt,permit:wire::TaskPermit::Offer,expiry:(now+60).min(run.deadline) }).await?;
                         if let (db::ScheduledPolicy::AgentCollection(v), wire::TaskPayload::Collection(spec))=(&plan,&payload) {super::agent_collection::reserve(tx,&v.frozen,&run,spec,now).await?;}
                         let signer=service.signer.as_ref().ok_or(Error::Unsupported)?;
+                        require_signing_trust(tx,p,signer).await?;
                         let signed=signer.sign(payload)?;
                         let tenant=tx.tenant_id().to_string();let run_id=run.id.to_string();let reg=p.registration().to_string();let value=checked_input(serde_json::to_value(&signed))?;
                         tx.with_connection(move|c|Box::pin(async move{sqlx::query("INSERT INTO mdm_commands.action_attempts(tenant_id,id,run,registration,claimed_at,offer) VALUES($1::uuid,$2::uuid,$3::uuid,$4::uuid,$5,$6)").bind(tenant).bind(attempt.to_string()).bind(run_id).bind(reg).bind(now).bind(value).execute(c).await?;Ok(())})).await?;
@@ -215,6 +216,7 @@ impl ExecutionService {
                     }
                     if matches!(plan,db::ScheduledPolicy::Credential(_)) {crate::credential_tasks::start(service,tx,&run,input.attempt_id()).await?;}
                     run.state.start(input.attempt_id(),now)?;
+                    require_signing_trust(tx,p,service.signer.as_ref().ok_or(Error::Unsupported)?).await?;
                     let signed=service.signer.as_ref().ok_or(Error::Unsupported)?.sign(plan.task(service,tx,&run.target,db::TaskIssue { run:id,attempt:input.attempt_id(),permit:wire::TaskPermit::Start,expiry:(now+15).min(run.deadline) }).await?)?;
                     let tenant=tx.tenant_id().to_string();let attempt=input.attempt_id().to_string();let value=checked_input(serde_json::to_value(&signed))?;
                     let changed=tx.with_connection(move|c|Box::pin(async move{Ok(sqlx::query("UPDATE mdm_commands.action_attempts SET permit=$3 WHERE tenant_id=$1::uuid AND id=$2::uuid AND permit IS NULL").bind(tenant).bind(attempt).bind(value).execute(c).await?.rows_affected())})).await?;
@@ -350,3 +352,17 @@ impl ExecutionService {
 }
 
 use rss_mdm_audit_integration::RequestAudit;
+
+async fn require_signing_trust(
+    tx: &mut PgTransaction<'_>,
+    p: &DevicePrincipal,
+    signer: &crate::task_signing::Signer,
+) -> Result<()> {
+    let p = p.clone();
+    let key = signer.key_id().to_owned();
+    tx.with_connection(move |c| {
+        Box::pin(async move { Ok(crate::task_signing::trust::require_issue(c, &p, &key).await) })
+    })
+    .await??;
+    Ok(())
+}

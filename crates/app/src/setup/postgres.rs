@@ -8,6 +8,14 @@ use sqlx::Connection;
 use std::collections::BTreeMap;
 
 pub(super) async fn prepare(input: &Input, instance: uuid::Uuid) -> Result<()> {
+    tokio::time::timeout(
+        std::time::Duration::from_secs(90),
+        prepare_inner(input, instance),
+    )
+    .await
+    .map_err(|_| Error::Storage)?
+}
+async fn prepare_inner(input: &Input, instance: uuid::Uuid) -> Result<()> {
     let admin = &input.database.administrator;
     let tag = format!("rss-mdm-installation:{instance}");
     let mut passwords = BTreeMap::new();

@@ -17,6 +17,7 @@ fn body<T>(v: Body<T>) -> Result<T, Error> {
 }
 pub(crate) fn routes() -> Router<Arc<TaskState>> {
     Router::new()
+        .route("/task-trust", get(task_trust).post(acknowledge_task_trust))
         .route("/tasks/claim", post(claim))
         .route("/tasks/{id}/enrollment", post(native_enrollment))
         .route("/self-service", get(directory))
@@ -37,6 +38,15 @@ async fn authenticate(
     peer: Option<&rss_mdm_certificate::HandshakePeer>,
     audit: &RequestAudit,
 ) -> Result<crate::device::DevicePrincipal, crate::AgentError> {
+    authenticate_for(app, headers, peer, audit, true).await
+}
+async fn authenticate_for(
+    app: &TaskState,
+    headers: &HeaderMap,
+    peer: Option<&rss_mdm_certificate::HandshakePeer>,
+    audit: &RequestAudit,
+    task_required: bool,
+) -> Result<crate::device::DevicePrincipal, crate::AgentError> {
     let principal = crate::authenticate(&app.enrollment, headers, peer).await?;
     let mut tx = app.access.begin(&principal.tenant().to_string()).await?;
     use rss_mdm_execution_service::channels::Agent;
@@ -49,7 +59,7 @@ async fn authenticate(
         .await
         .map_err(Error::from)?;
     tx.commit().await.map_err(crate::database::db)?;
-    if !binding.is_some_and(|b| b.inventory() && b.task()) {
+    if !binding.is_some_and(|b| b.inventory() && (!task_required || b.task())) {
         return Err(task_error(Error::Forbidden));
     }
     audit.identify_device(principal.registration());
@@ -278,6 +288,43 @@ async fn native_enrollment(
                 .await
                 .map_err(task_error)?,
         ))
+    })
+    .await
+}
+
+async fn task_trust(
+    State(app): State<Arc<TaskState>>,
+    Extension(audit): Extension<RequestAudit>,
+    peer: Option<Extension<rss_mdm_certificate::HandshakePeer>>,
+    headers: HeaderMap,
+) -> Result<Json<rss_mdm_agent_wire::task_trust::Trust>, crate::AgentError> {
+    crate::bounded(async {
+        let p =
+            authenticate_for(&app, &headers, peer.as_ref().map(|p| &p.0), &audit, false).await?;
+        app.execution
+            .agent_task_trust(&p, &audit)
+            .await
+            .map(Json)
+            .map_err(task_error)
+    })
+    .await
+}
+async fn acknowledge_task_trust(
+    State(app): State<Arc<TaskState>>,
+    Extension(audit): Extension<RequestAudit>,
+    peer: Option<Extension<rss_mdm_certificate::HandshakePeer>>,
+    headers: HeaderMap,
+    input: Body<rss_mdm_agent_wire::task_trust::Acknowledgement>,
+) -> Result<Json<rss_mdm_agent_wire::task_trust::Acknowledgement>, crate::AgentError> {
+    crate::bounded(async {
+        let input = body(input)?;
+        let p =
+            authenticate_for(&app, &headers, peer.as_ref().map(|p| &p.0), &audit, false).await?;
+        app.execution
+            .acknowledge_task_trust(&p, &audit, &input)
+            .await
+            .map_err(task_error)?;
+        Ok(Json(input))
     })
     .await
 }
