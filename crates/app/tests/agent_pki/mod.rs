@@ -1549,3 +1549,49 @@ async fn management_crl_publication_accepts_large_signed_material_and_rejects_ov
     host.close().await?;
     Ok(())
 }
+
+#[tokio::test]
+#[ignore = "make t2 MODULE=agent.pki: bootstrap selection follows current registry issuer with retained overlap"]
+async fn bootstrap_sources_select_current_issuer_and_reject_missing_application()
+-> anyhow::Result<()> {
+    use rss_mdm_agent_wire::pki::{Mode, Purpose, Trust};
+    use rss_mdm_registration_service::agent::bootstrap::Deployment;
+    let config = deployment();
+    let mut previous: Trust =
+        serde_json::from_slice(&std::fs::read(config["trust_file"].as_str().unwrap())?)?;
+    let candidate = PathBuf::from(std::env::var("MDM_AGENT_PKI_CANDIDATE_FIXTURES")?);
+    let next: Trust = serde_json::from_slice(&std::fs::read(candidate.join("agent-trust.json"))?)?;
+    previous.purpose = Purpose::AgentBootstrap;
+    let mut added = next.issuers[0].clone();
+    added.mode = Mode::Prepared;
+    previous.issuers.push(added);
+    for issuer in &mut previous.issuers {
+        issuer.provisioner = "rss-agent-bootstrap".into();
+        issuer.kid.clear();
+    }
+    let old = previous.issuers[0].digest.clone();
+    let new = previous.issuers[1].digest.clone();
+    let endpoints = std::collections::BTreeMap::from([
+        (
+            old.clone(),
+            "https://old.example.test/scep/rss-agent-bootstrap".into(),
+        ),
+        (
+            new.clone(),
+            "https://new.example.test/scep/rss-agent-bootstrap".into(),
+        ),
+    ]);
+    let frozen = Deployment::select(previous.clone(), &endpoints, now())?;
+    assert_eq!(frozen.issuer, old);
+    previous.issuers[0].mode = Mode::VerifyOnly;
+    previous.issuers[1].mode = Mode::Active;
+    previous.revision += 1;
+    let current = Deployment::select(previous.clone(), &endpoints, now())?;
+    assert_eq!(current.issuer, new);
+    assert_ne!(frozen.root, current.root);
+    let old_only = std::collections::BTreeMap::from([(old.clone(), endpoints[&old].clone())]);
+    assert!(Deployment::select(previous, &old_only, now()).is_err());
+    // A pre-existing operation retains its original issuer after the new selection.
+    assert_eq!(frozen.issuer, old);
+    Ok(())
+}

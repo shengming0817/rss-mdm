@@ -22,6 +22,35 @@ pub struct Deployment {
     pub root: Vec<u8>,
     pub root_thumbprint: String,
 }
+impl Deployment {
+    /// Select the exact issuer frozen by the caller's registry transaction fence.
+    pub fn select(
+        trust: rss_mdm_agent_wire::pki::Trust,
+        endpoints: &std::collections::BTreeMap<String, String>,
+        now: i64,
+    ) -> Result<Self, Error> {
+        let trust = DeviceTrust::new(trust, rss_mdm_agent_wire::pki::Purpose::AgentBootstrap, now)
+            .map_err(|_| Error::Configuration)?;
+        let issuer = trust.active().map_err(|_| Error::Configuration)?;
+        let root =
+            rss_mdm_device_trust::decode(&issuer.root, 32768).map_err(|_| Error::Configuration)?;
+        let root_thumbprint = ring::digest::digest(&ring::digest::SHA1_FOR_LEGACY_USE_ONLY, &root)
+            .as_ref()
+            .iter()
+            .map(|b| format!("{b:02X}"))
+            .collect();
+        Ok(Self {
+            scep_url: endpoints
+                .get(&issuer.digest)
+                .ok_or(Error::Configuration)?
+                .clone(),
+            issuer: issuer.digest,
+            provisioner: issuer.provisioner,
+            root,
+            root_thumbprint,
+        })
+    }
+}
 impl Service {
     pub fn bootstrap_configuration(&self) -> Result<&Configuration, Failure> {
         self.bootstrap

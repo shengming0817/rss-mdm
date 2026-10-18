@@ -19,7 +19,22 @@ impl ExecutionService {
         installation: Uuid,
         audit: &RequestAudit,
     ) -> Result<()> {
-        let deployment = self.inputs.bootstrap.as_ref().ok_or(Error::Unsupported)?;
+        let endpoints = self.inputs.bootstrap.as_ref().ok_or(Error::Unsupported)?;
+        let tenant = tx.tenant_id();
+        // Freeze the active DB generation under the same fence used by activation and retirement.
+        let body:Vec<u8>=tx.with_connection(move|c|Box::pin(async move {
+            sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,2639))").bind(tenant.to_string()).execute(&mut *c).await?;
+            sqlx::query_scalar("SELECT body FROM mdm_pki.trust WHERE tenant_id=$1::uuid AND purpose='agent_bootstrap'").bind(tenant.to_string()).fetch_one(c).await
+        })).await?;
+        let trust: rss_mdm_agent_wire::pki::Trust =
+            serde_json::from_slice(&body).map_err(|_| Error::Malformed)?;
+        if trust.tenant.to_string() != tenant.to_string()
+            || trust.purpose != rss_mdm_agent_wire::pki::Purpose::AgentBootstrap
+        {
+            return Err(Error::Forbidden.into());
+        }
+        let deployment = Deployment::select(trust, endpoints, storage::now(tx).await?)
+            .map_err(|_| Error::Unsupported)?;
         let op = storage::load(tx, &self.protection, installation).await?;
         let package = op.authority.agent_package().ok_or(Error::Forbidden)?;
         let id = Uuid::new_v4();
@@ -30,7 +45,7 @@ impl ExecutionService {
             .map_err(|_| Error::Malformed)?;
         let secret = zeroize::Zeroizing::new(URL_SAFE_NO_PAD.encode(random));
         let task = task(
-            deployment,
+            &deployment,
             package.target.parts().0,
             installation,
             id,
@@ -46,11 +61,6 @@ impl ExecutionService {
         let provisioner = deployment.provisioner.clone();
         let challenge = Sha256::digest(secret.as_bytes()).to_vec();
         tx.with_connection(move|c|Box::pin(async move {
-            sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,2639))").bind(tenant.to_string()).execute(&mut *c).await?;
-            let active:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_pki.trust t CROSS JOIN LATERAL jsonb_array_elements(convert_from(t.body,'UTF8')::jsonb->'issuers') i WHERE t.tenant_id=$1::uuid AND t.purpose='agent_bootstrap' AND i->>'mode'='active' AND i->>'digest'=$2)")
-                .bind(tenant.to_string()).bind(&issuer).fetch_one(&mut *c).await?;
-            // A stale process must refresh its deployment snapshot before creating new attempts.
-            if !active {return Err(sqlx::Error::Protocol("bootstrap issuer application required".into()));}
             let credential:Uuid=sqlx::query_scalar("SELECT id FROM mdm_access.credentials WHERE tenant_id=$1::uuid AND registration=$2 AND channel='mdm' AND state='active'")
                 .bind(tenant.to_string()).bind(registration).fetch_one(&mut *c).await?;
             let proof=serde_json::json!({"installation":installation,"registration":registration,"credential":credential,"generation":generation,"source":source,"runtime":null,"bootstrap":id});

@@ -21,14 +21,18 @@ pub(crate) fn load(
 ) -> Result<rss_mdm_pki_service::scep::Verifier, Error> {
     let invalid = || Error::Configuration(ConfigIssue::SecretContents);
     let public = trust.public().map_err(|_| invalid())?;
-    if inputs.len() != public.issuers.len() {
+    // Prepared callbacks can be installed before the registry publishes overlapping trust.
+    // Every retained trusted issuer still needs its original credentials.
+    if inputs.len() > 32
+        || public
+            .issuers
+            .iter()
+            .any(|issuer| !inputs.iter().any(|input| input.issuer == issuer.digest))
+    {
         return Err(invalid());
     }
     let mut credentials = Vec::new();
     for input in inputs {
-        if !public.issuers.iter().any(|g| g.digest == input.issuer) {
-            return Err(invalid());
-        }
         let read = |v: &Webhook, issue| {
             let bytes = crate::config::read(&v.secret_file, 4096, true)
                 .map_err(|_| Error::Configuration(issue))?;

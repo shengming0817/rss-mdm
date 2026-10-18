@@ -245,6 +245,13 @@ pub async fn run(input: Request) -> Result<Receipt> {
         origin(callback)?;
     }
     let root = Journal::open(&input.installation.directory)?;
+    if root
+        .load::<Option<Uuid>>("backup-operation.json")?
+        .flatten()
+        .is_some()
+    {
+        return Err(Error::Busy);
+    }
     let journal = Journal::open(
         &input
             .installation

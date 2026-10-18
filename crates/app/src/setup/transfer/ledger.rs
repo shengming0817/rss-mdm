@@ -4,24 +4,48 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub(super) struct Head {
+pub(in crate::setup) struct Head {
     pub tenant: String,
     pub key_id: Option<String>,
     pub sequence: Option<i64>,
     pub tag: Option<Vec<u8>>,
     pub verified_records: Option<u64>,
 }
-pub(super) async fn verify(runtime: &Value, tenants: &[String]) -> Result<Vec<Head>> {
+pub(in crate::setup) async fn verify(runtime: &Value, tenants: &[String]) -> Result<Vec<Head>> {
     let database: crate::config::Database =
         serde_json::from_value(runtime["access_database"].clone()).map_err(|_| Error::Input)?;
-    let audit: crate::config::AuditConfig =
-        serde_json::from_value(runtime["audit"].clone()).map_err(|_| Error::Input)?;
     let pool = sqlx::postgres::PgPoolOptions::new()
         .max_connections(1)
         .acquire_timeout(std::time::Duration::from_secs(5))
         .connect_with(database.options().map_err(|_| Error::Input)?)
         .await
         .map_err(|_| Error::Storage)?;
+    verify_pool(runtime, tenants, pool).await
+}
+/// The deployment operator opens a privileged connection, then drops to the existing read role.
+/// This permits integrity verification while ordinary runtime CONNECT privileges are fenced.
+pub(in crate::setup) async fn verify_operator(
+    runtime: &Value,
+    tenants: &[String],
+    database: &crate::config::Database,
+) -> Result<Vec<Head>> {
+    let pool = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(1)
+        .acquire_timeout(std::time::Duration::from_secs(5))
+        .after_connect(|c, _| {
+            Box::pin(async move {
+                sqlx::query("SET ROLE mdm_access").execute(c).await?;
+                Ok(())
+            })
+        })
+        .connect_with(database.options().map_err(|_| Error::Input)?)
+        .await
+        .map_err(|_| Error::Storage)?;
+    verify_pool(runtime, tenants, pool).await
+}
+async fn verify_pool(runtime: &Value, tenants: &[String], pool: sqlx::PgPool) -> Result<Vec<Head>> {
+    let audit: crate::config::AuditConfig =
+        serde_json::from_value(runtime["audit"].clone()).map_err(|_| Error::Input)?;
     let result=async {
         let budget=rss_mdm_audit_integration::budget::AuditBudget::new(std::time::Duration::from_secs(10));
         let store=rss_mdm_audit_integration::AuditStore::new(pool.clone(),audit.integrity().map_err(|_|Error::Corrupt)?,&budget.control()).await.map_err(|_|Error::Corrupt)?;

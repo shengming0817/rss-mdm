@@ -146,6 +146,21 @@ pub async fn rotate(request: Request) -> Result<Receipt> {
     let input = &request.installation;
     let journal = Journal::open(&input.directory)?;
     if journal
+        .load::<Option<Uuid>>("backup-operation.json")?
+        .flatten()
+        .is_some()
+    {
+        return Err(Error::Busy);
+    }
+    if journal
+        .load::<Option<Uuid>>("configuration-operation.json")?
+        .flatten()
+        .is_some()
+    {
+        return Err(Error::Busy);
+    }
+
+    if journal
         .load::<serde_json::Value>("recovery.json")?
         .is_some_and(|v| v["stage"] != "complete")
     {
@@ -216,9 +231,24 @@ pub async fn rotate(request: Request) -> Result<Receipt> {
             ring::rand::SystemRandom::new()
                 .fill(bytes.as_mut())
                 .map_err(|_| Error::Storage)?;
-            operation.secret("encryption.key", bytes.as_slice())?;
+            if request.purpose == Purpose::OidcCredentials {
+                let encoded = zeroize::Zeroizing::new(
+                    bytes.iter().map(|b| format!("{b:02x}")).collect::<String>(),
+                );
+                operation.secret("encryption.key", encoded.as_bytes())?;
+            } else {
+                operation.secret("encryption.key", bytes.as_slice())?;
+            }
         }
-        let next = crate::config::read(&next_path, 32, true).map_err(|_| Error::Corrupt)?;
+        let next = if request.purpose == Purpose::OidcCredentials {
+            zeroize::Zeroizing::new(
+                crate::identity::key(&next_path)
+                    .map_err(|_| Error::Corrupt)?
+                    .to_vec(),
+            )
+        } else {
+            crate::config::read(&next_path, 32, true).map_err(|_| Error::Corrupt)?
+        };
         let key_id = rss_mdm_native_protection::Protector::new(&next)
             .map_err(|_| Error::Corrupt)?
             .id()

@@ -192,6 +192,34 @@ pub(super) async fn backup(
     host: Uuid,
     runtime: &Value,
 ) -> Result<()> {
+    if runtime["content"]["storage"]["kind"] != "s3" {
+        return Ok(());
+    }
+    let store = connect(runtime).await?;
+    let mut copy = runtime.clone();
+    let protection = super::materials::protection(&mut copy)?;
+    backup_with(c, journal, host, runtime, store, protection).await
+}
+pub(in crate::setup) async fn backup_current(
+    c: &mut PgConnection,
+    journal: &crate::setup::local::Journal,
+    host: Uuid,
+    runtime: &Value,
+) -> Result<()> {
+    if runtime["content"]["storage"]["kind"] != "s3" {
+        return Ok(());
+    }
+    let (store, protection) = current_source(c, runtime).await?;
+    backup_with(c, journal, host, runtime, store, protection).await
+}
+async fn backup_with(
+    c: &mut PgConnection,
+    journal: &crate::setup::local::Journal,
+    host: Uuid,
+    runtime: &Value,
+    store: rss_mdm_content_s3::Store,
+    protection: std::sync::Arc<Protector>,
+) -> Result<()> {
     use futures::StreamExt;
     use sha2::{Digest, Sha256};
     use tokio::io::AsyncWriteExt;
@@ -202,9 +230,6 @@ pub(super) async fn backup(
         .as_str()
         .ok_or(Error::Input)?;
     let id = rss_request_context::TenantId::parse(tenant).map_err(|_| Error::Input)?;
-    let store = connect(runtime).await?;
-    let mut copy = runtime.clone();
-    let protection = super::materials::protection(&mut copy)?;
     let mut tx = c.begin().await.map_err(|_| Error::Storage)?;
     sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
         .bind(tenant)
@@ -397,13 +422,38 @@ pub(super) async fn restore(
     if runtime["content"]["storage"]["kind"] != "s3" {
         return Ok(());
     }
+    let store = connect(runtime).await?;
+    let mut copy = runtime.clone();
+    let protection = super::materials::protection(&mut copy)?;
+    restore_with(c, journal, host, runtime, store, protection).await
+}
+pub(in crate::setup) async fn restore_current(
+    c: &mut PgConnection,
+    journal: &crate::setup::local::Journal,
+    host: Uuid,
+    runtime: &Value,
+) -> Result<()> {
+    if runtime["content"]["storage"]["kind"] != "s3" {
+        return Ok(());
+    }
+    let (store, protection) = current_source(c, runtime).await?;
+    restore_with(c, journal, host, runtime, store, protection).await
+}
+async fn restore_with(
+    c: &mut PgConnection,
+    journal: &crate::setup::local::Journal,
+    host: Uuid,
+    runtime: &Value,
+    store: rss_mdm_content_s3::Store,
+    protection: std::sync::Arc<Protector>,
+) -> Result<()> {
+    if runtime["content"]["storage"]["kind"] != "s3" {
+        return Ok(());
+    }
     let tenant = runtime["identity"]["tenant_id"]
         .as_str()
         .ok_or(Error::Input)?;
     let id = rss_request_context::TenantId::parse(tenant).map_err(|_| Error::Input)?;
-    let store = connect(runtime).await?;
-    let mut copy = runtime.clone();
-    let protection = super::materials::protection(&mut copy)?;
     let root = journal.path(&format!("s3-{}", host.simple()))?;
     let objects = crate::setup::local::Journal::open(&root)?;
     let mut names = Vec::new();
@@ -515,4 +565,48 @@ pub(super) async fn restore(
         .await
         .map_err(|_| Error::Corrupt)?;
     tx.rollback().await.map_err(|_| Error::Storage)
+}
+
+async fn current_source(
+    c: &mut PgConnection,
+    runtime: &Value,
+) -> Result<(rss_mdm_content_s3::Store, std::sync::Arc<Protector>)> {
+    let config: crate::config::Config =
+        serde_json::from_value(runtime.clone()).map_err(|_| Error::Input)?;
+    let protection = config.native_protector().map_err(|_| Error::Corrupt)?;
+    let tenant = rss_request_context::TenantId::parse(&config.identity.tenant_id)
+        .map_err(|_| Error::Input)?;
+    let revision = runtime["content"]["storage"]["revision"]
+        .as_u64()
+        .ok_or(Error::Input)?;
+    let mut tx = c.begin().await.map_err(|_| Error::Storage)?;
+    sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
+        .bind(tenant.to_string())
+        .execute(&mut *tx)
+        .await
+        .map_err(|_| Error::Storage)?;
+    let loaded = domain::load(&mut tx, tenant, revision, &protection)
+        .await
+        .map_err(|_| Error::Corrupt)?;
+    tx.rollback().await.map_err(|_| Error::Storage)?;
+    let metadata = &loaded.metadata;
+    let config = rss_mdm_content_s3::Config {
+        endpoint: metadata.endpoint.clone(),
+        region: metadata.region.clone(),
+        bucket: metadata.bucket.clone(),
+        namespace: format!("{}/{}", metadata.namespace, tenant),
+        credentials_reference: "content-connection".into(),
+        private_ca_pem: Some(metadata.private_ca.clone()),
+        max_concurrent: 1,
+        connect_timeout: std::time::Duration::from_secs(5),
+    };
+    let store = rss_mdm_content_s3::Store::connect(
+        config,
+        std::sync::Arc::new(loaded),
+        std::sync::Arc::new(crate::lifecycle::RuntimeTimer),
+        budget(4096)?,
+    )
+    .await
+    .map_err(|_| Error::Storage)?;
+    Ok((store, protection))
 }

@@ -10,18 +10,19 @@ pub struct OriginalAccount {
     pub login: String,
     pub password_file: PathBuf,
 }
-pub(super) async fn verify(
+async fn verify_with(
     config: &crate::config::Config,
     tenant: &str,
     epoch: i64,
     account: &OriginalAccount,
     grant: Option<Uuid>,
+    required: &[rss_mdm_authorization_service::Permission],
 ) -> Result<()> {
     use rss_identity_core::{
         InstanceId,
         account::{LoginKey, Password, PasswordKdf},
     };
-    use rss_mdm_authorization_service::{Permission, Subject, User, initialization};
+    use rss_mdm_authorization_service::{Subject, User, initialization};
     let tenant_id = rss_request_context::TenantId::parse(tenant).map_err(|_| Error::Input)?;
     let instance = InstanceId::parse(&config.identity.instance_id).map_err(|_| Error::Input)?;
     let login = LoginKey::parse(&account.login).map_err(|_| Error::Input)?;
@@ -110,13 +111,7 @@ pub(super) async fn verify(
                 )
                 .await
                 .map_err(|_| Error::Storage)?;
-                let allowed = [
-                    Permission::TenantCreate,
-                    Permission::TenantRead,
-                    Permission::AuthorizationWrite,
-                ]
-                .into_iter()
-                .all(|permission| {
+                let allowed = required.iter().copied().all(|permission| {
                     rules
                         .rules
                         .iter()
@@ -143,4 +138,50 @@ pub(super) async fn verify(
     kdf.wait_closed().await;
     runtime.close().await;
     result
+}
+
+pub(super) async fn verify(
+    config: &crate::config::Config,
+    tenant: &str,
+    epoch: i64,
+    account: &OriginalAccount,
+    grant: Option<Uuid>,
+) -> Result<()> {
+    use rss_mdm_authorization_service::Permission;
+    verify_with(
+        config,
+        tenant,
+        epoch,
+        account,
+        grant,
+        &[
+            Permission::TenantCreate,
+            Permission::TenantRead,
+            Permission::AuthorizationWrite,
+        ],
+    )
+    .await
+}
+pub(in crate::setup) async fn verify_restored(
+    config: &crate::config::Config,
+    tenant: &str,
+    epoch: i64,
+    account: &OriginalAccount,
+    platform: bool,
+) -> Result<()> {
+    use rss_mdm_authorization_service::Permission;
+    let required = if platform {
+        vec![
+            Permission::TenantCreate,
+            Permission::TenantRead,
+            Permission::AuthorizationWrite,
+        ]
+    } else {
+        vec![
+            Permission::Credentials,
+            Permission::RegistrationConfigurationWrite,
+            Permission::AuthorizationWrite,
+        ]
+    };
+    verify_with(config, tenant, epoch, account, None, &required).await
 }

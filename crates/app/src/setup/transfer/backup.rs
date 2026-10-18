@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use std::{io::Read, os::unix::fs::OpenOptionsExt, path::Path};
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub(super) struct DatabaseBackup {
+pub(in crate::setup) struct DatabaseBackup {
     pub sha256: String,
     pub bytes: u64,
 }
@@ -40,7 +40,7 @@ fn digest(path: &Path) -> Result<DatabaseBackup> {
         bytes,
     })
 }
-pub(super) async fn capture(
+pub(in crate::setup) async fn capture(
     journal: &Journal,
     database: &crate::config::Database,
 ) -> Result<DatabaseBackup> {
@@ -65,6 +65,7 @@ pub(super) async fn capture(
         tokio::process::Command::new("pg_dump")
             .args([
                 "--format=custom",
+                "--exclude-table=public.mdm_restore_operation",
                 "--no-password",
                 "--host",
                 &database.host,
@@ -118,7 +119,7 @@ struct Volume {
     files: Vec<FileRecord>,
 }
 /// 内容卷逐文件归档，不跟随符号链接，不把数据库备份当作物理内容备份。
-pub(super) fn volume(journal: &Journal, id: uuid::Uuid, source: &Path) -> Result<()> {
+pub(in crate::setup) fn volume(journal: &Journal, id: uuid::Uuid, source: &Path) -> Result<()> {
     use std::{
         io::Write,
         os::unix::fs::{MetadataExt, PermissionsExt},
@@ -216,7 +217,7 @@ pub(super) fn volume(journal: &Journal, id: uuid::Uuid, source: &Path) -> Result
         },
     )
 }
-pub(super) fn file_digest(path: &Path) -> Result<DatabaseBackup> {
+pub(in crate::setup) fn file_digest(path: &Path) -> Result<DatabaseBackup> {
     use sha2::{Digest, Sha256};
     let mut file = std::fs::OpenOptions::new()
         .read(true)
@@ -251,13 +252,13 @@ pub(super) fn file_digest(path: &Path) -> Result<DatabaseBackup> {
 
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub(super) struct Bundle {
+pub(in crate::setup) struct Bundle {
     pub format: u32,
     pub operation: uuid::Uuid,
     files: Vec<FileRecord>,
 }
 /// 清单只包含停写快照及其原保管文件，不包含仍会推进的操作检查点。
-pub(super) fn seal(journal: &Journal, operation: uuid::Uuid) -> Result<String> {
+pub(in crate::setup) fn seal(journal: &Journal, operation: uuid::Uuid) -> Result<String> {
     let name = "backup-manifest.json";
     if let Some(bundle) = journal.load::<Bundle>(name)? {
         if bundle.operation != operation {
@@ -287,7 +288,12 @@ pub(super) fn seal(journal: &Journal, operation: uuid::Uuid) -> Result<String> {
                 || (relative.as_os_str().is_empty()
                     && matches!(
                         name,
-                        "transfer.json" | "transfer-request.json" | "backup-manifest.json"
+                        "transfer.json"
+                            | "transfer-request.json"
+                            | "backup-manifest.json"
+                            | "backup-progress.json"
+                            | "restore-progress.json"
+                            | "restore-request.json"
                     ))
             {
                 continue;
@@ -322,7 +328,7 @@ pub(super) fn seal(journal: &Journal, operation: uuid::Uuid) -> Result<String> {
     Ok(file_digest(&journal.path(name)?)?.sha256)
 }
 /// 期望摘要必须来自独立保存的备份回执，不能从待恢复目录自我取信。
-pub(super) fn verify(journal: &Journal, expected: &str) -> Result<Bundle> {
+pub(in crate::setup) fn verify(journal: &Journal, expected: &str) -> Result<Bundle> {
     if expected.len() != 64
         || file_digest(&journal.path("backup-manifest.json")?)?.sha256 != expected
     {
@@ -383,7 +389,11 @@ pub(super) fn verify(journal: &Journal, expected: &str) -> Result<Bundle> {
     Ok(bundle)
 }
 
-pub(super) fn restore_volume(journal: &Journal, id: uuid::Uuid, destination: &Path) -> Result<()> {
+pub(in crate::setup) fn restore_volume(
+    journal: &Journal,
+    id: uuid::Uuid,
+    destination: &Path,
+) -> Result<()> {
     use std::os::unix::fs::PermissionsExt;
     let volume: Volume = journal
         .load(&format!("volume-{}.json", id.simple()))?
@@ -483,7 +493,7 @@ pub(super) fn restore_volume(journal: &Journal, id: uuid::Uuid, destination: &Pa
     Ok(())
 }
 
-pub(super) async fn restore_database(
+pub(in crate::setup) async fn restore_database(
     journal: &Journal,
     database: &crate::config::Database,
 ) -> Result<()> {

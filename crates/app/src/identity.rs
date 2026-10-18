@@ -360,7 +360,7 @@ pub struct OidcConfig {
     pub assurance_profiles: Vec<AssuranceProfile>,
     pub private_providers: Vec<PrivateProvider>,
 }
-#[derive(serde::Deserialize)]
+#[derive(serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AssuranceProfile {
     pub tenant_id: String,
@@ -368,7 +368,7 @@ pub struct AssuranceProfile {
     pub client_id: String,
     pub keycloak_totp: bool,
 }
-#[derive(serde::Deserialize)]
+#[derive(serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PrivateProvider {
     pub tenant_id: String,
@@ -377,6 +377,20 @@ pub struct PrivateProvider {
     pub cidrs: Vec<String>,
 }
 impl OidcConfig {
+    pub(crate) fn validate_deployment(&self, tenant: &str, origin: &str) -> Result<(), Error> {
+        self.require_business_tenant(tenant)?;
+        rss_identity_core::groups::GroupFactsMaxAge::new(self.group_facts_max_age_seconds)
+            .map_err(|_| invalid())?;
+        self.transport(TenantId::parse(tenant).map_err(|_| invalid())?)?;
+        key(&self.state_key_file)?;
+        rss_identity_postgres::FederationConfig {
+            callback: format!("{origin}/api/v1/identity/oidc/callback"),
+            credential_keys: Arc::new(self.credential_keys()?),
+            targets: self.return_targets.clone(),
+        }
+        .validate()
+        .map_err(failure)
+    }
     pub(crate) fn credential_keys(&self) -> Result<rss_identity_postgres::CredentialKeys, Error> {
         let keys = self
             .credential_keys
@@ -504,7 +518,7 @@ async fn business_federation(
     }
     next.run(request).await
 }
-fn key(path: &std::path::Path) -> Result<zeroize::Zeroizing<[u8; 32]>, Error> {
+pub(crate) fn key(path: &std::path::Path) -> Result<zeroize::Zeroizing<[u8; 32]>, Error> {
     let text = config::secret(path)?;
     if text.len() != 64 || !text.bytes().all(|b| b.is_ascii_hexdigit()) {
         return Err(invalid());

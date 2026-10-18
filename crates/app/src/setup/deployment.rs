@@ -270,7 +270,7 @@ pub async fn apply(directory: &Path, config: &Config, runtime: &Value) -> Result
     let gateway_path = journal.secret("nginx.conf", gateway.as_bytes())?;
     let ui_path = journal.public(
         "ui.json",
-        &serde_json::to_vec(&json!({"canonicalOrigin":decoded.product_origin,"oidcEnabled":false}))
+        &serde_json::to_vec(&json!({"canonicalOrigin":decoded.product_origin,"oidcEnabled":decoded.identity.oidc.is_some()}))
             .map_err(|_| Error::Input)?,
     )?;
     let mdm_path = journal.public(

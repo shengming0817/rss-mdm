@@ -205,7 +205,20 @@ pub(crate) async fn open(
                         crate::device_pki::providers(&config.device_pki)?.as_ref(),
                         time::OffsetDateTime::now_utc().unix_timestamp(),
                     )?
-                    .map(|(_, deployment)| deployment),
+                    .map(|_| {
+                        config
+                            .device_pki
+                            .iter()
+                            .filter(|p| {
+                                p.purpose == rss_mdm_agent_wire::pki::Purpose::AgentBootstrap
+                            })
+                            .filter_map(|p| {
+                                p.scep_url
+                                    .as_ref()
+                                    .map(|url| (p.issuer.clone(), url.clone()))
+                            })
+                            .collect()
+                    }),
                 enrollment_entries: config.enrollment_entries.clone(),
                 runtime: runtime.clone(),
                 tenant,

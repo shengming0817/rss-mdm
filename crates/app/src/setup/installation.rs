@@ -231,6 +231,13 @@ pub async fn install(input: Input) -> Result<Receipt> {
     input.validate()?;
     let journal = Journal::open(&input.directory)?;
     if journal
+        .load::<Option<Uuid>>("backup-operation.json")?
+        .flatten()
+        .is_some()
+    {
+        return Err(Error::Busy);
+    }
+    if journal
         .load::<serde_json::Value>("transfer.json")?
         .is_some()
     {

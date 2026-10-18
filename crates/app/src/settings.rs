@@ -84,6 +84,23 @@ impl Source for Directory {
                         };
                         projection.reason = Some("current_process_loaded_not_device_confirmation");
                     }
+                    "recovery-key" | "recovery-rsa" if business => {
+                        if let Some(protection) = self.state.execution.recovery_credentials() {
+                            configured(&mut projection, 1);
+                            projection.status = if item.id == "recovery-rsa"
+                                && self.state.clock.unix_seconds().ok().is_none_or(|now| {
+                                    protection.active_recipient().require_current(now).is_err()
+                                }) {
+                                Status::Unavailable
+                            } else {
+                                Status::Loaded
+                            };
+                            projection.reason =
+                                Some("deployment_application_not_device_escrow_confirmation");
+                        } else {
+                            configured(&mut projection, 0);
+                        }
+                    }
                     "oidc" if business => {
                         if let Some(federation) = &self.state.identity.federation {
                             use rss_mdm_authorization_service::credential::RequestCredential;

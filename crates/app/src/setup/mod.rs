@@ -3,6 +3,10 @@
 #[cfg(unix)]
 mod application;
 #[cfg(unix)]
+pub mod backup;
+#[cfg(unix)]
+pub mod configure;
+#[cfg(unix)]
 pub mod deployment;
 pub mod host;
 #[cfg(unix)]
@@ -16,6 +20,8 @@ mod postgres;
 pub mod protection;
 #[cfg(unix)]
 pub mod providers;
+#[cfg(unix)]
+mod snapshot_tree;
 #[cfg(unix)]
 pub mod source;
 #[cfg(unix)]

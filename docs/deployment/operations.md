@@ -230,3 +230,23 @@ SCEP 使用独立 RSA 解密叶证书，核对用途、签名、有效期、撤�
 Apple 的 `identity_seed` 永久保留原 challenge/notify ID，实际凭据放在 issuer 绑定的 `webhooks` 集合。Agent bootstrap 冻结签发者，切换活跃 CA 后原请求仍沿原 CA 完成；新请求在事务内复核当前活跃 CA。未知签发不因超时或设备清理完成而解除退役门禁。
 
 `rotate-protection` 另支持 `oidc_credentials` 和 `recovery`：复用先分发读钥、再切换写钥的宿主阶段；OIDC provider 密文由固定 Identity 依赖的原领域方法在租户事务内重加密，恢复凭据由原 recovery owner 分批重包。OIDC state 签名、恢复 RSA recipient、原凭据身份及操作摘要保持不变。旧读钥继续保留用于历史、未决操作和备份；`complete` 不能解释为可以删除历史密钥。行锁超时保留原操作重试，不把暂时锁住的密文算作迁移完成。
+
+### OIDC 与恢复凭据宿主配置
+
+`configure-host` 使用安装输入、稳定 `operation_id`、`host_id`、`expected_revision` 和封闭的 `change`。`{"kind":"oidc","settings":...}` 的 settings 包含 `group_facts_max_age_seconds`、`return_targets`、`assurance_profiles`、`private_providers`。首次启用在受保护的操作目录生成独立 state 签名和 provider 凭据保护材料；后续设置变更保留原密钥。提供方客户端配置仍由原 Identity 管理 API 写入。宿主入口的 `oidcEnabled` 根据实际加载配置生成，平台会话不转成业务会话。
+
+`{"kind":"recovery","recipient":{"kind":"generate"}}` 生成独立 RSA escrow recipient 和专用保护材料；也可用 `{"kind":"import","certificate_file":"...","private_key_file":"..."}` 导入原 recipient。该证书只用于恢复材料加密，不是设备 CA。新导入检查证书、用途、有效期及私钥匹配；替换保留原 recipient 私钥，历史密文与未决设备响应继续按原身份读取。过期 active recipient 拒绝生成新恢复任务，不阻断旧密文解密。
+
+两种变更均先持久保存候选和原操作，再重启真实宿主并核对 HTTPS 观察。开通回执记录 requested/applied revision、当前观察和失败原因；失败保留原有效宿主并沿原配置操作恢复，不能把写入配置文件当成启用成功。
+
+`configure-host` 的 `{"kind":"ca","preparation":"<prepare-ca operation UUID>"}` 将已核验的用途 provider 和回调凭据装入现有通道，保持原 trust、原协议种子和旧凭据。之后由真实业务管理会话通过原 PKI API 发布 prepared trust、等待安装确认并激活。该部署动作不替代信任授权，不自动启用尚缺其他材料的设备通道。Agent bootstrap 在创建事务内选择数据库当前 active issuer，并从已装入的精确 issuer→SCEP 地址集合选路；重启不会把旧配置文件里的 active 标记重新当作权威。
+
+### 当前安装联合冷备
+
+`backup-installation` 接受安装输入、稳定操作 ID、位于安装目录之外的私有备份目录，以及每个保留 CA 的确切容器 ID、issuer、purpose、在线与离线目录、离线 root 私钥和密码文件。准备阶段核对已启用宿主、实际 provider issuer、CA 容器挂载、在线 issuer 与原离线 root 私钥对应关系；不接受用另一份目录冒充原 CA。备份中包含秘密，公开回执只返回操作、阶段和需独立保存的 manifest SHA-256。
+
+操作先持久保存原身份，关闭容器自动重启并停写，保存和暂时收回普通运行角色的数据库 CONNECT 授权。数据库 owner 和受控管理员用于原样 dump 及切换到原只读角色后的 Ledger 验证。联合归档保留部署文件的原 UID/GID/权限、原保护材料、内容卷、S3 确切物理版本和 CA 在线/离线目录。未决对象继续保持未知；原 Ledger 历史逐页验证，不更换 HMAC 密钥。归档封存后按原权限恢复连接并重新观察宿主。
+
+`restore-installation` 使用备份目录、独立保存的 manifest 摘要、新恢复操作 ID、目标管理员数据库连接，以及平台和每个已启用业务租户的 `accounts`（tenant_id、原 principal_id/login/password_file）。这是同址恢复：数据库名称/地址、安装路径、材料路径和内容路径保持原值；目标库必须为空，受限角色及原凭据须已恢复，外置材料父目录须存在。拒绝覆盖不同文件内容或已有业务库。恢复数据库使用单事务和持久操作标记，原角色授权在验证完成后恢复；原账户执行真实认证及授权核对，不以密码重置代替验证。
+
+CA 原容器仍存在时核对原 image/command/mount 后启动；容器缺失时从封存元数据生成固定、受限的 step-ca Compose 服务，复用原不可变 image、挂载和数据库，不重新初始化 CA。自定义 Docker 网络及固定 image 属于需预先恢复的部署基础设施。任何材料、旧密钥、权限、网络或外部 S3 资格缺失均停在原检查点，不能宣称恢复成功。

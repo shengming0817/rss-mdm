@@ -91,7 +91,7 @@ impl Config {
                 .map_err(|_| invalid())?,
         );
         let prepared_bootstrap = self.bootstrap_materials(&providers, clock.unix_seconds()?)?;
-        let bootstrap = prepared_bootstrap.map(|(configuration, _)| configuration);
+        let bootstrap = prepared_bootstrap;
         let issuer = AgentIssuer::new(
             providers,
             days,
@@ -178,13 +178,8 @@ impl Config {
         &self,
         providers: &rss_mdm_pki_service::providers::Providers,
         now: i64,
-    ) -> Result<
-        Option<(
-            Arc<rss_mdm_registration_service::agent::bootstrap::Configuration>,
-            rss_mdm_registration_service::agent::bootstrap::Deployment,
-        )>,
-        Error,
-    > {
+    ) -> Result<Option<Arc<rss_mdm_registration_service::agent::bootstrap::Configuration>>, Error>
+    {
         let Self::StepCa {
             endpoint,
             bootstrap: Some(input),
@@ -202,29 +197,15 @@ impl Config {
         if trust.public().map_err(|_| invalid())?.origin != endpoint.origin {
             return Err(invalid());
         }
-        let issuer = trust.active().map_err(|_| invalid())?;
-        let url = providers
-            .bootstrap_scep(&issuer.digest)
-            .map_err(|_| invalid())?
-            .to_owned();
-        let root = rss_mdm_device_trust::decode(&issuer.root, 32768).map_err(|_| invalid())?;
-        // SHA1 is only the Windows CSP's certificate locator, never a signing or integrity algorithm.
-        let thumb = ring::digest::digest(&ring::digest::SHA1_FOR_LEGACY_USE_ONLY, &root)
-            .as_ref()
-            .iter()
-            .map(|b| format!("{b:02X}"))
-            .collect();
-        let deployment = rss_mdm_registration_service::agent::bootstrap::Deployment {
-            issuer: issuer.digest,
-            provisioner: issuer.provisioner,
-            scep_url: url,
-            root,
-            root_thumbprint: thumb,
-        };
+        for issuer in trust.public().map_err(|_| invalid())?.issuers {
+            providers
+                .bootstrap_scep(&issuer.digest)
+                .map_err(|_| invalid())?;
+        }
         let webhooks = crate::ca_webhooks::load(&input.webhooks, &trust)?;
         let configuration =
             rss_mdm_registration_service::agent::bootstrap::Configuration { trust, webhooks };
-        Ok(Some((Arc::new(configuration), deployment)))
+        Ok(Some(Arc::new(configuration)))
     }
 }
 

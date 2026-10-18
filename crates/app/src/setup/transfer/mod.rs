@@ -1,11 +1,11 @@
 //! 固定 V4 来源的一次性离线转交。检查点只覆盖停写、迁移和外部宿主副作用。
-mod accounts;
-mod backup;
+pub(super) mod accounts;
+pub(super) mod backup;
 mod containers;
-mod ledger;
+pub(super) mod ledger;
 mod materials;
 pub mod recovery;
-mod storage;
+pub(super) mod storage;
 mod wns;
 use super::{Error, Result, deployment, installation, local::Journal};
 pub use accounts::OriginalAccount;

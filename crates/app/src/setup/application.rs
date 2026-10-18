@@ -63,7 +63,11 @@ pub(super) fn fingerprint(runtime: &Value) -> Result<String> {
         Sha256::digest(serde_json::to_vec(&value).map_err(|_| Error::Corrupt)?)
     ))
 }
-async fn save(c: &mut PgConnection, receipt: &Receipt, original: &Value) -> Result<Value> {
+pub(super) async fn save(
+    c: &mut PgConnection,
+    receipt: &Receipt,
+    original: &Value,
+) -> Result<Value> {
     let value = serde_json::to_value(receipt).map_err(|_| Error::Corrupt)?;
     let result=sqlx::query("UPDATE public.mdm_tenant_operations SET receipt=$2 WHERE operation_id=$1 AND action='provision' AND receipt=$3").bind(receipt.operation_id).bind(&value).bind(original).execute(c).await.map_err(|_|Error::Storage)?;
     if result.rows_affected() != 1 {
