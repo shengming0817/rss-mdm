@@ -75,7 +75,7 @@ async fn each_route_requires_its_exact_capability() -> Result<()> {
             op(json!({"action":"activate","version":"missing"})),
         ),
         ("release_read", Method::GET, release.clone(), None),
-        ("release_publish",Method::POST,"/api/v1/software/publications".into(),Some(json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"publish","resource":"missing","version":"v1","expectedResourceRevision":1,"resourceDigest":vec![1;32],"target":source,"targetDigest":vec![2;32]}}))),
+        ("release_publish",Method::POST,"/api/v1/software/publications".into(),Some(json!({"operationId":id,"expectedRevision":0,"input":{"action":"publish","resource":"missing","version":"v1","expectedResourceRevision":1,"resourceDigest":vec![1;32],"target":source,"targetDigest":vec![2;32]}}))),
         (
             "release_withdraw",
             Method::POST,
@@ -100,7 +100,7 @@ async fn each_route_requires_its_exact_capability() -> Result<()> {
             "release_recover",
             Method::POST,
             format!("/api/v1/software/publications/{id}"),
-            op(json!({"action":"recover","ring":"test","publication":vec![0;32],"attempt":1})),
+            op(json!({"action":"recover"})),
         ),
     ]);
     let expected_denied = cases.len();
@@ -157,7 +157,7 @@ async fn each_route_requires_its_exact_capability() -> Result<()> {
             ("scope_read" | "scope_write", _) => (StatusCode::NOT_FOUND, "scope_not_found"),
             ("policy_read", _) => (StatusCode::NOT_FOUND, "policy_not_found"),
             ("resource_read", _) => (StatusCode::NOT_FOUND, "resource_not_found"),
-            ("release_read" | "release_publish" | "release_withdraw" | "release_recover", _) => (StatusCode::NOT_FOUND, "software_candidate_not_found"),
+            ("release_read" | "release_withdraw" | "release_recover", _) => (StatusCode::NOT_FOUND, "software_publication_not_found"),
             _ => (StatusCode::CONFLICT, "operation_conflict"),
         };
         ensure!(accepted.0 == status && accepted.1["code"] == code, "{needed} wrong domain result: {accepted:?}");

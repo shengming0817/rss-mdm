@@ -60,9 +60,9 @@ pub async fn read(
     audit: &RequestAudit,
     id: String,
 ) -> Result<wire::Publication, Error> {
-    authorize(authorization, proof, Permission::ReleaseRead).await?;
     audit.set_action("management_read");
     audit.target(&id);
+    authorize(authorization, proof, Permission::ReleaseRead).await?;
     let view = read_view(directory, id, true).await?;
     authorize(authorization, proof, Permission::ReleaseRead).await?;
     Ok(view)
@@ -146,6 +146,13 @@ pub async fn write(
         Change::Recover | Change::Retry => Permission::ReleaseRecover,
         Change::Withdraw => Permission::ReleaseWithdraw,
     };
+    audit.set_action("management_write");
+    audit.target(
+        path_id
+            .as_deref()
+            .unwrap_or(&request.operation_id.to_string()),
+    );
+    audit.operation(request.operation_id, "management_write");
     authorize(authorization, proof, permission).await?;
     let (id, target) = match (&request.input, path_id) {
         (Change::Publish { target, .. }, None) if request.expected_revision == 0 => {

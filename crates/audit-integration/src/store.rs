@@ -224,7 +224,13 @@ impl AuditStore {
                             .map_err(E::from)?;
                         tx.with_connection(|c|Box::pin(async move {
                             // reason: Audit-only consumers have no execution binding; publishing SQL always requires one.
-                            sqlx::query("SELECT rss_transactional_messaging.check_execution() WHERE nullif(current_setting('rss.storage_target',true),'') IS NOT NULL").execute(c).await.map(|_|()).map_err(Error::from)
+                            let bound: bool = sqlx::query_scalar("SELECT nullif(current_setting('rss.storage_target',true),'') IS NOT NULL")
+                                .fetch_one(&mut *c).await?;
+                            if bound {
+                                sqlx::query("SELECT rss_transactional_messaging.check_execution()")
+                                    .execute(c).await?;
+                            }
+                            Ok::<_, Error>(())
                         })).await.map_err(E::from)?;
                         let operation = operation
                             .take()
