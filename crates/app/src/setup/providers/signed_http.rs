@@ -34,7 +34,10 @@ impl Client {
     ) -> Result<Self> {
         let url = url::Url::parse(endpoint).map_err(|_| Error::Input)?;
         if url.scheme() != "https"
-            || url.origin().ascii_serialization() != endpoint
+            || url.host_str().is_none()
+            || url.path() != "/"
+            || url.query().is_some()
+            || url.fragment().is_some()
             || !url.username().is_empty()
             || url.password().is_some()
             || region.is_empty()

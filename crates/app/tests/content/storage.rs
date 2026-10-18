@@ -690,3 +690,178 @@ async fn s3_rejected_writes_release_quota_after_permission_recovery_and_expiry()
         }
     }
 }
+
+#[tokio::test]
+#[ignore = "MODULE=content.storage: exact S3 version restore preserves native ciphertext, logical identity and upload frontier"]
+async fn restored_provider_version_rebinds_atomically_without_reissuing_content() -> Result<()> {
+    use futures::StreamExt;
+    use sqlx::Connection;
+    use std::str::FromStr;
+    let (_private, storage) = s3_storage()?;
+    let (resources, store, _) = stores(Some(storage)).await?;
+    resources
+        .finish(async {
+            let now = crate::windows::test_support::now();
+            let bytes = b"native-ciphertext-restore-fixture";
+            let binding = binding(bytes, StorageClass::NativeConfiguration);
+            let artifact = binding.artifact()?;
+            let operation = Uuid::new_v4();
+            store
+                .begin(operation, binding.clone(), now, store.upload_budget()?)
+                .await?;
+            store
+                .append(
+                    &binding.actor,
+                    operation,
+                    0,
+                    now,
+                    bytes,
+                    store.upload_budget()?,
+                )
+                .await?;
+            store
+                .finish(&binding.actor, operation, now, store.upload_budget()?)
+                .await?;
+            let config = crate::test_support::identity::config(case_tenant())?;
+            let tenant = rss_request_context::TenantId::parse(case_tenant())?;
+            let protection = config.native_protector()?;
+            let options =
+                sqlx::postgres::PgConnectOptions::from_str(&std::env::var("MDM_OWNER_URL")?)?
+                    .ssl_mode(sqlx::postgres::PgSslMode::VerifyFull)
+                    .ssl_root_cert(std::env::var("PG_CA_FILE")?);
+            let mut c = sqlx::PgConnection::connect_with(&options).await?;
+            let mut tx = c.begin().await?;
+            sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
+                .bind(case_tenant())
+                .execute(&mut *tx)
+                .await?;
+            rss_mdm_content_service::backup::validate_catalog(&mut tx, tenant, &protection).await?;
+            let records = rss_mdm_content_service::backup::s3_page(&mut tx, tenant, None).await?;
+            ensure!(records.len() == 1 && records[0].required);
+            let record = records[0].clone();
+            let loaded = std::sync::Arc::new(
+                rss_mdm_content_service::connections::load(&mut tx, tenant, 1, &protection).await?,
+            );
+            tx.rollback().await?;
+            let budget = || {
+                rss_mdm_content_s3::Budget::new(
+                    std::sync::Arc::new(crate::lifecycle::RuntimeTimer),
+                    Duration::from_secs(20),
+                    Duration::from_secs(5),
+                    1024 * 1024,
+                    16,
+                )
+            };
+            let metadata = &loaded.metadata;
+            let provider = rss_mdm_content_s3::Store::connect(
+                rss_mdm_content_s3::Config {
+                    endpoint: metadata.endpoint.clone(),
+                    region: metadata.region.clone(),
+                    bucket: metadata.bucket.clone(),
+                    namespace: format!("{}/{}", metadata.namespace, case_tenant()),
+                    credentials_reference: "content-connection".into(),
+                    private_ca_pem: Some(metadata.private_ca.clone()),
+                    max_concurrent: 1,
+                    connect_timeout: Duration::from_secs(5),
+                },
+                loaded.clone(),
+                std::sync::Arc::new(crate::lifecycle::RuntimeTimer),
+                budget()?,
+            )
+            .await?;
+            let original = record.object.as_ref().unwrap();
+            let verified = provider.verify(original, record.content, budget()?).await?;
+            let mut encrypted = Vec::new();
+            let mut stream = provider
+                .read(&verified, 0, record.content.length, budget()?)
+                .await?;
+            while let Some(chunk) = stream.next().await {
+                encrypted.extend_from_slice(&chunk?);
+            }
+            ensure!(encrypted != bytes && encrypted.len() > bytes.len());
+            ensure!(matches!(
+                provider.delete(original, budget()?).await?,
+                rss_mdm_content_s3::Mutation::Confirmed(())
+            ));
+            ensure!(matches!(
+                provider.inspect(original, budget()?).await,
+                Err(rss_mdm_content_s3::Error::Missing)
+            ));
+            let body = axum::body::Bytes::from(encrypted);
+            let put = provider
+                .put(
+                    &record.write,
+                    Box::pin(futures::stream::once(async move { Ok(body) })),
+                    budget()?,
+                )
+                .await?;
+            let rss_mdm_content_s3::Mutation::Confirmed(rss_mdm_content_s3::Written::Verified(
+                restored,
+            )) = put
+            else {
+                anyhow::bail!("provider restore must be confirmed")
+            };
+            ensure!(restored.object().version() != original.version());
+            let mut tx = c.begin().await?;
+            sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
+                .bind(case_tenant())
+                .execute(&mut *tx)
+                .await?;
+            ensure!(
+                rss_mdm_content_service::backup::rebind(
+                    &mut tx,
+                    tenant,
+                    &record,
+                    original,
+                    &restored,
+                    &protection
+                )
+                .await?
+            );
+            tx.rollback().await?;
+            let mut tx = c.begin().await?;
+            sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
+                .bind(case_tenant())
+                .execute(&mut *tx)
+                .await?;
+            ensure!(
+                rss_mdm_content_service::backup::rebind(
+                    &mut tx,
+                    tenant,
+                    &record,
+                    original,
+                    &restored,
+                    &protection
+                )
+                .await?
+            );
+            ensure!(
+                !rss_mdm_content_service::backup::rebind(
+                    &mut tx,
+                    tenant,
+                    &record,
+                    original,
+                    &restored,
+                    &protection
+                )
+                .await?
+            );
+            rss_mdm_content_service::backup::validate_catalog(&mut tx, tenant, &protection).await?;
+            tx.commit().await?;
+            let mut output = store
+                .verify(&artifact)
+                .await?
+                .stream(0, artifact.length())
+                .await?;
+            let mut plain = Vec::new();
+            while let Some(chunk) = output.next().await {
+                plain.extend_from_slice(&chunk?);
+            }
+            ensure!(plain == bytes);
+            let status = store.status(&binding.actor, operation, now).await?;
+            ensure!(status.complete && status.offset == bytes.len() as u64);
+            c.close().await?;
+            Ok(())
+        })
+        .await
+}

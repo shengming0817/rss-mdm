@@ -2083,3 +2083,5 @@ consume(('crates/content-service/src/connections*','crates/content-service/schem
 consume(('crates/app/src/setup/application.rs',), 'deployment.management-tenant content.storage execution.agent.task_trust apple.host')
 
 consume(('crates/app/src/setup/protection.rs',), 'content.storage execution.agent.task_trust apple.host')
+
+consume(('crates/content-service/src/backup.rs','crates/app/src/setup/transfer/*'), 'content.storage installation.migration audit.integrity apple.host')

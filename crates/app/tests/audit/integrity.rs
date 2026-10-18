@@ -1,5 +1,95 @@
 use super::*;
 
+#[tokio::test]
+#[ignore = "MODULE=audit.integrity: full original-key history verification binds the captured head"]
+async fn original_key_verifies_multiple_pages_and_rejects_replacement_or_wrong_head() -> Result<()>
+{
+    let pool = pool("mdm_access").await?;
+    let budget = rss_mdm_audit_integration::budget::AuditBudget::new(Duration::from_secs(30));
+    let store = AuditStore::new(pool.clone(), integrity(true)?, &budget.control()).await?;
+    let tenant = TenantId::parse(&Uuid::new_v4().to_string())?;
+    let request = RequestAudit::new(tenant.to_string(), "history_restore_test");
+    let facts = (0u32..65)
+        .map(|i| {
+            Fact::business(
+                &request,
+                &format!("restore:{i}"),
+                &i.to_be_bytes(),
+                200,
+                "success",
+                None,
+            )
+        })
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    let result = store
+        .write(
+            tenant,
+            &budget.control(),
+            (&store, &facts),
+            |(store, facts), tx| {
+                Box::pin(async move {
+                    for fact in *facts {
+                        store.append(tx, fact, false).await?;
+                    }
+                    Ok::<_, Error>(())
+                })
+            },
+        )
+        .await;
+    ensure!(state(result) == "committed");
+    let mut tx = pool.begin().await?;
+    sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
+        .bind(tenant.to_string())
+        .execute(&mut *tx)
+        .await?;
+    let (seq, tag): (i64, Vec<u8>) = sqlx::query_as(
+        "SELECT seq,tag FROM rss_ledger.heads WHERE tenant_id=$1::uuid AND chain_id='rss.audit.v1'",
+    )
+    .bind(tenant.to_string())
+    .fetch_one(&mut *tx)
+    .await?;
+    tx.rollback().await?;
+    let tag: [u8; 32] = tag
+        .try_into()
+        .map_err(|_| anyhow::anyhow!("invalid captured tag"))?;
+    ensure!(
+        store
+            .verify_history_to(tenant, Some(seq as u64), &tag)
+            .await?
+            == 65
+    );
+    ensure!(
+        store
+            .verify_history_to(tenant, Some(seq as u64 + 1), &tag)
+            .await
+            .is_err()
+    );
+    ensure!(
+        store
+            .verify_history_to(tenant, Some(seq as u64), &[0; 32])
+            .await
+            .is_err()
+    );
+    let wrong = AuditStore::new(
+        pool.clone(),
+        Integrity::Ledger(std::sync::Arc::new(rss_ledger::Authenticator::new(
+            rss_ledger::KeyId::parse("mdm-audit-fixture")?,
+            vec![20; 32],
+        )?)),
+        &budget.control(),
+    )
+    .await?;
+    ensure!(
+        wrong
+            .verify_history_to(tenant, Some(seq as u64), &tag)
+            .await
+            .is_err()
+    );
+    request.finalize(None);
+    pool.close().await;
+    Ok(())
+}
+
 async fn rejects_snapshot_isolation(pool: &PgPool) -> Result<()> {
     let timer = crate::lifecycle::RuntimeTimer;
     let cancel = tokio_util::sync::CancellationToken::new();

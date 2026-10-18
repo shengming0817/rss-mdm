@@ -25,6 +25,18 @@ pub async fn reconcile(input: &Input) -> Result<usize> {
     validate_slots(input)?;
     let journal = Journal::open(&input.directory)?;
     if journal
+        .load::<serde_json::Value>("recovery.json")?
+        .is_some_and(|v| v["stage"] != "complete")
+    {
+        return Err(Error::Busy);
+    }
+    if journal
+        .load::<serde_json::Value>("transfer.json")?
+        .is_some_and(|v| v["receipt"]["phase"] != "transferred")
+    {
+        return Err(Error::Busy);
+    }
+    if journal
         .load::<Option<Uuid>>("protection-operation.json")?
         .flatten()
         .is_some()

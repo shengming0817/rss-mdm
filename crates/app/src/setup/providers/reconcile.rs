@@ -23,7 +23,6 @@ pub async fn storage(
     if input.storage_profiles.iter().any(|p| !ids.insert(&p.id)) {
         return Err(Error::Input);
     }
-    let protection = config.native_protector().map_err(|_| Error::Corrupt)?;
     let tenants: Vec<Uuid> = sqlx::query_scalar(
         "SELECT tenant_id FROM public.mdm_tenants WHERE NOT deleted ORDER BY tenant_id",
     )
@@ -36,6 +35,22 @@ pub async fn storage(
         scope(&mut tx, tenant).await?;
         let operations: Vec<Uuid> = sqlx::query_scalar("SELECT operation_id FROM mdm_content_connections.versions WHERE tenant_id=$1 AND state='pending' AND NOT revoked ORDER BY revision LIMIT 8").bind(tenant).fetch_all(&mut *tx).await.map_err(|_| Error::Storage)?;
         tx.commit().await.map_err(|_| Error::Storage)?;
+        if operations.is_empty() {
+            continue;
+        }
+        let host:Option<String>=sqlx::query_scalar("SELECT receipt->'result'->>'hostId' FROM public.mdm_tenant_operations WHERE tenant_id=$1 AND action='provision' AND receipt->'result'->>'phase'='enabled' ORDER BY operation_id LIMIT 1").bind(tenant).fetch_optional(&mut *c).await.map_err(|_|Error::Storage)?;
+        let protection = if let Some(host) = host {
+            let host = Uuid::parse_str(&host).map_err(|_| Error::Corrupt)?;
+            let journal = crate::setup::local::Journal::open(
+                &input.directory.join(format!("rss-mdm-{}", host.simple())),
+            )?;
+            let runtime: crate::config::Config = journal
+                .load("requested-runtime.json")?
+                .ok_or(Error::Corrupt)?;
+            runtime.native_protector().map_err(|_| Error::Corrupt)?
+        } else {
+            config.native_protector().map_err(|_| Error::Corrupt)?
+        };
         for operation in operations {
             let mut tx = c.begin().await.map_err(|_| Error::Storage)?;
             scope(&mut tx, tenant).await?;

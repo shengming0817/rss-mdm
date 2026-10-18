@@ -1,5 +1,6 @@
 //! Tenant-scoped immutable content; PostgreSQL owns progress and exact material identities.
 //! ref: sqlx sqlx-core/src/transaction.rs; aws-sdk-rust sdk/s3/src/operation/complete_multipart_upload/builders.rs (manifest freezing avoids assembly)
+pub mod backup;
 pub mod connections;
 mod range;
 pub use range::range;

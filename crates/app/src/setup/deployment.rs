@@ -18,6 +18,7 @@ pub struct Config {
     pub certificate_file: PathBuf,
     pub private_key_file: PathBuf,
     pub trust_file: PathBuf,
+    pub content_volume: Option<PathBuf>,
 }
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -45,7 +46,7 @@ fn image(value: &str) -> Result<()> {
     }
     Ok(())
 }
-async fn docker(args: &[&str]) -> Result<Vec<u8>> {
+pub(super) async fn docker(args: &[&str]) -> Result<Vec<u8>> {
     let output = tokio::time::timeout(
         Duration::from_secs(90),
         tokio::process::Command::new("docker")
@@ -98,6 +99,10 @@ fn project(
             for (name, value) in values {
                 if name.ends_with("_file") && value.is_string() {
                     project_file(value, journal, mounts, !public_file(name))?;
+                } else if name == "key_files" {
+                    for key in value.as_object_mut().ok_or(Error::Input)?.values_mut() {
+                        project_file(key, journal, mounts, true)?;
+                    }
                 } else if name == "apple_material_roots" || name == "historical_files" {
                     for root in value.as_array_mut().ok_or(Error::Input)? {
                         project_file(root, journal, mounts, name == "historical_files")?;
@@ -276,6 +281,29 @@ pub async fn apply(directory: &Path, config: &Config, runtime: &Value) -> Result
         .map(|(name, path)| mount(path, format!("/run/mdm/{name}")))
         .collect::<Vec<_>>();
     server_mounts.push(mount(&runtime_path, "/run/mdm/runtime.json".into()));
+    if let Some(directory) = decoded
+        .content
+        .as_ref()
+        .and_then(|v| v.storage.volume_directory())
+    {
+        use std::os::unix::fs::MetadataExt;
+        let source = config.content_volume.as_ref().ok_or(Error::Input)?;
+        let meta = std::fs::symlink_metadata(source).map_err(|_| Error::Input)?;
+        if !source.is_absolute()
+            || source.canonicalize().map_err(|_| Error::Input)? != *source
+            || !meta.is_dir()
+            || meta.uid() != 10001
+            || meta.mode() & 0o077 != 0
+            || !directory.is_absolute()
+            || directory == Path::new("/")
+        {
+            return Err(Error::Input);
+        }
+        server_mounts.push(json!({"type":"bind","source":source,"target":directory,"read_only":false,"bind":{"create_host_path":false}}));
+    } else if config.content_volume.is_some() {
+        return Err(Error::Conflict);
+    }
+
     let compose = json!({"services":{
         "server":{"image":config.server_image,"network_mode":"host","user":"10001:10001","read_only":true,"cap_drop":["ALL"],"security_opt":["no-new-privileges:true"],"tmpfs":["/tmp:rw,noexec,nosuid,size=64m"],"volumes":server_mounts,"command":["serve","--config","/run/mdm/runtime.json"],"labels":{"rss.mdm.host":decoded.runtime_binding.host_id,"rss.mdm.operation":decoded.runtime_binding.operation_id}},
         "gateway":{"image":config.gateway_image,"network_mode":"host","read_only":true,"cap_drop":["ALL"],"cap_add":["NET_BIND_SERVICE","SETUID","SETGID"],"security_opt":["no-new-privileges:true"],"tmpfs":["/tmp:rw,noexec,nosuid,size=64m"],"entrypoint":["nginx"],"command":["-e","stderr","-c","/run/gateway/nginx.conf","-g","daemon off;"],"volumes":[mount(&gateway_path,"/run/gateway/nginx.conf".into()),mount(&certificate_path,"/run/gateway/tls.crt".into()),mount(&key_path,"/run/gateway/tls.key".into()),mount(&ui_path,"/run/gateway/ui.json".into()),mount(&mdm_path,"/run/gateway/mdm.json".into())],"labels":{"rss.mdm.host":decoded.runtime_binding.host_id,"rss.mdm.operation":decoded.runtime_binding.operation_id}}

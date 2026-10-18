@@ -63,18 +63,17 @@ pub fn protocol_identity(
     enrollment_origin: &str,
     management_origin: &str,
     provider_id: &str,
-    protocol_key: &[u8],
+    protector: &rss_mdm_native_protection::Protector,
     poll: &rss_mdm_windows_mdm::provisioning::Poll,
 ) -> Result<String, Error> {
     poll.validate().map_err(|_| Error::Malformed)?;
-    let protection = protection::Protection::from_bytes(protocol_key)?;
     Ok(enrollment::digest(&(
         "mdm.windows.profile.v3",
         poll,
         enrollment_origin,
         management_origin,
         provider_id,
-        &protection.id,
+        protector.fingerprint_id(),
     )))
 }
 impl Windows {
@@ -102,16 +101,15 @@ impl Windows {
         provider_id: String,
         ca: rss_mdm_device_trust::windows::WindowsDeviceTrust,
         providers: Arc<rss_mdm_pki_service::providers::Providers>,
-        protocol_key: &[u8],
+        protector: Arc<rss_mdm_native_protection::Protector>,
         poll: rss_mdm_windows_mdm::provisioning::Poll,
     ) -> Result<Self, Error> {
         poll.validate().map_err(|_| Error::Malformed)?;
-        let protection = protection::Protection::from_bytes(protocol_key)?;
         let configuration = protocol_identity(
             &enrollment_origin,
             &management_origin,
             &provider_id,
-            protocol_key,
+            &protector,
             &poll,
         )?;
         Ok(Self {
@@ -124,7 +122,7 @@ impl Windows {
             provider_id,
             ca,
             providers,
-            protection,
+            protection: protection::Protection::new(protector),
             configuration,
         })
     }

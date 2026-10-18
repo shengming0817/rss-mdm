@@ -186,8 +186,21 @@ Apple 的 challenge/notify webhook ID 和 HMAC 秘密属于稳定协议配置。
 
 ### 原生加密写钥切换
 
-`rss-mdm-installer rotate-protection --config /absolute/private-rotation.json` 接受 `installation`（原部署输入）和稳定 UUID `operation_id`。专用部署进程与该操作互斥。操作先在最终保管目录生成新钥并保存每个宿主的两个不可变输入：第一阶段让全部实际进程读取新旧钥，第二阶段才切换新密文写钥。每个阶段都要求 HTTPS 返回确切宿主、操作、版本、摘要与新进程观察；失败使用原 operation ID 重试，不能手工跳过剩余宿主。
+`rss-mdm-installer rotate-protection --config /absolute/private-rotation.json` 接受 `installation`（原部署输入）、`purpose`（`native` 或 `windows`）和稳定 UUID `operation_id`。专用部署进程与该操作互斥。操作先在最终保管目录生成新钥并保存每个宿主的两个不可变输入：第一阶段让全部实际进程读取新旧钥，第二阶段才切换新密文写钥。每个阶段都要求 HTTPS 返回确切宿主、操作、版本、摘要与新进程观察；失败使用原 operation ID 重试，不能手工跳过剩余宿主。
 
 写钥切换完成后，每次调用以有界领域事务重加密 APNs/Profile/Managed Apple Account、任务签名私钥和 S3 凭据；`rewrapping` 表示还需继续用原输入调用，`complete` 表示该轮切换和上述运行材料批次已完成。私钥身份、材料版本、签名信任、ACK、原请求指纹和证书均不改变。中断可重放，单批失败回滚。
 
 完成回执始终标记 `historicalKeysRetained=true`。历史原生输入、协议回执、物理内容块和备份仍可能引用旧加密钥，不能仅凭运行材料批次为零就删除旧钥。稳定比较钥另有持久身份用途，密文轮换不表示比较 HMAC 轮换。恢复须联合取回全部仍被记录或备份引用的材料；此流程不会自动退出旧钥，也不会修改固定安装 Ledger HMAC。
+
+
+### 固定 V4 转交及灾难恢复
+
+`rss-mdm-installer transfer-v4 --config /absolute/private-transfer.json` 只接受源提交 `5dbcc81469b9524e86e72a0ef141df8f8cd4d9e2` 对应的正式 V4 清单、独立取得的清单摘要，以及正在使用该候选的确切 Docker 容器 ID。输入包含原平台管理员和每个业务管理员的主体 ID、登录名及原密码文件。导入器真实登录并核对主体，不重置密码或把初始化拒绝视为成功。
+
+部署目录必须独立且仅 owner 可读。首次副作用前保存稳定宿主、授权与操作身份，将原运行文件及网关 TLS、供应方管理材料复制到该目录；随后关闭旧容器自动重启、停写、核验原 Ledger 全历史并联合归档 PostgreSQL、内容卷及确切 S3 版本。`backupManifestSha256` 是返回的公开备份回执，应独立保存。备份目录本身包含秘密，按部署保管材料保护；不可只保留数据库 dump。
+
+`rss-mdm-installer restore-v4 --config /absolute/private-restore.json` 的输入为 `directory`、新的稳定 `operation_id`、独立保存的 `backup_manifest_sha256` 和目标 `administrator` 数据库配置。当前入口是同址恢复：部署目录、数据库地址/名称和卷的容器路径保持原值；目标数据库必须为空，受限角色及原密码须已恢复。它拒绝覆盖已有业务库及内容冲突，使用单事务 `pg_restore`，以数据库内恢复身份解决未知提交。S3 原版本确实缺失时，用原写入身份恢复归档物理字节，再在领域事务内更新确切版本引用和内容 MAC；逻辑 SHA、设备身份、上传进度和 Ledger 历史不变。原本未确认且无引用的对象仍保留未知状态。
+
+原链、材料、内容校验通过后，恢复沿同一个转交用例继续迁入新权威、核对真实认证、启动并观察实际宿主。任一步失败保留原操作与归档；重复运行同一输入。该入口不接受替换 Ledger 密钥、不重签审计历史、不自动切换 Plain。此入口仅消费转交前的 V4 联合快照，不代表日常 V5 在线备份或跨地址恢复已经实现。
+
+Windows 保护配置现在使用 `protocol_protection`，包含 `active_file`、`historical_files`、`fingerprint_file`。仅离线 V4 导入器识别旧 `protocol_key_file`。Windows 轮换先向所有启用 Windows 的宿主分发读钥，再切换写钥并分批重包注册秘密；固定 fingerprint 维持原注册/续期配置身份。旧钥继续保留供历史与备份恢复，完成写钥切换不表示旧钥可以删除。

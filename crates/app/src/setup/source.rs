@@ -44,6 +44,7 @@ pub struct Evidence {
     pub inputs_sha256: String,
     pub manifest_sha256: String,
     pub archive_sha256: String,
+    pub image: String,
 }
 fn supported() -> Supported {
     serde_json::from_str(include_str!(
@@ -88,6 +89,7 @@ fn validate(bytes: &[u8], expected: &str) -> Result<(Candidate, Evidence)> {
         inputs_sha256: source.inputs_sha256,
         manifest_sha256: expected.into(),
         archive_sha256: candidate.archive.sha256.clone(),
+        image: candidate.image.clone(),
     };
     Ok((candidate, evidence))
 }

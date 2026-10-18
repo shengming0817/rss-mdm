@@ -107,6 +107,27 @@ pub struct NativeProtection {
     pub historical_files: Vec<PathBuf>,
     pub fingerprint_file: PathBuf,
 }
+impl NativeProtection {
+    pub(crate) fn load(&self) -> Result<Arc<rss_mdm_native_protection::Protector>, Error> {
+        if self.historical_files.len() > 15 {
+            return Err(Error::Configuration(ConfigIssue::NativeProtection));
+        }
+        let key = read(&self.active_file, 32, true)?;
+        let fingerprint = read(&self.fingerprint_file, 32, true)?;
+        let historical = self
+            .historical_files
+            .iter()
+            .map(|p| read(p, 32, true))
+            .collect::<Result<Vec<_>, _>>()?;
+        let refs = historical
+            .iter()
+            .map(|key| key.as_slice())
+            .collect::<Vec<_>>();
+        rss_mdm_native_protection::Protector::with_fingerprint(&key, &refs, &fingerprint)
+            .map(Arc::new)
+            .map_err(|_| Error::Configuration(ConfigIssue::NativeProtection))
+    }
+}
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
@@ -154,24 +175,7 @@ impl Config {
     pub(crate) fn native_protector(
         &self,
     ) -> Result<Arc<rss_mdm_native_protection::Protector>, Error> {
-        if self.native_protection.historical_files.len() > 15 {
-            return Err(Error::Configuration(ConfigIssue::NativeProtection));
-        }
-        let key = read(&self.native_protection.active_file, 32, true)?;
-        let fingerprint = read(&self.native_protection.fingerprint_file, 32, true)?;
-        let historical = self
-            .native_protection
-            .historical_files
-            .iter()
-            .map(|p| read(p, 32, true))
-            .collect::<Result<Vec<_>, _>>()?;
-        let refs = historical
-            .iter()
-            .map(|key| key.as_slice())
-            .collect::<Vec<_>>();
-        rss_mdm_native_protection::Protector::with_fingerprint(&key, &refs, &fingerprint)
-            .map(Arc::new)
-            .map_err(|_| Error::Configuration(ConfigIssue::NativeProtection))
+        self.native_protection.load()
     }
     pub(crate) fn compile(self) -> Result<Compiled, Error> {
         self.runtime_binding.validate()?;

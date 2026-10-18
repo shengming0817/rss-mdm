@@ -44,6 +44,20 @@ pub async fn initialize(
     if operation_id.is_nil() {
         return Err(Error::Malformed);
     }
+    let user = verify_local(authority, expected, login, password).await?.0;
+    crate::store::initialize_verified_user(store, user, operation_id, audit).await
+}
+
+/// 原凭据的真实认证与精确主体核对；不创建账户、不恢复密码，也不新增授权。
+pub async fn verify_local(
+    authority: &Authority,
+    expected: User,
+    login: LoginKey,
+    password: Password,
+) -> Result<VerifiedLocal, Error> {
+    expected.validate(&expected.tenant_id, &expected.instance_id)?;
+    crate::canonical_uuid(&expected.tenant_id)?;
+    crate::canonical_uuid(&expected.instance_id)?;
     let tenant = TenantId::parse(&expected.tenant_id).map_err(|_| Error::Malformed)?;
     let issued = authority
         .login_local(
@@ -78,5 +92,63 @@ pub async fn initialize(
     if user != expected {
         return Err(Error::Forbidden);
     }
-    crate::store::initialize_verified_user(store, user, operation_id, audit).await
+    Ok(VerifiedLocal(user))
+}
+
+/// 离线转交复用原管理员身份补齐业务授权；调用者先完成 verify_local。
+/// 原主体必须仍有直接租户授权管理权，审计和授权在同一事务提交。
+pub async fn complete_verified_business_administrator(
+    store: &AuditStore,
+    verified: VerifiedLocal,
+    operation: uuid::Uuid,
+    audit: &RequestAudit,
+) -> Result<Receipt, Error> {
+    let user = verified.0;
+    if operation.is_nil() {
+        return Err(Error::Malformed);
+    }
+    user.validate(&user.tenant_id, &user.instance_id)?;
+    audit.set_principal(&user.principal_id, &user.instance_id);
+    audit.operation(operation, "authorization_transfer");
+    audit.require_request_settlement();
+    let desired = crate::tenant_administrator_rule(user.clone());
+    let bytes = serde_json::to_vec(&desired).map_err(|_| Error::Malformed)?;
+    let fact = rss_mdm_audit_integration::Fact::business(
+        audit,
+        &format!("authorization-transfer:{operation}"),
+        &bytes,
+        200,
+        "success",
+        None,
+    )?;
+    let budget =
+        rss_mdm_audit_integration::budget::AuditBudget::new(std::time::Duration::from_secs(6));
+    let tenant = TenantId::parse(&user.tenant_id).map_err(|_| Error::Malformed)?;
+    let result=store.write(tenant,&budget.control(),(store,&user,&desired,operation,audit,fact),|(store,user,desired,operation,audit,fact),tx|Box::pin(async move {
+        let mut context=(*user,*desired,*operation);
+        let (receipt,replay)=tx.with_connection_context(&mut context,|(user,desired,operation),c|Box::pin(async move {
+            crate::lock_on(c,&user.tenant_id,&user.instance_id).await?;
+            let rules=crate::snapshot_on(c,&user.tenant_id,&user.instance_id).await?;
+            if let Some(existing)=rules.rules.iter().find(|r|r.id==*operation) {
+                if existing.value.as_ref()!=Some(*desired) {return Err(Error::Conflict)}
+                return Ok((Receipt{id:existing.id,revision:existing.revision,deleted:false},true));
+            }
+            let authorized=rules.rules.iter().filter_map(|r|r.value.as_ref()).any(|r|matches!(&r.subject,crate::Subject::User{user:subject} if subject==*user) && r.grants.iter().any(|g|g.covers(crate::Permission::AuthorizationWrite,None)));
+            if !authorized {return Err(Error::Forbidden)}
+            let receipt=crate::store::grant_tenant_administrator_on(c,(*user).clone(),*operation).await?;
+            Ok::<_,Error>((receipt,false))
+        })).await?;
+        store.append(tx,fact,replay).await?;
+        audit.mark_commit_started();
+        Ok(receipt)
+    })).await;
+    crate::operations::settle(result, audit)
+}
+
+/// 只有精确主体的真实本地认证才能构造；不携带可转移的会话秘密。
+pub struct VerifiedLocal(User);
+impl VerifiedLocal {
+    pub fn user(&self) -> &User {
+        &self.0
+    }
 }

@@ -6,10 +6,41 @@ use sqlx::Connection;
 use std::collections::BTreeMap;
 use uuid::Uuid;
 
+#[derive(Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum Purpose {
+    Native,
+    Windows,
+}
+impl Purpose {
+    fn path(self) -> &'static str {
+        match self {
+            Self::Native => "/native_protection",
+            Self::Windows => "/native_protocols/windows/protocol_protection",
+        }
+    }
+    fn protector(
+        self,
+        config: &crate::config::Config,
+    ) -> Result<std::sync::Arc<rss_mdm_native_protection::Protector>> {
+        match self {
+            Self::Native => config.native_protector().map_err(|_| Error::Corrupt),
+            Self::Windows => config
+                .native_protocols
+                .windows
+                .as_ref()
+                .ok_or(Error::Input)?
+                .protocol_protection
+                .load()
+                .map_err(|_| Error::Corrupt),
+        }
+    }
+}
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Request {
     pub installation: Input,
+    pub purpose: Purpose,
     pub operation_id: Uuid,
 }
 #[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -26,6 +57,7 @@ pub struct Receipt {
     pub operation_id: Uuid,
     pub phase: Phase,
     pub key_id: String,
+    pub purpose: Purpose,
     pub rewritten: u64,
     pub historical_keys_retained: bool,
 }
@@ -44,8 +76,8 @@ struct Saved {
     hosts: Vec<Host>,
 }
 
-fn successor(mut runtime: Value, protection: Value) -> Result<Value> {
-    runtime["native_protection"] = protection;
+fn successor(mut runtime: Value, protection: Value, purpose: Purpose) -> Result<Value> {
+    *runtime.pointer_mut(purpose.path()).ok_or(Error::Corrupt)? = protection;
     let revision = runtime["runtime_binding"]["revision"]
         .as_u64()
         .and_then(|r| r.checked_add(1))
@@ -63,6 +95,18 @@ pub async fn rotate(request: Request) -> Result<Receipt> {
     }
     let input = &request.installation;
     let journal = Journal::open(&input.directory)?;
+    if journal
+        .load::<serde_json::Value>("recovery.json")?
+        .is_some_and(|v| v["stage"] != "complete")
+    {
+        return Err(Error::Busy);
+    }
+    if journal
+        .load::<serde_json::Value>("transfer.json")?
+        .is_some_and(|v| v["receipt"]["phase"] != "transferred")
+    {
+        return Err(Error::Busy);
+    }
     let operation = Journal::open(
         &input
             .directory
@@ -129,21 +173,10 @@ pub async fn rotate(request: Request) -> Result<Receipt> {
             .map_err(|_| Error::Corrupt)?
             .id()
             .to_owned();
-        let mut read_protection = base["native_protection"].clone();
-        let history = read_protection["historical_files"]
-            .as_array_mut()
-            .ok_or(Error::Corrupt)?;
-        if history.len() >= 15 {
-            return Err(Error::Conflict);
-        }
-        history.push(json!(next_path));
-        let mut write_protection = base["native_protection"].clone();
-        let previous = write_protection["active_file"].clone();
-        write_protection["active_file"] = json!(next_path);
-        write_protection["historical_files"]
-            .as_array_mut()
-            .ok_or(Error::Corrupt)?
-            .push(previous);
+        let write_protection = base
+            .pointer(request.purpose.path())
+            .map(|p| key_stages(p, &next_path).map(|(_, w)| w))
+            .transpose()?;
         let slots: BTreeMap<Uuid, usize> =
             journal.load("host-reservations.json")?.unwrap_or_default();
         let records:Vec<Value>=sqlx::query_scalar("SELECT receipt FROM public.mdm_tenant_operations WHERE action='provision' AND receipt->'result'->>'phase'='enabled' ORDER BY operation_id").fetch_all(&mut c).await.map_err(|_|Error::Storage)?;
@@ -161,12 +194,13 @@ pub async fn rotate(request: Request) -> Result<Receipt> {
                     .join(format!("rss-mdm-{}", progress.host_id.simple())),
             )?;
             let runtime: Value = root.load("requested-runtime.json")?.ok_or(Error::Corrupt)?;
-            // 同一次安装的全部宿主必须从同一钥集合出发，不能覆盖异常分叉。
-            if runtime["native_protection"] != base["native_protection"] {
-                return Err(Error::Conflict);
-            }
-            let read = successor(runtime, read_protection.clone())?;
-            let write = successor(read.clone(), write_protection.clone())?;
+            // 存量租户可有不同旧钥；保留各自比较身份与历史读钥。
+            let Some(original) = runtime.pointer(request.purpose.path()) else {
+                continue;
+            };
+            let (read_protection, write_protection) = key_stages(original, &next_path)?;
+            let read = successor(runtime, read_protection, request.purpose)?;
+            let write = successor(read.clone(), write_protection, request.purpose)?;
             hosts.push(Host {
                 id: progress.host_id,
                 tenant: progress.tenant_id,
@@ -179,12 +213,17 @@ pub async fn rotate(request: Request) -> Result<Receipt> {
             return Err(Error::Conflict);
         }
         let mut next_base = base.clone();
-        next_base["native_protection"] = write_protection;
+        if let Some(protection) = write_protection {
+            *next_base
+                .pointer_mut(request.purpose.path())
+                .ok_or(Error::Corrupt)? = protection;
+        }
         let saved = Saved {
             receipt: Receipt {
                 operation_id: request.operation_id,
                 phase: Phase::Distributing,
                 key_id,
+                purpose: request.purpose,
                 rewritten: 0,
                 historical_keys_retained: true,
             },
@@ -203,15 +242,15 @@ pub async fn rotate(request: Request) -> Result<Receipt> {
         }
         journal.save("protection-operation.json", &request.operation_id)?;
     }
-    let candidate: crate::config::Config =
-        serde_json::from_value(saved.base.clone()).map_err(|_| Error::Corrupt)?;
-    if candidate
-        .native_protector()
-        .map_err(|_| Error::Corrupt)?
-        .id()
-        != saved.receipt.key_id
-    {
+    if saved.receipt.purpose != request.purpose {
         return Err(Error::Conflict);
+    }
+    for host in &saved.hosts {
+        let candidate: crate::config::Config =
+            serde_json::from_value(host.write.clone()).map_err(|_| Error::Corrupt)?;
+        if request.purpose.protector(&candidate)?.id() != saved.receipt.key_id {
+            return Err(Error::Conflict);
+        }
     }
     if saved.receipt.phase == Phase::Distributing {
         for host in &saved.hosts {
@@ -230,11 +269,11 @@ pub async fn rotate(request: Request) -> Result<Receipt> {
         operation.save("rotation.json", &saved)?;
     }
     if saved.receipt.phase == Phase::Rewrapping {
-        let config: crate::config::Config =
-            serde_json::from_value(saved.base.clone()).map_err(|_| Error::Corrupt)?;
-        let protector = config.native_protector().map_err(|_| Error::Corrupt)?;
         let mut rewritten = 0;
         for host in &saved.hosts {
+            let config: crate::config::Config =
+                serde_json::from_value(host.write.clone()).map_err(|_| Error::Corrupt)?;
+            let protector = request.purpose.protector(&config)?;
             let tenant = rss_request_context::TenantId::parse(&host.tenant.to_string())
                 .map_err(|_| Error::Corrupt)?;
             let mut tx = c.begin().await.map_err(|_| Error::Storage)?;
@@ -243,20 +282,32 @@ pub async fn rotate(request: Request) -> Result<Receipt> {
                 .execute(&mut *tx)
                 .await
                 .map_err(|_| Error::Storage)?;
-            rewritten += rss_mdm_content_service::connections::rewrap(&mut tx, tenant, &protector)
+            if request.purpose == Purpose::Windows {
+                rewritten += rss_mdm_windows_channel::enrollment_store::rewrap_protocol(
+                    &mut tx,
+                    &host.tenant.to_string(),
+                    &protector,
+                )
                 .await
                 .map_err(|_| Error::Corrupt)?;
-            rewritten +=
-                rss_mdm_execution_service::task_signing::trust::rewrap(&mut tx, tenant, &protector)
-                    .await
-                    .map_err(|_| Error::Corrupt)?;
-            rewritten += rss_mdm_apple_channel::runtime_materials::rewrap(
-                &mut tx,
-                &host.tenant.to_string(),
-                &protector,
-            )
-            .await
-            .map_err(|_| Error::Corrupt)?;
+            } else {
+                rewritten +=
+                    rss_mdm_content_service::connections::rewrap(&mut tx, tenant, &protector)
+                        .await
+                        .map_err(|_| Error::Corrupt)?;
+                rewritten += rss_mdm_execution_service::task_signing::trust::rewrap(
+                    &mut tx, tenant, &protector,
+                )
+                .await
+                .map_err(|_| Error::Corrupt)?;
+                rewritten += rss_mdm_apple_channel::runtime_materials::rewrap(
+                    &mut tx,
+                    &host.tenant.to_string(),
+                    &protector,
+                )
+                .await
+                .map_err(|_| Error::Corrupt)?;
+            }
             tx.commit().await.map_err(|_| Error::Storage)?;
         }
         saved.receipt.rewritten = saved
@@ -296,4 +347,23 @@ async fn apply(input: &Input, host: &Host, runtime: &Value) -> Result<()> {
         return Err(Error::Conflict);
     }
     Ok(())
+}
+
+fn key_stages(original: &Value, next: &std::path::Path) -> Result<(Value, Value)> {
+    let mut read = original.clone();
+    let history = read["historical_files"]
+        .as_array_mut()
+        .ok_or(Error::Corrupt)?;
+    if history.len() >= 15 {
+        return Err(Error::Conflict);
+    }
+    history.push(json!(next));
+    let mut write = original.clone();
+    let previous = write["active_file"].clone();
+    write["active_file"] = json!(next);
+    write["historical_files"]
+        .as_array_mut()
+        .ok_or(Error::Corrupt)?
+        .push(previous);
+    Ok((read, write))
 }

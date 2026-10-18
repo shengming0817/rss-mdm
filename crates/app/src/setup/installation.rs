@@ -228,6 +228,12 @@ fn coordinates(input: &Input, saved: &Saved) -> Installation {
 pub async fn install(input: Input) -> Result<Receipt> {
     input.validate()?;
     let journal = Journal::open(&input.directory)?;
+    if journal
+        .load::<serde_json::Value>("transfer.json")?
+        .is_some()
+    {
+        return Err(Error::Conflict);
+    }
     let previous = journal.load::<Saved>("installation.json")?;
     let first = previous.is_none();
     let fingerprint_key = protected(&journal, "operation.key", 32, first)?;

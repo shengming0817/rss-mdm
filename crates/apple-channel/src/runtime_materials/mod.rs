@@ -2,6 +2,7 @@
 mod crypto;
 pub mod runtime;
 mod storage;
+pub mod transfer;
 use crate::{Error, Failure, HttpState, database::db};
 use axum::{
     Extension, Json, Router,
@@ -62,6 +63,7 @@ pub struct CertificateRequest {
 pub struct ApplyRequest {
     expected_revision: i64,
     material_revision: i64,
+    account_alias: Option<String>,
 }
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -152,10 +154,18 @@ async fn status(
     let mut tx = app.access.begin_read(p.tenant_id()).await?;
     let (revision, desired) = storage::head(&mut tx, p.tenant_id(), purpose).await?;
     let values = storage::versions(&mut tx, p.tenant_id(), purpose).await?;
+    let accounts: Vec<(String, i64)> = if purpose == Purpose::ManagedAccount {
+        sqlx::query_as("SELECT alias,revision FROM mdm_apple_runtime.account_bindings WHERE tenant_id=$1::uuid ORDER BY alias").bind(p.tenant_id()).fetch_all(&mut *tx).await.map_err(db)?
+    } else {
+        Vec::new()
+    };
+    let accounts = accounts
+        .into_iter()
+        .collect::<std::collections::BTreeMap<_, _>>();
     tx.rollback().await.map_err(db)?;
     p.check_live()?;
     Ok(Json(
-        json!({"revision":revision,"desiredRevision":desired,"versions":values,"runtimeObservation":"separate"}),
+        json!({"revision":revision,"desiredRevision":desired,"versions":values,"runtimeObservation":"separate","accountBindings":accounts}),
     ))
 }
 async fn operation(
@@ -261,7 +271,7 @@ async fn apply(
         purpose,
         input.expected_revision,
         &request,
-        Change::Apply(input.material_revision),
+        Change::Apply(input.material_revision, input.account_alias),
     )
     .await
     .map(Json)
@@ -277,7 +287,7 @@ async fn revoke(
 ) -> Result<Json<Value>, Error> {
     let p = proof(&app, &auth, true)?;
     let id = crate::account_enrollment::management::operation(&headers)?;
-    if input.material_revision < 1 {
+    if input.material_revision < 1 || input.account_alias.is_some() {
         return Err(Error::Malformed);
     }
     let request = Zeroizing::new(
@@ -299,7 +309,7 @@ async fn revoke(
 enum Change {
     Key(crypto::Key),
     Certificate(CertificateRequest),
-    Apply(i64),
+    Apply(i64, Option<String>),
     Revoke(i64),
 }
 #[allow(clippy::too_many_arguments)]
@@ -339,7 +349,7 @@ async fn write(
             let value=match change {
                 Change::Key(key)=>{
                     let key_id=Uuid::new_v4();
-                    storage::insert(c,app,p.tenant_id(),*purpose,revision,key_id,key,None).await?;
+                    storage::insert(c,&app.protection,p.tenant_id(),*purpose,revision,key_id,key,None).await?;
                     json!({"operationId":id,"revision":revision,"keyId":key_id,"csr":key.csr,"publicKeyDigest":key.public_digest,"state":"awaiting_certificate"})
                 },
                 Change::Certificate(input)=>{
@@ -350,7 +360,7 @@ async fn write(
                         if old.topic.is_some() && old.topic!=validated.topic {return Err(Error::Conflict);}
                     }
                     let key=crypto::Key {private:Zeroizing::new(private.expose().to_vec()),csr:previous.csr,public_digest:previous.public_key_digest};
-                    storage::insert(c,app,p.tenant_id(),*purpose,revision,previous.key_id,&key,Some((&input.certificate_chain_pem,&validated))).await?;
+                    storage::insert(c,&app.protection,p.tenant_id(),*purpose,revision,previous.key_id,&key,Some((&input.certificate_chain_pem,&validated))).await?;
                     json!({"operationId":id,"revision":revision,"keyId":previous.key_id,"certificateDigest":validated.digest,"expiresAt":validated.expires,"state":"validated"})
                 },
                 Change::Revoke(selected)=>{
@@ -362,7 +372,7 @@ async fn write(
                     crate::notify(c,"apple").await.map_err(db)?;
                     json!({"operationId":id,"revision":revision,"materialRevision":selected,"state":"revoked"})
                 },
-                Change::Apply(selected)=>{
+                Change::Apply(selected,alias)=>{
                     let (candidate,private)=storage::material(c,app,p.tenant_id(),*purpose,*selected).await?;
                     if candidate.revoked{return Err(Error::Conflict);}
                     crypto::certificate(*purpose,candidate.certificate_chain_pem.as_deref().ok_or(Error::Conflict)?,private.expose(),&app.material_roots,now(app)?)?;
@@ -370,6 +380,10 @@ async fn write(
                         let old=storage::version(c,p.tenant_id(),*purpose,old_revision).await?;
                         if old.topic.is_some() && old.topic!=candidate.topic {return Err(Error::Conflict);}
                     }
+                    if *purpose==Purpose::ManagedAccount {
+                        let alias=alias.as_deref().ok_or(Error::Malformed)?;
+                        storage::bind_account(c,p.tenant_id(),alias,*selected).await?;
+                    } else if alias.is_some() {return Err(Error::Malformed)}
                     storage::select(c,p.tenant_id(),*purpose,*selected).await?;
                     json!({"operationId":id,"revision":revision,"desiredRevision":selected,"state":"pending_application"})
                 }

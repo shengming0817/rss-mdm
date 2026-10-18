@@ -93,12 +93,12 @@ impl Journal {
                 if !meta.is_file()
                     || meta.uid() != self.uid
                     || meta.mode() & 0o077 != 0
-                    || meta.len() > 1024 * 1024
+                    || meta.len() > 64 * 1024 * 1024
                 {
                     return Err(Error::Input);
                 }
-                let bytes =
-                    crate::config::read(&path, 1024 * 1024, true).map_err(|_| Error::Storage)?;
+                let bytes = crate::config::read(&path, 64 * 1024 * 1024, true)
+                    .map_err(|_| Error::Storage)?;
                 serde_json::from_slice(&bytes)
                     .map(Some)
                     .map_err(|_| Error::Corrupt)
@@ -107,6 +107,9 @@ impl Journal {
     }
     pub(super) fn save<T: Serialize>(&self, name: &str, value: &T) -> Result<()> {
         let bytes = serde_json::to_vec(value).map_err(|_| Error::Input)?;
+        if bytes.len() > 64 * 1024 * 1024 {
+            return Err(Error::Input);
+        }
         self.replace(name, &bytes)
     }
     fn replace(&self, name: &str, bytes: &[u8]) -> Result<()> {
@@ -141,7 +144,7 @@ impl Journal {
         self.material(name, bytes, false)
     }
     fn material(&self, name: &str, bytes: &[u8], private: bool) -> Result<PathBuf> {
-        if bytes.len() > 1024 * 1024 {
+        if bytes.len() > 64 * 1024 * 1024 {
             return Err(Error::Input);
         }
         let path = self.path(name)?;

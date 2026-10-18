@@ -33,6 +33,13 @@ CREATE TABLE mdm_apple_runtime.operations (
  receipt jsonb NOT NULL,
  PRIMARY KEY(tenant_id,operation_id)
 );
+CREATE TABLE mdm_apple_runtime.account_bindings (
+ tenant_id uuid NOT NULL, alias text NOT NULL CHECK(length(alias) BETWEEN 1 AND 128),
+ revision bigint NOT NULL CHECK(revision>0), PRIMARY KEY(tenant_id,alias)
+);
+ALTER TABLE mdm_apple_runtime.account_bindings ENABLE ROW LEVEL SECURITY;
+ALTER TABLE mdm_apple_runtime.account_bindings FORCE ROW LEVEL SECURITY;
+CREATE POLICY tenant ON mdm_apple_runtime.account_bindings USING(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid) WITH CHECK(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid);
 ALTER TABLE mdm_apple_runtime.heads ENABLE ROW LEVEL SECURITY;
 ALTER TABLE mdm_apple_runtime.heads FORCE ROW LEVEL SECURITY;
 CREATE POLICY tenant ON mdm_apple_runtime.heads USING(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid) WITH CHECK(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid);
@@ -48,4 +55,5 @@ GRANT USAGE ON SCHEMA mdm_apple_runtime TO mdm_access;
 GRANT SELECT,INSERT ON ALL TABLES IN SCHEMA mdm_apple_runtime TO mdm_access;
 GRANT UPDATE(revision,desired_revision) ON mdm_apple_runtime.heads TO mdm_access;
 GRANT UPDATE(revoked,private_key,selected) ON mdm_apple_runtime.versions TO mdm_access;
+GRANT UPDATE(revision) ON mdm_apple_runtime.account_bindings TO mdm_access;
 COMMIT;

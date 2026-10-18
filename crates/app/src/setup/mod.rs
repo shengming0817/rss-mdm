@@ -22,6 +22,8 @@ pub mod source;
 mod supervisor;
 #[cfg(unix)]
 pub mod tenant_hosts;
+#[cfg(unix)]
+pub mod transfer;
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     #[error("installation input rejected")]

@@ -27,6 +27,15 @@
       "read_write": true,
       "updates": [],
       "delete_policy": null
+    },
+    {
+      "schema": "mdm_apple_runtime",
+      "table": "account_bindings",
+      "read_write": true,
+      "updates": [
+        "revision"
+      ],
+      "delete_policy": null
     }
   ],
   "functions": [

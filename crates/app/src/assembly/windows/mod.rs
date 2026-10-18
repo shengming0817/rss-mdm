@@ -13,7 +13,7 @@ pub struct WindowsConfig {
     pub enrollment: TlsEndpoint,
     pub management: TlsEndpoint,
     pub trust_file: PathBuf,
-    pub protocol_key_file: PathBuf,
+    pub protocol_protection: crate::config::NativeProtection,
     #[serde(default)]
     pub lifetime: certificate::Lifetime,
     pub provider_id: String,
@@ -129,7 +129,10 @@ impl Windows {
             config.provider_id.clone(),
             ca,
             providers,
-            &protocol_key(&config.protocol_key_file)?,
+            config
+                .protocol_protection
+                .load()
+                .map_err(|_| Error::Configuration(ConfigIssue::ProtocolKey))?,
             config.poll.clone(),
         )
         .map_err(|_| Error::Configuration(ConfigIssue::ProtocolKey))?;
@@ -265,14 +268,6 @@ impl rss_mdm_windows_channel::push::WakeEligibility for WakeEligibility {
     }
 }
 
-fn protocol_key(path: &std::path::Path) -> Result<zeroize::Zeroizing<Vec<u8>>, Error> {
-    let bytes = crate::config::read(path, 32, true)
-        .map_err(|_| Error::Configuration(ConfigIssue::ProtocolKey))?;
-    if bytes.len() != 32 {
-        return Err(Error::Configuration(ConfigIssue::ProtocolKey));
-    }
-    Ok(bytes)
-}
 #[cfg(test)]
 #[path = "../../../tests/windows/unit.rs"]
 mod unit;

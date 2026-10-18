@@ -34,17 +34,13 @@ async fn desired(c: &mut PgConnection, tenant: Uuid, runtime: &mut Value) -> Res
     if runtime["native_protocols"]["apple"].is_object() {
         let versions: Vec<(String,i64)> = sqlx::query_as("SELECT purpose,desired_revision FROM mdm_apple_runtime.heads WHERE tenant_id=$1 AND desired_revision IS NOT NULL").bind(tenant).fetch_all(&mut *tx).await.map_err(|_| Error::Storage)?;
         for (purpose, revision) in versions {
-            if purpose == "managed_account" {
-                if let Some(accounts) =
-                    runtime["native_protocols"]["apple"]["materials"]["accounts"].as_object_mut()
-                {
-                    for value in accounts.values_mut() {
-                        *value = json!(revision);
-                    }
-                }
-            } else if purpose == "apns" || purpose == "profile" {
+            if purpose == "apns" || purpose == "profile" {
                 runtime["native_protocols"]["apple"]["materials"][purpose] = json!(revision);
             }
+        }
+        let accounts:Vec<(String,i64)>=sqlx::query_as("SELECT alias,revision FROM mdm_apple_runtime.account_bindings WHERE tenant_id=$1 ORDER BY alias").bind(tenant).fetch_all(&mut *tx).await.map_err(|_|Error::Storage)?;
+        for (alias, revision) in accounts {
+            runtime["native_protocols"]["apple"]["materials"]["accounts"][alias] = json!(revision);
         }
     }
     tx.commit().await.map_err(|_| Error::Storage)

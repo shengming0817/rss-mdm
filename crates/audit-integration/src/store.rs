@@ -59,6 +59,58 @@ pub struct AuditStore {
     ledger: bool,
 }
 impl AuditStore {
+    /// 停写转交/恢复时逐页验证至已捕获的链头；同库链头本身不是外部防截断证明。
+    pub async fn verify_history_to(
+        &self,
+        tenant: rss_request_context::TenantId,
+        last: Option<u64>,
+        tag: &[u8; 32],
+    ) -> Result<u64, Error> {
+        if !self.ledger {
+            return Err(Error::Admission);
+        }
+        let mut start = 0u64;
+        loop {
+            let budget = crate::budget::AuditBudget::new(std::time::Duration::from_secs(10));
+            let window = self
+                .adapter
+                .read_verified(
+                    tenant,
+                    rss_ledger::Sequence::new(start),
+                    rss_ledger_postgres::ReadLimit::new(64, 4 * 1024 * 1024)
+                        .map_err(rss_audit_postgres::Error::from)?,
+                    &budget.control(),
+                )
+                .await
+                .fold(
+                    |v| Ok(v.into_value()),
+                    |e| Err(Error::Audit(e)),
+                    |e| Err(Error::Audit(e)),
+                    |_| Err(Error::RollbackFailed),
+                    |_| Err(Error::CommitUnknown),
+                    |e| Err(Error::Audit(e)),
+                )?;
+            let verified = window.ledger_verification();
+            let Some(expected) = last else {
+                return if verified.count() == 0 && tag == &[0u8; 32] {
+                    Ok(0)
+                } else {
+                    Err(Error::Receipt)
+                };
+            };
+            let end = verified.last().ok_or(Error::Receipt)?.get();
+            if verified.first().map(|v| v.get()) != Some(start) || end > expected {
+                return Err(Error::Receipt);
+            }
+            if end == expected {
+                if verified.tail_tag().as_ref().map(|v| v.as_bytes()) != Some(tag) {
+                    return Err(Error::Receipt);
+                }
+                return expected.checked_add(1).ok_or(Error::Receipt);
+            }
+            start = end.checked_add(1).ok_or(Error::Receipt)?;
+        }
+    }
     #[cfg(feature = "integration")]
     pub fn inject_next_fault(&self, fault: rss_audit_postgres::PgFault) {
         self.adapter.inject_next_fault(fault);

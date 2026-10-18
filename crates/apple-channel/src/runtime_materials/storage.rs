@@ -74,7 +74,7 @@ pub(super) async fn material(
 #[allow(clippy::too_many_arguments)]
 pub(super) async fn insert(
     c: &mut PgConnection,
-    app: &HttpState,
+    protection: &rss_mdm_native_protection::Protector,
     tenant: &str,
     purpose: Purpose,
     revision: i64,
@@ -93,8 +93,7 @@ pub(super) async fn insert(
     if count >= 64 {
         return Err(Error::Conflict);
     }
-    let sealed = app
-        .protection
+    let sealed = protection
         .seal_bytes(&key.private, &aad(tenant, purpose, revision, key_id)?)
         .map_err(|_| Error::Conflict)?;
     sqlx::query("INSERT INTO mdm_apple_runtime.versions(tenant_id,purpose,revision,key_id,public_digest,private_key,csr,certificate,certificate_digest,topic,expires_at) VALUES($1::uuid,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)")
@@ -161,4 +160,26 @@ pub(super) async fn receipt(
     id: Uuid,
 ) -> Result<Option<Value>, Error> {
     sqlx::query_scalar("SELECT receipt FROM mdm_apple_runtime.operations WHERE tenant_id=$1::uuid AND operation_id=$2").bind(tenant).bind(id).fetch_optional(c).await.map_err(db)
+}
+
+pub(super) async fn bind_account(
+    c: &mut PgConnection,
+    tenant: &str,
+    alias: &str,
+    revision: i64,
+) -> Result<(), Error> {
+    if alias.is_empty()
+        || alias.len() > 128
+        || !alias
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b".-_".contains(&b))
+    {
+        return Err(Error::Malformed);
+    }
+    let admissible:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_apple_runtime.versions WHERE tenant_id=$1::uuid AND purpose='managed_account' AND revision=$3 AND NOT revoked AND certificate IS NOT NULL) AND ((SELECT count(*) FROM mdm_apple_runtime.account_bindings WHERE tenant_id=$1::uuid)<16 OR EXISTS(SELECT 1 FROM mdm_apple_runtime.account_bindings WHERE tenant_id=$1::uuid AND alias=$2))").bind(tenant).bind(alias).bind(revision).fetch_one(&mut *c).await.map_err(db)?;
+    if !admissible {
+        return Err(Error::Conflict);
+    }
+    sqlx::query("INSERT INTO mdm_apple_runtime.account_bindings(tenant_id,alias,revision) VALUES($1::uuid,$2,$3) ON CONFLICT(tenant_id,alias) DO UPDATE SET revision=excluded.revision").bind(tenant).bind(alias).bind(revision).execute(c).await.map_err(db)?;
+    Ok(())
 }
