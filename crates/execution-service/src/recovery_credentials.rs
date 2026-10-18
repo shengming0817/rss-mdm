@@ -109,6 +109,15 @@ impl ExecutionService {
                     if proof.tenant_id() != service.tenant.to_string() {
                         return Err(Error::Forbidden.into());
                     }
+                    rss_reconcile_postgres::messaging::wake_in(
+                        tx,
+                        &crate::service::target(service.tenant, device),
+                        (),
+                        |_, _| Box::pin(async { Ok(()) }),
+                    )
+                    .await?;
+                    crate::worker_wake::notify_in(tx, crate::worker_wake::Work::CommandRecovery)
+                        .await?;
                     let mut permissions = vec![Permission::SecurityOperate];
                     if matches!(input.action, Action::ConfigureFilevault) {
                         permissions.push(Permission::ConfigurationWrite);

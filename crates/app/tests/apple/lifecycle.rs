@@ -160,6 +160,12 @@ impl Peer {
     pub async fn next(&self, kind: &str) -> Result<(Uuid, plist::Dictionary)> {
         command(&self.next_bytes(kind).await?, kind)
     }
+    pub async fn next_security(&self) -> Result<(Uuid, plist::Dictionary)> {
+        command(
+            &self.next_bytes_mode("SecurityInfo", true).await?,
+            "SecurityInfo",
+        )
+    }
     pub async fn next_collection(&self) -> Result<(Uuid, plist::Dictionary)> {
         command(
             &self.next_bytes_mode("DeviceInformation", true).await?,

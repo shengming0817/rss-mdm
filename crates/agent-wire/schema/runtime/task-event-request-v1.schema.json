@@ -136,6 +136,11 @@
       "description": "Independent native verification of a fenced mutation, after its local execution has stopped.",
       "oneOf": [
         {
+          "const": "not_attempted",
+          "description": "Protected journal proves no OS mutation was issued, and the original execution is stopped.\nThis does not claim that any password was verified or that an OS change was rolled back.",
+          "type": "string"
+        },
+        {
           "const": "unchanged",
           "description": "Original target state verified unchanged; no mutation can still execute.",
           "type": "string"

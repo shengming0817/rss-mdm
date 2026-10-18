@@ -17,7 +17,7 @@ async fn credential_offer_start_escrow_and_result_keep_secrets_out_of_task_histo
         let context=crate::test_support::software_execution::context(crate::test_support::software_execution::Platform::Windows);
         let registration=crate::test_support::agent::seed_profile(&fixture.base,fixture.execution.clone(),case_credential(),case_device_id(),json!({"capabilities":["inventory.collect.v1","task.execute.v1","credentials.windows.v1"],"platform":"windows","architecture":"x86_64","executionContext":context})).await?;
         let device=registration["deviceId"].as_str().unwrap();
-        fixture.grants.extend(identity::device_grants(Some(device),&["security_operate","credentials"])?);
+        fixture.grants.extend(identity::device_grants(None,&["security_operate","credentials"])?);
         identity::set_grants(case_tenant(),&fixture.author_id,fixture.grants.clone()).await?;
         fixture.scope(case_task_scope(),json!([{"kind":"device","id":device}])).await?;
         let policy=Uuid::new_v4();
@@ -1624,6 +1624,21 @@ fn credential_envelope(
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 #[ignore = "make t2 MODULE=execution.agent.delivery"]
 async fn credential_unknown_without_escrow_recovers_after_server_restart() -> Result<()> {
+    recover_unknown_after_restart(rss_mdm_agent_wire::runtime::CredentialRecoveryOutcome::Applied)
+        .await
+}
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+#[ignore = "make t2 MODULE=execution.agent.delivery"]
+async fn credential_unknown_without_os_attempt_can_settle_without_inventing_a_password()
+-> Result<()> {
+    recover_unknown_after_restart(
+        rss_mdm_agent_wire::runtime::CredentialRecoveryOutcome::NotAttempted,
+    )
+    .await
+}
+async fn recover_unknown_after_restart(
+    effect: rss_mdm_agent_wire::runtime::CredentialRecoveryOutcome,
+) -> Result<()> {
     use rss_mdm_agent_wire::runtime as wire;
     let mut f = Fixture::new().await?;
     let resources = std::mem::take(&mut f.resources);
@@ -1633,7 +1648,7 @@ async fn credential_unknown_without_escrow_recovers_after_server_restart() -> Re
     let sid = "S-1-5-21-101-202-303-500";
     let original=resources.finish(async{
         crate::test_support::agent::seed_profile(&f.base,f.execution.clone(),case_credential(),case_device_id(),json!({"capabilities":["inventory.collect.v1","task.execute.v1","credentials.windows.v1"],"platform":"windows","architecture":"x86_64","executionContext":context})).await?;
-        f.grants.extend(identity::device_grants(Some(case_device_id()),&["account_write"])?);
+        f.grants.extend(identity::device_grants(None,&["account_write"])?);
         identity::set_grants(case_tenant(),&f.author_id,f.grants.clone()).await?;
         f.scope(case_task_scope(),json!([{"kind":"device","id":case_device_id()}])).await?;
         credential_policy(&mut f,json!({"kind":"rotate_local_administrator","sid":sid})).await?;
@@ -1650,10 +1665,8 @@ async fn credential_unknown_without_escrow_recovers_after_server_restart() -> Re
     let resources = std::mem::take(&mut f.resources);
     resources
         .finish(async {
-            f.grants.extend(identity::device_grants(
-                Some(case_device_id()),
-                &["account_write"],
-            )?);
+            f.grants
+                .extend(identity::device_grants(None, &["account_write"])?);
             identity::set_grants(case_tenant(), &f.author_id, f.grants.clone()).await?;
             let mut c = sqlx::PgConnection::connect_with(&crate::device::test_support::options(
                 "postgres",
@@ -1695,35 +1708,46 @@ async fn credential_unknown_without_escrow_recovers_after_server_restart() -> Re
                 ensure!(response.0 == StatusCode::OK, "verify start {response:?}");
             }
             let subject = wire::CredentialSubject::LocalAdministrator { sid: sid.into() };
-            let envelope =
-                credential_envelope(&task, subject.clone(), b"persisted-before-os-change-2789")?;
-            let response = credential_event(
-                &f,
-                &context,
-                &task,
-                serde_json::to_value(wire::TaskEvent::CredentialEscrow(wire::CredentialEscrow {
-                    definition_digest: task.definition_digest,
-                    materials: vec![envelope],
-                }))?,
-            )
-            .await?;
-            ensure!(
-                response.0 == StatusCode::OK,
-                "recovery escrow: {response:?}"
-            );
+            if effect == wire::CredentialRecoveryOutcome::Applied {
+                let envelope = credential_envelope(
+                    &task,
+                    subject.clone(),
+                    b"persisted-before-os-change-2789",
+                )?;
+                let response = credential_event(
+                    &f,
+                    &context,
+                    &task,
+                    serde_json::to_value(wire::TaskEvent::CredentialEscrow(
+                        wire::CredentialEscrow {
+                            definition_digest: task.definition_digest,
+                            materials: vec![envelope],
+                        },
+                    ))?,
+                )
+                .await?;
+                ensure!(
+                    response.0 == StatusCode::OK,
+                    "recovery escrow: {response:?}"
+                );
+            }
             let response = credential_event(
                 &f,
                 &context,
                 &task,
                 serde_json::to_value(wire::TaskEvent::CredentialResult(wire::CredentialResult {
-                    recovery: Some(wire::CredentialRecoveryOutcome::Applied),
+                    recovery: Some(effect),
                     definition_digest: task.definition_digest,
                     complete: true,
                     failure: None,
-                    items: vec![wire::CredentialItemResult {
-                        subject,
-                        outcome: wire::CredentialOutcome::Verified,
-                    }],
+                    items: if effect == wire::CredentialRecoveryOutcome::Applied {
+                        vec![wire::CredentialItemResult {
+                            subject,
+                            outcome: wire::CredentialOutcome::Verified,
+                        }]
+                    } else {
+                        vec![]
+                    },
                 }))?,
             )
             .await?;

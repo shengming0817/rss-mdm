@@ -574,7 +574,7 @@ pub async fn agent_guard_in(
     registration: Uuid,
     generation: i64,
 ) -> Result<Option<(Uuid, Uuid)>, Error> {
-    sqlx::query("SELECT task,attempt FROM mdm_recovery.agent_guards WHERE tenant_id=$1 AND registration=$2 AND generation=$3 FOR UPDATE").bind(tenant).bind(registration).bind(generation).fetch_optional(c).await?.map(|r|Ok((r.try_get("task")?,r.try_get("attempt")?))).transpose()
+    sqlx::query("SELECT task,attempt FROM mdm_recovery.agent_guards WHERE tenant_id=$1 AND registration=$2 AND generation=$3").bind(tenant).bind(registration).bind(generation).fetch_optional(c).await?.map(|r|Ok((r.try_get("task")?,r.try_get("attempt")?))).transpose()
 }
 /// After independent platform verification and original execution fencing, resolve a candidate
 /// or restore the verified predecessor. Invalidated versions can never be resurrected.
@@ -645,14 +645,12 @@ pub async fn recovery_secret_in(
         if let (Some(key), Some(sealed)) = (
             r.try_get::<Option<String>, _>("key_id")?,
             r.try_get::<Option<Vec<u8>>, _>("sealed")?,
+        ) && bool::from(
+            keys.open(&key, &coordinates, &sealed)?
+                .expose()
+                .ct_eq(secret),
         ) {
-            if bool::from(
-                keys.open(&key, &coordinates, &sealed)?
-                    .expose()
-                    .ct_eq(secret),
-            ) {
-                return Ok(coordinates);
-            }
+            return Ok(coordinates);
         }
     }
     let coordinates = reserve_in(c, tenant, binding, original, revision).await?;

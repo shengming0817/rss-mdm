@@ -44,7 +44,7 @@ impl ExecutionService {
         };
         let audit = RequestAudit::new(self.tenant.to_string(), "recovery_credential_maintenance");
         audit.identify_service("recovery-credentials");
-        transaction::run(&self.audit_store,&self.runtime,self.tenant,&audit,(self,protection,&audit),|ctx,tx|Box::pin(async move{
+        let result=transaction::run(&self.audit_store,&self.runtime,self.tenant,&audit,(self,protection,&audit),|ctx,tx|Box::pin(async move{
             let (service,protection,audit)=*ctx;
             let tenant=checked_input(Uuid::parse_str(&service.tenant.to_string()))?;
             let keys=protection.keys.clone();
@@ -53,29 +53,32 @@ impl ExecutionService {
             let mut cleared=Vec::new();
             let mut purged=Vec::new();
             let mut examined=Vec::new();
+            let mut remaining_inputs=100;
             for material in expired{
-                if purged.len()>=100{break}
+                if remaining_inputs==0{break}
                 let registration=material.binding.registration;
                 let id=material.id;let version=material.version;
                 tx.with_connection(move|c|Box::pin(async move{Ok(materials::cleanup_visited_in(c,tenant,id,version).await)})).await?.map_err(crate::recovery_credentials::error)?;
                 examined.push((id,version));
                 let ids=tx.with_connection(move|c|Box::pin(async move{Ok(materials::input_copies_in(c,tenant,registration).await)})).await?.map_err(crate::recovery_credentials::error)?;
-                for id in ids.into_iter().take(100-purged.len()){
+                for id in ids.into_iter().take(remaining_inputs){
+                    remaining_inputs-=1;
                     let mut op=storage::load(tx,&service.protection,id).await?;
-                    if !service.required_command(tx,&op).await?.status().is_terminal(){continue}
+                    let terminal=service.required_command(tx,&op).await?.status().is_terminal();
                     if let Task::Macos{request:rss_mdm_apple_mdm::native::request::Request::Command{command}}=&mut op.request.task{
                         for key in ["PIN","Password","CurrentPassword","NewPassword","FileVaultUnlock"]{command.fields.0.remove(key);}
                     }
                     let (_,sealed)=input_storage::seal(&service.protection,service.tenant,&input_storage::Identity{operation:id,device:&op.device,registration:op.registration,generation:op.registration_generation},&op.request)?;
                     let apple=service.apple_results.clone();
-                    tx.with_connection(move|c|Box::pin(async move{
-                        let result=apple.purge_credential_inputs(c,tenant.to_string(),id).await;
-                        if let Err(e)=result{return Ok(Err(e));}
+                    let purged_input=tx.with_connection(move|c|Box::pin(async move{
+                        match apple.purge_credential_inputs(c,tenant.to_string(),id,terminal).await {
+                            Err(e)=>return Ok(Err(e)),Ok(false)=>return Ok(Ok(false)),Ok(true)=>{}
+                        }
                         sqlx::query("UPDATE mdm_commands.operations SET request=$3 WHERE tenant_id=$1 AND id=$2").bind(tenant).bind(id).bind(sealed).execute(&mut *c).await?;
                         materials::input_purged_in(c,tenant,id).await.map_err(|_|sqlx::Error::Protocol("credential maintenance unavailable".into()))?;
-                        Ok(Ok(()))
+                        Ok(Ok(true))
                     })).await?.map_err(Error::from)?;
-                    purged.push(id);
+                    if purged_input {purged.push(id);}
                 }
                 let remaining=tx.with_connection(move|c|Box::pin(async move{Ok(materials::inputs_remain_in(c,tenant,registration).await)})).await?.map_err(crate::recovery_credentials::error)?;
                 if remaining{continue}
@@ -89,6 +92,13 @@ impl ExecutionService {
                 service.audit_store.append_in(tx,&fact,false).await?;
             }
             Ok(())
-        })).await
+        })).await;
+        audit.finalize(
+            result
+                .as_ref()
+                .err()
+                .map(|_| rss_mdm_audit_integration::FailureReason::Transaction),
+        );
+        result
     }
 }

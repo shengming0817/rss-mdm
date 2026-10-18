@@ -5,6 +5,47 @@
       "oneOf": [
         {
           "additionalProperties": false,
+          "description": "Native Windows credential management on the existing Agent schedule.",
+          "properties": {
+            "architecture": {
+              "$ref": "#/$defs/Architecture",
+              "description": "Required processor architecture."
+            },
+            "frequency": {
+              "$ref": "#/$defs/Frequency",
+              "description": "Existing execution-history rule."
+            },
+            "kind": {
+              "const": "credential",
+              "type": "string"
+            },
+            "operation": {
+              "$ref": "#/$defs/CredentialOperation",
+              "description": "Exact native operation and stable target identity."
+            },
+            "runLifetimeSeconds": {
+              "description": "Original task lifetime, including offline recovery.",
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "schedule": {
+              "$ref": "#/$defs/Schedule",
+              "description": "Existing calendar or explicit trigger."
+            }
+          },
+          "required": [
+            "kind",
+            "operation",
+            "architecture",
+            "schedule",
+            "frequency",
+            "runLifetimeSeconds"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
           "description": "A side-effecting or collection action admitted on Agent check-in.",
           "properties": {
             "frequency": {
@@ -394,6 +435,113 @@
           },
           "required": [
             "action"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "CredentialOperation": {
+      "description": "Product-owned native credential intent; scheduling remains ordinary Policy behavior.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "description": "Collect system and fixed-volume recovery protectors.",
+          "properties": {
+            "kind": {
+              "const": "collect_bitlocker",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Verify an existing protector without creating or deleting one.",
+          "properties": {
+            "kind": {
+              "const": "verify_bitlocker",
+              "type": "string"
+            },
+            "protector": {
+              "description": "Exact existing protector.",
+              "format": "uuid",
+              "type": "string"
+            },
+            "volume": {
+              "description": "Stable volume DeviceID.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "volume",
+            "protector"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Rotate precisely one existing protector.",
+          "properties": {
+            "kind": {
+              "const": "rotate_bitlocker",
+              "type": "string"
+            },
+            "protector": {
+              "description": "Exact protector ID.",
+              "format": "uuid",
+              "type": "string"
+            },
+            "volume": {
+              "description": "Stable volume ID.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "volume",
+            "protector"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Reset the RSS-owned local administrator password.",
+          "properties": {
+            "kind": {
+              "const": "rotate_local_administrator",
+              "type": "string"
+            },
+            "sid": {
+              "description": "Exact Windows account SID.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "sid"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Verify the locally retained RSS-managed password.",
+          "properties": {
+            "kind": {
+              "const": "verify_local_administrator",
+              "type": "string"
+            },
+            "sid": {
+              "description": "Exact Windows account SID.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "sid"
           ],
           "type": "object"
         }

@@ -311,12 +311,10 @@ impl ExecutionService {
             operation,
             ..
         } = &authority
-        {
-            if (*expected_registration, *expected_generation, *operation)
+            && (*expected_registration, *expected_generation, *operation)
                 != (registration, registration_generation, input.operation_id)
-            {
-                return Err(Error::Conflict.into());
-            }
+        {
+            return Err(Error::Conflict.into());
         }
         if matches!(authority, ExecutionAuthority::DeviceControl { .. })
             && !authority.control_matches(input, registration, registration_generation)?

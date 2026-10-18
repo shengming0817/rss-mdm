@@ -52,3 +52,30 @@ fn rebuilt_v1_rejects_retired_majors_and_historical_v1_shapes() {
         assert!(serde_json::from_value::<runtime::Capability>(json!(capability)).is_err());
     }
 }
+
+#[test]
+fn credential_recovery_never_invents_a_verified_material_for_an_unattempted_mutation() {
+    let mut result = runtime::CredentialResult {
+        recovery: None,
+        failure: None,
+        definition_digest: [1; 32],
+        complete: true,
+        items: vec![],
+    };
+    assert!(result.validate().is_err());
+    result.recovery = Some(runtime::CredentialRecoveryOutcome::NotAttempted);
+    assert!(result.validate().is_ok());
+    result.complete = false;
+    assert!(result.validate().is_err());
+    result.complete = true;
+    result.failure = Some(runtime::CredentialFailure::RecoveryState);
+    assert!(result.validate().is_err());
+    result.failure = None;
+    result.items.push(runtime::CredentialItemResult {
+        subject: runtime::CredentialSubject::LocalAdministrator {
+            sid: "S-1-5-21-1-2-3-500".into(),
+        },
+        outcome: runtime::CredentialOutcome::Verified,
+    });
+    assert!(result.validate().is_err());
+}

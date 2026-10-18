@@ -508,7 +508,35 @@ pub async fn finish(
                         }
                     }
                     if let Some(recovery) = &task.recovery {
-                        if success
+                        if value.recovery == Some(wire::CredentialRecoveryOutcome::NotAttempted) {
+                            if !materials::agent_materials_in(
+                                c,
+                                task.tenant_id,
+                                recovery.task_id,
+                                recovery.attempt_id,
+                            )
+                            .await?
+                            .is_empty()
+                                || materials::agent_guard_in(
+                                    c,
+                                    task.tenant_id,
+                                    task.registration_id,
+                                    task.generation as i64,
+                                )
+                                .await?
+                                    != Some((recovery.task_id, recovery.attempt_id))
+                                || materials::finish_agent_in(c, task.tenant_id, recovery.task_id)
+                                    .await?
+                                    != Some(recovery.attempt_id)
+                            {
+                                return Err(vault::Error::Conflict);
+                            }
+                            recovered.push((
+                                recovery.task_id,
+                                recovery.attempt_id,
+                                wire::CredentialRecoveryOutcome::NotAttempted,
+                            ));
+                        } else if success
                             && value.items.len() == 1
                             && value.items[0].outcome == wire::CredentialOutcome::Verified
                         {

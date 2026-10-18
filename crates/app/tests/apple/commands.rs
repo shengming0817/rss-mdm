@@ -106,8 +106,7 @@ async fn recovery_material_is_escrowed_without_leaking_into_native_results() -> 
     let mut f = Fixture::start().await?;
     let (peer, device) = f.ready_local_peer().await?;
     f.native_context().await?;
-    f.grant_native_actions(&["security_operate", "credentials"])
-        .await?;
+    f.grant_native_actions(&["security_operate"]).await?;
     let detail = f
         .browser
         .call(
@@ -127,7 +126,7 @@ async fn recovery_material_is_escrowed_without_leaking_into_native_results() -> 
         accepted.0 == StatusCode::ACCEPTED,
         "credential create: {accepted:?}"
     );
-    let (attempt, _) = peer.next("SecurityInfo").await?;
+    let (attempt, _) = peer.next_security().await?;
     let protection = f.app.execution.recovery_credentials().unwrap();
     let mut recipients = Stack::new()?;
     recipients.push(X509::from_der(
@@ -255,12 +254,11 @@ async fn recovery_material_is_escrowed_without_leaking_into_native_results() -> 
         Some(("PasswordVerified", true.into())),
     )
     .await?;
-    // A live profile command prevents final ciphertext deletion, but purging terminal copies
+    // A live verification command prevents final ciphertext deletion, but purging terminal copies
     // must still commit an audit fact and remove plaintext from both protected input stores.
-    f.grant_native_actions(&["security_operate", "credentials", "configuration_write"])
-        .await?;
+    f.grant_native_actions(&["security_operate"]).await?;
     let pending = Uuid::new_v4();
-    let accepted=f.browser.call(&f.router,Method::POST,&format!("{path}/operations"),Some(json!({"operationId":pending,"registration":registration,"generation":generation,"deadline":f.app.clock.unix_seconds()?+300,"action":{"kind":"configure_filevault"}}))).await?;
+    let accepted=f.browser.call(&f.router,Method::POST,&format!("{path}/operations"),Some(json!({"operationId":pending,"registration":registration,"generation":generation,"deadline":f.app.clock.unix_seconds()?+300,"action":{"kind":"verify_recovery_lock","material":{"id":lock["id"],"version":3}}}))).await?;
     ensure!(accepted.0 == StatusCode::ACCEPTED, "profile {accepted:?}");
     let mut pg =
         sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?)
@@ -322,8 +320,13 @@ async fn recovery_material_is_escrowed_without_leaking_into_native_results() -> 
         let plain = key.open_bytes(&row.try_get::<Vec<u8>, _>("request")?, &aad)?;
         ensure!(!String::from_utf8_lossy(plain.expose()).contains(&password));
     }
-    let (attempt, _) = peer.next("InstallProfile").await?;
-    peer.manage("Acknowledged", Some(attempt), None).await?;
+    let (attempt, _) = peer.next("VerifyRecoveryLock").await?;
+    peer.manage(
+        "Acknowledged",
+        Some(attempt),
+        Some(("PasswordVerified", true.into())),
+    )
+    .await?;
     f.app.execution.maintain_recovery_credentials().await?;
     let erased:bool=sqlx::query_scalar("SELECT sealed IS NULL AND key_id IS NULL FROM mdm_recovery.versions WHERE tenant_id=$1::uuid AND entry=$2 AND version=1").bind(case_tenant()).bind(Uuid::parse_str(lock["id"].as_str().unwrap())?).fetch_one(&mut pg).await?;
     ensure!(erased);

@@ -222,13 +222,14 @@ pub trait ApplePush: Send + Sync {
     ) -> Pending<'a, bool>;
 }
 pub trait AppleResults: Send + Sync {
-    /// Remove secret input copies after the original operation has permanently settled.
+    /// Purge input copies only after execution delivery settles and the material owner permits expiry.
     fn purge_credential_inputs<'a>(
         &'a self,
         c: &'a mut PgConnection,
         tenant: String,
         operation: Uuid,
-    ) -> Pending<'a, ()>;
+        terminal: bool,
+    ) -> Pending<'a, bool>;
     /// Current-generation declaration keys, locked through the caller's evidence read.
     fn declaration_page<'a>(
         &'a self,

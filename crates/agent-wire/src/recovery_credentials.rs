@@ -137,6 +137,9 @@ pub struct CredentialRecovery {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum CredentialRecoveryOutcome {
+    /// Protected journal proves no OS mutation was issued, and the original execution is stopped.
+    /// This does not claim that any password was verified or that an OS change was rolled back.
+    NotAttempted,
     /// Original target state verified unchanged; no mutation can still execute.
     Unchanged,
     /// Persisted candidate verified applied; replaced protector cleanup completed.
@@ -200,18 +203,17 @@ impl CredentialTaskSpec {
     /// Validate coordinates and capability without granting execution authority.
     pub fn validate(&self) -> Result<(), WireError> {
         self.operation.validate()?;
-        if let Some(recovery) = &self.recovery {
-            if recovery.task_id.is_nil()
+        if let Some(recovery) = &self.recovery
+            && (recovery.task_id.is_nil()
                 || recovery.attempt_id.is_nil()
                 || recovery.task_id == self.task_id
                 || !matches!(
                     self.operation,
                     CredentialOperation::VerifyBitlocker { .. }
                         | CredentialOperation::VerifyLocalAdministrator { .. }
-                )
-            {
-                return Err(WireError::InvalidValue);
-            }
+                ))
+        {
+            return Err(WireError::InvalidValue);
         }
         self.authorization.validate(self.tenant_id)?;
         if self.wire_version != WIRE_VERSION
@@ -418,7 +420,11 @@ pub struct CredentialItemResult {
 impl CredentialResult {
     /// Reject duplicate or empty successful result collections.
     pub fn validate(&self) -> Result<(), WireError> {
-        if (self.items.is_empty() && self.failure.is_none()) || self.items.len() > 512 {
+        let not_attempted = self.recovery == Some(CredentialRecoveryOutcome::NotAttempted);
+        if (not_attempted && (!self.complete || self.failure.is_some() || !self.items.is_empty()))
+            || (self.items.is_empty() && self.failure.is_none() && !not_attempted)
+            || self.items.len() > 512
+        {
             return Err(WireError::InvalidValue);
         }
         let mut seen = std::collections::BTreeSet::new();

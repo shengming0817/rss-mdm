@@ -166,7 +166,16 @@ pub(crate) async fn purge_inputs(
     key: &rss_mdm_native_protection::Protector,
     tenant: &str,
     operation: uuid::Uuid,
-) -> Result<(), Error> {
+    terminal: bool,
+) -> Result<bool, Error> {
+    // ACK settles delivery, not recovery validity. Once the material owner permits expiry,
+    // an accepted execute receipt proves these inputs cannot be dispatched again.
+    if !terminal {
+        let settled:bool=sqlx::query_scalar("SELECT coalesce((SELECT accepted AND state IN('acknowledged','error') FROM mdm_apple.attempts WHERE tenant_id=$1::uuid AND operation=$2 AND phase='execute' ORDER BY ordinal DESC LIMIT 1),false)").bind(tenant).bind(operation).fetch_one(&mut *c).await.map_err(crate::database::db)?;
+        if !settled {
+            return Ok(false);
+        }
+    }
     let rows=sqlx::query("SELECT id,registration,generation,request FROM mdm_apple.attempts WHERE tenant_id=$1::uuid AND operation=$2 FOR UPDATE")
         .bind(tenant).bind(operation).fetch_all(&mut *c).await.map_err(crate::database::db)?;
     for row in rows {
@@ -203,5 +212,5 @@ pub(crate) async fn purge_inputs(
             .await
             .map_err(crate::database::db)?;
     }
-    Ok(())
+    Ok(true)
 }

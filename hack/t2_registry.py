@@ -2034,3 +2034,5 @@ for name, selector in (
         db_mode='reuse', scope='tenant',
         actors=tuple(dict.fromkeys((*module.actors, ('tenant', 'other')))),
         fixtures=tuple(dict.fromkeys((*module.fixtures, 'scep' if name == 'apple.onboarding' else 'ca_windows'))))))
+
+consume(('crates/apple-channel/src/recovery_credentials.rs',), 'apple.commands')

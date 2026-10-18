@@ -86,7 +86,7 @@ async fn login_and_device_permission_are_sufficient_over_real_http() -> Result<(
             let router = route(&authority, ring.clone())?;
             let device = case::name("recovery-device");
             let secret = "recovery-http-canary-2789";
-            let coordinates = seed(&authority, &ring, &device, secret).await?;
+            let coordinates = seed(&authority, &ring, device, secret).await?;
             let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
             let address = listener.local_addr()?;
             let app = router.clone();
@@ -105,13 +105,13 @@ async fn login_and_device_permission_are_sufficient_over_real_http() -> Result<(
                 case_tenant(),
                 &actor,
                 identity::device_grants(
-                    Some(&device),
+                    Some(device),
                     &["inventory_read", "credentials", "account_write"],
                 )?,
             )
             .await?;
             identity::age_prepared_admin_session()?;
-            let url = secret_url(&device, &coordinates);
+            let url = secret_url(device, &coordinates);
             let (status, value) = admin.call(&router, Method::GET, &url, None).await?;
             ensure!(
                 status == StatusCode::OK,
@@ -164,7 +164,7 @@ async fn encrypted_versions_replay_rewrap_and_registration_retirement() -> Resul
     let resources = std::mem::take(&mut authority.resources);
     resources.finish(async{
         let first=keys("first",true);let device=case::name("recovery-storage");let secret="storage-recovery-canary-2789";
-        let coordinates=seed(&authority,&first,&device,secret).await?;
+        let coordinates=seed(&authority,&first,device,secret).await?;
         let mut tx=begin(&authority).await?;
         let row=sqlx::query("SELECT operation,sealed FROM mdm_recovery.versions WHERE tenant_id=$1 AND entry=$2 AND version=1").bind(coordinates.tenant).bind(coordinates.material).fetch_one(&mut *tx).await?;
         let operation:Uuid=row.try_get("operation")?;let sealed:Vec<u8>=row.try_get("sealed")?;
@@ -194,7 +194,7 @@ async fn postgres_backup_restores_material_only_with_the_correct_key() -> Result
     let resources = std::mem::take(&mut authority.resources);
     resources.finish(async{
         let ring=keys("first",true);let device=case::name("recovery-backup");
-        let secret="backup-recovery-canary-2789";let c=seed(&authority,&ring,&device,secret).await?;
+        let secret="backup-recovery-canary-2789";let c=seed(&authority,&ring,device,secret).await?;
         let config:Config=serde_json::from_value(authority.base.clone())?;
         let container=std::env::var("MDM_TEST_PG_CONTAINER")?;
         let dump=command(&["exec","-i",&container,"pg_dump","-U","postgres","-d",&config.access_database.name,"--data-only","--schema=mdm_recovery","--disable-triggers","--no-owner","--no-privileges"],None)?;
@@ -220,7 +220,7 @@ async fn unknown_candidates_block_rotation_and_retention_preserves_unresolved_ma
     let resources = std::mem::take(&mut authority.resources);
     resources.finish(async{
         let ring=keys("first",true);let device=case::name("recovery-retention");
-        let first=seed(&authority,&ring,&device,"first-managed-password").await?;
+        let first=seed(&authority,&ring,device,"first-managed-password").await?;
         let mut tx=begin(&authority).await?;
         let operation=Uuid::new_v4();
         let second=storage::reserve_in(&mut tx,first.tenant,&first.binding,operation,1).await?;
@@ -256,8 +256,8 @@ async fn retention_sweep_skips_protected_registrations_and_advances_past_blocked
     let resources = std::mem::take(&mut authority.resources);
     resources.finish(async {
         let ring=keys("first",true);
-        let a=seed(&authority,&ring,&case::name("retention-held"),"first-password").await?;
-        let b=seed(&authority,&ring,&case::name("retention-free"),"other-password").await?;
+        let a=seed(&authority,&ring,case::name("retention-held"),"first-password").await?;
+        let b=seed(&authority,&ring,case::name("retention-free"),"other-password").await?;
         let mut tx=begin(&authority).await?;
         for revision in 1..=100 {
             let operation=Uuid::new_v4();

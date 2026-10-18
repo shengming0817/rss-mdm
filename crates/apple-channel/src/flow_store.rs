@@ -300,11 +300,18 @@ impl channels::AppleResults for Store {
         c: &'a mut PgConnection,
         tenant: String,
         operation: Uuid,
-    ) -> Pending<'a, ()> {
+        terminal: bool,
+    ) -> Pending<'a, bool> {
         Box::pin(async move {
-            crate::recovery_credentials::purge_inputs(c, &self.protection, &tenant, operation)
-                .await
-                .map_err(Into::into)
+            crate::recovery_credentials::purge_inputs(
+                c,
+                &self.protection,
+                &tenant,
+                operation,
+                terminal,
+            )
+            .await
+            .map_err(Into::into)
         })
     }
 
