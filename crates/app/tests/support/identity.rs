@@ -165,7 +165,7 @@ async fn prepare_environment(root: &std::path::Path) -> Result<()> {
         }))?,
     )?;
     let value: Config = serde_json::from_slice(&std::fs::read(root.join("runtime.json"))?)?;
-    let access = crate::Database::connect(value.access_database.options()?).await?;
+    let access = crate::Database::connect(value.access_options()?).await?;
     let audit = access.audit_store(&value.audit).await?;
     let result = crate::authorization::store::initialize_authorization(
         &audit,
@@ -524,8 +524,7 @@ async fn set_grants_in(
     let (identity, identity_resources) = identity(tenant).await?;
     identity_resources
         .finish(async {
-            let access =
-                crate::Database::connect(config(tenant)?.access_database.options()?).await?;
+            let access = crate::Database::connect(config(tenant)?.access_options()?).await?;
             let principal = crate::authorization::context::AuthorizedPrincipal::new(
                 identity
                     .authority

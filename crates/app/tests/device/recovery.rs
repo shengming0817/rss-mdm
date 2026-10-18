@@ -107,6 +107,11 @@ async fn revocation_and_replacement_unknown_commit() -> anyhow::Result<()> {
             .await?,
         receipt
     );
+    let emitted: i64 = sqlx::query_scalar("SELECT count(*) FROM mdm_webhook.events e JOIN rss_transactional_messaging.outbox o ON(o.tenant_id,o.message_id)=(e.tenant_id,e.id::text) WHERE e.tenant_id=$1::uuid AND e.document->>'eventType'='device.retired' AND e.document->'data'->>'registrationId'=$2 AND o.domain='mdm-webhook-source'").bind(case_a()).bind(second.registration.to_string()).fetch_one(&mut root).await?;
+    assert_eq!(
+        emitted, 1,
+        "retirement/replay must append one fact and source message"
+    );
     assert!(matches!(
         restart
             .authorize_report(&newer, ReportSource::MdmWindows)

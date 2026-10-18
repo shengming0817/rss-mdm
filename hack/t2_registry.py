@@ -867,6 +867,11 @@ consume(('crates/backend-postgres-support/src/access*', 'crates/*/src/access-con
         ' '.join(name for name, module in MODULES.items() if module.build == APP and module.postgres))
 
 # Application assembly and configuration have actual product consumers.
+# Webhook-specific product risks; RSS owns transport/signature and retry conformance.
+add('webhooks.product', selectors=('webhook_tests::',), fixtures=('identity','tls'),
+    sources=('crates/webhook-service/src/*','crates/webhook-service/schema/*','crates/app/src/webhooks/*','crates/management-http/src/webhooks.rs','crates/registration-service/src/webhook.rs'),
+    tests=('crates/app/tests/webhooks.rs',), support=('hack/source_fixtures.py',))
+
 for name, module in tuple(MODULES.items()):
     if module.build == APP:
         MODULES[name] = replace(MODULES[name], support_inputs=(*MODULES[name].support_inputs,'crates/app/tests/fixtures/error.rs'))
@@ -2059,3 +2064,8 @@ consume(('crates/execution-service/src/unmanage.rs', 'crates/execution-service/s
 
 consume(('crates/registration-service/src/lifecycle.rs',),
         'planning.onboarding device.associations device.binding device.revocation agent.registration windows.management apple.identity')
+
+consume(('crates/app/schema/webhook-roles.sql',), 'webhooks.product installation.migration catalog.contract')
+consume(('crates/registration-service/src/agent/activation.rs','crates/registration-service/src/device/store.rs','crates/registration-service/src/device/linked.rs','crates/execution-service/src/actions/storage.rs','crates/inventory-service/src/compliance/evaluation.rs','crates/authorization-service/src/model.rs'), 'webhooks.product')
+
+consume_dependencies("webhooks.product", normal="ipnet rss-mdm-webhook-service rss-transactional-messaging-recovery")

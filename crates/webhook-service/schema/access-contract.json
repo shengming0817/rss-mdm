@@ -1,0 +1,87 @@
+{
+  "tables": [
+    {
+      "schema": "mdm_webhook",
+      "table": "subscriptions",
+      "read_write": true,
+      "updates": [
+        "revision",
+        "target_version",
+        "enabled",
+        "deleted",
+        "settings"
+      ],
+      "delete_policy": null
+    },
+    {
+      "schema": "mdm_webhook",
+      "table": "versions",
+      "read_write": true,
+      "updates": [
+        "retired"
+      ],
+      "delete_policy": null
+    },
+    {
+      "schema": "mdm_webhook",
+      "table": "events",
+      "read_write": true,
+      "updates": [],
+      "delete_policy": null
+    },
+    {
+      "schema": "mdm_webhook",
+      "table": "fanout",
+      "read_write": true,
+      "updates": [
+        "cursor",
+        "complete"
+      ],
+      "delete_policy": null
+    },
+    {
+      "schema": "mdm_webhook",
+      "table": "deliveries",
+      "read_write": true,
+      "updates": [
+        "attempts",
+        "last_outcome",
+        "last_stage",
+        "last_reason"
+      ],
+      "delete_policy": null
+    },
+    {
+      "schema": "mdm_webhook",
+      "table": "operations",
+      "read_write": true,
+      "updates": [],
+      "delete_policy": null
+    },
+    {
+      "schema": "mdm_webhook",
+      "table": "compliance_sources",
+      "read_write": true,
+      "updates": [
+        "cursor",
+        "complete"
+      ],
+      "delete_policy": null
+    }
+  ],
+  "functions": [
+    {
+      "name": "rss_transactional_messaging.check_execution",
+      "search_path": "search_path=pg_catalog, rss_transactional_messaging, pg_temp"
+    },
+    {
+      "name": "rss_transactional_messaging.append_outbox",
+      "search_path": "search_path=pg_catalog, rss_transactional_messaging, pg_temp"
+    }
+  ],
+  "external_relations": [
+    "rss_transactional_messaging.policy",
+    "rss_transactional_messaging.outbox"
+  ],
+  "verified_schemas": []
+}

@@ -17,6 +17,7 @@ use serde_json::Value;
 use serde_json::json;
 use std::sync::Arc;
 pub(crate) struct Assembly {
+    pub(crate) webhooks: Arc<crate::webhooks::Backend>,
     pub(crate) pki: Arc<rss_mdm_pki_service::registry::Registry>,
     pub(crate) agent_enrollment: Option<Arc<rss_mdm_registration_service::agent::Service>>,
     pub(crate) agent_pki: Option<Arc<crate::agent_pki::AgentPki>>,
@@ -179,6 +180,7 @@ pub(crate) async fn application_fixture(
             },
         )
         .await?;
+        resources.resource(fixture_routers.webhooks.clone());
         crate::test_support::pki::seed_trust(
             &access.archive_pool(),
             fixture_routers.pki.bindings(),
@@ -253,6 +255,8 @@ pub(crate) async fn from_compiled(
         protection,
         content: content_writer,
         runtime: _execution_runtime,
+        #[cfg(test)]
+            webhooks: fixture_webhooks,
     } = execution;
     let devices = Arc::new(crate::device::DeviceService::new(
         access.registration(),
@@ -362,7 +366,35 @@ pub(crate) async fn from_compiled(
             .map_err(Error::from)
         })
         .transpose()?;
+    let binding = rss_transactional_messaging::fence::ExecutionBinding::new(
+        rss_transactional_messaging::fence::StorageIdentity::new(
+            config.flow.storage.target,
+            config.flow.storage.lineage,
+        )
+        .map_err(|_| Error::Malformed)?,
+        vec![(
+            identity.tenant,
+            rss_transactional_messaging::fence::Epoch::new(config.flow.storage.epoch)
+                .map_err(|_| Error::Malformed)?,
+        )],
+    )
+    .map_err(|_| Error::Malformed)?;
+    let webhooks = crate::webhooks::Backend::open(
+        config.webhooks,
+        _execution_runtime.clone(),
+        identity.tenant,
+        audit_store.clone(),
+        clock.clone(),
+        protection.clone(),
+        binding,
+    )
+    .await?;
+    #[cfg(test)]
+    fixture_webhooks
+        .set(webhooks.clone())
+        .map_err(|_| Error::Conflict)?;
     let state = Arc::new(Assembly {
+        webhooks,
         pki,
         agent_enrollment,
         agent_pki,
@@ -535,6 +567,7 @@ pub(crate) fn from_state(
     );
     let management = rss_mdm_management_http::router(
         rss_mdm_management_http::Services {
+            webhooks: state.webhooks.clone(),
             registration_channels: Arc::new(crate::registration_channels::Channels {
                 windows: state.windows.clone(),
                 agent: state.agent_pki.clone(),
@@ -739,6 +772,7 @@ pub(crate) fn from_state(
         )
         .layer(DefaultBodyLimit::max(16384));
     crate::native::Routers {
+        webhooks: state.webhooks.clone(),
         apple_control: apple_state,
         pki: state.pki.clone(),
         agent_pki: state.agent_pki.clone(),

@@ -282,6 +282,7 @@ pub(super) fn units() -> Vec<(&'static str, &'static str)> {
             "tenant-administration-v2",
             include_str!("../../schema/tenant-administration.sql"),
         ),
+        ("webhook-v1", rss_mdm_webhook_service::INSTALL_SQL),
         (
             "channel-maintenance-history-v1",
             rss_mdm_inventory_service::CHANNEL_MAINTENANCE_SQL,

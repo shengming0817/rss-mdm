@@ -1,0 +1,189 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "mdm.webhook.event.v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "eventId",
+    "eventType",
+    "version",
+    "occurredAt",
+    "tenantId",
+    "deviceId",
+    "data"
+  ],
+  "properties": {
+    "eventId": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "eventType": {
+      "enum": [
+        "device.registered",
+        "device.retired",
+        "policy.execution.terminal",
+        "compliance.status.changed",
+        "webhook.test"
+      ]
+    },
+    "version": {
+      "const": 1
+    },
+    "occurredAt": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "tenantId": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "deviceId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 255
+    },
+    "data": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "registrationId",
+            "generation",
+            "channel",
+            "state"
+          ],
+          "properties": {
+            "kind": {
+              "const": "registration"
+            },
+            "registrationId": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "generation": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "channel": {
+              "enum": [
+                "agent",
+                "mdm"
+              ]
+            },
+            "state": {
+              "enum": [
+                "active",
+                "retired",
+                "revoked",
+                "superseded"
+              ]
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "runId",
+            "policyVersion",
+            "status",
+            "registrationId",
+            "generation"
+          ],
+          "properties": {
+            "kind": {
+              "const": "policy"
+            },
+            "runId": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "policyVersion": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "status": {
+              "enum": [
+                "succeeded",
+                "failed",
+                "cancelled",
+                "expired"
+              ]
+            },
+            "registrationId": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "generation": {
+              "type": "integer",
+              "minimum": 1
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "ruleId",
+            "ruleVersion",
+            "runId",
+            "status",
+            "reason"
+          ],
+          "properties": {
+            "kind": {
+              "const": "compliance"
+            },
+            "ruleId": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "ruleVersion": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "runId": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "status": {
+              "enum": [
+                "compliant",
+                "non_compliant",
+                "unknown",
+                "not_applicable"
+              ]
+            },
+            "reason": {
+              "enum": [
+                "platform_not_applicable",
+                "group_not_applicable",
+                "platform_unknown",
+                "group_unknown",
+                "rule_satisfied",
+                "rule_failed",
+                "facts_unknown"
+              ]
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind"
+          ],
+          "properties": {
+            "kind": {
+              "const": "test"
+            }
+          }
+        }
+      ]
+    }
+  }
+}

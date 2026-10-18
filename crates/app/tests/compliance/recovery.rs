@@ -48,12 +48,17 @@ async fn publication_terminal_page_and_audit_are_atomic() -> Result<()> {
         "INSERT INTO mdm_access.devices SELECT '{TENANT}', 'page-'||lpad(n::text,2,'0') FROM generate_series(1,31) n",
         TENANT = case_tenant()
     ))?;
-    let (_, path, _) = fixture.rule().await?;
+    let (rule, path, _) = fixture.rule().await?;
     assign(&mut browser, router, "compliance-a", 0, true).await?;
     let automation = start_automation(base).await?;
     status(&mut browser, router, "compliance-a", "non_compliant")
         .await
         .map_err(|e| anyhow::anyhow!("initial compliance publication: {e}"))?;
+    let initial = pg(&format!(
+        "SELECT current_run FROM mdm_compliance.rules WHERE tenant_id='{}' AND id='{rule}'",
+        case_tenant()
+    ))?;
+    let initial = Uuid::parse_str(initial.trim())?;
     // Publication and its terminal audit must roll back together, including the final page.
     pg(
         "CREATE SEQUENCE public.compliance_publish_attempts; GRANT USAGE ON SEQUENCE public.compliance_publish_attempts TO mdm_flow_runtime; CREATE FUNCTION public.reject_compliance_publish() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN PERFORM nextval('public.compliance_publish_attempts'); RAISE EXCEPTION 'publication fixture'; END $$; CREATE CONSTRAINT TRIGGER reject_compliance_publish AFTER UPDATE ON mdm_compliance.rules DEFERRABLE INITIALLY DEFERRED FOR EACH ROW WHEN (NEW.current_run IS DISTINCT FROM OLD.current_run) EXECUTE FUNCTION public.reject_compliance_publish()",
@@ -111,6 +116,14 @@ async fn publication_terminal_page_and_audit_are_atomic() -> Result<()> {
     ensure!(
         audit_count(|r| r.operation() == Some(task) && r.action() == "automation_completed")? == 0
     );
+    ensure!(
+        pg(&format!(
+            "SELECT count(*) FROM mdm_webhook.compliance_sources WHERE document->>'run'='{task}'"
+        ))?
+        .trim()
+            == "0",
+        "failed publication leaked a webhook source"
+    );
     pg(
         "DROP TRIGGER reject_compliance_publish ON mdm_compliance.rules; DROP FUNCTION public.reject_compliance_publish(); DROP SEQUENCE public.compliance_publish_attempts",
     )?;
@@ -140,8 +153,48 @@ async fn publication_terminal_page_and_audit_are_atomic() -> Result<()> {
     ensure!(
         audit_count(|r| r.operation() == Some(task) && r.action() == "automation_completed")? == 1
     );
+    ensure!(pg(&format!("SELECT count(*) FROM mdm_webhook.compliance_sources s JOIN rss_transactional_messaging.outbox o ON(o.tenant_id,o.message_id)=(s.tenant_id,s.id::text) WHERE s.document->>'run'='{task}' AND o.domain='mdm-webhook-source'"))?.trim()=="1", "published run must atomically append one webhook source");
     crate::test_support::stop_worker(automation).await?;
+    // Consume actual publication sources with command-runtime ACLs. The first run
+    // changes PAGE+1 devices; recomputing identical assessments must emit none.
+    let cancellation = tokio_util::sync::CancellationToken::new();
+    let mut relay = tokio::spawn(fixture.webhooks.clone().work(cancellation.clone()));
+    let derived = async {
+        tokio::time::timeout(Duration::from_secs(30),async {
+            loop {
+                if pg(&format!("SELECT count(*) FROM mdm_webhook.compliance_sources WHERE tenant_id='{}' AND document->>'run' IN('{initial}','{task}') AND complete",case_tenant()))?.trim()=="2" { return Ok::<_,anyhow::Error>(()); }
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        }).await??;
+        ensure!(pg(&format!("SELECT count(*) FROM mdm_webhook.events WHERE tenant_id='{}' AND document->>'eventType'='compliance.status.changed' AND document->'data'->>'runId'='{initial}'",case_tenant()))?.trim()=="33");
+        ensure!(pg(&format!("SELECT count(*) FROM mdm_webhook.events e JOIN mdm_compliance.results r ON(r.tenant_id,r.device)=(e.tenant_id,e.document->>'deviceId') WHERE e.tenant_id='{}' AND r.task='{initial}' AND e.document->'data'->>'runId'='{initial}' AND e.document->'data'->>'status'=r.document->>'status' AND e.document->'data'->>'reason'=r.document->>'reason'",case_tenant()))?.trim()=="33","derived assessments lost status/reason or paging");
+        ensure!(pg(&format!("SELECT count(*) FROM mdm_webhook.events WHERE tenant_id='{}' AND document->'data'->>'runId'='{task}'",case_tenant()))?.trim()=="0","unchanged publication emitted changes");
+        let config:Config=serde_json::from_value(base.clone())?;
+        let hex=|bytes:&[u8]|bytes.iter().map(|b|format!("{b:02x}")).collect::<String>();
+        let source=rss_mdm_webhook_service::events::identity(initial,"compliance-publication");
+        pg(&format!("SET LOCAL rss.storage_target='{}'; SET LOCAL rss.storage_lineage='{}'; SET LOCAL rss.execution_epoch='{}'; UPDATE rss_transactional_messaging.outbox SET status='pending',lease_token=NULL,lease_until=NULL,retry_after=clock_timestamp() WHERE tenant_id='{}' AND message_id='{source}'",hex(&config.flow.storage.target),hex(&config.flow.storage.lineage),config.flow.storage.epoch,case_tenant()))?;
+        tokio::time::timeout(Duration::from_secs(10),async {
+            loop {
+                if pg(&format!("SELECT status FROM rss_transactional_messaging.outbox WHERE tenant_id='{}' AND message_id='{source}'",case_tenant()))?.trim()=="published" { return Ok::<_,anyhow::Error>(()); }
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        }).await??;
+        ensure!(pg(&format!("SELECT count(*) FROM mdm_webhook.events WHERE tenant_id='{}' AND document->'data'->>'runId'='{initial}'",case_tenant()))?.trim()=="33","source redelivery duplicated events");
+        Ok::<_,anyhow::Error>(())
+    }.await;
+    cancellation.cancel();
+    let stopped = match tokio::time::timeout(Duration::from_secs(20), &mut relay).await {
+        Ok(Ok(result)) => result.map_err(anyhow::Error::from),
+        Ok(Err(error)) => Err(error.into()),
+        Err(_) => {
+            relay.abort();
+            let _ = relay.await;
+            Err(anyhow::anyhow!("webhook relay shutdown timed out"))
+        }
+    };
     fixture.close().await;
+    stopped?;
+    derived?;
     Ok(())
 }
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

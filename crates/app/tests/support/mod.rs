@@ -284,7 +284,7 @@ pub(crate) fn pg_tenant(tenant: &str, sql: &str) -> Result<String> {
 pub(crate) async fn database(value: &Value) -> Result<Arc<crate::Database>> {
     let config: Config = serde_json::from_value(value.clone())?;
     Ok(Arc::new(
-        crate::Database::connect(config.access_database.options()?)
+        crate::Database::connect(config.access_options()?)
             .await
             .map_err(|error| anyhow::anyhow!("access database rejected: {error:?}"))?,
     ))
@@ -340,7 +340,7 @@ pub(crate) async fn start_automation(value: &Value) -> Result<Option<rss_runtime
         Arc::new(crate::lifecycle::RuntimeTimer),
     )?;
     let mut startup = stack.startup()?;
-    let access = Arc::new(crate::Database::connect(config.access_database.options()?).await?);
+    let access = Arc::new(crate::Database::connect(config.access_options()?).await?);
     startup.stage_resource(rss_runtime::DynManagedResource::new_box(
         crate::lifecycle::AccessResource(access.clone()),
     ));
@@ -385,7 +385,7 @@ pub(crate) async fn start_automation(value: &Value) -> Result<Option<rss_runtime
         crate::automation::Resource(automation.clone()),
     ));
     let notifications = crate::worker_wake::Listener::new(
-        config.access_database.options()?,
+        config.access_options()?,
         rss_request_context::TenantId::parse(case_tenant())?,
     );
     let signals = notifications.signals.clone();

@@ -982,6 +982,7 @@ async fn native_inventory_case(
                 .await?
         );
         ensure!(pg(&format!("SELECT state->>'execution' FROM mdm_commands.action_runs WHERE tenant_id='{}' AND id='{}'", case_tenant(), spec.task_id))?.trim() == "succeeded", "legal finished package did not complete execution");
+        ensure!(pg(&format!("SELECT count(*) FROM mdm_webhook.events e JOIN rss_transactional_messaging.outbox o ON(o.tenant_id,o.message_id)=(e.tenant_id,e.id::text) WHERE e.tenant_id='{}' AND e.document->>'eventType'='policy.execution.terminal' AND e.document->'data'->>'runId'='{}' AND o.domain='mdm-webhook-source'", case_tenant(),spec.task_id))?.trim()=="1", "terminal result/replay must append one policy fact and source message");
         if all_failed {
             ensure!(pg(&format!("SELECT result FROM mdm_access.collection_runs WHERE tenant_id='{}' AND id='{}'", case_tenant(), spec.attempt_id))?.trim() == "failed");
             tokio::time::timeout(Duration::from_secs(20), async {

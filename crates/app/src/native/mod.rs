@@ -58,6 +58,7 @@ pub(crate) struct TlsRouter {
     pub router: Router,
 }
 pub(crate) struct Routers {
+    pub webhooks: Arc<crate::webhooks::Backend>,
     pub apple_control: Arc<rss_mdm_apple_channel::HttpState>,
     pub pki: Arc<rss_mdm_pki_service::registry::Registry>,
     pub agent_pki: Option<Arc<crate::agent_pki::AgentPki>>,

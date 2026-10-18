@@ -77,9 +77,19 @@ pub async fn bind_in(
     sqlx::query("UPDATE mdm_access.requests SET state='bound' WHERE tenant_id=$1::uuid AND id=$2")
         .bind(&tenant)
         .bind(request)
-        .execute(c)
+        .execute(&mut *c)
         .await
         .map_err(db)?;
+    crate::webhook::registration(
+        c,
+        &tenant,
+        parent.device(),
+        ids[0],
+        generation,
+        "mdm",
+        "active",
+    )
+    .await?;
     Ok(RegistrationReceipt {
         operation_id: row.try_get("issuance_operation").map_err(db)?,
         request_id: request,

@@ -222,6 +222,10 @@ impl AuditStore {
                         tx.with_connection(|c| Box::pin(check_isolation(c)))
                             .await
                             .map_err(E::from)?;
+                        tx.with_connection(|c|Box::pin(async move {
+                            // reason: Audit-only consumers have no execution binding; publishing SQL always requires one.
+                            sqlx::query("SELECT rss_transactional_messaging.check_execution() WHERE nullif(current_setting('rss.storage_target',true),'') IS NOT NULL").execute(c).await.map(|_|()).map_err(Error::from)
+                        })).await.map_err(E::from)?;
                         let operation = operation
                             .take()
                             .expect("component invokes its transaction callback once");

@@ -97,11 +97,9 @@ pub async fn serve(
                         notifications,
                     ) = tokio::time::timeout(compiled.config.flow.startup_budget(), async {
                         let access = Arc::new(
-                            crate::Database::connect(
-                                compiled.config.access_database.options().map_err(|e| {
-                                    ProcessError::at("startup.access_configuration", e)
-                                })?,
-                            )
+                            crate::Database::connect(compiled.config.access_options().map_err(
+                                |e| ProcessError::at("startup.access_configuration", e),
+                            )?)
                             .await
                             .map_err(|e| ProcessError::at("startup.access_store", e))?,
                         );
@@ -331,6 +329,7 @@ pub async fn serve(
                         )
                         .await
                         .map_err(assembly_error)?;
+                        startup.stage_resource(DynManagedResource::new_box(app.webhooks.clone()));
                         app.pki
                             .admit(
                                 rss_request_context::TenantId::parse(&tenant).map_err(|_| {
@@ -392,6 +391,9 @@ pub async fn serve(
                     })??;
                     let signals = notifications.signals.clone();
                     let mut launch = startup.commit();
+                    launch.stage_deferred_task_with_token(
+                        app.webhooks.clone().registration().critical(),
+                    );
                     launch.stage_task_with_token(
                         crate::device_pki::registration(app.pki.clone()).critical(),
                     );

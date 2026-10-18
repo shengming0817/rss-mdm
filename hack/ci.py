@@ -25,6 +25,7 @@ ROOT = Path(__file__).resolve().parents[1]
 OUT = ROOT / "artifacts" / "local-ci"
 
 LOCAL_PACKAGES = {
+    "rss-mdm-webhook-service": "crates/webhook-service",
     "rss-mdm-device-service": "crates/device-service",
     "rss-mdm-device-trust": "crates/device-trust",
     "rss-mdm-pki-service": "crates/pki-service",

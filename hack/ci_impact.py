@@ -559,11 +559,20 @@ def lock_dependency(reference, packages):
     fields = reference.split(' ', 2)
     matches = [p for p in packages if p['name'] == fields[0]
                and (len(fields) < 2 or p['version'] == fields[1])
-               and (len(fields) < 3 or p.get('source') == fields[2].removeprefix('(').removesuffix(')'))]
+               and (len(fields) < 3 or lock_source_matches(p.get('source'), fields[2].removeprefix('(').removesuffix(')')))]
     if len(matches) != 1:
         raise SelectionError('lock-invalid')
     package = matches[0]
     return package['name'], package['version'], package.get('source') or ''
+
+
+def lock_source_matches(source, reference):
+    # Cargo's Git dependency qualifier omits the resolved commit fragment.
+    # Keep URL/revision exact, and require the fragment when one was supplied.
+    if source == reference:
+        return True
+    return (isinstance(source, str) and source.startswith('git+')
+            and '#' not in reference and source.rsplit('#', 1)[0] == reference)
 
 
 def flatten(value, prefix=()):

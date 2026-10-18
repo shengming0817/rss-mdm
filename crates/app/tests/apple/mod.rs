@@ -123,7 +123,7 @@ impl Fixture {
         let config = &compiled.config;
         let clock = Arc::new(crate::clock::SystemClock);
         let monotonic: Arc<dyn rss_observation::Clock> = fixture_clock();
-        let access = Arc::new(crate::Database::connect(config.access_database.options()?).await?);
+        let access = Arc::new(crate::Database::connect(config.access_options()?).await?);
         resources.resource(crate::lifecycle::AccessResource(access.clone()));
         let devices = Arc::new(
             crate::device::DeviceService::new(

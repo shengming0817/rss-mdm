@@ -263,10 +263,10 @@ class Environment:
         for role, password in [('mdm_runtime','runtime-fixture'),('mdm_api','api-fixture'),('mdm_access','access-fixture')]:
             sql += f"CREATE ROLE {role} LOGIN PASSWORD '{password}' NOSUPERUSER NOBYPASSRLS;"
         # Publication defines the borrowed relay role required by subsequent role files.
-        for name in ('software-publication','flow','commands','identity','audit'):
+        for name in ('software-publication','flow','commands','identity','audit','webhook'):
             sql += (ROOT/f'crates/app/schema/{name}-roles.sql').read_text()
         for role in ('mdm_policy_runtime','mdm_resource_runtime','mdm_software_release_runtime','mdm_group_runtime',
-                     'mdm_flow_runtime','mdm_command_runtime','mdm_software_driver'):
+                     'mdm_flow_runtime','mdm_command_runtime','mdm_software_driver','mdm_webhook_operator'):
             sql += f"ALTER ROLE {role} LOGIN PASSWORD 'runtime-fixture';"
         for role, password in [('mdm_identity_runtime','identity-runtime-fixture'),('mdm_identity_maintenance','identity-maintenance-fixture'),('mdm_identity_audit','identity-audit-fixture'),('mdm_tenant_registry','tenant-registry-fixture'),('mdm_identity_provisioning','identity-provisioning-fixture')]:
             sql += f"ALTER ROLE {role} LOGIN PASSWORD '{password}';"
@@ -389,6 +389,7 @@ class Environment:
         config['access_database']=database(runtime,'mdm_access');config['runtime_database']=database(runtime,'mdm_runtime')
         config['identity']['database']=database(runtime,'mdm_identity_runtime');config['identity']['audit_worker']=database(runtime,'mdm_identity_audit')
         config['execution']['database']=database(runtime,'mdm_command_runtime')
+        config['webhooks']['recovery_database']=database(runtime,'mdm_webhook_operator')
         config['flow']['storage']['database']=database(runtime,'mdm_flow_runtime');config['flow']['publication']['database']=database(runtime,'mdm_software_driver')
         private(runtime/'runtime.json',config)
         password=self.root/'account-password'

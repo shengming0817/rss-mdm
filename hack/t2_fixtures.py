@@ -142,6 +142,7 @@ class RunFixtures:
             config[owner][key] = db(root, database, role, password)
         config['flow']['storage']['database'] = db(root, database, 'mdm_flow_runtime', 'runtime-fixture')
         config['flow']['publication']['database'] = db(root, database, 'mdm_software_driver', 'runtime-fixture')
+        config['webhooks']['recovery_database'] = db(root, database, 'mdm_webhook_operator', 'runtime-fixture')
         config['identity']['tenant_id'] = tenant
         config['native_protocols'] = {}
         config['device_pki'] = []

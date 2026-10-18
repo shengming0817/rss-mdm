@@ -531,7 +531,7 @@ pub(crate) async fn worker_for(
         rss_mdm_execution_service::Resource(worker.clone()),
     ));
     let notifications = crate::worker_wake::Listener::new(
-        config.access_database.options()?,
+        config.access_options()?,
         rss_request_context::TenantId::parse(&config.identity.tenant_id)?,
     );
     let signals = notifications.signals.clone();

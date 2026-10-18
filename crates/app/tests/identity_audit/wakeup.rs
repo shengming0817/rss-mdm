@@ -32,7 +32,7 @@ pub(super) async fn event_driven_delivery(
 ) -> Result<()> {
     let name = format!("identity-wake-{}", uuid::Uuid::new_v4());
     let listener = crate::worker_wake::Listener::new(
-        config.access_database.options()?.application_name(&name),
+        config.access_options()?.application_name(&name),
         identity.tenant,
     )
     .with_identity(

@@ -89,3 +89,37 @@ Apple 操作入口为 `POST /api/v1/devices/{device}/recovery-credentials/operat
 macOS 锁定继续使用原 `lock` 动作，其 PIN 同事务进入托管。部署需先配置恢复凭据密钥和接收证书。原生 ACK、已托管、平台核实与实际恢复效果分别记录；真实 Windows/macOS 恢复效果由独立产品 T3 提供证据。
 
 Agent 核实策略会绑定同一注册世代中匹配的 Unknown 轮换 task/attempt。Agent 必须先停止原操作的本地执行，再从受保护 journal 核实“原状态未变”或“新材料已生效”，将密文与核实结果持久回传；没有收到任何材料的原操作也可恢复。若受保护日志证明原操作尚未发起 OS 变更且已停止，返回 `not_attempted`，原操作按未执行成功结算；不会要求读取未知旧密码，也不宣称密码已核实或 OS 已回滚。核实完成前不会解除轮换保护，取消不表示 OS 变更已回滚。
+
+
+## Webhook 对外事件
+
+管理员在 `/api/v1/webhooks/subscriptions` 查询订阅，通过
+`PUT /api/v1/webhooks/subscriptions/{id}` 创建或修改。写请求使用
+`{"operationId":"<UUID>","expectedRevision":0,"change":{"kind":"put","value":{...}}}`；
+启停用 `change: {"kind":"enabled","value":true|false}`，删除用 `change: {"kind":"delete"}`。
+新建默认停用；后续操作使用返回的 revision。Settings 包含 name、endpoint、eventTypes、
+selection、keyReference、networkReference。selection 使用 `allDevices`、`devices`（ids）或
+`groups`（ids）；组必须是当前已发布的 endpoint 成员集合。事件目录见
+`GET /api/v1/webhooks/event-types`，精确 V1 载荷见
+[事件 schema](../../crates/webhook-service/schema/event-v1.json)。仅输出登记、退役、策略执行终态、
+已发布合规结论变化；Unknown 不推断为执行成功。
+
+`WebhookRead` 允许配置及投递查询；`WebhookWrite` 允许配置、启停和测试；
+`WebhookReplay` 允许恢复。它们不替代对应设备的 InventoryRead、OperationRead 或 ComplianceRead。
+首次 fanout 保存接收订阅版本及组筛选结果，分页恢复沿用该名单；订阅属于租户；发送时检查租户、启停状态及目标版本，不重新筛选组成员，也不复核创建者个人权限。
+创建、修改和恢复时检查当前操作者权限；创建者离职或撤权不自动停用租户集成。
+设备/组范围更新或目标、密钥引用变化会退休旧 TargetVersion；名称修改只增加 revision。
+停用不撤回在途请求，重新启用不恢复旧版本。新订阅不回补启用前的事件。
+
+`POST /api/v1/webhooks/subscriptions/{id}/test` 使用 `{operationId,deviceId}`，走正式授权与 HTTPS。
+`GET /api/v1/webhooks/deliveries` 返回分页投递及 nextCursor（作为下一次 after），详情地址为
+`/deliveries/{id}`。status 来自 RSS 持久状态，transportObservation 只是接收/未知/未发送观察；
+attempts 计发布调用，包含发送前准入拒绝。HTTP 2xx 只证明接收，不证明下游业务成功。
+每个目标有独立 MessageId；自动重试保持 ID 和精确 body，接收方应按投递 ID 或业务 eventId 去重。
+
+`POST /deliveries/{id}/redrive` 使用 `{operationId,expectedVersion}`，expectedVersion 取查询返回的
+recoveryVersion，必须仍处于原自动投递窗口；`POST /deliveries/{id}/replay` 使用 `{operationId}`，
+对失败投递创建新身份并关联原投递，保持原 eventId、body 和 TargetVersion。
+退休或停用的版本拒绝恢复，不自动改投新 URL。重试未知提交时复用原 operationId。
+`GET /api/v1/webhooks/health` 提供源/目标 Outbox 的规范状态计数，需要 WebhookRead；
+源 fanout 死信同样可见，不将无目标记录解释为发送成功。

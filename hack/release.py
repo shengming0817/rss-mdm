@@ -75,7 +75,7 @@ def build(out, header, web_image=None):
         staged.rename(out)
     print("candidate: " + str(out / "candidate.json"))
 
-ROLE_NAMES = ("software-publication", "flow", "identity", "commands", "audit")
+ROLE_NAMES = ("software-publication", "flow", "identity", "commands", "audit", "webhook")
 DEPLOYMENT_FILES = ('deployment/compose.yaml', 'deployment/providers.lock.json', 'fixtures/pki-tools.lock.json', 'deployment/agent-leaf.tpl', 'deployment/windows-leaf.tpl', "mdm-config.example.json", "deployment/nginx.conf", *(
     f"deployment/{name}-roles.sql" for name in ROLE_NAMES))
 

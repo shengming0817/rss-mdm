@@ -294,6 +294,7 @@ pub async fn retire_state_in(
     registration: Uuid,
     state: &str,
 ) -> Result<(), Error> {
+    let previous=sqlx::query("SELECT device,generation,channel,state FROM mdm_access.registrations WHERE tenant_id=$1::uuid AND id=$2 FOR UPDATE").bind(tenant).bind(registration).fetch_optional(&mut *tx).await.map_err(db)?;
     sqlx::query(
         "UPDATE mdm_access.registrations SET state=$3 WHERE tenant_id=$1::uuid AND id=$2::uuid",
     )
@@ -305,6 +306,22 @@ pub async fn retire_state_in(
     .map_err(db)?;
     sqlx::query("UPDATE mdm_access.credentials SET state=$3 WHERE tenant_id=$1::uuid AND registration=$2::uuid").bind(tenant).bind(registration.to_string()).bind(state).execute(&mut *tx).await.map_err(db)?;
     sqlx::query("UPDATE mdm_access.report_sources SET enabled=false WHERE tenant_id=$1::uuid AND registration=$2::uuid").bind(tenant).bind(registration.to_string()).execute(&mut *tx).await.map_err(db)?;
+    if let Some(row) = previous {
+        if row.try_get::<String, _>("state").map_err(db)? == "active"
+            && matches!(state, "retired" | "revoked" | "superseded")
+        {
+            crate::webhook::registration(
+                tx,
+                tenant,
+                &row.try_get::<String, _>("device").map_err(db)?,
+                registration,
+                row.try_get("generation").map_err(db)?,
+                &row.try_get::<String, _>("channel").map_err(db)?,
+                state,
+            )
+            .await?;
+        }
+    }
     Ok(())
 }
 
@@ -420,6 +437,16 @@ pub(crate) async fn bind_authorized_in(
     sqlx::query("INSERT INTO mdm_access.report_sources(tenant_id,registration,source,epoch,enabled) VALUES($1::uuid,$2::uuid,$3,$4::uuid,true)")
             .bind(tenant).bind(receipt.registration.to_string()).bind(command.source.as_str()).bind(receipt.epoch.to_string()).execute(&mut *tx).await.map_err(db)?;
 
+    crate::webhook::registration(
+        tx,
+        tenant,
+        &receipt.device,
+        receipt.registration,
+        receipt.generation,
+        receipt.channel.as_str(),
+        "active",
+    )
+    .await?;
     Ok(receipt)
 }
 

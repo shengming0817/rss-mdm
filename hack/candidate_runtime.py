@@ -138,6 +138,7 @@ def inputs(root, example, gateway_file, *, database_host="postgres"):
     for field,role in [("access_database","mdm_access"),("runtime_database","mdm_runtime")]:
         config[field]=database(runtime,role)
     config["execution"]["database"]=database(runtime,"mdm_command_runtime")
+    config["webhooks"]["recovery_database"]=database(runtime,"mdm_webhook_operator")
     config["identity"]["database"]=database(runtime,"mdm_identity_runtime")
     config["identity"]["audit_worker"]=database(runtime,"mdm_identity_audit")
     config["flow"]["storage"]["database"]=database(runtime,"mdm_flow_runtime")
@@ -424,7 +425,7 @@ class Candidate:
             roles=''.join("CREATE ROLE "+role+" LOGIN PASSWORD '"+role+"-fixture' NOSUPERUSER NOBYPASSRLS;" for role in ['mdm_owner','mdm_api','mdm_access','mdm_runtime'])
             roles+='GRANT CREATE ON DATABASE mdm_test TO mdm_owner; GRANT CREATE ON SCHEMA public TO mdm_owner;'
             for owner in ROLE_NAMES:roles+=(self.directory/f'deployment/{owner}-roles.sql').read_text()
-            for role in ['mdm_command_runtime','mdm_flow_runtime','mdm_software_driver','mdm_identity_runtime','mdm_identity_maintenance','mdm_identity_audit']:roles+="ALTER ROLE "+role+" LOGIN PASSWORD '"+role+"-fixture';"
+            for role in ['mdm_command_runtime','mdm_flow_runtime','mdm_software_driver','mdm_identity_runtime','mdm_identity_maintenance','mdm_identity_audit','mdm_webhook_operator']:roles+="ALTER ROLE "+role+" LOGIN PASSWORD '"+role+"-fixture';"
             self.sql(roles)
             self.copy_runtime()
             self.runtime_volume=self.name+'_runtime';self.operator_volume=self.name+'_operator';self.gateway_inputs=self.name+'_gateway'

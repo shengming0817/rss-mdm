@@ -214,3 +214,9 @@ mod recovery_credentials;
 #[cfg(test)]
 #[path = "../tests/recovery_credentials/mod.rs"]
 mod recovery_credentials_tests;
+
+pub mod webhooks;
+
+#[cfg(all(test, feature = "integration"))]
+#[path = "../tests/webhooks.rs"]
+mod webhook_tests;

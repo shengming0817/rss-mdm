@@ -109,6 +109,7 @@ struct Fixture {
     subject: String,
     reader: Arc<InventoryReader>,
     plan_runtime: Arc<rss_transactional_messaging_postgres::PgRuntime>,
+    webhooks: Arc<crate::webhooks::Backend>,
 }
 impl Fixture {
     async fn open() -> Result<Self> {
@@ -127,7 +128,7 @@ impl Fixture {
         );
         let access = database(&base).await?;
         let audit = access.audit_store(&config.audit).await?;
-        let (router, _, plan_runtime, _, resources) = crate::api::application_fixture(
+        let (router, execution, plan_runtime, _, resources) = crate::api::application_fixture(
             config,
             Arc::new(crate::clock::SystemClock),
             monotonic(),
@@ -136,6 +137,11 @@ impl Fixture {
             audit,
         )
         .await?;
+        let webhooks = execution
+            .webhooks
+            .get()
+            .ok_or_else(|| anyhow::anyhow!("missing webhook assembly"))?
+            .clone();
         let router = router.layer(axum::Extension(rss_identity_http_axum::ClientAddress(
             "127.0.0.1".parse()?,
         )));
@@ -154,6 +160,7 @@ impl Fixture {
             subject,
             reader,
             plan_runtime,
+            webhooks,
         })
     }
     async fn rule(&self) -> Result<(Uuid, String, Value)> {

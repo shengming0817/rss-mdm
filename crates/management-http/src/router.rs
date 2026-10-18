@@ -10,6 +10,7 @@ use rss_mdm_audit_integration::RequestAudit;
 use serde::Deserialize;
 use std::sync::Arc;
 pub struct Services {
+    pub webhooks: Arc<dyn crate::webhooks::Source>,
     pub registration_channels: Arc<dyn crate::enrollment::channels::Source>,
     pub associations: Arc<rss_mdm_device_service::Associations>,
     pub windows_entra: Option<Arc<rss_mdm_registration_service::windows_entra::Management>>,
@@ -96,6 +97,7 @@ pub fn router(state: Services, envelope: crate::boundary::Envelope) -> Router {
         windows: state.windows,
     });
     let core = Router::new()
+        .merge(crate::webhooks::routes(state.webhooks))
         .merge(crate::api_access::key_routes(Arc::new(
             crate::api_access::Management {
                 access: state.authorization.clone(),

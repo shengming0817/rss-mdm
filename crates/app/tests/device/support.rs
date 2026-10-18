@@ -57,6 +57,9 @@ pub(crate) async fn admin(tenant: &str, token: &str) -> anyhow::Result<Authorize
 }
 
 pub(crate) fn options(user: &str) -> anyhow::Result<PgConnectOptions> {
+    if user == "mdm_access" {
+        return Ok(crate::test_support::identity::config(case_a())?.access_options()?);
+    }
     Ok(std::env::var(if user == "postgres" {
         "MDM_ADMIN_URL"
     } else {

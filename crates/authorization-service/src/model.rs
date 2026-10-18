@@ -5,6 +5,9 @@ use uuid::Uuid;
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, Eq, PartialEq, Ord, PartialOrd)]
 #[serde(rename_all = "snake_case")]
 pub enum Permission {
+    WebhookRead,
+    WebhookWrite,
+    WebhookReplay,
     TenantCreate,
     /// Tenant metadata detail, list and operation receipt reads.
     TenantRead,
@@ -116,7 +119,10 @@ impl Permission {
             | Self::SoftwareDeploy
             | Self::OperationRead
             | Self::OperationCancel => true,
-            Self::TenantCreate
+            Self::WebhookRead
+            | Self::WebhookWrite
+            | Self::WebhookReplay
+            | Self::TenantCreate
             | Self::TenantRead
             | Self::TenantUpdate
             | Self::TenantDelete
@@ -379,6 +385,9 @@ pub fn canonical_uuid(value: &str) -> Result<(), AuthorizationError> {
 /// Complete business-tenant administration; installation registry permissions are excluded.
 pub fn tenant_administrator_rule(user: User) -> Rule {
     let operations = [
+        Permission::WebhookRead,
+        Permission::WebhookWrite,
+        Permission::WebhookReplay,
         Permission::IdentityAccountsManage,
         Permission::IdentityProvidersManage,
         Permission::CertificateArchiveRead,

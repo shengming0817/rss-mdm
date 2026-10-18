@@ -52,3 +52,5 @@ pub const WINDOWS_ENTRA_POLICY_SQL: &str = include_str!("../schema/windows-entra
 
 /// Dynamic new-registration admission schema.
 pub const ADMISSION_SQL: &str = include_str!("../schema/admission.sql");
+
+mod webhook;

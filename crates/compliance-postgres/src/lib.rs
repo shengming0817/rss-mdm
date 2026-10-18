@@ -297,3 +297,28 @@ pub async fn field_references_in(
     .fetch_one(c)
     .await
 }
+
+/// Compare immutable published assessments; preparation is not visible as a public change.
+pub async fn webhook_changes(
+    c: &mut PgConnection,
+    t: TenantId,
+    run: Uuid,
+    previous: Option<Uuid>,
+    after: Option<String>,
+    limit: i64,
+) -> Result<Vec<(String, Assessment)>> {
+    tenant(c, t).await?;
+    if !(1..=33).contains(&limit) {
+        return Err(corrupt());
+    }
+    let rows=sqlx::query("SELECT n.device,n.document::text FROM mdm_compliance.results n LEFT JOIN mdm_compliance.results o ON o.tenant_id=n.tenant_id AND o.task=$3::uuid AND o.device=n.device WHERE n.tenant_id=$1::uuid AND n.task=$2 AND ($4::text IS NULL OR n.device COLLATE \"C\">$4 COLLATE \"C\") AND (o.document->>'status' IS DISTINCT FROM n.document->>'status' OR o.document->>'reason' IS DISTINCT FROM n.document->>'reason') ORDER BY n.device COLLATE \"C\" LIMIT $5")
+        .bind(t.to_string()).bind(run).bind(previous).bind(after).bind(limit).fetch_all(c).await?;
+    rows.into_iter()
+        .map(|r| {
+            let a: Assessment =
+                serde_json::from_str(r.try_get("document")?).map_err(|_| corrupt())?;
+            a.validate().map_err(|_| corrupt())?;
+            Ok((r.try_get("device")?, a))
+        })
+        .collect()
+}

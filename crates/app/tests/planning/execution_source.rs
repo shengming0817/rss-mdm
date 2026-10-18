@@ -31,7 +31,7 @@ async fn empty_candidate_page_preserves_progress_to_the_next_matching_policy() -
     let (identity, resources) = identity::identity(&tenant.to_string()).await?;
     resources.finish(async {
         let config = identity::config(&tenant.to_string())?;
-        let access = crate::Database::connect(config.access_database.options()?).await?;
+        let access = crate::Database::connect(config.access_options()?).await?;
         let proof = crate::authorization::context::AuthorizedPrincipal::new(identity.authority.inspect_session(tenant, identity::credential_for(&tenant.to_string(), "admin")?, crate::identity::deadline()).await?)?
             .load_authorization(access.authorization()).await?;
         let snapshot = proof.authorization()?;

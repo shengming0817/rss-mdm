@@ -825,6 +825,19 @@ class DependencyOwnership(unittest.TestCase):
             with self.assertRaisesRegex(SelectionError, 'lock-invalid'):
                 lock_entries(root)
 
+    def test_git_lock_qualification_matches_the_exact_revision(self):
+        from ci_impact import lock_dependency, SelectionError
+        a = 'git+https://example.test/rss?rev=aaaa'
+        b = 'git+https://example.test/rss?rev=bbbb'
+        packages = [dict(name='driver', version='1.0.0', source=a+'#aaaa'),
+                    dict(name='driver', version='1.0.0', source=b+'#bbbb')]
+        self.assertEqual(lock_dependency('driver 1.0.0 ('+a+')', packages),
+                         ('driver', '1.0.0', a+'#aaaa'))
+        for reference in ('driver 1.0.0', 'driver 1.0.0 (git+https://example.test/rss?rev=cccc)',
+                          'driver 1.0.0 ('+a+'#wrong)'):
+            with self.assertRaisesRegex(SelectionError, 'lock-invalid'):
+                lock_dependency(reference, packages)
+
     def test_lock_identity_and_checksum_changes_use_old_and_new_consumers(self):
         from ci_impact import Graph, Registry, Change, analyze_dependencies
         from t2_model import Module, Build

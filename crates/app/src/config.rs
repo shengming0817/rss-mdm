@@ -103,6 +103,7 @@ fn enabled<'de, D: serde::Deserializer<'de>, T: Deserialize<'de>>(
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
+    pub webhooks: crate::webhooks::Config,
     #[serde(default)]
     pub software_distribution: rss_mdm_execution_service::SoftwareDistribution,
     pub agent_pki: crate::agent_pki::Config,
@@ -131,6 +132,15 @@ pub(crate) struct Compiled {
         Arc<crate::authorization::identity_management::IdentityManagementPolicy>,
 }
 impl Config {
+    /// Fence SQL Outbox producers with externally supplied process configuration before any transaction.
+    pub fn access_options(&self) -> Result<PgConnectOptions, Error> {
+        let hex = |v: &[u8]| v.iter().map(|b| format!("{b:02x}")).collect::<String>();
+        Ok(self.access_database.options()?.options([
+            ("rss.storage_target", hex(&self.flow.storage.target)),
+            ("rss.storage_lineage", hex(&self.flow.storage.lineage)),
+            ("rss.execution_epoch", self.flow.storage.epoch.to_string()),
+        ]))
+    }
     pub(crate) fn native_protector(
         &self,
     ) -> Result<Arc<rss_mdm_native_protection::Protector>, Error> {

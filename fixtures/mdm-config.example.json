@@ -160,6 +160,18 @@
       "provisioner_key_file": "/run/mdm/windows-provisioner.pk8"
     }
   ],
+  "webhooks": {
+    "keys": [],
+    "networks": [],
+    "recovery_database": {
+      "host": "postgres.example.test",
+      "port": 5432,
+      "name": "mdm",
+      "user": "mdm_webhook_operator",
+      "password_file": "/run/mdm/webhook-operator-password",
+      "ca_file": "/run/mdm/database-ca.pem"
+    }
+  },
   "software_distribution": {
     "mdm_enabled": false
   }

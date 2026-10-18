@@ -297,7 +297,7 @@ async fn capability_routes_without_application_preserve_revocation_and_atomicity
     let identity = Arc::new(identity);
     identity_resources.finish(async {
     let access =
-        Arc::new(crate::database::Database::connect(config.access_database.options()?).await?);
+        Arc::new(crate::database::Database::connect(config.access_options()?).await?);
     let monotonic: Arc<dyn rss_observation::Clock> = Arc::new(crate::Monotonic(|| {
         rss_request_context::Clock::now(&crate::lifecycle::RuntimeTimer)
     }));

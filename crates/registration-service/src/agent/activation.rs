@@ -209,6 +209,7 @@ VALUES($1::uuid,$2,$3,'agent',$6,$4,'active','primary',$5)
                         .execute(&mut *c)
                         .await
                         .map_err(db)?;
+                        crate::webhook::registration(c,&tenant,&device,registration,generation,"agent","active").await?;
                         for source in [
                             "agent.builtin",
                             "agent.script",

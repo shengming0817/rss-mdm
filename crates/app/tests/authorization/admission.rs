@@ -55,7 +55,7 @@ async fn permission_drift_corrupt_policy_and_stalled_postgres() -> Result<()> {
             None,
         )
         .await;
-    let reconnect = crate::Database::connect(config.access_database.options()?).await;
+    let reconnect = crate::Database::connect(config.access_options()?).await;
     pg("GRANT SELECT ON mdm_access.authorization_rules TO mdm_access")?;
     let denied = denied?;
     let context = context?;
@@ -131,10 +131,10 @@ async fn permission_drift_corrupt_policy_and_stalled_postgres() -> Result<()> {
         ),
     ] {
         pg(drift)?;
-        let rejected = crate::Database::connect(config.access_database.options()?).await;
+        let rejected = crate::Database::connect(config.access_options()?).await;
         pg(restore)?;
         ensure!(matches!(rejected, Err(crate::Error::Unavailable(crate::Failure::AccessAdmission))), "undeclared access privilege admitted");
-        crate::Database::connect(config.access_database.options()?).await?.close().await;
+        crate::Database::connect(config.access_options()?).await?.close().await;
     }
     let (identity, identity_resources) =
         crate::test_support::identity::identity(case_tenant()).await?;

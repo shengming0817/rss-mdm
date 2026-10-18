@@ -135,6 +135,9 @@ async fn registration_binding_and_replay() -> Result<()> {
         before == after && after.0 == 1,
         "rejected binding mutation changed persistent identity"
     );
+    let emitted: i64 = sqlx::query_scalar("SELECT count(*) FROM mdm_webhook.events e JOIN rss_transactional_messaging.outbox o ON (o.tenant_id,o.message_id)=(e.tenant_id,e.id::text) WHERE e.tenant_id=$1::uuid AND e.document->>'eventType'='device.registered' AND e.document->'data'->>'registrationId'=$2 AND o.domain='mdm-webhook-source'")
+        .bind(case_tenant()).bind(registration).fetch_one(&mut owner).await?;
+    ensure!(emitted == 1, "activation/replay must append one registration fact and source message");
     owner.close().await?;
     let mut retired_profile = agent.request.clone();
     retired_profile["operationId"] = json!(Uuid::new_v4());

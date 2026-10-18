@@ -291,6 +291,8 @@ pub(crate) async fn open(
         ));
         service.validate_recovery_credentials().await?;
         Ok(Assembly {
+            #[cfg(test)]
+            webhooks: Arc::default(),
             service,
             inputs,
             queries,
@@ -308,6 +310,8 @@ pub(crate) async fn open(
 
 #[derive(Clone)]
 pub(crate) struct Assembly {
+    #[cfg(test)]
+    pub(crate) webhooks: Arc<std::sync::OnceLock<Arc<crate::webhooks::Backend>>>,
     pub(crate) service: Arc<ExecutionService>,
     pub(crate) inputs: Arc<rss_mdm_execution_service::Inputs>,
     pub(crate) queries: Arc<rss_mdm_execution_service::queries::Queries>,

@@ -53,3 +53,4 @@ mod windows_entra;
 pub mod recovery_credentials;
 
 mod software_content;
+pub mod webhooks;

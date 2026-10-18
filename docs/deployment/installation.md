@@ -229,3 +229,25 @@ step ca provisioner add rss-windows --type JWK --public-key windows-provisioner.
 ```
 
 每个密钥文件恰好 32 个随机原始字节，私密文件权限为 0600。凭据密钥、接收 RSA 私钥、现有 native protection 密钥及 APNs/身份密钥分别生成与保管。接收证书和私钥必须匹配，RSA 至少 2048 位。FileVault 使用该证书接收 CMS，Agent 使用其公钥包裹 AES-GCM 数据密钥；不在客户端配置服务端私钥。未配置时不开放恢复凭据接口或派发该类 Agent 任务，macOS 锁定 PIN 托管也不可用。
+
+
+### Webhook 宿主输入
+
+顶层 `webhooks` 是必填闭合配置，示例中的空 keys/networks 表示没有获准的接收端。
+recovery_database 使用独立登录角色，具备 `mdm_webhook_operator` 的能力；按现有角色文件先部署
+`webhook-roles.sql`，密码由部署秘密提供，不与访问或投递角色混用。恢复能力不暴露原始 runtime。
+
+每条 keys 配置包含 tenant、reference、正整数 version、current_file 和可选 retiring
+（version、key_file、until，UTC Unix 秒）。文件存 Standard Webhooks 的 `whsec_<Base64>`，
+解码后为 24–64 随机字节，0600；不得复用入站 API 凭据。轮换时配置新 current 与有期限的旧 key，
+重启原宿主；过渡期同时签名，到期停止旧签名，再删除旧文件。相同引用保持接收方身份，
+更换引用通过订阅版本显式生效。
+
+每条 networks 配置包含 tenant、reference、hostname、port、addresses（IP:port）、cidrs 和 ca_files。
+所有地址端口须匹配，地址须全部在允许 CIDR 内；CA 为 PEM。首版 DNS 策略为宿主固定地址快照，
+adapter 按批准 IP 连接并验证原 hostname；地址变更需更新配置并重启。可显式允许企业内网。
+不接受 URL 凭据、query、fragment，不跟随重定向或使用环境代理。
+
+这些配置只描述允许范围；管理员仍须创建并明确启用订阅。访问池的 storage target、lineage 和
+execution epoch 来自原宿主配置，在连接建立时固定；源事件复用 RSS 正式 SQL Outbox append 与
+原 Audit 事务原子提交，失败不会触发事务后的直接 HTTP。新增组件迁移由既有 installer 执行。

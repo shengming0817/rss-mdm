@@ -6,6 +6,9 @@ rust-version.workspace = true
 publish.workspace = true
 
 [dependencies]
+rss-transactional-messaging-recovery.workspace = true
+ipnet.workspace = true
+rss-mdm-webhook-service.workspace = true
 rss-mdm-recovery-credentials.workspace = true
 rss-mdm-device-service.workspace = true
 rss-mdm-device-trust.workspace = true

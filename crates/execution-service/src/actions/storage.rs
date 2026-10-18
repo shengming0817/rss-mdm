@@ -81,9 +81,42 @@ pub async fn save_run(tx: &mut PgTransaction<'_>, run: &Run) -> Result<()> {
     let id = run.id.to_string();
     let state = checked_input(serde_json::to_value(&run.state))?;
     let result = run.result.clone();
+    let previous=tx.with_connection({let tenant=tenant.clone();let id=id.clone();move|c|Box::pin(async move {sqlx::query_scalar::<_,Value>("SELECT state FROM mdm_commands.action_runs WHERE tenant_id=$1::uuid AND id=$2::uuid").bind(tenant).bind(id).fetch_one(c).await})}).await?;
     let changed = tx.with_connection(move|c|Box::pin(async move{sqlx::query("UPDATE mdm_commands.action_runs SET state=$3,result=$4 WHERE tenant_id=$1::uuid AND id=$2::uuid AND (state IS DISTINCT FROM $3 OR result IS DISTINCT FROM $4)").bind(tenant).bind(id).bind(state).bind(result).execute(c).await})).await?;
     if changed.rows_affected() > 0 {
         crate::worker_wake::notify_in(tx, crate::worker_wake::Work::CommandRecovery).await?;
+    }
+    let terminal = match run.state.execution {
+        super::state::Execution::Succeeded => Some("succeeded"),
+        super::state::Execution::Failed => Some("failed"),
+        _ if run.state.cancellation == super::state::Cancellation::Confirmed => Some("cancelled"),
+        _ => None,
+    };
+    // RetirementSoftware is cleanup work, not a policy execution terminal event.
+    if let (Some(status), Source::Policy { version }) = (terminal, run.source) {
+        let old = previous.get("execution").and_then(Value::as_str);
+        let cancelled = previous.get("cancellation").and_then(Value::as_str) == Some("confirmed");
+        if old != Some(status) && !(status == "cancelled" && cancelled) {
+            use rss_mdm_webhook_service::{events, model::*};
+            let event = Event {
+                event_id: events::identity(run.id, &format!("terminal:{status}")),
+                event_type: EventType::PolicyTerminal,
+                version: 1,
+                occurred_at: crate::storage::now(tx).await?,
+                tenant_id: stored(Uuid::parse_str(&tx.tenant_id().to_string()))?,
+                device_id: run.target.device.clone(),
+                data: EventData::Policy {
+                    run_id: run.id,
+                    policy_version: version,
+                    registration_id: run.target.registration,
+                    generation: run.target.generation,
+                    status: status.into(),
+                },
+            };
+            events::emit_in(tx, event)
+                .await
+                .map_err(rss_transactional_messaging_postgres::PgError::from)?;
+        }
     }
     Ok(())
 }

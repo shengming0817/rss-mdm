@@ -273,7 +273,7 @@ async fn management_only_startup_integrity(
         rss_identity_core::InstanceId::parse(&config.identity.instance_id)?,
     )
     .await?;
-    let access = crate::Database::connect(config.access_database.options()?).await?;
+    let access = crate::Database::connect(config.access_options()?).await?;
     let store = access.audit_store(&config.audit).await?;
     let budget = rss_mdm_audit_integration::budget::AuditBudget::new(Duration::from_secs(5));
     let control = budget.control();

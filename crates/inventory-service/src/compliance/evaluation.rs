@@ -220,6 +220,18 @@ impl Compliance {
         {
             return Err(Error::Conflict.into());
         }
+        let source = rss_mdm_webhook_service::events::CompliancePublication {
+            id: rss_mdm_webhook_service::events::identity(task, "compliance-publication"),
+            tenant: stored(uuid::Uuid::parse_str(&t.to_string()))?,
+            run: task,
+            previous: r.current_run,
+            rule: id,
+            rule_version: revision,
+            occurred_at: input.evaluated_at,
+        };
+        rss_mdm_webhook_service::events::compliance_in(tx, source)
+            .await
+            .map_err(rss_transactional_messaging_postgres::PgError::from)?;
         self.tasks
             .finish(tx, &self.audit_store, task, None)
             .await
