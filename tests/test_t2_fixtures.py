@@ -236,6 +236,7 @@ class PreparationTests(unittest.TestCase):
             pool.installation = 'installation'
             pool.database_config.return_value = {}
             fixture.runtime_config = Mock(return_value={})
+            fixture.recovery_config = Mock(return_value={})
             fixture.builds.executables = {'rss-mdm': '/fixture/mdm'}
             stages = []
             def helper(root, manifest, output, database):
