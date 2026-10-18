@@ -38,3 +38,9 @@ Scope 结果页必须指定 `channel=agent|mdm`，游标绑定该通道。每个
 本次契约为新装切换，没有旧 DTO、缺省 assetContext 或 `/policies/{id}/devices` 路由。rss-web 需独立完成 Group/Scope/assignment 契约切换后才能联合发布。
 
 Scope 在发布固定结果前按目标通道完成集合运算，并持久化原始 DeviceId、注册世代与进入坐标。连续成员保留进入坐标；任何已发布的退出后重入都产生新坐标，即使 assignment 后台尚未处理退出。软件灰度统计由现有恢复 worker 按固定结果分批计算并保存游标，结果与能力更新按设备增量刷新，通道集合不变时保留分母。查询返回阶段 `ready` 与 `asOf`；输入过期或计算未完成时统计不可用于打开成功率门禁。
+
+## Windows 恢复凭据策略
+
+`action.kind=credential` 使用现有 Scope、schedule、frequency、runLifetimeSeconds 和显式重执行入口，不依赖虚构 Resource 或独立调度器。指定 Windows `architecture` 及闭合 `operation`：`collect_bitlocker`、`rotate_bitlocker`、`verify_bitlocker`、`rotate_local_administrator`、`verify_local_administrator`。卷操作绑定稳定卷 ID/protector ID，账户操作绑定 SID。安全材料操作使用 `security_operate`，本地账户操作使用 `account_write`；策略发布仍遵循普通 Policy 权限。
+
+只有声明 `credentials.windows.v1` 的受管 Agent 才能领取。RSS 管理账户与微软 LAPS 排他，不读取未知旧密码。轮换先托管新材料，收到持久接收确认后才清理明确替换的旧 protector；Unknown 保留原操作与材料，不自动重新生成。独立验证可核对已有候选材料，解除已确认操作的恢复阻塞。该策略不发布到自助目录。

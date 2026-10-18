@@ -9,7 +9,7 @@
           "items": {
             "$ref": "#/$defs/Capability"
           },
-          "maxItems": 21,
+          "maxItems": 22,
           "minItems": 1,
           "type": "array",
           "uniqueItems": true
@@ -193,6 +193,11 @@
         {
           "const": "inventory.native.v1",
           "description": "Execute signed declarative native inventory tasks.",
+          "type": "string"
+        },
+        {
+          "const": "credentials.windows.v1",
+          "description": "Native Windows recovery material execution and encrypted escrow.",
           "type": "string"
         }
       ]

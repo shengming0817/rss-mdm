@@ -154,11 +154,12 @@ pub async fn receive(
     message: &s::Message,
     history: &s::Expected,
     facts: &mut Vec<rss_mdm_audit_integration::Fact>,
-) -> Result<s::Message, Error> {
+) -> Result<(s::Message, Vec<Uuid>), Error> {
     let tenant = p.tenant().to_string();
     let rows = sqlx::query("SELECT id,template_state FROM mdm_windows.collections WHERE tenant_id=$1::uuid AND registration=$2 AND session_id=$3 AND kind='template' ORDER BY first_command")
         .bind(&tenant).bind(p.registration()).bind(message.header.session_id.to_string()).fetch_all(&mut *c).await.map_err(db)?;
     let mut consumed = std::collections::BTreeSet::new();
+    let mut runs = Vec::new();
     for row in rows {
         let id: Uuid = row.try_get("id").map_err(db)?;
         let mut run = store::load_on(c, &tenant, id).await?;
@@ -181,6 +182,7 @@ pub async fn receive(
         {
             continue;
         }
+        runs.push(id);
         let plan =
             rss_mdm_execution_service::actions::native_collection::plan_on(c, &tenant, id).await?;
         let template = native::template(c, &tenant, id)
@@ -291,16 +293,19 @@ pub async fn receive(
             Settlement::Pending => store::save_attempts_in(c, &run).await?,
         }
     }
-    Ok(s::Message {
-        header: message.header.clone(),
-        commands: message
-            .commands
-            .iter()
-            .filter(|cmd| !refs(cmd).is_some_and(|r| consumed.contains(&r)))
-            .cloned()
-            .collect(),
-        final_message: message.final_message,
-    })
+    Ok((
+        s::Message {
+            header: message.header.clone(),
+            commands: message
+                .commands
+                .iter()
+                .filter(|cmd| !refs(cmd).is_some_and(|r| consumed.contains(&r)))
+                .cloned()
+                .collect(),
+            final_message: message.final_message,
+        },
+        runs,
+    ))
 }
 
 #[derive(Debug, PartialEq, Eq)]

@@ -118,6 +118,7 @@ pub async fn audit_details(
 }
 
 pub enum ScheduledPolicy {
+    Credential(ExecutionPolicy<crate::credential_tasks::FrozenCredential>),
     AgentCollection(ExecutionPolicy<crate::action_contract::FrozenAgentCollection>),
     Script(Box<ExecutionPolicy>),
     Native(ExecutionPolicy<crate::action_contract::FrozenNativeCollection>),
@@ -133,6 +134,7 @@ pub struct TaskIssue {
 impl ScheduledPolicy {
     pub fn owner(&self) -> Uuid {
         match self {
+            Self::Credential(v) => v.owner,
             Self::AgentCollection(v) => v.owner,
             Self::Script(v) => v.owner,
             Self::Native(v) => v.owner,
@@ -142,6 +144,7 @@ impl ScheduledPolicy {
     }
     pub fn timeout_seconds(&self) -> u32 {
         match self {
+            Self::Credential(v) => v.frozen.input.run_lifetime_seconds,
             Self::AgentCollection(v) => {
                 v.frozen
                     .definition
@@ -165,6 +168,16 @@ impl ScheduledPolicy {
         now: i64,
     ) -> Result<bool> {
         match self {
+            Self::Credential(v) => Ok(crate::credential_tasks::eligible(
+                service,
+                tx,
+                target,
+                v.frozen.input.architecture,
+            )
+            .await?
+                && v.frozen.authorized_in(tx, target, now).await?
+                && v.authorized_in(&service.source, tx, &target.device, now)
+                    .await?),
             Self::AgentCollection(v) => Ok(crate::agent_collection_eligibility::check_in(
                 tx,
                 service.agent_store.clone(),
@@ -278,6 +291,11 @@ impl ScheduledPolicy {
         target: &Target,
         now: i64,
     ) -> Result<bool> {
+        if let Self::Credential(v) = self {
+            return Ok(v.frozen.authorized_in(tx, target, now).await?
+                && v.authorized_in(&service.source, tx, &target.device, now)
+                    .await?);
+        }
         if let Self::AgentCollection(v) = self {
             return Ok(v.frozen.authorized_in(tx, target, now).await?
                 && v.authorized_in(&service.source, tx, &target.device, now)
@@ -316,6 +334,8 @@ impl ScheduledPolicy {
         now: i64,
     ) -> Result<bool> {
         match self {
+            Self::Credential(v) => Ok(v.withdrawn_in(&service.source, tx, &target.device).await?
+                || !v.frozen.authorized_in(tx, target, now).await?),
             Self::AgentCollection(v) => {
                 Ok(v.withdrawn_in(&service.source, tx, &target.device).await?
                     || !v.frozen.authorized_in(tx, target, now).await?)
@@ -335,6 +355,9 @@ impl ScheduledPolicy {
         issue: TaskIssue,
     ) -> Result<rss_mdm_agent_wire::runtime::TaskPayload> {
         match self {
+            Self::Credential(v) => {
+                crate::credential_tasks::task(v, service, tx, target, issue).await
+            }
             Self::Enrollment(v) => v.task(service, tx, target, issue).await,
             Self::Native(_) => Err(Error::Unsupported.into()),
             Self::AgentCollection(v) => {
@@ -534,6 +557,9 @@ pub async fn load_policy_version(
 ) -> Result<ScheduledPolicy> {
     let (policy, frozen) = crate::sources::storage::version_in(reader, tx, id).await?;
     match frozen {
+        crate::frozen::Frozen::Credential { .. } => Ok(ScheduledPolicy::Credential(
+            crate::sources::admission::credential_in(reader, tx, id).await?,
+        )),
         crate::frozen::Frozen::MdmEnrollment { action } => Ok(ScheduledPolicy::Enrollment(
             crate::sources::enrollment::EnrollmentPolicy {
                 id,

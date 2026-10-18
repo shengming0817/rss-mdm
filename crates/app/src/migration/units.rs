@@ -121,7 +121,7 @@ pub(super) fn units() -> Vec<(&'static str, &'static str)> {
         ),
         ("flow-service-schema-v1", rss_mdm_flow_service::INSTALL_SQL),
         (
-            "execution-service-schema-v4",
+            "execution-service-schema-v5",
             rss_mdm_execution_service::INSTALL_SQL,
         ),
         (
@@ -161,7 +161,7 @@ pub(super) fn units() -> Vec<(&'static str, &'static str)> {
             rss_mdm_content_service::RELATIONS_SQL,
         ),
         (
-            "execution-service-relations-v3",
+            "execution-service-relations-v4",
             rss_mdm_execution_service::RELATIONS_SQL,
         ),
         (
@@ -195,6 +195,10 @@ pub(super) fn units() -> Vec<(&'static str, &'static str)> {
         (
             "timeline-service-schema-v2",
             rss_mdm_timeline_service::INSTALL_SQL,
+        ),
+        (
+            "recovery-credentials-schema-v1",
+            rss_mdm_recovery_credentials::INSTALL_SQL,
         ),
         (
             "certificate-archive-schema-v1",

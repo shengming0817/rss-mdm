@@ -533,6 +533,13 @@ pub(crate) fn from_state(
             agent_enrollment: state.agent_enrollment.clone(),
             pki: state.pki.clone(),
             pki_clock: Arc::new(crate::agent_pki::PkiClock(state.clock.clone())),
+            recovery_credentials: state.execution.recovery_credentials().map(|p| {
+                Arc::new(rss_mdm_recovery_credentials::Credentials::new(
+                    state.access.archive_pool(),
+                    state.audit_store.clone(),
+                    p.keys.clone(),
+                ))
+            }),
             certificate_archive: state.certificate_archive.clone(),
             timeline: state.timeline.clone(),
             associations: state.associations.clone(),

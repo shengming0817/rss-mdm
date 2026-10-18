@@ -10,6 +10,7 @@ pub mod storage;
 mod agent_collection;
 mod collection;
 pub mod native_collection;
+pub(crate) mod native_recovery;
 mod output;
 
 mod poll;

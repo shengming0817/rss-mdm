@@ -116,6 +116,7 @@ impl Fixture {
             .build()?;
         let peer = Peer {
             client,
+            pending_replies: Default::default(),
             installed_trust: Default::default(),
             oracle: oracle::Oracle::new(&der)?,
             origin: apple.config.management.origin.clone(),
@@ -241,7 +242,7 @@ impl Fixture {
         self.policy_grants().await?;
         let definition = self.collection_template().await?;
         let owner = self.policy_worker().await?;
-        let queued = self.pending_collections(&definition, 65).await;
+        let queued = self.pending_collections(&definition, 65, peer).await;
         crate::test_support::stop_worker(Some(owner)).await?;
         let runs = queued?;
         let run = runs[64];

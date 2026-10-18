@@ -45,6 +45,7 @@ struct Fixture {
     browser: Browser,
     router: Router,
     owner: rss_runtime::ShutdownStack,
+    execution_owner: Option<rss_runtime::ShutdownStack>,
     signals: Arc<crate::worker_wake::Signals>,
     root: PathBuf,
     lose_notify: Arc<std::sync::atomic::AtomicBool>,
@@ -390,12 +391,7 @@ impl Fixture {
                 )
                 .critical(),
             );
-            launch.stage_deferred_task_with_token(
-                execution
-                    .service
-                    .registration(signals.execution())
-                    .critical(),
-            );
+
             launch.stage_deferred_task_with_token(
                 runtime
                     .registration(signals.handle(crate::worker_wake::Work::Inventory))
@@ -403,6 +399,13 @@ impl Fixture {
             );
             launch.finish();
         }
+        let mut execution_owner = rss_runtime::ShutdownStack::try_new(
+            rss_runtime::TotalDrainBudget::new(Duration::from_secs(15))?,
+            Arc::new(crate::lifecycle::RuntimeTimer),
+        )?;
+        let mut launch = execution_owner.startup()?.commit();
+        launch.stage_deferred_task_with_token(execution.service.registration(signals.execution()).critical());
+        launch.finish();
         if !preserve_authorization {
             crate::test_support::identity::set_grants(
                 case_tenant(),
@@ -432,6 +435,7 @@ impl Fixture {
             browser,
             router,
             owner,
+            execution_owner: Some(execution_owner),
             signals,
             root,
             lose_notify,
@@ -706,16 +710,21 @@ mod push;
 mod renewal;
 
 impl Fixture {
+    async fn stop_execution_worker(&mut self) -> Result<()> {
+        crate::test_support::stop_worker(self.execution_owner.take()).await
+    }
     async fn close(self) -> Result<()> {
         let Self {
             resources,
             owner,
+            execution_owner,
             app,
             ..
         } = self;
         resources
             .finish(async move {
                 let report = owner.shutdown().join().await?;
+                crate::test_support::stop_worker(execution_owner).await?;
                 if !report.is_clean() {
                     let diagnostics = app
                         .inventory
@@ -771,6 +780,7 @@ impl Fixture {
                     self.root.join("ca.crt"),
                 )?)?)
                 .build()?,
+            pending_replies: Default::default(),
             installed_trust: Default::default(),
             oracle: oracle::Oracle::new(der)?,
             origin: apple.config.management.origin.clone(),
@@ -906,6 +916,7 @@ impl Fixture {
     pub(super) async fn queue_collection(
         &mut self,
         definition: &serde_json::Value,
+        peer: &lifecycle::Peer,
     ) -> Result<(Uuid, Uuid)> {
         use sqlx::Connection;
         let policy = Uuid::new_v4();
@@ -915,12 +926,15 @@ impl Fixture {
             json!({"action":"put","enabled":true,"definition":definition}),
         )
         .await?;
+        let reply = peer.manage("Idle", None, None).await?;
+        if !reply.is_empty() {
+            peer.pending_replies.lock().await.push_back(reply);
+        }
         let mut db =
             sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?)
                 .await?;
         let run = tokio::time::timeout(Duration::from_secs(30), async {
             loop {
-                self.app.execution.settle_native_fixture(case_device()).await?;
                 let run: Option<Uuid> = sqlx::query_scalar("SELECT r.id FROM mdm_commands.action_runs r JOIN mdm_policy.versions v ON(v.tenant_id,v.id)=(r.tenant_id,r.policy_version) JOIN mdm_access.collection_runs c ON(c.tenant_id,c.id)=(r.tenant_id,r.id) JOIN mdm_apple.attempts a ON(a.tenant_id,a.collection)=(r.tenant_id,r.id) WHERE r.tenant_id=$1::uuid AND v.policy=$2 AND r.gateway_accepted AND c.sealed_at IS NULL AND a.phase='collect_device'")
                     .bind(case_tenant()).bind(policy).fetch_optional(&mut db).await?;
                 if let Some(run) = run { return Ok::<_, anyhow::Error>(run); }
@@ -935,12 +949,13 @@ impl Fixture {
         &mut self,
         definition: &serde_json::Value,
         count: usize,
+        peer: &lifecycle::Peer,
     ) -> Result<Vec<Uuid>> {
         use sqlx::Connection;
         ensure!(count > 0);
         // One frozen Policy version owns distinct pending occurrences. Queue through
         // the production owner so fingerprints, outbox and source evidence stay real.
-        let (_, first) = self.queue_collection(definition).await?;
+        let (_, first) = self.queue_collection(definition, peer).await?;
         let mut db =
             sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?)
                 .await?;
@@ -959,14 +974,14 @@ impl Fixture {
             let now = self.app.clock.unix_seconds()?;
             self.app.execution_runtime.local_tx_with_context(
                 rss_request_context::TenantId::parse(case_tenant())?,
-                // Only preparation is batched. settle_native_fixture below retains
-                // the unmodified production transaction budget.
+                // Only preparation is batched; the worker recovers each run in its own production transaction.
                 rss_transactional_messaging::policy::OperationDeadline::from_remaining(Duration::from_secs(30)),
                 (&self.app.execution, &self.app.audit_store), |(service, audit), tx| Box::pin(async move {
                     audit.lock_in(tx).await.map_err(|e| rss_transactional_messaging_postgres::PgError::from(sqlx::Error::Protocol(e.to_string())))?;
                     for id in pending {
                         rss_mdm_execution_service::actions::production::queue_run_in(service, tx,
                             rss_mdm_execution_service::actions::production::RunInput {
+                                triggered_at: Some(now),
                                 source: rss_mdm_execution_service::actions::storage::Source::Policy { version },
                                 target: &target, id, occurrence: format!("backlog:{id}"),
                                 available: now, deadline: now + 1800, now,
@@ -986,20 +1001,15 @@ impl Fixture {
                 tokio::time::sleep(Duration::from_millis(50)).await;
             }
         }).await??;
-        // #2758: exercise real device recovery only after the full live ActionRun
-        // workset exists. A CollectionRun count alone cannot prove this seam.
-        for _ in 0..count.div_ceil(64) {
-            self.app
-                .execution
-                .settle_native_fixture(case_device())
-                .await?;
-        }
+        // The full live workset must reach the protocol owner through the real worker.
+        tokio::time::timeout(Duration::from_secs(30), async {
+            loop {
         let pending: i64 = sqlx::query_scalar("SELECT count(DISTINCT c.id) FROM mdm_commands.action_runs r JOIN mdm_access.collection_runs c USING(tenant_id,id) JOIN mdm_apple.attempts a ON(a.tenant_id,a.collection)=(c.tenant_id,c.id) WHERE c.tenant_id=$1::uuid AND c.id=ANY($2) AND c.sealed_at IS NULL AND a.phase='collect_device' AND a.state='pending' AND r.gateway_accepted AND r.state->>'execution' IN ('not_started','running') AND r.state->>'cancellation'='none'")
             .bind(case_tenant()).bind(&runs).fetch_one(&mut db).await?;
-        ensure!(
-            pending == count as i64,
-            "recovery did not preserve the entire live backlog"
-        );
+                if pending == count as i64 { return Ok::<_, anyhow::Error>(()); }
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        }).await.map_err(|_| anyhow::anyhow!("recovery did not preserve the entire live backlog"))??;
         db.close().await?;
         Ok(runs)
     }

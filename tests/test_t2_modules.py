@@ -9,6 +9,10 @@ from ci_impact import select_inputs, SelectionError
 
 
 class ModuleImpactTests(unittest.TestCase):
+    def test_recovery_schema_selects_installation_catalog_and_business_consumers(self):
+        selected=set(select_inputs(['crates/recovery-credentials/schema/install.sql']).modules)
+        self.assertTrue({'installation.migration','catalog.contract','recovery-credentials.http','apple.commands','execution.agent.delivery'} <= selected,selected)
+
     def test_upload_budget_selects_its_content_and_execution_consumers(self):
         self.assertEqual(self.selected('crates/content-service/src/budget.rs'),
                          self.selected('crates/content-service/src/transaction.rs'))
@@ -94,8 +98,9 @@ class ModuleImpactTests(unittest.TestCase):
     def test_collection_inputs_select_their_actual_protocol_consumers(self):
         cases={
             'crates/execution-service/src/actions/output.rs': {'execution.agent.delivery'},
-            'crates/execution-service/src/actions/native_collection.rs': {'windows.management','apple.collection'},
-            'crates/execution-service/src/actions/recovery.rs': {'windows.management','apple.collection','execution.agent.recovery','execution.software.recovery'},
+            'crates/execution-service/src/actions/native_collection.rs': {'windows.management','apple.collection','apple.fairness','apple.identity','apple.policy'},
+            'crates/execution-service/src/actions/native_recovery.rs': {'windows.management','apple.collection','apple.fairness','apple.identity','apple.policy'},
+            'crates/execution-service/src/actions/recovery.rs': {'windows.management','apple.collection','apple.fairness','apple.identity','apple.policy','execution.agent.recovery','execution.software.recovery'},
         }
         for path,expected in cases.items():
             selected=select_inputs([path])

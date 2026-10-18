@@ -68,6 +68,11 @@ pub struct PreparedWindows {
     pub package: PackageState,
     pub session: Box<dyn WindowsSession>,
 }
+/// Native runs processed by this request, returned by the protocol correlation owner.
+pub struct WindowsCollections {
+    pub pending: bool,
+    pub runs: Vec<uuid::Uuid>,
+}
 /// One request's channel participant. Every method borrows the original transaction.
 pub trait WindowsSession: Send {
     /// Channel-owned prerequisite reads can authorize a further bounded data fragment.
@@ -93,7 +98,7 @@ pub trait WindowsSession: Send {
         history: Option<&'a rss_mdm_windows_mdm::syncml::Expected>,
         response: &'a mut rss_mdm_windows_mdm::syncml::Message,
         dispatch: bool,
-    ) -> Pending<'a, bool>;
+    ) -> Pending<'a, WindowsCollections>;
     fn finish<'a>(
         self: Box<Self>,
         c: &'a mut PgConnection,
@@ -222,6 +227,14 @@ pub trait ApplePush: Send + Sync {
     ) -> Pending<'a, bool>;
 }
 pub trait AppleResults: Send + Sync {
+    /// Purge input copies only after execution delivery settles and the material owner permits expiry.
+    fn purge_credential_inputs<'a>(
+        &'a self,
+        c: &'a mut PgConnection,
+        tenant: String,
+        operation: Uuid,
+        terminal: bool,
+    ) -> Pending<'a, bool>;
     /// Current-generation declaration keys, locked through the caller's evidence read.
     fn declaration_page<'a>(
         &'a self,
@@ -282,6 +295,7 @@ pub trait AppleExchange: Send {
     fn current<'a>(&'a self, c: &'a mut PgConnection, p: &'a DevicePrincipal) -> Pending<'a, ()>;
     fn reception<'a>(
         self: Box<Self>,
+        source: &'a dyn crate::source_authority::SourceAuthority,
         c: &'a mut PgConnection,
         p: &'a DevicePrincipal,
         audit: &'a rss_mdm_audit_integration::RequestAudit,
@@ -290,10 +304,11 @@ pub trait AppleExchange: Send {
 pub enum AppleReception {
     Idle,
     Replay,
-    Collection(Vec<Fact>),
+    Collection { facts: Vec<Fact>, run: Option<Uuid> },
     Command(Box<dyn AppleAttempt>),
 }
 pub struct AppleCommand {
+    pub recovery: Option<std::sync::Arc<rss_mdm_recovery_credentials::Protection>>,
     pub operation: Uuid,
     pub owner: String,
     pub authorized_declarations: Vec<Uuid>,
@@ -346,6 +361,7 @@ pub trait Apple: Send + Sync {
     ) -> Pending<'a, Reply>;
     fn collection<'a>(
         &'a self,
+        source: &'a dyn crate::source_authority::SourceAuthority,
         c: &'a mut PgConnection,
         p: &'a DevicePrincipal,
         user_key: &'a str,
@@ -420,7 +436,13 @@ impl AgentBinding {
             .contains(&rss_mdm_agent_wire::runtime::Capability::InventoryNativeV1)
     }
     pub fn task(&self) -> bool {
-        self.script() || self.software() || self.enrollment() || self.native_collection()
+        self.script()
+            || self.software()
+            || self.enrollment()
+            || self.native_collection()
+            || self
+                .capabilities
+                .contains(&rss_mdm_agent_wire::runtime::Capability::CredentialsWindowsV1)
     }
 }
 pub trait Agent: Send + Sync {

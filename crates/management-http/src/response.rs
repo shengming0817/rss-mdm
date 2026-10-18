@@ -8,6 +8,7 @@ impl IntoResponse for Error {
     fn into_response(self) -> Response {
         let (status, code) = match &self {
             Error::Archive(e) => archive_error(e),
+            Error::RecoveryCredentials(e) => recovery_error(e),
             Error::EnrollmentPaused => (StatusCode::CONFLICT, "enrollment_paused"),
             Error::RegistrationLimit => (StatusCode::TOO_MANY_REQUESTS, "registration_limit"),
             Error::Conflict => (StatusCode::CONFLICT, "operation_conflict"),
@@ -110,5 +111,29 @@ fn archive_error(error: &rss_mdm_certificate_archive_service::Error) -> (StatusC
             StatusCode::SERVICE_UNAVAILABLE,
             "operation_rollback_unconfirmed",
         ),
+    }
+}
+
+fn recovery_error(e: &rss_mdm_recovery_credentials::Error) -> (StatusCode, &'static str) {
+    use rss_mdm_recovery_credentials::Error as E;
+    match e {
+        E::Unauthorized => (StatusCode::UNAUTHORIZED, "invalid_identity"),
+        E::Forbidden => (StatusCode::FORBIDDEN, "permission_denied"),
+        E::Malformed => (StatusCode::BAD_REQUEST, "malformed_request"),
+        E::NotFound => (StatusCode::NOT_FOUND, "recovery_credential_not_found"),
+        E::Conflict => (StatusCode::CONFLICT, "operation_conflict"),
+        E::Integrity => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "recovery_credential_integrity",
+        ),
+        E::CommitUnknown => (StatusCode::SERVICE_UNAVAILABLE, "operation_unknown"),
+        E::RollbackFailed => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "operation_rollback_unconfirmed",
+        ),
+        E::Unsupported => (StatusCode::NOT_IMPLEMENTED, "action_not_supported"),
+        E::Configuration | E::Storage | E::Audit => {
+            (StatusCode::SERVICE_UNAVAILABLE, "service_unavailable")
+        }
     }
 }

@@ -7,6 +7,7 @@ pub(super) struct Peer {
     pub origin: String,
     pub topic: String,
     pub oracle: oracle::Oracle,
+    pub pending_replies: tokio::sync::Mutex<std::collections::VecDeque<Vec<u8>>>,
     pub installed_trust: tokio::sync::Mutex<Option<plist::Dictionary>>,
 }
 impl Peer {
@@ -160,6 +161,12 @@ impl Peer {
     pub async fn next(&self, kind: &str) -> Result<(Uuid, plist::Dictionary)> {
         command(&self.next_bytes(kind).await?, kind)
     }
+    pub async fn next_security(&self) -> Result<(Uuid, plist::Dictionary)> {
+        command(
+            &self.next_bytes_mode("SecurityInfo", true).await?,
+            "SecurityInfo",
+        )
+    }
     pub async fn next_collection(&self) -> Result<(Uuid, plist::Dictionary)> {
         command(
             &self
@@ -189,7 +196,11 @@ impl Peer {
     ) -> Result<Vec<u8>> {
         let mut resolving = false;
         for _ in 0..100 {
-            let mut bytes = self.manage("Idle", None, None).await?;
+            let pending = self.pending_replies.lock().await.pop_front();
+            let mut bytes = match pending {
+                Some(bytes) => bytes,
+                None => self.manage("Idle", None, None).await?,
+            };
             for _ in 0..128 {
                 if bytes.is_empty() {
                     break;
@@ -262,7 +273,8 @@ impl Peer {
                     .manage("Acknowledged", Some(id), Some(response))
                     .await?;
             }
-            tokio::time::sleep(Duration::from_millis(100)).await;
+            // Keep idle polling below the native peer admission rate (four requests/second).
+            tokio::time::sleep(Duration::from_millis(300)).await;
         }
         anyhow::bail!("native {kind} dispatch deadline")
     }

@@ -106,6 +106,7 @@ pub struct Config {
     pub agent_pki: crate::agent_pki::Config,
     pub device_pki: Vec<crate::device_pki::Provider>,
     pub native_protection_key_file: PathBuf,
+    pub recovery_credentials: Option<crate::recovery_credentials::Config>,
     pub audit: AuditConfig,
     pub listen: SocketAddr,
     pub product_origin: String,

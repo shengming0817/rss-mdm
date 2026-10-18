@@ -27,6 +27,7 @@ pub async fn accept_for_device(
         service,
         tx,
         RunInput {
+            triggered_at: None,
             source: db::Source::Policy { version: policy.id },
             target,
             id,

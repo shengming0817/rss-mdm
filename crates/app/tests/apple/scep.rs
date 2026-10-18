@@ -170,6 +170,7 @@ async fn external_scep_issuance_and_lost_notify() -> Result<()> {
     );
     oracle.compare("/checkin", &body, &[]).await?;
     let peer = lifecycle::Peer {
+        pending_replies: Default::default(),
         installed_trust: Default::default(),
         client,
         oracle,

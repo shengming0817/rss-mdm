@@ -6,6 +6,7 @@ rust-version.workspace = true
 publish.workspace = true
 
 [dependencies]
+rss-mdm-recovery-credentials.workspace = true
 rss-mdm-device-service.workspace = true
 rss-mdm-device-trust.workspace = true
 rss-mdm-pki-service.workspace = true
@@ -101,6 +102,7 @@ rss-reconcile.workspace = true
 rss-reconcile-postgres.workspace = true
 
 [dev-dependencies]
+openssl.workspace = true
 rss-mdm-device-service = { workspace = true, features = ["integration"] }
 rss-mdm-resource-postgres = { workspace = true, features = ["integration"] }
 rss-mdm-software-service = { workspace = true, features = ["integration"] }

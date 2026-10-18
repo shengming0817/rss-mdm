@@ -16,6 +16,7 @@ impl Fixture {
                 .build()?,
             origin: self.app.apple()?.config.management.origin.clone(),
             topic: self.app.apple()?.config.apns_topic.clone(),
+            pending_replies: Default::default(),
             installed_trust: Default::default(),
             oracle: oracle::Oracle::new(&der)?,
         };
@@ -55,6 +56,7 @@ impl Fixture {
             rss_runtime::TotalDrainBudget::new(Duration::from_secs(20))?,
             Arc::new(crate::lifecycle::RuntimeTimer),
         )?;
+        self.stop_execution_worker().await?;
         let manual = std::mem::replace(&mut self.owner, empty);
         ensure!(manual.shutdown().join().await?.is_clean());
         let stop = tokio_util::sync::CancellationToken::new();

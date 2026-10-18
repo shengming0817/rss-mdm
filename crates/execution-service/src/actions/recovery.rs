@@ -16,7 +16,7 @@ pub async fn active(tx: &mut PgTransaction<'_>, id: Uuid) -> Result<bool> {
     let tenant = tx.tenant_id().to_string();
     let kinds = rss_mdm_policy::AssignmentBehavior::NativeCollectionRecovery.kinds();
     Ok(tx.with_connection(move|c|Box::pin(async move {
-        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_policy.policies p WHERE p.tenant_id=$1::uuid AND p.id=$2::uuid AND (p.state='enabled') AND (p.definition->'action'->>'kind'=ANY($3::text[]) OR p.definition->'action'->>'kind'='software')) OR EXISTS(SELECT 1 FROM mdm_commands.action_runs r JOIN mdm_policy.versions v ON(v.tenant_id,v.id)=(r.tenant_id,r.policy_version) JOIN mdm_policy.policies p ON(p.tenant_id,p.id)=(v.tenant_id,v.policy) WHERE r.tenant_id=$1::uuid AND v.policy=$2::uuid AND ((r.state->>'execution'='not_started' AND r.state->>'cancellation'<>'confirmed') OR r.state->>'execution'='running' OR (r.state->>'execution'='unknown' AND r.state->>'cancellation'='none' AND (NOT (p.state='enabled') OR p.current_version<>v.id))))").bind(tenant).bind(id.to_string()).bind(kinds).fetch_one(c).await
+        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_policy.policies p WHERE p.tenant_id=$1::uuid AND p.id=$2::uuid AND (p.state='enabled') AND ((p.definition->'action'->>'kind'=ANY($3::text[]) AND (p.definition->'action'->'schedule'->'trigger'->>'kind' NOT IN ('check_in','registration') OR EXISTS(SELECT 1 FROM mdm_policy.triggers t WHERE t.tenant_id=p.tenant_id AND t.version=p.current_version AND t.deadline>floor(extract(epoch FROM clock_timestamp()))))) OR p.definition->'action'->>'kind'='software')) OR EXISTS(SELECT 1 FROM mdm_commands.action_runs r JOIN mdm_policy.versions v ON(v.tenant_id,v.id)=(r.tenant_id,r.policy_version) JOIN mdm_policy.policies p ON(p.tenant_id,p.id)=(v.tenant_id,v.policy) WHERE r.tenant_id=$1::uuid AND v.frozen->>'kind'<>'native_collection' AND v.policy=$2::uuid AND ((r.state->>'execution'='not_started' AND r.state->>'cancellation'<>'confirmed') OR r.state->>'execution'='running' OR (r.state->>'execution'='unknown' AND r.state->>'cancellation'='none' AND (NOT (p.state='enabled') OR p.current_version<>v.id))))").bind(tenant).bind(id.to_string()).bind(kinds).fetch_one(c).await
     })).await?)
 }
 pub async fn recover(
@@ -25,7 +25,7 @@ pub async fn recover(
     id: Uuid,
 ) -> Result<()> {
     crate::sources::storage::lock(tx, id).await?;
-    super::native_collection::admit_policy(service, tx, id).await?;
+
     if let Some(policy) = crate::sources::storage::read_in(&service.policy_reader, tx, id).await?
         && policy.definition.action.kind() == rss_mdm_policy::ActionKind::Software
     {
@@ -39,7 +39,7 @@ pub async fn recover(
     let tenant = tx.tenant_id().to_string();
     let runs=tx.with_connection(move|c|Box::pin(async move {
         sqlx::query("INSERT INTO mdm_commands.policy_recovery(tenant_id,policy) VALUES($1::uuid,$2::uuid) ON CONFLICT DO NOTHING").bind(&tenant).bind(id.to_string()).execute(&mut *c).await?;
-        sqlx::query_as::<_,(Uuid,Option<Uuid>)>("SELECT r.id,(SELECT recovery_after FROM mdm_commands.policy_recovery WHERE tenant_id=$1::uuid AND policy=$2::uuid) FROM mdm_commands.action_runs r JOIN mdm_policy.versions v ON(v.tenant_id,v.id)=(r.tenant_id,r.policy_version) JOIN mdm_policy.policies p ON(p.tenant_id,p.id)=(v.tenant_id,v.policy) WHERE r.tenant_id=$1::uuid AND v.policy=$2::uuid AND ((r.state->>'execution'='not_started' AND r.state->>'cancellation'<>'confirmed') OR r.state->>'execution' IN('running','unknown')) AND r.id>coalesce((SELECT recovery_after FROM mdm_commands.policy_recovery WHERE tenant_id=$1::uuid AND policy=$2::uuid),'00000000-0000-0000-0000-000000000000'::uuid) ORDER BY r.id LIMIT 128").bind(tenant).bind(id.to_string()).fetch_all(c).await
+        sqlx::query_as::<_,(Uuid,Option<Uuid>)>("SELECT r.id,(SELECT recovery_after FROM mdm_commands.policy_recovery WHERE tenant_id=$1::uuid AND policy=$2::uuid) FROM mdm_commands.action_runs r JOIN mdm_policy.versions v ON(v.tenant_id,v.id)=(r.tenant_id,r.policy_version) JOIN mdm_policy.policies p ON(p.tenant_id,p.id)=(v.tenant_id,v.policy) WHERE r.tenant_id=$1::uuid AND v.frozen->>'kind'<>'native_collection' AND v.policy=$2::uuid AND ((r.state->>'execution'='not_started' AND r.state->>'cancellation'<>'confirmed') OR r.state->>'execution' IN('running','unknown')) AND r.id>coalesce((SELECT recovery_after FROM mdm_commands.policy_recovery WHERE tenant_id=$1::uuid AND policy=$2::uuid),'00000000-0000-0000-0000-000000000000'::uuid) ORDER BY r.id LIMIT 128").bind(tenant).bind(id.to_string()).fetch_all(c).await
     })).await?;
     let total = runs.len();
     let mut last = runs.first().and_then(|(_, previous)| *previous);
@@ -148,36 +148,6 @@ impl ExecutionService {
 
 #[cfg(feature = "integration")]
 impl ExecutionService {
-    /// Exercise the native check-in recovery funnel against persisted runs.
-    pub async fn settle_native_fixture(
-        &self,
-        device: &str,
-    ) -> std::result::Result<(), crate::Error> {
-        let audit = rss_mdm_audit_integration::RequestAudit::new(
-            self.tenant.to_string(),
-            "command_reconcile",
-        );
-        let result = crate::transaction::run(
-            &self.audit_store,
-            &self.runtime,
-            self.tenant,
-            &audit,
-            (self, device),
-            |ctx, tx| {
-                Box::pin(
-                    async move { super::native_collection::settle_device(ctx.0, tx, ctx.1).await },
-                )
-            },
-        )
-        .await;
-        audit.finalize(
-            result
-                .as_ref()
-                .err()
-                .map(|_| rss_mdm_audit_integration::FailureReason::Transaction),
-        );
-        result
-    }
     /// Exercise the production recovery transaction through the same action funnel as the worker.
     pub async fn recover_action_fixture(&self, id: Uuid) -> std::result::Result<(), crate::Error> {
         let audit = rss_mdm_audit_integration::RequestAudit::new(

@@ -54,6 +54,7 @@ impl ports::AppleExchange for Exchange {
     }
     fn reception<'a>(
         self: Box<Self>,
+        source: &'a dyn crate::execution::source_authority::SourceAuthority,
         c: &'a mut PgConnection,
         p: &'a DevicePrincipal,
         audit: &'a rss_mdm_audit_integration::RequestAudit,
@@ -63,7 +64,7 @@ impl ports::AppleExchange for Exchange {
                 return Ok(ports::AppleReception::Idle);
             };
             if self.user.is_empty() {
-                if let Some(facts) = crate::trust_installation::receive(
+                if let Some(reception) = crate::trust_installation::receive(
                     c,
                     &self.apple,
                     p,
@@ -75,9 +76,9 @@ impl ports::AppleExchange for Exchange {
                 .await
                 .map_err(ports::Rejection::from)?
                 {
-                    return Ok(ports::AppleReception::Collection(facts));
+                    return Ok(reception);
                 }
-                if let Some(facts) = crate::agent_collection::receive(
+                if let Some(reception) = crate::agent_collection::receive(
                     c,
                     &self.apple.protection,
                     p,
@@ -89,11 +90,12 @@ impl ports::AppleExchange for Exchange {
                 .await
                 .map_err(ports::Rejection::from)?
                 {
-                    return Ok(ports::AppleReception::Collection(facts));
+                    return Ok(reception);
                 }
             }
             let mut facts = Vec::new();
-            if crate::collection::receive(
+            if let Some((run, replay)) = crate::collection::receive(
+                source,
                 c,
                 &self.apple.protection,
                 &mut facts,
@@ -106,7 +108,14 @@ impl ports::AppleExchange for Exchange {
             .await
             .map_err(ports::Rejection::from)?
             {
-                return Ok(ports::AppleReception::Collection(facts));
+                return Ok(if replay {
+                    ports::AppleReception::Replay
+                } else {
+                    ports::AppleReception::Collection {
+                        facts,
+                        run: Some(run),
+                    }
+                });
             }
             let attempt = crate::attempt::lock(
                 c,
@@ -185,6 +194,17 @@ impl ports::AppleAttempt for CommandAttempt {
                 .map_err(ports::Rejection::from)?;
             if !accepted {
                 return Ok(S::Waiting);
+            }
+            if !phase.prerequisite() {
+                crate::recovery_credentials::receive(
+                    c,
+                    &command,
+                    &target,
+                    &self.report,
+                    self.status,
+                )
+                .await
+                .map_err(ports::Rejection::from)?;
             }
             if phase == Phase::Observe
                 && self.status == protocol::Status::Acknowledged

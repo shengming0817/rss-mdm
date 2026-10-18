@@ -132,6 +132,19 @@ pub enum SoftwareDeliveryRing {
 )]
 /// Each action owns its inputs; registration never requires a fictitious resource.
 pub enum Action {
+    /// Native Windows credential management on the existing Agent schedule.
+    Credential {
+        /// Exact native operation and stable target identity.
+        operation: CredentialOperation,
+        /// Required processor architecture.
+        architecture: Architecture,
+        /// Existing calendar or explicit trigger.
+        schedule: Schedule,
+        /// Existing execution-history rule.
+        frequency: Frequency,
+        /// Original task lifetime, including offline recovery.
+        run_lifetime_seconds: u32,
+    },
     /// A side-effecting or collection action admitted on Agent check-in.
     Execution {
         /// Exact immutable script resource.
@@ -397,6 +410,7 @@ impl Action {
     /// Closed action identity persisted alongside its optional resource coordinates.
     pub const fn kind(&self) -> crate::ActionKind {
         match self {
+            Self::Credential { .. } => crate::ActionKind::Credential,
             Self::Execution { .. } => crate::ActionKind::Execution,
             Self::NativeCollection { .. } => crate::ActionKind::NativeCollection,
             Self::AgentCollection { .. } => crate::ActionKind::AgentCollection,
@@ -415,7 +429,9 @@ impl Action {
             | Self::Execution { resource, .. }
             | Self::Configuration { resource, .. } => Some(resource.identity()),
             Self::Software { resource, .. } => Some(resource.identity()),
-            Self::RequestMdmEnrollment { .. } | Self::EnsureAgentInstalled { .. } => None,
+            Self::Credential { .. }
+            | Self::RequestMdmEnrollment { .. }
+            | Self::EnsureAgentInstalled { .. } => None,
         }
     }
     /// Validate calendar and lifetime semantics without owning any targets.
@@ -434,6 +450,7 @@ impl Action {
                     return Err(Error::Malformed);
                 }
             }
+            Self::Credential { operation, .. } => operation.validate()?,
             Self::RequestMdmEnrollment { .. } => (),
         }
         if let Action::Execution {
@@ -448,7 +465,12 @@ impl Action {
             }
         }
         match self {
-            Action::Execution {
+            Action::Credential {
+                schedule,
+                run_lifetime_seconds,
+                ..
+            }
+            | Action::Execution {
                 schedule,
                 run_lifetime_seconds,
                 ..
@@ -648,5 +670,62 @@ mod tests {
         assert!(!gated.open(100, 10, 7));
         assert!(gated.open(100, 10, 8));
         assert!(!gated.open(100, 0, 0));
+    }
+}
+
+/// Product-owned native credential intent; scheduling remains ordinary Policy behavior.
+#[derive(schemars::JsonSchema, Clone, Debug, Deserialize, Serialize)]
+#[serde(
+    tag = "kind",
+    rename_all = "snake_case",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
+pub enum CredentialOperation {
+    /// Collect system and fixed-volume recovery protectors.
+    CollectBitlocker,
+    /// Verify an existing protector without creating or deleting one.
+    VerifyBitlocker {
+        /// Stable volume DeviceID.
+        volume: String,
+        /// Exact existing protector.
+        protector: Uuid,
+    },
+    /// Rotate precisely one existing protector.
+    RotateBitlocker {
+        /// Stable volume ID.
+        volume: String,
+        /// Exact protector ID.
+        protector: Uuid,
+    },
+    /// Reset the RSS-owned local administrator password.
+    RotateLocalAdministrator {
+        /// Exact Windows account SID.
+        sid: String,
+    },
+    /// Verify the locally retained RSS-managed password.
+    VerifyLocalAdministrator {
+        /// Exact Windows account SID.
+        sid: String,
+    },
+}
+impl CredentialOperation {
+    /// Validate native identifiers without querying a platform.
+    pub fn validate(&self) -> Result<(), Error> {
+        let bounded = |s: &str| !s.is_empty() && s.len() <= 256 && !s.chars().any(char::is_control);
+        let valid = match self {
+            Self::CollectBitlocker => true,
+            Self::VerifyBitlocker { volume, protector }
+            | Self::RotateBitlocker { volume, protector } => bounded(volume) && !protector.is_nil(),
+            Self::RotateLocalAdministrator { sid } | Self::VerifyLocalAdministrator { sid } => {
+                bounded(sid)
+                    && sid.starts_with("S-1-5-")
+                    && sid
+                        .split('-')
+                        .skip(1)
+                        .all(|v| !v.is_empty() && v.bytes().all(|b| b.is_ascii_digit()))
+            }
+        };
+        if valid { Ok(()) } else { Err(Error::Malformed) }
     }
 }

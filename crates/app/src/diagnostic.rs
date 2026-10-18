@@ -43,6 +43,7 @@ impl rss_observation::Clock for Monotonic {
 pub enum ConfigIssue {
     AgentPki,
     NativeProtection,
+    RecoveryCredentials,
     Audit,
     AppleListeners,
     AppleScep,

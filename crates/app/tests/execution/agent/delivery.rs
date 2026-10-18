@@ -4,6 +4,72 @@ mod windows_assets;
 use crate::test_support::agent_execution::*;
 use crate::test_support::*;
 use ring::signature::KeyPair;
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+#[ignore = "make t2 MODULE=execution.agent.delivery"]
+async fn credential_offer_start_escrow_and_result_keep_secrets_out_of_task_history() -> Result<()> {
+    use base64::{Engine, engine::general_purpose::STANDARD};
+    use openssl::{encrypt::Encrypter, hash::MessageDigest, pkey::PKey, rsa::Padding};
+    use rss_mdm_agent_wire::runtime as wire;
+    let mut fixture = Fixture::new().await?;
+    let resources = std::mem::take(&mut fixture.resources);
+    resources.finish(async{
+        let context=crate::test_support::software_execution::context(crate::test_support::software_execution::Platform::Windows);
+        let registration=crate::test_support::agent::seed_profile(&fixture.base,fixture.execution.clone(),case_credential(),case_device_id(),json!({"capabilities":["inventory.collect.v1","task.execute.v1","credentials.windows.v1"],"platform":"windows","architecture":"x86_64","executionContext":context})).await?;
+        let device=registration["deviceId"].as_str().unwrap();
+        fixture.grants.extend(identity::device_grants(None,&["security_operate","credentials"])?);
+        identity::set_grants(case_tenant(),&fixture.author_id,fixture.grants.clone()).await?;
+        fixture.scope(case_task_scope(),json!([{"kind":"device","id":device}])).await?;
+        let policy=Uuid::new_v4();
+        post(&mut fixture.author,&fixture.router,&format!("/api/v1/policies/{policy}"),json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"put","enabled":true,"definition":{"scope":case_task_scope(),"action":{"kind":"credential","operation":{"kind":"collect_bitlocker"},"architecture":"x86_64","schedule":{"trigger":{"kind":"check_in","minimumSeconds":60},"misfire":{"kind":"coalesce_one"},"notBefore":0,"until":null,"jitterSeconds":0,"window":null},"frequency":"once_per_version","runLifetimeSeconds":300}}}})).await?;
+        let offered=tokio::time::timeout(Duration::from_secs(30),async{
+            loop{
+                let (status,value)=agent_call(&fixture.router,Method::POST,"/api/v1/agent/runtime/tasks/claim",Some(case_credential()),Some(json!({"wireVersion":1,"operationId":Uuid::new_v4(),"executionContext":context,"environment":{"edition":null,"tools":{},"nativeEngines":{}},"profiles":[]}))).await?;
+                ensure!(status==StatusCode::OK,"credential claim: {status} {value}");
+                if !value["task"].is_null(){break Ok::<_,anyhow::Error>(value["task"].clone())}
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+        }).await??;
+        let signed:wire::SignedTask=serde_json::from_value(offered.clone())?;
+        ensure!(matches!(signed.payload,wire::TaskPayload::Credential(_)));
+        let task=signed.payload.task_id();let attempt=signed.payload.attempt_id();
+        let path=format!("/api/v1/agent/runtime/tasks/{task}/events");
+        for event in [json!({"kind":"received"}),json!({"kind":"start"})]{
+            let (status,value)=agent_call(&fixture.router,Method::POST,&path,Some(case_credential()),Some(json!({"wireVersion":1,"operationId":Uuid::new_v4(),"attemptId":attempt,"executionContext":context,"event":event}))).await?;
+            ensure!(status==StatusCode::OK,"credential start: {status} {value}");
+        }
+        let wire::TaskPayload::Credential(spec)=signed.payload else{unreachable!()};
+        let mut materials=Vec::new();let mut secrets=Vec::new();
+        for index in 0..2u8{
+            let subject=wire::CredentialSubject::Bitlocker{volume:format!("\\\\?\\Volume{{{}}}\\",Uuid::new_v4()),protector:Uuid::new_v4()};
+            let secret=std::iter::repeat_n(if index==0{"111111"}else{"222222"},8).collect::<Vec<_>>().join("-");
+            let aad=spec.material_aad(&subject,0)?;let key=[index+7;32];let nonce=[index+1;12];
+            let public=PKey::public_key_from_der(&STANDARD.decode(&spec.recipient.public_key)?)?;
+            let mut encrypt=Encrypter::new(&public)?;encrypt.set_rsa_padding(Padding::PKCS1_OAEP)?;encrypt.set_rsa_oaep_md(MessageDigest::sha256())?;encrypt.set_rsa_mgf1_md(MessageDigest::sha256())?;
+            let mut wrapped=vec![0;encrypt.encrypt_len(&key)?];let length=encrypt.encrypt(&key,&mut wrapped)?;wrapped.truncate(length);
+            let aead=ring::aead::LessSafeKey::new(ring::aead::UnboundKey::new(&ring::aead::AES_256_GCM,&key).map_err(|_|anyhow::anyhow!("test key"))?);
+            let mut ciphertext=secret.as_bytes().to_vec();aead.seal_in_place_append_tag(ring::aead::Nonce::assume_unique_for_key(nonce),ring::aead::Aad::from(aad),&mut ciphertext).map_err(|_|anyhow::anyhow!("test encryption"))?;
+            materials.push(wire::CredentialEnvelope{subject,expected_revision:0,wrapped_key:STANDARD.encode(wrapped),nonce,ciphertext:STANDARD.encode(ciphertext)});secrets.push(secret);
+        }
+        let mut tampered=materials.clone();tampered[1].subject=wire::CredentialSubject::Bitlocker{volume:format!("\\\\?\\Volume{{{}}}\\",Uuid::new_v4()),protector:Uuid::new_v4()};
+        let event=wire::TaskEvent::CredentialEscrow(wire::CredentialEscrow{definition_digest:spec.definition_digest,materials:tampered});
+        let rejected=agent_call(&fixture.router,Method::POST,&path,Some(case_credential()),Some(json!({"wireVersion":1,"operationId":Uuid::new_v4(),"attemptId":attempt,"executionContext":context,"event":event}))).await?;
+        ensure!(!rejected.0.is_success());
+        ensure!(pg(&format!("SELECT count(*) FROM mdm_recovery.versions WHERE tenant_id='{}' AND operation='{task}'",case_tenant()))?.trim()=="0");
+        let event=wire::TaskEvent::CredentialEscrow(wire::CredentialEscrow{definition_digest:spec.definition_digest,materials:materials.clone()});
+        let input=json!({"wireVersion":1,"operationId":Uuid::new_v4(),"attemptId":attempt,"executionContext":context,"event":event});
+        let first=agent_call(&fixture.router,Method::POST,&path,Some(case_credential()),Some(input.clone())).await?;
+        ensure!(first.0==StatusCode::OK,"escrow: {first:?}");
+        ensure!(agent_call(&fixture.router,Method::POST,&path,Some(case_credential()),Some(input)).await?==first);
+        let event=wire::TaskEvent::CredentialResult(wire::CredentialResult{recovery:None,definition_digest:spec.definition_digest,complete:true,failure:None,items:materials.iter().map(|m|wire::CredentialItemResult{subject:m.subject.clone(),outcome:wire::CredentialOutcome::Verified}).collect()});
+        let complete=agent_call(&fixture.router,Method::POST,&path,Some(case_credential()),Some(json!({"wireVersion":1,"operationId":Uuid::new_v4(),"attemptId":attempt,"executionContext":context,"event":event}))).await?;
+        ensure!(complete.0==StatusCode::OK,"credential completion: {complete:?}");
+        let history=pg(&format!("SELECT coalesce(result::text,'') FROM mdm_commands.action_runs WHERE tenant_id='{}' AND id='{task}'",case_tenant()))?;
+        for secret in secrets{ensure!(!history.contains(&secret));}
+        ensure!(pg(&format!("SELECT count(*) FROM mdm_recovery.versions WHERE tenant_id='{}' AND operation='{task}' AND validity='verified'",case_tenant()))?.trim()=="2");
+        Ok(())
+    }).await
+}
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 #[ignore = "make t2 MODULE=execution.agent.delivery"]
 async fn registration_capability_and_wire_gate() -> Result<()> {
@@ -1479,4 +1545,271 @@ async fn certificate_scope_case(macos: bool) -> Result<()> {
         crate::test_support::stop_worker(inventory).await?;runtime.close_fixture().await?;crate::test_support::stop_worker(worker).await?;
         Ok(())
     }).await
+}
+
+async fn credential_policy(f: &mut Fixture, operation: Value) -> Result<()> {
+    let policy = Uuid::new_v4();
+    post(&mut f.author,&f.router,&format!("/api/v1/policies/{policy}"),json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"put","enabled":true,"definition":{"scope":case_task_scope(),"action":{"kind":"credential","operation":operation,"architecture":"x86_64","schedule":{"trigger":{"kind":"check_in","minimumSeconds":60},"misfire":{"kind":"coalesce_one"},"notBefore":0,"until":null,"jitterSeconds":0,"window":null},"frequency":"once_per_version","runLifetimeSeconds":300}}}})).await?;
+    Ok(())
+}
+async fn claim_credential(
+    f: &Fixture,
+    context: &Value,
+) -> Result<Box<rss_mdm_agent_wire::runtime::CredentialTaskSpec>> {
+    use rss_mdm_agent_wire::runtime as wire;
+    tokio::time::timeout(Duration::from_secs(30),async {
+        loop {
+            let (status,value)=agent_call(&f.router,Method::POST,"/api/v1/agent/runtime/tasks/claim",Some(case_credential()),Some(json!({"wireVersion":1,"operationId":Uuid::new_v4(),"executionContext":context,"environment":{"edition":null,"tools":{},"nativeEngines":{}},"profiles":[]}))).await?;
+            ensure!(status==StatusCode::OK,"claim: {status} {value}");
+            if !value["task"].is_null(){
+                let signed:wire::SignedTask=serde_json::from_value(value["task"].clone())?;
+                if let wire::TaskPayload::Credential(task)=signed.payload {return Ok(task)}
+                anyhow::bail!("unexpected task");
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    }).await?
+}
+async fn credential_event(
+    f: &Fixture,
+    context: &Value,
+    task: &rss_mdm_agent_wire::runtime::CredentialTaskSpec,
+    event: Value,
+) -> Result<(StatusCode, Value)> {
+    agent_call(&f.router,Method::POST,&format!("/api/v1/agent/runtime/tasks/{}/events",task.task_id),Some(case_credential()),Some(json!({"wireVersion":1,"operationId":Uuid::new_v4(),"attemptId":task.attempt_id,"executionContext":context,"event":event}))).await
+}
+fn credential_envelope(
+    task: &rss_mdm_agent_wire::runtime::CredentialTaskSpec,
+    subject: rss_mdm_agent_wire::runtime::CredentialSubject,
+    secret: &[u8],
+) -> Result<rss_mdm_agent_wire::runtime::CredentialEnvelope> {
+    use base64::{Engine, engine::general_purpose::STANDARD};
+    use openssl::{encrypt::Encrypter, hash::MessageDigest, pkey::PKey, rsa::Padding};
+    let revision = task
+        .expected
+        .iter()
+        .find(|v| v.subject == subject)
+        .map(|v| v.revision)
+        .unwrap_or(0);
+    let aad = task.material_aad(&subject, revision)?;
+    let key = [71; 32];
+    let nonce = [19; 12];
+    let public = PKey::public_key_from_der(&STANDARD.decode(&task.recipient.public_key)?)?;
+    let mut encrypt = Encrypter::new(&public)?;
+    encrypt.set_rsa_padding(Padding::PKCS1_OAEP)?;
+    encrypt.set_rsa_oaep_md(MessageDigest::sha256())?;
+    encrypt.set_rsa_mgf1_md(MessageDigest::sha256())?;
+    let mut wrapped = vec![0; encrypt.encrypt_len(&key)?];
+    let length = encrypt.encrypt(&key, &mut wrapped)?;
+    wrapped.truncate(length);
+    let aead = ring::aead::LessSafeKey::new(
+        ring::aead::UnboundKey::new(&ring::aead::AES_256_GCM, &key)
+            .map_err(|_| anyhow::anyhow!("fixture key"))?,
+    );
+    let mut ciphertext = secret.to_vec();
+    aead.seal_in_place_append_tag(
+        ring::aead::Nonce::assume_unique_for_key(nonce),
+        ring::aead::Aad::from(aad),
+        &mut ciphertext,
+    )
+    .map_err(|_| anyhow::anyhow!("fixture encryption"))?;
+    Ok(rss_mdm_agent_wire::runtime::CredentialEnvelope {
+        subject,
+        expected_revision: revision,
+        wrapped_key: STANDARD.encode(wrapped),
+        nonce,
+        ciphertext: STANDARD.encode(ciphertext),
+    })
+}
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+#[ignore = "make t2 MODULE=execution.agent.delivery"]
+async fn credential_unknown_without_escrow_recovers_after_server_restart() -> Result<()> {
+    recover_unknown_after_restart(
+        rss_mdm_agent_wire::runtime::CredentialRecoveryOutcome::Applied,
+        false,
+    )
+    .await
+}
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+#[ignore = "make t2 MODULE=execution.agent.delivery"]
+async fn credential_unknown_without_os_attempt_can_settle_without_inventing_a_password()
+-> Result<()> {
+    recover_unknown_after_restart(
+        rss_mdm_agent_wire::runtime::CredentialRecoveryOutcome::NotAttempted,
+        false,
+    )
+    .await
+}
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+#[ignore = "make t2 MODULE=execution.agent.delivery"]
+async fn credential_rotation_escrow_without_verification_remains_unknown() -> Result<()> {
+    recover_unknown_after_restart(
+        rss_mdm_agent_wire::runtime::CredentialRecoveryOutcome::Applied,
+        true,
+    )
+    .await
+}
+async fn recover_unknown_after_restart(
+    effect: rss_mdm_agent_wire::runtime::CredentialRecoveryOutcome,
+    escrow_only: bool,
+) -> Result<()> {
+    use rss_mdm_agent_wire::runtime as wire;
+    let mut f = Fixture::new().await?;
+    let resources = std::mem::take(&mut f.resources);
+    let context = crate::test_support::software_execution::context(
+        crate::test_support::software_execution::Platform::Windows,
+    );
+    let sid = "S-1-5-21-101-202-303-500";
+    let original=resources.finish(async{
+        crate::test_support::agent::seed_profile(&f.base,f.execution.clone(),case_credential(),case_device_id(),json!({"capabilities":["inventory.collect.v1","task.execute.v1","credentials.windows.v1"],"platform":"windows","architecture":"x86_64","executionContext":context})).await?;
+        f.grants.extend(identity::device_grants(None,&["account_write"])?);
+        identity::set_grants(case_tenant(),&f.author_id,f.grants.clone()).await?;
+        f.scope(case_task_scope(),json!([{"kind":"device","id":case_device_id()}])).await?;
+        credential_policy(&mut f,json!({"kind":"rotate_local_administrator","sid":sid})).await?;
+        let task=claim_credential(&f,&context).await?;
+        for event in [json!({"kind":"received"}),json!({"kind":"start"})]{let response=credential_event(&f,&context,&task,event).await?;ensure!(response.0==StatusCode::OK,"start {response:?}");}
+        let outcome=if escrow_only {
+            let subject=wire::CredentialSubject::LocalAdministrator{sid:sid.into()};
+            let envelope=credential_envelope(&task,subject.clone(),b"persisted-before-os-change-2789")?;
+            let response=credential_event(&f,&context,&task,serde_json::to_value(wire::TaskEvent::CredentialEscrow(wire::CredentialEscrow{definition_digest:task.definition_digest,materials:vec![envelope]}))?).await?;
+            ensure!(response.0==StatusCode::OK);
+            wire::CredentialResult{recovery:None,definition_digest:task.definition_digest,complete:true,failure:None,items:vec![wire::CredentialItemResult{subject,outcome:wire::CredentialOutcome::Escrowed}]}
+        }else{wire::CredentialResult{recovery:None,definition_digest:task.definition_digest,complete:false,failure:Some(wire::CredentialFailure::RecoveryState),items:vec![]}};
+        let response=credential_event(&f,&context,&task,serde_json::to_value(wire::TaskEvent::CredentialResult(outcome))?).await?;
+        ensure!(response.0==StatusCode::OK,"unknown: {response:?}");
+        ensure!(pg(&format!("SELECT state->>'execution' FROM mdm_commands.action_runs WHERE tenant_id='{}' AND id='{}'",case_tenant(),task.task_id))?.trim()=="unknown");
+        ensure!(pg(&format!("SELECT count(*) FROM mdm_recovery.versions WHERE tenant_id='{}' AND operation='{}'",case_tenant(),task.task_id))?.trim()==if escrow_only{"1"}else{"0"});
+        Ok(task)
+    }).await?;
+    let base = f.base.clone();
+    drop(f);
+    let mut f = Fixture::from_config(base).await?;
+    let resources = std::mem::take(&mut f.resources);
+    resources
+        .finish(async {
+            f.grants
+                .extend(identity::device_grants(None, &["account_write"])?);
+            identity::set_grants(case_tenant(), &f.author_id, f.grants.clone()).await?;
+            let mut c = sqlx::PgConnection::connect_with(&crate::device::test_support::options(
+                "postgres",
+            )?)
+            .await?;
+            use sqlx::Connection;
+            sqlx::query("SELECT set_config('rss.tenant_id',$1,false)")
+                .bind(case_tenant())
+                .execute(&mut c)
+                .await?;
+            ensure!(
+                rss_mdm_recovery_credentials::storage::start_agent_in(
+                    &mut c,
+                    original.tenant_id,
+                    original.registration_id,
+                    original.generation as i64,
+                    Uuid::new_v4(),
+                    Uuid::new_v4()
+                )
+                .await
+                .is_err(),
+                "restart lost mutation fence"
+            );
+            credential_policy(
+                &mut f,
+                json!({"kind":"verify_local_administrator","sid":sid}),
+            )
+            .await?;
+            let task = claim_credential(&f, &context).await?;
+            ensure!(
+                task.recovery
+                    == Some(wire::CredentialRecovery {
+                        task_id: original.task_id,
+                        attempt_id: original.attempt_id
+                    })
+            );
+            for event in [json!({"kind":"received"}), json!({"kind":"start"})] {
+                let response = credential_event(&f, &context, &task, event).await?;
+                ensure!(response.0 == StatusCode::OK, "verify start {response:?}");
+            }
+            let subject = wire::CredentialSubject::LocalAdministrator { sid: sid.into() };
+            if effect == wire::CredentialRecoveryOutcome::Applied {
+                let envelope = credential_envelope(
+                    &task,
+                    subject.clone(),
+                    b"persisted-before-os-change-2789",
+                )?;
+                let response = credential_event(
+                    &f,
+                    &context,
+                    &task,
+                    serde_json::to_value(wire::TaskEvent::CredentialEscrow(
+                        wire::CredentialEscrow {
+                            definition_digest: task.definition_digest,
+                            materials: vec![envelope],
+                        },
+                    ))?,
+                )
+                .await?;
+                ensure!(
+                    response.0 == StatusCode::OK,
+                    "recovery escrow: {response:?}"
+                );
+            }
+            let response = credential_event(
+                &f,
+                &context,
+                &task,
+                serde_json::to_value(wire::TaskEvent::CredentialResult(wire::CredentialResult {
+                    recovery: Some(effect),
+                    definition_digest: task.definition_digest,
+                    complete: true,
+                    failure: None,
+                    items: if effect == wire::CredentialRecoveryOutcome::Applied {
+                        vec![wire::CredentialItemResult {
+                            subject,
+                            outcome: wire::CredentialOutcome::Verified,
+                        }]
+                    } else {
+                        vec![]
+                    },
+                }))?,
+            )
+            .await?;
+            ensure!(response.0 == StatusCode::OK, "reconcile: {response:?}");
+            ensure!(
+                rss_mdm_recovery_credentials::storage::agent_guard_in(
+                    &mut c,
+                    original.tenant_id,
+                    original.registration_id,
+                    original.generation as i64
+                )
+                .await?
+                .is_none()
+            );
+            let stale = credential_event(
+                &f,
+                &context,
+                &original,
+                serde_json::to_value(wire::TaskEvent::CredentialResult(wire::CredentialResult {
+                    recovery: None,
+                    definition_digest: original.definition_digest,
+                    complete: false,
+                    failure: Some(wire::CredentialFailure::RecoveryState),
+                    items: vec![],
+                }))?,
+            )
+            .await?;
+            ensure!(!stale.0.is_success(), "old attempt reopened settled run");
+            credential_policy(
+                &mut f,
+                json!({"kind":"rotate_local_administrator","sid":sid}),
+            )
+            .await?;
+            let next = claim_credential(&f, &context).await?;
+            for event in [json!({"kind":"received"}), json!({"kind":"start"})] {
+                let response = credential_event(&f, &context, &next, event).await?;
+                ensure!(response.0 == StatusCode::OK, "next rotation {response:?}");
+            }
+            c.close().await?;
+            Ok(())
+        })
+        .await
 }

@@ -180,6 +180,10 @@ impl TaskEventAck {
     deny_unknown_fields
 )]
 pub enum TaskEvent {
+    /// Encrypted material batch; acknowledgment proves durable escrow only.
+    CredentialEscrow(super::CredentialEscrow),
+    /// Final native material verification and cleanup evidence.
+    CredentialResult(super::CredentialResult),
     /// The complete signed offer was received and verified.
     Received,
     /// Request a fresh start permit immediately before executing the task.
@@ -469,6 +473,12 @@ impl TaskEventRequest {
         }
         if let TaskEvent::SoftwareResult(result) = &event {
             result.validate()?;
+        }
+        if let TaskEvent::CredentialEscrow(v) = &event {
+            v.validate()?;
+        }
+        if let TaskEvent::CredentialResult(v) = &event {
+            v.validate()?;
         }
         let input = EventInput {
             wire_version: WIRE_VERSION,
@@ -1290,6 +1300,7 @@ impl SoftwareTaskSpec {
     deny_unknown_fields
 )]
 enum RawTaskPayload {
+    Credential(Box<super::CredentialTaskSpec>),
     Collection(Box<CollectionTaskSpec>),
     Script(Box<TaskSpec>),
     Software(Box<SoftwareTaskSpec>),
@@ -1300,6 +1311,8 @@ enum RawTaskPayload {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(try_from = "RawTaskPayload", into = "RawTaskPayload")]
 pub enum TaskPayload {
+    /// Native recovery material operation; no script or arbitrary output.
+    Credential(Box<super::CredentialTaskSpec>),
     /// Declarative native collection, without script execution authority.
     Collection(Box<CollectionTaskSpec>),
     /// Existing script task, upgraded to the current wire major.
@@ -1313,6 +1326,10 @@ impl TryFrom<RawTaskPayload> for TaskPayload {
     type Error = WireError;
     fn try_from(value: RawTaskPayload) -> Result<Self, Self::Error> {
         match value {
+            RawTaskPayload::Credential(v) => {
+                v.validate()?;
+                Ok(Self::Credential(v))
+            }
             RawTaskPayload::Collection(v) => {
                 v.validate()?;
                 Ok(Self::Collection(v))
@@ -1335,6 +1352,7 @@ impl TryFrom<RawTaskPayload> for TaskPayload {
 impl From<TaskPayload> for RawTaskPayload {
     fn from(value: TaskPayload) -> Self {
         match value {
+            TaskPayload::Credential(v) => Self::Credential(v),
             TaskPayload::Collection(v) => Self::Collection(v),
             TaskPayload::Script(v) => Self::Script(v),
             TaskPayload::Software(v) => Self::Software(v),
@@ -1367,6 +1385,7 @@ impl TaskPayload {
     /// Exact task identity.
     pub fn task_id(&self) -> Uuid {
         match self {
+            Self::Credential(v) => v.task_id,
             Self::Collection(v) => v.task_id,
             Self::Script(v) => v.task_id,
             Self::Software(v) => v.task_id,
@@ -1376,6 +1395,7 @@ impl TaskPayload {
     /// Exact attempt identity.
     pub fn attempt_id(&self) -> Uuid {
         match self {
+            Self::Credential(v) => v.attempt_id,
             Self::Collection(v) => v.attempt_id,
             Self::Script(v) => v.attempt_id,
             Self::Software(v) => v.attempt_id,
@@ -1385,6 +1405,7 @@ impl TaskPayload {
     /// Signed expiry.
     pub fn expires_at(&self) -> i64 {
         match self {
+            Self::Credential(v) => v.expires_at,
             Self::Collection(v) => v.expires_at,
             Self::Script(v) => v.expires_at,
             Self::Software(v) => v.expires_at,
@@ -1394,6 +1415,7 @@ impl TaskPayload {
     /// Selected permission.
     pub fn permit(&self) -> TaskPermit {
         match self {
+            Self::Credential(v) => v.permit,
             Self::Collection(v) => v.permit,
             Self::Script(v) => v.permit,
             Self::Software(v) => v.permit,
@@ -1403,6 +1425,7 @@ impl TaskPayload {
     /// Exact operating system.
     pub fn platform(&self) -> TaskPlatform {
         match self {
+            Self::Credential(v) => v.platform,
             Self::Collection(v) => v.platform,
             Self::Script(v) => v.platform,
             Self::Software(v) => v.platform,
@@ -1412,6 +1435,7 @@ impl TaskPayload {
     /// Exact architecture.
     pub fn architecture(&self) -> TaskArchitecture {
         match self {
+            Self::Credential(v) => v.architecture,
             Self::Collection(v) => v.architecture,
             Self::Script(v) => v.architecture,
             Self::Software(v) => v.architecture,
@@ -1421,6 +1445,7 @@ impl TaskPayload {
     /// Sign validated bytes for this task family.
     pub fn signing_bytes(&self, key_id: &str) -> Result<Vec<u8>, WireError> {
         match self {
+            Self::Credential(v) => v.signing_bytes(key_id),
             Self::Collection(v) => v.signing_bytes(key_id),
             Self::Script(v) => v.signing_bytes(key_id),
             Self::Software(v) => v.signing_bytes(key_id),

@@ -71,6 +71,7 @@ pub(crate) async fn observations(
                 && !phase.prerequisite()
                 && let Some(mut body) = body
             {
+                crate::recovery_credentials::redact(&mut body);
                 if let Some(chain) = body.get("ErrorChain") {
                     error = Some(
                         Fields::from_plist(&protocol::dictionary([("ErrorChain", chain.clone())]))

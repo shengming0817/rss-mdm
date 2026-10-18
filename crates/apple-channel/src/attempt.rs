@@ -177,7 +177,9 @@ pub async fn lock(
     {
         Some(crate::collection_context::retained(&phase, &response)?)
     } else {
-        None
+        let mut safe = response.clone();
+        crate::recovery_credentials::redact(&mut safe);
+        Some(crate::protocol::xml(safe)?)
     };
     Ok(Some(Reception::Ready(Attempt {
         latest: row.try_get("latest").map_err(db)?,

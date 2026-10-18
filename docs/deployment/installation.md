@@ -32,6 +32,8 @@ MDM 宿主使用同一份运行配置生成两份公开 bootstrap 输入：`ui.j
 Identity callback 固定 `/api/v1/identity/oidc/callback`，其它 API 保留后端路由和错误，不能落入 SPA。
 这些宿主配置和 HTTP 接缝由后端验证；前端消费和页面验收由前端 owner 负责。
 
+原生采集持久恢复采用当前 execution schema；旧安装清单拒绝接入，无原地转换或双读。重新安装须使用独立空库，安装器不会自动清理已有数据库。
+
 使用 candidate.json 固定的依赖和二进制 --describe 声明的安装单元。接受空库或完全一致的当前安装记录；失败恢复见[运维](operations.md)。
 
 由数据库管理员创建专用数据库和 `mdm_owner`、`mdm_runtime`、`mdm_api`、`mdm_access` 基础角色。所有产品角色均禁止 SUPERUSER、BYPASSRLS 和高权继承；`mdm_owner` 需要该数据库与 public schema 的 CREATE 权限，但不持有 CREATEROLE。`mdm_api` 是组件 reader 的验证角色，不进入 serve 配置。
@@ -209,3 +211,21 @@ step ca provisioner add rss-windows --type JWK --public-key windows-provisioner.
 ```
 
 其私钥按同一受保护 PKCS#8 流程配置到 Windows provider。模板只从已验签令牌的 `.Token.sub` 生成登记 CN，不复制 CSR 的主体、SAN 或扩展；服务端冻结原 CSR/SPKI 和授权登记，并校验签发结果。令牌中的 CSR 输入名称仅供 step-ca 的前置校验，原 CSR 指纹绑定仍必须验证。不要替换为默认模板或 `.Insecure.CR`。生产叶证书完整 90 天；开发时同步配置明确的有效期和 CA max/default。Docker 候选将 Windows 与 Agent 模板一并哈希交付，运行夹具也消费这份模板。
+
+### 恢复凭据密钥与接收证书
+
+启用恢复凭据时配置顶层 `recovery_credentials`：
+
+```json
+{
+  "active_key": "recovery-2026",
+  "key_files": { "recovery-2026": "/run/mdm/recovery.key" },
+  "active_recipient": "接收证书DER的SHA256小写十六进制指纹",
+  "recipients": [{
+    "certificate_file": "/run/mdm/recovery-recipient.crt",
+    "private_key_file": "/run/mdm/recovery-recipient.key"
+  }]
+}
+```
+
+每个密钥文件恰好 32 个随机原始字节，私密文件权限为 0600。凭据密钥、接收 RSA 私钥、现有 native protection 密钥及 APNs/身份密钥分别生成与保管。接收证书和私钥必须匹配，RSA 至少 2048 位。FileVault 使用该证书接收 CMS，Agent 使用其公钥包裹 AES-GCM 数据密钥；不在客户端配置服务端私钥。未配置时不开放恢复凭据接口或派发该类 Agent 任务，macOS 锁定 PIN 托管也不可用。
