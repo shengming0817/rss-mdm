@@ -383,6 +383,9 @@ pub async fn queue_run_in(
     if native {
         super::native_recovery::wake_run(tx, id).await?;
     }
+    if retirement {
+        crate::sources::storage::wake_execution_in(tx, policy.id).await?;
+    }
     let audit =
         rss_mdm_audit_integration::RequestAudit::new(tx.tenant_id().to_string(), "command_accept");
     audit.operation(id, "command_accept");

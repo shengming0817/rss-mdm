@@ -146,7 +146,7 @@ CREATE TABLE mdm_devices.retirement_channels (
  parent_registration uuid,
  stage text NOT NULL CHECK(stage IN('cleanup','unenroll','revoke','complete')),
  effect text NOT NULL CHECK(effect IN('pending','confirmed','unknown','blocked')),
- execution uuid, reason text,
+ execution uuid, blocking_execution uuid, reason text,
  PRIMARY KEY(tenant_id,operation,registration),
  FOREIGN KEY(tenant_id,operation) REFERENCES mdm_devices.retirements(tenant_id,id),
  FOREIGN KEY(tenant_id,registration,generation) REFERENCES mdm_access.registrations(tenant_id,id,generation)
@@ -161,7 +161,7 @@ REVOKE ALL ON mdm_devices.retirements,mdm_devices.retirement_channels FROM PUBLI
 GRANT SELECT,INSERT ON mdm_devices.retirements,mdm_devices.retirement_channels TO mdm_access,mdm_flow_runtime;
 GRANT SELECT ON mdm_devices.retirements,mdm_devices.retirement_channels,mdm_devices.associations,mdm_devices.members TO mdm_command_runtime;
 GRANT UPDATE(forced_at,forced_by) ON mdm_devices.retirements TO mdm_access;
-GRANT UPDATE(stage,effect,execution,reason) ON mdm_devices.retirement_channels TO mdm_access,mdm_flow_runtime,mdm_command_runtime;
+GRANT UPDATE(stage,effect,execution,blocking_execution,reason) ON mdm_devices.retirement_channels TO mdm_access,mdm_flow_runtime,mdm_command_runtime;
 CREATE INDEX pending_retirement_channels ON mdm_devices.retirement_channels(tenant_id,operation) WHERE stage<>'complete';
 
 CREATE TABLE mdm_devices.retirement_work (
@@ -185,4 +185,15 @@ CREATE POLICY tenant ON mdm_devices.asset_states USING(tenant_id=nullif(current_
 REVOKE ALL ON mdm_devices.asset_states FROM PUBLIC;
 GRANT SELECT,INSERT ON mdm_devices.asset_states TO mdm_access;
 GRANT UPDATE(state) ON mdm_devices.asset_states TO mdm_access;
+CREATE TABLE mdm_devices.retirement_policies (
+ tenant_id uuid NOT NULL,policy uuid NOT NULL,version uuid NOT NULL,operation uuid NOT NULL,
+ PRIMARY KEY(tenant_id,policy,version,operation),
+ FOREIGN KEY(tenant_id,operation) REFERENCES mdm_devices.retirements(tenant_id,id)
+);
+ALTER TABLE mdm_devices.retirement_policies ENABLE ROW LEVEL SECURITY;
+ALTER TABLE mdm_devices.retirement_policies FORCE ROW LEVEL SECURITY;
+CREATE POLICY tenant ON mdm_devices.retirement_policies USING(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid) WITH CHECK(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid);
+REVOKE ALL ON mdm_devices.retirement_policies FROM PUBLIC;
+GRANT SELECT,INSERT ON mdm_devices.retirement_policies TO mdm_access,mdm_flow_runtime;
+GRANT SELECT ON mdm_devices.retirement_policies TO mdm_command_runtime;
 COMMIT;

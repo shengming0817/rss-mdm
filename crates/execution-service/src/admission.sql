@@ -1,7 +1,7 @@
 WITH tables AS (
  SELECT c.* FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='mdm_commands' AND c.relkind='r'
 ), update_columns(relation, col) AS (VALUES
- ('mdm_devices.retirement_channels','stage'),('mdm_devices.retirement_channels','effect'),('mdm_devices.retirement_channels','execution'),('mdm_devices.retirement_channels','reason'),
+ ('mdm_devices.retirement_channels','blocking_execution'),('mdm_devices.retirement_channels','stage'),('mdm_devices.retirement_channels','effect'),('mdm_devices.retirement_channels','execution'),('mdm_devices.retirement_channels','reason'),
  ('mdm_recovery.entries','revision'),('mdm_recovery.entries','current_version'),('mdm_recovery.entries','retired'),('mdm_recovery.versions','validity'),('mdm_recovery.versions','key_id'),('mdm_recovery.versions','sealed'),('mdm_recovery.versions','invalidated_at'),('mdm_recovery.versions','pending'),('mdm_recovery.versions','cleanup_checked_at'),
  ('mdm_recovery.native_actions','inputs_purged'),('mdm_commands.operations','request'),('mdm_apple.attempts','request'),
  ('mdm_access.agent_bootstraps','active'),('mdm_access.agent_bootstraps','cleanup'),('mdm_access.agent_bootstraps','cleanup_complete'),('mdm_access.agent_bootstraps','cleanup_retry_at'),
@@ -42,7 +42,7 @@ WITH tables AS (
  ('public.mdm_installation','instance_id'),('public.mdm_installation','management_tenant_id'),
  ('mdm_access.agent_issuances','tenant_id'),('mdm_access.agent_issuances','credential'),('mdm_access.agent_issuances','not_after')
 ), allowed(relation,sel,ins,del) AS (VALUES
- ('mdm_devices.retirements',true,false,false),('mdm_devices.retirement_channels',true,false,false),('mdm_devices.retirement_work',true,true,false),('mdm_devices.associations',true,false,false),('mdm_devices.members',true,false,false),
+ ('mdm_devices.retirement_policies',true,false,false),('mdm_devices.retirements',true,false,false),('mdm_devices.retirement_channels',true,false,false),('mdm_devices.retirement_work',true,true,false),('mdm_devices.associations',true,false,false),('mdm_devices.members',true,false,false),
  ('mdm_recovery.agent_guards',true,true,true),('mdm_recovery.agent_materials',true,true,false),('mdm_recovery.entries',true,true,false),('mdm_recovery.versions',true,true,false),('mdm_recovery.native_actions',true,true,false),
  ('mdm_pki.certificates',true,false,false),('mdm_pki.revocations',true,false,false),('mdm_agent_packages.releases',true,false,false),('mdm_access.agent_bootstraps',true,true,false),('mdm_access.agent_native_enrollments',true,true,false),('mdm_access.grants',true,true,false),('mdm_pki.trust',true,false,false),('mdm_pki.rotations',true,false,false),('mdm_pki.installations',true,true,false),('mdm_pki.acknowledgements',true,true,false),
  ('mdm_windows.trust_deliveries',true,true,false),('mdm_apple.trust_deliveries',true,true,false),

@@ -49,7 +49,7 @@ pub async fn assignments_in(
     let policy = p.id;
     let cursor = after.map(str::to_owned);
     let retained: Vec<Value> = tx.with_connection(move |c| Box::pin(async move {
-        sqlx::query_scalar("SELECT DISTINCT ON(object) target FROM mdm_devices.retirements WHERE tenant_id=$1::uuid AND policy=$2 AND object>coalesce($3,'') COLLATE \"C\" ORDER BY object,created_at DESC LIMIT 65")
+        sqlx::query_scalar("SELECT DISTINCT ON(o.object) o.target FROM mdm_devices.retirements o JOIN mdm_devices.retirement_policies p ON(p.tenant_id,p.operation)=(o.tenant_id,o.id) WHERE o.tenant_id=$1::uuid AND p.policy=$2 AND o.object>coalesce($3,'') COLLATE \"C\" ORDER BY o.object,o.created_at DESC LIMIT 65")
             .bind(tenant).bind(policy).bind(cursor).fetch_all(c).await
     })).await?;
     for target in retained {

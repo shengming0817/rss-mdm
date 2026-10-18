@@ -441,7 +441,7 @@ async fn unmanage_policy_requires_authority_and_preserves_accepted_exit() -> Res
     let mut f = Fixture::new().await?;
     let resources = std::mem::take(&mut f.resources);
     resources.finish(async {
-        f.register_profile(json!(["inventory.collect.v1", "device.unmanage.v1"])).await?;
+        f.register_profile(json!(["inventory.collect.v1", "device.unmanage.v1", "task.execute.v1"])).await?;
         f.scope(case_task_scope(), json!([{"kind":"device","id":case_device_id()}])).await?;
         let policy = Uuid::new_v4();
         let path = format!("/api/v1/policies/{policy}");
@@ -458,6 +458,10 @@ async fn unmanage_policy_requires_authority_and_preserves_accepted_exit() -> Res
         let empty = claim_request(&f.router,Uuid::new_v4()).await?;
         ensure!(empty.0==StatusCode::OK && empty.1["task"].is_null(),"manual policy ran automatically: {empty:?}");
         ensure!(pg(&format!("SELECT count(*) FROM mdm_devices.retirements WHERE tenant_id='{}' AND policy='{policy}'",case_tenant()))?.trim()=="0");
+        let (resource,_,_)=f.resource().await?;
+        crate::test_support::agent_execution::publish(&mut f.author,&f.router,resource).await?;
+        let ordinary=claim(&f.router).await?;
+        task_event(&f.router,&ordinary,json!({"kind":"received"})).await?;
         let now=crate::clock::Clock::unix_seconds(&crate::clock::SystemClock)?;
         let rerun=json!({"operationId":Uuid::new_v4(),"expectedRevision":1,"input":{"deadline":now+300}});
         post(&mut f.author,&f.router,&format!("{path}/reruns"),rerun.clone()).await?;
@@ -466,13 +470,25 @@ async fn unmanage_policy_requires_authority_and_preserves_accepted_exit() -> Res
         ensure!(task["payload"]["kind"]=="unmanage","{task}");
         let retirement=task["payload"]["task"]["retirementId"].as_str().context("retirement ID")?;
         ensure!(pg(&format!("SELECT retirement FROM mdm_access.devices WHERE tenant_id='{}' AND id='{}'",case_tenant(),case_device_id()))?.trim()==retirement);
+        let mut start=json!({"kind":"start"});
+        let rejected=task_event_request(&f.router,&ordinary,Uuid::new_v4(),&mut start).await?;
+        ensure!(rejected.0==StatusCode::FORBIDDEN || rejected.0==StatusCode::CONFLICT,"ordinary work started after accepted exit: {rejected:?}");
         post(&mut f.author,&f.router,&path,json!({"operationId":Uuid::new_v4(),"expectedRevision":1,"input":{"action":"put","enabled":false,"definition":definition}})).await?;
         task_event(&f.router,&task,json!({"kind":"received"})).await?;
         task_event(&f.router,&task,json!({"kind":"start"})).await?;
         task_event(&f.router,&task,json!({"kind":"unmanage_result","outcome":"unknown"})).await?;
-        let (status,record)=f.author.call(&f.router,Method::GET,&format!("/api/v1/device-retirements/{retirement}"),None).await?;
-        ensure!(status==StatusCode::OK,"{record}");
-        ensure!(record["channels"][0]["effect"]!="confirmed","lost evidence was treated as success: {record}");
+        tokio::time::timeout(Duration::from_secs(30),async {
+            loop {
+                let (status,record)=f.author.call(&f.router,Method::GET,&format!("/api/v1/device-retirements/{retirement}"),None).await?;
+                ensure!(status==StatusCode::OK,"{record}");
+                let channel=&record["channels"][0];
+                if channel["stage"]=="unenroll" && channel["effect"]=="unknown" && channel["reason"]=="agent_uninstall_unconfirmed" {
+                    ensure!(channel["execution"]==task["payload"]["task"]["taskId"]);
+                    break Ok::<_,anyhow::Error>(());
+                }
+                tokio::time::sleep(Duration::from_millis(30)).await;
+            }
+        }).await??;
         ensure!(pg(&format!("SELECT state FROM mdm_access.registrations WHERE tenant_id='{}' AND id='{}'",case_tenant(),task["payload"]["task"]["registrationId"].as_str().context("registration ID")?))?.trim()=="active");
         ensure!(pg(&format!("SELECT count(*) FROM mdm_devices.retirements WHERE tenant_id='{}' AND policy='{policy}'",case_tenant()))?.trim()=="1");
         let forced=json!({"operationId":Uuid::new_v4(),"reason":"device effect unavailable"});
@@ -492,6 +508,43 @@ async fn unmanage_policy_requires_authority_and_preserves_accepted_exit() -> Res
         ensure!(peer.0==StatusCode::UNAUTHORIZED || peer.0==StatusCode::FORBIDDEN,"restoring asset revived its credential: {peer:?}");
         stop_worker(workers).await?;
         stop_worker(automation).await?;
+        Ok(())
+    }).await
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+#[ignore = "make t2 MODULE=planning.onboarding"]
+async fn unmanage_start_without_receipt_expires_through_existing_recovery() -> Result<()> {
+    let mut f = Fixture::new().await?;
+    let resources = std::mem::take(&mut f.resources);
+    resources.finish(async {
+        f.register_profile(json!(["inventory.collect.v1","device.unmanage.v1"])).await?;
+        f.grants.extend(identity::device_grants(None,&["device_unmanage"])?);
+        identity::set_grants(case_tenant(),&f.author_id,f.grants.clone()).await?;
+        f.scope(case_task_scope(),json!([{"kind":"device","id":case_device_id()}])).await?;
+        let policy=Uuid::new_v4();
+        let now=crate::clock::Clock::unix_seconds(&crate::clock::SystemClock)?;
+        post(&mut f.author,&f.router,&format!("/api/v1/policies/{policy}"),json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"put","enabled":true,"definition":{"scope":case_task_scope(),"action":{"kind":"unmanage_device","runLifetimeSeconds":300}}}})).await?;
+        let automation=start_automation(&f.base).await?;
+        let workers=worker(&f.base).await?;
+        post(&mut f.author,&f.router,&format!("/api/v1/policies/{policy}/reruns"),json!({"operationId":Uuid::new_v4(),"expectedRevision":1,"input":{"deadline":now+300}})).await?;
+        let task=claim(&f.router).await?;
+        task_event(&f.router,&task,json!({"kind":"received"})).await?;
+        task_event(&f.router,&task,json!({"kind":"start"})).await?;
+        let execution=task["payload"]["task"]["taskId"].as_str().context("task ID")?;
+        let retirement=task["payload"]["task"]["retirementId"].as_str().context("retirement ID")?;
+        // Move the persisted execution budget across its deadline; no further device
+        // sign-in, Policy change or explicit recovery call may be needed.
+        pg(&format!("UPDATE mdm_commands.action_runs SET state=jsonb_set(state,'{{deadline}}',to_jsonb(floor(extract(epoch FROM clock_timestamp()))::bigint-1)) WHERE tenant_id='{}' AND id='{execution}'",case_tenant()))?;
+        tokio::time::timeout(Duration::from_secs(30),async {
+            loop {
+                let state=pg(&format!("SELECT effect||':'||reason FROM mdm_devices.retirement_channels WHERE tenant_id='{}' AND operation='{retirement}'",case_tenant()))?;
+                if state.trim()=="unknown:agent_uninstall_unconfirmed" {break Ok::<_,anyhow::Error>(());}
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        }).await??;
+        ensure!(pg(&format!("SELECT state->>'execution' FROM mdm_commands.action_runs WHERE tenant_id='{}' AND id='{execution}'",case_tenant()))?.trim()=="unknown");
+        stop_worker(workers).await?;stop_worker(automation).await?;
         Ok(())
     }).await
 }

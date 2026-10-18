@@ -133,7 +133,7 @@ impl ExecutionService {
         audit: &rss_mdm_audit_integration::RequestAudit,
     ) -> Result<bool> {
         use crate::actions::state::Execution;
-        use rss_mdm_device_service::lifecycle::{self as owner, Effect, Stage};
+        use rss_mdm_device_service::lifecycle::{self as owner, Stage};
         let tenant = tx.tenant_id();
         let original = tx
             .with_connection(move |c| {
@@ -169,6 +169,13 @@ impl ExecutionService {
             })
             .await??;
         }
+        let original = tx
+            .with_connection(move |c| {
+                Box::pin(
+                    async move { Ok(owner::read_in(c, tenant, id).await.map_err(Error::from)) },
+                )
+            })
+            .await??;
         for channel in &original.channels {
             if matches!(channel.stage, Stage::Complete | Stage::Revoke) {
                 continue;
@@ -217,6 +224,33 @@ impl ExecutionService {
                         .bind(t).bind(device).bind(id).fetch_one(c).await
                 })).await?;
                 if remaining {
+                    let t = tenant.to_string();
+                    let device = channel.device.clone();
+                    let blocker:Option<(i32,Option<Uuid>)>=tx.with_connection(move|c|Box::pin(async move{
+                        sqlx::query_as("SELECT priority,execution FROM (SELECT 0 AS priority,r.id AS execution FROM mdm_commands.action_runs r WHERE r.tenant_id=$1::uuid AND r.registration IN(SELECT registration FROM mdm_devices.retirement_channels WHERE tenant_id=$1::uuid AND operation=$3) AND r.state->>'execution'='unknown' UNION ALL SELECT 0,o.id FROM mdm_commands.operations o JOIN rss_device_command.commands d ON(d.tenant_id,d.command_id)=(o.tenant_id,o.id::text) WHERE o.tenant_id=$1::uuid AND o.registration IN(SELECT registration FROM mdm_devices.retirement_channels WHERE tenant_id=$1::uuid AND operation=$3) AND d.terminal_at IS NOT NULL AND d.status<>'applied' AND (EXISTS(SELECT 1 FROM mdm_commands.attempts a WHERE(a.tenant_id,a.operation)=(o.tenant_id,o.id) AND a.phase='execute') OR EXISTS(SELECT 1 FROM mdm_apple.attempts a WHERE(a.tenant_id,a.operation)=(o.tenant_id,o.id) AND a.phase='execute' AND a.state<>'pending')) UNION ALL SELECT 1,c.operation FROM mdm_planning.configuration_claims c JOIN mdm_planning.configuration_objects d USING(tenant_id,device,user_key,platform,object_kind,object_key) WHERE c.tenant_id=$1::uuid AND c.device=$2 AND d.diagnosis IN('configuration_conflict','native_group_conflict','removal_blocked_by_shared_unit')) blockers ORDER BY priority,execution LIMIT 1")
+                            .bind(t).bind(device).bind(id).fetch_optional(c).await
+                    })).await?;
+                    let observation = match blocker {
+                        Some((0, execution)) => owner::Observation::CleanupBlocked {
+                            reason: "cleanup_execution_unconfirmed",
+                            execution,
+                            unknown: true,
+                        },
+                        Some((_, execution)) => owner::Observation::CleanupBlocked {
+                            reason: "configuration_removal_blocked",
+                            execution,
+                            unknown: false,
+                        },
+                        None => owner::Observation::CleanupWaiting { execution: None },
+                    };
+                    tx.with_connection(move |c| {
+                        Box::pin(async move {
+                            Ok(owner::observe_in(c, tenant, id, registration, observation)
+                                .await
+                                .map_err(Error::from))
+                        })
+                    })
+                    .await??;
                     continue;
                 }
                 if channel.channel == rss_mdm_inventory::Channel::Agent
@@ -231,14 +265,12 @@ impl ExecutionService {
                 }
                 tx.with_connection(move |c| {
                     Box::pin(async move {
-                        Ok(owner::record_channel_in(
+                        Ok(owner::observe_in(
                             c,
                             tenant,
                             id,
                             registration,
-                            Stage::Unenroll,
-                            Effect::Pending,
-                            None,
+                            owner::Observation::CleanupReady,
                         )
                         .await
                         .map_err(Error::from))
@@ -250,33 +282,21 @@ impl ExecutionService {
             if let Some(execution) = channel.execution {
                 if channel.channel == rss_mdm_inventory::Channel::Agent {
                     let run = crate::actions::storage::load_run(tx, execution).await?;
-                    let (stage, effect, reason) = match run.state.execution {
-                        Execution::Succeeded => (Stage::Revoke, Effect::Confirmed, None),
-                        Execution::Failed => (
-                            Stage::Unenroll,
-                            Effect::Blocked,
-                            Some("agent_uninstall_failed"),
-                        ),
-                        Execution::Unknown => (
-                            Stage::Unenroll,
-                            Effect::Unknown,
-                            Some("agent_uninstall_unconfirmed"),
-                        ),
+                    let observation = match run.state.execution {
+                        Execution::Succeeded => owner::Observation::Uninstalled,
+                        Execution::Failed => owner::Observation::UnenrollmentBlocked {
+                            reason: "agent_uninstall_failed",
+                        },
+                        Execution::Unknown => owner::Observation::UnenrollmentUnknown {
+                            reason: "agent_uninstall_unconfirmed",
+                        },
                         _ => continue,
                     };
                     tx.with_connection(move |c| {
                         Box::pin(async move {
-                            Ok(owner::record_channel_in(
-                                c,
-                                tenant,
-                                id,
-                                registration,
-                                stage,
-                                effect,
-                                reason,
-                            )
-                            .await
-                            .map_err(Error::from))
+                            Ok(owner::observe_in(c, tenant, id, registration, observation)
+                                .await
+                                .map_err(Error::from))
                         })
                     })
                     .await??;
@@ -297,14 +317,12 @@ impl ExecutionService {
                     if let Some(reason) = reason {
                         tx.with_connection(move |c| {
                             Box::pin(async move {
-                                Ok(owner::record_channel_in(
+                                Ok(owner::observe_in(
                                     c,
                                     tenant,
                                     id,
                                     registration,
-                                    Stage::Unenroll,
-                                    Effect::Unknown,
-                                    Some(reason),
+                                    owner::Observation::UnenrollmentUnknown { reason },
                                 )
                                 .await
                                 .map_err(Error::from))
@@ -324,14 +342,14 @@ impl ExecutionService {
                 {
                     tx.with_connection(move |c| {
                         Box::pin(async move {
-                            Ok(owner::record_channel_in(
+                            Ok(owner::observe_in(
                                 c,
                                 tenant,
                                 id,
                                 registration,
-                                Stage::Unenroll,
-                                Effect::Blocked,
-                                Some("agent_unmanage_capability_required"),
+                                owner::Observation::UnenrollmentBlocked {
+                                    reason: "agent_unmanage_capability_required",
+                                },
                             )
                             .await
                             .map_err(Error::from))
@@ -737,14 +755,16 @@ impl ExecutionService {
         let tenant = tx.tenant_id();
         tx.with_connection(move |c| {
             Box::pin(async move {
-                Ok(owner::record_channel_in(
+                Ok(owner::observe_in(
                     c,
                     tenant,
                     id,
                     registration,
-                    owner::Stage::Cleanup,
-                    owner::Effect::Blocked,
-                    Some(reason),
+                    owner::Observation::CleanupBlocked {
+                        reason,
+                        execution: None,
+                        unknown: false,
+                    },
                 )
                 .await
                 .map_err(Error::from))

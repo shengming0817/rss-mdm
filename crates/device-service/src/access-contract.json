@@ -76,7 +76,8 @@
         "stage",
         "effect",
         "execution",
-        "reason"
+        "reason",
+        "blocking_execution"
       ],
       "delete_policy": null
     },
@@ -95,6 +96,13 @@
       "updates": [
         "state"
       ],
+      "delete_policy": null
+    },
+    {
+      "schema": "mdm_devices",
+      "table": "retirement_policies",
+      "read_write": true,
+      "updates": [],
       "delete_policy": null
     }
   ],

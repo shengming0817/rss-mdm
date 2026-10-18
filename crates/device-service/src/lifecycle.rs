@@ -29,6 +29,7 @@ pub struct ChannelResult {
     pub stage: Stage,
     pub effect: Effect,
     pub execution: Option<Uuid>,
+    pub blocking_execution: Option<Uuid>,
     pub reason: Option<String>,
 }
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -96,6 +97,7 @@ pub async fn accept_in(
     }
     if let Some(id)=sqlx::query_scalar("SELECT id FROM mdm_devices.retirements WHERE tenant_id=$1::uuid AND version=$2 AND object=$3 AND occurrence=$4")
         .bind(&tenant).bind(input.version).bind(input.target.object.key()).bind(input.occurrence).fetch_optional(&mut *c).await? {
+        link_policy_in(c, &tenant, input, id).await?;
         return Ok((id,true));
     }
     let mut existing = std::collections::BTreeSet::new();
@@ -116,6 +118,7 @@ pub async fn accept_in(
         let id = *existing.first().ok_or(Error::Conflict)?;
         let prior = read_in(c, tenant_id, id).await?;
         if prior.target.members == input.target.members {
+            link_policy_in(c, &tenant, input, id).await?;
             return Ok((id, true));
         }
         return Err(Error::Conflict);
@@ -148,24 +151,36 @@ pub async fn accept_in(
         sqlx::query("INSERT INTO mdm_devices.retirement_channels(tenant_id,operation,device,channel,registration,generation,parent_registration,stage,effect) SELECT tenant_id,$2,device,channel,id,generation,parent_id,'cleanup','pending' FROM mdm_access.registrations WHERE tenant_id=$1::uuid AND parent_id=$3 AND state='active'")
             .bind(&tenant).bind(id).bind(member.registration_id).execute(&mut *c).await?;
     }
+    link_policy_in(c, &tenant, input, id).await?;
     Ok((id, false))
+}
+
+async fn link_policy_in(
+    c: &mut PgConnection,
+    tenant: &str,
+    input: &Acceptance<'_>,
+    operation: Uuid,
+) -> Result<()> {
+    sqlx::query("INSERT INTO mdm_devices.retirement_policies(tenant_id,policy,version,operation) VALUES($1::uuid,$2,$3,$4) ON CONFLICT DO NOTHING")
+        .bind(tenant).bind(input.policy).bind(input.version).bind(operation).execute(c).await?;
+    Ok(())
 }
 
 pub async fn policy_operations_in(
     c: &mut PgConnection,
     tenant: TenantId,
-    _policy: Uuid,
+    policy: Uuid,
     object: &str,
 ) -> Result<Vec<Uuid>> {
-    Ok(sqlx::query_scalar("SELECT id FROM mdm_devices.retirements WHERE tenant_id=$1::uuid AND object=$2 ORDER BY created_at DESC,id DESC LIMIT 100")
-        .bind(tenant.to_string()).bind(object).fetch_all(c).await?)
+    Ok(sqlx::query_scalar("SELECT o.id FROM mdm_devices.retirements o JOIN mdm_devices.retirement_policies p ON(p.tenant_id,p.operation)=(o.tenant_id,o.id) WHERE o.tenant_id=$1::uuid AND o.object=$2 AND p.policy=$3 GROUP BY o.id,o.created_at ORDER BY o.created_at DESC,o.id DESC LIMIT 100")
+        .bind(tenant.to_string()).bind(object).bind(policy).fetch_all(c).await?)
 }
 
 pub async fn read_in(c: &mut PgConnection, tenant: TenantId, id: Uuid) -> Result<Retirement> {
     let t = tenant.to_string();
     let row=sqlx::query("SELECT policy,version,target,created_at,forced_at FROM mdm_devices.retirements WHERE tenant_id=$1::uuid AND id=$2")
         .bind(&t).bind(id).fetch_optional(&mut *c).await?.ok_or(Error::NotFound)?;
-    let rows=sqlx::query("SELECT device,channel,registration,generation,parent_registration,stage,effect,execution,reason FROM mdm_devices.retirement_channels WHERE tenant_id=$1::uuid AND operation=$2 ORDER BY device,channel")
+    let rows=sqlx::query("SELECT device,channel,registration,generation,parent_registration,stage,effect,execution,blocking_execution,reason FROM mdm_devices.retirement_channels WHERE tenant_id=$1::uuid AND operation=$2 ORDER BY device,channel")
         .bind(&t).bind(id).fetch_all(c).await?;
     let mut channels = Vec::new();
     for r in rows {
@@ -181,6 +196,7 @@ pub async fn read_in(c: &mut PgConnection, tenant: TenantId, id: Uuid) -> Result
             stage: serde_json::from_value(parse("stage")?).map_err(|_| Error::Storage)?,
             effect: serde_json::from_value(parse("effect")?).map_err(|_| Error::Storage)?,
             execution: r.try_get("execution")?,
+            blocking_execution: r.try_get("blocking_execution")?,
             reason: r.try_get("reason")?,
         });
     }
@@ -268,7 +284,7 @@ pub async fn execution_allowed_in(
 }
 
 /// Attach exactly one current execution. Previous results remain in execution history.
-pub async fn bind_execution_in(
+async fn bind_execution_in(
     c: &mut PgConnection,
     tenant: TenantId,
     operation: Uuid,
@@ -288,22 +304,77 @@ pub async fn bind_execution_in(
     }
     Ok(())
 }
-pub async fn record_channel_in(
+/// Facts reported by execution; lifecycle transitions remain owned here.
+pub enum Observation {
+    CleanupReady,
+    CleanupWaiting {
+        execution: Option<Uuid>,
+    },
+    CleanupBlocked {
+        reason: &'static str,
+        execution: Option<Uuid>,
+        unknown: bool,
+    },
+    Uninstalled,
+    UnenrollmentBlocked {
+        reason: &'static str,
+    },
+    UnenrollmentUnknown {
+        reason: &'static str,
+    },
+}
+pub async fn observe_in(
     c: &mut PgConnection,
     tenant: TenantId,
     operation: Uuid,
     registration: Uuid,
-    stage: Stage,
-    effect: Effect,
-    reason: Option<&str>,
+    observation: Observation,
 ) -> Result<()> {
-    let stage = serde_json::to_value(stage).map_err(|_| Error::Malformed)?;
-    let effect = serde_json::to_value(effect).map_err(|_| Error::Malformed)?;
-    let changed=sqlx::query("UPDATE mdm_devices.retirement_channels SET stage=$4,effect=$5,reason=$6 WHERE tenant_id=$1::uuid AND operation=$2 AND registration=$3 AND stage<>'complete'")
-        .bind(tenant.to_string()).bind(operation).bind(registration).bind(stage.as_str()).bind(effect.as_str()).bind(reason).execute(c).await?;
-    if changed.rows_affected() != 1 {
-        return Err(Error::Conflict);
+    let t = tenant.to_string();
+    let device: String = sqlx::query_scalar("SELECT device FROM mdm_devices.retirement_channels WHERE tenant_id=$1::uuid AND operation=$2 AND registration=$3")
+        .bind(&t).bind(operation).bind(registration).fetch_one(&mut *c).await?;
+    lifecycle::lock_device_in(c, &t, &device).await?;
+    let row = sqlx::query("SELECT t.stage,o.forced_at FROM mdm_devices.retirement_channels t JOIN mdm_devices.retirements o ON(o.tenant_id,o.id)=(t.tenant_id,t.operation) WHERE t.tenant_id=$1::uuid AND t.operation=$2 AND t.registration=$3 FOR UPDATE OF t")
+        .bind(&t).bind(operation).bind(registration).fetch_one(&mut *c).await?;
+    let current: String = row.try_get("stage")?;
+    if row.try_get::<Option<i64>, _>("forced_at")?.is_some()
+        || matches!(current.as_str(), "revoke" | "complete")
+    {
+        return Ok(());
     }
+    let (expected, stage, effect, reason, blocking) = match observation {
+        Observation::CleanupReady => ("cleanup", "unenroll", "pending", None, None),
+        Observation::CleanupWaiting { execution } => (
+            "cleanup",
+            "cleanup",
+            "pending",
+            Some("cleanup_in_progress"),
+            execution,
+        ),
+        Observation::CleanupBlocked {
+            reason,
+            execution,
+            unknown,
+        } => (
+            "cleanup",
+            "cleanup",
+            if unknown { "unknown" } else { "blocked" },
+            Some(reason),
+            execution,
+        ),
+        Observation::Uninstalled => ("unenroll", "revoke", "confirmed", None, None),
+        Observation::UnenrollmentBlocked { reason } => {
+            ("unenroll", "unenroll", "blocked", Some(reason), None)
+        }
+        Observation::UnenrollmentUnknown { reason } => {
+            ("unenroll", "unenroll", "unknown", Some(reason), None)
+        }
+    };
+    if current != expected {
+        return Ok(());
+    }
+    sqlx::query("UPDATE mdm_devices.retirement_channels SET stage=$4,effect=$5,reason=$6,blocking_execution=$7 WHERE tenant_id=$1::uuid AND operation=$2 AND registration=$3 AND stage=$8")
+        .bind(t).bind(operation).bind(registration).bind(stage).bind(effect).bind(reason).bind(blocking).bind(expected).execute(c).await?;
     Ok(())
 }
 

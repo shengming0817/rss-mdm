@@ -638,7 +638,55 @@ async fn retirement_fences_complete_target_and_rolls_back_with_acceptance() -> a
             .len(),
         2
     );
-    c.execute("ROLLBACK").await?;
+    assert_eq!(
+        lifecycle::policy_operations_in(&mut c, tenant, input.policy, &target.object.key()).await?,
+        vec![accepted.0]
+    );
+    c.execute("COMMIT").await?;
+    let before = lifecycle::read_in(&mut c, tenant, accepted.0).await?;
+    s.force_retirement(
+        &principal,
+        accepted.0,
+        &rss_mdm_device_service::lifecycle_management::ForceRevoke {
+            operation_id: Uuid::new_v4(),
+            reason: "offline exit".into(),
+        },
+        &audit("device_retirement_force_revoke"),
+    )
+    .await?;
+    // A worker holding the old cleanup observation cannot move force-revoke back.
+    for channel in before.channels {
+        lifecycle::observe_in(
+            &mut c,
+            tenant,
+            accepted.0,
+            channel.registration,
+            lifecycle::Observation::CleanupReady,
+        )
+        .await?;
+        lifecycle::observe_in(
+            &mut c,
+            tenant,
+            accepted.0,
+            channel.registration,
+            lifecycle::Observation::CleanupBlocked {
+                reason: "late_observation",
+                execution: None,
+                unknown: false,
+            },
+        )
+        .await?;
+    }
+    let after = lifecycle::read_in(&mut c, tenant, accepted.0).await?;
+    assert!(after.forced_at.is_some());
+    assert!(
+        after
+            .channels
+            .iter()
+            .all(|c| c.stage == lifecycle::Stage::Revoke
+                && c.effect == lifecycle::Effect::Unknown
+                && c.reason.as_deref() == Some("forced_revoke_cleanup_unconfirmed"))
+    );
     access.close().await;
     Ok(())
 }
