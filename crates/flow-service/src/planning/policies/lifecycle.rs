@@ -117,16 +117,23 @@ impl super::super::Planning {
                     .map_err(|_| Error::Malformed)?;
                 let fact = Fact::business(
                     &audit,
-                    &format!("retirement:{}:accepted", accepted.0),
+                    &format!(
+                        "retirement:{}:policy:{}:{version}:accepted",
+                        accepted.0, policy.id
+                    ),
                     &bytes,
                     200,
                     "success",
                     None,
                 )?;
-                self.audit_store
-                    .append_in(tx, &fact, false)
-                    .await
-                    .map_err(Error::from)?;
+                let appended = self.audit_store.append_in(tx, &fact, false).await;
+                audit.finalize(
+                    appended
+                        .as_ref()
+                        .err()
+                        .map(|_| rss_mdm_audit_integration::FailureReason::Transaction),
+                );
+                appended.map_err(Error::from)?;
             }
         }
         if more {
@@ -153,7 +160,7 @@ impl super::super::Planning {
         loop {
             let audit = RequestAudit::new(self.tenant.to_string(), "device_retirement_schedule");
             audit.identify_service("device-lifecycle");
-            let (next,added)=run(&self.audit_store,&self.runtime,self.tenant,&audit,(self,after),|ctx,tx|Box::pin(async move {
+            let outcome=run(&self.audit_store,&self.runtime,self.tenant,&audit,(self,after),|ctx,tx|Box::pin(async move {
                 let (s,after)=*ctx;
                 let now=crate::action_admission::now(tx).await?;
                 let tenant=tx.tenant_id().to_string();
@@ -165,9 +172,22 @@ impl super::super::Planning {
                 let mut added=0;
                 for (policy,version,value) in rows {
                     let Frozen::UnmanageDevice {schedule,..}=stored(serde_json::from_value(value))? else {return Err(Error::Malformed.into());};
-                    let Some(slot)=schedule.due(-1,now,version.as_bytes())? else {continue;};
-                    if slot.available_at>now {continue;}
-                    let digest=Sha256::digest(serde_json::to_vec(&("unmanage-calendar",s.tenant.to_string(),version,slot.coordinate)).map_err(|_|Error::Malformed)?);
+                    let mut occurrences=Vec::new();
+                    if let Some(slot)=schedule.due(-1,now,version.as_bytes())? && slot.available_at<=now {
+                        occurrences.push(format!("calendar:{}",slot.coordinate));
+                    }
+                    let t=tx.tenant_id().to_string();
+                    let triggers=tx.with_connection(move|c|Box::pin(async move {
+                        sqlx::query_as::<_,(Uuid,i64)>("SELECT id,created_at FROM mdm_policy.triggers WHERE tenant_id=$1::uuid AND version=$2 AND deadline>$3 ORDER BY created_at DESC,id DESC LIMIT 64")
+                            .bind(t).bind(version).bind(now).fetch_all(c).await
+                    })).await?;
+                    for (trigger,at) in triggers {
+                        if let Some(slot)=schedule.occurrence(at,version.as_bytes())? && slot.available_at<=now && slot.window_end.is_none_or(|end|now<end) {
+                            occurrences.push(format!("explicit:{trigger}"));
+                        }
+                    }
+                    for occurrence in occurrences {
+                    let digest=Sha256::digest(serde_json::to_vec(&("unmanage-scheduled",s.tenant.to_string(),version,occurrence)).map_err(|_|Error::Malformed)?);
                     let mut bytes=[0u8;16];bytes.copy_from_slice(&digest[..16]);let id=Uuid::from_bytes(bytes);
                     crate::transaction::lock(tx).await?;
                     let t=tx.tenant_id().to_string();
@@ -178,9 +198,17 @@ impl super::super::Planning {
                         crate::automation::jobs::enqueue_job_in(tx,id,&crate::automation::JobInput::PolicyReconcile{policy}).await?;
                         added+=1;
                     }
+                    }
                 }
                 Ok((next,added))
-            }),TransactionOwner::Planning).await?;
+            }),TransactionOwner::Planning).await;
+            audit.finalize(
+                outcome
+                    .as_ref()
+                    .err()
+                    .map(|_| rss_mdm_audit_integration::FailureReason::Transaction),
+            );
+            let (next, added) = outcome?;
             count += added;
             if next.is_none() {
                 break;

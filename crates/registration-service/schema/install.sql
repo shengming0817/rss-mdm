@@ -15,7 +15,10 @@ BEGIN
  t=(r->>'tenant_id')::uuid;
  CASE TG_TABLE_NAME
  WHEN 'devices' THEN
-  k='device'; i=r->>'id'; dev=i; d=jsonb_build_object('id',i,'retirement',r->'retirement');
+  k='device'; i=r->>'id'; dev=i; d=jsonb_build_object('id',i);
+  -- Admission intent does not replace the endpoint identity or invalidate
+  -- other devices in the same sealed Policy batch.
+  IF previous IS NOT NULL AND d=jsonb_build_object('id',previous->>'id') THEN RETURN NULL; END IF;
  WHEN 'registrations' THEN
   k='registration'; i=r->>'id'; reg=i::uuid; dev=r->>'device';
   d=jsonb_build_object('id',i,'device',dev,'channel',r->>'channel','purpose',r->>'purpose','generation',r->'generation','state',r->>'state');

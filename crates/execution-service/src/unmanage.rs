@@ -219,6 +219,13 @@ impl ExecutionService {
                 }
                 let t = tenant.to_string();
                 let device = channel.device.clone();
+                if channel.channel == rss_mdm_inventory::Channel::Mdm
+                    && !self
+                        .prior_agent_installations_removed_in(tx, id, channel)
+                        .await?
+                {
+                    continue;
+                }
                 let remaining:bool=tx.with_connection(move|c|Box::pin(async move{
                     sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_planning.configuration_claims WHERE tenant_id=$1::uuid AND device=$2) OR EXISTS(SELECT 1 FROM mdm_commands.action_runs WHERE tenant_id=$1::uuid AND registration IN(SELECT registration FROM mdm_devices.retirement_channels WHERE tenant_id=$1::uuid AND operation=$3) AND state->>'execution' IN('running','waiting_reboot','unknown')) OR EXISTS(SELECT 1 FROM mdm_commands.operations o JOIN rss_device_command.commands d ON(d.tenant_id,d.command_id)=(o.tenant_id,o.id::text) WHERE o.tenant_id=$1::uuid AND o.registration IN(SELECT registration FROM mdm_devices.retirement_channels WHERE tenant_id=$1::uuid AND operation=$3) AND (d.terminal_at IS NULL OR (d.status<>'applied' AND (EXISTS(SELECT 1 FROM mdm_commands.attempts a WHERE(a.tenant_id,a.operation)=(o.tenant_id,o.id) AND a.phase='execute') OR EXISTS(SELECT 1 FROM mdm_apple.attempts a WHERE(a.tenant_id,a.operation)=(o.tenant_id,o.id) AND a.phase='execute' AND a.state<>'pending')))))")
                         .bind(t).bind(device).bind(id).fetch_one(c).await
@@ -569,6 +576,62 @@ pub async fn cleanup_allowed_in(
 }
 
 impl ExecutionService {
+    async fn prior_agent_installations_removed_in(
+        &self,
+        tx: &mut PgTransaction<'_>,
+        id: Uuid,
+        channel: &rss_mdm_device_service::lifecycle::ChannelResult,
+    ) -> Result<bool> {
+        use rss_mdm_device_service::lifecycle as owner;
+        let tenant = tx.tenant_id();
+        let t = tenant.to_string();
+        let registration = channel.registration;
+        let generation = channel.generation;
+        let installations:Vec<Uuid>=tx.with_connection(move|c|Box::pin(async move {
+            sqlx::query_scalar("SELECT o.id FROM mdm_commands.operations o JOIN rss_device_command.commands d ON(d.tenant_id,d.command_id)=(o.tenant_id,o.id::text) WHERE o.tenant_id=$1::uuid AND o.registration=$2 AND o.registration_generation=$3 AND o.authority->>'kind'='agent_install' AND o.authority->>'stage'='install' AND d.status='applied' AND NOT EXISTS(SELECT 1 FROM mdm_devices.retirement_channels t WHERE t.tenant_id=$1::uuid AND t.operation=$4 AND t.channel='agent') ORDER BY o.id LIMIT 129")
+                .bind(t).bind(registration).bind(generation).bind(id).fetch_all(c).await
+        })).await?;
+        if installations.len() > 128 {
+            return self
+                .block_retirement_cleanup(tx, id, registration, "agent_installation_history_limit")
+                .await;
+        }
+        for execution in installations {
+            let operation = crate::storage::load(tx, &self.protection, execution).await?;
+            let observation = crate::native_installation::installation_observation(
+                tx,
+                self.apple_results.clone(),
+                self.agent_store.clone(),
+                &operation,
+            )
+            .await?;
+            // Only the installation owner's correlated post-dispatch observation
+            // can prove absence. Bootstrap removal is not program removal.
+            if observation["installation"] == "absent" {
+                continue;
+            }
+            tx.with_connection(move |c| {
+                Box::pin(async move {
+                    Ok(owner::observe_in(
+                        c,
+                        tenant,
+                        id,
+                        registration,
+                        owner::Observation::CleanupBlocked {
+                            reason: "agent_installation_removal_unavailable",
+                            execution: Some(execution),
+                            unknown: false,
+                        },
+                    )
+                    .await
+                    .map_err(Error::from))
+                })
+            })
+            .await??;
+            return Ok(false);
+        }
+        Ok(true)
+    }
     async fn cleanup_software_retirement_in(
         &self,
         tx: &mut PgTransaction<'_>,

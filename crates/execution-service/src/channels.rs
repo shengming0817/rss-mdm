@@ -441,7 +441,9 @@ impl AgentBinding {
             .contains(&rss_mdm_agent_wire::runtime::Capability::InventoryNativeV1)
     }
     pub fn task(&self) -> bool {
-        self.script()
+        self.capabilities
+            .contains(&rss_mdm_agent_wire::runtime::Capability::DeviceUnmanageV1)
+            || self.script()
             || self.software()
             || self.enrollment()
             || self.native_collection()

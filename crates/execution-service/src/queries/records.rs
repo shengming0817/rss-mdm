@@ -332,7 +332,7 @@ pub struct Assignment {
     target: Option<rss_mdm_registration_service::device::endpoints::PrimaryRegistration>,
     qualification: crate::source_authority::ScopeAdmission,
     sources: Vec<crate::source_authority::DeviceObject>,
-    scope_result: Uuid,
+    scope_result: Option<Uuid>,
     task_admission: Option<crate::sources::software::TaskAdmission>,
     operation_ids: Vec<Uuid>,
 }

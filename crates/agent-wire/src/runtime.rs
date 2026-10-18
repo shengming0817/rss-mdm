@@ -232,7 +232,7 @@ impl Capability {
 /// The only supported ordered capability sets for Agent V1.
 pub fn supported_capabilities(value: &[Capability]) -> bool {
     value.first() == Some(&Capability::InventoryCollectionV1)
-        && value.len() <= 22
+        && value.len() <= 23
         && value.windows(2).all(|pair| pair[0] < pair[1])
 }
 

@@ -147,7 +147,7 @@ pub(crate) async fn explanation_on(
             known.insert(row.source);
         }
     }
-    resolve_membership(tenant, frozen, device, at, &known, &uncertain)
+    resolve_membership(tenant, frozen, device, at, &known, &uncertain, None)
 }
 
 fn resolve_membership(
@@ -157,6 +157,7 @@ fn resolve_membership(
     at: Timepoint,
     known: &BTreeSet<usize>,
     uncertain: &BTreeSet<usize>,
+    object: Option<(&DeviceObject, u64)>,
 ) -> Result<Option<s::MemberExplanation>, SourceError> {
     let membership = |refs: &BTreeSet<Reference>| -> Result<Vec<s::SourceMembership>, SourceError> {
         frozen
@@ -166,9 +167,21 @@ fn resolve_membership(
             .filter(|(_, source)| refs.contains(&source.reference))
             .map(|(index, source)| {
                 let id = match &source.reference {
-                    Reference::Device(id) => s::SourceId::Direct(
-                        s::DeviceId::new(tenant, id).map_err(|_| SourceError::Invariant)?,
-                    ),
+                    Reference::Device(id) => {
+                        // Normalize direct endpoint references into the same object
+                        // universe as the verified complete-device target. Multiple
+                        // member references coalesce to one direct object source.
+                        let key = match object {
+                            Some((object, _)) if object.members.iter().any(|m| m.device == *id) => {
+                                object.object.key()
+                            }
+                            Some(_) => ObjectRef::Endpoint(id.clone()).key(),
+                            None => id.clone(),
+                        };
+                        s::SourceId::Direct(
+                            s::DeviceId::new(tenant, key).map_err(|_| SourceError::Invariant)?,
+                        )
+                    }
                     Reference::Group(id) => s::SourceId::Group(
                         s::GroupId::new(tenant, id.to_string())
                             .map_err(|_| SourceError::Invariant)?,
@@ -177,7 +190,10 @@ fn resolve_membership(
                 Ok(s::SourceMembership {
                     source: s::SourceRef::new(
                         id,
-                        source.member_version + source.authority_version + 1,
+                        match (object, &source.reference) {
+                            (Some((_, revision)), Reference::Device(_)) => revision,
+                            _ => source.member_version + source.authority_version + 1,
+                        },
                         at,
                     )
                     .map_err(|_| SourceError::Invariant)?,
@@ -516,8 +532,37 @@ pub async fn lifecycle_objects_on(
                 }
             }
         }
-        let result =
-            resolve_membership(tenant, &frozen, &input.object.key(), at, &known, &uncertain)?;
+        // A direct reference is exact only when its original source snapshot is
+        // complete. Do not turn unavailable evidence into a synthetic membership.
+        valid &= frozen
+            .sources
+            .iter()
+            .enumerate()
+            .all(|(index, source)| match &source.reference {
+                Reference::Device(device) => {
+                    !uncertain.contains(&index)
+                        && known.contains(&index)
+                            == input.members.iter().any(|m| m.device == *device)
+                }
+                Reference::Group(_) => true,
+            });
+        let result = if valid {
+            let mapped_revision = u64::try_from(revision)
+                .map_err(|_| SourceError::Invariant)?
+                .checked_add(1)
+                .ok_or(SourceError::Invariant)?;
+            resolve_membership(
+                tenant,
+                &frozen,
+                &input.object.key(),
+                at,
+                &known,
+                &uncertain,
+                Some((&input, mapped_revision)),
+            )?
+        } else {
+            None
+        };
         let admission = if !valid {
             ScopeAdmission::Pending
         } else {
@@ -546,4 +591,127 @@ pub async fn lifecycle_objects_on(
         });
     }
     Ok(out)
+}
+
+#[cfg(test)]
+mod lifecycle_mapping_tests {
+    use super::*;
+    use crate::planning::{ScopeDefinition, automation::SourceSet};
+    #[test]
+    fn complete_device_direct_sources_keep_limits_and_peer_exclusions() {
+        let tenant = TenantId::parse("11111111-1111-1111-1111-111111111111").unwrap();
+        let native = Reference::Device("native".into());
+        let agent = Reference::Device("agent".into());
+        let other = Reference::Device("other".into());
+        let object = DeviceObject {
+            object: ObjectRef::Association(Uuid::from_u128(1)),
+            association_version: Some(1),
+            verified: true,
+            members: vec![
+                rss_mdm_registration_service::device::endpoints::PrimaryRegistration {
+                    device: "native".into(),
+                    channel: Channel::Mdm,
+                    registration_id: Uuid::from_u128(2),
+                    generation: 1,
+                },
+                rss_mdm_registration_service::device::endpoints::PrimaryRegistration {
+                    device: "agent".into(),
+                    channel: Channel::Agent,
+                    registration_id: Uuid::from_u128(3),
+                    generation: 4,
+                },
+            ],
+        };
+        let mut frozen = ScopeInput {
+            definition: ScopeDefinition {
+                targets: BTreeSet::from([native.clone(), agent.clone()]),
+                limitations: Some(BTreeSet::from([agent.clone()])),
+                exclusions: BTreeSet::from([other.clone()]),
+            },
+            sources: [native.clone(), agent.clone(), other]
+                .into_iter()
+                .enumerate()
+                .map(|(i, reference)| SourceSet {
+                    reference,
+                    member_set: None,
+                    member_version: i as u64 + 1,
+                    definition_version: 1,
+                    authority_version: i as u64,
+                    asset_context: rss_mdm_group_postgres::AssetContext::Endpoint,
+                    snapshot: None,
+                })
+                .collect(),
+            as_of: 1,
+        };
+        let at = Timepoint::try_from(1).unwrap();
+        let known = BTreeSet::from([0, 1]);
+        let unknown = BTreeSet::new();
+        let result = resolve_membership(
+            tenant,
+            &frozen,
+            &object.object.key(),
+            at,
+            &known,
+            &unknown,
+            Some((&object, 10)),
+        )
+        .unwrap()
+        .unwrap();
+        assert!(
+            result.reasons.is_empty(),
+            "two endpoint sources of one device must coalesce despite different source versions"
+        );
+        frozen.definition.targets = BTreeSet::from([native.clone()]);
+        assert!(
+            resolve_membership(
+                tenant,
+                &frozen,
+                &object.object.key(),
+                at,
+                &known,
+                &unknown,
+                Some((&object, 10))
+            )
+            .unwrap()
+            .unwrap()
+            .reasons
+            .is_empty(),
+            "peer membership satisfies the device-level limitation"
+        );
+        frozen.definition.exclusions = BTreeSet::from([agent]);
+        assert!(
+            !resolve_membership(
+                tenant,
+                &frozen,
+                &object.object.key(),
+                at,
+                &known,
+                &unknown,
+                Some((&object, 10))
+            )
+            .unwrap()
+            .unwrap()
+            .reasons
+            .is_empty(),
+            "excluding either endpoint excludes the complete device"
+        );
+        frozen.definition.limitations = None;
+        frozen.definition.exclusions.clear();
+        assert!(
+            resolve_membership(
+                tenant,
+                &frozen,
+                "native",
+                at,
+                &BTreeSet::from([0]),
+                &unknown,
+                None
+            )
+            .unwrap()
+            .unwrap()
+            .reasons
+            .is_empty(),
+            "ordinary endpoint resolution keeps its existing identity contract"
+        );
+    }
 }

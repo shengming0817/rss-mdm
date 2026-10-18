@@ -560,10 +560,13 @@ async fn retirement_fences_complete_target_and_rolls_back_with_acceptance() -> a
     let agent = crate::test_support::case::name("retirement-agent");
     seed(mdm, "mdm", "retirement-serial")?;
     seed(agent, "agent", "retirement-serial")?;
+    let other_mdm = crate::test_support::case::name("retirement-other-mdm");
+    let other_agent = crate::test_support::case::name("retirement-other-agent");
+    seed(other_mdm, "mdm", "retirement-other-serial")?;
+    seed(other_agent, "agent", "retirement-other-serial")?;
     s.reconcile().await?;
-    let association: Uuid = serde_json::from_value(
-        s.views(&principal, &query(64)).await?["items"][0]["reference"]["id"].clone(),
-    )?;
+    let association:Uuid=sqlx::query_scalar("SELECT association_id FROM mdm_devices.members WHERE tenant_id=$1::uuid AND device=$2 AND NOT released").bind(case_a()).bind(mdm).fetch_one(&mut c).await?;
+    let other_association:Uuid=sqlx::query_scalar("SELECT association_id FROM mdm_devices.members WHERE tenant_id=$1::uuid AND device=$2 AND NOT released").bind(case_a()).bind(other_mdm).fetch_one(&mut c).await?;
     let tenant = TenantId::parse(case_a())?;
     let reader = rss_mdm_device_service::planning::PlanningObjects::new(
         access
@@ -585,6 +588,14 @@ async fn retirement_fences_complete_target_and_rolls_back_with_acceptance() -> a
         )
         .await?;
     assert!(target.verified && target.members.len() == 2);
+    let other_target = reader
+        .lookup(
+            &mut c,
+            tenant,
+            snapshot.id,
+            &ObjectRef::Association(other_association),
+        )
+        .await?;
     let authority =
         rss_mdm_authorization_service::snapshot_on(&mut c, case_a(), principal.instance_id())
             .await?;
@@ -606,14 +617,22 @@ async fn retirement_fences_complete_target_and_rolls_back_with_acceptance() -> a
     c.execute("BEGIN").await?;
     let first = lifecycle::accept_in(&mut c, tenant, &reader, &input).await?;
     assert!(!first.1);
-    for device in [mdm, agent] {
+    // Acceptance of one associated device must not invalidate another identity
+    // in the same sealed batch and original transaction.
+    let second_input = Acceptance {
+        target: &other_target,
+        ..input
+    };
+    let second = lifecycle::accept_in(&mut c, tenant, &reader, &second_input).await?;
+    assert_ne!(first.0, second.0);
+    for device in [mdm, agent, other_mdm, other_agent] {
         assert!(
             !rss_mdm_registration_service::lifecycle::work_allowed_in(&mut c, case_a(), device)
                 .await?
         );
     }
     c.execute("ROLLBACK").await?;
-    for device in [mdm, agent] {
+    for device in [mdm, agent, other_mdm, other_agent] {
         assert!(
             rss_mdm_registration_service::lifecycle::work_allowed_in(&mut c, case_a(), device)
                 .await?
@@ -629,7 +648,7 @@ async fn retirement_fences_complete_target_and_rolls_back_with_acceptance() -> a
     input.version = Uuid::new_v4();
     assert_eq!(
         lifecycle::accept_in(&mut c, tenant, &reader, &input).await?,
-        (accepted.0, true)
+        (accepted.0, false)
     );
     assert_eq!(
         lifecycle::read_in(&mut c, tenant, accepted.0)

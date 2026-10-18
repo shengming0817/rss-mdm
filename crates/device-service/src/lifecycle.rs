@@ -97,8 +97,8 @@ pub async fn accept_in(
     }
     if let Some(id)=sqlx::query_scalar("SELECT id FROM mdm_devices.retirements WHERE tenant_id=$1::uuid AND version=$2 AND object=$3 AND occurrence=$4")
         .bind(&tenant).bind(input.version).bind(input.target.object.key()).bind(input.occurrence).fetch_optional(&mut *c).await? {
-        link_policy_in(c, &tenant, input, id).await?;
-        return Ok((id,true));
+        let replay = link_policy_in(c, &tenant, input, id).await?;
+        return Ok((id,replay));
     }
     let mut existing = std::collections::BTreeSet::new();
     for member in &members {
@@ -118,8 +118,8 @@ pub async fn accept_in(
         let id = *existing.first().ok_or(Error::Conflict)?;
         let prior = read_in(c, tenant_id, id).await?;
         if prior.target.members == input.target.members {
-            link_policy_in(c, &tenant, input, id).await?;
-            return Ok((id, true));
+            let replay = link_policy_in(c, &tenant, input, id).await?;
+            return Ok((id, replay));
         }
         return Err(Error::Conflict);
     }
@@ -160,10 +160,10 @@ async fn link_policy_in(
     tenant: &str,
     input: &Acceptance<'_>,
     operation: Uuid,
-) -> Result<()> {
-    sqlx::query("INSERT INTO mdm_devices.retirement_policies(tenant_id,policy,version,operation) VALUES($1::uuid,$2,$3,$4) ON CONFLICT DO NOTHING")
+) -> Result<bool> {
+    let inserted = sqlx::query("INSERT INTO mdm_devices.retirement_policies(tenant_id,policy,version,operation) VALUES($1::uuid,$2,$3,$4) ON CONFLICT DO NOTHING")
         .bind(tenant).bind(input.policy).bind(input.version).bind(operation).execute(c).await?;
-    Ok(())
+    Ok(inserted.rows_affected() == 0)
 }
 
 pub async fn policy_operations_in(

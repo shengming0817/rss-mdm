@@ -441,7 +441,7 @@ async fn unmanage_policy_requires_authority_and_preserves_accepted_exit() -> Res
     let mut f = Fixture::new().await?;
     let resources = std::mem::take(&mut f.resources);
     resources.finish(async {
-        f.register_profile(json!(["inventory.collect.v1", "device.unmanage.v1", "task.execute.v1"])).await?;
+        f.register_profile(json!(["inventory.collect.v1", "task.execute.v1", "device.unmanage.v1"])).await?;
         f.scope(case_task_scope(), json!([{"kind":"device","id":case_device_id()}])).await?;
         let policy = Uuid::new_v4();
         let path = format!("/api/v1/policies/{policy}");
@@ -544,6 +544,58 @@ async fn unmanage_start_without_receipt_expires_through_existing_recovery() -> R
             }
         }).await??;
         ensure!(pg(&format!("SELECT state->>'execution' FROM mdm_commands.action_runs WHERE tenant_id='{}' AND id='{execution}'",case_tenant()))?.trim()=="unknown");
+        stop_worker(workers).await?;stop_worker(automation).await?;
+        Ok(())
+    }).await
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+#[ignore = "make t2 MODULE=planning.onboarding"]
+async fn delayed_explicit_retirement_and_overlapping_policy_history_remain_durable() -> Result<()> {
+    let mut f = Fixture::new().await?;
+    let resources = std::mem::take(&mut f.resources);
+    resources.finish(async {
+        f.register_profile(json!(["inventory.collect.v1","device.unmanage.v1"])).await?;
+        f.grants.extend(identity::device_grants(None,&["device_unmanage"])?);
+        identity::set_grants(case_tenant(),&f.author_id,f.grants.clone()).await?;
+        f.scope(case_task_scope(),json!([{"kind":"device","id":case_device_id()}])).await?;
+        f.scope(case_empty_scope(),json!([])).await?;
+        let a=Uuid::new_v4();let b=Uuid::new_v4();
+        let action=json!({"kind":"unmanage_device","runLifetimeSeconds":300,"schedule":{"trigger":{"kind":"manual"},"notBefore":0,"until":null,"jitterSeconds":60,"window":null}});
+        for policy in [a,b] {
+            post(&mut f.author,&f.router,&format!("/api/v1/policies/{policy}"),json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"put","enabled":true,"definition":{"scope":case_task_scope(),"action":action}}})).await?;
+        }
+        let automation=start_automation(&f.base).await?;
+        let workers=worker(&f.base).await?;
+        // First drain publication jobs without any trigger. The following persisted
+        // trigger has no accompanying job, as after an early delayed reconciliation.
+        tokio::time::timeout(Duration::from_secs(30),async {
+            loop {
+                if pg(&format!("SELECT count(*) FROM mdm_automation.automation_jobs WHERE tenant_id='{}' AND kind='policy_reconcile' AND target IN('{a}','{b}') AND NOT completed",case_tenant()))?.trim()=="0" {break Ok::<_,anyhow::Error>(());}
+                tokio::time::sleep(Duration::from_millis(30)).await;
+            }
+        }).await??;
+        let now=crate::clock::Clock::unix_seconds(&crate::clock::SystemClock)?;
+        let trigger=Uuid::new_v4();
+        pg(&format!("INSERT INTO mdm_policy.triggers(tenant_id,id,version,created_at,deadline) SELECT tenant_id,'{trigger}',current_version,{},{} FROM mdm_policy.policies WHERE tenant_id='{}' AND id='{b}'",now-120,now+600,case_tenant()))?;
+        f.planning.forward_lifecycle_schedules().await?;
+        let task=claim(&f.router).await?;
+        let retirement=task["payload"]["task"]["retirementId"].as_str().context("retirement ID")?;
+        let trigger_a=Uuid::new_v4();
+        post(&mut f.author,&f.router,&format!("/api/v1/policies/{a}/reruns"),json!({"operationId":trigger_a,"expectedRevision":1,"input":{"deadline":now+600}})).await?;
+        pg(&format!("UPDATE mdm_policy.triggers SET created_at={} WHERE tenant_id='{}' AND id='{trigger_a}'",now-120,case_tenant()))?;
+        f.planning.forward_lifecycle_schedules().await?;
+        tokio::time::timeout(Duration::from_secs(30),async {
+            loop {
+                if pg(&format!("SELECT count(*) FROM mdm_devices.retirement_policies WHERE tenant_id='{}' AND operation='{retirement}'",case_tenant()))?.trim()=="2" {break Ok::<_,anyhow::Error>(());}
+                tokio::time::sleep(Duration::from_millis(30)).await;
+            }
+        }).await??;
+        ensure!(pg(&format!("SELECT count(*) FROM mdm_devices.retirement_policies p JOIN rss_audit.records r ON r.tenant_id=p.tenant_id AND r.source_id='mdm.business' AND r.event_id='e-'||encode(sha256(convert_to('retirement:'||p.operation::text||':policy:'||p.policy::text||':'||p.version::text||':accepted','UTF8')),'hex') WHERE p.tenant_id='{}' AND p.operation='{retirement}'",case_tenant()))?.trim()=="2","each new Policy reference needs its own audited fact");
+        post(&mut f.author,&f.router,&format!("/api/v1/policies/{a}"),json!({"operationId":Uuid::new_v4(),"expectedRevision":1,"input":{"action":"put","enabled":false,"definition":{"scope":case_empty_scope(),"action":action}}})).await?;
+        let (status,page)=f.author.call(&f.router,Method::GET,&format!("/api/v1/policies/{a}/assignments"),None).await?;
+        ensure!(status==StatusCode::OK,"{page}");
+        ensure!(page["items"].as_array().context("assignments")?.iter().any(|item|item["operationIds"].as_array().is_some_and(|ids|ids.contains(&json!(retirement)))),"Scope exit lost the shared retirement reference: {page}");
         stop_worker(workers).await?;stop_worker(automation).await?;
         Ok(())
     }).await
