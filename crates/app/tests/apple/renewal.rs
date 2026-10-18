@@ -209,6 +209,7 @@ impl Fixture {
                 .build()?,
             origin: old.origin.clone(),
             topic: old.topic.clone(),
+            pending_replies: Default::default(),
             installed_trust: Default::default(),
             oracle: oracle::Oracle::new(&der)?,
         };

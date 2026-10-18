@@ -309,8 +309,12 @@ impl WindowsSession for Session {
         history: Option<&'a syncml::Expected>,
         response: &'a mut syncml::Message,
         dispatch: bool,
-    ) -> rss_mdm_execution_service::channels::Pending<'a, bool> {
+    ) -> rss_mdm_execution_service::channels::Pending<
+        'a,
+        rss_mdm_execution_service::channels::WindowsCollections,
+    > {
         Box::pin(async move {
+            let mut runs = Vec::new();
             let result: Result<bool, Error> = async {
                 if self.stored.is_none() {
                     supersede_sessions(c, &mut self.facts, p).await?;
@@ -387,7 +391,7 @@ impl WindowsSession for Session {
                         &mut self.facts,
                     )
                     .await?;
-                    crate::template_collection::receive(
+                    let (filtered, processed) = crate::template_collection::receive(
                         source,
                         c,
                         key,
@@ -396,7 +400,9 @@ impl WindowsSession for Session {
                         history,
                         &mut self.facts,
                     )
-                    .await?
+                    .await?;
+                    runs = processed;
+                    filtered
                 } else {
                     input.clone()
                 };
@@ -434,7 +440,14 @@ impl WindowsSession for Session {
                 Ok(pending)
             }
             .await;
-            result.map_err(Into::into)
+            result
+                .map(
+                    |pending| rss_mdm_execution_service::channels::WindowsCollections {
+                        pending,
+                        runs,
+                    },
+                )
+                .map_err(Into::into)
         })
     }
     fn finish<'a>(

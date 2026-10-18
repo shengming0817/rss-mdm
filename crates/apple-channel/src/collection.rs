@@ -7,6 +7,7 @@ use uuid::Uuid;
 // Keep transaction, protection, audit sink and authenticated wire evidence explicit.
 #[allow(clippy::too_many_arguments)]
 pub async fn receive(
+    source: &dyn crate::execution::source_authority::SourceAuthority,
     c: &mut PgConnection,
     protection: &rss_mdm_native_protection::Protector,
     facts: &mut Vec<rss_mdm_audit_integration::Fact>,
@@ -15,18 +16,33 @@ pub async fn receive(
     status: wire::Status,
     d: &plist::Dictionary,
     bytes: &[u8],
-) -> Result<bool, Error> {
+) -> Result<Option<(Uuid, bool)>, Error> {
     use crate::attempt::{self, Owner, Reception};
     let tenant = p.tenant().to_string();
     let attempt = match attempt::lock(c, protection, p, id, Owner::Collection, bytes).await? {
-        None => return Ok(false),
-        Some(Reception::Replay) => return Ok(true),
+        None => return Ok(None),
+        Some(Reception::Replay) => {
+            return sqlx::query_as("SELECT collection,true FROM mdm_apple.attempts WHERE tenant_id=$1::uuid AND id=$2 AND registration=$3 AND generation=$4")
+                .bind(&tenant).bind(id).bind(p.registration()).bind(p.generation()).fetch_optional(c).await.map_err(db);
+        }
         Some(Reception::Ready(attempt)) => attempt,
     };
     let collection = attempt.collection.ok_or(Error::Malformed)?;
-    if !rss_mdm_inventory_service::apple_collection::current(c, &tenant, collection).await? {
+    let current =
+        rss_mdm_inventory_service::apple_collection::current(c, &tenant, collection).await?;
+    if !current
+        || !rss_mdm_execution_service::actions::native_collection::eligible_on(
+            source, c, p, collection,
+        )
+        .await?
+    {
         attempt.settle(c, status, false).await?;
-        return Ok(true);
+        let mut run = store::load_on(c, &tenant, collection).await?;
+        // Expiry and already settled evidence retain the collection owner's reason.
+        if current && run.sealed_at.is_none() {
+            facts.extend(store::seal(c, &mut run, "revoked").await?);
+        }
+        return Ok(Some((collection, false)));
     }
     if matches!(
         attempt.phase.as_str(),
@@ -66,7 +82,7 @@ pub async fn receive(
             )?;
             facts.extend(store::seal(c, &mut run, "complete").await?);
         }
-        return Ok(true);
+        return Ok(Some((collection, false)));
     }
     let native_valid = attempt.valid;
     attempt.settle(c, status, native_valid).await?;
@@ -135,17 +151,19 @@ pub async fn receive(
                 &unsupported,
             )?;
             facts.extend(store::seal(c, &mut run, "complete").await?);
-            return Ok(true);
+            return Ok(Some((collection, false)));
         }
     }
-    Ok(true)
+    Ok(Some((collection, false)))
 }
 pub async fn send(
+    source: &dyn crate::execution::source_authority::SourceAuthority,
     c: &mut PgConnection,
     protection: &rss_mdm_native_protection::Protector,
     p: &DevicePrincipal,
     user_key: &str,
-) -> Result<Vec<u8>, Error> {
+) -> Result<(Vec<u8>, Vec<rss_mdm_audit_integration::Fact>), Error> {
+    let mut facts = Vec::new();
     let tenant = p.tenant().to_string();
     let rows=sqlx::query("SELECT id::text,collection,request FROM mdm_apple.attempts WHERE tenant_id=$1::uuid AND registration=$2::uuid AND generation=$3 AND user_key=$4 AND phase IN ('collect','collect_device','collect_security') AND state IN ('pending','sent','not_now') AND next_attempt<=clock_timestamp() AND deadline>clock_timestamp() ORDER BY collection_sequence LIMIT 32 FOR UPDATE")
         .bind(&tenant).bind(p.registration().to_string()).bind(p.generation()).bind(user_key).fetch_all(&mut *c).await.map_err(db)?;
@@ -155,6 +173,17 @@ pub async fn send(
         if !rss_mdm_inventory_service::apple_collection::current(c, &tenant, collection).await? {
             sqlx::query("UPDATE mdm_apple.attempts SET next_attempt=clock_timestamp()+interval '30 seconds' WHERE tenant_id=$1::uuid AND id=$2::uuid").bind(&tenant).bind(id.to_string()).execute(&mut *c).await.map_err(db)?;
             crate::notify(c, "apple").await.map_err(db)?;
+            continue;
+        }
+        if !rss_mdm_execution_service::actions::native_collection::delivery_eligible_on(
+            source, c, p, collection,
+        )
+        .await?
+        {
+            let mut run = store::load_on(c, &tenant, collection).await?;
+            if run.sealed_at.is_none() {
+                facts.extend(store::seal(c, &mut run, "revoked").await?);
+            }
             continue;
         }
         sqlx::query("UPDATE mdm_apple.attempts SET state='sent',next_attempt=clock_timestamp()+interval '30 seconds' WHERE tenant_id=$1::uuid AND id=$2::uuid")
@@ -171,9 +200,9 @@ pub async fn send(
             crate::protection::Part::Request,
             &sealed,
         )
-        .map(|v| v.expose().to_vec());
+        .map(|v| (v.expose().to_vec(), facts));
     }
-    Ok(Vec::new())
+    Ok((Vec::new(), facts))
 }
 
 pub async fn prepare_native(

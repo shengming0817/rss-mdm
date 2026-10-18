@@ -40,7 +40,6 @@ impl ExecutionService {
                     })
                     .await?;
                     storage::lock(tx, p.device()).await?;
-                    actions::native_collection::settle_device(s, tx, p.device()).await?;
                     let w = w.clone();
                     let protection = s.protection.clone();
                     let source = s.source.clone();
@@ -48,7 +47,7 @@ impl ExecutionService {
                     let message = m.clone();
                     let bytes = b.to_vec();
                     let audit = a.clone();
-                    let (reply, package) = tx
+                    let (reply, package, authenticated, runs) = tx
                         .with_connection(move |c| {
                             Box::pin(async move {
                                 Ok(manage_on(
@@ -64,9 +63,14 @@ impl ExecutionService {
                             })
                         })
                         .await??;
+                    if authenticated {
+                        actions::native_recovery::record(tx, p).await?;
+                    }
                     settle_dispatch_failures(s, tx, p, a).await?;
                     settle_reports(s, tx, p, m.header.session_id, package).await?;
-                    actions::native_collection::settle_device(s, tx, p.device()).await?;
+                    for id in runs {
+                        actions::recovery::recover_one(s, tx, id).await?;
+                    }
                     s.reconcile_agent_install_in(tx, p.device(), a).await?;
                     if !matches!(
                         a.snapshot().management_result,
@@ -101,7 +105,7 @@ async fn manage_on(
     raw: &rss_mdm_windows_mdm::syncml::Message,
     bytes: &[u8],
     audit: &RequestAudit,
-) -> std::result::Result<(channels::Reply, channels::PackageState), Error> {
+) -> std::result::Result<(channels::Reply, channels::PackageState, bool, Vec<Uuid>), Error> {
     let (source, key) = authority;
     use channels::{PackageState as P, WindowsReception};
     use rss_mdm_windows_mdm::syncml::{self as sm, Alert, Command};
@@ -112,7 +116,7 @@ async fn manage_on(
     {
         WindowsReception::Replay { reply, package } => {
             native::replay_on(source, c, key, p, raw).await?;
-            return Ok((reply, package));
+            return Ok((reply, package, false, Vec::new()));
         }
         WindowsReception::Challenge(prepared) => (prepared, false),
         WindowsReception::Authenticated(prepared) => (prepared, true),
@@ -162,7 +166,7 @@ async fn manage_on(
     .await?;
     let outgoing = authenticated && native::outgoing_on(c, p, raw.header.session_id).await?;
     let dispatch = authenticated && prepared.package == P::Complete && !outgoing;
-    let channel_pending = prepared
+    let collections = prepared
         .session
         .collect(
             source,
@@ -254,11 +258,11 @@ async fn manage_on(
             p,
             prepared.response,
             package,
-            channel_pending || command_pending || outgoing,
+            collections.pending || command_pending || outgoing,
         )
         .await
         .map_err(Error::from)?;
-    Ok((reply, package))
+    Ok((reply, package, authenticated, collections.runs))
 }
 
 fn retain_received_acks(

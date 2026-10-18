@@ -7,6 +7,7 @@ pub(super) struct Peer {
     pub origin: String,
     pub topic: String,
     pub oracle: oracle::Oracle,
+    pub pending_replies: tokio::sync::Mutex<std::collections::VecDeque<Vec<u8>>>,
     pub installed_trust: tokio::sync::Mutex<Option<plist::Dictionary>>,
 }
 impl Peer {
@@ -178,7 +179,11 @@ impl Peer {
     async fn next_bytes_mode(&self, kind: &str, collection: bool) -> Result<Vec<u8>> {
         let mut resolving = false;
         for _ in 0..100 {
-            let mut bytes = self.manage("Idle", None, None).await?;
+            let pending = self.pending_replies.lock().await.pop_front();
+            let mut bytes = match pending {
+                Some(bytes) => bytes,
+                None => self.manage("Idle", None, None).await?,
+            };
             for _ in 0..128 {
                 if bytes.is_empty() {
                     break;

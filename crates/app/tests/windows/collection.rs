@@ -303,15 +303,15 @@ async fn template_flow(
     let mut ready = native::post(&peer.mutual, &peer.url, &report).await?;
     ensure!(ready.status() == StatusCode::OK);
     // Applicability requires authenticated native capability facts before admission.
-    // The existing outbox accepts the action before its native read can be sent.
+    // Both outbox acceptance and the worker-created CollectionRun precede protocol delivery.
     use sqlx::Connection;
     let mut pg =
         sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?)
             .await?;
     let pending = tokio::time::timeout(Duration::from_secs(20), async {
         loop {
-            let ready: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_commands.action_runs WHERE tenant_id=$1::uuid AND gateway_accepted AND state->>'execution'='not_started')")
-                .bind(case_tenant()).fetch_one(&mut pg).await?;
+            let ready: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_commands.action_runs r JOIN mdm_policy.versions v ON(v.tenant_id,v.id)=(r.tenant_id,r.policy_version) JOIN mdm_access.collection_runs c ON(c.tenant_id,c.id)=(r.tenant_id,r.id) WHERE r.tenant_id=$1::uuid AND v.policy=$2 AND r.gateway_accepted AND c.sealed_at IS NULL)")
+                .bind(case_tenant()).bind(policy).fetch_one(&mut pg).await?;
             if ready { break; }
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
@@ -379,6 +379,8 @@ async fn template_flow(
             | Completion::EmptyInventory
             | Completion::RevokedInventory
     ) {
+        // The request must settle its own result without assistance from recovery.
+        crate::test_support::stop_worker(owner.take()).await?;
         dynamic_result(
             &host,
             &mut f,
@@ -452,6 +454,20 @@ async fn template_flow(
     let browser = f.browser.clone();
     drop(f);
     host = host.restart().await?;
+    let mut resumed = rss_runtime::ShutdownStack::try_new(
+        rss_runtime::TotalDrainBudget::new(Duration::from_secs(15))?,
+        Arc::new(crate::lifecycle::RuntimeTimer),
+    )?;
+    let mut launch = resumed.startup()?.commit();
+    launch.stage_deferred_task_with_token(
+        host.app
+            .execution
+            .clone()
+            .registration(host.notifications.signals.execution())
+            .critical(),
+    );
+    launch.finish();
+    owner = Some(resumed);
     f = Client::with_browser(host.browser.clone(), host.app.clone(), browser);
     let mut end = packet.clone();
     end.header.message_id += 1;
@@ -499,7 +515,10 @@ async fn template_flow(
     // Recovery happens after its original execution timeout, as after worker downtime.
     sqlx::query("UPDATE mdm_commands.action_runs SET state=jsonb_set(jsonb_set(state,'{execution}','\"running\"'),'{startedAt}',to_jsonb($3::bigint)) WHERE tenant_id=$1::uuid AND id=$2")
         .bind(case_tenant()).bind(runs[0]).bind(now-120).execute(&mut pg).await?;
-    host.app.execution.recover_action_fixture(policy).await?;
+    host.app
+        .execution
+        .recover_native_run_fixture(runs[0])
+        .await?;
     let state:String=sqlx::query_scalar("SELECT state->>'execution' FROM mdm_commands.action_runs WHERE tenant_id=$1::uuid AND id=$2")
         .bind(case_tenant()).bind(runs[0]).fetch_one(&mut pg).await?;
     ensure!(
@@ -509,25 +528,27 @@ async fn template_flow(
     // Shift the completed occurrence to the previous interval; the current one is due.
     sqlx::query("UPDATE mdm_commands.action_runs SET occurrence='timer:'||($3::bigint)::text||':'||registration::text,created_at=$3 WHERE tenant_id=$1::uuid AND id=$2")
         .bind(case_tenant()).bind(runs[0]).bind(now-3600).execute(&mut pg).await?;
-    host.app.execution.recover_action_fixture(policy).await?;
-    let count:i64=sqlx::query_scalar("SELECT count(*) FROM mdm_commands.action_runs r JOIN mdm_policy.versions v ON(v.tenant_id,v.id)=(r.tenant_id,r.policy_version) WHERE r.tenant_id=$1::uuid AND v.policy=$2")
-        .bind(case_tenant()).bind(policy).fetch_one(&mut pg).await?;
-    ensure!(count == 2, "completed run blocked the next occurrence");
+    tokio::time::timeout(std::time::Duration::from_secs(30), async {
+        loop {
+            let count: i64 = sqlx::query_scalar("SELECT count(*) FROM mdm_commands.action_runs r JOIN mdm_policy.versions v ON(v.tenant_id,v.id)=(r.tenant_id,r.policy_version) WHERE r.tenant_id=$1::uuid AND v.policy=$2")
+                .bind(case_tenant()).bind(policy).fetch_one(&mut pg).await?;
+            if count == 2 { return Ok::<_, anyhow::Error>(()); }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+    }).await.map_err(|_| anyhow::anyhow!("completed run blocked the next occurrence"))??;
     // History is retained, but it cannot occupy the entire check-in recovery page.
     sqlx::query("INSERT INTO mdm_commands.action_runs(tenant_id,id,policy_version,device,registration,generation,occurrence,created_at,available_at,deadline,state,gateway_accepted,dispatch_fingerprint,source_objects) SELECT tenant_id,gen_random_uuid(),policy_version,device,registration,generation,'blocked-history:'||n,created_at-1000,available_at,deadline,jsonb_set(jsonb_set(state,'{execution}',to_jsonb(CASE WHEN n<=65 THEN 'unknown' ELSE 'not_started' END::text)),'{cancellation}',to_jsonb(CASE WHEN n<=65 THEN 'none' ELSE 'confirmed' END::text)),gateway_accepted,dispatch_fingerprint,source_objects FROM mdm_commands.action_runs CROSS JOIN generate_series(1,130) n WHERE tenant_id=$1::uuid AND id=$2")
         .bind(case_tenant()).bind(runs[0]).execute(&mut pg).await?;
-    let next:Uuid=sqlx::query_scalar("UPDATE mdm_commands.action_runs SET gateway_accepted=true WHERE tenant_id=$1::uuid AND id<>$2 AND occurrence NOT LIKE 'blocked-history:%' RETURNING id")
+    let next:Uuid=sqlx::query_scalar("SELECT id FROM mdm_commands.action_runs WHERE tenant_id=$1::uuid AND id<>$2 AND occurrence NOT LIKE 'blocked-history:%'")
         .bind(case_tenant()).bind(runs[0]).fetch_one(&mut pg).await?;
-    host.app
-        .execution
-        .settle_native_fixture(case_device())
-        .await?;
-    let initialized:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_access.collection_runs WHERE tenant_id=$1::uuid AND id=$2)")
-        .bind(case_tenant()).bind(next).fetch_one(&mut pg).await?;
-    ensure!(
-        initialized,
-        "historical Unknown/cancelled runs starved native check-in recovery"
-    );
+    tokio::time::timeout(std::time::Duration::from_secs(30), async {
+        loop {
+            let initialized: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_access.collection_runs WHERE tenant_id=$1::uuid AND id=$2)")
+                .bind(case_tenant()).bind(next).fetch_one(&mut pg).await?;
+            if initialized { return Ok::<_, anyhow::Error>(()); }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+    }).await.map_err(|_| anyhow::anyhow!("historical Unknown/cancelled runs starved native recovery"))??;
     let unknown:i64=sqlx::query_scalar("SELECT count(*) FROM mdm_commands.action_runs WHERE tenant_id=$1::uuid AND occurrence LIKE 'blocked-history:%' AND state->>'execution'='unknown'")
         .bind(case_tenant()).fetch_one(&mut pg).await?;
     ensure!(unknown == 65, "unknown history was retried or rewritten");
@@ -542,7 +563,8 @@ async fn template_flow(
         id: 2,
         alert: s::Alert::UnenrollmentRequested,
     }];
-    authenticate_during_recovery(&host, &peer, &mut pg, policy).await?;
+    crate::test_support::stop_worker(owner.take()).await?;
+    authenticate_during_recovery(&host, &peer, &mut pg).await?;
     ensure!(
         native::post(&peer.mutual, &peer.url, &notification)
             .await?
@@ -566,7 +588,6 @@ async fn authenticate_during_recovery(
     host: &Host,
     peer: &crate::windows::test_support::Peer,
     observer: &mut sqlx::PgConnection,
-    policy: Uuid,
 ) -> anyhow::Result<()> {
     use sqlx::Connection;
     let row: Uuid = sqlx::query_scalar("SELECT id FROM mdm_commands.action_runs WHERE tenant_id=$1::uuid AND registration=$2 AND state->>'execution' IN('not_started','running','waiting_reboot','unknown') AND state->>'cancellation'='none' ORDER BY id OFFSET 1 LIMIT 1")
@@ -616,7 +637,7 @@ async fn authenticate_during_recovery(
         result
     };
     let (recovered, authenticated) = tokio::join!(
-        host.app.execution.recover_action_fixture(policy),
+        host.app.execution.recover_native_run_fixture(row),
         authentication
     );
     let closed = connection.close().await;
@@ -799,6 +820,7 @@ async fn dynamic_result(
         .await?;
     seed_prior_list(pg, &agent_scope, &definition, agent_key, &agent_value).await?;
     let mut enumerations = 0;
+    let mut final_packet = None;
     for _ in 0..6 {
         let gets: Vec<_> = wire
             .commands
@@ -886,6 +908,7 @@ async fn dynamic_result(
         packet.commands.sort_by_key(
             |c| matches!(c, s::Command::Results(v) if v.items.iter().any(|i| i.more_data)),
         );
+        final_packet = Some(packet.clone());
         let response = native::post(&peer.mutual, &peer.url, &packet).await?;
         ensure!(
             response.status() == StatusCode::OK,
@@ -984,12 +1007,30 @@ async fn dynamic_result(
                 tail,
             ];
             packet.final_message = true;
+            final_packet = Some(packet.clone());
             let response = native::post(&peer.mutual, &peer.url, &packet).await?;
             ensure!(response.status() == StatusCode::OK);
             wire = s::decode(&response.bytes().await?, &CodecLimits::default())?;
         }
     }
     let result:(String,String)=sqlx::query_as("SELECT result,attempts FROM mdm_access.collection_runs WHERE tenant_id=$1::uuid AND id=$2 AND sealed_at IS NOT NULL").bind(case_tenant()).bind(run).fetch_one(&mut *pg).await.context("dynamic sealed result")?;
+    let action: (String, String) = sqlx::query_as("SELECT state->>'execution',result->>'collectionRun' FROM mdm_commands.action_runs WHERE tenant_id=$1::uuid AND id=$2")
+        .bind(case_tenant()).bind(run).fetch_one(&mut *pg).await?;
+    ensure!(
+        action == ("succeeded".into(), run.to_string()),
+        "final multi-stage receipt did not atomically settle its ActionRun: {action:?}"
+    );
+    let packet = final_packet
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("missing final packet"))?;
+    ensure!(
+        native::post(&peer.mutual, &peer.url, packet)
+            .await?
+            .status()
+            == StatusCode::OK
+    );
+    let before: serde_json::Value = sqlx::query_scalar("SELECT jsonb_build_array(state,result) FROM mdm_commands.action_runs WHERE tenant_id=$1::uuid AND id=$2")
+        .bind(case_tenant()).bind(run).fetch_one(&mut *pg).await?;
     let attempts: serde_json::Value = serde_json::from_str(&result.1)?;
     if matches!(completion, Completion::MissingChild) {
         ensure!(result.0 == "partial", "{result:?}");
@@ -1070,6 +1111,41 @@ async fn dynamic_result(
         retained == serde_json::to_value(&agent_value)?,
         "native collection modified Agent software"
     );
+    crate::test_support::identity::set_grants(
+        case_tenant(),
+        crate::test_support::case::admin(),
+        vec![],
+    )
+    .await?;
+    let mut recovery = rss_runtime::ShutdownStack::try_new(
+        rss_runtime::TotalDrainBudget::new(Duration::from_secs(15))?,
+        Arc::new(crate::lifecycle::RuntimeTimer),
+    )?;
+    let mut launch = recovery.startup()?.commit();
+    launch.stage_deferred_task_with_token(
+        host.app
+            .execution
+            .clone()
+            .registration(host.notifications.signals.execution())
+            .critical(),
+    );
+    launch.finish();
+    tokio::time::timeout(Duration::from_secs(20), async {
+        loop {
+            let converged: bool = sqlx::query_scalar("SELECT result='converged' FROM rss_reconcile.targets WHERE tenant_id=$1::uuid AND reconciler='mdm.commands.v3' AND entity='native-run:'||$2::text")
+                .bind(case_tenant()).bind(run).fetch_one(&mut *pg).await?;
+            if converged { return Ok::<_,anyhow::Error>(()); }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    }).await??;
+    crate::test_support::stop_worker(Some(recovery)).await?;
+    let after: serde_json::Value = sqlx::query_scalar("SELECT jsonb_build_array(state,result) FROM mdm_commands.action_runs WHERE tenant_id=$1::uuid AND id=$2")
+        .bind(case_tenant()).bind(run).fetch_one(&mut *pg).await?;
+    ensure!(
+        before == after,
+        "revocation changed a synchronously sealed result"
+    );
+
     Ok(())
 }
 

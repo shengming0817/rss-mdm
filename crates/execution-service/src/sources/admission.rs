@@ -73,26 +73,8 @@ pub async fn agent_versions_in(
     tx: &mut PgTransaction<'_>,
     registration: Uuid,
 ) -> Result<Vec<Uuid>> {
-    versions_in(tx, registration, false).await
-}
-pub async fn native_versions_in(
-    tx: &mut PgTransaction<'_>,
-    registration: Uuid,
-) -> Result<Vec<Uuid>> {
-    versions_in(tx, registration, true).await
-}
-async fn versions_in(
-    tx: &mut PgTransaction<'_>,
-    registration: Uuid,
-    native: bool,
-) -> Result<Vec<Uuid>> {
     let tenant = tx.tenant_id().to_string();
-    let kinds = if native {
-        rss_mdm_policy::AssignmentBehavior::NativeCollectionRecovery
-    } else {
-        rss_mdm_policy::AssignmentBehavior::AgentCheckIn
-    }
-    .kinds();
+    let kinds = rss_mdm_policy::AssignmentBehavior::AgentCheckIn.kinds();
     let ids=tx.with_connection(move|c|Box::pin(async move {
         sqlx::query("INSERT INTO mdm_commands.action_polls(tenant_id,registration) VALUES($1::uuid,$2::uuid) ON CONFLICT DO NOTHING").bind(&tenant).bind(registration.to_string()).execute(&mut *c).await?;
         let after=sqlx::query_scalar::<_,Option<Uuid>>("SELECT policy_after FROM mdm_commands.action_polls WHERE tenant_id=$1::uuid AND registration=$2::uuid FOR UPDATE").bind(&tenant).bind(registration.to_string()).fetch_one(&mut *c).await?;

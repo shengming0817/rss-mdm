@@ -46,13 +46,33 @@ fn dispatch(
     )))
 }
 
+/// Admission cause is fixed before the asynchronous worker evaluates current authority.
+#[derive(Clone, Copy)]
+pub enum AdmissionTrigger {
+    Agent(Uuid),
+    CheckIn { event: Uuid, at: i64 },
+    Registration { at: i64 },
+    Scheduled,
+}
+impl AdmissionTrigger {
+    fn event_time(self, now: i64) -> i64 {
+        match self {
+            Self::CheckIn { at, .. } | Self::Registration { at } => at,
+            Self::Agent(_) | Self::Scheduled => now,
+        }
+    }
+    fn explicit(self) -> bool {
+        matches!(self, Self::Agent(_) | Self::Scheduled)
+    }
+}
+
 /// Only the authenticated device can cause its own recurring execution to be admitted.
 pub async fn accept_for_device(
     service: &ExecutionService,
     tx: &mut PgTransaction<'_>,
     policy: &db::ScheduledPolicy,
     target: &crate::Target,
-    request: Uuid,
+    trigger: AdmissionTrigger,
     now: i64,
 ) -> Result<()> {
     use rss_mdm_policy::Frequency;
@@ -174,15 +194,30 @@ pub async fn accept_for_device(
         }
         db::ScheduledPolicy::Software(_) => return Ok(()),
     };
+    let native = matches!(policy, db::ScheduledPolicy::Native(_));
+    if native == matches!(trigger, AdmissionTrigger::Agent(_)) {
+        return Err(Error::Malformed.into());
+    }
+    let event_at = trigger.event_time(now);
     let enrollment = matches!(policy, db::ScheduledPolicy::Enrollment(_));
-    let (pending, last) = policy_pending_in(tx, owner, version, target, now, enrollment).await?;
+    let (pending, mut last) =
+        policy_pending_in(tx, owner, version, target, now, enrollment).await?;
     if pending {
         return Ok(());
     }
+    if native {
+        let tenant = tx.tenant_id().to_string();
+        let registration = target.registration;
+        last = tx.with_connection(move |c| Box::pin(async move {
+            sqlx::query_scalar::<_, Option<i64>>("SELECT max(triggered_at) FROM mdm_commands.action_runs WHERE tenant_id=$1::uuid AND policy_version=$2 AND registration=$3")
+                .bind(tenant).bind(version).bind(registration).fetch_one(c).await
+        })).await?;
+    }
     let tenant = tx.tenant_id().to_string();
     let device = target.device.clone();
+    let allow_explicit = trigger.explicit();
     let explicit=tx.with_connection(move|c|Box::pin(async move {
-        sqlx::query_as::<_,(Uuid,i64,i64)>("SELECT t.id,t.created_at,t.deadline FROM mdm_policy.triggers t WHERE t.tenant_id=$1::uuid AND t.version=$2 AND t.deadline>$4 AND NOT EXISTS(SELECT 1 FROM mdm_commands.action_runs r WHERE r.tenant_id=t.tenant_id AND r.policy_version=t.version AND r.device=$3 AND r.occurrence='explicit:'||t.id::text) ORDER BY t.created_at,t.id LIMIT 1").bind(tenant).bind(version).bind(device).bind(now).fetch_optional(c).await
+        sqlx::query_as::<_,(Uuid,i64,i64)>("SELECT t.id,t.created_at,t.deadline FROM mdm_policy.triggers t WHERE t.tenant_id=$1::uuid AND t.version=$2 AND t.deadline>$4 AND $5 AND NOT EXISTS(SELECT 1 FROM mdm_commands.action_runs r WHERE r.tenant_id=t.tenant_id AND r.policy_version=t.version AND r.device=$3 AND r.occurrence='explicit:'||t.id::text) ORDER BY t.created_at,t.id LIMIT 1").bind(tenant).bind(version).bind(device).bind(now).bind(allow_explicit).fetch_optional(c).await
     })).await?;
     if enrollment && explicit.is_none() {
         let tenant = tx.tenant_id().to_string();
@@ -200,12 +235,24 @@ pub async fn accept_for_device(
         match &schedule.trigger {
             Trigger::Manual => return Ok(()),
             Trigger::CheckIn { .. } => {
-                if !check_in_interval_elapsed(&schedule.trigger, last, now) {
+                if !check_in_interval_elapsed(&schedule.trigger, last, event_at) {
                     return Ok(());
                 }
-                (now, format!("checkin:{request}"))
+                match trigger {
+                    AdmissionTrigger::Agent(request) => (now, format!("checkin:{request}")),
+                    AdmissionTrigger::CheckIn { event, at } => (at, format!("checkin:{event}")),
+                    _ => return Ok(()),
+                }
             }
-            Trigger::Registration => (now, format!("registration:{}", target.registration)),
+            Trigger::Registration => match trigger {
+                AdmissionTrigger::Registration { at } => {
+                    (at, format!("registration:{}", target.registration))
+                }
+                AdmissionTrigger::Agent(_) => {
+                    (now, format!("registration:{}", target.registration))
+                }
+                _ => return Ok(()),
+            },
             Trigger::Once { .. } | Trigger::Interval { .. } | Trigger::Weekly { .. } => {
                 let Some(due) = schedule.due(-1, now, target.device.as_bytes())? else {
                     return Ok(());
@@ -247,6 +294,7 @@ pub async fn accept_for_device(
             available,
             deadline,
             now,
+            triggered_at: native.then_some(coordinate),
         },
     )
     .await?;
@@ -261,6 +309,7 @@ pub struct RunInput<'a> {
     pub available: i64,
     pub deadline: i64,
     pub now: i64,
+    pub triggered_at: Option<i64>,
 }
 pub async fn queue_run_in(
     service: &ExecutionService,
@@ -275,10 +324,15 @@ pub async fn queue_run_in(
         available,
         deadline,
         now,
+        triggered_at,
     } = input;
     let db::Source::Policy { version } = source;
     let (policy, _) =
         crate::sources::storage::version_in(&service.policy_reader, tx, version).await?;
+    let native = policy.definition.action.kind() == rss_mdm_policy::ActionKind::NativeCollection;
+    if native != triggered_at.is_some() {
+        return Err(Error::Malformed.into());
+    }
     let reader = service.source.clone();
     let tenant = tx.tenant_id();
     let scope = policy.definition.scope;
@@ -313,9 +367,12 @@ pub async fn queue_run_in(
     let (kind, version) = source.columns();
     let state = checked_input(serde_json::to_value(RunState::new(deadline, now)?))?;
     tx.with_connection(move|c|Box::pin(async move {
-        sqlx::query("INSERT INTO mdm_commands.action_runs(tenant_id,id,source_kind,policy_version,device,registration,generation,occurrence,available_at,deadline,state,dispatch_fingerprint,created_at,source_objects) VALUES($1::uuid,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)")
-            .bind(tenant).bind(id).bind(kind).bind(version).bind(target.device).bind(target.registration).bind(target.generation).bind(occurrence).bind(available).bind(deadline).bind(state).bind(digest).bind(now).bind(evidence).execute(c).await?;Ok(())
+        sqlx::query("INSERT INTO mdm_commands.action_runs(tenant_id,id,source_kind,policy_version,device,registration,generation,occurrence,available_at,deadline,state,dispatch_fingerprint,created_at,source_objects,triggered_at) VALUES($1::uuid,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)")
+            .bind(tenant).bind(id).bind(kind).bind(version).bind(target.device).bind(target.registration).bind(target.generation).bind(occurrence).bind(available).bind(deadline).bind(state).bind(digest).bind(now).bind(evidence).bind(triggered_at).execute(c).await?;Ok(())
     })).await?;
+    if native {
+        super::native_recovery::wake_run(tx, id).await?;
+    }
     let audit =
         rss_mdm_audit_integration::RequestAudit::new(tx.tenant_id().to_string(), "command_accept");
     audit.operation(id, "command_accept");

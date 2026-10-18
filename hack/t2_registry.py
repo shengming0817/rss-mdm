@@ -1127,7 +1127,8 @@ consume(("crates/software-service/tests/support/imports.rs",), "software.catalog
 
 consume(('crates/execution-service/src/actions/output.rs',), 'execution.agent.delivery')
 consume(('crates/execution-service/src/actions/native_collection.rs',
-         'crates/execution-service/src/actions/recovery.rs'), 'windows.management apple.collection')
+         'crates/execution-service/src/actions/recovery.rs',
+         'crates/execution-service/src/actions/native_recovery.rs'), 'windows.management apple.collection apple.fairness apple.identity apple.policy')
 
 consume(('crates/native-protection/*', 'crates/execution-service/src/input_storage.rs', 'crates/execution-service/src/protection.rs'), 'certificate-archive.http windows.enrollment windows.management execution.commands.admission execution.commands.windows execution.commands.configuration execution.commands.onboarding apple.profile')
 

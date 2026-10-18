@@ -86,10 +86,10 @@ impl ExecutionService {
                 let policy=db::load_policy_version(&service.policy_reader,tx,id).await?;
                 let target=crate::Target {device:p.device().into(),registration:p.registration(),generation:p.generation()};
                 match &policy {
-                    db::ScheduledPolicy::Credential(v) if crate::credential_tasks::capable(&binding,v.frozen.input.architecture) => super::production::accept_for_device(service,tx,&policy,&target,input.operation_id(),now).await?,
-                    db::ScheduledPolicy::AgentCollection(v) if crate::agent_collection_eligibility::matches(&binding,v.frozen.input.platform,v.frozen.input.architecture,&v.frozen.definition,input.environment()) => super::production::accept_for_device(service,tx,&policy,&target,input.operation_id(),now).await?,
-                    db::ScheduledPolicy::Enrollment(_) if enrollment_capable => super::production::accept_for_device(service,tx,&policy,&target,input.operation_id(),now).await?,
-                    db::ScheduledPolicy::Script(script) if crate::script_eligibility::matches(&binding,script.frozen.input.platform,script.frozen.input.architecture,script.frozen.executor_profile(),input.profiles()) => super::production::accept_for_device(service,tx,&policy,&target,input.operation_id(),now).await?,
+                    db::ScheduledPolicy::Credential(v) if crate::credential_tasks::capable(&binding,v.frozen.input.architecture) => super::production::accept_for_device(service,tx,&policy,&target,super::production::AdmissionTrigger::Agent(input.operation_id()),now).await?,
+                    db::ScheduledPolicy::AgentCollection(v) if crate::agent_collection_eligibility::matches(&binding,v.frozen.input.platform,v.frozen.input.architecture,&v.frozen.definition,input.environment()) => super::production::accept_for_device(service,tx,&policy,&target,super::production::AdmissionTrigger::Agent(input.operation_id()),now).await?,
+                    db::ScheduledPolicy::Enrollment(_) if enrollment_capable => super::production::accept_for_device(service,tx,&policy,&target,super::production::AdmissionTrigger::Agent(input.operation_id()),now).await?,
+                    db::ScheduledPolicy::Script(script) if crate::script_eligibility::matches(&binding,script.frozen.input.platform,script.frozen.input.architecture,script.frozen.executor_profile(),input.profiles()) => super::production::accept_for_device(service,tx,&policy,&target,super::production::AdmissionTrigger::Agent(input.operation_id()),now).await?,
                     db::ScheduledPolicy::Software(software) if software_capable => super::software::accept_for_device(service,tx,software,&target,now).await?,
                     _ => (),
                 }

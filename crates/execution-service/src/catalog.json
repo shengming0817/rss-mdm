@@ -254,6 +254,15 @@
     ],
     [
       "action_runs",
+      "triggered_at",
+      "bigint",
+      false,
+      null,
+      "",
+      ""
+    ],
+    [
+      "action_runs",
       "created_at",
       "bigint",
       true,
@@ -904,6 +913,78 @@
       "devices",
       "recovery_after",
       "text",
+      false,
+      null,
+      "",
+      ""
+    ],
+    [
+      "native_checkins",
+      "tenant_id",
+      "uuid",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "native_checkins",
+      "registration",
+      "uuid",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "native_checkins",
+      "generation",
+      "bigint",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "native_checkins",
+      "active_event",
+      "uuid",
+      false,
+      null,
+      "",
+      ""
+    ],
+    [
+      "native_checkins",
+      "active_at",
+      "bigint",
+      false,
+      null,
+      "",
+      ""
+    ],
+    [
+      "native_checkins",
+      "policy_after",
+      "uuid",
+      false,
+      null,
+      "",
+      ""
+    ],
+    [
+      "native_checkins",
+      "pending_event",
+      "uuid",
+      false,
+      null,
+      "",
+      ""
+    ],
+    [
+      "native_checkins",
+      "pending_at",
+      "bigint",
       false,
       null,
       "",
@@ -1660,6 +1741,13 @@
       true
     ],
     [
+      "action_runs",
+      "action_runs_triggered_at_check",
+      "c",
+      "CHECK (((triggered_at IS NULL) OR (triggered_at >= 0)))",
+      true
+    ],
+    [
       "attempt_frames",
       "attempt_frames_attempt_fkey",
       "f",
@@ -1907,6 +1995,62 @@
     [
       "devices",
       "devices_tenant_id_registration_fkey",
+      "f",
+      "FOREIGN KEY (tenant_id, registration) REFERENCES mdm_access.registrations(tenant_id, id)",
+      true
+    ],
+    [
+      "native_checkins",
+      "native_checkins_active_at_check",
+      "c",
+      "CHECK (((active_at IS NULL) OR (active_at >= 0)))",
+      true
+    ],
+    [
+      "native_checkins",
+      "native_checkins_check",
+      "c",
+      "CHECK (((active_event IS NULL) = (active_at IS NULL)))",
+      true
+    ],
+    [
+      "native_checkins",
+      "native_checkins_check1",
+      "c",
+      "CHECK (((pending_event IS NULL) = (pending_at IS NULL)))",
+      true
+    ],
+    [
+      "native_checkins",
+      "native_checkins_check2",
+      "c",
+      "CHECK (((active_event IS NOT NULL) OR (policy_after IS NULL)))",
+      true
+    ],
+    [
+      "native_checkins",
+      "native_checkins_generation_check",
+      "c",
+      "CHECK ((generation > 0))",
+      true
+    ],
+    [
+      "native_checkins",
+      "native_checkins_pending_at_check",
+      "c",
+      "CHECK (((pending_at IS NULL) OR (pending_at >= 0)))",
+      true
+    ],
+    [
+      "native_checkins",
+      "native_checkins_pkey",
+      "p",
+      "PRIMARY KEY (tenant_id, registration, generation)",
+      true
+    ],
+    [
+      "native_checkins",
+      "native_checkins_tenant_id_registration_fkey",
       "f",
       "FOREIGN KEY (tenant_id, registration) REFERENCES mdm_access.registrations(tenant_id, id)",
       true
@@ -2346,6 +2490,14 @@
       "devices",
       "devices_tenant_id_command_device_key",
       "CREATE UNIQUE INDEX devices_tenant_id_command_device_key ON mdm_commands.devices USING btree (tenant_id, command_device)",
+      true,
+      true,
+      true
+    ],
+    [
+      "native_checkins",
+      "native_checkins_pkey",
+      "CREATE UNIQUE INDEX native_checkins_pkey ON mdm_commands.native_checkins USING btree (tenant_id, registration, generation)",
       true,
       true,
       true

@@ -68,6 +68,11 @@ pub struct PreparedWindows {
     pub package: PackageState,
     pub session: Box<dyn WindowsSession>,
 }
+/// Native runs processed by this request, returned by the protocol correlation owner.
+pub struct WindowsCollections {
+    pub pending: bool,
+    pub runs: Vec<uuid::Uuid>,
+}
 /// One request's channel participant. Every method borrows the original transaction.
 pub trait WindowsSession: Send {
     /// Channel-owned prerequisite reads can authorize a further bounded data fragment.
@@ -93,7 +98,7 @@ pub trait WindowsSession: Send {
         history: Option<&'a rss_mdm_windows_mdm::syncml::Expected>,
         response: &'a mut rss_mdm_windows_mdm::syncml::Message,
         dispatch: bool,
-    ) -> Pending<'a, bool>;
+    ) -> Pending<'a, WindowsCollections>;
     fn finish<'a>(
         self: Box<Self>,
         c: &'a mut PgConnection,
@@ -290,6 +295,7 @@ pub trait AppleExchange: Send {
     fn current<'a>(&'a self, c: &'a mut PgConnection, p: &'a DevicePrincipal) -> Pending<'a, ()>;
     fn reception<'a>(
         self: Box<Self>,
+        source: &'a dyn crate::source_authority::SourceAuthority,
         c: &'a mut PgConnection,
         p: &'a DevicePrincipal,
         audit: &'a rss_mdm_audit_integration::RequestAudit,
@@ -298,7 +304,7 @@ pub trait AppleExchange: Send {
 pub enum AppleReception {
     Idle,
     Replay,
-    Collection(Vec<Fact>),
+    Collection { facts: Vec<Fact>, run: Option<Uuid> },
     Command(Box<dyn AppleAttempt>),
 }
 pub struct AppleCommand {
@@ -355,6 +361,7 @@ pub trait Apple: Send + Sync {
     ) -> Pending<'a, Reply>;
     fn collection<'a>(
         &'a self,
+        source: &'a dyn crate::source_authority::SourceAuthority,
         c: &'a mut PgConnection,
         p: &'a DevicePrincipal,
         user_key: &'a str,

@@ -14,9 +14,9 @@ pub async fn admit_policy(
     service: &ExecutionService,
     tx: &mut PgTransaction<'_>,
     id: Uuid,
-) -> Result<()> {
+) -> Result<bool> {
     let Some(policy) = policies::storage::read_in(&service.policy_reader, tx, id).await? else {
-        return Ok(());
+        return Ok(false);
     };
     if !policy.state.is_enabled()
         || !matches!(
@@ -24,25 +24,18 @@ pub async fn admit_policy(
             rss_mdm_policy::Action::NativeCollection { .. }
         )
     {
-        return Ok(());
+        return Ok(false);
     }
     let plan = db::load_policy_version(&service.policy_reader, tx, policy.version).await?;
     let db::ScheduledPolicy::Native(native) = &plan else {
         return Err(Error::Malformed.into());
     };
-    if matches!(
-        native.frozen.input.schedule.trigger,
-        rss_mdm_policy::schedule::Trigger::CheckIn { .. }
-            | rss_mdm_policy::schedule::Trigger::Registration
-    ) {
-        return Ok(());
-    }
     let source = native.frozen.collection.source().as_str().to_owned();
     let tenant = tx.tenant_id().to_string();
     let now = storage::now(tx).await?;
     let rows=tx.with_connection(move|c|Box::pin(async move {
         sqlx::query("INSERT INTO mdm_commands.policy_recovery(tenant_id,policy) VALUES($1::uuid,$2) ON CONFLICT DO NOTHING").bind(&tenant).bind(id).execute(&mut *c).await?;
-        sqlx::query("SELECT r.device,r.id,r.generation FROM mdm_access.registrations r JOIN mdm_access.report_sources s ON(s.tenant_id,s.registration)=(r.tenant_id,r.id) WHERE r.tenant_id=$1::uuid AND r.state='active' AND s.enabled AND s.source=$3 AND r.device>coalesce((SELECT target_after FROM mdm_commands.policy_recovery WHERE tenant_id=$1::uuid AND policy=$2),'') COLLATE \"C\" ORDER BY r.device COLLATE \"C\" LIMIT 32")
+        sqlx::query("SELECT r.device,r.id,r.generation FROM mdm_access.registrations r JOIN mdm_access.report_sources s ON(s.tenant_id,s.registration)=(r.tenant_id,r.id) WHERE r.tenant_id=$1::uuid AND r.state='active' AND s.enabled AND s.source=$3 AND r.device>coalesce((SELECT target_after FROM mdm_commands.policy_recovery WHERE tenant_id=$1::uuid AND policy=$2),'') COLLATE \"C\" ORDER BY r.device COLLATE \"C\" LIMIT 1")
             .bind(tenant).bind(id).bind(source).fetch_all(c).await
     })).await?;
     let mut last = None;
@@ -53,15 +46,22 @@ pub async fn admit_policy(
             registration: row.try_get("id")?,
             generation: row.try_get("generation")?,
         };
-        storage::lock(tx, &target.device).await?;
-        super::production::accept_for_device(service, tx, &plan, &target, Uuid::new_v4(), now)
-            .await?;
+        super::native_recovery::lock_device(tx, &target.device).await?;
+        super::production::accept_for_device(
+            service,
+            tx,
+            &plan,
+            &target,
+            super::production::AdmissionTrigger::Scheduled,
+            now,
+        )
+        .await?;
         last = Some(target.device);
     }
     let tenant = tx.tenant_id().to_string();
-    let after = if count == 32 { last } else { None };
+    let after = if count == 1 { last } else { None };
     tx.with_connection(move|c|Box::pin(async move{sqlx::query("UPDATE mdm_commands.policy_recovery SET target_after=$3 WHERE tenant_id=$1::uuid AND policy=$2").bind(tenant).bind(id).bind(after).execute(c).await?;Ok(())})).await?;
-    Ok(())
+    Ok(count == 1)
 }
 /// Reconcile sealed evidence without admitting, renewing or dispatching a collection.
 pub async fn settle_run(tx: &mut PgTransaction<'_>, run: &mut db::Run) -> Result<()> {
@@ -190,96 +190,6 @@ pub async fn advance_run(
     }
     Ok(())
 }
-pub async fn settle_device(
-    service: &ExecutionService,
-    tx: &mut PgTransaction<'_>,
-    device: &str,
-) -> Result<()> {
-    let registration = match storage::current_registration(
-        tx,
-        device,
-        rss_mdm_registration_service::Purpose::Primary,
-    )
-    .await
-    {
-        Ok(v) => Some(v),
-        Err(crate::transaction::Fault::Request(Error::Conflict)) => None,
-        Err(e) => return Err(e),
-    };
-    if let Some((registration, generation)) = registration {
-        for version in policies::admission::native_versions_in(tx, registration).await? {
-            let plan = db::load_policy_version(&service.policy_reader, tx, version).await?;
-            let db::ScheduledPolicy::Native(native) = &plan else {
-                continue;
-            };
-            let source = match native.frozen.input.platform {
-                rss_mdm_policy::Platform::Windows => rss_mdm_inventory::ReportSource::MdmWindows,
-                rss_mdm_policy::Platform::Macos => rss_mdm_inventory::ReportSource::MdmApple,
-            };
-            match storage::require_source(tx, registration, source).await {
-                Ok(()) => (),
-                Err(crate::transaction::Fault::Request(Error::Conflict | Error::Unsupported)) => {
-                    continue;
-                }
-                Err(e) => return Err(e),
-            }
-            {
-                let now = storage::now(tx).await?;
-                let target = crate::Target {
-                    device: device.into(),
-                    registration,
-                    generation,
-                };
-                super::production::accept_for_device(
-                    service,
-                    tx,
-                    &plan,
-                    &target,
-                    Uuid::new_v4(),
-                    now,
-                )
-                .await?;
-            }
-        }
-    }
-    let tenant = tx.tenant_id().to_string();
-    let device = device.to_owned();
-    let now = storage::now(tx).await?;
-    // Completed/cancelled evidence and not-yet-admitted reads can make progress now.
-    // Waiting/Unknown history must not consume their bounded check-in page.
-    let ids: Vec<Uuid> = tx
-        .with_connection(move |c| {
-            Box::pin(async move {
-                sqlx::query_scalar(
-                    r#"SELECT r.id FROM mdm_commands.action_runs r
-        LEFT JOIN mdm_policy.versions v ON(v.tenant_id,v.id)=(r.tenant_id,r.policy_version)
-        LEFT JOIN mdm_access.collection_runs c ON(c.tenant_id,c.id)=(r.tenant_id,r.id)
-        WHERE r.tenant_id=$1::uuid AND r.device=$2
-          AND v.frozen->>'kind'='native_collection'
-          AND r.state->>'execution' IN('not_started','running','unknown')
-          AND r.state->>'cancellation'<>'confirmed'
-        ORDER BY CASE
-          WHEN r.state->>'cancellation'='requested' THEN 0
-          WHEN r.state->>'execution'='unknown' THEN 4
-          WHEN c.sealed_at IS NOT NULL OR r.deadline<=$3 THEN 0
-          WHEN r.gateway_accepted AND c.id IS NULL AND r.available_at<=$3 THEN 1
-          WHEN c.id IS NOT NULL THEN 2
-          ELSE 3 END, r.created_at,r.id LIMIT 64"#,
-                )
-                .bind(tenant)
-                .bind(device)
-                .bind(now)
-                .fetch_all(c)
-                .await
-            })
-        })
-        .await?;
-    for id in ids {
-        super::recovery::recover_one(service, tx, id).await?;
-    }
-    Ok(())
-}
-
 /// Protocol owner marks the exact frozen read dispatched, on the Flow-owned connection.
 pub async fn sent(
     c: &mut sqlx::PgConnection,
@@ -319,44 +229,6 @@ pub async fn sent(
         .map_err(crate::database::db)?;
     }
     Ok(())
-}
-
-/// Revalidate every live Apple template before protocol receipt or delivery under device locks.
-/// Recovery's bounded work page is not an authorization boundary for a reported run.
-pub(crate) async fn fence_apple_collections(
-    service: &ExecutionService,
-    tx: &mut PgTransaction<'_>,
-    principal: &crate::device::DevicePrincipal,
-) -> Result<()> {
-    let mut after = None;
-    loop {
-        let tenant = tx.tenant_id().to_string();
-        let registration = principal.registration();
-        let generation = principal.generation();
-        let ids: Vec<Uuid> = tx.with_connection(move |c| Box::pin(async move {
-            sqlx::query_scalar("SELECT c.id FROM mdm_access.collection_runs c JOIN mdm_access.registrations r ON (r.tenant_id,r.id)=(c.tenant_id,c.registration) WHERE c.tenant_id=$1::uuid AND c.registration=$2 AND r.generation=$3 AND c.source='mdm.apple' AND c.evidence ? 'nativeTemplate' AND c.sealed_at IS NULL AND c.deadline>clock_timestamp() AND ($4::uuid IS NULL OR c.id>$4) ORDER BY c.id LIMIT 64")
-                .bind(tenant).bind(registration).bind(generation).bind(after).fetch_all(c).await
-        })).await?;
-        for id in &ids {
-            let source = service.source.clone();
-            let principal = principal.clone();
-            let id = *id;
-            let eligible = tx
-                .with_connection(move |c| {
-                    Box::pin(
-                        async move { Ok(eligible_on(source.as_ref(), c, &principal, id).await) },
-                    )
-                })
-                .await??;
-            if !eligible {
-                super::collection::abandon(service, tx, id, "revoked").await?;
-            }
-        }
-        if ids.len() < 64 {
-            return Ok(());
-        }
-        after = ids.last().copied();
-    }
 }
 
 /// Check current frozen operation grants on the same connection used by the protocol owner.
