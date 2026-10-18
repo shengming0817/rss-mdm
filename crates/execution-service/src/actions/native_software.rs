@@ -93,112 +93,122 @@ pub async fn advance_run(
             return Ok(());
         }
         let op = storage::load(tx, &service.protection, run.id).await?;
-        if matches!(op.request.task, crate::Task::Windows { .. }) {
-            let command = service.required_command(tx, &op).await?;
-            if let crate::queries::records::NativeObservation::Windows { receipts, .. } =
-                crate::protocol::observation(
-                    tx,
-                    &service.protection,
-                    service.apple_results.clone(),
-                    &op,
-                    command.status(),
-                    true,
-                )
-                .await?
-            {
-                let latest = receipts
-                    .iter()
-                    .filter(|r| {
-                        r.phase == crate::AttemptPhase::Observe
-                            && r.accepted == Some(true)
-                            && r.result_accepted == Some(true)
-                            && r.status == Some(200)
-                    })
-                    .map(|r| r.ordinal)
-                    .max();
-                if let Some(latest) = latest {
-                    let value = |suffix: &str| {
-                        receipts
-                            .iter()
-                            .find(|r| {
-                                r.ordinal == latest
-                                    && r.uri.as_deref().is_some_and(|uri| uri.ends_with(suffix))
-                                    && r.accepted == Some(true)
-                                    && r.result_accepted == Some(true)
-                                    && r.status == Some(200)
-                            })
-                            .and_then(|r| r.value.as_deref())
-                    };
-                    let verified = match &op.request.task {
-                        crate::Task::Windows {
-                            request: rss_mdm_windows_mdm::native::Execution::Msi { job },
-                        } => {
-                            value("/Status") == Some("70")
-                                && value("/Version") == Some(job.version.as_str())
-                        }
-                        _ => {
-                            let actual = serde_json::to_value(&op.request.task)
-                                .map_err(|_| Error::Malformed)?;
-                            policy
-                                .assignment
-                                .frozen
-                                .native_packages
-                                .values()
-                                .find(|p| {
-                                    p.task(run.id, &service.protection, service.tenant)
-                                        .ok()
-                                        .and_then(|t| serde_json::to_value(t).ok())
-                                        .as_ref()
-                                        == Some(&actual)
-                                })
-                                .is_some_and(|p| match &p.identity {
-                                    crate::native_software::Identity::Msix { identity, .. } => {
-                                        matches!(value("/IsProvisioned"), Some("1" | "true"))
-                                            && value("/Version")
-                                                == Some(
-                                                    identity
-                                                        .version
-                                                        .map(|v| v.to_string())
-                                                        .join(".")
-                                                        .as_str(),
-                                                )
-                                    }
-                                    _ => false,
-                                })
-                        }
-                    };
-                    if verified {
-                        if !command.status().is_terminal() {
-                            let report = crate::dc::DeviceReport {
-                                scope: op.scope,
-                                command_id: op.command_id()?,
-                                coordinate: op.coordinate,
-                                event: crate::dc::DeviceEvent::Reported(op.request.digest(
-                                    &service.protection,
-                                    service.tenant,
-                                    &op.device,
-                                )?),
-                            };
-                            if service.store.report(tx, &report).await?.outcome
-                                == crate::dc::Outcome::OutOfOrder
-                            {
-                                return Err(Error::Conflict.into());
-                            }
-                        }
-                        run.state.result(run.id, true)?;
-                        run.result = Some(
-                            serde_json::json!({"operation":run.id,"effect":"verified","effectObservedAt":now}),
-                        );
-                        return Ok(());
+        let command = service.required_command(tx, &op).await?;
+        let observation = crate::protocol::observation(
+            tx,
+            &service.protection,
+            service.apple_results.clone(),
+            &op,
+            command.status(),
+            true,
+        )
+        .await?;
+        let apple_received = matches!(
+            &observation,
+            crate::queries::records::NativeObservation::Apple {
+                facts: rss_mdm_apple_mdm::native::evidence::ReadEvidence::Command { receipts, .. },
+                ..
+            } if receipts.iter().any(|receipt| {
+                use rss_mdm_apple_mdm::native::evidence::{Phase, ReceiptState};
+                receipt.accepted && receipt.phase == Phase::Execute
+                    && matches!(receipt.state, ReceiptState::Acknowledged | ReceiptState::Error)
+            })
+        );
+        if let crate::queries::records::NativeObservation::Windows { receipts, .. } = observation {
+            let latest = receipts
+                .iter()
+                .filter(|r| {
+                    r.phase == crate::AttemptPhase::Observe
+                        && r.accepted == Some(true)
+                        && r.result_accepted == Some(true)
+                        && r.status == Some(200)
+                })
+                .map(|r| r.ordinal)
+                .max();
+            if let Some(latest) = latest {
+                let value = |suffix: &str| {
+                    receipts
+                        .iter()
+                        .find(|r| {
+                            r.ordinal == latest
+                                && r.uri.as_deref().is_some_and(|uri| uri.ends_with(suffix))
+                                && r.accepted == Some(true)
+                                && r.result_accepted == Some(true)
+                                && r.status == Some(200)
+                        })
+                        .and_then(|r| r.value.as_deref())
+                };
+                let verified = match &op.request.task {
+                    crate::Task::Windows {
+                        request: rss_mdm_windows_mdm::native::Execution::Msi { job },
+                    } => {
+                        value("/Status") == Some("70")
+                            && value("/Version") == Some(job.version.as_str())
                     }
+                    _ => {
+                        let actual =
+                            serde_json::to_value(&op.request.task).map_err(|_| Error::Malformed)?;
+                        policy
+                            .assignment
+                            .frozen
+                            .native_packages
+                            .values()
+                            .find(|p| {
+                                p.task(run.id, &service.protection, service.tenant)
+                                    .ok()
+                                    .and_then(|t| serde_json::to_value(t).ok())
+                                    .as_ref()
+                                    == Some(&actual)
+                            })
+                            .is_some_and(|p| match &p.identity {
+                                crate::native_software::Identity::Msix { identity, .. } => {
+                                    matches!(value("/IsProvisioned"), Some("1" | "true"))
+                                        && value("/Version")
+                                            == Some(
+                                                identity
+                                                    .version
+                                                    .map(|v| v.to_string())
+                                                    .join(".")
+                                                    .as_str(),
+                                            )
+                                }
+                                _ => false,
+                            })
+                    }
+                };
+                if verified {
+                    if !command.status().is_terminal() {
+                        let report = crate::dc::DeviceReport {
+                            scope: op.scope,
+                            command_id: op.command_id()?,
+                            coordinate: op.coordinate,
+                            event: crate::dc::DeviceEvent::Reported(op.request.digest(
+                                &service.protection,
+                                service.tenant,
+                                &op.device,
+                            )?),
+                        };
+                        if service.store.report(tx, &report).await?.outcome
+                            == crate::dc::Outcome::OutOfOrder
+                        {
+                            return Err(Error::Conflict.into());
+                        }
+                    }
+                    run.state.result(run.id, true)?;
+                    run.result = Some(
+                        serde_json::json!({"operation":run.id,"effect":"verified","effectObservedAt":now}),
+                    );
+                    return Ok(());
                 }
             }
         }
         // Protocol acknowledgement does not prove the package's actual installed state.
-        if matches!(
-            status.as_str(),
-            "applied" | "failed" | "expired" | "cancelled"
-        ) && matches!(run.state.execution, Execution::Running | Execution::Unknown)
+        if (apple_received
+            || matches!(
+                status.as_str(),
+                "applied" | "failed" | "expired" | "cancelled"
+            ))
+            && matches!(run.state.execution, Execution::Running | Execution::Unknown)
         {
             run.state.uncertain_result(run.id)?;
             run.result =

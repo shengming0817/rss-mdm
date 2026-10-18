@@ -54,12 +54,16 @@ async fn absent_agent_group_installs_fixed_package_and_registers_independently()
         Err(_) => peer.next("InstalledApplicationList").await?,
     };
     ensure!(payload["Identifiers"] == plist::Value::Array(vec!["com.rss.agent".into()]));
-    peer.manage(
-        "Acknowledged",
-        Some(query),
-        Some(("InstalledApplicationList", plist::Value::Array(vec![]))),
-    )
-    .await?;
+    let next = peer
+        .manage(
+            "Acknowledged",
+            Some(query),
+            Some(("InstalledApplicationList", plist::Value::Array(vec![]))),
+        )
+        .await?;
+    if !next.is_empty() {
+        peer.pending_replies.lock().await.push_back(next);
+    }
     let operation = setup::operation(policy).await?;
     let state = setup::diagnosis(&mut f.browser, &f.router, policy, case_device()).await?;
     ensure!(
@@ -302,8 +306,21 @@ async fn next_after_cooldown(
     let future: bool = sqlx::query_scalar("SELECT next_attempt>clock_timestamp() FROM mdm_apple.attempts WHERE tenant_id=$1::uuid AND id=$2")
         .bind(case_tenant()).bind(attempt).fetch_one(&mut db).await?;
     ensure!(future, "current attempt has no future cooldown");
+    // A native client must answer its outstanding command before sending Idle.
+    // NotNow may return a bootstrap prerequisite while the package is cooling down.
+    let pending = peer.pending_replies.lock().await.front().cloned();
+    let early = match pending {
+        Some(bytes) => bytes,
+        None => {
+            let bytes = peer.manage("Idle", None, None).await?;
+            if !bytes.is_empty() {
+                peer.pending_replies.lock().await.push_back(bytes.clone());
+            }
+            bytes
+        }
+    };
     ensure!(
-        peer.manage("Idle", None, None).await?.is_empty(),
+        lifecycle::command(&early, kind).is_err(),
         "cooldown allowed an early retry"
     );
     let changed = sqlx::query("UPDATE mdm_apple.attempts SET next_attempt=clock_timestamp()-interval '1 second' WHERE tenant_id=$1::uuid AND id=$2")
