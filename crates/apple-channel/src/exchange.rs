@@ -64,7 +64,7 @@ impl ports::AppleExchange for Exchange {
                 return Ok(ports::AppleReception::Idle);
             };
             if self.user.is_empty() {
-                if let Some(facts) = crate::trust_installation::receive(
+                if let Some(reception) = crate::trust_installation::receive(
                     c,
                     &self.apple,
                     p,
@@ -76,9 +76,9 @@ impl ports::AppleExchange for Exchange {
                 .await
                 .map_err(ports::Rejection::from)?
                 {
-                    return Ok(ports::AppleReception::Collection { facts, run: None });
+                    return Ok(reception);
                 }
-                if let Some(facts) = crate::agent_collection::receive(
+                if let Some(reception) = crate::agent_collection::receive(
                     c,
                     &self.apple.protection,
                     p,
@@ -90,7 +90,7 @@ impl ports::AppleExchange for Exchange {
                 .await
                 .map_err(ports::Rejection::from)?
                 {
-                    return Ok(ports::AppleReception::Collection { facts, run: None });
+                    return Ok(reception);
                 }
             }
             let mut facts = Vec::new();

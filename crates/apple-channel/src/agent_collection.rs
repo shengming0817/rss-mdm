@@ -1,4 +1,5 @@
 //! Bounded built-in Agent queries use the existing native attempts and collection owner.
+use crate::execution::channels::AppleReception;
 use crate::{Error, database::db, device::DevicePrincipal};
 use rss_mdm_apple_mdm::{protocol, software as wire};
 use rss_mdm_execution_service::agent_install::Identity;
@@ -14,7 +15,7 @@ pub async fn receive(
     status: protocol::Status,
     d: &plist::Dictionary,
     bytes: &[u8],
-) -> Result<Option<Vec<rss_mdm_audit_integration::Fact>>, Error> {
+) -> Result<Option<AppleReception>, Error> {
     let row=sqlx::query("SELECT collection,phase,request,deadline<=clock_timestamp() AS expired FROM mdm_apple.attempts WHERE tenant_id=$1::uuid AND id=$2 AND registration=$3 AND generation=$4 AND phase IN('collect_agent_platform','collect_agent')")
         .bind(p.tenant().to_string()).bind(id).bind(p.registration()).bind(p.generation()).fetch_optional(&mut *c).await.map_err(db)?;
     let Some(row) = row else {
@@ -34,7 +35,7 @@ pub async fn receive(
         return Err(Error::Conflict);
     };
     match attempt {
-        crate::attempt::Reception::Replay => return Ok(Some(vec![])),
+        crate::attempt::Reception::Replay => return Ok(Some(AppleReception::Replay)),
         crate::attempt::Reception::Ready(a) => {
             a.settle(c, status, !row.try_get::<bool, _>("expired").map_err(db)?)
                 .await?
@@ -45,12 +46,12 @@ pub async fn receive(
         facts.extend(
             channel::abandon_in(c, &p.tenant().to_string(), id_collection, "timeout").await?,
         );
-        return Ok(Some(facts));
+        return Ok(Some(AppleReception::Collection { facts, run: None }));
     }
     if status == protocol::Status::NotNow
         || row.try_get::<String, _>("phase").map_err(db)? == "collect_agent_platform"
     {
-        return Ok(Some(facts));
+        return Ok(Some(AppleReception::Collection { facts, run: None }));
     }
     let sealed: Vec<u8> = row.try_get("request").map_err(db)?;
     let plain = crate::protection::open(
@@ -145,7 +146,7 @@ pub async fn receive(
         )
         .await?,
     );
-    Ok(Some(facts))
+    Ok(Some(AppleReception::Collection { facts, run: None }))
 }
 pub async fn send(
     c: &mut PgConnection,

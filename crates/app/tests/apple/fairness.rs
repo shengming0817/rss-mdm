@@ -153,6 +153,16 @@ async fn checkin_sweep_coalesces_and_resumes_after_interrupted_item() -> Result<
         state.0 == active && state.1 != first_pending && state.2.is_none(),
         "new check-in reset active work or failed to coalesce"
     );
+    // A valid empty-facts trust receipt is distinct from its exact replay.
+    let trust: Uuid = sqlx::query_scalar("SELECT id FROM mdm_apple.attempts WHERE tenant_id=$1::uuid AND registration=$2 AND generation=$3 AND phase='trust_install' AND received_at IS NOT NULL ORDER BY received_at DESC LIMIT 1")
+        .bind(case_tenant()).bind(registration).bind(generation).fetch_one(&mut pg).await?;
+    peer.manage("Acknowledged", Some(trust), None).await?;
+    let replay_state: (Uuid, Uuid, Option<Uuid>) = sqlx::query_as("SELECT active_event,pending_event,policy_after FROM mdm_commands.native_checkins WHERE tenant_id=$1::uuid AND registration=$2 AND generation=$3")
+        .bind(case_tenant()).bind(registration).bind(generation).fetch_one(&mut pg).await?;
+    ensure!(
+        replay_state == state,
+        "trust receipt replay manufactured a new native check-in"
+    );
     let mut blocker =
         sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?)
             .await?;

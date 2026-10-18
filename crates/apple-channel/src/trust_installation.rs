@@ -1,4 +1,5 @@
 //! Dedicated managed certificate profile with correlated ManagedOnly ProfileList confirmation.
+use crate::execution::channels::AppleReception;
 use crate::{Apple, Error, Failure, attempt, database::db, device::DevicePrincipal, protocol};
 use rss_mdm_agent_wire::pki::{Acknowledgement, Trust};
 use rss_mdm_audit_integration::{Fact, RequestAudit};
@@ -159,7 +160,7 @@ pub(crate) async fn receive(
     status: protocol::Status,
     report: &plist::Dictionary,
     input: (&[u8], &RequestAudit),
-) -> Result<Option<Vec<Fact>>, Error> {
+) -> Result<Option<AppleReception>, Error> {
     let (bytes, audit) = input;
     let row=sqlx::query("SELECT a.phase,a.deadline>clock_timestamp() AS live,d.body,d.profile FROM mdm_apple.attempts a JOIN mdm_apple.trust_deliveries d ON (d.tenant_id,d.id)=(a.tenant_id,a.trust) WHERE a.tenant_id=$1::uuid AND a.id=$2 AND a.registration=$3 AND a.generation=$4")
         .bind(p.tenant().to_string()).bind(id).bind(p.registration()).bind(p.generation()).fetch_optional(&mut *c).await.map_err(db)?;
@@ -170,7 +171,7 @@ pub(crate) async fn receive(
         .await?
         .ok_or(Error::Conflict)?;
     let attempt::Reception::Ready(a) = reception else {
-        return Ok(Some(vec![]));
+        return Ok(Some(AppleReception::Replay));
     };
     let valid = row.try_get::<bool, _>("live").map_err(db)?;
     a.settle(c, status, valid).await?;
@@ -178,13 +179,19 @@ pub(crate) async fn receive(
         || status != protocol::Status::Acknowledged
         || row.try_get::<String, _>("phase").map_err(db)? != "trust_verify"
     {
-        return Ok(Some(vec![]));
+        return Ok(Some(AppleReception::Collection {
+            facts: Vec::new(),
+            run: None,
+        }));
     }
     let frozen: Trust = serde_json::from_slice(&row.try_get::<Vec<u8>, _>("body").map_err(db)?)
         .map_err(|_| unavailable())?;
     let current = apple.device_trust().public().map_err(|_| Error::Conflict)?;
     if frozen.installation_digest() != current.installation_digest() {
-        return Ok(Some(vec![]));
+        return Ok(Some(AppleReception::Collection {
+            facts: Vec::new(),
+            run: None,
+        }));
     }
     let (_, objects) = rss_mdm_apple_mdm::profile::trust(
         &apple.trust_certificates()?,
@@ -192,7 +199,10 @@ pub(crate) async fn receive(
         row.try_get("profile").map_err(db)?,
     )?;
     if !rss_mdm_apple_mdm::native::profiles::observed_structure(report, &objects)? {
-        return Ok(Some(vec![]));
+        return Ok(Some(AppleReception::Collection {
+            facts: Vec::new(),
+            run: None,
+        }));
     }
     rss_mdm_pki_service::registry::Registry::acknowledge_in(
         c,
@@ -212,12 +222,15 @@ pub(crate) async fn receive(
     a.identify_device(p.registration());
     a.registration(p.registration());
     a.target(p.device());
-    Ok(Some(vec![Fact::business(
-        &a,
-        &format!("apple-pki:{id}:confirmed"),
-        current.installation_digest().as_bytes(),
-        200,
-        "success",
-        Some(id),
-    )?]))
+    Ok(Some(AppleReception::Collection {
+        facts: vec![Fact::business(
+            &a,
+            &format!("apple-pki:{id}:confirmed"),
+            current.installation_digest().as_bytes(),
+            200,
+            "success",
+            Some(id),
+        )?],
+        run: None,
+    }))
 }
