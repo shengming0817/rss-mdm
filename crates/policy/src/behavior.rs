@@ -5,6 +5,8 @@ use serde::{Deserialize, Serialize};
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ActionKind {
+    /// Server-owned retirement of all managed channels.
+    UnmanageDevice,
     /// Native recovery material management.
     Credential,
     /// Agent script or collection.
@@ -25,6 +27,8 @@ pub enum ActionKind {
 /// Assignment driver selection, never a device authorization or capability proof.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum AssignmentBehavior {
+    /// Server-owned execution independent of endpoint connectivity.
+    DeviceLifecycle,
     /// Lazily admitted at Agent check-in.
     AgentCheckIn,
     /// Native reads driven by bounded collection recovery.
@@ -34,7 +38,8 @@ pub enum AssignmentBehavior {
 }
 impl ActionKind {
     /// Complete closed set for deriving database predicates.
-    pub const ALL: [Self; 8] = [
+    pub const ALL: [Self; 9] = [
+        Self::UnmanageDevice,
         Self::Credential,
         Self::Execution,
         Self::NativeCollection,
@@ -45,19 +50,23 @@ impl ActionKind {
         Self::RequestMdmEnrollment,
     ];
     /// Original endpoint channel selected by this action; no peer broadcast is permitted.
-    pub const fn target_channel(self) -> &'static str {
+    pub const fn target_channel(self) -> Option<&'static str> {
         match self {
+            Self::UnmanageDevice => None,
             Self::Credential
             | Self::AgentCollection
             | Self::Execution
             | Self::Software
-            | Self::RequestMdmEnrollment => "agent",
-            Self::NativeCollection | Self::Configuration | Self::EnsureAgentInstalled => "mdm",
+            | Self::RequestMdmEnrollment => Some("agent"),
+            Self::NativeCollection | Self::Configuration | Self::EnsureAgentInstalled => {
+                Some("mdm")
+            }
         }
     }
     /// Persisted discriminator.
     pub const fn as_str(self) -> &'static str {
         match self {
+            Self::UnmanageDevice => "unmanage_device",
             Self::Credential => "credential",
             Self::Execution => "execution",
             Self::NativeCollection => "native_collection",
@@ -71,6 +80,7 @@ impl ActionKind {
     /// Select the existing assignment driver.
     pub const fn assignment_behavior(self) -> AssignmentBehavior {
         match self {
+            Self::UnmanageDevice => AssignmentBehavior::DeviceLifecycle,
             Self::Credential
             | Self::AgentCollection
             | Self::Execution
@@ -84,7 +94,11 @@ impl ActionKind {
     pub const fn supports_rerun(self) -> bool {
         matches!(
             self,
-            Self::Credential | Self::AgentCollection | Self::Execution | Self::RequestMdmEnrollment
+            Self::UnmanageDevice
+                | Self::Credential
+                | Self::AgentCollection
+                | Self::Execution
+                | Self::RequestMdmEnrollment
         )
     }
 }

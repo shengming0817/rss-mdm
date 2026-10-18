@@ -15,7 +15,7 @@ BEGIN
  t=(r->>'tenant_id')::uuid;
  CASE TG_TABLE_NAME
  WHEN 'devices' THEN
-  k='device'; i=r->>'id'; dev=i; d=jsonb_build_object('id',i);
+  k='device'; i=r->>'id'; dev=i; d=jsonb_build_object('id',i,'retirement',r->'retirement');
  WHEN 'registrations' THEN
   k='registration'; i=r->>'id'; reg=i::uuid; dev=r->>'device';
   d=jsonb_build_object('id',i,'device',dev,'channel',r->>'channel','purpose',r->>'purpose','generation',r->'generation','state',r->>'state');
@@ -73,6 +73,7 @@ ALTER TABLE ONLY mdm_access.credentials FORCE ROW LEVEL SECURITY;
 CREATE TABLE mdm_access.devices (
     tenant_id uuid NOT NULL,
     id text NOT NULL,
+    retirement uuid,
     CONSTRAINT devices_id_check CHECK ((((octet_length(id) >= 1) AND (octet_length(id) <= 256)) AND (id !~ '[[:cntrl:]]'::text)))
 );
 

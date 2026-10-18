@@ -21,7 +21,9 @@
       "schema": "mdm_access",
       "table": "devices",
       "read_write": true,
-      "updates": [],
+      "updates": [
+        "retirement"
+      ],
       "delete_policy": null
     },
     {

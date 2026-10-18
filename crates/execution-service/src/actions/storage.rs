@@ -167,6 +167,21 @@ impl ScheduledPolicy {
         target: &Target,
         now: i64,
     ) -> Result<bool> {
+        let tenant = tx.tenant_id().to_string();
+        let device = target.device.clone();
+        let allowed = tx
+            .with_connection(move |c| {
+                Box::pin(async move {
+                    Ok(rss_mdm_registration_service::lifecycle::work_allowed_in(
+                        c, &tenant, &device,
+                    )
+                    .await)
+                })
+            })
+            .await??;
+        if !allowed {
+            return Ok(false);
+        }
         match self {
             Self::Credential(v) => Ok(crate::credential_tasks::eligible(
                 service,

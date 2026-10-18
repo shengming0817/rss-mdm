@@ -39,3 +39,38 @@ fn onboarding_requires_organization_and_bounded_lifetime() {
         assert!(parsed.is_err() || parsed.unwrap().validate().is_err());
     }
 }
+
+#[test]
+fn retirement_is_manual_device_execution_without_resource_or_self_service() {
+    use rss_mdm_policy::{Action, ActionKind, AssignmentBehavior, schedule::Trigger};
+    let input = json!({"scope":Uuid::new_v4(),"action":{
+        "kind":"unmanage_device", "runLifetimeSeconds":3600
+    }});
+    let definition: Definition = serde_json::from_value(input.clone()).unwrap();
+    definition.validate().unwrap();
+    let Action::UnmanageDevice { schedule, .. } = &definition.action else {
+        panic!("wrong action");
+    };
+    assert!(matches!(schedule.trigger, Trigger::Manual));
+    assert_eq!(definition.action.kind().target_channel(), None);
+    assert_eq!(
+        definition.action.kind().assignment_behavior(),
+        AssignmentBehavior::DeviceLifecycle
+    );
+    assert!(ActionKind::UnmanageDevice.supports_rerun());
+    assert!(definition.action.resource().is_none());
+    for (name, value) in [
+        ("resource", json!({"id":"fake"})),
+        ("channel", json!("agent")),
+    ] {
+        let mut invalid = input.clone();
+        invalid["action"][name] = value;
+        assert!(serde_json::from_value::<Definition>(invalid).is_err());
+    }
+    for lifetime in [0, 59, 604801] {
+        let mut invalid = input.clone();
+        invalid["action"]["runLifetimeSeconds"] = json!(lifetime);
+        let parsed = serde_json::from_value::<Definition>(invalid);
+        assert!(parsed.is_err() || parsed.unwrap().validate().is_err());
+    }
+}

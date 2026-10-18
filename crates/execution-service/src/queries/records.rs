@@ -326,7 +326,7 @@ pub struct Capability {
 #[serde(rename_all = "camelCase")]
 pub struct Assignment {
     object: crate::source_authority::ObjectRef,
-    channel: rss_mdm_inventory::Channel,
+    channel: Option<rss_mdm_inventory::Channel>,
     availability: crate::source_authority::Availability,
     reason: Option<String>,
     target: Option<rss_mdm_registration_service::device::endpoints::PrimaryRegistration>,
@@ -349,7 +349,7 @@ pub struct Preview {
 #[serde(rename_all = "camelCase")]
 struct PreviewTarget {
     object: crate::source_authority::ObjectRef,
-    channel: rss_mdm_inventory::Channel,
+    channel: Option<rss_mdm_inventory::Channel>,
     availability: crate::source_authority::Availability,
     reason: Option<String>,
     target: Option<rss_mdm_registration_service::device::endpoints::PrimaryRegistration>,

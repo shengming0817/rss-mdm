@@ -147,6 +147,17 @@ pub(crate) async fn explanation_on(
             known.insert(row.source);
         }
     }
+    resolve_membership(tenant, frozen, device, at, &known, &uncertain)
+}
+
+fn resolve_membership(
+    tenant: TenantId,
+    frozen: &ScopeInput,
+    device: &str,
+    at: Timepoint,
+    known: &BTreeSet<usize>,
+    uncertain: &BTreeSet<usize>,
+) -> Result<Option<s::MemberExplanation>, SourceError> {
     let membership = |refs: &BTreeSet<Reference>| -> Result<Vec<s::SourceMembership>, SourceError> {
         frozen
             .sources
@@ -449,4 +460,90 @@ async fn published_admission(
         Some((_, true, _)) => ScopeAdmission::Pending,
         _ => ScopeAdmission::Excluded,
     })
+}
+
+/// Apply the same Scope algebra to the complete managed object. No member is
+/// selected as a proxy transport, and exclusions on either member exclude it.
+pub async fn lifecycle_objects_on(
+    reader: &dyn rss_mdm_inventory_service::objects::ObjectReader,
+    c: &mut PgConnection,
+    tenant: TenantId,
+    scope: Uuid,
+    after: Option<&str>,
+) -> Result<Vec<DeviceAssignment>, SourceError> {
+    let Some((run, revision, frozen, fresh)) = resolution(c, tenant, scope).await? else {
+        return Ok(Vec::new());
+    };
+    let targets: Vec<i32> = frozen
+        .sources
+        .iter()
+        .enumerate()
+        .filter(|(_, s)| frozen.definition.targets.contains(&s.reference))
+        .map(|(i, _)| i as i32)
+        .collect();
+    let rows = sqlx::query("SELECT DISTINCT ON(object_key) input,unknown FROM (SELECT input,unknown,CASE input->'object'->>'kind' WHEN 'endpoint' THEN 'endpoint:'||(input->'object'->>'id') ELSE 'association:'||(input->'object'->>'id') END COLLATE \"C\" AS object_key FROM mdm_planning.scope_source_members WHERE tenant_id=$1::uuid AND run=$2 AND source=ANY($3)) objects WHERE object_key>coalesce($4,'') COLLATE \"C\" ORDER BY object_key,unknown LIMIT 65")
+        .bind(tenant.to_string()).bind(run).bind(targets).bind(after).fetch_all(&mut *c).await?;
+    let at = Timepoint::try_from(frozen.as_of).map_err(|_| SourceError::Invariant)?;
+    let mut out = Vec::new();
+    for row in rows {
+        let input: DeviceObject =
+            serde_json::from_value(row.try_get("input")?).map_err(|_| SourceError::Invariant)?;
+        let cursor = input.object.key();
+        let input = rss_mdm_device_service::lifecycle::complete_target_in(c, tenant, &input)
+            .await
+            .map_err(|_| SourceError::Invariant)?;
+        let mut known = BTreeSet::new();
+        let mut uncertain = BTreeSet::new();
+        let mut valid = fresh
+            && input.verified
+            && !row.try_get::<bool, _>("unknown")?
+            && !input.members.is_empty();
+        for member in &input.members {
+            valid &= current(reader, c, tenant, &input, member.channel)
+                .await?
+                .as_ref()
+                == Some(member);
+            for source in rows_for(c, tenant, run, member.channel, &member.device).await? {
+                if source.unknown
+                    || !source.input.verified
+                    || current(reader, c, tenant, &source.input, member.channel)
+                        .await?
+                        .is_none()
+                {
+                    uncertain.insert(source.source);
+                } else {
+                    known.insert(source.source);
+                }
+            }
+        }
+        let result =
+            resolve_membership(tenant, &frozen, &input.object.key(), at, &known, &uncertain)?;
+        let admission = if !valid {
+            ScopeAdmission::Pending
+        } else {
+            match result {
+                Some(r) if r.reasons.is_empty() => ScopeAdmission::Eligible { entry: revision },
+                Some(r)
+                    if r.reasons.iter().any(|r| {
+                        matches!(
+                            r,
+                            s::ExclusionReason::UnknownTarget
+                                | s::ExclusionReason::UnknownLimitation
+                                | s::ExclusionReason::UnknownExclusion
+                        )
+                    }) =>
+                {
+                    ScopeAdmission::Pending
+                }
+                _ => ScopeAdmission::Excluded,
+            }
+        };
+        out.push(DeviceAssignment {
+            cursor,
+            object: input,
+            admission,
+            scope_result: run,
+        });
+    }
+    Ok(out)
 }

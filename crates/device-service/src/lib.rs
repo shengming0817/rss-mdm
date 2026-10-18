@@ -2,6 +2,7 @@
 //! ref: sqlx v0.8.6 sqlx-core/src/transaction.rs (borrowed transaction ownership).
 mod changes;
 mod cursor;
+pub mod lifecycle;
 mod model;
 pub mod planning;
 mod views;

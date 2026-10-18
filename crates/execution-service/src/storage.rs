@@ -87,6 +87,25 @@ async fn check_authority(
     now: i64,
     receipt: bool,
 ) -> Result<bool> {
+    if !receipt {
+        let tenant = tx.tenant_id().to_string();
+        let device = operation.device.clone();
+        let id = operation.id;
+        let allowed = tx
+            .with_connection(move |c| {
+                Box::pin(async move {
+                    Ok(rss_mdm_device_service::lifecycle::execution_allowed_in(
+                        c, &tenant, &device, id,
+                    )
+                    .await
+                    .map_err(Error::from))
+                })
+            })
+            .await??;
+        if !allowed {
+            return Ok(false);
+        }
+    }
     if matches!(
         operation.authority,
         ExecutionAuthority::DeviceControl { .. }

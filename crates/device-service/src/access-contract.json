@@ -57,6 +57,28 @@
       "read_write": false,
       "updates": [],
       "delete_policy": null
+    },
+    {
+      "schema": "mdm_devices",
+      "table": "retirements",
+      "read_write": true,
+      "updates": [
+        "forced_at",
+        "forced_by"
+      ],
+      "delete_policy": null
+    },
+    {
+      "schema": "mdm_devices",
+      "table": "retirement_channels",
+      "read_write": true,
+      "updates": [
+        "stage",
+        "effect",
+        "execution",
+        "reason"
+      ],
+      "delete_policy": null
     }
   ],
   "functions": [

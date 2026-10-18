@@ -31,3 +31,70 @@ pub async fn retire(
         .retire(tx, facts, tenant, registration, state)
         .await
 }
+
+/// Fence all channels of one endpoint, including enrollment which has no row yet.
+/// Callers acquiring more than one endpoint lock must use lexical device order.
+pub async fn lock_device_in(
+    c: &mut sqlx::PgConnection,
+    tenant: &str,
+    device: &str,
+) -> Result<(), Error> {
+    let key = serde_json::to_string(&(tenant, device)).map_err(|_| Error::Malformed)?;
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,2790))")
+        .bind(key)
+        .execute(c)
+        .await
+        .map_err(crate::database::db)?;
+    Ok(())
+}
+
+/// Normal work and enrollment cannot cross an accepted retirement. Authentication
+/// remains separate so the exact cleanup operation can still receive its evidence.
+pub async fn require_work_in(
+    c: &mut sqlx::PgConnection,
+    tenant: &str,
+    device: &str,
+) -> Result<(), Error> {
+    if !work_allowed_in(c, tenant, device).await? {
+        return Err(Error::Forbidden);
+    }
+    Ok(())
+}
+
+pub async fn work_allowed_in(
+    c: &mut sqlx::PgConnection,
+    tenant: &str,
+    device: &str,
+) -> Result<bool, Error> {
+    lock_device_in(c, tenant, device).await?;
+    let exit: Option<uuid::Uuid> = sqlx::query_scalar(
+        "SELECT retirement FROM mdm_access.devices WHERE tenant_id=$1::uuid AND id=$2",
+    )
+    .bind(tenant)
+    .bind(device)
+    .fetch_optional(c)
+    .await
+    .map_err(crate::database::db)?
+    .flatten();
+    Ok(exit.is_none())
+}
+
+/// The lifecycle owner calls this in its original audited acceptance transaction.
+/// Replays keep the first operation; competing policies cannot replace its authority.
+pub async fn begin_retirement_in(
+    c: &mut sqlx::PgConnection,
+    tenant: &str,
+    device: &str,
+    operation: uuid::Uuid,
+) -> Result<(), Error> {
+    if operation.is_nil() {
+        return Err(Error::Malformed);
+    }
+    lock_device_in(c, tenant, device).await?;
+    let changed = sqlx::query("UPDATE mdm_access.devices SET retirement=$3 WHERE tenant_id=$1::uuid AND id=$2 AND (retirement IS NULL OR retirement=$3)")
+        .bind(tenant).bind(device).bind(operation).execute(c).await.map_err(crate::database::db)?;
+    if changed.rows_affected() != 1 {
+        return Err(Error::Conflict);
+    }
+    Ok(())
+}

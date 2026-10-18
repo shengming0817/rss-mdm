@@ -81,6 +81,7 @@ SELECT * FROM mdm_access.agent_issuances WHERE tenant_id=$1::uuid AND id=$2 FOR 
                             digest: digest.clone(),
                         });
                     }
+                    crate::lifecycle::require_work_in(c, &tenant, &device).await?;
                     service.grant_live(c, &g).await?;
                     if g.try_get::<Option<Uuid>, _>("target_registration")
                         .map_err(db)?
