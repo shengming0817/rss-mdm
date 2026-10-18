@@ -326,7 +326,7 @@ for name in ('planning.assets', 'planning.scope', 'planning.group_scope', 'plann
                             ('crates/app/tests/planning/support.rs',))
 MODULES['planning.resource_archive'] = replace(MODULES['planning.resource_archive'], fixtures=('identity', 'tls'))
 MODULES['audit.integrity'] = replace(MODULES['audit.integrity'],
-    test_inputs=MODULES['audit.integrity'].test_inputs + ('crates/app/tests/audit/owner_admission.rs',))
+    test_inputs=MODULES['audit.integrity'].test_inputs + ('crates/app/tests/audit/owner_admission.rs', 'crates/app/tests/audit/query_cost.rs'))
 for name in ('policy', 'resource', 'software_release'):
     package = name.replace('_', '-')
     for suffix, target in (('persistence', 'behavior'), ('recovery', 'recovery')):
@@ -477,6 +477,7 @@ MODULES['installation.migration'] = replace(MODULES['installation.migration'], d
 MODULES['audit.receipts'] = replace(MODULES['audit.receipts'], db_mode='reuse', scope='tenant')
 MODULES['audit.integrity'] = replace(MODULES['audit.integrity'], db_mode='instance', scope='objects', policies=(
     CasePolicy('audit_integration_tests::integrity::storage_integrity_is_enforced', 'fresh', 'objects'),
+    CasePolicy('audit_integration_tests::integrity::query_cost::startup_probes_leave_both_transaction_hot_paths', 'fresh', 'objects'),
 ))
 MODULES['audit.recovery'] = replace(MODULES['audit.recovery'], db_mode='reuse', scope='pair')
 MODULES['audit.budget'] = replace(MODULES['audit.budget'], db_mode='reuse', scope='tenant')

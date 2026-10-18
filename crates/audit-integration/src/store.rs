@@ -27,7 +27,17 @@ pub enum Error {
 }
 impl From<sqlx::Error> for Error {
     fn from(e: sqlx::Error) -> Self {
-        Self::Audit(e.into())
+        // A real SQL permission denial retains the permission diagnosis after startup probes
+        // leave the hot path. Other storage failures (including closed pools) stay distinct.
+        if e.as_database_error()
+            .and_then(|error| error.code())
+            .as_deref()
+            == Some("42501")
+        {
+            Self::Admission
+        } else {
+            Self::Audit(e.into())
+        }
     }
 }
 impl From<Error> for PgError {
@@ -172,7 +182,7 @@ impl AuditStore {
                 (context, Some(operation)),
                 |(context, operation), tx| {
                     Box::pin(async move {
-                        tx.with_connection(|c| Box::pin(admit_receipts(c)))
+                        tx.with_connection(|c| Box::pin(check_isolation(c)))
                             .await
                             .map_err(E::from)?;
                         let operation = operation
@@ -209,7 +219,7 @@ impl AuditStore {
                 (context, Some(operation)),
                 |(context, operation), tx| {
                     Box::pin(async move {
-                        tx.with_connection(|c| Box::pin(admit_receipts(c)))
+                        tx.with_connection(|c| Box::pin(check_isolation(c)))
                             .await
                             .map_err(E::from)?;
                         let operation = operation
@@ -221,14 +231,23 @@ impl AuditStore {
             )
             .await
     }
-    /// First operation in an RSS transaction: validate isolation/receipts, then lock Audit and Ledger.
+    /// First operation in an RSS transaction: check isolation, then lock Audit and Ledger.
     /// Must precede business and outbox locks. Reuses the owner's connection and remaining budget;
     /// errors must propagate to that owner. This method neither commits nor proves prior rollback.
     pub async fn lock_in(&self, tx: &mut PgTransaction<'_>) -> Result<(), Error> {
-        tx.with_connection(|c| Box::pin(async move { Ok(admit_receipts(c).await) }))
+        tx.with_connection(|c| Box::pin(async move { Ok(check_isolation(c).await) }))
             .await
             .map_err(rss_audit_postgres::Error::from)??;
         self.adapter.lock_head_in(tx).await?;
+        Ok(())
+    }
+    /// Validate receipts and Audit/Ledger on the actual borrowed worker connection at startup.
+    /// The caller owns the original budget and settlement; no pool lease is acquired.
+    pub async fn validate_in(&self, tx: &mut PgTransaction<'_>) -> Result<(), Error> {
+        tx.with_connection(|c| Box::pin(async move { Ok(admit_receipts(c).await) }))
+            .await
+            .map_err(rss_audit_postgres::Error::from)??;
+        self.adapter.validate_in(tx).await?;
         Ok(())
     }
     /// Persist the independent request outcome using the component's settlement result.
@@ -310,20 +329,19 @@ impl AuditStore {
         let receipt = tx
             .with_connection(move |c| Box::pin(async move { read_receipt(c, &identity).await }))
             .await?;
-        let record = tx.find(fact.identity()).await?;
-        if let Some(prepared) = restore(fact, receipt, record, self.ledger, existing)? {
-            tx.append(&prepared).await?;
-            return Ok(());
+        let staged = tx
+            .append_with(fact.identity(), |record, now| {
+                resolve(fact, receipt, record, self.ledger, existing, now)
+            })
+            .await?;
+        if staged.inserted() {
+            let save = staged.record().prepared().clone();
+            let fingerprint = *fact.fingerprint();
+            tx.with_connection(move |c| {
+                Box::pin(async move { save_receipt(c, &save, fingerprint).await })
+            })
+            .await?;
         }
-        let at = tx.with_connection(|c| Box::pin(now(c))).await?;
-        let prepared = tx.prepare(fact.event(at)?).await?;
-        let save = prepared.clone();
-        let fingerprint = *fact.fingerprint();
-        tx.with_connection(move |c| {
-            Box::pin(async move { save_receipt(c, &save, fingerprint).await })
-        })
-        .await?;
-        tx.append(&prepared).await?;
         Ok(())
     }
     /// Stage a business fact in the existing RSS owner after `lock_in`.
@@ -363,24 +381,21 @@ impl AuditStore {
             .with_connection(move |c| Box::pin(async move { Ok(read_receipt(c, &identity).await) }))
             .await
             .map_err(rss_audit_postgres::Error::from)??;
-        let record = self.adapter.find_in(tx, fact.identity()).await?;
-        if let Some(prepared) = restore(fact, receipt, record, self.ledger, existing)? {
-            self.adapter.append_in(tx, &prepared).await?;
-            return Ok(());
-        }
-        let at = tx
-            .with_connection(|c| Box::pin(async move { Ok(now(c).await) }))
+        let staged = self
+            .adapter
+            .append_with_in(tx, fact.identity(), |record, now| {
+                resolve(fact, receipt, record, self.ledger, existing, now)
+            })
+            .await?;
+        if staged.inserted() {
+            let save = staged.record().prepared().clone();
+            let fingerprint = *fact.fingerprint();
+            tx.with_connection(move |c| {
+                Box::pin(async move { Ok(save_receipt(c, &save, fingerprint).await) })
+            })
             .await
             .map_err(rss_audit_postgres::Error::from)??;
-        let prepared = self.adapter.prepare_in(tx, fact.event(at)?).await?;
-        let save = prepared.clone();
-        let fingerprint = *fact.fingerprint();
-        tx.with_connection(move |c| {
-            Box::pin(async move { Ok(save_receipt(c, &save, fingerprint).await) })
-        })
-        .await
-        .map_err(rss_audit_postgres::Error::from)??;
-        self.adapter.append_in(tx, &prepared).await?;
+        }
         Ok(())
     }
 }
@@ -391,7 +406,7 @@ struct Receipt {
 fn restore(
     fact: &Fact,
     receipt: Option<Receipt>,
-    record: Option<Record>,
+    record: Option<&Record>,
     ledger: bool,
     existing: Option<bool>,
 ) -> Result<Option<PreparedAuditV1>, Error> {
@@ -408,11 +423,19 @@ fn restore(
         _ => Err(Error::Receipt),
     }
 }
-async fn now(c: &mut PgConnection) -> Result<Timepoint, Error> {
-    let at: i64 = sqlx::query_scalar("SELECT floor(extract(epoch FROM clock_timestamp()))::bigint")
-        .fetch_one(c)
-        .await?;
-    Timepoint::try_from(at).map_err(|_| rss_audit_postgres::Error::StorageContract.into())
+fn resolve(
+    fact: &Fact,
+    receipt: Option<Receipt>,
+    record: Option<&Record>,
+    ledger: bool,
+    existing: Option<bool>,
+    now: Timepoint,
+) -> Result<PreparedAuditV1, Error> {
+    match restore(fact, receipt, record, ledger, existing)? {
+        Some(prepared) => Ok(prepared),
+        None => rss_audit_core::prepare(fact.event(now)?, now)
+            .map_err(|error| Error::Audit(error.into())),
+    }
 }
 async fn read_receipt(
     c: &mut PgConnection,
@@ -442,13 +465,18 @@ async fn save_receipt(
     Ok(())
 }
 
-async fn admit_receipts(c: &mut PgConnection) -> Result<(), Error> {
+async fn check_isolation(c: &mut PgConnection) -> Result<(), Error> {
     let isolation: String = sqlx::query_scalar("SHOW transaction_isolation")
         .fetch_one(&mut *c)
         .await?;
     if isolation != "read committed" {
         return Err(Error::Isolation);
     }
+    Ok(())
+}
+
+async fn admit_receipts(c: &mut PgConnection) -> Result<(), Error> {
+    check_isolation(c).await?;
     let valid: Option<bool> = sqlx::query_scalar(include_str!("admission.sql"))
         .fetch_one(c)
         .await?;

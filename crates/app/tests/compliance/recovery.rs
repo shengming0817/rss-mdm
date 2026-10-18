@@ -51,7 +51,9 @@ async fn publication_terminal_page_and_audit_are_atomic() -> Result<()> {
     let (_, path, _) = fixture.rule().await?;
     assign(&mut browser, router, "compliance-a", 0, true).await?;
     let automation = start_automation(base).await?;
-    status(&mut browser, router, "compliance-a", "non_compliant").await?;
+    status(&mut browser, router, "compliance-a", "non_compliant")
+        .await
+        .map_err(|e| anyhow::anyhow!("initial compliance publication: {e}"))?;
     // Publication and its terminal audit must roll back together, including the final page.
     pg(
         "CREATE SEQUENCE public.compliance_publish_attempts; GRANT USAGE ON SEQUENCE public.compliance_publish_attempts TO mdm_flow_runtime; CREATE FUNCTION public.reject_compliance_publish() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN PERFORM nextval('public.compliance_publish_attempts'); RAISE EXCEPTION 'publication fixture'; END $$; CREATE CONSTRAINT TRIGGER reject_compliance_publish AFTER UPDATE ON mdm_compliance.rules DEFERRABLE INITIALLY DEFERRED FOR EACH ROW WHEN (NEW.current_run IS DISTINCT FROM OLD.current_run) EXECUTE FUNCTION public.reject_compliance_publish()",
@@ -90,7 +92,8 @@ async fn publication_terminal_page_and_audit_are_atomic() -> Result<()> {
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
     })
-    .await??;
+    .await
+    .map_err(|e| anyhow::anyhow!("deferred publication trigger: {e}"))??;
     ensure!(
         pg(&format!(
             "SELECT count(*) FROM mdm_compliance.results WHERE task='{task}'"
@@ -117,7 +120,8 @@ async fn publication_terminal_page_and_audit_are_atomic() -> Result<()> {
         &format!("{path}/tasks/{task}"),
         "published",
     )
-    .await?;
+    .await
+    .map_err(|e| anyhow::anyhow!("publication recovery after trigger removal: {e}"))?;
     ensure!(
         completed["completed"] == true && completed["failure"].is_null(),
         "{completed}"

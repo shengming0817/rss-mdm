@@ -29,19 +29,30 @@ impl Service {
             &[(self.management, 1), (target, epoch)],
         )
         .await?;
-        let provisioner = AccountProvisioner::connect(
-            runtime.clone(),
-            self.kdf.clone(),
-            crate::identity::authority_config(
-                self.installation.validate().map_err(|_| Error::Malformed)?,
-                vec![self.management, target],
-            )?,
-            self.management,
-            self.policy.clone(),
-            crate::identity::deadline(),
-        )
-        .await
-        .map_err(crate::identity::failure)?;
+        let provisioner = async {
+            crate::database::admit_audit_runtime(&runtime, &self.audit, target).await?;
+            AccountProvisioner::connect(
+                runtime.clone(),
+                self.kdf.clone(),
+                crate::identity::authority_config(
+                    self.installation.validate().map_err(|_| Error::Malformed)?,
+                    vec![self.management, target],
+                )?,
+                self.management,
+                self.policy.clone(),
+                crate::identity::deadline(),
+            )
+            .await
+            .map_err(crate::identity::failure)
+        }
+        .await;
+        let provisioner = match provisioner {
+            Ok(provisioner) => provisioner,
+            Err(error) => {
+                runtime.close().await;
+                return Err(error);
+            }
+        };
         Ok((runtime, provisioner))
     }
     async fn create_administrator(
