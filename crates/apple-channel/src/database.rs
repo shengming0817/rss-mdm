@@ -26,6 +26,18 @@ impl Store {
         sqlx::query("SELECT set_config('rss.tenant_id',$1,true),set_config('statement_timeout','1000',true),set_config('lock_timeout','1000',true)").bind(tenant).execute(&mut *tx).await.map_err(db)?;
         Ok(tx)
     }
+    pub(crate) async fn material_snapshot(
+        &self,
+        tenant: &str,
+    ) -> Result<Transaction<'_, Postgres>, Error> {
+        let mut tx = self.pool.begin().await.map_err(db)?;
+        sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
+            .execute(&mut *tx)
+            .await
+            .map_err(db)?;
+        sqlx::query("SELECT set_config('rss.tenant_id',$1,true),set_config('statement_timeout','3000',true),set_config('lock_timeout','3000',true)").bind(tenant).execute(&mut *tx).await.map_err(db)?;
+        Ok(tx)
+    }
     pub(crate) async fn begin_read(
         &self,
         tenant: &str,

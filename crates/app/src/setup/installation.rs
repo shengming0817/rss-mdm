@@ -42,6 +42,7 @@ pub struct DatabaseInput {
 #[serde(deny_unknown_fields)]
 pub struct Input {
     pub directory: PathBuf,
+    pub deployment: super::deployment::Config,
     pub database: DatabaseInput,
     pub audit_mode: AuditMode,
     pub organization_name: String,
@@ -61,6 +62,7 @@ pub enum Stage {
     Platform,
     Business,
     HostPending,
+    Enabled,
 }
 /// An installation receipt is deliberately not a deployment-success declaration.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -238,13 +240,21 @@ pub async fn install(input: Input) -> Result<Receipt> {
         input.administrator_password_file.as_deref(),
         first,
     )?;
-    protected(&journal, "native.key", 32, first)?;
-    if input.audit_mode == AuditMode::Ledger {
-        protected(&journal, "ledger.key", 32, first)?;
-    }
+    let native_key = protected(&journal, "native.key", 32, first)?;
+    let ledger_key = if input.audit_mode == AuditMode::Ledger {
+        Some(protected(&journal, "ledger.key", 32, first)?)
+    } else {
+        None
+    };
     let canonical = zeroize::Zeroizing::new(
-        serde_json::to_vec(&(&input, platform.as_str(), administrator.as_str()))
-            .map_err(invalid)?,
+        serde_json::to_vec(&(
+            &input,
+            platform.as_str(),
+            administrator.as_str(),
+            native_key.as_slice(),
+            ledger_key.as_deref(),
+        ))
+        .map_err(invalid)?,
     );
     let fingerprint = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(
         hmac::sign(
@@ -302,17 +312,19 @@ pub async fn install(input: Input) -> Result<Receipt> {
         .ok_or(Error::Corrupt)?
         .tenant_id
         .clone();
-    initialize_account(
-        &input,
-        &journal,
-        &saved,
-        &management,
-        saved.receipt.platform_principal_id,
-        &input.platform_login,
-        "platform-password",
-        saved.platform_authorization,
-    )
-    .await?;
+    if saved.receipt.stage == Stage::Database {
+        initialize_account(
+            &input,
+            &journal,
+            &saved,
+            &management,
+            saved.receipt.platform_principal_id,
+            &input.platform_login,
+            "platform-password",
+            saved.platform_authorization,
+        )
+        .await?;
+    }
     if saved.receipt.stage == Stage::Database {
         saved.receipt.stage = Stage::Platform;
         journal.save("installation.json", &saved)?;
@@ -328,17 +340,19 @@ pub async fn install(input: Input) -> Result<Receipt> {
     })
     .await
     .map_err(|_| Error::Storage)?;
-    initialize_account(
-        &input,
-        &journal,
-        &saved,
-        &saved.receipt.tenant_id.to_string(),
-        saved.receipt.administrator_id,
-        &input.administrator_login,
-        "administrator-password",
-        saved.business_authorization,
-    )
-    .await?;
+    if saved.receipt.stage == Stage::Platform {
+        initialize_account(
+            &input,
+            &journal,
+            &saved,
+            &saved.receipt.tenant_id.to_string(),
+            saved.receipt.administrator_id,
+            &input.administrator_login,
+            "administrator-password",
+            saved.business_authorization,
+        )
+        .await?;
+    }
     if saved.receipt.stage == Stage::Platform {
         saved.receipt.stage = Stage::Business;
         journal.save("installation.json", &saved)?;
@@ -356,6 +370,10 @@ pub async fn install(input: Input) -> Result<Receipt> {
         &serde_json::json!({"canonicalOrigin":input.origin,"tenant":saved.receipt.tenant_id}),
     )?;
     saved.receipt.stage = Stage::HostPending;
+    journal.save("installation.json", &saved)?;
+    let observed = super::deployment::apply(&input.directory, &input.deployment, &runtime).await?;
+    journal.save("host-observation.json", &observed)?;
+    saved.receipt.stage = Stage::Enabled;
     journal.save("installation.json", &saved)?;
     Ok(saved.receipt)
 }
@@ -419,6 +437,7 @@ fn runtime(input: &Input, journal: &Journal, saved: &Saved) -> Result<serde_json
         }
     };
     Ok(serde_json::json!({
+        "runtime_binding":{"host_id":saved.receipt.host_id,"operation_id":saved.receipt.operation_id,"revision":1,"material_digest":saved.fingerprint_digest()},
         "agent_pki":{"mode":"disabled"},"device_pki":[],"native_protocols":{},"native_protection_key_file":journal.path("native.key")?,
         "audit":audit,"listen":input.listen,"product_origin":input.origin,"trusted_gateway":input.trusted_gateway,
         "identity":{"instance_id":saved.receipt.instance_id,"tenant_id":saved.receipt.tenant_id,"database":input.database("mdm_identity_runtime")?,"audit_worker":input.database("mdm_identity_audit")?,"oidc":null},
@@ -428,3 +447,14 @@ fn runtime(input: &Input, journal: &Journal, saved: &Saved) -> Result<serde_json
         "webhooks":{"keys":[],"networks":[],"recovery_database":input.database("mdm_webhook_operator")?},"content":null,"task_signing":null,"recovery_credentials":null
     }))
 }
+
+impl Saved {
+    fn fingerprint_digest(&self) -> String {
+        use sha2::{Digest, Sha256};
+        format!("{:x}", Sha256::digest(self.fingerprint.as_bytes()))
+    }
+}
+
+#[cfg(test)]
+#[path = "../../tests/setup/installation.rs"]
+mod tests;

@@ -17,6 +17,8 @@ use serde_json::Value;
 use serde_json::json;
 use std::sync::Arc;
 pub(crate) struct Assembly {
+    pub(crate) runtime_observation: crate::setup::host::Observation,
+    pub(crate) apple_material_roots: Arc<Vec<Vec<u8>>>,
     pub(crate) webhooks: Arc<crate::webhooks::Backend>,
     pub(crate) pki: Arc<rss_mdm_pki_service::registry::Registry>,
     pub(crate) agent_enrollment: Option<Arc<rss_mdm_registration_service::agent::Service>>,
@@ -394,6 +396,20 @@ pub(crate) async fn from_compiled(
         .set(webhooks.clone())
         .map_err(|_| Error::Conflict)?;
     let state = Arc::new(Assembly {
+        runtime_observation: crate::setup::host::Observation::new(
+            &config.runtime_binding,
+            identity.tenant.to_string(),
+            identity.instance.to_string(),
+        ),
+        apple_material_roots: Arc::new(
+            config
+                .apple_material_roots
+                .iter()
+                .map(|path| {
+                    crate::config::read(path, 128 * 1024, false).map(|bytes| bytes.to_vec())
+                })
+                .collect::<Result<_, _>>()?,
+        ),
         webhooks,
         pki,
         agent_enrollment,
@@ -430,6 +446,7 @@ pub(crate) fn from_state(
     monotonic: Arc<dyn rss_observation::Clock>,
 ) -> crate::native::Routers {
     let apple_state = Arc::new(rss_mdm_apple_channel::HttpState {
+        material_roots: state.apple_material_roots.clone(),
         account_authority: rss_mdm_apple_channel::account_enrollment::authority(),
         authentication: rss_mdm_apple_channel::account_enrollment::Authentication {
             authority: state.identity.authority.clone(),
@@ -740,7 +757,11 @@ pub(crate) fn from_state(
         .route("/livez", get(|| async { Json(json!({"alive":true})) }))
         .route(
             "/readyz",
-            get(ready).with_state((diagnostics, monotonic.clone())),
+            get(ready).with_state((
+                diagnostics,
+                monotonic.clone(),
+                state.runtime_observation.clone(),
+            )),
         )
         .fallback(|| async { axum::http::StatusCode::NOT_FOUND })
         .layer(middleware::from_fn_with_state(
@@ -784,9 +805,10 @@ pub(crate) fn from_state(
 }
 
 async fn ready(
-    State((diagnostics, clock)): State<(
+    State((diagnostics, clock, observation)): State<(
         Arc<crate::runtime_diagnostics::RuntimeDiagnostics>,
         Arc<dyn rss_observation::Clock>,
+        crate::setup::host::Observation,
     )>,
 ) -> Response {
     let result = diagnostics
@@ -797,7 +819,11 @@ async fn ready(
     } else {
         axum::http::StatusCode::SERVICE_UNAVAILABLE
     };
-    (status, Json(json!({"ready":result.ready}))).into_response()
+    (
+        status,
+        Json(json!({"ready":result.ready,"observation":observation})),
+    )
+        .into_response()
 }
 
 #[cfg(test)]

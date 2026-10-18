@@ -1,6 +1,9 @@
 //! Product deployment and complete tenant provisioning. No generic workflow or configuration store.
 //! ref: sqlx v0.9.0 sqlx-core/src/transaction.rs; Rust std/fs File::try_lock.
 #[cfg(unix)]
+pub mod deployment;
+pub mod host;
+#[cfg(unix)]
 pub mod installation;
 #[cfg(unix)]
 mod local;

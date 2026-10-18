@@ -103,6 +103,9 @@ fn enabled<'de, D: serde::Deserializer<'de>, T: Deserialize<'de>>(
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
+    pub runtime_binding: crate::setup::host::Binding,
+    #[serde(default)]
+    pub apple_material_roots: Vec<PathBuf>,
     pub webhooks: crate::webhooks::Config,
     #[serde(default)]
     pub software_distribution: rss_mdm_execution_service::SoftwareDistribution,
@@ -150,6 +153,10 @@ impl Config {
             .map_err(|_| Error::Configuration(ConfigIssue::NativeProtection))
     }
     pub(crate) fn compile(self) -> Result<Compiled, Error> {
+        self.runtime_binding.validate()?;
+        if self.apple_material_roots.len() > 16 {
+            return Err(Error::Configuration(ConfigIssue::AppleProfileSigner));
+        }
         if !self.listen.ip().is_loopback() {
             return Err(Error::Configuration(ConfigIssue::Listen));
         }

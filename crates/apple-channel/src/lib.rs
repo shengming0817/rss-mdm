@@ -22,6 +22,7 @@ mod profiles;
 mod protection;
 pub mod push;
 pub mod renewal;
+pub mod runtime_materials;
 mod trust_installation;
 pub use database::Store;
 pub use error::Error;
@@ -209,6 +210,7 @@ impl Apple {
 pub fn management_routes(app: Arc<HttpState>) -> axum::Router {
     account_enrollment::management_routes()
         .merge(ade::management_routes())
+        .merge(runtime_materials::routes())
         .with_state(app)
 }
 pub fn browser_routes(app: Arc<HttpState>, envelope: boundary::Envelope) -> axum::Router {
@@ -320,6 +322,8 @@ impl Apple {
 }
 
 pub struct HttpState {
+    /// Deployment-approved signing roots; tenant requests cannot add trust anchors.
+    pub material_roots: Arc<Vec<Vec<u8>>>,
     pub authentication: account_enrollment::Authentication,
     pub account_authority:
         Arc<dyn rss_mdm_registration_service::enrollment::native::AccountAuthority>,

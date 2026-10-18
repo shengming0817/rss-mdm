@@ -291,5 +291,9 @@ pub(super) fn units() -> Vec<(&'static str, &'static str)> {
             "tenant-provisioning-v1",
             include_str!("../../schema/provisioning.sql"),
         ),
+        (
+            "apple-runtime-materials-v1",
+            rss_mdm_apple_channel::runtime_materials::INSTALL_SQL,
+        ),
     ]
 }

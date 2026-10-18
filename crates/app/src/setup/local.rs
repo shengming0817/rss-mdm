@@ -12,6 +12,7 @@ pub(super) struct Journal {
     root: PathBuf,
     _lock: File,
     uid: u32,
+    projection_uid: Option<u32>,
 }
 impl Journal {
     pub(super) fn open(root: &Path) -> Result<Self> {
@@ -62,7 +63,13 @@ impl Journal {
             root: root.into(),
             _lock: lock,
             uid,
+            projection_uid: None,
         })
+    }
+    pub(super) fn projection(root: &Path) -> Result<Self> {
+        let mut journal = Self::open(root)?;
+        journal.projection_uid = Some(10001);
+        Ok(journal)
     }
     pub(super) fn path(&self, name: &str) -> Result<PathBuf> {
         if name.is_empty()
@@ -127,20 +134,41 @@ impl Journal {
     }
     /// The journal lock excludes concurrent generation. Existing bytes are never overwritten.
     pub(super) fn secret(&self, name: &str, bytes: &[u8]) -> Result<PathBuf> {
+        self.material(name, bytes, true)
+    }
+    /// Only explicitly public bootstrap JSON is made readable by the gateway worker.
+    pub(super) fn public(&self, name: &str, bytes: &[u8]) -> Result<PathBuf> {
+        self.material(name, bytes, false)
+    }
+    fn material(&self, name: &str, bytes: &[u8], private: bool) -> Result<PathBuf> {
+        if bytes.len() > 1024 * 1024 {
+            return Err(Error::Input);
+        }
         let path = self.path(name)?;
         match fs::symlink_metadata(&path) {
             Ok(meta) => {
-                if !meta.is_file() || meta.uid() != self.uid || meta.mode() & 0o077 != 0 {
+                if !meta.is_file()
+                    || (meta.uid() != self.uid && Some(meta.uid()) != self.projection_uid)
+                    || (private && meta.mode() & 0o077 != 0)
+                    || (!private && meta.mode() & 0o022 != 0)
+                {
                     return Err(Error::Input);
                 }
-                let existing =
-                    crate::config::read(&path, 4096, true).map_err(|_| Error::Storage)?;
+                let existing = crate::config::read(&path, bytes.len() as u64, private)
+                    .map_err(|_| Error::Storage)?;
                 if existing.as_slice() != bytes {
                     return Err(Error::Conflict);
                 }
             }
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => self.replace(name, bytes)?,
             Err(_) => return Err(Error::Storage),
+        }
+        if !private {
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o644))
+                .map_err(|_| Error::Storage)?;
+            File::open(&path)
+                .and_then(|file| file.sync_all())
+                .map_err(|_| Error::Storage)?;
         }
         Ok(path)
     }

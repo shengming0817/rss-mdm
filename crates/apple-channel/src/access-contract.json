@@ -1,5 +1,34 @@
 {
-  "tables": [],
+  "tables": [
+    {
+      "schema": "mdm_apple_runtime",
+      "table": "heads",
+      "read_write": true,
+      "updates": [
+        "revision",
+        "desired_revision"
+      ],
+      "delete_policy": null
+    },
+    {
+      "schema": "mdm_apple_runtime",
+      "table": "versions",
+      "read_write": true,
+      "updates": [
+        "revoked",
+        "private_key",
+        "selected"
+      ],
+      "delete_policy": null
+    },
+    {
+      "schema": "mdm_apple_runtime",
+      "table": "operations",
+      "read_write": true,
+      "updates": [],
+      "delete_policy": null
+    }
+  ],
   "functions": [
     {
       "name": "mdm_apple.account_current",

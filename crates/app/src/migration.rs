@@ -124,11 +124,19 @@ async fn migrate_units(
     {
         verify_installation(conn, installation, instance).await?;
     }
-    let progress_exists: bool = sqlx::query_scalar("SELECT to_regclass('public.mdm_installation_progress') IS NOT NULL")
-        .fetch_one(&mut *conn).await.map_err(|_|MigrationError::at("installation","progress read"))?;
-    let source_length = current.iter().position(|(name,_)| *name == "tenant-provisioning-v1");
+    let progress_exists: bool =
+        sqlx::query_scalar("SELECT to_regclass('public.mdm_installation_progress') IS NOT NULL")
+            .fetch_one(&mut *conn)
+            .await
+            .map_err(|_| MigrationError::at("installation", "progress read"))?;
+    let source_length = current
+        .iter()
+        .position(|(name, _)| *name == "tenant-provisioning-v1");
     if !installed.is_empty() && !progress_exists && source_length != Some(installed.len()) {
-        return Err(MigrationError::at("installation","unrecognized resumable installation source"));
+        return Err(MigrationError::at(
+            "installation",
+            "unrecognized resumable installation source",
+        ));
     }
     bind_progress(conn, installation).await?;
     for &(name, sql) in current {
@@ -166,10 +174,12 @@ async fn apply_unit(
             .execute(&mut *tx)
             .await
             .map_err(|_| MigrationError::at(name, "owner role"))?;
-        sqlx::raw_sql(transaction_body(sql)?)
-            .execute(&mut *tx)
-            .await
-            .map_err(|_| MigrationError::at(name, "component schema"))?;
+        for statement in transaction_body(sql)? {
+            sqlx::raw_sql(statement)
+                .execute(&mut *tx)
+                .await
+                .map_err(|_| MigrationError::at(name, "component schema"))?;
+        }
         sqlx::query("SET LOCAL ROLE mdm_owner")
             .execute(&mut *tx)
             .await
@@ -179,15 +189,17 @@ async fn apply_unit(
             .await
             .map_err(|_| MigrationError::at(name, "identity installation"))?;
     } else if name != "identity-audit-runtime-v1" || installation.audit_mode == AuditMode::Ledger {
-        sqlx::raw_sql(transaction_body(sql)?)
-            .execute(&mut *tx)
-            .await
-            .map_err(|_| {
-                MigrationError::at(
-                    name,
-                    "component SQL failed; original transaction rolled back",
-                )
-            })?;
+        for statement in transaction_body(sql)? {
+            sqlx::raw_sql(statement)
+                .execute(&mut *tx)
+                .await
+                .map_err(|_| {
+                    MigrationError::at(
+                        name,
+                        "component SQL failed; original transaction rolled back",
+                    )
+                })?;
+        }
     }
     sqlx::query("INSERT INTO public.mdm_migrations(name,digest,complete) VALUES($1,$2,true)")
         .bind(name)
@@ -200,27 +212,49 @@ async fn apply_unit(
         .map_err(|_| MigrationError::at(name, "commit acknowledgement unknown"))
 }
 
-/// Component SQL is fixed source, not user input. Accept either a transaction-free unit or one
-/// outer BEGIN/COMMIT envelope. Reject nested control instead of silently escaping our transaction.
-fn transaction_body(sql: &'static str) -> Result<&'static str> {
-    let mut offset=0;
-    let mut executable=Vec::new();
+/// Adapt the fixed, pinned component scripts to the installer's transaction. Some components
+/// concatenate initial DDL and an explicitly wrapped upgrade. Preserve each static SQL slice and
+/// execute all slices in the same transaction as the receipt; never send their transaction controls.
+/// This is only for repository SQL, whose standalone control lines are checked in the unit test.
+fn transaction_body(sql: &'static str) -> Result<Vec<&'static str>> {
+    let mut offset = 0;
+    let mut start = 0;
+    let mut wrapped = false;
+    let mut bodies = Vec::new();
     for line in sql.split_inclusive('\n') {
-        let trimmed=line.trim();
-        if !trimmed.is_empty() && !trimmed.starts_with("--") {
-            executable.push((offset,offset+line.len(),trimmed));
+        match line.trim() {
+            "BEGIN;" if !wrapped => {
+                bodies.push(&sql[start..offset]);
+                wrapped = true;
+                start = offset + line.len();
+            }
+            "COMMIT;" if wrapped => {
+                bodies.push(&sql[start..offset]);
+                wrapped = false;
+                start = offset + line.len();
+            }
+            "BEGIN;" | "COMMIT;" | "ROLLBACK;" | "START TRANSACTION;" => {
+                return Err(MigrationError::at(
+                    "installation",
+                    "unsupported component transaction envelope",
+                ));
+            }
+            _ => {}
         }
-        offset+=line.len();
+        offset += line.len();
     }
-    let outer=executable.first().is_some_and(|(_,_,line)|*line=="BEGIN;")
-        && executable.last().is_some_and(|(_,_,line)|*line=="COMMIT;");
-    let body=if outer {
-        &sql[executable.first().expect("outer begin").1..executable.last().expect("outer commit").0]
-    } else {sql};
-    if body.lines().any(|line|matches!(line.trim(),"BEGIN;"|"COMMIT;"|"ROLLBACK;"|"START TRANSACTION;")) {
-        return Err(MigrationError::at("installation","unsupported component transaction envelope"));
+    if wrapped {
+        return Err(MigrationError::at(
+            "installation",
+            "unclosed component transaction envelope",
+        ));
     }
-    Ok(body)
+    bodies.push(&sql[start..]);
+    bodies.retain(|body| {
+        body.lines()
+            .any(|line| !line.trim().is_empty() && !line.trim().starts_with("--"))
+    });
+    Ok(bodies)
 }
 async fn bind_progress(conn: &mut PgConnection, installation: &Installation) -> Result<()> {
     sqlx::raw_sql("CREATE TABLE IF NOT EXISTS public.mdm_installation_progress(singleton boolean PRIMARY KEY DEFAULT true CHECK(singleton),instance_id uuid NOT NULL,target bytea NOT NULL CHECK(octet_length(target)=16),lineage bytea NOT NULL CHECK(octet_length(lineage)=16),audit_mode text NOT NULL CHECK(audit_mode IN('plain','ledger'))); REVOKE ALL ON public.mdm_installation_progress FROM PUBLIC")

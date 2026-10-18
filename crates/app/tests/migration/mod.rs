@@ -376,8 +376,14 @@ fn every_component_keeps_transaction_control_with_the_installer() {
     }
     assert_eq!(
         transaction_body("-- header\nBEGIN;\nSELECT 1;\nCOMMIT;\n-- end").unwrap(),
-        "SELECT 1;\n"
+        vec!["SELECT 1;\n"]
     );
+    assert_eq!(
+        transaction_body("SELECT 1;\nBEGIN;\nSELECT 2;\nCOMMIT;\nBEGIN;\nSELECT 3;\nCOMMIT;")
+            .unwrap(),
+        vec!["SELECT 1;\n", "SELECT 2;\n", "SELECT 3;\n"]
+    );
+    assert!(transaction_body("BEGIN;\nBEGIN;\nSELECT 1;\nCOMMIT;\nCOMMIT;").is_err());
     assert!(transaction_body("SELECT 1;\nCOMMIT;\nSELECT 2;").is_err());
     assert!(transaction_body("BEGIN;\nSELECT 1;").is_err());
 }

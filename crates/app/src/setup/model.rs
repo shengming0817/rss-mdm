@@ -50,6 +50,11 @@ impl Application {
         !host.is_nil()
             && !generation.is_nil()
             && !self.operation_id.is_nil()
+            && self.material_digest.len() == 64
+            && self
+                .material_digest
+                .bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
             && self.requested_revision > 0
             && material_valid
             && self.observation.as_ref().is_some_and(|o| {
@@ -101,13 +106,13 @@ mod tests {
         let generation = Uuid::from_u128(2);
         let mut application = Application {
             requested_revision: 3,
-            material_digest: "exact".into(),
+            material_digest: "a".repeat(64),
             operation_id: Uuid::from_u128(3),
             observation: Some(Observation {
                 host_id: host,
                 process_generation: generation,
                 applied_revision: 3,
-                material_digest: "exact".into(),
+                material_digest: "a".repeat(64),
                 observed_at: 1,
                 failure: None,
             }),
