@@ -88,7 +88,7 @@ pub async fn slot_in(
             .native_packages
             .get(&rss_mdm_policy::SoftwareTarget::new(p, a))
             .ok_or(Error::Unsupported)?;
-        serde_json::json!({"channel":"mdm","generation":target.generation,"resource":policy.assignment.frozen.resource,"version":policy.assignment.frozen.version,"digest":policy.assignment.frozen.resource_digest,"intent":"install","target":{"kind":"device"},"packages":[package.effect_identity()]})
+        serde_json::json!({"channel":"mdm","generation":target.generation,"resource":policy.assignment.frozen.resource,"version":policy.assignment.frozen.version,"digest":policy.assignment.frozen.resource_digest,"intent":"install","target":{"kind":"device"},"packages":[package.effect_identity()],"packageVersions":{(package.effect_identity()):package.effect_version()}})
     } else {
         let Some(binding) =
             crate::channels::agent_binding_in(tx, service.agent_store.clone(), target.registration)
@@ -185,7 +185,7 @@ pub async fn slot_in(
                             OR (state->>'execution'='not_started' AND deadline>$5))
                            AND state->>'cancellation'<>'confirmed')),false),
                    max(created_at) FILTER(WHERE software_effect=$2 AND policy_version=$4 AND occurrence LIKE $6),
-                   coalesce((SELECT software_effect=$2 AND result->>'effect'='verified'
+                   coalesce((SELECT (software_effect=$2 OR (software_effect->'target'=$2::jsonb->'target' AND software_effect->'intent'=$2::jsonb->'intent' AND $2::jsonb->'packageVersions'<>'{}'::jsonb AND software_effect->'packageVersions' @> $2::jsonb->'packageVersions')) AND result->>'effect'='verified'
                              FROM effects
                              WHERE software_effect->'generation'=$2::jsonb->'generation'
                                AND result->>'effect' IN ('verified','failed')
@@ -272,30 +272,39 @@ fn effect_key(
         }
     };
     use rss_mdm_agent_wire::runtime::{SoftwareTaskBehavior as B, SoftwareTaskDetection as D};
-    let packages: Vec<String> = steps
+    let versions: std::collections::BTreeMap<String, String> = steps
         .iter()
-        .filter_map(|step| match &step.action.behavior {
-            B::Msi(v) => match &v.detect {
-                D::MsiProduct { product_code, .. } => {
-                    Uuid::parse_str(product_code.trim_matches(['{', '}']))
-                        .ok()
-                        .map(|id| format!("msi:{id}"))
-                }
+        .filter_map(|step| {
+            let identity = match &step.action.behavior {
+                B::Msi(v) => match &v.detect {
+                    D::MsiProduct { product_code, .. } => {
+                        Uuid::parse_str(product_code.trim_matches(['{', '}']))
+                            .ok()
+                            .map(|id| format!("msi:{id}"))
+                    }
+                    _ => None,
+                },
+                B::Pkg(v) => match &v.detect {
+                    D::PkgReceipt { receipt, .. } => Some(format!("pkg:{receipt}")),
+                    _ => None,
+                },
+                B::Msix(v) => Some(format!(
+                    "msix:{}",
+                    crate::agent_preparation::family(&v.identity.name, &v.identity.publisher)
+                )),
                 _ => None,
-            },
-            B::Pkg(v) => match &v.detect {
-                D::PkgReceipt { receipt, .. } => Some(format!("pkg:{receipt}")),
-                _ => None,
-            },
-            B::Msix(v) => Some(format!(
-                "msix:{}",
-                crate::agent_preparation::family(&v.identity.name, &v.identity.publisher)
-            )),
-            _ => None,
+            };
+            identity.map(|id| {
+                (
+                    id,
+                    rss_mdm_software_service::preparation::evidence::detected_version(&step.action),
+                )
+            })
         })
         .collect();
+    let packages: Vec<_> = versions.keys().collect();
     Ok(
-        serde_json::json!({"packages":packages,"channel":"agent","generation":target.generation,"resource":policy.assignment.frozen.resource,"version":policy.assignment.frozen.version,"digest":policy.assignment.frozen.resource_digest,"intent":if policy.assignment.intent()==rss_mdm_policy::SoftwareIntent::ExplicitUninstall {"uninstall"} else {"install"},"target":effect_target}),
+        serde_json::json!({"packages":packages,"packageVersions":versions,"channel":"agent","generation":target.generation,"resource":policy.assignment.frozen.resource,"version":policy.assignment.frozen.version,"digest":policy.assignment.frozen.resource_digest,"intent":if policy.assignment.intent()==rss_mdm_policy::SoftwareIntent::ExplicitUninstall {"uninstall"} else {"install"},"target":effect_target}),
     )
 }
 pub async fn persist_effect_in(

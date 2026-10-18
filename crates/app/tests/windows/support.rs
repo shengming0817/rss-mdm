@@ -286,6 +286,7 @@ impl Host {
             serde_json::from_slice(&std::fs::read(std::env::var("MDM_TEST_CONFIG")?)?)?;
         value["content"] = original["content"].clone();
         value["agent_pki"] = original["agent_pki"].clone();
+        if mdm_software { value["task_signing"] = original["task_signing"].clone(); }
         value["device_pki"] = original["device_pki"].clone();
         value["native_protection_key_file"] = original["native_protection_key_file"].clone();
         if push {

@@ -4,6 +4,7 @@ use super::{
     storage as db,
 };
 use crate::{Error, ExecutionService, Result, sources as policies, storage};
+use rss_device_command::Store;
 use rss_transactional_messaging_postgres::PgTransaction;
 use sqlx::Row;
 use uuid::Uuid;
@@ -167,6 +168,23 @@ pub async fn advance_run(
                         }
                     };
                     if verified {
+                        if !command.status().is_terminal() {
+                            let report = crate::dc::DeviceReport {
+                                scope: op.scope,
+                                command_id: op.command_id()?,
+                                coordinate: op.coordinate,
+                                event: crate::dc::DeviceEvent::Reported(op.request.digest(
+                                    &service.protection,
+                                    service.tenant,
+                                    &op.device,
+                                )?),
+                            };
+                            if service.store.report(tx, &report).await?.outcome
+                                == crate::dc::Outcome::OutOfOrder
+                            {
+                                return Err(Error::Conflict.into());
+                            }
+                        }
                         run.state.result(run.id, true)?;
                         run.result = Some(
                             serde_json::json!({"operation":run.id,"effect":"verified","effectObservedAt":now}),

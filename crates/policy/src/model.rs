@@ -33,6 +33,7 @@ pub enum Change {
     Put {
         /// Replacement definition.
         #[serde(deserialize_with = "definition_input")]
+        #[schemars(schema_with = "definition_input_schema")]
         definition: Box<Definition>,
         /// Requested enabled state.
         enabled: bool,
@@ -299,4 +300,35 @@ pub fn definition_input<'de, D: serde::Deserializer<'de>>(
             .or_insert_with(|| serde_json::json!("agent"));
     }
     serde_json::from_value(value).map_err(serde::de::Error::custom)
+}
+
+/// Management input schema shares the strict domain shape, with its one input default.
+fn definition_input_schema(g: &mut schemars::SchemaGenerator) -> schemars::Schema {
+    use schemars::JsonSchema;
+    let mut definition = Definition::json_schema(g);
+    let mut action = crate::Action::json_schema(g);
+    if let Some(branches) = action
+        .get_mut("oneOf")
+        .and_then(serde_json::Value::as_array_mut)
+    {
+        for branch in branches {
+            if branch
+                .pointer("/properties/kind/const")
+                .and_then(serde_json::Value::as_str)
+                == Some("software")
+            {
+                if let Some(required) = branch
+                    .get_mut("required")
+                    .and_then(serde_json::Value::as_array_mut)
+                {
+                    required.retain(|v| v != "channel");
+                }
+                branch["properties"]["channel"]["default"] = serde_json::json!("agent");
+            }
+        }
+    }
+    if let Some(properties) = definition.get_mut("properties") {
+        properties["action"] = action.to_value();
+    }
+    definition
 }

@@ -219,8 +219,12 @@
         },
         {
           "additionalProperties": false,
-          "description": "Enterprise software installed or removed through the Agent.",
+          "description": "Enterprise software on exactly one explicitly selected channel.",
           "properties": {
+            "channel": {
+              "$ref": "#/$defs/SoftwareChannel",
+              "description": "The only channel allowed to write this assignment."
+            },
             "delivery": {
               "$ref": "#/$defs/SoftwareDelivery",
               "description": "Explicit content or frozen native-source delivery authority."
@@ -267,6 +271,7 @@
           },
           "required": [
             "kind",
+            "channel",
             "delivery",
             "resource",
             "intent",
@@ -395,8 +400,404 @@
               "type": "string"
             },
             "definition": {
-              "$ref": "#/$defs/Definition",
-              "description": "Replacement definition."
+              "additionalProperties": false,
+              "description": "Replacement definition.",
+              "properties": {
+                "action": {
+                  "description": "Each action owns its inputs; registration never requires a fictitious resource.",
+                  "oneOf": [
+                    {
+                      "additionalProperties": false,
+                      "description": "Native Windows credential management on the existing Agent schedule.",
+                      "properties": {
+                        "architecture": {
+                          "$ref": "#/$defs/Architecture",
+                          "description": "Required processor architecture."
+                        },
+                        "frequency": {
+                          "$ref": "#/$defs/Frequency",
+                          "description": "Existing execution-history rule."
+                        },
+                        "kind": {
+                          "const": "credential",
+                          "type": "string"
+                        },
+                        "operation": {
+                          "$ref": "#/$defs/CredentialOperation",
+                          "description": "Exact native operation and stable target identity."
+                        },
+                        "runLifetimeSeconds": {
+                          "description": "Original task lifetime, including offline recovery.",
+                          "format": "uint32",
+                          "minimum": 0,
+                          "type": "integer"
+                        },
+                        "schedule": {
+                          "$ref": "#/$defs/Schedule",
+                          "description": "Existing calendar or explicit trigger."
+                        }
+                      },
+                      "required": [
+                        "kind",
+                        "operation",
+                        "architecture",
+                        "schedule",
+                        "frequency",
+                        "runLifetimeSeconds"
+                      ],
+                      "type": "object"
+                    },
+                    {
+                      "additionalProperties": false,
+                      "description": "A side-effecting or collection action admitted on Agent check-in.",
+                      "properties": {
+                        "frequency": {
+                          "$ref": "#/$defs/Frequency",
+                          "default": "once_per_version",
+                          "description": "History deduplication rule; defaults to once per version."
+                        },
+                        "kind": {
+                          "const": "execution",
+                          "type": "string"
+                        },
+                        "parameters": {
+                          "$ref": "#/$defs/ParameterSources",
+                          "description": "Complete parameter sources validated against the selected Resource."
+                        },
+                        "resource": {
+                          "$ref": "#/$defs/ExactResourceBinding",
+                          "description": "Exact immutable script resource."
+                        },
+                        "runLifetimeSeconds": {
+                          "description": "Maximum lifetime of each admitted run, from 60 seconds through seven days.",
+                          "format": "uint32",
+                          "minimum": 0,
+                          "type": "integer"
+                        },
+                        "schedule": {
+                          "$ref": "#/$defs/Schedule",
+                          "default": {
+                            "jitterSeconds": 0,
+                            "misfire": {
+                              "kind": "coalesce_one"
+                            },
+                            "notBefore": 0,
+                            "trigger": {
+                              "kind": "check_in",
+                              "minimumSeconds": 60
+                            },
+                            "until": null,
+                            "window": null
+                          },
+                          "description": "Calendar and event conditions; defaults to check-in without an end."
+                        }
+                      },
+                      "required": [
+                        "kind",
+                        "resource",
+                        "parameters",
+                        "runLifetimeSeconds"
+                      ],
+                      "type": "object"
+                    },
+                    {
+                      "additionalProperties": false,
+                      "description": "A native Agent read template using the same schedule and membership frequency.",
+                      "properties": {
+                        "frequency": {
+                          "$ref": "#/$defs/Frequency",
+                          "default": "once_per_version",
+                          "description": "Existing Policy execution frequency."
+                        },
+                        "kind": {
+                          "const": "agent_collection",
+                          "type": "string"
+                        },
+                        "resource": {
+                          "$ref": "#/$defs/ExactResourceBinding",
+                          "description": "Exact immutable native template."
+                        },
+                        "runLifetimeSeconds": {
+                          "description": "Lifetime of the accepted collection.",
+                          "format": "uint32",
+                          "minimum": 0,
+                          "type": "integer"
+                        },
+                        "schedule": {
+                          "$ref": "#/$defs/Schedule",
+                          "default": {
+                            "jitterSeconds": 0,
+                            "misfire": {
+                              "kind": "coalesce_one"
+                            },
+                            "notBefore": 0,
+                            "trigger": {
+                              "kind": "check_in",
+                              "minimumSeconds": 60
+                            },
+                            "until": null,
+                            "window": null
+                          },
+                          "description": "Calendar and check-in trigger."
+                        }
+                      },
+                      "required": [
+                        "kind",
+                        "resource",
+                        "runLifetimeSeconds"
+                      ],
+                      "type": "object"
+                    },
+                    {
+                      "additionalProperties": false,
+                      "description": "A native MDM read template using the same schedule and membership frequency.",
+                      "properties": {
+                        "frequency": {
+                          "$ref": "#/$defs/Frequency",
+                          "default": "once_per_version",
+                          "description": "Existing Policy execution frequency."
+                        },
+                        "kind": {
+                          "const": "native_collection",
+                          "type": "string"
+                        },
+                        "resource": {
+                          "$ref": "#/$defs/ExactResourceBinding",
+                          "description": "Exact immutable native template."
+                        },
+                        "runLifetimeSeconds": {
+                          "description": "Lifetime of the accepted collection.",
+                          "format": "uint32",
+                          "minimum": 0,
+                          "type": "integer"
+                        },
+                        "schedule": {
+                          "$ref": "#/$defs/Schedule",
+                          "default": {
+                            "jitterSeconds": 0,
+                            "misfire": {
+                              "kind": "coalesce_one"
+                            },
+                            "notBefore": 0,
+                            "trigger": {
+                              "kind": "check_in",
+                              "minimumSeconds": 60
+                            },
+                            "until": null,
+                            "window": null
+                          },
+                          "description": "Calendar and check-in trigger."
+                        }
+                      },
+                      "required": [
+                        "kind",
+                        "resource",
+                        "runLifetimeSeconds"
+                      ],
+                      "type": "object"
+                    },
+                    {
+                      "additionalProperties": false,
+                      "description": "A persistent native configuration without a script schedule.",
+                      "properties": {
+                        "exit": {
+                          "$ref": "#/$defs/Exit",
+                          "default": "retain",
+                          "description": "What to do when this configuration no longer has an owner."
+                        },
+                        "kind": {
+                          "const": "configuration",
+                          "type": "string"
+                        },
+                        "resource": {
+                          "$ref": "#/$defs/ExactResourceBinding",
+                          "description": "Exact immutable native configuration resource."
+                        }
+                      },
+                      "required": [
+                        "kind",
+                        "resource"
+                      ],
+                      "type": "object"
+                    },
+                    {
+                      "additionalProperties": false,
+                      "description": "Enterprise software on exactly one explicitly selected channel.",
+                      "properties": {
+                        "channel": {
+                          "$ref": "#/$defs/SoftwareChannel",
+                          "default": "agent",
+                          "description": "The only channel allowed to write this assignment."
+                        },
+                        "delivery": {
+                          "$ref": "#/$defs/SoftwareDelivery",
+                          "description": "Explicit content or frozen native-source delivery authority."
+                        },
+                        "intent": {
+                          "$ref": "#/$defs/SoftwareIntent",
+                          "description": "Required, self-service, or explicit removal semantics."
+                        },
+                        "kind": {
+                          "const": "software",
+                          "type": "string"
+                        },
+                        "resource": {
+                          "$ref": "#/$defs/SoftwareResourceBinding",
+                          "description": "Approved logical software release and exact platform variants."
+                        },
+                        "rollout": {
+                          "$ref": "#/$defs/SoftwareRollout",
+                          "description": "Administrator-authored rollout stages."
+                        },
+                        "runLifetimeSeconds": {
+                          "description": "Maximum lifetime of one task.",
+                          "format": "uint32",
+                          "minimum": 0,
+                          "type": "integer"
+                        },
+                        "schedule": {
+                          "$ref": "#/$defs/Schedule",
+                          "default": {
+                            "jitterSeconds": 0,
+                            "misfire": {
+                              "kind": "coalesce_one"
+                            },
+                            "notBefore": 0,
+                            "trigger": {
+                              "kind": "check_in",
+                              "minimumSeconds": 60
+                            },
+                            "until": null,
+                            "window": null
+                          },
+                          "description": "Device execution schedule and maintenance window."
+                        }
+                      },
+                      "required": [
+                        "kind",
+                        "delivery",
+                        "resource",
+                        "intent",
+                        "runLifetimeSeconds",
+                        "rollout"
+                      ],
+                      "type": "object"
+                    },
+                    {
+                      "additionalProperties": false,
+                      "description": "Install only the product's approved Agent through the source MDM channel.",
+                      "properties": {
+                        "kind": {
+                          "const": "ensure_agent_installed",
+                          "type": "string"
+                        },
+                        "packages": {
+                          "additionalProperties": {
+                            "format": "uuid",
+                            "type": "string"
+                          },
+                          "description": "One explicitly published Agent release per native target; no format fallback.",
+                          "type": "object"
+                        },
+                        "runLifetimeSeconds": {
+                          "description": "Bounded lifetime of this installation and its registration handoff.",
+                          "format": "uint32",
+                          "minimum": 0,
+                          "type": "integer"
+                        },
+                        "schedule": {
+                          "$ref": "#/$defs/Schedule",
+                          "default": {
+                            "jitterSeconds": 0,
+                            "misfire": {
+                              "kind": "coalesce_one"
+                            },
+                            "notBefore": 0,
+                            "trigger": {
+                              "kind": "check_in",
+                              "minimumSeconds": 60
+                            },
+                            "until": null,
+                            "window": null
+                          },
+                          "description": "Source-channel scheduling and cooldown."
+                        }
+                      },
+                      "required": [
+                        "kind",
+                        "packages",
+                        "runLifetimeSeconds"
+                      ],
+                      "type": "object"
+                    },
+                    {
+                      "additionalProperties": false,
+                      "description": "Ask an independently registered Agent to open the standard MDM enrollment flow.",
+                      "properties": {
+                        "kind": {
+                          "const": "request_mdm_enrollment",
+                          "type": "string"
+                        },
+                        "organization": {
+                          "description": "Target organization; the product verifies its enrollment authority.",
+                          "format": "uuid",
+                          "type": "string"
+                        },
+                        "runLifetimeSeconds": {
+                          "description": "Bounded lifetime; opening the UI does not complete enrollment.",
+                          "format": "uint32",
+                          "minimum": 0,
+                          "type": "integer"
+                        },
+                        "schedule": {
+                          "$ref": "#/$defs/Schedule",
+                          "default": {
+                            "jitterSeconds": 0,
+                            "misfire": {
+                              "kind": "coalesce_one"
+                            },
+                            "notBefore": 0,
+                            "trigger": {
+                              "kind": "check_in",
+                              "minimumSeconds": 60
+                            },
+                            "until": null,
+                            "window": null
+                          },
+                          "description": "Source-channel scheduling and cooldown."
+                        }
+                      },
+                      "required": [
+                        "kind",
+                        "organization",
+                        "runLifetimeSeconds"
+                      ],
+                      "type": "object"
+                    }
+                  ]
+                },
+                "scope": {
+                  "description": "Opaque Scope identity; Scope alone owns membership and entry coordinates.",
+                  "format": "uuid",
+                  "type": "string"
+                },
+                "selfService": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/$defs/SelfService"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "description": "Optional task self-service publication and presentation."
+                }
+              },
+              "required": [
+                "scope",
+                "action"
+              ],
+              "type": "object"
             },
             "enabled": {
               "description": "Requested enabled state.",
@@ -546,37 +947,6 @@
           "type": "object"
         }
       ]
-    },
-    "Definition": {
-      "additionalProperties": false,
-      "description": "Complete authored Policy definition, without execution progress.",
-      "properties": {
-        "action": {
-          "$ref": "#/$defs/Action",
-          "description": "Closed action or configuration semantics."
-        },
-        "scope": {
-          "description": "Opaque Scope identity; Scope alone owns membership and entry coordinates.",
-          "format": "uuid",
-          "type": "string"
-        },
-        "selfService": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/SelfService"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "description": "Optional task self-service publication and presentation."
-        }
-      },
-      "required": [
-        "scope",
-        "action"
-      ],
-      "type": "object"
     },
     "ExactResourceBinding": {
       "additionalProperties": false,
@@ -1104,6 +1474,21 @@
         "configurationVersion"
       ],
       "type": "object"
+    },
+    "SoftwareChannel": {
+      "description": "A software assignment has one write channel; there is no automatic fallback.",
+      "oneOf": [
+        {
+          "const": "agent",
+          "description": "Existing Agent task execution.",
+          "type": "string"
+        },
+        {
+          "const": "mdm",
+          "description": "Native MDM package execution.",
+          "type": "string"
+        }
+      ]
     },
     "SoftwareDelivery": {
       "description": "Explicit delivery authority for the native behaviors in a software dependency closure.",

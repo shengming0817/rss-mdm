@@ -121,3 +121,30 @@ fn msix_observation_is_read_only_and_targets_exact_provisioned_version() {
     assert!(value.contains("IsProvisioned"));
     assert!(!value.contains("HostedInstall"));
 }
+
+#[test]
+fn native_rejects_unrepresentable_approved_semantics_before_queueing() {
+    let compile = |v: Value| {
+        Package::compile(
+            &serde_json::from_value::<r::SoftwareDefinition>(v).unwrap(),
+            "https://mdm.test".into(),
+        )
+    };
+    for (field, value) in [("reboot", json!("forbid")), ("downgrade", json!("allow"))] {
+        let mut spec = msi();
+        spec[field] = value;
+        assert!(compile(spec).is_err());
+    }
+    for (seconds, accepted) in [(15300, true), (15301, false), (301, false)] {
+        let mut spec = msi();
+        for invocation in ["install", "upgradeInvocation"] {
+            spec["behavior"][invocation]["timeoutSeconds"] = json!(seconds);
+        }
+        assert_eq!(compile(spec).is_ok(), accepted);
+    }
+    let mut spec = msi();
+    for invocation in ["install", "upgradeInvocation"] {
+        spec["behavior"][invocation]["exitCodes"]["success"] = json!([42]);
+    }
+    assert!(compile(spec).is_err());
+}

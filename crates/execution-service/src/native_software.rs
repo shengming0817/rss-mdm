@@ -37,7 +37,10 @@ impl Package {
         origin: String,
     ) -> std::result::Result<Self, Error> {
         let spec = definition.spec();
-        if !spec.dependencies.is_empty() {
+        if !spec.dependencies.is_empty()
+            || spec.reboot != r::SoftwareReboot::Report
+            || spec.downgrade != r::SoftwareDowngrade::Deny
+        {
             return Err(Error::Unsupported);
         }
         let (key, identity, invocation, mechanism) = match &spec.behavior {
@@ -106,6 +109,13 @@ impl Package {
         if invocation.run_as != r::RunAs::System
             || !invocation.environment.is_empty()
             || !invocation.arguments.is_empty()
+            || invocation.exit_codes.success != [0].into_iter().collect()
+            || !invocation.exit_codes.reboot.is_empty()
+        {
+            return Err(Error::Unsupported);
+        }
+        if matches!(identity, Identity::Msi { .. })
+            && (invocation.timeout_seconds > 255 * 60 || invocation.timeout_seconds % 60 != 0)
         {
             return Err(Error::Unsupported);
         }
@@ -129,6 +139,12 @@ impl Package {
                 _ => None,
             },
         })
+    }
+    pub fn effect_version(&self) -> String {
+        match &self.identity {
+            Identity::Msi { version, .. } | Identity::Pkg { version, .. } => version.clone(),
+            Identity::Msix { identity, .. } => identity.version.map(|v| v.to_string()).join("."),
+        }
     }
     pub fn effect_identity(&self) -> String {
         match &self.identity {

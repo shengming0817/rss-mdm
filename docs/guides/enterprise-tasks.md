@@ -164,7 +164,7 @@ Run 保存服务端选择的访问依据，用户模式只保存 Identity 签发
 
 软件 `action.channel` 只接受 `agent`、`mdm`；省略时输入边界保存为 `agent`。主机 `software_distribution.mdm_enabled` 默认 false，修改配置后重启生效；`GET /api/v1/policies/capabilities` 在 PolicyRead 授权下返回默认通道和开关。开关不改写策略。关闭时启用 MDM 软件返回 `mdm_software_disabled`，已排队但未开始原生执行的任务停止投递；已发出的副作用继续按原任务回收，不声称已撤销安装。
 
-MDM v1 仅支持系统 MSI、签名单包 MSIX 的 device provisioning、签名 PKG。每个安装包的 `signatures[].evidence` 指向不可变报告 artifact；报告 JSON 持有 `sha256`、`mechanism`、`publisher`、`verified:true`，由平台打包/验证流程产生，经现有 Catalog 启用审批校验和固定。服务端验证报告与材料匹配，不执行平台签名工具。自定义环境/参数、依赖包、EXE、DMG、Bundle、用户安装、MDM 自助和卸载均不准入。Agent 原有能力独立保留。
+MDM v1 仅支持系统 MSI、签名单包 MSIX 的 device provisioning、签名 PKG。每个安装包的 `signatures[].evidence` 指向不可变报告 artifact；报告 JSON 持有 `sha256`、`mechanism`、`publisher`、`verified:true`，由平台打包/验证流程产生，经现有 Catalog 启用审批校验和固定。服务端验证报告与材料匹配，不执行平台签名工具。自定义环境/参数、依赖包、EXE、DMG、Bundle、用户安装、MDM 自助和卸载均不准入。MDM 仅接受 `reboot:report`、`downgrade:deny` 和标准退出码（success 为 `[0]`、reboot 为空）；MSI timeout 必须为整分钟且不超过 255 分钟。Agent 原有能力独立保留。
 
 安装命令和下载都绑定原 action run、Policy/Resource 版本、注册世代及当前权限。切换通道产生新执行版本；未解决的安装效果按关联设备及所有包身份阻止重复写入，失败或离线不回退到另一通道。Windows MSI 通过原生 Status/Version，MSIX 通过精确 PackageFullName 的 IsProvisioned/Version 证明效果；缺失状态节点不算成功。PKG ACK 只证明协议受理，保持 Unknown，不推动成功率门禁。普通 PKG manifest 的 receipt 标识不被当作 InstalledApplicationList 的应用 bundle 标识。
 
