@@ -47,7 +47,7 @@ impl ExecutionService {
                     let message = m.clone();
                     let bytes = b.to_vec();
                     let audit = a.clone();
-                    let (reply, package, authenticated) = tx
+                    let (reply, package, authenticated, runs) = tx
                         .with_connection(move |c| {
                             Box::pin(async move {
                                 Ok(manage_on(
@@ -68,8 +68,8 @@ impl ExecutionService {
                     }
                     settle_dispatch_failures(s, tx, p, a).await?;
                     settle_reports(s, tx, p, m.header.session_id, package).await?;
-                    if authenticated {
-                        settle_native_reports(s, tx, p, m).await?;
+                    for id in runs {
+                        actions::recovery::recover_one(s, tx, id).await?;
                     }
                     s.reconcile_agent_install_in(tx, p.device(), a).await?;
                     if !matches!(
@@ -105,7 +105,7 @@ async fn manage_on(
     raw: &rss_mdm_windows_mdm::syncml::Message,
     bytes: &[u8],
     audit: &RequestAudit,
-) -> std::result::Result<(channels::Reply, channels::PackageState, bool), Error> {
+) -> std::result::Result<(channels::Reply, channels::PackageState, bool, Vec<Uuid>), Error> {
     let (source, key) = authority;
     use channels::{PackageState as P, WindowsReception};
     use rss_mdm_windows_mdm::syncml::{self as sm, Alert, Command};
@@ -116,7 +116,7 @@ async fn manage_on(
     {
         WindowsReception::Replay { reply, package } => {
             native::replay_on(source, c, key, p, raw).await?;
-            return Ok((reply, package, false));
+            return Ok((reply, package, false, Vec::new()));
         }
         WindowsReception::Challenge(prepared) => (prepared, false),
         WindowsReception::Authenticated(prepared) => (prepared, true),
@@ -166,7 +166,7 @@ async fn manage_on(
     .await?;
     let outgoing = authenticated && native::outgoing_on(c, p, raw.header.session_id).await?;
     let dispatch = authenticated && prepared.package == P::Complete && !outgoing;
-    let channel_pending = prepared
+    let collections = prepared
         .session
         .collect(
             source,
@@ -258,46 +258,11 @@ async fn manage_on(
             p,
             prepared.response,
             package,
-            channel_pending || command_pending || outgoing,
+            collections.pending || command_pending || outgoing,
         )
         .await
         .map_err(Error::from)?;
-    Ok((reply, package, authenticated))
-}
-
-async fn settle_native_reports(
-    service: &ExecutionService,
-    tx: &mut PgTransaction<'_>,
-    principal: &DevicePrincipal,
-    message: &rss_mdm_windows_mdm::syncml::Message,
-) -> Result<()> {
-    use rss_mdm_windows_mdm::syncml::Command;
-    let references: Vec<i64> = message
-        .commands
-        .iter()
-        .filter_map(|command| match command {
-            Command::Status(status) if status.command_ref != 0 => {
-                Some(i64::from(status.message_ref))
-            }
-            Command::Results(result) => result.message_ref.map(i64::from),
-            _ => None,
-        })
-        .collect();
-    if references.is_empty() {
-        return Ok(());
-    }
-    let tenant = tx.tenant_id().to_string();
-    let registration = principal.registration();
-    let generation = principal.generation();
-    let session = message.header.session_id.to_string();
-    let ids: Vec<Uuid> = tx.with_connection(move |c| Box::pin(async move {
-        sqlx::query_scalar("SELECT DISTINCT w.id FROM mdm_windows.collections w JOIN mdm_commands.action_runs r USING(tenant_id,id) WHERE w.tenant_id=$1::uuid AND w.registration=$2 AND r.generation=$3 AND w.session_id=$4 AND w.kind='template' AND w.request_message=ANY($5) ORDER BY w.id")
-            .bind(tenant).bind(registration).bind(generation).bind(session).bind(references).fetch_all(c).await
-    })).await?;
-    for id in ids {
-        actions::recovery::recover_one(service, tx, id).await?;
-    }
-    Ok(())
+    Ok((reply, package, authenticated, collections.runs))
 }
 
 fn retain_received_acks(

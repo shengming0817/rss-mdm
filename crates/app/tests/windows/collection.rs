@@ -379,6 +379,8 @@ async fn template_flow(
             | Completion::EmptyInventory
             | Completion::RevokedInventory
     ) {
+        // The request must settle its own result without assistance from recovery.
+        crate::test_support::stop_worker(owner.take()).await?;
         dynamic_result(
             &host,
             &mut f,
@@ -818,6 +820,7 @@ async fn dynamic_result(
         .await?;
     seed_prior_list(pg, &agent_scope, &definition, agent_key, &agent_value).await?;
     let mut enumerations = 0;
+    let mut final_packet = None;
     for _ in 0..6 {
         let gets: Vec<_> = wire
             .commands
@@ -905,6 +908,7 @@ async fn dynamic_result(
         packet.commands.sort_by_key(
             |c| matches!(c, s::Command::Results(v) if v.items.iter().any(|i| i.more_data)),
         );
+        final_packet = Some(packet.clone());
         let response = native::post(&peer.mutual, &peer.url, &packet).await?;
         ensure!(
             response.status() == StatusCode::OK,
@@ -1003,12 +1007,30 @@ async fn dynamic_result(
                 tail,
             ];
             packet.final_message = true;
+            final_packet = Some(packet.clone());
             let response = native::post(&peer.mutual, &peer.url, &packet).await?;
             ensure!(response.status() == StatusCode::OK);
             wire = s::decode(&response.bytes().await?, &CodecLimits::default())?;
         }
     }
     let result:(String,String)=sqlx::query_as("SELECT result,attempts FROM mdm_access.collection_runs WHERE tenant_id=$1::uuid AND id=$2 AND sealed_at IS NOT NULL").bind(case_tenant()).bind(run).fetch_one(&mut *pg).await.context("dynamic sealed result")?;
+    let action: (String, String) = sqlx::query_as("SELECT state->>'execution',result->>'collectionRun' FROM mdm_commands.action_runs WHERE tenant_id=$1::uuid AND id=$2")
+        .bind(case_tenant()).bind(run).fetch_one(&mut *pg).await?;
+    ensure!(
+        action == ("succeeded".into(), run.to_string()),
+        "final multi-stage receipt did not atomically settle its ActionRun: {action:?}"
+    );
+    let packet = final_packet
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("missing final packet"))?;
+    ensure!(
+        native::post(&peer.mutual, &peer.url, packet)
+            .await?
+            .status()
+            == StatusCode::OK
+    );
+    let before: serde_json::Value = sqlx::query_scalar("SELECT jsonb_build_array(state,result) FROM mdm_commands.action_runs WHERE tenant_id=$1::uuid AND id=$2")
+        .bind(case_tenant()).bind(run).fetch_one(&mut *pg).await?;
     let attempts: serde_json::Value = serde_json::from_str(&result.1)?;
     if matches!(completion, Completion::MissingChild) {
         ensure!(result.0 == "partial", "{result:?}");
@@ -1089,6 +1111,41 @@ async fn dynamic_result(
         retained == serde_json::to_value(&agent_value)?,
         "native collection modified Agent software"
     );
+    crate::test_support::identity::set_grants(
+        case_tenant(),
+        crate::test_support::case::admin(),
+        vec![],
+    )
+    .await?;
+    let mut recovery = rss_runtime::ShutdownStack::try_new(
+        rss_runtime::TotalDrainBudget::new(Duration::from_secs(15))?,
+        Arc::new(crate::lifecycle::RuntimeTimer),
+    )?;
+    let mut launch = recovery.startup()?.commit();
+    launch.stage_deferred_task_with_token(
+        host.app
+            .execution
+            .clone()
+            .registration(host.notifications.signals.execution())
+            .critical(),
+    );
+    launch.finish();
+    tokio::time::timeout(Duration::from_secs(20), async {
+        loop {
+            let converged: bool = sqlx::query_scalar("SELECT result='converged' FROM rss_reconcile.targets WHERE tenant_id=$1::uuid AND reconciler='mdm.commands.v3' AND entity='native-run:'||$2::text")
+                .bind(case_tenant()).bind(run).fetch_one(&mut *pg).await?;
+            if converged { return Ok::<_,anyhow::Error>(()); }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    }).await??;
+    crate::test_support::stop_worker(Some(recovery)).await?;
+    let after: serde_json::Value = sqlx::query_scalar("SELECT jsonb_build_array(state,result) FROM mdm_commands.action_runs WHERE tenant_id=$1::uuid AND id=$2")
+        .bind(case_tenant()).bind(run).fetch_one(&mut *pg).await?;
+    ensure!(
+        before == after,
+        "revocation changed a synchronously sealed result"
+    );
+
     Ok(())
 }
 
