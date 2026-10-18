@@ -497,17 +497,17 @@ pub async fn lifecycle_objects_on(
         .filter(|(_, s)| frozen.definition.targets.contains(&s.reference))
         .map(|(i, _)| i as i32)
         .collect();
-    let rows = sqlx::query("SELECT DISTINCT ON(object_key) input,unknown FROM (SELECT input,unknown,CASE input->'object'->>'kind' WHEN 'endpoint' THEN 'endpoint:'||(input->'object'->>'id') ELSE 'association:'||(input->'object'->>'id') END COLLATE \"C\" AS object_key FROM mdm_planning.scope_source_members WHERE tenant_id=$1::uuid AND run=$2 AND source=ANY($3)) objects WHERE object_key>coalesce($4,'') COLLATE \"C\" ORDER BY object_key,unknown LIMIT 65")
+    let rows = sqlx::query("SELECT DISTINCT ON(object_key) input,unknown FROM (SELECT m.input,m.unknown,CASE WHEN a.id IS NOT NULL THEN 'association:'||a.id::text WHEN m.input->'object'->>'kind'='endpoint' THEN 'endpoint:'||(m.input->'object'->>'id') ELSE 'association:'||(m.input->'object'->>'id') END COLLATE \"C\" AS object_key FROM mdm_planning.scope_source_members m LEFT JOIN mdm_devices.members d ON d.tenant_id=m.tenant_id AND m.input->'object'->>'kind'='endpoint' AND d.device=m.input->'object'->>'id' AND NOT d.released LEFT JOIN mdm_devices.associations a ON(a.tenant_id,a.id)=(d.tenant_id,d.association_id) AND a.state<>'revoked' WHERE m.tenant_id=$1::uuid AND m.run=$2 AND m.source=ANY($3)) objects WHERE object_key>coalesce($4,'') COLLATE \"C\" ORDER BY object_key,unknown LIMIT 65")
         .bind(tenant.to_string()).bind(run).bind(targets).bind(after).fetch_all(&mut *c).await?;
     let at = Timepoint::try_from(frozen.as_of).map_err(|_| SourceError::Invariant)?;
     let mut out = Vec::new();
     for row in rows {
         let input: DeviceObject =
             serde_json::from_value(row.try_get("input")?).map_err(|_| SourceError::Invariant)?;
-        let cursor = input.object.key();
         let input = rss_mdm_device_service::lifecycle::complete_target_in(c, tenant, &input)
             .await
             .map_err(|_| SourceError::Invariant)?;
+        let cursor = input.object.key();
         let mut known = BTreeSet::new();
         let mut uncertain = BTreeSet::new();
         let mut valid = fresh

@@ -289,7 +289,13 @@ impl ExecutionService {
             if let Some(execution) = channel.execution {
                 if channel.channel == rss_mdm_inventory::Channel::Agent {
                     let run = crate::actions::storage::load_run(tx, execution).await?;
+                    let now = crate::storage::now(tx).await?;
                     let observation = match run.state.execution {
+                        Execution::NotStarted if delivery_ended(&run.state, now) => {
+                            owner::Observation::UnenrollmentBlocked {
+                                reason: "agent_uninstall_not_started",
+                            }
+                        }
                         Execution::Succeeded => owner::Observation::Uninstalled,
                         Execution::Failed => owner::Observation::UnenrollmentBlocked {
                             reason: "agent_uninstall_failed",
@@ -700,15 +706,35 @@ impl ExecutionService {
                 {
                     continue;
                 }
-                if matches!(run.state.execution, Execution::Failed | Execution::Unknown) {
-                    return self
-                        .block_retirement_cleanup(
-                            tx,
-                            retirement,
-                            registration,
-                            "software_removal_unconfirmed",
-                        )
-                        .await;
+                let now = crate::storage::now(tx).await?;
+                let reason = if delivery_ended(&run.state, now) {
+                    Some("software_removal_not_started")
+                } else if matches!(run.state.execution, Execution::Failed | Execution::Unknown) {
+                    Some("software_removal_unconfirmed")
+                } else {
+                    None
+                };
+                if let Some(reason) = reason {
+                    let unknown = run.state.execution == Execution::Unknown;
+                    tx.with_connection(move |c| {
+                        Box::pin(async move {
+                            Ok(owner::observe_in(
+                                c,
+                                tenant,
+                                retirement,
+                                registration,
+                                owner::Observation::CleanupBlocked {
+                                    reason,
+                                    execution: Some(id),
+                                    unknown,
+                                },
+                            )
+                            .await
+                            .map_err(Error::from))
+                        })
+                    })
+                    .await??;
+                    return Ok(false);
                 }
                 complete = false;
                 continue;
@@ -836,4 +862,11 @@ impl ExecutionService {
         .await??;
         Ok(false)
     }
+}
+
+// An expired or cancelled unstarted task cannot be delivered by the execution owner.
+fn delivery_ended(state: &crate::actions::state::RunState, now: i64) -> bool {
+    use crate::actions::state::{Cancellation, Execution};
+    state.execution == Execution::NotStarted
+        && (state.cancellation != Cancellation::None || now >= state.deadline)
 }

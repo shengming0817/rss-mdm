@@ -515,6 +515,14 @@ async fn unmanage_policy_requires_authority_and_preserves_accepted_exit() -> Res
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 #[ignore = "make t2 MODULE=planning.onboarding"]
 async fn unmanage_start_without_receipt_expires_through_existing_recovery() -> Result<()> {
+    retirement_delivery_deadline(true).await
+}
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+#[ignore = "make t2 MODULE=planning.onboarding"]
+async fn unmanage_without_start_expires_as_blocked_without_redelivery() -> Result<()> {
+    retirement_delivery_deadline(false).await
+}
+async fn retirement_delivery_deadline(started: bool) -> Result<()> {
     let mut f = Fixture::new().await?;
     let resources = std::mem::take(&mut f.resources);
     resources.finish(async {
@@ -530,7 +538,7 @@ async fn unmanage_start_without_receipt_expires_through_existing_recovery() -> R
         post(&mut f.author,&f.router,&format!("/api/v1/policies/{policy}/reruns"),json!({"operationId":Uuid::new_v4(),"expectedRevision":1,"input":{"deadline":now+300}})).await?;
         let task=claim(&f.router).await?;
         task_event(&f.router,&task,json!({"kind":"received"})).await?;
-        task_event(&f.router,&task,json!({"kind":"start"})).await?;
+        if started { task_event(&f.router,&task,json!({"kind":"start"})).await?; }
         let execution=task["payload"]["task"]["taskId"].as_str().context("task ID")?;
         let retirement=task["payload"]["task"]["retirementId"].as_str().context("retirement ID")?;
         // Move the persisted execution budget across its deadline; no further device
@@ -539,11 +547,16 @@ async fn unmanage_start_without_receipt_expires_through_existing_recovery() -> R
         tokio::time::timeout(Duration::from_secs(30),async {
             loop {
                 let state=pg(&format!("SELECT effect||':'||reason FROM mdm_devices.retirement_channels WHERE tenant_id='{}' AND operation='{retirement}'",case_tenant()))?;
-                if state.trim()=="unknown:agent_uninstall_unconfirmed" {break Ok::<_,anyhow::Error>(());}
+                if state.trim()==if started {"unknown:agent_uninstall_unconfirmed"}else{"blocked:agent_uninstall_not_started"} {break Ok::<_,anyhow::Error>(());}
                 tokio::time::sleep(Duration::from_millis(50)).await;
             }
         }).await??;
-        ensure!(pg(&format!("SELECT state->>'execution' FROM mdm_commands.action_runs WHERE tenant_id='{}' AND id='{execution}'",case_tenant()))?.trim()=="unknown");
+        ensure!(pg(&format!("SELECT state->>'execution' FROM mdm_commands.action_runs WHERE tenant_id='{}' AND id='{execution}'",case_tenant()))?.trim()==if started {"unknown"} else {"not_started"});
+        if !started {
+            let (_, tasks)=claim_request(&f.router,Uuid::new_v4()).await?;
+            ensure!(tasks["task"].is_null(),"expired uninstall was redelivered: {tasks}");
+            ensure!(pg(&format!("SELECT execution::text FROM mdm_devices.retirement_channels WHERE tenant_id='{}' AND operation='{retirement}'",case_tenant()))?.trim()==execution);
+        }
         stop_worker(workers).await?;stop_worker(automation).await?;
         Ok(())
     }).await
