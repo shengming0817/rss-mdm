@@ -168,31 +168,38 @@ impl ExecutionService {
                     .await??;
                     crate::transaction::lock(tx).await?;
                     storage::lock(tx, p.device()).await?;
-                    actions::native_collection::fence_apple_collections(service, tx, p).await?;
                     let exchange = exchange.take().ok_or(Error::Conflict)?;
                     let user_key = exchange.user_key().to_owned();
                     let principal = p.clone();
                     let reception_audit = (*audit).clone();
+                    let source = service.source.clone();
                     let reception = tx
                         .with_connection(move |c| {
                             Box::pin(async move {
                                 Ok(async {
                                     exchange.current(c, &principal).await?;
-                                    exchange.reception(c, &principal, &reception_audit).await
+                                    exchange
+                                        .reception(source.as_ref(), c, &principal, &reception_audit)
+                                        .await
                                 }
                                 .await)
                             })
                         })
                         .await?
                         .map_err(Error::from)?;
-                    actions::native_collection::settle_device(service, tx, p.device()).await?;
+                    if !matches!(reception, channels::AppleReception::Replay) {
+                        actions::native_recovery::record(tx, p).await?;
+                    }
                     match reception {
                         channels::AppleReception::Command(attempt) => {
                             receive(service, tx, p, attempt).await?
                         }
-                        channels::AppleReception::Collection(facts) => {
+                        channels::AppleReception::Collection { facts, run } => {
                             for fact in &facts {
                                 service.audit_store.append_in(tx, fact, false).await?;
+                            }
+                            if let Some(id) = run {
+                                actions::recovery::recover_one(service, tx, id).await?;
                             }
                         }
                         channels::AppleReception::Idle | channels::AppleReception::Replay => {}
@@ -200,8 +207,6 @@ impl ExecutionService {
                     service
                         .reconcile_agent_install_in(tx, p.device(), audit)
                         .await?;
-                    actions::native_collection::settle_device(service, tx, p.device()).await?;
-                    actions::native_collection::fence_apple_collections(service, tx, p).await?;
                     let response = send(service, tx, (*apple).clone(), p, &user_key, audit).await?;
                     super::protocol::settle_dispatch_failures(service, tx, p, audit).await?;
                     service
@@ -393,9 +398,14 @@ async fn send(
     }
     let user_key = user_key.to_owned();
     let principal = p.clone();
+    let source = service.source.clone();
     let reply = tx
         .with_connection(move |c| {
-            Box::pin(async move { Ok(apple.collection(c, &principal, &user_key).await) })
+            Box::pin(async move {
+                Ok(apple
+                    .collection(source.as_ref(), c, &principal, &user_key)
+                    .await)
+            })
         })
         .await?
         .map_err(Error::from)?;
@@ -537,7 +547,6 @@ impl ExecutionService {
                     .await??;
                     crate::transaction::lock(tx).await?;
                     storage::lock(tx, p.device()).await?;
-                    actions::native_collection::fence_apple_collections(service, tx, p).await?;
                     let exchange = exchange.take().ok_or(Error::Conflict)?;
                     let principal = p.clone();
                     let (exchange, ids) = tx

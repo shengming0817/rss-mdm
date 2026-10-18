@@ -54,6 +54,7 @@ impl ports::AppleExchange for Exchange {
     }
     fn reception<'a>(
         self: Box<Self>,
+        source: &'a dyn crate::execution::source_authority::SourceAuthority,
         c: &'a mut PgConnection,
         p: &'a DevicePrincipal,
         audit: &'a rss_mdm_audit_integration::RequestAudit,
@@ -75,7 +76,7 @@ impl ports::AppleExchange for Exchange {
                 .await
                 .map_err(ports::Rejection::from)?
                 {
-                    return Ok(ports::AppleReception::Collection(facts));
+                    return Ok(ports::AppleReception::Collection { facts, run: None });
                 }
                 if let Some(facts) = crate::agent_collection::receive(
                     c,
@@ -89,11 +90,12 @@ impl ports::AppleExchange for Exchange {
                 .await
                 .map_err(ports::Rejection::from)?
                 {
-                    return Ok(ports::AppleReception::Collection(facts));
+                    return Ok(ports::AppleReception::Collection { facts, run: None });
                 }
             }
             let mut facts = Vec::new();
-            if crate::collection::receive(
+            if let Some((run, replay)) = crate::collection::receive(
+                source,
                 c,
                 &self.apple.protection,
                 &mut facts,
@@ -106,7 +108,14 @@ impl ports::AppleExchange for Exchange {
             .await
             .map_err(ports::Rejection::from)?
             {
-                return Ok(ports::AppleReception::Collection(facts));
+                return Ok(if replay {
+                    ports::AppleReception::Replay
+                } else {
+                    ports::AppleReception::Collection {
+                        facts,
+                        run: Some(run),
+                    }
+                });
             }
             let attempt = crate::attempt::lock(
                 c,

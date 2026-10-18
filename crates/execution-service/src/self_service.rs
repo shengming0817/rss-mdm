@@ -430,7 +430,7 @@ impl ExecutionService {
             checked_input(decision.validate(checked_input(Uuid::parse_str(&p.tenant().to_string()))?))?;
             let invocation = Invocation { authorization: decision, parameters: prepared.parameters, basis, execution_target: prepared.execution_target };
             let id = Uuid::new_v4();
-            production::queue_run_in(service, tx, production::RunInput { source: db::Source::Policy { version: policy.version }, target: &target, id, occurrence: prepared.slot.occurrence, available: prepared.slot.available, deadline: prepared.slot.deadline, now }).await?;
+            production::queue_run_in(service, tx, production::RunInput { triggered_at: None, source: db::Source::Policy { version: policy.version }, target: &target, id, occurrence: prepared.slot.occurrence, available: prepared.slot.available, deadline: prepared.slot.deadline, now }).await?;
             if let Some(effect) = prepared.effect { crate::actions::software::persist_effect_in(tx, id, &effect).await?; }
             let tenant = tx.tenant_id().to_string(); let document = json(&invocation)?;
             tx.with_connection(move |c| Box::pin(async move { sqlx::query("UPDATE mdm_commands.action_runs SET invocation=$3 WHERE tenant_id=$1::uuid AND id=$2 AND invocation IS NULL").bind(tenant).bind(id).bind(document).execute(c).await?; Ok(()) })).await?;

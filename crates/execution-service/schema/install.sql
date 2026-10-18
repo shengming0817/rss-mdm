@@ -99,6 +99,28 @@ CREATE TABLE mdm_commands.action_polls (
 
 ALTER TABLE ONLY mdm_commands.action_polls FORCE ROW LEVEL SECURITY;
 
+CREATE TABLE mdm_commands.native_checkins (
+    tenant_id uuid NOT NULL,
+    registration uuid NOT NULL,
+    generation bigint NOT NULL CHECK (generation > 0),
+    active_event uuid,
+    active_at bigint,
+    policy_after uuid,
+    pending_event uuid,
+    pending_at bigint,
+    PRIMARY KEY (tenant_id, registration, generation),
+    CHECK ((active_event IS NULL) = (active_at IS NULL)),
+    CHECK ((pending_event IS NULL) = (pending_at IS NULL)),
+    CHECK (active_event IS NOT NULL OR policy_after IS NULL),
+    CHECK (active_at IS NULL OR active_at >= 0),
+    CHECK (pending_at IS NULL OR pending_at >= 0)
+);
+ALTER TABLE mdm_commands.native_checkins ENABLE ROW LEVEL SECURITY;
+ALTER TABLE mdm_commands.native_checkins FORCE ROW LEVEL SECURITY;
+CREATE POLICY tenant ON mdm_commands.native_checkins
+ USING (tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid)
+ WITH CHECK (tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid);
+
 CREATE TABLE mdm_commands.action_receipts (
     tenant_id uuid NOT NULL,
     actor text NOT NULL,
@@ -122,6 +144,7 @@ CREATE TABLE mdm_commands.action_runs (
     registration uuid NOT NULL,
     generation bigint NOT NULL,
     occurrence text NOT NULL,
+    triggered_at bigint CHECK (triggered_at IS NULL OR triggered_at >= 0),
     created_at bigint NOT NULL,
     available_at bigint NOT NULL,
     deadline bigint NOT NULL,

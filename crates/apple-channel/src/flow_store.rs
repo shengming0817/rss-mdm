@@ -427,12 +427,13 @@ impl channels::Apple for super::Apple {
     }
     fn collection<'a>(
         &'a self,
+        source: &'a dyn crate::execution::source_authority::SourceAuthority,
         c: &'a mut PgConnection,
         p: &'a DevicePrincipal,
         user_key: &'a str,
     ) -> Pending<'a, channels::Reply> {
         Box::pin(async move {
-            let (mut bytes, facts) = if user_key.is_empty() {
+            let (mut bytes, mut facts) = if user_key.is_empty() {
                 crate::agent_collection::send(c, &self.protection, p)
                     .await
                     .map_err(channels::Rejection::from)?
@@ -440,9 +441,12 @@ impl channels::Apple for super::Apple {
                 (Vec::new(), Vec::new())
             };
             if bytes.is_empty() {
-                bytes = crate::collection::send(c, &self.protection, p, user_key)
-                    .await
-                    .map_err(channels::Rejection::from)?;
+                let (native_bytes, native_facts) =
+                    crate::collection::send(source, c, &self.protection, p, user_key)
+                        .await
+                        .map_err(channels::Rejection::from)?;
+                bytes = native_bytes;
+                facts.extend(native_facts);
             }
             Ok(channels::Reply { bytes, facts })
         })

@@ -335,6 +335,7 @@ impl Reconciler<rss_reconcile_postgres::PgClaim> for ExecutionService {
             let audit = RequestAudit::new(self.tenant.to_string(), "management_read");
             let active=crate::transaction::run(&self.audit_store,&self.runtime,self.tenant,&audit,(self,claim.target().entity()),|ctx,tx|Box::pin(async move {
             let (service,entity) = *ctx;
+            if let Some(work)=actions::native_recovery::Work::parse(entity) { return actions::native_recovery::active(tx,work).await; }
             if let Some(id)=actions::recovery::policy_id(entity){return actions::recovery::active(tx,id).await;}
             if let Some(digest)=entity.strip_prefix("configuration:") {
                 let Some(device)=configuration_device(tx,digest).await? else {return Ok(false)};
@@ -373,21 +374,31 @@ impl Reconciler<rss_reconcile_postgres::PgClaim> for ExecutionService {
     ) -> impl std::future::Future<Output = std::result::Result<(), rss_reconcile::Error>> + Send
     {
         Box::pin(async move {
-            let audit = RequestAudit::new(self.tenant.to_string(), "management_write");
-            let error = Mutex::new(None);
-            control.check()?;
-            let attempt=self.runtime.local_tx_with_context(self.tenant,rss_transactional_messaging::policy::OperationDeadline::from_remaining(control.remaining()),(self,claim,(self,claim.target().entity(),&audit,&error)),|(service,claim,context),tx|Box::pin(async move {
+            for _ in 0..64 {
+                let audit = RequestAudit::new(self.tenant.to_string(), "management_write");
+                let error = Mutex::new(None);
+                control.check()?;
+                let attempt=self.runtime.local_tx_with_context(self.tenant,rss_transactional_messaging::policy::OperationDeadline::from_remaining(control.remaining()),(self,claim,(self,claim.target().entity(),&audit,&error)),|(service,claim,context),tx|Box::pin(async move {
                 if let Err(e)=service.audit_store.lock_in(tx).await {return Err(rejection(Fault::Request(e.into()),context.3));}
                 rss_reconcile_postgres::messaging::protect_in(tx,claim,context,|ctx,tx|Box::pin(async move {
             let (service,entity,audit,failure) = *ctx;
-            let result:Result<()>=async {
+            let result:Result<bool>=async {
                 storage::admit(tx).await?;
-                if let Some(id)=actions::recovery::policy_id(entity){return actions::recovery::recover(service,tx,id).await;}
-                if let Some(digest)=entity.strip_prefix("configuration:") {
-                    let Some(device)=configuration_device(tx,digest).await? else {return Ok(())};
-                    return service.reconcile_configuration(tx,&device,audit).await;
+                if let Some(work)=actions::native_recovery::Work::parse(entity) { return actions::native_recovery::step(service,tx,work).await; }
+                if let Some(id)=actions::recovery::policy_id(entity) {
+                    crate::sources::storage::lock(tx,id).await?;
+                    if let Some(policy)=crate::sources::storage::read_in(&service.policy_reader,tx,id).await?
+                        && policy.definition.action.kind()==rss_mdm_policy::ActionKind::NativeCollection {
+                        return actions::native_collection::admit_policy(service,tx,id).await;
+                    }
+                    actions::recovery::recover(service,tx,id).await?;
+                    return Ok(false);
                 }
-                let Some(name)=device(tx,entity).await? else{return Ok(())};
+                if let Some(digest)=entity.strip_prefix("configuration:") {
+                    let Some(device)=configuration_device(tx,digest).await? else {return Ok(false)};
+                    return service.reconcile_configuration(tx,&device,audit).await.map(|()| false);
+                }
+                let Some(name)=device(tx,entity).await? else{return Ok(false)};
                 storage::lock(tx,&name).await?;
                 let tenant=service.tenant.to_string();let key=name.clone();
                 let row=tx.with_connection(move|c|Box::pin(async move {sqlx::query("SELECT command_device::text,generation,epoch,recovery_after FROM mdm_commands.devices WHERE tenant_id=$1::uuid AND device=$2 FOR UPDATE").bind(tenant).bind(key).fetch_one(c).await})).await?;
@@ -424,19 +435,23 @@ impl Reconciler<rss_reconcile_postgres::PgClaim> for ExecutionService {
                 }
                 let cursor=page.after.map(|s|s.as_str().to_owned());let tenant=service.tenant.to_string();
                 tx.with_connection(move|c|Box::pin(async move {sqlx::query("UPDATE mdm_commands.devices SET recovery_after=$3 WHERE tenant_id=$1::uuid AND device=$2").bind(tenant).bind(name).bind(cursor).execute(c).await?;Ok(())})).await?;
-                Ok(())
+                Ok(false)
             }.await;
-            match result {Ok(())=>{audit.mark_commit_started();Ok(())},Err(e)=>Err(rejection(e,failure))}
+            match result {Ok(more)=>{audit.mark_commit_started();Ok(more)},Err(e)=>Err(rejection(e,failure))}
         })).await
             })).await;
-            let result = settle(attempt, &audit, error);
-            audit.finalize(
-                result
-                    .as_ref()
-                    .err()
-                    .map(|_| rss_mdm_audit_integration::FailureReason::Transaction),
-            );
-            result.map_err(failure)
+                let result = settle(attempt, &audit, error);
+                audit.finalize(
+                    result
+                        .as_ref()
+                        .err()
+                        .map(|_| rss_mdm_audit_integration::FailureReason::Transaction),
+                );
+                if !result.map_err(failure)? {
+                    return Ok(());
+                }
+            }
+            Ok(())
         })
     }
 }

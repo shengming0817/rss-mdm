@@ -282,6 +282,7 @@ pub trait AppleExchange: Send {
     fn current<'a>(&'a self, c: &'a mut PgConnection, p: &'a DevicePrincipal) -> Pending<'a, ()>;
     fn reception<'a>(
         self: Box<Self>,
+        source: &'a dyn crate::source_authority::SourceAuthority,
         c: &'a mut PgConnection,
         p: &'a DevicePrincipal,
         audit: &'a rss_mdm_audit_integration::RequestAudit,
@@ -290,7 +291,7 @@ pub trait AppleExchange: Send {
 pub enum AppleReception {
     Idle,
     Replay,
-    Collection(Vec<Fact>),
+    Collection { facts: Vec<Fact>, run: Option<Uuid> },
     Command(Box<dyn AppleAttempt>),
 }
 pub struct AppleCommand {
@@ -346,6 +347,7 @@ pub trait Apple: Send + Sync {
     ) -> Pending<'a, Reply>;
     fn collection<'a>(
         &'a self,
+        source: &'a dyn crate::source_authority::SourceAuthority,
         c: &'a mut PgConnection,
         p: &'a DevicePrincipal,
         user_key: &'a str,
