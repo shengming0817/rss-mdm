@@ -240,6 +240,14 @@ async fn checkin_on(
             )
         }
         CheckIn::CheckOut { .. } => {
+            crate::execution::unmanage::native_departure_in(
+                tx,
+                &tenant,
+                principal.registration(),
+                true,
+            )
+            .await
+            .map_err(|_| crate::Error::Unavailable(crate::Failure::AppleStorage))?;
             rss_mdm_registration_service::retire(
                 tx,
                 facts,

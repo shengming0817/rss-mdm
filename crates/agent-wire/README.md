@@ -106,3 +106,10 @@ BitLocker conversion/lock 沿用既有 Inventory 闭合词汇，无法读取时�
 包含 System recipe 的计划总输出上限为 1 MiB，只接受 inline CollectionResult。
 原始 OutputChunk 和 ChunkedCollectionResult 在写入前拒绝；验证通过的大结果仍可由服务端沿现有存储分块保留。
 Agent 达到预算须返回 Truncated 的有界结果，保留旧事实，不能偷偷切换到未校验分块。
+
+`device.unmanage.v1` 提供固定的管理员授权退出任务。独立签名域
+`rss-mdm-agent-unmanage-v1-ed25519` 绑定 tenant/device/registration/generation、
+retirement、task/attempt、permit/expiry/deadline 和 Policy 授权；不携带脚本或删除路径。
+Agent 仅对本安装身份执行，Offer 不授权卸载，必须取得 Start。
+`unmanage_result` 区分 completed、failed、unknown；响应丢失不能推定 completed。
+服务端与 Agent 消费者必须使用同一固定公开 revision，不保留旧结构解析。

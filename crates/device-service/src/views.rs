@@ -23,6 +23,7 @@ pub struct ViewQuery {
     pub status: Option<String>,
     pub channel: Option<String>,
     pub source: Option<String>,
+    pub asset_state: Option<crate::lifecycle_management::AssetState>,
 }
 fn limit() -> usize {
     64
@@ -79,6 +80,13 @@ async fn groups(
             .last()
             .and_then(|v| v["id"].as_str())
             .map(str::to_owned);
+    }
+    let states: Vec<(String, String)> = sqlx::query_as(
+        "SELECT device,state FROM mdm_devices.asset_states WHERE tenant_id=$1::uuid AND device=ANY($2)",
+    ).bind(tenant).bind(rows.keys().cloned().collect::<Vec<_>>()).fetch_all(&mut *c).await?;
+    let states = states.into_iter().collect::<BTreeMap<_, _>>();
+    for (id, endpoint) in &mut rows {
+        endpoint["assetState"] = json!(states.get(id).map(String::as_str).unwrap_or("active"));
     }
     let mut result = Vec::new();
     for a in &world.associations {
@@ -147,7 +155,7 @@ impl Associations {
                 let world=identity::world(c,service.tenant).await?;
                 let mut groups=groups(c,proof.tenant_id(),snapshot.inventory_devices(proof)?,&world).await?;
                 let version=cursor::digest(&groups.iter().map(|g|g.summary()).collect::<Vec<_>>())?;
-                let context=json!({"kind":"device-directory","tenant":proof.tenant_id(),"instance":proof.instance_id(),"principal":proof.principal_id(),"scope":grants,"watermark":world.watermark,"version":version,"query":{"status":query.status,"channel":query.channel,"source":query.source,"descending":query.descending}});
+                let context=json!({"kind":"device-directory","tenant":proof.tenant_id(),"instance":proof.instance_id(),"principal":proof.principal_id(),"scope":grants,"watermark":world.watermark,"version":version,"query":{"status":query.status,"channel":query.channel,"source":query.source,"assetState":query.asset_state,"descending":query.descending}});
                 let offset=if let Some(cursor)=&query.cursor {let cursor=service.decode(cursor)?;if cursor.context!=context{return Err(Error::CursorInvalidated);}cursor.offset}else{0};
                 groups.retain(|g|g.endpoints.iter().any(|e|matches_query(e,query)));
                 if query.descending{groups.reverse();}
@@ -253,10 +261,17 @@ fn matches_query(endpoint: &Value, query: &ViewQuery) -> bool {
         .chain(endpoint["enrollments"].as_array().into_iter().flatten())
         .filter_map(|item| item["source"].as_str())
         .collect::<Vec<_>>();
-    query
-        .status
-        .as_deref()
-        .is_none_or(|status| endpoint["status"] == status)
+    endpoint["assetState"]
+        == serde_json::to_value(
+            query
+                .asset_state
+                .unwrap_or(crate::lifecycle_management::AssetState::Active),
+        )
+        .expect("asset state serialization")
+        && query
+            .status
+            .as_deref()
+            .is_none_or(|status| endpoint["status"] == status)
         && query
             .source
             .as_deref()

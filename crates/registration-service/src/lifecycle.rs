@@ -98,3 +98,50 @@ pub async fn begin_retirement_in(
     }
     Ok(())
 }
+
+/// A new administrator enrollment may reopen a fully retired endpoint. Old
+/// enrollment authority is cancelled before clearing the fence in this transaction.
+pub(crate) async fn authorize_reenrollment_in(
+    c: &mut sqlx::PgConnection,
+    proof: &rss_mdm_authorization_service::context::AuthorizedPrincipal,
+    device: &str,
+) -> Result<(), Error> {
+    use rss_mdm_authorization_service as auth;
+    proof.enrollment(device)?.check()?;
+    auth::lock_on(c, proof.tenant_id(), proof.instance_id()).await?;
+    auth::snapshot_on(c, proof.tenant_id(), proof.instance_id())
+        .await?
+        .require(proof, auth::Permission::Enrollment, Some(device))
+        .map_err(|_| Error::Forbidden)?;
+    lock_device_in(c, proof.tenant_id(), device).await?;
+    let retirement: Option<uuid::Uuid> = sqlx::query_scalar(
+        "SELECT retirement FROM mdm_access.devices WHERE tenant_id=$1::uuid AND id=$2",
+    )
+    .bind(proof.tenant_id())
+    .bind(device)
+    .fetch_optional(&mut *c)
+    .await
+    .map_err(crate::database::db)?
+    .flatten();
+    let Some(retirement) = retirement else {
+        return Ok(());
+    };
+    let active: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM mdm_access.devices d JOIN mdm_access.registrations r ON(r.tenant_id,r.device)=(d.tenant_id,d.id) WHERE d.tenant_id=$1::uuid AND d.retirement=$2 AND r.state='active')",
+    ).bind(proof.tenant_id()).bind(retirement).fetch_one(&mut *c).await.map_err(crate::database::db)?;
+    if active {
+        return Err(Error::Conflict);
+    }
+    sqlx::query("UPDATE mdm_access.requests r SET state='cancelled' FROM mdm_access.grants g WHERE(r.tenant_id,r.grant_id)=(g.tenant_id,g.id) AND g.tenant_id=$1::uuid AND g.device=$2 AND r.state='pending'")
+        .bind(proof.tenant_id()).bind(device).execute(&mut *c).await.map_err(crate::database::db)?;
+    sqlx::query("UPDATE mdm_access.agent_grants SET state='revoked' WHERE tenant_id=$1::uuid AND device=$2 AND state<>'revoked'")
+        .bind(proof.tenant_id()).bind(device).execute(&mut *c).await.map_err(crate::database::db)?;
+    sqlx::query("UPDATE mdm_access.devices SET retirement=NULL WHERE tenant_id=$1::uuid AND id=$2")
+        .bind(proof.tenant_id())
+        .bind(device)
+        .execute(c)
+        .await
+        .map_err(crate::database::db)?;
+    proof.check_live()?;
+    Ok(())
+}

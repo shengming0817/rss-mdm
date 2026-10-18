@@ -79,6 +79,23 @@
         "reason"
       ],
       "delete_policy": null
+    },
+    {
+      "schema": "mdm_devices",
+      "table": "retirement_work",
+      "read_write": false,
+      "read_only": true,
+      "updates": [],
+      "delete_policy": null
+    },
+    {
+      "schema": "mdm_devices",
+      "table": "asset_states",
+      "read_write": true,
+      "updates": [
+        "state"
+      ],
+      "delete_policy": null
     }
   ],
   "functions": [

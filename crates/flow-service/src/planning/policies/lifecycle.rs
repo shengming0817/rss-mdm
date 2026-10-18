@@ -65,7 +65,7 @@ impl super::super::Planning {
             let key = item.object.object.key();
             let explicit = triggers.iter().find_map(|(id, at)| {
                 schedule
-                    .occurrence(*at, key.as_bytes())
+                    .occurrence(*at, version.as_bytes())
                     .ok()
                     .flatten()
                     .filter(|s| s.available_at <= now && s.window_end.is_none_or(|end| now < end))
@@ -75,7 +75,7 @@ impl super::super::Planning {
                 Some(explicit)
             } else {
                 schedule
-                    .due(-1, now, key.as_bytes())?
+                    .due(-1, now, version.as_bytes())?
                     .filter(|s| s.available_at <= now)
                     .map(|s| format!("calendar:{}", s.coordinate))
             };
@@ -107,6 +107,7 @@ impl super::super::Planning {
                 })
                 .await?
                 .map_err(Error::from)?;
+            rss_mdm_execution_service::unmanage::wake_in(tx, accepted.0).await?;
             if !accepted.1 {
                 let audit = RequestAudit::new(tenant.to_string(), "device_retirement_accepted");
                 audit.identify_service("device-lifecycle");

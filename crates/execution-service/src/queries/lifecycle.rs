@@ -40,20 +40,43 @@ pub async fn assignments_in(
     p: &Policy,
     after: Option<&str>,
 ) -> Result<records::AssignmentPage> {
-    let mut objects = objects_in(s, tx, p.definition.scope, after).await?;
-    let more = objects.len() > 64;
-    objects.truncate(64);
+    let objects = objects_in(s, tx, p.definition.scope, after).await?;
+    let mut rows = objects
+        .iter()
+        .map(|o| (o.cursor.clone(), item(o, p.state.is_enabled())))
+        .collect::<Vec<_>>();
+    let tenant = tx.tenant_id().to_string();
+    let policy = p.id;
+    let cursor = after.map(str::to_owned);
+    let retained: Vec<Value> = tx.with_connection(move |c| Box::pin(async move {
+        sqlx::query_scalar("SELECT DISTINCT ON(object) target FROM mdm_devices.retirements WHERE tenant_id=$1::uuid AND policy=$2 AND object>coalesce($3,'') COLLATE \"C\" ORDER BY object,created_at DESC LIMIT 65")
+            .bind(tenant).bind(policy).bind(cursor).fetch_all(c).await
+    })).await?;
+    for target in retained {
+        let object: crate::source_authority::DeviceObject =
+            serde_json::from_value(target).map_err(|_| Error::Malformed)?;
+        if !rows
+            .iter()
+            .any(|(_, v)| v["object"] == json!(object.object))
+        {
+            rows.push((object.object.key(), json!({"object":object.object,"channel":null,"target":null,"availability":"unavailable","reason":"source_removed","qualification":{"state":"excluded"},"sources":[object],"scopeResult":null,"taskAdmission":null,"operationIds":[]})));
+        }
+    }
+    rows.sort_by(|a, b| a.0.cmp(&b.0));
+    let more = rows.len() > 64;
+    rows.truncate(64);
     let next = if more {
-        objects.last().map(|o| o.cursor.clone())
+        rows.last().map(|r| r.0.clone())
     } else {
         None
     };
     let mut items = Vec::new();
-    for object in objects {
-        let mut value = item(&object, p.state.is_enabled());
+    for (_, mut value) in rows {
         let tenant = tx.tenant_id();
         let policy = p.id;
-        let key = object.object.object.key();
+        let object: crate::source_authority::ObjectRef =
+            serde_json::from_value(value["object"].clone()).map_err(|_| Error::Malformed)?;
+        let key = object.key();
         let ids = tx
             .with_connection(move |c| {
                 Box::pin(async move {
@@ -70,6 +93,7 @@ pub async fn assignments_in(
     }
     records::decode(json!({"items":items,"nextCursor":next}))
 }
+
 pub async fn preview_in(
     s: &Queries,
     tx: &mut PgTransaction<'_>,

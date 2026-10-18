@@ -87,7 +87,8 @@
       "updates": [
         "actor",
         "instance",
-        "state"
+        "state",
+        "device"
       ],
       "delete_policy": null,
       "insert_policy": "current_user<>'mdm_command_runtime'::nameorsource='native'::text"

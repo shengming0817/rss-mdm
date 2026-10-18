@@ -410,7 +410,8 @@ impl ExecutionService {
             ExecutionAuthority::DeviceControl { .. } | ExecutionAuthority::Credential { .. } => {
                 ("direct", None)
             }
-            ExecutionAuthority::AgentInstall { version, .. }
+            ExecutionAuthority::Retirement { version, .. }
+            | ExecutionAuthority::AgentInstall { version, .. }
             | ExecutionAuthority::Policy { version, .. } => ("policy", Some(*version)),
         };
         let authority = checked_input(serde_json::to_string(&authority))?;

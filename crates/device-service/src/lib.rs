@@ -3,6 +3,7 @@
 mod changes;
 mod cursor;
 pub mod lifecycle;
+pub mod lifecycle_management;
 mod model;
 pub mod planning;
 mod views;

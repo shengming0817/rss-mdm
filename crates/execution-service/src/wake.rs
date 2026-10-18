@@ -11,6 +11,7 @@ pub async fn wake_native_in(
     tx: &mut PgTransaction<'_>,
     device: &str,
 ) -> Result<()> {
+    crate::unmanage::wake_device_in(tx, device).await?;
     let source_tenant = tx.tenant_id();
     let tenant = source_tenant.to_string();
     let name = device.to_owned();

@@ -1,6 +1,7 @@
 //! Real HTTP/PG source evidence and durable Policy authority; no OS success is inferred.
 use crate::test_support::agent_execution::*;
 use crate::test_support::*;
+use anyhow::Context;
 async fn fixture() -> Result<Fixture> {
     let mut base: Value =
         serde_json::from_slice(&std::fs::read(std::env::var("MDM_TEST_CONFIG")?)?)?;
@@ -426,6 +427,69 @@ async fn native_continuation_rejects_independent_source_read_revocation_after_op
         ensure!(pg(&format!("SELECT count(*) FROM mdm_access.registrations WHERE tenant_id='{}' AND channel='mdm'",case_tenant()))?.trim() == "0");
         c.close().await?;
         access.close().await;
+        stop_worker(workers).await?;
+        stop_worker(automation).await?;
+        Ok(())
+    }).await
+}
+
+/// Retirement must use ordinary publication and explicit Policy execution, survive
+/// later policy changes, and keep an unconfirmed device effect visible.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+#[ignore = "make t2 MODULE=planning.onboarding"]
+async fn unmanage_policy_requires_authority_and_preserves_accepted_exit() -> Result<()> {
+    let mut f = Fixture::new().await?;
+    let resources = std::mem::take(&mut f.resources);
+    resources.finish(async {
+        f.register_profile(json!(["inventory.collect.v1", "device.unmanage.v1"])).await?;
+        f.scope(case_task_scope(), json!([{"kind":"device","id":case_device_id()}])).await?;
+        let policy = Uuid::new_v4();
+        let path = format!("/api/v1/policies/{policy}");
+        let definition = json!({"scope":case_task_scope(),"action":{"kind":"unmanage_device","runLifetimeSeconds":300}});
+        let input = json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"put","enabled":true,"definition":definition}});
+        // PolicyWrite alone must not grant retirement authority.
+        let denied = f.author.call(&f.router,Method::POST,&path,Some(input.clone())).await?;
+        ensure!(denied.0==StatusCode::FORBIDDEN,"{denied:?}");
+        f.grants.extend(identity::device_grants(None,&["device_unmanage","inventory_assign"])?);
+        identity::set_grants(case_tenant(),&f.author_id,f.grants.clone()).await?;
+        post(&mut f.author,&f.router,&path,input).await?;
+        let automation = start_automation(&f.base).await?;
+        let workers = worker(&f.base).await?;
+        let empty = claim_request(&f.router,Uuid::new_v4()).await?;
+        ensure!(empty.0==StatusCode::OK && empty.1["task"].is_null(),"manual policy ran automatically: {empty:?}");
+        ensure!(pg(&format!("SELECT count(*) FROM mdm_devices.retirements WHERE tenant_id='{}' AND policy='{policy}'",case_tenant()))?.trim()=="0");
+        let now=crate::clock::Clock::unix_seconds(&crate::clock::SystemClock)?;
+        let rerun=json!({"operationId":Uuid::new_v4(),"expectedRevision":1,"input":{"deadline":now+300}});
+        post(&mut f.author,&f.router,&format!("{path}/reruns"),rerun.clone()).await?;
+        post(&mut f.author,&f.router,&format!("{path}/reruns"),rerun).await?;
+        let task=claim(&f.router).await?;
+        ensure!(task["payload"]["kind"]=="unmanage","{task}");
+        let retirement=task["payload"]["task"]["retirementId"].as_str().context("retirement ID")?;
+        ensure!(pg(&format!("SELECT retirement FROM mdm_access.devices WHERE tenant_id='{}' AND id='{}'",case_tenant(),case_device_id()))?.trim()==retirement);
+        post(&mut f.author,&f.router,&path,json!({"operationId":Uuid::new_v4(),"expectedRevision":1,"input":{"action":"put","enabled":false,"definition":definition}})).await?;
+        task_event(&f.router,&task,json!({"kind":"received"})).await?;
+        task_event(&f.router,&task,json!({"kind":"start"})).await?;
+        task_event(&f.router,&task,json!({"kind":"unmanage_result","outcome":"unknown"})).await?;
+        let (status,record)=f.author.call(&f.router,Method::GET,&format!("/api/v1/device-retirements/{retirement}"),None).await?;
+        ensure!(status==StatusCode::OK,"{record}");
+        ensure!(record["channels"][0]["effect"]!="confirmed","lost evidence was treated as success: {record}");
+        ensure!(pg(&format!("SELECT state FROM mdm_access.registrations WHERE tenant_id='{}' AND id='{}'",case_tenant(),task["payload"]["task"]["registrationId"].as_str().context("registration ID")?))?.trim()=="active");
+        ensure!(pg(&format!("SELECT count(*) FROM mdm_devices.retirements WHERE tenant_id='{}' AND policy='{policy}'",case_tenant()))?.trim()=="1");
+        let forced=json!({"operationId":Uuid::new_v4(),"reason":"device effect unavailable"});
+        let force_path=format!("/api/v1/device-retirements/{retirement}/force-revoke");
+        let receipt=post(&mut f.author,&f.router,&force_path,forced.clone()).await?;
+        ensure!(post(&mut f.author,&f.router,&force_path,forced).await?==receipt);
+        let access=database(&f.base).await?;
+        let owner=rss_mdm_device_service::Associations::new(access.audit_store(&crate::config::AuditConfig::Plain).await?,rss_request_context::TenantId::parse(case_tenant())?,&[7;32])?;
+        ensure!(owner.finalize_retirements(&crate::registration_lifecycle::Bridge).await?==1);
+        let (status,record)=f.author.call(&f.router,Method::GET,&format!("/api/v1/device-retirements/{retirement}"),None).await?;
+        ensure!(status==StatusCode::OK && record["channels"][0]["stage"]=="complete" && record["channels"][0]["effect"]=="unknown","{record}");
+        let asset_path=format!("/api/v1/device-views/endpoint/{}/asset-state",case_device_id());
+        for state in ["archived","deleted","active"] {
+            post(&mut f.author,&f.router,&asset_path,json!({"operationId":Uuid::new_v4(),"state":state})).await?;
+        }
+        let peer=claim_request(&f.router,Uuid::new_v4()).await?;
+        ensure!(peer.0==StatusCode::UNAUTHORIZED || peer.0==StatusCode::FORBIDDEN,"restoring asset revived its credential: {peer:?}");
         stop_worker(workers).await?;
         stop_worker(automation).await?;
         Ok(())

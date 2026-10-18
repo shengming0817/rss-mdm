@@ -40,6 +40,7 @@ impl ExecutionService {
                     })
                     .await?;
                     storage::lock(tx, p.device()).await?;
+                    let retirement_request = w.retirement_request(p.purpose());
                     let w = w.clone();
                     let protection = s.protection.clone();
                     let source = s.source.clone();
@@ -65,6 +66,8 @@ impl ExecutionService {
                         .await??;
                     if authenticated {
                         actions::native_recovery::record(tx, p).await?;
+                        s.queue_windows_retirement_in(tx, p, retirement_request, a)
+                            .await?;
                     }
                     settle_dispatch_failures(s, tx, p, a).await?;
                     settle_reports(s, tx, p, m.header.session_id, package).await?;

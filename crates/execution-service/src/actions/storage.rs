@@ -13,15 +13,18 @@ use uuid::Uuid;
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Source {
     Policy { version: Uuid },
+    RetirementSoftware { version: Uuid, retirement: Uuid },
 }
 impl Source {
     pub fn columns(self) -> (&'static str, Uuid) {
         match self {
-            Self::Policy { version } => ("policy", version),
+            Self::Policy { version } | Self::RetirementSoftware { version, .. } => {
+                ("policy", version)
+            }
         }
     }
     pub fn audit(self, audit: &rss_mdm_audit_integration::RequestAudit) {
-        let Self::Policy { version } = self;
+        let (_, version) = self.columns();
         audit.plan(version);
     }
 }
@@ -38,13 +41,22 @@ pub struct Run {
 }
 pub async fn load_run(tx: &mut PgTransaction<'_>, id: Uuid) -> Result<Run> {
     let tenant = tx.tenant_id().to_string();
-    let row=tx.with_connection(move|c|Box::pin(async move{sqlx::query("SELECT source_kind,policy_version,device,registration::text,generation,available_at,deadline,state,result,invocation,source_objects FROM mdm_commands.action_runs WHERE tenant_id=$1::uuid AND id=$2::uuid FOR UPDATE").bind(tenant).bind(id.to_string()).fetch_optional(c).await})).await?.ok_or(Error::Execution(crate::missing::ExecutionError::MissingTask))?;
+    let row=tx.with_connection(move|c|Box::pin(async move{sqlx::query("SELECT (SELECT w.operation FROM mdm_devices.retirement_work w JOIN mdm_devices.retirements o ON(o.tenant_id,o.id)=(w.tenant_id,w.operation) WHERE w.tenant_id=mdm_commands.action_runs.tenant_id AND w.execution=mdm_commands.action_runs.id AND o.version<>mdm_commands.action_runs.policy_version) AS retirement,source_kind,policy_version,device,registration::text,generation,available_at,deadline,state,result,invocation,source_objects FROM mdm_commands.action_runs WHERE tenant_id=$1::uuid AND id=$2::uuid FOR UPDATE").bind(tenant).bind(id.to_string()).fetch_optional(c).await})).await?.ok_or(Error::Execution(crate::missing::ExecutionError::MissingTask))?;
     Ok(Run {
         id,
         source: match row.try_get::<&str, _>("source_kind")? {
-            "policy" => Source::Policy {
-                version: row.try_get("policy_version")?,
-            },
+            "policy" => {
+                if let Some(retirement) = row.try_get::<Option<Uuid>, _>("retirement")? {
+                    Source::RetirementSoftware {
+                        version: row.try_get("policy_version")?,
+                        retirement,
+                    }
+                } else {
+                    Source::Policy {
+                        version: row.try_get("policy_version")?,
+                    }
+                }
+            }
             _ => return Err(Error::Unavailable(crate::Failure::CommandInvariant).into()),
         },
         target: Target {
@@ -118,6 +130,7 @@ pub async fn audit_details(
 }
 
 pub enum ScheduledPolicy {
+    Retirement(crate::unmanage::RetirementPlan),
     Credential(ExecutionPolicy<crate::credential_tasks::FrozenCredential>),
     AgentCollection(ExecutionPolicy<crate::action_contract::FrozenAgentCollection>),
     Script(Box<ExecutionPolicy>),
@@ -140,6 +153,7 @@ impl ScheduledPolicy {
             Self::Native(v) => v.owner,
             Self::Software(v) => v.owner,
             Self::Enrollment(v) => v.owner,
+            Self::Retirement(v) => v.owner,
         }
     }
     pub fn timeout_seconds(&self) -> u32 {
@@ -158,6 +172,7 @@ impl ScheduledPolicy {
             Self::Native(v) => v.frozen.definition.spec().timeout_seconds,
             Self::Software(v) => v.assignment.frozen.run_lifetime_seconds,
             Self::Enrollment(v) => v.frozen.run_lifetime_seconds,
+            Self::Retirement(v) => v.lifetime,
         }
     }
     pub async fn authorized_in(
@@ -167,6 +182,29 @@ impl ScheduledPolicy {
         target: &Target,
         now: i64,
     ) -> Result<bool> {
+        if let Self::Retirement(v) = self {
+            return v.allowed_in(tx, target, None).await;
+        }
+        if let Self::Software(v) = self
+            && v.assignment.retirement.is_some()
+        {
+            let Some((platform, architecture)) =
+                agent_profile_in(service, tx, target.registration).await?
+            else {
+                return Ok(false);
+            };
+            return v
+                .assignment
+                .authorized_in(
+                    &service.admission(),
+                    tx,
+                    &target.device,
+                    platform,
+                    architecture,
+                    now,
+                )
+                .await;
+        }
         let tenant = tx.tenant_id().to_string();
         let device = target.device.clone();
         let allowed = tx
@@ -183,6 +221,7 @@ impl ScheduledPolicy {
             return Ok(false);
         }
         match self {
+            Self::Retirement(v) => v.allowed_in(tx, target, None).await,
             Self::Credential(v) => Ok(crate::credential_tasks::eligible(
                 service,
                 tx,
@@ -261,6 +300,24 @@ impl ScheduledPolicy {
         run: &Run,
         now: i64,
     ) -> Result<bool> {
+        if let Self::Retirement(v) = self {
+            return v.allowed_in(tx, &run.target, Some(run.id)).await;
+        }
+        if let Self::Software(v) = self
+            && let Some(retirement) = v.assignment.retirement
+        {
+            if !crate::unmanage::cleanup_allowed_in(
+                tx,
+                retirement,
+                &run.target.device,
+                Some(run.id),
+            )
+            .await?
+            {
+                return Ok(false);
+            }
+            return self.authorized_in(service, tx, &run.target, now).await;
+        }
         if run.state.started_at.is_none() {
             let channel = if matches!(self, Self::Native(_)) {
                 rss_mdm_inventory::Channel::Mdm
@@ -349,6 +406,7 @@ impl ScheduledPolicy {
         now: i64,
     ) -> Result<bool> {
         match self {
+            Self::Retirement(v) => Ok(!v.allowed_in(tx, target, None).await?),
             Self::Credential(v) => Ok(v.withdrawn_in(&service.source, tx, &target.device).await?
                 || !v.frozen.authorized_in(tx, target, now).await?),
             Self::AgentCollection(v) => {
@@ -370,6 +428,7 @@ impl ScheduledPolicy {
         issue: TaskIssue,
     ) -> Result<rss_mdm_agent_wire::runtime::TaskPayload> {
         match self {
+            Self::Retirement(v) => v.task(service, tx, target, issue).await,
             Self::Credential(v) => {
                 crate::credential_tasks::task(v, service, tx, target, issue).await
             }
@@ -572,6 +631,16 @@ pub async fn load_policy_version(
 ) -> Result<ScheduledPolicy> {
     let (policy, frozen) = crate::sources::storage::version_in(reader, tx, id).await?;
     match frozen {
+        crate::frozen::Frozen::UnmanageDevice {
+            run_lifetime_seconds,
+            ..
+        } => Ok(ScheduledPolicy::Retirement(
+            crate::unmanage::RetirementPlan {
+                owner: policy.id,
+                version: id,
+                lifetime: run_lifetime_seconds,
+            },
+        )),
         crate::frozen::Frozen::Credential { .. } => Ok(ScheduledPolicy::Credential(
             crate::sources::admission::credential_in(reader, tx, id).await?,
         )),
@@ -606,5 +675,11 @@ pub async fn load_source(
 ) -> Result<ScheduledPolicy> {
     match source {
         Source::Policy { version } => load_policy_version(reader, tx, version).await,
+        Source::RetirementSoftware {
+            version,
+            retirement,
+        } => Ok(ScheduledPolicy::Software(
+            crate::sources::software::retirement_in(reader, tx, version, retirement).await?,
+        )),
     }
 }

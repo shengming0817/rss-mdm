@@ -35,6 +35,7 @@ pub(crate) async fn setup() -> anyhow::Result<(
 }
 pub(super) fn query(limit: usize) -> ViewQuery {
     ViewQuery {
+        asset_state: None,
         cursor: None,
         limit,
         descending: false,
@@ -532,6 +533,112 @@ async fn change_checkpoints_resume_after_empty_pages_and_restart() -> anyhow::Re
         restarted.changes(&admin, Some(&checkpoint)).await?["items"],
         json!([])
     );
+    access.close().await;
+    Ok(())
+}
+
+#[tokio::test]
+#[ignore = "MODULE=device.associations: accepted retirement freezes both registrations atomically"]
+async fn retirement_fences_complete_target_and_rolls_back_with_acceptance() -> anyhow::Result<()> {
+    use rss_mdm_device_service::lifecycle::{self, Acceptance};
+    use rss_mdm_inventory_service::objects::{ObjectReader, ObjectRef, SnapshotProgress};
+    let (access, s, principal, mut c) = setup().await?;
+    crate::test_support::identity::set_grants(
+        case_a(),
+        principal.principal_id(),
+        crate::test_support::identity::device_grants(
+            None,
+            &[
+                "inventory_read",
+                "device_association_write",
+                "device_unmanage",
+            ],
+        )?,
+    )
+    .await?;
+    let mdm = crate::test_support::case::name("retirement-mdm");
+    let agent = crate::test_support::case::name("retirement-agent");
+    seed(mdm, "mdm", "retirement-serial")?;
+    seed(agent, "agent", "retirement-serial")?;
+    s.reconcile().await?;
+    let association: Uuid = serde_json::from_value(
+        s.views(&principal, &query(64)).await?["items"][0]["reference"]["id"].clone(),
+    )?;
+    let tenant = TenantId::parse(case_a())?;
+    let reader = rss_mdm_device_service::planning::PlanningObjects::new(
+        access
+            .audit_store(&crate::config::AuditConfig::Plain)
+            .await?,
+    );
+    let snapshot = reader.freeze(&mut c, tenant).await?;
+    for _ in 0..32 {
+        if reader.advance(&mut c, tenant, &snapshot).await? == SnapshotProgress::Ready {
+            break;
+        }
+    }
+    let target = reader
+        .lookup(
+            &mut c,
+            tenant,
+            snapshot.id,
+            &ObjectRef::Association(association),
+        )
+        .await?;
+    assert!(target.verified && target.members.len() == 2);
+    let authority =
+        rss_mdm_authorization_service::snapshot_on(&mut c, case_a(), principal.instance_id())
+            .await?;
+    let grant = rss_mdm_authorization_service::UserGrant::all_devices(
+        &authority,
+        &principal,
+        crate::authorization::Permission::DeviceUnmanage,
+    )?;
+    let now = crate::clock::Clock::unix_seconds(&crate::clock::SystemClock)?;
+    let mut input = Acceptance {
+        policy: Uuid::new_v4(),
+        version: Uuid::new_v4(),
+        occurrence: "explicit:test",
+        target: &target,
+        authority: &grant,
+        delivery_seconds: 300,
+        now,
+    };
+    c.execute("BEGIN").await?;
+    let first = lifecycle::accept_in(&mut c, tenant, &reader, &input).await?;
+    assert!(!first.1);
+    for device in [mdm, agent] {
+        assert!(
+            !rss_mdm_registration_service::lifecycle::work_allowed_in(&mut c, case_a(), device)
+                .await?
+        );
+    }
+    c.execute("ROLLBACK").await?;
+    for device in [mdm, agent] {
+        assert!(
+            rss_mdm_registration_service::lifecycle::work_allowed_in(&mut c, case_a(), device)
+                .await?
+        );
+    }
+    c.execute("BEGIN").await?;
+    let accepted = lifecycle::accept_in(&mut c, tenant, &reader, &input).await?;
+    assert_eq!(
+        lifecycle::accept_in(&mut c, tenant, &reader, &input).await?,
+        (accepted.0, true)
+    );
+    input.policy = Uuid::new_v4();
+    input.version = Uuid::new_v4();
+    assert_eq!(
+        lifecycle::accept_in(&mut c, tenant, &reader, &input).await?,
+        (accepted.0, true)
+    );
+    assert_eq!(
+        lifecycle::read_in(&mut c, tenant, accepted.0)
+            .await?
+            .channels
+            .len(),
+        2
+    );
+    c.execute("ROLLBACK").await?;
     access.close().await;
     Ok(())
 }

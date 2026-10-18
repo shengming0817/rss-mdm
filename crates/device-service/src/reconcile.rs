@@ -7,11 +7,15 @@ use std::{collections::BTreeSet, time::Duration};
 use uuid::Uuid;
 
 impl Associations {
-    pub fn registration(self: Arc<Self>) -> rss_runtime::ManagedTaskRegistration {
+    pub fn registration(
+        self: Arc<Self>,
+        retirement: Arc<dyn rss_mdm_registration_service::Retirement>,
+    ) -> rss_runtime::ManagedTaskRegistration {
         let (task, _) =
             rss_runtime::ManagedTask::prepare("device-associations", Duration::from_secs(20));
         task.into_registration(move |stop|async move {
             while !stop.is_cancelled() {
+                if self.finalize_retirements(retirement.as_ref()).await.is_err() {eprintln!("device retirement settlement unavailable");}
                 if self.reconcile().await.is_err() {eprintln!("{}",serde_json::json!({"event":"device_association_reconciliation_unavailable"}));}
                 tokio::select!{()=stop.cancelled()=>break,()=tokio::time::sleep(Duration::from_secs(2))=>{}}
             }

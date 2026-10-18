@@ -142,11 +142,22 @@ impl ExecutionService {
         .await??;
         crate::transaction::lock(tx).await?;
         storage::lock(tx, device).await?;
-        self.reconcile_agent_install_in(tx, device, audit).await?;
+        let t = tx.tenant_id().to_string();
+        let d = device.to_owned();
+        let retirement:Option<Uuid>=tx.with_connection(move|c|Box::pin(async move {
+            sqlx::query_scalar("SELECT retirement FROM mdm_access.devices WHERE tenant_id=$1::uuid AND id=$2").bind(t).bind(d).fetch_optional(c).await.map(Option::flatten)
+        })).await?;
+        if retirement.is_none() {
+            self.reconcile_agent_install_in(tx, device, audit).await?;
+        }
         let tenant = tx.tenant_id().to_string();
         let name = device.to_owned();
         let revision=tx.with_connection(move|c|Box::pin(async move {sqlx::query_scalar::<_,i64>("SELECT input_revision FROM mdm_planning.configuration_devices WHERE tenant_id=$1::uuid AND device=$2 FOR UPDATE").bind(tenant).bind(name).fetch_one(c).await})).await?;
-        let (wanted, waiting) = desired_in(self, tx, device).await?;
+        let (wanted, waiting) = if retirement.is_some() {
+            (Vec::new(), Vec::new())
+        } else {
+            desired_in(self, tx, device).await?
+        };
         let prior = prior_claims(&self.policy_reader, tx, device).await?;
         let mut inputs = Vec::new();
         for (p, f) in &wanted {
@@ -158,6 +169,9 @@ impl ExecutionService {
         // Unresolved scope or dispatched unknown side effects retain their own exact object range.
         // A retired parent's uncertain Delete must also fence a newly assigned child.
         for (p, f) in &prior {
+            if retirement.is_some() {
+                break;
+            }
             if inputs.iter().any(|d| d.policy.id == p.id) {
                 continue;
             }
@@ -312,11 +326,26 @@ impl ExecutionService {
                     );
                 }
             }
+            if retirement.is_some() {
+                retain = false;
+            }
             if !retain && removal_contracts.len() > 1 {
                 save_objects(
                     tx,
                     device,
                     &old.objects,
+                    state,
+                    Some(&old.object_digests),
+                    Some(Diagnosis::RemovalBlocked),
+                )
+                .await?;
+                continue;
+            }
+            if retirement.is_some() && old.native.remove.is_none() {
+                save_objects(
+                    tx,
+                    device,
+                    &unowned,
                     state,
                     Some(&old.object_digests),
                     Some(Diagnosis::RemovalBlocked),
@@ -394,6 +423,7 @@ impl ExecutionService {
                 let is_remove = matches!(
                     op.authority,
                     authority::ExecutionAuthority::Policy { remove: true, .. }
+                        | authority::ExecutionAuthority::Retirement { .. }
                 );
                 let publication_withdrawn = self
                     .configuration_withdrawn_in(tx, &op, command.status())
@@ -482,6 +512,7 @@ impl ExecutionService {
         if !matches!(
             op.authority,
             authority::ExecutionAuthority::Policy { remove: true, .. }
+                | authority::ExecutionAuthority::Retirement { .. }
         ) || status != dc::Status::Received
             || !matches!(&op.request.task, Task::Macos { request: rss_mdm_apple_mdm::native::request::Request::Declarations { declarations, .. } } if declarations.is_empty())
         {
@@ -631,15 +662,54 @@ impl ExecutionService {
             })
             .await??
         };
-        let authority = crate::authority::ExecutionAuthority::Policy {
-            source_objects,
-            unit,
-            required: input.task.permissions()?,
-            tenant: tx.tenant_id().to_string(),
-            policy: policy.id,
-            version: policy.version,
-            device: device.into(),
-            remove,
+        let t = tx.tenant_id().to_string();
+        let d = device.to_owned();
+        let retirement:Option<(Uuid,Uuid)>=tx.with_connection(move|c|Box::pin(async move {
+            sqlx::query_as("SELECT o.id,o.version FROM mdm_access.devices d JOIN mdm_devices.retirements o ON(o.tenant_id,o.id)=(d.tenant_id,d.retirement) WHERE d.tenant_id=$1::uuid AND d.id=$2")
+                .bind(t).bind(d).fetch_optional(c).await
+        })).await?;
+        let authority = if let Some((retirement, version)) = retirement {
+            if !remove {
+                return Err(Error::Forbidden.into());
+            }
+            let (registration, _) =
+                storage::current_registration(tx, device, input.task.purpose()?).await?;
+            let tenant = tx.tenant_id();
+            let execution = input.operation_id;
+            tx.with_connection(move |c| {
+                Box::pin(async move {
+                    Ok(rss_mdm_device_service::lifecycle::authorize_execution_in(
+                        c,
+                        tenant,
+                        retirement,
+                        registration,
+                        execution,
+                    )
+                    .await
+                    .map_err(Error::from))
+                })
+            })
+            .await??;
+            crate::authority::ExecutionAuthority::Retirement {
+                tenant: tenant.to_string(),
+                retirement,
+                version,
+                device: device.into(),
+                registration,
+                execution,
+                required: input.task.permissions()?,
+            }
+        } else {
+            crate::authority::ExecutionAuthority::Policy {
+                source_objects,
+                unit,
+                required: input.task.permissions()?,
+                tenant: tx.tenant_id().to_string(),
+                policy: policy.id,
+                version: policy.version,
+                device: device.into(),
+                remove,
+            }
         };
         let fingerprint = crate::protection::fingerprint(
             &self.protection,
