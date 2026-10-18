@@ -174,9 +174,6 @@ pub async fn write(
         json!([proof.instance_id(), proof.principal_id()]).to_string(),
     )
     .map_err(|_| Error::Malformed)?;
-    audit.set_action("management_write");
-    audit.target(&id);
-    audit.operation(request.operation_id, "management_write");
     let intent_audit = audit.transaction_copy();
     intent_audit.set_action("software_preflight");
     intent_audit.software(rss_mdm_audit_integration::SoftwareFact {
