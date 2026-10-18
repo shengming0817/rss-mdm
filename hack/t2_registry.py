@@ -2045,3 +2045,5 @@ consume(('crates/execution-service/src/native_software.rs',
         'execution.software.offer execution.software.recovery execution.commands.onboarding apple.onboarding planning.software')
 T1_INPUTS += ('crates/execution-service/tests/native_software_unit.rs',)
 consume(('crates/app/tests/execution/commands/onboarding/native_software.rs',), 'execution.commands.onboarding')
+
+consume(('crates/app/tests/apple/onboarding/native_software.rs',), 'apple.onboarding')

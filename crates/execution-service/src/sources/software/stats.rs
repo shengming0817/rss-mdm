@@ -26,28 +26,36 @@ impl SoftwareAssignment {
         tx: &mut PgTransaction<'_>,
         index: usize,
     ) -> Result<Option<Input>> {
-        let stage = self.rollout.stages.get(index).ok_or(Error::Malformed)?;
-        let mut scopes = vec![self.scope, stage.scope];
-        scopes.extend(self.rollout.stages[..index].iter().map(|s| s.scope));
-        let reader = source.clone();
+        let assignment = self.clone();
+        let source = source.clone();
         let tenant = tx.tenant_id();
-        let scope_input = scopes.clone();
-        let channel = self.channel();
-        let resolved = tx
+        Ok(tx
             .with_connection(move |c| {
                 Box::pin(async move {
-                    Ok(reader
-                        .rollout_input_on(c, tenant, &scope_input, channel)
+                    Ok(assignment
+                        .stats_input_on(source.as_ref(), c, tenant, index)
                         .await)
                 })
             })
-            .await??;
-        let Some(resolved) = resolved else {
+            .await??)
+    }
+    pub(super) async fn stats_input_on(
+        &self,
+        source: &dyn crate::source_authority::SourceAuthority,
+        c: &mut sqlx::PgConnection,
+        tenant: rss_request_context::TenantId,
+        index: usize,
+    ) -> std::result::Result<Option<Input>, Error> {
+        let stage = self.rollout.stages.get(index).ok_or(Error::Malformed)?;
+        let mut scopes = vec![self.scope, stage.scope];
+        scopes.extend(self.rollout.stages[..index].iter().map(|s| s.scope));
+        let Some(resolved) = source
+            .rollout_input_on(c, tenant, &scopes, self.channel())
+            .await?
+        else {
             return Ok(None);
         };
-        let tenant = tenant.to_string();
-        let version = self.version;
-        let (results,bindings)=tx.with_connection(move|c|Box::pin(async move {sqlx::query_as::<_,(i64,i64)>("SELECT coalesce((SELECT stats_revision FROM mdm_commands.policy_recovery r JOIN mdm_policy.versions v ON(v.tenant_id,v.policy)=(r.tenant_id,r.policy) WHERE r.tenant_id=$1::uuid AND v.id=$2),0),coalesce((SELECT revision FROM mdm_commands.software_binding_revisions WHERE tenant_id=$1::uuid),0)").bind(tenant).bind(version).fetch_one(c).await})).await?;
+        let (results,bindings)=sqlx::query_as::<_,(i64,i64)>("SELECT coalesce((SELECT stats_revision FROM mdm_commands.policy_recovery r JOIN mdm_policy.versions v ON(v.tenant_id,v.policy)=(r.tenant_id,r.policy) WHERE r.tenant_id=$1::uuid AND v.id=$2),0),coalesce((SELECT revision FROM mdm_commands.software_binding_revisions WHERE tenant_id=$1::uuid),0)").bind(tenant.to_string()).bind(self.version).fetch_one(c).await.map_err(crate::database::db)?;
         Ok(Some(Input {
             scopes,
             runs: resolved.iter().map(|r| r.run).collect(),
@@ -257,11 +265,18 @@ impl SoftwareAssignment {
         }
         count.unsupported_capability = 1;
         if self.channel() == rss_mdm_inventory::Channel::Mdm {
-            count.unsupported_capability = u64::from(
-                crate::native_software::target_in(tx, &target.device)
+            if let Some((current, platform, architecture)) =
+                crate::native_software::target_in(tx, &target.device).await?
+                && current.registration == target.registration_id
+                && current.generation == target.generation
+                && self.variant(platform, architecture).is_some()
+                && self
+                    .admitted_in(service, tx, platform, architecture)
                     .await?
-                    .is_none(),
-            );
+                    .is_some()
+            {
+                count.unsupported_capability = 0;
+            }
         } else {
             for binding in crate::channels::agent_targets_in(
                 tx,

@@ -5,18 +5,23 @@ use sha2::{Digest, Sha256};
 #[tokio::test]
 #[ignore = "make t2 MODULE=execution.commands.onboarding"]
 async fn explicit_software_uses_native_run_without_agent_catalog() -> Result<()> {
-    native_case(false).await
+    native_case(false, false).await
 }
 #[tokio::test]
 #[ignore = "make t2 MODULE=execution.commands.onboarding"]
 async fn associated_agent_unknown_blocks_native_alias_but_not_other_package() -> Result<()> {
-    native_case(true).await
+    native_case(true, false).await
+}
+#[tokio::test]
+#[ignore = "make t2 MODULE=execution.commands.onboarding"]
+async fn native_rollout_counts_unsupported_selected_architecture() -> Result<()> {
+    native_case(false, true).await
 }
 #[allow(
     clippy::cognitive_complexity,
     reason = "end-to-end fixture keeps admission, transport, content grants and effect settlement in one owned lifecycle"
 )]
-async fn native_case(agent_unknown: bool) -> Result<()> {
+async fn native_case(agent_unknown: bool, unsupported_architecture: bool) -> Result<()> {
     let mut host = crate::windows::test_support::Host::with_mdm_software().await?;
     host.listen().await?;
     let peer = host.peer().await?;
@@ -154,10 +159,12 @@ async fn native_case(agent_unknown: bool) -> Result<()> {
     } else {
         software_execution::prepared_scope(&host.app.flow.planning, &[case_device()]).await?
     };
+    let stage =
+        software_execution::prepared_scope(&host.app.flow.planning, &[case_device()]).await?;
     let policy = Uuid::new_v4();
     let competing = Uuid::new_v4();
     for (policy, resource) in [(policy, resource), (competing, alias)] {
-        content_setup::write(&mut client.browser,&client.router,&format!("/api/v1/policies/{policy}"),0,json!({"action":"put","enabled":true,"definition":{"scope":scope,"action":{"kind":"software","channel":"mdm","resource":{"kind":"software","id":resource,"version":"v1","variants":{"windows_x86_64":"default"}},"delivery":{"kind":"direct"},"intent":"required_install","runLifetimeSeconds":600,"rollout":{"stages":[{"scope":scope,"opensAt":0}]}}}})).await?;
+        content_setup::write(&mut client.browser,&client.router,&format!("/api/v1/policies/{policy}"),0,json!({"action":"put","enabled":true,"definition":{"scope":scope,"action":{"kind":"software","channel":"mdm","resource":{"kind":"software","id":resource,"version":"v1","variants":{"windows_x86_64":"default"}},"delivery":{"kind":"direct"},"intent":"required_install","runLifetimeSeconds":600,"rollout":{"stages":[{"scope":stage,"opensAt":0}]}}}})).await?;
     }
     let (a, b) = tokio::join!(
         host.app.execution.recover_action_fixture(policy),
@@ -165,12 +172,23 @@ async fn native_case(agent_unknown: bool) -> Result<()> {
     );
     a?;
     b?;
+    let mut stage_rechecked = false;
     let mut executes = 0;
     let mut saw_observe = false;
     let outcome=tokio::time::timeout(Duration::from_secs(90),async {
         for session in 1900..2000 {
             let (initial,mut response)=begin(&peer,session).await?;
             for _ in 0..12 {
+                if !agent_unknown && !unsupported_architecture && !stage_rechecked
+                    && response.commands.iter().any(|c|matches!(c,s::Command::Add {items,..} if items.iter().any(|i|i.target.as_deref().is_some_and(|u|u.contains("EnterpriseDesktopAppManagement")))))
+                {
+                    change_stage(&mut client, stage, 1, false).await?;
+                    let blocked = post(&peer, &native_reply(&initial,&response,false)).await?;
+                    ensure!(!blocked.commands.iter().any(installation_write), "first write bypassed changed stage Scope");
+                    change_stage(&mut client, stage, 2, true).await?;
+                    stage_rechecked = true;
+                    response = blocked;
+                }
                 for command in &response.commands {
                     if let s::Command::Exec {items,..}=command {
                         for item in items {
@@ -190,10 +208,18 @@ async fn native_case(agent_unknown: bool) -> Result<()> {
                 executes += response.commands.iter().filter(|c|matches!(c,s::Command::Exec {items,..} if items.iter().any(|i|i.target.as_deref().is_some_and(|u|u.ends_with("/DownloadInstall"))))).count();
                 saw_observe |= response.commands.iter().any(|c|matches!(c,s::Command::Get {items,..} if items.iter().any(|i|i.target.as_deref().is_some_and(|u|u.contains("EnterpriseDesktopAppManagement") && u.ends_with("/Version")))));
                 if response.commands.iter().all(|c|matches!(c,s::Command::Status(_))) { break; }
-                response=post(&peer,&native_reply(&initial,&response)).await?;
+                response=post(&peer,&native_reply(&initial,&response,unsupported_architecture)).await?;
             }
             host.app.execution.recover_action_fixture(policy).await?;
             host.app.execution.recover_action_fixture(competing).await?;
+            if unsupported_architecture {
+                let progress = client.browser.call(&client.router,Method::GET,&format!("/api/v1/policies/{policy}/software/rollout"),None).await?;
+                if progress.1["stages"][0]["ready"] == true && progress.1["stages"][0]["totalTargets"] == 1 {
+                    ensure!(progress.1["stages"][0]["unsupportedCapability"] == 1, "unsupported variant missing from statistics: {progress:?}");
+                    ensure!(executes == 0, "unsupported architecture must not install");
+                    return Ok::<_,anyhow::Error>(());
+                }
+            }
             for policy in [policy,competing] {
             let runs=client.browser.call(&client.router,Method::GET,&format!("/api/v1/policies/{policy}/runs"),None).await?;
             if runs.1["items"].as_array().is_some_and(|items|items.iter().any(|r|r["effect"]=="verified")) {return Ok::<_,anyhow::Error>(());}
@@ -214,6 +240,16 @@ async fn native_case(agent_unknown: bool) -> Result<()> {
         );
     }
     outcome??;
+    if unsupported_architecture {
+        ensure!(commands.shutdown().join().await?.is_clean());
+        ensure!(owner.shutdown().join().await?.is_clean());
+        host.close().await?;
+        return Ok(());
+    }
+    ensure!(
+        agent_unknown || stage_rechecked,
+        "stage withdrawal was not exercised"
+    );
     ensure!(
         executes == 1 && saw_observe,
         "must execute once then verify read-only"
@@ -223,7 +259,7 @@ async fn native_case(agent_unknown: bool) -> Result<()> {
     }
     let (_, response) = begin(&peer, 2100).await?;
     ensure!(
-        !response.commands.iter().any(installation_write),
+        !response.commands.iter().any(|c|installation_write(c) || matches!(c,s::Command::Get {items,..} if items.iter().any(|i|i.target.as_deref().is_some_and(|u|u.contains("EnterpriseDesktopAppManagement"))))),
         "verified effect must stop installation and observation work"
     );
     use sqlx::Connection;
@@ -249,7 +285,11 @@ async fn native_case(agent_unknown: bool) -> Result<()> {
     Ok(())
 }
 
-fn native_reply(initial: &s::Message, response: &s::Message) -> s::Message {
+fn native_reply(
+    initial: &s::Message,
+    response: &s::Message,
+    unsupported_architecture: bool,
+) -> s::Message {
     let mut reply = super::reply(initial, response, true);
     for command in &mut reply.commands {
         let s::Command::Results(results) = command else {
@@ -270,10 +310,50 @@ fn native_reply(initial: &s::Message, response: &s::Message) -> s::Message {
                     target: None,
                     source: Some(uri.into()),
                     meta: None,
-                    data: Some(Secret(reported_value(uri, response).into())),
+                    data: Some(Secret(
+                        if unsupported_architecture && uri.ends_with("/ProcessorArchitecture") {
+                            "ARM64"
+                        } else {
+                            reported_value(uri, response)
+                        }
+                        .into(),
+                    )),
                 }
             })
             .collect();
     }
     reply
+}
+
+async fn change_stage(
+    client: &mut Client,
+    stage: Uuid,
+    revision: u64,
+    included: bool,
+) -> Result<()> {
+    let targets = if included {
+        json!([{"kind":"device","id":case_device()}])
+    } else {
+        json!([])
+    };
+    let path = format!("/api/v1/scopes/{stage}");
+    let changed = content_setup::write(
+        &mut client.browser,
+        &client.router,
+        &path,
+        revision,
+        json!({"action":"put","definition":{"targets":targets,"limitations":null,"exclusions":[]}}),
+    )
+    .await?;
+    await_task(
+        &mut client.browser,
+        &client.router,
+        &format!(
+            "{path}/tasks/{}",
+            changed["task"].as_str().context("scope task")?
+        ),
+    )
+    .await?;
+    crate::test_support::planning_http::await_ingress().await?;
+    Ok(())
 }
