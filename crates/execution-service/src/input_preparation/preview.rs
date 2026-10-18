@@ -1,6 +1,7 @@
 //! Validate draft material without collection registration, sealing or assignment identities.
 use super::*;
 pub(crate) enum PreviewInputs {
+    DeviceLifecycle,
     Credential {
         architecture: Architecture,
     },
@@ -30,6 +31,7 @@ impl Inputs {
         snapshot: &crate::authorization::Snapshot,
     ) -> Result<PreviewInputs> {
         match input {
+            PublicationInput::Unmanage { .. } => return Ok(PreviewInputs::DeviceLifecycle),
             PublicationInput::Credential { architecture, .. } => {
                 if !self.recovery_enabled || !self.signing_enabled {
                     return Err(Error::Unsupported.into());
@@ -184,7 +186,8 @@ impl Inputs {
                     self.software_in(tx, input, &version).await?,
                 )));
             }
-            PublicationInput::Credential { .. }
+            PublicationInput::Unmanage { .. }
+            | PublicationInput::Credential { .. }
             | PublicationInput::AgentInstall { .. }
             | PublicationInput::Enrollment { .. } => {
                 unreachable!("onboarding was prepared above")

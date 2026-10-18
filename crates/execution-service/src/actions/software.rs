@@ -243,7 +243,7 @@ pub async fn slot_in(
         effect,
     }))
 }
-fn effect_key(
+pub(crate) fn effect_key(
     policy: &crate::sources::software::SoftwareExecutionPolicy,
     target: &Target,
     steps: &[rss_mdm_agent_wire::runtime::SoftwareTaskStep],

@@ -48,6 +48,7 @@ GRANT UPDATE(state) ON TABLE mdm_access.credentials TO mdm_access;
 GRANT SELECT(state) ON TABLE mdm_access.credentials TO mdm_flow_runtime;
 
 GRANT SELECT,INSERT ON TABLE mdm_access.devices TO mdm_access;
+GRANT UPDATE(retirement) ON mdm_access.devices TO mdm_access,mdm_flow_runtime;
 GRANT SELECT ON TABLE mdm_access.devices TO mdm_flow_runtime;
 GRANT SELECT ON TABLE mdm_access.devices TO mdm_command_runtime;
 
@@ -95,7 +96,7 @@ ALTER TABLE mdm_access.agent_grants ADD CONSTRAINT agent_recovery_registration F
 ALTER TABLE mdm_access.agent_grants ADD CONSTRAINT agent_recovery_predecessor FOREIGN KEY(tenant_id,predecessor) REFERENCES mdm_access.credentials(tenant_id,id);
 ALTER TABLE mdm_access.agent_issuances ADD CONSTRAINT activated_credential FOREIGN KEY(tenant_id,credential) REFERENCES mdm_access.credentials(tenant_id,id);
 GRANT SELECT,INSERT ON mdm_access.agent_grants,mdm_access.agent_issuances TO mdm_access;
-GRANT UPDATE(actor,instance,state) ON mdm_access.agent_grants TO mdm_access;
+GRANT UPDATE(actor,instance,state,device) ON mdm_access.agent_grants TO mdm_access;
 GRANT UPDATE(state,certificate_chain,metadata,fingerprint,activation_operation,activation_digest,activation_result,credential) ON mdm_access.agent_issuances TO mdm_access;
 GRANT SELECT,INSERT ON mdm_access.agent_grants TO mdm_command_runtime;
 GRANT SELECT(tenant_id,credential,not_after) ON mdm_access.agent_issuances TO mdm_command_runtime;

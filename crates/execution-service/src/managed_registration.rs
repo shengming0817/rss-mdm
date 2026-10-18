@@ -55,6 +55,7 @@ impl ExecutionService {
             .execute(&mut *c)
             .await
             .map_err(crate::database::db)?;
+        rss_mdm_registration_service::lifecycle::require_work_in(c, &tenant, p.device()).await?;
         crate::device::store::revalidate_source(c, p, source).await?;
         // The existing request lock serializes absent receipts and distinct retry IDs for one install.
         sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,2348))")

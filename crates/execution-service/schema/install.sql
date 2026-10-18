@@ -25,14 +25,14 @@ CREATE FUNCTION mdm_commands.retirement_commands(p_registration uuid, p_after te
   JOIN rss_device_command.commands d ON(d.tenant_id,d.command_id)=(o.tenant_id,o.id::text)
   JOIN mdm_access.registrations r ON(r.tenant_id,r.id)=(o.tenant_id,o.registration)
   WHERE o.tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid
-   AND o.registration=p_registration AND r.state<>'active' AND d.terminal_at IS NULL
+   AND o.registration=p_registration AND (r.state<>'active' OR (EXISTS(SELECT 1 FROM mdm_access.devices x WHERE(x.tenant_id,x.id)=(r.tenant_id,r.device) AND x.retirement IS NOT NULL) AND NOT EXISTS(SELECT 1 FROM mdm_devices.retirement_work w WHERE(w.tenant_id,w.execution)=(o.tenant_id,o.id)) AND NOT EXISTS(SELECT 1 FROM mdm_commands.attempts a WHERE(a.tenant_id,a.operation)=(o.tenant_id,o.id) AND a.phase='execute') AND NOT EXISTS(SELECT 1 FROM mdm_apple.attempts a WHERE(a.tenant_id,a.operation)=(o.tenant_id,o.id) AND a.phase='execute' AND a.state<>'pending'))) AND d.terminal_at IS NULL
   ORDER BY d.device_id
  ) scope CROSS JOIN LATERAL rss_device_command.lock_authority(nullif(current_setting('rss.tenant_id',true),'')::uuid,scope.device_id) a;
  SELECT d.* FROM mdm_commands.operations o
  JOIN rss_device_command.commands d ON(d.tenant_id,d.command_id)=(o.tenant_id,o.id::text)
  JOIN mdm_access.registrations r ON(r.tenant_id,r.id)=(o.tenant_id,o.registration)
  WHERE o.tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid
-  AND o.registration=p_registration AND r.state<>'active' AND d.terminal_at IS NULL
+  AND o.registration=p_registration AND (r.state<>'active' OR (EXISTS(SELECT 1 FROM mdm_access.devices x WHERE(x.tenant_id,x.id)=(r.tenant_id,r.device) AND x.retirement IS NOT NULL) AND NOT EXISTS(SELECT 1 FROM mdm_devices.retirement_work w WHERE(w.tenant_id,w.execution)=(o.tenant_id,o.id)) AND NOT EXISTS(SELECT 1 FROM mdm_commands.attempts a WHERE(a.tenant_id,a.operation)=(o.tenant_id,o.id) AND a.phase='execute') AND NOT EXISTS(SELECT 1 FROM mdm_apple.attempts a WHERE(a.tenant_id,a.operation)=(o.tenant_id,o.id) AND a.phase='execute' AND a.state<>'pending'))) AND d.terminal_at IS NULL
   AND d.command_id COLLATE "C" > p_after ORDER BY d.command_id COLLATE "C" LIMIT 64;
 $$;
 REVOKE ALL ON FUNCTION mdm_commands.retirement_commands(uuid,text) FROM PUBLIC;
@@ -45,13 +45,13 @@ CREATE FUNCTION mdm_commands.save_retired_command(p_registration uuid, p_run uui
  JOIN mdm_access.registrations r ON(r.tenant_id,r.id)=(o.tenant_id,o.registration)
  CROSS JOIN LATERAL rss_device_command.lock_authority(o.tenant_id,d.device_id) a
  WHERE o.tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid
-  AND o.registration=p_registration AND o.id=p_run AND r.state<>'active';
+  AND o.registration=p_registration AND o.id=p_run AND (r.state<>'active' OR (EXISTS(SELECT 1 FROM mdm_access.devices x WHERE(x.tenant_id,x.id)=(r.tenant_id,r.device) AND x.retirement IS NOT NULL) AND NOT EXISTS(SELECT 1 FROM mdm_devices.retirement_work w WHERE(w.tenant_id,w.execution)=(o.tenant_id,o.id)) AND NOT EXISTS(SELECT 1 FROM mdm_commands.attempts a WHERE(a.tenant_id,a.operation)=(o.tenant_id,o.id) AND a.phase='execute') AND NOT EXISTS(SELECT 1 FROM mdm_apple.attempts a WHERE(a.tenant_id,a.operation)=(o.tenant_id,o.id) AND a.phase='execute' AND a.state<>'pending')));
  SELECT coalesce((SELECT rss_device_command.save(d.tenant_id,d.device_id,d.command_id,p_previous,'cancelled',d.published_at,d.received_at,p_terminal)
  FROM mdm_commands.operations o
  JOIN rss_device_command.commands d ON(d.tenant_id,d.command_id)=(o.tenant_id,o.id::text)
  JOIN mdm_access.registrations r ON(r.tenant_id,r.id)=(o.tenant_id,o.registration)
  WHERE o.tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid
-  AND o.registration=p_registration AND o.id=p_run AND r.state<>'active'
+  AND o.registration=p_registration AND o.id=p_run AND (r.state<>'active' OR (EXISTS(SELECT 1 FROM mdm_access.devices x WHERE(x.tenant_id,x.id)=(r.tenant_id,r.device) AND x.retirement IS NOT NULL) AND NOT EXISTS(SELECT 1 FROM mdm_devices.retirement_work w WHERE(w.tenant_id,w.execution)=(o.tenant_id,o.id)) AND NOT EXISTS(SELECT 1 FROM mdm_commands.attempts a WHERE(a.tenant_id,a.operation)=(o.tenant_id,o.id) AND a.phase='execute') AND NOT EXISTS(SELECT 1 FROM mdm_apple.attempts a WHERE(a.tenant_id,a.operation)=(o.tenant_id,o.id) AND a.phase='execute' AND a.state<>'pending')))
   AND d.version=p_previous AND d.terminal_at IS NULL),false);
 $$;
 REVOKE ALL ON FUNCTION mdm_commands.save_retired_command(uuid,uuid,bigint,bigint) FROM PUBLIC;
@@ -68,7 +68,7 @@ CREATE FUNCTION mdm_commands.save_retired_action(p_registration uuid, p_run uuid
    AND a.state->>'execution' IN ('not_started','running','waiting_reboot','unknown')
    AND a.state->>'cancellation'='none'
    AND EXISTS(SELECT 1 FROM mdm_access.registrations r
-    WHERE (r.tenant_id,r.id)=(a.tenant_id,a.registration) AND r.state<>'active')
+    WHERE (r.tenant_id,r.id)=(a.tenant_id,a.registration) AND (r.state<>'active' OR (EXISTS(SELECT 1 FROM mdm_access.devices x WHERE(x.tenant_id,x.id)=(r.tenant_id,r.device) AND x.retirement IS NOT NULL) AND NOT EXISTS(SELECT 1 FROM mdm_devices.retirement_work w WHERE(w.tenant_id,w.execution)=(a.tenant_id,a.id)))))
   RETURNING a.id
  ) SELECT EXISTS(SELECT 1 FROM changed);
 $$;
@@ -260,7 +260,7 @@ CREATE TABLE mdm_commands.operations (
     CONSTRAINT operation_authority_source CHECK (COALESCE(
 CASE source_kind
     WHEN 'direct'::text THEN ((authority ->> 'kind'::text) IN ('device_control'::text,'credential'::text))
-    WHEN 'policy'::text THEN (((authority ->> 'kind'::text) IN ('policy'::text,'agent_install'::text,'software'::text)) AND ((authority ->> 'tenant'::text) = (tenant_id)::text) AND ((authority ->> 'device'::text) = device) AND ((authority ->> 'version'::text) = (policy_version)::text) AND ((authority ->> 'kind') <> 'software' OR (authority ->> 'operation') = id::text))
+    WHEN 'policy'::text THEN (((authority ->> 'kind'::text) IN ('policy'::text,'agent_install'::text,'software'::text,'retirement'::text)) AND ((authority ->> 'tenant'::text) = (tenant_id)::text) AND ((authority ->> 'device'::text) = device) AND ((authority ->> 'version'::text) = (policy_version)::text) AND ((authority ->> 'kind') <> 'software' OR (authority ->> 'operation') = id::text))
     ELSE NULL::boolean
 END, false)),
     CONSTRAINT operation_source CHECK (((source_kind = 'direct'::text) AND (policy_version IS NULL)) OR ((source_kind = 'policy'::text) AND (policy_version IS NOT NULL))),

@@ -2019,6 +2019,25 @@
         },
         {
           "additionalProperties": false,
+          "description": "Final evidence from the protected installation retirement owner.",
+          "properties": {
+            "kind": {
+              "const": "unmanage_result",
+              "type": "string"
+            },
+            "outcome": {
+              "$ref": "#/$defs/UnmanageOutcome",
+              "description": "Closed cleanup outcome."
+            }
+          },
+          "required": [
+            "kind",
+            "outcome"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
           "description": "Only the enrollment UI outcome; active MDM registration is server-owned.",
           "properties": {
             "kind": {
@@ -2069,6 +2088,26 @@
         {
           "const": "capture_failed",
           "description": "The executor could not capture a complete result.",
+          "type": "string"
+        }
+      ]
+    },
+    "UnmanageOutcome": {
+      "description": "Reported terminal effect; lack of a report is never completion.",
+      "oneOf": [
+        {
+          "const": "completed",
+          "description": "The protected installation owner verified its removal and credential cleanup.",
+          "type": "string"
+        },
+        {
+          "const": "failed",
+          "description": "The owner confirmed a failure and retained its recovery evidence.",
+          "type": "string"
+        },
+        {
+          "const": "unknown",
+          "description": "Execution started but its effect could not be confirmed.",
           "type": "string"
         }
       ]

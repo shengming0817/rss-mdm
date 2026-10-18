@@ -81,6 +81,15 @@ pub trait SourceAuthority: Send + Sync {
     fn mdm_software_enabled(&self) -> bool {
         false
     }
+    /// Complete objects for the server-owned lifecycle action, without selecting a transport.
+    fn lifecycle_objects_on<'a>(
+        &'a self,
+        c: &'a mut PgConnection,
+        tenant: TenantId,
+        scope: Uuid,
+        after: Option<&'a str>,
+    ) -> Pending<'a, Vec<DeviceAssignment>>;
+
     /// Freeze current published root, selected stage and earlier stages, or wait.
     fn rollout_input_on<'a>(
         &'a self,
@@ -190,10 +199,20 @@ pub enum Availability {
 }
 
 /// Convert the pure authored action channel at the service boundary.
-pub fn action_channel(action: &rss_mdm_policy::Action) -> Channel {
-    if action.target_channel() == rss_mdm_policy::SoftwareChannel::Mdm {
-        Channel::Mdm
-    } else {
-        Channel::Agent
+pub fn action_channel(action: &rss_mdm_policy::Action) -> Result<Channel, crate::Error> {
+    match action.target_channel() {
+        Some(rss_mdm_policy::SoftwareChannel::Mdm) => Ok(Channel::Mdm),
+        Some(rss_mdm_policy::SoftwareChannel::Agent) => Ok(Channel::Agent),
+        None => Err(crate::Error::Malformed),
     }
+}
+
+/// Scope qualification of an entire endpoint/association for device-owned work.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeviceAssignment {
+    pub cursor: String,
+    pub object: DeviceObject,
+    pub admission: ScopeAdmission,
+    pub scope_result: Uuid,
 }

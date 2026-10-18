@@ -12,6 +12,7 @@ pub async fn create_in(
     let p = authority.principal();
     let tenant = p.tenant().to_string();
     crate::admission::lock_in(c, &tenant).await?;
+    crate::lifecycle::require_work_in(c, &tenant, p.device()).await?;
     if authority.installation() != input.installation_operation {
         return Err(Error::Forbidden);
     }

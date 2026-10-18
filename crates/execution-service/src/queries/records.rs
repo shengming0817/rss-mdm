@@ -326,13 +326,13 @@ pub struct Capability {
 #[serde(rename_all = "camelCase")]
 pub struct Assignment {
     object: crate::source_authority::ObjectRef,
-    channel: rss_mdm_inventory::Channel,
+    channel: Option<rss_mdm_inventory::Channel>,
     availability: crate::source_authority::Availability,
     reason: Option<String>,
     target: Option<rss_mdm_registration_service::device::endpoints::PrimaryRegistration>,
     qualification: crate::source_authority::ScopeAdmission,
     sources: Vec<crate::source_authority::DeviceObject>,
-    scope_result: Uuid,
+    scope_result: Option<Uuid>,
     task_admission: Option<crate::sources::software::TaskAdmission>,
     operation_ids: Vec<Uuid>,
 }
@@ -349,7 +349,7 @@ pub struct Preview {
 #[serde(rename_all = "camelCase")]
 struct PreviewTarget {
     object: crate::source_authority::ObjectRef,
-    channel: rss_mdm_inventory::Channel,
+    channel: Option<rss_mdm_inventory::Channel>,
     availability: crate::source_authority::Availability,
     reason: Option<String>,
     target: Option<rss_mdm_registration_service::device::endpoints::PrimaryRegistration>,

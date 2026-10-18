@@ -464,12 +464,15 @@ fn software_channel_defaults_only_at_the_management_boundary() {
     let Change::Put { definition, .. } = change else {
         panic!("put")
     };
-    assert_eq!(definition.action.target_channel(), SoftwareChannel::Agent);
+    assert_eq!(
+        definition.action.target_channel(),
+        Some(SoftwareChannel::Agent)
+    );
     let agent = definition.semantic().unwrap();
     let mut mdm = (*definition).clone();
     if let Action::Software { channel, .. } = &mut mdm.action {
         *channel = SoftwareChannel::Mdm;
     }
     assert_ne!(agent, mdm.semantic().unwrap());
-    assert_eq!(mdm.action.target_channel(), SoftwareChannel::Mdm);
+    assert_eq!(mdm.action.target_channel(), Some(SoftwareChannel::Mdm));
 }

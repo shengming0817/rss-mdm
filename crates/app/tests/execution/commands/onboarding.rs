@@ -1838,3 +1838,116 @@ async fn historical_bootstrap_cleanup_survives_current_identity_completion() -> 
     ensure!(owner.shutdown().join().await?.is_clean());
     host.close().await
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+#[ignore = "make t2 MODULE=execution.commands.onboarding"]
+async fn retirement_keeps_unregistered_installed_agent_as_explicit_residue() -> Result<()> {
+    let (host, mut client, peer, commands, owner, policy, operation) = start_fixture().await?;
+    let (initial, execute, bootstrap_wire) =
+        installation(&peer, &mut client, policy, operation, AttemptPhase::Execute).await?;
+    // Complete the independent bootstrap certificate delivery without activating
+    // an Agent registration. Otherwise that older uncertain command is the first blocker.
+    bootstrap::issue_windows(
+        &host.app,
+        &client.router,
+        &host.root,
+        operation,
+        bootstrap_wire
+            .as_ref()
+            .context("native bootstrap delivery")?,
+    )
+    .await?;
+    let mut next = post(&peer, &reply(&initial, &execute, false)).await?;
+    while next
+        .commands
+        .iter()
+        .any(|c| !matches!(c, s::Command::Status(_)))
+    {
+        ensure!((next.header.message_id as usize) < CodecLimits::default().session_messages);
+        next = post(&peer, &reply(&initial, &next, true)).await?;
+    }
+    let (initial, observe) = begin(&peer, 903).await?;
+    let mut next = post(&peer, &reply(&initial, &observe, true)).await?;
+    while next
+        .commands
+        .iter()
+        .any(|c| !matches!(c, s::Command::Status(_)))
+    {
+        ensure!((next.header.message_id as usize) < CodecLimits::default().session_messages);
+        next = post(&peer, &reply(&initial, &next, true)).await?;
+    }
+    tokio::time::timeout(Duration::from_secs(30),async {
+        loop {
+            if pg(&format!("SELECT status FROM rss_device_command.commands WHERE tenant_id='{}' AND command_id='{operation}'",case_tenant()))?.trim()=="applied" {break Ok::<_,anyhow::Error>(());}
+            tokio::time::sleep(Duration::from_millis(30)).await;
+        }
+    }).await??;
+    ensure!(pg(&format!("SELECT count(*) FROM mdm_access.registrations WHERE tenant_id='{}' AND channel='agent'",case_tenant()))?.trim()=="0");
+    let scope = Uuid::new_v4();
+    crate::test_support::agent_execution::seed_scope(
+        &host.app.flow.planning,
+        scope,
+        json!([{"kind":"device","id":case_device()}]),
+    )
+    .await?;
+    let subject = browser_subject(&client.browser, &client.router).await?;
+    let mut grants = identity::device_grants(
+        None,
+        &[
+            "enrollment",
+            "inventory_read",
+            "software_deploy",
+            "operation_read",
+            "operation_cancel",
+            "device_unmanage",
+        ],
+    )?;
+    for name in [
+        "resource_read",
+        "resource_write",
+        "software_read",
+        "software_write",
+        "release_publish",
+        "software_withdraw",
+        "policy_read",
+        "policy_write",
+        "scope_read",
+        "scope_write",
+        "group_read",
+        "group_write",
+        "group_recompute",
+    ] {
+        grants.push(crate::authorization::Grant {
+            operation: serde_json::from_value(json!(name))?,
+            scope: crate::authorization::Scope::Tenant,
+        });
+    }
+    identity::set_grants(case_tenant(), &subject, grants).await?;
+    let exit = Uuid::new_v4();
+    software::write(&mut client.browser,&client.router,&format!("/api/v1/policies/{exit}"),0,json!({"action":"put","enabled":true,"definition":{"scope":scope,"action":{"kind":"unmanage_device","runLifetimeSeconds":300}}})).await?;
+    let now = crate::clock::Clock::unix_seconds(&crate::clock::SystemClock)?;
+    software::write(
+        &mut client.browser,
+        &client.router,
+        &format!("/api/v1/policies/{exit}/reruns"),
+        1,
+        json!({"deadline":now+300}),
+    )
+    .await?;
+    let retirement=tokio::time::timeout(Duration::from_secs(30),async {
+        loop {
+            let row=pg(&format!("SELECT operation::text FROM mdm_devices.retirement_channels WHERE tenant_id='{}' AND device='{}' AND stage='cleanup' AND effect='blocked' AND reason='agent_installation_removal_unavailable' AND blocking_execution='{operation}'",case_tenant(),case_device()))?;
+            if !row.trim().is_empty() {break Ok::<_,anyhow::Error>(row.trim().to_owned());}
+            tokio::time::sleep(Duration::from_millis(30)).await;
+        }
+    }).await.map_err(|error| anyhow::anyhow!("retirement residue not projected: {error}; channels={}; operations={}",
+        pg(&format!("SELECT coalesce(jsonb_agg(to_jsonb(c)),'[]') FROM mdm_devices.retirement_channels c WHERE tenant_id='{}'",case_tenant())).unwrap_or_default(),
+        pg(&format!("SELECT coalesce(jsonb_agg(jsonb_build_object('id',o.id,'kind',o.authority->>'kind','stage',o.authority->>'stage','status',d.status,'terminal',d.terminal_at)),'[]') FROM mdm_commands.operations o JOIN rss_device_command.commands d ON(d.tenant_id,d.command_id)=(o.tenant_id,o.id::text) WHERE o.tenant_id='{}'",case_tenant())).unwrap_or_default()))??;
+    ensure!(pg(&format!("SELECT state FROM mdm_access.registrations WHERE tenant_id='{}' AND device='{}' AND purpose='primary'",case_tenant(),case_device()))?.trim()=="active");
+    let (status,receipt)=client.browser.call(&client.router,Method::POST,&format!("/api/v1/device-retirements/{retirement}/force-revoke"),Some(json!({"operationId":Uuid::new_v4(),"reason":"device program cleanup requires operator"}))).await?;
+    ensure!(status == StatusCode::OK, "{receipt}");
+    ensure!(pg(&format!("SELECT effect||':'||blocking_execution::text FROM mdm_devices.retirement_channels WHERE tenant_id='{}' AND operation='{retirement}'",case_tenant()))?.trim()==format!("unknown:{operation}"));
+    ensure!(commands.shutdown().join().await?.is_clean());
+    ensure!(owner.shutdown().join().await?.is_clean());
+    host.close().await
+}

@@ -15,6 +15,7 @@ pub struct SoftwareExecutionPolicy {
 /// Shared assignment data; a draft has no persisted version or authored Policy identity.
 #[derive(Clone)]
 pub struct SoftwareAssignment {
+    pub(crate) retirement: Option<Uuid>,
     pub frozen: FrozenSoftwareAction,
     active: bool,
     scope: Uuid,
@@ -107,6 +108,7 @@ impl SoftwareAssignment {
         active: bool,
     ) -> Self {
         Self {
+            retirement: None,
             scope,
             rollout,
             frozen,
@@ -127,6 +129,7 @@ impl SoftwareAssignment {
         frozen: FrozenSoftwareAction,
     ) -> Self {
         Self {
+            retirement: None,
             scope,
             rollout,
             frozen,
@@ -422,6 +425,15 @@ impl SoftwareAssignment {
         architecture: Architecture,
         now: i64,
     ) -> Result<bool> {
+        if let Some(retirement) = self.retirement {
+            return Ok(
+                crate::unmanage::cleanup_allowed_in(tx, retirement, device, None).await?
+                    && self
+                        .admitted_in(service, tx, platform, architecture)
+                        .await?
+                        .is_some(),
+            );
+        }
         if self
             .entry_in(&service.source, tx, device, now)
             .await?
@@ -622,3 +634,36 @@ fn delivery(input: &rss_mdm_policy::SoftwareDelivery) -> Delivery<'_> {
 }
 
 mod stats;
+
+/// Reuse the frozen software contract for an accepted device-owned removal.
+/// Mutable Policy publication/Scope cannot change the accepted cleanup target.
+pub async fn retirement_in(
+    reader: &rss_mdm_policy_postgres::PolicyReader,
+    tx: &mut PgTransaction<'_>,
+    version: Uuid,
+    retirement: Uuid,
+) -> Result<SoftwareExecutionPolicy> {
+    let published = checked(reader.version_in(tx, version).await?)?.ok_or(Error::NotFound)?;
+    let Frozen::Software { action } = stored(serde_json::from_value(published.frozen))? else {
+        return Err(Error::Malformed.into());
+    };
+    let mut frozen = *action;
+    frozen.intent = SoftwareIntent::ExplicitUninstall;
+    let tenant = tx.tenant_id().to_string();
+    let (owner,id,lifetime):(Uuid,Uuid,i32)=tx.with_connection(move|c|Box::pin(async move {
+        sqlx::query_as("SELECT policy,version,delivery_seconds FROM mdm_devices.retirements WHERE tenant_id=$1::uuid AND id=$2").bind(tenant).bind(retirement).fetch_one(c).await
+    })).await?;
+    frozen.run_lifetime_seconds = lifetime.try_into().map_err(|_| Error::Malformed)?;
+    Ok(SoftwareExecutionPolicy {
+        owner,
+        id,
+        assignment: SoftwareAssignment {
+            retirement: Some(retirement),
+            frozen,
+            active: true,
+            scope: Uuid::nil(),
+            rollout: SoftwareRollout { stages: vec![] },
+            version: Some(version),
+        },
+    })
+}

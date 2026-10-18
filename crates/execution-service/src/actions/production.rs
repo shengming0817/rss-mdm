@@ -1,5 +1,5 @@
 use super::{state::RunState, storage as db};
-use crate::Error;
+use crate::{Error, stored};
 use crate::{ExecutionService, Result, checked_input, messaging_domain};
 use rss_contract::{ContractId, ContractVersion, SchemaDigest, Timepoint};
 use rss_mdm_audit_integration::Fact;
@@ -192,7 +192,7 @@ pub async fn accept_for_device(
                 format!("scope:{}", definition.policy.definition.scope),
             )
         }
-        db::ScheduledPolicy::Software(_) => return Ok(()),
+        db::ScheduledPolicy::Retirement(_) | db::ScheduledPolicy::Software(_) => return Ok(()),
     };
     let native = matches!(policy, db::ScheduledPolicy::Native(_));
     if native == matches!(trigger, AdmissionTrigger::Agent(_)) {
@@ -326,25 +326,35 @@ pub async fn queue_run_in(
         now,
         triggered_at,
     } = input;
-    let db::Source::Policy { version } = source;
-    let (policy, _) =
+    let (_, version) = source.columns();
+    let (policy, frozen) =
         crate::sources::storage::version_in(&service.policy_reader, tx, version).await?;
-    let native = policy.definition.action.kind() == rss_mdm_policy::ActionKind::NativeCollection;
+    let retirement = matches!(source, db::Source::RetirementSoftware { .. })
+        || matches!(frozen, crate::frozen::Frozen::UnmanageDevice { .. });
+    let native = matches!(frozen, crate::frozen::Frozen::NativeCollection { .. });
     if native != triggered_at.is_some() {
         return Err(Error::Malformed.into());
     }
     let reader = service.source.clone();
     let tenant = tx.tenant_id();
     let scope = policy.definition.scope;
-    let channel = crate::source_authority::action_channel(&policy.definition.action);
     let device = target.device.clone();
-    let evidence = tx
-        .with_connection(move |c| {
+    let evidence = if retirement {
+        let t = tenant.to_string();
+        let value=tx.with_connection(move|c|Box::pin(async move {
+            sqlx::query_scalar::<_,serde_json::Value>("SELECT o.target FROM mdm_devices.retirements o JOIN mdm_devices.retirement_work w ON(w.tenant_id,w.operation)=(o.tenant_id,o.id) WHERE w.tenant_id=$1::uuid AND w.execution=$2")
+                .bind(t).bind(id).fetch_one(c).await
+        })).await?;
+        vec![stored(serde_json::from_value(value))?]
+    } else {
+        let channel = crate::source_authority::action_channel(&policy.definition.action)?;
+        tx.with_connection(move |c| {
             Box::pin(
                 async move { Ok(reader.evidence_on(c, tenant, scope, channel, &device).await) },
             )
         })
-        .await??;
+        .await??
+    };
     let evidence = checked_input(serde_json::to_value(evidence))?;
     let message = dispatch(tx.tenant_id(), source, id, target, now)?;
     let fingerprint = message.fingerprint().as_bytes().to_vec();
@@ -372,6 +382,9 @@ pub async fn queue_run_in(
     })).await?;
     if native {
         super::native_recovery::wake_run(tx, id).await?;
+    }
+    if retirement {
+        crate::sources::storage::wake_execution_in(tx, policy.id).await?;
     }
     let audit =
         rss_mdm_audit_integration::RequestAudit::new(tx.tenant_id().to_string(), "command_accept");

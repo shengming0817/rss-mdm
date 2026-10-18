@@ -110,6 +110,11 @@ pub trait WindowsSession: Send {
     ) -> Pending<'a, Reply>;
 }
 pub trait Windows: Send + Sync {
+    /// The configured provider belongs to the Windows channel owner.
+    fn retirement_request(
+        &self,
+        purpose: rss_mdm_registration_service::Purpose,
+    ) -> rss_mdm_windows_mdm::native::Request;
     fn prepare<'a>(
         self: std::sync::Arc<Self>,
         connection: &'a mut PgConnection,
@@ -436,7 +441,9 @@ impl AgentBinding {
             .contains(&rss_mdm_agent_wire::runtime::Capability::InventoryNativeV1)
     }
     pub fn task(&self) -> bool {
-        self.script()
+        self.capabilities
+            .contains(&rss_mdm_agent_wire::runtime::Capability::DeviceUnmanageV1)
+            || self.script()
             || self.software()
             || self.enrollment()
             || self.native_collection()

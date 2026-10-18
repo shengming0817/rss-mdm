@@ -5,6 +5,8 @@ use serde::{Deserialize, Serialize};
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ActionKind {
+    /// Server-owned retirement of all managed channels.
+    UnmanageDevice,
     /// Native recovery material management.
     Credential,
     /// Agent script or collection.
@@ -25,6 +27,8 @@ pub enum ActionKind {
 /// Assignment driver selection, never a device authorization or capability proof.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum AssignmentBehavior {
+    /// Server-owned execution independent of endpoint connectivity.
+    DeviceLifecycle,
     /// Lazily admitted at Agent check-in.
     AgentCheckIn,
     /// Native reads driven by bounded collection recovery.
@@ -34,7 +38,8 @@ pub enum AssignmentBehavior {
 }
 impl ActionKind {
     /// Complete closed set for deriving database predicates.
-    pub const ALL: [Self; 8] = [
+    pub const ALL: [Self; 9] = [
+        Self::UnmanageDevice,
         Self::Credential,
         Self::Execution,
         Self::NativeCollection,
@@ -47,6 +52,7 @@ impl ActionKind {
     /// Persisted discriminator.
     pub const fn as_str(self) -> &'static str {
         match self {
+            Self::UnmanageDevice => "unmanage_device",
             Self::Credential => "credential",
             Self::Execution => "execution",
             Self::NativeCollection => "native_collection",
@@ -61,27 +67,33 @@ impl ActionKind {
     pub const fn supports_rerun(self) -> bool {
         matches!(
             self,
-            Self::Credential | Self::AgentCollection | Self::Execution | Self::RequestMdmEnrollment
+            Self::UnmanageDevice
+                | Self::Credential
+                | Self::AgentCollection
+                | Self::Execution
+                | Self::RequestMdmEnrollment
         )
     }
 }
 impl crate::Action {
     /// Select exactly one write channel from the complete authored action.
-    pub const fn target_channel(&self) -> SoftwareChannel {
+    pub const fn target_channel(&self) -> Option<SoftwareChannel> {
         use crate::Action;
         match self {
-            Action::Software { channel, .. } => *channel,
+            Action::UnmanageDevice { .. } => None,
+            Action::Software { channel, .. } => Some(*channel),
             Action::NativeCollection { .. }
             | Action::Configuration { .. }
-            | Action::EnsureAgentInstalled { .. } => SoftwareChannel::Mdm,
-            _ => SoftwareChannel::Agent,
+            | Action::EnsureAgentInstalled { .. } => Some(SoftwareChannel::Mdm),
+            _ => Some(SoftwareChannel::Agent),
         }
     }
     /// Select the existing driver using the complete authored input.
     pub const fn assignment_behavior(&self) -> AssignmentBehavior {
         match self {
+            crate::Action::UnmanageDevice { .. } => AssignmentBehavior::DeviceLifecycle,
             crate::Action::NativeCollection { .. } => AssignmentBehavior::NativeCollectionRecovery,
-            _ if matches!(self.target_channel(), SoftwareChannel::Mdm) => {
+            _ if matches!(self.target_channel(), Some(SoftwareChannel::Mdm)) => {
                 AssignmentBehavior::NativeDesired
             }
             _ => AssignmentBehavior::AgentCheckIn,
@@ -110,6 +122,7 @@ impl AssignmentBehavior {
     /// Fixed-channel kinds. Software additionally requires its authored channel predicate.
     pub fn kinds(self) -> Vec<&'static str> {
         match self {
+            Self::DeviceLifecycle => vec!["unmanage_device"],
             Self::AgentCheckIn => vec![
                 "credential",
                 "agent_collection",

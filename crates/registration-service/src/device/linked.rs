@@ -18,6 +18,7 @@ pub async fn request_in(
     {
         return Err(Error::Forbidden);
     }
+    crate::lifecycle::require_work_in(c, &parent.tenant().to_string(), parent.device()).await?;
     store::revalidate_management(c, parent).await?;
     let tenant = parent.tenant().to_string();
     let profile: String = sqlx::query_scalar("SELECT windows_profile FROM mdm_access.requests q JOIN mdm_access.registrations r ON(r.tenant_id,r.request_id)=(q.tenant_id,q.id) WHERE r.tenant_id=$1::uuid AND r.id=$2 AND q.source='mdm.windows'")
@@ -48,6 +49,7 @@ pub async fn bind_in(
     {
         return Err(Error::Forbidden);
     }
+    crate::lifecycle::require_work_in(c, &parent.tenant().to_string(), parent.device()).await?;
     store::revalidate_management(c, parent).await?;
     let tenant = parent.tenant().to_string();
     let row = sqlx::query("SELECT expected_generation,issuance_operation FROM mdm_access.requests WHERE tenant_id=$1::uuid AND id=$2 AND authority_kind='parent_certificate' AND parent_id=$3 AND parent_generation=$4 AND parent_credential=$5 AND state='pending' AND expires_at>clock_timestamp() FOR UPDATE")

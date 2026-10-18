@@ -125,4 +125,75 @@ CREATE TRIGGER immutable_input BEFORE INSERT ON mdm_devices.input_objects FOR EA
 
 -- Execution revalidates owner evidence under the same narrow tenant watermark fence.
 GRANT EXECUTE ON FUNCTION mdm.lock_asset_watermark(uuid) TO mdm_command_runtime;
+
+-- One product-owned retirement intent. Execution attempts remain in their owners.
+CREATE TABLE mdm_devices.retirements (
+ tenant_id uuid NOT NULL REFERENCES public.mdm_tenants(tenant_id),
+ id uuid NOT NULL, policy uuid NOT NULL, version uuid NOT NULL,
+ object text NOT NULL, occurrence text NOT NULL,
+ target jsonb NOT NULL, authority jsonb NOT NULL,
+ delivery_seconds integer NOT NULL CHECK(delivery_seconds BETWEEN 60 AND 604800),
+ created_at bigint NOT NULL, forced_at bigint, forced_by jsonb,
+ PRIMARY KEY(tenant_id,id), UNIQUE(tenant_id,version,object,occurrence),
+ CHECK(length(object) BETWEEN 1 AND 1024), CHECK(length(occurrence) BETWEEN 1 AND 256),
+ CHECK(octet_length(target::text)<=1048576), CHECK(octet_length(authority::text)<=65536),
+ CHECK((forced_at IS NULL)=(forced_by IS NULL))
+);
+CREATE TABLE mdm_devices.retirement_channels (
+ tenant_id uuid NOT NULL, operation uuid NOT NULL,
+ device text NOT NULL, channel text NOT NULL CHECK(channel IN('mdm','agent')),
+ registration uuid NOT NULL, generation bigint NOT NULL CHECK(generation>0),
+ parent_registration uuid,
+ stage text NOT NULL CHECK(stage IN('cleanup','unenroll','revoke','complete')),
+ effect text NOT NULL CHECK(effect IN('pending','confirmed','unknown','blocked')),
+ execution uuid, blocking_execution uuid, reason text,
+ PRIMARY KEY(tenant_id,operation,registration),
+ FOREIGN KEY(tenant_id,operation) REFERENCES mdm_devices.retirements(tenant_id,id),
+ FOREIGN KEY(tenant_id,registration,generation) REFERENCES mdm_access.registrations(tenant_id,id,generation)
+);
+ALTER TABLE mdm_devices.retirements ENABLE ROW LEVEL SECURITY;
+ALTER TABLE mdm_devices.retirements FORCE ROW LEVEL SECURITY;
+ALTER TABLE mdm_devices.retirement_channels ENABLE ROW LEVEL SECURITY;
+ALTER TABLE mdm_devices.retirement_channels FORCE ROW LEVEL SECURITY;
+CREATE POLICY tenant ON mdm_devices.retirements USING(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid) WITH CHECK(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid);
+CREATE POLICY tenant ON mdm_devices.retirement_channels USING(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid) WITH CHECK(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid);
+REVOKE ALL ON mdm_devices.retirements,mdm_devices.retirement_channels FROM PUBLIC;
+GRANT SELECT,INSERT ON mdm_devices.retirements,mdm_devices.retirement_channels TO mdm_access,mdm_flow_runtime;
+GRANT SELECT ON mdm_devices.retirements,mdm_devices.retirement_channels,mdm_devices.associations,mdm_devices.members TO mdm_command_runtime;
+GRANT UPDATE(forced_at,forced_by) ON mdm_devices.retirements TO mdm_access;
+GRANT UPDATE(stage,effect,execution,blocking_execution,reason) ON mdm_devices.retirement_channels TO mdm_access,mdm_flow_runtime,mdm_command_runtime;
+CREATE INDEX pending_retirement_channels ON mdm_devices.retirement_channels(tenant_id,operation) WHERE stage<>'complete';
+
+CREATE TABLE mdm_devices.retirement_work (
+ tenant_id uuid NOT NULL, operation uuid NOT NULL, registration uuid NOT NULL, execution uuid NOT NULL,
+ PRIMARY KEY(tenant_id,execution),
+ FOREIGN KEY(tenant_id,operation,registration) REFERENCES mdm_devices.retirement_channels(tenant_id,operation,registration)
+);
+ALTER TABLE mdm_devices.retirement_work ENABLE ROW LEVEL SECURITY;
+ALTER TABLE mdm_devices.retirement_work FORCE ROW LEVEL SECURITY;
+CREATE POLICY tenant ON mdm_devices.retirement_work USING(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid) WITH CHECK(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid);
+REVOKE ALL ON mdm_devices.retirement_work FROM PUBLIC;
+GRANT SELECT ON mdm_devices.retirement_work TO mdm_access,mdm_flow_runtime,mdm_command_runtime;
+GRANT INSERT ON mdm_devices.retirement_work TO mdm_command_runtime;
+CREATE TABLE mdm_devices.asset_states (
+ tenant_id uuid NOT NULL,device text NOT NULL,state text NOT NULL CHECK(state IN('active','archived','deleted')),
+ PRIMARY KEY(tenant_id,device),FOREIGN KEY(tenant_id,device) REFERENCES mdm_access.devices(tenant_id,id)
+);
+ALTER TABLE mdm_devices.asset_states ENABLE ROW LEVEL SECURITY;
+ALTER TABLE mdm_devices.asset_states FORCE ROW LEVEL SECURITY;
+CREATE POLICY tenant ON mdm_devices.asset_states USING(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid) WITH CHECK(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid);
+REVOKE ALL ON mdm_devices.asset_states FROM PUBLIC;
+GRANT SELECT,INSERT ON mdm_devices.asset_states TO mdm_access;
+GRANT UPDATE(state) ON mdm_devices.asset_states TO mdm_access;
+CREATE TABLE mdm_devices.retirement_policies (
+ tenant_id uuid NOT NULL,policy uuid NOT NULL,version uuid NOT NULL,operation uuid NOT NULL,
+ PRIMARY KEY(tenant_id,policy,version,operation),
+ FOREIGN KEY(tenant_id,operation) REFERENCES mdm_devices.retirements(tenant_id,id)
+);
+ALTER TABLE mdm_devices.retirement_policies ENABLE ROW LEVEL SECURITY;
+ALTER TABLE mdm_devices.retirement_policies FORCE ROW LEVEL SECURITY;
+CREATE POLICY tenant ON mdm_devices.retirement_policies USING(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid) WITH CHECK(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid);
+REVOKE ALL ON mdm_devices.retirement_policies FROM PUBLIC;
+GRANT SELECT,INSERT ON mdm_devices.retirement_policies TO mdm_access,mdm_flow_runtime;
+GRANT SELECT ON mdm_devices.retirement_policies TO mdm_command_runtime;
 COMMIT;

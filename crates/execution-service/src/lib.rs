@@ -14,6 +14,7 @@ pub mod protection;
 pub mod sources;
 pub mod task_signing;
 pub mod transaction;
+pub mod unmanage;
 pub mod worker_wake;
 pub use error::Error;
 mod diagnostic;

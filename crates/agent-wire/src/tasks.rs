@@ -205,6 +205,11 @@ pub enum TaskEvent {
     ChunkedResult(crate::runtime::ChunkedTaskResult),
     /// Independent software detection evidence after local software-plan execution.
     SoftwareResult(SoftwareTaskResult),
+    /// Final evidence from the protected installation retirement owner.
+    UnmanageResult {
+        /// Closed cleanup outcome.
+        outcome: crate::runtime::UnmanageOutcome,
+    },
     /// Only the enrollment UI outcome; active MDM registration is server-owned.
     EnrollmentResult {
         /// Closed platform outcome.
@@ -1306,6 +1311,8 @@ enum RawTaskPayload {
     Software(Box<SoftwareTaskSpec>),
     /// Standard MDM enrollment entry.
     Enrollment(Box<crate::runtime::EnrollmentTaskSpec>),
+    /// Administrator-authorized installation retirement.
+    Unmanage(Box<crate::runtime::UnmanageTaskSpec>),
 }
 /// Validated immutable script or software task payload.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
@@ -1321,6 +1328,8 @@ pub enum TaskPayload {
     Software(Box<SoftwareTaskSpec>),
     /// Standard MDM enrollment entry.
     Enrollment(Box<crate::runtime::EnrollmentTaskSpec>),
+    /// Administrator-authorized installation retirement.
+    Unmanage(Box<crate::runtime::UnmanageTaskSpec>),
 }
 impl TryFrom<RawTaskPayload> for TaskPayload {
     type Error = WireError;
@@ -1337,6 +1346,10 @@ impl TryFrom<RawTaskPayload> for TaskPayload {
             RawTaskPayload::Script(v) => {
                 v.signing_bytes("validation")?;
                 Ok(Self::Script(v))
+            }
+            RawTaskPayload::Unmanage(v) => {
+                v.signing_bytes("validation")?;
+                Ok(Self::Unmanage(v))
             }
             RawTaskPayload::Enrollment(v) => {
                 v.signing_bytes("validation")?;
@@ -1357,6 +1370,7 @@ impl From<TaskPayload> for RawTaskPayload {
             TaskPayload::Script(v) => Self::Script(v),
             TaskPayload::Software(v) => Self::Software(v),
             TaskPayload::Enrollment(v) => Self::Enrollment(v),
+            TaskPayload::Unmanage(v) => Self::Unmanage(v),
         }
     }
 }
@@ -1390,6 +1404,7 @@ impl TaskPayload {
             Self::Script(v) => v.task_id,
             Self::Software(v) => v.task_id,
             Self::Enrollment(v) => v.task_id,
+            Self::Unmanage(v) => v.task_id,
         }
     }
     /// Exact attempt identity.
@@ -1400,6 +1415,7 @@ impl TaskPayload {
             Self::Script(v) => v.attempt_id,
             Self::Software(v) => v.attempt_id,
             Self::Enrollment(v) => v.attempt_id,
+            Self::Unmanage(v) => v.attempt_id,
         }
     }
     /// Signed expiry.
@@ -1410,6 +1426,7 @@ impl TaskPayload {
             Self::Script(v) => v.expires_at,
             Self::Software(v) => v.expires_at,
             Self::Enrollment(v) => v.expires_at,
+            Self::Unmanage(v) => v.expires_at,
         }
     }
     /// Selected permission.
@@ -1420,6 +1437,7 @@ impl TaskPayload {
             Self::Script(v) => v.permit,
             Self::Software(v) => v.permit,
             Self::Enrollment(v) => v.permit,
+            Self::Unmanage(v) => v.permit,
         }
     }
     /// Exact operating system.
@@ -1430,6 +1448,7 @@ impl TaskPayload {
             Self::Script(v) => v.platform,
             Self::Software(v) => v.platform,
             Self::Enrollment(v) => v.platform,
+            Self::Unmanage(v) => v.platform,
         }
     }
     /// Exact architecture.
@@ -1440,6 +1459,7 @@ impl TaskPayload {
             Self::Script(v) => v.architecture,
             Self::Software(v) => v.architecture,
             Self::Enrollment(v) => v.architecture,
+            Self::Unmanage(v) => v.architecture,
         }
     }
     /// Sign validated bytes for this task family.
@@ -1450,6 +1470,7 @@ impl TaskPayload {
             Self::Script(v) => v.signing_bytes(key_id),
             Self::Software(v) => v.signing_bytes(key_id),
             Self::Enrollment(v) => v.signing_bytes(key_id),
+            Self::Unmanage(v) => v.signing_bytes(key_id),
         }
     }
 }

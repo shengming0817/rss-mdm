@@ -10,9 +10,14 @@ impl super::super::Planning {
         let Some(p) = storage::read_in(self.policy_store.reader(), tx, policy).await? else {
             return crate::automation::jobs::finish_job_in(tx, &self.audit_store, task, None).await;
         };
+        if matches!(p.definition.action, Action::UnmanageDevice { .. }) {
+            return self
+                .advance_lifecycle_assignment_in(tx, task, &p, after)
+                .await;
+        }
         use rss_mdm_execution_service::source_authority::{Availability, SourceAuthority};
         let channel =
-            rss_mdm_execution_service::source_authority::action_channel(&p.definition.action);
+            rss_mdm_execution_service::source_authority::action_channel(&p.definition.action)?;
         let source = crate::planning::execution_source::ExecutionSource::new(self.objects.clone());
         let tenant = tx.tenant_id();
         let scope = p.definition.scope;

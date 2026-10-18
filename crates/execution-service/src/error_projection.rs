@@ -281,3 +281,21 @@ impl From<rss_mdm_software_service::management::Error> for Error {
         }
     }
 }
+
+impl From<rss_mdm_device_service::Error> for Error {
+    fn from(e: rss_mdm_device_service::Error) -> Self {
+        use rss_mdm_device_service::Error as E;
+        match e {
+            E::Malformed => Self::Malformed,
+            E::Unauthorized => Self::Unauthorized,
+            E::Forbidden => Self::Forbidden,
+            E::NotFound => Self::NotFound,
+            E::Conflict | E::CursorInvalidated => Self::Conflict,
+            E::CommitUnknown => Self::CommitUnknown,
+            E::RollbackFailed => Self::RollbackFailed,
+            E::Audit(e) => Self::from(e),
+            E::Deadline => Self::Unavailable(crate::Failure::RequestDeadline),
+            E::Storage => Self::Unavailable(crate::Failure::CommandStorage),
+        }
+    }
+}

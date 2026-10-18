@@ -32,6 +32,22 @@ impl SourceAuthority for ExecutionSource {
     fn mdm_software_enabled(&self) -> bool {
         self.mdm_software_enabled
     }
+    fn lifecycle_objects_on<'a>(
+        &'a self,
+        c: &'a mut PgConnection,
+        tenant: TenantId,
+        scope: Uuid,
+        after: Option<&'a str>,
+    ) -> Pending<'a, Vec<DeviceAssignment>> {
+        Box::pin(super::targets::lifecycle_objects_on(
+            self.objects.as_ref(),
+            c,
+            tenant,
+            scope,
+            after,
+        ))
+    }
+
     fn rollout_input_on<'a>(
         &'a self,
         c: &'a mut PgConnection,

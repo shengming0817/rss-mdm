@@ -24,6 +24,7 @@ pub async fn lock_channel(
     device: &str,
     channel: Channel,
 ) -> Result<(), Error> {
+    crate::lifecycle::lock_device_in(tx, tenant, device).await?;
     let key = serde_json::to_string(&(tenant, device, channel)).expect("closed identity");
     sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,2348))")
         .bind(key)
@@ -371,6 +372,7 @@ pub(crate) async fn bind_authorized_in(
         return Err(Error::Forbidden);
     }
     lock_channel(tx, tenant, &device, credential.channel).await?;
+    crate::lifecycle::require_work_in(tx, tenant, &device).await?;
     let current:i64 = sqlx::query_scalar("SELECT coalesce(max(generation),0) FROM mdm_access.registrations WHERE tenant_id=$1::uuid AND device=$2 AND channel=$3 AND purpose='primary'")
             .bind(tenant).bind(&device).bind(credential.channel.as_str()).fetch_one(&mut *tx).await.map_err(db)?;
     if current != command.expected_generation {

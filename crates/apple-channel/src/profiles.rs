@@ -93,8 +93,19 @@ pub(crate) async fn reserve(
     };
     let user = command.target.user_key();
     let enrollment:Uuid=sqlx::query_scalar("SELECT request_id FROM mdm_access.registrations WHERE tenant_id=$1::uuid AND id=$2 AND generation=$3 AND state='active'").bind(&target.tenant).bind(target.registration).bind(target.generation).fetch_one(&mut *c).await.map_err(db)?;
-    if identifier == format!("com.rss-mdm.enrollment.{enrollment}") {
-        return Err(Error::Forbidden);
+    let management_removal = identifier == format!("com.rss-mdm.enrollment.{enrollment}");
+    if management_removal {
+        if present
+            || uuid != enrollment
+            || !matches!(command.target, crate::execution::NativeTarget::Device)
+        {
+            return Err(Error::Forbidden);
+        }
+        let allowed:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_devices.retirement_channels t JOIN mdm_access.devices d ON(d.tenant_id,d.id,d.retirement)=(t.tenant_id,t.device,t.operation) WHERE t.tenant_id=$1::uuid AND t.registration=$2 AND t.generation=$3 AND t.execution=$4 AND t.stage='unenroll' AND ('retirement:'||t.operation::text)=$5)")
+            .bind(&target.tenant).bind(target.registration).bind(target.generation).bind(command.operation).bind(&command.owner).fetch_one(&mut *c).await.map_err(db)?;
+        if !allowed {
+            return Err(Error::Forbidden);
+        }
     }
 
     let rows=sqlx::query("SELECT d.terminal_at IS NOT NULL AS terminal,p.dispatched_at IS NOT NULL AS dispatched,p.observed_at IS NOT NULL AS observed,p.present,p.profile FROM mdm_apple.profiles p JOIN rss_device_command.commands d ON d.tenant_id=p.tenant_id AND d.command_id=p.operation::text WHERE p.tenant_id=$1::uuid AND p.device=$2 AND p.user_key=$3 AND p.registration=$4 AND p.generation=$5 AND p.identifier=$6 AND p.retired_at IS NULL")
@@ -111,7 +122,8 @@ pub(crate) async fn reserve(
             })
         })
         .collect::<Result<Vec<_>, Error>>()?;
-    if !rss_mdm_apple_mdm::native::profiles::can_reserve(&history, uuid, present)
+    if (!management_removal
+        && !rss_mdm_apple_mdm::native::profiles::can_reserve(&history, uuid, present))
         || collides(c, key, target, user, identifier, &objects, false).await?
     {
         return Err(Error::Conflict);

@@ -283,6 +283,23 @@ impl ExecutionService {
         {
             return Err(Error::Unsupported.into());
         }
+        let tenant = tx.tenant_id().to_string();
+        let name = device.to_owned();
+        let id = input.operation_id;
+        let allowed = tx
+            .with_connection(move |c| {
+                Box::pin(async move {
+                    Ok(rss_mdm_device_service::lifecycle::execution_allowed_in(
+                        c, &tenant, &name, id,
+                    )
+                    .await
+                    .map_err(Error::from))
+                })
+            })
+            .await??;
+        if !allowed {
+            return Err(Error::Forbidden.into());
+        }
         let now = self.store.now(tx).await? / 1_000_000;
         input.validate(now)?;
         if input
@@ -422,6 +439,7 @@ impl ExecutionService {
                 ("direct", None)
             }
             ExecutionAuthority::Software { version, .. }
+            | ExecutionAuthority::Retirement { version, .. }
             | ExecutionAuthority::AgentInstall { version, .. }
             | ExecutionAuthority::Policy { version, .. } => ("policy", Some(*version)),
         };

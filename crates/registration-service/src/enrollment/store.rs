@@ -196,7 +196,11 @@ async fn create_enrollment_on(
         )
         .await?;
     }
+    if !permission.self_service() {
+        crate::lifecycle::authorize_reenrollment_in(tx, proof, device).await?;
+    }
     lock_channel(tx, proof.tenant_id(), device, source.channel()).await?;
+    crate::lifecycle::require_work_in(tx, proof.tenant_id(), device).await?;
     let generation: i64 = sqlx::query_scalar("SELECT coalesce(max(generation),0) FROM mdm_access.registrations WHERE tenant_id=$1::uuid AND device=$2 AND channel=$3 AND purpose='primary'")
             .bind(proof.tenant_id()).bind(device).bind(source.channel().as_str()).fetch_one(&mut *tx).await.map_err(db)?;
     let id = Uuid::new_v4();

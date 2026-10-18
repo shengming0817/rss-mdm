@@ -56,11 +56,8 @@ async fn software_pkg_ack_is_unknown_and_does_not_reinstall() -> Result<()> {
     }
     software_execution::seed_enabled(
         &f.app.flow.planning,
-        resource,
+        f.app.content_writer.as_ref().unwrap(),
         &version,
-        "macos",
-        "aarch64",
-        definition,
     )
     .await?;
     let scope = software_execution::prepared_scope(&f.app.flow.planning, &[case_device()]).await?;

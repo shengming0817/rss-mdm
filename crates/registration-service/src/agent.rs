@@ -227,6 +227,12 @@ impl Service {
             .map_err(db)?
         {
             let source = native::source(c, self.tenant, authority).await?;
+            crate::lifecycle::require_work_in(
+                c,
+                &self.tenant.to_string(),
+                source.principal().device(),
+            )
+            .await?;
             self.native.validate(c, &source).await?
         }
         Ok(())

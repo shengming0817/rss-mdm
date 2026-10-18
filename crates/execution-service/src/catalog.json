@@ -2059,7 +2059,7 @@
       "operations",
       "operation_authority_source",
       "c",
-      "CHECK (COALESCE(\nCASE source_kind\n    WHEN 'direct'::text THEN ((authority ->> 'kind'::text) = ANY (ARRAY['device_control'::text, 'credential'::text]))\n    WHEN 'policy'::text THEN (((authority ->> 'kind'::text) = ANY (ARRAY['policy'::text, 'agent_install'::text, 'software'::text])) AND ((authority ->> 'tenant'::text) = (tenant_id)::text) AND ((authority ->> 'device'::text) = device) AND ((authority ->> 'version'::text) = (policy_version)::text) AND (((authority ->> 'kind'::text) <> 'software'::text) OR ((authority ->> 'operation'::text) = (id)::text)))\n    ELSE NULL::boolean\nEND, false))",
+      "CHECK (COALESCE(\nCASE source_kind\n    WHEN 'direct'::text THEN ((authority ->> 'kind'::text) = ANY (ARRAY['device_control'::text, 'credential'::text]))\n    WHEN 'policy'::text THEN (((authority ->> 'kind'::text) = ANY (ARRAY['policy'::text, 'agent_install'::text, 'software'::text, 'retirement'::text])) AND ((authority ->> 'tenant'::text) = (tenant_id)::text) AND ((authority ->> 'device'::text) = device) AND ((authority ->> 'version'::text) = (policy_version)::text) AND (((authority ->> 'kind'::text) <> 'software'::text) OR ((authority ->> 'operation'::text) = (id)::text)))\n    ELSE NULL::boolean\nEND, false))",
       true
     ],
     [

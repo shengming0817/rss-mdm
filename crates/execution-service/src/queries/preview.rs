@@ -44,6 +44,11 @@ pub async fn preview(
         authorization.require(proof,Permission::PolicyRead,None)?;
         if input.definition.action.resource().is_some() { authorization.require(proof,Permission::ResourceRead,None)?; }
         authorize_policy_snapshot(&authorization,proof,&input.definition)?;
+        if matches!(input.definition.action, Action::UnmanageDevice {..}) {
+            let preview=super::lifecycle::preview_in(s,tx,input).await?;
+            s.audit_store.append_request_in(tx,audit,200,"success").await?;
+            return Ok(preview);
+        }
         let prepared = s.inputs.preview_in(tx, &PublicationInput::from(&input.definition.action), verified, proof, &authorization).await?;
         let software = if let PreviewInputs::Software(action) = &prepared {
             let Action::Software { rollout, .. } = &input.definition.action else { return Err(Error::Malformed.into()); };
@@ -51,7 +56,7 @@ pub async fn preview(
         } else { None };
         let onboarding = if let PreviewInputs::Onboarding(frozen) = &prepared { Some(frozen) } else { None };
         authorization.require_all_devices(proof,Permission::InventoryRead)?;
-        let source=s.source.clone();let tenant=tx.tenant_id();let scope=input.definition.scope;let after=input.after.clone();let channel=crate::source_authority::action_channel(&input.definition.action);
+        let source=s.source.clone();let tenant=tx.tenant_id();let scope=input.definition.scope;let after=input.after.clone();let channel=crate::source_authority::action_channel(&input.definition.action)?;
         let mut objects=tx.with_connection(move|c|Box::pin(async move {Ok(source.assignment_objects_on(c,tenant,scope,channel,after.as_deref()).await)})).await??;
         let source=s.source.clone();let tenant=tx.tenant_id();
         let result=tx.with_connection(move|c|Box::pin(async move {Ok(source.preview_scope_on(c,tenant,scope,channel,None).await)})).await??.result;

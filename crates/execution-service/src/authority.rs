@@ -21,6 +21,15 @@ pub enum ExecutionAuthority {
         operation: uuid::Uuid,
         required: Vec<Permission>,
     },
+    Retirement {
+        tenant: String,
+        retirement: uuid::Uuid,
+        version: uuid::Uuid,
+        device: String,
+        registration: uuid::Uuid,
+        execution: uuid::Uuid,
+        required: Vec<Permission>,
+    },
     AgentInstall {
         stage: AgentInstallStage,
         source_objects: Vec<crate::source_authority::DeviceObject>,
@@ -68,6 +77,16 @@ impl ExecutionAuthority {
             } => Ok((source.mdm_software_enabled()
                 || crate::agent_install::dispatched_on(c, tenant, *operation).await?)
                 && crate::native_software::authority_on(source, c, self, true).await?),
+            Self::Retirement {
+                tenant,
+                device,
+                execution,
+                ..
+            } => rss_mdm_device_service::lifecycle::execution_allowed_in(
+                c, tenant, device, *execution,
+            )
+            .await
+            .map_err(Error::from),
             Self::AgentInstall {
                 stage: AgentInstallStage::Cleanup { .. },
                 ..
@@ -148,6 +167,7 @@ impl ExecutionAuthority {
     }
     pub fn apple_owner(&self, operation: uuid::Uuid) -> Result<String, Error> {
         Ok(match self {
+            Self::Retirement { retirement, .. } => format!("retirement:{retirement}"),
             Self::DeviceControl { evidence, .. } | Self::Credential { evidence, .. } => {
                 let user = evidence.first().ok_or(Error::Forbidden)?.user();
                 if evidence.iter().any(|g| g.user() != user) {
@@ -163,7 +183,8 @@ impl ExecutionAuthority {
     }
     pub fn required(&self) -> &[Permission] {
         match self {
-            Self::Credential { required, .. }
+            Self::Retirement { required, .. }
+            | Self::Credential { required, .. }
             | Self::DeviceControl { required, .. }
             | Self::Software { required, .. }
             | Self::AgentInstall { required, .. }
@@ -172,7 +193,8 @@ impl ExecutionAuthority {
     }
     pub fn bind_required(&mut self, permissions: Vec<Permission>) {
         match self {
-            Self::Credential { required, .. }
+            Self::Retirement { required, .. }
+            | Self::Credential { required, .. }
             | Self::DeviceControl { required, .. }
             | Self::Software { required, .. }
             | Self::AgentInstall { required, .. }
@@ -286,6 +308,29 @@ impl ExecutionAuthority {
                     return Ok(false);
                 }
                 crate::native_software::authority_on(source, conn, self, false).await
+            }
+            Self::Retirement {
+                tenant,
+                retirement,
+                device,
+                registration,
+                execution,
+                required,
+                ..
+            } => {
+                if !required.contains(&permission) {
+                    return Ok(false);
+                }
+                if !rss_mdm_device_service::lifecycle::execution_allowed_in(
+                    conn, tenant, device, *execution,
+                )
+                .await
+                .map_err(Error::from)?
+                {
+                    return Ok(false);
+                }
+                sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_devices.retirement_work w JOIN mdm_access.registrations r ON(r.tenant_id,r.id)=(w.tenant_id,w.registration) WHERE w.tenant_id=$1::uuid AND w.operation=$2 AND w.registration=$3 AND w.execution=$4 AND r.device=$5 AND r.state='active')")
+                    .bind(tenant).bind(retirement).bind(registration).bind(execution).bind(device).fetch_one(conn).await.map_err(db)
             }
             Self::AgentInstall { stage, .. } => {
                 let allowed = match stage {

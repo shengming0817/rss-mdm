@@ -20,6 +20,20 @@ struct Session {
     limits: CodecLimits,
 }
 impl rss_mdm_execution_service::channels::Windows for Windows {
+    fn retirement_request(
+        &self,
+        purpose: rss_mdm_registration_service::Purpose,
+    ) -> rss_mdm_windows_mdm::native::Request {
+        rss_mdm_windows_mdm::native::Request::Node {
+            node: "./Device/Vendor/MSFT/DMClient/Unenroll".into(),
+            instance: vec![],
+            operation: rss_mdm_windows_mdm::native::Verb::Exec,
+            value: Some(rss_mdm_windows_mdm::native::Value::Text(
+                self.provider(purpose),
+            )),
+        }
+    }
+
     fn prepare<'a>(
         self: Arc<Self>,
         c: &'a mut sqlx::PgConnection,
