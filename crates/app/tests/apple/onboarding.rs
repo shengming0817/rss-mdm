@@ -113,12 +113,8 @@ async fn absent_agent_group_installs_fixed_package_and_registers_independently()
     // Bootstrap provisioning can proceed while package delivery is deferred.
     let deferred = peer.manage("NotNow", Some(install), None).await?;
     if !deferred.is_empty() {
-        let (id, payload) = lifecycle::command(&deferred, "InstallProfile")?;
-        let next = peer.confirm_managed_profile(id, &payload).await?;
-        if !next.is_empty() {
-            peer.pending_replies.lock().await.push_back(next);
-        }
-        early_bootstrap = Some(payload);
+        // Native scheduling may return a prerequisite before the bootstrap profile.
+        peer.pending_replies.lock().await.push_back(deferred);
     }
     ensure!(f.operation(operation).await?["agentInstallation"]["delivery"] == "deferred");
     let (retry, _) = next_after_cooldown(

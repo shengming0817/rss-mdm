@@ -4,10 +4,11 @@ use sqlx::{Connection, PgPool, Postgres, Transaction};
 #[derive(Clone)]
 pub struct Store {
     pool: PgPool,
+    pub(crate) clock: std::sync::Arc<dyn rss_request_context::Clock>,
 }
 impl Store {
-    pub fn from_pool(pool: PgPool) -> Self {
-        Self { pool }
+    pub fn from_pool(pool: PgPool, clock: std::sync::Arc<dyn rss_request_context::Clock>) -> Self {
+        Self { pool, clock }
     }
     pub(crate) async fn acquire(&self) -> Result<sqlx::pool::PoolConnection<Postgres>, Error> {
         self.pool.acquire().await.map_err(db)

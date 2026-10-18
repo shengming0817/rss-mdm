@@ -128,7 +128,10 @@ impl Peer {
     ) -> Result<Vec<u8>> {
         let summary = installed_profile(payload)?;
         let query = self.manage("Acknowledged", Some(id), None).await?;
-        let (read_id, _) = command(&query, "ProfileList")?;
+        if !query.is_empty() {
+            self.pending_replies.lock().await.push_back(query);
+        }
+        let (read_id, _) = Box::pin(self.next("ProfileList")).await?;
         self.manage(
             "Acknowledged",
             Some(read_id),

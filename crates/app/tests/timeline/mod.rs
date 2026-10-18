@@ -497,7 +497,7 @@ async fn administrators_use_existing_access_and_tenant_isolation_is_preserved() 
                 case_tenant(),
                 &subject,
                 vec![crate::authorization::Grant {
-                    operation: crate::authorization::Permission::AuthorizationRead,
+                    operation: crate::authorization::Permission::AuditRead,
                     scope: crate::authorization::Scope::Tenant,
                 }],
             )

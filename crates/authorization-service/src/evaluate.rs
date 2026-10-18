@@ -54,11 +54,13 @@ impl Snapshot {
             .iter()
             .find(|key| key.id == credential.id)
             .ok_or(AuthorizationError::Unauthorized)?;
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_err(|_| AuthorizationError::Corrupt)?
-            .as_secs() as i64;
-        if key.credential_revision != credential.credential_revision || !key.live(now) {
+        // The authenticated proof bounds expiry in its injected monotonic clock.
+        // Any grant, expiry or enabled-state change invalidates that proof.
+        if key.credential_revision != credential.credential_revision
+            || key.authority_revision != credential.authority_revision
+            || key.revoked
+            || !key.metadata.enabled
+        {
             return Err(AuthorizationError::Unauthorized);
         }
         Ok(Some(key))

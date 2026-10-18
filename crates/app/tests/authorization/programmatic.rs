@@ -106,6 +106,7 @@ async fn programmatic_keys_tokens_and_online_network_policy() -> Result<()> {
         ..
     } = fixture().await?;
     resources.finish(async {
+        pg(&format!("INSERT INTO mdm_access.devices(tenant_id,id) VALUES('{}','{}')", case_tenant(), case::name("device-1")))?;
         let mut manager = manager(&router).await?;
         let network_path = "/api/v1/tenant-administration/api-access/network-policy";
         let (status, initial) = manager.call(&router, Method::GET, network_path, None).await?;
@@ -204,6 +205,7 @@ async fn key_scope_expiry_creator_independence_and_uncertain_issuance() -> Resul
         ..
     } = fixture().await?;
     resources.finish(async {
+        pg(&format!("INSERT INTO mdm_access.devices(tenant_id,id) VALUES('{}','{}')", case_tenant(), case::name("device-1")))?;
         let mut manager = manager(&router).await?;
         policy(&mut manager, &router, 0, json!(["127.0.0.1"])).await?;
         let scoped = json!({"name":"scoped","enabled":true,"expiresAt":null,"grants":[{"operation":"inventory_read","scope":{"kind":"device","id":case::name("device-1")}}]});

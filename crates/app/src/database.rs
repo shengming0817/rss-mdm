@@ -71,6 +71,7 @@ impl Database {
             )),
             authorization: std::sync::Arc::new(rss_mdm_authorization_service::Store::from_pool(
                 pool.clone(),
+                std::sync::Arc::new(crate::lifecycle::RuntimeTimer),
             )),
             pool,
         })

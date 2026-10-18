@@ -213,7 +213,7 @@ impl Principal {
                 .assurance()
                 .map(|_| ())
                 .map_err(|_| Error::Unauthorized),
-            Authentication::ApiKey(proof) if std::time::Instant::now() < proof.deadline => Ok(()),
+            Authentication::ApiKey(proof) if proof.clock.now() < proof.deadline => Ok(()),
             Authentication::ApiKey(_) => Err(Error::Unauthorized),
         }
     }
