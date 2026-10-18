@@ -211,6 +211,124 @@ async fn recovery_material_is_escrowed_without_leaking_into_native_results() -> 
             .any(|v| v["id"] == lock["id"] && v["validity"] == "verified" && v["current"] == true)
     );
     ensure!(!f.operation(verify).await?.to_string().contains(&password));
+    // A rejected replacement remains protected until the original password is independently verified.
+    let replacement = Uuid::new_v4();
+    let accepted=f.browser.call(&f.router,Method::POST,&format!("{path}/operations"),Some(json!({"operationId":replacement,"registration":registration,"generation":generation,"deadline":f.app.clock.unix_seconds()?+300,"action":{"kind":"set_recovery_lock","expectedRevision":1,"current":{"id":lock["id"],"version":1},"clear":false}}))).await?;
+    ensure!(
+        accepted.0 == StatusCode::ACCEPTED,
+        "replacement {accepted:?}"
+    );
+    let (attempt, _) = peer.next("SetRecoveryLock").await?;
+    peer.manage("Error", Some(attempt), None).await?;
+    let accepted=f.browser.call(&f.router,Method::POST,&format!("{path}/operations"),Some(json!({"operationId":Uuid::new_v4(),"registration":registration,"generation":generation,"deadline":f.app.clock.unix_seconds()?+300,"action":{"kind":"verify_recovery_lock","material":{"id":lock["id"],"version":2}}}))).await?;
+    ensure!(accepted.0 == StatusCode::ACCEPTED);
+    let (attempt, _) = peer.next("VerifyRecoveryLock").await?;
+    peer.manage(
+        "Acknowledged",
+        Some(attempt),
+        Some(("PasswordVerified", false.into())),
+    )
+    .await?;
+    let accepted=f.browser.call(&f.router,Method::POST,&format!("{path}/operations"),Some(json!({"operationId":Uuid::new_v4(),"registration":registration,"generation":generation,"deadline":f.app.clock.unix_seconds()?+300,"action":{"kind":"reconcile_recovery_lock","operation":replacement,"material":{"id":lock["id"],"version":1}}}))).await?;
+    ensure!(
+        accepted.0 == StatusCode::ACCEPTED,
+        "reconcile old {accepted:?}"
+    );
+    let (attempt, payload) = peer.next("VerifyRecoveryLock").await?;
+    ensure!(payload["Password"].as_string() == Some(password.as_str()));
+    peer.manage(
+        "Acknowledged",
+        Some(attempt),
+        Some(("PasswordVerified", true.into())),
+    )
+    .await?;
+    let accepted=f.browser.call(&f.router,Method::POST,&format!("{path}/operations"),Some(json!({"operationId":Uuid::new_v4(),"registration":registration,"generation":generation,"deadline":f.app.clock.unix_seconds()?+300,"action":{"kind":"set_recovery_lock","expectedRevision":2,"current":{"id":lock["id"],"version":1},"clear":false}}))).await?;
+    ensure!(accepted.0 == StatusCode::ACCEPTED, "next set {accepted:?}");
+    let (attempt, _) = peer.next("SetRecoveryLock").await?;
+    peer.manage("Acknowledged", Some(attempt), None).await?;
+    let accepted=f.browser.call(&f.router,Method::POST,&format!("{path}/operations"),Some(json!({"operationId":Uuid::new_v4(),"registration":registration,"generation":generation,"deadline":f.app.clock.unix_seconds()?+300,"action":{"kind":"verify_recovery_lock","material":{"id":lock["id"],"version":3}}}))).await?;
+    ensure!(accepted.0 == StatusCode::ACCEPTED);
+    let (attempt, _) = peer.next("VerifyRecoveryLock").await?;
+    peer.manage(
+        "Acknowledged",
+        Some(attempt),
+        Some(("PasswordVerified", true.into())),
+    )
+    .await?;
+    // A live profile command prevents final ciphertext deletion, but purging terminal copies
+    // must still commit an audit fact and remove plaintext from both protected input stores.
+    f.grant_native_actions(&["security_operate", "credentials", "configuration_write"])
+        .await?;
+    let pending = Uuid::new_v4();
+    let accepted=f.browser.call(&f.router,Method::POST,&format!("{path}/operations"),Some(json!({"operationId":pending,"registration":registration,"generation":generation,"deadline":f.app.clock.unix_seconds()?+300,"action":{"kind":"configure_filevault"}}))).await?;
+    ensure!(accepted.0 == StatusCode::ACCEPTED, "profile {accepted:?}");
+    let mut pg =
+        sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?)
+            .await?;
+    sqlx::query("UPDATE mdm_recovery.versions SET invalidated_at=floor(extract(epoch FROM clock_timestamp()))::bigint-7776001 WHERE tenant_id=$1::uuid AND entry=$2 AND version<3").bind(case_tenant()).bind(Uuid::parse_str(lock["id"].as_str().unwrap())?).execute(&mut pg).await?;
+    let before: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM mdm_audit.receipts WHERE tenant_id=$1::uuid")
+            .bind(case_tenant())
+            .fetch_one(&mut pg)
+            .await?;
+    f.app.execution.maintain_recovery_credentials().await?;
+    let after: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM mdm_audit.receipts WHERE tenant_id=$1::uuid")
+            .bind(case_tenant())
+            .fetch_one(&mut pg)
+            .await?;
+    ensure!(after > before, "partial purge omitted audit");
+    let retained:bool=sqlx::query_scalar("SELECT sealed IS NOT NULL FROM mdm_recovery.versions WHERE tenant_id=$1::uuid AND entry=$2 AND version=1").bind(case_tenant()).bind(Uuid::parse_str(lock["id"].as_str().unwrap())?).fetch_one(&mut pg).await?;
+    ensure!(retained, "purged material before all input copies settled");
+    use sqlx::Row;
+    let config: crate::config::Config =
+        serde_json::from_slice(&std::fs::read(std::env::var("MDM_TEST_CONFIG")?)?)?;
+    let key = config.native_protector()?;
+    let row=sqlx::query("SELECT request,input_context,device,registration,registration_generation FROM mdm_commands.operations WHERE tenant_id=$1::uuid AND id=$2").bind(case_tenant()).bind(set).fetch_one(&mut pg).await?;
+    // Identity field ordering is the owner's serialized struct order.
+    let identity = format!(
+        "{{\"operation\":{},\"device\":{},\"registration\":{},\"generation\":{}}}",
+        serde_json::to_string(&set)?,
+        serde_json::to_string(&row.try_get::<String, _>("device")?)?,
+        serde_json::to_string(&row.try_get::<Uuid, _>("registration")?)?,
+        row.try_get::<i64, _>("registration_generation")?
+    );
+    let metadata = row.try_get::<serde_json::Value, _>("input_context")?;
+    let metadata = format!(
+        "{{\"platform\":{},\"deadline\":{},\"inputVersion\":{},\"target\":{}}}",
+        metadata["platform"], metadata["deadline"], metadata["inputVersion"], metadata["target"]
+    );
+    let field = format!("[\"native.operation.input/v1\",{metadata}]");
+    let tenant = rss_request_context::TenantId::parse(case_tenant())?;
+    let aad =
+        rss_mdm_native_protection::ProtectionContext::new(tenant, &identity, &field, 1)?.derive();
+    let plain = key.open_bytes(&row.try_get::<Vec<u8>, _>("request")?, &aad)?;
+    ensure!(!String::from_utf8_lossy(plain.expose()).contains(&password));
+    let rows=sqlx::query("SELECT id,registration,generation,request FROM mdm_apple.attempts WHERE tenant_id=$1::uuid AND operation=$2").bind(case_tenant()).bind(set).fetch_all(&mut pg).await?;
+    ensure!(!rows.is_empty());
+    for row in rows {
+        let owner = serde_json::to_string(&(
+            row.try_get::<Uuid, _>("registration")?,
+            row.try_get::<i64, _>("generation")?,
+            row.try_get::<Uuid, _>("id")?,
+        ))?;
+        let aad = rss_mdm_native_protection::ProtectionContext::new(
+            tenant,
+            &owner,
+            "apple.attempt.request",
+            1,
+        )?
+        .derive();
+        let plain = key.open_bytes(&row.try_get::<Vec<u8>, _>("request")?, &aad)?;
+        ensure!(!String::from_utf8_lossy(plain.expose()).contains(&password));
+    }
+    let (attempt, _) = peer.next("InstallProfile").await?;
+    peer.manage("Acknowledged", Some(attempt), None).await?;
+    f.app.execution.maintain_recovery_credentials().await?;
+    let erased:bool=sqlx::query_scalar("SELECT sealed IS NULL AND key_id IS NULL FROM mdm_recovery.versions WHERE tenant_id=$1::uuid AND entry=$2 AND version=1").bind(case_tenant()).bind(Uuid::parse_str(lock["id"].as_str().unwrap())?).fetch_one(&mut pg).await?;
+    ensure!(erased);
+    pg.close().await?;
+
     drop(device);
     f.close().await
 }

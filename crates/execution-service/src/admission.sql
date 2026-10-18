@@ -1,7 +1,7 @@
 WITH tables AS (
  SELECT c.* FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='mdm_commands' AND c.relkind='r'
 ), update_columns(relation, col) AS (VALUES
- ('mdm_recovery.entries','revision'),('mdm_recovery.entries','current_version'),('mdm_recovery.entries','retired'),('mdm_recovery.versions','validity'),('mdm_recovery.versions','key_id'),('mdm_recovery.versions','sealed'),('mdm_recovery.versions','invalidated_at'),('mdm_recovery.versions','pending'),
+ ('mdm_recovery.entries','revision'),('mdm_recovery.entries','current_version'),('mdm_recovery.entries','retired'),('mdm_recovery.versions','validity'),('mdm_recovery.versions','key_id'),('mdm_recovery.versions','sealed'),('mdm_recovery.versions','invalidated_at'),('mdm_recovery.versions','pending'),('mdm_recovery.versions','cleanup_checked_at'),
  ('mdm_recovery.native_actions','inputs_purged'),('mdm_commands.operations','request'),('mdm_apple.attempts','request'),
  ('mdm_pki.installations','revision'),('mdm_pki.installations','digest'),('mdm_pki.installations','body'),('mdm_pki.installations','confirmed_at'),
  ('mdm_pki.acknowledgements','revision'),('mdm_pki.acknowledgements','digest'),('mdm_pki.acknowledgements','confirmed_at'),

@@ -132,6 +132,21 @@
         }
       ]
     },
+    "CredentialRecoveryOutcome": {
+      "description": "Independent native verification of a fenced mutation, after its local execution has stopped.",
+      "oneOf": [
+        {
+          "const": "unchanged",
+          "description": "Original target state verified unchanged; no mutation can still execute.",
+          "type": "string"
+        },
+        {
+          "const": "applied",
+          "description": "Persisted candidate verified applied; replaced protector cleanup completed.",
+          "type": "string"
+        }
+      ]
+    },
     "CredentialSubject": {
       "description": "An exact Windows object, never an account display name or drive letter.",
       "oneOf": [
@@ -1468,6 +1483,17 @@
             "kind": {
               "const": "credential_result",
               "type": "string"
+            },
+            "recovery": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/CredentialRecoveryOutcome"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Required only when resolving a signed recovery reference."
             }
           },
           "required": [

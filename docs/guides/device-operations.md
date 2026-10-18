@@ -82,8 +82,10 @@ Policy 引用精确资源版本/variant；它消费完整操作权限和多对�
 
 `GET /api/v1/devices/{device}/recovery-credentials` 返回版本元数据，使用现有设备读取权限；最多返回 100 项，通过末项的 `id/version` 作为 `afterId/afterVersion` 继续。`escrowed`、`validity`、`current` 分别表示材料是否存在、核实情况和是否为当前已核实版本。轮换后未核实的材料不会覆盖当前版本；Unknown 不表示旧密码仍然有效。
 
-`GET /api/v1/devices/{device}/recovery-credentials/{id}/versions/{version}/secret` 直接返回对应材料，只要求有效登录和该设备的 `credentials` 权限。没有额外 MFA、近期认证时限、原因填写、解锁票据或审批。响应禁止缓存，审计结算失败不返回秘密。撤销使用同一路径前缀下的 `POST .../revoke`，执行设备的安全操作权限；账户材料使用 `account_write`。撤销托管访问不等于删除端上的密码或 protector。
+`GET /api/v1/devices/{device}/recovery-credentials/{id}/versions/{version}/secret` 直接返回对应材料，只要求有效登录和该设备的 `credentials` 权限。没有额外 MFA、近期认证时限、原因填写、解锁票据或审批。响应禁止缓存，审计结算失败不返回秘密。撤销使用同一路径前缀下的 `POST .../revoke`，账户材料使用 `account_write`，锁定 PIN 使用 `device_control`，其余材料使用 `security_operate`。撤销托管访问不等于删除端上的密码或 protector。
 
-Apple 操作入口为 `POST /api/v1/devices/{device}/recovery-credentials/operations`，携带 `operationId`、`registration`、`generation`、Unix 秒 `deadline` 和类型化 `action`。FileVault 原生命令只针对启动卷，不接受调用方指定任意卷。可配置 FileVault escrow、采集或轮换 PRK、重新核对已有 PRK 候选、设置/清除及验证 Recovery Lock。轮换 PRK 的 `unlockPassword` 只用于官方原生命令；缺少平台前提不自动改走脚本。`reconcile_filevault` 和 `verify_recovery_lock` 引用已有 `material: {id,version}`，核实 Unknown，不重新生成秘密。FileVault 采集可指定已配置的历史 `recipient` 指纹。
+Apple 操作入口为 `POST /api/v1/devices/{device}/recovery-credentials/operations`，携带 `operationId`、`registration`、`generation`、Unix 秒 `deadline` 和类型化 `action`。FileVault 原生命令只针对启动卷，不接受调用方指定任意卷。可配置 FileVault escrow、采集或轮换 PRK、重新核对已有 PRK 候选、设置/清除及验证 Recovery Lock。轮换 PRK 的 `unlockPassword` 只用于官方原生命令；缺少平台前提不自动改走脚本。`reconcile_filevault` 和 `verify_recovery_lock` 引用已有 `material: {id,version}`，核实 Unknown，不重新生成秘密。Recovery Lock 候选未生效时，在原设置操作结束后使用 `reconcile_recovery_lock`，提供原 `operation` 与待核实的 `material`；只有平台确认密码有效才结束未决候选，单次验证 false 不解除保护。FileVault 采集可指定已配置的历史 `recipient` 指纹。
 
 macOS 锁定继续使用原 `lock` 动作，其 PIN 同事务进入托管。部署需先配置恢复凭据密钥和接收证书。原生 ACK、已托管、平台核实与实际恢复效果分别记录；真实 Windows/macOS 恢复效果由独立产品 T3 提供证据。
+
+Agent 核实策略会绑定同一注册世代中匹配的 Unknown 轮换 task/attempt。Agent 必须先停止原操作的本地执行，再从受保护 journal 核实“原状态未变”或“新材料已生效”，将密文与核实结果持久回传；没有收到任何材料的原操作也可恢复。核实完成前不会解除轮换保护，取消不表示 OS 变更已回滚。

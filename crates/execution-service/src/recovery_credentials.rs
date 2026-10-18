@@ -39,6 +39,10 @@ pub enum Action {
         current: Option<Version>,
         clear: bool,
     },
+    ReconcileRecoveryLock {
+        material: Version,
+        operation: Uuid,
+    },
     VerifyRecoveryLock {
         material: Version,
     },
@@ -148,6 +152,20 @@ impl ExecutionService {
                     if (registration, generation) != (input.registration, input.generation) {
                         return Err(Error::Conflict.into());
                     }
+                    if let Action::ReconcileRecoveryLock { operation, .. } = &input.action {
+                        let original = storage::load(tx, &service.protection, *operation).await?;
+                        if original.device != device
+                            || original.registration != registration
+                            || original.registration_generation != generation
+                            || !service
+                                .required_command(tx, &original)
+                                .await?
+                                .status()
+                                .is_terminal()
+                        {
+                            return Err(Error::Conflict.into());
+                        }
+                    }
                     let tenant = Uuid::parse_str(&service.tenant.to_string())
                         .map_err(|_| Error::Malformed)?;
                     let prepared_protection = protection.clone();
@@ -238,6 +256,7 @@ async fn prepare(
     use credentials::Error as E;
     let recipient = protection.active_recipient();
     let mut link = vault::NativeAction {
+        reconciles: None,
         action: String::new(),
         coordinates: None,
         recipient: recipient.id().into(),
@@ -399,12 +418,33 @@ async fn prepare(
             }
             command("SetRecoveryLock", fields)
         }
-        Action::VerifyRecoveryLock { material } => {
+        Action::VerifyRecoveryLock { material }
+        | Action::ReconcileRecoveryLock { material, .. } => {
             link.action = "verify_recovery_lock".into();
             let coordinates =
                 vault::coordinates_in(c, tenant, device, material.id, material.version).await?;
             if coordinates.binding != binding(Subject::RecoveryLock) {
                 return Err(E::Conflict);
+            }
+            if let Action::ReconcileRecoveryLock { operation, .. } = &input.action {
+                let original = vault::native_action_in(
+                    c,
+                    tenant,
+                    *operation,
+                    device,
+                    input.registration,
+                    input.generation,
+                )
+                .await?
+                .ok_or(E::Conflict)?;
+                if original.action != "set_recovery_lock"
+                    || original.coordinates.as_ref().is_none_or(|v| {
+                        v.material != coordinates.material || v.version < coordinates.version
+                    })
+                {
+                    return Err(E::Conflict);
+                }
+                link.reconciles = Some(*operation);
             }
             let value = vault::secret_in(c, &protection.keys, &coordinates).await?;
             let request = command(

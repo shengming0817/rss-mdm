@@ -124,6 +124,24 @@ pub struct CredentialVersion {
     /// Last known material revision.
     pub revision: i64,
 }
+/// Exact unresolved mutation whose durable local journal must be reconciled.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CredentialRecovery {
+    /// Original mutation task.
+    pub task_id: Uuid,
+    /// Original mutation attempt, never a newer retry.
+    pub attempt_id: Uuid,
+}
+/// Independent native verification of a fenced mutation, after its local execution has stopped.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum CredentialRecoveryOutcome {
+    /// Original target state verified unchanged; no mutation can still execute.
+    Unchanged,
+    /// Persisted candidate verified applied; replaced protector cleanup completed.
+    Applied,
+}
 /// Signed, bounded execution intent using the standard Offer/Received/Start lifecycle.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -160,6 +178,8 @@ pub struct CredentialTaskSpec {
     pub recipient: CredentialRecipient,
     /// Expected revisions, sorted by subject without duplicates.
     pub expected: Vec<CredentialVersion>,
+    /// Original unresolved operation, present only on a matching verification task.
+    pub recovery: Option<CredentialRecovery>,
     /// Digest of operation, recipient and expected revisions.
     pub definition_digest: [u8; 32],
 }
@@ -169,9 +189,10 @@ impl CredentialTaskSpec {
         operation: &CredentialOperation,
         recipient: &CredentialRecipient,
         expected: &[CredentialVersion],
+        recovery: &Option<CredentialRecovery>,
     ) -> Result<[u8; 32], WireError> {
         Ok(Sha256::digest(
-            serde_json::to_vec(&(operation, recipient, expected))
+            serde_json::to_vec(&(operation, recipient, expected, recovery))
                 .map_err(|_| WireError::InvalidValue)?,
         )
         .into())
@@ -179,6 +200,19 @@ impl CredentialTaskSpec {
     /// Validate coordinates and capability without granting execution authority.
     pub fn validate(&self) -> Result<(), WireError> {
         self.operation.validate()?;
+        if let Some(recovery) = &self.recovery {
+            if recovery.task_id.is_nil()
+                || recovery.attempt_id.is_nil()
+                || recovery.task_id == self.task_id
+                || !matches!(
+                    self.operation,
+                    CredentialOperation::VerifyBitlocker { .. }
+                        | CredentialOperation::VerifyLocalAdministrator { .. }
+                )
+            {
+                return Err(WireError::InvalidValue);
+            }
+        }
         self.authorization.validate(self.tenant_id)?;
         if self.wire_version != WIRE_VERSION
             || self.platform != TaskPlatform::Windows
@@ -221,8 +255,12 @@ impl CredentialTaskSpec {
             .expected
             .windows(2)
             .any(|v| v[0].subject >= v[1].subject)
-            || Self::digest(&self.operation, &self.recipient, &self.expected)?
-                != self.definition_digest
+            || Self::digest(
+                &self.operation,
+                &self.recipient,
+                &self.expected,
+                &self.recovery,
+            )? != self.definition_digest
         {
             return Err(WireError::InvalidValue);
         }
@@ -271,6 +309,7 @@ impl CredentialTaskSpec {
             self.task_id,
             self.attempt_id,
             &self.operation,
+            &self.recovery,
             subject,
             revision,
             &self.recipient.key_id,
@@ -356,6 +395,8 @@ pub enum CredentialOutcome {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CredentialResult {
+    /// Required only when resolving a signed recovery reference.
+    pub recovery: Option<CredentialRecoveryOutcome>,
     /// Closed overall failure, including an empty material inventory.
     pub failure: Option<CredentialFailure>,
     /// Frozen task digest.

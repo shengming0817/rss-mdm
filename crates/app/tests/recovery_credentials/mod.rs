@@ -233,6 +233,8 @@ async fn unknown_candidates_block_rotation_and_retention_preserves_unresolved_ma
         sqlx::query("UPDATE mdm_recovery.versions SET invalidated_at=floor(extract(epoch FROM clock_timestamp()))::bigint-7779600 WHERE tenant_id=$1 AND entry=$2 AND version=1").bind(first.tenant).bind(first.material).execute(&mut *tx).await?;
         ensure!(storage::expired_in(&mut tx,first.tenant).await?.iter().any(|m|m.id==first.material&&m.version==1));
         storage::clear_expired_in(&mut tx,first.tenant,first.material,1).await?;
+        let erased:bool=sqlx::query_scalar("SELECT sealed IS NULL AND key_id IS NULL FROM mdm_recovery.versions WHERE tenant_id=$1 AND entry=$2 AND version=1").bind(first.tenant).bind(first.material).fetch_one(&mut *tx).await?;
+        ensure!(erased);
         ensure!(storage::secret_in(&mut tx,&ring,&second).await?.expose()==b"second-managed-password");
         let uncertain=Uuid::new_v4();
         let third=storage::reserve_in(&mut tx,first.tenant,&first.binding,uncertain,2).await?;
@@ -243,5 +245,41 @@ async fn unknown_candidates_block_rotation_and_retention_preserves_unresolved_ma
         let retained:bool=sqlx::query_scalar("SELECT sealed IS NOT NULL AND pending FROM mdm_recovery.versions WHERE tenant_id=$1 AND entry=$2 AND version=3").bind(first.tenant).bind(first.material).fetch_one(&mut *tx).await?;
         ensure!(retained);
         tx.commit().await?;Ok(())
+    }).await
+}
+
+#[tokio::test]
+#[ignore = "make t2 MODULE=recovery-credentials.http"]
+async fn retention_sweep_skips_protected_registrations_and_advances_past_blocked_copies()
+-> Result<()> {
+    let mut authority = authority::Authority::open().await?;
+    let resources = std::mem::take(&mut authority.resources);
+    resources.finish(async {
+        let ring=keys("first",true);
+        let a=seed(&authority,&ring,&case::name("retention-held"),"first-password").await?;
+        let b=seed(&authority,&ring,&case::name("retention-free"),"other-password").await?;
+        let mut tx=begin(&authority).await?;
+        for revision in 1..=100 {
+            let operation=Uuid::new_v4();
+            let candidate=storage::reserve_in(&mut tx,a.tenant,&a.binding,operation,revision).await?;
+            storage::ingest_in(&mut tx,&ring,&candidate,operation,b"retained-history-password").await?;
+            storage::verify_in(&mut tx,&candidate,operation).await?;
+        }
+        let unresolved=Uuid::new_v4();
+        let pending=storage::reserve_in(&mut tx,a.tenant,&a.binding,unresolved,101).await?;
+        storage::ingest_in(&mut tx,&ring,&pending,unresolved,b"unknown-password").await?;
+        storage::unknown_in(&mut tx,a.tenant,unresolved).await?;
+        storage::retire_in(&mut tx,case_tenant(),b.binding.registration).await?;
+        sqlx::query("UPDATE mdm_recovery.versions SET invalidated_at=floor(extract(epoch FROM clock_timestamp()))::bigint-8000000 WHERE tenant_id=$1 AND entry=$2 AND invalidated_at IS NOT NULL").bind(a.tenant).bind(a.material).execute(&mut *tx).await?;
+        sqlx::query("UPDATE mdm_recovery.versions SET invalidated_at=floor(extract(epoch FROM clock_timestamp()))::bigint-7776001 WHERE tenant_id=$1 AND entry=$2").bind(b.tenant).bind(b.material).execute(&mut *tx).await?;
+        let eligible=storage::expired_in(&mut tx,a.tenant).await?;
+        ensure!(eligible.iter().any(|m|m.id==b.material));
+        ensure!(eligible.iter().all(|m|m.id!=a.material));
+        storage::verify_in(&mut tx,&pending,unresolved).await?;
+        let batch=storage::expired_in(&mut tx,a.tenant).await?;
+        ensure!(batch.len()==100 && batch.iter().all(|m|m.id==a.material));
+        for m in batch {storage::cleanup_visited_in(&mut tx,a.tenant,m.id,m.version).await?;}
+        ensure!(storage::expired_in(&mut tx,a.tenant).await?.iter().any(|m|m.id==b.material),"blocked copies starved later registration");
+        tx.rollback().await?;Ok(())
     }).await
 }

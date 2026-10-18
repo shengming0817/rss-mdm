@@ -172,6 +172,7 @@ impl ExecutionService {
                                     Ok(()) => Ok((
                                         ctx.2.clone(),
                                         rss_mdm_recovery_credentials::storage::NativeAction {
+                                            reconciles: None,
                                             action: "lock_pin".into(),
                                             coordinates: Some(coordinates),
                                             recipient: ctx.0.active_recipient().id().into(),

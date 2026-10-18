@@ -51,12 +51,16 @@ impl ExecutionService {
             let rewrapped=tx.with_connection(move|c|Box::pin(async move{Ok(materials::rewrap_in(c,tenant,&keys).await)})).await?.map_err(crate::recovery_credentials::error)?;
             let expired=tx.with_connection(move|c|Box::pin(async move{Ok(materials::expired_in(c,tenant).await)})).await?.map_err(crate::recovery_credentials::error)?;
             let mut cleared=Vec::new();
+            let mut purged=Vec::new();
+            let mut examined=Vec::new();
             for material in expired{
+                if purged.len()>=100{break}
                 let registration=material.binding.registration;
-                let pending:bool=tx.with_connection(move|c|Box::pin(async move{sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_recovery.versions v JOIN mdm_recovery.entries e ON(e.tenant_id,e.id)=(v.tenant_id,v.entry) WHERE e.tenant_id=$1 AND e.registration=$2 AND v.pending)").bind(tenant).bind(registration).fetch_one(c).await})).await?;
-                if pending{continue}
-                let ids:Vec<Uuid>=tx.with_connection(move|c|Box::pin(async move{sqlx::query_scalar("SELECT operation FROM mdm_recovery.native_actions WHERE tenant_id=$1 AND registration=$2 AND NOT inputs_purged ORDER BY operation LIMIT 100").bind(tenant).bind(registration).fetch_all(c).await})).await?;
-                for id in ids{
+                let id=material.id;let version=material.version;
+                tx.with_connection(move|c|Box::pin(async move{Ok(materials::cleanup_visited_in(c,tenant,id,version).await)})).await?.map_err(crate::recovery_credentials::error)?;
+                examined.push((id,version));
+                let ids=tx.with_connection(move|c|Box::pin(async move{Ok(materials::input_copies_in(c,tenant,registration).await)})).await?.map_err(crate::recovery_credentials::error)?;
+                for id in ids.into_iter().take(100-purged.len()){
                     let mut op=storage::load(tx,&service.protection,id).await?;
                     if !service.required_command(tx,&op).await?.status().is_terminal(){continue}
                     if let Task::Macos{request:rss_mdm_apple_mdm::native::request::Request::Command{command}}=&mut op.request.task{
@@ -68,18 +72,19 @@ impl ExecutionService {
                         let result=apple.purge_credential_inputs(c,tenant.to_string(),id).await;
                         if let Err(e)=result{return Ok(Err(e));}
                         sqlx::query("UPDATE mdm_commands.operations SET request=$3 WHERE tenant_id=$1 AND id=$2").bind(tenant).bind(id).bind(sealed).execute(&mut *c).await?;
-                        sqlx::query("UPDATE mdm_recovery.native_actions SET inputs_purged=true WHERE tenant_id=$1 AND operation=$2").bind(tenant).bind(id).execute(c).await?;
+                        materials::input_purged_in(c,tenant,id).await.map_err(|_|sqlx::Error::Protocol("credential maintenance unavailable".into()))?;
                         Ok(Ok(()))
                     })).await?.map_err(Error::from)?;
+                    purged.push(id);
                 }
-                let remaining:bool=tx.with_connection(move|c|Box::pin(async move{sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_recovery.native_actions WHERE tenant_id=$1 AND registration=$2 AND NOT inputs_purged)").bind(tenant).bind(registration).fetch_one(c).await})).await?;
+                let remaining=tx.with_connection(move|c|Box::pin(async move{Ok(materials::inputs_remain_in(c,tenant,registration).await)})).await?.map_err(crate::recovery_credentials::error)?;
                 if remaining{continue}
                 let id=material.id;let version=material.version;
                 tx.with_connection(move|c|Box::pin(async move{Ok(materials::clear_expired_in(c,tenant,id,version).await)})).await?.map_err(crate::recovery_credentials::error)?;
                 cleared.push((id,version));
             }
-            if rewrapped>0||!cleared.is_empty(){
-                let bytes=checked_input(serde_json::to_vec(&(rewrapped,&cleared)))?;
+            if rewrapped>0||!cleared.is_empty()||!purged.is_empty()||!examined.is_empty(){
+                let bytes=checked_input(serde_json::to_vec(&(rewrapped,&cleared,&purged,&examined)))?;
                 let fact=rss_mdm_audit_integration::Fact::business(audit,&format!("recovery:maintenance:{}",audit.request_id()),&bytes,200,"success",None)?;
                 service.audit_store.append_in(tx,&fact,false).await?;
             }

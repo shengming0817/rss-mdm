@@ -9,7 +9,6 @@ use rss_mdm_agent_wire::runtime as wire;
 use rss_mdm_policy::{Architecture, CredentialOperation as Operation};
 use rss_mdm_recovery_credentials::{self as vault, storage as materials};
 use serde::{Deserialize, Serialize};
-use sqlx::Row;
 use std::collections::BTreeMap;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -133,13 +132,91 @@ pub async fn task(
     };
     let tenant = checked_input(Uuid::parse_str(&tx.tenant_id().to_string()))?;
     let target_owned = target.clone();
-    let mut expected=tx.with_connection(move|c|Box::pin(async move{
-        let rows=sqlx::query("SELECT subject,revision FROM mdm_recovery.entries WHERE tenant_id=$1 AND device=$2 AND registration=$3 AND generation=$4 AND NOT retired ORDER BY id LIMIT 513").bind(tenant).bind(target_owned.device).bind(target_owned.registration).bind(target_owned.generation).fetch_all(c).await?;
-        rows.into_iter().map(|r|Ok((r.try_get::<serde_json::Value,_>("subject")?,r.try_get::<i64,_>("revision")?))).collect::<std::result::Result<Vec<_>,sqlx::Error>>()
-    })).await?.into_iter().map(|(subject,revision)|Ok(wire::CredentialVersion{subject:stored(serde_json::from_value(subject))?,revision})).collect::<Result<Vec<_>>>()?;
+    let revisions = tx
+        .with_connection(move |c| {
+            Box::pin(async move {
+                Ok(materials::revisions_in(
+                    c,
+                    tenant,
+                    &target_owned.device,
+                    target_owned.registration,
+                    target_owned.generation,
+                )
+                .await)
+            })
+        })
+        .await?
+        .map_err(recovery_credentials::error)?;
+    let mut expected = revisions
+        .into_iter()
+        .map(|(subject, revision)| {
+            Ok(wire::CredentialVersion {
+                subject: stored(serde_json::from_value(checked_input(
+                    serde_json::to_value(subject),
+                )?))?,
+                revision,
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
     expected.sort_by(|a, b| a.subject.cmp(&b.subject));
     let run = actions::storage::load_run(tx, issue.run).await?;
     let operation = operation(&policy.frozen.operation);
+    let recovery = if matches!(
+        operation,
+        wire::CredentialOperation::VerifyBitlocker { .. }
+            | wire::CredentialOperation::VerifyLocalAdministrator { .. }
+    ) {
+        let registration = target.registration;
+        let generation = target.generation;
+        let guard = tx
+            .with_connection(move |c| {
+                Box::pin(async move {
+                    Ok(materials::agent_guard_in(c, tenant, registration, generation).await)
+                })
+            })
+            .await?
+            .map_err(recovery_credentials::error)?;
+        if let Some((task_id, attempt_id)) = guard {
+            let original = actions::storage::load_run(tx, task_id).await?;
+            let actions::evidence::Material::Credential {
+                task: original_task,
+            } = actions::evidence::load_in(tx, task_id, attempt_id).await?
+            else {
+                return Err(Error::Conflict.into());
+            };
+            let matching = match (&operation, &original_task.operation) {
+                (
+                    wire::CredentialOperation::VerifyBitlocker { volume, protector },
+                    wire::CredentialOperation::RotateBitlocker {
+                        volume: v,
+                        protector: p,
+                    },
+                ) => volume == v && protector == p,
+                (
+                    wire::CredentialOperation::VerifyLocalAdministrator { sid },
+                    wire::CredentialOperation::RotateLocalAdministrator { sid: s },
+                ) => sid == s,
+                _ => false,
+            };
+            if !matching
+                || original.target.device != target.device
+                || original.target.registration != target.registration
+                || original.target.generation != target.generation
+                || original.state.attempt() != Some(attempt_id)
+                || !matches!(original.state.execution, actions::state::Execution::Unknown)
+            {
+                return Err(Error::Conflict.into());
+            }
+            Some(wire::CredentialRecovery {
+                task_id,
+                attempt_id,
+            })
+        } else {
+            None
+        }
+    } else {
+        None
+    };
     let spec = wire::CredentialTaskSpec {
         wire_version: wire::WIRE_VERSION,
         tenant_id: tenant,
@@ -161,11 +238,12 @@ pub async fn task(
             policy_version: policy.id,
         },
         definition_digest: checked_input(wire::CredentialTaskSpec::digest(
-            &operation, &recipient, &expected,
+            &operation, &recipient, &expected, &recovery,
         ))?,
         operation,
         recipient,
         expected,
+        recovery,
     };
     checked_input(spec.validate())?;
     Ok(wire::TaskPayload::Credential(Box::new(spec)))
@@ -189,7 +267,7 @@ fn allowed_subject(task: &wire::CredentialTaskSpec, value: &wire::CredentialSubj
                 volume: v,
                 protector: p,
             },
-        ) => volume == v && protector == p,
+        ) => volume == v && (task.recovery.is_some() || protector == p),
         (
             wire::CredentialOperation::CollectBitlocker,
             wire::CredentialSubject::Bitlocker { .. },
@@ -269,7 +347,29 @@ pub async fn escrow(
                         wire::CredentialOperation::VerifyBitlocker { .. }
                             | wire::CredentialOperation::VerifyLocalAdministrator { .. }
                     );
-                    let coordinates = if verifying {
+                    let coordinates = if let Some(recovery) = &task.recovery {
+                        if materials::agent_guard_in(
+                            c,
+                            task.tenant_id,
+                            task.registration_id,
+                            task.generation as i64,
+                        )
+                        .await?
+                            != Some((recovery.task_id, recovery.attempt_id))
+                        {
+                            return Err(vault::Error::Conflict);
+                        }
+                        materials::recovery_secret_in(
+                            c,
+                            &protection.keys,
+                            task.tenant_id,
+                            &binding,
+                            item.expected_revision,
+                            recovery.task_id,
+                            &secret,
+                        )
+                        .await?
+                    } else if verifying {
                         materials::verify_existing_secret_in(
                             c,
                             &protection.keys,
@@ -333,35 +433,188 @@ pub async fn finish(
     if task.definition_digest != value.definition_digest {
         return Err(Error::Conflict.into());
     }
+    if value.recovery.is_some() && task.recovery.is_none() {
+        return Err(Error::Conflict.into());
+    }
     let value = value.clone();
-    let (success,recovered)=tx.with_connection(move|c|Box::pin(async move{
-        let result=async{
-            let mut recovered=Vec::new();
-            let mut success=value.complete&&value.failure.is_none();
-            let escrowed=materials::agent_materials_in(c,task.tenant_id,task.task_id,task.attempt_id).await?;
-            if escrowed.len()>512 || escrowed.iter().any(|m|!value.items.iter().any(|i|subject(&i.subject)==m.binding.subject)){return Err(vault::Error::Conflict)}
-            for item in &value.items{
-                if !allowed_subject(&task,&item.subject){return Err(vault::Error::Malformed)}
-                let good=matches!(item.outcome,wire::CredentialOutcome::Verified|wire::CredentialOutcome::Escrowed);
-                if good{
-                    let material=escrowed.iter().find(|m|m.binding.subject==subject(&item.subject)).ok_or(vault::Error::Conflict)?;
-                    let coordinates=vault::Coordinates{tenant:task.tenant_id,material:material.id,version:material.version,binding:material.binding.clone()};
-                    if item.outcome==wire::CredentialOutcome::Verified{
-                        materials::verify_in(c,&coordinates,material.operation).await?;
-                        if material.operation!=task.task_id && matches!(task.operation,wire::CredentialOperation::VerifyBitlocker{..}|wire::CredentialOperation::VerifyLocalAdministrator{..}) && let Some(attempt)=materials::finish_agent_in(c,task.tenant_id,material.operation).await? { recovered.push((material.operation,attempt)); }
-                    }else{materials::settled_in(c,&coordinates,material.operation).await?;}
-                }else{success=false;materials::unknown_in(c,task.tenant_id,task.task_id).await?;}
-            }
-            if success && value.items.iter().all(|i|i.outcome==wire::CredentialOutcome::Verified) && let wire::CredentialOperation::RotateBitlocker{volume,protector}=&task.operation {
-                let previous=wire::CredentialSubject::Bitlocker{volume:volume.clone(),protector:*protector};
-                let revision=task.expected.iter().find(|v|v.subject==previous).map(|v|v.revision).unwrap_or(0);
-                materials::supersede_in(c,task.tenant_id,&vault::Binding{device:task.device_id.clone(),registration:task.registration_id,generation:task.generation as i64,subject:subject(&previous)},revision).await?;
-            }
-            if success || (escrowed.is_empty() && matches!(value.failure,Some(wire::CredentialFailure::NoMaterials|wire::CredentialFailure::Unsupported|wire::CredentialFailure::PermissionDenied|wire::CredentialFailure::OwnerConflict|wire::CredentialFailure::TargetMissing))) { materials::finish_agent_in(c,task.tenant_id,task.task_id).await?; }
-            Ok::<_,vault::Error>((success,recovered))
-        }.await;Ok(result)
-    })).await?.map_err(recovery_credentials::error)?;
-    for (id, attempt) in recovered {
+    let (success, recovered) = tx
+        .with_connection(move |c| {
+            Box::pin(async move {
+                let result = async {
+                    let mut recovered = Vec::new();
+                    let mut success = value.complete && value.failure.is_none();
+                    let escrowed = materials::agent_materials_in(
+                        c,
+                        task.tenant_id,
+                        task.task_id,
+                        task.attempt_id,
+                    )
+                    .await?;
+                    if escrowed.len() > 512
+                        || escrowed.iter().any(|m| {
+                            !value
+                                .items
+                                .iter()
+                                .any(|i| subject(&i.subject) == m.binding.subject)
+                        })
+                    {
+                        return Err(vault::Error::Conflict);
+                    }
+                    for item in &value.items {
+                        if !allowed_subject(&task, &item.subject) {
+                            return Err(vault::Error::Malformed);
+                        }
+                        let good = matches!(
+                            item.outcome,
+                            wire::CredentialOutcome::Verified | wire::CredentialOutcome::Escrowed
+                        );
+                        if good {
+                            let material = escrowed
+                                .iter()
+                                .find(|m| m.binding.subject == subject(&item.subject))
+                                .ok_or(vault::Error::Conflict)?;
+                            let coordinates = vault::Coordinates {
+                                tenant: task.tenant_id,
+                                material: material.id,
+                                version: material.version,
+                                binding: material.binding.clone(),
+                            };
+                            if item.outcome == wire::CredentialOutcome::Verified {
+                                if let Some(recovery) = &task.recovery {
+                                    if value.recovery.is_none()
+                                        || materials::agent_guard_in(
+                                            c,
+                                            task.tenant_id,
+                                            task.registration_id,
+                                            task.generation as i64,
+                                        )
+                                        .await?
+                                            != Some((recovery.task_id, recovery.attempt_id))
+                                    {
+                                        return Err(vault::Error::Conflict);
+                                    }
+                                    materials::reconcile_in(c, &coordinates, recovery.task_id)
+                                        .await?;
+                                } else {
+                                    materials::verify_in(c, &coordinates, material.operation)
+                                        .await?;
+                                }
+                            } else {
+                                materials::settled_in(c, &coordinates, material.operation).await?;
+                            }
+                        } else {
+                            success = false;
+                            materials::unknown_in(c, task.tenant_id, task.task_id).await?;
+                        }
+                    }
+                    if let Some(recovery) = &task.recovery {
+                        if success
+                            && value.items.len() == 1
+                            && value.items[0].outcome == wire::CredentialOutcome::Verified
+                        {
+                            let effect = value.recovery.ok_or(vault::Error::Conflict)?;
+                            if let wire::CredentialOperation::VerifyBitlocker {
+                                volume,
+                                protector,
+                            } = &task.operation
+                            {
+                                let old = wire::CredentialSubject::Bitlocker {
+                                    volume: volume.clone(),
+                                    protector: *protector,
+                                };
+                                let unchanged = value.items[0].subject == old;
+                                if unchanged
+                                    != (effect == wire::CredentialRecoveryOutcome::Unchanged)
+                                {
+                                    return Err(vault::Error::Conflict);
+                                }
+                                if !unchanged {
+                                    let revision = task
+                                        .expected
+                                        .iter()
+                                        .find(|v| v.subject == old)
+                                        .map(|v| v.revision)
+                                        .unwrap_or(0);
+                                    materials::supersede_in(
+                                        c,
+                                        task.tenant_id,
+                                        &vault::Binding {
+                                            device: task.device_id.clone(),
+                                            registration: task.registration_id,
+                                            generation: task.generation as i64,
+                                            subject: subject(&old),
+                                        },
+                                        revision,
+                                    )
+                                    .await?;
+                                }
+                            }
+                            if materials::finish_agent_in(c, task.tenant_id, recovery.task_id)
+                                .await?
+                                != Some(recovery.attempt_id)
+                            {
+                                return Err(vault::Error::Conflict);
+                            }
+                            recovered.push((recovery.task_id, recovery.attempt_id, effect));
+                        } else if value.recovery.is_some() {
+                            return Err(vault::Error::Conflict);
+                        }
+                    }
+                    if success
+                        && value
+                            .items
+                            .iter()
+                            .all(|i| i.outcome == wire::CredentialOutcome::Verified)
+                        && let wire::CredentialOperation::RotateBitlocker { volume, protector } =
+                            &task.operation
+                    {
+                        let previous = wire::CredentialSubject::Bitlocker {
+                            volume: volume.clone(),
+                            protector: *protector,
+                        };
+                        let revision = task
+                            .expected
+                            .iter()
+                            .find(|v| v.subject == previous)
+                            .map(|v| v.revision)
+                            .unwrap_or(0);
+                        materials::supersede_in(
+                            c,
+                            task.tenant_id,
+                            &vault::Binding {
+                                device: task.device_id.clone(),
+                                registration: task.registration_id,
+                                generation: task.generation as i64,
+                                subject: subject(&previous),
+                            },
+                            revision,
+                        )
+                        .await?;
+                    }
+                    if success
+                        || (escrowed.is_empty()
+                            && matches!(
+                                value.failure,
+                                Some(
+                                    wire::CredentialFailure::NoMaterials
+                                        | wire::CredentialFailure::Unsupported
+                                        | wire::CredentialFailure::PermissionDenied
+                                        | wire::CredentialFailure::OwnerConflict
+                                        | wire::CredentialFailure::TargetMissing
+                                )
+                            ))
+                    {
+                        materials::finish_agent_in(c, task.tenant_id, task.task_id).await?;
+                    }
+                    Ok::<_, vault::Error>((success, recovered))
+                }
+                .await;
+                Ok(result)
+            })
+        })
+        .await?
+        .map_err(recovery_credentials::error)?;
+    for (id, attempt, effect) in recovered {
         let mut original = actions::storage::load_run(tx, id).await?;
         if original.target.device != run.target.device
             || original.target.registration != run.target.registration
@@ -373,9 +626,11 @@ pub async fn finish(
             original.state.execution,
             actions::state::Execution::Unknown | actions::state::Execution::Running
         ) {
-            original.state.result(attempt, true)?;
+            original
+                .state
+                .result(attempt, effect == wire::CredentialRecoveryOutcome::Applied)?;
             original.result = Some(
-                serde_json::json!({"effect":"verified","recoveredByTask":run.id,"recoveredByAttempt":run.state.attempt()}),
+                serde_json::json!({"effect":effect,"recoveredByTask":run.id,"recoveredByAttempt":run.state.attempt()}),
             );
             actions::storage::save_run(tx, &original).await?;
         }

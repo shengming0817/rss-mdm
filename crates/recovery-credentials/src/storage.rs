@@ -226,6 +226,7 @@ pub(crate) fn decode(row: &sqlx::postgres::PgRow) -> Result<Material, Error> {
 /// Metadata linking an existing native command to its single credential owner.
 #[derive(Clone)]
 pub struct NativeAction {
+    pub reconciles: Option<Uuid>,
     pub action: String,
     pub coordinates: Option<Coordinates>,
     pub recipient: String,
@@ -238,9 +239,9 @@ pub async fn native_action_in(
     registration: Uuid,
     generation: i64,
 ) -> Result<Option<NativeAction>, Error> {
-    sqlx::query("SELECT action,coordinates,recipient FROM mdm_recovery.native_actions WHERE tenant_id=$1 AND operation=$2 AND device=$3 AND registration=$4 AND generation=$5")
+    sqlx::query("SELECT action,coordinates,recipient,reconciles FROM mdm_recovery.native_actions WHERE tenant_id=$1 AND operation=$2 AND device=$3 AND registration=$4 AND generation=$5")
         .bind(tenant).bind(operation).bind(device).bind(registration).bind(generation).fetch_optional(c).await?.map(|r|{
-            Ok(NativeAction { action:r.try_get("action")?,coordinates:r.try_get::<Option<serde_json::Value>,_>("coordinates")?.map(serde_json::from_value).transpose().map_err(|_|Error::Integrity)?,recipient:r.try_get("recipient")? })
+            Ok(NativeAction { reconciles:r.try_get("reconciles")?,action:r.try_get("action")?,coordinates:r.try_get::<Option<serde_json::Value>,_>("coordinates")?.map(serde_json::from_value).transpose().map_err(|_|Error::Integrity)?,recipient:r.try_get("recipient")? })
         }).transpose()
 }
 /// Platform compilation supplies the action; it is not a second execution queue.
@@ -252,8 +253,8 @@ pub async fn link_native_in(
     action: &NativeAction,
 ) -> Result<(), Error> {
     active_in(c, tenant, binding).await?;
-    sqlx::query("INSERT INTO mdm_recovery.native_actions(tenant_id,operation,device,registration,generation,action,coordinates,recipient) VALUES($1,$2,$3,$4,$5,$6,$7,$8)")
-        .bind(tenant).bind(operation).bind(&binding.device).bind(binding.registration).bind(binding.generation).bind(&action.action).bind(action.coordinates.as_ref().map(serde_json::to_value).transpose().map_err(|_|Error::Malformed)?).bind(&action.recipient).execute(c).await?;
+    sqlx::query("INSERT INTO mdm_recovery.native_actions(tenant_id,operation,device,registration,generation,action,coordinates,recipient,reconciles) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)")
+        .bind(tenant).bind(operation).bind(&binding.device).bind(binding.registration).bind(binding.generation).bind(&action.action).bind(action.coordinates.as_ref().map(serde_json::to_value).transpose().map_err(|_|Error::Malformed)?).bind(&action.recipient).bind(action.reconciles).execute(c).await?;
     Ok(())
 }
 /// Internal platform use is separately authorized by the original operation owner.
@@ -365,7 +366,7 @@ pub async fn rewrap_in(c: &mut PgConnection, tenant: Uuid, keys: &KeyRing) -> Re
 
 /// The execution owner must scrub its terminal input copies before clearing these bytes.
 pub async fn expired_in(c: &mut PgConnection, tenant: Uuid) -> Result<Vec<Material>, Error> {
-    sqlx::query(select_material!(" WHERE e.tenant_id=$1 AND NOT v.pending AND v.sealed IS NOT NULL AND v.invalidated_at<=floor(extract(epoch FROM clock_timestamp()))::bigint-7776000 ORDER BY v.invalidated_at LIMIT 100 FOR UPDATE OF v SKIP LOCKED"))
+    sqlx::query(select_material!(" WHERE e.tenant_id=$1 AND NOT v.pending AND NOT EXISTS(SELECT 1 FROM mdm_recovery.entries held JOIN mdm_recovery.versions unresolved ON(unresolved.tenant_id,unresolved.entry)=(held.tenant_id,held.id) WHERE held.tenant_id=e.tenant_id AND held.registration=e.registration AND unresolved.pending) AND v.sealed IS NOT NULL AND v.invalidated_at<=floor(extract(epoch FROM clock_timestamp()))::bigint-7776000 ORDER BY v.cleanup_checked_at,v.invalidated_at,e.id,v.version LIMIT 100 FOR UPDATE OF v SKIP LOCKED"))
         .bind(tenant).fetch_all(c).await?.iter().map(decode).collect()
 }
 pub async fn clear_expired_in(
@@ -511,5 +512,161 @@ pub async fn cleared_in(c: &mut PgConnection, coordinates: &Coordinates) -> Resu
         .bind(coordinates.tenant).bind(coordinates.material).bind(coordinates.version).execute(&mut *c).await?;
     sqlx::query("UPDATE mdm_recovery.entries SET current_version=NULL WHERE tenant_id=$1 AND id=$2 AND current_version=$3")
         .bind(coordinates.tenant).bind(coordinates.material).bind(coordinates.version).execute(c).await?;
+    Ok(())
+}
+
+/// Frozen object revisions for the current registration; consumers do not own this schema.
+pub async fn revisions_in(
+    c: &mut PgConnection,
+    tenant: Uuid,
+    device: &str,
+    registration: Uuid,
+    generation: i64,
+) -> Result<Vec<(Subject, i64)>, Error> {
+    let rows=sqlx::query("SELECT subject,revision FROM mdm_recovery.entries WHERE tenant_id=$1 AND device=$2 AND registration=$3 AND generation=$4 AND NOT retired ORDER BY id LIMIT 513").bind(tenant).bind(device).bind(registration).bind(generation).fetch_all(c).await?;
+    rows.into_iter()
+        .map(|r| {
+            Ok((
+                serde_json::from_value(r.try_get("subject")?).map_err(|_| Error::Integrity)?,
+                r.try_get("revision")?,
+            ))
+        })
+        .collect()
+}
+/// Correlated negative verification preserves uncertainty without touching other versions.
+pub async fn uncertain_version_in(
+    c: &mut PgConnection,
+    coordinates: &Coordinates,
+) -> Result<(), Error> {
+    active_in(c, coordinates.tenant, &coordinates.binding).await?;
+    locked_version(c, coordinates).await?;
+    sqlx::query("UPDATE mdm_recovery.versions SET validity='unknown' WHERE tenant_id=$1 AND entry=$2 AND version=$3 AND invalidated_at IS NULL").bind(coordinates.tenant).bind(coordinates.material).bind(coordinates.version).execute(c).await?;
+    Ok(())
+}
+/// Native input copies must be purged before any expired ciphertext for this registration.
+pub async fn input_copies_in(
+    c: &mut PgConnection,
+    tenant: Uuid,
+    registration: Uuid,
+) -> Result<Vec<Uuid>, Error> {
+    Ok(sqlx::query_scalar("SELECT operation FROM mdm_recovery.native_actions WHERE tenant_id=$1 AND registration=$2 AND NOT inputs_purged ORDER BY operation LIMIT 100").bind(tenant).bind(registration).fetch_all(c).await?)
+}
+pub async fn input_purged_in(
+    c: &mut PgConnection,
+    tenant: Uuid,
+    operation: Uuid,
+) -> Result<(), Error> {
+    sqlx::query("UPDATE mdm_recovery.native_actions SET inputs_purged=true WHERE tenant_id=$1 AND operation=$2").bind(tenant).bind(operation).execute(c).await?;
+    Ok(())
+}
+pub async fn inputs_remain_in(
+    c: &mut PgConnection,
+    tenant: Uuid,
+    registration: Uuid,
+) -> Result<bool, Error> {
+    Ok(sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_recovery.native_actions WHERE tenant_id=$1 AND registration=$2 AND NOT inputs_purged)").bind(tenant).bind(registration).fetch_one(c).await?)
+}
+
+/// Read the exact unresolved execution identity, including operations with no escrow yet.
+pub async fn agent_guard_in(
+    c: &mut PgConnection,
+    tenant: Uuid,
+    registration: Uuid,
+    generation: i64,
+) -> Result<Option<(Uuid, Uuid)>, Error> {
+    sqlx::query("SELECT task,attempt FROM mdm_recovery.agent_guards WHERE tenant_id=$1 AND registration=$2 AND generation=$3 FOR UPDATE").bind(tenant).bind(registration).bind(generation).fetch_optional(c).await?.map(|r|Ok((r.try_get("task")?,r.try_get("attempt")?))).transpose()
+}
+/// After independent platform verification and original execution fencing, resolve a candidate
+/// or restore the verified predecessor. Invalidated versions can never be resurrected.
+pub async fn reconcile_in(
+    c: &mut PgConnection,
+    coordinates: &Coordinates,
+    original: Uuid,
+) -> Result<(), Error> {
+    active_in(c, coordinates.tenant, &coordinates.binding).await?;
+    let row = locked_version(c, coordinates).await?;
+    if row.try_get::<Option<Vec<u8>>, _>("sealed")?.is_none() {
+        return Err(Error::Conflict);
+    }
+    let candidate:Option<Uuid>=sqlx::query_scalar("SELECT v.operation FROM mdm_recovery.versions v JOIN mdm_recovery.entries e ON(e.tenant_id,e.id,e.revision)=(v.tenant_id,v.entry,v.version) WHERE e.tenant_id=$1 AND e.id=$2 AND v.pending").bind(coordinates.tenant).bind(coordinates.material).fetch_optional(&mut *c).await?;
+    if candidate.is_some_and(|id| id != original) {
+        return Err(Error::Conflict);
+    }
+    sqlx::query("UPDATE mdm_recovery.versions SET validity='superseded',pending=false,invalidated_at=floor(extract(epoch FROM clock_timestamp()))::bigint WHERE tenant_id=$1 AND entry=$2 AND version<>$3 AND invalidated_at IS NULL").bind(coordinates.tenant).bind(coordinates.material).bind(coordinates.version).execute(&mut *c).await?;
+    sqlx::query("UPDATE mdm_recovery.versions SET validity='verified',pending=false WHERE tenant_id=$1 AND entry=$2 AND version=$3").bind(coordinates.tenant).bind(coordinates.material).bind(coordinates.version).execute(&mut *c).await?;
+    sqlx::query("UPDATE mdm_recovery.entries SET current_version=$3 WHERE tenant_id=$1 AND id=$2")
+        .bind(coordinates.tenant)
+        .bind(coordinates.material)
+        .bind(coordinates.version)
+        .execute(c)
+        .await?;
+    Ok(())
+}
+/// An independent recovery query can receive a previously unreported candidate, or match a
+/// retained predecessor. It cannot replace unrelated pending operations or overwrite ciphertext.
+pub async fn recovery_secret_in(
+    c: &mut PgConnection,
+    keys: &KeyRing,
+    tenant: Uuid,
+    binding: &Binding,
+    revision: i64,
+    original: Uuid,
+    secret: &[u8],
+) -> Result<Coordinates, Error> {
+    active_in(c, tenant, binding).await?;
+    let revisions = revisions_in(
+        c,
+        tenant,
+        &binding.device,
+        binding.registration,
+        binding.generation,
+    )
+    .await?;
+    if revisions
+        .iter()
+        .find(|(s, _)| s == &binding.subject)
+        .map(|(_, r)| *r)
+        .unwrap_or(0)
+        != revision
+    {
+        return Err(Error::Conflict);
+    }
+    let subject = serde_json::to_value(&binding.subject).map_err(|_| Error::Malformed)?;
+    let rows=sqlx::query(select_material!(" WHERE e.tenant_id=$1 AND e.device=$2 AND e.registration=$3 AND e.generation=$4 AND e.subject=$5 AND NOT e.retired AND v.invalidated_at IS NULL ORDER BY v.version DESC FOR UPDATE OF e,v"))
+        .bind(tenant).bind(&binding.device).bind(binding.registration).bind(binding.generation).bind(subject).fetch_all(&mut *c).await?;
+    for r in rows {
+        let m = decode(&r)?;
+        let coordinates = Coordinates {
+            tenant,
+            material: m.id,
+            binding: m.binding,
+            version: m.version,
+        };
+        if let (Some(key), Some(sealed)) = (
+            r.try_get::<Option<String>, _>("key_id")?,
+            r.try_get::<Option<Vec<u8>>, _>("sealed")?,
+        ) {
+            if bool::from(
+                keys.open(&key, &coordinates, &sealed)?
+                    .expose()
+                    .ct_eq(secret),
+            ) {
+                return Ok(coordinates);
+            }
+        }
+    }
+    let coordinates = reserve_in(c, tenant, binding, original, revision).await?;
+    ingest_in(c, keys, &coordinates, original, secret).await?;
+    Ok(coordinates)
+}
+
+/// Fair bounded sweeps advance even when a live native command prevents destruction.
+pub async fn cleanup_visited_in(
+    c: &mut PgConnection,
+    tenant: Uuid,
+    id: Uuid,
+    version: i64,
+) -> Result<(), Error> {
+    sqlx::query("UPDATE mdm_recovery.versions SET cleanup_checked_at=(extract(epoch FROM clock_timestamp())*1000000)::bigint WHERE tenant_id=$1 AND entry=$2 AND version=$3").bind(tenant).bind(id).bind(version).execute(c).await?;
     Ok(())
 }

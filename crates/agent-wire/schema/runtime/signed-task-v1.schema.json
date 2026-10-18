@@ -522,6 +522,27 @@
       ],
       "type": "object"
     },
+    "CredentialRecovery": {
+      "additionalProperties": false,
+      "description": "Exact unresolved mutation whose durable local journal must be reconciled.",
+      "properties": {
+        "attemptId": {
+          "description": "Original mutation attempt, never a newer retry.",
+          "format": "uuid",
+          "type": "string"
+        },
+        "taskId": {
+          "description": "Original mutation task.",
+          "format": "uuid",
+          "type": "string"
+        }
+      },
+      "required": [
+        "taskId",
+        "attemptId"
+      ],
+      "type": "object"
+    },
     "CredentialSubject": {
       "description": "An exact Windows object, never an account display name or drive letter.",
       "oneOf": [
@@ -642,6 +663,17 @@
         "recipient": {
           "$ref": "#/$defs/CredentialRecipient",
           "description": "Pinned public recipient."
+        },
+        "recovery": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CredentialRecovery"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Original unresolved operation, present only on a matching verification task."
         },
         "registrationId": {
           "description": "Current registration.",

@@ -9,6 +9,10 @@ from ci_impact import select_inputs, SelectionError
 
 
 class ModuleImpactTests(unittest.TestCase):
+    def test_recovery_schema_selects_installation_catalog_and_business_consumers(self):
+        selected=set(select_inputs(['crates/recovery-credentials/schema/install.sql']).modules)
+        self.assertTrue({'installation.migration','catalog.contract','recovery-credentials.http','apple.commands','execution.agent.delivery'} <= selected,selected)
+
     def test_upload_budget_selects_its_content_and_execution_consumers(self):
         self.assertEqual(self.selected('crates/content-service/src/budget.rs'),
                          self.selected('crates/content-service/src/transaction.rs'))

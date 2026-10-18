@@ -89,12 +89,22 @@ pub(crate) async fn receive(
                 .and_then(plist::Value::as_boolean)
                 == Some(true)
             {
-                let operation=sqlx::query("SELECT operation FROM mdm_recovery.versions WHERE tenant_id=$1 AND entry=$2 AND version=$3").bind(tenant).bind(coordinates.material).bind(coordinates.version).fetch_one(&mut *c).await.map_err(crate::database::db)?.try_get("operation").map_err(crate::database::db)?;
-                vault::verify_in(c, &coordinates, operation)
+                let operation = vault::source_operation_in(c, &coordinates)
                     .await
                     .map_err(failed)?;
+                if let Some(original) = action.reconciles {
+                    vault::reconcile_in(c, &coordinates, original)
+                        .await
+                        .map_err(failed)?;
+                } else {
+                    vault::verify_in(c, &coordinates, operation)
+                        .await
+                        .map_err(failed)?;
+                }
             } else {
-                sqlx::query("UPDATE mdm_recovery.versions SET validity='unknown' WHERE tenant_id=$1 AND entry=$2 AND version=$3 AND invalidated_at IS NULL").bind(tenant).bind(coordinates.material).bind(coordinates.version).execute(c).await.map_err(crate::database::db)?;
+                vault::uncertain_version_in(c, &coordinates)
+                    .await
+                    .map_err(failed)?;
             }
         }
         "clear_recovery_lock" => {

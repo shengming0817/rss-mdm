@@ -1999,3 +1999,5 @@ T1_INPUTS += ('crates/timeline-service/tests/model.rs',)
 consume(('crates/device-trust/src/windows/*', 'crates/device-trust/fixtures/*'), 'windows.issuance windows.management')
 
 consume(('crates/recovery-credentials/src/*','crates/recovery-credentials/schema/*','crates/execution-service/src/recovery_credentials.rs','crates/execution-service/src/credential_tasks.rs','crates/execution-service/src/credential_maintenance.rs'), 'recovery-credentials.http apple.commands execution.agent.delivery')
+
+consume(('crates/recovery-credentials/schema/*.sql',), 'installation.migration catalog.contract')
