@@ -173,7 +173,7 @@ pub async fn prepare(
         .bind(&input.profile)
         .bind(matches!(input.source, Source::Generate))
         .bind(sealed)
-        .bind(protection.id())
+        .bind(protection.fingerprint_id())
         .bind(fingerprint.as_slice())
         .bind(credentials.expires_at)
         .execute(&mut *c)
@@ -389,4 +389,23 @@ pub async fn verify_reservation(c: &mut PgConnection) -> Result<bool, Error> {
         .expect("fixed reserve body");
     sqlx::query_scalar("SELECT count(*)=1 AND coalesce(bool_and(p.prosrc=$1 AND p.proowner='mdm_owner'::regrole AND p.prosecdef AND p.proconfig=ARRAY['search_path=pg_catalog, pg_temp'] AND NOT EXISTS(SELECT 1 FROM aclexplode(coalesce(p.proacl,acldefault('f',p.proowner))) a WHERE a.grantee=0 OR a.is_grantable OR pg_get_userbyid(a.grantee) NOT IN('mdm_owner','mdm_access'))),false) FROM pg_proc p WHERE p.oid='mdm_content_connections.reserve(bigint,uuid,text,boolean,bytea,text,bytea,bigint)'::regprocedure")
         .bind(body).fetch_one(c).await.map_err(db)
+}
+
+/// 部署维护事务中的有界重加密；材料版本和请求指纹保持不变。
+pub async fn rewrap(
+    c: &mut PgConnection,
+    tenant: TenantId,
+    protection: &Protector,
+) -> Result<u64, Error> {
+    let prefix = protection.ciphertext_prefix();
+    let rows=sqlx::query("SELECT revision,credentials FROM mdm_content_connections.versions WHERE tenant_id=$1::uuid AND substring(credentials FROM 1 FOR $2)<>$3 ORDER BY revision LIMIT 64 FOR UPDATE SKIP LOCKED").bind(tenant.to_string()).bind(prefix.len() as i32).bind(prefix).fetch_all(&mut *c).await.map_err(db)?;
+    for row in &rows {
+        let revision: i64 = row.try_get("revision").map_err(db)?;
+        let sealed: Vec<u8> = row.try_get("credentials").map_err(db)?;
+        let next = protection
+            .rewrap_bytes(&sealed, &aad(tenant, revision)?)
+            .map_err(|_| Error::Metadata)?;
+        sqlx::query("UPDATE mdm_content_connections.versions SET credentials=$3 WHERE tenant_id=$1::uuid AND revision=$2").bind(tenant.to_string()).bind(revision).bind(next).execute(&mut *c).await.map_err(db)?;
+    }
+    Ok(rows.len() as u64)
 }

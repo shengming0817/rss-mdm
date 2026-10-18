@@ -384,7 +384,7 @@ class Environment:
         if not native_key.exists():
             private(native_key,'').write_bytes(secrets.token_bytes(32))
         config=json.loads((ROOT/'fixtures/mdm-config.example.json').read_text())
-        config['native_protection_key_file']=path(runtime,'native-data.key')
+        config['native_protection']=dict(active_file=path(runtime,'native-data.key'),historical_files=[],fingerprint_file=path(runtime,'native-data.key'))
         config.update(listen=f'127.0.0.1:{backend_port}',product_origin=origin,trusted_gateway='127.0.0.1',native_protocols={},device_pki=[])
         config['access_database']=database(runtime,'mdm_access');config['runtime_database']=database(runtime,'mdm_runtime')
         config['identity']['database']=database(runtime,'mdm_identity_runtime');config['identity']['audit_worker']=database(runtime,'mdm_identity_audit')

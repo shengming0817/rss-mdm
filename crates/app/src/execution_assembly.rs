@@ -93,7 +93,7 @@ pub(crate) async fn open(
     );
     let result = async {
         crate::database::admit_audit_runtime(&runtime, &audit_store, tenant).await?;
-        storage::bind_native_key(&runtime, tenant, protection.id()).await?;
+        storage::bind_native_key(&runtime, tenant, protection.fingerprint_id()).await?;
         let outbox = Arc::new(
             PgOutboxStore::new(
                 runtime.clone(),

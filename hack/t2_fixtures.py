@@ -146,7 +146,7 @@ class RunFixtures:
         config['identity']['tenant_id'] = tenant
         config['native_protocols'] = {}
         config['device_pki'] = []
-        config['native_protection_key_file'] = str(native_key)
+        config['native_protection'] = dict(active_file=str(native_key),historical_files=[],fingerprint_file=str(native_key))
         config['recovery_credentials'] = recovery_credentials
         return config
 

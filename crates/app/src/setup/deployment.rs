@@ -98,9 +98,9 @@ fn project(
             for (name, value) in values {
                 if name.ends_with("_file") && value.is_string() {
                     project_file(value, journal, mounts, !public_file(name))?;
-                } else if name == "apple_material_roots" {
+                } else if name == "apple_material_roots" || name == "historical_files" {
                     for root in value.as_array_mut().ok_or(Error::Input)? {
-                        project_file(root, journal, mounts, false)?;
+                        project_file(root, journal, mounts, name == "historical_files")?;
                     }
                 } else {
                     project(value, journal, mounts)?;

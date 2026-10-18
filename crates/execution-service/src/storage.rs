@@ -341,8 +341,7 @@ pub async fn authorized_native(
     Ok(snapshot)
 }
 
-/// Bind the installation to its configured native data key. Key changes require an explicit
-/// owner re-encryption procedure; a restart must never silently create a second comparison space.
+/// 固定租户的比较身份；密文写钥可独立轮换，重启不能创建第二个比较空间。
 pub async fn bind_native_key(
     runtime: &PgRuntime,
     tenant: TenantId,

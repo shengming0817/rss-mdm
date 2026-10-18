@@ -125,6 +125,88 @@ fn binding(bytes: &[u8], class: StorageClass) -> Binding {
         actor: "storage-fixture".into(),
     }
 }
+
+#[tokio::test]
+#[ignore = "MODULE=content.storage: interrupted encryption rotation preserves credentials and request replay"]
+async fn interrupted_connection_rewrap_keeps_identity_and_resumes() -> Result<()> {
+    use rss_mdm_content_service::connections as c;
+    use sqlx::Connection;
+    use std::str::FromStr;
+    let config = crate::test_support::identity::config(case_tenant())?;
+    let tenant = rss_request_context::TenantId::parse(case_tenant())?;
+    let old = config.native_protector()?;
+    let original = crate::config::read(&config.native_protection.active_file, 32, true)?;
+    let fingerprint = crate::config::read(&config.native_protection.fingerprint_file, 32, true)?;
+    let next = rss_mdm_native_protection::Protector::with_fingerprint(
+        &[72; 32],
+        &[original.as_slice()],
+        &fingerprint,
+    )?;
+    let options = sqlx::postgres::PgConnectOptions::from_str(&std::env::var("MDM_OWNER_URL")?)?
+        .ssl_mode(sqlx::postgres::PgSslMode::VerifyFull)
+        .ssl_root_cert(std::env::var("PG_CA_FILE")?);
+    let mut connection = sqlx::PgConnection::connect_with(&options).await?;
+    let operation = Uuid::new_v4();
+    let input = c::Request {
+        expected_revision: 0,
+        profile: "rewrap-fixture".into(),
+        source: c::Source::Generate,
+    };
+    let mut tx = connection.begin().await?;
+    sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
+        .bind(case_tenant())
+        .execute(&mut *tx)
+        .await?;
+    let receipt = c::prepare(&mut tx, tenant, operation, &input, "operator", &old).await?;
+    let secret = c::pending(&mut tx, tenant, operation, &old)
+        .await?
+        .credentials
+        .secret_key;
+    tx.commit().await?;
+    let mut tx = connection.begin().await?;
+    sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
+        .bind(case_tenant())
+        .execute(&mut *tx)
+        .await?;
+    ensure!(c::rewrap(&mut tx, tenant, &next).await? == 1);
+    tx.rollback().await?;
+    let mut tx = connection.begin().await?;
+    sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
+        .bind(case_tenant())
+        .execute(&mut *tx)
+        .await?;
+    ensure!(
+        c::pending(&mut tx, tenant, operation, &old)
+            .await?
+            .credentials
+            .secret_key
+            == secret
+    );
+    ensure!(c::rewrap(&mut tx, tenant, &next).await? == 1);
+    ensure!(c::rewrap(&mut tx, tenant, &next).await? == 0);
+    tx.commit().await?;
+    let mut tx = connection.begin().await?;
+    sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
+        .bind(case_tenant())
+        .execute(&mut *tx)
+        .await?;
+    ensure!(
+        c::pending(&mut tx, tenant, operation, &next)
+            .await?
+            .credentials
+            .secret_key
+            == secret
+    );
+    ensure!(c::pending(&mut tx, tenant, operation, &old).await.is_err());
+    ensure!(
+        serde_json::to_value(
+            c::prepare(&mut tx, tenant, operation, &input, "operator", &next).await?
+        )? == serde_json::to_value(receipt)?
+    );
+    tx.rollback().await?;
+    connection.close().await?;
+    Ok(())
+}
 fn s3_storage() -> Result<(tempfile::TempDir, Value)> {
     let provider: Value =
         serde_json::from_slice(&std::fs::read(std::env::var("MDM_S3_FIXTURE")?)?)?;

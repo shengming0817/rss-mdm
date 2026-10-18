@@ -374,7 +374,7 @@ async fn write(
                     json!({"operationId":id,"revision":revision,"desiredRevision":selected,"state":"pending_application"})
                 }
             };
-            storage::save(c,p.tenant_id(),*id,app.protection.id(),fingerprint,&value).await?;
+            storage::save(c,p.tenant_id(),*id,app.protection.fingerprint_id(),fingerprint,&value).await?;
             p.check_live()?;Ok::<_,Error>((value,false,*fingerprint))
         })).await?;
         let fact=Fact::business(audit,&format!("apple-runtime:{id}"),&original_fingerprint,200,"success",None).map_err(|_|Error::Malformed)?;
@@ -383,4 +383,28 @@ async fn write(
         audit.mark_commit_started();Ok(value)
     })).await;
     crate::operations::settle(outcome, audit)
+}
+
+/// 在部署维护事务中重加密，证书、材料版本和选择状态均不改变。
+pub async fn rewrap(
+    c: &mut sqlx::PgConnection,
+    tenant: &str,
+    protection: &rss_mdm_native_protection::Protector,
+) -> Result<u64, Error> {
+    use sqlx::Row;
+    let prefix = protection.ciphertext_prefix();
+    let rows=sqlx::query("SELECT purpose,revision,key_id,private_key FROM mdm_apple_runtime.versions WHERE tenant_id=$1::uuid AND substring(private_key FROM 1 FOR $2)<>$3 ORDER BY purpose,revision LIMIT 64 FOR UPDATE SKIP LOCKED").bind(tenant).bind(prefix.len() as i32).bind(prefix).fetch_all(&mut *c).await.map_err(db)?;
+    for row in &rows {
+        let purpose: String = row.try_get("purpose").map_err(db)?;
+        let purpose: Purpose =
+            serde_json::from_value(json!(purpose)).map_err(|_| Error::Conflict)?;
+        let revision: i64 = row.try_get("revision").map_err(db)?;
+        let key: Uuid = row.try_get("key_id").map_err(db)?;
+        let sealed: Vec<u8> = row.try_get("private_key").map_err(db)?;
+        let next = protection
+            .rewrap_bytes(&sealed, &aad(tenant, purpose, revision, key)?)
+            .map_err(|_| Error::Conflict)?;
+        sqlx::query("UPDATE mdm_apple_runtime.versions SET private_key=$4 WHERE tenant_id=$1::uuid AND purpose=$2 AND revision=$3").bind(tenant).bind(purpose.name()).bind(revision).bind(next).execute(&mut *c).await.map_err(db)?;
+    }
+    Ok(rows.len() as u64)
 }

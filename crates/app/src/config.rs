@@ -102,6 +102,13 @@ fn enabled<'de, D: serde::Deserializer<'de>, T: Deserialize<'de>>(
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct NativeProtection {
+    pub active_file: PathBuf,
+    pub historical_files: Vec<PathBuf>,
+    pub fingerprint_file: PathBuf,
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Config {
     pub runtime_binding: crate::setup::host::Binding,
     #[serde(default)]
@@ -111,7 +118,7 @@ pub struct Config {
     pub software_distribution: rss_mdm_execution_service::SoftwareDistribution,
     pub agent_pki: crate::agent_pki::Config,
     pub device_pki: Vec<crate::device_pki::Provider>,
-    pub native_protection_key_file: PathBuf,
+    pub native_protection: NativeProtection,
     pub recovery_credentials: Option<crate::recovery_credentials::Config>,
     pub audit: AuditConfig,
     pub listen: SocketAddr,
@@ -147,8 +154,22 @@ impl Config {
     pub(crate) fn native_protector(
         &self,
     ) -> Result<Arc<rss_mdm_native_protection::Protector>, Error> {
-        let key = read(&self.native_protection_key_file, 32, true)?;
-        rss_mdm_native_protection::Protector::new(&key)
+        if self.native_protection.historical_files.len() > 15 {
+            return Err(Error::Configuration(ConfigIssue::NativeProtection));
+        }
+        let key = read(&self.native_protection.active_file, 32, true)?;
+        let fingerprint = read(&self.native_protection.fingerprint_file, 32, true)?;
+        let historical = self
+            .native_protection
+            .historical_files
+            .iter()
+            .map(|p| read(p, 32, true))
+            .collect::<Result<Vec<_>, _>>()?;
+        let refs = historical
+            .iter()
+            .map(|key| key.as_slice())
+            .collect::<Vec<_>>();
+        rss_mdm_native_protection::Protector::with_fingerprint(&key, &refs, &fingerprint)
             .map(Arc::new)
             .map_err(|_| Error::Configuration(ConfigIssue::NativeProtection))
     }

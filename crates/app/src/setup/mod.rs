@@ -13,6 +13,8 @@ pub mod model;
 #[cfg(unix)]
 mod postgres;
 #[cfg(unix)]
+pub mod protection;
+#[cfg(unix)]
 pub mod providers;
 #[cfg(unix)]
 pub mod source;

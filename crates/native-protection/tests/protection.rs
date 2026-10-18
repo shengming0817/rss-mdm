@@ -159,3 +159,34 @@ fn ring_rejects_duplicates_unknown_keys_and_unbounded_history() {
             .is_err()
     );
 }
+
+#[test]
+fn encryption_rotation_preserves_comparison_identity_without_implicit_decrypt_keys() {
+    let old = Protector::new(&[21; 32]).unwrap();
+    let aad = context(TENANT, "stable-operation", "input");
+    let sealed = old.seal_bytes(b"kept material", &aad).unwrap();
+    let rotated = Protector::with_fingerprint(&[22; 32], &[&[21; 32]], &[21; 32]).unwrap();
+    assert_ne!(old.id(), rotated.id());
+    assert_eq!(old.fingerprint_id(), rotated.fingerprint_id());
+    assert_eq!(
+        old.mac(b"same request", &aad).unwrap(),
+        rotated.mac(b"same request", &aad).unwrap()
+    );
+    let rewritten = rotated.rewrap_bytes(&sealed, &aad).unwrap();
+    let retired = Protector::with_fingerprint(&[22; 32], &[], &[21; 32]).unwrap();
+    assert!(retired.open_bytes(&sealed, &aad).is_err());
+    assert_eq!(
+        retired.open_bytes(&rewritten, &aad).unwrap().expose(),
+        b"kept material"
+    );
+    assert!(
+        retired
+            .verify_mac_with_key(
+                old.fingerprint_id(),
+                b"same request",
+                &aad,
+                &old.mac(b"same request", &aad).unwrap()
+            )
+            .is_ok()
+    );
+}

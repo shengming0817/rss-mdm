@@ -76,7 +76,7 @@ async fn save(
         .mac(request, &request_aad(tenant, operation)?)
         .map_err(|_| Error::Conflict)?;
     sqlx::query("INSERT INTO mdm_task_signing.versions(tenant_id,revision,operation_id,fingerprint_key,fingerprint,body,digest) VALUES($1::uuid,$2,$3,$4,$5,$6,$7)")
-        .bind(tenant.to_string()).bind(trust.revision as i64).bind(operation).bind(protection.id()).bind(tag.as_slice()).bind(serde_json::to_value(trust).map_err(|_|Error::Malformed)?).bind(digest).execute(&mut *c).await.map_err(db)?;
+        .bind(tenant.to_string()).bind(trust.revision as i64).bind(operation).bind(protection.fingerprint_id()).bind(tag.as_slice()).bind(serde_json::to_value(trust).map_err(|_|Error::Malformed)?).bind(digest).execute(&mut *c).await.map_err(db)?;
     sqlx::query("UPDATE mdm_task_signing.heads SET revision=$2 WHERE tenant_id=$1::uuid")
         .bind(tenant.to_string())
         .bind(trust.revision as i64)
@@ -468,4 +468,23 @@ pub async fn retire(
     trust.revision += 1;
     save(c, tenant, operation, protection, &request, &trust).await?;
     Ok(trust)
+}
+
+/// 重加密保留任务签名身份、信任历史和 ACK，不创建新的签名钥。
+pub async fn rewrap(
+    c: &mut PgConnection,
+    tenant: TenantId,
+    protection: &Protector,
+) -> Result<u64, Error> {
+    let prefix = protection.ciphertext_prefix();
+    let rows=sqlx::query("SELECT key_id,private_key FROM mdm_task_signing.keys WHERE tenant_id=$1::uuid AND substring(private_key FROM 1 FOR $2)<>$3 ORDER BY key_id LIMIT 64 FOR UPDATE SKIP LOCKED").bind(tenant.to_string()).bind(prefix.len() as i32).bind(prefix).fetch_all(&mut *c).await.map_err(db)?;
+    for row in &rows {
+        let id: String = row.try_get("key_id").map_err(db)?;
+        let sealed: Vec<u8> = row.try_get("private_key").map_err(db)?;
+        let next = protection
+            .rewrap_bytes(&sealed, &aad(tenant, &id)?)
+            .map_err(|_| Error::Conflict)?;
+        sqlx::query("UPDATE mdm_task_signing.keys SET private_key=$3 WHERE tenant_id=$1::uuid AND key_id=$2").bind(tenant.to_string()).bind(id).bind(next).execute(&mut *c).await.map_err(db)?;
+    }
+    Ok(rows.len() as u64)
 }

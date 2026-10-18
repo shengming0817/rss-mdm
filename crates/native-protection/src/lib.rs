@@ -31,6 +31,7 @@ struct Key {
 /// this type does not discover keys, authorize retirement, or rewrite stored business records.
 pub struct Protector {
     active: Key,
+    fingerprint: Key,
     historical: std::collections::BTreeMap<[u8; 32], Key>,
 }
 impl Protector {
@@ -41,6 +42,15 @@ impl Protector {
     /// Install an active key and at most fifteen distinct historical keys.
     /// Duplicate identities are rejected, including a repeated active key.
     pub fn with_history(active: &[u8], historical: &[&[u8]]) -> Result<Self, Error> {
+        Self::with_fingerprint(active, historical, active)
+    }
+    /// 比较身份独立于密文写钥。历史请求和设备材料的稳定标识不随重加密改变。
+    /// 指纹材料仍被历史记录使用时不能退出；它不隐式加入解密钥集合。
+    pub fn with_fingerprint(
+        active: &[u8],
+        historical: &[&[u8]],
+        fingerprint: &[u8],
+    ) -> Result<Self, Error> {
         if historical.len() > 15 {
             return Err(Error);
         }
@@ -54,12 +64,20 @@ impl Protector {
         }
         Ok(Self {
             active,
+            fingerprint: Key::new(fingerprint)?,
             historical: keys,
         })
     }
     /// Exact identity used for new writes.
     pub fn id(&self) -> &str {
         self.active.id()
+    }
+    pub fn fingerprint_id(&self) -> &str {
+        self.fingerprint.id()
+    }
+    /// 仅用于有界重加密批次筛选；调用者仍须以领域 AAD 验证完整密文。
+    pub fn ciphertext_prefix(&self) -> Vec<u8> {
+        [MAGIC.as_slice(), self.active.identity.as_slice()].concat()
     }
     /// Seal under the active key without changing the existing authenticated envelope format.
     pub fn seal_bytes(&self, plain: &[u8], aad: &DerivedAad) -> Result<Vec<u8>, Error> {
@@ -95,13 +113,13 @@ impl Protector {
             self.active.seal_bytes(plain.expose(), aad)
         }
     }
-    /// New keyed fingerprints use the active key. Persist its identity with any durable digest.
+    /// 指纹使用独立的稳定比较钥，持久摘要记录 fingerprint_id。
     pub fn mac(&self, plain: &[u8], aad: &DerivedAad) -> Result<[u8; 32], Error> {
-        self.active.mac(plain, aad)
+        self.fingerprint.mac(plain, aad)
     }
-    /// Verify an active-key fingerprint. Historical operation owners must use `verify_mac_with_key`.
+    /// 校验稳定比较钥的指纹；已有带 key ID 的操作使用 verify_mac_with_key。
     pub fn verify_mac(&self, plain: &[u8], aad: &DerivedAad, tag: &[u8]) -> Result<(), Error> {
-        self.active.verify_mac(plain, aad, tag)
+        self.fingerprint.verify_mac(plain, aad, tag)
     }
     /// Verify a durable request fingerprint against its exact recorded key, without trial decryption.
     pub fn verify_mac_with_key(
@@ -111,7 +129,11 @@ impl Protector {
         aad: &DerivedAad,
         tag: &[u8],
     ) -> Result<(), Error> {
-        self.key_for_id(id)?.verify_mac(plain, aad, tag)
+        if id == self.fingerprint.id() {
+            self.fingerprint.verify_mac(plain, aad, tag)
+        } else {
+            self.key_for_id(id)?.verify_mac(plain, aad, tag)
+        }
     }
     fn key_for_id(&self, id: &str) -> Result<&Key, Error> {
         if id == self.active.id() {

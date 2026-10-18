@@ -288,7 +288,7 @@ impl Host {
         value["agent_pki"] = original["agent_pki"].clone();
         if mdm_software { value["task_signing"] = original["task_signing"].clone(); }
         value["device_pki"] = original["device_pki"].clone();
-        value["native_protection_key_file"] = original["native_protection_key_file"].clone();
+        value["native_protection"] = original["native_protection"].clone();
         if push {
             let secret = root.join(format!("wns-{}-secret", Uuid::new_v4()));
             std::fs::write(&secret, "fixture-secret")?;

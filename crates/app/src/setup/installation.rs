@@ -253,6 +253,7 @@ pub async fn install(input: Input) -> Result<Receipt> {
         )?);
     }
     let native_key = protected(&journal, "native.key", 32, first)?;
+    let native_fingerprint = protected(&journal, "native-fingerprint.key", 32, first)?;
     let ledger_key = if input.audit_mode == AuditMode::Ledger {
         Some(protected(&journal, "ledger.key", 32, first)?)
     } else {
@@ -265,6 +266,7 @@ pub async fn install(input: Input) -> Result<Receipt> {
             administrator.as_str(),
             &database_passwords,
             native_key.as_slice(),
+            native_fingerprint.as_slice(),
             ledger_key.as_deref(),
         ))
         .map_err(invalid)?,
@@ -373,6 +375,19 @@ pub async fn install(input: Input) -> Result<Receipt> {
     if saved.receipt.stage == Stage::Platform {
         saved.receipt.stage = Stage::Business;
         journal.save("installation.json", &saved)?;
+    }
+    if saved.receipt.stage == Stage::Enabled {
+        // 完成后的安装重放不能覆盖后续材料轮换或宿主应用。
+        let root = input
+            .directory
+            .join(format!("rss-mdm-{}", saved.receipt.host_id.simple()));
+        let host = Journal::open(&root)?;
+        let current: serde_json::Value =
+            host.load("requested-runtime.json")?.ok_or(Error::Corrupt)?;
+        drop(host);
+        super::deployment::apply(&input.directory, &input.deployment, &current).await?;
+        super::supervisor::install(&journal, &input, saved.receipt.instance_id).await?;
+        return Ok(saved.receipt);
     }
     let runtime = runtime(&input, &journal, &saved)?;
     // Reuse the actual runtime decoder, not a second interpretation of configuration.
@@ -534,7 +549,7 @@ fn runtime(input: &Input, journal: &Journal, saved: &Saved) -> Result<serde_json
     };
     Ok(serde_json::json!({
         "runtime_binding":{"host_id":saved.receipt.host_id,"operation_id":saved.receipt.operation_id,"revision":1,"material_digest":saved.fingerprint_digest()},
-        "agent_pki":{"mode":"disabled"},"device_pki":[],"native_protocols":{},"native_protection_key_file":journal.path("native.key")?,
+        "agent_pki":{"mode":"disabled"},"device_pki":[],"native_protocols":{},"native_protection":{"active_file":journal.path("native.key")?,"historical_files":[],"fingerprint_file":journal.path("native-fingerprint.key")?},
         "audit":audit,"listen":input.listen,"product_origin":input.origin,"trusted_gateway":input.trusted_gateway,
         "identity":{"instance_id":saved.receipt.instance_id,"tenant_id":saved.receipt.tenant_id,"database":input.database("mdm_identity_runtime")?,"audit_worker":input.database("mdm_identity_audit")?,"oidc":null},
         "access_database":input.database("mdm_access")?,"runtime_database":input.database("mdm_runtime")?,"execution":{"database":input.database("mdm_command_runtime")?},

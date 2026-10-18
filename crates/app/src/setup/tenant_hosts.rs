@@ -24,6 +24,13 @@ pub struct Slot {
 pub async fn reconcile(input: &Input) -> Result<usize> {
     validate_slots(input)?;
     let journal = Journal::open(&input.directory)?;
+    if journal
+        .load::<Option<Uuid>>("protection-operation.json")?
+        .flatten()
+        .is_some()
+    {
+        return Err(Error::Busy);
+    }
     for (index, slot) in input.additional_hosts.iter().enumerate() {
         journal.secret(
             &format!("host-slot-{index}.json"),

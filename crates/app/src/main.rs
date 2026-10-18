@@ -21,7 +21,7 @@ async fn execute() -> Result<(), ProcessError> {
     let args: Vec<_> = std::env::args().skip(1).collect();
     if args == ["--help"] {
         println!(
-            "rss-mdm install|provision-hosts|serve|migrate|tenant-get|tenant-list|tenant-update|tenant-delete|tenant-operation-status|initialize|initialize-authorization|recover-password --config /absolute/private-config.json\nrss-mdm --version|--describe"
+            "rss-mdm install|provision-hosts|rotate-protection|serve|migrate|tenant-get|tenant-list|tenant-update|tenant-delete|tenant-operation-status|initialize|initialize-authorization|recover-password --config /absolute/private-config.json\nrss-mdm --version|--describe"
         );
         return Ok(());
     }
@@ -53,6 +53,15 @@ async fn execute() -> Result<(), ProcessError> {
             println!(
                 "{}",
                 serde_json::to_string(&receipt).expect("public installation receipt")
+            );
+            Ok(())
+        }
+        #[cfg(unix)]
+        "rotate-protection" => {
+            let receipt=rss_mdm_app::setup::protection::rotate(config::load(path)?).await.map_err(|_|ProcessError::Stage {stage:"protection.rotation",kind:"rotation incomplete; resume the original operation and retain all original materials"})?;
+            println!(
+                "{}",
+                serde_json::to_string(&receipt).expect("public protection receipt")
             );
             Ok(())
         }

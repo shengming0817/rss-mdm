@@ -120,7 +120,7 @@ def inputs(root, example, gateway_file, *, database_host="postgres"):
     native_key.touch(mode=0o600)
     native_key.write_bytes(os.urandom(32))
     config=json.loads(example.read_text())
-    config["native_protection_key_file"]="/run/mdm/native-data.key"
+    config["native_protection"]=dict(active_file="/run/mdm/native-data.key",historical_files=[],fingerprint_file="/run/mdm/native-data.key")
     # Agent registration consumes the same explicit signing input as runtime tasks.
     key_file=runtime/'task-signing.pk8';key_file.touch(mode=0o600)
     openssl('genpkey','-algorithm','ED25519','-outform','DER','-out',key_file)

@@ -49,7 +49,7 @@ async fn desired(c: &mut PgConnection, tenant: Uuid, runtime: &mut Value) -> Res
     }
     tx.commit().await.map_err(|_| Error::Storage)
 }
-fn fingerprint(runtime: &Value) -> Result<String> {
+pub(super) fn fingerprint(runtime: &Value) -> Result<String> {
     use sha2::{Digest, Sha256};
     let mut value = runtime.clone();
     value

@@ -2081,3 +2081,5 @@ add('installation.providers', selectors=('setup::providers::storage::tests::real
     sources=('crates/app/src/setup/providers/*',), tests=('crates/app/tests/setup/providers.rs',), support=('hack/s3_fixtures.py','fixtures/s3-provider.lock.json'))
 consume(('crates/content-service/src/connections*','crates/content-service/schema/connections.sql','crates/management-http/src/content/connections.rs','crates/app/tests/support/storage.rs'), 'content.storage')
 consume(('crates/app/src/setup/application.rs',), 'deployment.management-tenant content.storage execution.agent.task_trust apple.host')
+
+consume(('crates/app/src/setup/protection.rs',), 'content.storage execution.agent.task_trust apple.host')

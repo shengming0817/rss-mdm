@@ -153,7 +153,7 @@ impl Store {
     }
     pub(super) async fn journal_admit(&self) -> Result<(), Error> {
         let mut tx = self.tx().await?;
-        let identity = serde_json::json!({"protection":self.protection.id(),"backend":self.backend.identity()?});
+        let identity = serde_json::json!({"protection":self.protection.fingerprint_id(),"backend":self.backend.identity()?});
         sqlx::query("INSERT INTO mdm_content.settings(tenant_id,identity) VALUES($1::uuid,$2) ON CONFLICT DO NOTHING").bind(self.tenant.to_string()).bind(&identity).execute(&mut *tx).await.map_err(|e|journal::pg_error(concat!(file!(), ":", line!()),e))?;
         let old: serde_json::Value = sqlx::query_scalar(
             "SELECT identity FROM mdm_content.settings WHERE tenant_id=$1::uuid",
