@@ -1,9 +1,5 @@
 //! Read projections from the existing publication, Resource and admission authorities.
-use super::{
-    config::{Driver, index},
-    service::PublicationService,
-    storage as db, *,
-};
+use super::{config::Driver, service::PublicationService, storage as db, *};
 use rss_mdm_software_release as rel;
 use rss_request_context::Deadline;
 use sqlx::Row;
@@ -20,32 +16,32 @@ pub struct PublishedSoftware {
     pub snapshot: Option<String>,
 }
 impl PublicationService {
-    pub fn public_base(&self, ring: rel::Ring) -> &str {
-        match &self.sources.binding(ring).driver {
+    pub fn public_base(&self) -> &str {
+        match &self.sources.binding().driver {
             Driver::Winget { base, .. } | Driver::Brew { base, .. } => base,
         }
     }
-    pub fn native_identifier(&self, ring: rel::Ring, publication: Option<[u8; 32]>) -> String {
+    pub fn native_identifier(&self, publication: Option<[u8; 32]>) -> String {
         match publication {
             Some(id) => format!("rss.{}", hex(&id)),
-            None => format!("rss.{}.{}", hex(&self.sources.digest), index(ring)),
+            None => format!("rss.{}", hex(&self.sources.digest)),
         }
     }
-    pub fn native_read_allowed(&self, ring: rel::Ring, token: Option<&str>) -> bool {
-        match &self.sources.binding(ring).driver {
+    pub fn native_read_allowed(&self, token: Option<&str>) -> bool {
+        match &self.sources.binding().driver {
             Driver::Winget { .. } => true,
             Driver::Brew { access, .. } => token
                 .is_some_and(|token| access.permits(self.tenant(), &self.sources.logical, token)),
         }
     }
-    pub fn native_winget(&self, ring: rel::Ring) -> bool {
-        matches!(self.sources.binding(ring).driver, Driver::Winget { .. })
+    pub fn native_winget(&self) -> bool {
+        matches!(self.sources.binding().driver, Driver::Winget { .. })
     }
 
     /// A frozen read does not adopt a newer source lifecycle, target or release identity.
     pub async fn published(
         &self,
-        ring: rel::Ring,
+
         publication: [u8; 32],
         cutoff: Deadline,
     ) -> Result<PublishedSoftware> {
@@ -54,10 +50,8 @@ impl PublicationService {
                 .local_tx_with_context(
                     self.tenant(),
                     budget(cutoff),
-                    (self, ring, publication),
-                    |(s, ring, id), tx| {
-                        Box::pin(async move { s.exports().published_in(tx, *ring, *id).await })
-                    },
+                    (self, publication),
+                    |(s, id), tx| Box::pin(async move { s.exports().published_in(tx, *id).await }),
                 )
                 .await,
         )?;
@@ -74,11 +68,11 @@ impl PublicationService {
                 .local_tx_with_context(
                     self.tenant(),
                     budget(cutoff),
-                    (self, ring, publication),
-                    |(s, ring, id), tx| {
+                    (self, publication),
+                    |(s, id), tx| {
                         Box::pin(async move {
                             s.exports()
-                                .published_in(tx, *ring, *id)
+                                .published_in(tx, *id)
                                 .await
                                 .map(|v| v.map(|_| ()))
                         })
@@ -94,7 +88,7 @@ impl PublicationService {
             dependencies: derive::dependency_documents(
                 &version,
                 &dependencies,
-                match &self.sources.binding(ring).driver {
+                match &self.sources.binding().driver {
                     Driver::Winget { artifacts_base, .. } | Driver::Brew { artifacts_base, .. } => {
                         artifacts_base
                     }
@@ -104,7 +98,7 @@ impl PublicationService {
             artifacts: derive::exported_materials(
                 &version,
                 &dependencies,
-                match &self.sources.binding(ring).driver {
+                match &self.sources.binding().driver {
                     Driver::Winget { artifacts_base, .. } | Driver::Brew { artifacts_base, .. } => {
                         artifacts_base
                     }
@@ -113,10 +107,10 @@ impl PublicationService {
             snapshot: target.snapshot,
         })
     }
-    /// Bounded page through already-published projections, never raw candidates.
+    /// Bounded page through already-published projections, never raw records.
     pub async fn published_page(
         &self,
-        ring: rel::Ring,
+
         after: &str,
         limit: usize,
         cutoff: Deadline,
@@ -124,7 +118,7 @@ impl PublicationService {
         if limit == 0 || limit > 100 || after.len() > 512 || after.contains(['\r', '\n', '\0']) {
             return Err(Error::Input);
         }
-        let binding = self.sources.binding(ring).identity.clone();
+        let binding = self.sources.binding().identity.clone();
         let after = after.to_owned();
         settle(self.runtime.local_tx_with_context(self.tenant(),budget(cutoff),(binding,after),|(binding,after),tx|Box::pin(async move {
             let tenant=tx.tenant_id().to_string();let binding=binding.clone();let after=after.clone();
@@ -136,42 +130,42 @@ impl PublicationService {
     /// does not cap source membership or make later publications unreachable.
     pub async fn published_coordinate(
         &self,
-        ring: rel::Ring,
+
         coordinate: &str,
         cutoff: Deadline,
     ) -> Result<PublishedSoftware> {
         if coordinate.len() > 512 {
             return Err(Error::Input);
         }
-        let binding = self.sources.binding(ring).identity.clone();
+        let binding = self.sources.binding().identity.clone();
         let coordinate = coordinate.to_owned();
         let id=settle(self.runtime.local_tx_with_context(self.tenant(),budget(cutoff),(binding,coordinate),|(binding,coordinate),tx|Box::pin(async move {
             let tenant=tx.tenant_id().to_string();let binding=binding.clone();let coordinate=coordinate.clone();
             let bytes:Option<Vec<u8>>=tx.with_connection(move|c|Box::pin(async move{sqlx::query_scalar("SELECT publication FROM mdm_software_composition.projections WHERE tenant_id=$1::uuid AND binding=$2 AND coordinate=$3").bind(tenant).bind(binding).bind(coordinate).fetch_optional(c).await})).await?;
-            Ok(bytes.map(|b|b.try_into().map_err(|_|Error::Content)).transpose().map(|v|v.ok_or(Error::CandidateNotFound)).and_then(|v|v))
+            Ok(bytes.map(|b|b.try_into().map_err(|_|Error::Content)).transpose().map(|v|v.ok_or(Error::PublicationNotFound)).and_then(|v|v))
         })).await)?;
-        self.published(ring, id, cutoff).await
+        self.published(id, cutoff).await
     }
     pub async fn published_resource(
         &self,
-        ring: rel::Ring,
+
         resource: &str,
         version: &str,
         cutoff: Deadline,
     ) -> Result<Vec<PublishedSoftware>> {
-        let binding = self.sources.binding(ring).identity.clone();
+        let binding = self.sources.binding().identity.clone();
         let resource = resource.to_owned();
         let version = version.to_owned();
         let ids=settle(self.runtime.local_tx_with_context(self.tenant(),budget(cutoff),(binding,resource,version),|(binding,resource,version),tx|Box::pin(async move {
             let tenant=tx.tenant_id().to_string();let binding=binding.clone();let resource=resource.clone();let version=version.clone();
-            let bytes:Vec<Vec<u8>>=tx.with_connection(move|c|Box::pin(async move{sqlx::query_scalar("SELECT DISTINCT p.publication FROM mdm_software_composition.projections p JOIN mdm_software_composition.targets t ON t.tenant_id=p.tenant_id AND t.id LIKE ('p:'||encode(p.publication,'hex')||':%') JOIN mdm_software_composition.subjects s ON s.tenant_id=t.tenant_id AND s.candidate=t.candidate WHERE p.tenant_id=$1::uuid AND p.binding=$2 AND s.resource=$3 AND s.version=$4 LIMIT 4").bind(tenant).bind(binding).bind(resource).bind(version).fetch_all(c).await})).await?;
+            let bytes:Vec<Vec<u8>>=tx.with_connection(move|c|Box::pin(async move{sqlx::query_scalar("SELECT DISTINCT p.publication FROM mdm_software_composition.projections p JOIN mdm_software_composition.targets t ON t.tenant_id=p.tenant_id AND t.id LIKE ('p:'||encode(p.publication,'hex')||':%') JOIN mdm_software_composition.subjects s ON s.tenant_id=t.tenant_id AND s.record=t.record WHERE p.tenant_id=$1::uuid AND p.binding=$2 AND s.resource=$3 AND s.version=$4 LIMIT 4").bind(tenant).bind(binding).bind(resource).bind(version).fetch_all(c).await})).await?;
             let ids=bytes.into_iter().map(|b|b.try_into().map_err(|_|Error::Content)).collect::<Result<Vec<[u8;32]>>>();Ok(ids)
         })).await)?;
         let mut values = Vec::new();
         for id in ids {
-            match self.published(ring, id, cutoff).await {
+            match self.published(id, cutoff).await {
                 Ok(v) => values.push(v),
-                Err(Error::CandidateNotFound | Error::Content) => {}
+                Err(Error::PublicationNotFound | Error::Content) => {}
                 Err(e) => return Err(e),
             }
         }
@@ -180,14 +174,14 @@ impl PublicationService {
     /// Execute upload-pack while current publication and lifecycle locks remain held.
     pub async fn upload_pack(
         &self,
-        ring: rel::Ring,
+
         publication: [u8; 32],
         advertise: bool,
         v2: bool,
         input: &[u8],
         cutoff: Deadline,
     ) -> Result<Vec<u8>> {
-        let Driver::Brew { repo, .. } = &self.sources.binding(ring).driver else {
+        let Driver::Brew { repo, .. } = &self.sources.binding().driver else {
             return Err(Error::Unsupported);
         };
         settle(
@@ -195,11 +189,10 @@ impl PublicationService {
                 .local_tx_with_context(
                     self.tenant(),
                     budget(cutoff),
-                    (self, ring, publication, repo, input),
-                    |(s, ring, id, repo, input), tx| {
+                    (self, publication, repo, input),
+                    |(s, id, repo, input), tx| {
                         Box::pin(async move {
-                            let (_, _, target) =
-                                input!(s.exports().published_in(tx, *ring, *id).await?);
+                            let (_, _, target) = input!(s.exports().published_in(tx, *id).await?);
                             let snapshot = input!(
                                 rss_mdm_brew_source::CommitId::parse(
                                     target.snapshot.as_deref().ok_or_else(db::fault)?
@@ -218,17 +211,11 @@ impl PublicationService {
     }
 }
 
-pub(super) fn current_published(
-    candidate: &rel::Candidate,
-    ring: rel::Ring,
-    target: &db::Target,
-) -> bool {
-    let rel::RingState::Publication(current) = candidate.snapshot().ring_state(ring) else {
-        return false;
-    };
+pub(super) fn current_published(record: &rel::Publication, target: &db::Target) -> bool {
+    let current = &record.snapshot().attempt;
     current.id().digest().bytes() == target.publication
         && current.attempt == target.attempt
-        && candidate.snapshot().disposition == rel::Disposition::Active
+        && !record.snapshot().withdrawn
         && matches!(
             current.outcome,
             rel::PublicationOutcome::Reported(rel::PublicationResult::Applied(_))

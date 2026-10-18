@@ -2,100 +2,115 @@ use super::*;
 
 #[tokio::test]
 #[ignore = "real PG + content: make t2 MODULE=publication.withdrawal"]
-async fn quarantine_denies_published_reads_and_ring_cleanup_preserves_other_projections() {
+async fn one_target_withdrawal_preserves_an_independent_target() {
     let server = Server::new().await;
     let runtime = runtime().await;
-    let service = server.service(runtime.clone(), server.winget()).await;
-    let input = seed(runtime.clone(), &server, server.winget_document()).await;
-    service.create_candidate(&input, cutoff()).await.unwrap();
-    let test = submit_publication(&service, &input.candidate, rel::Ring::Test).await;
-    service
-        .publish(test.id(), 1, at(10), cutoff())
+    let first = server.service(runtime.clone(), server.winget()).await;
+    let a = seed(runtime.clone(), &server, server.winget_document()).await;
+    let digest = first.target()["digest"].clone();
+    let mut config = server.winget();
+    let SourceConfig::Winget(c) = &mut config else {
+        panic!()
+    };
+    c.base.push_str("secondary/");
+    let second = PublicationService::connect(
+        host(runtime.clone(), audit_store().await).await,
+        tenant(),
+        format!("{}-secondary", server.logical),
+        config,
+        actors(),
+        cutoff(),
+    )
+    .await
+    .unwrap();
+    let mut b = a.clone();
+    b.record = rel::PublicationKey::new(tenant(), unique()).unwrap();
+    b.request = rel::RequestId::new(tenant(), uuid::Uuid::new_v4().to_string()).unwrap();
+    let pb = submit_publication(&second, &b).await;
+    second
+        .publish(pb.id(), pb.attempt, at(10), cutoff())
         .await
         .unwrap();
-    let pilot = submit_publication(&service, &input.candidate, rel::Ring::Pilot).await;
-    service
-        .publish(pilot.id(), 1, at(10), cutoff())
+    let pa = submit_publication(&first, &a).await;
+    first
+        .publish(pa.id(), pa.attempt, at(10), cutoff())
         .await
         .unwrap();
-    assert!(
-        service
-            .published(rel::Ring::Test, test.id().digest().bytes(), cutoff())
-            .await
-            .is_ok()
-    );
-    assert!(
-        service
-            .published(rel::Ring::Pilot, pilot.id().digest().bytes(), cutoff())
-            .await
-            .is_ok()
-    );
-    assert!(matches!(
-        service
-            .published(rel::Ring::Pilot, test.id().digest().bytes(), cutoff())
-            .await,
-        Err(Error::CandidateNotFound)
-    ));
-    let request = request_for(&service, &input.candidate).await;
+    assert_eq!(first.target()["digest"], digest);
+    assert_ne!(pa.id(), pb.id());
+    let r = request_for(&first, &a.record).await;
     assert_eq!(
-        service
-            .withdraw(&input.candidate, rel::Ring::Test, &request, cutoff())
+        first
+            .withdraw(&a.record, &r, &TestPublishAccess, cutoff())
             .await
             .unwrap()
             .outcome,
         Withdrawal::Complete
     );
-    // Candidate quarantine fences reads in every ring, while each projection is removed by its own intent.
-    assert!(matches!(
-        service
-            .published(rel::Ring::Test, test.id().digest().bytes(), cutoff())
-            .await,
-        Err(Error::CandidateNotFound)
-    ));
-    assert!(matches!(
-        service
-            .published(rel::Ring::Pilot, pilot.id().digest().bytes(), cutoff())
-            .await,
-        Err(Error::CandidateNotFound)
-    ));
     assert!(
-        service
-            .published_page(rel::Ring::Test, "", 100, cutoff())
+        first
+            .published(pa.id().digest().bytes(), cutoff())
+            .await
+            .is_err()
+    );
+    assert!(
+        second
+            .published(pb.id().digest().bytes(), cutoff())
+            .await
+            .is_ok()
+    );
+    assert!(
+        first
+            .published_page("", 100, cutoff())
             .await
             .unwrap()
             .is_empty()
     );
-    let retained = service
-        .published_page(rel::Ring::Pilot, "", 100, cutoff())
-        .await
-        .unwrap();
-    assert_eq!(retained.len(), 1);
-    assert_eq!(retained[0].1, pilot.id().digest().bytes());
+    assert_eq!(
+        second
+            .published_page("", 100, cutoff())
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
     assert!(
-        service
-            .withdraw(&input.candidate, rel::Ring::Test, &request, cutoff())
+        first
+            .withdraw(&a.record, &r, &TestPublishAccess, cutoff())
             .await
             .unwrap()
             .replayed
     );
-    let request = request_for(&service, &input.candidate).await;
-    assert_eq!(
-        service
-            .withdraw(&input.candidate, rel::Ring::Pilot, &request, cutoff())
+    withdraw_version(&a).await;
+    assert!(
+        second
+            .published(pb.id().digest().bytes(), cutoff())
             .await
-            .unwrap()
-            .outcome,
+            .is_err()
+    );
+    let work = second
+        .reconciliation_page("", 32, cutoff())
+        .await
+        .unwrap()
+        .work;
+    assert!(
+        work.iter()
+            .any(|w| w.withdrawal && w.publication == pb.id())
+    );
+    assert_eq!(
+        second
+            .reconcile_withdrawal(pb.id(), pb.attempt, cutoff())
+            .await
+            .unwrap(),
         Withdrawal::Complete
     );
     assert!(
-        service
-            .published_page(rel::Ring::Pilot, "", 100, cutoff())
+        second
+            .published_page("", 100, cutoff())
             .await
             .unwrap()
             .is_empty()
     );
-    assert_eq!(server.state.lock().unwrap().posts, 0);
-    assert_eq!(server.state.lock().unwrap().deletes, 0);
     runtime.close().await;
 }
 
@@ -106,12 +121,11 @@ async fn unstarted_withdrawal_cancels_original_attempt_without_publishing() {
     let runtime = runtime().await;
     let service = server.service(runtime.clone(), server.winget()).await;
     let input = seed(runtime.clone(), &server, server.winget_document()).await;
-    service.create_candidate(&input, cutoff()).await.unwrap();
-    let p = submit_publication(&service, &input.candidate, rel::Ring::Test).await;
-    let request = request_for(&service, &input.candidate).await;
+    let p = submit_publication(&service, &input).await;
+    let request = request_for(&service, &input.record).await;
     assert_eq!(
         service
-            .withdraw(&input.candidate, rel::Ring::Test, &request, cutoff())
+            .withdraw(&input.record, &request, &TestPublishAccess, cutoff())
             .await
             .unwrap()
             .outcome,
@@ -125,10 +139,8 @@ async fn unstarted_withdrawal_cancels_original_attempt_without_publishing() {
         rel::PublicationOutcome::Reported(rel::PublicationResult::NotApplied(_))
     ));
     assert!(matches!(
-        service
-            .published(rel::Ring::Test, p.id().digest().bytes(), cutoff())
-            .await,
-        Err(Error::CandidateNotFound)
+        service.published(p.id().digest().bytes(), cutoff()).await,
+        Err(Error::PublicationNotFound)
     ));
     assert!(
         service

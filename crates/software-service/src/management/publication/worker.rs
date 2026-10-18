@@ -65,7 +65,7 @@ fn failure_event(
         error = category;
     }
     let category = match error {
-        E::CandidateNotFound => "candidate_not_found",
+        E::PublicationNotFound => "record_not_found",
         E::Unsupported => "unsupported",
         E::Input => "input",
         E::Identity => "identity",

@@ -149,7 +149,7 @@ pub fn validate_export_context(
         && !context
             .source_credentials
             .iter()
-            .any(|c| c.source == binding.source && c.reference == *credential_reference)
+            .any(|c| c.source == binding.target && c.reference == *credential_reference)
     {
         return Err(WireError::InvalidValue);
     }

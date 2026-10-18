@@ -1,6 +1,6 @@
 # rss-mdm-software-service
 
-产品内企业软件准入与外部 publication 协调。Resource 是唯一不可变定义权威，目录生命周期与外部三环发布分别持有可用性和发布结果。管理操作与内容协议见[资源与软件](../../docs/guides/resources-and-software.md)。
+产品内企业软件准入与外部 publication 协调。Resource 是唯一不可变定义权威，目录生命周期与实际目标发布分别持有可用性和发布结果。管理操作与内容协议见[资源与软件](../../docs/guides/resources-and-software.md)。
 
 `catalog::Catalog` 借用宿主 `PgTransaction`，不提交或关闭宿主 runtime；状态、原操作回执、审计及 Outbox 由同一事务结算。`ContentPort` 在事务外验证并固定完整产物，`VerifiedContent` 必须持有这些文件直到启用或发布事务结束。`resolve_admitted_in` 返回当前准入的精确变体及来源，`recheck_admitted_in` 拒绝用新生命周期代次替换已冻结绑定。
 

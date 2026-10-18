@@ -41,11 +41,11 @@ impl PublicationService {
             for key in keys {
                 let withdrawal=key.starts_with("w:");let table=if withdrawal{db::Table::Withdraw}else{db::Table::Publish};
                 let call=db::call(tx,table,&key).await?.ok_or_else(db::fault)?;
-                if !s.sources.bindings.iter().any(|b|b.identity==call.target.binding){continue;}
-                let candidate=input!(rel::CandidateId::new(s.tenant(),&call.target.candidate).map_err(|_|Error::Identity));
-                let candidate=input!(s.releases.get_in(tx,&candidate).await?.map_err(|_|Error::Content)).ok_or_else(db::fault)?;
-                let publication=match db::core_publication(&candidate,&call.target) {Ok(value)=>value,Err(Error::Conflict)=>continue,Err(error)=>return Ok(Err(error))};
-                if !withdrawal&&(candidate.snapshot().disposition!=rel::Disposition::Active||matches!(publication.outcome,rel::PublicationOutcome::Reported(rel::PublicationResult::NotApplied(_)))){continue;}
+                if !(s.sources.binding.identity==call.target.binding){continue;}
+                let record=input!(rel::PublicationKey::new(s.tenant(),&call.target.record).map_err(|_|Error::Identity));
+                let record=input!(s.releases.get_in(tx,&record).await?.map_err(|_|Error::Content)).ok_or_else(db::fault)?;
+                let publication=match db::core_publication(&record,&call.target) {Ok(value)=>value,Err(Error::Conflict)=>continue,Err(error)=>return Ok(Err(error))};
+                if !withdrawal&&(db::call(tx,db::Table::Withdraw,&call.target.withdrawal_key()).await?.is_some()||record.snapshot().withdrawn||matches!(publication.outcome,rel::PublicationOutcome::Reported(rel::PublicationResult::NotApplied(_)))){continue;}
                 work.push(PublicationWork{cursor:key,publication:call.target.publication_id(),attempt:call.target.attempt,withdrawal});
             }
             Ok(Ok(PublicationWorkPage{next,work}))

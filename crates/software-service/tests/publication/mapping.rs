@@ -2,7 +2,7 @@ use super::*;
 
 #[tokio::test]
 #[ignore = "real PG + HTTPS: make t2 MODULE=publication.mapping"]
-async fn candidate_receipts_and_persisted_source_admission() {
+async fn record_receipts_and_persisted_source_admission() {
     let audit_store = audit_store().await;
     let server = Server::new().await;
     let runtime = runtime().await;
@@ -11,25 +11,37 @@ async fn candidate_receipts_and_persisted_source_admission() {
     let original = input.resource_digest;
     input.resource_digest = [0; 32];
     assert!(matches!(
-        service.create_candidate(&input, cutoff()).await,
+        service
+            .submit(&bound_input(&service, &input), &TestPublishAccess, cutoff())
+            .await,
         Err(Error::Content)
     ));
     input.resource_digest = original;
-    let (receipt, replayed) = service.create_candidate(&input, cutoff()).await.unwrap();
+    let (receipt, replayed) = service
+        .submit(&bound_input(&service, &input), &TestPublishAccess, cutoff())
+        .await
+        .unwrap();
     assert!(!replayed);
     assert_eq!(
-        service.create_candidate(&input, cutoff()).await.unwrap(),
+        service
+            .submit(&bound_input(&service, &input), &TestPublishAccess, cutoff())
+            .await
+            .unwrap(),
         (receipt, true)
     );
     input.expected_resource_revision += 1;
     assert!(matches!(
-        service.create_candidate(&input, cutoff()).await,
+        service
+            .submit(&bound_input(&service, &input), &TestPublishAccess, cutoff())
+            .await,
         Err(Error::Conflict)
     ));
-    input.candidate = rel::CandidateId::new(tenant(), unique()).unwrap();
-    input.request = rel::RequestId::new(tenant(), unique()).unwrap();
+    input.record = rel::PublicationKey::new(tenant(), unique()).unwrap();
+    input.request = rel::RequestId::new(tenant(), uuid::Uuid::new_v4().to_string()).unwrap();
     assert!(matches!(
-        service.create_candidate(&input, cutoff()).await,
+        service
+            .submit(&bound_input(&service, &input), &TestPublishAccess, cutoff())
+            .await,
         Err(Error::Conflict)
     ));
     input.expected_resource_revision -= 1;
@@ -74,7 +86,10 @@ async fn candidate_receipts_and_persisted_source_admission() {
         .is_err()
     );
     let mut swapped = server.winget();
-    std::mem::swap(&mut swapped.test, &mut swapped.pilot);
+    let SourceConfig::Winget(c) = &mut swapped else {
+        panic!()
+    };
+    c.artifacts_base.push_str("changed/");
     assert!(
         PublicationService::connect(
             host(runtime.clone(), audit_store.clone()).await,

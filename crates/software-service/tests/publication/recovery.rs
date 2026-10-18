@@ -8,9 +8,8 @@ async fn publication_result_commit_unknown_recovers_one_projection_and_audit() {
     let runtime = runtime_at(Some(proxy.port), "mdm_software_driver").await;
     let service = server.service(runtime.clone(), server.winget()).await;
     let input = seed(runtime.clone(), &server, server.winget_document()).await;
-    service.create_candidate(&input, cutoff()).await.unwrap();
-    let p = submit_publication(&service, &input.candidate, rel::Ring::Test).await;
-    let gate = ack::CommitGate::start(input.candidate.value()).await;
+    let p = submit_publication(&service, &input).await;
+    let gate = ack::CommitGate::start(input.record.value()).await;
     let cutoff =
         rss_request_context::Deadline::from_timeout(&Timer, std::time::Duration::from_secs(7))
             .unwrap();
@@ -39,7 +38,7 @@ async fn publication_result_commit_unknown_recovers_one_projection_and_audit() {
         sql(&format!(
             "SELECT jsonb_build_object('receipts',(SELECT jsonb_agg(to_jsonb(r) ORDER BY id) FROM mdm_software_release.requests r WHERE tenant_id='{}' AND owner='{}'),'slots',(SELECT jsonb_agg(to_jsonb(s) ORDER BY s.binding,s.coordinate) FROM mdm_software_composition.slots s JOIN mdm_software_composition.projections p USING(tenant_id,binding,coordinate) WHERE publication=decode('{publication}','hex')),'projections',(SELECT jsonb_agg(to_jsonb(p) ORDER BY binding) FROM mdm_software_composition.projections p WHERE tenant_id='{}' AND publication=decode('{publication}','hex')))",
             tenant(),
-            input.candidate.value(),
+            input.record.value(),
             tenant()
         ))
     };
@@ -55,22 +54,18 @@ async fn publication_result_commit_unknown_recovers_one_projection_and_audit() {
     assert_eq!(facts["projections"].as_array().unwrap().len(), 1);
     assert_eq!(facts["slots"].as_array().unwrap().len(), 1);
     assert!(facts["slots"][0]["operation"].is_null());
-    assert_publication_audit(&p, &input.candidate, "applied");
+    assert_publication_audit(&p, &input.record, "applied");
     assert_eq!(
         audit_records()
             .iter()
             .filter(|r| r.event().facts().action().as_str() == "software_result"
-                && r.event().facts().resource().id().as_str() == input.candidate.value())
+                && r.event().facts().resource().id().as_str() == input.record.value())
             .count(),
         1
     );
     assert!(
         service
-            .published(
-                rel::Ring::Test,
-                p.id().digest().bytes(),
-                publication_support::pg::cutoff()
-            )
+            .published(p.id().digest().bytes(), publication_support::pg::cutoff())
             .await
             .is_ok()
     );
@@ -86,11 +81,11 @@ async fn publication_result_commit_unknown_recovers_one_projection_and_audit() {
         audit_records()
             .iter()
             .filter(|r| r.event().facts().action().as_str() == "software_result"
-                && r.event().facts().resource().id().as_str() == input.candidate.value())
+                && r.event().facts().resource().id().as_str() == input.record.value())
             .count(),
         1
     );
-    let target:serde_json::Value=serde_json::from_str(&sql(&format!("SELECT convert_from(document,'UTF8') FROM mdm_software_composition.targets WHERE candidate='{}' AND left(id,2)='p:'",input.candidate.value()))).unwrap();
+    let target:serde_json::Value=serde_json::from_str(&sql(&format!("SELECT convert_from(document,'UTF8') FROM mdm_software_composition.targets WHERE record='{}' AND left(id,2)='p:'",input.record.value()))).unwrap();
     let binding = target["binding"]
         .as_array()
         .unwrap()
@@ -109,7 +104,7 @@ async fn publication_result_commit_unknown_recovers_one_projection_and_audit() {
         )),
         "1"
     );
-    assert_publication_audit(&p, &input.candidate, "applied");
+    assert_publication_audit(&p, &input.record, "applied");
     assert_eq!(
         committed(),
         before,
