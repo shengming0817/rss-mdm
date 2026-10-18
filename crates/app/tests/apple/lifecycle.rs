@@ -163,7 +163,7 @@ impl Peer {
     }
     pub async fn next_security(&self) -> Result<(Uuid, plist::Dictionary)> {
         command(
-            &self.next_bytes_mode("SecurityInfo", true).await?,
+            &self.next_bytes_mode("SecurityInfo", true, None).await?,
             "SecurityInfo",
         )
     }
