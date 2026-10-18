@@ -84,11 +84,6 @@ fn direct_acceptance_has_one_immutable_target_and_attempt() {
     assert_eq!(a.snapshot().attempt.attempt, 1);
     assert_eq!(a.snapshot().attempt.outcome, PublicationOutcome::Pending);
     assert_ne!(a.snapshot().attempt.id(), b.snapshot().attempt.id());
-    let mut withdrawn = a.clone();
-    apply(&mut withdrawn, "withdraw", Operation::Withdraw);
-    assert!(withdrawn.snapshot().withdrawn);
-    assert!(!b.snapshot().withdrawn);
-    assert_eq!(a.snapshot().attempt, withdrawn.snapshot().attempt);
 }
 #[test]
 fn unknown_cannot_retry_and_late_attempt_cannot_overwrite() {

@@ -862,29 +862,14 @@ impl PublicationService {
                             let Some(call) = db::call(tx, Table::Withdraw, key).await? else {
                                 return Ok(Ok(None));
                             };
-                            if call.complete {
-                                return Ok(Ok(Some(Withdrawal::Complete)));
-                            }
                             let record = input!(
                                 rel::PublicationKey::new(s.tenant(), &call.target.record)
                                     .map_err(|cause| Error::Identity
                                         .context("driver::withdrawal_status", cause))
                             );
-                            let c =
-                                input!(s.releases.get_in(tx, &record).await?.map_err(|cause| {
-                                    Error::Conflict.context("driver::withdrawal_status", cause)
-                                }))
-                                .ok_or_else(db::fault)?;
-                            let publication = input!(db::core_publication(&c, &call.target));
-                            let status = match publication.outcome {
-                                rel::PublicationOutcome::Reported(
-                                    rel::PublicationResult::Applied(_),
-                                ) => withdrawal_progress(&call),
-                                rel::PublicationOutcome::Reported(
-                                    rel::PublicationResult::NotApplied(_),
-                                ) => Withdrawal::NotPublished,
-                                _ => Withdrawal::WaitingPublication,
-                            };
+                            let c = input!(s.releases.get_in(tx, &record).await?
+                                .map_err(|_| Error::Conflict)).ok_or_else(db::fault)?;
+                            let status = input!(withdrawal_state(&c, &call));
                             Ok(Ok(Some(status)))
                         })
                     },
@@ -1212,6 +1197,9 @@ impl PublicationService {
                             let call = db::call(tx, Table::Withdraw, key)
                                 .await?
                                 .ok_or_else(db::fault)?;
+                            if call.complete {
+                                return Ok(Ok(()));
+                            }
                             db::complete_noop(tx, key).await?;
                             let fact = db::fact(
                                 tx.tenant_id(),
@@ -1227,7 +1215,7 @@ impl PublicationService {
                                 &db::encode(&call.target)?,
                             )?;
                             s.audit_store
-                                .append_in(tx, &fact, call.complete)
+                                .append_in(tx, &fact, false)
                                 .await
                                 .map_err(rss_transactional_messaging_postgres::PgError::from)?;
                             Ok(Ok(()))
@@ -1388,7 +1376,7 @@ impl PublicationService {
                                     &db::encode(t)?,
                                 )?;
                                 s.audit_store
-                                    .append_in(tx, &fact, call.complete)
+                                    .append_in(tx, &fact, false)
                                     .await
                                     .map_err(rss_transactional_messaging_postgres::PgError::from)?;
                                 Ok(Ok(()))
@@ -1499,7 +1487,7 @@ impl PublicationService {
                             &db::encode(t)?,
                         )?;
                         s.audit_store
-                            .append_in(tx, &fact, false)
+                            .append_in(tx, &fact, call.complete)
                             .await
                             .map_err(rss_transactional_messaging_postgres::PgError::from)?;
                         Ok(Ok(()))
@@ -1517,4 +1505,22 @@ fn withdrawal_progress(call: &Call) -> Withdrawal {
     } else {
         Withdrawal::AwaitingConfirmation
     }
+}
+
+// Shared by detail and page readers; neither path performs source I/O.
+pub(super) fn withdrawal_state(record: &rel::Publication, call: &Call) -> Result<Withdrawal> {
+    let publication = db::core_publication(record, &call.target)?;
+    Ok(if call.complete {
+        Withdrawal::Complete
+    } else {
+        match publication.outcome {
+            rel::PublicationOutcome::Reported(rel::PublicationResult::Applied(_)) => {
+                withdrawal_progress(call)
+            }
+            rel::PublicationOutcome::Reported(rel::PublicationResult::NotApplied(_)) => {
+                Withdrawal::NotPublished
+            }
+            _ => Withdrawal::WaitingPublication,
+        }
+    })
 }

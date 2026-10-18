@@ -63,14 +63,13 @@ pub async fn read(
     audit.set_action("management_read");
     audit.target(&id);
     authorize(authorization, proof, Permission::ReleaseRead).await?;
-    let view = read_view(directory, id, true).await?;
+    let view = read_view(directory, id).await?;
     authorize(authorization, proof, Permission::ReleaseRead).await?;
     Ok(view)
 }
 async fn read_view(
     directory: &PublicationDirectory,
     id: String,
-    include_document: bool,
 ) -> Result<wire::Publication, Error> {
     let (target, resource, version) = directory.coordinate(&id).await?;
     let service = directory.services.get(&target).ok_or(Error::Publication(
@@ -84,30 +83,34 @@ async fn read_view(
         .ok_or(Error::Publication(
             super::error::PublicationError::MissingPublication,
         ))?;
+    let p = &record.snapshot().attempt;
+    let withdrawal = service.withdrawal_status(p.id(), p.attempt, cutoff())
+        .await.map_err(failure)?;
+    let document = Some(service.document(&key, cutoff()).await.map_err(failure)?);
+    view(id, (target, resource, version), &record, withdrawal, document)
+}
+fn view(
+    id: String,
+    (target, resource, version): (String, String, String),
+    record: &rel::Publication,
+    withdrawal: Option<service::Withdrawal>,
+    document: Option<service::ExportDocument>,
+) -> Result<wire::Publication, Error> {
     let snapshot = record.snapshot();
     let p = &snapshot.attempt;
     if p.binding.target.value() != target {
         return Err(Error::Conflict);
     }
-    let withdrawal = service
-        .withdrawal_status(p.id(), p.attempt, cutoff())
-        .await
-        .map_err(failure)?
-        .map(|w| {
-            match w {
-                service::Withdrawal::Complete => "withdrawn",
-                service::Withdrawal::NotPublished => "not_published",
-                service::Withdrawal::WaitingPublication => "waiting_publication",
-                service::Withdrawal::PreflightRetryable => "preflight_retryable",
-                service::Withdrawal::AwaitingConfirmation => "unknown",
-            }
-            .to_owned()
-        });
-    let document = if include_document {
-        Some(service.document(&key, cutoff()).await.map_err(failure)?)
-    } else {
-        None
-    };
+    let withdrawal = withdrawal.map(|w| {
+        match w {
+            service::Withdrawal::Complete => "withdrawn",
+            service::Withdrawal::NotPublished => "not_published",
+            service::Withdrawal::WaitingPublication => "waiting_publication",
+            service::Withdrawal::PreflightRetryable => "preflight_retryable",
+            service::Withdrawal::AwaitingConfirmation => "unknown",
+        }
+        .to_owned()
+    });
     Ok(wire::Publication {
         id,
         revision: snapshot.revision,
@@ -133,6 +136,7 @@ async fn read_view(
         document,
     })
 }
+
 pub async fn write(
     directory: &PublicationDirectory,
     authorization: &rss_mdm_authorization_service::Store,
@@ -346,7 +350,7 @@ pub async fn write(
         }
     }
     authorize(authorization, proof, permission).await?;
-    read_view(directory, id, true).await
+    read_view(directory, id).await
 }
 pub struct PublicationDirectory {
     pub services: std::collections::BTreeMap<String, Arc<service::PublicationService>>,
@@ -430,27 +434,48 @@ pub async fn list(
     }
     authorize(authorization, proof, Permission::ReleaseRead).await?;
     audit.set_action("management_read");
-    let limit = q.limit;
-    let ids=crate::management::transaction::inspect(&directory.runtime,directory.tenant,q,|q,tx|Box::pin(async move {
-        let tenant=tx.tenant_id().to_string();let after=q.after.clone();let target=q.target.clone();let resource=q.resource.clone();let version=q.version.clone();let operation=q.operation_id.map(|id|id.to_string());let limit=q.limit;
-        Ok(tx.with_connection(move|c|Box::pin(async move {
-            sqlx::query_scalar::<_,String>("SELECT record FROM mdm_software_composition.subjects s WHERE tenant_id=$1::uuid AND ($2::text IS NULL OR record COLLATE \"C\">$2) AND ($3::text IS NULL OR convert_from(document,'UTF8')::jsonb->>'target'=$3) AND ($4::text IS NULL OR resource=$4) AND ($5::text IS NULL OR version=$5) AND ($6::text IS NULL OR EXISTS(SELECT 1 FROM mdm_publication.operations o WHERE o.tenant_id=s.tenant_id AND o.id::text=$6 AND o.response->>'record'=s.record)) ORDER BY record COLLATE \"C\" LIMIT $7")
-                .bind(tenant).bind(after).bind(target).bind(resource).bind(version).bind(operation).bind((limit+1)as i64).fetch_all(c).await
-        })).await?)
-    }),crate::management::transaction::TransactionOwner::Publication).await?;
-    let next = if ids.len() > limit {
-        ids.get(limit - 1).cloned()
-    } else {
-        None
-    };
-    let mut items = Vec::new();
-    for id in ids.into_iter().take(limit) {
-        let view = read_view(directory, id, false).await?;
-        items.push(view);
-    }
+    let (items, next) = crate::management::transaction::inspect(
+        &directory.runtime, directory.tenant, (directory, q), |(directory, q), tx| Box::pin(async move {
+            directory.audit_store.lock_in(tx).await.map_err(Error::from)?;
+            crate::catalog::storage::lock(tx).await.map_err(|_| Error::Conflict)?;
+            let tenant = tx.tenant_id().to_string();
+            let after = q.after.clone();
+            let target = q.target.clone();
+            let resource = q.resource.clone();
+            let version = q.version.clone();
+            let operation = q.operation_id.map(|id| id.to_string());
+            let limit = q.limit;
+            let mut rows = tx.with_connection(move |c| Box::pin(async move {
+                sqlx::query_as::<_, (String, String, String, String)>(
+                    r#"SELECT record, convert_from(document,'UTF8')::jsonb->>'target', resource, version
+                       FROM mdm_software_composition.subjects s
+                       WHERE tenant_id=$1::uuid AND ($2::text IS NULL OR record COLLATE "C">$2)
+                         AND ($3::text IS NULL OR convert_from(document,'UTF8')::jsonb->>'target'=$3)
+                         AND ($4::text IS NULL OR resource=$4) AND ($5::text IS NULL OR version=$5)
+                         AND ($6::text IS NULL OR EXISTS(
+                             SELECT 1 FROM mdm_publication.operations o WHERE o.tenant_id=s.tenant_id
+                             AND o.id::text=$6 AND o.response->>'record'=s.record))
+                       ORDER BY record COLLATE "C" LIMIT $7"#)
+                    .bind(tenant).bind(after).bind(target).bind(resource).bind(version)
+                    .bind(operation).bind((limit+1) as i64).fetch_all(c).await
+            })).await?;
+            let next = if rows.len() > limit { rows.get(limit-1).map(|row| row.0.clone()) } else { None };
+            rows.truncate(limit);
+            let mut items = Vec::with_capacity(rows.len());
+            for (id, target, resource, version) in rows {
+                let service = directory.services.get(&target).ok_or(Error::Publication(
+                    super::error::PublicationError::MissingSource))?;
+                let key = rel::PublicationKey::new(directory.tenant, &id).map_err(|_| Error::Malformed)?;
+                let (record, withdrawal) = service.record_status_in(tx, &key).await?.map_err(failure)?;
+                items.push(view(id, (target, resource, version), &record, withdrawal, None)?);
+            }
+            Ok((items, next))
+        }), crate::management::transaction::TransactionOwner::Publication,
+    ).await?;
     authorize(authorization, proof, Permission::ReleaseRead).await?;
     Ok(json!({"items":items,"nextCursor":next}))
 }
+
 pub async fn targets(
     directory: &PublicationDirectory,
     authorization: &rss_mdm_authorization_service::Store,

@@ -9,7 +9,22 @@ use sha2::{Digest, Sha256};
 async fn publication_http_authority_receipts_and_public_native_binding() -> Result<()> {
     let server = publication_support::Server::new().await;
     let base: Value = serde_json::from_slice(&std::fs::read(std::env::var("MDM_TEST_CONFIG")?)?)?;
-    let cfg = publication_http::configuration(&base, &server);
+    let mut cfg = publication_http::configuration(&base, &server);
+    let secondary = format!("{}-secondary", server.logical);
+    let mut target_config = cfg["flow"]["publication"]["sources"][0].clone();
+    target_config["name"] = json!(secondary);
+    target_config["target"]["Winget"]["base"] = json!(format!(
+        "{}/api/v1/software/native/sources/{secondary}/",
+        base["product_origin"].as_str().unwrap()
+    ));
+    target_config["target"]["Winget"]["artifacts_base"] = json!(format!(
+        "{}/api/v1/software/native/sources/{secondary}/artifacts/",
+        base["product_origin"].as_str().unwrap()
+    ));
+    cfg["flow"]["publication"]["sources"]
+        .as_array_mut()
+        .unwrap()
+        .push(target_config);
     let mut local = execution::context(Platform::Windows);
     local["interactiveUser"] = json!({"generatedUid":null,"identity":"S-1-5-21-100-200-300-1001","sessionId":Uuid::new_v4(),"administrator":true});
     let mut f = execution::Fixture::with_config(
@@ -96,18 +111,85 @@ async fn publication_http_authority_receipts_and_public_native_binding() -> Resu
         )
         .await?;
     ensure!(targets.0 == StatusCode::OK && targets.1["items"].as_array().unwrap().len() == 1);
-    let target = &targets.1["items"][0];
+    let target = targets.1["items"][0].clone();
     ensure!(target["id"] == server.logical);
-    let sources = f
-        .author
-        .call(
-            &f.router,
-            Method::GET,
-            "/api/v1/software/sources?limit=1",
-            None,
+    ensure!(targets.1["nextCursor"] == server.logical);
+    let target_page = discovery_page(
+        &mut f,
+        &format!(
+            "/api/v1/software/publication-targets?limit=1&after={}",
+            server.logical
+        ),
+    )
+    .await?;
+    ensure!(
+        target_page["items"].as_array().unwrap().len() == 1
+            && target_page["items"][0]["id"] == secondary
+    );
+    ensure!(target_page["nextCursor"].is_null());
+    let secondary_target = target_page["items"][0].clone();
+    let empty = discovery_page(
+        &mut f,
+        &format!("/api/v1/software/publication-targets?after={secondary}"),
+    )
+    .await?;
+    ensure!(empty["items"] == json!([]) && empty["nextCursor"].is_null());
+    let source = Uuid::new_v4().to_string();
+    for revision in ["a", "b"] {
+        write(&mut f.author, &f.router, &format!("/api/v1/software/sources/{source}/revisions/{revision}"), 0,
+            json!({"action":"register","definition":{"id":source,"revision":revision,"protocol":{"kind":"private"}}})).await?;
+    }
+    write(
+        &mut f.author,
+        &f.router,
+        &format!("/api/v1/software/sources/{source}/revisions/b"),
+        1,
+        json!({"action":"disable"}),
+    )
+    .await?;
+    let source_url = format!("/api/v1/software/sources?source={source}&limit=1");
+    let sources = discovery_page(&mut f, &source_url).await?;
+    ensure!(
+        sources["items"].as_array().unwrap().len() == 1
+            && sources["items"][0]["source"]["revision"] == "a"
+    );
+    let cursor = sources["nextCursor"].as_str().unwrap();
+    let query = url::form_urlencoded::Serializer::new(String::new())
+        .append_pair("after", cursor)
+        .finish();
+    let sources = discovery_page(&mut f, &format!("{source_url}&{query}")).await?;
+    ensure!(
+        sources["items"].as_array().unwrap().len() == 1
+            && sources["items"][0]["source"]["revision"] == "b"
+    );
+    ensure!(sources["nextCursor"].is_null());
+    for (filter, expected) in [
+        ("protocol=private", 2),
+        ("protocol=winget_rest", 0),
+        ("state=enabled", 1),
+        ("state=disabled", 1),
+    ] {
+        let page = discovery_page(
+            &mut f,
+            &format!("/api/v1/software/sources?source={source}&{filter}"),
         )
         .await?;
-    ensure!(sources.0 == StatusCode::OK && !sources.1["items"].as_array().unwrap().is_empty());
+        ensure!(
+            page["items"].as_array().unwrap().len() == expected,
+            "source filter {filter}: {page}"
+        );
+        if expected == 1 {
+            ensure!(
+                page["items"][0]["lifecycle"]["state"] == filter.strip_prefix("state=").unwrap()
+            );
+        }
+    }
+    let missing = discovery_page(
+        &mut f,
+        &format!("/api/v1/software/sources?source={}", Uuid::new_v4()),
+    )
+    .await?;
+    ensure!(missing["items"] == json!([]));
     let input = json!({"action":"publish","resource":resource,"version":"v1","expectedResourceRevision":2,"resourceDigest":catalog.1["resourceDigest"],"target":server.logical,"targetDigest":target["digest"]});
     let operation = Uuid::new_v4();
     let request = json!({"operationId":operation,"expectedRevision":0,"input":input});
@@ -175,6 +257,68 @@ async fn publication_http_authority_receipts_and_public_native_binding() -> Resu
         )
         .await?;
     ensure!(found.0 == StatusCode::OK && found.1["items"][0]["id"] == operation.to_string());
+    let other_operation = Uuid::new_v4();
+    let mut other_input = input.clone();
+    other_input["target"] = json!(secondary);
+    other_input["targetDigest"] = secondary_target["digest"].clone();
+    let other = f
+        .author
+        .call(
+            &f.router,
+            Method::POST,
+            collection,
+            Some(json!({"operationId":other_operation,"expectedRevision":0,"input":other_input})),
+        )
+        .await?;
+    ensure!(other.0 == StatusCode::ACCEPTED, "second target: {other:?}");
+    let mut ids = [operation.to_string(), other_operation.to_string()];
+    ids.sort();
+    let first_page =
+        discovery_page(&mut f, &format!("{collection}?resource={resource}&limit=1")).await?;
+    ensure!(
+        first_page["items"].as_array().unwrap().len() == 1
+            && first_page["items"][0]["id"] == ids[0]
+    );
+    ensure!(first_page["nextCursor"] == ids[0] && first_page["items"][0].get("document").is_none());
+    let last_page = discovery_page(
+        &mut f,
+        &format!("{collection}?resource={resource}&limit=1&after={}", ids[0]),
+    )
+    .await?;
+    ensure!(
+        last_page["items"].as_array().unwrap().len() == 1 && last_page["items"][0]["id"] == ids[1]
+    );
+    ensure!(last_page["nextCursor"].is_null());
+    for (filter, expected) in [
+        (format!("target={}", server.logical), Some(operation)),
+        (format!("target={secondary}"), Some(other_operation)),
+        ("target=missing".into(), None),
+        ("version=v1".into(), Some(operation)),
+        ("version=missing".into(), None),
+        (format!("operationId={operation}"), Some(operation)),
+        (format!("operationId={}", Uuid::new_v4()), None),
+    ] {
+        let page = discovery_page(
+            &mut f,
+            &format!("{collection}?resource={resource}&{filter}"),
+        )
+        .await?;
+        let items = page["items"].as_array().unwrap();
+        if let Some(id) = expected {
+            ensure!(
+                items.iter().any(|item| item["id"] == id.to_string()),
+                "record filter {filter}: {page}"
+            );
+            if !filter.starts_with("version=") {
+                ensure!(items.len() == 1);
+            }
+        } else {
+            ensure!(items.is_empty(), "record filter {filter}: {page}");
+        }
+    }
+    let missing =
+        discovery_page(&mut f, &format!("{collection}?resource={}", Uuid::new_v4())).await?;
+    ensure!(missing["items"] == json!([]));
     let id = pending["publication"]
         .as_array()
         .unwrap()
@@ -429,4 +573,13 @@ async fn publication_http_authority_receipts_and_public_native_binding() -> Resu
     );
     crate::test_support::stop_worker(stack).await?;
     Ok(())
+}
+
+async fn discovery_page(f: &mut execution::Fixture, url: &str) -> Result<Value> {
+    let response = f.author.call(&f.router, Method::GET, url, None).await?;
+    ensure!(
+        response.0 == StatusCode::OK,
+        "discovery {url}: {response:?}"
+    );
+    Ok(response.1)
 }

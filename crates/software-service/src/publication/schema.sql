@@ -17,7 +17,7 @@ CREATE TABLE mdm_software_composition.subjects (
 CREATE INDEX resource_references ON mdm_software_composition.subjects(tenant_id,resource,version);
 CREATE TABLE mdm_software_composition.authorities (
  tenant_id uuid NOT NULL, software bytea NOT NULL CHECK(octet_length(software)=32),
- material bytea NOT NULL CHECK(octet_length(material)=32), record text NOT NULL,
+ record text NOT NULL,
  PRIMARY KEY(tenant_id,software), FOREIGN KEY(tenant_id,record) REFERENCES mdm_software_composition.subjects(tenant_id,record) DEFERRABLE INITIALLY DEFERRED
 );
 CREATE TABLE mdm_software_composition.slots (

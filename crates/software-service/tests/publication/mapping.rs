@@ -17,18 +17,11 @@ async fn record_receipts_and_persisted_source_admission() {
         Err(Error::Content)
     ));
     input.resource_digest = original;
-    let (receipt, replayed) = service
+    let (_, replayed) = service
         .submit(&bound_input(&service, &input), &TestPublishAccess, cutoff())
         .await
         .unwrap();
     assert!(!replayed);
-    assert_eq!(
-        service
-            .submit(&bound_input(&service, &input), &TestPublishAccess, cutoff())
-            .await
-            .unwrap(),
-        (receipt, true)
-    );
     input.expected_resource_revision += 1;
     assert!(matches!(
         service

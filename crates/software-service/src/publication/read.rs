@@ -16,6 +16,20 @@ pub struct PublishedSoftware {
     pub snapshot: Option<String>,
 }
 impl PublicationService {
+    /// Read a management summary in the caller's audit/catalog-locked transaction.
+    pub(crate) async fn record_status_in(
+        &self,
+        tx: &mut rss_transactional_messaging_postgres::PgTransaction<'_>,
+        id: &rel::PublicationKey,
+    ) -> InTransaction<(rel::Publication, Option<Withdrawal>)> {
+        let record = input!(self.releases.get_in(tx, id).await?
+            .map_err(|_| Error::Conflict)).ok_or_else(db::fault)?;
+        let attempt = &record.snapshot().attempt;
+        let key = format!("w:{}:{}", hex(&attempt.id().digest().bytes()), attempt.attempt);
+        let withdrawal = db::call(tx, db::Table::Withdraw, &key).await?
+            .map(|call| super::driver::withdrawal_state(&record, &call)).transpose();
+        Ok(Ok((record, input!(withdrawal))))
+    }
     pub fn public_base(&self) -> &str {
         match &self.sources.binding().driver {
             Driver::Winget { base, .. } | Driver::Brew { base, .. } => base,

@@ -186,3 +186,40 @@ async fn unstarted_withdrawal_cancels_original_attempt_without_publishing() {
     assert_eq!(server.state.lock().unwrap().posts, 0);
     runtime.close().await;
 }
+
+#[tokio::test]
+#[ignore = "real PG + content: make t2 MODULE=publication.withdrawal"]
+async fn global_withdrawal_settles_an_unstarted_attempt_once() {
+    let server = Server::new().await;
+    let runtime = runtime().await;
+    let service = server.service(runtime.clone(), server.winget()).await;
+    let input = seed(runtime.clone(), &server, server.winget_document()).await;
+    let p = submit_publication(&service, &input).await;
+    withdraw_version(&input).await;
+    let reconcile = || service.reconcile_withdrawal(p.id(), p.attempt, cutoff());
+    assert_eq!(reconcile().await.unwrap(), Withdrawal::Complete);
+    let settled = audit_records().len();
+    assert_eq!(reconcile().await.unwrap(), Withdrawal::Complete);
+    assert_eq!(audit_records().len(), settled);
+    assert!(
+        service
+            .reconciliation_page("", 32, cutoff())
+            .await
+            .unwrap()
+            .work
+            .is_empty()
+    );
+    assert!(matches!(
+        service
+            .record(&input.record, cutoff())
+            .await
+            .unwrap()
+            .unwrap()
+            .snapshot()
+            .attempt
+            .outcome,
+        rel::PublicationOutcome::Reported(rel::PublicationResult::NotApplied(_))
+    ));
+    assert_eq!(server.state.lock().unwrap().posts, 0);
+    runtime.close().await;
+}

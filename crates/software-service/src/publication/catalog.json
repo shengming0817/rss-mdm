@@ -20,15 +20,6 @@
     ],
     [
       "authorities",
-      "material",
-      "bytea",
-      true,
-      null,
-      "",
-      ""
-    ],
-    [
-      "authorities",
       "record",
       "text",
       true,
@@ -335,13 +326,6 @@
     ]
   ],
   "constraints": [
-    [
-      "authorities",
-      "authorities_material_check",
-      "c",
-      "CHECK ((octet_length(material) = 32))",
-      true
-    ],
     [
       "authorities",
       "authorities_pkey",

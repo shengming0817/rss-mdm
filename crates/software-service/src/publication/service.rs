@@ -12,7 +12,6 @@ use rss_mdm_software_release as rel;
 use rss_mdm_software_release_postgres::ReleaseStore;
 use rss_request_context::{Deadline, TenantId};
 use rss_transactional_messaging_postgres::{PgRuntime, PgTransaction};
-use sha2::{Digest, Sha256};
 use std::sync::Arc;
 #[derive(Clone)]
 pub struct PublishInput {
@@ -332,15 +331,7 @@ impl PublicationService {
                                 }
                                 let key = db::software_key(&c.snapshot().content)?;
                                 db::lock(tx, "authority", &hex(&key)).await?;
-                                let material = Sha256::digest(db::encode(&serde_json::json!([
-                                    v.digest().bytes(),
-                                    c.snapshot().content.manifest().bytes()
-                                ]))?)
-                                .to_vec();
-                                if let Some((owner, old)) = db::authority(tx, &key).await? {
-                                    if old != material {
-                                        return Ok(Err(Error::Content));
-                                    }
+                                if let Some(owner) = db::authority(tx, &key).await? {
                                     input!(s.retired_owner(tx, &owner).await?);
                                 }
                                 db::lock(
@@ -396,7 +387,7 @@ impl PublicationService {
                                         .map_err(|_| Error::Conflict)
                                 );
                                 db::insert_subject(tx, i.record.value(), subject).await?;
-                                db::set_authority(tx, key, material, i.record.value()).await?;
+                                db::set_authority(tx, key, i.record.value()).await?;
                                 db::reserve(tx, target, &target.key()).await?;
                                 db::insert_call(tx, db::Table::Publish, target).await?;
                                 let fact = db::fact(
@@ -623,7 +614,7 @@ impl PublicationService {
                                 let key = db::software_key(&c.snapshot().content)?;
                                 if db::authority(tx, &key)
                                     .await?
-                                    .is_none_or(|(owner, _)| owner != target.record)
+                                    .is_none_or(|owner| owner != target.record)
                                 {
                                     return Ok(Err(Error::Conflict));
                                 }

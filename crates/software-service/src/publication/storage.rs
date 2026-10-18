@@ -349,7 +349,7 @@ pub(super) fn software_key(c: &rel::Content) -> std::result::Result<Vec<u8>, PgE
 pub(super) async fn authority(
     tx: &mut PgTransaction<'_>,
     key: &[u8],
-) -> std::result::Result<Option<(String, Vec<u8>)>, PgError> {
+) -> std::result::Result<Option<String>, PgError> {
     let (t, k) = (tx.tenant_id().to_string(), key.to_vec());
     let row = tx
         .with_connection(move |c| {
@@ -363,13 +363,12 @@ pub(super) async fn authority(
         })
         .await?;
 
-    row.map(|r| Ok((r.try_get("record")?, r.try_get("material")?)))
+    row.map(|r| r.try_get("record"))
         .transpose()
 }
 pub(super) async fn set_authority(
     tx: &mut PgTransaction<'_>,
     key: Vec<u8>,
-    material: Vec<u8>,
     record: &str,
 ) -> std::result::Result<(), PgError> {
     let (t, id) = (tx.tenant_id().to_string(), record.to_owned());
@@ -379,7 +378,6 @@ pub(super) async fn set_authority(
                 sqlx::query(SET_AUTHORITY_SQL)
                     .bind(t)
                     .bind(key)
-                    .bind(material)
                     .bind(id)
                     .execute(c)
                     .await
@@ -858,8 +856,8 @@ const READ_BINDING_SQL: &str = "SELECT configuration FROM mdm_software_compositi
 const INSERT_TAP_SLOT_SQL: &str = "INSERT INTO mdm_software_composition.slots(tenant_id,binding,coordinate,cursor) VALUES($1::uuid,$2,'tap',$3) ON CONFLICT DO NOTHING";
 const SUBJECT_SQL: &str = "SELECT resource,version,document,digest FROM mdm_software_composition.subjects WHERE tenant_id=$1::uuid AND record=$2";
 const INSERT_SUBJECT_SQL: &str = "INSERT INTO mdm_software_composition.subjects(tenant_id,record,resource,version,document,digest) VALUES($1::uuid,$2,$3,$4,$5,$6)";
-const AUTHORITY_SQL: &str = "SELECT record,material FROM mdm_software_composition.authorities WHERE tenant_id=$1::uuid AND software=$2 FOR UPDATE";
-const SET_AUTHORITY_SQL: &str = "INSERT INTO mdm_software_composition.authorities(tenant_id,software,material,record) VALUES($1::uuid,$2,$3,$4) ON CONFLICT(tenant_id,software) DO UPDATE SET record=EXCLUDED.record WHERE mdm_software_composition.authorities.material=EXCLUDED.material";
+const AUTHORITY_SQL: &str = "SELECT record FROM mdm_software_composition.authorities WHERE tenant_id=$1::uuid AND software=$2 FOR UPDATE";
+const SET_AUTHORITY_SQL: &str = "INSERT INTO mdm_software_composition.authorities(tenant_id,software,record) VALUES($1::uuid,$2,$3) ON CONFLICT(tenant_id,software) DO UPDATE SET record=EXCLUDED.record";
 const SLOT_SQL: &str = "SELECT operation,cursor FROM mdm_software_composition.slots WHERE tenant_id=$1::uuid AND binding=$2 AND coordinate=$3";
 const RESERVE_SQL: &str = "INSERT INTO mdm_software_composition.slots(tenant_id,binding,coordinate,operation,cursor) VALUES($1::uuid,$2,$3,$4,$5) ON CONFLICT(tenant_id,binding,coordinate) DO UPDATE SET operation=EXCLUDED.operation WHERE mdm_software_composition.slots.operation IS NULL AND mdm_software_composition.slots.cursor IS NOT DISTINCT FROM EXCLUDED.cursor";
 const RELEASE_SLOT_SQL: &str = "UPDATE mdm_software_composition.slots SET operation=NULL,cursor=coalesce($5,cursor) WHERE tenant_id=$1::uuid AND binding=$2 AND coordinate=$3 AND operation=$4";
