@@ -105,7 +105,7 @@ fn session(proof: &AuthorizedPrincipal) -> Session {
         tenant: proof.tenant_id().into(),
         instance: proof.instance_id().into(),
         principal: proof.principal_id().into(),
-        session: proof.session_id(),
+        session: proof.credential_binding(),
     }
 }
 struct Unlock {

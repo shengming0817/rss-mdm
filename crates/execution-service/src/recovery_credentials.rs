@@ -131,7 +131,7 @@ impl ExecutionService {
                         service.tenant,
                         device,
                         "recovery-credential-create/v1",
-                        &(proof.user(), input),
+                        &(proof.actor(), input),
                     )?;
                     if let Some(value) =
                         crate::service::replay(tx, input.operation_id, &fingerprint, audit).await?

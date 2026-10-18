@@ -11,8 +11,6 @@ use axum::{
     middleware::Next,
     response::{IntoResponse, Response},
 };
-#[cfg(test)]
-use rss_identity_core::session::SessionSecret;
 use rss_identity_core::{InstanceId, account::PasswordKdf, session::SessionPolicy};
 use rss_identity_postgres::{Authority, AuthorityConfig, AuthorityError};
 #[cfg(test)]
@@ -47,6 +45,7 @@ pub(crate) struct Identity {
     pub(crate) tenant_administration: Option<Arc<crate::tenant_registry::http::Service>>,
     pub(crate) audit_readiness: Arc<crate::identity_audit::Readiness>,
     routes: Router,
+    bearer_routes: Router,
     http: rss_identity_http_axum::HttpConfig,
 }
 impl Identity {
@@ -143,6 +142,8 @@ impl Identity {
         .map_err(|_| invalid())?;
         let mut routes =
             rss_identity_http_axum::router(authority.clone(), http.clone()).map_err(failure)?;
+        let bearer_routes = rss_identity_http_axum::bearer_router(authority.clone(), http.clone())
+            .map_err(failure)?;
         if let Some(oidc) = &config.identity.oidc {
             oidc.require_business_tenant(&config.identity.tenant_id)?;
             let federation = federation(
@@ -169,6 +170,7 @@ impl Identity {
             tenant_administration,
             audit_readiness: Arc::default(),
             routes,
+            bearer_routes,
             http,
         })
     }
@@ -195,10 +197,21 @@ impl Identity {
     pub(crate) fn routes(&self) -> Router {
         self.routes.clone()
     }
+    pub(crate) fn bearer_routes(&self) -> Router {
+        self.bearer_routes.clone()
+    }
 
     /// Device enrollment continuations revalidate the credential without renewing idle expiry.
     #[cfg(test)]
-    pub(crate) async fn authenticate(&self, secret: SessionSecret) -> Result<Principal, Error> {
+    pub(crate) async fn authenticate(
+        &self,
+        credential: rss_mdm_authorization_service::credential::RequestCredential,
+    ) -> Result<Principal, Error> {
+        let rss_mdm_authorization_service::credential::RequestCredential::Cookie(secret) =
+            credential
+        else {
+            return Err(Error::Forbidden);
+        };
         let session = self
             .authority
             .inspect_session(self.tenant, secret, deadline())

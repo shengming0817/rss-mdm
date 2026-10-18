@@ -151,7 +151,7 @@ async fn departments(Extension(auth): Extension<RequestAuth>) -> Result<Json<Val
     auth.proof.require(Permission::DepartmentRead, None)?;
     let value = match auth
         .proof
-        .session()
+        .session()?
         .department_snapshot()
         .map_err(|_| Error::Unauthorized)?
     {
@@ -209,7 +209,7 @@ pub async fn management_identity_only(
 ) -> Response {
     authenticate_and_run(app, request, next, false, true).await
 }
-async fn authenticate_and_run(
+async fn authenticate_inner(
     app: Arc<AuthenticationState>,
     request: Request,
     next: Next,
@@ -217,6 +217,11 @@ async fn authenticate_and_run(
     management: bool,
 ) -> Response {
     let (mut parts, body) = request.into_parts();
+    let path = parts
+        .extensions
+        .get::<axum::extract::OriginalUri>()
+        .map_or_else(|| parts.uri.path(), |original| original.0.path())
+        .to_owned();
     let activity =
         if parts.method == axum::http::Method::GET || parts.method == axum::http::Method::HEAD {
             rss_identity_http_axum::SessionActivity::Passive
@@ -231,7 +236,20 @@ async fn authenticate_and_run(
     };
     match app
         .identity
-        .authenticate_request(&parts.headers, activity)
+        .authenticate_request(
+            &parts.headers,
+            activity,
+            &app.access,
+            parts
+                .extensions
+                .get::<rss_identity_http_axum::ClientAddress>()
+                .map(|address| address.0),
+            !management
+                && authorization
+                && !path.starts_with("/api/v1/self-")
+                && !path.starts_with("/api/v1/identity-host/")
+                && path != "/api/v1/registration-quotas/me",
+        )
         .await
     {
         Ok((proof, credential)) => {
@@ -278,7 +296,7 @@ async fn authenticate_and_run(
             };
             parts
                 .extensions
-                .insert(crate::http_operation::SessionContinuation::new(credential));
+                .insert(crate::http_operation::RequestContinuation::new(credential));
             parts.extensions.insert(RequestAuth {
                 proof: Arc::new(proof),
             });
@@ -304,3 +322,29 @@ pub struct AuthenticationState {
 }
 
 use rss_mdm_audit_integration::RequestAudit;
+
+async fn authenticate_and_run(
+    app: Arc<AuthenticationState>,
+    request: Request,
+    next: Next,
+    authorization: bool,
+    management: bool,
+) -> Response {
+    let challenge = if request.headers().contains_key("authorization") {
+        Some("Bearer")
+    } else if request.headers().contains_key("x-api-key") {
+        Some("ApiKey")
+    } else {
+        None
+    };
+    let mut response = authenticate_inner(app, request, next, authorization, management).await;
+    if response.status() == axum::http::StatusCode::UNAUTHORIZED
+        && let Some(challenge) = challenge
+    {
+        response.headers_mut().insert(
+            axum::http::header::WWW_AUTHENTICATE,
+            axum::http::HeaderValue::from_static(challenge),
+        );
+    }
+    response
+}

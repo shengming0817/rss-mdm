@@ -59,7 +59,7 @@ pub async fn download(
     id: &str,
     version: &str,
     input: &ScriptSelection,
-    secret: &rss_identity_core::session::SessionSecret,
+    secret: &rss_mdm_authorization_service::credential::RequestCredential,
 ) -> Result<crate::Verified, Error> {
     proof.require(Permission::ResourceRead, None)?;
     audit.resource_target(rss_mdm_audit_integration::TargetKind::Resource, id);
@@ -70,13 +70,14 @@ pub async fn download(
     // The original browser session can be revoked while Content verifies the bytes.
     // Reauthenticate within the remaining transfer deadline before the final reference check.
     let (current, reference) = tokio::time::timeout_at(verified.deadline.instant().into(), async {
-        let secret = rss_identity_core::session::SessionSecret::parse(secret.expose().to_owned())
-            .map_err(|_| Error::Forbidden)?;
+        let secret = secret.duplicate().map_err(|_| Error::Forbidden)?;
         let fresh = app
             .sessions
             .authenticate(&app.authorization, secret)
             .await?;
-        if fresh.user() != proof.user() || fresh.session_id() != proof.session_id() {
+        if fresh.actor() != proof.actor()
+            || fresh.credential_binding() != proof.credential_binding()
+        {
             return Err(Error::Forbidden);
         }
         selected(app, &fresh, id, version, input).await

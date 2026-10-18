@@ -1,6 +1,6 @@
 //! Frozen Agent installation contracts and checked native package inputs.
 use crate::Error;
-use rss_mdm_authorization_service::UserGrant;
+use rss_mdm_authorization_service::OperationAuthority;
 use rss_mdm_policy::Platform;
 use rss_mdm_policy::{SoftwareTarget, schedule::Schedule};
 use rss_mdm_resource as resource;
@@ -157,8 +157,8 @@ pub struct FrozenInstall {
     pub schedule: Schedule,
     pub run_lifetime_seconds: u32,
     pub packages: BTreeMap<SoftwareTarget, Package>,
-    pub deploy: UserGrant,
-    pub enrollment: UserGrant,
+    pub deploy: OperationAuthority,
+    pub enrollment: OperationAuthority,
 }
 #[cfg(test)]
 #[path = "../tests/agent_install_unit.rs"]

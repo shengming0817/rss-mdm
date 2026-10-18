@@ -147,7 +147,7 @@ async fn apply_unit(
         .map_err(|_| MigrationError::at(name, "recording installation intent"))?;
     if matches!(name, "audit-v1" | "audit-ledger-v1") {
         install_audit_component(conn, name, sql).await?;
-    } else if name == "identity-authority-v12" {
+    } else if name == "identity-authority-v13" {
         install_identity(conn, installation, instance).await?;
     } else if name != "identity-audit-runtime-v1" || installation.audit_mode == AuditMode::Ledger {
         sqlx::raw_sql(sql).execute(&mut *conn).await.map_err(|_| {
@@ -368,7 +368,7 @@ async fn install_identity(
     }
     install(conn, installation, instance).await.map_err(|_| {
         MigrationError::at(
-            "identity-authority-v12",
+            "identity-authority-v13",
             "installation not confirmed; inspect ledger",
         )
     })

@@ -48,6 +48,7 @@ pub(crate) fn for_route(route: &str, method: &Method) -> BodyPolicy {
             | "/api/v1/software/sources/{id}/revisions/{revision}"
             | "/api/v1/software/resources/{id}/versions/{version}",
         ) => Buffered(1024 * 1024),
+        (_, path) if path.starts_with("/api/v1/apple/organizations") => Buffered(256 * 1024),
         _ => Buffered(16 * 1024),
     }
 }

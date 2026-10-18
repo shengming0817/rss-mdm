@@ -68,7 +68,7 @@ pub async fn write_in(
         frozen: frozen
             .map(|value| checked_input(serde_json::to_value(value)))
             .transpose()?,
-        author: checked_input(serde_json::to_value(proof.user()))?,
+        author: checked_input(serde_json::to_value(proof.actor()))?,
         at: now,
     };
     checked(store.publish_in(tx, &publication).await?)?;

@@ -1,8 +1,8 @@
+use crate::credential::RequestCredential;
 use crate::{
     Error, Store,
     context::{AuthorizedPrincipal, Principal},
 };
-use rss_identity_core::session::SessionSecret;
 use rss_identity_postgres::{Authority, AuthorityError};
 pub use rss_identity_postgres::{RevalidatedSession, SessionReference};
 use rss_request_context::TenantId;
@@ -35,17 +35,31 @@ impl SessionAuthority {
     pub async fn authenticate(
         &self,
         store: &Store,
-        secret: SessionSecret,
+        credential: RequestCredential,
     ) -> Result<AuthorizedPrincipal, Error> {
         let deadline = rss_transactional_messaging::policy::OperationDeadline::from_remaining(
             std::time::Duration::from_secs(10),
         );
-        let session = self
-            .authority
-            .inspect_session(self.tenant, secret, deadline)
-            .await
-            .map_err(authority_error)?;
-        AuthorizedPrincipal::from_identity(Principal::new(session)?)
+        let principal = match credential {
+            RequestCredential::Cookie(secret) => Principal::new(
+                self.authority
+                    .inspect_session(self.tenant, secret, deadline)
+                    .await
+                    .map_err(authority_error)?,
+            )?,
+            RequestCredential::Bearer(secret) => Principal::new(
+                self.authority
+                    .inspect_bearer(self.tenant, secret, deadline)
+                    .await
+                    .map_err(authority_error)?,
+            )?,
+            RequestCredential::ApiKey(secret) => {
+                store
+                    .authenticate_key(&self.tenant.to_string(), &secret)
+                    .await?
+            }
+        };
+        AuthorizedPrincipal::from_identity(principal)
             .load_authorization(store)
             .await
     }

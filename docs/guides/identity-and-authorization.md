@@ -10,6 +10,20 @@ MDM 嵌入 rss-identity 公共组件，由 Identity 持有账户、认证与会�
 
 私有 IdP 需显式批准 tenant、issuer、client 和全部解析地址，仍验证 TLS；网络准入不代表 MFA 或业务授权。私钥与 client secret 由受保护部署配置持有。敏感账户/IdP 操作要求近期认证；恢复密码使用 maintenance 凭据，不能把它挂入运行服务。
 
+## 程序化访问
+
+程序化调用使用账户 Bearer Token 或租户 API Key，通过 HTTPS 访问同一业务 API。安装管理用户先通过浏览器 Cookie/CSRF 调用 `GET/PUT /api/v1/tenant-administration/api-access/network-policy`，配置允许的来源 IP/CIDR；写入携带 `operationId`、`expectedRevision` 和 `networks`。初始空列表拒绝所有程序化访问，包括 Bearer 登录；它不阻断浏览器管理入口。策略持久化并在下一请求重新读取，不需重启。IPv4 和 IPv6 均支持，单个 IP 仅允许该主机。来源只采用已验证的真实 TCP peer／可信网关链，不接受调用者任意指定的转发头。
+
+账户通过 `POST /api/v1/identity/tenants/{tenant}/bearer/login` 提交本地 `login/password`，取得 `accessToken` 后使用 `Authorization: Bearer ...`。Token 由 Identity 签发并持有，延用账户当前权限；账户停用、会话撤销后失效。空闲期限为 15 分钟、绝对期限为 4 小时，成功认证请求（包括 GET）刷新空闲期限，不延长绝对期限；没有 refresh token，过期重新登录。`POST .../bearer/logout` 撤销当前 Token，账户的全部会话撤销同时覆盖 Cookie 与 Bearer。
+
+API Key 属于业务租户，由具有 `authorization_read/write` 的租户账户管理。创建者仅为审计信息，创建者停用或退出不撤销 Key。`/api/v1/api-keys` 提供列表和创建，`/{id}` 提供详情和更新，`/{id}/rotate`、`/{id}/revoke` 用于轮换和永久撤销。创建时客户端预先生成 `id` 和 `operationId`；修改带 `expectedRevision`。名称、启用状态、可选到期时间和显式 grants 由管理者维护，字段以 [HTTP 定义](../../crates/management-http/src/api_access.rs) 和 [权限模型](../../crates/authorization-service/src/model.rs) 为准。
+
+每租户累计最多保留 1000 个 Key ID，元数据及创建者信息总计最多 2 MiB。撤销保留 ID 和审计历史，不释放额度；轮换沿用 ID，不增加 Key 数量。
+
+Key 通过 `X-API-Key` 传递；完整随机密钥仅在创建或轮换成功的首次响应返回，服务端只存摘要。幂等重放仅返回回执，不能找回密钥。提交未知时，用原操作查询／重放确认，再以新操作轮换；不要假设失败响应表示没有创建。丢失密钥同样通过轮换恢复，怀疑泄露则撤销或轮换。Key 支持显式授权的设备、资产、策略、软件、内容、任务和受管注册业务；不提供个人自助、身份账户/IdP 管理、授权规则/成员管理或安装租户管理权。
+
+每次请求只接受一种凭据，混用 Cookie、Bearer 或 Key、重复认证头均拒绝，不回退到其它凭据。Key 与账户在审计中具有独立主体身份。异步任务保留操作授权依据：重命名或轮换不取消已授权任务；禁用、撤销、修改 grants 或到期设置使旧授权失效，重新启用不会恢复旧任务。上传、注册续接等进行中的请求仍重验原凭据，旧 Key 轮换后不能继续绑定。
+
 ## 权限计算与维护
 
 授权主体可为精确用户、可信 IdP 组/部门（精确或子树）、显式本地用户组。标签与邮箱不构成权威；来源过期或配置身份变化不能沿用旧证明。操作与 scope 必须在同一 grant 内匹配，再合并有效 grant，默认拒绝。管理对象一般使用 tenant 范围，设备操作使用设备范围；声明权限不代表未实现动作已可执行。
@@ -30,9 +44,13 @@ MDM 嵌入 rss-identity 公共组件，由 Identity 持有账户、认证与会�
 
 初始管理用户始终保留账户管理与授权读写；可以给其它管理用户委派其中任意权限。账户维护由持久化的 `identity_accounts_manage` 授权控制，普通新增账户不自动获得产品权限；租户管理员创建入口则原子创建账户和完整业务管理员授权。管理用户不能进入任何业务接口，业务用户不能进入管理规则接口；管理租户不接纳联合身份或 provider 管理。每个产品 origin 复用一个 `__Host-identity-session` cookie，切换租户登录会切换当前会话。
 
+## 业务配置权限
+
+`registration_configuration_read/write`（tenant scope）分别控制 Apple 组织/ADE、Windows Entra 注册策略及注册配额/准入配置的读写；`audit_read` 控制审计检索。这些业务权限可显式授予账户或 API Key，不能借此管理授权规则。业务管理员初始化包含这些权限；已有自定义规则需按业务需要重新配置，不将 `authorization_read/write` 兼容映射为新权限。Apple 的管理控制面使用共同管理认证与来源策略；原生注册、账户自助桥接和设备协议仍使用各自认证 owner。
+
 ## 管理审计检索
 
-`GET /api/v1/audit-events` 与设备时间线复用既有 `authorization_read` 管理入口及正常请求上下文，不新增权限项或分页授权读取。支持按设备、operation、主体、动作、结果和记录时间检索；租户/实例来自可信会话，客户端不能覆盖。响应仅包含安全事实投影，不返回凭据、原始 payload、任意 details 或执行输出。普通审计读取不表示已完成密码学账本验证。
+`GET /api/v1/audit-events` 与设备时间线使用 `audit_read` 权限及正常请求上下文。支持按设备、operation、主体、动作、结果和记录时间检索；租户/实例来自可信会话，客户端不能覆盖。响应仅包含安全事实投影，不返回凭据、原始 payload、任意 details 或执行输出。普通审计读取不表示已完成密码学账本验证。
 ## 运行诊断
 
 运行诊断通过 `GET /api/v1/runtime/diagnostics` 查询；使用现有授权规则，为获准运维主体显式授予

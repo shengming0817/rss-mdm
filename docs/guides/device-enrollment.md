@@ -48,7 +48,7 @@ Agent 使用独立的持久授权与 mTLS 生命周期，见 [Agent 集成指南
 
 当前组织的有效用户可以直接创建自助注册，无需管理员批准。浏览器入口为“注册我的设备”；原生 MDM 使用 `POST /api/v1/self-enrollments`，参数与组织创建相同但不提供 deviceId。服务端分配独立设备身份，设备上报标识不能选择或覆盖已有组织设备。Windows 保留首次签发时的终端协议标识供后续 SyncML、续证和关联通道校验；该标识不用于跨通道合并。Agent 授权使用 `POST /api/v1/self-enrollments/agent`，沿用 Agent 的持久授权和秘密交付契约。
 
-“注册额度”页面由具有 authorization_read／authorization_write 的管理员读取／配置。每个租户持有自己的默认值和按用户、渠道的覆盖；覆盖留空表示继承，全部清空恢复默认值。0 禁止新增。Agent 的 Windows/macOS 共用一个额度，Windows MDM 和 macOS MDM 各自独立，默认值由注册服务持有。`GET /api/v1/registration-quotas/me` 读取自己的有效额度和当前占用。
+“注册额度”页面由具有 registration_configuration_read／registration_configuration_write 的管理员读取／配置。每个租户持有自己的默认值和按用户、渠道的覆盖；覆盖留空表示继承，全部清空恢复默认值。0 禁止新增。Agent 的 Windows/macOS 共用一个额度，Windows MDM 和 macOS MDM 各自独立，默认值由注册服务持有。`GET /api/v1/registration-quotas/me` 读取自己的有效额度和当前占用。
 
 占用包括有效设备注册和已授权、未过期的待完成注册；授权重试、续证与凭据恢复不产生第二份占用。取消、过期或撤销后释放相应占用。降低额度保留已有设备与有效待完成注册，超过新额度时禁止新增。额度不足返回 registration_limit；不要将其当作短暂限流自动重试。
 

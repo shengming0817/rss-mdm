@@ -84,7 +84,7 @@ async fn read(
 async fn write(
     State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
-    Extension(continuation): Extension<crate::http_operation::SessionContinuation>,
+    Extension(continuation): Extension<crate::http_operation::RequestContinuation>,
     Extension(audit): Extension<RequestAudit>,
     Path(id): Path<String>,
     body: std::result::Result<Json<Operation<Change>>, axum::extract::rejection::JsonRejection>,
@@ -116,7 +116,7 @@ async fn write(
         let bytes = blueprint.definition.canonical();
         let uploaded = rss_mdm_content_service::service::upload(
             &app.content,
-            rss_mdm_content_service::service::UploadSession::new(
+            rss_mdm_content_service::service::UploadAuthority::new(
                 &auth.proof,
                 continuation.secret(),
             ),

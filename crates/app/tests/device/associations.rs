@@ -599,7 +599,7 @@ async fn retirement_fences_complete_target_and_rolls_back_with_acceptance() -> a
     let authority =
         rss_mdm_authorization_service::snapshot_on(&mut c, case_a(), principal.instance_id())
             .await?;
-    let grant = rss_mdm_authorization_service::UserGrant::all_devices(
+    let grant = rss_mdm_authorization_service::OperationAuthority::all_devices(
         &authority,
         &principal,
         crate::authorization::Permission::DeviceUnmanage,

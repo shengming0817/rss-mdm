@@ -113,7 +113,7 @@ impl Admission {
         audit: &RequestAudit,
     ) -> Result<Setting, Error> {
         use crate::operations::{Actor, Operation};
-        p.manage(Permission::AuthorizationWrite)?;
+        p.manage(Permission::RegistrationConfigurationWrite)?;
         if key.is_nil() || change.expected_revision >= i64::MAX as u64 {
             return Err(Error::Malformed);
         }
@@ -143,7 +143,7 @@ impl Admission {
                 let revision=current.revision+1;
                 sqlx::query("INSERT INTO mdm_access.registration_admission(tenant_id,channel,revision,paused) VALUES($1::uuid,$2,$3,$4) ON CONFLICT(tenant_id,channel) DO UPDATE SET revision=EXCLUDED.revision,paused=EXCLUDED.paused")
                     .bind(p.tenant_id()).bind(channel.as_str()).bind(revision as i64).bind(change.admission==State::Paused).execute(&mut *c).await.map_err(db)?;
-                p.manage(Permission::AuthorizationWrite)?;
+                p.manage(Permission::RegistrationConfigurationWrite)?;
                 crate::operations::save(c,op,&revision.to_string(),audit).await?;
                 Ok((revision,false))
             })).await?;

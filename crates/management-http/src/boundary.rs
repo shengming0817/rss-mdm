@@ -68,7 +68,11 @@ pub async fn admit(State(envelope): State<Envelope>, mut request: Request, next:
     } else {
         body(request, next, envelope.requests).await
     };
-    let failure = classify(response.extensions().get::<Error>());
+    let failure = response
+        .extensions()
+        .get::<ResponseFailure>()
+        .copied()
+        .or_else(|| classify(response.extensions().get::<Error>()));
     if let Some(replacement) = rss_mdm_audit_integration::completion::complete(
         &envelope.audit_store,
         &audit,
@@ -109,7 +113,7 @@ pub async fn authentication(
     let id = audit.request_id();
     request.extensions_mut().insert(audit.clone());
     request.extensions_mut().insert(envelope.clock.clone());
-    let response = if request.headers().get_all(header::HOST).iter().count() != 1
+    let mut response = if request.headers().get_all(header::HOST).iter().count() != 1
         || request.uri().to_string().len() > 8192
         || request
             .headers()
@@ -121,7 +125,28 @@ pub async fn authentication(
     } else {
         body(request, next, envelope.requests).await
     };
-    audit.finalize(None);
+    if response
+        .extensions()
+        .get::<crate::api_access::AdmissionRejected>()
+        .is_some()
+    {
+        if let Some(replacement) = rss_mdm_audit_integration::completion::complete(
+            &envelope.audit_store,
+            &audit,
+            response.status().as_u16(),
+            classify(response.extensions().get::<Error>()),
+        )
+        .await
+        {
+            response = project(match replacement {
+                Replacement::CommitUnknown => Error::CommitUnknown,
+                Replacement::RollbackFailed => Error::RollbackFailed,
+                Replacement::Audit(e) => e.into(),
+            });
+        }
+    } else {
+        audit.finalize(None);
+    }
     eprintln!(
         "{}",
         serde_json::json!({"event":"mdm_request","request_id":id,"status":response.status().as_u16(),"latency_ms":envelope.clock.now().saturating_duration_since(started).as_millis()})

@@ -155,7 +155,7 @@ impl Associations {
       let result=match change {
         Change::Force{retirement,input}=>{
           sqlx::query("UPDATE mdm_devices.retirements SET forced_at=floor(extract(epoch FROM clock_timestamp()))::bigint,forced_by=$3 WHERE tenant_id=$1::uuid AND id=$2 AND forced_at IS NULL")
-            .bind(p.tenant_id()).bind(*retirement).bind(json!({"actor":p.user(),"reason":input.reason})).execute(&mut *c).await?;
+            .bind(p.tenant_id()).bind(*retirement).bind(json!({"actor":p.actor(),"reason":input.reason})).execute(&mut *c).await?;
           sqlx::query("UPDATE mdm_devices.retirement_channels SET stage='revoke',effect=CASE WHEN effect='confirmed' THEN effect ELSE 'unknown' END,reason=CASE WHEN effect='confirmed' THEN reason ELSE 'forced_revoke_cleanup_unconfirmed' END WHERE tenant_id=$1::uuid AND operation=$2 AND stage<>'complete'")
             .bind(p.tenant_id()).bind(*retirement).execute(&mut *c).await?;
           json!({"operationId":input.operation_id,"retirementId":retirement,"revocation":"pending"})

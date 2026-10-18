@@ -13,6 +13,7 @@ use uuid::Uuid;
 pub struct Snapshot {
     pub rules: Vec<Revision<Rule>>,
     pub groups: Vec<Revision<UserGroup>>,
+    pub(crate) keys: Vec<crate::api_key::KeyRecord>,
     #[serde(skip)]
     pub(crate) installation: Option<crate::tenancy::InstallationTenants>,
 }
@@ -35,9 +36,51 @@ pub(super) struct Observation {
     source_revision: Option<String>,
 }
 impl Snapshot {
+    pub fn key_record(&self, id: Uuid) -> Option<&crate::api_key::KeyRecord> {
+        self.keys.iter().find(|key| key.id == id)
+    }
+    pub(crate) fn key(
+        &self,
+        proof: &AuthorizedPrincipal,
+    ) -> Result<Option<&crate::api_key::KeyRecord>, AuthorizationError> {
+        proof
+            .check_live()
+            .map_err(|_| AuthorizationError::Unauthorized)?;
+        let Some(credential) = proof.key_proof() else {
+            return Ok(None);
+        };
+        let key = self
+            .keys
+            .iter()
+            .find(|key| key.id == credential.id)
+            .ok_or(AuthorizationError::Unauthorized)?;
+        // The authenticated proof bounds expiry in its injected monotonic clock.
+        // Any grant, expiry or enabled-state change invalidates that proof.
+        if key.credential_revision != credential.credential_revision
+            || key.authority_revision != credential.authority_revision
+            || key.revoked
+            || !key.metadata.enabled
+        {
+            return Err(AuthorizationError::Unauthorized);
+        }
+        Ok(Some(key))
+    }
     /// Deterministic query binding for a live principal and its effective authority.
     pub fn query_binding(&self, proof: &AuthorizedPrincipal) -> Result<String, Error> {
         use sha2::{Digest, Sha256};
+        if let Some(key) = self.key(proof)? {
+            return Ok(format!(
+                "{:x}",
+                Sha256::digest(
+                    serde_json::to_vec(&(
+                        proof.actor(),
+                        key.authority_revision,
+                        &key.metadata.grants
+                    ))
+                    .map_err(|_| Error::Malformed)?
+                )
+            ));
+        }
         let mut grants = self
             .effective(proof)?
             .into_iter()
@@ -47,15 +90,28 @@ impl Snapshot {
         Ok(format!(
             "{:x}",
             Sha256::digest(
-                serde_json::to_vec(&(proof.user(), grants)).map_err(|_| Error::Malformed)?
+                serde_json::to_vec(&(proof.actor(), grants)).map_err(|_| Error::Malformed)?
             )
         ))
     }
 
     pub fn validate(&self, tenant: &str, instance: &str) -> Result<(), AuthorizationError> {
         let invalid = || AuthorizationError::Corrupt;
-        if self.rules.len() > 10000 || self.groups.len() > 10000 {
+        if self.rules.len() > 10000 || self.groups.len() > 10000 || self.keys.len() > 1000 {
             return Err(invalid());
+        }
+        for key in &self.keys {
+            if key.id.is_nil()
+                || key.revision == 0
+                || key.authority_revision == 0
+                || key.credential_revision == 0
+            {
+                return Err(invalid());
+            }
+            key.metadata.validate().map_err(|_| invalid())?;
+            key.created_by
+                .validate(tenant, instance)
+                .map_err(|_| invalid())?;
         }
         for r in &self.rules {
             if r.id.is_nil() || r.revision == 0 {
@@ -82,6 +138,7 @@ impl Snapshot {
         proof
             .check_live()
             .map_err(|_| AuthorizationError::Unauthorized)?;
+        proof.session().map_err(|_| AuthorizationError::Forbidden)?;
         let mut grants = Vec::new();
         for record in &self.rules {
             let Some(rule) = &record.value else { continue };
@@ -117,6 +174,18 @@ impl Snapshot {
             .map_err(|_| AuthorizationError::Unauthorized)?;
         if let Some(device) = device {
             rss_observation::Id::new(device).map_err(|_| AuthorizationError::Malformed)?;
+        }
+        if let Some(key) = self.key(proof)? {
+            return if key
+                .metadata
+                .grants
+                .iter()
+                .any(|g| g.covers(operation, device))
+            {
+                Ok(())
+            } else {
+                Err(AuthorizationError::Forbidden)
+            };
         }
         for record in &self.rules {
             let Some(rule) = &record.value else { continue };
@@ -168,6 +237,32 @@ impl Snapshot {
         proof
             .check_live()
             .map_err(|_| AuthorizationError::Unauthorized)?;
+        if let Some(key) = self.key(proof)? {
+            let grants: Vec<_> = key
+                .metadata
+                .grants
+                .iter()
+                .filter(|g| g.operation == permission)
+                .collect();
+            if grants.iter().any(|g| g.scope == Scope::AllDevices) {
+                return Ok(None);
+            }
+            let devices: std::collections::BTreeSet<_> = grants
+                .into_iter()
+                .filter_map(|g| {
+                    if let Scope::Device { id } = &g.scope {
+                        Some(id.clone())
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+            return if devices.is_empty() {
+                Err(AuthorizationError::Forbidden)
+            } else {
+                Ok(Some(devices))
+            };
+        }
         let mut devices = std::collections::BTreeSet::new();
         let mut all = false;
         for record in &self.rules {
@@ -222,7 +317,12 @@ impl Snapshot {
         proof: &AuthorizedPrincipal,
         subject: &Subject,
     ) -> Result<Option<Option<Observation>>, AuthorizationError> {
-        self.matches_facts(&SubjectFacts::Authenticated(proof.session()), subject)
+        self.matches_facts(
+            &SubjectFacts::Authenticated(
+                proof.session().map_err(|_| AuthorizationError::Forbidden)?,
+            ),
+            subject,
+        )
     }
     fn matches_facts(
         &self,
@@ -338,6 +438,18 @@ impl Snapshot {
         proof: &crate::context::AuthorizedPrincipal,
         permission: Permission,
     ) -> Result<(), crate::Error> {
+        if let Some(key) = self.key(proof)? {
+            return if key
+                .metadata
+                .grants
+                .iter()
+                .any(|g| g.operation == permission && g.scope == Scope::AllDevices)
+            {
+                Ok(())
+            } else {
+                Err(Error::Forbidden)
+            };
+        }
         if self
             .effective(proof)
             .map_err(crate::Error::from)?

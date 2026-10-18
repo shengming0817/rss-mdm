@@ -192,6 +192,7 @@ fn model_capacity_limits_and_scope_categories_are_closed() {
         assert!(serde_json::from_value::<Permission>(serde_json::json!(retired)).is_err());
     }
     let mut snapshot = Snapshot {
+        keys: Vec::new(),
         rules: (1..=10000)
             .map(|id| Revision {
                 id: uuid::Uuid::from_u128(id),

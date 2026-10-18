@@ -457,7 +457,17 @@ pub(crate) fn from_state(
         tenant: state.identity.tenant,
         instance: state.identity.instance.to_string(),
     });
-    let authentication = state.identity.routes();
+    let bearer = state
+        .identity
+        .bearer_routes()
+        .route_layer(axum::middleware::from_fn_with_state(
+            Arc::new(rss_mdm_management_http::api_access::BearerAdmission {
+                access: state.access.authorization_store(),
+                tenant: state.identity.tenant.to_string(),
+            }),
+            rss_mdm_management_http::api_access::admit_bearer,
+        ));
+    let authentication = state.identity.routes().merge(bearer);
     let admission = Arc::new(tokio::sync::Semaphore::new(32));
     let management_boundary = rss_mdm_management_http::boundary::Envelope {
         admission: admission.clone(),
@@ -507,6 +517,21 @@ pub(crate) fn from_state(
             tenant: state.identity.management_tenant.to_string(),
             ..management_boundary.clone()
         },
+    );
+    let apple_management = rss_mdm_management_http::boundary::wrap(
+        rss_mdm_apple_channel::management_routes(apple_state.clone())
+            .route_layer(middleware::from_fn(apple_management_settlement))
+            .route_layer(middleware::from_fn_with_state(
+                Arc::new(
+                    rss_mdm_management_http::authorization::http::AuthenticationState {
+                        identity: state.identity.browser(),
+                        access: state.access.authorization_store(),
+                        requests: state.requests.clone(),
+                    },
+                ),
+                rss_mdm_management_http::authorization::http::protect,
+            )),
+        management_boundary.clone(),
     );
     let management = rss_mdm_management_http::router(
         rss_mdm_management_http::Services {
@@ -692,6 +717,7 @@ pub(crate) fn from_state(
     let browser = Router::new()
         .merge(tenant_administration)
         .merge(management)
+        .merge(apple_management)
         .merge(rss_mdm_apple_channel::browser_routes(
             apple_state.clone(),
             apple_boundary,
@@ -784,4 +810,38 @@ fn software_access(
                 .map_or(0, |s| s.config.transfer_seconds),
         },
     })
+}
+
+/// Compose the Apple business owner's settlement class with the common HTTP boundary.
+async fn apple_management_settlement(
+    request: axum::extract::Request,
+    next: middleware::Next,
+) -> Response {
+    use rss_mdm_apple_channel::{Error as AppleError, Failure as AppleFailure};
+    use rss_mdm_audit_integration::completion::ResponseFailure;
+    let mut response = next.run(request).await;
+    let failure = match response.extensions().get::<AppleError>() {
+        Some(AppleError::CommitUnknown) => Some(ResponseFailure::CommitUnknown),
+        Some(AppleError::RollbackFailed) => Some(ResponseFailure::RollbackFailed),
+        Some(AppleError::Unauthorized | AppleError::Forbidden) => Some(ResponseFailure::Denied),
+        Some(AppleError::Unavailable(AppleFailure::RequestDeadline)) => {
+            Some(ResponseFailure::Deadline)
+        }
+        Some(AppleError::Unavailable(AppleFailure::AuditIntegrity)) => {
+            Some(ResponseFailure::AuditIntegrity)
+        }
+        Some(AppleError::Unavailable(
+            AppleFailure::AuditContract
+            | AppleFailure::AuditIsolation
+            | AppleFailure::AuditAdmission,
+        )) => Some(ResponseFailure::AuditContract),
+        Some(AppleError::Unavailable(AppleFailure::Audit)) => {
+            Some(ResponseFailure::AuditUnavailable)
+        }
+        _ => None,
+    };
+    if let Some(failure) = failure {
+        response.extensions_mut().insert(failure);
+    }
+    response
 }

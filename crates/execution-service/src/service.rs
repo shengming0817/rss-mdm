@@ -496,7 +496,7 @@ impl ExecutionService {
             let permissions=if reauthorize {op.authority.required().to_vec()}else{vec![Permission::OperationCancel]};
             let auth=storage::authorized_native(tx,proof,device,&permissions).await?;
             storage::lock(tx,&format!("request:{}",change.request_id)).await?;storage::lock(tx,device).await?;
-            let fingerprint=Sha256::digest(checked_input(serde_json::to_vec(&("mdm.command-change/v4",proof.user(),device,id,change,reauthorization)))?).to_vec();
+            let fingerprint=Sha256::digest(checked_input(serde_json::to_vec(&("mdm.command-change/v4",proof.actor(),device,id,change,reauthorization)))?).to_vec();
             let event_key = format!("command-change:{}:{}", audit.snapshot().actor.ok_or(Error::Malformed)?, change.request_id);
             if let Some(value)=replay(tx,change.request_id,&fingerprint,audit).await? {audit.management_result(rss_mdm_audit_integration::ManagementResult::Replayed);let fact = Fact::business(audit, &event_key, &fingerprint, 200, "success", None)?; service.audit_store.append_in(tx, &fact, true).await?;return Ok(value);}
             let op=storage::load(tx,&service.protection,id).await?;
@@ -636,7 +636,7 @@ fn create_fingerprint(
         service.tenant,
         device,
         "device-control-create/v1",
-        &(proof.user(), input),
+        &(proof.actor(), input),
     )?)
 }
 

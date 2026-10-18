@@ -547,8 +547,8 @@ impl Control {
             case_tenant(),
             crate::test_support::case::admin(),
             serde_json::from_value(json!([
-                {"operation":"authorization_read","scope":{"kind":"tenant"}},
-                {"operation":"authorization_write","scope":{"kind":"tenant"}}
+                {"operation":"registration_configuration_read","scope":{"kind":"tenant"}},
+                {"operation":"registration_configuration_write","scope":{"kind":"tenant"}}
             ]))?,
         )
         .await?;
@@ -577,8 +577,8 @@ impl Control {
             case_tenant(),
             crate::test_support::case::admin(),
             serde_json::from_value(json!([
-                {"operation":"authorization_read","scope":{"kind":"tenant"}},
-                {"operation":"authorization_write","scope":{"kind":"tenant"}}
+                {"operation":"registration_configuration_read","scope":{"kind":"tenant"}},
+                {"operation":"registration_configuration_write","scope":{"kind":"tenant"}}
             ]))?,
         )
         .await?;

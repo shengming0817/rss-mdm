@@ -11,7 +11,7 @@ async fn create_enrollment(
     State(app): State<Arc<HttpState>>,
     headers: HeaderMap,
     Extension(auth): Extension<RequestAuth>,
-    Extension(continuation): Extension<crate::http_operation::SessionContinuation>,
+    Extension(continuation): Extension<crate::http_operation::RequestContinuation>,
     Extension(audit): Extension<RequestAudit>,
     input: Result<Json<Create>, axum::extract::rejection::JsonRejection>,
 ) -> Result<Json<crate::enrollment::Receipt>, Error> {
@@ -65,7 +65,7 @@ async fn resume_enrollment(
     State(app): State<Arc<HttpState>>,
     headers: HeaderMap,
     Extension(auth): Extension<RequestAuth>,
-    Extension(continuation): Extension<crate::http_operation::SessionContinuation>,
+    Extension(continuation): Extension<crate::http_operation::RequestContinuation>,
     Extension(audit): Extension<RequestAudit>,
     path: Result<Path<uuid::Uuid>, axum::extract::rejection::PathRejection>,
     input: Result<Json<Resume>, axum::extract::rejection::JsonRejection>,

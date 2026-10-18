@@ -202,7 +202,7 @@ impl EnrollmentService {
         &self,
         proof: &rss_mdm_authorization_service::context::AuthorizedPrincipal,
         input: &Create,
-        continuation: &rss_identity_core::session::SessionSecret,
+        continuation: &rss_mdm_authorization_service::credential::RequestCredential,
         key: Uuid,
         audit: &rss_mdm_audit_integration::RequestAudit,
     ) -> Result<Receipt, Error> {
@@ -214,10 +214,9 @@ impl EnrollmentService {
         }
         let permission = proof.enrollment(&input.device_id)?;
         audit.target_device(&input.device_id);
-        let reference = self.credentials.insert(
-            rss_identity_core::session::SessionSecret::parse(continuation.expose().into())
-                .map_err(|_| Error::Unauthorized)?,
-        )?;
+        let reference = self
+            .credentials
+            .insert(continuation.duplicate().map_err(|_| Error::Unauthorized)?)?;
         let result = store::create_enrollment(
             &self.audit_store,
             permission,
@@ -235,7 +234,7 @@ impl EnrollmentService {
         &self,
         proof: &rss_mdm_authorization_service::context::AuthorizedPrincipal,
         input: &SelfCreate,
-        continuation: &rss_identity_core::session::SessionSecret,
+        continuation: &rss_mdm_authorization_service::credential::RequestCredential,
         key: Uuid,
         audit: &rss_mdm_audit_integration::RequestAudit,
     ) -> Result<SelfReceipt, Error> {
@@ -254,10 +253,9 @@ impl EnrollmentService {
         );
         let permission = proof.self_enrollment(&device_id)?;
         audit.target_device(&device_id);
-        let reference = self.credentials.insert(
-            rss_identity_core::session::SessionSecret::parse(continuation.expose().into())
-                .map_err(|_| Error::Unauthorized)?,
-        )?;
+        let reference = self
+            .credentials
+            .insert(continuation.duplicate().map_err(|_| Error::Unauthorized)?)?;
         let result = store::create_enrollment(
             &self.audit_store,
             permission,
@@ -276,16 +274,15 @@ impl EnrollmentService {
         &self,
         proof: &rss_mdm_authorization_service::context::AuthorizedPrincipal,
         command: ResumeCommand<'_>,
-        continuation: &rss_identity_core::session::SessionSecret,
+        continuation: &rss_mdm_authorization_service::credential::RequestCredential,
         audit: &rss_mdm_audit_integration::RequestAudit,
     ) -> Result<Receipt, Error> {
         let permission = store::owned_permission(&self.access, proof, command.id).await?;
         let device = permission.device().to_owned();
         audit.target_device(&device);
-        let reference = self.credentials.insert(
-            rss_identity_core::session::SessionSecret::parse(continuation.expose().into())
-                .map_err(|_| Error::Unauthorized)?,
-        )?;
+        let reference = self
+            .credentials
+            .insert(continuation.duplicate().map_err(|_| Error::Unauthorized)?)?;
         let result = store::change_enrollment(
             &self.audit_store,
             permission,

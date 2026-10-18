@@ -24,7 +24,7 @@ impl Associations {
         self.audit.read(self.tenant,&budget.control(),(self,proof,token),|(service,proof,token),tx|Box::pin(async move {
             let snapshot=tx.with_connection_context(proof,|proof,c|Box::pin(read::authorization(c,proof))).await?;
             snapshot.inventory_devices(proof)?;
-            let binding=json!({"kind":"device-association-changes","tenant":proof.tenant_id(),"instance":proof.instance_id(),"principal":proof.principal_id(),"scope":cursor::digest(&snapshot.effective(proof)?)?});
+            let binding=json!({"kind":"device-association-changes","tenant":proof.tenant_id(),"instance":proof.instance_id(),"principal":proof.principal_id(),"scope":snapshot.query_binding(proof)?});
             let position=if let Some(token)=token {
                 let decoded=service.decode(token)?;
                 if decoded.context["binding"]!=binding{return Err(Error::CursorInvalidated);}

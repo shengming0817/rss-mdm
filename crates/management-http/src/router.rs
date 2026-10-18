@@ -96,6 +96,12 @@ pub fn router(state: Services, envelope: crate::boundary::Envelope) -> Router {
         windows: state.windows,
     });
     let core = Router::new()
+        .merge(crate::api_access::key_routes(Arc::new(
+            crate::api_access::Management {
+                access: state.authorization.clone(),
+                audit: state.audit_store.clone(),
+            },
+        )))
         .merge(
             crate::pki::routes().with_state(Arc::new(crate::pki::HttpState {
                 registry: state.pki,
@@ -232,7 +238,7 @@ fn identity_context_response(
     Ok(Json(IdentityHostContext {
         tenant_id: proof.tenant_id().to_owned(),
         principal_id: proof.principal_id().to_owned(),
-        session_id: proof.session_id(),
+        session_id: proof.session_id()?,
         navigation: app.identity_management.identity_navigation(proof)?,
     }))
 }

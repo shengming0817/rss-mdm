@@ -6,7 +6,7 @@ GRANT INSERT ON public.mdm_tenant_operations TO mdm_tenant_registry,mdm_identity
 CREATE POLICY registry ON public.mdm_tenants TO mdm_tenant_registry,mdm_identity_provisioning USING(true);
 GRANT USAGE ON SCHEMA rss_transactional_messaging,mdm_access TO mdm_tenant_registry,mdm_identity_provisioning;
 GRANT SELECT ON rss_transactional_messaging.tenant_epoch TO mdm_tenant_registry,mdm_identity_provisioning;
-GRANT SELECT ON mdm_access.authorization_rules,mdm_access.user_groups,mdm_access.authorization_initializations TO mdm_tenant_registry,mdm_identity_provisioning;
+GRANT SELECT ON mdm_access.authorization_rules,mdm_access.user_groups,mdm_access.api_keys,mdm_access.authorization_initializations TO mdm_tenant_registry,mdm_identity_provisioning;
 GRANT INSERT ON mdm_access.authorization_rules TO mdm_identity_provisioning;
 GRANT EXECUTE ON FUNCTION public.claim_tenant_use(uuid,bigint,uuid,bytea,bytea,text) TO mdm_identity_provisioning;
 CREATE FUNCTION public.create_new_tenant(t uuid,e bigint,n text,d text) RETURNS void

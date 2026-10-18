@@ -80,7 +80,7 @@ struct Offset {
 async fn append(
     State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
-    Extension(continuation): Extension<crate::http_operation::SessionContinuation>,
+    Extension(continuation): Extension<crate::http_operation::RequestContinuation>,
     Extension(audit): Extension<RequestAudit>,
     Path((id, upload)): Path<(String, Uuid)>,
     Query(offset): Query<Offset>,
@@ -91,7 +91,7 @@ async fn append(
         tokio_util::io::StreamReader::new(body.into_data_stream().map_err(std::io::Error::other));
     match rss_mdm_content_service::service::append_upload(
         &app,
-        rss_mdm_content_service::service::UploadSession::new(&auth.proof, continuation.secret()),
+        rss_mdm_content_service::service::UploadAuthority::new(&auth.proof, continuation.secret()),
         &audit,
         &id,
         upload,
@@ -113,13 +113,13 @@ async fn append(
 async fn complete(
     State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
-    Extension(continuation): Extension<crate::http_operation::SessionContinuation>,
+    Extension(continuation): Extension<crate::http_operation::RequestContinuation>,
     Extension(audit): Extension<RequestAudit>,
     Path((id, upload)): Path<(String, Uuid)>,
 ) -> Result<StatusCode, Error> {
     rss_mdm_content_service::service::complete_upload(
         &app,
-        rss_mdm_content_service::service::UploadSession::new(&auth.proof, continuation.secret()),
+        rss_mdm_content_service::service::UploadAuthority::new(&auth.proof, continuation.secret()),
         &audit,
         &id,
         upload,
@@ -130,7 +130,7 @@ async fn complete(
 async fn upload(
     State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
-    Extension(continuation): Extension<crate::http_operation::SessionContinuation>,
+    Extension(continuation): Extension<crate::http_operation::RequestContinuation>,
     Extension(audit): Extension<RequestAudit>,
     Path(id): Path<String>,
     Query(input): Query<Selection>,
@@ -140,7 +140,7 @@ async fn upload(
         tokio_util::io::StreamReader::new(body.into_data_stream().map_err(std::io::Error::other));
     rss_mdm_content_service::service::upload(
         &app,
-        rss_mdm_content_service::service::UploadSession::new(&auth.proof, continuation.secret()),
+        rss_mdm_content_service::service::UploadAuthority::new(&auth.proof, continuation.secret()),
         &audit,
         &id,
         &input,
@@ -165,14 +165,14 @@ async fn cleanup(
 async fn mirror(
     State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
-    Extension(continuation): Extension<crate::http_operation::SessionContinuation>,
+    Extension(continuation): Extension<crate::http_operation::RequestContinuation>,
     Extension(audit): Extension<RequestAudit>,
     Path(id): Path<String>,
     Query(input): Query<Selection>,
 ) -> Result<StatusCode, Error> {
     rss_mdm_content_service::service::mirror(
         &app,
-        rss_mdm_content_service::service::UploadSession::new(&auth.proof, continuation.secret()),
+        rss_mdm_content_service::service::UploadAuthority::new(&auth.proof, continuation.secret()),
         &audit,
         &id,
         &input,
@@ -278,7 +278,7 @@ async fn receipt(
 async fn script(
     State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
-    Extension(continuation): Extension<crate::http_operation::SessionContinuation>,
+    Extension(continuation): Extension<crate::http_operation::RequestContinuation>,
     Extension(audit): Extension<RequestAudit>,
     Path((id, version)): Path<(String, String)>,
     headers: axum::http::HeaderMap,

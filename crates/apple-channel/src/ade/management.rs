@@ -1,5 +1,5 @@
 use super::*;
-use crate::account_enrollment::{authenticate, management::operation as operation_id};
+use crate::account_enrollment::management::operation as operation_id;
 use axum::{
     Extension, Json,
     extract::{Path, Query, State},
@@ -8,7 +8,10 @@ use axum::{
 };
 use base64::{Engine, engine::general_purpose::STANDARD};
 use rss_mdm_audit_integration::{Fact, RequestAudit};
-use rss_mdm_authorization_service::{Permission, context::AuthorizedPrincipal};
+use rss_mdm_authorization_service::{
+    Permission,
+    context::{AuthorizedPrincipal, RequestAuth},
+};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use zeroize::Zeroizing;
@@ -112,21 +115,17 @@ impl Setup {
         json!({"profile_name":self.name,"url":url,"is_mandatory":self.mandatory,"is_mdm_removable":self.removable,"is_supervised":true,"skip_setup_items":self.skip,"await_device_configured":false,"auto_advance_setup":false})
     }
 }
-async fn proof(
-    app: &HttpState,
-    headers: &HeaderMap,
-    write: bool,
-) -> Result<AuthorizedPrincipal, Error> {
-    let p = authenticate(app, headers, write).await?;
-    p.manage(if write {
-        Permission::AuthorizationWrite
+fn proof(auth: &RequestAuth, write: bool) -> Result<&AuthorizedPrincipal, Error> {
+    auth.proof.manage(if write {
+        Permission::RegistrationConfigurationWrite
     } else {
-        Permission::AuthorizationRead
+        Permission::RegistrationConfigurationRead
     })?;
-    Ok(p)
+    Ok(&auth.proof)
 }
 pub async fn configure(
     State(app): State<Arc<HttpState>>,
+    Extension(auth): Extension<RequestAuth>,
     Path(id): Path<Uuid>,
     headers: HeaderMap,
     Extension(audit): Extension<RequestAudit>,
@@ -142,7 +141,7 @@ pub async fn configure(
     {
         return Err(Error::Malformed);
     }
-    let p = proof(&app, &headers, true).await?;
+    let p = proof(&auth, true)?;
     let key = tokio::task::spawn_blocking({
         let time = now(&app)?;
         move || rss_mdm_certificate::apple::ade::generate_key(time)
@@ -189,10 +188,10 @@ pub async fn configure(
 }
 pub async fn public_key(
     State(app): State<Arc<HttpState>>,
+    Extension(auth): Extension<RequestAuth>,
     Path(id): Path<Uuid>,
-    headers: HeaderMap,
 ) -> Result<axum::response::Response, Error> {
-    let p = proof(&app, &headers, false).await?;
+    let p = proof(&auth, false)?;
     let mut tx = app.access.begin_read(p.tenant_id()).await?;
     let bytes:Vec<u8>=sqlx::query_scalar("SELECT certificate FROM mdm_apple.ade_servers WHERE tenant_id=$1::uuid AND organization=$2").bind(p.tenant_id()).bind(id).fetch_optional(&mut *tx).await.map_err(db)?.ok_or(Error::NotFound)?;
     Ok((
@@ -210,12 +209,13 @@ pub async fn public_key(
 }
 pub async fn operation(
     State(app): State<Arc<HttpState>>,
+    Extension(auth): Extension<RequestAuth>,
     Path(id): Path<Uuid>,
     headers: HeaderMap,
     Extension(audit): Extension<RequestAudit>,
     Json(input): Json<Command>,
 ) -> Result<Json<Value>, Error> {
-    let p = proof(&app, &headers, true).await?;
+    let p = proof(&auth, true)?;
     let op = operation_id(&headers)?;
     p.bind_audit(&audit)?;
     audit.operation(op, "apple_ade_operation");
@@ -501,10 +501,10 @@ async fn check_devices(
 }
 pub async fn status(
     State(app): State<Arc<HttpState>>,
+    Extension(auth): Extension<RequestAuth>,
     Path(id): Path<Uuid>,
-    headers: HeaderMap,
 ) -> Result<Json<Value>, Error> {
-    let p = proof(&app, &headers, false).await?;
+    let p = proof(&auth, false)?;
     let mut tx = app.access.begin_read(p.tenant_id()).await?;
     let row = sqlx::query(
         "SELECT * FROM mdm_apple.ade_servers WHERE tenant_id=$1::uuid AND organization=$2",
@@ -536,10 +536,10 @@ pub(crate) fn status_row(r: &sqlx::postgres::PgRow, now: i64) -> Result<Value, E
 }
 pub async fn operation_status(
     State(app): State<Arc<HttpState>>,
+    Extension(auth): Extension<RequestAuth>,
     Path((id, op)): Path<(Uuid, Uuid)>,
-    headers: HeaderMap,
 ) -> Result<Json<Value>, Error> {
-    let p = proof(&app, &headers, false).await?;
+    let p = proof(&auth, false)?;
     let mut tx = app.access.begin_read(p.tenant_id()).await?;
     let row=sqlx::query("SELECT kind,state,result FROM mdm_apple.ade_operations WHERE tenant_id=$1::uuid AND organization=$2 AND id=$3").bind(p.tenant_id()).bind(id).bind(op).fetch_optional(&mut *tx).await.map_err(db)?.ok_or(Error::NotFound)?;
     Ok(Json(
@@ -553,8 +553,8 @@ pub struct Page {
 }
 pub async fn devices(
     State(app): State<Arc<HttpState>>,
+    Extension(auth): Extension<RequestAuth>,
     Path(id): Path<Uuid>,
-    headers: HeaderMap,
     Query(page): Query<Page>,
 ) -> Result<Json<Value>, Error> {
     if page
@@ -564,7 +564,7 @@ pub async fn devices(
     {
         return Err(Error::Malformed);
     }
-    let p = proof(&app, &headers, false).await?;
+    let p = proof(&auth, false)?;
     let mut tx = app.access.begin_read(p.tenant_id()).await?;
     let rows=sqlx::query("SELECT serial,deleted,remote_profile,observed_at FROM mdm_apple.ade_devices WHERE tenant_id=$1::uuid AND organization=$2 AND ($3::text IS NULL OR serial>$3) ORDER BY serial LIMIT 101").bind(p.tenant_id()).bind(id).bind(page.after).fetch_all(&mut *tx).await.map_err(db)?;
     let items=rows.iter().take(100).map(|r|Ok(json!({"serial":r.try_get::<String,_>("serial").map_err(db)?,"deleted":r.try_get::<bool,_>("deleted").map_err(db)?,"profileUuid":r.try_get::<Option<Uuid>,_>("remote_profile").map_err(db)?,"observedAt":r.try_get::<i64,_>("observed_at").map_err(db)?,"registration":"not_implied"}))).collect::<Result<Vec<_>,Error>>()?;
@@ -579,10 +579,10 @@ pub async fn devices(
 }
 pub async fn profiles(
     State(app): State<Arc<HttpState>>,
+    Extension(auth): Extension<RequestAuth>,
     Path(id): Path<Uuid>,
-    headers: HeaderMap,
 ) -> Result<Json<Value>, Error> {
-    let p = proof(&app, &headers, false).await?;
+    let p = proof(&auth, false)?;
     let mut tx = app.access.begin_read(p.tenant_id()).await?;
     let rows=sqlx::query("SELECT id,revision,configuration,remote_uuid FROM mdm_apple.ade_profiles WHERE tenant_id=$1::uuid AND organization=$2 ORDER BY id LIMIT 1001").bind(p.tenant_id()).bind(id).fetch_all(&mut *tx).await.map_err(db)?;
     if rows.len() > 1000 {

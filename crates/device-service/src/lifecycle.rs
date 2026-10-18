@@ -1,7 +1,7 @@
 //! Device retirement is accepted once; command delivery remains execution-owned.
 //! ref: sqlx sqlx-core/src/transaction.rs (borrowed atomic acceptance).
 use crate::{Error, Result};
-use rss_mdm_authorization_service::{Permission, UserGrant};
+use rss_mdm_authorization_service::{OperationAuthority, Permission};
 use rss_mdm_inventory_service::objects::{DeviceObject, ObjectReader};
 use rss_mdm_registration_service::lifecycle;
 use rss_request_context::TenantId;
@@ -14,7 +14,7 @@ pub struct Acceptance<'a> {
     pub version: Uuid,
     pub occurrence: &'a str,
     pub target: &'a DeviceObject,
-    pub authority: &'a UserGrant,
+    pub authority: &'a OperationAuthority,
     pub delivery_seconds: u32,
     pub now: i64,
 }
@@ -72,7 +72,7 @@ pub async fn accept_in(
         || input.occurrence.is_empty()
         || input.occurrence.len() > 256
         || !(60..=604800).contains(&input.delivery_seconds)
-        || input.authority.user().tenant_id != tenant.to_string()
+        || input.authority.actor().tenant_id() != tenant.to_string()
         || !input.target.verified
         || input.target.members.is_empty()
         || input.target.members.len() > 2

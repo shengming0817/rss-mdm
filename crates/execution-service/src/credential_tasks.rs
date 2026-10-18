@@ -1,7 +1,7 @@
 //! Credential policies share the existing schedule and durable Agent task lifecycle.
 use crate::{
     action_contract::{ExecutionInput, ScheduledInput},
-    authorization::{Permission, UserGrant},
+    authorization::{OperationAuthority, Permission},
     *,
 };
 use base64::{Engine, engine::general_purpose::STANDARD};
@@ -15,7 +15,7 @@ use std::collections::BTreeMap;
 pub struct FrozenCredential {
     pub input: ExecutionInput,
     pub operation: Operation,
-    pub grants: BTreeMap<String, Vec<UserGrant>>,
+    pub grants: BTreeMap<String, Vec<OperationAuthority>>,
 }
 impl ScheduledInput for FrozenCredential {
     fn execution_input(&self) -> &ExecutionInput {

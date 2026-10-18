@@ -319,9 +319,9 @@ impl Host {
             .await?;
         let secret = admin_session(&identity, credential).await?;
         let credentials = crate::enrollment::credentials::Credentials::new(monotonic(), 100);
-        let reference = credentials.insert(rss_identity_core::session::SessionSecret::parse(
+        let reference = credentials.insert(rss_mdm_authorization_service::credential::RequestCredential::Cookie(rss_identity_core::session::SessionSecret::parse(
             secret.expose().into(),
-        )?)?;
+        )?))?;
         let store = Arc::new(Database::connect(options("mdm_access")?).await?);
         resources.resource(crate::lifecycle::AccessResource(store.clone()));
         let devices = Arc::new(crate::device::DeviceService::new(

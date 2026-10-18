@@ -3,9 +3,9 @@ use axum::{
     http::HeaderMap,
     response::{IntoResponse, Response},
 };
-use rss_identity_core::session::SessionSecret;
 use rss_identity_postgres::{Authority, AuthorityError};
 use rss_mdm_authorization_service::context::Principal;
+use rss_mdm_authorization_service::credential::{ApiKeySecret, RequestCredential};
 use rss_request_context::TenantId;
 pub struct Identity {
     pub authority: Authority,
@@ -30,7 +30,60 @@ impl Identity {
         &self,
         headers: &HeaderMap,
         activity: rss_identity_http_axum::SessionActivity,
-    ) -> Result<(Principal, SessionSecret), Response> {
+        access: &rss_mdm_authorization_service::Store,
+        address: Option<std::net::IpAddr>,
+        programmatic: bool,
+    ) -> Result<(Principal, RequestCredential), Response> {
+        let bearer = headers.contains_key("authorization");
+        let key = headers.contains_key("x-api-key");
+        if bearer || key {
+            if bearer && key
+                || headers.get_all("authorization").iter().count() > 1
+                || headers.get_all("x-api-key").iter().count() > 1
+                || has_identity_cookie(headers)
+            {
+                return Err(Error::Malformed.into_response());
+            }
+            if !programmatic {
+                return Err(Error::Forbidden.into_response());
+            }
+            let address = address.ok_or_else(|| Error::Forbidden.into_response())?;
+            access
+                .require_api_source(address)
+                .await
+                .map_err(Error::from)
+                .map_err(IntoResponse::into_response)?;
+            if key {
+                let raw = headers
+                    .get("x-api-key")
+                    .and_then(|value| value.to_str().ok())
+                    .ok_or_else(|| Error::Unauthorized.into_response())?;
+                let secret = ApiKeySecret::parse(raw.into())
+                    .map_err(Error::from)
+                    .map_err(IntoResponse::into_response)?;
+                let proof = access
+                    .authenticate_key(&self.tenant.to_string(), &secret)
+                    .await
+                    .map_err(Error::from)
+                    .map_err(IntoResponse::into_response)?;
+                return Ok((proof, RequestCredential::ApiKey(secret)));
+            }
+            let (session, secret) = rss_identity_http_axum::authenticate_bearer_request(
+                &self.authority,
+                &self.http,
+                self.tenant,
+                headers,
+                deadline(),
+            )
+            .await
+            .map_err(project_failure)?;
+            return Ok((
+                Principal::new(session)
+                    .map_err(Error::from)
+                    .map_err(IntoResponse::into_response)?,
+                RequestCredential::Bearer(secret),
+            ));
+        }
         let (session, credential) = rss_identity_http_axum::authenticate_request(
             &self.authority,
             &self.http,
@@ -40,20 +93,34 @@ impl Identity {
             deadline(),
         )
         .await
-        .map_err(|mut response| {
-            // Keep the component response and settlement class; product audit reads Error.
-            if let Some(rss_identity_http_axum::HttpFailure::Authority(error)) = response
-                .extensions()
-                .get::<rss_identity_http_axum::HttpFailure>()
-                .copied()
-            {
-                response.extensions_mut().insert(failure(error));
-            }
-            response
-        })?;
+        .map_err(project_failure)?;
         let proof = Principal::new(session)
             .map_err(Error::from)
             .map_err(IntoResponse::into_response)?;
-        Ok((proof, credential))
+        Ok((proof, RequestCredential::Cookie(credential)))
     }
+}
+
+fn has_identity_cookie(headers: &HeaderMap) -> bool {
+    headers.get_all("cookie").iter().any(|value| {
+        value.to_str().map_or(true, |value| {
+            value.split(';').any(|part| {
+                part.trim().split_once('=').is_none_or(|(name, _)| {
+                    name == "__Host-identity-session" || name == "__Host-identity-csrf"
+                })
+            })
+        })
+    })
+}
+
+fn project_failure(mut response: Response) -> Response {
+    // Preserve component settlement and expose its class to the product audit boundary.
+    if let Some(rss_identity_http_axum::HttpFailure::Authority(error)) = response
+        .extensions()
+        .get::<rss_identity_http_axum::HttpFailure>()
+        .copied()
+    {
+        response.extensions_mut().insert(failure(error));
+    }
+    response
 }

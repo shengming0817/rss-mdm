@@ -24,7 +24,7 @@ ADE 面向企业所有、分配到指定 Apple MDM server 的 Mac，产品 MDM �
 
 组织身份共用 `/api/v1/apple/organizations`，响应为 `id`、可空 `accountEnrollment` 和可空 `ade`。账户驱动设置归 `/organizations/{id}/account-enrollment`，ADE 设置归 `/organizations/{id}/ade`。旧组织管理写入口直接替换；发现和设备原生协议入口保持实际协议语义。
 
-管理员需要 `authorization_write`，查询需要 `authorization_read`；写入带 CSRF、Origin 和 UUID `Idempotency-Key`。ADE 操作步骤：
+管理员需要 `registration_configuration_write`，查询需要 `registration_configuration_read`；写入带 UUID `Idempotency-Key`，浏览器 Cookie 调用同时带 CSRF 和 Origin。ADE 操作步骤：
 
 1. `PUT /api/v1/apple/organizations/{id}/ade/configuration`，正文为 `expectedRevision`、`enabled`、Apple `serverUuid`、`orgId` 和 `rotateKey`。新组织 `expectedRevision=0`；组织与 server 身份建成后不能修改。公钥与私钥由服务端独立生成，私钥绑定租户/组织/密钥版本加密保存。
 2. `GET .../ade/public-key` 下载 PEM 公钥证书，上传到 Apple Business Manager / Apple School Manager 的对应 MDM server；随后从 Apple 下载加密 server token。
@@ -43,7 +43,7 @@ T2 使用受控 Apple HTTPS 和制造商根证书，仅证明本地协议、持�
 
 macOS 14 及以上可在系统设置中用 Managed Apple Account 注册组织设备。浏览器控制台另行实施；服务端提供发现、最小认证桥和管理 API。只提供 `mdm-adde`，不提供个人 BYOD User Enrollment。组织域名须将 `/.well-known/com.apple.remotemanagement` 的请求转送到产品浏览器 HTTPS origin；发现请求包含 `user-identifier` 和 `model-family=Mac`。
 
-在 `native_protocols.apple.account_keys` 中按键名配置 `certificate_file` 与 `private_key_file`。私钥是 owner-only PKCS8 DER；这对 RSA 证书与私钥对应 Apple 组织登记的公钥，和 Profile/APNs 密钥分别管理。管理员从 Apple AccountDetail 取得真正的 `server_uuid` 后，用 `authorization_write` 权限配置 `PUT /api/v1/apple/organizations/{id}/account-enrollment`：`expectedRevision`（首次 0）、`domain`、`serverUuid`、`signingKey`、`enabled`。再用同一权限配置 `PUT .../organizations/{id}/account-enrollment/accounts/{managed-account}`，提交 `expectedRevision`、`principalId`、`instanceId`、`enabled`。写入要求非零 UUID `Idempotency-Key`，更新采用预期版本；同一请求可重放。账户及域名规范为 ASCII、小写，账户本地部分支持字母数字与 `._+-`。映射必须属于当前 Identity 实例和组织域名。`authorization_read` 可通过 `GET .../organizations` 查看映射与本地签名密钥可用性；`externalOrganizationVerification=not_observed` 表示外部组织配置尚未验收。
+在 `native_protocols.apple.account_keys` 中按键名配置 `certificate_file` 与 `private_key_file`。私钥是 owner-only PKCS8 DER；这对 RSA 证书与私钥对应 Apple 组织登记的公钥，和 Profile/APNs 密钥分别管理。管理员从 Apple AccountDetail 取得真正的 `server_uuid` 后，用 `registration_configuration_write` 权限配置 `PUT /api/v1/apple/organizations/{id}/account-enrollment`：`expectedRevision`（首次 0）、`domain`、`serverUuid`、`signingKey`、`enabled`。再用同一权限配置 `PUT .../organizations/{id}/account-enrollment/accounts/{managed-account}`，提交 `expectedRevision`、`principalId`、`instanceId`、`enabled`。写入要求非零 UUID `Idempotency-Key`，更新采用预期版本；同一请求可重放。账户及域名规范为 ASCII、小写，账户本地部分支持字母数字与 `._+-`。映射必须属于当前 Identity 实例和组织域名。`registration_configuration_read` 可通过 `GET .../organizations` 查看映射与本地签名密钥可用性；`externalOrganizationVerification=not_observed` 表示外部组织配置尚未验收。
 
 Apple 的签名 CMS 请求只证明载荷完整性，不作为设备认证或组织授权。首次请求获得 `401` 与 `apple-as-web` 认证地址；认证桥复用 RSS Identity 登录、联合身份和 CSRF 验证。登录人必须与管理员设置的组织账户映射完全一致。认证成功通过 `308` 返回 Apple 原生登录回调和随机 bearer；同一授权可重放。随后同一签名请求携带 bearer 取得固定签名 Profile，使用 `EnrollmentMode=ADDE`、`AssignedManagedAppleID`、`com.apple.mdm.token` 和设备范围。该 Profile 的 SCEP、证书绑定、首次 Authenticate 和 TokenUpdate 沿用共同注册生命周期；注册归属真实 RSS 用户，占用其 macOS MDM 额度。
 

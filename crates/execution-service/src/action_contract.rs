@@ -57,7 +57,7 @@ pub struct FrozenNativeCollection {
     pub input: ExecutionInput,
     pub definition: r::NativeCollectionDefinition,
     pub windows_plan: Option<rss_mdm_windows_mdm::native::collection::Plan>,
-    pub grants: BTreeMap<String, Vec<crate::authorization::UserGrant>>,
+    pub grants: BTreeMap<String, Vec<crate::authorization::OperationAuthority>>,
     pub collection: rss_mdm_inventory::CollectionDefinition,
     pub resource_digest: [u8; 32],
 }
@@ -102,7 +102,7 @@ impl FrozenNativeCollection {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct FrozenAgentCollection {
     pub fields: Vec<rss_mdm_inventory::FieldDefinition>,
-    pub grants: BTreeMap<String, Vec<crate::authorization::UserGrant>>,
+    pub grants: BTreeMap<String, Vec<crate::authorization::OperationAuthority>>,
     pub input: ExecutionInput,
     pub resource: wire::TaskResource,
     pub definition: r::AgentCollectionDefinition,

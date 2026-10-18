@@ -14,7 +14,7 @@ use sqlx::Row;
 use std::sync::Arc;
 use uuid::Uuid;
 
-pub(crate) fn routes() -> Router<Arc<HttpState>> {
+pub(crate) fn management_routes() -> Router<Arc<HttpState>> {
     Router::new()
         .route(
             "/api/v1/apple/organizations/{id}/ade",
@@ -44,6 +44,9 @@ pub(crate) fn routes() -> Router<Arc<HttpState>> {
             "/api/v1/apple/organizations/{id}/ade/profiles",
             get(management::profiles),
         )
+}
+pub(crate) fn routes() -> Router<Arc<HttpState>> {
+    Router::new()
         .route(
             "/api/v1/apple/ade/enroll/{organization}/{profile}",
             post(protocol::enroll),

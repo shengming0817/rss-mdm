@@ -407,7 +407,7 @@ class ModuleImpactTests(unittest.TestCase):
                          {'authorization.capacity'})
         self.assertEqual(self.selected('crates/app/tests/authorization/mod.rs'),
                          {'authorization.' + part for part in
-                          ('rules', 'membership', 'capacity', 'initialization', 'admission')})
+                          ('rules', 'membership', 'capacity', 'initialization', 'admission', 'programmatic')})
         self.assertEqual(self.selected('crates/app/tests/audit/recovery.rs'),
                          {'audit.recovery'})
         self.assertEqual(self.selected('crates/compliance-postgres/tests/t2.rs'),

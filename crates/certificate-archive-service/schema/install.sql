@@ -14,7 +14,7 @@ CREATE TABLE mdm_certificate_archive.entries (
 );
 CREATE TABLE mdm_certificate_archive.versions (
  tenant_id uuid NOT NULL, entry_id uuid NOT NULL, version bigint NOT NULL CHECK(version>0),
- actor uuid NOT NULL, instance uuid NOT NULL, operation_id uuid NOT NULL, created_at bigint NOT NULL,
+ actor text NOT NULL CHECK (length(actor) BETWEEN 1 AND 128), instance uuid NOT NULL, operation_id uuid NOT NULL, created_at bigint NOT NULL,
  metadata jsonb NOT NULL CHECK(octet_length(metadata::text)<=16384),
  facts jsonb NOT NULL CHECK(octet_length(facts::text)<=262144),
  sealed bytea NOT NULL CHECK(octet_length(sealed)<=3145728), source text NOT NULL CHECK(source IN ('import','generate','metadata')),
@@ -24,7 +24,7 @@ CREATE TABLE mdm_certificate_archive.versions (
  FOREIGN KEY(tenant_id,request_entry_id,request_version) REFERENCES mdm_certificate_archive.versions(tenant_id,entry_id,version)
 );
 CREATE TABLE mdm_certificate_archive.operations (
- tenant_id uuid NOT NULL, actor uuid NOT NULL, instance uuid NOT NULL, id uuid NOT NULL,
+ tenant_id uuid NOT NULL, actor text NOT NULL CHECK (length(actor) BETWEEN 1 AND 128), instance uuid NOT NULL, id uuid NOT NULL,
  action text NOT NULL, digest bytea NOT NULL CHECK(octet_length(digest)=32),
  result jsonb NOT NULL CHECK(octet_length(result::text)<=16384), created_at bigint NOT NULL,
  PRIMARY KEY(tenant_id,actor,instance,id)

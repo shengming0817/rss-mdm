@@ -101,7 +101,7 @@ impl Quotas {
         p: &AuthorizedPrincipal,
         user: Option<&User>,
     ) -> Result<Configuration, Error> {
-        p.manage(Permission::AuthorizationRead)?;
+        p.manage(Permission::RegistrationConfigurationRead)?;
         let subject = subject(p, user)?;
         let mut tx = self.store.begin(p.tenant_id()).await?;
         configuration_on(&mut tx, p.tenant_id(), &subject).await
@@ -113,10 +113,16 @@ impl Quotas {
     ) -> Result<Usage, Error> {
         p.check_live()?;
         if user.is_some() {
-            p.manage(Permission::AuthorizationRead)?;
+            p.manage(Permission::RegistrationConfigurationRead)?;
         }
-        let owned = p.user();
-        let user = user.unwrap_or(&owned);
+        let owned;
+        let user = match user {
+            Some(user) => user,
+            None => {
+                owned = p.user()?;
+                &owned
+            }
+        };
         user.validate(p.tenant_id(), p.instance_id())
             .map_err(|_| Error::Malformed)?;
         let mut tx = self.store.begin(p.tenant_id()).await?;

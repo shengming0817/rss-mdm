@@ -194,7 +194,10 @@ async fn employee(
     .map_err(|_| Error::Unauthorized)?;
     let proof = app
         .identity
-        .authenticate(&app.authorization, secret)
+        .authenticate(
+            &app.authorization,
+            rss_mdm_authorization_service::credential::RequestCredential::Cookie(secret),
+        )
         .await
         .map_err(Error::from)?;
     proof.bind_audit(audit).map_err(Error::from)?;

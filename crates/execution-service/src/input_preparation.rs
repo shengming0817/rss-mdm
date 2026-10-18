@@ -58,7 +58,7 @@ impl Inputs {
             PublicationInput::Unmanage { schedule, lifetime } => Frozen::UnmanageDevice {
                 schedule: (*schedule).clone(),
                 run_lifetime_seconds: *lifetime,
-                grant: crate::authorization::UserGrant::all_devices(
+                grant: crate::authorization::OperationAuthority::all_devices(
                     authority.snapshot,
                     authority.proof,
                     Permission::DeviceUnmanage,

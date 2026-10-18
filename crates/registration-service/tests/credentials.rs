@@ -13,11 +13,18 @@ fn handoff_has_finite_capacity_and_reads_never_renew_it() {
         AtomicU64::new(0),
     ));
     let cache = Credentials::new(clock.clone(), 1);
-    let secret = || SessionSecret::parse("a".repeat(64)).unwrap();
+    let secret = || {
+        RequestCredential::Cookie(
+            rss_identity_core::session::SessionSecret::parse("a".repeat(64)).unwrap(),
+        )
+    };
     let id = cache.insert(secret()).unwrap();
     assert!(matches!(cache.insert(secret()), Err(Error::Capacity)));
     clock.1.store(299, Ordering::SeqCst);
-    assert_eq!(cache.get(id).unwrap().expose(), secret().expose());
+    let RequestCredential::Cookie(retained) = cache.get(id).unwrap() else {
+        panic!("wrong credential kind")
+    };
+    assert_eq!(retained.expose(), "a".repeat(64));
     clock.1.store(300, Ordering::SeqCst);
     assert!(matches!(cache.get(id), Err(Error::Unauthorized)));
     assert!(cache.insert(secret()).is_ok());
@@ -30,7 +37,11 @@ fn settled_unused_handoffs_release_capacity_but_unknown_commits_retain_it() {
         AtomicU64::new(0),
     ));
     let cache = Credentials::new(clock, 1);
-    let secret = || SessionSecret::parse("a".repeat(64)).unwrap();
+    let secret = || {
+        RequestCredential::Cookie(
+            rss_identity_core::session::SessionSecret::parse("a".repeat(64)).unwrap(),
+        )
+    };
     for _ in 0..5 {
         let id = cache.insert(secret()).unwrap();
         assert!(matches!(

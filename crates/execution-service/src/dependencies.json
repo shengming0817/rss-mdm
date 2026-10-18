@@ -6,6 +6,7 @@
   "mdm_access.agent_grants": "5593c79a37379a5016a22fc86071d4a81183c69853bd8dd441ff1f634b20e358",
   "mdm_access.agent_issuances": "40329b3acaeb8829c7d2628da0408b475f7e63293c145bbae9d1b1786d085dd8",
   "mdm_access.agent_native_enrollments": "0013b3f0af9e4466eb355200c5ad9095e0f5ed185eac6ae60fdcce958c9f8059",
+  "mdm_access.api_keys": "ce0a7cc164a94734834946d80847edc5277ae8dbd2a88682a90bdceee43095ef",
   "mdm_access.authorization_rules": "728a46e3366110ceca461be07d36a3b63a4fa116bcd82bf9428abc9d840a11aa",
   "mdm_access.collection_runs": "94bcb91f11aa9585d8daa1bffef3a0da073e4ca5307932c69821bc08dd8fcfa0",
   "mdm_access.credentials": "d84c5912e7172fbc3fa9e566a2328024196db9923385b436b3bc942aeb3e4727",

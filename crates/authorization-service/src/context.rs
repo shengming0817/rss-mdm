@@ -22,13 +22,17 @@ impl AuthorizedPrincipal {
         if audit.tenant() != self.tenant_id() {
             return Err(Error::Forbidden);
         }
-        audit.set_principal(self.principal_id(), self.instance_id());
+        audit.set_authenticated(
+            self.principal_id(),
+            self.instance_id(),
+            self.identity.audit_kind(),
+        );
         Ok(())
     }
-    pub fn shared_session(&self) -> Arc<AuthenticatedSession> {
-        self.identity.session.clone()
+    pub fn shared_session(&self) -> Result<Arc<AuthenticatedSession>, Error> {
+        self.identity.shared_session()
     }
-    pub fn session(&self) -> &AuthenticatedSession {
+    pub fn session(&self) -> Result<&AuthenticatedSession, Error> {
         self.identity.session()
     }
     pub fn check_live(&self) -> Result<(), Error> {
@@ -43,15 +47,20 @@ impl AuthorizedPrincipal {
     pub fn principal_id(&self) -> &str {
         self.identity.principal_id()
     }
-    pub fn session_id(&self) -> String {
-        self.identity.session_id()
+    pub fn session_id(&self) -> Result<String, Error> {
+        Ok(self.session()?.view().id.to_string())
     }
-    pub fn user(&self) -> crate::User {
-        crate::User {
-            instance_id: self.instance_id().into(),
-            tenant_id: self.tenant_id().into(),
-            principal_id: self.principal_id().into(),
-        }
+    pub fn credential_binding(&self) -> String {
+        self.identity.credential_binding()
+    }
+    pub fn actor(&self) -> crate::Actor {
+        self.identity.actor.clone()
+    }
+    pub(crate) fn key_proof(&self) -> Option<&crate::api_key::KeyProof> {
+        self.identity.key_proof()
+    }
+    pub fn user(&self) -> Result<crate::User, Error> {
+        self.identity.actor.account().cloned()
     }
     pub async fn load_authorization(mut self, access: &crate::Store) -> Result<Self, Error> {
         self.authorization = Some(crate::store::authorization_snapshot(access, &self).await?);
@@ -62,14 +71,7 @@ impl AuthorizedPrincipal {
         self.authorization.as_ref().ok_or(Error::Unauthorized)
     }
     pub fn require_all_devices(&self, permission: crate::Permission) -> Result<(), Error> {
-        let grants = self.authorization()?.effective(self)?;
-        if grants.iter().any(|g| {
-            g.grant.operation == permission && matches!(g.grant.scope, crate::Scope::AllDevices)
-        }) {
-            self.check_live()
-        } else {
-            Err(Error::Forbidden)
-        }
+        self.authorization()?.require_all_devices(self, permission)
     }
     pub fn require(&self, operation: crate::Permission, device: Option<&str>) -> Result<(), Error> {
         self.authorization()?
@@ -91,6 +93,7 @@ impl AuthorizedPrincipal {
     }
     /// Live identity for a self-service request. Registration validates its server-owned target.
     pub fn self_enrollment(&self, device: &str) -> Result<EnrollmentPermission<'_>, Error> {
+        self.session()?;
         self.check_live()?;
         Ok(EnrollmentPermission {
             proof: self,
@@ -142,42 +145,98 @@ pub struct RequestAuth {
 
 /// A single private projection, created only from a request's authoritative component result.
 pub struct Principal {
-    session: Arc<AuthenticatedSession>,
-    instance: String,
-    tenant: String,
-    principal: String,
+    proof: Authentication,
+    actor: crate::Actor,
+    subject: String,
+}
+enum Authentication {
+    Account(Arc<AuthenticatedSession>),
+    ApiKey(crate::api_key::KeyProof),
 }
 impl Principal {
     pub fn new(session: AuthenticatedSession) -> Result<Self, Error> {
         session.assurance().map_err(|_| Error::Unauthorized)?;
+        let user = crate::User {
+            instance_id: session.instance().to_string(),
+            tenant_id: session.account().tenant.to_string(),
+            principal_id: session.account().principal.as_uuid().to_string(),
+        };
         Ok(Self {
-            instance: session.instance().to_string(),
-            tenant: session.account().tenant.to_string(),
-            principal: session.account().principal.as_uuid().to_string(),
-            session: Arc::new(session),
+            subject: user.principal_id.clone(),
+            actor: crate::Actor::Account { user },
+            proof: Authentication::Account(Arc::new(session)),
         })
     }
-    pub fn session(&self) -> &AuthenticatedSession {
-        &self.session
+    pub(crate) fn from_key(proof: crate::api_key::KeyProof) -> Self {
+        let actor = crate::Actor::ApiKey {
+            instance: proof.instance.clone(),
+            tenant: proof.tenant.clone(),
+            id: proof.id,
+        };
+        Self {
+            subject: actor.subject(),
+            actor,
+            proof: Authentication::ApiKey(proof),
+        }
     }
-
+    pub fn session(&self) -> Result<&AuthenticatedSession, Error> {
+        match &self.proof {
+            Authentication::Account(session) => Ok(session),
+            Authentication::ApiKey(_) => Err(Error::Forbidden),
+        }
+    }
+    fn shared_session(&self) -> Result<Arc<AuthenticatedSession>, Error> {
+        match &self.proof {
+            Authentication::Account(session) => Ok(session.clone()),
+            Authentication::ApiKey(_) => Err(Error::Forbidden),
+        }
+    }
+    fn key_proof(&self) -> Option<&crate::api_key::KeyProof> {
+        match &self.proof {
+            Authentication::ApiKey(proof) => Some(proof),
+            _ => None,
+        }
+    }
+    fn audit_kind(&self) -> rss_mdm_audit_integration::AuthenticationKind {
+        use rss_mdm_audit_integration::AuthenticationKind;
+        match &self.proof {
+            Authentication::ApiKey(_) => AuthenticationKind::ApiKey,
+            Authentication::Account(proof) => match proof.view().credential_kind {
+                rss_identity_core::session::CredentialKind::Cookie => AuthenticationKind::Cookie,
+                rss_identity_core::session::CredentialKind::Bearer => AuthenticationKind::Bearer,
+            },
+        }
+    }
     pub fn check_live(&self) -> Result<(), Error> {
-        self.session
-            .assurance()
-            .map(|_| ())
-            .map_err(|_| Error::Unauthorized)
+        match &self.proof {
+            Authentication::Account(session) => session
+                .assurance()
+                .map(|_| ())
+                .map_err(|_| Error::Unauthorized),
+            Authentication::ApiKey(proof) if proof.clock.now() < proof.deadline => Ok(()),
+            Authentication::ApiKey(_) => Err(Error::Unauthorized),
+        }
     }
     pub fn instance_id(&self) -> &str {
-        &self.instance
+        self.actor.instance_id()
     }
     pub fn tenant_id(&self) -> &str {
-        &self.tenant
-    }
-    pub fn session_id(&self) -> String {
-        self.session.view().id.to_string()
+        self.actor.tenant_id()
     }
     pub fn principal_id(&self) -> &str {
-        &self.principal
+        &self.subject
+    }
+    pub fn credential_binding(&self) -> String {
+        match &self.proof {
+            Authentication::Account(session) => format!(
+                "{}:{}",
+                session.view().credential_kind.as_str(),
+                session.view().id
+            ),
+            Authentication::ApiKey(proof) => {
+                format!("api-key:{}:{}", proof.id, proof.credential_revision)
+            }
+        }
     }
 }
 
