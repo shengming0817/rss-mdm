@@ -215,9 +215,23 @@ async fn publication_http_authority_receipts_and_public_native_binding() -> Resu
     ensure!(published.1["revision"] != pending["revision"]);
     let replayed = f
         .author
-        .call(&f.router, Method::POST, &path, Some(recovery))
+        .call(&f.router, Method::POST, &path, Some(recovery.clone()))
         .await?;
     ensure!(replayed.0 == StatusCode::OK && replayed.1 == published.1);
+    let found = f
+        .author
+        .call(
+            &f.router,
+            Method::GET,
+            &format!(
+                "{collection}?operationId={}",
+                recovery["operationId"].as_str().unwrap()
+            ),
+            None,
+        )
+        .await?;
+    ensure!(found.0 == StatusCode::OK && found.1["items"][0]["id"] == published.1["id"]);
+
     let info = f
         .router
         .clone()

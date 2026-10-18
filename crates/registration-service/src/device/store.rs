@@ -306,21 +306,20 @@ pub async fn retire_state_in(
     .map_err(db)?;
     sqlx::query("UPDATE mdm_access.credentials SET state=$3 WHERE tenant_id=$1::uuid AND registration=$2::uuid").bind(tenant).bind(registration.to_string()).bind(state).execute(&mut *tx).await.map_err(db)?;
     sqlx::query("UPDATE mdm_access.report_sources SET enabled=false WHERE tenant_id=$1::uuid AND registration=$2::uuid").bind(tenant).bind(registration.to_string()).execute(&mut *tx).await.map_err(db)?;
-    if let Some(row) = previous {
-        if row.try_get::<String, _>("state").map_err(db)? == "active"
-            && matches!(state, "retired" | "revoked" | "superseded")
-        {
-            crate::webhook::registration(
-                tx,
-                tenant,
-                &row.try_get::<String, _>("device").map_err(db)?,
-                registration,
-                row.try_get("generation").map_err(db)?,
-                &row.try_get::<String, _>("channel").map_err(db)?,
-                state,
-            )
-            .await?;
-        }
+    if let Some(row) = previous
+        && row.try_get::<String, _>("state").map_err(db)? == "active"
+        && matches!(state, "retired" | "revoked" | "superseded")
+    {
+        crate::webhook::registration(
+            tx,
+            tenant,
+            &row.try_get::<String, _>("device").map_err(db)?,
+            registration,
+            row.try_get("generation").map_err(db)?,
+            &row.try_get::<String, _>("channel").map_err(db)?,
+            state,
+        )
+        .await?;
     }
     Ok(())
 }

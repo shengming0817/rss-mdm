@@ -41,7 +41,7 @@ impl PublicationService {
             for key in keys {
                 let withdrawal=key.starts_with("w:");let table=if withdrawal{db::Table::Withdraw}else{db::Table::Publish};
                 let call=db::call(tx,table,&key).await?.ok_or_else(db::fault)?;
-                if !(s.sources.binding.identity==call.target.binding){continue;}
+                if s.sources.binding.identity!=call.target.binding{continue;}
                 let record=input!(rel::PublicationKey::new(s.tenant(),&call.target.record).map_err(|_|Error::Identity));
                 let record=input!(s.releases.get_in(tx,&record).await?.map_err(|_|Error::Content)).ok_or_else(db::fault)?;
                 let publication=match db::core_publication(&record,&call.target) {Ok(value)=>value,Err(Error::Conflict)=>continue,Err(error)=>return Ok(Err(error))};

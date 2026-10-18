@@ -1,6 +1,7 @@
 WITH tables AS (
  SELECT c.* FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='mdm_commands' AND c.relkind='r'
 ), update_columns(relation, col) AS (VALUES
+ ('mdm_webhook.subscriptions','revision'),('mdm_webhook.subscriptions','target_version'),('mdm_webhook.subscriptions','enabled'),('mdm_webhook.subscriptions','deleted'),('mdm_webhook.subscriptions','settings'),('mdm_webhook.versions','retired'),('mdm_webhook.compliance_sources','cursor'),('mdm_webhook.compliance_sources','complete'),('mdm_webhook.fanout','cursor'),('mdm_webhook.fanout','complete'),('mdm_webhook.deliveries','attempts'),('mdm_webhook.deliveries','last_outcome'),('mdm_webhook.deliveries','last_stage'),('mdm_webhook.deliveries','last_reason'),
  ('mdm_devices.retirement_channels','blocking_execution'),('mdm_devices.retirement_channels','stage'),('mdm_devices.retirement_channels','effect'),('mdm_devices.retirement_channels','execution'),('mdm_devices.retirement_channels','reason'),
  ('mdm_recovery.entries','revision'),('mdm_recovery.entries','current_version'),('mdm_recovery.entries','retired'),('mdm_recovery.versions','validity'),('mdm_recovery.versions','key_id'),('mdm_recovery.versions','sealed'),('mdm_recovery.versions','invalidated_at'),('mdm_recovery.versions','pending'),('mdm_recovery.versions','cleanup_checked_at'),
  ('mdm_recovery.native_actions','inputs_purged'),('mdm_commands.operations','request'),('mdm_apple.attempts','request'),
@@ -42,6 +43,8 @@ WITH tables AS (
  ('public.mdm_installation','instance_id'),('public.mdm_installation','management_tenant_id'),
  ('mdm_access.agent_issuances','tenant_id'),('mdm_access.agent_issuances','credential'),('mdm_access.agent_issuances','not_after')
 ), allowed(relation,sel,ins,del) AS (VALUES
+ ('mdm_webhook.subscriptions',true,true,false),('mdm_webhook.versions',true,true,false),('mdm_webhook.events',true,true,false),('mdm_webhook.compliance_sources',true,true,false),('mdm_webhook.fanout',true,true,false),('mdm_webhook.deliveries',true,true,false),('mdm_webhook.operations',true,true,false),
+ ('mdm_group.groups',true,false,false),('mdm_group.member_runs',true,false,false),('mdm_group.member_changes',true,false,false),('mdm_compliance.results',true,false,false),
  ('mdm_devices.retirement_policies',true,false,false),('mdm_devices.retirements',true,false,false),('mdm_devices.retirement_channels',true,false,false),('mdm_devices.retirement_work',true,true,false),('mdm_devices.associations',true,false,false),('mdm_devices.members',true,false,false),
  ('mdm_recovery.agent_guards',true,true,true),('mdm_recovery.agent_materials',true,true,false),('mdm_recovery.entries',true,true,false),('mdm_recovery.versions',true,true,false),('mdm_recovery.native_actions',true,true,false),
  ('mdm_pki.certificates',true,false,false),('mdm_pki.revocations',true,false,false),('mdm_agent_packages.releases',true,false,false),('mdm_access.agent_bootstraps',true,true,false),('mdm_access.agent_native_enrollments',true,true,false),('mdm_access.grants',true,true,false),('mdm_pki.trust',true,false,false),('mdm_pki.rotations',true,false,false),('mdm_pki.installations',true,true,false),('mdm_pki.acknowledgements',true,true,false),

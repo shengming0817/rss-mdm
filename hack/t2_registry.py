@@ -290,7 +290,7 @@ for name in ('projection', 'recovery', 'process'):
         sources=('crates/examples/src/app.rs', 'crates/inventory-postgres/src/*'),
         tests=(f'crates/examples/src/app/t2/{name}.rs',),
         support=('crates/examples/src/app/t2/mod.rs',))
-add('worker.wake', selectors=('worker_wake::tests::',),
+add('worker.wake', selectors=('worker_wake::tests::',), fixtures=('identity',),
     sources=('crates/app/src/worker_wake.rs',),
     tests=('crates/app/tests/worker_wake/mod.rs',), support=())
 MODULES['worker.wake'] = replace(MODULES['worker.wake'], policies=(CasePolicy('worker_wake::tests::committed_hints_reconnect_and_restart_preserve_durable_markers', 'reuse', 'pair'),))
@@ -405,7 +405,7 @@ add('sources.brew_git', build=Build('rss-mdm-brew-source', 'test', 't2_git'), se
 add('sources.brew_recovery', build=Build('rss-mdm-brew-source'),
     selectors=('git::recovery_tests::',), profile='none', fixtures=('git',),
     sources=('crates/brew-source/src/git.rs',))
-add('native.tls', selectors=('native::tls::tests::',), profile='product', fixtures=('windows',),
+add('native.tls', selectors=('native::tls::tests::',), profile='product', fixtures=('windows','identity'),
     sources=('crates/app/src/native/*',),
     tests=('crates/app/tests/native/tls.rs',))
 app_family('windows',

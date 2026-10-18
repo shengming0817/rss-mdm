@@ -9,8 +9,11 @@ AND NOT EXISTS(SELECT 1 FROM tables t JOIN pg_attribute a ON a.attrelid=t.oid WH
 AND NOT EXISTS(SELECT 1 FROM tables t CROSS JOIN LATERAL aclexplode(coalesce(t.relacl,acldefault('r',t.relowner))) a WHERE a.is_grantable AND a.grantee<>t.relowner AND pg_has_role(current_user,a.grantee,'MEMBER'))
 AND NOT EXISTS(
  SELECT 1 FROM tables t CROSS JOIN LATERAL aclexplode(coalesce(t.relacl,acldefault('r',t.relowner))) a
- WHERE a.grantee NOT IN(t.relowner,(SELECT oid FROM pg_roles WHERE rolname='mdm_flow_runtime'))
- OR (a.grantee<>t.relowner AND (a.is_grantable OR NOT (a.privilege_type IN('SELECT','INSERT') OR (a.privilege_type='DELETE' AND t.relname IN('fields','groups')))))
+ WHERE NOT (a.grantee=t.relowner
+ OR (a.grantee=(SELECT oid FROM pg_roles WHERE rolname='mdm_flow_runtime') AND NOT a.is_grantable
+     AND (a.privilege_type IN('SELECT','INSERT') OR (a.privilege_type='DELETE' AND t.relname IN('fields','groups'))))
+ OR (a.grantee=(SELECT oid FROM pg_roles WHERE rolname='mdm_command_runtime') AND NOT a.is_grantable
+     AND t.relname='results' AND a.privilege_type='SELECT'))
 )
 AND NOT EXISTS(
  SELECT 1 FROM tables t JOIN pg_attribute c ON c.attrelid=t.oid CROSS JOIN LATERAL aclexplode(c.attacl) a

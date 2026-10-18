@@ -869,6 +869,37 @@ const PROJECTION_SQL: &str = "SELECT publication FROM mdm_software_composition.p
 const PREPARE_WITHDRAWAL_SQL: &str = "INSERT INTO mdm_software_composition.targets(tenant_id,id,record,document,digest,withdrawal_id) SELECT $1::uuid,$2,$3,$4,$5,$2 WHERE EXISTS(SELECT 1 FROM mdm_software_composition.withdrawals WHERE tenant_id=$1::uuid AND id=$2 AND NOT complete)";
 const COMPLETE_NOOP_SQL: &str = "UPDATE mdm_software_composition.withdrawals w SET complete=true WHERE tenant_id=$1::uuid AND id=$2 AND NOT EXISTS(SELECT 1 FROM mdm_software_composition.targets t WHERE t.tenant_id=w.tenant_id AND t.id=w.id AND t.attempted)";
 
+/// Persist the immutable withdrawal intent and its queue audit exactly once.
+/// Subsequent commands have their own management audit and reuse this original intent.
+pub(super) async fn queue_withdrawal_in(
+    tx: &mut PgTransaction<'_>,
+    audit: &dyn crate::AuditPort,
+    actor: &rel::ActorId,
+    target: &Target,
+) -> std::result::Result<(), PgError> {
+    lock(tx, "withdrawal", &target.withdrawal_key()).await?;
+    if call(tx, Table::Withdraw, &target.withdrawal_key())
+        .await?
+        .is_some()
+    {
+        return Ok(());
+    }
+    insert_call(tx, Table::Withdraw, target).await?;
+    let fact = fact(
+        tx.tenant_id(),
+        actor,
+        &target.record,
+        "software_withdraw",
+        target_fact(target, Table::Withdraw, "queue_withdrawal", "queued"),
+        &encode(target)?,
+    )?;
+    audit
+        .append_in(tx, &fact, false)
+        .await
+        .map_err(PgError::from)?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod audit_tests {
     use super::*;
@@ -956,35 +987,4 @@ mod audit_tests {
             rss_audit_core::Outcome::Unknown
         );
     }
-}
-
-/// Persist the immutable withdrawal intent and its queue audit exactly once.
-/// Subsequent commands have their own management audit and reuse this original intent.
-pub(super) async fn queue_withdrawal_in(
-    tx: &mut PgTransaction<'_>,
-    audit: &dyn crate::AuditPort,
-    actor: &rel::ActorId,
-    target: &Target,
-) -> std::result::Result<(), PgError> {
-    lock(tx, "withdrawal", &target.withdrawal_key()).await?;
-    if call(tx, Table::Withdraw, &target.withdrawal_key())
-        .await?
-        .is_some()
-    {
-        return Ok(());
-    }
-    insert_call(tx, Table::Withdraw, target).await?;
-    let fact = fact(
-        tx.tenant_id(),
-        actor,
-        &target.record,
-        "software_withdraw",
-        target_fact(target, Table::Withdraw, "queue_withdrawal", "queued"),
-        &encode(target)?,
-    )?;
-    audit
-        .append_in(tx, &fact, false)
-        .await
-        .map_err(PgError::from)?;
-    Ok(())
 }

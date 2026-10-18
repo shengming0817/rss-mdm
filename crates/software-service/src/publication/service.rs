@@ -202,6 +202,14 @@ impl PublicationService {
                     .await,
             );
         }
+        let resource = self
+            .resources
+            .get(&i.resource, budget(cutoff))
+            .await?
+            .ok_or(Error::Content)?;
+        if resource.storage_revision != i.expected_resource_revision {
+            return Err(Error::Conflict);
+        }
         let version = self
             .resources
             .version(&i.resource, &i.version, budget(cutoff))

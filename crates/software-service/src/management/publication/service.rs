@@ -380,7 +380,7 @@ impl PublicationDirectory {
                     proof.check_live()?;
                     return Ok((old, true));
                 }
-                let mut value = json!({"as_of": s.clock.unix_seconds().ok_or(Error::Unavailable(Failure::Clock))?});
+                let mut value = json!({"record": id, "as_of": s.clock.unix_seconds().ok_or(Error::Unavailable(Failure::Clock))?});
                 if matches!(request.input, Change::Recover) {
                     let key = rel::PublicationKey::new(s.tenant, id).map_err(|_| Error::Malformed)?;
                     let record = rss_mdm_software_release_postgres::lock_publication_reference_in(tx, &key)
@@ -430,7 +430,7 @@ pub async fn list(
     let ids=crate::management::transaction::inspect(&directory.runtime,directory.tenant,q,|q,tx|Box::pin(async move {
         let tenant=tx.tenant_id().to_string();let after=q.after.clone();let target=q.target.clone();let resource=q.resource.clone();let version=q.version.clone();let operation=q.operation_id.map(|id|id.to_string());let limit=q.limit;
         Ok(tx.with_connection(move|c|Box::pin(async move {
-            sqlx::query_scalar::<_,String>("SELECT record FROM mdm_software_composition.subjects WHERE tenant_id=$1::uuid AND ($2::text IS NULL OR record COLLATE \"C\">$2) AND ($3::text IS NULL OR convert_from(document,'UTF8')::jsonb->>'target'=$3) AND ($4::text IS NULL OR resource=$4) AND ($5::text IS NULL OR version=$5) AND ($6::text IS NULL OR record=$6) ORDER BY record COLLATE \"C\" LIMIT $7")
+            sqlx::query_scalar::<_,String>("SELECT record FROM mdm_software_composition.subjects s WHERE tenant_id=$1::uuid AND ($2::text IS NULL OR record COLLATE \"C\">$2) AND ($3::text IS NULL OR convert_from(document,'UTF8')::jsonb->>'target'=$3) AND ($4::text IS NULL OR resource=$4) AND ($5::text IS NULL OR version=$5) AND ($6::text IS NULL OR EXISTS(SELECT 1 FROM mdm_publication.operations o WHERE o.tenant_id=s.tenant_id AND o.id::text=$6 AND o.response->>'record'=s.record)) ORDER BY record COLLATE \"C\" LIMIT $7")
                 .bind(tenant).bind(after).bind(target).bind(resource).bind(version).bind(operation).bind((limit+1)as i64).fetch_all(c).await
         })).await?)
     }),crate::management::transaction::TransactionOwner::Publication).await?;

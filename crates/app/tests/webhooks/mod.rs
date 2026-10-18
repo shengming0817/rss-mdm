@@ -185,7 +185,7 @@ async fn subscription_versions_atomic_fanout_and_same_id_https_retry() -> Result
         let rollback_event=Event{event_id:Uuid::new_v4(),..event.clone()};let copied=rollback_event.clone();
         let rolled=execution.runtime.local_tx(rss_request_context::TenantId::parse(case_tenant())?,crate::webhooks::deadline(),move|tx|Box::pin(async move {events::emit_in(tx,copied).await.map_err(rss_transactional_messaging_postgres::PgError::from)?;Err::<(),_>(sqlx::Error::Protocol("deliberate business rollback".into()).into())})).await;
         ensure!(rolled.fold(|_|false,|_|false,|_|true,|_|false,|_|false,|_|false));
-        ensure!(pg(&format!("SELECT count(*) FROM mdm_webhook.events WHERE id='{}'",rollback_event.event_id))?=="0");
+        ensure!(pg(&format!("SELECT count(*) FROM mdm_webhook.events WHERE id='{}'",rollback_event.event_id))?.trim()=="0");
         let copied=event.clone();execution.runtime.local_tx(rss_request_context::TenantId::parse(case_tenant())?,crate::webhooks::deadline(),move|tx|Box::pin(async move {events::emit_in(tx,copied).await.map_err(rss_transactional_messaging_postgres::PgError::from)})).await.fold(Ok,Err,Err,Err,Err,Err)?;
         // The integration belongs to the tenant even after its creator loses all business grants.
         identity::set_grants(case_tenant(),case::admin(),vec![]).await?;
@@ -193,7 +193,7 @@ async fn subscription_versions_atomic_fanout_and_same_id_https_retry() -> Result
         let requests=tokio::time::timeout(Duration::from_secs(30),&mut server).await???;
         let first:Vec<_>=requests.iter().filter(|r|r.0=="/first").collect();ensure!(first.len()==2 && first[0].1==first[1].1 && first[0].2==first[1].2);
         ensure!(requests.iter().all(|r|serde_json::from_slice::<Value>(&r.2).ok().is_some_and(|v|v["eventId"]==event.event_id.to_string())));
-        tokio::time::timeout(Duration::from_secs(10),async {loop {if pg(&format!("SELECT count(*) FROM mdm_webhook.deliveries d JOIN rss_transactional_messaging.outbox o ON(o.tenant_id,o.message_id)=(d.tenant_id,d.id::text) WHERE d.event_id='{}' AND o.status='published'",event.event_id))?==(rss_mdm_webhook_service::PAGE+1).to_string(){return Ok::<_,anyhow::Error>(())}tokio::time::sleep(Duration::from_millis(100)).await;}}).await??;
+        tokio::time::timeout(Duration::from_secs(10),async {loop {if pg(&format!("SELECT count(*) FROM mdm_webhook.deliveries d JOIN rss_transactional_messaging.outbox o ON(o.tenant_id,o.message_id)=(d.tenant_id,d.id::text) WHERE d.event_id='{}' AND o.status='published'",event.event_id))?.trim()==(rss_mdm_webhook_service::PAGE+1).to_string(){return Ok::<_,anyhow::Error>(())}tokio::time::sleep(Duration::from_millis(100)).await;}}).await??;
         stop.cancel();
         if let Some(mut task)=worker.take() {
             match tokio::time::timeout(Duration::from_secs(20),&mut task).await {
@@ -261,14 +261,13 @@ async fn subscription_versions_atomic_fanout_and_same_id_https_retry() -> Result
         Ok::<_,anyhow::Error>(())
     }.await;
     stop.cancel();
-    if let Some(mut task) = worker {
-        if tokio::time::timeout(Duration::from_secs(20), &mut task)
+    if let Some(mut task) = worker
+        && tokio::time::timeout(Duration::from_secs(20), &mut task)
             .await
             .is_err()
-        {
-            task.abort();
-            let _ = task.await;
-        }
+    {
+        task.abort();
+        let _ = task.await;
     }
     if !server.is_finished() {
         server.abort();
