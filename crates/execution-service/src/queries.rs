@@ -2,6 +2,7 @@
 use crate::*;
 #[derive(Clone)]
 pub struct Admission {
+    pub(crate) software_distribution: crate::SoftwareDistribution,
     pub(crate) source: Arc<dyn source_authority::SourceAuthority>,
     pub(crate) software: Arc<rss_mdm_software_service::preparation::Preparation>,
     pub(crate) agent_store: Arc<dyn channels::Agent>,
@@ -36,6 +37,7 @@ pub struct Dependencies {
 impl Queries {
     pub fn new(dependencies: Dependencies) -> Self {
         let admission = Admission {
+            software_distribution: dependencies.inputs.software_distribution,
             source: dependencies.source.clone(),
             software: dependencies.inputs.software.clone(),
             agent_store: dependencies.agent_store.clone(),

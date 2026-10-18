@@ -3,6 +3,8 @@ use crate::{ConfigIssue, Failure, planning, resource_catalog};
 #[derive(Clone, Debug, thiserror::Error, serde::Serialize)]
 #[serde(tag = "kind", content = "reason", rename_all = "snake_case")]
 pub enum Error {
+    #[error("MDM software distribution is disabled")]
+    MdmSoftwareDisabled,
     #[error(transparent)]
     RecoveryCredentials(#[from] rss_mdm_recovery_credentials::Error),
     #[error(transparent)]

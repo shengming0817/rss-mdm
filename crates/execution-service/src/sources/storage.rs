@@ -102,7 +102,7 @@ pub async fn eligible_in(
             source,
             tx,
             policy.definition.scope,
-            crate::source_authority::action_channel(policy.definition.action.kind())?,
+            crate::source_authority::action_channel(&policy.definition.action)?,
             device,
         )
         .await?
@@ -123,7 +123,7 @@ pub async fn withdrawn_in(
             source,
             tx,
             policy.definition.scope,
-            crate::source_authority::action_channel(policy.definition.action.kind())?,
+            crate::source_authority::action_channel(&policy.definition.action)?,
             device,
         )
         .await?

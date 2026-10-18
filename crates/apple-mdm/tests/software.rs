@@ -56,7 +56,7 @@ fn bundle_version_and_untrusted_team_field_do_not_verify_installation() {
 }
 
 #[test]
-fn software_observation_uses_native_identities_and_never_guesses_from_a_url() {
+fn enterprise_package_metadata_does_not_prove_an_installed_application() {
     use crate::native::input::{CommandInput, Fields};
     let command = |fields| CommandInput {
         request_type: "InstallEnterpriseApplication".into(),
@@ -80,10 +80,7 @@ fn software_observation_uses_native_identities_and_never_guesses_from_a_url() {
         "Manifest",
         Value::Dictionary(wire::dictionary([("items", Value::Array(items))])),
     )]));
-    let followup = agent::observation(&input).unwrap().unwrap();
-    assert_eq!(followup.request_type, "InstalledApplicationList");
-    assert_eq!(
-        followup.fields.to_plist().unwrap()["Identifiers"],
-        Value::Array(vec!["org.example.one".into(), "org.example.two".into()])
-    );
+    // Enterprise package identifiers name receipts, not necessarily application bundles.
+    // Both remote and inline manifests must leave package effect unverified.
+    assert!(agent::observation(&input).unwrap().is_none());
 }

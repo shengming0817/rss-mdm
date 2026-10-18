@@ -13,6 +13,7 @@ pub struct SoftwareExecutionPolicy {
     pub assignment: SoftwareAssignment,
 }
 /// Shared assignment data; a draft has no persisted version or authored Policy identity.
+#[derive(Clone)]
 pub struct SoftwareAssignment {
     pub(crate) retirement: Option<Uuid>,
     pub frozen: FrozenSoftwareAction,
@@ -39,6 +40,7 @@ pub struct StageCounts {
 #[serde(rename_all = "snake_case")]
 pub enum TaskAdmissionState {
     Paused,
+    MdmSoftwareDisabled,
     OutsideWindow,
     OutsideScope,
     ScopePending,
@@ -88,17 +90,39 @@ pub async fn read_in(
     Ok(SoftwareExecutionPolicy {
         id,
         owner: policy.id,
-        assignment: SoftwareAssignment {
-            retirement: None,
-            active: policy.state.is_enabled() && policy.version == id,
-            frozen: *action,
-            scope: policy.definition.scope,
+        assignment: SoftwareAssignment::persisted(
+            policy.definition.scope,
             rollout,
-            version: Some(id),
-        },
+            *action,
+            id,
+            policy.state.is_enabled() && policy.version == id,
+        ),
     })
 }
 impl SoftwareAssignment {
+    pub(crate) fn persisted(
+        scope: Uuid,
+        rollout: SoftwareRollout,
+        frozen: FrozenSoftwareAction,
+        version: Uuid,
+        active: bool,
+    ) -> Self {
+        Self {
+            retirement: None,
+            scope,
+            rollout,
+            frozen,
+            version: Some(version),
+            active,
+        }
+    }
+
+    pub fn channel(&self) -> rss_mdm_inventory::Channel {
+        match self.frozen.channel {
+            rss_mdm_policy::SoftwareChannel::Agent => rss_mdm_inventory::Channel::Agent,
+            rss_mdm_policy::SoftwareChannel::Mdm => rss_mdm_inventory::Channel::Mdm,
+        }
+    }
     pub(crate) fn draft(
         scope: Uuid,
         rollout: SoftwareRollout,
@@ -128,15 +152,7 @@ impl SoftwareAssignment {
             return Ok(None);
         }
         Ok(
-            match storage::admission_in(
-                source,
-                tx,
-                self.scope,
-                rss_mdm_inventory::Channel::Agent,
-                device,
-            )
-            .await?
-            {
+            match storage::admission_in(source, tx, self.scope, self.channel(), device).await? {
                 crate::source_authority::ScopeAdmission::Eligible { entry } => Some(entry),
                 _ => None,
             },
@@ -162,34 +178,66 @@ impl SoftwareAssignment {
         device: &str,
         now: i64,
     ) -> Result<Option<(usize, i64)>> {
+        let assignment = self.clone();
+        let source = source.clone();
+        let tenant = tx.tenant_id();
+        let device = device.to_owned();
+        Ok(tx
+            .with_connection(move |c| {
+                Box::pin(async move {
+                    Ok(assignment
+                        .entry_on(source.as_ref(), c, tenant, &device, now)
+                        .await)
+                })
+            })
+            .await??)
+    }
+    /// Admission and first native write share the same current rollout decision.
+    pub(crate) async fn entry_on(
+        &self,
+        source: &dyn crate::source_authority::SourceAuthority,
+        c: &mut sqlx::PgConnection,
+        tenant: rss_request_context::TenantId,
+        device: &str,
+        now: i64,
+    ) -> std::result::Result<Option<(usize, i64)>, Error> {
         if !self.active
             || now < self.frozen.schedule.not_before
             || now >= self.frozen.schedule.ends_at()
         {
             return Ok(None);
         }
-        let Some(entry) = self.eligible_in(source, tx, device).await? else {
+        if let Some(version) = self.version
+            && !source.policy_readable_on(c, tenant, version).await?
+        {
+            return Ok(None);
+        }
+        let crate::source_authority::ScopeAdmission::Eligible { entry } = source
+            .admission_on(c, tenant, self.scope, self.channel(), device)
+            .await?
+        else {
             return Ok(None);
         };
-        let stages = &self.rollout.stages;
-        for (index, stage) in stages.iter().enumerate() {
-            let scope = stage.scope;
-            let admission =
-                storage::admission_in(source, tx, scope, rss_mdm_inventory::Channel::Agent, device)
-                    .await?;
-            match admission {
+        for (index, stage) in self.rollout.stages.iter().enumerate() {
+            match source
+                .admission_on(c, tenant, stage.scope, self.channel(), device)
+                .await?
+            {
                 crate::source_authority::ScopeAdmission::Eligible { .. } => {
-                    let (total, verified) = if stage.minimum_verified_percent.is_some() {
-                        self.stage_progress_in(
+                    let counts = if stage.minimum_verified_percent.is_some() {
+                        self.counts_on(
                             source,
-                            tx,
+                            c,
+                            tenant,
                             index.checked_sub(1).ok_or(Error::Malformed)?,
                         )
                         .await?
                     } else {
-                        (0, 0)
+                        StageCounts::default()
                     };
-                    return Ok(stage.open(now, total, verified).then_some((index, entry)));
+                    return Ok(stage
+                        .open(now, counts.total, counts.verified)
+                        .then_some((index, entry)));
                 }
                 crate::source_authority::ScopeAdmission::Pending => return Ok(None),
                 crate::source_authority::ScopeAdmission::Excluded => (),
@@ -204,6 +252,9 @@ impl SoftwareAssignment {
         tx: &mut PgTransaction<'_>,
         binding: &crate::channels::AgentBinding,
     ) -> Result<bool> {
+        if self.channel() != rss_mdm_inventory::Channel::Agent {
+            return Ok(false);
+        }
         let platform = match binding.platform.as_str() {
             "windows" => Platform::Windows,
             "macos" => Platform::Macos,
@@ -240,7 +291,7 @@ impl SoftwareAssignment {
         tx: &mut PgTransaction<'_>,
         index: usize,
     ) -> Result<(u64, u64)> {
-        let counts = self.counts_in(source, tx, index, None).await?;
+        let counts = self.counts_in(source, tx, index).await?;
         Ok((counts.total, counts.verified))
     }
     /// Live target denominator with the latest per-device result in this stage.
@@ -250,30 +301,49 @@ impl SoftwareAssignment {
         index: usize,
         service: &crate::queries::Admission,
     ) -> Result<StageCounts> {
-        self.counts_in(&service.source, tx, index, Some(service))
-            .await
+        self.counts_in(&service.source, tx, index).await
     }
     async fn counts_in(
         &self,
         source: &std::sync::Arc<dyn crate::source_authority::SourceAuthority>,
         tx: &mut PgTransaction<'_>,
         index: usize,
-        _service: Option<&crate::queries::Admission>,
     ) -> Result<StageCounts> {
+        let assignment = self.clone();
+        let source = source.clone();
+        let tenant = tx.tenant_id();
+        Ok(tx
+            .with_connection(move |c| {
+                Box::pin(async move {
+                    Ok(assignment
+                        .counts_on(source.as_ref(), c, tenant, index)
+                        .await)
+                })
+            })
+            .await??)
+    }
+    async fn counts_on(
+        &self,
+        source: &dyn crate::source_authority::SourceAuthority,
+        c: &mut sqlx::PgConnection,
+        tenant: rss_request_context::TenantId,
+        index: usize,
+    ) -> std::result::Result<StageCounts, Error> {
         let Some(version) = self.version else {
             return Ok(StageCounts::default());
         };
-        let Some(input) = self.stats_input_in(source, tx, index).await? else {
+        let Some(input) = self.stats_input_on(source, c, tenant, index).await? else {
             return Ok(StageCounts::default());
         };
-        let tenant = tx.tenant_id().to_string();
-        let document = crate::checked_input(serde_json::to_value(input))?;
+        let tenant = tenant.to_string();
+        let document = serde_json::to_value(input).map_err(|_| Error::Malformed)?;
         // A new Run in a later stage must not revoke an already satisfied earlier-stage gate.
         // Membership revisions and binding changes still fence the whole cached reduction;
         // result changes fence it only when they affect this generation's actual members.
-        let counts:Option<serde_json::Value>=tx.with_connection(move|c|Box::pin(async move {sqlx::query_scalar("SELECT s.counts FROM mdm_commands.software_stage_stats s JOIN mdm_policy.versions v ON(v.tenant_id,v.id)=(s.tenant_id,s.version) WHERE s.tenant_id=$1::uuid AND s.version=$2 AND s.stage=$3 AND s.input-'runs'-'results'=$4::jsonb-'runs'-'results' AND (s.input->>'results')::bigint<=($4::jsonb->>'results')::bigint AND s.ready AND NOT EXISTS(SELECT 1 FROM mdm_commands.software_result_changes c JOIN mdm_commands.software_stats_members m ON(m.tenant_id,m.device)=(c.tenant_id,c.device) WHERE c.tenant_id=s.tenant_id AND c.policy=v.policy AND c.revision>(s.input->>'results')::bigint AND m.version=s.version AND m.stage=s.stage AND m.generation=s.generation)").bind(tenant).bind(version).bind(index as i32).bind(document).fetch_optional(c).await})).await?;
+        let counts:Option<serde_json::Value>=sqlx::query_scalar("SELECT s.counts FROM mdm_commands.software_stage_stats s JOIN mdm_policy.versions v ON(v.tenant_id,v.id)=(s.tenant_id,s.version) WHERE s.tenant_id=$1::uuid AND s.version=$2 AND s.stage=$3 AND s.input-'runs'-'results'=$4::jsonb-'runs'-'results' AND (s.input->>'results')::bigint<=($4::jsonb->>'results')::bigint AND s.ready AND NOT EXISTS(SELECT 1 FROM mdm_commands.software_result_changes c JOIN mdm_commands.software_stats_members m ON(m.tenant_id,m.device)=(c.tenant_id,c.device) WHERE c.tenant_id=s.tenant_id AND c.policy=v.policy AND c.revision>(s.input->>'results')::bigint AND m.version=s.version AND m.stage=s.stage AND m.generation=s.generation)").bind(tenant).bind(version).bind(index as i32).bind(document).fetch_optional(c).await.map_err(crate::database::db)?;
         match counts {
-            Some(v) => crate::stored(serde_json::from_value(v)),
+            Some(v) => serde_json::from_value(v)
+                .map_err(|_| Error::Unavailable(crate::Failure::CommandStorage)),
             None => Ok(StageCounts::default()),
         }
     }
@@ -384,6 +454,14 @@ impl SoftwareAssignment {
         device: &str,
         now: i64,
     ) -> Result<TaskAdmission> {
+        if self.channel() == rss_mdm_inventory::Channel::Mdm
+            && !service.software_distribution.mdm_enabled
+        {
+            return Ok(TaskAdmission::new(
+                TaskAdmissionState::MdmSoftwareDisabled,
+                None,
+            ));
+        }
         if !self.active {
             return Ok(TaskAdmission::new(TaskAdmissionState::Paused, None));
         }
@@ -400,14 +478,8 @@ impl SoftwareAssignment {
         let mut stage_index = None;
         for (index, stage) in self.stages().iter().enumerate() {
             let scope = stage.scope;
-            let state = storage::admission_in(
-                &service.source,
-                tx,
-                scope,
-                rss_mdm_inventory::Channel::Agent,
-                device,
-            )
-            .await?;
+            let state =
+                storage::admission_in(&service.source, tx, scope, self.channel(), device).await?;
             match state {
                 crate::source_authority::ScopeAdmission::Eligible { .. } => {
                     stage_index = Some(index);
@@ -446,6 +518,25 @@ impl SoftwareAssignment {
                     Some(index),
                 ));
             }
+        }
+        if self.channel() == rss_mdm_inventory::Channel::Mdm {
+            let (reason, target) = crate::native_software::target_admission_in(tx, device).await?;
+            let state = match target {
+                None => reason,
+                Some((_, platform, architecture)) => {
+                    if self.variant(platform, architecture).is_some()
+                        && self
+                            .admitted_in(service, tx, platform, architecture)
+                            .await?
+                            .is_some()
+                    {
+                        TaskAdmissionState::Eligible
+                    } else {
+                        TaskAdmissionState::UnsupportedCapability
+                    }
+                }
+            };
+            return Ok(TaskAdmission::new(state, Some(index)));
         }
         let registrations = crate::channels::agent_targets_in(
             tx,

@@ -105,7 +105,8 @@ pub fn observation(
         }
         identifiers.insert(id.to_owned());
     }
-    if let Some(manifest) = fields.get("Manifest").and_then(Value::as_dictionary)
+    if fields.contains_key("Configuration")
+        && let Some(manifest) = fields.get("Manifest").and_then(Value::as_dictionary)
         && let Some(items) = manifest.get("items").and_then(Value::as_array)
     {
         for item in items {
@@ -159,4 +160,52 @@ pub fn receipt_presence(
     let bundle = ids[0].as_string().ok_or(Error::Malformed)?;
     // A native query may omit optional content; it cannot establish presence in that case.
     Ok(presence(report, bundle).ok())
+}
+
+/// Build an immutable enterprise package manifest; metadata is not an observed app identity.
+pub fn installation_manifest(
+    bundle: &str,
+    version: &str,
+    url: &str,
+    hash: [u8; 32],
+) -> Result<plist::Dictionary, crate::Error> {
+    use crate::{Error, protocol::dictionary};
+    use plist::Value;
+    let bounded = |s: &str| !s.is_empty() && s.len() <= 256 && !s.chars().any(char::is_control);
+    let location = url::Url::parse(url).map_err(|_| Error::Malformed)?;
+    if !bounded(bundle)
+        || !bounded(version)
+        || hash == [0; 32]
+        || url.len() > 2048
+        || location.scheme() != "https"
+        || location.host_str().is_none()
+        || !location.username().is_empty()
+        || location.password().is_some()
+        || location.fragment().is_some()
+    {
+        return Err(Error::Malformed);
+    }
+    let hash = hash.iter().map(|b| format!("{b:02x}")).collect::<String>();
+    let asset = dictionary([
+        ("kind", "software-package".into()),
+        ("url", url.into()),
+        ("sha256", hash.into()),
+    ]);
+    let metadata = dictionary([
+        ("bundle-identifier", bundle.into()),
+        ("bundle-version", version.into()),
+        ("kind", "software".into()),
+        ("title", bundle.into()),
+    ]);
+    let item = dictionary([
+        ("assets", Value::Array(vec![asset.into()])),
+        ("metadata", metadata.into()),
+    ]);
+    Ok(dictionary([
+        ("RequestType", "InstallEnterpriseApplication".into()),
+        (
+            "Manifest",
+            dictionary([("items", Value::Array(vec![item.into()]))]).into(),
+        ),
+    ]))
 }

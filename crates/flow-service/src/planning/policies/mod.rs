@@ -120,6 +120,7 @@ impl Policies {
                     )?;
                     let changed = changed_policy.semantic_changed;
                     let policy = changed_policy.policy;
+                    if policy.state.is_enabled() { s.inputs.admit_software_channel(&policy.definition.action)?; }
                     authorize_policy_snapshot(&authorization, p, &policy.definition).map_err(Error::from)?;
                     if changed {
                         let frozen = s.inputs.publish_in(tx, &PublicationInput::from(&policy.definition.action), verified, &PublicationAuthority {
@@ -174,3 +175,19 @@ impl Policies {
 }
 
 pub mod read;
+
+impl Policies {
+    pub async fn capabilities(
+        &self,
+        proof: &AuthorizedPrincipal,
+        audit: &RequestAudit,
+    ) -> std::result::Result<Value, Error> {
+        proof.manage(Permission::PolicyRead)?;
+        run(&self.audit_store, &self.runtime, self.tenant, audit, (self, proof, audit), |ctx, tx| Box::pin(async move {
+            let (s, p, a) = *ctx;
+            crate::action_admission::current(tx, p).await?.require(p, Permission::PolicyRead, None)?;
+            s.audit_store.append_request_in(tx, a, 200, "success").await?;
+            Ok(json!({"defaultSoftwareChannel":"agent", "mdmSoftwareDistributionEnabled":s.inputs.software_distribution().mdm_enabled}))
+        }), TransactionOwner::Planning).await
+    }
+}

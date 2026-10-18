@@ -103,7 +103,7 @@ CREATE POLICY tenant ON mdm_devices.input_objects USING(tenant_id=nullif(current
 REVOKE ALL ON mdm_devices.input_snapshots,mdm_devices.input_objects FROM PUBLIC;
 GRANT USAGE ON SCHEMA mdm_devices TO mdm_flow_runtime,mdm_command_runtime;
 GRANT SELECT ON mdm_devices.associations,mdm_devices.members,mdm_devices.checkpoints,mdm_devices.input_snapshots,mdm_devices.input_objects TO mdm_flow_runtime;
-GRANT SELECT ON mdm_devices.checkpoints,mdm_devices.input_snapshots,mdm_devices.input_objects TO mdm_command_runtime;
+GRANT SELECT ON mdm_devices.associations,mdm_devices.members,mdm_devices.checkpoints,mdm_devices.input_snapshots,mdm_devices.input_objects TO mdm_command_runtime;
 GRANT INSERT ON mdm_devices.input_snapshots,mdm_devices.input_objects TO mdm_flow_runtime;
 GRANT UPDATE(phase,cursor,object_count,byte_count) ON mdm_devices.input_snapshots TO mdm_flow_runtime;
 

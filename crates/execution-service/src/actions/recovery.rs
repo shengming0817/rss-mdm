@@ -163,6 +163,19 @@ impl ExecutionService {
             |ctx, tx| {
                 Box::pin(async move {
                     let (service, id) = *ctx;
+                    crate::sources::storage::lock(tx, id).await?;
+                    if let Some(policy) =
+                        crate::sources::storage::read_in(&service.policy_reader, tx, id).await?
+                        && matches!(
+                            policy.definition.action,
+                            rss_mdm_policy::Action::Software {
+                                channel: rss_mdm_policy::SoftwareChannel::Mdm,
+                                ..
+                            }
+                        )
+                    {
+                        super::native_software::admit_policy(service, tx, id).await?;
+                    }
                     recover(service, tx, id).await
                 })
             },
@@ -213,6 +226,11 @@ pub async fn recover_one(
         && let db::ScheduledPolicy::Native(native) = &plan
     {
         super::native_collection::advance_run(service, tx, &mut run, native, now).await?;
+    }
+    if let db::ScheduledPolicy::Software(software) = &plan
+        && software.assignment.channel() == rss_mdm_inventory::Channel::Mdm
+    {
+        super::native_software::advance_run(service, tx, &mut run, software, now).await?;
     }
     // A sealed protocol result is durable execution evidence, even after worker downtime.
     run.state.expire(now, plan.timeout_seconds());

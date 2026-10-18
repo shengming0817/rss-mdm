@@ -263,6 +263,13 @@
     ],
     [
       "policies",
+      "policies_definition_check1",
+      "c",
+      "CHECK (((((definition -> 'action'::text) ->> 'kind'::text) <> 'software'::text) OR COALESCE((((definition -> 'action'::text) ->> 'channel'::text) = ANY (ARRAY['agent'::text, 'mdm'::text])), false)))",
+      true
+    ],
+    [
+      "policies",
       "policies_execution_binding_check",
       "c",
       "CHECK (((execution_binding IS NULL) OR (octet_length(execution_binding) = 32)))",
@@ -371,6 +378,13 @@
       "versions_check1",
       "c",
       "CHECK (((action_kind = ANY (ARRAY['credential'::text, 'ensure_agent_installed'::text, 'request_mdm_enrollment'::text, 'unmanage_device'::text])) = (resource IS NULL)))",
+      true
+    ],
+    [
+      "versions",
+      "versions_check2",
+      "c",
+      "CHECK (((action_kind <> 'software'::text) OR COALESCE((((frozen -> 'action'::text) ->> 'channel'::text) = ANY (ARRAY['agent'::text, 'mdm'::text])), false)))",
       true
     ],
     [

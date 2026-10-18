@@ -33,7 +33,7 @@ pub async fn assignments(
         }
         let onboarding=if matches!(p.definition.action,Action::EnsureAgentInstalled{..}|Action::RequestMdmEnrollment{..}){Some(crate::sources::storage::version_in(&s.policy_reader,tx,p.version).await?.1)}else{None};
         let software=if matches!(p.definition.action,Action::Software {..}) {Some(software::read_in(&s.policy_reader,tx,p.version).await?)}else{None};
-        let source=s.source.clone();let tenant=tx.tenant_id();let scope=p.definition.scope;let cursor=after.clone();let channel=crate::source_authority::action_channel(p.definition.action.kind())?;
+        let source=s.source.clone();let tenant=tx.tenant_id();let scope=p.definition.scope;let cursor=after.clone();let channel=crate::source_authority::action_channel(&p.definition.action)?;
         let mut objects=tx.with_connection(move|c|Box::pin(async move {Ok(source.assignment_objects_on(c,tenant,scope,channel,cursor.as_deref()).await)})).await??;
         let t=tenant.to_string();let version=p.version;let channel_name=channel.as_str();let cursor=after.clone();
         let retired=tx.with_connection(move|c|Box::pin(async move {sqlx::query_scalar::<_,serde_json::Value>("SELECT input FROM mdm_planning.policy_assignments WHERE tenant_id=$1::uuid AND policy=$2 AND version=$3 AND channel=$4 AND reason='source_removed' AND object>coalesce($5,'') COLLATE \"C\" ORDER BY object LIMIT 65").bind(t).bind(id).bind(version).bind(channel_name).bind(cursor).fetch_all(c).await})).await?;

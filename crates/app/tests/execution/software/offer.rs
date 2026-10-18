@@ -297,3 +297,24 @@ async fn windows_variant_delivery_and_detection() -> Result<()> {
     Ok(())
     }).await
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+#[ignore = "make t2 MODULE=execution.software.offer"]
+async fn explicit_mdm_requires_capability_and_does_not_rewrite_agent_policy() -> Result<()> {
+    let mut f = Fixture::authorized(Platform::MacOs).await?;
+    let resources = std::mem::take(&mut f.resources);
+    resources.finish(async {
+        let capability=f.author.call(&f.router,Method::GET,"/api/v1/policies/capabilities",None).await?;
+        ensure!(capability.0==StatusCode::OK && capability.1==json!({"defaultSoftwareChannel":"agent","mdmSoftwareDistributionEnabled":false}),"capabilities {capability:?}");
+        let id=Uuid::new_v4();let path=format!("/api/v1/policies/{id}");
+        let original=authored(f.resource,f.scope,"required_install");
+        let saved=write(&mut f.author,&f.router,&path,0,json!({"action":"put","enabled":false,"definition":original})).await?;
+        ensure!(saved["definition"]["action"]["channel"]=="agent","normalized {saved}");
+        let mut mdm=original.clone();mdm["action"]["channel"]=json!("mdm");
+        let denied=f.author.call(&f.router,Method::POST,&path,Some(json!({"operationId":Uuid::new_v4(),"expectedRevision":1,"input":{"action":"put","enabled":true,"definition":mdm}}))).await?;
+        ensure!(denied.0==StatusCode::CONFLICT && denied.1["code"]=="mdm_software_disabled","disabled MDM {denied:?}");
+        let unchanged=f.author.call(&f.router,Method::GET,&path,None).await?;
+        ensure!(unchanged.0==StatusCode::OK && unchanged.1["definition"]["action"]["channel"]=="agent" && unchanged.1["revision"]==1,"unchanged {unchanged:?}");
+        Ok(())
+    }).await
+}

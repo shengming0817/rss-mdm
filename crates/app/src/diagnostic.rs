@@ -289,7 +289,7 @@ impl From<rss_mdm_execution_service::Error> for OwnerDiagnostic {
             E::EnrollmentPaused => Self::Conflict,
             E::WindowsDeclaredEnrollmentNotReady => Self::WindowsDeclaredEnrollmentNotReady,
             E::Unauthorized => Self::Unauthorized,
-            E::Forbidden => Self::Forbidden,
+            E::MdmSoftwareDisabled | E::Forbidden => Self::Forbidden,
             E::CommitUnknown => Self::CommitUnknown,
             E::RollbackFailed => Self::RollbackFailed,
             E::Unsupported => Self::Unsupported,

@@ -72,6 +72,18 @@ impl Fixture {
         preserve_authorization: bool,
         ade: Option<rss_mdm_apple_channel::ade::Fixture>,
     ) -> Result<Self> {
+        Self::with_options(agent, address, preserve_authorization, ade, false).await
+    }
+    async fn with_mdm_software() -> Result<Self> {
+        Self::with_options(None, None, false, None, true).await
+    }
+    async fn with_options(
+        agent: Option<serde_json::Value>,
+        address: Option<std::net::SocketAddr>,
+        preserve_authorization: bool,
+        ade: Option<rss_mdm_apple_channel::ade::Fixture>,
+        mdm_software: bool,
+    ) -> Result<Self> {
         let _ = agent;
         let (resources, mut fixture) = crate::test_support::Resources::build(move |resources| Box::pin(async move {
         let root = PathBuf::from(std::env::var("MDM_APPLE_FIXTURES")?);
@@ -86,6 +98,7 @@ impl Fixture {
         }
         let mut config = crate::test_support::identity::config(case_tenant())?;
         config.native_protocols.windows = None;
+        config.software_distribution.mdm_enabled = mdm_software;
         let mut apple: config::Config =
             serde_json::from_slice(&std::fs::read(root.join("apple.json"))?)?;
         apple.account_keys.insert(

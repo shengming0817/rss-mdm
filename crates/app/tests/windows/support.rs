@@ -139,6 +139,7 @@ impl Host {
             false,
             false,
             Some((binding, verifier, jit)),
+            false,
         )
         .await
     }
@@ -150,7 +151,18 @@ impl Host {
         agent: Option<serde_json::Value>,
         command_clock: rss_device_command_postgres::CommandClock,
     ) -> anyhow::Result<Self> {
-        Self::bind(agent, command_clock, None, None, None, false, false, None).await
+        Self::bind(
+            agent,
+            command_clock,
+            None,
+            None,
+            None,
+            false,
+            false,
+            None,
+            false,
+        )
+        .await
     }
     pub(super) async fn renewal_window() -> anyhow::Result<Self> {
         Self::bind(
@@ -162,6 +174,7 @@ impl Host {
             false,
             false,
             None,
+            false,
         )
         .await
     }
@@ -175,6 +188,21 @@ impl Host {
             true,
             false,
             None,
+            false,
+        )
+        .await
+    }
+    pub(crate) async fn with_mdm_software() -> anyhow::Result<Self> {
+        Self::bind(
+            None,
+            rss_device_command_postgres::CommandClock::Postgres,
+            None,
+            None,
+            None,
+            false,
+            false,
+            None,
+            true,
         )
         .await
     }
@@ -196,6 +224,7 @@ impl Host {
             Arc<dyn rss_identity_core::entra::EntraTokenVerifier>,
             bool,
         )>,
+        mdm_software: bool,
     ) -> anyhow::Result<Self> {
         let ca = ca.map(str::to_owned);
         let (resources, mut fixture) = crate::test_support::Resources::build(move |resources| Box::pin(async move {
@@ -252,10 +281,12 @@ impl Host {
         value["execution"]["database"] = value["flow"]["storage"]["database"].clone();
         value["execution"]["database"]["user"] = "mdm_command_runtime".into();
         let _ = agent;
+        value["software_distribution"]=serde_json::json!({"mdm_enabled":mdm_software});
         let original: serde_json::Value =
             serde_json::from_slice(&std::fs::read(std::env::var("MDM_TEST_CONFIG")?)?)?;
         value["content"] = original["content"].clone();
         value["agent_pki"] = original["agent_pki"].clone();
+        if mdm_software { value["task_signing"] = original["task_signing"].clone(); }
         value["device_pki"] = original["device_pki"].clone();
         value["native_protection_key_file"] = original["native_protection_key_file"].clone();
         if push {
@@ -578,6 +609,7 @@ impl Host {
             false,
             false,
             None,
+            false,
         )
         .await?;
         next.listen().await?;

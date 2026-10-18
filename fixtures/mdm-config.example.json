@@ -159,5 +159,8 @@
       "kid": "replace-windows-jwk-kid",
       "provisioner_key_file": "/run/mdm/windows-provisioner.pk8"
     }
-  ]
+  ],
+  "software_distribution": {
+    "mdm_enabled": false
+  }
 }

@@ -71,6 +71,16 @@ pub enum SourceError {
 }
 /// Implementations use this connection's snapshot and locks; they never settle a transaction.
 pub trait SourceAuthority: Send + Sync {
+    fn effect_devices_on<'a>(
+        &'a self,
+        c: &'a mut PgConnection,
+        tenant: TenantId,
+        device: &'a str,
+    ) -> Pending<'a, Vec<String>>;
+
+    fn mdm_software_enabled(&self) -> bool {
+        false
+    }
     /// Complete objects for the server-owned lifecycle action, without selecting a transport.
     fn lifecycle_objects_on<'a>(
         &'a self,
@@ -86,6 +96,7 @@ pub trait SourceAuthority: Send + Sync {
         c: &'a mut PgConnection,
         tenant: TenantId,
         scopes: &'a [Uuid],
+        channel: Channel,
     ) -> Pending<'a, Option<Vec<ScopeResult>>>;
     /// One durable statistics page from immutable channel results; no online owner revalidation.
     fn rollout_devices_on<'a>(
@@ -93,6 +104,7 @@ pub trait SourceAuthority: Send + Sync {
         c: &'a mut PgConnection,
         tenant: TenantId,
         runs: &'a [Uuid],
+        channel: Channel,
         after: Option<&'a str>,
     ) -> Pending<'a, RolloutPage>;
     fn preview_scope_on<'a>(
@@ -187,11 +199,11 @@ pub enum Availability {
 }
 
 /// Convert the pure authored action channel at the service boundary.
-pub fn action_channel(kind: rss_mdm_policy::ActionKind) -> Result<Channel, crate::Error> {
-    match kind.target_channel() {
-        Some("mdm") => Ok(Channel::Mdm),
-        Some("agent") => Ok(Channel::Agent),
-        _ => Err(crate::Error::Malformed),
+pub fn action_channel(action: &rss_mdm_policy::Action) -> Result<Channel, crate::Error> {
+    match action.target_channel() {
+        Some(rss_mdm_policy::SoftwareChannel::Mdm) => Ok(Channel::Mdm),
+        Some(rss_mdm_policy::SoftwareChannel::Agent) => Ok(Channel::Agent),
+        None => Err(crate::Error::Malformed),
     }
 }
 

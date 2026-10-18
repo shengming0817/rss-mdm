@@ -102,7 +102,7 @@ impl Inputs {
     }
 }
 /// Windows PublisherId uses the first 64 SHA256 bits of the UTF-16LE publisher DN.
-fn family(name: &str, publisher: &str) -> String {
+pub(crate) fn family(name: &str, publisher: &str) -> String {
     use sha2::{Digest, Sha256};
     let bytes: Vec<u8> = publisher
         .encode_utf16()

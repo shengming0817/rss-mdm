@@ -1,4 +1,5 @@
 //! Real mTLS/SyncML, authorized software, Policy and one atomic independent Agent registration.
+mod native_software;
 use crate::execution::test_support::{Client, case_device, case_tenant, native};
 use crate::test_support::{channel_onboarding as setup, *};
 use anyhow::Context;

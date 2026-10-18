@@ -856,7 +856,7 @@ AC-06-21-04　Windows 原生标准模板须经 Resource 发布、任务执行、
 
 | 需求编号 / 名称 | 产品要求 | 历史基础 / 分级 |
 | --- | --- | --- |
-| WMD-CH01<br>双通道选择策略 | 每条策略选择 auto、agent_only 或 mdm_only，可限制允许通道与偏好。auto 先判能力与前提再选择；没有可行路径时显示 blocked/unsupported，不盲目广播两个通道。 | 新增目标<br>一级 |
+| WMD-CH01<br>双通道选择策略 | 软件 Policy 显式选择 Agent 或 MDM，缺省输入固定保存为 Agent；MDM 软件分发开关默认关闭，仅开关开启且 Policy 显式选择 MDM 才允许原生投递，失败、离线或 Unknown 不换通道。其它类型策略的 auto、agent_only 或 mdm_only 按其能力与前提决定；没有可行路径时显示 blocked/unsupported。 | 新增目标<br>一级 |
 | WMD-CH02<br>混合策略拆成显式步骤 | 一条业务策略可含 MDM profile、Agent 脚本和软件确保等多个步骤，各自唯一通道、依赖、前提与核实；与同一步骤双通道同时写入严格区分。 | 新增目标<br>二级 |
 | WMD-CH03<br>资源写入所有权 | 按设备/用户对象、逻辑资源和 generation 确定单一写 owner；同一应用/配置被两个策略或工具管理时显示冲突、优先级与接管决定。 | 新增目标<br>一级 |
 | WMD-CH04<br>切换与结果不明 | 只有旧写路径被证实未执行、取消成功或完成状态核实，且替代路径语义/权限一致时，才允许受控切换；超时本身不是自动 fallback 的授权。 | 新增目标<br>一级 |
@@ -868,7 +868,7 @@ AC-06-21-04　Windows 原生标准模板须经 Resource 发布、任务执行、
 
 通道维度只有 agent、mdm；执行器维度可以是 powershell、shell、osquery、winget、brew、windows-csp、apple-mdm、apple-ddm。字段来源也可细分为 agent.osquery、agent.script、mdm.windows、mdm.apple、manual、api，但不会产生六套产品设备身份。
 
-通道选择建议默认：原生配置用 MDM；软件按应用定义选择原生安装或 Agent 包管理器；任意脚本仅走获准 Agent 执行器；标准资产优先满足采集模板的权威/时效策略。不得规定所有能力一律 MDM-first 或 Agent-first，也不得让“两个通道都在”意味着“两个通道都写”。
+通道选择建议默认：原生配置用 MDM；软件默认 Agent，仅显式选择 MDM 且主机 MDM 软件分发开关开启时使用受支持的原生安装；任意脚本仅走获准 Agent 执行器；标准资产优先满足采集模板的权威/时效策略。不得规定所有能力一律 MDM-first 或 Agent-first，也不得让“两个通道都在”意味着“两个通道都写”。
 
 原生 MDM 不能共享自研 Agent 的本地互斥锁。服务端 generation/fencing 能防止自己的重复派发和旧结果覆盖，但不能证明终端永不晚执行旧原生命令；需配合到期、查询、人工处置或下一轮期望状态收敛。此限制必须保留在恢复设计与产品文案中。
 

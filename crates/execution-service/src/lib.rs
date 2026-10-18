@@ -171,6 +171,7 @@ impl ExecutionService {
     }
     pub(crate) fn admission(&self) -> queries::Admission {
         queries::Admission {
+            software_distribution: self.inputs.software_distribution,
             source: self.source.clone(),
             software: self.inputs.software.clone(),
             agent_store: self.agent_store.clone(),
@@ -263,6 +264,8 @@ pub mod queries;
 
 /// Policy publication receives immutable input preparation, never execution readers or workers.
 pub struct Inputs {
+    pub(crate) software_distribution: SoftwareDistribution,
+    pub(crate) product_origin: String,
     pub(crate) recovery_enabled: bool,
     pub(crate) protection: Arc<rss_mdm_native_protection::Protector>,
     pub(crate) software: Arc<rss_mdm_software_service::preparation::Preparation>,
@@ -275,6 +278,8 @@ pub struct Inputs {
     pub(crate) signing_enabled: bool,
 }
 pub struct InputDependencies {
+    pub software_distribution: SoftwareDistribution,
+    pub product_origin: String,
     pub recovery_enabled: bool,
     pub protection: Arc<rss_mdm_native_protection::Protector>,
     pub software: Arc<rss_mdm_software_service::preparation::Preparation>,
@@ -289,6 +294,8 @@ pub struct InputDependencies {
 impl Inputs {
     pub fn new(dependencies: InputDependencies) -> Self {
         Self {
+            software_distribution: dependencies.software_distribution,
+            product_origin: dependencies.product_origin,
             recovery_enabled: dependencies.recovery_enabled,
             protection: dependencies.protection,
             software: dependencies.software,
@@ -354,3 +361,34 @@ pub mod recovery_credentials;
 pub(crate) mod credential_tasks;
 
 mod credential_maintenance;
+
+/// Host-owned software admission, read once with the rest of product configuration.
+#[derive(Clone, Copy, Default, serde::Deserialize, serde::Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct SoftwareDistribution {
+    #[serde(default)]
+    pub mdm_enabled: bool,
+}
+impl Inputs {
+    pub fn software_distribution(&self) -> SoftwareDistribution {
+        self.software_distribution
+    }
+    pub fn admit_software_channel(
+        &self,
+        action: &rss_mdm_policy::Action,
+    ) -> std::result::Result<(), Error> {
+        if matches!(
+            action,
+            rss_mdm_policy::Action::Software {
+                channel: rss_mdm_policy::SoftwareChannel::Mdm,
+                ..
+            }
+        ) && !self.software_distribution.mdm_enabled
+        {
+            return Err(Error::MdmSoftwareDisabled);
+        }
+        Ok(())
+    }
+}
+
+mod native_software;

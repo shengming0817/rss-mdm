@@ -28,6 +28,15 @@ pub struct MembershipObjects {
     pub current: bool,
 }
 pub trait ObjectReader: Send + Sync {
+    /// Conservative side-effect boundary, independent of targeting or read authorization.
+    /// Unreleased links remain barriers while their identity is awaiting verification.
+    fn effect_devices<'a>(
+        &'a self,
+        c: &'a mut PgConnection,
+        tenant: TenantId,
+        device: &'a str,
+    ) -> Pending<'a, Vec<String>>;
+
     fn memberships<'a>(
         &'a self,
         c: &'a mut PgConnection,

@@ -393,6 +393,12 @@ impl Reconciler<rss_reconcile_postgres::PgClaim> for ExecutionService {
                         && policy.definition.action.kind()==rss_mdm_policy::ActionKind::NativeCollection {
                         return actions::native_collection::admit_policy(service,tx,id).await;
                     }
+                    if let Some(policy)=crate::sources::storage::read_in(&service.policy_reader,tx,id).await?
+                        && matches!(policy.definition.action,rss_mdm_policy::Action::Software { channel:rss_mdm_policy::SoftwareChannel::Mdm,.. }) {
+                        let more=actions::native_software::admit_policy(service,tx,id).await?;
+                        actions::recovery::recover(service,tx,id).await?;
+                        return Ok(more);
+                    }
                     actions::recovery::recover(service,tx,id).await?;
                     return Ok(false);
                 }

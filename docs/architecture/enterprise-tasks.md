@@ -12,13 +12,15 @@ Resource 持有不可变内容。Policy 持有组织持续分配及六类闭合 
 
 `policy` / `policy-postgres` 持有 Policy 合同和配置存储，`flow-service` 的 `planning` 编排 Group、Scope 与 Policy。独立 `execution-service` 持有冻结执行输入、命令、Run、Attempt、远程操作、签名和交付恢复。Policy 发布只持有 Execution 的 `Inputs` 准备能力；Flow 不持有 `ExecutionService`、`Queries` 或私有 `ExecutionRead`。资源目录等非执行的 Flow 余项另行收敛。
 
-Action 直接持有对应资源选择：脚本、原生采集和配置使用 Exact，软件和 Agent 安装使用 Software，Enrollment 无资源。`ResourceIdentity` 只借用资源及版本坐标。`ActionKind` 持有持久标签、目录解析及 AssignmentBehavior 分类；Agent check-in、原生采集恢复与原生期望核对的 SQL 参数从该分类派生。显式重跑只支持已有消费者的脚本和 Enrollment。
+Action 直接持有对应资源选择：脚本、原生采集和配置使用 Exact，软件和 Agent 安装使用 Software，Enrollment 无资源。`ResourceIdentity` 只借用资源及版本坐标。`ActionKind` 持有持久标签和目录解析；完整 `Action` 根据显式 channel 决定 AssignmentBehavior，软件候选 SQL 同时限定 action kind 和 channel。显式重跑只支持已有消费者的脚本和 Enrollment。
 
 Execution 的 `ResourcePreparation` 是四类资源预检输入，`PublicationInput` 是六类冻结输入，均为借用的内部请求，不持有 Policy 身份、Scope 或 rollout。Policy 在自己的事务里提交授权、收据、审计和 wake；Execution 在同一事务里复查 active version、绑定内容证明、冻结并封存原生授权。Remote 与通用 direct 的历史读取、结算和存储已退出；当前安装不提供旧部署升级或数据导入。设备创建使用闭合 DeviceControl 授权与三动作合同，平台原生载荷只由后端固定映射生成。
 
 预览复用资源和内容校验，但不登记采集定义、不封存配置、不发布版本或执行任务。软件草稿只持有 Scope、rollout 和冻结内容，历史版本为 `None`；阶段分母仍读取当前真实 Scope，成功事实为零。持久软件分配使用真实版本并共享准入计算。
 
-合法定义的 JSON 及执行指纹不因类型收敛改变。Action 自身持有指纹材料；软件指纹包含完整变体选择而排除 rollout，Scope 变化也不产生新执行版本。固定的六类身份 fixture 验证此约束，不保留旧 ResourceBinding 或冻结接口。
+软件副作用防重从设备 owner 读取尚未释放的关联端点，独立于 Policy 的 Scope 写法；此读取只扩大冲突检查边界，不赋予目标授权。关联身份待复核时保留阻断，同包依赖、资源别名和跨通道 Unknown 均不能绕过。原生投递登记现有设备命令恢复任务，协议操作与共享 Run 使用同一身份。
+
+当前软件定义要求持久化显式 channel；仅管理输入省略 channel 时规范化为 Agent。Action 自身持有指纹材料；软件指纹包含 channel 和完整变体选择而排除 rollout，Scope 变化也不产生新执行版本。固定的六类身份 fixture 验证此约束，不保留旧 ResourceBinding 或冻结接口。
 
 Execution 不依赖 Flow。App 注入 Flow 实现的 `SourceAuthority`，在执行方原事务连接上读取类型化 Scope 准入、预览和分配设备页及 Policy 候选；不创建第二事务，也不传递完整 Flow 对象或授权黑盒。原生交付、回执及 Windows 缓存重放都重验当前来源、世代和授权。分配页锁定当前不可变 Scope 结果，在执行方合并有界来源页与自有执行记录。软件阶段计数保留单 SQL 的声明级快照，避免拆查询造成分母与 Run 事实不一致。
 

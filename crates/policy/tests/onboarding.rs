@@ -52,9 +52,9 @@ fn retirement_is_manual_device_execution_without_resource_or_self_service() {
         panic!("wrong action");
     };
     assert!(matches!(schedule.trigger, Trigger::Manual));
-    assert_eq!(definition.action.kind().target_channel(), None);
+    assert_eq!(definition.action.target_channel(), None);
     assert_eq!(
-        definition.action.kind().assignment_behavior(),
+        definition.action.assignment_behavior(),
         AssignmentBehavior::DeviceLifecycle
     );
     assert!(ActionKind::UnmanageDevice.supports_rerun());

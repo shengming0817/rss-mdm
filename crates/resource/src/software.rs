@@ -239,6 +239,12 @@ impl SoftwareDefinition {
             .artifacts
             .values()
             .chain(files.iter().map(|file| &file.content))
+            .chain(
+                self.spec
+                    .signatures
+                    .iter()
+                    .filter_map(|signature| signature.evidence.as_ref()),
+            )
     }
     /// Canonical bytes. Serialization only contains validated finite value types.
     pub fn canonical(&self) -> Vec<u8> {

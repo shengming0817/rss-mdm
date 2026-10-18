@@ -96,6 +96,19 @@ impl Protector {
         .map_err(|_| Error)?;
         self.open(&envelope, aad).map_err(|_| Error)
     }
+    /// Verify a bounded domain-bound MAC using the cryptographic provider's constant-time comparison.
+    pub fn verify_mac(&self, plain: &[u8], aad: &DerivedAad, tag: &[u8]) -> Result<(), Error> {
+        if plain.len() > MAX_BYTES {
+            return Err(Error);
+        }
+        let coordinates = aad.as_canonical_bytes();
+        let mut bytes = Zeroizing::new(Vec::with_capacity(16 + coordinates.len() + plain.len()));
+        bytes.extend_from_slice(&(coordinates.len() as u64).to_be_bytes());
+        bytes.extend_from_slice(coordinates);
+        bytes.extend_from_slice(&(plain.len() as u64).to_be_bytes());
+        bytes.extend_from_slice(plain);
+        hmac::verify(&self.mac_key, &bytes, tag).map_err(|_| Error)
+    }
     /// Stable, keyed comparison for secret-bearing canonical input and protocol replay.
     pub fn mac(&self, plain: &[u8], aad: &DerivedAad) -> Result<[u8; 32], Error> {
         if plain.len() > MAX_BYTES {

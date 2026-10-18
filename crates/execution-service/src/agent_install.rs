@@ -171,50 +171,19 @@ fn apple_install(
     hash: [u8; 32],
     operation: Uuid,
 ) -> std::result::Result<plist::Dictionary, rss_mdm_apple_mdm::Error> {
-    use plist::Value;
-    use rss_mdm_apple_mdm::{Error, protocol::dictionary};
-    let bounded = |s: &str| !s.is_empty() && s.len() <= 256 && !s.chars().any(char::is_control);
-    let location = url::Url::parse(url).map_err(|_| Error::Malformed)?;
-    if !bounded(bundle)
-        || !bounded(version)
-        || hash == [0; 32]
-        || operation.is_nil()
-        || url.len() > 2048
-        || location.scheme() != "https"
-        || location.host_str().is_none()
-        || !location.username().is_empty()
-        || location.password().is_some()
-        || location.fragment().is_some()
-    {
-        return Err(Error::Malformed);
+    if operation.is_nil() {
+        return Err(rss_mdm_apple_mdm::Error::Malformed);
     }
-    let hash = hash.iter().map(|b| format!("{b:02x}")).collect::<String>();
-    let asset = dictionary([
-        ("kind", "software-package".into()),
-        ("url", url.into()),
-        ("sha256", hash.into()),
-    ]);
-    let metadata = dictionary([
-        ("bundle-identifier", bundle.into()),
-        ("bundle-version", version.into()),
-        ("kind", "software".into()),
-        ("title", "RSS Agent".into()),
-    ]);
-    let item = dictionary([
-        ("assets", Value::Array(vec![asset.into()])),
-        ("metadata", metadata.into()),
-    ]);
-    Ok(dictionary([
-        ("RequestType", "InstallEnterpriseApplication".into()),
-        (
-            "Manifest",
-            dictionary([("items", Value::Array(vec![item.into()]))]).into(),
-        ),
-        (
-            "Configuration",
-            dictionary([("RSSInstallationOperation", operation.to_string().into())]).into(),
-        ),
-    ]))
+    let mut body = rss_mdm_apple_mdm::software::installation_manifest(bundle, version, url, hash)?;
+    body.insert(
+        "Configuration".into(),
+        rss_mdm_apple_mdm::protocol::dictionary([(
+            "RSSInstallationOperation",
+            operation.to_string().into(),
+        )])
+        .into(),
+    );
+    Ok(body)
 }
 
 use crate::frozen::Frozen;

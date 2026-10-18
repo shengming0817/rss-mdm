@@ -38,6 +38,9 @@ impl FrozenAction {
 /// Enterprise software input frozen at Policy publication, before per-device admission.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct FrozenSoftwareAction {
+    pub native_packages: BTreeMap<rss_mdm_policy::SoftwareTarget, crate::native_software::Package>,
+    pub channel: rss_mdm_policy::SoftwareChannel,
+    pub grants: BTreeMap<String, Vec<crate::authorization::UserGrant>>,
     pub delivery: rss_mdm_policy::SoftwareDelivery,
     pub resource: String,
     pub version: String,

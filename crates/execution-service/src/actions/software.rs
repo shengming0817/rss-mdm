@@ -57,53 +57,101 @@ pub async fn slot_in(
     request: Option<Uuid>,
     now: i64,
 ) -> Result<Option<Slot>> {
-    let Some(binding) =
-        crate::channels::agent_binding_in(tx, service.agent_store.clone(), target.registration)
-            .await?
-    else {
-        return Ok(None);
-    };
-    if !policy
-        .assignment
-        .supported_in(&service.admission(), tx, &binding)
-        .await?
-    {
-        return Ok(None);
-    }
-    let Some((stage, _entry)) = policy
+    let Some((stage, _)) = policy
         .assignment
         .entry_in(&service.source, tx, &target.device, now)
         .await?
     else {
         return Ok(None);
     };
-    let Some((platform, architecture)) =
-        db::agent_profile_in(service, tx, target.registration).await?
-    else {
-        return Ok(None);
+    let effect = if policy.assignment.channel() == rss_mdm_inventory::Channel::Mdm {
+        if !service.inputs.software_distribution.mdm_enabled {
+            return Ok(None);
+        }
+        let Some((current, p, a)) = crate::native_software::target_in(tx, &target.device).await?
+        else {
+            return Ok(None);
+        };
+        if current.registration != target.registration
+            || current.generation != target.generation
+            || policy
+                .assignment
+                .admitted_in(&service.admission(), tx, p, a)
+                .await?
+                .is_none()
+        {
+            return Ok(None);
+        }
+        let package = policy
+            .assignment
+            .frozen
+            .native_packages
+            .get(&rss_mdm_policy::SoftwareTarget::new(p, a))
+            .ok_or(Error::Unsupported)?;
+        serde_json::json!({"channel":"mdm","generation":target.generation,"resource":policy.assignment.frozen.resource,"version":policy.assignment.frozen.version,"digest":policy.assignment.frozen.resource_digest,"intent":"install","target":{"kind":"device"},"packages":[package.effect_identity()],"packageVersions":{(package.effect_identity()):package.effect_version()}})
+    } else {
+        let Some(binding) =
+            crate::channels::agent_binding_in(tx, service.agent_store.clone(), target.registration)
+                .await?
+        else {
+            return Ok(None);
+        };
+        if !policy
+            .assignment
+            .supported_in(&service.admission(), tx, &binding)
+            .await?
+        {
+            return Ok(None);
+        }
+        let Some((platform, architecture)) =
+            db::agent_profile_in(service, tx, target.registration).await?
+        else {
+            return Ok(None);
+        };
+        if policy
+            .assignment
+            .admitted_in(&service.admission(), tx, platform, architecture)
+            .await?
+            .is_none()
+        {
+            return Ok(None);
+        }
+        let steps = policy
+            .assignment
+            .prepared_in(
+                &service.admission(),
+                tx,
+                platform,
+                architecture,
+                &binding.execution_context,
+            )
+            .await?
+            .ok_or(Error::Forbidden)?;
+        effect_key(policy, target, &steps)?
     };
-    if policy
-        .assignment
-        .admitted_in(&service.admission(), tx, platform, architecture)
-        .await?
-        .is_none()
-    {
-        return Ok(None);
-    }
-    let steps = policy
-        .assignment
-        .prepared_in(
-            &service.admission(),
-            tx,
-            platform,
-            architecture,
-            &binding.execution_context,
-        )
-        .await?
-        .ok_or(Error::Forbidden)?;
-    let effect = effect_key(policy, target, &steps)?;
-    let tenant = tx.tenant_id().to_string();
+    let fence = tx.tenant_id().to_string();
+    tx.with_connection(move |c| {
+        Box::pin(async move {
+            sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,2793))")
+                .bind(fence)
+                .execute(c)
+                .await?;
+            Ok(())
+        })
+    })
+    .await?;
+    let source = service.source.clone();
+    let tenant_id = tx.tenant_id();
     let device = target.device.clone();
+    let devices = tx
+        .with_connection(move |c| {
+            Box::pin(async move { Ok(source.effect_devices_on(c, tenant_id, &device).await) })
+        })
+        .await??;
+    // The transaction admission fence serializes conflicting effects across associated endpoints.
+    let tenant = tx.tenant_id().to_string();
+    let device = devices;
+
     let version = policy.id;
     let stage_scope = policy.assignment.stages()[stage].scope;
     let prefix = format!("software:stage:{stage_scope}:%");
@@ -115,16 +163,16 @@ pub async fn slot_in(
         sqlx::query_as(r#"
             WITH effects AS (
                 SELECT r.* FROM mdm_commands.action_runs r
-                WHERE r.tenant_id=$1::uuid AND r.device=$3
-                  AND r.software_effect->'resource'=$2::jsonb->'resource'
+                WHERE r.tenant_id=$1::uuid AND r.device=ANY($3::text[])
                   AND r.software_effect->'target'=$2::jsonb->'target'
+                  AND (r.software_effect->'resource'=$2::jsonb->'resource' OR EXISTS(SELECT 1 FROM jsonb_array_elements_text(r.software_effect->'packages') a JOIN jsonb_array_elements_text($2::jsonb->'packages') b ON a.value=b.value))
             )
             SELECT coalesce(bool_or(state->>'execution' IN ('unknown','waiting_reboot')
                        OR ((state->>'execution'='running'
                             OR (state->>'execution'='not_started' AND deadline>$5))
                            AND state->>'cancellation'<>'confirmed')),false),
                    max(created_at) FILTER(WHERE software_effect=$2 AND policy_version=$4 AND occurrence LIKE $6),
-                   coalesce((SELECT software_effect=$2 AND result->>'effect'='verified'
+                   coalesce((SELECT (software_effect=$2 OR (software_effect->'target'=$2::jsonb->'target' AND software_effect->'intent'=$2::jsonb->'intent' AND $2::jsonb->'packageVersions'<>'{}'::jsonb AND (software_effect->'packageVersions') @> ($2::jsonb->'packageVersions'))) AND result->>'effect'='verified'
                              FROM effects
                              WHERE software_effect->'generation'=$2::jsonb->'generation'
                                AND result->>'effect' IN ('verified','failed')
@@ -210,8 +258,40 @@ pub(crate) fn effect_key(
             serde_json::json!({"kind":"user", "identity":identity})
         }
     };
+    use rss_mdm_agent_wire::runtime::{SoftwareTaskBehavior as B, SoftwareTaskDetection as D};
+    let versions: std::collections::BTreeMap<String, String> = steps
+        .iter()
+        .filter_map(|step| {
+            let identity = match &step.action.behavior {
+                B::Msi(v) => match &v.detect {
+                    D::MsiProduct { product_code, .. } => {
+                        Uuid::parse_str(product_code.trim_matches(['{', '}']))
+                            .ok()
+                            .map(|id| format!("msi:{id}"))
+                    }
+                    _ => None,
+                },
+                B::Pkg(v) => match &v.detect {
+                    D::PkgReceipt { receipt, .. } => Some(format!("pkg:{receipt}")),
+                    _ => None,
+                },
+                B::Msix(v) => Some(format!(
+                    "msix:{}",
+                    crate::agent_preparation::family(&v.identity.name, &v.identity.publisher)
+                )),
+                _ => None,
+            };
+            identity.map(|id| {
+                (
+                    id,
+                    rss_mdm_software_service::preparation::evidence::detected_version(&step.action),
+                )
+            })
+        })
+        .collect();
+    let packages: Vec<_> = versions.keys().collect();
     Ok(
-        serde_json::json!({"generation":target.generation,"resource":policy.assignment.frozen.resource,"version":policy.assignment.frozen.version,"digest":policy.assignment.frozen.resource_digest,"intent":if policy.assignment.intent()==rss_mdm_policy::SoftwareIntent::ExplicitUninstall {"uninstall"} else {"install"},"target":effect_target}),
+        serde_json::json!({"packages":packages,"packageVersions":versions,"channel":"agent","generation":target.generation,"resource":policy.assignment.frozen.resource,"version":policy.assignment.frozen.version,"digest":policy.assignment.frozen.resource_digest,"intent":if policy.assignment.intent()==rss_mdm_policy::SoftwareIntent::ExplicitUninstall {"uninstall"} else {"install"},"target":effect_target}),
     )
 }
 pub async fn persist_effect_in(

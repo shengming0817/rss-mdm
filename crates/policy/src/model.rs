@@ -32,6 +32,8 @@ pub enum Change {
     /// Create or replace the complete definition at an expected CAS.
     Put {
         /// Replacement definition.
+        #[serde(deserialize_with = "definition_input")]
+        #[schemars(schema_with = "definition_input_schema")]
         definition: Box<Definition>,
         /// Requested enabled state.
         enabled: bool,
@@ -196,13 +198,15 @@ impl crate::Action {
         match self {
             Self::Software {
                 resource,
+                channel,
                 delivery,
                 intent,
                 schedule,
                 run_lifetime_seconds,
                 ..
             } => serde_json::to_vec(&(
-                Some(resource),
+                resource,
+                channel,
                 delivery,
                 intent,
                 schedule,
@@ -279,4 +283,52 @@ impl State {
             Self::Archived => "archived",
         }
     }
+}
+
+/// Normalize the current request default only; persisted Definition remains strict.
+pub fn definition_input<'de, D: serde::Deserializer<'de>>(
+    d: D,
+) -> Result<Box<Definition>, D::Error> {
+    let mut value = serde_json::Value::deserialize(d)?;
+    if let Some(action) = value
+        .get_mut("action")
+        .and_then(serde_json::Value::as_object_mut)
+        && action.get("kind").and_then(serde_json::Value::as_str) == Some("software")
+    {
+        action
+            .entry("channel")
+            .or_insert_with(|| serde_json::json!("agent"));
+    }
+    serde_json::from_value(value).map_err(serde::de::Error::custom)
+}
+
+/// Management input schema shares the strict domain shape, with its one input default.
+fn definition_input_schema(g: &mut schemars::SchemaGenerator) -> schemars::Schema {
+    use schemars::JsonSchema;
+    let mut definition = Definition::json_schema(g);
+    let mut action = crate::Action::json_schema(g);
+    if let Some(branches) = action
+        .get_mut("oneOf")
+        .and_then(serde_json::Value::as_array_mut)
+    {
+        for branch in branches {
+            if branch
+                .pointer("/properties/kind/const")
+                .and_then(serde_json::Value::as_str)
+                == Some("software")
+            {
+                if let Some(required) = branch
+                    .get_mut("required")
+                    .and_then(serde_json::Value::as_array_mut)
+                {
+                    required.retain(|v| v != "channel");
+                }
+                branch["properties"]["channel"]["default"] = serde_json::json!("agent");
+            }
+        }
+    }
+    if let Some(properties) = definition.get_mut("properties") {
+        properties["action"] = action.to_value();
+    }
+    definition
 }

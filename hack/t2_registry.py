@@ -2038,6 +2038,15 @@ for name, selector in (
 
 consume(('crates/apple-channel/src/recovery_credentials.rs',), 'apple.commands')
 
+# Explicit software channel uses the existing Policy, shared Run and protocol owners.
+consume(('crates/execution-service/src/native_software.rs',
+         'crates/execution-service/src/actions/native_software.rs',
+         'crates/management-http/src/software_content.rs'),
+        'execution.software.offer execution.software.recovery execution.commands.onboarding apple.onboarding planning.software')
+T1_INPUTS += ('crates/execution-service/tests/native_software_unit.rs',)
+consume(('crates/app/tests/execution/commands/onboarding/native_software.rs',), 'execution.commands.onboarding')
+
+consume(('crates/app/tests/apple/onboarding/native_software.rs',), 'apple.onboarding')
 consume(('crates/execution-service/src/unmanage.rs', 'crates/execution-service/src/queries/lifecycle.rs', 'crates/device-service/src/lifecycle*',
          'crates/flow-service/src/planning/policies/lifecycle.rs', 'crates/agent-wire/src/unmanage.rs'),
         'planning.onboarding device.associations device.views execution.agent.delivery windows.management apple.identity')

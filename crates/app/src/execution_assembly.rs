@@ -196,9 +196,12 @@ pub(crate) async fn open(
         config.enrollment_entries.validate()?;
         let source: Arc<dyn rss_mdm_execution_service::source_authority::SourceAuthority> =
             Arc::new(
-                rss_mdm_flow_service::planning::execution_source::ExecutionSource::new(Arc::new(
-                    rss_mdm_device_service::planning::PlanningObjects::new(audit_store.clone()),
-                )),
+                rss_mdm_flow_service::planning::execution_source::ExecutionSource {
+                    objects: Arc::new(rss_mdm_device_service::planning::PlanningObjects::new(
+                        audit_store.clone(),
+                    )),
+                    mdm_software_enabled: config.software_distribution.mdm_enabled,
+                },
             );
         let agent_store: Arc<dyn rss_mdm_execution_service::channels::Agent> =
             Arc::new(rss_mdm_agent_channel::Bindings);
@@ -220,6 +223,8 @@ pub(crate) async fn open(
         ));
         let inputs = Arc::new(rss_mdm_execution_service::Inputs::new(
             rss_mdm_execution_service::InputDependencies {
+                software_distribution: config.software_distribution,
+                product_origin: config.product_origin.clone(),
                 recovery_enabled: config.recovery_credentials.is_some(),
                 protection: protection.clone(),
                 software,

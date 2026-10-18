@@ -219,8 +219,12 @@
         },
         {
           "additionalProperties": false,
-          "description": "Enterprise software installed or removed through the Agent.",
+          "description": "Enterprise software on exactly one explicitly selected channel.",
           "properties": {
+            "channel": {
+              "$ref": "#/$defs/SoftwareChannel",
+              "description": "The only channel allowed to write this assignment."
+            },
             "delivery": {
               "$ref": "#/$defs/SoftwareDelivery",
               "description": "Explicit content or frozen native-source delivery authority."
@@ -267,6 +271,7 @@
           },
           "required": [
             "kind",
+            "channel",
             "delivery",
             "resource",
             "intent",
@@ -1084,6 +1089,21 @@
         "configurationVersion"
       ],
       "type": "object"
+    },
+    "SoftwareChannel": {
+      "description": "A software assignment has one write channel; there is no automatic fallback.",
+      "oneOf": [
+        {
+          "const": "agent",
+          "description": "Existing Agent task execution.",
+          "type": "string"
+        },
+        {
+          "const": "mdm",
+          "description": "Native MDM package execution.",
+          "type": "string"
+        }
+      ]
     },
     "SoftwareDelivery": {
       "description": "Explicit delivery authority for the native behaviors in a software dependency closure.",

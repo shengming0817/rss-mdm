@@ -57,6 +57,10 @@ impl Frozen {
         owner: configuration::Owner,
     ) -> std::result::Result<(), Error> {
         let (mut permissions, grants) = match self {
+            Self::Software { action } => (
+                vec![crate::authorization::Permission::SoftwareDeploy],
+                &mut action.grants,
+            ),
             Self::Credential { action, .. } => (vec![action.permission()], &mut action.grants),
             Self::Configuration { native, grants, .. } => {
                 let native = native.open(key, tenant, owner)?;

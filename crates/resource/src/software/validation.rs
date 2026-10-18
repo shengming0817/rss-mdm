@@ -465,6 +465,12 @@ fn signatures(spec: &SoftwareSpec) -> Result<(), Error> {
     let mut seen = BTreeSet::new();
     for signature in &spec.signatures {
         reference(spec, &signature.artifact)?;
+        if let Some(evidence) = &signature.evidence {
+            evidence.artifact()?;
+            if evidence.length > 65536 {
+                return Err(invalid(Validation::Budget));
+            }
+        }
         checked(&signature.publisher, 1024, Validation::Identity)?;
         if !seen.insert((&signature.artifact, signature.mechanism as u8)) {
             return Err(invalid(Validation::Identity));
