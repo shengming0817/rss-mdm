@@ -8,11 +8,11 @@ use rss_transactional_messaging_postgres::{PgError, PgOutboxWriter, PgRuntime, P
 use serde_json::{Value, json};
 use sqlx::Row;
 use std::sync::Arc;
-/// Immutable candidate request receipt; distinct from mutable current candidate state.
+/// Immutable publication request receipt; distinct from mutable current publication state.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct OperationReceipt {
-    /// Tenant-scoped candidate identity.
-    pub candidate: CandidateId,
+    /// Tenant-scoped publication identity.
+    pub publication: PublicationKey,
     /// Original request identity associated with this receipt.
     pub request: RequestId,
     /// Version or lifecycle revision recorded in this value.
@@ -26,9 +26,9 @@ pub struct HistoricalAttempt {
     /// Opaque continuation identity; pass unchanged to the next history query.
     pub cursor: String,
     /// Immutable publication attempt, including its original publication binding and result.
-    pub publication: Publication,
+    pub attempt: Attempt,
 }
-/// Tenant-bound sole persistence owner of candidates, publication bindings, attempts and publication results.
+/// Tenant-bound sole persistence owner of publications, publication bindings, attempts and publication results.
 pub struct ReleaseStore {
     runtime: Arc<PgRuntime>,
     tenant: TenantId,
@@ -87,9 +87,9 @@ impl ReleaseStore {
     /// Read and validate the current aggregate for this store tenant. Missing identities return `None`.
     pub async fn get(
         &self,
-        id: &CandidateId,
+        id: &PublicationKey,
         d: OperationDeadline,
-    ) -> Result<Option<Candidate>, Error> {
+    ) -> Result<Option<Publication>, Error> {
         settle(
             self.runtime
                 .local_tx_with_context(self.tenant, d, (self, id), |(s, id), tx| {
@@ -103,33 +103,33 @@ impl ReleaseStore {
     pub async fn get_in(
         &self,
         tx: &mut PgTransaction<'_>,
-        id: &CandidateId,
-    ) -> InTransaction<Option<Candidate>> {
+        id: &PublicationKey,
+    ) -> InTransaction<Option<Publication>> {
         input!(self.check(tx)?);
         if id.tenant() != self.tenant {
             return Ok(Err(Rejection::TenantMismatch));
         }
-        read_candidate_in(tx, id).await
+        read_publication_in(tx, id).await
     }
-    /// Lock and restore a candidate for companion app decisions. The caller retains the transaction lock.
-    pub async fn lock_candidate_in(
+    /// Lock and restore a publication for companion app decisions. The caller retains the transaction lock.
+    pub async fn lock_publication_in(
         &self,
         tx: &mut PgTransaction<'_>,
-        id: &CandidateId,
-    ) -> InTransaction<Candidate> {
+        id: &PublicationKey,
+    ) -> InTransaction<Publication> {
         input!(self.check(tx)?);
         if id.tenant() != self.tenant {
             return Ok(Err(Rejection::TenantMismatch));
         }
-        STORAGE.lock(tx, "candidate", id.value()).await?;
+        STORAGE.lock(tx, "publication", id.value()).await?;
         Ok(input!(self.get_in(tx, id).await?).ok_or(Rejection::NotFound))
     }
-    /// Persist a new immutable candidate and its original creation receipt in one transaction.
+    /// Persist a new immutable publication and its original creation receipt in one transaction.
     /// Reuse the identical request after an unconfirmed commit; changed content under an existing identity is rejected.
     pub async fn create(
         &self,
         id: &RequestId,
-        c: &Candidate,
+        c: &Publication,
         d: OperationDeadline,
     ) -> Result<OperationReceipt, Error> {
         settle(
@@ -151,34 +151,29 @@ impl ReleaseStore {
         &self,
         tx: &mut PgTransaction<'_>,
         id: &RequestId,
-        c: &Candidate,
+        c: &Publication,
     ) -> InTransaction<OperationReceipt> {
         input!(self.check(tx)?);
         if id.tenant() != self.tenant || c.snapshot().id.tenant() != self.tenant {
             return Ok(Err(Rejection::TenantMismatch));
         }
         if c.snapshot().revision != 0
-            || c.snapshot().disposition != Disposition::Active
-            || c.snapshot().at != c.snapshot().content_at
-            || c.snapshot().rings
-                != [
-                    RingState::Candidate,
-                    RingState::NotStarted,
-                    RingState::NotStarted,
-                ]
+            || c.snapshot().withdrawn
+            || c.snapshot().attempt.attempt != 1
+            || c.snapshot().attempt.outcome != PublicationOutcome::Pending
         {
             return Ok(Err(Rejection::InvalidInput));
         }
         let document = codec::snapshot(c)?;
         let request = STORAGE.encode(&json!([
-            "create-v3",
+            "publish-v4",
             id.tenant().to_string(),
             id.value(),
             STORAGE.decode::<Value>(&document)?
         ]))?;
         let hash = digest(&request);
         STORAGE
-            .lock(tx, "candidate", c.snapshot().id.value())
+            .lock(tx, "publication", c.snapshot().id.value())
             .await?;
         STORAGE.lock(tx, "request", id.value()).await?;
         if let Some(RequestRecord {
@@ -194,14 +189,14 @@ impl ReleaseStore {
             return Ok(Ok(operation_receipt(&b)?));
         }
         STORAGE
-            .lock(tx, "candidate", c.snapshot().id.value())
+            .lock(tx, "publication", c.snapshot().id.value())
             .await?;
         if input!(self.get_in(tx, &c.snapshot().id).await?).is_some() {
             return Ok(Err(Rejection::Conflict));
         }
         input!(material_compatible(tx, &c.snapshot().content).await?);
         let result = OperationReceipt {
-            candidate: c.snapshot().id.clone(),
+            publication: c.snapshot().id.clone(),
             request: id.clone(),
             revision: 0,
             transition: None,
@@ -210,6 +205,7 @@ impl ReleaseStore {
             .write(tx, c.snapshot().id.value(), None, 0, document)
             .await?;
         freeze_material(tx, &c.snapshot().content).await?;
+        freeze_attempt(tx, c).await?;
         STORAGE
             .save_receipt(
                 tx,
@@ -239,7 +235,7 @@ impl ReleaseStore {
     /// Replays return the original receipt rather than a new external Publish decision.
     pub async fn transition(
         &self,
-        id: &CandidateId,
+        id: &PublicationKey,
         r: &Request,
         d: OperationDeadline,
     ) -> Result<Transition, Error> {
@@ -261,7 +257,7 @@ impl ReleaseStore {
     pub async fn transition_in(
         &self,
         tx: &mut PgTransaction<'_>,
-        id: &CandidateId,
+        id: &PublicationKey,
         r: &Request,
     ) -> InTransaction<Transition> {
         input!(self.check(tx)?);
@@ -273,7 +269,7 @@ impl ReleaseStore {
         }
         let request = codec::request(id, r)?;
         let hash = digest(&request);
-        STORAGE.lock(tx, "candidate", id.value()).await?;
+        STORAGE.lock(tx, "publication", id.value()).await?;
         STORAGE.lock(tx, "request", r.id.value()).await?;
         let previous = if let Some(RequestRecord {
             owner,
@@ -293,7 +289,7 @@ impl ReleaseStore {
         } else {
             None
         };
-        let c = input!(self.lock_candidate_in(tx, id).await?);
+        let c = input!(self.lock_publication_in(tx, id).await?);
         let result = input!(
             c.transition(r.clone(), previous.as_ref())
                 .map_err(|e| match e {
@@ -316,25 +312,7 @@ impl ReleaseStore {
             )
             .await?;
         freeze_material(tx, &next.snapshot().content).await?;
-        for ring in &next.snapshot().rings {
-            if let RingState::Publication(p) = ring {
-                let key = format!(
-                    "{}/{}/{:020}",
-                    crate::hex(&p.id().digest().bytes()),
-                    p.attempt,
-                    next.snapshot().revision
-                );
-                STORAGE
-                    .freeze(
-                        tx,
-                        id.value(),
-                        "attempt",
-                        &key,
-                        STORAGE.encode(&codec::publication(p))?,
-                    )
-                    .await?;
-            }
-        }
+        freeze_attempt(tx, next).await?;
         STORAGE
             .save_receipt(
                 tx,
@@ -361,7 +339,7 @@ impl ReleaseStore {
         &self,
         id: &RequestId,
         d: OperationDeadline,
-    ) -> Result<Option<(CandidateId, Request)>, Error> {
+    ) -> Result<Option<(PublicationKey, Request)>, Error> {
         if id.tenant() != self.tenant {
             return Err(Rejection::TenantMismatch.into());
         }
@@ -442,7 +420,7 @@ impl ReleaseStore {
     /// Read immutable publication attempts in bounded cursor order. Pass the last item cursor as `after`.
     pub async fn attempt_history(
         &self,
-        id: &CandidateId,
+        id: &PublicationKey,
         after: Option<String>,
         limit: usize,
         d: OperationDeadline,
@@ -499,7 +477,7 @@ fn operation_receipt(bytes: &[u8]) -> Result<OperationReceipt, PgError> {
         0 => {
             let a = codec::array(&v, 3)?;
             Ok(OperationReceipt {
-                candidate: codec::read_candidate(&a[1])?,
+                publication: codec::read_publication_key(&a[1])?,
                 request: codec::read_request_id(&a[2])?,
                 revision: 0,
                 transition: None,
@@ -509,7 +487,7 @@ fn operation_receipt(bytes: &[u8]) -> Result<OperationReceipt, PgError> {
             let a = codec::array(&v, 2)?;
             let r = codec::read_receipt(&a[1])?;
             Ok(OperationReceipt {
-                candidate: r.candidate.clone(),
+                publication: r.publication.clone(),
                 request: r.request.clone(),
                 revision: r.revision,
                 transition: Some(r),
@@ -548,33 +526,33 @@ fn decode_attempt(
     owner: &str,
 ) -> Result<HistoricalAttempt, PgError> {
     let bytes = STORAGE.checked(row.try_get("document")?, row.try_get("digest")?)?;
-    let publication = codec::read_publication(&STORAGE.decode::<Value>(&bytes)?)?;
-    let candidate = &publication.binding.validation.candidate;
-    if candidate.tenant() != tenant || candidate.value() != owner || publication.attempt == 0 {
+    let attempt = codec::read_attempt(&STORAGE.decode::<Value>(&bytes)?)?;
+    let key = &attempt.binding.publication;
+    if key.tenant() != tenant || key.value() != owner || attempt.attempt == 0 {
         return Err(STORAGE.fault("store::attempt_history"));
     }
     Ok(HistoricalAttempt {
         cursor: row.try_get("key")?,
-        publication,
+        attempt,
     })
 }
 
 /// Read and lock the existing publication authority from a caller-owned product transaction.
 /// This narrow reference reader performs no writes or runtime-owner substitution.
-pub async fn lock_candidate_reference_in(
+pub async fn lock_publication_reference_in(
     tx: &mut PgTransaction<'_>,
-    id: &CandidateId,
-) -> InTransaction<Candidate> {
+    id: &PublicationKey,
+) -> InTransaction<Publication> {
     if tx.tenant_id() != id.tenant() {
         return Ok(Err(Rejection::TenantMismatch));
     }
-    STORAGE.lock(tx, "candidate", id.value()).await?;
-    Ok(input!(read_candidate_in(tx, id).await?).ok_or(Rejection::NotFound))
+    STORAGE.lock(tx, "publication", id.value()).await?;
+    Ok(input!(read_publication_in(tx, id).await?).ok_or(Rejection::NotFound))
 }
-async fn read_candidate_in(
+async fn read_publication_in(
     tx: &mut PgTransaction<'_>,
-    id: &CandidateId,
-) -> InTransaction<Option<Candidate>> {
+    id: &PublicationKey,
+) -> InTransaction<Option<Publication>> {
     let c = STORAGE
         .read(tx, id.value())
         .await?
@@ -592,4 +570,27 @@ async fn read_candidate_in(
         )
         .transpose()?;
     Ok(Ok(c))
+}
+
+async fn freeze_attempt(
+    tx: &mut PgTransaction<'_>,
+    publication: &Publication,
+) -> Result<(), PgError> {
+    let s = publication.snapshot();
+    let p = &s.attempt;
+    let key = format!(
+        "{}/{}/{:020}",
+        crate::hex(&p.id().digest().bytes()),
+        p.attempt,
+        s.revision
+    );
+    STORAGE
+        .freeze(
+            tx,
+            s.id.value(),
+            "attempt",
+            &key,
+            STORAGE.encode(&codec::attempt(p))?,
+        )
+        .await
 }

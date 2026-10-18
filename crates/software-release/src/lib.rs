@@ -1,26 +1,4 @@
-//! Deterministic software publication decisions, without storage or authentication.
-//! Persist the next snapshot and request receipt atomically before executing a decision.
-//! Restored inputs require a trusted storage owner; structural checks do not authenticate them.
-//! Candidate identity cannot be replaced by a same-tenant actor:
-//! ```compile_fail
-//! use rss_mdm_software_release::{ActorId, Candidate, Content};
-//! fn wrong_role(actor: ActorId, content: Content, at: rss_contract::Timepoint) {
-//!     Candidate::new(actor, content, at);
-//! }
-//! ```
-//! Snapshots must pass the aggregate's restore validation:
-//! ```compile_fail
-//! use rss_mdm_software_release::{Candidate, Snapshot};
-//! fn bypass(snapshot: Snapshot) -> Candidate { Candidate(snapshot) }
-//! ```
-//! A pending attempt is state, not a report from the backend:
-//! ```compile_fail
-//! use rss_mdm_software_release::{Operation, PublicationId, PublicationOutcome, Ring};
-//! fn pending(id: PublicationId) -> Operation {
-//!     Operation::Record { ring: Ring::Test, publication: id, attempt: 1,
-//!                         outcome: PublicationOutcome::Pending }
-//! }
-//! ```
+//! Deterministic direct publication decisions; adapters own authentication and atomic persistence.
 #![forbid(unsafe_code)]
 #![warn(clippy::cognitive_complexity)]
 #![deny(missing_docs)]
@@ -28,7 +6,7 @@ mod fingerprint;
 mod identity;
 mod model;
 mod transition;
-pub use identity::{ActorId, CandidateId, Digest, PublicationId, RequestId};
+pub use identity::{ActorId, Digest, PublicationId, PublicationKey, RequestId, TargetId};
 pub use model::*;
 pub use transition::*;
 
@@ -48,15 +26,15 @@ pub enum Error {
     /// A request, actor or evidence record belongs to another tenant.
     #[error("tenant mismatch")]
     TenantMismatch,
-    /// The candidate, ring, publication or attempt does not match the current subject.
-    #[error("candidate or publication identity mismatch")]
+    /// The record, publication or attempt does not match the current subject.
+    #[error("record or publication identity mismatch")]
     IdentityMismatch,
     /// The requested CAS revision differs from the current aggregate revision.
     #[error("revision conflict: expected {expected}, actual {actual}")]
     RevisionConflict {
         /// Revision supplied by the request.
         expected: u64,
-        /// Current candidate revision.
+        /// Current publication revision.
         actual: u64,
     },
     /// Incrementing a revision or attempt would exceed its numeric range.
@@ -74,23 +52,8 @@ pub enum Error {
     /// The requested lifecycle edge is not supported.
     #[error("invalid lifecycle transition")]
     InvalidTransition,
-    /// The previous ring has no confirmed Applied publication.
-    #[error("previous ring is not confirmed published")]
-    PromotionBlocked,
-    /// A publication attempt prevents content replacement or revalidation.
-    #[error("published content cannot be changed after publication authorization")]
-    ContentFrozen,
-    /// Replacement would change the candidate’s exact software identity.
-    #[error("candidate software identity cannot change")]
-    ContentConflict,
-    /// Validation or predecessor binding differs from current content/state.
-    #[error("validation does not match the current subject")]
-    StaleEvidence,
-    /// Current passed validation is absent.
-    #[error("validation has not passed")]
-    ValidationRequired,
-    /// Quarantine or deprecation forbids a new publication or retry.
-    #[error("candidate is withdrawn or deprecated")]
+    /// Withdrawal forbids new retries, while observed facts remain recordable.
+    #[error("publication is withdrawn")]
     PublicationClosed,
     /// Ordinary authorization cannot resubmit a confirmed NotApplied attempt.
     #[error("publication requires reconciliation")]

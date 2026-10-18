@@ -1,6 +1,6 @@
 # rss-mdm-software-release
 
-不可变候选、分环直接发布与结果决策。公共契约由 [源码与 rustdoc](src/lib.rs) 持有，使用流程见 [任务指南](../../docs/guides/resources-and-software.md)。
+精确版本到实际目标的直接发布与结果决策。公共契约由 [源码与 rustdoc](src/lib.rs) 持有，使用流程见 [任务指南](../../docs/guides/resources-and-software.md)。
 
 ## 来源
 

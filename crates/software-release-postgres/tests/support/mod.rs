@@ -113,3 +113,27 @@ pub fn unique() -> String {
         NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
     )
 }
+
+pub fn publication(
+    id: rss_mdm_software_release_postgres::core::PublicationKey,
+    content: rss_mdm_software_release_postgres::core::Content,
+    at: Timepoint,
+) -> rss_mdm_software_release_postgres::core::Publication {
+    use rss_mdm_software_release_postgres::core::*;
+    let actor = ActorId::new(id.tenant(), "operator").unwrap();
+    let binding = PublicationBinding {
+        publication: id.clone(),
+        content: content.digest(),
+        target: TargetId::new(id.tenant(), "internal").unwrap(),
+        target_digest: Digest::from_bytes([2; 32]),
+        evidence: Evidence {
+            actor: actor.clone(),
+            digest: content.digest(),
+            at,
+        },
+        lifecycle: Digest::from_bytes([7; 32]),
+        actor,
+        at,
+    };
+    Publication::new(content, binding).unwrap()
+}
