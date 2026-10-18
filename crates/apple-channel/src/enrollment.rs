@@ -23,6 +23,7 @@ use std::sync::Arc;
 use uuid::Uuid;
 
 async fn admitted(c: &mut sqlx::PgConnection, proof: &Admission) -> Result<PgRow, Error> {
+    proof.lock_authority_in(c).await?;
     let d = proof.coordinates();
     rss_mdm_registration_service::admission::require_request_in(
         c,

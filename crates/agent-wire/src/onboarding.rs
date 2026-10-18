@@ -114,6 +114,8 @@ pub struct EnrollmentTaskSpec {
     #[serde(with = "strict_uuid")]
     #[schemars(schema_with = "crate::runtime::uuid_schema")]
     pub organization: Uuid,
+    /// Current Policy or employee invocation authority, covered by the task signature.
+    pub authorization: crate::runtime::TaskAuthorization,
     /// Standard platform enrollment entry, never an executable or installation script.
     pub entry: EnrollmentEntry,
 }
@@ -121,6 +123,7 @@ impl EnrollmentTaskSpec {
     /// Canonical signature domain, bound to every identity and enrollment input.
     pub fn signing_bytes(&self, key_id: &str) -> Result<Vec<u8>, WireError> {
         self.entry.validate(self.platform)?;
+        self.authorization.validate(self.tenant_id)?;
         if self.wire_version != crate::runtime::WIRE_VERSION
             || self.tenant_id.is_nil()
             || self.organization != self.tenant_id

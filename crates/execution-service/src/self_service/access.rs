@@ -96,10 +96,31 @@ pub async fn qualify_in(
     config: &rss_mdm_policy::SelfService,
     basis: &Basis,
 ) -> Result<Option<wire::SelfServiceSubject>> {
+    let tenant = service.tenant;
+    let instance = service.instance.clone();
+    let sessions = service.sessions.clone();
+    let config = config.clone();
+    let basis = basis.clone();
+    tx.with_connection(move |c| {
+        Box::pin(
+            async move { Ok(qualify_on(c, &config, &basis, tenant, &instance, &sessions).await) },
+        )
+    })
+    .await?
+}
+
+pub(super) async fn qualify_on(
+    c: &mut sqlx::PgConnection,
+    config: &rss_mdm_policy::SelfService,
+    basis: &Basis,
+    tenant: rss_request_context::TenantId,
+    instance: &str,
+    sessions: &crate::authorization::session::SessionAuthority,
+) -> Result<Option<wire::SelfServiceSubject>> {
     match (config.access.as_ref(), basis) {
         (Some(Access::Device), Basis::Device) => Ok(Some(wire::SelfServiceSubject::Device {})),
         (Some(Access::AuthenticatedUser | Access::Users { .. }), Basis::User { reference }) => {
-            let facts = match service.sessions.recheck(reference).await {
+            let facts = match sessions.recheck(reference).await {
                 Ok(facts) => facts,
                 Err(
                     crate::authorization::Error::Unauthorized
@@ -108,24 +129,18 @@ pub async fn qualify_in(
                 Err(error) => return Err(Error::from(error).into()),
             };
             let user = SubjectFacts::Revalidated(&facts).user();
-            if user.tenant_id != tx.tenant_id().to_string() || user.instance_id != service.instance
-            {
+            if user.tenant_id != tenant.to_string() || user.instance_id != instance {
                 return Ok(None);
             }
             let subjects = selectors(config, &user.tenant_id, &user.instance_id)?;
             if matches!(config.access, Some(Access::Users { .. })) {
                 let tenant = user.tenant_id.clone();
                 let instance = user.instance_id.clone();
-                let snapshot = tx
-                    .with_connection(move |c| {
-                        Box::pin(async move {
-                            crate::authorization::lock_on(c, &tenant, &instance)
-                                .await
-                                .map_err(|_| sqlx::Error::Protocol("authorization lock".into()))?;
-                            Ok(crate::authorization::snapshot_on(c, &tenant, &instance).await)
-                        })
-                    })
-                    .await?
+                crate::authorization::lock_on(c, &tenant, &instance)
+                    .await
+                    .map_err(Error::from)?;
+                let snapshot = crate::authorization::snapshot_on(c, &tenant, &instance)
+                    .await
                     .map_err(Error::from)?;
                 if !snapshot
                     .matches_subjects(SubjectFacts::Revalidated(&facts), &subjects)

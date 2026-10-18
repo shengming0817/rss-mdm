@@ -8,6 +8,10 @@
     {
       "name": "mdm_commands.installation_status",
       "search_path": "search_path=pg_catalog"
+    },
+    {
+      "name": "mdm_planning.policy_lock",
+      "search_path": "search_path=pg_catalog"
     }
   ],
   "external_relations": [
@@ -20,7 +24,11 @@
     "mdm_resource.immutable",
     "mdm_software.sources",
     "mdm_software.versions",
-    "mdm_planning.policy_source_grants"
+    "mdm_planning.policy_source_grants",
+    "mdm_planning.scopes",
+    "mdm_planning.scope_runs",
+    "mdm_planning.scope_source_members",
+    "mdm_planning.scope_channel_results"
   ],
   "verified_schemas": []
 }

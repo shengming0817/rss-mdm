@@ -803,6 +803,10 @@
           "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
           "type": "string"
         },
+        "authorization": {
+          "$ref": "#/$defs/TaskAuthorization",
+          "description": "Current Policy or employee invocation authority, covered by the task signature."
+        },
         "deviceId": {
           "description": "Independent source Agent device.",
           "maxLength": 256,
@@ -890,6 +894,7 @@
         "permit",
         "expiresAt",
         "organization",
+        "authorization",
         "entry"
       ],
       "type": "object"

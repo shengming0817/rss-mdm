@@ -1305,7 +1305,7 @@ enum RawTaskPayload {
     Script(Box<TaskSpec>),
     Software(Box<SoftwareTaskSpec>),
     /// Standard MDM enrollment entry.
-    Enrollment(crate::runtime::EnrollmentTaskSpec),
+    Enrollment(Box<crate::runtime::EnrollmentTaskSpec>),
 }
 /// Validated immutable script or software task payload.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
@@ -1320,7 +1320,7 @@ pub enum TaskPayload {
     /// Approved software task.
     Software(Box<SoftwareTaskSpec>),
     /// Standard MDM enrollment entry.
-    Enrollment(crate::runtime::EnrollmentTaskSpec),
+    Enrollment(Box<crate::runtime::EnrollmentTaskSpec>),
 }
 impl TryFrom<RawTaskPayload> for TaskPayload {
     type Error = WireError;
@@ -1378,7 +1378,7 @@ impl TryFrom<crate::runtime::EnrollmentTaskSpec> for TaskPayload {
     type Error = WireError;
     fn try_from(value: crate::runtime::EnrollmentTaskSpec) -> Result<Self, Self::Error> {
         value.signing_bytes("validation")?;
-        Ok(Self::Enrollment(value))
+        Ok(Self::Enrollment(Box::new(value)))
     }
 }
 impl TaskPayload {

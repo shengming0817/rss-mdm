@@ -41,13 +41,17 @@ async fn absent_agent_group_installs_fixed_package_and_registers_independently()
                 "QueryResponses",
                 protocol::dictionary([
                     ("OSVersion", "15.0".into()),
+                    ("IsSupervised", true.into()),
                     ("IsAppleSilicon", true.into()),
                 ])
                 .into(),
             )),
         )
         .await?;
-    let (query, payload) = lifecycle::command(&bytes, "InstalledApplicationList")?;
+    let (query, payload) = match lifecycle::command(&bytes, "InstalledApplicationList") {
+        Ok(value) => value,
+        Err(_) => peer.next("InstalledApplicationList").await?,
+    };
     ensure!(payload["Identifiers"] == plist::Value::Array(vec!["com.rss.agent".into()]));
     peer.manage(
         "Acknowledged",
@@ -62,7 +66,10 @@ async fn absent_agent_group_installs_fixed_package_and_registers_independently()
             && state["operationIds"] == json!([operation]),
         "{state}"
     );
-    let (install, payload) = peer.next("InstallEnterpriseApplication").await?;
+    let mut early_bootstrap = None;
+    let (install, payload) = peer
+        .next_managed("InstallEnterpriseApplication", &mut early_bootstrap)
+        .await?;
     ensure!(
         payload["Configuration"].as_dictionary().unwrap()["RSSInstallationOperation"].as_string()
             == Some(operation.to_string().as_str())
@@ -103,9 +110,25 @@ async fn absent_agent_group_installs_fixed_package_and_registers_independently()
             == &setup::bytes()[..4]
     );
 
-    ensure!(peer.manage("NotNow", Some(install), None).await?.is_empty());
+    // Bootstrap provisioning can proceed while package delivery is deferred.
+    let deferred = peer.manage("NotNow", Some(install), None).await?;
+    if !deferred.is_empty() {
+        let (id, payload) = lifecycle::command(&deferred, "InstallProfile")?;
+        ensure!(
+            peer.manage("Acknowledged", Some(id), None)
+                .await?
+                .is_empty()
+        );
+        early_bootstrap = Some(payload);
+    }
     ensure!(f.operation(operation).await?["agentInstallation"]["delivery"] == "deferred");
-    let (retry, _) = next_after_cooldown(&peer, install, "InstallEnterpriseApplication").await?;
+    let (retry, _) = next_after_cooldown(
+        &peer,
+        install,
+        "InstallEnterpriseApplication",
+        &mut early_bootstrap,
+    )
+    .await?;
     ensure!(retry == install, "NotNow retries the same native identity");
     // The reference server receives the ACK; the product loses this transport message.
     // Both then continue on the same device, so the oracle still checks query syntax.
@@ -124,7 +147,9 @@ async fn absent_agent_group_installs_fixed_package_and_registers_independently()
         )
         .await?;
     // An unacknowledged install is queried; it is never sent again as a new install.
-    let (observe, _) = peer.next("InstalledApplicationList").await?;
+    let (observe, _) = peer
+        .next_managed("InstalledApplicationList", &mut early_bootstrap)
+        .await?;
     // Error responses cannot claim installed even if an extraneous list is present.
     peer.manage(
         "Error",
@@ -148,13 +173,17 @@ async fn absent_agent_group_installs_fixed_package_and_registers_independently()
         "{state}"
     );
     let input = json!({"wireVersion":1,"operationId":Uuid::new_v4(),"installationOperation":operation,"secret":credential("managed-apple-agent"),"csr":crate::test_support::agent::csr()?,"runtime":{"executionContext":crate::test_support::software_execution::context(crate::test_support::software_execution::Platform::MacOs),"platform":"macos","architecture":"aarch64","capabilities":["inventory.collect.v1","mdm.enrollment.v1"]}});
-    let (bootstrap_delivery, bootstrap_payload) = peer.next("InstallProfile").await?;
+    let bootstrap_payload = if let Some(payload) = early_bootstrap {
+        payload
+    } else {
+        let (id, payload) = peer.next("InstallProfile").await?;
+        peer.manage("Acknowledged", Some(id), None).await?;
+        payload
+    };
     ensure!(
         bootstrap_payload.contains_key("Payload"),
         "native bootstrap must deliver a profile"
     );
-    peer.manage("Acknowledged", Some(bootstrap_delivery), None)
-        .await?;
     let bootstrap_peer = crate::test_support::bootstrap::issue_apple(
         &f.app,
         &f.router,
@@ -265,6 +294,7 @@ async fn next_after_cooldown(
     peer: &lifecycle::Peer,
     attempt: Uuid,
     kind: &str,
+    bootstrap: &mut Option<plist::Dictionary>,
 ) -> Result<(Uuid, plist::Dictionary)> {
     use sqlx::Connection;
     let mut db =
@@ -281,7 +311,7 @@ async fn next_after_cooldown(
         .bind(case_tenant()).bind(attempt).execute(&mut db).await?;
     ensure!(changed.rows_affected() == 1);
     db.close().await?;
-    peer.next(kind).await
+    peer.next_managed(kind, bootstrap).await
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
@@ -299,6 +329,7 @@ async fn collected_bundle_presence_remains_unknown() -> Result<()> {
                 "QueryResponses",
                 protocol::dictionary([
                     ("OSVersion", "15.0".into()),
+                    ("IsSupervised", true.into()),
                     ("IsAppleSilicon", true.into()),
                 ])
                 .into(),

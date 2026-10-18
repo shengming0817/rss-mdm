@@ -133,17 +133,20 @@ Apple 新注册 profile 在启用该能力时申请已安装应用查询与企�
 
 ## 自助任务与调用参数
 
-`Policy.definition.selfService` 同时用于脚本与 AvailableInstall 软件。`access` 必须显式填写：`device` 允许有效设备 Scope 内的当前注册调用；`authenticated_user` 要求本租户有效企业会话；`users` 要求非空、有界、无重复的 selectors 至少匹配一个当前可信用户、IdP 组、部门（exact/subtree）或静态用户组。用户组与设备 Scope 分别判断，不建立 userScope。未发布草稿可显式填写 `access:null`；发布时不允许 null，省略字段不再接受。
+互注册默认不主动开启：管理员分别配置并启用 `ensure_agent_installed` 和 `request_mdm_enrollment` 策略。设备未注册只是状态，不产生授权。设置页主动申请 MDM 注册还要求对应策略发布 selfService；仅开放人工发起时将 schedule.trigger 设为 manual。自动与自助入口共用同一任务队列，未决或 Unknown 不创建第二个注册任务；停用策略不自动注销已经建立的通道身份。注册入口 outcome 为 opened 只代表已打开系统流程，最终注册由原生认证事实确认。
+
+
+`Policy.definition.selfService` 用于脚本、AvailableInstall 软件和 `request_mdm_enrollment`。`access` 必须显式填写：`device` 允许有效设备 Scope 内的当前注册调用；`authenticated_user` 要求本租户有效企业会话；`users` 要求非空、有界、无重复的 selectors 至少匹配一个当前可信用户、IdP 组、部门（exact/subtree）或静态用户组。用户组与设备 Scope 分别判断，不建立 userScope。未发布草稿可显式填写 `access:null`；发布时不允许 null，省略字段不再接受。
 
 管理员继续使用既有 Policy/Resource/Software 管理权限；普通员工无需 ScriptExecute 或 SoftwareDeploy。系统服务的执行权限不由员工管理员身份决定。Resource 的 System/LoggedInUser 保持原意；后者必须绑定确切 SID/UID、OS 登录世代和该会话的 helper，缺失或换人时阻止新 Start。
 
 自助描述与 AI 开关由 selfService 持有。首次省略 allowAi/riskLevel 归一化为 true/2，编辑省略保留原值。脚本 riskLevel 仅允许 1、2；软件 riskLevel 只接受 2（省略时归一化为 2），AI 安装必须确认。关闭 allowAi 或撤回 published 只阻止自助调用，普通自动 Policy 独立判断。
 
-Resource.Script 持有参数 schema，Policy 使用 Fixed/Input 选择来源。调用必须提交全部且仅提交 Input 键，不能覆盖 Fixed；后端合并后完整校验并冻结到 Run。存在 Input 时 trigger 必须为 manual。参数来源或固定值变化产生执行版本；访问和描述变化只推进配置 revision。软件调用 parameters 必须为空。
+Resource.Script 持有参数 schema，Policy 使用 Fixed/Input 选择来源。调用必须提交全部且仅提交 Input 键，不能覆盖 Fixed；后端合并后完整校验并冻结到 Run。存在 Input 时 trigger 必须为 manual。参数来源或固定值变化产生执行版本；访问和描述变化只推进配置 revision。软件和 MDM 注册调用 parameters 必须为空。
 
 以下入口位于 `/api/v1/agent/runtime`，始终使用 Agent 系统服务的设备凭据。用户访问模式还使用 `X-RSS-User-Session`；设备模式不需要企业登录。无效或重复用户会话头不会降级为设备访问。系统服务根据真实 IPC 入口设置 source，模型参数不得控制 source，也不得接触设备私钥或企业凭据。confirmed 绑定当前 requestId、Policy revision/version 和确切输入，客户端边界由 #2677 实施。
 
-- `GET /self-service?source=human|ai&after=<policyId>` 返回当前可调用的有界目录。每项含 Policy 坐标、自助描述及 tagged script/software 接口。目录复用 Scope、注册世代、平台、能力、资源批准、频率、窗口、容量及 pending/Unknown 判断；未知事实不授予执行。
+- `GET /self-service?source=human|ai&after=<policyId>` 返回当前可调用的有界目录。每项含 Policy 坐标、自助描述及 tagged script/software/enrollment 接口。目录复用 Scope、注册世代、平台、能力、资源批准、频率、窗口、容量及 pending/Unknown 判断；未知事实不授予执行。
 - `POST /self-service/invocations` 针对当前设备接受 operationId、Policy 坐标、source、confirmed、parameters，返回 202 的 requestId/runId。精确重试返回原 Run；变化正文返回冲突。AvailableInstall 在显式请求前不创建 Run/Offer，不能自行 Start；安装按确切资源版本、检测意图及稳定 Device/SID/UID 效果目标在用户和 Policy 之间排除重复，Unknown 不允许盲重试。
 - `GET /self-service/invocations/{requestId}` 返回本主体、注册及世代对应的执行状态。原始脚本结果另外要求 InventoryRead，敏感采集还要求 InventorySensitiveRead；缺少读取权限时 result 为 null，状态仍可读。软件只返回闭合检测 outcome，原生证据与诊断继续由管理接口持有。
 

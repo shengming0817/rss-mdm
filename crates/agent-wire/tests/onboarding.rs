@@ -34,7 +34,7 @@ fn enrollment_schema_and_signing_agree_on_text_and_expiry_boundaries() {
     .unwrap();
     let validator = jsonschema::validator_for(&schema).unwrap();
     let tenant = Uuid::new_v4();
-    let base = json!({"wireVersion":1,"tenantId":tenant,"deviceId":"agent","platform":"macos","architecture":"aarch64","registrationId":Uuid::new_v4(),"generation":1,"taskId":Uuid::new_v4(),"attemptId":Uuid::new_v4(),"permit":"offer","expiresAt":1,"organization":tenant,"entry":{"kind":"macos","url":"https://mdm.example.test/enroll"}});
+    let base = json!({"wireVersion":1,"tenantId":tenant,"deviceId":"agent","platform":"macos","architecture":"aarch64","registrationId":Uuid::new_v4(),"generation":1,"taskId":Uuid::new_v4(),"attemptId":Uuid::new_v4(),"permit":"offer","expiresAt":1,"organization":tenant,"authorization":{"kind":"policy","policyId":Uuid::new_v4(),"policyVersion":Uuid::new_v4()},"entry":{"kind":"macos","url":"https://mdm.example.test/enroll"}});
     for (field, value, expected) in [
         ("expiresAt", json!(0), false),
         ("expiresAt", json!(1), true),
@@ -76,6 +76,7 @@ fn enrollment_task_rejects_the_old_signature_domain() {
         "tenantId":id,"deviceId":"agent","platform":"macos","architecture":"aarch64",
         "registrationId":id,"generation":1,"taskId":id,"attemptId":id,
         "permit":"offer","expiresAt":200,"organization":id,
+        "authorization":{"kind":"policy","policyId":id,"policyVersion":id},
         "entry":{"kind":"macos","url":"https://mdm.example.test/enroll"}}))
     .unwrap();
     let document = Ed25519KeyPair::generate_pkcs8(&SystemRandom::new()).unwrap();
@@ -96,4 +97,29 @@ fn enrollment_task_rejects_the_old_signature_domain() {
     signed.signature =
         base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(key.sign(&old_bytes).as_ref());
     assert!(support::verify_signature(&signed, key.public_key().as_ref()).is_err());
+}
+
+#[test]
+fn enrollment_authority_is_required_and_part_of_the_signature() {
+    use rss_mdm_agent_wire::runtime::{EnrollmentTaskSpec, TaskPayload};
+    let vectors: serde_json::Value =
+        serde_json::from_str(include_str!("fixtures/v1-vectors.json")).unwrap();
+    let vector = vectors["tasks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|v| v["family"] == "enrollment")
+        .unwrap();
+    let TaskPayload::Enrollment(task) =
+        serde_json::from_str(vector["payloadJson"].as_str().unwrap()).unwrap()
+    else {
+        panic!("enrollment vector");
+    };
+    let original = task.signing_bytes("key").unwrap();
+    let mut value = serde_json::to_value(&task).unwrap();
+    value["authorization"]["policyVersion"] = json!(Uuid::new_v4());
+    let changed: EnrollmentTaskSpec = serde_json::from_value(value.clone()).unwrap();
+    assert_ne!(original, changed.signing_bytes("key").unwrap());
+    value.as_object_mut().unwrap().remove("authorization");
+    assert!(serde_json::from_value::<EnrollmentTaskSpec>(value).is_err());
 }
