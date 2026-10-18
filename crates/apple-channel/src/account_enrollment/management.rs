@@ -6,6 +6,7 @@ use axum::{
 };
 use rss_mdm_audit_integration::RequestAudit;
 use rss_mdm_authorization_service::Permission;
+use rss_mdm_authorization_service::context::RequestAuth;
 use serde::{Deserialize, Serialize};
 
 #[derive(Deserialize, Serialize)]
@@ -43,10 +44,10 @@ pub(crate) fn operation(headers: &HeaderMap) -> Result<Uuid, Error> {
 }
 pub(super) async fn list(
     State(app): State<Arc<HttpState>>,
-    headers: HeaderMap,
+    Extension(auth): Extension<RequestAuth>,
 ) -> Result<Json<serde_json::Value>, Error> {
-    let proof = authenticate(&app, &headers, false).await?;
-    proof.manage(Permission::AuthorizationRead)?;
+    let proof = &auth.proof;
+    proof.manage(Permission::RegistrationConfigurationRead)?;
     let mut tx = app.access.begin_read(proof.tenant_id()).await?;
     let rows = sqlx::query(
         "SELECT id FROM mdm_apple.organizations WHERE tenant_id=$1::uuid ORDER BY id LIMIT 1001",
@@ -104,6 +105,7 @@ pub(super) async fn list(
 pub(super) async fn organization(
     State(app): State<Arc<HttpState>>,
     Path(id): Path<Uuid>,
+    Extension(auth): Extension<RequestAuth>,
     headers: HeaderMap,
     Extension(audit): Extension<RequestAudit>,
     Json(mut input): Json<OrganizationChange>,
@@ -129,13 +131,21 @@ pub(super) async fn organization(
     {
         return Err(Error::Conflict);
     }
-    change(&app, &headers, &audit, id, Change::Organization(input))
-        .await
-        .map(Json)
+    change(
+        &app,
+        &auth.proof,
+        &headers,
+        &audit,
+        id,
+        Change::Organization(input),
+    )
+    .await
+    .map(Json)
 }
 pub(super) async fn account(
     State(app): State<Arc<HttpState>>,
     Path((id, account)): Path<(Uuid, String)>,
+    Extension(auth): Extension<RequestAuth>,
     headers: HeaderMap,
     Extension(audit): Extension<RequestAudit>,
     Json(input): Json<AccountChange>,
@@ -148,9 +158,16 @@ pub(super) async fn account(
     {
         return Err(Error::Malformed);
     }
-    change(&app, &headers, &audit, id, Change::Account(name, input))
-        .await
-        .map(Json)
+    change(
+        &app,
+        &auth.proof,
+        &headers,
+        &audit,
+        id,
+        Change::Account(name, input),
+    )
+    .await
+    .map(Json)
 }
 #[derive(Serialize)]
 enum Change {
@@ -159,13 +176,13 @@ enum Change {
 }
 async fn change(
     app: &HttpState,
+    proof: &AuthorizedPrincipal,
     headers: &HeaderMap,
     audit: &RequestAudit,
     id: Uuid,
     input: Change,
 ) -> Result<serde_json::Value, Error> {
-    let proof = authenticate(app, headers, true).await?;
-    proof.manage(Permission::AuthorizationWrite)?;
+    proof.manage(Permission::RegistrationConfigurationWrite)?;
     proof.bind_audit(audit)?;
     let operation = operation(headers)?;
     audit.operation(operation, "apple_account_configuration");
@@ -178,7 +195,7 @@ async fn change(
         .write(
             app.identity.tenant(),
             &control,
-            (app, &proof, audit, id, operation, &input, &fingerprint),
+            (app, proof, audit, id, operation, &input, &fingerprint),
             |(app, proof, audit, id, operation, input, fingerprint), tx| {
                 Box::pin(async move {
                     let (value, replayed) = tx
@@ -222,7 +239,7 @@ async fn change_on(
     operation: Uuid,
     input: &Change,
 ) -> Result<(serde_json::Value, bool), Error> {
-    p.manage(Permission::AuthorizationWrite)?;
+    p.manage(Permission::RegistrationConfigurationWrite)?;
     sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,2672))")
         .bind(format!("apple-organization:{}:{id}", p.tenant_id()))
         .execute(&mut *c)

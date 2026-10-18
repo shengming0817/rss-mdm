@@ -205,6 +205,12 @@ impl Apple {
         8191
     }
 }
+/// Business control plane; App must install the common management authentication boundary.
+pub fn management_routes(app: Arc<HttpState>) -> axum::Router {
+    account_enrollment::management_routes()
+        .merge(ade::management_routes())
+        .with_state(app)
+}
 pub fn browser_routes(app: Arc<HttpState>, envelope: boundary::Envelope) -> axum::Router {
     use axum::routing::post;
     boundary::wrap(

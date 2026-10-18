@@ -80,7 +80,7 @@ CollectionRun 拥有命令关联、完整性与报告封存。Status 或 Final �
 
 Access token 只接受 Entra v2、RS256、appId audience、明确允许的客户端与 delegated scopes、`idtyp=user`，并验证签名、issuer 和时间。应用需配置 include_user_token optional claim。实际 WSTEP 注册必须有非空设备 UUID claim；TOU 阶段允许缺少该 claim。Token 不创建浏览器会话，也不充当设备证书；续证与管理仍使用已建立的设备证书和现有协议认证。
 
-`GET /api/v1/windows/entra-policy` 与 `PUT` 使用产品浏览器认证及 authorization_read／authorization_write；写入包含 `expectedRevision`、`operationId` 和 `policy`。策略字段为 enabled、allUsers、users（明确的 oid 列表）、termsVersion、termsText（最多 32768 字节的纯文本）、allowBackground。缺少策略时默认关闭；组织用户范围、条款版本和非交互注册授权均由 MDM 持有。没有 Graph 查询或隐式 group/scope 推断。
+`GET /api/v1/windows/entra-policy` 与 `PUT` 使用产品管理认证及 registration_configuration_read／registration_configuration_write；写入包含 `expectedRevision`、`operationId` 和 `policy`。策略字段为 enabled、allUsers、users（明确的 oid 列表）、termsVersion、termsText（最多 32768 字节的纯文本）、allowBackground。缺少策略时默认关闭；组织用户范围、条款版本和非交互注册授权均由 MDM 持有。没有 Graph 查询或隐式 group/scope 推断。
 
 产品浏览器 HTTPS origin 提供 `GET /api/v1/windows/entra/terms` 原生入口。Windows 在 Authorization 中传入 Entra Bearer token，查询包含 redirect_uri、client-request-id、api-version=1.0；组织加入另带 mode=azureadjoin。入口校验完整回调 allowlist、token 和当前策略后设置 Secure／HttpOnly 的短期流程 cookie，并重定向到同源 `/enrollment/windows/entra/terms`。注册监听器不再提供旧的 JSON 条款 GET／POST。
 

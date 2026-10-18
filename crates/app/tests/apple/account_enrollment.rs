@@ -114,8 +114,8 @@ pub(super) fn plist_cms(bytes: &[u8]) -> Result<plist::Dictionary> {
 }
 async fn configure(f: &mut Fixture, organization: Uuid, name: &str) -> Result<()> {
     let grants = serde_json::from_value(json!([
-        {"operation":"authorization_read","scope":{"kind":"tenant"}},
-        {"operation":"authorization_write","scope":{"kind":"tenant"}}
+        {"operation":"registration_configuration_read","scope":{"kind":"tenant"}},
+        {"operation":"registration_configuration_write","scope":{"kind":"tenant"}}
     ]))?;
     crate::test_support::identity::set_grants(
         case_tenant(),
@@ -660,8 +660,8 @@ async fn user_asset(
         crate::authorization::Permission::PolicyWrite,
         crate::authorization::Permission::ScopeRead,
         crate::authorization::Permission::ScopeWrite,
-        crate::authorization::Permission::AuthorizationRead,
-        crate::authorization::Permission::AuthorizationWrite,
+        crate::authorization::Permission::RegistrationConfigurationRead,
+        crate::authorization::Permission::RegistrationConfigurationWrite,
     ] {
         grants.push(crate::authorization::Grant {
             operation,

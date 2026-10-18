@@ -115,6 +115,7 @@ async fn programmatic_keys_tokens_and_online_network_policy() -> Result<()> {
         let login = json!({"login":case::login("admin"),"password":PASSWORD});
         ensure!(call(&router, Method::POST, &login_path, &[], Some(login.clone())).await?.0 == StatusCode::FORBIDDEN);
 
+        ensure!(audit_count(|r| r.action()=="authentication" && r.status()==403 && r.result()=="denied")? > 0);
         let id = Uuid::new_v4();
         let metadata = json!({"name":"automation","enabled":true,"expiresAt":null,"grants":[{"operation":"inventory_read","scope":{"kind":"all_devices"}}]});
         let operation = Uuid::new_v4();
@@ -138,6 +139,10 @@ async fn programmatic_keys_tokens_and_online_network_policy() -> Result<()> {
         ensure!(status == StatusCode::OK, "bearer login: {status}");
         let bearer = format!("Bearer {}", token["accessToken"].as_str().ok_or_else(|| anyhow::anyhow!("missing bearer"))?);
         ensure!(call(&router, Method::GET, &inventory, &[("authorization", &bearer)], None).await?.0 == StatusCode::OK);
+        ensure!(call(&router,Method::GET,"/api/v1/apple/organizations",&[("authorization",&bearer)],None).await?.0==StatusCode::OK);
+        for (method,path) in [(Method::GET,"/api/v1/self-enrollments"),(Method::POST,"/api/v1/self-enrollments"),(Method::GET,"/api/v1/registration-quotas/me")] {
+            ensure!(call(&router,method,path,&[("authorization",&bearer)],Some(json!({}))).await?.0==StatusCode::FORBIDDEN);
+        }
         for headers in [vec![("authorization", bearer.as_str()), ("x-api-key", secret.as_str())], vec![("x-api-key", secret.as_str()), ("x-api-key", secret.as_str())], vec![("authorization", bearer.as_str()), ("authorization", bearer.as_str())], vec![("x-api-key", secret.as_str()), ("cookie", "__Host-identity-session=broken")]] {
             ensure!(call(&router, Method::GET, &inventory, &headers, None).await?.0 == StatusCode::BAD_REQUEST);
         }
@@ -217,7 +222,7 @@ async fn key_scope_expiry_creator_independence_and_uncertain_issuance() -> Resul
         let inventory = format!("{}/inventory",case_device());
         ensure!(call(&router, Method::GET, &inventory, &[("x-api-key",&secret)], None).await?.0 == StatusCode::OK);
         ensure!(call(&router, Method::GET, "/api/v1/devices/outside-key-scope/inventory", &[("x-api-key",&secret)], None).await?.0 == StatusCode::FORBIDDEN);
-        ensure!(store.authorization_store().authenticate_key(case::peer(), &ApiKeySecret::parse(secret.clone())?).await.is_err());
+        ensure!(store.authorization_store().authenticate_key(&Uuid::new_v4().to_string(), &ApiKeySecret::parse(secret.clone())?).await.is_err());
         for permission in ["identity_accounts_manage","identity_providers_manage","authorization_write","tenant_create"] {
             let mut input = scoped.clone(); input["grants"]=json!([{"operation":permission,"scope":{"kind":"tenant"}}]);
             ensure!(admin.call(&router, Method::PUT, &path, Some(json!({"operationId":Uuid::new_v4(),"expectedRevision":2,"metadata":input}))).await?.0 == StatusCode::BAD_REQUEST);
@@ -264,6 +269,9 @@ async fn business_writes_bind_key_actor_and_managed_enrollment() -> Result<()> {
         policy(&mut manager, &router, 0, json!(["127.0.0.1"])).await?;
         let id = Uuid::new_v4();
         let metadata = json!({"name":"automation-writer","enabled":true,"expiresAt":null,"grants":[
+            {"operation":"registration_configuration_read","scope":{"kind":"tenant"}},
+            {"operation":"registration_configuration_write","scope":{"kind":"tenant"}},
+            {"operation":"audit_read","scope":{"kind":"tenant"}},
             {"operation":"resource_write","scope":{"kind":"tenant"}},
             {"operation":"resource_read","scope":{"kind":"tenant"}},
             {"operation":"enrollment","scope":{"kind":"all_devices"}},
@@ -272,6 +280,17 @@ async fn business_writes_bind_key_actor_and_managed_enrollment() -> Result<()> {
         let (status, created) = admin.call(&router, Method::POST, "/api/v1/api-keys", Some(json!({"id":id,"operationId":Uuid::new_v4(),"metadata":metadata}))).await?;
         ensure!(status == StatusCode::OK);
         let secret = created["secret"].as_str().ok_or_else(|| anyhow::anyhow!("missing key"))?;
+        for path in ["/api/v1/registration-quotas/defaults","/api/v1/audit-events","/api/v1/apple/organizations"] {
+            ensure!(call(&router,Method::GET,path,&[("x-api-key",secret)],None).await?.0==StatusCode::OK,"business read: {path}");
+        }
+        let organization=Uuid::new_v4();
+        let ade_path=format!("/api/v1/apple/organizations/{organization}/ade");
+        let ade_operation=Uuid::new_v4().to_string();
+        let configured=call(&router,Method::PUT,&format!("{ade_path}/configuration"),&[("x-api-key",secret),("idempotency-key",&ade_operation)],Some(json!({"expectedRevision":0,"enabled":false,"serverUuid":organization,"orgId":"programmatic-test","rotateKey":false}))).await?;
+        ensure!(configured.0==StatusCode::OK,"ADE configuration: {}",configured.0);
+        ensure!(call(&router,Method::GET,&ade_path,&[("x-api-key",secret)],None).await?.0==StatusCode::OK);
+        let usage_path=format!("/api/v1/registration-quotas/users/{INSTANCE}/{}/usage",case_admin());
+        ensure!(call(&router,Method::GET,&usage_path,&[("x-api-key",secret)],None).await?.0==StatusCode::OK);
         let resource = Uuid::new_v4();
         let resource_path = format!("/api/v1/resources/{resource}");
         let operation = Uuid::new_v4();
@@ -293,6 +312,72 @@ async fn business_writes_bind_key_actor_and_managed_enrollment() -> Result<()> {
         let resume_op=Uuid::new_v4().to_string();
         ensure!(call(&router,Method::POST,&format!("/api/v1/enrollments/{enrollment_id}/resume"),&[("x-api-key",secret),("idempotency-key",&resume_op)],Some(json!({"password":"BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBA"}))).await?.0==StatusCode::FORBIDDEN);
         ensure!(call(&router,Method::GET,&resource_path,&[("x-api-key",secret)],None).await?.0==StatusCode::FORBIDDEN);
+        policy(&mut manager,&router,1,json!([])).await?;
+        Ok(())
+    }).await
+}
+
+#[tokio::test]
+#[ignore = "MODULE=authorization.programmatic: original API key rechecked after streamed body"]
+async fn streamed_content_rejects_rotated_key_before_binding() -> Result<()> {
+    use futures::SinkExt;
+    use sha2::{Digest, Sha256};
+    let Fixture {
+        resources,
+        router,
+        mut admin,
+        ..
+    } = fixture().await?;
+    resources.finish(async {
+        let mut manager = manager(&router).await?;
+        policy(&mut manager,&router,0,json!(["127.0.0.1"])).await?;
+        let id=Uuid::new_v4();
+        let metadata=json!({"name":"stream-writer","enabled":true,"expiresAt":null,"grants":[{"operation":"resource_write","scope":{"kind":"tenant"}},{"operation":"resource_read","scope":{"kind":"tenant"}}]});
+        let (status,issued)=admin.call(&router,Method::POST,"/api/v1/api-keys",Some(json!({"id":id,"operationId":Uuid::new_v4(),"metadata":metadata}))).await?;
+        ensure!(status==StatusCode::OK);
+        let secret=issued["secret"].as_str().ok_or_else(||anyhow::anyhow!("missing key"))?;
+        let resource=Uuid::new_v4();
+        let path=format!("/api/v1/resources/{resource}");
+        let bytes=b"#!/bin/sh\nprintf '{}'\n";
+        let digest:[u8;32]=Sha256::digest(bytes).into();
+        let script=json!({"profile":"posix_sh","runAs":"system","encoding":"utf8","parameters":{"type":"object","properties":{},"required":[],"additionalProperties":false},"bindings":{},"output":{"type":"object","properties":{},"required":[],"additionalProperties":false},"purpose":{"kind":"action"},"timeoutSeconds":60,"outputBytes":4096,"maxRows":1});
+        for (revision,input) in [(0,json!({"action":"create","kind":"script"})),(1,json!({"action":"version","version":"v1","kind":"script","variants":[{"platform":"macos","architecture":"aarch64","key":"default","declaration":{"kind":"script","artifact":{"reference":"script","length":bytes.len(),"sha256":digest},"definition":script}}]}))] {
+            let result=call(&router,Method::POST,&path,&[("x-api-key",secret)],Some(json!({"operationId":Uuid::new_v4(),"expectedRevision":revision,"input":input}))).await?;
+            ensure!(result.0==StatusCode::OK,"script prepare: {}",result.0);
+        }
+        let operation=Uuid::new_v4();
+        let upload_path=|op|format!("{path}/content?version=v1&variant=default&platform=macos&architecture=aarch64&operation={op}");
+        let (mut sender,stream)=futures::channel::mpsc::channel::<Result<Vec<u8>,std::io::Error>>(1);
+        let request=Request::builder().method(Method::POST).uri(upload_path(operation)).header("host","mdm.example.test").header("x-api-key",secret).header("content-type","application/octet-stream").body(Body::from_stream(stream))?;
+        let running=tokio::spawn(router.clone().oneshot(request));
+        sender.send(Ok(bytes[..1].to_vec())).await?;
+        let observer=sqlx::postgres::PgPoolOptions::new().max_connections(1).connect_with(crate::device::test_support::options("postgres")?).await?;
+        let claimed=tokio::time::timeout(Duration::from_secs(5),async {
+            loop {
+                let count:i64=sqlx::query_scalar("SELECT count(*) FROM mdm_content.uploads WHERE tenant_id=$1::uuid AND document->'value'->'upload'->>'id'=$2 AND epoch IS NOT NULL").bind(case_tenant()).bind(operation.to_string()).fetch_one(&observer).await?;
+                if count==1 { return Ok::<_,anyhow::Error>(()); }
+                tokio::task::yield_now().await;
+            }
+        }).await;
+        observer.close().await;
+        let rotated:Result<String>=async {
+            claimed??;
+            let (status,rotation)=admin.call(&router,Method::POST,&format!("/api/v1/api-keys/{id}/rotate"),Some(json!({"operationId":Uuid::new_v4(),"expectedRevision":1}))).await?;
+            ensure!(status==StatusCode::OK);
+            let rotated=rotation["secret"].as_str().ok_or_else(||anyhow::anyhow!("missing rotated key"))?.to_owned();
+            sender.send(Ok(bytes[1..].to_vec())).await?;
+            Ok(rotated)
+        }.await;
+        drop(sender);
+        let response=running.await??;
+        let rotated=rotated?;
+        ensure!(response.status()==StatusCode::UNAUTHORIZED,"rotated upload: {}",response.status());
+        ensure!(pg(&format!("SELECT count(*) FROM mdm_content.bindings WHERE tenant_id='{}' AND operation='{operation}'",case_tenant()))?.trim()=="0");
+        ensure!(audit_count(|r|r.operation()==Some(operation.to_string().as_str()) && r.status()==201 && r.result()=="success")?==0);
+        let replacement=Uuid::new_v4();
+        let response=router.clone().oneshot(Request::builder().method(Method::POST).uri(upload_path(replacement)).header("host","mdm.example.test").header("x-api-key",rotated).header("content-type","application/octet-stream").body(Body::from(bytes.to_vec()))?).await?;
+        ensure!(response.status()==StatusCode::CREATED,"new key upload: {}",response.status());
+        ensure!(pg(&format!("SELECT count(*) FROM mdm_content.bindings WHERE tenant_id='{}' AND operation='{replacement}'",case_tenant()))?.trim()=="1");
         policy(&mut manager,&router,1,json!([])).await?;
         Ok(())
     }).await

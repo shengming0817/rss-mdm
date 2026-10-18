@@ -217,13 +217,21 @@ pub struct BearerAdmission {
     pub access: Arc<rss_mdm_authorization_service::Store>,
     pub tenant: String,
 }
+/// Marks a product rejection before Identity can own authentication settlement.
+#[derive(Clone, Copy)]
+pub(crate) struct AdmissionRejected;
 pub async fn admit_bearer(
     State(state): State<Arc<BearerAdmission>>,
     request: Request,
     next: Next,
 ) -> Response {
+    let reject = |error: Error| {
+        let mut response = error.into_response();
+        response.extensions_mut().insert(AdmissionRejected);
+        response
+    };
     if request.headers().contains_key("x-api-key") {
-        return Error::Malformed.into_response();
+        return reject(Error::Malformed);
     }
     let permitted = request
         .uri()
@@ -231,16 +239,17 @@ pub async fn admit_bearer(
         .strip_prefix("/api/v1/identity/tenants/")
         .is_some_and(|path| path.split('/').next() == Some(state.tenant.as_str()));
     if !permitted {
-        return Error::Forbidden.into_response();
+        return reject(Error::Forbidden);
     }
     let Some(address) = request
         .extensions()
         .get::<rss_identity_http_axum::ClientAddress>()
+        .map(|address| address.0)
     else {
-        return Error::Forbidden.into_response();
+        return reject(Error::Forbidden);
     };
-    match state.access.require_api_source(address.0).await {
+    match state.access.require_api_source(address).await {
         Ok(()) => next.run(request).await,
-        Err(error) => Error::from(error).into_response(),
+        Err(error) => reject(error.into()),
     }
 }

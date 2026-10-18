@@ -20,7 +20,7 @@ pub struct Authentication {
     pub origin: String,
 }
 pub fn routes() -> Router<Arc<HttpState>> {
-    use axum::routing::{get, post, put};
+    use axum::routing::{get, post};
     Router::new()
         .route(
             "/.well-known/com.apple.remotemanagement",
@@ -46,6 +46,10 @@ pub fn routes() -> Router<Arc<HttpState>> {
             "/api/v1/apple/account-enrollment/bridge.js",
             get(bridge::script),
         )
+}
+pub(crate) fn management_routes() -> Router<Arc<HttpState>> {
+    use axum::routing::{get, put};
+    Router::new()
         .route("/api/v1/apple/organizations", get(management::list))
         .route(
             "/api/v1/apple/organizations/{id}/account-enrollment",

@@ -324,9 +324,12 @@ async fn prepare_accounts(
     Ok(costs)
 }
 
-const MANAGEMENT_PERMISSIONS: [crate::authorization::Permission; 7] = {
+const MANAGEMENT_PERMISSIONS: [crate::authorization::Permission; 10] = {
     use crate::authorization::Permission::*;
     [
+        RegistrationConfigurationRead,
+        RegistrationConfigurationWrite,
+        AuditRead,
         AuthorizationRead,
         AuthorizationWrite,
         UserGroupRead,
@@ -386,7 +389,7 @@ fn baseline_management_does_not_protect_device_grants() -> Result<()> {
         .into_iter()
         .map(serde_json::from_value::<Rule>)
         .collect::<Result<Vec<_>, _>>()?;
-    anyhow::ensure!(rules.iter().map(|r| r.grants.len()).sum::<usize>() == 10);
+    anyhow::ensure!(rules.iter().map(|r| r.grants.len()).sum::<usize>() == 13);
     anyhow::ensure!(protected_management_rule(&rules[0]));
     anyhow::ensure!(!protected_management_rule(&rules[1]) && !protected_management_rule(&rules[2]));
     anyhow::ensure!(

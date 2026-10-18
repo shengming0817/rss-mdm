@@ -217,6 +217,11 @@ async fn authenticate_inner(
     management: bool,
 ) -> Response {
     let (mut parts, body) = request.into_parts();
+    let path = parts
+        .extensions
+        .get::<axum::extract::OriginalUri>()
+        .map_or_else(|| parts.uri.path(), |original| original.0.path())
+        .to_owned();
     let activity =
         if parts.method == axum::http::Method::GET || parts.method == axum::http::Method::HEAD {
             rss_identity_http_axum::SessionActivity::Passive
@@ -241,9 +246,9 @@ async fn authenticate_inner(
                 .map(|address| address.0),
             !management
                 && authorization
-                && !parts.uri.path().starts_with("/api/v1/self-")
-                && !parts.uri.path().starts_with("/api/v1/identity-host/")
-                && parts.uri.path() != "/api/v1/registration-quotas/me",
+                && !path.starts_with("/api/v1/self-")
+                && !path.starts_with("/api/v1/identity-host/")
+                && path != "/api/v1/registration-quotas/me",
         )
         .await
     {

@@ -118,7 +118,7 @@ impl Management {
         }
     }
     pub async fn settings(&self, p: &AuthorizedPrincipal) -> Result<Settings, Error> {
-        p.manage(Permission::AuthorizationRead)?;
+        p.manage(Permission::RegistrationConfigurationRead)?;
         if p.tenant_id() != self.tenant.to_string() {
             return Err(Error::Forbidden);
         }
@@ -137,7 +137,7 @@ impl Management {
         input: &Update,
         a: &RequestAudit,
     ) -> Result<Revision, Error> {
-        p.manage(Permission::AuthorizationWrite)?;
+        p.manage(Permission::RegistrationConfigurationWrite)?;
         if p.tenant_id() != self.tenant.to_string()
             || input.operation_id.is_nil()
             || input.expected_revision < 0
@@ -155,7 +155,7 @@ impl Management {
             let (this,p,input,a,digest)=(*this,*p,*input,*a,*digest);
             let (value,replayed)=tx.with_connection_context(&mut (p,input,digest),|(p,input,digest),c|Box::pin(async move {
                 let (p,input,digest)=(*p,*input,*digest);
-                p.manage(Permission::AuthorizationWrite)?;
+                p.manage(Permission::RegistrationConfigurationWrite)?;
                 let old=settings_in(c,p.tenant_id(),true).await?;
                 let op=crate::windows_receipts::Operation::from_authorized(p,input.operation_id,digest);
                 if let Some(value)=crate::windows_receipts::replay(c,&op).await? {return Ok((serde_json::from_str(&value).map_err(|_|Error::Conflict)?,true));}

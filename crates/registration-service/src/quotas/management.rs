@@ -11,7 +11,7 @@ impl Quotas {
         key: Uuid,
         audit: &RequestAudit,
     ) -> Result<Configuration, Error> {
-        p.manage(Permission::AuthorizationWrite)?;
+        p.manage(Permission::RegistrationConfigurationWrite)?;
         let subject = subject(p, user)?;
         if key.is_nil()
             || change.expected_revision >= i64::MAX as u64
@@ -47,7 +47,7 @@ impl Quotas {
                 let revision = current.revision + 1;
                 sqlx::query("INSERT INTO mdm_access.registration_quota_settings(tenant_id,subject,revision,agent,windows_mdm,macos_mdm) VALUES($1::uuid,$2,$3,$4,$5,$6) ON CONFLICT(tenant_id,subject) DO UPDATE SET revision=EXCLUDED.revision,agent=EXCLUDED.agent,windows_mdm=EXCLUDED.windows_mdm,macos_mdm=EXCLUDED.macos_mdm")
                     .bind(p.tenant_id()).bind(subject).bind(revision as i64).bind(change.limits.agent.map(i64::from)).bind(change.limits.windows_mdm.map(i64::from)).bind(change.limits.macos_mdm.map(i64::from)).execute(&mut *c).await.map_err(db)?;
-                p.manage(Permission::AuthorizationWrite)?;
+                p.manage(Permission::RegistrationConfigurationWrite)?;
                 let value = Configuration { revision, limits: change.limits.clone() };
                 crate::operations::save(c,op,&serde_json::to_string(&value).map_err(|_| Error::Corrupt)?,audit).await?;
                 Ok((value,false))

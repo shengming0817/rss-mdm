@@ -71,7 +71,7 @@ impl Timeline {
             return Err(Error::Forbidden);
         }
         proof
-            .require(Permission::AuthorizationRead, None)
+            .require(Permission::AuditRead, None)
             .map_err(|_| Error::Forbidden)?;
         query.validate()?;
         let token = query
@@ -347,7 +347,7 @@ impl Timeline {
                 .await
                 .map_err(authorization_error)?;
         current
-            .require(proof, Permission::AuthorizationRead, None)
+            .require(proof, Permission::AuditRead, None)
             .map_err(|e| authorization_error(e.into()))?;
         if current.query_binding(proof).map_err(authorization_error)?
             != proof

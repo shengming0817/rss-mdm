@@ -518,6 +518,21 @@ pub(crate) fn from_state(
             ..management_boundary.clone()
         },
     );
+    let apple_management = rss_mdm_management_http::boundary::wrap(
+        rss_mdm_apple_channel::management_routes(apple_state.clone())
+            .route_layer(middleware::from_fn(apple_management_settlement))
+            .route_layer(middleware::from_fn_with_state(
+                Arc::new(
+                    rss_mdm_management_http::authorization::http::AuthenticationState {
+                        identity: state.identity.browser(),
+                        access: state.access.authorization_store(),
+                        requests: state.requests.clone(),
+                    },
+                ),
+                rss_mdm_management_http::authorization::http::protect,
+            )),
+        management_boundary.clone(),
+    );
     let management = rss_mdm_management_http::router(
         rss_mdm_management_http::Services {
             registration_channels: Arc::new(crate::registration_channels::Channels {
@@ -702,6 +717,7 @@ pub(crate) fn from_state(
     let browser = Router::new()
         .merge(tenant_administration)
         .merge(management)
+        .merge(apple_management)
         .merge(rss_mdm_apple_channel::browser_routes(
             apple_state.clone(),
             apple_boundary,
@@ -794,4 +810,38 @@ fn software_access(
                 .map_or(0, |s| s.config.transfer_seconds),
         },
     })
+}
+
+/// Compose the Apple business owner's settlement class with the common HTTP boundary.
+async fn apple_management_settlement(
+    request: axum::extract::Request,
+    next: middleware::Next,
+) -> Response {
+    use rss_mdm_apple_channel::{Error as AppleError, Failure as AppleFailure};
+    use rss_mdm_audit_integration::completion::ResponseFailure;
+    let mut response = next.run(request).await;
+    let failure = match response.extensions().get::<AppleError>() {
+        Some(AppleError::CommitUnknown) => Some(ResponseFailure::CommitUnknown),
+        Some(AppleError::RollbackFailed) => Some(ResponseFailure::RollbackFailed),
+        Some(AppleError::Unauthorized | AppleError::Forbidden) => Some(ResponseFailure::Denied),
+        Some(AppleError::Unavailable(AppleFailure::RequestDeadline)) => {
+            Some(ResponseFailure::Deadline)
+        }
+        Some(AppleError::Unavailable(AppleFailure::AuditIntegrity)) => {
+            Some(ResponseFailure::AuditIntegrity)
+        }
+        Some(AppleError::Unavailable(
+            AppleFailure::AuditContract
+            | AppleFailure::AuditIsolation
+            | AppleFailure::AuditAdmission,
+        )) => Some(ResponseFailure::AuditContract),
+        Some(AppleError::Unavailable(AppleFailure::Audit)) => {
+            Some(ResponseFailure::AuditUnavailable)
+        }
+        _ => None,
+    };
+    if let Some(failure) = failure {
+        response.extensions_mut().insert(failure);
+    }
+    response
 }
