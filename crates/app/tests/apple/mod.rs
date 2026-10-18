@@ -780,6 +780,7 @@ impl Fixture {
                     self.root.join("ca.crt"),
                 )?)?)
                 .build()?,
+            pending_replies: Default::default(),
             installed_trust: Default::default(),
             oracle: oracle::Oracle::new(der)?,
             origin: apple.config.management.origin.clone(),
@@ -925,7 +926,10 @@ impl Fixture {
             json!({"action":"put","enabled":true,"definition":definition}),
         )
         .await?;
-        peer.manage("Idle", None, None).await?;
+        let reply = peer.manage("Idle", None, None).await?;
+        if !reply.is_empty() {
+            peer.pending_replies.lock().await.push_back(reply);
+        }
         let mut db =
             sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?)
                 .await?;

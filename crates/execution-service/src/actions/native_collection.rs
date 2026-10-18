@@ -46,7 +46,7 @@ pub async fn admit_policy(
             registration: row.try_get("id")?,
             generation: row.try_get("generation")?,
         };
-        storage::lock(tx, &target.device).await?;
+        super::native_recovery::lock_device(tx, &target.device).await?;
         super::production::accept_for_device(
             service,
             tx,

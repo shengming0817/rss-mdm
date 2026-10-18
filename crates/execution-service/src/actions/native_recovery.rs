@@ -82,6 +82,25 @@ pub(crate) async fn active(tx: &mut PgTransaction<'_>, work: Work) -> Result<boo
         }
     })).await?)
 }
+/// Preserve the device/channel lock order before reading mutable registration or run state.
+pub(crate) async fn lock_device(tx: &mut PgTransaction<'_>, device: &str) -> Result<()> {
+    storage::lock(tx, device).await?;
+    let tenant = tx.tenant_id().to_string();
+    let device = device.to_owned();
+    tx.with_connection(move |c| {
+        Box::pin(async move {
+            Ok(crate::device::store::lock_channel(
+                c,
+                &tenant,
+                &device,
+                rss_mdm_inventory::Channel::Mdm,
+            )
+            .await)
+        })
+    })
+    .await??;
+    Ok(())
+}
 pub(crate) async fn step(
     service: &ExecutionService,
     tx: &mut PgTransaction<'_>,
@@ -94,7 +113,7 @@ pub(crate) async fn step(
                 sqlx::query_scalar("SELECT device FROM mdm_commands.action_runs WHERE tenant_id=$1::uuid AND id=$2")
                     .bind(tenant).bind(id).fetch_one(c).await
             })).await?;
-            storage::lock(tx, &device).await?;
+            lock_device(tx, &device).await?;
             super::recovery::recover_one(service, tx, id).await?;
             Ok(false)
         }
@@ -110,6 +129,15 @@ async fn checkin_step(
     registration: Uuid,
     generation: i64,
 ) -> Result<bool> {
+    let tenant = tx.tenant_id().to_string();
+    let device: Option<String> = tx.with_connection(move |c| Box::pin(async move {
+        sqlx::query_scalar("SELECT device FROM mdm_access.registrations WHERE tenant_id=$1::uuid AND id=$2")
+            .bind(tenant).bind(registration).fetch_optional(c).await
+    })).await?;
+    let Some(device) = device else {
+        return Err(Error::Conflict.into());
+    };
+    lock_device(tx, &device).await?;
     let tenant = tx.tenant_id().to_string();
     let state = tx.with_connection(move |c| Box::pin(async move {
         sqlx::query("UPDATE mdm_commands.native_checkins SET active_event=pending_event,active_at=pending_at,pending_event=NULL,pending_at=NULL,policy_after=NULL WHERE tenant_id=$1::uuid AND registration=$2 AND generation=$3 AND active_event IS NULL AND pending_event IS NOT NULL")
@@ -128,7 +156,6 @@ async fn checkin_step(
     let at: i64 = state.try_get("active_at")?;
     let after: Option<Uuid> = state.try_get("policy_after")?;
     let device: String = state.try_get("device")?;
-    storage::lock(tx, &device).await?;
     let tenant = tx.tenant_id().to_string();
     let next: Option<(Uuid, Uuid)> = tx.with_connection(move |c| Box::pin(async move {
         sqlx::query_as("SELECT id,current_version FROM mdm_policy.policies WHERE tenant_id=$1::uuid AND state='enabled' AND definition->'action'->>'kind'='native_collection' AND ($2::uuid IS NULL OR id>$2) ORDER BY id LIMIT 1")

@@ -16,6 +16,7 @@ impl Fixture {
                 .build()?,
             origin: self.app.apple()?.config.management.origin.clone(),
             topic: self.app.apple()?.config.apns_topic.clone(),
+            pending_replies: Default::default(),
             installed_trust: Default::default(),
             oracle: oracle::Oracle::new(&der)?,
         };
