@@ -90,7 +90,6 @@ impl Peer {
         {
             profiles.push(plist::Value::Dictionary(installed.clone()));
         }
-        use x509_cert::der::{Decode, asn1::OctetString};
         let mut bytes = self.manage_raw(status, id, extra).await?;
         for _ in 0..4 {
             if bytes.is_empty() {
@@ -103,46 +102,10 @@ impl Peer {
             {
                 return Ok(bytes);
             }
-            let data = payload["Payload"]
-                .as_data()
-                .ok_or_else(|| anyhow::anyhow!("signed Profile required"))?;
-            let cms = cms::content_info::ContentInfo::from_der(data)?
-                .content
-                .decode_as::<cms::signed_data::SignedData>()?;
-            let content = cms
-                .encap_content_info
-                .econtent
-                .ok_or_else(|| anyhow::anyhow!("Profile content required"))?
-                .decode_as::<OctetString>()?;
-            let installed = protocol::decode(content.as_bytes())?;
-            if !protocol::text(&installed, "PayloadIdentifier")?.starts_with("com.rss-mdm.pki.") {
+            let summary = installed_profile(payload)?;
+            if !protocol::text(&summary, "PayloadIdentifier")?.starts_with("com.rss-mdm.pki.") {
                 return Ok(bytes);
             }
-            // ProfileList reports installed identities, not the configuration
-            // payload's DER certificate data or installation-only fields.
-            let mut summary = plist::Dictionary::new();
-            for key in ["PayloadIdentifier", "PayloadUUID", "PayloadVersion"] {
-                summary.insert(key.into(), installed[key].clone());
-            }
-            let children = installed["PayloadContent"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .map(|child| {
-                    let child = child.as_dictionary().unwrap();
-                    let mut item = plist::Dictionary::new();
-                    for key in [
-                        "PayloadIdentifier",
-                        "PayloadUUID",
-                        "PayloadType",
-                        "PayloadVersion",
-                    ] {
-                        item.insert(key.into(), child[key].clone());
-                    }
-                    plist::Value::Dictionary(item)
-                })
-                .collect();
-            summary.insert("PayloadContent".into(), plist::Value::Array(children));
             *self.installed_trust.lock().await = Some(summary.clone());
             let id = Uuid::parse_str(protocol::text(&message, "CommandUUID")?)?;
             let query = self.manage_raw("Acknowledged", Some(id), None).await?;
@@ -157,6 +120,21 @@ impl Peer {
                 .await?;
         }
         anyhow::bail!("trust Profile exchange exceeded the fixture bound")
+    }
+    pub async fn confirm_managed_profile(
+        &self,
+        id: Uuid,
+        payload: &plist::Dictionary,
+    ) -> Result<Vec<u8>> {
+        let summary = installed_profile(payload)?;
+        let query = self.manage("Acknowledged", Some(id), None).await?;
+        let (read_id, _) = command(&query, "ProfileList")?;
+        self.manage(
+            "Acknowledged",
+            Some(read_id),
+            Some(("ProfileList", plist::Value::Array(vec![summary.into()]))),
+        )
+        .await
     }
     pub async fn next(&self, kind: &str) -> Result<(Uuid, plist::Dictionary)> {
         command(&self.next_bytes(kind).await?, kind)
@@ -214,7 +192,7 @@ impl Peer {
                 {
                     ensure!(slot.is_none(), "duplicate managed bootstrap profile");
                     *slot = Some(payload.clone());
-                    bytes = self.manage("Acknowledged", Some(id), None).await?;
+                    bytes = self.confirm_managed_profile(id, payload).await?;
                     continue;
                 }
                 let prerequisite_device = actual == "DeviceInformation"
@@ -278,6 +256,47 @@ impl Peer {
         }
         anyhow::bail!("native {kind} dispatch deadline")
     }
+}
+// ref: apple/device-management mdm/commands/profile.list.yaml
+fn installed_profile(payload: &plist::Dictionary) -> Result<plist::Dictionary> {
+    use x509_cert::der::{Decode, asn1::OctetString};
+    let data = payload["Payload"]
+        .as_data()
+        .ok_or_else(|| anyhow::anyhow!("signed Profile required"))?;
+    let cms = cms::content_info::ContentInfo::from_der(data)?
+        .content
+        .decode_as::<cms::signed_data::SignedData>()?;
+    let content = cms
+        .encap_content_info
+        .econtent
+        .ok_or_else(|| anyhow::anyhow!("Profile content required"))?
+        .decode_as::<OctetString>()?;
+    let installed = protocol::decode(content.as_bytes())?;
+    // Report installed identities, without certificate data or SCEP secrets.
+    let mut summary = plist::Dictionary::new();
+    for key in ["PayloadIdentifier", "PayloadUUID", "PayloadVersion"] {
+        summary.insert(key.into(), installed[key].clone());
+    }
+    let children = installed["PayloadContent"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|child| {
+            let child = child.as_dictionary().unwrap();
+            let mut item = plist::Dictionary::new();
+            for key in [
+                "PayloadIdentifier",
+                "PayloadUUID",
+                "PayloadType",
+                "PayloadVersion",
+            ] {
+                item.insert(key.into(), child[key].clone());
+            }
+            plist::Value::Dictionary(item)
+        })
+        .collect();
+    summary.insert("PayloadContent".into(), plist::Value::Array(children));
+    Ok(summary)
 }
 pub(super) fn command(bytes: &[u8], kind: &str) -> Result<(Uuid, plist::Dictionary)> {
     let d = protocol::decode(bytes)?;

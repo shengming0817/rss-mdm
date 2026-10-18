@@ -25,7 +25,6 @@ def execute(fixture):
     pool = SimpleNamespace(owner=fixture.owner)
     pool.database_config = lambda *args: DatabasePool.database_config(pool, *args)
     builds = SimpleNamespace(processes=HostProcesses(), executables={'rss-mdm': fixture.binary})
-    context = SimpleNamespace(native_key=os.environ['MDM_NATIVE_PROTECTION_KEY_FILE'])
     password = 'Fixture-only-management-password-2026!'
     password_file = private(root / 'account-password', password)
     business = str(uuid.uuid4())
@@ -67,7 +66,9 @@ def execute(fixture):
         seeds[tenant] = command('initialize-authorization', value)
         initialization[tenant] = account
 
-    config = RunFixtures.runtime_config(context, pool, root, fixture.database, business)
+    config = RunFixtures.runtime_config(pool, root, fixture.database, business,
+        native_key=os.environ['MDM_NATIVE_PROTECTION_KEY_FILE'],
+        recovery_credentials=fixture.recovery_credentials)
     config['agent_pki'] = {'mode': 'disabled'}
     # Install business federation routes so management denial cannot be a missing-route 404.
     state_key = private(root / 'oidc-state-key', 'ab' * 32)

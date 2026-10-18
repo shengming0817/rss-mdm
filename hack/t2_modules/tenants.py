@@ -78,7 +78,6 @@ def execute(fixture):
     pool = SimpleNamespace(owner=fixture.owner)
     pool.database_config = lambda *args: DatabasePool.database_config(pool, *args)
     builds = SimpleNamespace(processes=HostProcesses(), executables={'rss-mdm':fixture.binary})
-    context = SimpleNamespace(native_key=os.environ['MDM_NATIVE_PROTECTION_KEY_FILE'])
     a, b = str(uuid.uuid4()), str(uuid.uuid4())
     password = 'Fixture-only-correct-horse-battery-2026!'
     private(root / 'account-password', password)
@@ -159,7 +158,9 @@ def execute(fixture):
                 login='admin', passwordFile=str(root/'account-password'), operationId=str(uuid.uuid4()),
                 user=dict(instanceId=INSTANCE,tenantId=tenant,principalId=ADMIN)))
         rules.append(receipt['id'])
-        config = RunFixtures.runtime_config(context,pool,root,fixture.database,tenant)
+        config = RunFixtures.runtime_config(pool, root, fixture.database, tenant,
+            native_key=os.environ['MDM_NATIVE_PROTECTION_KEY_FILE'],
+            recovery_credentials=fixture.recovery_credentials)
         config['agent_pki'] = {'mode':'disabled'}
         configs.append(private(root/('runtime-'+tenant+'.json'),config))
         detail=command('tenant-get',dict(**common,tenant_id=tenant))

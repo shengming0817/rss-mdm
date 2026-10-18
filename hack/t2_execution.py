@@ -466,6 +466,7 @@ class Builds:
             'root': str(fixture.root), 'database': fixture.database,
             'migration_config': str(fixture.migration_config) if fixture.migration_config else None,
             'binary': fixture.binary,
+            'recovery_credentials': fixture.context.recovery_config() if fixture.database else None,
         }))
         payload.chmod(0o600)
         with (output / 'test.log').open('w') as log:
