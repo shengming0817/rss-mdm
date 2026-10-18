@@ -12,6 +12,10 @@ async fn explicit_software_uses_native_run_without_agent_catalog() -> Result<()>
 async fn associated_agent_unknown_blocks_native_alias_but_not_other_package() -> Result<()> {
     native_case(true).await
 }
+#[allow(
+    clippy::cognitive_complexity,
+    reason = "end-to-end fixture keeps admission, transport, content grants and effect settlement in one owned lifecycle"
+)]
 async fn native_case(agent_unknown: bool) -> Result<()> {
     let mut host = crate::windows::test_support::Host::with_mdm_software().await?;
     host.listen().await?;
