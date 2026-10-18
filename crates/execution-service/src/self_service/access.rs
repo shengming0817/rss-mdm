@@ -24,7 +24,7 @@ pub fn select(
                 proof.check_live()?;
                 Ok(Basis::User {
                     reference: proof
-                        .session()
+                        .session()?
                         .reference()
                         .map_err(|_| Error::Unauthorized)?,
                 })

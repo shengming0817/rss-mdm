@@ -133,7 +133,7 @@ impl Fixture {
     // Prepare one authorized operation and its retained prerequisite evidence.
     // Control admission and actual response intake remain the protocol tests' actions.
     pub(super) async fn native_context(&mut self) -> Result<()> {
-        use crate::authorization::{Permission, UserGrant};
+        use crate::authorization::{OperationAuthority, Permission};
         use rss_mdm_execution_service::{authority::ExecutionAuthority, device_control::Kind};
         self.grant_native_actions(&["device_control"]).await?;
         let proof = crate::device::test_support::admin(case_tenant(), "admin-a").await?;
@@ -141,13 +141,13 @@ impl Fixture {
             sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?)
                 .await?;
         let snapshot =
-            crate::authorization::snapshot_on(&mut db, case_tenant(), &proof.user().instance_id)
+            crate::authorization::snapshot_on(&mut db, case_tenant(), &proof.user()?.instance_id)
                 .await?;
         let authority = ExecutionAuthority::DeviceControl {
             action: Kind::Restart,
             confirmation: None,
             required: vec![Permission::DeviceControl],
-            evidence: vec![UserGrant::from_proof(
+            evidence: vec![OperationAuthority::from_proof(
                 &snapshot,
                 &proof,
                 case_device(),

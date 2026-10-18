@@ -76,4 +76,33 @@ CREATE POLICY tenant ON mdm_access.authorization_rules USING ((tenant_id = (NULL
 CREATE POLICY tenant ON mdm_access.user_groups USING ((tenant_id = (NULLIF(current_setting('rss.tenant_id'::text, true), ''::text))::uuid)) WITH CHECK ((tenant_id = (NULLIF(current_setting('rss.tenant_id'::text, true), ''::text))::uuid));
 
 ALTER TABLE mdm_access.user_groups ENABLE ROW LEVEL SECURITY;
+CREATE TABLE mdm_access.api_keys (
+    tenant_id uuid NOT NULL,
+    instance uuid NOT NULL,
+    id uuid NOT NULL,
+    revision bigint NOT NULL CHECK (revision > 0),
+    authority_revision bigint NOT NULL CHECK (authority_revision > 0),
+    credential_revision bigint NOT NULL CHECK (credential_revision > 0),
+    metadata jsonb NOT NULL CHECK (jsonb_typeof(metadata)='object' AND octet_length(metadata::text)<=65536),
+    secret_digest bytea NOT NULL CHECK (octet_length(secret_digest)=32),
+    created_by jsonb NOT NULL CHECK (jsonb_typeof(created_by)='object'),
+    created_at bigint NOT NULL,
+    revoked boolean NOT NULL DEFAULT false,
+    enabled boolean GENERATED ALWAYS AS ((metadata->>'enabled')::boolean) STORED,
+    expires_at bigint GENERATED ALWAYS AS ((metadata->>'expiresAt')::bigint) STORED,
+    PRIMARY KEY (tenant_id,instance,id)
+);
+ALTER TABLE mdm_access.api_keys ENABLE ROW LEVEL SECURITY;
+ALTER TABLE mdm_access.api_keys FORCE ROW LEVEL SECURITY;
+CREATE POLICY tenant ON mdm_access.api_keys USING (tenant_id=NULLIF(current_setting('rss.tenant_id',true),'')::uuid) WITH CHECK (tenant_id=NULLIF(current_setting('rss.tenant_id',true),'')::uuid);
+
+CREATE TABLE mdm_access.api_network_policy (
+    tenant_id uuid PRIMARY KEY,
+    instance uuid NOT NULL UNIQUE,
+    revision bigint NOT NULL CHECK (revision > 0),
+    networks jsonb NOT NULL CHECK (jsonb_typeof(networks)='array' AND jsonb_array_length(networks)<=256)
+);
+ALTER TABLE mdm_access.api_network_policy ENABLE ROW LEVEL SECURITY;
+ALTER TABLE mdm_access.api_network_policy FORCE ROW LEVEL SECURITY;
+CREATE POLICY tenant ON mdm_access.api_network_policy USING (tenant_id=NULLIF(current_setting('rss.tenant_id',true),'')::uuid) WITH CHECK (tenant_id=NULLIF(current_setting('rss.tenant_id',true),'')::uuid);
 COMMIT;

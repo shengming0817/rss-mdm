@@ -383,7 +383,7 @@ pub async fn issue_in(
     lock_account_issuance(c, proof, id).await?;
     authority.authorize_issue(c, proof, id, operation).await?;
     let reference = proof
-        .session()
+        .session()?
         .reference()
         .map_err(|_| Error::Unauthorized)?;
     let hash = challenge_digest(proof.tenant_id(), id, challenge);

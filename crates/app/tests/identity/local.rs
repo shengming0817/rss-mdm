@@ -207,9 +207,9 @@ async fn native_accounts(
     let credentials = crate::enrollment::credentials::Credentials::new(monotonic(), 16);
     let cache = |browser: &Browser| -> Result<uuid::Uuid> {
         Ok(
-            credentials.insert(rss_identity_core::session::SessionSecret::parse(
+            credentials.insert(rss_mdm_authorization_service::credential::RequestCredential::Cookie(rss_identity_core::session::SessionSecret::parse(
                 browser.cookies["__Host-identity-session"].clone(),
-            )?)?,
+            )?))?,
         )
     };
     for state in ["membership", "enabled"] {

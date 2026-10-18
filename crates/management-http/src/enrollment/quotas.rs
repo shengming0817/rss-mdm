@@ -177,7 +177,7 @@ async fn create_self(
     State(app): State<App>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
-    Extension(continuation): Extension<crate::http_operation::SessionContinuation>,
+    Extension(continuation): Extension<crate::http_operation::RequestContinuation>,
     headers: HeaderMap,
     input: Result<Json<super::SelfCreate>, axum::extract::rejection::JsonRejection>,
 ) -> Result<Json<super::SelfReceipt>, Error> {

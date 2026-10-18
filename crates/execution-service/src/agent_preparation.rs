@@ -2,7 +2,7 @@
 use crate::agent_install::{FrozenInstall, Identity, Package};
 use crate::authorization::{Permission, context::AuthorizedPrincipal};
 use crate::{Error, Inputs, transaction::*};
-use rss_mdm_authorization_service::UserGrant;
+use rss_mdm_authorization_service::OperationAuthority;
 use rss_mdm_policy::{SoftwareTarget, schedule::Schedule};
 use rss_mdm_resource as resource;
 use rss_transactional_messaging_postgres::PgTransaction;
@@ -96,8 +96,8 @@ impl Inputs {
             schedule: schedule.clone(),
             run_lifetime_seconds: lifetime,
             packages,
-            deploy: UserGrant::all_devices(snapshot, proof, Permission::SoftwareDeploy)?,
-            enrollment: UserGrant::all_devices(snapshot, proof, Permission::Enrollment)?,
+            deploy: OperationAuthority::all_devices(snapshot, proof, Permission::SoftwareDeploy)?,
+            enrollment: OperationAuthority::all_devices(snapshot, proof, Permission::Enrollment)?,
         })
     }
 }

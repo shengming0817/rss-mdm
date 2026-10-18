@@ -33,6 +33,30 @@
         "document"
       ],
       "delete_policy": null
+    },
+    {
+      "schema": "mdm_access",
+      "table": "api_keys",
+      "read_write": true,
+      "updates": [
+        "revision",
+        "authority_revision",
+        "credential_revision",
+        "metadata",
+        "secret_digest",
+        "revoked"
+      ],
+      "delete_policy": null
+    },
+    {
+      "schema": "mdm_access",
+      "table": "api_network_policy",
+      "read_write": true,
+      "updates": [
+        "revision",
+        "networks"
+      ],
+      "delete_policy": null
     }
   ],
   "functions": [],

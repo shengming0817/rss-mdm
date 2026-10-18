@@ -112,7 +112,7 @@ fn scope(snapshot: &Snapshot, proof: &AuthorizedPrincipal) -> Result<(bool, Stri
         Err(rss_mdm_authorization_service::error::AuthorizationError::Forbidden) => false,
         Err(e) => return Err(e.into()),
     };
-    Ok((sensitive, cursor::digest(&snapshot.effective(proof)?)?))
+    Ok((sensitive, snapshot.query_binding(proof)?))
 }
 impl Associations {
     pub async fn views(&self, proof: &AuthorizedPrincipal, query: &ViewQuery) -> Result<Value> {

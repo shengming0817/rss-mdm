@@ -62,7 +62,7 @@ pub(super) fn units() -> Vec<(&'static str, &'static str)> {
             include_str!("../../schema/installation.sql"),
         ),
         (
-            "identity-authority-v12",
+            "identity-authority-v13",
             rss_identity_postgres::MIGRATION_SQL,
         ),
         (
@@ -108,7 +108,7 @@ pub(super) fn units() -> Vec<(&'static str, &'static str)> {
         ),
         ("compliance-v1", rss_mdm_compliance_postgres::MIGRATION_SQL),
         (
-            "authorization-service-schema-v1",
+            "authorization-service-schema-v2",
             rss_mdm_authorization_service::INSTALL_SQL,
         ),
         (
@@ -149,7 +149,7 @@ pub(super) fn units() -> Vec<(&'static str, &'static str)> {
             rss_mdm_registration_service::RELATIONS_SQL,
         ),
         (
-            "authorization-service-relations-v2",
+            "authorization-service-relations-v3",
             rss_mdm_authorization_service::RELATIONS_SQL,
         ),
         (
@@ -201,7 +201,7 @@ pub(super) fn units() -> Vec<(&'static str, &'static str)> {
             rss_mdm_recovery_credentials::INSTALL_SQL,
         ),
         (
-            "certificate-archive-schema-v1",
+            "certificate-archive-schema-v2",
             rss_mdm_certificate_archive_service::INSTALL_SQL,
         ),
         (
@@ -279,7 +279,7 @@ pub(super) fn units() -> Vec<(&'static str, &'static str)> {
             rss_mdm_registration_service::agent::settings::tenant_seed_sql(),
         ),
         (
-            "tenant-administration-v1",
+            "tenant-administration-v2",
             include_str!("../../schema/tenant-administration.sql"),
         ),
         (

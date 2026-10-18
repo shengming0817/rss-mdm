@@ -1,13 +1,13 @@
 -- Exact host authority for borrowed execution handoff and current authorization.
 WITH capabilities(name,append) AS (VALUES
- ('mdm_agent.bindings',false),('mdm_access.authorization_rules',false),('mdm_access.user_groups',false)
+ ('mdm_agent.bindings',false),('mdm_access.authorization_rules',false),('mdm_access.user_groups',false),('mdm_access.api_keys',false)
 ), objects AS (
  SELECT name,append,to_regclass(name) AS oid FROM capabilities
 ), reachable AS (
  SELECT oid FROM pg_roles WHERE rolname=current_user OR pg_has_role(current_user,oid,'MEMBER')
 )
 SELECT
- (SELECT count(*)=3 AND bool_and(o.oid IS NOT NULL AND c.relkind='r' AND c.relrowsecurity AND c.relforcerowsecurity
+ (SELECT count(*)=4 AND bool_and(o.oid IS NOT NULL AND c.relkind='r' AND c.relrowsecurity AND c.relforcerowsecurity
   AND has_schema_privilege(current_user,c.relnamespace,'USAGE')
   AND has_table_privilege(current_user,c.oid,'SELECT')
   AND (NOT o.append OR has_table_privilege(current_user,c.oid,'INSERT')))

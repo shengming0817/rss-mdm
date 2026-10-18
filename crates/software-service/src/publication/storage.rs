@@ -138,7 +138,18 @@ pub(super) fn fact(
         if instance.len() > 255 || subject.len() > 255 {
             return Err(fault());
         }
-        audit.set_principal(&subject, &instance);
+        if subject
+            .strip_prefix("api-key:")
+            .is_some_and(|id| uuid::Uuid::parse_str(id).is_ok())
+        {
+            audit.set_authenticated(
+                &subject,
+                &instance,
+                rss_mdm_audit_integration::AuthenticationKind::ApiKey,
+            );
+        } else {
+            audit.set_principal(&subject, &instance);
+        }
     } else {
         audit.identify_service(actor.value());
     }

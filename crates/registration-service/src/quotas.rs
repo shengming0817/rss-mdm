@@ -115,7 +115,7 @@ impl Quotas {
         if user.is_some() {
             p.manage(Permission::AuthorizationRead)?;
         }
-        let owned = p.user();
+        let owned = p.user()?;
         let user = user.unwrap_or(&owned);
         user.validate(p.tenant_id(), p.instance_id())
             .map_err(|_| Error::Malformed)?;

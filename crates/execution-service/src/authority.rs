@@ -1,5 +1,5 @@
 //! A task-scoped grant remembers authentic admission evidence, never browser secrets.
-use crate::authorization::{Permission, Snapshot, UserGrant};
+use crate::authorization::{OperationAuthority, Permission, Snapshot};
 use crate::{Error, authorization::context::AuthorizedPrincipal, database::db};
 use serde::{Deserialize, Serialize};
 use sqlx::PgConnection;
@@ -27,7 +27,7 @@ pub enum ExecutionAuthority {
     },
     Credential {
         required: Vec<Permission>,
-        evidence: Vec<UserGrant>,
+        evidence: Vec<OperationAuthority>,
         registration: uuid::Uuid,
         generation: i64,
         operation: uuid::Uuid,
@@ -36,7 +36,7 @@ pub enum ExecutionAuthority {
         action: crate::device_control::Kind,
         confirmation: Option<crate::device_control::RegistrationConfirmation>,
         required: Vec<Permission>,
-        evidence: Vec<UserGrant>,
+        evidence: Vec<OperationAuthority>,
     },
     Policy {
         source_objects: Vec<crate::source_authority::DeviceObject>,
@@ -137,11 +137,11 @@ impl ExecutionAuthority {
     pub fn apple_owner(&self, operation: uuid::Uuid) -> Result<String, Error> {
         Ok(match self {
             Self::DeviceControl { evidence, .. } | Self::Credential { evidence, .. } => {
-                let user = evidence.first().ok_or(Error::Forbidden)?.user();
-                if evidence.iter().any(|g| g.user() != user) {
+                let actor = evidence.first().ok_or(Error::Forbidden)?.actor();
+                if evidence.iter().any(|g| g.actor() != actor) {
                     return Err(Error::Forbidden);
                 }
-                format!("user:{}:{}", user.instance_id, user.principal_id)
+                format!("actor:{}:{}", actor.instance_id(), actor.subject())
             }
             Self::Policy { unit, .. } => format!("configuration:{unit}"),
             Self::AgentInstall { .. } => {

@@ -6,6 +6,12 @@ use uuid::Uuid;
 /// Shared request facts and diagnostic projection. It never proves transaction settlement.
 #[derive(Clone)]
 pub struct RequestAudit(Arc<Context>);
+/// Credential presentation supplied by the authentication owner, never a proof itself.
+pub enum AuthenticationKind {
+    Cookie,
+    Bearer,
+    ApiKey,
+}
 struct Context {
     request_id: Uuid,
     tenant: String,
@@ -155,6 +161,16 @@ impl RequestAudit {
         state.snapshot.actor = Some(actor.into());
         state.snapshot.actor_kind = "principal";
         state.snapshot.instance = Some(instance.into());
+    }
+    pub fn set_authenticated(&self, actor: &str, instance: &str, kind: AuthenticationKind) {
+        let mut state = self.0.state.lock().expect("audit lock");
+        state.snapshot.actor = Some(actor.into());
+        state.snapshot.instance = Some(instance.into());
+        state.snapshot.actor_kind = match kind {
+            AuthenticationKind::Cookie => "account_cookie",
+            AuthenticationKind::Bearer => "account_bearer",
+            AuthenticationKind::ApiKey => "api_key",
+        };
     }
     /// Bind the service actor supplied by the owning background producer; never an authenticated user proof.
     pub fn identify_service(&self, actor: &str) {

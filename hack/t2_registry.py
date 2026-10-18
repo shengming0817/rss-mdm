@@ -32,6 +32,7 @@ def add(name, *, build=APP, selectors=(), profile='product', fixtures=(),
 
 
 CAPABILITY_INPUTS = {'identity.local': ('crates/app/src/identity.rs',),
+ 'authorization.programmatic': ('crates/authorization-service/src/api_key.rs','crates/authorization-service/src/api_key_store.rs','crates/authorization-service/src/credential.rs','crates/authorization-service/src/network_policy.rs','crates/management-http/src/api_access.rs','crates/management-http/src/identity.rs'),
  'identity.sso': ('crates/app/src/identity.rs',),
  'authorization.rules': ('crates/authorization-service/src/store.rs',
                          'crates/authorization-service/src/evaluate.rs',
@@ -248,6 +249,10 @@ add('identity.audit', selectors=('identity_audit::tests::',), fixtures=('identit
     sources=('crates/app/src/identity_audit.rs','crates/app/src/worker_wake.rs'),
     tests=('crates/app/tests/identity_audit/mod.rs','crates/app/tests/identity_audit/wakeup.rs',))
 app_family('authorization')
+MODULES['authorization.programmatic'] = replace(MODULES['authorization.programmatic'], db_mode='instance', scope='objects', policies=(
+    CasePolicy('authorization::t2::programmatic::business_writes_bind_key_actor_and_managed_enrollment',
+               'instance', 'objects', ('identity', 'windows')),
+))
 for name in ('rules', 'membership', 'capacity', 'initialization', 'admission'):
     key = 'authorization.' + name
     MODULES[key] = replace(MODULES[key], support_inputs=('crates/app/tests/authorization/mod.rs',))

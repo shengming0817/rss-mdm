@@ -457,7 +457,17 @@ pub(crate) fn from_state(
         tenant: state.identity.tenant,
         instance: state.identity.instance.to_string(),
     });
-    let authentication = state.identity.routes();
+    let bearer = state
+        .identity
+        .bearer_routes()
+        .route_layer(axum::middleware::from_fn_with_state(
+            Arc::new(rss_mdm_management_http::api_access::BearerAdmission {
+                access: state.access.authorization_store(),
+                tenant: state.identity.tenant.to_string(),
+            }),
+            rss_mdm_management_http::api_access::admit_bearer,
+        ));
+    let authentication = state.identity.routes().merge(bearer);
     let admission = Arc::new(tokio::sync::Semaphore::new(32));
     let management_boundary = rss_mdm_management_http::boundary::Envelope {
         admission: admission.clone(),

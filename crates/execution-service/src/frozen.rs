@@ -24,7 +24,7 @@ pub enum Frozen {
     Configuration {
         #[serde(rename = "native_sealed")]
         native: configuration::Protected,
-        grants: std::collections::BTreeMap<String, Vec<crate::authorization::UserGrant>>,
+        grants: std::collections::BTreeMap<String, Vec<crate::authorization::OperationAuthority>>,
         platform: Platform,
         exit: Exit,
         resource_digest: [u8; 32],

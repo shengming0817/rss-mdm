@@ -8,14 +8,14 @@ pub(super) fn grant(
     proof: &crate::authorization::context::AuthorizedPrincipal,
     device: Option<&str>,
     permission: P,
-) -> Result<crate::authorization::UserGrant, Error> {
-    use crate::authorization::UserGrant;
+) -> Result<crate::authorization::OperationAuthority, Error> {
+    use crate::authorization::OperationAuthority;
     let grant = if !permission.device() {
-        UserGrant::tenant(snapshot, proof, permission)
+        OperationAuthority::tenant(snapshot, proof, permission)
     } else if let Some(device) = device {
-        UserGrant::from_proof(snapshot, proof, device, permission)
+        OperationAuthority::from_proof(snapshot, proof, device, permission)
     } else {
-        UserGrant::all_devices(snapshot, proof, permission)
+        OperationAuthority::all_devices(snapshot, proof, permission)
     };
     grant.map_err(Into::into)
 }

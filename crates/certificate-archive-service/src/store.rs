@@ -88,7 +88,7 @@ pub(crate) async fn operation(
     p: &AuthorizedPrincipal,
     id: Uuid,
 ) -> Result<Option<(Vec<u8>, Receipt)>, Error> {
-    let row=sqlx::query("SELECT digest,result::text FROM mdm_certificate_archive.operations WHERE tenant_id=$1::uuid AND actor=$2::uuid AND instance=$3::uuid AND id=$4::uuid").bind(p.tenant_id()).bind(p.principal_id()).bind(p.instance_id()).bind(id.to_string()).fetch_optional(c).await?;
+    let row=sqlx::query("SELECT digest,result::text FROM mdm_certificate_archive.operations WHERE tenant_id=$1::uuid AND actor=$2 AND instance=$3::uuid AND id=$4::uuid").bind(p.tenant_id()).bind(p.principal_id()).bind(p.instance_id()).bind(id.to_string()).fetch_optional(c).await?;
     row.map(|r| {
         Ok((
             r.try_get("digest")?,
@@ -191,7 +191,7 @@ pub(crate) async fn write(
             }
             if let Some((old,result))=operation(c,p,*id).await?{if old.as_slice()!=digest||result.action!=*action{return Err(Error::Conflict)}return Ok((result,true))}
             let receipt=apply(c,p,*id,action,mutation).await?;
-            sqlx::query("INSERT INTO mdm_certificate_archive.operations(tenant_id,actor,instance,id,action,digest,result,created_at) VALUES($1::uuid,$2::uuid,$3::uuid,$4::uuid,$5,$6,$7::jsonb,floor(extract(epoch FROM clock_timestamp()))::bigint)").bind(p.tenant_id()).bind(p.principal_id()).bind(p.instance_id()).bind(id.to_string()).bind(*action).bind(digest.as_slice()).bind(serde_json::to_string(&receipt).map_err(|_|Error::Integrity)?).execute(c).await?;
+            sqlx::query("INSERT INTO mdm_certificate_archive.operations(tenant_id,actor,instance,id,action,digest,result,created_at) VALUES($1::uuid,$2,$3::uuid,$4::uuid,$5,$6,$7::jsonb,floor(extract(epoch FROM clock_timestamp()))::bigint)").bind(p.tenant_id()).bind(p.principal_id()).bind(p.instance_id()).bind(id.to_string()).bind(*action).bind(digest.as_slice()).bind(serde_json::to_string(&receipt).map_err(|_|Error::Integrity)?).execute(c).await?;
             Ok((receipt,false))
         })).await?;
         context.6.append(tx,&context.7,replayed).await?;
@@ -282,7 +282,7 @@ async fn apply(
             } else {
                 sqlx::query("UPDATE mdm_certificate_archive.entries SET revision=$3 WHERE tenant_id=$1::uuid AND id=$2::uuid").bind(tenant).bind(entry.to_string()).bind(next).execute(&mut *c).await?;
             }
-            sqlx::query("INSERT INTO mdm_certificate_archive.versions(tenant_id,entry_id,version,actor,instance,operation_id,created_at,metadata,facts,sealed,source,request_entry_id,request_version) VALUES($1::uuid,$2::uuid,$3,$4::uuid,$5::uuid,$6::uuid,floor(extract(epoch FROM clock_timestamp()))::bigint,$7::jsonb,$8::jsonb,$9,$10,$11::uuid,$12)").bind(tenant).bind(entry.to_string()).bind(next).bind(p.principal_id()).bind(p.instance_id()).bind(id.to_string()).bind(serde_json::to_string(metadata).map_err(|_|Error::Malformed)?).bind(serde_json::to_string(facts).map_err(|_|Error::Integrity)?).bind(sealed).bind(*source).bind(request_version.map(|r|r.entry_id.to_string())).bind(request_version.map(|r|r.version)).execute(c).await?;
+            sqlx::query("INSERT INTO mdm_certificate_archive.versions(tenant_id,entry_id,version,actor,instance,operation_id,created_at,metadata,facts,sealed,source,request_entry_id,request_version) VALUES($1::uuid,$2::uuid,$3,$4,$5::uuid,$6::uuid,floor(extract(epoch FROM clock_timestamp()))::bigint,$7::jsonb,$8::jsonb,$9,$10,$11::uuid,$12)").bind(tenant).bind(entry.to_string()).bind(next).bind(p.principal_id()).bind(p.instance_id()).bind(id.to_string()).bind(serde_json::to_string(metadata).map_err(|_|Error::Malformed)?).bind(serde_json::to_string(facts).map_err(|_|Error::Integrity)?).bind(sealed).bind(*source).bind(request_version.map(|r|r.entry_id.to_string())).bind(request_version.map(|r|r.version)).execute(c).await?;
             result.entry_id = Some(*entry);
             result.version = Some(next);
             result.revision = next;

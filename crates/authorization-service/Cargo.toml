@@ -8,6 +8,8 @@ publish.workspace = true
 
 [dependencies]
 zeroize.workspace = true
+rand.workspace = true
+ipnet.workspace = true
 rss-identity-core.workspace = true
 rss-identity-postgres.workspace = true
 rss-observation.workspace = true

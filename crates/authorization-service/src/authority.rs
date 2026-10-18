@@ -3,11 +3,17 @@ use crate::{Error, context::AuthorizedPrincipal, database::db, *};
 use serde::{Deserialize, Serialize};
 use sqlx::{PgConnection, Row};
 #[derive(Clone, Debug, Deserialize, Serialize)]
-pub struct UserGrant {
+pub struct OperationAuthority {
     permission: Permission,
-    user: User,
+    actor: crate::Actor,
     scope: Scope,
-    rules: Vec<Basis>,
+    basis: AuthorityBasis,
+}
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+enum AuthorityBasis {
+    Account { rules: Vec<Basis> },
+    ApiKey { authority_revision: u64 },
 }
 #[derive(Clone, Debug, Deserialize, Serialize)]
 struct Basis {
@@ -15,10 +21,10 @@ struct Basis {
     revision: u64,
     expires_at: Option<i64>,
 }
-impl UserGrant {
+impl OperationAuthority {
     /// Stable actor identity for native ownership; this conveys no current authority.
-    pub fn user(&self) -> &User {
-        &self.user
+    pub fn actor(&self) -> &crate::Actor {
+        &self.actor
     }
 
     pub fn from_proof(
@@ -29,12 +35,20 @@ impl UserGrant {
     ) -> Result<Self, Error> {
         snapshot.require(proof, permission, Some(device))?;
         let scope = Scope::Device { id: device.into() };
-        let rules = snapshot.authorization_bases(proof, &scope, permission)?;
+        let basis = if let Some(key) = snapshot.key(proof)? {
+            AuthorityBasis::ApiKey {
+                authority_revision: key.authority_revision,
+            }
+        } else {
+            AuthorityBasis::Account {
+                rules: snapshot.authorization_bases(proof, &scope, permission)?,
+            }
+        };
         Ok(Self {
             permission,
-            user: proof.user(),
+            actor: proof.actor(),
             scope,
-            rules,
+            basis,
         })
     }
     /// Freeze a real tenant permission independently of any device assignment.
@@ -48,12 +62,20 @@ impl UserGrant {
         }
         snapshot.require(proof, permission, None)?;
         let scope = Scope::Tenant;
-        let rules = snapshot.authorization_bases(proof, &scope, permission)?;
+        let basis = if let Some(key) = snapshot.key(proof)? {
+            AuthorityBasis::ApiKey {
+                authority_revision: key.authority_revision,
+            }
+        } else {
+            AuthorityBasis::Account {
+                rules: snapshot.authorization_bases(proof, &scope, permission)?,
+            }
+        };
         Ok(Self {
             permission,
-            user: proof.user(),
+            actor: proof.actor(),
             scope,
-            rules,
+            basis,
         })
     }
     /// Freeze only actual all-device rule evidence; future Scope members need no browser session.
@@ -64,12 +86,20 @@ impl UserGrant {
     ) -> Result<Self, Error> {
         snapshot.require_all_devices(proof, permission)?;
         let scope = Scope::AllDevices;
-        let rules = snapshot.authorization_bases(proof, &scope, permission)?;
+        let basis = if let Some(key) = snapshot.key(proof)? {
+            AuthorityBasis::ApiKey {
+                authority_revision: key.authority_revision,
+            }
+        } else {
+            AuthorityBasis::Account {
+                rules: snapshot.authorization_bases(proof, &scope, permission)?,
+            }
+        };
         Ok(Self {
             permission,
-            user: proof.user(),
+            actor: proof.actor(),
             scope,
-            rules,
+            basis,
         })
     }
     pub async fn valid(
@@ -81,13 +111,39 @@ impl UserGrant {
         if self.permission != permission {
             return Ok(false);
         }
-        super::store::lock(conn, &self.user.tenant_id, &self.user.instance_id).await?;
-        for basis in &self.rules {
+        super::store::lock(conn, self.actor.tenant_id(), self.actor.instance_id()).await?;
+        let (user, rules) = match (&self.actor, &self.basis) {
+            (
+                crate::Actor::ApiKey {
+                    instance,
+                    tenant,
+                    id,
+                },
+                AuthorityBasis::ApiKey { authority_revision },
+            ) => {
+                if !permission.api_key_allowed() {
+                    return Ok(false);
+                }
+                let raw = sqlx::query_scalar::<_, serde_json::Value>("SELECT metadata FROM mdm_access.api_keys WHERE tenant_id=$1::uuid AND instance=$2::uuid AND id=$3 AND authority_revision=$4 AND enabled AND NOT revoked AND (expires_at IS NULL OR expires_at>$5) AND (expires_at IS NULL OR to_timestamp(expires_at)>clock_timestamp())")
+                    .bind(tenant).bind(instance).bind(id).bind(i64::try_from(*authority_revision).map_err(|_| Error::Corrupt)?).bind(now).fetch_optional(&mut *conn).await.map_err(db)?;
+                let Some(raw) = raw else { return Ok(false) };
+                let metadata: crate::api_key::KeyMetadata =
+                    serde_json::from_value(raw).map_err(|_| Error::Corrupt)?;
+                metadata.validate()?;
+                return Ok(metadata
+                    .grants
+                    .iter()
+                    .any(|g| covers_scope(g, permission, &self.scope)));
+            }
+            (crate::Actor::Account { user }, AuthorityBasis::Account { rules }) => (user, rules),
+            _ => return Err(Error::Corrupt),
+        };
+        for basis in rules {
             if basis.expires_at.is_some_and(|until| now >= until) {
                 continue;
             }
             let row = sqlx::query("SELECT revision,document::text FROM mdm_access.authorization_rules WHERE tenant_id=$1::uuid AND instance=$2::uuid AND id=$3::uuid")
-                .bind(&self.user.tenant_id).bind(&self.user.instance_id).bind(basis.id.to_string()).fetch_optional(&mut *conn).await.map_err(db)?;
+                .bind(&user.tenant_id).bind(&user.instance_id).bind(basis.id.to_string()).fetch_optional(&mut *conn).await.map_err(db)?;
             let Some(row) = row else { continue };
             if row.try_get::<i64, _>("revision").map_err(db)? as u64 != basis.revision {
                 continue;
@@ -104,7 +160,7 @@ impl UserGrant {
                 continue;
             }
             match rule.subject {
-                Subject::User { user } if user == self.user => return Ok(true),
+                Subject::User { user: subject } if &subject == user => return Ok(true),
                 Subject::IdpGroup { .. } | Subject::Department { .. }
                     if basis.expires_at.is_some() =>
                 {
@@ -112,11 +168,11 @@ impl UserGrant {
                 }
                 Subject::UserGroup { id } => {
                     let raw = sqlx::query_scalar::<_,Option<String>>("SELECT document::text FROM mdm_access.user_groups WHERE tenant_id=$1::uuid AND instance=$2::uuid AND id=$3::uuid")
-                        .bind(&self.user.tenant_id).bind(&self.user.instance_id).bind(id.to_string()).fetch_optional(&mut *conn).await.map_err(db)?.flatten();
+                        .bind(&user.tenant_id).bind(&user.instance_id).bind(id.to_string()).fetch_optional(&mut *conn).await.map_err(db)?.flatten();
                     if let Some(raw) = raw {
                         let group: UserGroup =
                             serde_json::from_str(&raw).map_err(|_| Error::Forbidden)?;
-                        if group.enabled && group.members.contains(&self.user) {
+                        if group.enabled && group.members.contains(user) {
                             return Ok(true);
                         }
                     }

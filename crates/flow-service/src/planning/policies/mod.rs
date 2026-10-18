@@ -95,7 +95,7 @@ impl Policies {
                     }
                     crate::transaction::lock(tx).await?;
                     storage::lock(tx, id).await?;
-                    let hash = fingerprint(&(id, &op.input, op.expected_revision, p.user()))?;
+                    let hash = fingerprint(&(id, &op.input, op.expected_revision, p.actor()))?;
                     if let Some(value) = checked(
                         s.policy_store
                             .replay_in(tx, op.operation_id, &hash)
@@ -141,7 +141,7 @@ impl Policies {
                             .await?;
                     }
                     if changed {
-                        let grant=rss_mdm_authorization_service::UserGrant::all_devices(&authorization,p,Permission::InventoryRead)?;
+                        let grant=rss_mdm_authorization_service::OperationAuthority::all_devices(&authorization,p,Permission::InventoryRead)?;
                         let grant=checked_input(serde_json::to_value(grant))?;let tenant=tx.tenant_id().to_string();let version=policy.version;
                         tx.with_connection(move|c|Box::pin(async move {sqlx::query("INSERT INTO mdm_planning.policy_source_grants(tenant_id,version,read_grant) VALUES($1::uuid,$2,$3)").bind(tenant).bind(version).bind(grant).execute(c).await?;Ok(())})).await?;
                     }

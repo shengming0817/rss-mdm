@@ -3,7 +3,7 @@ use crate::{
     Error, Inputs,
     authorization::{Permission, context::AuthorizedPrincipal},
 };
-use rss_mdm_authorization_service::UserGrant;
+use rss_mdm_authorization_service::OperationAuthority;
 use rss_mdm_policy::schedule::Schedule;
 use uuid::Uuid;
 
@@ -32,7 +32,7 @@ impl Inputs {
             schedule: schedule.clone(),
             run_lifetime_seconds: lifetime,
             entries: entries.clone(),
-            grant: UserGrant::all_devices(snapshot, proof, Permission::Enrollment)?,
+            grant: OperationAuthority::all_devices(snapshot, proof, Permission::Enrollment)?,
         })
     }
 }

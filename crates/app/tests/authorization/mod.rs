@@ -75,4 +75,5 @@ mod admission;
 mod capacity;
 mod initialization;
 mod membership;
+mod programmatic;
 mod rules;

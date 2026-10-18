@@ -24,14 +24,14 @@ pub struct Access {
 }
 /// Request-local continuation of an authenticated browser identity. Never persisted.
 #[derive(Clone, Copy)]
-pub struct UploadSession<'a> {
+pub struct UploadAuthority<'a> {
     proof: &'a AuthorizedPrincipal,
-    secret: &'a rss_identity_core::session::SessionSecret,
+    secret: &'a rss_mdm_authorization_service::credential::RequestCredential,
 }
-impl<'a> UploadSession<'a> {
+impl<'a> UploadAuthority<'a> {
     pub fn new(
         proof: &'a AuthorizedPrincipal,
-        secret: &'a rss_identity_core::session::SessionSecret,
+        secret: &'a rss_mdm_authorization_service::credential::RequestCredential,
     ) -> Self {
         Self { proof, secret }
     }
@@ -42,10 +42,7 @@ impl<'a> UploadSession<'a> {
     ) -> Result<AuthorizedPrincipal, Error> {
         let fresh = budget
             .work(async {
-                let secret = rss_identity_core::session::SessionSecret::parse(
-                    self.secret.expose().to_owned(),
-                )
-                .map_err(|_| Error::Forbidden)?;
+                let secret = self.secret.duplicate().map_err(|_| Error::Forbidden)?;
                 app.sessions
                     .authenticate(&app.authorization, secret)
                     .await
@@ -55,7 +52,7 @@ impl<'a> UploadSession<'a> {
         if fresh.tenant_id() != self.proof.tenant_id()
             || fresh.instance_id() != self.proof.instance_id()
             || fresh.principal_id() != self.proof.principal_id()
-            || fresh.session_id() != self.proof.session_id()
+            || fresh.credential_binding() != self.proof.credential_binding()
         {
             return Err(Error::Forbidden);
         }
@@ -289,7 +286,7 @@ pub async fn current(
 }
 pub async fn record(
     app: &Access,
-    session: UploadSession<'_>,
+    session: UploadAuthority<'_>,
     audit: &RequestAudit,
     upload: &Upload,
     source_catalog: Option<&rss_mdm_software_service::catalog::Reader>,
@@ -439,7 +436,7 @@ pub async fn cleanup(
 }
 pub async fn mirror(
     app: &Access,
-    session: UploadSession<'_>,
+    session: UploadAuthority<'_>,
     audit: &RequestAudit,
     id: &str,
     input: &Selection,
@@ -589,7 +586,7 @@ pub enum Append {
 }
 pub async fn append_upload<R: tokio::io::AsyncRead + Unpin + Send>(
     app: &Access,
-    session: UploadSession<'_>,
+    session: UploadAuthority<'_>,
     audit: &RequestAudit,
     id: &str,
     upload: Uuid,
@@ -618,7 +615,7 @@ pub async fn append_upload<R: tokio::io::AsyncRead + Unpin + Send>(
 }
 pub async fn complete_upload(
     app: &Access,
-    session: UploadSession<'_>,
+    session: UploadAuthority<'_>,
     audit: &RequestAudit,
     id: &str,
     upload: Uuid,
@@ -638,7 +635,7 @@ pub async fn complete_upload(
 }
 pub async fn upload<R: tokio::io::AsyncRead + Unpin + Send>(
     app: &Access,
-    session: UploadSession<'_>,
+    session: UploadAuthority<'_>,
     audit: &RequestAudit,
     id: &str,
     input: &Selection,

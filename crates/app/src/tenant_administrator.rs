@@ -105,7 +105,7 @@ impl Service {
             .prepare_local_account(login, password, crate::identity::deadline())
             .await
             .map_err(crate::identity::failure)?;
-        let actor = proof.shared_session();
+        let actor = proof.shared_session()?;
         let operator = serde_json::json!({"kind":"session","tenantId":proof.tenant_id(),"instanceId":proof.instance_id(),"principalId":proof.principal_id()});
         audit.operation(operation, "tenant_administrator_create");
         audit.target(tenant);

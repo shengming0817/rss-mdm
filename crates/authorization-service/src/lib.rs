@@ -1,14 +1,20 @@
 //! Product authorization owns grants, snapshots and durable user authorization evidence.
+mod actor;
 mod authority;
+pub use actor::Actor;
+pub mod api_key;
+pub mod api_key_store;
 pub mod context;
+pub mod credential;
 mod database;
 pub mod error;
 mod evaluate;
 pub mod identity_management;
 mod model;
+pub mod network_policy;
 mod operations;
 pub mod store;
-pub use authority::UserGrant;
+pub use authority::OperationAuthority;
 pub use database::Store;
 pub use error::Error;
 #[cfg(test)]

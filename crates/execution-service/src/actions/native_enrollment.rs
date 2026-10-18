@@ -244,7 +244,7 @@ impl AgentPolicyAuthority for ExecutionService {
             {
                 return Err(E::Forbidden);
             }
-            let grant: rss_mdm_authorization_service::UserGrant =
+            let grant: rss_mdm_authorization_service::OperationAuthority =
                 serde_json::from_value(row.try_get("authority").map_err(|_| E::Storage)?)
                     .map_err(|_| E::Corrupt)?;
             if !grant

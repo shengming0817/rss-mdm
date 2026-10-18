@@ -1,6 +1,6 @@
 //! Bounded, zeroizing credential references for the Windows enrollment handoff only.
 use crate::Error;
-use rss_identity_core::session::SessionSecret;
+use rss_mdm_authorization_service::credential::RequestCredential;
 use std::{
     collections::HashMap,
     sync::{Arc, Mutex},
@@ -8,7 +8,7 @@ use std::{
 };
 use uuid::Uuid;
 struct Entry {
-    secret: SessionSecret,
+    secret: RequestCredential,
     expires: Instant,
 }
 pub struct Credentials {
@@ -24,7 +24,7 @@ impl Credentials {
             limit,
         }
     }
-    pub fn insert(&self, secret: SessionSecret) -> Result<Uuid, Error> {
+    pub fn insert(&self, secret: RequestCredential) -> Result<Uuid, Error> {
         let now = self.clock.now();
         let mut entries = self.entries.lock().map_err(|_| Error::Runtime)?;
         entries.retain(|_, entry| entry.expires > now);
@@ -66,12 +66,12 @@ impl Credentials {
         entries.retain(|_, entry| entry.expires > now);
         Ok(entries.contains_key(&reference))
     }
-    pub fn get(&self, reference: Uuid) -> Result<SessionSecret, Error> {
+    pub fn get(&self, reference: Uuid) -> Result<RequestCredential, Error> {
         let now = self.clock.now();
         let mut entries = self.entries.lock().map_err(|_| Error::Runtime)?;
         entries.retain(|_, entry| entry.expires > now);
         let entry = entries.get(&reference).ok_or(Error::Unauthorized)?;
-        SessionSecret::parse(entry.secret.expose().into()).map_err(|_| Error::Unauthorized)
+        entry.secret.duplicate().map_err(|_| Error::Unauthorized)
     }
 }
 

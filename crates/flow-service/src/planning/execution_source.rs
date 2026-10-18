@@ -157,7 +157,7 @@ impl SourceAuthority for ExecutionSource {
             let Some(value) = value else {
                 return Ok(false);
             };
-            let grant: rss_mdm_authorization_service::UserGrant =
+            let grant: rss_mdm_authorization_service::OperationAuthority =
                 serde_json::from_value(value).map_err(|_| SourceError::Invariant)?;
             let now: i64 =
                 sqlx::query_scalar("SELECT extract(epoch FROM clock_timestamp())::bigint")

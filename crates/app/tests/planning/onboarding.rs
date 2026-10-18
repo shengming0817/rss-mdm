@@ -379,7 +379,7 @@ async fn employee_enrollment_is_opt_in_idempotent_and_rechecks_publication() -> 
 #[ignore = "make t2 MODULE=planning.onboarding"]
 async fn native_continuation_rejects_independent_source_read_revocation_after_opened() -> Result<()>
 {
-    use crate::authorization::{Permission, UserGrant};
+    use crate::authorization::{OperationAuthority, Permission};
     use sqlx::{Connection, Row};
     let mut f = fixture().await?;
     let resources = std::mem::take(&mut f.resources);
@@ -413,7 +413,7 @@ async fn native_continuation_rejects_independent_source_read_revocation_after_op
         let rule = sqlx::query("SELECT id,revision FROM mdm_access.authorization_rules WHERE tenant_id=$1::uuid AND document->'subject'->'user'->>'principalId'=$2 AND jsonb_array_length(document->'grants')=1 AND document->'grants'->0->>'operation'='inventory_read'")
             .bind(case_tenant()).bind(&f.author_id).fetch_one(&mut *tx).await?;
         let grant: Value = sqlx::query_scalar("SELECT authority FROM mdm_access.agent_native_enrollments WHERE tenant_id=$1::uuid AND request=$2").bind(case_tenant()).bind(request).fetch_one(&mut *tx).await?;
-        let grant: UserGrant = serde_json::from_value(grant)?;
+        let grant: OperationAuthority = serde_json::from_value(grant)?;
         tx.rollback().await?;
         let removed = admin.call(&f.router, Method::PUT, &format!("/api/v1/authorization/rules/{}",rule.try_get::<Uuid,_>("id")?), Some(json!({"operationId":Uuid::new_v4(),"expectedRevision":rule.try_get::<i64,_>("revision")?,"value":null}))).await?;
         ensure!(removed.0 == StatusCode::OK, "{removed:?}");

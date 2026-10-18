@@ -17,6 +17,12 @@ pub fn router(
                 .with_state(Arc::new(HttpState {
                     audit_store: envelope.audit_store.clone(),
                 }))
+                .merge(crate::api_access::network_routes(Arc::new(
+                    crate::api_access::Management {
+                        access: authentication.access.clone(),
+                        audit: envelope.audit_store.clone(),
+                    },
+                )))
                 .merge(registry),
         )
         .route_layer(middleware::from_fn_with_state(

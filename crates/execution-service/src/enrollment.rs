@@ -1,7 +1,7 @@
 //! Deployment-owned enrollment entries and immutable execution inputs.
 use crate::Error;
 use rss_mdm_agent_wire::runtime as wire;
-use rss_mdm_authorization_service::UserGrant;
+use rss_mdm_authorization_service::OperationAuthority;
 use rss_mdm_policy::Platform;
 use rss_mdm_policy::schedule::Schedule;
 use serde::{Deserialize, Serialize};
@@ -47,5 +47,5 @@ pub struct FrozenEnrollment {
     pub schedule: Schedule,
     pub run_lifetime_seconds: u32,
     pub entries: Entries,
-    pub grant: UserGrant,
+    pub grant: OperationAuthority,
 }
