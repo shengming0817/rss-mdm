@@ -55,6 +55,15 @@ impl Inputs {
         authority: &PublicationAuthority<'_>,
     ) -> Result<Frozen> {
         let mut frozen = match input {
+            PublicationInput::Unmanage { schedule, lifetime } => Frozen::UnmanageDevice {
+                schedule: (*schedule).clone(),
+                run_lifetime_seconds: *lifetime,
+                grant: crate::authorization::UserGrant::all_devices(
+                    authority.snapshot,
+                    authority.proof,
+                    Permission::DeviceUnmanage,
+                )?,
+            },
             PublicationInput::Credential {
                 operation,
                 architecture,
@@ -261,6 +270,7 @@ pub fn authorize_policy_snapshot(
         Action::Configuration { .. } => Permission::ConfigurationWrite,
         Action::Software { .. } | Action::EnsureAgentInstalled { .. } => Permission::SoftwareDeploy,
         Action::RequestMdmEnrollment { .. } => Permission::Enrollment,
+        Action::UnmanageDevice { .. } => Permission::DeviceUnmanage,
     };
     if matches!(definition.action, Action::EnsureAgentInstalled { .. }) {
         snapshot.require_all_devices(proof, Permission::Enrollment)?;

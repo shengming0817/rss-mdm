@@ -277,6 +277,43 @@
         },
         {
           "additionalProperties": false,
+          "description": "Retire the whole managed device through a server-owned execution.",
+          "properties": {
+            "kind": {
+              "const": "unmanage_device",
+              "type": "string"
+            },
+            "runLifetimeSeconds": {
+              "description": "Lifetime of an individual cleanup delivery, not proof of retirement.",
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "schedule": {
+              "$ref": "#/$defs/Schedule",
+              "default": {
+                "jitterSeconds": 0,
+                "misfire": {
+                  "kind": "coalesce_one"
+                },
+                "notBefore": 0,
+                "trigger": {
+                  "kind": "manual"
+                },
+                "until": null,
+                "window": null
+              },
+              "description": "Explicit by default; calendar execution is administrator-selected."
+            }
+          },
+          "required": [
+            "kind",
+            "runLifetimeSeconds"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
           "description": "Install only the product's approved Agent through the source MDM channel.",
           "properties": {
             "kind": {

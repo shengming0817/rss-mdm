@@ -6,7 +6,7 @@ mod database;
 pub mod device;
 pub mod enrollment;
 mod error;
-mod lifecycle;
+pub mod lifecycle;
 mod operations;
 pub mod quotas;
 pub mod windows_entra;

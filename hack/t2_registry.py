@@ -2037,3 +2037,10 @@ for name, selector in (
         fixtures=tuple(dict.fromkeys((*module.fixtures, 'scep' if name == 'apple.onboarding' else 'ca_windows'))))))
 
 consume(('crates/apple-channel/src/recovery_credentials.rs',), 'apple.commands')
+
+consume(('crates/execution-service/src/unmanage.rs', 'crates/execution-service/src/queries/lifecycle.rs', 'crates/device-service/src/lifecycle*',
+         'crates/flow-service/src/planning/policies/lifecycle.rs', 'crates/agent-wire/src/unmanage.rs'),
+        'planning.onboarding device.associations device.views execution.agent.delivery windows.management apple.identity')
+
+consume(('crates/registration-service/src/lifecycle.rs',),
+        'planning.onboarding device.associations device.binding device.revocation agent.registration windows.management apple.identity')

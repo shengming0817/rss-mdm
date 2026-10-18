@@ -69,7 +69,7 @@ impl Automation {
             let bridge=async {
                 loop {
                     if cancel.is_cancelled() {return Ok(());}
-                    let result=async {let assets=self.service.forward_asset_changes().await?;let jobs=jobs::forward_jobs(&self.service.runtime,self.service.tenant,&self.service.audit_store).await?;Ok::<_,Error>(assets+jobs as u64)}.await;
+                    let result=async {let assets=self.service.forward_asset_changes().await?;let lifecycle=self.service.forward_lifecycle_schedules().await?;let jobs=jobs::forward_jobs(&self.service.runtime,self.service.tenant,&self.service.audit_store).await?;Ok::<_,Error>(assets+lifecycle+jobs as u64)}.await;
                     self.service.record_bridge(match &result {
                         Ok(_) => None,
                         Err(Error::CommitUnknown | Error::RollbackFailed) => Some(crate::planning::automation::AutomationFailure::SettlementUnknown),

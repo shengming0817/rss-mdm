@@ -191,6 +191,11 @@
           "type": "string"
         },
         {
+          "const": "device.unmanage.v1",
+          "description": "Administrator-authorized Agent retirement.",
+          "type": "string"
+        },
+        {
           "const": "inventory.native.v1",
           "description": "Execute signed declarative native inventory tasks.",
           "type": "string"

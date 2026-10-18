@@ -56,6 +56,12 @@ pub(crate) fn verify(signed: &SignedTask, context: &TaskVerification<'_>) -> Res
             v.registration_id,
             v.generation,
         ),
+        TaskPayload::Unmanage(v) => (
+            v.tenant_id,
+            v.device_id.as_str(),
+            v.registration_id,
+            v.generation,
+        ),
         TaskPayload::Software(v) => (
             v.tenant_id,
             v.device_id.as_str(),

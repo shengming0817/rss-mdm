@@ -16,6 +16,9 @@ BEGIN
  CASE TG_TABLE_NAME
  WHEN 'devices' THEN
   k='device'; i=r->>'id'; dev=i; d=jsonb_build_object('id',i);
+  -- Admission intent does not replace the endpoint identity or invalidate
+  -- other devices in the same sealed Policy batch.
+  IF previous IS NOT NULL AND d=jsonb_build_object('id',previous->>'id') THEN RETURN NULL; END IF;
  WHEN 'registrations' THEN
   k='registration'; i=r->>'id'; reg=i::uuid; dev=r->>'device';
   d=jsonb_build_object('id',i,'device',dev,'channel',r->>'channel','purpose',r->>'purpose','generation',r->'generation','state',r->>'state');
@@ -73,6 +76,7 @@ ALTER TABLE ONLY mdm_access.credentials FORCE ROW LEVEL SECURITY;
 CREATE TABLE mdm_access.devices (
     tenant_id uuid NOT NULL,
     id text NOT NULL,
+    retirement uuid,
     CONSTRAINT devices_id_check CHECK ((((octet_length(id) >= 1) AND (octet_length(id) <= 256)) AND (id !~ '[[:cntrl:]]'::text)))
 );
 

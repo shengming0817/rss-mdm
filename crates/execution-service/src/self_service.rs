@@ -585,7 +585,7 @@ impl ExecutionService {
             let basis = access::select(config, proof)?.ok_or(Error::Forbidden)?;
             if access::qualify_in(service, tx, config, &basis).await?.is_none()
                 || !matches!(crate::sources::storage::admission_in(&service.source, tx,
-                    policy.definition.scope, crate::source_authority::action_channel(policy.definition.action.kind()), p.device()).await?,
+                    policy.definition.scope, crate::source_authority::action_channel(policy.definition.action.kind())?, p.device()).await?,
                     crate::source_authority::ScopeAdmission::Eligible { .. }) {
                 return Err(Error::Forbidden.into());
             }

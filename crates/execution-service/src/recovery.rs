@@ -335,6 +335,7 @@ impl Reconciler<rss_reconcile_postgres::PgClaim> for ExecutionService {
             let audit = RequestAudit::new(self.tenant.to_string(), "management_read");
             let active=crate::transaction::run(&self.audit_store,&self.runtime,self.tenant,&audit,(self,claim.target().entity()),|ctx,tx|Box::pin(async move {
             let (service,entity) = *ctx;
+            if let Some(id)=crate::unmanage::operation(entity){return crate::unmanage::active_in(tx,id).await;}
             if let Some(work)=actions::native_recovery::Work::parse(entity) { return actions::native_recovery::active(tx,work).await; }
             if let Some(id)=actions::recovery::policy_id(entity){return actions::recovery::active(tx,id).await;}
             if let Some(digest)=entity.strip_prefix("configuration:") {
@@ -384,6 +385,7 @@ impl Reconciler<rss_reconcile_postgres::PgClaim> for ExecutionService {
             let (service,entity,audit,failure) = *ctx;
             let result:Result<bool>=async {
                 storage::admit(tx).await?;
+                if let Some(id)=crate::unmanage::operation(entity){return service.advance_retirement_in(tx,id,audit).await;}
                 if let Some(work)=actions::native_recovery::Work::parse(entity) { return actions::native_recovery::step(service,tx,work).await; }
                 if let Some(id)=actions::recovery::policy_id(entity) {
                     crate::sources::storage::lock(tx,id).await?;

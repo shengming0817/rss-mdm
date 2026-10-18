@@ -235,6 +235,87 @@ async fn associated_context_maps_before_exclusions_and_missing_channels_recover(
                 )
         }
     };
+    // Both endpoint sources denote one complete device. Its final key must also
+    // be the seek cursor, or the association reappears on a subsequent page.
+    let lifecycle_scope = Uuid::new_v4();
+    let accepted = execute(
+        &service,
+        &Command::Scope {
+            id: lifecycle_scope,
+            change: operation(
+                0,
+                ScopeChange::Put {
+                    definition: ScopeDefinition {
+                        targets: [mdm, agent, alone]
+                            .into_iter()
+                            .map(|id| Reference::Device(id.into()))
+                            .collect(),
+                        limitations: None,
+                        exclusions: Default::default(),
+                    },
+                },
+            ),
+        },
+    )
+    .await
+    .unwrap();
+    wait_task(
+        &service,
+        Uuid::parse_str(accepted["task"].as_str().unwrap()).unwrap(),
+        crate::automation::TaskKind::Scope,
+        &lifecycle_scope.to_string(),
+    )
+    .await;
+    let mut lifecycle_connection = sqlx::PgConnection::connect_with(
+        &crate::device::test_support::options("mdm_flow_runtime")
+            .unwrap()
+            .password("runtime-fixture"),
+    )
+    .await
+    .unwrap();
+    let mut tx = lifecycle_connection.begin().await.unwrap();
+    sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
+        .bind(tenant().to_string())
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    let page = rss_mdm_flow_service::planning::targets::lifecycle_objects_on(
+        service.objects.as_ref(),
+        &mut tx,
+        tenant(),
+        lifecycle_scope,
+        None,
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        page.len(),
+        2,
+        "both endpoint sources must yield only one association"
+    );
+    let pair_key = ObjectRef::Association(association).key();
+    assert_eq!(page[0].cursor, pair_key);
+    assert_eq!(page[0].object.object, ObjectRef::Association(association));
+    let after_pair = rss_mdm_flow_service::planning::targets::lifecycle_objects_on(
+        service.objects.as_ref(),
+        &mut tx,
+        tenant(),
+        lifecycle_scope,
+        Some(&pair_key),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        after_pair.len(),
+        1,
+        "normalized seek must not repeat the pair"
+    );
+    assert_eq!(
+        after_pair[0].object.object,
+        ObjectRef::Endpoint(alone.into())
+    );
+    tx.rollback().await.unwrap();
+    lifecycle_connection.close().await.unwrap();
     let mdm_objects = objects(Channel::Mdm).await;
     let pair = mdm_objects
         .iter()
