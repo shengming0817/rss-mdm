@@ -206,14 +206,18 @@ async fn publication_http_authority_receipts_and_public_native_binding() -> Resu
             .status()
             == StatusCode::NOT_FOUND
     );
-    let _published = write(
-        &mut f.author,
-        &f.router,
-        &path,
-        pending["revision"].as_u64().unwrap(),
-        json!({"action":"recover"}),
-    )
-    .await?;
+    let recovery = json!({"operationId":Uuid::new_v4(),"expectedRevision":pending["revision"],"input":{"action":"recover"}});
+    let published = f
+        .author
+        .call(&f.router, Method::POST, &path, Some(recovery.clone()))
+        .await?;
+    ensure!(published.0 == StatusCode::OK && published.1["outcome"] == "published");
+    ensure!(published.1["revision"] != pending["revision"]);
+    let replayed = f
+        .author
+        .call(&f.router, Method::POST, &path, Some(recovery))
+        .await?;
+    ensure!(replayed.0 == StatusCode::OK && replayed.1 == published.1);
     let info = f
         .router
         .clone()

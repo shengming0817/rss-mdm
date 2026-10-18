@@ -181,15 +181,14 @@ pub async fn write(
         outcome: "accepted",
     });
     let intent = directory
-        .authorize_intent(&target, &id, &request, &intent_audit, &|| {
-            proof.manage(permission).map_err(Error::from)
-        })
+        .authorize_intent(&target, &id, &request, &intent_audit, proof, permission)
         .await;
     intent_audit.finalize(intent.as_ref().err().and_then(|e| {
         e.is_audit_transaction_failure()
             .then_some(rss_mdm_audit_integration::FailureReason::Transaction)
     }));
-    let at = Timepoint::try_from(intent?["as_of"].as_i64().ok_or(Error::Conflict)?)
+    let (intent, replayed) = intent?;
+    let at = Timepoint::try_from(intent["as_of"].as_i64().ok_or(Error::Conflict)?)
         .map_err(|_| Error::Conflict)?;
     let call = service::ServiceRequest {
         actor: actor.clone(),
@@ -274,33 +273,55 @@ pub async fn write(
                 )
             }
             Change::Recover => {
-                let c = service
+                let recovery = &intent["recovery"];
+                let digest: [u8; 32] = serde_json::from_value(recovery["publication"].clone())
+                    .map_err(|_| Error::Conflict)?;
+                let publication = rel::PublicationId::from_digest(rel::Digest::from_bytes(digest));
+                let attempt = recovery["attempt"].as_u64().ok_or(Error::Conflict)?;
+                let current = service
                     .record(&key, cutoff())
                     .await
                     .map_err(failure)?
                     .ok_or(Error::Conflict)?;
-                if c.snapshot().revision != request.expected_revision {
-                    return Err(Error::Conflict);
+                // Retry is permitted only after a terminal NotApplied result. A newer attempt
+                // proves the accepted attempt settled; never redirect recovery to the retry.
+                if current.snapshot().attempt.attempt > attempt {
+                    return Ok(Effect::Replayed);
                 }
-                let p = &c.snapshot().attempt;
-                if c.snapshot().withdrawn
+                // A later withdrawal takes precedence over recovery of a publish call.
+                let withdrawing = recovery["withdrawn"].as_bool().ok_or(Error::Conflict)?
                     || service
-                        .withdrawal_status(p.id(), p.attempt, cutoff())
+                        .withdrawal_status(publication, attempt, cutoff())
                         .await
                         .map_err(failure)?
-                        .is_some()
-                {
-                    service
-                        .reconcile_withdrawal(p.id(), p.attempt, cutoff())
-                        .await
-                        .map_err(failure)?;
+                        .is_some();
+                let complete = if withdrawing {
+                    matches!(
+                        service
+                            .reconcile_withdrawal(publication, attempt, cutoff())
+                            .await
+                            .map_err(failure)?,
+                        service::Withdrawal::Complete | service::Withdrawal::NotPublished
+                    )
                 } else {
-                    service
-                        .reconcile(p.id(), p.attempt, at, cutoff())
-                        .await
-                        .map_err(failure)?;
-                }
-                Ok(Effect::Performed)
+                    matches!(
+                        service
+                            .reconcile(publication, attempt, at, cutoff())
+                            .await
+                            .map_err(failure)?,
+                        rel::PublicationOutcome::Reported(
+                            rel::PublicationResult::Applied(_)
+                                | rel::PublicationResult::NotApplied(_)
+                        )
+                    )
+                };
+                Ok(if !complete {
+                    Effect::Unknown
+                } else if replayed {
+                    Effect::Replayed
+                } else {
+                    Effect::Performed
+                })
             }
         }
     }
@@ -337,19 +358,46 @@ impl PublicationDirectory {
         id: &str,
         request: &Operation<Change>,
         audit: &RequestAudit,
-        authorize: &(dyn Fn() -> std::result::Result<(), Error> + Sync),
-    ) -> std::result::Result<Value, Error> {
-        authorize()?;
-        crate::management::transaction::run(&self.audit_store,&self.runtime,self.tenant,audit,&(self,source,id,request,audit,authorize),|ctx,tx|Box::pin(async move{
-   let (s,source,id,request,audit,authorize)=*ctx;crate::management::transaction::lock(tx).await?;authorize()?;
-   if request.operation_id.is_nil(){return Err(Error::Malformed.into());}
-   use sha2::Digest;
-   let hash=sha2::Sha256::digest(checked_input(serde_json::to_vec(&("direct-publication",audit.tenant(),audit.snapshot().actor,audit.snapshot().instance,source,id,request)))?).to_vec();
-   if let Some(old)=super::receipts::replay(tx,audit,request.operation_id,&hash).await?{super::receipts::audit(tx,&*s.audit_store,audit,Some((request.operation_id,&hash)),true).await?;authorize()?;return Ok(old);}
-   let value=serde_json::json!({"as_of":s.clock.unix_seconds().ok_or(Error::Unavailable(Failure::Clock))?});
-   super::receipts::receipt(tx,audit,request.operation_id,&hash,&value).await?;
-   super::receipts::audit(tx,&*s.audit_store,audit,Some((request.operation_id,&hash)),false).await?;authorize()?;Ok(value)
-  }),crate::management::transaction::TransactionOwner::Publication).await
+        proof: &AuthorizedPrincipal,
+        permission: Permission,
+    ) -> std::result::Result<(Value, bool), Error> {
+        proof.manage(permission)?;
+        crate::management::transaction::run(
+            &self.audit_store, &self.runtime, self.tenant, audit,
+            (self, source, id, request, audit, proof),
+            |ctx, tx| Box::pin(async move {
+                let (s, source, id, request, audit, proof) = *ctx;
+                crate::management::transaction::lock(tx).await?;
+                crate::management::transaction::current(tx, proof).await?.require(proof, permission, None)?;
+                if request.operation_id.is_nil() { return Err(Error::Malformed.into()); }
+                use sha2::Digest;
+                let hash = sha2::Sha256::digest(checked_input(serde_json::to_vec(&(
+                    "direct-publication", audit.tenant(), audit.snapshot().actor,
+                    audit.snapshot().instance, source, id, request,
+                )))?).to_vec();
+                if let Some(old) = super::receipts::replay(tx, audit, request.operation_id, &hash).await? {
+                    super::receipts::audit(tx, &*s.audit_store, audit, Some((request.operation_id, &hash)), true).await?;
+                    proof.check_live()?;
+                    return Ok((old, true));
+                }
+                let mut value = json!({"as_of": s.clock.unix_seconds().ok_or(Error::Unavailable(Failure::Clock))?});
+                if matches!(request.input, Change::Recover) {
+                    let key = rel::PublicationKey::new(s.tenant, id).map_err(|_| Error::Malformed)?;
+                    let record = rss_mdm_software_release_postgres::lock_publication_reference_in(tx, &key)
+                        .await?.map_err(|_| Error::Conflict)?;
+                    let snapshot = record.snapshot();
+                    if snapshot.revision != request.expected_revision || snapshot.attempt.binding.target.value() != source {
+                        return Err(Error::Conflict.into());
+                    }
+                    value["recovery"] = json!({"publication": snapshot.attempt.id().digest().bytes(),
+                        "attempt": snapshot.attempt.attempt, "withdrawn": snapshot.withdrawn});
+                }
+                super::receipts::receipt(tx, audit, request.operation_id, &hash, &value).await?;
+                super::receipts::audit(tx, &*s.audit_store, audit, Some((request.operation_id, &hash)), false).await?;
+                proof.check_live()?;
+                Ok((value, false))
+            }), crate::management::transaction::TransactionOwner::Publication,
+        ).await
     }
 }
 

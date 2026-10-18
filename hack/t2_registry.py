@@ -395,7 +395,7 @@ for part in ('winget', 'brew', 'mapping', 'withdrawal', 'recovery', 'artifact'):
             'artifact': ('artifact.rs',),
         }[part]),
         tests=(f'crates/software-service/tests/publication/{part}.rs',),
-        support=('tests/support/software/*',))
+        support=('tests/support/software/*', 'crates/software-service/tests/publication_t2.rs'))
 add('sources.winget', build=Build('rss-mdm-winget-source', 'test', 't2_http'), selectors=('',),
     profile='none', fixtures=('tls',), sources=('crates/winget-source/src/*',),
     tests=('crates/winget-source/tests/t2_http.rs',), support=())
@@ -852,7 +852,7 @@ consume(('crates/software-service/src/management/catalog.rs', 'crates/software-s
          'crates/software-service/src/management/error.rs', 'crates/software-service/src/management/transaction.rs',
          'crates/software-service/src/management/mod.rs'), 'software.http')
 consume(('crates/software-service/src/management/publication/*',), 'software.http catalog.contract')
-consume(('crates/software-service/src/publication/access.rs', 'crates/software-service/src/publication/read.rs'), 'software.http publication.winget publication.brew publication.mapping publication.withdrawal publication.recovery')
+consume(('crates/software-service/src/publication/access.rs', 'crates/software-service/src/publication/read.rs', 'crates/software-service/src/publication/worker.rs', 'crates/software-service/src/publication/derive.rs'), 'software.http publication.winget publication.brew publication.mapping publication.withdrawal publication.recovery')
 consume(('crates/content-service/src/software.rs',), 'software.http')
 
 # App router assembly and channel registrars select every actual ingress consumer.

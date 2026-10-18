@@ -335,3 +335,77 @@ async fn unknown_withdrawal_only_settles_absence_after_original_cas_is_fenced() 
     );
     runtime.close().await;
 }
+
+#[tokio::test]
+#[ignore = "real PG + HTTPS + bare Git: make t2 MODULE=publication.brew"]
+async fn withdrawal_settles_a_result_observed_after_its_intent() {
+    let server = Server::new().await;
+    let runtime = runtime().await;
+    let (_root, config) = brew_config();
+    let service = server.service(runtime.clone(), config).await;
+    let input = seed(runtime.clone(), &server, cask(&server, "late", "1")).await;
+    let p = submit_publication(&service, &input).await;
+    sql(
+        "CREATE FUNCTION public.reject_late_result() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'fixture result failure'; END $$; CREATE TRIGGER reject_late_result BEFORE UPDATE ON mdm_software_release.aggregates FOR EACH ROW EXECUTE FUNCTION public.reject_late_result();",
+    );
+    let result = service.publish(p.id(), 1, at(10), cutoff()).await;
+    sql(
+        "DROP TRIGGER reject_late_result ON mdm_software_release.aggregates; DROP FUNCTION public.reject_late_result();",
+    );
+    assert!(matches!(result, Err(Error::RolledBack(_))));
+    withdraw_version(&input).await;
+    let observed_at = at(sql(&format!("SELECT (convert_from(document,'UTF8')::jsonb->>'commit_at')::bigint+20 FROM mdm_software_composition.withdrawals WHERE record='{}'", input.record.value())).parse().unwrap());
+    // Reproduce an in-flight observation committing after the withdrawal intent.
+    let store =
+        rss_mdm_software_release_postgres::ReleaseStore::new(runtime.clone(), tenant(), deadline())
+            .await
+            .unwrap();
+    store
+        .transition(
+            &input.record,
+            &rel::Request {
+                id: rel::RequestId::new(tenant(), unique()).unwrap(),
+                actor: input.actor.clone(),
+                expected_revision: 0,
+                as_of: observed_at,
+                operation: rel::Operation::Record {
+                    publication: p.id(),
+                    attempt: 1,
+                    outcome: rel::PublicationResult::Unknown(rel::Evidence {
+                        actor: input.actor.clone(),
+                        digest: rel::Digest::from_bytes([17; 32]),
+                        at: observed_at,
+                    }),
+                },
+            },
+            deadline(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        service
+            .reconcile_withdrawal(p.id(), 1, cutoff())
+            .await
+            .unwrap(),
+        Withdrawal::Complete
+    );
+    let record = service
+        .record(&input.record, cutoff())
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(record.snapshot().withdrawn);
+    assert!(record.snapshot().at >= observed_at);
+    assert!(matches!(
+        record.snapshot().attempt.outcome,
+        rel::PublicationOutcome::Reported(rel::PublicationResult::Applied(_))
+    ));
+    assert_eq!(
+        service
+            .reconcile_withdrawal(p.id(), 1, cutoff())
+            .await
+            .unwrap(),
+        Withdrawal::Complete
+    );
+    runtime.close().await;
+}

@@ -957,3 +957,34 @@ mod audit_tests {
         );
     }
 }
+
+/// Persist the immutable withdrawal intent and its queue audit exactly once.
+/// Subsequent commands have their own management audit and reuse this original intent.
+pub(super) async fn queue_withdrawal_in(
+    tx: &mut PgTransaction<'_>,
+    audit: &dyn crate::AuditPort,
+    actor: &rel::ActorId,
+    target: &Target,
+) -> std::result::Result<(), PgError> {
+    lock(tx, "withdrawal", &target.withdrawal_key()).await?;
+    if call(tx, Table::Withdraw, &target.withdrawal_key())
+        .await?
+        .is_some()
+    {
+        return Ok(());
+    }
+    insert_call(tx, Table::Withdraw, target).await?;
+    let fact = fact(
+        tx.tenant_id(),
+        actor,
+        &target.record,
+        "software_withdraw",
+        target_fact(target, Table::Withdraw, "queue_withdrawal", "queued"),
+        &encode(target)?,
+    )?;
+    audit
+        .append_in(tx, &fact, false)
+        .await
+        .map_err(PgError::from)?;
+    Ok(())
+}

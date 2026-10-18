@@ -224,6 +224,97 @@ fn replay_checks_all_original_fields_and_cas() {
     ));
 }
 #[test]
+fn retry_and_record_replay_fingerprints_cover_every_effect_field() {
+    let pending = publication("internal");
+    let id = pending.snapshot().attempt.id();
+    let record = Operation::Record {
+        publication: id,
+        attempt: 1,
+        outcome: PublicationResult::NotApplied(evidence(10)),
+    };
+    let mut failed = pending.clone();
+    apply(&mut failed, "failure", record.clone());
+    for (p, operation) in [
+        (pending, record),
+        (
+            failed,
+            Operation::Retry {
+                publication: id,
+                attempt: 1,
+            },
+        ),
+    ] {
+        let original = request(&p, "original", operation);
+        let Transition::Applied { next, receipt, .. } =
+            p.transition(original.clone(), None).unwrap()
+        else {
+            panic!()
+        };
+        let mut variants = Vec::new();
+        let mut changed = original.clone();
+        changed.actor = ActorId::new(tenant(), "other").unwrap();
+        variants.push(changed);
+        let mut changed = original.clone();
+        changed.expected_revision += 1;
+        variants.push(changed);
+        let mut changed = original.clone();
+        changed.as_of = at(11);
+        variants.push(changed);
+        for field in 0..6 {
+            let mut changed = original.clone();
+            match &mut changed.operation {
+                Operation::Retry {
+                    publication,
+                    attempt,
+                }
+                | Operation::Record {
+                    publication,
+                    attempt,
+                    ..
+                } => {
+                    if field == 0 {
+                        *publication = PublicationId::from_digest(Digest::from_bytes([99; 32]));
+                    }
+                    if field == 1 {
+                        *attempt += 1;
+                    }
+                }
+                _ => unreachable!(),
+            }
+            if field >= 2 {
+                let Operation::Record { outcome, .. } = &mut changed.operation else {
+                    continue;
+                };
+                let mut e = evidence(10);
+                match field {
+                    2 => {
+                        *outcome = PublicationResult::Applied(e);
+                    }
+                    3 => {
+                        e.actor = ActorId::new(tenant(), "different-evidence").unwrap();
+                        *outcome = PublicationResult::NotApplied(e);
+                    }
+                    4 => {
+                        e.digest = Digest::from_bytes([77; 32]);
+                        *outcome = PublicationResult::NotApplied(e);
+                    }
+                    _ => {
+                        e.at = at(9);
+                        *outcome = PublicationResult::NotApplied(e);
+                    }
+                }
+            }
+            variants.push(changed);
+        }
+        for changed in variants {
+            assert_eq!(
+                next.transition(changed, Some(&receipt)),
+                Err(Error::RequestConflict)
+            );
+        }
+    }
+}
+#[test]
 fn restore_rejects_identity_time_and_tenant_corruption() {
     let p = publication("internal");
     assert_eq!(Publication::restore(p.snapshot().clone()).unwrap(), p);

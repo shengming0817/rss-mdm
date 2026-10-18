@@ -940,11 +940,8 @@ async fn admit_version(version: &resource::Version) {
 pub async fn withdraw_version(input: &PublishInput) {
     use rss_mdm_software_service::catalog as c;
     let runtime = pg::runtime_at(None, "mdm_flow_runtime").await;
-    let catalog = c::Catalog::new(
-        runtime.clone(),
-        tenant(),
-        Arc::new(TestAudit(pg::audit_store_for("mdm_flow_runtime").await)),
-    );
+    let audit = Arc::new(TestAudit(pg::audit_store_for("mdm_flow_runtime").await));
+    let catalog = c::Catalog::new(runtime.clone(), tenant(), audit.clone());
     let request =
         rss_mdm_audit_integration::RequestAudit::new(tenant().to_string(), "software_withdraw");
     request.set_principal("publisher", INSTANCE);
@@ -957,8 +954,8 @@ pub async fn withdraw_version(input: &PublishInput) {
         .local_tx_with_context(
             tenant(),
             pg::deadline(),
-            (&catalog, &request, &op, input),
-            |(catalog, request, op, input), tx| {
+            (&catalog, &request, &op, input, audit.as_ref()),
+            |(catalog, request, op, input, audit), tx| {
                 Box::pin(async move {
                     let value = catalog
                         .version_change_in(
@@ -980,6 +977,8 @@ pub async fn withdraw_version(input: &PublishInput) {
                         input.resource.as_str(),
                         input.version.as_str(),
                         value["lifecycle"]["at"].as_i64().unwrap(),
+                        *audit,
+                        &input.actor,
                     )
                     .await
                 })

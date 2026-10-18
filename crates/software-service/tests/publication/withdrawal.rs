@@ -97,6 +97,32 @@ async fn one_target_withdrawal_preserves_an_independent_target() {
         work.iter()
             .any(|w| w.withdrawal && w.publication == pb.id())
     );
+    let mut close = request_for(&second, &b.record).await;
+    close.as_of = at(20);
+    assert_eq!(
+        second
+            .withdraw(&b.record, &close, &TestPublishAccess, cutoff())
+            .await
+            .unwrap()
+            .outcome,
+        Withdrawal::Complete
+    );
+    assert_eq!(
+        audit_records()
+            .iter()
+            .map(audit_payload)
+            .filter(|fact| fact["software"]["stage"] == "queue_withdrawal"
+                && fact["software"]["publication"]
+                    == pb
+                        .id()
+                        .digest()
+                        .bytes()
+                        .iter()
+                        .map(|b| format!("{b:02x}"))
+                        .collect::<String>())
+            .count(),
+        1
+    );
     assert_eq!(
         second
             .reconcile_withdrawal(pb.id(), pb.attempt, cutoff())

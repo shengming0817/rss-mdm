@@ -222,6 +222,13 @@ pub async fn write_version<C: ManagementContentPort>(
                         id,
                         version,
                         value["lifecycle"]["at"].as_i64().ok_or(Error::Conflict)?,
+                        app.audit.as_ref(),
+                        &rss_mdm_software_release::ActorId::new(
+                            app.tenant,
+                            serde_json::json!([proof.instance_id(), proof.principal_id()])
+                                .to_string(),
+                        )
+                        .map_err(|_| Error::Malformed)?,
                     )
                     .await?;
                 }

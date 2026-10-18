@@ -197,6 +197,8 @@ pub async fn withdraw_version_in(
     resource: &str,
     version: &str,
     at: i64,
+    audit: &dyn crate::AuditPort,
+    actor: &rss_mdm_software_release::ActorId,
 ) -> std::result::Result<(), rss_transactional_messaging_postgres::PgError> {
     let tenant = tx.tenant_id();
     let resource = resource.to_owned();
@@ -226,13 +228,7 @@ pub async fn withdraw_version_in(
         intent.base = None;
         intent.commit = None;
         intent.commit_at = at.max(c.snapshot().at.unix_seconds());
-        storage::lock(tx, "withdrawal", &intent.withdrawal_key()).await?;
-        if storage::call(tx, storage::Table::Withdraw, &intent.withdrawal_key())
-            .await?
-            .is_none()
-        {
-            storage::insert_call(tx, storage::Table::Withdraw, &intent).await?;
-        }
+        storage::queue_withdrawal_in(tx, audit, actor, &intent).await?;
     }
     Ok(())
 }

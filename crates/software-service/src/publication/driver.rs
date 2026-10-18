@@ -377,6 +377,7 @@ impl PublicationService {
                                 |cause| Error::Conflict.context("driver::start_call", cause)
                             ));
                             let p = input!(db::core_publication(&c, t));
+
                             if matches!(table, Table::Publish) {
                                 if (c.snapshot().withdrawn
                                     || db::call(tx, Table::Withdraw, &t.withdrawal_key())
@@ -648,6 +649,7 @@ impl PublicationService {
                                 |cause| Error::Conflict.context("driver::record_result", cause)
                             ));
                             let current = input!(db::core_publication(&c, t));
+                            let at = at.max(c.snapshot().at);
                             let evidence = rel::Evidence {
                                 actor: s.actors.backend.clone(),
                                 digest: rel::Digest::of(&db::encode(&serde_json::json!([
@@ -895,26 +897,7 @@ impl PublicationService {
         tx: &mut rss_transactional_messaging_postgres::PgTransaction<'_>,
         t: &Target,
     ) -> std::result::Result<(), rss_transactional_messaging_postgres::PgError> {
-        db::lock(tx, "withdrawal", &t.withdrawal_key()).await?;
-        let replayed = db::call(tx, Table::Withdraw, &t.withdrawal_key())
-            .await?
-            .is_some();
-        if !replayed {
-            db::insert_call(tx, Table::Withdraw, t).await?;
-        }
-        let fact = db::fact(
-            tx.tenant_id(),
-            &self.actors.backend,
-            &t.record,
-            "software_withdraw",
-            db::target_fact(t, Table::Withdraw, "queue_withdrawal", "queued"),
-            &db::encode(t)?,
-        )?;
-        self.audit_store
-            .append_in(tx, &fact, replayed)
-            .await
-            .map_err(rss_transactional_messaging_postgres::PgError::from)?;
-        Ok(())
+        db::queue_withdrawal_in(tx, self.audit_store.as_ref(), &self.actors.backend, t).await
     }
     async fn cancel_unstarted(&self, t: &Target, at: Timepoint, cutoff: Deadline) -> Result<()> {
         settle(
@@ -957,6 +940,7 @@ impl PublicationService {
                                 return Ok(Err(Error::Blocked));
                             }
                             let p = input!(db::core_publication(&c, t));
+                            let at = at.max(c.snapshot().at);
                             if matches!(p.outcome, rel::PublicationOutcome::Pending) {
                                 let evidence = rel::Evidence {
                                     actor: s.actors.backend.clone(),
