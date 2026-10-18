@@ -44,8 +44,11 @@ def generate(root, tls_certificate, tls_key):
         management=dict(listen='127.0.0.1:8445', origin='https://localhost:8445',
                         certificate_file=str(tls_certificate), private_key_file=str(root/'apple-tls.pk8')),
         trust_file=str(root/'apple-trust.json'),
-        profile_certificate_file=str(root/'apple-profile.pem'), profile_private_key_file=str(root/'apple-profile.pk8'),
-        apns_certificate_file=str(root/'apple-apns.pem'), apns_private_key_file=str(root/'apple-apns.key'),
-        apns_topic='com.apple.mgmt.rss-t2', challenge_webhook=dict(id='rss-challenge',secret_file=str(root/'apple-challenge-secret')), notify_webhook=dict(id='rss-notify',secret_file=str(root/'apple-notify-secret')))
+        materials=dict(apns=1,profile=1,accounts={'organization':1}),
+        challenge_webhook=dict(id='rss-challenge',secret_file=str(root/'apple-challenge-secret')),
+        notify_webhook=dict(id='rss-notify',secret_file=str(root/'apple-notify-secret')))
+    materials = dict(profile_certificate_file=str(root/'apple-profile.pem'), profile_private_key_file=str(root/'apple-profile.pk8'),
+        apns_certificate_file=str(root/'apple-apns.pem'), apns_private_key_file=str(root/'apple-apns.key'), apns_topic='com.apple.mgmt.rss-t2')
+    (root/'apple-materials.json').write_text(json.dumps(materials))
     (root/'apple.json').write_text(json.dumps(config))
     return config

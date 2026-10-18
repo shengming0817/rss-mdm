@@ -209,7 +209,7 @@ MODULES['agent.pki'] = replace(MODULES['agent.pki'], scope='tenant', policies=(
     CasePolicy('agent_pki_tests::unknown_original_ca_result_blocks_retirement_after_rotation', 'reuse', 'tenant',('identity','agent_pki','pki_rotation')),
 ))
 
-add('installation.migration', selectors=('migration::tests::ledger_installation_rejects_audit_privilege_drift','migration::tests::fresh_installation_replay_and_mismatch_rejection','migration::tests::field_scope_migration_rejects_hidden_state_and_restores_rls','tenant_registry::tests::rollback_failure_preserves_primary_reason_and_cleanup_evidence'), profile='empty',
+add('installation.migration', selectors=('migration::tests::failed_unit_rolls_back_schema_and_can_resume_original_name','migration::tests::ledger_installation_rejects_audit_privilege_drift','migration::tests::fresh_installation_replay_and_mismatch_rejection','migration::tests::field_scope_migration_rejects_hidden_state_and_restores_rls','tenant_registry::tests::rollback_failure_preserves_primary_reason_and_cleanup_evidence'), profile='empty',
     sources=('crates/app/src/migration.rs','crates/app/src/tenant_registry.rs','crates/app/src/tenant_use.rs','crates/app/schema/installation.sql'), tests=('crates/app/tests/migration/mod.rs','crates/app/tests/tenant_registry/mod.rs',),
     python='installation', support=('hack/t2_modules/installation.py',))
 add('installation.registry', selectors=('tenant_registry::tests::business::',), profile='product',
@@ -2069,3 +2069,7 @@ consume(('crates/app/schema/webhook-roles.sql',), 'webhooks.product installation
 consume(('crates/registration-service/src/agent/activation.rs','crates/registration-service/src/device/store.rs','crates/registration-service/src/device/linked.rs','crates/execution-service/src/actions/storage.rs','crates/inventory-service/src/compliance/evaluation.rs','crates/authorization-service/src/model.rs'), 'webhooks.product')
 
 consume_dependencies("webhooks.product", normal="ipnet rss-mdm-webhook-service rss-transactional-messaging-recovery")
+
+consume(('crates/apple-channel/src/runtime_materials/*','crates/apple-channel/schema/runtime-materials.sql'), 'apple.host')
+consume(('crates/app/src/setup/host.rs',), 'api.diagnostics apple.host')
+consume(('crates/app/src/tenant_provisioning.rs','crates/app/schema/provisioning.sql'), 'deployment.management-tenant')

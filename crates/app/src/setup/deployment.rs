@@ -97,19 +97,11 @@ fn project(
         Value::Object(values) => {
             for (name, value) in values {
                 if name.ends_with("_file") && value.is_string() {
-                    let source = Path::new(value.as_str().ok_or(Error::Input)?);
-                    if !source.is_absolute() {
-                        return Err(Error::Input);
+                    project_file(value, journal, mounts, !public_file(name))?;
+                } else if name == "apple_material_roots" {
+                    for root in value.as_array_mut().ok_or(Error::Input)? {
+                        project_file(root, journal, mounts, false)?;
                     }
-                    let bytes = crate::config::read(source, 1024 * 1024, !public_file(name))
-                        .map_err(|_| Error::Input)?;
-                    let filename = format!(
-                        "input-{:x}",
-                        Sha256::digest(source.as_os_str().as_encoded_bytes())
-                    );
-                    let path = journal.secret(&filename, &bytes)?;
-                    mounts.insert(filename.clone(), path);
-                    *value = Value::String(format!("/run/mdm/{filename}"));
                 } else {
                     project(value, journal, mounts)?;
                 }
@@ -122,6 +114,16 @@ fn project(
         }
         _ => (),
     }
+    Ok(())
+}
+fn project_file(value: &mut Value, journal: &Journal, mounts: &mut BTreeMap<String,PathBuf>, private: bool) -> Result<()> {
+    let source = Path::new(value.as_str().ok_or(Error::Input)?);
+    if !source.is_absolute() { return Err(Error::Input); }
+    let bytes = crate::config::read(source,1024*1024,private).map_err(|_|Error::Input)?;
+    let filename = format!("input-{:x}",Sha256::digest(source.as_os_str().as_encoded_bytes()));
+    let path = journal.secret(&filename,&bytes)?;
+    mounts.insert(filename.clone(),path);
+    *value = Value::String(format!("/run/mdm/{filename}"));
     Ok(())
 }
 async fn runtime_owner(paths: impl Iterator<Item = PathBuf>) -> Result<()> {

@@ -1,6 +1,6 @@
 # 候选构建与安装
 
-## 构建 V4 候选
+## 构建 V5 候选
 
 构建使用当前工作区源码，包含未提交修改、已加入 Git 索引的新文件及删除；源码路径由 workspace 成员与构建输入限定。范围内未跟踪文件默认拒绝，新增源码须先逐项检查并加入索引，不要求 commit 或 clean HEAD。复制前后核对文件内容与状态，变化则终止构建；candidate 记录实际复制输入的摘要，运行验收不依赖源码 checkout。构建机需要 Docker Buildx 和私有 Git 只读凭据。后端可独立发布；前后端一起交付时，额外提供不可变 rss-web MDM image ID/repository digest。
 
@@ -14,13 +14,20 @@ python3 hack/build_run.py -- python3 hack/candidate_smoke.py --candidate artifac
 
 授权头文件须为 owner 独占普通文件，只以 BuildKit secret 供依赖获取使用。构建从一次源码副本生成正式 OCI，复用正常缓存；失败不发布候选目录，已有输出不覆盖。
 
-V4 候选包含 server.oci.tar、candidate.json、示例配置、deployment 下的角色 SQL、nginx 配置与 Agent 叶证书模板，以及普通构建记录。传入 `--web-image` 时另包含 identity-ui.image.tar 和 manifest 的 `ui` 信息，并保留前端镜像身份、运行用户和归档完整性检查；省略时不检查或归档前端。V4 候选必须包含当前服务端登记命令及部署输入；缺少当前契约的旧二进制候选必须重新构建。manifest 固定实际镜像身份、归档摘要、平台、依赖提供者及全部部署输入摘要。恢复时先核验归档与部署输入，再 docker load；不从 tag 拉取替代品。V2 必须重新构建，没有兼容解析或转换器。
+V5 候选包含 server.oci.tar、rss-mdm-installer、candidate.json、示例配置、deployment 下的角色 SQL、nginx 配置与 Agent 叶证书模板，以及普通构建记录。传入 `--web-image` 时另包含 identity-ui.image.tar 和 manifest 的 `ui` 信息，并保留前端镜像身份、运行用户和归档完整性检查；省略时不检查或归档前端。V5 候选包含与服务镜像一致的 Linux 安装二进制，摘要单独绑定到 manifest；缺少当前契约的旧二进制候选必须重新构建。manifest 固定实际镜像身份、归档摘要、平台、依赖提供者及全部部署输入摘要。恢复时先核验归档与部署输入，再 docker load；不从 tag 拉取替代品。V2 必须重新构建，没有兼容解析或转换器。
 
 安装、smoke 与认证验收不要求 matching checkout、Git 元数据或 clean HEAD。把运行工具与候选放到独立目录也可执行，工具从候选目录读取角色和网关文件。候选摘要保护所交付内容的一致性，不替代分发渠道信任。
 
 smoke 启动实际 OCI、自有 TLS PostgreSQL 与 HTTPS 网关，验证迁移、初始化、权限、重放、健康与关闭；不构建第二个消费者。仅后端候选使用固定 nginx 依赖提供 HTTPS API 代理，页面路径返回 404；包含前端的候选使用交付的前端镜像提供页面。浏览器认证验收要求包含前端，缺失时明确拒绝并提示使用 `--web-image` 重建。成功与资源清理完成后才发布 smoke.json/smoke.log，失败移除旧成功标记并保存脱敏诊断。真机 T3 另行提供。
 
 ## 全新实例安装
+
+Linux 单机安装由固定候选中的 `rss-mdm-installer install --config /absolute/private-input.json` 执行。宿主需要 systemd、Docker Engine/Compose、受信 TLS 入口及二进制运行依赖。安装器先保存稳定身份和秘密，再准备专用 PostgreSQL 数据库与受限角色、初始化独立平台/业务管理员、应用默认租户宿主。数据库引导连接只由部署操作员持有，服务容器不接收该凭据。
+
+部署输入结构由 [安装输入](../../crates/app/src/setup/installation.rs) 持有。`database` 包含目标 `name` 和引导 `administrator` 连接；角色密码由安装目录生成。`deployment` 固定服务/网关镜像摘要及 TLS 材料；`additional_hosts` 列出后续租户可用的独立入口、监听和部署参数。没有可用槽位时保留原开通操作并显示 capacity，不另建租户或账户。槽位预留不可改绑，新增容量需追加配置并重启部署进程。
+
+安装器将部署二进制复制到 root 独占安装目录，注册 `rss-mdm-deployer-<instance>.service`。该进程只消费已有开通回执，使用固定 Docker Compose 模板部署宿主；管理 HTTP 不接受任意命令或维护凭据。实例目录、原凭据、角色密码和固定 Ledger 密钥必须联合备份。重试使用原输入和原目录；密码或密钥丢失时恢复原材料，不重新生成替代身份。
+
 
 MDM 宿主使用同一份运行配置生成两份公开 bootstrap 输入：`ui.json` 的
 `canonicalOrigin/oidcEnabled` 和 `mdm.json` 的 `canonicalOrigin/tenant`。
@@ -46,11 +53,12 @@ Audit 与 Ledger 的组件 SQL 分别由 `mdm_audit_owner`、`mdm_ledger_owner` 
 
 迁移输入含 database 和 installation；installation 只固定 instance_id、target、lineage 和 audit_mode（plain 或 ledger，与运行配置 audit.mode 一致）。安装创建唯一保留管理租户及 epoch=1，不创建账户、密码或权限；重放只核稳定安装身份、保留管理租户绑定、完整当前 schema 和运行权限，不比较租户全集，不改租户 epoch。安装按 audit mode 授予 Identity audit worker 权限，模式不能随重放改变。
 
-租户管理仅提供 CLI，由实际 `mdm_owner` 登录连接执行。六个命令均使用 `--config /absolute/private-config.json`，公共输入为 database 和稳定 installation：
+新增租户统一使用平台会话调用 `POST /api/v1/tenant-administration/provisionings`，包含 `name`、`administratorLogin`、`administratorPassword`，并提供 UUID `Idempotency-Key`。返回可查询开通回执；202 表示管理员或宿主阶段尚未完成，不能解释为租户已启用。旧裸创建 HTTP 入口与 `tenant-create` 命令已移除。元数据维护、查询和追加管理员保留独立用途。
+
+下列维护命令由实际 `mdm_owner` 登录连接执行，使用 `--config /absolute/private-config.json`，公共输入为 database 和稳定 installation：
 
 | 命令 | 其它输入 | 输出与约束 |
 |---|---|---|
-| `tenant-create` | tenant_id、initial_epoch、operation_id；可选 name、notes | 创建 revision=1，连同 RSS 初始 epoch、Agent 默认设置和操作回执原子提交 |
 | `tenant-get` | tenant_id | 当前租户详情，包括 initial_epoch、current_epoch、name、notes、revision、deletable、management |
 | `tenant-list` | 无 | 所有未删除租户详情，按 UUID 排序，最多 1024 个业务租户与 1 个管理租户 |
 | `tenant-update` | tenant_id、expected_revision、operation_id；可选 name、notes | 全量替换元数据；省略或 null 清空字段；成功时 revision 加一，即使值未改变 |

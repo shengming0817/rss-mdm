@@ -21,7 +21,7 @@ async fn execute() -> Result<(), ProcessError> {
     let args: Vec<_> = std::env::args().skip(1).collect();
     if args == ["--help"] {
         println!(
-            "rss-mdm install|serve|migrate|tenant-create|tenant-get|tenant-list|tenant-update|tenant-delete|tenant-operation-status|initialize|initialize-authorization|recover-password --config /absolute/private-config.json\nrss-mdm --version|--describe"
+            "rss-mdm install|provision-hosts|serve|migrate|tenant-get|tenant-list|tenant-update|tenant-delete|tenant-operation-status|initialize|initialize-authorization|recover-password --config /absolute/private-config.json\nrss-mdm --version|--describe"
         );
         return Ok(());
     }
@@ -56,6 +56,24 @@ async fn execute() -> Result<(), ProcessError> {
             );
             Ok(())
         }
+        #[cfg(unix)]
+        "provision-hosts" => {
+            let input = config::load(path)?;
+            loop {
+                if rss_mdm_app::setup::tenant_hosts::reconcile(&input)
+                    .await
+                    .is_err()
+                {
+                    eprintln!(
+                        "tenant host reconciliation unavailable; original operations retained"
+                    );
+                }
+                tokio::select! {
+                    result = rss_mdm_app::signal() => { return result.map_err(|_| ProcessError::Stage { stage: "deployment.signal", kind: "shutdown signal unavailable" }); }
+                    () = tokio::time::sleep(std::time::Duration::from_secs(5)) => {}
+                }
+            }
+        }
         "serve" => {
             rss_mdm_app::serve(config::load(path)?, rss_mdm_app::signal(), monotonic()).await
         }
@@ -66,14 +84,6 @@ async fn execute() -> Result<(), ProcessError> {
                 .options()
                 .map_err(|e| ProcessError::at("migration.database_configuration", e))?;
             rss_mdm_app::migration::migrate(&options, &config.installation).await?;
-            Ok(())
-        }
-        "tenant-create" => {
-            let receipt = rss_mdm_app::tenant_registry::create(config::load(path)?).await?;
-            println!(
-                "{}",
-                serde_json::to_string(&receipt).expect("public receipt")
-            );
             Ok(())
         }
         "tenant-get" => {

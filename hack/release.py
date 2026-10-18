@@ -165,6 +165,14 @@ def build_staged(out, header, web_image=None):
         subprocess.run(["docker", "load", "--input", str(output)], check=True)
         migrations = json.loads(run(["docker", "run", "--rm", "--network", "none", image, "--describe"]))
         version = run(["docker", "run", "--rm", "--network", "none", image, "--version"])
+        # The same fixed image supplies the Linux operator binary; no host checkout is required.
+        installer = out / "rss-mdm-installer"
+        container = run(["docker", "create", "--network", "none", image, "--version"])
+        try:
+            subprocess.run(["docker", "cp", container + ":/usr/local/bin/rss-mdm", str(installer)], check=True)
+        finally:
+            subprocess.run(["docker", "rm", container], check=True, stdout=subprocess.DEVNULL)
+        installer.chmod(0o700)
         deployment = {}
         for name in DEPLOYMENT_FILES:
             original = (source / "fixtures/mdm-config.example.json" if name == "mdm-config.example.json"
@@ -179,7 +187,8 @@ def build_staged(out, header, web_image=None):
         for name in ("Cargo.lock", "rust-toolchain.toml"):
             shutil.copy(source / name, build / name)
         manifest = {
-            "format_version": 4,
+            "format_version": 5,
+            "installer": {"file": installer.name, "sha256": sha(installer)},
             "source": {"inputs_sha256": inputs_sha256},
             "version": version, "platform": platform(config), "migrations": migrations,
             "image": image + "@" + digest,

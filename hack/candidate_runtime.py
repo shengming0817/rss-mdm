@@ -245,7 +245,9 @@ def load_ui(directory, ui):
 
 def verify_candidate(directory):
     manifest=json.loads((directory/"candidate.json").read_text())
-    require(manifest.get("format_version")==4,"candidate V4 required; rebuild the candidate")
+    require(manifest.get("format_version")==5,"candidate V5 required; rebuild the candidate")
+    installer=directory/manifest["installer"]["file"]
+    require(installer.parent==directory and not installer.is_symlink() and installer.is_file() and sha(installer)==manifest["installer"]["sha256"],"candidate installer mismatch")
     archive=directory/manifest["archive"]["file"]
     require(archive.parent==directory and not archive.is_symlink() and sha(archive)==manifest["archive"]["sha256"],"candidate archive mismatch")
     digest,config=oci_identity(archive)

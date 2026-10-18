@@ -50,7 +50,7 @@ def execute(fixture):
     reserved = command('tenant-get', dict(**common, tenant_id=management))
     require(reserved['management'] and not reserved['deletable'] and reserved['currentEpoch'] == 1,
             'reserved tenant binding invalid')
-    command('tenant-create', dict(**common, tenant_id=business, initial_epoch=1, operation_id=str(uuid.uuid4())))
+    sql(f"SELECT public.create_new_tenant('{uuid.UUID(business)}',1,NULL,NULL)")
     seeds = {}
     initialization = {}
     for tenant in (business, management):

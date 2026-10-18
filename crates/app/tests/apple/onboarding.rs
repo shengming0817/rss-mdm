@@ -257,6 +257,7 @@ async fn agent_publication_preserves_bound_attempt_identity() -> Result<()> {
     let updated = Apple::load(
         f.app.protection.clone(),
         config,
+        fixture_materials(&f.root)?,
         f.app.clock.unix_seconds()?,
         super::fixture_providers(&f.root)?,
     )?;

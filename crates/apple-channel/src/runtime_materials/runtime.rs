@@ -11,6 +11,7 @@ pub struct Selection {
 }
 /// Verified material held only by the running owner. This type deliberately has no Debug/Serialize.
 pub struct Loaded {
+    pub binding: Binding,
     pub profile: rss_mdm_certificate::apple::ProfileSigner,
     pub apns_certificate: Vec<u8>,
     pub apns_private_key: Zeroizing<Vec<u8>>,
@@ -51,6 +52,15 @@ pub async fn load(
         now,
     )
     .await?;
+    let mut records = vec![
+        (Purpose::Apns, selection.apns, apns.2.digest.clone()),
+        (
+            Purpose::Profile,
+            selection.profile,
+            profile.2.digest.clone(),
+        ),
+    ];
+    let mut expires = apns.2.expires.min(profile.2.expires);
     let profile = rss_mdm_certificate::apple::ProfileSigner::from_bytes(
         profile.0.as_bytes(),
         profile.1.expose(),
@@ -58,9 +68,13 @@ pub async fn load(
     )?;
     let mut accounts = BTreeMap::new();
     for (id, revision) in &selection.accounts {
-        let row = storage::version(&mut tx, &tenant, Purpose::ManagedAccount, *revision).await?;
-        if row.key_id.to_string() != *id {
-            return Err(Error::Conflict);
+        if id.is_empty()
+            || id.len() > 128
+            || !id
+                .bytes()
+                .all(|v| v.is_ascii_alphanumeric() || b"_-".contains(&v))
+        {
+            return Err(Error::Malformed);
         }
         let material = read(
             &mut tx,
@@ -72,6 +86,12 @@ pub async fn load(
             now,
         )
         .await?;
+        records.push((
+            Purpose::ManagedAccount,
+            *revision,
+            material.2.digest.clone(),
+        ));
+        expires = expires.min(material.2.expires);
         accounts.insert(
             id.clone(),
             rss_mdm_certificate::apple::ManagedAccountTokenSigner::from_bytes(
@@ -85,6 +105,7 @@ pub async fn load(
     let key = openssl::pkey::PKey::private_key_from_pkcs8(apns.1.expose())
         .map_err(|_| Error::CertificateRequest)?;
     Ok(Loaded {
+        binding: Binding { records, expires },
         profile,
         apns_certificate: apns.0.into_bytes(),
         apns_private_key: Zeroizing::new(
@@ -112,7 +133,7 @@ async fn read(
     Error,
 > {
     use sqlx::Row;
-    let row=sqlx::query("SELECT v.* FROM mdm_apple_runtime.versions v JOIN mdm_apple_runtime.heads h USING(tenant_id,purpose) WHERE v.tenant_id=$1::uuid AND v.purpose=$2 AND v.revision=$3 AND v.selected AND NOT v.revoked AND (v.purpose='managed_account' OR h.desired_revision=v.revision)")
+    let row=sqlx::query("SELECT v.* FROM mdm_apple_runtime.versions v JOIN mdm_apple_runtime.heads h USING(tenant_id,purpose) WHERE v.tenant_id=$1::uuid AND v.purpose=$2 AND v.revision=$3 AND v.selected AND NOT v.revoked")
         .bind(tenant).bind(purpose.name()).bind(revision).fetch_optional(c).await.map_err(db)?.ok_or(Error::Conflict)?;
     let key: Uuid = row.try_get("key_id").map_err(db)?;
     let sealed: Vec<u8> = row.try_get("private_key").map_err(db)?;
@@ -126,4 +147,48 @@ async fn read(
         return Err(Error::Conflict);
     }
     Ok((pem, private, validated))
+}
+
+/// Immutable material identities loaded by this process; desired revision may advance separately.
+pub struct Binding {
+    records: Vec<(Purpose, i64, String)>,
+    expires: i64,
+}
+impl Binding {
+    pub fn valid_at(&self, now: i64) -> bool {
+        now > 0 && now < self.expires
+    }
+    #[cfg(feature = "integration")]
+    pub fn fixture(expires: i64) -> Self {
+        Self {
+            records: Vec::new(),
+            expires,
+        }
+    }
+    pub async fn check(&self, store: &crate::Store, tenant: &str, now: i64) -> Result<(), Error> {
+        if !self.valid_at(now) {
+            return Err(Error::Conflict);
+        }
+        let mut tx = store.material_snapshot(tenant).await?;
+        for (purpose, revision, digest) in &self.records {
+            let valid: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_apple_runtime.versions WHERE tenant_id=$1::uuid AND purpose=$2 AND revision=$3 AND certificate_digest=$4 AND selected AND NOT revoked AND expires_at>$5)")
+                .bind(tenant).bind(purpose.name()).bind(revision).bind(digest).bind(now).fetch_one(&mut *tx).await.map_err(db)?;
+            if !valid {
+                return Err(Error::Conflict);
+            }
+        }
+        tx.rollback().await.map_err(db)?;
+        Ok(())
+    }
+}
+pub(crate) async fn admit(
+    axum::extract::State(app): axum::extract::State<Arc<HttpState>>,
+    request: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> Result<axum::response::Response, Error> {
+    let apple = app.apple()?;
+    apple
+        .check_materials(&app.access, &app.identity.tenant().to_string(), now(&app)?)
+        .await?;
+    Ok(next.run(request).await)
 }

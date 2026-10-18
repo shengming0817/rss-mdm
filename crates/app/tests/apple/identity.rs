@@ -120,7 +120,7 @@ impl Fixture {
             installed_trust: Default::default(),
             oracle: oracle::Oracle::new(&der)?,
             origin: apple.config.management.origin.clone(),
-            topic: apple.config.apns_topic.clone(),
+            topic: apple.channel.apns_topic().to_owned(),
         };
         let reply = peer
             .send(

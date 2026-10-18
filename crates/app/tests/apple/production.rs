@@ -15,7 +15,7 @@ impl Fixture {
                 )?)?)
                 .build()?,
             origin: self.app.apple()?.config.management.origin.clone(),
-            topic: self.app.apple()?.config.apns_topic.clone(),
+            topic: self.app.apple()?.channel.apns_topic().to_owned(),
             pending_replies: Default::default(),
             installed_trust: Default::default(),
             oracle: oracle::Oracle::new(&der)?,
@@ -51,6 +51,8 @@ impl Fixture {
         apple.trust_file = self.app.apple()?.config.trust_file.clone();
         apple.test_push_transport = Some((participant.origin(), self.root.join("ca.crt")));
         config.native_protocols.apple = Some(apple);
+        config.apple_material_roots = vec![self.root.join("apple-root.pem")];
+        seed_fixture_materials(&self.root, &self.app.protection).await?;
         let address = config.listen;
         let empty = rss_runtime::ShutdownStack::try_new(
             rss_runtime::TotalDrainBudget::new(Duration::from_secs(20))?,
@@ -197,4 +199,79 @@ async fn production_listeners_push_and_shutdown() -> Result<()> {
 #[ignore = "MODULE=apple.host: material loading without production listeners or application assembly"]
 fn startup_material_diagnostics() -> Result<()> {
     startup_diagnostics(&PathBuf::from(std::env::var("MDM_APPLE_FIXTURES")?))
+}
+
+#[tokio::test]
+#[ignore = "MODULE=apple.host: durable material selection, failed-candidate rollback, isolation and revocation"]
+async fn durable_material_authority_controls_host_use() -> Result<()> {
+    use rss_mdm_apple_channel::runtime_materials::runtime;
+    use sqlx::Connection;
+    let f = Fixture::start().await?;
+    seed_fixture_materials(&f.root, &f.app.protection).await?;
+    let roots = vec![std::fs::read(f.root.join("apple-root.pem"))?];
+    let selection = runtime::Selection {
+        apns: 1,
+        profile: 1,
+        accounts: std::collections::BTreeMap::from([("organization".into(), 1)]),
+    };
+    let store = f.app.access.apple_store();
+    let tenant = rss_request_context::TenantId::parse(case_tenant())?;
+    let now = f.app.clock.unix_seconds()?;
+    let loaded = runtime::load(&store, tenant, &f.app.protection, &roots, &selection, now).await?;
+    loaded.binding.check(&store, case_tenant(), now).await?;
+    let wrong = rss_mdm_native_protection::Protector::new(&[19; 32])?;
+    ensure!(
+        runtime::load(&store, tenant, &wrong, &roots, &selection, now)
+            .await
+            .is_err()
+    );
+    ensure!(
+        runtime::load(
+            &store,
+            rss_request_context::TenantId::parse("33333333-3333-4333-8333-333333333333")?,
+            &f.app.protection,
+            &roots,
+            &selection,
+            now
+        )
+        .await
+        .is_err()
+    );
+    let mut c =
+        sqlx::PgConnection::connect_with(&crate::device::test_support::options("mdm_access")?)
+            .await?;
+    let mut tx = c.begin().await?;
+    sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
+        .bind(case_tenant())
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query(
+        "UPDATE mdm_apple_runtime.heads SET revision=9,desired_revision=9 WHERE tenant_id=$1::uuid",
+    )
+    .bind(case_tenant())
+    .execute(&mut *tx)
+    .await?;
+    tx.commit().await?;
+    // A rejected newer candidate cannot prevent restoring the previously selected valid version.
+    runtime::load(&store, tenant, &f.app.protection, &roots, &selection, now).await?;
+    let mut tx = c.begin().await?;
+    sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
+        .bind(case_tenant())
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query("UPDATE mdm_apple_runtime.versions SET revoked=true WHERE tenant_id=$1::uuid AND purpose='apns'").bind(case_tenant()).execute(&mut *tx).await?;
+    tx.commit().await?;
+    ensure!(
+        loaded
+            .binding
+            .check(&store, case_tenant(), now)
+            .await
+            .is_err()
+    );
+    ensure!(
+        runtime::load(&store, tenant, &f.app.protection, &roots, &selection, now)
+            .await
+            .is_err()
+    );
+    f.close().await
 }

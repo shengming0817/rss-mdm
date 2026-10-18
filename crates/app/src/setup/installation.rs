@@ -8,13 +8,12 @@ use ring::{
 };
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::BTreeMap,
     net::{IpAddr, SocketAddr},
     path::{Path, PathBuf},
 };
 use uuid::Uuid;
 
-const ROLES: &[&str] = &[
+pub(super) const ROLES: &[&str] = &[
     "mdm_owner",
     "mdm_identity_maintenance",
     "mdm_identity_runtime",
@@ -31,18 +30,17 @@ const ROLES: &[&str] = &[
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct DatabaseInput {
-    pub host: String,
-    pub port: u16,
+    /// Cluster bootstrap login is confined to the deployment operator.
+    pub administrator: crate::config::Database,
     pub name: String,
-    pub ca_file: PathBuf,
-    /// Restricted profiles prepared by the deployment executor; never passed to the runtime en bloc.
-    pub passwords: BTreeMap<String, PathBuf>,
 }
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Input {
     pub directory: PathBuf,
     pub deployment: super::deployment::Config,
+    #[serde(default)]
+    pub additional_hosts: Vec<super::tenant_hosts::Slot>,
     pub database: DatabaseInput,
     pub audit_mode: AuditMode,
     pub organization_name: String,
@@ -101,42 +99,44 @@ impl Input {
             || u.origin().ascii_serialization() != self.origin
             || !self.listen.ip().is_loopback()
             || self.listen.port() == 0
-            || self.database.host.is_empty()
             || self.database.name.is_empty()
-            || self.database.port == 0
             || self.organization_name.trim().is_empty()
             || self.organization_name.chars().count() > 128
             || self.organization_name.contains('\0')
-            || self.database.passwords.len() != ROLES.len()
-            || ROLES
-                .iter()
-                .any(|role| !self.database.passwords.contains_key(*role))
+            || self.database.name.len() > 63
+            || !self
+                .database
+                .name
+                .bytes()
+                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_')
+            || !self
+                .database
+                .name
+                .as_bytes()
+                .first()
+                .is_some_and(u8::is_ascii_lowercase)
         {
             return Err(Error::Input);
         }
         rss_identity_core::account::LoginKey::parse(&self.platform_login).map_err(invalid)?;
         rss_identity_core::account::LoginKey::parse(&self.administrator_login).map_err(invalid)?;
-        for path in self.database.passwords.values() {
-            crate::config::secret(path).map_err(invalid)?;
-        }
-        crate::config::read(&self.database.ca_file, 1024 * 1024, false).map_err(invalid)?;
+        self.database.administrator.options().map_err(invalid)?;
         Ok(())
     }
-    fn database(&self, role: &str) -> Result<crate::config::Database> {
+    pub(super) fn database(&self, role: &str) -> Result<crate::config::Database> {
+        if !ROLES.contains(&role) {
+            return Err(Error::Input);
+        }
         Ok(crate::config::Database {
-            host: self.database.host.clone(),
-            port: self.database.port,
+            host: self.database.administrator.host.clone(),
+            port: self.database.administrator.port,
             name: self.database.name.clone(),
             user: role.into(),
-            password_file: self
-                .database
-                .passwords
-                .get(role)
-                .ok_or(Error::Input)?
-                .clone(),
-            ca_file: self.database.ca_file.clone(),
+            password_file: self.directory.join(format!("database-{role}.password")),
+            ca_file: self.database.administrator.ca_file.clone(),
         })
     }
+
     fn audit(&self, journal: &Journal) -> Result<crate::config::AuditConfig> {
         Ok(match self.audit_mode {
             AuditMode::Plain => crate::config::AuditConfig::Plain,
@@ -240,6 +240,15 @@ pub async fn install(input: Input) -> Result<Receipt> {
         input.administrator_password_file.as_deref(),
         first,
     )?;
+    let mut database_passwords = Vec::new();
+    for role in ROLES {
+        database_passwords.push(password(
+            &journal,
+            &format!("database-{role}.password"),
+            None,
+            first,
+        )?);
+    }
     let native_key = protected(&journal, "native.key", 32, first)?;
     let ledger_key = if input.audit_mode == AuditMode::Ledger {
         Some(protected(&journal, "ledger.key", 32, first)?)
@@ -251,6 +260,7 @@ pub async fn install(input: Input) -> Result<Receipt> {
             &input,
             platform.as_str(),
             administrator.as_str(),
+            &database_passwords,
             native_key.as_slice(),
             ledger_key.as_deref(),
         ))
@@ -290,6 +300,7 @@ pub async fn install(input: Input) -> Result<Receipt> {
         journal.save("installation.json", &saved)?;
         saved
     };
+    super::postgres::prepare(&input, saved.receipt.instance_id).await?;
     crate::migration::migrate(
         &input.database("mdm_owner")?.options().map_err(invalid)?,
         &coordinates(&input, &saved),
@@ -340,6 +351,7 @@ pub async fn install(input: Input) -> Result<Receipt> {
     })
     .await
     .map_err(|_| Error::Storage)?;
+    publish_progress(&input, &saved, false, None).await?;
     if saved.receipt.stage == Stage::Platform {
         initialize_account(
             &input,
@@ -371,12 +383,91 @@ pub async fn install(input: Input) -> Result<Receipt> {
     )?;
     saved.receipt.stage = Stage::HostPending;
     journal.save("installation.json", &saved)?;
-    let observed = super::deployment::apply(&input.directory, &input.deployment, &runtime).await?;
-    journal.save("host-observation.json", &observed)?;
+    let mut progress = initial_progress(&saved, true);
+    let applied =
+        super::tenant_hosts::activate(&input.directory, &input.deployment, &runtime, &mut progress)
+            .await;
+    publish_progress(&input, &saved, true, Some(progress)).await?;
+    applied?;
+    super::supervisor::install(&journal, &input, saved.receipt.instance_id).await?;
     saved.receipt.stage = Stage::Enabled;
     journal.save("installation.json", &saved)?;
     Ok(saved.receipt)
 }
+fn initial_progress(saved: &Saved, account: bool) -> super::model::Provisioning {
+    super::model::Provisioning {
+        operation_id: saved.receipt.operation_id,
+        tenant_id: saved.receipt.tenant_id,
+        administrator_id: account.then_some(saved.receipt.administrator_id),
+        host_id: saved.receipt.host_id,
+        revision: 1,
+        phase: if account {
+            super::model::Phase::HostPending
+        } else {
+            super::model::Phase::Reserved
+        },
+        blocked: None,
+        origin: None,
+        application: None,
+    }
+}
+async fn publish_progress(
+    input: &Input,
+    saved: &Saved,
+    account: bool,
+    progress: Option<super::model::Provisioning>,
+) -> Result<()> {
+    use sqlx::Connection;
+    let mut c =
+        sqlx::PgConnection::connect_with(&input.database("mdm_owner")?.options().map_err(invalid)?)
+            .await
+            .map_err(|_| Error::Storage)?;
+    crate::migration::verify_identity(&mut c, &coordinates(input, saved))
+        .await
+        .map_err(|_| Error::Conflict)?;
+    let mut tx = c.begin().await.map_err(|_| Error::Storage)?;
+    sqlx::query("SELECT pg_advisory_xact_lock(2346)")
+        .execute(&mut *tx)
+        .await
+        .map_err(|_| Error::Storage)?;
+    let existing: Option<(serde_json::Value,serde_json::Value)> = sqlx::query_as("SELECT request,receipt FROM public.mdm_tenant_operations WHERE operation_id=$1 AND action='provision'")
+        .bind(saved.receipt.operation_id).fetch_optional(&mut *tx).await.map_err(|_|Error::Storage)?;
+    let mut value = progress.unwrap_or_else(|| initial_progress(saved, account));
+    if let Some((request, receipt)) = &existing {
+        if request["fingerprint"].as_str() != Some(saved.fingerprint.as_str()) {
+            return Err(Error::Conflict);
+        }
+        let previous: crate::tenant_registry::Receipt =
+            serde_json::from_value(receipt.clone()).map_err(|_| Error::Corrupt)?;
+        let crate::tenant_registry::ReceiptResult::Provisioning(previous) = previous.result else {
+            return Err(Error::Corrupt);
+        };
+        if !account {
+            tx.rollback().await.map_err(|_| Error::Storage)?;
+            return Ok(());
+        }
+        value.revision = previous.revision.checked_add(1).ok_or(Error::Corrupt)?;
+    }
+    let receipt = crate::tenant_registry::Receipt {
+        operation_id: saved.receipt.operation_id,
+        action: crate::tenant_registry::Action::Provision,
+        result: crate::tenant_registry::ReceiptResult::Provisioning(value),
+    };
+    let public = serde_json::to_value(receipt).map_err(|_| Error::Corrupt)?;
+    if existing.is_some() {
+        sqlx::query("UPDATE public.mdm_tenant_operations SET receipt=$2 WHERE operation_id=$1 AND action='provision'")
+            .bind(saved.receipt.operation_id).bind(public).execute(&mut *tx).await.map_err(|_|Error::Storage)?;
+    } else {
+        sqlx::query("INSERT INTO public.mdm_tenant_operations(operation_id,tenant_id,action,request,receipt,operator) VALUES($1,$2,'provision',$3,$4,$5)")
+            .bind(saved.receipt.operation_id).bind(saved.receipt.tenant_id)
+            .bind(serde_json::json!({"fingerprint":saved.fingerprint,"administratorOperationId":saved.business_authorization}))
+            .bind(public).bind(serde_json::json!({"kind":"installation","instanceId":saved.receipt.instance_id})).execute(&mut *tx).await.map_err(|_|Error::Storage)?;
+    }
+    tx.commit().await.map_err(|_| Error::Storage)?;
+    c.close().await.map_err(|_| Error::Storage)?;
+    Ok(())
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn initialize_account(
     input: &Input,

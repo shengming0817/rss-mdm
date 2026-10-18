@@ -85,6 +85,7 @@ pub(crate) fn routes() -> Router<Arc<HttpState>> {
             post(certificate),
         )
         .route("/api/v1/apple/materials/{purpose}/apply", post(apply))
+        .route("/api/v1/apple/materials/{purpose}/revoke", post(revoke))
         .route(
             "/api/v1/apple/material-operations/{operation}",
             get(operation),
@@ -181,8 +182,9 @@ async fn key(
 ) -> Result<Json<Value>, Error> {
     let p = proof(&app, &auth, true)?;
     let id = crate::account_enrollment::management::operation(&headers)?;
-    let request =
-        Zeroizing::new(serde_json::to_vec(&(purpose, &input)).map_err(|_| Error::Malformed)?);
+    let request = Zeroizing::new(
+        serde_json::to_vec(&("key", purpose, &input)).map_err(|_| Error::Malformed)?,
+    );
     let tenant = p.tenant_id().to_owned();
     let material = tokio::task::spawn_blocking(move || {
         crypto::prepare(
@@ -222,8 +224,9 @@ async fn certificate(
     if input.certificate_chain_pem.len() > 128 * 1024 || input.key_revision < 1 {
         return Err(Error::Malformed);
     }
-    let request =
-        Zeroizing::new(serde_json::to_vec(&(purpose, &input)).map_err(|_| Error::Malformed)?);
+    let request = Zeroizing::new(
+        serde_json::to_vec(&("certificate", purpose, &input)).map_err(|_| Error::Malformed)?,
+    );
     write(
         &app,
         p,
@@ -247,8 +250,9 @@ async fn apply(
 ) -> Result<Json<Value>, Error> {
     let p = proof(&app, &auth, true)?;
     let id = crate::account_enrollment::management::operation(&headers)?;
-    let request =
-        Zeroizing::new(serde_json::to_vec(&(purpose, &input)).map_err(|_| Error::Malformed)?);
+    let request = Zeroizing::new(
+        serde_json::to_vec(&("apply", purpose, &input)).map_err(|_| Error::Malformed)?,
+    );
     write(
         &app,
         p,
@@ -262,10 +266,41 @@ async fn apply(
     .await
     .map(Json)
 }
+/// Revoke the exact certificate version locally; vendor-side revocation remains an external action.
+async fn revoke(
+    State(app): State<Arc<HttpState>>,
+    Extension(auth): Extension<RequestAuth>,
+    Extension(audit): Extension<RequestAudit>,
+    Path(purpose): Path<Purpose>,
+    headers: HeaderMap,
+    Json(input): Json<ApplyRequest>,
+) -> Result<Json<Value>, Error> {
+    let p = proof(&app, &auth, true)?;
+    let id = crate::account_enrollment::management::operation(&headers)?;
+    if input.material_revision < 1 {
+        return Err(Error::Malformed);
+    }
+    let request = Zeroizing::new(
+        serde_json::to_vec(&("revoke", purpose, &input)).map_err(|_| Error::Malformed)?,
+    );
+    write(
+        &app,
+        p,
+        &audit,
+        id,
+        purpose,
+        input.expected_revision,
+        &request,
+        Change::Revoke(input.material_revision),
+    )
+    .await
+    .map(Json)
+}
 enum Change {
     Key(crypto::Key),
     Certificate(CertificateRequest),
     Apply(i64),
+    Revoke(i64),
 }
 #[allow(clippy::too_many_arguments)]
 async fn write(
@@ -317,6 +352,15 @@ async fn write(
                     let key=crypto::Key {private:Zeroizing::new(private.expose().to_vec()),csr:previous.csr,public_digest:previous.public_key_digest};
                     storage::insert(c,app,p.tenant_id(),*purpose,revision,previous.key_id,&key,Some((&input.certificate_chain_pem,&validated))).await?;
                     json!({"operationId":id,"revision":revision,"keyId":previous.key_id,"certificateDigest":validated.digest,"expiresAt":validated.expires,"state":"validated"})
+                },
+                Change::Revoke(selected)=>{
+                    storage::version(c,p.tenant_id(),*purpose,*selected).await?;
+                    sqlx::query("UPDATE mdm_apple_runtime.versions SET revoked=true WHERE tenant_id=$1::uuid AND purpose=$2 AND revision=$3")
+                        .bind(p.tenant_id()).bind(purpose.name()).bind(selected).execute(&mut *c).await.map_err(db)?;
+                    sqlx::query("UPDATE mdm_apple_runtime.heads SET revision=revision+1 WHERE tenant_id=$1::uuid AND purpose=$2")
+                        .bind(p.tenant_id()).bind(purpose.name()).execute(&mut *c).await.map_err(db)?;
+                    crate::notify(c,"apple").await.map_err(db)?;
+                    json!({"operationId":id,"revision":revision,"materialRevision":selected,"state":"revoked"})
                 },
                 Change::Apply(selected)=>{
                     let (candidate,private)=storage::material(c,app,p.tenant_id(),*purpose,*selected).await?;

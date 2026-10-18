@@ -306,19 +306,33 @@ pub(crate) async fn from_compiled(
             Ok::<_, Error>(Arc::new(windows))
         })
         .transpose()?;
-    let apple = config
-        .native_protocols
-        .apple
-        .map(|config| {
-            crate::apple::Apple::load(
-                protection.clone(),
-                config,
-                clock.unix_seconds()?,
-                providers.clone(),
-            )
-            .map(Arc::new)
-        })
-        .transpose()?;
+    let apple_material_roots = Arc::new(
+        config
+            .apple_material_roots
+            .iter()
+            .map(|path| crate::config::read(path, 128 * 1024, false).map(|bytes| bytes.to_vec()))
+            .collect::<Result<Vec<_>, _>>()?,
+    );
+    let apple = if let Some(config) = config.native_protocols.apple {
+        let materials = rss_mdm_apple_channel::runtime_materials::runtime::load(
+            &access.apple_store(),
+            identity.tenant,
+            &protection,
+            &apple_material_roots,
+            &config.materials,
+            clock.unix_seconds()?,
+        )
+        .await?;
+        Some(Arc::new(crate::apple::Apple::load(
+            protection.clone(),
+            config,
+            materials,
+            clock.unix_seconds()?,
+            providers.clone(),
+        )?))
+    } else {
+        None
+    };
     let agent_pki = config
         .agent_pki
         .load(audit_store.clone(), clock.clone(), providers.clone())?;
@@ -401,15 +415,7 @@ pub(crate) async fn from_compiled(
             identity.tenant.to_string(),
             identity.instance.to_string(),
         ),
-        apple_material_roots: Arc::new(
-            config
-                .apple_material_roots
-                .iter()
-                .map(|path| {
-                    crate::config::read(path, 128 * 1024, false).map(|bytes| bytes.to_vec())
-                })
-                .collect::<Result<_, _>>()?,
-        ),
+        apple_material_roots,
         webhooks,
         pki,
         agent_enrollment,

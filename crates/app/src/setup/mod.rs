@@ -8,6 +8,12 @@ pub mod installation;
 #[cfg(unix)]
 mod local;
 pub mod model;
+#[cfg(unix)]
+mod postgres;
+#[cfg(unix)]
+mod supervisor;
+#[cfg(unix)]
+pub mod tenant_hosts;
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     #[error("installation input rejected")]

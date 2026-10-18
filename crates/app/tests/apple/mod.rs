@@ -101,13 +101,6 @@ impl Fixture {
         config.software_distribution.mdm_enabled = mdm_software;
         let mut apple: config::Config =
             serde_json::from_slice(&std::fs::read(root.join("apple.json"))?)?;
-        apple.account_keys.insert(
-            "organization".into(),
-            config::AccountSigningKey {
-                certificate_file: root.join("apple-profile.pem"),
-                private_key_file: root.join("apple-profile.pk8"),
-            },
-        );
         apple.management.listen = manage.local_addr()?;
         apple.management.origin = format!("https://localhost:{}", manage.local_addr()?.port());
         let mut trust: rss_mdm_agent_wire::pki::Trust =
@@ -227,6 +220,7 @@ impl Fixture {
         let mut apple = Apple::load(
             execution.protection.clone(),
             config.native_protocols.apple.unwrap(),
+            fixture_materials(&root)?,
             crate::clock::SystemClock.unix_seconds()?,
             crate::device_pki::providers(&config.device_pki)?,
         )?;
@@ -688,8 +682,6 @@ fn startup_diagnostics(root: &std::path::Path) -> Result<()> {
         serde_json::from_slice(&std::fs::read(root.join("apple.json"))?)?;
     for (pointer, category) in [
         ("/trust_file", "AgentPki"),
-        ("/profile_certificate_file", "AppleProfileSigner"),
-        ("/apns_certificate_file", "AppleApns"),
         ("/challenge_webhook/secret_file", "AppleChallengeWebhook"),
         ("/notify_webhook/secret_file", "AppleNotifyWebhook"),
     ] {
@@ -699,6 +691,7 @@ fn startup_diagnostics(root: &std::path::Path) -> Result<()> {
         match Apple::load(
             crate::test_support::identity::config(case_tenant())?.native_protector()?,
             config,
+            fixture_materials(root)?,
             crate::clock::SystemClock.unix_seconds()?,
             fixture_providers(root)?,
         ) {
@@ -712,6 +705,7 @@ fn startup_diagnostics(root: &std::path::Path) -> Result<()> {
     let apple = Apple::load(
         crate::test_support::identity::config(case_tenant())?.native_protector()?,
         serde_json::from_value(original)?,
+        fixture_materials(root)?,
         crate::clock::SystemClock.unix_seconds()?,
         fixture_providers(root)?,
     )?;
@@ -810,7 +804,7 @@ impl Fixture {
             installed_trust: Default::default(),
             oracle: oracle::Oracle::new(der)?,
             origin: apple.config.management.origin.clone(),
-            topic: apple.config.apns_topic.clone(),
+            topic: apple.channel.apns_topic().to_owned(),
         };
         Ok(peer)
     }
@@ -1158,4 +1152,98 @@ fn fixture_providers(
     let providers: Vec<crate::device_pki::Provider> =
         serde_json::from_slice(&std::fs::read(root.join("device-pki.json"))?)?;
     Ok(crate::device_pki::providers(&providers)?)
+}
+
+#[derive(serde::Deserialize)]
+pub(in crate::apple) struct FixtureMaterials {
+    pub(in crate::apple) profile_certificate_file: PathBuf,
+    pub(in crate::apple) profile_private_key_file: PathBuf,
+    pub(in crate::apple) apns_certificate_file: PathBuf,
+    pub(in crate::apple) apns_private_key_file: PathBuf,
+    pub(in crate::apple) apns_topic: String,
+}
+fn fixture_materials(
+    root: &std::path::Path,
+) -> Result<rss_mdm_apple_channel::runtime_materials::runtime::Loaded> {
+    let input: FixtureMaterials =
+        serde_json::from_slice(&std::fs::read(root.join("apple-materials.json"))?)?;
+    let certificate = std::fs::read(input.profile_certificate_file)?;
+    let private = zeroize::Zeroizing::new(std::fs::read(input.profile_private_key_file)?);
+    let now = crate::clock::SystemClock.unix_seconds()?;
+    Ok(rss_mdm_apple_channel::runtime_materials::runtime::Loaded {
+        binding: rss_mdm_apple_channel::runtime_materials::runtime::Binding::fixture(now + 3600),
+        profile: rss_mdm_certificate::apple::ProfileSigner::from_bytes(
+            &certificate,
+            &private,
+            now,
+        )?,
+        apns_certificate: std::fs::read(input.apns_certificate_file)?,
+        apns_private_key: zeroize::Zeroizing::new(std::fs::read(input.apns_private_key_file)?),
+        apns_topic: input.apns_topic,
+        accounts: std::collections::BTreeMap::from([(
+            "organization".into(),
+            rss_mdm_certificate::apple::ManagedAccountTokenSigner::from_bytes(
+                &certificate,
+                &private,
+                now,
+            )?,
+        )]),
+    })
+}
+
+/// Seed the durable owner used by the real host startup test. These rows are fixture data;
+/// production startup has no fixture/file import branch.
+async fn seed_fixture_materials(
+    root: &std::path::Path,
+    protection: &rss_mdm_native_protection::Protector,
+) -> Result<()> {
+    use rss_mdm_native_protection::ProtectionContext;
+    use sha2::{Digest, Sha256};
+    use sqlx::Connection;
+    use x509_cert::der::{DecodePem, Encode};
+    let mut c =
+        sqlx::PgConnection::connect_with(&crate::device::test_support::options("mdm_access")?)
+            .await?;
+    let mut tx = c.begin().await?;
+    sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
+        .bind(case_tenant())
+        .execute(&mut *tx)
+        .await?;
+    for (purpose, name, topic) in [
+        ("apns", "apple-apns", Some("com.apple.mgmt.rss-t2")),
+        ("profile", "apple-profile", None),
+        ("managed_account", "apple-profile", None),
+    ] {
+        let key_id = uuid::Uuid::new_v4();
+        let private = zeroize::Zeroizing::new(std::fs::read(root.join(format!("{name}.pk8")))?);
+        let pem = std::fs::read_to_string(root.join(format!("{name}.pem")))?;
+        let cert = x509_cert::Certificate::from_pem(&pem)?;
+        let der = cert.to_der()?;
+        let mut digest = Sha256::new();
+        digest.update((der.len() as u64).to_be_bytes());
+        digest.update(&der);
+        let public_digest = format!(
+            "{:x}",
+            Sha256::digest(cert.tbs_certificate.subject_public_key_info.to_der()?)
+        );
+        let aad = ProtectionContext::new(
+            rss_request_context::TenantId::parse(case_tenant())?,
+            &format!("{purpose}:1:{key_id}"),
+            "apple.runtime.private-key",
+            1,
+        )?
+        .derive();
+        let sealed = protection.seal_bytes(&private, &aad)?;
+        let expires = cert
+            .tbs_certificate
+            .validity
+            .not_after
+            .to_unix_duration()
+            .as_secs() as i64;
+        sqlx::query("INSERT INTO mdm_apple_runtime.heads(tenant_id,purpose,revision,desired_revision) VALUES($1::uuid,$2,1,1) ON CONFLICT DO NOTHING").bind(case_tenant()).bind(purpose).execute(&mut *tx).await?;
+        sqlx::query("INSERT INTO mdm_apple_runtime.versions(tenant_id,purpose,revision,key_id,public_digest,private_key,csr,certificate,certificate_digest,topic,expires_at,selected) VALUES($1::uuid,$2,1,$3,$4,$5,$6,$7,$8,$9,$10,true) ON CONFLICT DO NOTHING")
+            .bind(case_tenant()).bind(purpose).bind(key_id).bind(public_digest).bind(sealed).bind(std::fs::read_to_string(root.join(format!("{name}.csr")))?).bind(pem).bind(format!("{:x}",digest.finalize())).bind(topic).bind(expires).execute(&mut *tx).await?;
+    }
+    tx.commit().await?;
+    Ok(())
 }

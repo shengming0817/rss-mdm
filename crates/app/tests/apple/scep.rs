@@ -155,7 +155,7 @@ async fn external_scep_issuance_and_lost_notify() -> Result<()> {
             "UDID",
             crate::test_support::case::name("rss-t2-apple").into(),
         ),
-        ("Topic", apple.config.apns_topic.clone().into()),
+        ("Topic", apple.channel.apns_topic().to_owned().into()),
     ]))?;
     let oracle = oracle::Oracle::new(&der)?;
     let response = client
@@ -175,7 +175,7 @@ async fn external_scep_issuance_and_lost_notify() -> Result<()> {
         client,
         oracle,
         origin: apple.config.management.origin.clone(),
-        topic: apple.config.apns_topic.clone(),
+        topic: apple.channel.apns_topic().to_owned(),
     };
     peer.token().await?;
     f.close().await

@@ -56,6 +56,8 @@ pub struct Apple {
     pub(crate) signer: certificate::ProfileSigner,
     pub(crate) push: push::Push,
     push_ready: std::sync::atomic::AtomicBool,
+    materials: runtime_materials::runtime::Binding,
+    materials_ready: std::sync::atomic::AtomicBool,
     pub(crate) challenge_key: ring::hmac::Key,
     pub(crate) notify_key: ring::hmac::Key,
     configuration: [u8; 32],
@@ -120,6 +122,20 @@ impl Apple {
             })
             .collect()
     }
+    pub(crate) async fn check_materials(
+        &self,
+        store: &Store,
+        tenant: &str,
+        now: i64,
+    ) -> Result<(), Error> {
+        let result = self.materials.check(store, tenant, now).await;
+        self.materials_ready
+            .store(result.is_ok(), std::sync::atomic::Ordering::Relaxed);
+        result
+    }
+    pub fn apns_topic(&self) -> &str {
+        &self.config.apns_topic
+    }
     pub fn device_trust(&self) -> &rss_mdm_device_trust::DeviceTrust {
         &self.authority.trust
     }
@@ -133,6 +149,7 @@ impl Apple {
         authority: rss_mdm_device_trust::apple::AppleDeviceTrust,
         signer: certificate::ProfileSigner,
         push: push::Push,
+        materials: runtime_materials::runtime::Binding,
         challenge_key: ring::hmac::Key,
         notify_key: ring::hmac::Key,
         providers: Arc<rss_mdm_pki_service::providers::Providers>,
@@ -147,6 +164,8 @@ impl Apple {
             signer,
             push,
             push_ready: std::sync::atomic::AtomicBool::new(true),
+            materials,
+            materials_ready: std::sync::atomic::AtomicBool::new(true),
             challenge_key,
             notify_key,
             configuration,
@@ -225,6 +244,10 @@ pub fn browser_routes(app: Arc<HttpState>, envelope: boundary::Envelope) -> axum
             .route("/api/v1/apple/scep/notify", post(enrollment::notify))
             .merge(account_enrollment::routes())
             .merge(ade::routes())
+            .layer(axum::middleware::from_fn_with_state(
+                app.clone(),
+                runtime_materials::runtime::admit,
+            ))
             .with_state(app)
             .layer(axum::extract::DefaultBodyLimit::max(128 * 1024)),
         envelope,
@@ -240,6 +263,10 @@ pub fn router(app: Arc<HttpState>, envelope: boundary::Envelope) -> axum::Router
                 axum::routing::get(ddm::asset),
             )
             .route("/mdm", put(checkin::manage))
+            .layer(axum::middleware::from_fn_with_state(
+                app.clone(),
+                runtime_materials::runtime::admit,
+            ))
             .with_state(app)
             .layer(axum::extract::DefaultBodyLimit::max(1024 * 1024)),
         envelope,
@@ -288,7 +315,11 @@ impl Apple {
     }
     pub fn health(&self, now: i64) -> Health {
         Health {
-            push_available: self.push_ready.load(std::sync::atomic::Ordering::Relaxed),
+            push_available: self.push_ready.load(std::sync::atomic::Ordering::Relaxed)
+                && self
+                    .materials_ready
+                    .load(std::sync::atomic::Ordering::Relaxed)
+                && self.materials.valid_at(now),
             certificates: self.certificate_health(now),
         }
     }

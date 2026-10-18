@@ -8,15 +8,9 @@ pub struct Config {
     #[cfg(test)]
     #[serde(skip)]
     pub test_push_transport: Option<(String, PathBuf)>,
-    #[serde(default)]
-    pub account_keys: std::collections::BTreeMap<String, AccountSigningKey>,
     pub management: TlsEndpoint,
     pub trust_file: PathBuf,
-    pub profile_certificate_file: PathBuf,
-    pub profile_private_key_file: PathBuf,
-    pub apns_certificate_file: PathBuf,
-    pub apns_private_key_file: PathBuf,
-    pub apns_topic: String,
+    pub materials: rss_mdm_apple_channel::runtime_materials::runtime::Selection,
     pub challenge_webhook: Webhook,
     pub notify_webhook: Webhook,
 }
@@ -47,7 +41,10 @@ impl Config {
         {
             return Err(bad(ConfigIssue::AppleListeners));
         }
-        if !self.apns_topic.starts_with("com.apple.mgmt.") || self.apns_topic.len() > 255 {
+        if self.materials.apns < 1
+            || self.materials.profile < 1
+            || self.materials.accounts.len() > 16
+        {
             return Err(bad(ConfigIssue::AppleApns));
         }
         if !self.challenge_webhook.valid() {
@@ -58,11 +55,4 @@ impl Config {
         }
         Ok(())
     }
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct AccountSigningKey {
-    pub certificate_file: PathBuf,
-    pub private_key_file: PathBuf,
 }
