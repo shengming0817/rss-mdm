@@ -1,21 +1,26 @@
 //! Frozen Agent installation contracts and checked native package inputs.
 use crate::Error;
 use rss_mdm_authorization_service::UserGrant;
-use rss_mdm_policy::{Platform, SoftwareResourceBinding};
+use rss_mdm_policy::Platform;
 use rss_mdm_policy::{SoftwareTarget, schedule::Schedule};
 use rss_mdm_resource as resource;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use uuid::Uuid;
 
-/// Deployment pins bind the reviewed product artifact to its claimed signing identity.
+/// Published package identity binds the reviewed artifact to its native detector.
 /// Production package signature/notarization verification belongs to package publication/T3.
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(tag = "platform", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Identity {
-    Windows {
+    WindowsMsi {
         product: Uuid,
         publisher: String,
+    },
+    WindowsMsix {
+        family: String,
+        identity: resource::MsixIdentity,
+        minimum_os: [u16; 4],
     },
     Macos {
         receipt: String,
@@ -26,14 +31,17 @@ pub enum Identity {
 impl Identity {
     pub fn platform(&self) -> Platform {
         match self {
-            Self::Windows { .. } => Platform::Windows,
+            Self::WindowsMsi { .. } | Self::WindowsMsix { .. } => Platform::Windows,
             Self::Macos { .. } => Platform::Macos,
         }
     }
     pub fn validate(&self) -> std::result::Result<(), Error> {
         let bounded = |s: &str| !s.is_empty() && s.len() <= 256 && !s.chars().any(char::is_control);
         let valid = match self {
-            Self::Windows { product, publisher } => !product.is_nil() && bounded(publisher),
+            Self::WindowsMsi { product, publisher } => !product.is_nil() && bounded(publisher),
+            Self::WindowsMsix {
+                family, identity, ..
+            } => bounded(family) && bounded(&identity.name) && bounded(&identity.publisher),
             Self::Macos {
                 receipt,
                 bundle,
@@ -52,75 +60,8 @@ impl Identity {
 }
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
-pub struct Pin {
-    pub identity: Identity,
-    pub package: String,
-    pub version: String,
-    pub sha256: [u8; 32],
-}
-#[derive(Clone, Debug, Default, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct Config {
-    pub content_origin: String,
-    pub packages: BTreeMap<SoftwareTarget, Pin>,
-}
-impl Config {
-    pub fn validate(&self) -> std::result::Result<(), Error> {
-        if self.packages.is_empty() {
-            return if self.content_origin.is_empty() {
-                Ok(())
-            } else {
-                Err(Error::Malformed)
-            };
-        }
-        let origin = url::Url::parse(&self.content_origin).map_err(|_| Error::Malformed)?;
-        if self.content_origin.len() > 2048
-            || self.content_origin.chars().any(char::is_control)
-            || origin.scheme() != "https"
-            || origin.host_str().is_none()
-            || !origin.username().is_empty()
-            || origin.password().is_some()
-            || origin.path() != "/"
-            || origin.query().is_some()
-            || origin.fragment().is_some()
-        {
-            return Err(Error::Malformed);
-        }
-        for (target, pin) in &self.packages {
-            pin.identity.validate()?;
-            if target.parts().0 != pin.identity.platform()
-                || pin.package.is_empty()
-                || pin.version.is_empty()
-                || pin.sha256 == [0; 32]
-            {
-                return Err(Error::Malformed);
-            }
-        }
-        // Collection must have one stable product identity for each platform across architectures.
-        for platform in [Platform::Windows, Platform::Macos] {
-            let mut identities = self
-                .packages
-                .iter()
-                .filter(|(t, _)| t.parts().0 == platform)
-                .map(|(_, p)| &p.identity);
-            if let Some(first) = identities.next()
-                && identities.any(|i| i != first)
-            {
-                return Err(Error::Malformed);
-            }
-        }
-        Ok(())
-    }
-    pub fn identity(&self, platform: Platform) -> Option<&Identity> {
-        self.packages
-            .iter()
-            .find(|(target, _)| target.parts().0 == platform)
-            .map(|(_, p)| &p.identity)
-    }
-}
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
 pub struct Package {
+    pub release: rss_mdm_agent_wire::enroll::configuration::Installation,
     pub identity: Identity,
     pub target: SoftwareTarget,
     pub version: String,
@@ -133,9 +74,19 @@ impl Package {
     pub fn native_task(&self, operation: Uuid) -> std::result::Result<crate::Task, Error> {
         use crate::Task;
         Ok(match &self.identity {
-            Identity::Windows { .. } => Task::Windows {
+            Identity::WindowsMsi { .. } => Task::Windows {
                 request: rss_mdm_windows_mdm::native::Execution::Msi {
                     job: self.windows_job(operation).map_err(|_| Error::Malformed)?,
+                },
+            },
+            Identity::WindowsMsix { family, .. } => Task::Windows {
+                request: rss_mdm_windows_mdm::native::Execution::SyncMl {
+                    request: rss_mdm_windows_mdm::software::MsixInstall::new(
+                        family.clone(),
+                        self.url(operation),
+                    )
+                    .and_then(|v| v.request())
+                    .map_err(|_| Error::Malformed)?,
                 },
             },
             Identity::Macos { bundle, .. } => {
@@ -174,7 +125,7 @@ impl Package {
             native::Scope,
             software::{Enforcement, InstallJob},
         };
-        let Identity::Windows { product, .. } = &self.identity else {
+        let Identity::WindowsMsi { product, .. } = &self.identity else {
             return Err(rss_mdm_windows_mdm::CodecError::Unsupported);
         };
         Ok(InstallJob {
@@ -185,7 +136,7 @@ impl Package {
             operation: operation.to_string(),
             scope: Scope::Device,
             enforcement: Enforcement {
-                command_line: format!("/quiet /norestart RSS_INSTALLATION_OPERATION={operation}"),
+                command_line: "/quiet /norestart".into(),
                 timeout_minutes: 5,
                 retry_count: 0,
                 retry_interval_minutes: 5,
@@ -203,9 +154,6 @@ impl Package {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct FrozenInstall {
-    pub resource: SoftwareResourceBinding,
-    pub resource_digest: [u8; 32],
-    pub lifecycle_binding: [u8; 32],
     pub schedule: Schedule,
     pub run_lifetime_seconds: u32,
     pub packages: BTreeMap<SoftwareTarget, Package>,
@@ -300,6 +248,7 @@ pub(crate) async fn authorized_on(
         version,
         device,
         operation,
+        package,
         ..
     } = authority
     else {
@@ -359,20 +308,40 @@ pub(crate) async fn authorized_on(
             return Ok(false);
         }
     }
-    rss_mdm_software_service::catalog::admitted_on(
-        c,
-        rss_request_context::TenantId::parse(tenant).map_err(|_| Error::Malformed)?,
-        action.resource.id.as_str(),
-        action.resource.version.as_str(),
-        action.resource_digest,
-        action.lifecycle_binding,
-    )
-    .await
-    .map_err(|e| match crate::transaction::Fault::from(e) {
-        crate::transaction::Fault::Request(e) => e,
-        _ => Error::Unavailable(crate::Failure::SoftwareCatalogStorage),
-    })
+    package
+        .admitted_on(
+            c,
+            rss_request_context::TenantId::parse(tenant).map_err(|_| Error::Malformed)?,
+        )
+        .await
 }
+impl Package {
+    pub async fn admitted_on(
+        &self,
+        c: &mut sqlx::PgConnection,
+        tenant: rss_request_context::TenantId,
+    ) -> std::result::Result<bool, Error> {
+        match rss_mdm_software_service::agent_packages::admitted_on(c, tenant, &self.release).await
+        {
+            Ok(current) => Ok(current.installer_sha256 == self.artifact.sha256
+                && current.version == self.version
+                && current.origin == self.content_origin),
+            Err(
+                rss_mdm_software_service::management::Error::Forbidden
+                | rss_mdm_software_service::management::Error::ResourceMissing,
+            ) => Ok(false),
+            Err(_) => Err(Error::Unavailable(crate::Failure::SoftwareCatalogStorage)),
+        }
+    }
+    pub fn detection_identity(&self) -> String {
+        match &self.identity {
+            Identity::WindowsMsi { product, .. } => product.to_string(),
+            Identity::WindowsMsix { family, .. } => family.clone(),
+            Identity::Macos { bundle, .. } => bundle.clone(),
+        }
+    }
+}
+
 pub async fn dispatched_on(
     c: &mut sqlx::PgConnection,
     tenant: &str,
@@ -412,6 +381,9 @@ pub async fn absent_on(
     let Some(evidence) = fact.evidence else {
         return Ok(None);
     };
+    if evidence.catalog_digest != detection_on(c, tenant_id, source).await?.digest()? {
+        return Ok(None);
+    }
     let architecture = match evidence.architecture.as_deref() {
         Some("x86_64") => Architecture::X86_64,
         Some("aarch64") => Architecture::Aarch64,
@@ -475,11 +447,8 @@ pub async fn dispatch_ready_on(
     let Some(package) = action.packages.get(&target) else {
         return Ok(false);
     };
-    let identity = match &package.identity {
-        Identity::Windows { product, .. } => product.to_string(),
-        Identity::Macos { bundle, .. } => bundle.clone(),
-    };
-    if evidence.identity != identity {
+    let identity = package.detection_identity();
+    if !evidence.matches(&identity) {
         return Ok(false);
     }
     let expected = serde_json::to_vec(package).map_err(|_| Error::Malformed)?;
@@ -518,4 +487,113 @@ pub async fn dispatch_ready_on(
         }
     }
     Ok(true)
+}
+
+/// Derive native observation targets from the publication owner, including retired releases.
+#[derive(Clone, Serialize, Deserialize)]
+pub struct DetectionCatalog {
+    pub identities: Vec<Identity>,
+    pub win32: Vec<Win32Identity>,
+    pub complete: bool,
+}
+#[derive(Clone, Serialize, Deserialize)]
+pub struct Win32Identity {
+    pub key: String,
+    pub publisher: String,
+}
+impl DetectionCatalog {
+    pub fn digest(&self) -> std::result::Result<[u8; 32], Error> {
+        use sha2::{Digest, Sha256};
+        Ok(Sha256::digest(serde_json::to_vec(self).map_err(|_| Error::Malformed)?).into())
+    }
+}
+pub async fn detection_on(
+    c: &mut sqlx::PgConnection,
+    tenant: rss_request_context::TenantId,
+    source: rss_mdm_inventory::ReportSource,
+) -> std::result::Result<DetectionCatalog, Error> {
+    let platform = match source {
+        rss_mdm_inventory::ReportSource::MdmWindows => {
+            rss_mdm_agent_wire::runtime::TaskPlatform::Windows
+        }
+        rss_mdm_inventory::ReportSource::MdmApple => {
+            rss_mdm_agent_wire::runtime::TaskPlatform::Macos
+        }
+        _ => return Err(Error::Malformed),
+    };
+    let known = rss_mdm_software_service::agent_packages::known_in(c, tenant)
+        .await
+        .map_err(crate::agent_preparation::publication_error)?;
+    let mut catalog = DetectionCatalog {
+        identities: Vec::new(),
+        win32: Vec::new(),
+        complete: true,
+    };
+    for release in known
+        .into_iter()
+        .filter(|r| r.metadata.target.platform == platform)
+    {
+        if let (
+            resource::SoftwareBehavior::Exe(exe),
+            rss_mdm_software_service::agent_packages::Packaging::NsisExe { publisher, .. },
+        ) = (&release.software.behavior, &release.packaging)
+        {
+            let resource::SoftwareDetection::Registry {
+                scope: resource::SoftwareScope::System,
+                key,
+                value,
+                ..
+            } = &exe.detect
+            else {
+                catalog.complete = false;
+                continue;
+            };
+            let lower = key.to_ascii_lowercase();
+            let suffix = [
+                "software\\microsoft\\windows\\currentversion\\uninstall\\",
+                "software\\wow6432node\\microsoft\\windows\\currentversion\\uninstall\\",
+            ]
+            .into_iter()
+            .find_map(|prefix| lower.strip_prefix(prefix));
+            if value.eq_ignore_ascii_case("DisplayVersion")
+                && let Some(key) = suffix.filter(|v| !v.is_empty() && !v.contains('\\'))
+            {
+                catalog.win32.push(Win32Identity {
+                    key: key.to_owned(),
+                    publisher: publisher.clone(),
+                });
+            } else {
+                catalog.complete = false;
+            }
+            continue;
+        }
+        match crate::agent_preparation::identity(&release) {
+            Ok(identity) => {
+                if !catalog.identities.contains(&identity) {
+                    catalog.identities.push(identity);
+                }
+            }
+            Err(Error::Unsupported | Error::Malformed) => catalog.complete = false,
+            Err(e) => return Err(e),
+        }
+    }
+    Ok(catalog)
+}
+
+/// Removing our exact bootstrap object is an activation cleanup duty, not a new install grant.
+pub(crate) async fn cleanup_authorized_on(
+    c: &mut sqlx::PgConnection,
+    authority: &crate::authority::ExecutionAuthority,
+) -> std::result::Result<bool, Error> {
+    let crate::authority::ExecutionAuthority::AgentInstall {
+        stage: crate::authority::AgentInstallStage::Cleanup { bootstrap },
+        tenant,
+        operation,
+        device,
+        ..
+    } = authority
+    else {
+        return Ok(false);
+    };
+    sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_access.agent_bootstraps b JOIN mdm_commands.operations o ON(o.tenant_id,o.id)=(b.tenant_id,b.installation) WHERE b.tenant_id=$1::uuid AND b.installation=$2 AND o.device=$3 AND b.id=$4 AND b.state IN('issued','consumed') AND NOT b.cleanup_complete AND EXISTS(SELECT 1 FROM mdm_access.registrations native WHERE native.tenant_id=o.tenant_id AND native.id=o.registration AND native.generation=o.registration_generation AND native.state='active') AND EXISTS(SELECT 1 FROM mdm_access.agent_grants g JOIN mdm_access.registrations r ON(r.tenant_id,r.agent_grant_id)=(g.tenant_id,g.id) WHERE g.tenant_id=b.tenant_id AND g.native_authority->>'installation'=b.installation::text))").bind(tenant).bind(operation).bind(device).bind(bootstrap).fetch_one(c).await.map_err(crate::database::db)
 }

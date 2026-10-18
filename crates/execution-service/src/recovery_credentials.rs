@@ -467,7 +467,7 @@ pub(crate) fn requires_owner(task: &Task) -> bool {
             request: Request::Command { command },
         } => matches!(
             command.request_type.as_str(),
-            "RotateFileVaultKey" | "SetRecoveryLock" | "VerifyRecoveryLock"
+            "SecurityInfo" | "RotateFileVaultKey" | "SetRecoveryLock" | "VerifyRecoveryLock"
         ),
         Task::Macos {
             request: Request::InstallProfile { profile },

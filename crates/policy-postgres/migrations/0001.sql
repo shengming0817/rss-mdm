@@ -13,7 +13,7 @@ CREATE TABLE mdm_policy.versions (
  action_kind text NOT NULL CHECK(action_kind IN ('execution','agent_collection','native_collection','configuration','software','ensure_agent_installed','request_mdm_enrollment')),
  resource text,resource_version text,
  CHECK((resource IS NULL) = (resource_version IS NULL)),
- CHECK((action_kind='request_mdm_enrollment') = (resource IS NULL)),
+ CHECK((action_kind IN ('ensure_agent_installed','request_mdm_enrollment')) = (resource IS NULL)),
  frozen jsonb NOT NULL CHECK(octet_length(frozen::text)<=25165824),
  fingerprint bytea NOT NULL CHECK(octet_length(fingerprint)=32),
  PRIMARY KEY(tenant_id,id),UNIQUE(tenant_id,policy,number),

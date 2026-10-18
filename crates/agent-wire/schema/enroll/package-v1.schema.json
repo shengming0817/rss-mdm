@@ -20,6 +20,31 @@
         }
       ]
     },
+    "InstallerFormat": {
+      "description": "Package format is part of the immutable release identity, never inferred from a URL.",
+      "oneOf": [
+        {
+          "const": "nsis_exe",
+          "description": "Independently installed Windows NSIS executable.",
+          "type": "string"
+        },
+        {
+          "const": "windows_msi",
+          "description": "Windows Installer package for native desktop management.",
+          "type": "string"
+        },
+        {
+          "const": "windows_msix",
+          "description": "Windows packaged application for native modern management.",
+          "type": "string"
+        },
+        {
+          "const": "macos_pkg",
+          "description": "macOS enterprise installer package.",
+          "type": "string"
+        }
+      ]
+    },
     "Target": {
       "additionalProperties": false,
       "description": "One native target; emulation does not select a different installer.",
@@ -91,8 +116,12 @@
       "description": "Explicit release channel."
     },
     "filename": {
-      "description": "Secret-free EXE or PKG filename.",
+      "description": "Secret-free installer filename.",
       "type": "string"
+    },
+    "format": {
+      "$ref": "#/$defs/InstallerFormat",
+      "description": "Exact installer format frozen by publication."
     },
     "installerSha256": {
       "description": "Installer digest; never used as the installation candidate identity.",
@@ -156,6 +185,7 @@
     "channel",
     "target",
     "version",
+    "format",
     "filename",
     "length",
     "installerSha256",

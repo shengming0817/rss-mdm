@@ -20,6 +20,8 @@ pub use lifecycle::{Retirement, retire};
 use rss_mdm_authorization_service as authorization;
 
 /// Fresh product schema owned by this capability.
+pub const AGENT_NATIVE_SQL: &str = include_str!("../schema/agent-native.sql");
+pub const AGENT_BOOTSTRAP_SQL: &str = include_str!("../schema/agent-bootstrap.sql");
 pub const INSTALL_SQL: &str = include_str!("../schema/install.sql");
 /// Cross-owner references and exact runtime privileges; apply after all owner tables.
 pub const RELATIONS_SQL: &str = include_str!("../schema/relations.sql");

@@ -15,6 +15,8 @@ impl ExecutionService {
         device: &str,
         audit: &RequestAudit,
     ) -> Result<()> {
+        self.recover_bootstrap_in(tx, device, audit).await?;
+        self.cleanup_bootstrap_in(tx, device, audit).await?;
         self.settle_agent_install_in(tx, device).await?;
         let Some((policy, version, package, deadline)) =
             self.agent_install_candidate_in(tx, device).await?
@@ -30,6 +32,7 @@ impl ExecutionService {
             task: package.native_task(operation_id)?,
         };
         let authority = authority::ExecutionAuthority::AgentInstall {
+            stage: authority::AgentInstallStage::Install,
             source_objects: vec![],
             required: input.task.permissions()?,
             package: Box::new(package),
@@ -88,6 +91,8 @@ impl ExecutionService {
                 .map(|_| rss_mdm_audit_integration::FailureReason::Transaction),
         );
         result?;
+        self.queue_bootstrap_in(tx, device, operation_id, audit)
+            .await?;
         let target = service::target(tx.tenant_id(), device);
         rss_reconcile_postgres::messaging::wake_in(tx, &target, (), |_, _| {
             Box::pin(async { Ok(()) })
@@ -100,9 +105,6 @@ impl ExecutionService {
         tx: &mut PgTransaction<'_>,
         device: &str,
     ) -> Result<Option<(Uuid, Uuid, Package, i64)>> {
-        if self.inputs.agent_installation.packages.is_empty() {
-            return Ok(None);
-        }
         let (registration, generation) = match storage::current_registration(
             tx,
             device,
@@ -148,16 +150,6 @@ impl ExecutionService {
             _ => return Ok(None),
         };
         let target = SoftwareTarget::new(platform, architecture);
-        let Some(pin) = self.inputs.agent_installation.packages.get(&target) else {
-            return Ok(None);
-        };
-        let identity = match &pin.identity {
-            Identity::Windows { product, .. } => product.to_string(),
-            Identity::Macos { bundle, .. } => bundle.clone(),
-        };
-        if evidence.identity != identity {
-            return Ok(None);
-        }
         // One installation per source registration, shared across overlapping policies and revisions.
         // Repeated inventory and unknown delivery never create another installer execution.
         let tenant = tx.tenant_id().to_string();
@@ -203,10 +195,7 @@ impl ExecutionService {
                 let Some(package) = action.packages.get(&target) else {
                     continue;
                 };
-                if package.identity != pin.identity
-                    || package.artifact.sha256 != pin.sha256
-                    || package.version != pin.version
-                {
+                if !evidence.matches(&package.detection_identity()) {
                     return Ok(None);
                 }
                 let fingerprint = crate::transaction::fingerprint(package)?;
@@ -356,7 +345,7 @@ impl ExecutionService {
     ) -> Result<()> {
         let tenant = tx.tenant_id().to_string();
         let name = device.to_owned();
-        let ids=tx.with_connection(move|c|Box::pin(async move{sqlx::query_scalar::<_,Uuid>("SELECT o.id FROM mdm_commands.operations o JOIN rss_device_command.commands d ON d.tenant_id=o.tenant_id AND d.command_id=o.id::text JOIN mdm_access.registrations r ON(r.tenant_id,r.id,r.generation)=(o.tenant_id,o.registration,o.registration_generation) WHERE o.tenant_id=$1::uuid AND o.device=$2 AND r.state='active' AND o.authority->>'kind'='agent_install' AND d.status IN('published','received') ORDER BY o.id LIMIT 64").bind(tenant).bind(name).fetch_all(c).await})).await?;
+        let ids=tx.with_connection(move|c|Box::pin(async move{sqlx::query_scalar::<_,Uuid>("SELECT o.id FROM mdm_commands.operations o JOIN rss_device_command.commands d ON d.tenant_id=o.tenant_id AND d.command_id=o.id::text JOIN mdm_access.registrations r ON(r.tenant_id,r.id,r.generation)=(o.tenant_id,o.registration,o.registration_generation) WHERE o.tenant_id=$1::uuid AND o.device=$2 AND r.state='active' AND o.authority->>'kind'='agent_install' AND o.authority->>'stage'='install' AND d.status IN('published','received') ORDER BY o.id LIMIT 64").bind(tenant).bind(name).fetch_all(c).await})).await?;
         for id in ids {
             let op = storage::load(tx, &self.protection, id).await?;
             let now = storage::now(tx).await?;
@@ -447,50 +436,90 @@ pub async fn installation_observation(
             })
         })
         .await??;
-    let mut after_dispatch = false;
     if let Some(fact) = &current
-        && let Identity::Windows { product, publisher } = &package.identity
+        && matches!(
+            package.identity,
+            Identity::WindowsMsi { .. } | Identity::WindowsMsix { .. }
+        )
     {
         let snapshot = fact.snapshot;
-        let product = product.to_string();
-        let publisher = publisher.clone();
         let query=tx.with_connection(move|c|Box::pin(async move {
-            sqlx::query_scalar::<_,serde_json::Value>("SELECT q.channel_state FROM mdm_windows.collections q JOIN mdm_commands.attempts a ON a.tenant_id=q.tenant_id AND a.operation=$2 AND a.phase='execute' JOIN mdm_commands.attempt_items i ON(i.tenant_id,i.attempt)=(a.tenant_id,a.id) WHERE q.tenant_id=$1::uuid AND q.id=$3 AND q.registration=$4 AND q.first_command>i.command AND q.channel_state->>'product'=$5 AND q.channel_state->>'publisher'=$6").bind(tenant.to_string()).bind(operation).bind(snapshot).bind(registration).bind(product).bind(publisher).fetch_optional(c).await
+            sqlx::query_scalar::<_,serde_json::Value>("SELECT q.channel_state FROM mdm_windows.collections q JOIN mdm_commands.attempts a ON a.tenant_id=q.tenant_id AND a.operation=$2 AND a.phase='execute' JOIN mdm_commands.attempt_items i ON(i.tenant_id,i.attempt)=(a.tenant_id,a.id) WHERE q.tenant_id=$1::uuid AND q.id=$3 AND q.registration=$4 AND q.first_command>i.command LIMIT 1")
+                .bind(tenant.to_string()).bind(operation).bind(snapshot).bind(registration).fetch_optional(c).await
         })).await?;
-        after_dispatch = sent && query.is_some();
+        let after_dispatch = sent && query.is_some();
         if after_dispatch {
             observed_at = Some(fact.received_at);
-            if fact.state == "absent" {
+            if fact.state == "absent"
+                && fact
+                    .evidence
+                    .as_ref()
+                    .is_some_and(|e| e.matches(&package.detection_identity()))
+            {
                 installation = "absent";
             }
-            if let Some(query) = query
-                && query["statuses"][0] == 200
-                && let Some(status) = query["values"][0].as_str()
+            if let Some(query) = query {
+                let key = package.detection_identity();
+                if let Some(probe) = query["probes"].as_array().and_then(|items| {
+                    items.iter().find(|p| {
+                        p["identity"]["product"].as_str() == Some(key.as_str())
+                            || p["identity"]["family"].as_str() == Some(key.as_str())
+                    })
+                }) && let Some(offset) = probe["offset"]
+                    .as_u64()
+                    .and_then(|v| usize::try_from(v).ok())
+                    && query["statuses"][offset] == 200
+                    && let Some(status) = query["values"][offset].as_str()
+                {
+                    installation = match &package.identity {
+                        Identity::WindowsMsix { .. } => match status {
+                            "0" => "pending",
+                            "1" => "installing",
+                            "2" => "failed",
+                            _ => "unknown",
+                        },
+                        _ => match rss_mdm_windows_mdm::software::progress(status) {
+                            rss_mdm_windows_mdm::software::Progress::Installing => "installing",
+                            rss_mdm_windows_mdm::software::Progress::UserRequired => {
+                                "user_required"
+                            }
+                            rss_mdm_windows_mdm::software::Progress::Failed => "failed",
+                            _ => "unknown",
+                        },
+                    };
+                }
+            }
+            if let Some(e) = &fact.evidence
+                && e.identity == package.detection_identity()
             {
-                use rss_mdm_windows_mdm::software::{Progress, progress};
-                installation = match progress(status) {
-                    Progress::Installing => "installing",
-                    Progress::UserRequired => "user_required",
-                    Progress::Failed => "failed",
-                    _ => "unknown",
-                };
+                match &package.identity {
+                    Identity::WindowsMsi { publisher, .. }
+                        if fact.state == "installed"
+                            && e.publisher.as_ref() == Some(publisher)
+                            && e.version.as_deref() == Some(package.version.as_str()) =>
+                    {
+                        installation = "installed"
+                    }
+                    Identity::WindowsMsix { identity, .. }
+                        if e.provisioned
+                            && e.publisher.as_ref() == Some(&identity.publisher)
+                            && e.version.as_deref()
+                                == Some(
+                                    identity
+                                        .version
+                                        .iter()
+                                        .map(u16::to_string)
+                                        .collect::<Vec<_>>()
+                                        .join(".")
+                                        .as_str(),
+                                ) =>
+                    {
+                        installation = "provisioned"
+                    }
+                    _ => (),
+                }
             }
         }
-    }
-    if after_dispatch
-        && let Some(fact) = &current
-        && fact.state == "installed"
-        && fact.evidence.as_ref().is_some_and(|e| {
-            e.version.as_deref() == Some(package.version.as_str())
-                && match &package.identity {
-                    Identity::Windows { product, publisher } => {
-                        e.identity == product.to_string() && e.publisher.as_ref() == Some(publisher)
-                    }
-                    Identity::Macos { .. } => false,
-                }
-        })
-    {
-        installation = "installed";
     }
     if matches!(package.identity, Identity::Macos { .. }) {
         use rss_mdm_apple_mdm::native::evidence::{Phase, ReceiptState};
@@ -534,6 +563,7 @@ pub async fn installation_observation(
         };
     }
     let bound=tx.with_connection(move|c|Box::pin(async move{sqlx::query_as::<_,(Uuid,String,String)>("SELECT r.id,r.device,r.state FROM mdm_access.agent_grants e JOIN mdm_access.registrations r ON(r.tenant_id,r.agent_grant_id)=(e.tenant_id,e.id) WHERE e.tenant_id=$1::uuid AND e.source='native' AND e.native_authority->>'installation'=$2::uuid::text").bind(tenant.to_string()).bind(operation).fetch_optional(c).await})).await?;
+    let bootstrap=tx.with_connection(move|c|Box::pin(async move {sqlx::query_scalar::<_,serde_json::Value>("SELECT jsonb_build_object('state',state,'delivery',delivery,'cleanup',cleanup,'cleanupComplete',cleanup_complete,'cleanupRetryAt',cleanup_retry_at,'deadline',deadline) FROM mdm_access.agent_bootstraps WHERE tenant_id=$1::uuid AND installation=$2 AND active").bind(tenant.to_string()).bind(operation).fetch_optional(c).await})).await?;
     let registered = if let Some((id, device, state)) = bound {
         let profile = channels::agent_binding_in(tx, agent, id).await?;
         serde_json::json!({"deviceId":device,"registrationId":id,"state":state,"capabilities":profile.map(|p|p.capabilities)})
@@ -541,6 +571,6 @@ pub async fn installation_observation(
         serde_json::Value::Null
     };
     Ok(
-        serde_json::json!({"protocol":source.as_str(),"delivery":delivery,"installation":installation,"agentRegistration":registered,"observedAt":observed_at}),
+        serde_json::json!({"protocol":source.as_str(),"delivery":delivery,"installation":installation,"agentRegistration":registered,"bootstrap":bootstrap,"observedAt":observed_at}),
     )
 }

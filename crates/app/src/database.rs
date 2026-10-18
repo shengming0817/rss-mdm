@@ -236,7 +236,7 @@ pub(crate) async fn admit_audit_runtime(
             (store, &failure),
             |(store, failure), tx| {
                 Box::pin(async move {
-                    match store.lock_in(tx).await {
+                    match store.validate_in(tx).await {
                         Ok(()) => Ok(()),
                         Err(error) => {
                             *failure.lock().expect("startup audit failure") =

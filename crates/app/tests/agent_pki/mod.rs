@@ -38,6 +38,22 @@ pub(crate) fn deployment() -> serde_json::Value {
 }
 struct NoNative;
 impl NativeAdmission for NoNative {
+    fn bootstrap<'a>(
+        &'a self,
+        _: &'a mut sqlx::PgConnection,
+        _: &'a rss_mdm_registration_service::agent::native::Source,
+    ) -> Pending<'a, ()> {
+        Box::pin(async { Err(rss_mdm_registration_service::Error::Forbidden) })
+    }
+    fn grant<'a>(
+        &'a self,
+        _: &'a mut sqlx::PgConnection,
+        _: &'a rss_mdm_registration_service::agent::native::Source,
+        _: &'a rss_mdm_agent_wire::enroll::NativeGrantRequest,
+    ) -> Pending<'a, (rss_mdm_agent_wire::enroll::GrantReceipt, bool)> {
+        Box::pin(async { Err(rss_mdm_registration_service::Error::Forbidden) })
+    }
+
     fn validate<'a>(
         &'a self,
         _c: &'a mut sqlx::PgConnection,
@@ -95,6 +111,7 @@ async fn service_with_provider(
         origin: pki.origin.clone(),
         configuration_signer: Arc::new(crate::test_support::agent::fixture_signer()?),
         installations: Arc::new(crate::agent_configurations::Installations),
+        bootstrap: None,
         binding: Arc::new(crate::agent::Bindings),
         native: Arc::new(NoNative),
     })?))
@@ -190,6 +207,7 @@ async fn renewal_grant_lookup_survives_expired_identity_without_writing_authorit
             origin: pki.origin.clone(),
             configuration_signer: Arc::new(crate::test_support::agent::fixture_signer()?),
             installations: Arc::new(crate::agent_configurations::Installations),
+            bootstrap: None,
             binding: Arc::new(crate::agent::Bindings),
             native: Arc::new(NoNative),
         })?))

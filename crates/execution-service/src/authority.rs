@@ -4,10 +4,18 @@ use crate::{Error, authorization::context::AuthorizedPrincipal, database::db};
 use serde::{Deserialize, Serialize};
 use sqlx::PgConnection;
 
+#[derive(Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub enum AgentInstallStage {
+    Install,
+    Bootstrap,
+    Cleanup { bootstrap: uuid::Uuid },
+}
 #[derive(Clone, Deserialize, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ExecutionAuthority {
     AgentInstall {
+        stage: AgentInstallStage,
         source_objects: Vec<crate::source_authority::DeviceObject>,
         required: Vec<Permission>,
         package: Box<crate::agent_install::Package>,
@@ -48,6 +56,10 @@ impl ExecutionAuthority {
         c: &mut PgConnection,
     ) -> Result<bool, Error> {
         match self {
+            Self::AgentInstall {
+                stage: AgentInstallStage::Cleanup { .. },
+                ..
+            } => crate::agent_install::cleanup_authorized_on(c, self).await,
             Self::AgentInstall {
                 tenant,
                 version,
@@ -155,7 +167,11 @@ impl ExecutionAuthority {
     }
     pub fn agent_package(&self) -> Option<&crate::agent_install::Package> {
         match self {
-            Self::AgentInstall { package, .. } => Some(package),
+            Self::AgentInstall {
+                stage: AgentInstallStage::Install,
+                package,
+                ..
+            } => Some(package),
             _ => None,
         }
     }
@@ -251,11 +267,24 @@ impl ExecutionAuthority {
         now: i64,
     ) -> Result<bool, Error> {
         match self {
-            Self::AgentInstall { .. } => {
-                if permission != Permission::SoftwareDeploy {
+            Self::AgentInstall { stage, .. } => {
+                let allowed = match stage {
+                    AgentInstallStage::Install => permission == Permission::SoftwareDeploy,
+                    AgentInstallStage::Bootstrap | AgentInstallStage::Cleanup { .. } => matches!(
+                        permission,
+                        Permission::SecurityOperate
+                            | Permission::ConfigurationWrite
+                            | Permission::Enrollment
+                    ),
+                };
+                if !allowed {
                     return Ok(false);
                 }
-                crate::agent_install::authorized_on(source, conn, self, now).await
+                if matches!(stage, AgentInstallStage::Cleanup { .. }) {
+                    crate::agent_install::cleanup_authorized_on(conn, self).await
+                } else {
+                    crate::agent_install::authorized_on(source, conn, self, now).await
+                }
             }
             Self::DeviceControl { evidence, .. } | Self::Credential { evidence, .. } => {
                 for grant in evidence {

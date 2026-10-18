@@ -68,6 +68,14 @@
     {
       "type": "Package",
       "file": "package-v1.schema.json"
+    },
+    {
+      "type": "NativeEnrollmentRequest",
+      "file": "native-enrollment-request-v1.schema.json"
+    },
+    {
+      "type": "NativeEnrollmentReceipt",
+      "file": "native-enrollment-receipt-v1.schema.json"
     }
   ]
 }

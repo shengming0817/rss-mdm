@@ -290,7 +290,10 @@ pub(crate) async fn complete(
     let credential = mount.credential(checked.fingerprint())?;
     let digest =
         crate::enrollment::digest(&("enrollment_issue", d.id, &intent.csr, &intent.configuration));
-    let operation = Operation::from_coordinates(&d, &digest);
+    let operation = match authority {
+        IssuanceAuthority::Native(admission) => Operation::from_admission(admission, &digest),
+        IssuanceAuthority::Password(_, _) => Operation::from_coordinates(&d, &digest),
+    };
     let budget = rss_mdm_audit_integration::budget::AuditBudget::retirement(None);
     let control = budget.control();
     let attempt = store

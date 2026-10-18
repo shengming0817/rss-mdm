@@ -6,6 +6,7 @@ pub mod mutation;
 pub mod providers;
 pub mod recovery;
 pub mod registry;
+pub mod scep;
 pub mod signing;
 pub const INSTALL_SQL: &str = include_str!("../schema/install.sql");
 pub const ACCESS_CONTRACT: &str = include_str!("access-contract.json");

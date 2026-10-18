@@ -40,3 +40,37 @@ async fn audit_startup_rejects_each_borrowed_owner_snapshot_isolation() {
         runtime.close().await;
     }
 }
+
+#[tokio::test]
+#[ignore = "MODULE=audit.integrity: actual borrowed worker startup permissions"]
+async fn audit_startup_validates_each_borrowed_owner_permissions() {
+    let mode = super::super::integrity(true).unwrap();
+    let store = audit_store_with_integrity(mode).await;
+    for role in [
+        "mdm_flow_runtime",
+        "mdm_command_runtime",
+        "mdm_software_driver",
+    ] {
+        let runtime = runtime_role(tenant(), role).await;
+        for table in [
+            "mdm_audit.receipts",
+            "rss_audit.records",
+            "rss_ledger.entries",
+        ] {
+            sql(&format!("GRANT UPDATE ON {table} TO {role}"));
+            let result = crate::database::admit_audit_runtime(&runtime, &store, tenant()).await;
+            sql(&format!("REVOKE UPDATE ON {table} FROM {role}"));
+            assert!(
+                matches!(
+                    result,
+                    Err(Error::Unavailable(crate::Failure::AuditAdmission))
+                ),
+                "{role} {table}: {result:?}"
+            );
+            crate::database::admit_audit_runtime(&runtime, &store, tenant())
+                .await
+                .unwrap();
+        }
+        runtime.close().await;
+    }
+}

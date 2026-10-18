@@ -1,6 +1,7 @@
 //! Purpose-bound certificate validation and signing; callers own enrollment state.
 pub mod agent;
 pub mod apple;
+pub mod bootstrap;
 mod peer;
 pub mod windows;
 pub use peer::HandshakePeer;

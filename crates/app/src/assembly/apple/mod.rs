@@ -1,7 +1,6 @@
 //! Apple file loading, TLS listener configuration and channel construction.
 pub(crate) mod config;
 use crate::{ConfigIssue, Error};
-use base64::Engine;
 #[cfg(not(test))]
 use rss_mdm_certificate::apple as certificate;
 use std::sync::Arc;
@@ -19,7 +18,6 @@ impl Apple {
         config: config::Config,
         now: i64,
         providers: Arc<rss_mdm_pki_service::providers::Providers>,
-        agent_identity: Option<rss_mdm_execution_service::agent_install::Identity>,
     ) -> Result<Self, Error> {
         let trust = crate::device_pki::load(
             &config.trust_file,
@@ -92,7 +90,6 @@ impl Apple {
                 push,
                 challenge_key,
                 notify_key,
-                agent_identity,
                 providers,
             )
             .with_account_keys(account_keys),
@@ -131,15 +128,8 @@ fn load_push(config: &config::Config) -> Result<rss_mdm_apple_channel::push::Pus
 }
 fn webhook_key(config: &config::Webhook) -> Result<ring::hmac::Key, Error> {
     let secret = crate::config::read(&config.secret_file, 1024, true)?;
-    let secret = zeroize::Zeroizing::new(
-        base64::engine::general_purpose::STANDARD
-            .decode(secret.as_slice())
-            .map_err(|_| Error::Configuration(ConfigIssue::SecretContents))?,
-    );
-    if secret.len() < 32 {
-        return Err(Error::Configuration(ConfigIssue::SecretContents));
-    }
-    Ok(ring::hmac::Key::new(ring::hmac::HMAC_SHA256, &secret))
+    rss_mdm_pki_service::scep::key(&secret)
+        .map_err(|_| Error::Configuration(ConfigIssue::SecretContents))
 }
 
 pub(crate) fn router(

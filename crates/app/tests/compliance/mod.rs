@@ -88,7 +88,9 @@ async fn grants(subject: &str, device: Option<&str>) -> Result<()> {
 }
 
 async fn task_phase(b: &mut Browser, router: &Router, path: &str, phase: &str) -> Result<Value> {
-    tokio::time::timeout(Duration::from_secs(30), async {
+    // Commit-unknown keeps the 30s claim lease; the recovery scan can add up to 5s.
+    // Leave execution time after that legitimate recovery window, as status() already does.
+    tokio::time::timeout(Duration::from_secs(45), async {
         loop {
             let value = ok(b, router, Method::GET, path, None).await?;
             if value["phase"] == phase {

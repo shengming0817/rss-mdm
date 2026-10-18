@@ -12,15 +12,26 @@ use uuid::Uuid;
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AgentEvidence {
+    pub catalog_digest: [u8; 32],
+    pub provisioned: bool,
+    pub checked_identities: Vec<String>,
     pub identity: String,
     pub publisher: Option<String>,
     pub version: Option<String>,
     pub architecture: Option<String>,
 }
+impl AgentEvidence {
+    pub fn matches(&self, identity: &str) -> bool {
+        self.checked_identities
+            .iter()
+            .any(|candidate| candidate == identity)
+    }
+}
 pub async fn start_in(
     c: &mut PgConnection,
     p: &DevicePrincipal,
     source: ReportSource,
+    catalog_digest: [u8; 32],
 ) -> Result<(Uuid, Scope, i64), Error> {
     let live = device::store::revalidate_source(c, p, source).await?;
     let (sequence, _) = device::store::allocate_report_in(
@@ -55,8 +66,8 @@ pub async fn start_in(
     )
     .await?;
     let attempt = Attempts::new(definition);
-    sqlx::query("INSERT INTO mdm_access.collection_runs(tenant_id,id,registration,source,epoch,scope,sequence,started_at,attempts,result,deadline) VALUES($1::uuid,$2,$3,$4,$5::uuid,$6,$7,$8,$9,'pending',CASE WHEN $4='mdm.apple' THEN clock_timestamp()+interval '5 minutes' END)")
-        .bind(p.tenant().to_string()).bind(id).bind(p.registration()).bind(source.as_str()).bind(scope.epoch().as_str()).bind(scope.encode().map_err(|_|Error::Malformed)?).bind(sequence).bind(at).bind(serde_json::to_string(&attempt).map_err(|_|Error::Malformed)?).execute(&mut *c).await.map_err(db)?;
+    sqlx::query("INSERT INTO mdm_access.collection_runs(tenant_id,id,registration,source,epoch,scope,sequence,started_at,attempts,result,evidence,deadline) VALUES($1::uuid,$2,$3,$4,$5::uuid,$6,$7,$8,$9,'pending',$10,CASE WHEN $4='mdm.apple' THEN clock_timestamp()+interval '5 minutes' END)")
+        .bind(p.tenant().to_string()).bind(id).bind(p.registration()).bind(source.as_str()).bind(scope.epoch().as_str()).bind(scope.encode().map_err(|_|Error::Malformed)?).bind(sequence).bind(at).bind(serde_json::to_string(&attempt).map_err(|_|Error::Malformed)?).bind(serde_json::json!({"catalogDigest":catalog_digest})).execute(&mut *c).await.map_err(db)?;
     Ok((id, scope, sequence))
 }
 pub async fn finish_in(

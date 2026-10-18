@@ -92,7 +92,7 @@ async fn publish_version(
     };
     let bytes = vec![if windows { 0x4e } else { 0x50 }; 128 * 1024 + 3];
     let candidate = serde_json::to_vec(
-        &json!({"wireVersion":1,"tenantId":case_tenant(),"target":{"platform":platform,"architecture":architecture},"version":version,"origin":"https://mdm.example.test:9445","signingKeys":base["task_signing"]["trusted_keys"],"packaging":if windows{json!({"kind":"nsis_exe","publisher":"RSS Test Publisher","signature_evidence":"external-signed-build:1"})}else{json!({"kind":"macos_pkg","team":"ABCDEFGHIJ","notarization_evidence":"external-notarized-build:1"})}}),
+        &json!({"wireVersion":1,"tenantId":case_tenant(),"target":{"platform":platform,"architecture":architecture},"version":version,"origin":"https://mdm.example.test:9445","signingKeys":base["task_signing"]["trusted_keys"],"packaging":if windows{json!({"kind":"nsis_exe","publisher":"RSS Test Publisher","signature_evidence":"external-signed-build:1"})}else{json!({"kind":"macos_pkg","bundle":"com.rss.agent","team":"ABCDEFGHIJ","notarization_evidence":"external-notarized-build:1"})}}),
     )?;
     let mut definition =
         publication_support::private_definition(f.registered["snapshot"].clone(), &bytes);

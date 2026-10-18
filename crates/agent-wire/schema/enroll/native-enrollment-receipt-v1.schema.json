@@ -1,0 +1,92 @@
+{
+  "$defs": {
+    "EnrollmentEntry": {
+      "description": "Platform-owned enrollment entry; opening it never proves enrollment completed.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "description": "Open Windows' standard device-enrollment UI for this HTTPS discovery authority.",
+          "properties": {
+            "kind": {
+              "const": "windows",
+              "type": "string"
+            },
+            "server": {
+              "description": "Organization's discovery server.",
+              "maxLength": 2048,
+              "pattern": "^https://[^/@?#\\s]+/?$",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "server"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Open the organization's HTTPS profile enrollment page; user/system approval remains required.",
+          "properties": {
+            "kind": {
+              "const": "macos",
+              "type": "string"
+            },
+            "url": {
+              "description": "Organization's managed enrollment entry.",
+              "maxLength": 2048,
+              "pattern": "^https://[^/@?#\\s]+(?:/[^#\\s]*)?$",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "url"
+          ],
+          "type": "object"
+        }
+      ]
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Non-secret native protocol coordinates. Opening the entry is not completion.",
+  "properties": {
+    "enrollmentId": {
+      "description": "Server-owned native registration request.",
+      "format": "uuid",
+      "type": "string"
+    },
+    "entry": {
+      "$ref": "#/$defs/EnrollmentEntry",
+      "description": "Standard OS entry fixed by the organization."
+    },
+    "expiresAt": {
+      "description": "Original handoff deadline in Unix seconds.",
+      "format": "int64",
+      "type": "integer"
+    },
+    "profileUrl": {
+      "description": "macOS profile POST location; absent on Windows.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "username": {
+      "description": "Windows protocol username; absent on macOS.",
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  },
+  "required": [
+    "enrollmentId",
+    "expiresAt",
+    "entry"
+  ],
+  "title": "NativeEnrollmentReceipt",
+  "type": "object",
+  "$id": "https://rss.example/agent/enroll/v1/NativeEnrollmentReceipt"
+}

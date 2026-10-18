@@ -174,6 +174,30 @@
         "paused"
       ],
       "delete_policy": null
+    },
+    {
+      "schema": "mdm_access",
+      "table": "agent_bootstraps",
+      "read_write": false,
+      "read_only": true,
+      "updates": [
+        "state",
+        "transaction_id",
+        "csr_digest",
+        "spki",
+        "fingerprint",
+        "certificate",
+        "deadline"
+      ],
+      "delete_policy": null
+    },
+    {
+      "schema": "mdm_access",
+      "table": "agent_native_enrollments",
+      "read_write": false,
+      "read_only": true,
+      "updates": [],
+      "delete_policy": null
     }
   ],
   "functions": [],

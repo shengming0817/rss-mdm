@@ -101,15 +101,31 @@ Agent 只收到单次可执行任务与服务端授权坐标，不消费 Policy 
 
 MDM 与 Agent 各自持有 DeviceId、注册世代、凭据、采集和策略。MDM 来源字段 `channel.agent.installation` 的 `absent` 才能触发安装；Agent 来源 `channel.mdm.enrollment` 的 `unenrolled` 才能触发标准入口。可以将这些字段用于动态 Group，再通过 Scope 分配策略。当前有效来源的最新完整观察是依据，没有 TTL 或最后连接时间门槛；未知、失败、第三方 MDM 和旧注册观察不会变成缺失。
 
-`action:{kind:"ensure_agent_installed",resource:{kind:"software",id,version,variants},runLifetimeSeconds}` 仅引用当前启用的固定 Agent 软件。发布需要覆盖未来成员的全设备 SoftwareDeploy 与 Enrollment 授权；它们随策略冻结，后续执行仍核对实际权限。Windows 采用固定 ProductID 的 Add/Exec；macOS 采用固定 PKG Manifest。版本、SHA-256、发布身份、无自定义参数和无依赖均需匹配部署 pin。已有 Agent 不自动升级，Scope 退出阻止尚未派发的新安装；已派发安装可在原期限内完成独立 Agent 注册，但当前策略版本、实际权限、软件生命周期和来源世代仍须有效。Scope 退出不卸载 Agent。重叠策略和重复报告共享来源注册下的一次安装；结果未知先继续查询，不重新运行安装器。单个操作仍受原始期限、取消及普通命令容量限制。
+`ensure_agent_installed` 沿用 Software Resource / Content → Agent 包发布 → Group / Scope → Policy → execution-service。Action 使用 `packages` 按平台和架构显式选择一个发布 releaseId；没有 latest、格式回退、自动升级或格式迁移。发布需要全设备 SoftwareDeploy 与 Enrollment 授权，执行和下载复核当前授权、发布状态及冻结摘要。普通软件没有 Agent 发布记录时不能获得引导权限。
 
-安装配置默认关闭。部署 `agent_installation`：`content_origin` 必须等于独立 Agent TLS origin，固定包由 enroll/v1 引导入口消费；`packages` 按 `windows_x86_64`、`windows_aarch64`、`macos_x86_64`、`macos_aarch64` 选择实际发布组合，每项包含 `identity`、`package`、`version`、`sha256`（32 个字节的 JSON 数组）。Windows identity 为 `{platform:"windows",product:"ProductID UUID",publisher:"签名发布者"}`；macOS 为 `{platform:"macos",receipt:"PKG receipt",bundle:"Agent bundle ID",team:"10 字符 Team ID"}`。这些值必须与普通 Software 目录中审核、上传、激活和批准的 release 相同。同平台不同架构必须使用同一产品身份。
+```json
+{
+  "kind": "ensure_agent_installed",
+  "packages": {
+    "windows_x86_64": "11111111-1111-4111-8111-111111111111",
+    "macos_aarch64": "22222222-2222-4222-8222-222222222222"
+  },
+  "schedule": {"trigger": {"kind": "registration"}, "misfire": {"kind": "coalesce_one"}, "notBefore": 1792195200, "until": 1792281600, "jitterSeconds": 0, "window": null},
+  "runLifetimeSeconds": 1800
+}
+```
+
+示例 releaseId 应替换为本租户实际发布结果，schedule 使用未来的实际窗口；完整 Policy 外壳、Group / Scope 和 CAS 发布步骤沿用本指南前文。Windows release 可以选择 MSI 或 MSIX：MSI 使用 ProductCode、DownloadInstall 与原生状态；MSIX 使用单个签名应用包的 HostedInstall、PFN 和设备 provisioning，禁止 bundle、外部依赖、用户安装及未签名包。PKG 使用 InstallEnterpriseApplication。EXE 可公开下载和独立安装，不能用于 MDM 首装。
+
+旧 `agent_installation` 配置已删除且拒绝解析。下载 origin 直接来自 `agent_pki.endpoint.origin`，包身份来自发布记录；不同架构无需共用安装身份。MDM→Agent 需要配置专用 `agent_pki.bootstrap` 与 `agent_bootstrap` PKI provider，详见[Agent 集成](agent-integration.md)。缺少引导 PKI 时不能发布此安装策略。
+
+安装投递和引导证书投递是同一冻结安装授权下的独立操作。检测覆盖发布目录中的历史身份，包括已撤回包；任一格式存在或状态未明时不会启动第二个安装器。重叠策略共享排他与去重，不同 release 选择明确冲突。Scope 退出阻止尚未投递的新安装；已投递操作只在原期限、原策略版本、当前权限和来源世代仍有效时继续。Scope 退出不卸载 Agent。
 
 Apple 新注册 profile 在启用该能力时申请已安装应用查询与企业应用安装 AccessRights；既有 profile 不会因服务器配置更新获得权限，需通过正常注册流程更新。采集要求 macOS 12+ 的明确 IsAppleSilicon 结果；Windows 只对明确的 64 位架构证据选择包。固定内容下载只暴露批准的包，不承载秘密，并复用单段 Range/ETag 和撤销检查。应分别读取操作中的原生 delivery、installation、独立 agentRegistration 与 capabilities；Acknowledged 不能证明安装完成。macOS 的 InstalledApplicationList 只证明同 bundle/version 的应用存在，不能核实签名 Team ID 或 PKG receipt，因此采集、策略诊断及原生 installation 均保持 unknown，不判 already_satisfied，也不据此重装。独立 Agent 注册及能力仍单独显示；配置中的 receipt/team 是批准产物的身份约束，不是设备侧签名证明。
 
 `action:{kind:"request_mdm_enrollment",organization:"本租户 UUID",runLifetimeSeconds}` 使用部署 `enrollment_entries:{windows:"https://发现服务域名",macos:"https://注册页面"}`，需要全设备 Enrollment 权限和 Agent 的 `mdm.enrollment.v1` 能力。任务有签名 Offer/Start permit，Windows 打开标准注册 UI，macOS 打开 HTTPS 注册页面，保留系统、账户和用户确认。`enrollment_result` 的 `opened`、`user_required`、`third_party_conflict`、`unsupported`、`failed`、`unknown` 分开保存；取消使用独立的 `{kind:"cancelled"}` 事件。opened 不证明 MDM 已注册。自动触发在同一 Agent 注册下去重；未知执行阻止重试，管理员显式 rerun 仍受当前权限、观察、期限和取消约束。
 
-两种动作分别配置与启停，不依赖另一通道先完成，也不使用跨通道设备关联。物理设备关联由 #2578 持有；生产 Agent 和安装包由独立客户端任务消费本契约。
+两种动作分别配置与启停。服务端通过冻结授权、任务和真实协议事实保存可信关联，保留独立 Device / Registration，不按序列号合并。生产 Agent、安装包及真实 OS 验收由后续客户端任务消费本契约。
 
 内容仓必须显式选择 `content.storage.kind=volume|s3`。服务端卷目录须存在、可写且为绝对路径；多实例共享同一目录。S3 配置参考 [S3 内容配置](../../fixtures/mdm-content-s3.example.json)，要求 HTTPS、启用版本控制的 bucket，以及指定 namespace 下对象读写和确切版本删除权限。实际对象前缀包含租户 UUID；下载始终经产品授权入口，不向客户端暴露 S3 凭据或地址。外部第三方下载 URL 不属于软件上传入口。
 

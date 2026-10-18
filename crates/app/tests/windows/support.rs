@@ -32,7 +32,7 @@ pub(crate) fn now() -> i64 {
 }
 pub(super) fn windows() -> anyhow::Result<Windows> {
     let config = serde_json::from_slice(&std::fs::read(root()?.join("windows.json"))?)?;
-    Ok(Windows::load(config, now(), fixture_providers()?, None)?)
+    Ok(Windows::load(config, now(), fixture_providers()?)?)
 }
 pub(super) async fn complete(
     store: &rss_mdm_audit_integration::AuditStore,
@@ -108,7 +108,6 @@ pub(crate) struct Host {
     resources: crate::test_support::Resources,
     pub(crate) root: PathBuf,
     pub(crate) app: Arc<Assembly>,
-    pub(crate) command_audit: Arc<rss_mdm_audit_integration::AuditStore>,
     pub(crate) notifications: crate::worker_wake::Listener,
     pub(crate) browser: Router,
     pub(crate) store: Arc<Database>,
@@ -252,15 +251,13 @@ impl Host {
         value["flow"]["storage"]["database"] = serde_json::json!({"host":"localhost","port":db.get_port(),"name":db.get_database().unwrap(),"user":"mdm_flow_runtime","password_file":management_password,"ca_file":root.join("ca.crt")});
         value["execution"]["database"] = value["flow"]["storage"]["database"].clone();
         value["execution"]["database"]["user"] = "mdm_command_runtime".into();
+        let _ = agent;
         let original: serde_json::Value =
             serde_json::from_slice(&std::fs::read(std::env::var("MDM_TEST_CONFIG")?)?)?;
         value["content"] = original["content"].clone();
         value["agent_pki"] = original["agent_pki"].clone();
         value["device_pki"] = original["device_pki"].clone();
         value["native_protection_key_file"] = original["native_protection_key_file"].clone();
-        if let Some(agent) = agent {
-            value["agent_installation"] = agent;
-        }
         if push {
             let secret = root.join(format!("wns-{}-secret", Uuid::new_v4()));
             std::fs::write(&secret, "fixture-secret")?;
@@ -369,10 +366,6 @@ impl Host {
                 .expect("Windows test configuration"),
             now(),
             crate::device_pki::providers(&config.device_pki)?,
-            config
-                .agent_installation
-                .identity(rss_mdm_policy::Platform::Windows)
-                .cloned(),
         )?;
         if let Some((mut binding, verifier, jit)) = entra {
             let view = provider(&identity, &secret, &binding.token, jit).await?;
@@ -425,9 +418,7 @@ impl Host {
             inputs: execution.inputs.clone(),
             protection: execution.protection.clone(),
             execution_runtime: execution.runtime.clone(),
-            audit_store: store
-                .audit_store(&crate::config::AuditConfig::Plain)
-                .await?,
+            audit_store: agent_audit.clone(),
             apple: None,
             execution: execution.service.clone(),
             flow: management,
@@ -467,7 +458,6 @@ impl Host {
             resources: Default::default(),
             root,
             app,
-            command_audit,
             notifications: crate::worker_wake::Listener::new(
                 crate::device::test_support::options("mdm_access")?,
                 rss_request_context::TenantId::parse(case_tenant())?,
@@ -778,13 +768,45 @@ impl Host {
         preparation: PeerPreparation,
         device: &str,
     ) -> anyhow::Result<Peer> {
+        self.peer_request(profile, self_service, preparation, device, None)
+            .await
+    }
+    pub(crate) async fn peer_from_agent_handoff(
+        &self,
+        id: Uuid,
+        password: String,
+    ) -> anyhow::Result<Peer> {
+        self.peer_request(
+            rss_mdm_registration_service::enrollment::WindowsProfile::Full,
+            false,
+            PeerPreparation::EnrollmentProtocol,
+            crate::test_support::case::name("tls-device"),
+            Some((id, password)),
+        )
+        .await
+    }
+    #[allow(
+        clippy::cognitive_complexity,
+        reason = "one controlled peer preserves real enrollment, current-credential setup and Agent-handoff protocol paths without duplicating identity construction"
+    )]
+    async fn peer_request(
+        &self,
+        profile: rss_mdm_registration_service::enrollment::WindowsProfile,
+        self_service: bool,
+        preparation: PeerPreparation,
+        device: &str,
+        handoff: Option<(Uuid, String)>,
+    ) -> anyhow::Result<Peer> {
         use x509_cert::der::{EncodePem, pem::LineEnding};
         let root = &self.root;
         let app = &self.app;
         let store = &self.store;
         let client = &self.client;
         let root_cert = &self.root_cert;
-        let plain = crate::enrollment::random();
+        let plain = handoff
+            .as_ref()
+            .map(|v| v.1.clone())
+            .unwrap_or_else(crate::enrollment::random);
         let (proof, receipt, seeded) = if matches!(preparation, PeerPreparation::CurrentCredential)
         {
             let proof = admin(case_tenant(), "admin-a").await?;
@@ -827,6 +849,16 @@ impl Host {
             .await?;
             tx.commit().await?;
             (proof, receipt, Some((intent, cert, provisioning)))
+        } else if let Some((id, _)) = &handoff {
+            let receipt = crate::enrollment::Receipt {
+                operation_id: Uuid::new_v4(),
+                enrollment_id: *id,
+                status: "pending".into(),
+                expires_at: now() + 300,
+                registration: None,
+                source: rss_mdm_inventory::ReportSource::MdmWindows,
+            };
+            (admin(case_tenant(), "admin-a").await?, receipt, None)
         } else {
             let (proof, _, receipt) = self
                 .enrollment_receipt(profile, self_service, &plain)
@@ -859,24 +891,35 @@ impl Host {
                 anyhow::bail!("missing issuance response")
             };
             ensure!(String::from_utf8_lossy(&result.provisioning.0).contains("AAUTHLEVEL"));
-            let auth = crate::enrollment::store::enrollment_authorization(
-                &store.registration(),
-                case_tenant(),
-                receipt.enrollment_id,
-                &Password::new(plain.clone())?,
-            )
-            .await?;
-            let csr = std::fs::read(root.join("device.csr"))?;
-            let intent = rss_mdm_windows_channel::issuance::issuance_intent(
-                &store.windows_store(),
-                &app.windows()?.channel,
-                &auth,
-                &proof,
-                (&csr, enrollment_type(profile)),
-                now(),
-            )
-            .await?;
-            let cert = sign_certificate(&app.windows()?.channel.ca, &intent).await?;
+            let (intent, cert) = if handoff.is_some() {
+                let mut tx = store.archive_pool().begin().await?;
+                crate::Database::configure_transaction(&mut tx, case_tenant()).await?;
+                let observed =
+                    issuance::fixture::observed(&mut tx, case_tenant(), receipt.enrollment_id)
+                        .await?;
+                tx.rollback().await?;
+                observed
+            } else {
+                let auth = crate::enrollment::store::enrollment_authorization(
+                    &store.registration(),
+                    case_tenant(),
+                    receipt.enrollment_id,
+                    &Password::new(plain.clone())?,
+                )
+                .await?;
+                let csr = std::fs::read(root.join("device.csr"))?;
+                let intent = rss_mdm_windows_channel::issuance::issuance_intent(
+                    &store.windows_store(),
+                    &app.windows()?.channel,
+                    &auth,
+                    &proof,
+                    (&csr, enrollment_type(profile)),
+                    now(),
+                )
+                .await?;
+                let cert = sign_certificate(&app.windows()?.channel.ca, &intent).await?;
+                (intent, cert)
+            };
             (intent, cert, result.provisioning.0)
         };
 

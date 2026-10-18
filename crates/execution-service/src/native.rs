@@ -121,28 +121,27 @@ async fn collection_result_eligible(
     session: u32,
     reference: &s::Reference,
 ) -> std::result::Result<bool, Error> {
-    let rows=sqlx::query("SELECT w.id,w.kind,w.template_state,r.scope,r.sealed_at IS NULL AND CASE w.kind WHEN 'agent' THEN r.deadline IS NULL OR r.deadline>clock_timestamp() WHEN 'template' THEN r.deadline IS NOT NULL AND r.deadline>clock_timestamp() ELSE false END AS live,w.kind='agent' AND w.request_message=$4 AND $5 BETWEEN w.first_command AND w.first_command+3 AS agent_match FROM mdm_windows.collections w JOIN mdm_access.collection_runs r USING(tenant_id,id) WHERE w.tenant_id=$1::uuid AND w.registration=$2 AND w.session_id=$3")
-        .bind(p.tenant().to_string()).bind(p.registration()).bind(session.to_string()).bind(i64::from(reference.message_id)).bind(i64::from(reference.command_id)).fetch_all(&mut *c).await.map_err(db)?;
+    let rows=sqlx::query("SELECT w.id,w.kind,w.template_state,r.scope,r.sealed_at IS NULL AND CASE w.kind WHEN 'agent' THEN r.deadline IS NULL OR r.deadline>clock_timestamp() WHEN 'template' THEN r.deadline IS NOT NULL AND r.deadline>clock_timestamp() ELSE false END AS live FROM mdm_windows.collections w JOIN mdm_access.collection_runs r USING(tenant_id,id) WHERE w.tenant_id=$1::uuid AND w.registration=$2 AND w.session_id=$3")
+        .bind(p.tenant().to_string()).bind(p.registration()).bind(session.to_string()).fetch_all(&mut *c).await.map_err(db)?;
     for row in rows {
         let id = row.try_get("id").map_err(db)?;
-        if row.try_get::<String, _>("kind").map_err(db)? == "template" {
-            let scope = serde_json::from_str(&row.try_get::<String, _>("scope").map_err(db)?)
-                .map_err(|_| protocol())?;
-            let state = open_collection_state(
-                protection,
-                &scope,
-                id,
-                &row.try_get::<Vec<u8>, _>("template_state").map_err(db)?,
-            )?;
-            if state.owns(reference.message_id, reference.command_id) {
-                return if row.try_get::<bool, _>("live").map_err(db)? {
-                    crate::actions::native_collection::delivery_eligible_on(source, c, p, id).await
-                } else {
-                    Ok(false)
-                };
+        let scope = serde_json::from_str(&row.try_get::<String, _>("scope").map_err(db)?)
+            .map_err(|_| protocol())?;
+        let state = open_collection_state(
+            protection,
+            &scope,
+            id,
+            &row.try_get::<Vec<u8>, _>("template_state").map_err(db)?,
+        )?;
+        if state.owns(reference.message_id, reference.command_id) {
+            if !row.try_get::<bool, _>("live").map_err(db)? {
+                return Ok(false);
             }
-        } else if row.try_get::<bool, _>("agent_match").map_err(db)? {
-            return row.try_get("live").map_err(db);
+            return if row.try_get::<String, _>("kind").map_err(db)? == "template" {
+                crate::actions::native_collection::delivery_eligible_on(source, c, p, id).await
+            } else {
+                Ok(true)
+            };
         }
     }
     // Capability prerequisites are bounded, registration-owned reads, never user operations.
@@ -558,7 +557,7 @@ pub(crate) async fn send_on(
         pending = true;
     }
     let cap=sqlx::query_as::<_,(String,i32)>("SELECT os_version,edition FROM mdm_commands.capabilities WHERE tenant_id=$1::uuid AND registration=$2 AND generation=$3").bind(&tenant).bind(p.registration()).bind(p.generation()).fetch_optional(&mut *c).await.map_err(db)?;
-    let rows=sqlx::query("SELECT o.id,o.device,o.registration,o.registration_generation,o.input_context,o.request,o.authority FROM mdm_commands.operations o JOIN rss_device_command.commands d ON d.tenant_id=o.tenant_id AND d.command_id=o.id::text WHERE o.tenant_id=$1::uuid AND o.registration=$2 AND o.registration_generation=$3 AND o.input_context->>'platform'='windows' AND o.gateway_accepted AND o.dispatch_failure IS NULL AND d.status IN('published','received') AND (o.input_context->>'deadline')::bigint>extract(epoch FROM clock_timestamp()) ORDER BY o.id LIMIT 64").bind(&tenant).bind(p.registration()).bind(p.generation()).fetch_all(&mut *c).await.map_err(db)?;
+    let rows=sqlx::query("SELECT o.id,o.device,o.registration,o.registration_generation,o.input_context,o.request,o.authority FROM mdm_commands.operations o JOIN rss_device_command.commands d ON d.tenant_id=o.tenant_id AND d.command_id=o.id::text WHERE o.tenant_id=$1::uuid AND o.registration=$2 AND o.registration_generation=$3 AND o.input_context->>'platform'='windows' AND o.gateway_accepted AND o.dispatch_failure IS NULL AND d.status IN('published','received') AND (o.input_context->>'deadline')::bigint>extract(epoch FROM clock_timestamp()) ORDER BY (o.authority->>'stage'='bootstrap') DESC NULLS LAST,o.id LIMIT 64").bind(&tenant).bind(p.registration()).bind(p.generation()).fetch_all(&mut *c).await.map_err(db)?;
     for row in rows {
         let op = super::input_storage::open_row(
             protection,
@@ -643,6 +642,18 @@ pub(crate) async fn send_on(
                 )
             })
             .transpose()?;
+        if let Some(package) = authority.agent_package()
+            && let crate::agent_install::Identity::WindowsMsix { minimum_os, .. } =
+                &package.identity
+            && let Some(context) = fresh
+            && context
+                .build
+                .is_none_or(|build| build < minimum_os.map(u32::from))
+        {
+            let failure = serde_json::json!({"platform":"windows","phase":"prepare","reason":"package_minimum_os","context":context});
+            sqlx::query("UPDATE mdm_commands.operations SET dispatch_failure=$3,revision=revision+1 WHERE tenant_id=$1::uuid AND id=$2 AND dispatch_failure IS NULL").bind(&tenant).bind(op.operation_id).bind(failure).execute(&mut *c).await.map_err(db)?;
+            continue;
+        }
         let frozen = old
             .as_ref()
             .map(|r| r.try_get::<Option<serde_json::Value>, _>("platform"))

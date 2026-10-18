@@ -111,8 +111,6 @@ pub struct Config {
     pub listen: SocketAddr,
     pub product_origin: String,
     #[serde(default)]
-    pub agent_installation: rss_mdm_execution_service::agent_install::Config,
-    #[serde(default)]
     pub enrollment_entries: rss_mdm_execution_service::enrollment::Entries,
     pub trusted_gateway: std::net::IpAddr,
     pub identity: Identity,
@@ -228,14 +226,6 @@ impl Config {
                         || a.management.origin == endpoint.origin
                 })
             {
-                return Err(Error::Configuration(ConfigIssue::AgentPki));
-            }
-        }
-        if !self.agent_installation.packages.is_empty() {
-            let crate::agent_pki::Config::StepCa { endpoint, .. } = &self.agent_pki else {
-                return Err(Error::Configuration(ConfigIssue::AgentPki));
-            };
-            if self.agent_installation.content_origin.trim_end_matches('/') != endpoint.origin {
                 return Err(Error::Configuration(ConfigIssue::AgentPki));
             }
         }

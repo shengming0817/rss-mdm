@@ -40,10 +40,29 @@ pub enum Packaging {
         publisher: String,
         signature_evidence: String,
     },
+    WindowsMsi {
+        publisher: String,
+        signature_evidence: String,
+    },
+    WindowsMsix {
+        publisher: String,
+        signature_evidence: String,
+    },
     MacosPkg {
+        bundle: String,
         team: String,
         notarization_evidence: String,
     },
+}
+impl Packaging {
+    fn format(&self) -> w::InstallerFormat {
+        match self {
+            Self::NsisExe { .. } => w::InstallerFormat::NsisExe,
+            Self::WindowsMsi { .. } => w::InstallerFormat::WindowsMsi,
+            Self::WindowsMsix { .. } => w::InstallerFormat::WindowsMsix,
+            Self::MacosPkg { .. } => w::InstallerFormat::MacosPkg,
+        }
+    }
 }
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -59,6 +78,9 @@ pub struct Publish {
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct Binding {
+    variant: String,
+    software: r::SoftwareSpec,
+    packaging: Packaging,
     resource: String,
     version: String,
     digest: [u8; 32],
@@ -115,6 +137,17 @@ fn definition<'a>(v: &'a r::Version, i: &Publish) -> Result<&'a r::SoftwareDefin
                 && x.layout.len() == 2
                 && x.layout.values().any(|key| key == &i.manifest_artifact)
         }
+        r::SoftwareBehavior::Msi(x) => {
+            i.target.platform == TaskPlatform::Windows && x.scope == r::SoftwareScope::System
+        }
+        r::SoftwareBehavior::Msix(x) => {
+            i.target.platform == TaskPlatform::Windows
+                && matches!(x.container, r::MsixContainer::Package { .. })
+                && matches!(x.deployment, r::MsixDeployment::DeviceProvisioning)
+                && x.dependencies.is_empty()
+                && definition.spec().dependencies.is_empty()
+                && !x.allow_unsigned
+        }
         r::SoftwareBehavior::Pkg(x) => {
             i.target.platform == TaskPlatform::Macos && x.scope == r::SoftwareScope::System
         }
@@ -138,16 +171,26 @@ fn metadata(
         Packaging::NsisExe {
             publisher,
             signature_evidence,
+        }
+        | Packaging::WindowsMsi {
+            publisher,
+            signature_evidence,
+        }
+        | Packaging::WindowsMsix {
+            publisher,
+            signature_evidence,
         } => {
             i.target.platform == TaskPlatform::Windows
                 && bounded(publisher)
                 && bounded(signature_evidence)
         }
         Packaging::MacosPkg {
+            bundle,
             team,
             notarization_evidence,
         } => {
             i.target.platform == TaskPlatform::Macos
+                && bounded(bundle)
                 && team.len() == 10
                 && team
                     .bytes()
@@ -188,7 +231,8 @@ fn metadata(
         channel: i.channel,
         target: i.target,
         version: manifest.version.clone(),
-        filename: filename(i.target).into(),
+        format: manifest.packaging.format(),
+        filename: filename(i.target, manifest.packaging.format()),
         length: installer.length(),
         installer_sha256: installer.digest().bytes(),
         candidate_sha256: Sha256::digest(bytes).into(),
@@ -203,13 +247,16 @@ struct Prepared<D> {
     _materials: PublicationMaterials<D>,
     verified: Box<dyn crate::catalog::VerifiedContent>,
 }
-fn filename(target: w::Target) -> &'static str {
-    match (target.platform, target.architecture) {
-        (TaskPlatform::Windows, TaskArchitecture::X86_64) => "rss-agent-windows-x86_64.exe",
-        (TaskPlatform::Windows, TaskArchitecture::Aarch64) => "rss-agent-windows-aarch64.exe",
-        (TaskPlatform::Macos, TaskArchitecture::X86_64) => "rss-agent-macos-x86_64.pkg",
-        (TaskPlatform::Macos, TaskArchitecture::Aarch64) => "rss-agent-macos-aarch64.pkg",
-    }
+fn filename(target: w::Target, format: w::InstallerFormat) -> String {
+    let platform = match target.platform {
+        TaskPlatform::Windows => "windows",
+        TaskPlatform::Macos => "macos",
+    };
+    let arch = match target.architecture {
+        TaskArchitecture::X86_64 => "x86_64",
+        TaskArchitecture::Aarch64 => "aarch64",
+    };
+    format!("rss-agent-{platform}-{arch}.{}", format.extension())
 }
 async fn replay_in(
     tx: &mut rss_transactional_messaging_postgres::PgTransaction<'_>,
@@ -281,7 +328,20 @@ async fn prepare<C: Materials>(
         .verify(&materials.manifest)
         .map_err(|_| invalid())?;
     let manifest: Manifest = serde_json::from_slice(&materials.manifest).map_err(|_| invalid())?;
-    if manifest.version != def.spec().version {
+    let format_matches = matches!(
+        (&manifest.packaging, &def.spec().behavior),
+        (Packaging::NsisExe { .. }, r::SoftwareBehavior::Exe(_))
+            | (Packaging::WindowsMsi { .. }, r::SoftwareBehavior::Msi(_))
+            | (Packaging::WindowsMsix { .. }, r::SoftwareBehavior::Msix(_))
+            | (Packaging::MacosPkg { .. }, r::SoftwareBehavior::Pkg(_))
+    );
+    if let (Packaging::WindowsMsix { publisher, .. }, r::SoftwareBehavior::Msix(native)) =
+        (&manifest.packaging, &def.spec().behavior)
+        && publisher != &native.identity.publisher
+    {
+        return Err(invalid());
+    }
+    if !format_matches || manifest.version != def.spec().version {
         return Err(invalid());
     }
     let package = metadata(
@@ -293,6 +353,9 @@ async fn prepare<C: Materials>(
         Uuid::new_v4(),
     )?;
     let binding = Binding {
+        variant: i.variant.clone(),
+        software: def.spec().clone(),
+        packaging: manifest.packaging.clone(),
         resource: i.resource.clone(),
         version: i.version.clone(),
         digest: version.digest().bytes(),
@@ -583,4 +646,63 @@ pub async fn withdraw<C: ManagementContentPort>(
   let fact=Fact::business(a,&format!("agent-package-withdraw:{operation}"),hash,200,"success",None)?;
   app.audit.append_in(tx,&fact,old.is_some()).await?;p.check_live()?;Ok(())
  }),TransactionOwner::SoftwareCatalog).await
+}
+
+/// Current published Agent candidate. Constructed only after release and software admission.
+pub struct AdmittedPackage {
+    pub metadata: w::Package,
+    pub resource: String,
+    pub version: String,
+    pub variant: String,
+    pub digest: [u8; 32],
+    pub lifecycle: [u8; 32],
+    pub software: r::SoftwareSpec,
+    pub packaging: Packaging,
+}
+/// Resolve an explicit release; ordinary Software resources cannot authorize Agent bootstrap.
+pub async fn resolve_in(
+    c: &mut sqlx::PgConnection,
+    tenant: TenantId,
+    id: Uuid,
+) -> Result<AdmittedPackage, Error> {
+    let (metadata, binding) = current_on(c, tenant, id).await?;
+    Ok(AdmittedPackage {
+        metadata,
+        resource: binding.resource,
+        version: binding.version,
+        variant: binding.variant,
+        digest: binding.digest,
+        lifecycle: binding.lifecycle,
+        software: binding.software,
+        packaging: binding.packaging,
+    })
+}
+
+/// Historical package identities are observation targets, not deployment authority.
+/// Withdrawn packages remain detectable so another format cannot silently reinstall the Agent.
+pub async fn known_in(
+    c: &mut sqlx::PgConnection,
+    tenant: TenantId,
+) -> Result<Vec<AdmittedPackage>, Error> {
+    let rows = sqlx::query("SELECT document,binding FROM mdm_agent_packages.releases WHERE tenant_id=$1::uuid ORDER BY id")
+        .bind(tenant.to_string()).fetch_all(c).await.map_err(|_| storage())?;
+    rows.into_iter()
+        .map(|row| {
+            let metadata = serde_json::from_value(row.try_get("document").map_err(|_| storage())?)
+                .map_err(|_| storage())?;
+            let binding: Binding =
+                serde_json::from_value(row.try_get("binding").map_err(|_| storage())?)
+                    .map_err(|_| storage())?;
+            Ok(AdmittedPackage {
+                metadata,
+                resource: binding.resource,
+                version: binding.version,
+                variant: binding.variant,
+                digest: binding.digest,
+                lifecycle: binding.lifecycle,
+                software: binding.software,
+                packaging: binding.packaging,
+            })
+        })
+        .collect()
 }

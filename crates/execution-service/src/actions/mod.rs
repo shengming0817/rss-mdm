@@ -19,3 +19,5 @@ pub mod history;
 pub(crate) mod software;
 
 pub(crate) mod evidence;
+
+mod native_enrollment;

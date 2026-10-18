@@ -229,6 +229,7 @@ impl ExecutionService {
         audit: &RequestAudit,
     ) -> Result<Value> {
         if let ExecutionAuthority::AgentInstall {
+            stage: crate::authority::AgentInstallStage::Install,
             version,
             source_objects,
             ..
@@ -250,8 +251,35 @@ impl ExecutionService {
                 })
                 .await??;
         }
+        if matches!(&input.task,Task::Macos{request:rss_mdm_apple_mdm::native::request::Request::Command{command}} if command.request_type=="DeviceLock")
+            && !matches!(
+                &authority,
+                ExecutionAuthority::DeviceControl {
+                    action: crate::device_control::Kind::Lock,
+                    ..
+                }
+            )
+        {
+            return Err(Error::Unsupported.into());
+        }
         if crate::recovery_credentials::requires_owner(&input.task)
             && !matches!(authority, ExecutionAuthority::Credential { .. })
+        {
+            return Err(Error::Unsupported.into());
+        }
+        if let ExecutionAuthority::AgentInstall {
+            stage: crate::authority::AgentInstallStage::Cleanup { bootstrap },
+            package,
+            ..
+        } = &authority
+            && (input.target != NativeTarget::Device
+                || checked_input(serde_json::to_vec(&input.task))?
+                    != checked_input(serde_json::to_vec(
+                        &crate::bootstrap_delivery::cleanup_task(
+                            package.target.parts().0,
+                            *bootstrap,
+                        ),
+                    ))?)
         {
             return Err(Error::Unsupported.into());
         }

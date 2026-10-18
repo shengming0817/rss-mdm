@@ -23,12 +23,12 @@ mod protection;
 pub mod push;
 pub mod renewal;
 mod trust_installation;
-mod webhook;
 pub use database::Store;
 pub use error::Error;
 use rss_mdm_apple_mdm::{profile, protocol};
 use rss_mdm_certificate::apple as certificate;
 use rss_mdm_execution_service as execution;
+use rss_mdm_pki_service::scep as webhook;
 mod diagnostic;
 pub use diagnostic::{ConfigIssue, Failure};
 use rss_mdm_registration_service::{device, enrollment as registration_enrollment};
@@ -50,7 +50,6 @@ pub struct Apple {
     #[cfg(feature = "integration")]
     pub(crate) ade_fixture: Option<ade::Fixture>,
     pub(crate) protection: Arc<rss_mdm_native_protection::Protector>,
-    pub(crate) agent_identity: Option<rss_mdm_execution_service::agent_install::Identity>,
     pub(crate) config: Config,
     pub(crate) authority: rss_mdm_device_trust::apple::AppleDeviceTrust,
     pub(crate) signer: certificate::ProfileSigner,
@@ -135,7 +134,6 @@ impl Apple {
         push: push::Push,
         challenge_key: ring::hmac::Key,
         notify_key: ring::hmac::Key,
-        agent_identity: Option<rss_mdm_execution_service::agent_install::Identity>,
         providers: Arc<rss_mdm_pki_service::providers::Providers>,
     ) -> Self {
         let configuration = protocol_identity(&config);
@@ -143,7 +141,6 @@ impl Apple {
             #[cfg(feature = "integration")]
             ade_fixture: None,
             protection,
-            agent_identity,
             config,
             authority,
             signer,
@@ -235,10 +232,6 @@ pub fn router(app: Arc<HttpState>, envelope: boundary::Envelope) -> axum::Router
                 axum::routing::get(ddm::asset),
             )
             .route("/mdm", put(checkin::manage))
-            .route(
-                "/api/v1/agent/enroll/native-grants",
-                axum::routing::post(checkin::register_agent),
-            )
             .with_state(app)
             .layer(axum::extract::DefaultBodyLimit::max(1024 * 1024)),
         envelope,

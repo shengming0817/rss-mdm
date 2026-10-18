@@ -87,6 +87,12 @@ pub(crate) async fn issue(
         .map_err(|_| Error::Unavailable(Failure::Protocol))?;
     let pending = prepare(app, &principal, &proof, &digest).await?;
     let profile = certificate::IssuanceProfile::decode(&pending.profile)?;
+    // Preparation can wait on the channel lock and freeze a later not-before time.
+    // Sign and validate against the current clock, never the earlier proof-check sample.
+    let now = app
+        .clock
+        .unix_seconds()
+        .ok_or(Error::Unavailable(Failure::Clock))?;
     let certificate = crate::issuance::sign_profile(
         app,
         &principal.tenant().to_string(),

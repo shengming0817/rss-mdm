@@ -8,6 +8,7 @@ autotests = false
 
 [dependencies]
 rss-mdm-recovery-credentials.workspace = true
+rss-mdm-certificate.workspace = true
 bytes.workspace = true
 zeroize.workspace = true
 rss-mdm-native-protection.workspace = true

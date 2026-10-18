@@ -4,105 +4,28 @@ use crate::agent_install;
 use crate::device::DevicePrincipal;
 use crate::frozen::Frozen;
 use rss_mdm_agent_wire::{enroll, runtime as wire};
-use rss_mdm_audit_integration::Fact;
 use sqlx::{PgConnection, Row};
 impl ExecutionService {
-    pub async fn managed_registration(
-        &self,
-        p: &DevicePrincipal,
-        source: rss_mdm_inventory::ReportSource,
-        input: &enroll::NativeGrantRequest,
-        audit: &RequestAudit,
-    ) -> std::result::Result<(enroll::GrantReceipt, bool), Error> {
-        input.validate().map_err(|_| Error::Malformed)?;
-        if p.tenant() != self.tenant || source == rss_mdm_inventory::ReportSource::AgentBuiltin {
-            return Err(Error::Forbidden);
-        }
-        audit.identify_device(p.registration());
-        audit.target_device(p.device());
-        audit.operation(input.operation_id, "agent_native_grant");
-        let budget = rss_mdm_audit_integration::budget::AuditBudget::new(Duration::from_secs(6));
-        let control = budget.control();
-        let result = self
-            .audit_store
-            .write(
-                self.tenant,
-                &control,
-                (self, p, source, input, audit),
-                |ctx, tx| {
-                    Box::pin(async move {
-                        let (service, p, source, input, audit) = *ctx;
-                        let (receipt, replay) = tx
-                            .with_connection_context(&mut (service, p, source, input), |ctx, c| {
-                                Box::pin(async move {
-                                    let (service, p, source, input) = *ctx;
-                                    service.register_managed_on(c, p, source, input).await
-                                })
-                            })
-                            .await?;
-                        let digest = rss_mdm_registration_service::enrollment::digest(&(
-                            "mdm.agent.native-grant/v1",
-                            input,
-                        ));
-                        let fact = Fact::business(
-                            audit,
-                            &format!(
-                                "agent-registration:device:{}:{}",
-                                p.registration(),
-                                input.operation_id
-                            ),
-                            digest.as_bytes(),
-                            201,
-                            "success",
-                            Some(input.installation_operation),
-                        )
-                        .map_err(Error::from)?;
-                        service
-                            .audit_store
-                            .append(tx, &fact, replay)
-                            .await
-                            .map_err(Error::from)?;
-                        if replay {
-                            audit.management_result(
-                                rss_mdm_audit_integration::ManagementResult::Replayed,
-                            );
-                        }
-                        audit.mark_commit_started();
-                        Ok::<_, Error>((receipt, replay))
-                    })
-                },
-            )
-            .await;
-        result.fold(
-            |v| {
-                audit.mark_committed();
-                Ok(v.into_value())
-            },
-            |e| Err(audit_error(e)),
-            |e| {
-                audit.mark_rolled_back();
-                Err(audit_error(e))
-            },
-            |_| {
-                audit.mark_rollback_failed();
-                Err(Error::RollbackFailed)
-            },
-            |_| Err(Error::CommitUnknown),
-            |e| Err(audit_error(e)),
-        )
-    }
     async fn register_managed_on(
         &self,
         c: &mut PgConnection,
         p: &DevicePrincipal,
         source: rss_mdm_inventory::ReportSource,
         input: &enroll::NativeGrantRequest,
+        bootstrap: Uuid,
     ) -> std::result::Result<(enroll::GrantReceipt, bool), Error> {
         rss_mdm_registration_service::admission::lock_in(c, &p.tenant().to_string()).await?;
         let grant = self
-            .authorize_managed_on(c, p, source, input.installation_operation, &input.runtime)
+            .authorize_managed_on(
+                c,
+                p,
+                source,
+                input.installation_operation,
+                Some(&input.runtime),
+                true,
+            )
             .await?;
-        let native = serde_json::json!({"installation":input.installation_operation,"registration":p.registration(),"credential":p.credential(),"generation":p.generation(),"source":source,"runtime":input.runtime});
+        let native = serde_json::json!({"installation":input.installation_operation,"registration":p.registration(),"credential":p.credential(),"generation":p.generation(),"source":source,"runtime":input.runtime,"bootstrap":bootstrap});
         rss_mdm_registration_service::agent::native::create_in(c, grant, input, &native)
             .await
             .map_err(Into::into)
@@ -113,7 +36,8 @@ impl ExecutionService {
         p: &DevicePrincipal,
         source: rss_mdm_inventory::ReportSource,
         installation: Uuid,
-        runtime: &enroll::RuntimeProfile,
+        runtime: Option<&enroll::RuntimeProfile>,
+        require_dispatch: bool,
     ) -> std::result::Result<rss_mdm_registration_service::enrollment::managed::Authority, Error>
     {
         rss_mdm_inventory_postgres::lock_watermark_in(c, self.tenant)
@@ -168,24 +92,26 @@ impl ExecutionService {
         if request.task.source() != source {
             return Err(Error::Forbidden);
         }
-        let (profile, arch) = package.target.parts();
-        if !matches!(
-            (profile, runtime.platform),
-            (
-                rss_mdm_policy::Platform::Windows,
-                wire::TaskPlatform::Windows
-            ) | (rss_mdm_policy::Platform::Macos, wire::TaskPlatform::Macos)
-        ) || !matches!(
-            (arch, runtime.architecture),
-            (
-                rss_mdm_policy::Architecture::X86_64,
-                wire::TaskArchitecture::X86_64
-            ) | (
-                rss_mdm_policy::Architecture::Aarch64,
-                wire::TaskArchitecture::Aarch64
-            )
-        ) {
-            return Err(Error::Forbidden);
+        if let Some(runtime) = runtime {
+            let (profile, arch) = package.target.parts();
+            if !matches!(
+                (profile, runtime.platform),
+                (
+                    rss_mdm_policy::Platform::Windows,
+                    wire::TaskPlatform::Windows
+                ) | (rss_mdm_policy::Platform::Macos, wire::TaskPlatform::Macos)
+            ) || !matches!(
+                (arch, runtime.architecture),
+                (
+                    rss_mdm_policy::Architecture::X86_64,
+                    wire::TaskArchitecture::X86_64
+                ) | (
+                    rss_mdm_policy::Architecture::Aarch64,
+                    wire::TaskArchitecture::Aarch64
+                )
+            ) {
+                return Err(Error::Forbidden);
+            }
         }
         let now: i64 =
             sqlx::query_scalar("SELECT floor(extract(epoch FROM clock_timestamp()))::bigint")
@@ -200,7 +126,8 @@ impl ExecutionService {
                     .as_str(),
                 "published" | "received" | "applied"
             )
-            || !agent_install::dispatched_on(c, &tenant, request.operation_id).await?
+            || (require_dispatch
+                && !agent_install::dispatched_on(c, &tenant, request.operation_id).await?)
         {
             return Err(Error::Forbidden);
         }
@@ -244,17 +171,49 @@ impl ExecutionService {
         Ok(grant)
     }
 }
-fn audit_error(e: rss_audit_postgres::TransactionError<Error>) -> Error {
-    match e {
-        rss_audit_postgres::TransactionError::Operation(e) => e,
-        rss_audit_postgres::TransactionError::Audit(e) => {
-            rss_mdm_audit_integration::Error::from(e).into()
-        }
-        rss_audit_postgres::TransactionError::Rollback { .. } => Error::RollbackFailed,
-    }
-}
-
 impl rss_mdm_registration_service::agent::NativeAdmission for ExecutionService {
+    fn bootstrap<'a>(
+        &'a self,
+        c: &'a mut PgConnection,
+        source: &'a rss_mdm_registration_service::agent::native::Source,
+    ) -> rss_mdm_registration_service::agent::Pending<'a, ()> {
+        Box::pin(async move {
+            let delivered: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_access.agent_bootstraps b WHERE b.tenant_id=$1::uuid AND b.id=$2 AND (EXISTS(SELECT 1 FROM mdm_commands.attempts a WHERE a.tenant_id=b.tenant_id AND a.operation=b.delivery AND a.phase='execute') OR EXISTS(SELECT 1 FROM mdm_apple.attempts a WHERE a.tenant_id=b.tenant_id AND a.operation=b.delivery AND a.phase='execute' AND a.state<>'pending')))")
+                .bind(self.tenant.to_string()).bind(source.bootstrap()).fetch_one(&mut *c).await.map_err(|_| rss_mdm_registration_service::Error::Storage)?;
+            if !delivered {
+                return Err(rss_mdm_registration_service::Error::Forbidden);
+            }
+            self.authorize_managed_on(
+                c,
+                source.principal(),
+                source.report_source(),
+                source.installation(),
+                None,
+                false,
+            )
+            .await
+            .map(|_| ())
+            .map_err(registration_error)
+        })
+    }
+    fn grant<'a>(
+        &'a self,
+        c: &'a mut PgConnection,
+        source: &'a rss_mdm_registration_service::agent::native::Source,
+        input: &'a enroll::NativeGrantRequest,
+    ) -> rss_mdm_registration_service::agent::Pending<'a, (enroll::GrantReceipt, bool)> {
+        Box::pin(async move {
+            self.register_managed_on(
+                c,
+                source.principal(),
+                source.report_source(),
+                input,
+                source.bootstrap(),
+            )
+            .await
+            .map_err(registration_error)
+        })
+    }
     fn validate<'a>(
         &'a self,
         c: &'a mut PgConnection,
@@ -267,6 +226,7 @@ impl rss_mdm_registration_service::agent::NativeAdmission for ExecutionService {
                 source.report_source(),
                 source.installation(),
                 source.runtime(),
+                true,
             )
             .await
             .map(|_| ())
@@ -277,5 +237,14 @@ impl rss_mdm_registration_service::agent::NativeAdmission for ExecutionService {
                 _ => rss_mdm_registration_service::Error::Storage,
             })
         })
+    }
+}
+
+fn registration_error(error: Error) -> rss_mdm_registration_service::Error {
+    match error {
+        Error::Forbidden | Error::Unauthorized => rss_mdm_registration_service::Error::Forbidden,
+        Error::Conflict => rss_mdm_registration_service::Error::Conflict,
+        Error::Malformed => rss_mdm_registration_service::Error::Malformed,
+        _ => rss_mdm_registration_service::Error::Storage,
     }
 }

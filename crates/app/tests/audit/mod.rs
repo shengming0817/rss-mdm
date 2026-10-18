@@ -33,6 +33,12 @@ async fn bytes(pool: &PgPool, tenant: TenantId) -> Result<Vec<Vec<u8>>> {
     .bind(tenant.to_string())
     .fetch_all(&mut *tx)
     .await?;
+    let mismatched: i64 = sqlx::query_scalar("SELECT count(*) FROM mdm_audit.receipts r JOIN rss_audit.records a USING(tenant_id,source_id,event_id) WHERE r.tenant_id=$1::uuid AND r.canonical<>a.canonical")
+        .bind(tenant.to_string()).fetch_one(&mut *tx).await?;
+    ensure!(
+        mismatched == 0,
+        "receipt must contain the actual staged canonical bytes"
+    );
     let receipts: i64 =
         sqlx::query_scalar("SELECT count(*) FROM mdm_audit.receipts WHERE tenant_id=$1::uuid")
             .bind(tenant.to_string())

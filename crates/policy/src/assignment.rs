@@ -212,8 +212,8 @@ pub enum Action {
     },
     /// Install only the product's approved Agent through the source MDM channel.
     EnsureAgentInstalled {
-        /// Exact approved Agent release; product identity is checked at publication.
-        resource: SoftwareResourceBinding,
+        /// One explicitly published Agent release per native target; no format fallback.
+        packages: std::collections::BTreeMap<SoftwareTarget, uuid::Uuid>,
         /// Source-channel scheduling and cooldown.
         #[serde(default = "default_schedule")]
         schedule: Schedule,
@@ -427,10 +427,10 @@ impl Action {
             | Self::NativeCollection { resource, .. }
             | Self::Execution { resource, .. }
             | Self::Configuration { resource, .. } => Some(resource.identity()),
-            Self::Software { resource, .. } | Self::EnsureAgentInstalled { resource, .. } => {
-                Some(resource.identity())
-            }
-            Self::Credential { .. } | Self::RequestMdmEnrollment { .. } => None,
+            Self::Software { resource, .. } => Some(resource.identity()),
+            Self::Credential { .. }
+            | Self::RequestMdmEnrollment { .. }
+            | Self::EnsureAgentInstalled { .. } => None,
         }
     }
     /// Validate calendar and lifetime semantics without owning any targets.
@@ -440,8 +440,14 @@ impl Action {
             | Self::AgentCollection { resource, .. }
             | Self::NativeCollection { resource, .. }
             | Self::Configuration { resource, .. } => resource.validate()?,
-            Self::Software { resource, .. } | Self::EnsureAgentInstalled { resource, .. } => {
-                resource.validate()?
+            Self::Software { resource, .. } => resource.validate()?,
+            Self::EnsureAgentInstalled { packages, .. } => {
+                if packages.is_empty()
+                    || packages.len() > 4
+                    || packages.values().any(uuid::Uuid::is_nil)
+                {
+                    return Err(Error::Malformed);
+                }
             }
             Self::Credential { operation, .. } => operation.validate()?,
             Self::RequestMdmEnrollment { .. } => (),

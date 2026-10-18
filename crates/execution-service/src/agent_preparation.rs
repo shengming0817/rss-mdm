@@ -1,80 +1,65 @@
-//! Policy publication and source authority for Agent installation.
+//! Agent installation freezes an explicitly published release, never deployment pins.
 use crate::agent_install::{FrozenInstall, Identity, Package};
-use crate::authorization::{self, Permission, context::AuthorizedPrincipal};
+use crate::authorization::{Permission, context::AuthorizedPrincipal};
 use crate::{Error, Inputs, transaction::*};
 use rss_mdm_authorization_service::UserGrant;
-use rss_mdm_policy::{SoftwareResourceBinding, schedule::Schedule};
+use rss_mdm_policy::{SoftwareTarget, schedule::Schedule};
 use rss_mdm_resource as resource;
 use rss_transactional_messaging_postgres::PgTransaction;
 use std::collections::BTreeMap;
 use uuid::Uuid;
 impl Inputs {
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "freeze inputs and current authority are explicit"
-    )]
     pub(crate) async fn freeze_agent_in(
         &self,
         tx: &mut PgTransaction<'_>,
         proof: &AuthorizedPrincipal,
-        snapshot: &authorization::Snapshot,
-        binding: &SoftwareResourceBinding,
+        snapshot: &crate::authorization::Snapshot,
+        releases: &BTreeMap<SoftwareTarget, Uuid>,
         schedule: &Schedule,
         lifetime: u32,
     ) -> Result<FrozenInstall> {
-        let config = &self.agent_installation;
-        config.validate()?;
-        let selection = binding;
-        let version = self
-            .active_version_in(tx, binding.id.as_str(), binding.version.as_str())
-            .await?;
-        let lifecycle = self.software.binding_in(tx, &version).await?;
+        if self.agent_origin.is_empty() || self.bootstrap.is_none() {
+            return Err(Error::Unsupported.into());
+        }
         let mut packages = BTreeMap::new();
-        for (target, key) in &selection.variants {
-            let pin = config.packages.get(target).ok_or(Error::Unsupported)?;
-            let (platform, architecture) = crate::agent_install::resource_target(*target);
-            let selected = self
-                .software
-                .resolve_in(
-                    tx,
-                    &rss_mdm_software_service::preparation::Selection {
-                        resource: binding.id.as_str(),
-                        version: binding.version.as_str(),
-                        digest: version.digest().bytes(),
-                        lifecycle,
-                        variant: key,
-                        uninstall: false,
-                    },
-                    rss_mdm_software_service::preparation::Target {
-                        platform,
-                        architecture,
-                    },
-                )
-                .await?;
-            let variant = selected
-                .version()
-                .resolve(
-                    platform,
-                    architecture,
-                    &checked_input(resource::Id::new(key))?,
-                )
-                .map_err(|_| Error::Malformed)?;
-            let resource::Declaration::Software { definition } = variant.declaration() else {
-                return Err(Error::Malformed.into());
+        for (target, id) in releases {
+            let tenant = tx.tenant_id();
+            let id = *id;
+            let release = tx
+                .with_connection(move |c| {
+                    Box::pin(async move {
+                        Ok(
+                            rss_mdm_software_service::agent_packages::resolve_in(c, tenant, id)
+                                .await
+                                .map_err(crate::agent_preparation::publication_error),
+                        )
+                    })
+                })
+                .await??;
+            let (platform, architecture) = target.parts();
+            let metadata = &release.metadata;
+            let expected_platform = match platform {
+                rss_mdm_policy::Platform::Windows => {
+                    rss_mdm_agent_wire::runtime::TaskPlatform::Windows
+                }
+                rss_mdm_policy::Platform::Macos => rss_mdm_agent_wire::runtime::TaskPlatform::Macos,
             };
-            let spec = definition.spec();
-            let artifact = spec
-                .artifacts
-                .get(spec.behavior.installer())
-                .ok_or(Error::Malformed)?
-                .clone();
-            checked_input(artifact.artifact())?;
-            if spec.package != pin.package
-                || spec.version != pin.version
-                || artifact.sha256 != pin.sha256
-                || spec.artifacts.len() != 1
-                || !spec.dependencies.is_empty()
-                || spec.behavior.bundle().is_some()
+            let expected_arch = match architecture {
+                rss_mdm_policy::Architecture::X86_64 => {
+                    rss_mdm_agent_wire::runtime::TaskArchitecture::X86_64
+                }
+                rss_mdm_policy::Architecture::Aarch64 => {
+                    rss_mdm_agent_wire::runtime::TaskArchitecture::Aarch64
+                }
+            };
+            if metadata.target.platform != expected_platform
+                || metadata.target.architecture != expected_arch
+                || metadata.origin != self.agent_origin
+            {
+                return Err(Error::Unsupported.into());
+            }
+            let spec = &release.software;
+            if !spec.dependencies.is_empty()
                 || spec.downgrade != resource::SoftwareDowngrade::Deny
                 || !spec.behavior.invocation().arguments.is_empty()
                 || !spec.behavior.invocation().environment.is_empty()
@@ -82,54 +67,141 @@ impl Inputs {
             {
                 return Err(Error::Unsupported.into());
             }
-            let exact = match (&pin.identity, &spec.behavior) {
-                (Identity::Windows { product, .. }, resource::SoftwareBehavior::Msi(native)) => {
-                    match &native.detect {
-                        resource::SoftwareDetection::MsiProduct {
-                            product_code,
-                            version,
-                        } => {
-                            Uuid::parse_str(product_code).ok() == Some(*product)
-                                && version == &pin.version
-                        }
-                        _ => false,
-                    }
-                }
-                (Identity::Macos { receipt, .. }, resource::SoftwareBehavior::Pkg(native)) => {
-                    match &native.detect {
-                        resource::SoftwareDetection::PkgReceipt {
-                            receipt: actual,
-                            version,
-                        } => actual == receipt && version == &pin.version,
-                        _ => false,
-                    }
-                }
-                _ => false,
-            };
-            if !exact {
-                return Err(Error::Unsupported.into());
+            let identity = identity(&release)?;
+            let artifact = spec
+                .artifacts
+                .get(spec.behavior.installer())
+                .ok_or(Error::Malformed)?
+                .clone();
+            if artifact.sha256 != metadata.installer_sha256 || artifact.length != metadata.length {
+                return Err(Error::Conflict.into());
             }
             packages.insert(
                 *target,
                 Package {
-                    identity: pin.identity.clone(),
+                    release: rss_mdm_agent_wire::enroll::configuration::Installation {
+                        release_id: id,
+                        candidate_sha256: metadata.candidate_sha256,
+                    },
+                    identity,
                     target: *target,
-                    version: pin.version.clone(),
+                    version: metadata.version.clone(),
                     artifact,
                     source: spec.source.clone(),
-                    content_origin: config.content_origin.clone(),
+                    content_origin: self.agent_origin.clone(),
                 },
             );
         }
         Ok(FrozenInstall {
-            resource: binding.clone(),
-            resource_digest: version.digest().bytes(),
-            lifecycle_binding: lifecycle,
             schedule: schedule.clone(),
             run_lifetime_seconds: lifetime,
             packages,
             deploy: UserGrant::all_devices(snapshot, proof, Permission::SoftwareDeploy)?,
             enrollment: UserGrant::all_devices(snapshot, proof, Permission::Enrollment)?,
         })
+    }
+}
+/// Windows PublisherId uses the first 64 SHA256 bits of the UTF-16LE publisher DN.
+fn family(name: &str, publisher: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let bytes: Vec<u8> = publisher
+        .encode_utf16()
+        .flat_map(u16::to_le_bytes)
+        .collect();
+    let digest = Sha256::digest(bytes);
+    let alphabet = b"0123456789abcdefghjkmnpqrstvwxyz";
+    let mut encoded = String::new();
+    for i in 0..13 {
+        let mut value = 0u8;
+        for j in 0..5 {
+            let bit = i * 5 + j;
+            value = (value << 1)
+                | if bit < 64 {
+                    (digest[bit / 8] >> (7 - bit % 8)) & 1
+                } else {
+                    0
+                };
+        }
+        encoded.push(alphabet[usize::from(value)] as char);
+    }
+    format!("{name}_{encoded}")
+}
+
+pub(crate) fn publication_error(error: rss_mdm_software_service::management::Error) -> Error {
+    use rss_mdm_software_service::management::Error as E;
+    match error {
+        E::Forbidden => Error::Forbidden,
+        E::ResourceMissing => Error::NotFound,
+        E::Malformed => Error::Malformed,
+        E::Conflict => Error::Conflict,
+        _ => Error::Unavailable(crate::Failure::SoftwareCatalogStorage),
+    }
+}
+
+/// Detection and execution consume the same published native identity.
+pub fn identity(
+    release: &rss_mdm_software_service::agent_packages::AdmittedPackage,
+) -> std::result::Result<Identity, Error> {
+    let spec = &release.software;
+    let metadata = &release.metadata;
+    use rss_mdm_software_service::agent_packages::Packaging;
+    let identity = match (&spec.behavior, &release.packaging) {
+        (resource::SoftwareBehavior::Msi(native), Packaging::WindowsMsi { publisher, .. }) => {
+            let resource::SoftwareDetection::MsiProduct {
+                product_code,
+                version,
+            } = &native.detect
+            else {
+                return Err(Error::Unsupported);
+            };
+            if version != &metadata.version {
+                return Err(Error::Unsupported);
+            }
+            Identity::WindowsMsi {
+                product: Uuid::parse_str(product_code.trim_matches(['{', '}']))
+                    .map_err(|_| Error::Malformed)?,
+                publisher: publisher.clone(),
+            }
+        }
+        (resource::SoftwareBehavior::Msix(native), Packaging::WindowsMsix { publisher, .. }) => {
+            if publisher != &native.identity.publisher {
+                return Err(Error::Unsupported);
+            }
+            Identity::WindowsMsix {
+                family: family(&native.identity.name, publisher),
+                identity: native.identity.clone(),
+                minimum_os: native.minimum_os,
+            }
+        }
+        (resource::SoftwareBehavior::Pkg(native), Packaging::MacosPkg { bundle, team, .. }) => {
+            let resource::SoftwareDetection::PkgReceipt { receipt, version } = &native.detect
+            else {
+                return Err(Error::Unsupported);
+            };
+            if version != &metadata.version {
+                return Err(Error::Unsupported);
+            }
+            Identity::Macos {
+                receipt: receipt.clone(),
+                bundle: bundle.clone(),
+                team: team.clone(),
+            }
+        }
+        _ => return Err(Error::Unsupported),
+    };
+    identity.validate()?;
+    Ok(identity)
+}
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn microsoft_publisher_identity_matches_platform_reference() {
+        assert_eq!(
+            super::family(
+                "Microsoft.Windows.Photos",
+                "CN=Microsoft Corporation, O=Microsoft Corporation, L=Redmond, S=Washington, C=US"
+            ),
+            "Microsoft.Windows.Photos_8wekyb3d8bbwe"
+        );
     }
 }
