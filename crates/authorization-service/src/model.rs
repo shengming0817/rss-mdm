@@ -36,6 +36,7 @@ pub enum Permission {
     AgentEnrollmentRead,
     AgentEnrollmentWrite,
     Credentials,
+    DeviceUnmanage,
     DeviceWipe,
     ConfigurationWrite,
     /// Per-device permission to invoke installed Windows MI providers.
@@ -101,6 +102,7 @@ impl Permission {
             | Self::InventoryAssign
             | Self::Enrollment
             | Self::Credentials
+            | Self::DeviceUnmanage
             | Self::DeviceWipe
             | Self::DeviceControl
             | Self::DeviceAssociationWrite
@@ -400,6 +402,7 @@ pub fn tenant_administrator_rule(user: User) -> Rule {
         Permission::AgentEnrollmentRead,
         Permission::AgentEnrollmentWrite,
         Permission::Credentials,
+        Permission::DeviceUnmanage,
         Permission::DeviceWipe,
         Permission::ConfigurationWrite,
         Permission::WindowsMiExecute,

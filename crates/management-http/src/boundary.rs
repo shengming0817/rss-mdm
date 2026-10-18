@@ -210,6 +210,10 @@ fn route_action(route: &str) -> &'static str {
         "/api/v1/device-associations/changes"
         | "/api/v1/device-associations/{id}"
         | "/api/v1/devices/{device}/association-candidates" => "device_association_read",
+        "/api/v1/device-retirements/{id}" => "device_retirement_read",
+        "/api/v1/device-retirements/{id}/force-revoke" => "device_retirement_force_revoke",
+        "/api/v1/device-views/{kind}/{id}/asset-state" => "device_asset_state",
+        "/api/v1/agent-requests/{id}/reenroll/{device}" => "agent_grant_authorize",
         "/api/v1/device-views"
         | "/api/v1/device-views/{kind}/{id}"
         | "/api/v1/device-views/{kind}/{id}/inventory-lists/{field}" => "device_view_read",

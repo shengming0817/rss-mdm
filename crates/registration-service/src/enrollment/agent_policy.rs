@@ -17,6 +17,7 @@ pub async fn create_in(c: &mut PgConnection, input: Create<'_>) -> Result<(Recei
     let p = input.principal;
     crate::admission::lock_in(c, &p.tenant().to_string()).await?;
     crate::device::store::revalidate_source(c, p, ReportSource::AgentBuiltin).await?;
+    crate::lifecycle::require_work_in(c, &p.tenant().to_string(), p.device()).await?;
     let now: i64 =
         sqlx::query_scalar("SELECT floor(extract(epoch FROM clock_timestamp()))::bigint")
             .fetch_one(&mut *c)

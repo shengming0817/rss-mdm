@@ -215,6 +215,14 @@ async fn registration_recovery_preserves_credential_rotation() -> Result<()> {
         operation_id: Uuid::new_v4(),
     };
     let a = || RequestAudit::new(case_tenant().into(), "agent_certificate_activate");
+    // Candidate was issued while management was live. An accepted exit blocks
+    // activation while the predecessor registration and its credential stay valid.
+    let exiting=Uuid::new_v4();
+    pg(&format!("UPDATE mdm_access.devices SET retirement='{exiting}' WHERE tenant_id='{}' AND id=(SELECT device FROM mdm_access.registrations WHERE tenant_id='{}' AND id='{registration}')",case_tenant(),case_tenant()))?;
+    ensure!(service.activate(&peer,&input,&a()).await.unwrap_err().code==wire::ErrorCode::PermissionDenied);
+    ensure!(pg(&format!("SELECT state FROM mdm_access.registrations WHERE tenant_id='{}' AND id='{registration}'",case_tenant()))?.trim()=="active");
+    pg(&format!("UPDATE mdm_access.devices SET retirement=NULL WHERE tenant_id='{}' AND retirement='{exiting}'",case_tenant()))?;
+
     fixture
         .audit
         .inject_next_fault(rss_audit_postgres::PgFault::BeforeCommitPending);

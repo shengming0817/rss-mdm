@@ -71,6 +71,15 @@ pub enum SourceError {
 }
 /// Implementations use this connection's snapshot and locks; they never settle a transaction.
 pub trait SourceAuthority: Send + Sync {
+    /// Complete objects for the server-owned lifecycle action, without selecting a transport.
+    fn lifecycle_objects_on<'a>(
+        &'a self,
+        c: &'a mut PgConnection,
+        tenant: TenantId,
+        scope: Uuid,
+        after: Option<&'a str>,
+    ) -> Pending<'a, Vec<DeviceAssignment>>;
+
     /// Freeze current published root, selected stage and earlier stages, or wait.
     fn rollout_input_on<'a>(
         &'a self,
@@ -178,10 +187,20 @@ pub enum Availability {
 }
 
 /// Convert the pure authored action channel at the service boundary.
-pub fn action_channel(kind: rss_mdm_policy::ActionKind) -> Channel {
-    if kind.target_channel() == "mdm" {
-        Channel::Mdm
-    } else {
-        Channel::Agent
+pub fn action_channel(kind: rss_mdm_policy::ActionKind) -> Result<Channel, crate::Error> {
+    match kind.target_channel() {
+        Some("mdm") => Ok(Channel::Mdm),
+        Some("agent") => Ok(Channel::Agent),
+        _ => Err(crate::Error::Malformed),
     }
+}
+
+/// Scope qualification of an entire endpoint/association for device-owned work.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeviceAssignment {
+    pub cursor: String,
+    pub object: DeviceObject,
+    pub admission: ScopeAdmission,
+    pub scope_result: Uuid,
 }

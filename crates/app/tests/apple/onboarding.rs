@@ -113,7 +113,7 @@ async fn absent_agent_group_installs_fixed_package_and_registers_independently()
     // Bootstrap provisioning can proceed while package delivery is deferred.
     let deferred = peer.manage("NotNow", Some(install), None).await?;
     if !deferred.is_empty() {
-        // Native scheduling may return a prerequisite before the bootstrap profile.
+        // Capability queries and the bootstrap may interleave before the retry.
         peer.pending_replies.lock().await.push_back(deferred);
     }
     ensure!(f.operation(operation).await?["agentInstallation"]["delivery"] == "deferred");
@@ -173,10 +173,9 @@ async fn absent_agent_group_installs_fixed_package_and_registers_independently()
     } else {
         let (id, payload) = peer.next("InstallProfile").await?;
         let next = peer.confirm_managed_profile(id, &payload).await?;
-        ensure!(
-            next.is_empty(),
-            "unexpected command after bootstrap confirmation"
-        );
+        if !next.is_empty() {
+            peer.pending_replies.lock().await.push_back(next);
+        }
         payload
     };
     ensure!(

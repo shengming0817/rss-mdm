@@ -4772,6 +4772,24 @@
             "task"
           ],
           "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Administrator-authorized installation retirement.",
+          "properties": {
+            "kind": {
+              "const": "unmanage",
+              "type": "string"
+            },
+            "task": {
+              "$ref": "#/$defs/UnmanageTaskSpec"
+            }
+          },
+          "required": [
+            "kind",
+            "task"
+          ],
+          "type": "object"
         }
       ]
     },
@@ -5120,6 +5138,114 @@
         "timeoutSeconds",
         "outputBytes",
         "maxRows"
+      ],
+      "type": "object"
+    },
+    "UnmanageTaskSpec": {
+      "additionalProperties": false,
+      "description": "Administrator-authorized retirement of the installation holding this registration.",
+      "properties": {
+        "architecture": {
+          "$ref": "#/$defs/TaskArchitecture",
+          "description": "Exact target architecture."
+        },
+        "attemptId": {
+          "description": "Exact delivery attempt.",
+          "format": "uuid",
+          "not": {
+            "const": "00000000-0000-0000-0000-000000000000"
+          },
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+          "type": "string"
+        },
+        "authorization": {
+          "$ref": "#/$defs/TaskAuthorization",
+          "description": "Published Policy responsible for the accepted retirement."
+        },
+        "deadline": {
+          "description": "End of the execution budget.",
+          "format": "int64",
+          "type": "integer"
+        },
+        "deviceId": {
+          "description": "Original Agent endpoint.",
+          "type": "string"
+        },
+        "expiresAt": {
+          "description": "Expiration of this signed permission.",
+          "format": "int64",
+          "type": "integer"
+        },
+        "generation": {
+          "description": "Original registration revision; never adopt a replacement identity.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "permit": {
+          "$ref": "#/$defs/TaskPermit",
+          "description": "Offer or freshly authorized start."
+        },
+        "platform": {
+          "$ref": "#/$defs/TaskPlatform",
+          "description": "Exact target platform."
+        },
+        "registrationId": {
+          "description": "Registration which the local installation must still hold.",
+          "format": "uuid",
+          "not": {
+            "const": "00000000-0000-0000-0000-000000000000"
+          },
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+          "type": "string"
+        },
+        "retirementId": {
+          "description": "Product retirement operation.",
+          "format": "uuid",
+          "not": {
+            "const": "00000000-0000-0000-0000-000000000000"
+          },
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+          "type": "string"
+        },
+        "taskId": {
+          "description": "Existing durable execution task.",
+          "format": "uuid",
+          "not": {
+            "const": "00000000-0000-0000-0000-000000000000"
+          },
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+          "type": "string"
+        },
+        "tenantId": {
+          "description": "Tenant authenticated by the server.",
+          "format": "uuid",
+          "not": {
+            "const": "00000000-0000-0000-0000-000000000000"
+          },
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+          "type": "string"
+        },
+        "wireVersion": {
+          "const": 1,
+          "description": "Exact wire major."
+        }
+      },
+      "required": [
+        "wireVersion",
+        "tenantId",
+        "deviceId",
+        "registrationId",
+        "generation",
+        "retirementId",
+        "taskId",
+        "attemptId",
+        "permit",
+        "expiresAt",
+        "deadline",
+        "platform",
+        "architecture",
+        "authorization"
       ],
       "type": "object"
     },

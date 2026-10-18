@@ -86,6 +86,10 @@ impl ResourcePreparation<'_> {
 
 /// Material to freeze inside the caller's original transaction.
 pub enum PublicationInput<'a> {
+    Unmanage {
+        schedule: &'a Schedule,
+        lifetime: u32,
+    },
     Credential {
         operation: &'a rss_mdm_policy::CredentialOperation,
         architecture: rss_mdm_policy::Architecture,
@@ -154,7 +158,10 @@ impl<'a> PublicationInput<'a> {
             }
             Self::Configuration { binding, .. } => ResourcePreparation::Configuration { binding },
             Self::Software { binding, .. } => ResourcePreparation::Software { binding },
-            Self::Credential { .. } | Self::Enrollment { .. } | Self::AgentInstall { .. } => {
+            Self::Unmanage { .. }
+            | Self::Credential { .. }
+            | Self::Enrollment { .. }
+            | Self::AgentInstall { .. } => {
                 return None;
             }
         })
@@ -163,6 +170,13 @@ impl<'a> PublicationInput<'a> {
 impl<'a> From<&'a Action> for PublicationInput<'a> {
     fn from(action: &'a Action) -> Self {
         match action {
+            Action::UnmanageDevice {
+                schedule,
+                run_lifetime_seconds,
+            } => Self::Unmanage {
+                schedule,
+                lifetime: *run_lifetime_seconds,
+            },
             Action::Credential {
                 operation,
                 architecture,

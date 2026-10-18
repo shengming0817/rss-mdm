@@ -69,6 +69,23 @@ pub async fn eligible_in(
     policy: &Policy,
     device: &str,
 ) -> Result<Option<i64>> {
+    let tenant_name = tx.tenant_id().to_string();
+    let device_name = device.to_owned();
+    let allowed = tx
+        .with_connection(move |c| {
+            Box::pin(async move {
+                Ok(rss_mdm_registration_service::lifecycle::work_allowed_in(
+                    c,
+                    &tenant_name,
+                    &device_name,
+                )
+                .await)
+            })
+        })
+        .await??;
+    if !allowed {
+        return Ok(None);
+    }
     let reader = source.clone();
     let tenant = tx.tenant_id();
     let version = policy.version;
@@ -85,7 +102,7 @@ pub async fn eligible_in(
             source,
             tx,
             policy.definition.scope,
-            crate::source_authority::action_channel(policy.definition.action.kind()),
+            crate::source_authority::action_channel(policy.definition.action.kind())?,
             device,
         )
         .await?
@@ -106,7 +123,7 @@ pub async fn withdrawn_in(
             source,
             tx,
             policy.definition.scope,
-            crate::source_authority::action_channel(policy.definition.action.kind()),
+            crate::source_authority::action_channel(policy.definition.action.kind())?,
             device,
         )
         .await?

@@ -35,6 +35,7 @@ pub(crate) async fn setup() -> anyhow::Result<(
 }
 pub(super) fn query(limit: usize) -> ViewQuery {
     ViewQuery {
+        asset_state: None,
         cursor: None,
         limit,
         descending: false,
@@ -531,6 +532,179 @@ async fn change_checkpoints_resume_after_empty_pages_and_restart() -> anyhow::Re
     assert_eq!(
         restarted.changes(&admin, Some(&checkpoint)).await?["items"],
         json!([])
+    );
+    access.close().await;
+    Ok(())
+}
+
+#[tokio::test]
+#[ignore = "MODULE=device.associations: accepted retirement freezes both registrations atomically"]
+async fn retirement_fences_complete_target_and_rolls_back_with_acceptance() -> anyhow::Result<()> {
+    use rss_mdm_device_service::lifecycle::{self, Acceptance};
+    use rss_mdm_inventory_service::objects::{ObjectReader, ObjectRef, SnapshotProgress};
+    let (access, s, principal, mut c) = setup().await?;
+    crate::test_support::identity::set_grants(
+        case_a(),
+        principal.principal_id(),
+        crate::test_support::identity::device_grants(
+            None,
+            &[
+                "inventory_read",
+                "device_association_write",
+                "device_unmanage",
+            ],
+        )?,
+    )
+    .await?;
+    let mdm = crate::test_support::case::name("retirement-mdm");
+    let agent = crate::test_support::case::name("retirement-agent");
+    seed(mdm, "mdm", "retirement-serial")?;
+    seed(agent, "agent", "retirement-serial")?;
+    let other_mdm = crate::test_support::case::name("retirement-other-mdm");
+    let other_agent = crate::test_support::case::name("retirement-other-agent");
+    seed(other_mdm, "mdm", "retirement-other-serial")?;
+    seed(other_agent, "agent", "retirement-other-serial")?;
+    s.reconcile().await?;
+    let association:Uuid=sqlx::query_scalar("SELECT association_id FROM mdm_devices.members WHERE tenant_id=$1::uuid AND device=$2 AND NOT released").bind(case_a()).bind(mdm).fetch_one(&mut c).await?;
+    let other_association:Uuid=sqlx::query_scalar("SELECT association_id FROM mdm_devices.members WHERE tenant_id=$1::uuid AND device=$2 AND NOT released").bind(case_a()).bind(other_mdm).fetch_one(&mut c).await?;
+    let tenant = TenantId::parse(case_a())?;
+    let reader = rss_mdm_device_service::planning::PlanningObjects::new(
+        access
+            .audit_store(&crate::config::AuditConfig::Plain)
+            .await?,
+    );
+    let snapshot = reader.freeze(&mut c, tenant).await?;
+    for _ in 0..32 {
+        if reader.advance(&mut c, tenant, &snapshot).await? == SnapshotProgress::Ready {
+            break;
+        }
+    }
+    let target = reader
+        .lookup(
+            &mut c,
+            tenant,
+            snapshot.id,
+            &ObjectRef::Association(association),
+        )
+        .await?;
+    assert!(target.verified && target.members.len() == 2);
+    let other_target = reader
+        .lookup(
+            &mut c,
+            tenant,
+            snapshot.id,
+            &ObjectRef::Association(other_association),
+        )
+        .await?;
+    let authority =
+        rss_mdm_authorization_service::snapshot_on(&mut c, case_a(), principal.instance_id())
+            .await?;
+    let grant = rss_mdm_authorization_service::OperationAuthority::all_devices(
+        &authority,
+        &principal,
+        crate::authorization::Permission::DeviceUnmanage,
+    )?;
+    let now = crate::clock::Clock::unix_seconds(&crate::clock::SystemClock)?;
+    let mut input = Acceptance {
+        policy: Uuid::new_v4(),
+        version: Uuid::new_v4(),
+        occurrence: "explicit:test",
+        target: &target,
+        authority: &grant,
+        delivery_seconds: 300,
+        now,
+    };
+    c.execute("BEGIN").await?;
+    let first = lifecycle::accept_in(&mut c, tenant, &reader, &input).await?;
+    assert!(!first.1);
+    // Acceptance of one associated device must not invalidate another identity
+    // in the same sealed batch and original transaction.
+    let second_input = Acceptance {
+        target: &other_target,
+        ..input
+    };
+    let second = lifecycle::accept_in(&mut c, tenant, &reader, &second_input).await?;
+    assert_ne!(first.0, second.0);
+    for device in [mdm, agent, other_mdm, other_agent] {
+        assert!(
+            !rss_mdm_registration_service::lifecycle::work_allowed_in(&mut c, case_a(), device)
+                .await?
+        );
+    }
+    c.execute("ROLLBACK").await?;
+    for device in [mdm, agent, other_mdm, other_agent] {
+        assert!(
+            rss_mdm_registration_service::lifecycle::work_allowed_in(&mut c, case_a(), device)
+                .await?
+        );
+    }
+    c.execute("BEGIN").await?;
+    let accepted = lifecycle::accept_in(&mut c, tenant, &reader, &input).await?;
+    assert_eq!(
+        lifecycle::accept_in(&mut c, tenant, &reader, &input).await?,
+        (accepted.0, true)
+    );
+    input.policy = Uuid::new_v4();
+    input.version = Uuid::new_v4();
+    assert_eq!(
+        lifecycle::accept_in(&mut c, tenant, &reader, &input).await?,
+        (accepted.0, false)
+    );
+    assert_eq!(
+        lifecycle::read_in(&mut c, tenant, accepted.0)
+            .await?
+            .channels
+            .len(),
+        2
+    );
+    assert_eq!(
+        lifecycle::policy_operations_in(&mut c, tenant, input.policy, &target.object.key()).await?,
+        vec![accepted.0]
+    );
+    c.execute("COMMIT").await?;
+    let before = lifecycle::read_in(&mut c, tenant, accepted.0).await?;
+    s.force_retirement(
+        &principal,
+        accepted.0,
+        &rss_mdm_device_service::lifecycle_management::ForceRevoke {
+            operation_id: Uuid::new_v4(),
+            reason: "offline exit".into(),
+        },
+        &audit("device_retirement_force_revoke"),
+    )
+    .await?;
+    // A worker holding the old cleanup observation cannot move force-revoke back.
+    for channel in before.channels {
+        lifecycle::observe_in(
+            &mut c,
+            tenant,
+            accepted.0,
+            channel.registration,
+            lifecycle::Observation::CleanupReady,
+        )
+        .await?;
+        lifecycle::observe_in(
+            &mut c,
+            tenant,
+            accepted.0,
+            channel.registration,
+            lifecycle::Observation::CleanupBlocked {
+                reason: "late_observation",
+                execution: None,
+                unknown: false,
+            },
+        )
+        .await?;
+    }
+    let after = lifecycle::read_in(&mut c, tenant, accepted.0).await?;
+    assert!(after.forced_at.is_some());
+    assert!(
+        after
+            .channels
+            .iter()
+            .all(|c| c.stage == lifecycle::Stage::Revoke
+                && c.effect == lifecycle::Effect::Unknown
+                && c.reason.as_deref() == Some("forced_revoke_cleanup_unconfirmed"))
     );
     access.close().await;
     Ok(())

@@ -14,6 +14,15 @@ pub enum AgentInstallStage {
 #[derive(Clone, Deserialize, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ExecutionAuthority {
+    Retirement {
+        tenant: String,
+        retirement: uuid::Uuid,
+        version: uuid::Uuid,
+        device: String,
+        registration: uuid::Uuid,
+        execution: uuid::Uuid,
+        required: Vec<Permission>,
+    },
     AgentInstall {
         stage: AgentInstallStage,
         source_objects: Vec<crate::source_authority::DeviceObject>,
@@ -56,6 +65,16 @@ impl ExecutionAuthority {
         c: &mut PgConnection,
     ) -> Result<bool, Error> {
         match self {
+            Self::Retirement {
+                tenant,
+                device,
+                execution,
+                ..
+            } => rss_mdm_device_service::lifecycle::execution_allowed_in(
+                c, tenant, device, *execution,
+            )
+            .await
+            .map_err(Error::from),
             Self::AgentInstall {
                 stage: AgentInstallStage::Cleanup { .. },
                 ..
@@ -136,6 +155,7 @@ impl ExecutionAuthority {
     }
     pub fn apple_owner(&self, operation: uuid::Uuid) -> Result<String, Error> {
         Ok(match self {
+            Self::Retirement { retirement, .. } => format!("retirement:{retirement}"),
             Self::DeviceControl { evidence, .. } | Self::Credential { evidence, .. } => {
                 let actor = evidence.first().ok_or(Error::Forbidden)?.actor();
                 if evidence.iter().any(|g| g.actor() != actor) {
@@ -151,7 +171,8 @@ impl ExecutionAuthority {
     }
     pub fn required(&self) -> &[Permission] {
         match self {
-            Self::Credential { required, .. }
+            Self::Retirement { required, .. }
+            | Self::Credential { required, .. }
             | Self::DeviceControl { required, .. }
             | Self::AgentInstall { required, .. }
             | Self::Policy { required, .. } => required,
@@ -159,7 +180,8 @@ impl ExecutionAuthority {
     }
     pub fn bind_required(&mut self, permissions: Vec<Permission>) {
         match self {
-            Self::Credential { required, .. }
+            Self::Retirement { required, .. }
+            | Self::Credential { required, .. }
             | Self::DeviceControl { required, .. }
             | Self::AgentInstall { required, .. }
             | Self::Policy { required, .. } => *required = permissions,
@@ -267,6 +289,29 @@ impl ExecutionAuthority {
         now: i64,
     ) -> Result<bool, Error> {
         match self {
+            Self::Retirement {
+                tenant,
+                retirement,
+                device,
+                registration,
+                execution,
+                required,
+                ..
+            } => {
+                if !required.contains(&permission) {
+                    return Ok(false);
+                }
+                if !rss_mdm_device_service::lifecycle::execution_allowed_in(
+                    conn, tenant, device, *execution,
+                )
+                .await
+                .map_err(Error::from)?
+                {
+                    return Ok(false);
+                }
+                sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_devices.retirement_work w JOIN mdm_access.registrations r ON(r.tenant_id,r.id)=(w.tenant_id,w.registration) WHERE w.tenant_id=$1::uuid AND w.operation=$2 AND w.registration=$3 AND w.execution=$4 AND r.device=$5 AND r.state='active')")
+                    .bind(tenant).bind(retirement).bind(registration).bind(execution).bind(device).fetch_one(conn).await.map_err(db)
+            }
             Self::AgentInstall { stage, .. } => {
                 let allowed = match stage {
                     AgentInstallStage::Install => permission == Permission::SoftwareDeploy,

@@ -113,6 +113,7 @@ pub(crate) async fn requested(
                         return Ok::<_,Error>(Some(row.try_get::<Vec<u8>,_>("response").map_err(db)?));
                     }
                     crate::device::store::revalidate_management(c,p).await?;
+                    rss_mdm_execution_service::unmanage::native_departure_in(c,&tenant,p.registration(),false).await.map_err(|_|Error::Conflict)?;
                     rss_mdm_registration_service::retire(c,facts,&tenant,p.registration(),"revoked",app.devices.retirement()).await?;
                     sqlx::query("INSERT INTO mdm_windows.unenrollment_receipts(tenant_id,registration,generation,credential,session,digest,response) VALUES($1::uuid,$2,$3,$4,$5,$6,$7)")
                         .bind(&tenant).bind(p.registration()).bind(p.generation()).bind(p.credential()).bind(i64::from(*session))

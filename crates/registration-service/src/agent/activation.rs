@@ -81,6 +81,7 @@ SELECT * FROM mdm_access.agent_issuances WHERE tenant_id=$1::uuid AND id=$2 FOR 
                             digest: digest.clone(),
                         });
                     }
+                    crate::lifecycle::require_work_in(c, &tenant, &device).await?;
                     service.grant_live(c, &g).await?;
                     if g.try_get::<Option<Uuid>, _>("target_registration")
                         .map_err(db)?
@@ -177,9 +178,14 @@ state='active'
                     } else {
                         let registration = Uuid::new_v4();
                         let epoch = Uuid::new_v4();
+                        let active: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_access.registrations WHERE tenant_id=$1::uuid AND device=$2 AND channel='agent' AND state='active')")
+                            .bind(&tenant).bind(&device).fetch_one(&mut *c).await.map_err(db)?;
+                        if active {return Err(Error::Conflict);}
+                        let generation: i64 = sqlx::query_scalar("SELECT coalesce(max(generation),0)+1 FROM mdm_access.registrations WHERE tenant_id=$1::uuid AND device=$2 AND channel='agent'")
+                            .bind(&tenant).bind(&device).fetch_one(&mut *c).await.map_err(db)?;
                         sqlx::query(
                             r#"
-INSERT INTO mdm_access.devices(tenant_id,id) VALUES($1::uuid,$2)
+INSERT INTO mdm_access.devices(tenant_id,id) VALUES($1::uuid,$2) ON CONFLICT DO NOTHING
 "#,
                         )
                         .bind(&tenant)
@@ -191,7 +197,7 @@ INSERT INTO mdm_access.devices(tenant_id,id) VALUES($1::uuid,$2)
                             r#"
 INSERT INTO
 mdm_access.registrations(tenant_id,id,device,channel,generation,agent_grant_id,state,purpose,epoch)
-VALUES($1::uuid,$2,$3,'agent',1,$4,'active','primary',$5)
+VALUES($1::uuid,$2,$3,'agent',$6,$4,'active','primary',$5)
 "#,
                         )
                         .bind(&tenant)
@@ -199,6 +205,7 @@ VALUES($1::uuid,$2,$3,'agent',1,$4,'active','primary',$5)
                         .bind(&device)
                         .bind(grant)
                         .bind(epoch)
+                        .bind(generation)
                         .execute(&mut *c)
                         .await
                         .map_err(db)?;
@@ -230,14 +237,14 @@ VALUES($1::uuid,$2,$3,$4,true)
                                     tenant: service.tenant,
                                     device: device.clone(),
                                     registration,
-                                    generation: 1,
+                                    generation,
                                     epoch,
                                     operation: input.operation_id,
                                 },
                                 &profile,
                             )
                             .await?;
-                        (registration, 1, epoch, runtime)
+                        (registration, generation, epoch, runtime)
                     };
                     let _ = (generation, epoch);
                     a.registration(registration);

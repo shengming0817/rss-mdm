@@ -41,6 +41,7 @@ pub fn routes(app: Option<Arc<Service>>) -> Router {
             post(revoke_configuration),
         )
         .route("/agent-requests/{id}/authorize", post(authorize))
+        .route("/agent-requests/{id}/reenroll/{device}", post(reenroll))
         .route("/agent-requests/{id}/cancel", post(revoke))
         .route(
             "/agent-enrollment-settings",
@@ -79,6 +80,19 @@ async fn authorize(
     Ok(Json(
         service(&app)?
             .authorize(&auth.proof, id, body(input)?.operation_id, &a)
+            .await?,
+    ))
+}
+async fn reenroll(
+    State(app): State<App>,
+    Extension(auth): Extension<RequestAuth>,
+    Extension(a): Extension<RequestAudit>,
+    Path((id, device)): Path<(Uuid, String)>,
+    input: Body<Operation>,
+) -> Result<Json<wire::GrantReceipt>, HttpFailure> {
+    Ok(Json(
+        service(&app)?
+            .authorize_reenrollment(&auth.proof, id, body(input)?.operation_id, &device, &a)
             .await?,
     ))
 }

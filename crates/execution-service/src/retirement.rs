@@ -105,7 +105,7 @@ pub async fn retire_in(
     }
     let mut after = Uuid::nil();
     loop {
-        let rows = sqlx::query("SELECT id,state FROM mdm_commands.action_runs WHERE tenant_id=$1::uuid AND registration=$2 AND id>$3 AND state->>'execution' IN ('not_started','running','waiting_reboot','unknown') AND state->>'cancellation'='none' ORDER BY id LIMIT 64").bind(tenant).bind(registration).bind(after).fetch_all(&mut *c).await.map_err(db)?;
+        let rows = sqlx::query("SELECT id,state FROM mdm_commands.action_runs WHERE tenant_id=$1::uuid AND registration=$2 AND id>$3 AND state->>'execution' IN ('not_started','running','waiting_reboot','unknown') AND state->>'cancellation'='none' AND (NOT EXISTS(SELECT 1 FROM mdm_access.registrations r WHERE r.tenant_id=$1::uuid AND r.id=$2 AND r.state='active') OR NOT EXISTS(SELECT 1 FROM mdm_devices.retirement_work w WHERE w.tenant_id=$1::uuid AND w.execution=mdm_commands.action_runs.id)) ORDER BY id LIMIT 64").bind(tenant).bind(registration).bind(after).fetch_all(&mut *c).await.map_err(db)?;
         let count = rows.len();
         for row in rows {
             let id: Uuid = row.try_get("id").map_err(db)?;

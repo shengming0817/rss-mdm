@@ -57,6 +57,53 @@
       "read_write": false,
       "updates": [],
       "delete_policy": null
+    },
+    {
+      "schema": "mdm_devices",
+      "table": "retirements",
+      "read_write": true,
+      "updates": [
+        "forced_at",
+        "forced_by"
+      ],
+      "delete_policy": null
+    },
+    {
+      "schema": "mdm_devices",
+      "table": "retirement_channels",
+      "read_write": true,
+      "updates": [
+        "stage",
+        "effect",
+        "execution",
+        "reason",
+        "blocking_execution"
+      ],
+      "delete_policy": null
+    },
+    {
+      "schema": "mdm_devices",
+      "table": "retirement_work",
+      "read_write": false,
+      "read_only": true,
+      "updates": [],
+      "delete_policy": null
+    },
+    {
+      "schema": "mdm_devices",
+      "table": "asset_states",
+      "read_write": true,
+      "updates": [
+        "state"
+      ],
+      "delete_policy": null
+    },
+    {
+      "schema": "mdm_devices",
+      "table": "retirement_policies",
+      "read_write": true,
+      "updates": [],
+      "delete_policy": null
     }
   ],
   "functions": [

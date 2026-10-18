@@ -4,6 +4,9 @@
 //! This package owns JSON values only. Device authority, persistence and HTTP authentication
 //! remain product responsibilities. V1 binds script and software tasks to one strict major.
 
+#[path = "unmanage.rs"]
+mod unmanage;
+pub use unmanage::*;
 #[path = "onboarding.rs"]
 mod onboarding;
 pub use onboarding::*;
@@ -33,7 +36,7 @@ pub const MAX_REQUEST_BYTES: usize = 1024 * 1024;
 pub const SCHEMA_MANIFEST: &str = include_str!("../schema/runtime/agent-v1.schema-manifest.json");
 /// SHA-256 of the ordered schema payloads named by [`SCHEMA_MANIFEST`].
 pub const SCHEMA_FINGERPRINT: &str =
-    "9fab28fc614de1a6b254c1a4994af6eb4844ed19c10a6f9f08f7f8e943dab8cd";
+    "87fb9b414308453d0243195469cc44b8c77c6d0a2bdbea2a894fe136e3fec0d1";
 
 /// Closed validation failure without retaining input values.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -174,6 +177,9 @@ pub enum Capability {
     /// Open the standard MDM enrollment entry with OS/user approval.
     #[serde(rename = "mdm.enrollment.v1")]
     MdmEnrollmentV1,
+    /// Administrator-authorized Agent retirement.
+    #[serde(rename = "device.unmanage.v1")]
+    DeviceUnmanageV1,
     /// Execute signed declarative native inventory tasks.
     #[serde(rename = "inventory.native.v1")]
     InventoryNativeV1,
@@ -189,6 +195,7 @@ impl Capability {
             Self::InventoryCollectionV1
                 | Self::TaskExecuteV1
                 | Self::MdmEnrollmentV1
+                | Self::DeviceUnmanageV1
                 | Self::InventoryNativeV1
                 | Self::CredentialsWindowsV1
         )
@@ -216,6 +223,7 @@ impl Capability {
             Self::SoftwareMsixRegistrationUserV1 => "software.msix.registration.user.v1",
             Self::SoftwareMsixProvisioningSystemV1 => "software.msix.provisioning.system.v1",
             Self::MdmEnrollmentV1 => "mdm.enrollment.v1",
+            Self::DeviceUnmanageV1 => "device.unmanage.v1",
             Self::InventoryNativeV1 => "inventory.native.v1",
             Self::CredentialsWindowsV1 => "credentials.windows.v1",
         }
@@ -224,7 +232,7 @@ impl Capability {
 /// The only supported ordered capability sets for Agent V1.
 pub fn supported_capabilities(value: &[Capability]) -> bool {
     value.first() == Some(&Capability::InventoryCollectionV1)
-        && value.len() <= 22
+        && value.len() <= 23
         && value.windows(2).all(|pair| pair[0] < pair[1])
 }
 

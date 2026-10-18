@@ -13,6 +13,12 @@ use uuid::Uuid;
 pub fn routes() -> Router<Arc<Associations>> {
     Router::new()
         .route("/device-views", get(list))
+        .route("/device-retirements/{id}", get(retirement))
+        .route(
+            "/device-retirements/{id}/force-revoke",
+            post(force_retirement),
+        )
+        .route("/device-views/{kind}/{id}/asset-state", post(asset_state))
         .route("/device-views/{kind}/{id}", get(detail))
         .route(
             "/device-views/{kind}/{id}/inventory-lists/{field}",
@@ -162,6 +168,51 @@ async fn changes(
         s.changes(
             &a.proof,
             query.map_err(|_| Error::Malformed)?.0.cursor.as_deref(),
+        )
+        .await?,
+    ))
+}
+
+async fn retirement(
+    State(s): State<Arc<Associations>>,
+    Extension(a): Extension<RequestAuth>,
+    Extension(audit): Extension<RequestAudit>,
+    Path(id): Path<Uuid>,
+) -> Result<Json<rss_mdm_device_service::lifecycle::Retirement>, Error> {
+    audit.set_action("device_retirement_read");
+    Ok(Json(s.retirement(&a.proof, id).await?))
+}
+async fn force_retirement(
+    State(s): State<Arc<Associations>>,
+    Extension(a): Extension<RequestAuth>,
+    Extension(audit): Extension<RequestAudit>,
+    Path(id): Path<Uuid>,
+    body: Result<
+        Json<rss_mdm_device_service::lifecycle_management::ForceRevoke>,
+        axum::extract::rejection::JsonRejection,
+    >,
+) -> Result<Json<Value>, Error> {
+    Ok(Json(
+        s.force_retirement(&a.proof, id, &body.map_err(Error::from)?.0, &audit)
+            .await?,
+    ))
+}
+async fn asset_state(
+    State(s): State<Arc<Associations>>,
+    Extension(a): Extension<RequestAuth>,
+    Extension(audit): Extension<RequestAudit>,
+    Path((kind, id)): Path<(String, String)>,
+    body: Result<
+        Json<rss_mdm_device_service::lifecycle_management::AssetChange>,
+        axum::extract::rejection::JsonRejection,
+    >,
+) -> Result<Json<Value>, Error> {
+    Ok(Json(
+        s.asset_state(
+            &a.proof,
+            &reference(kind, id)?,
+            &body.map_err(Error::from)?.0,
+            &audit,
         )
         .await?,
     ))

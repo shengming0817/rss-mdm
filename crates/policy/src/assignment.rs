@@ -210,6 +210,14 @@ pub enum Action {
         /// Administrator-authored rollout stages.
         rollout: SoftwareRollout,
     },
+    /// Retire the whole managed device through a server-owned execution.
+    UnmanageDevice {
+        /// Explicit by default; calendar execution is administrator-selected.
+        #[serde(default = "default_unmanage_schedule")]
+        schedule: Schedule,
+        /// Lifetime of an individual cleanup delivery, not proof of retirement.
+        run_lifetime_seconds: u32,
+    },
     /// Install only the product's approved Agent through the source MDM channel.
     EnsureAgentInstalled {
         /// One explicitly published Agent release per native target; no format fallback.
@@ -406,10 +414,18 @@ fn validate_ids<'a>(ids: impl IntoIterator<Item = &'a str>) -> Result<(), Error>
     }
     Ok(())
 }
+fn default_unmanage_schedule() -> Schedule {
+    Schedule {
+        trigger: Trigger::Manual,
+        ..default_schedule()
+    }
+}
+
 impl Action {
     /// Closed action identity persisted alongside its optional resource coordinates.
     pub const fn kind(&self) -> crate::ActionKind {
         match self {
+            Self::UnmanageDevice { .. } => crate::ActionKind::UnmanageDevice,
             Self::Credential { .. } => crate::ActionKind::Credential,
             Self::Execution { .. } => crate::ActionKind::Execution,
             Self::NativeCollection { .. } => crate::ActionKind::NativeCollection,
@@ -429,7 +445,8 @@ impl Action {
             | Self::Execution { resource, .. }
             | Self::Configuration { resource, .. } => Some(resource.identity()),
             Self::Software { resource, .. } => Some(resource.identity()),
-            Self::Credential { .. }
+            Self::UnmanageDevice { .. }
+            | Self::Credential { .. }
             | Self::RequestMdmEnrollment { .. }
             | Self::EnsureAgentInstalled { .. } => None,
         }
@@ -451,7 +468,7 @@ impl Action {
                 }
             }
             Self::Credential { operation, .. } => operation.validate()?,
-            Self::RequestMdmEnrollment { .. } => (),
+            Self::RequestMdmEnrollment { .. } | Self::UnmanageDevice { .. } => (),
         }
         if let Action::Execution {
             parameters,
@@ -531,6 +548,19 @@ impl Action {
                 }
             }
             Action::Configuration { .. } => {}
+            Action::UnmanageDevice {
+                schedule,
+                run_lifetime_seconds,
+            } => {
+                schedule.validate()?;
+                if matches!(
+                    schedule.trigger,
+                    Trigger::Registration | Trigger::CheckIn { .. }
+                ) || !(60..=604800).contains(run_lifetime_seconds)
+                {
+                    return Err(Error::Malformed);
+                }
+            }
             Action::EnsureAgentInstalled {
                 schedule,
                 run_lifetime_seconds,

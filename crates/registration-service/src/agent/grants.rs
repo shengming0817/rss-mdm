@@ -41,15 +41,36 @@ impl Service {
         operation: Uuid,
         a: &RequestAudit,
     ) -> Result<wire::GrantReceipt, Failure> {
+        self.authorize_target(p, id, operation, None, a).await
+    }
+    pub async fn authorize_reenrollment(
+        &self,
+        p: &AuthorizedPrincipal,
+        id: Uuid,
+        operation: Uuid,
+        device: &str,
+        a: &RequestAudit,
+    ) -> Result<wire::GrantReceipt, Failure> {
+        self.authorize_target(p, id, operation, Some(device), a)
+            .await
+    }
+    async fn authorize_target(
+        &self,
+        p: &AuthorizedPrincipal,
+        id: Uuid,
+        operation: Uuid,
+        device: Option<&str>,
+        a: &RequestAudit,
+    ) -> Result<wire::GrantReceipt, Failure> {
         self.proof(p, a)?;
         version(wire::API_VERSION, operation)?;
         a.operation(operation, "agent_grant_authorize");
-        self.write(a, (self, p, id, operation, a), |ctx, c| {
+        self.write(a, (self, p, id, operation, device, a), |ctx, c| {
             Box::pin(async move {
-                let (service, p, id, operation, a) = ctx;
+                let (service, p, id, operation, device, a) = ctx;
                 let tenant = service.tenant.to_string();
                 let action = "authorize";
-                let d = digest(&(action, *id, *operation))?;
+                let d = digest(&(action, *id, *operation, *device))?;
                 let op = crate::operations::Operation {
                     actor: crate::operations::Actor::from_authorized(p),
                     key: *operation,
@@ -96,6 +117,14 @@ impl Service {
                         crate::quotas::Channel::Agent,
                     )
                     .await?;
+                    if let Some(device) = device {
+                        crate::lifecycle::authorize_reenrollment_in(c, p, device).await?;
+                        let retired: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_access.registrations WHERE tenant_id=$1::uuid AND device=$2) AND NOT EXISTS(SELECT 1 FROM mdm_access.registrations WHERE tenant_id=$1::uuid AND device=$2 AND state='active')")
+                            .bind(&tenant).bind(*device).fetch_one(&mut *c).await.map_err(db)?;
+                        if !retired {return Err(Error::Conflict);}
+                        sqlx::query("UPDATE mdm_access.agent_grants SET device=$3 WHERE tenant_id=$1::uuid AND id=$2 AND state='pending'")
+                            .bind(&tenant).bind(*id).bind(*device).execute(&mut *c).await.map_err(db)?;
+                    }
                     p.check_live()?;
                     sqlx::query(
                         r#"

@@ -44,3 +44,36 @@ Scope 在发布固定结果前按目标通道完成集合运算，并持久化�
 `action.kind=credential` 使用现有 Scope、schedule、frequency、runLifetimeSeconds 和显式重执行入口，不依赖虚构 Resource 或独立调度器。指定 Windows `architecture` 及闭合 `operation`：`collect_bitlocker`、`rotate_bitlocker`、`verify_bitlocker`、`rotate_local_administrator`、`verify_local_administrator`。卷操作绑定稳定卷 ID/protector ID，账户操作绑定 SID。安全材料操作使用 `security_operate`，本地账户操作使用 `account_write`；策略发布仍遵循普通 Policy 权限。
 
 只有声明 `credentials.windows.v1` 的受管 Agent 才能领取。RSS 管理账户与微软 LAPS 排他，不读取未知旧密码。轮换先托管新材料，收到持久接收确认后才清理明确替换的旧 protector；Unknown 保留原操作与材料，不自动重新生成。独立验证可核对已有候选材料，解除已确认操作的恢复阻塞。该策略不发布到自助目录。
+
+## 通过 Policy 解除全部管理
+
+`action.kind=unmanage_device` 不引用 Resource，`runLifetimeSeconds` 范围为 60–604800。
+默认手动，管理员通过既有 `/policies/{id}/reruns` 显式执行；也可配置日历调度。
+不支持签入／注册触发和 Self Service。发布、执行除了 PolicyWrite 还要求
+`device_unmanage`；该授权独立于普通策略编辑权限。
+
+退管以完整设备为目标：选择已确认关联的任一端会纳入两端；任一端命中排除即阻止接受。
+接受时保存退出意图和原始注册快照，同时停止普通任务和互注册授权。重叠策略或重复执行
+复用已接受意图；随后移出 Scope、停用策略或动态组变化不会取消清理。
+设备离线、Agent 崩溃或 Profile 消失只改变通道事实，不产生退出意图。
+
+分配查询返回 `channel:null`、`target:null` 和 `operationIds`；通过
+`GET /api/v1/device-retirements/{id}` 查看各通道的清理阶段与证据。
+配置和软件使用原安装合同清理，仅处理产品管理效果。缺少移除能力、失败、离线或回执
+丢失保留待处理／未知结果，不假定卸载成功。Agent 必须支持 `device.unmanage.v1`，
+退出任务签名绑定原安装注册、Policy、退出操作和投递尝试。
+
+`POST /api/v1/device-retirements/{id}/force-revoke` 接收 `{operationId,reason}`，
+要求 `device_unmanage` 并检查目标权限；它请求最终撤权，不证明设备已卸载。
+紧急凭据撤销仍是独立操作，不产生已成功清理设备的结论。
+
+`POST /api/v1/device-views/{kind}/{id}/asset-state` 接收
+`{operationId,state:active|archived|deleted}`，要求 InventoryAssign。
+归档允许退出中的资产；软删除要求所有注册已失效。列表默认只显示 active，
+可用 `assetState` 查询归档或删除的资产，显式详情及审计历史保留。
+恢复为 active 不恢复凭据、旧任务或互注册授权。
+
+完成退管后，管理员创建新的 MDM 注册请求才能重新授权该端；Agent 使用新 CSR 请求，
+再通过 `POST /api/v1/agent-requests/{id}/reenroll/{device}` 和 `{operationId}`
+将其授权给原资产。两种方式都检查 Enrollment 权限并作废旧注册授权。
+新注册具有独立身份；普通责任人或策略调整无需重注册。
