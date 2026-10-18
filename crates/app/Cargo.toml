@@ -7,6 +7,8 @@ rust-version.workspace = true
 publish.workspace = true
 
 [dependencies]
+aws-sigv4.workspace = true
+aws-credential-types.workspace = true
 rss-transactional-messaging-recovery.workspace = true
 ipnet.workspace = true
 rss-mdm-webhook-service.workspace = true

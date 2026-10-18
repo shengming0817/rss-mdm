@@ -205,6 +205,11 @@ pub async fn apply(directory: &Path, config: &Config, runtime: &Value) -> Result
     }
     let stage = host_root.join(decoded.runtime_binding.operation_id.to_string());
     let journal = Journal::projection(&stage)?;
+    journal.secret(
+        "source-runtime.json",
+        &serde_json::to_vec(runtime).map_err(|_| Error::Input)?,
+    )?;
+    owner.save("requested-runtime.json", runtime)?;
     let mut projected = runtime.clone();
     let mut mounts = BTreeMap::new();
     project(&mut projected, &journal, &mut mounts)?;

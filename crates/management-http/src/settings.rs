@@ -321,19 +321,19 @@ pub const CATALOG: &[Item] = &[
     ),
     item!(
         "s3-key",
-        Deployment,
-        "content-s3",
-        StorageProvider,
+        Tenant,
+        "content-service",
+        DomainService,
         ProviderCredential,
-        TenantRead
+        StorageConfigurationRead
     ),
     item!(
         "storage",
-        Deployment,
+        Tenant,
         "content-service",
-        DeploymentOperator,
-        DeploymentMaintenance,
-        TenantRead
+        DomainService,
+        ProviderCredential,
+        StorageConfigurationRead
     ),
     item!(
         "prefix",

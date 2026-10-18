@@ -661,6 +661,13 @@ pub(crate) fn from_state(
             catalog: state.flow.catalog.clone(),
             publications: state.flow.publications.clone(),
             software_catalog: software_access(&state),
+            storage_connections: Arc::new(
+                rss_mdm_content_service::connections::authority::Authority {
+                    tenant: state.identity.tenant,
+                    protection: state.protection.clone(),
+                    audit: state.audit_store.clone(),
+                },
+            ),
             content: Arc::new(rss_mdm_content_service::service::Access {
                 sessions: rss_mdm_authorization_service::session::SessionAuthority::new(
                     state.identity.authority.clone(),

@@ -26,7 +26,18 @@ Linux 单机安装由固定候选中的 `rss-mdm-installer install --config /abs
 
 部署输入结构由 [安装输入](../../crates/app/src/setup/installation.rs) 持有。`database` 包含目标 `name` 和引导 `administrator` 连接；角色密码由安装目录生成。`deployment` 固定服务/网关镜像摘要及 TLS 材料；`additional_hosts` 列出后续租户可用的独立入口、监听和部署参数；当前单机模板为每个租户运行独立网关，HTTPS 端口和后端监听不得重复。没有可用槽位时保留原开通操作并显示 capacity，不另建租户或账户。槽位预留不可改绑，新增容量需追加配置并重启部署进程。
 
-安装器将部署二进制复制到 root 独占安装目录，注册 `rss-mdm-deployer-<instance>.service`。该进程只消费已有开通回执，使用固定 Docker Compose 模板部署宿主；管理 HTTP 不接受任意命令或维护凭据。实例目录、原凭据、角色密码和固定 Ledger 密钥必须联合备份。重试使用原输入和原目录；密码或密钥丢失时恢复原材料，不重新生成替代身份。
+安装器将部署二进制复制到 root 独占安装目录，注册 `rss-mdm-deployer-<instance>.service`。该进程消费已有开通回执和领域期望版本，使用固定 Docker Compose 模板部署宿主；管理 HTTP 不接受任意命令或维护凭据。实例目录、原凭据、角色密码和固定 Ledger 密钥必须联合备份。重试使用原输入和原目录；密码或密钥丢失时恢复原材料，不重新生成替代身份。
+
+### 对象存储开通与凭据更新
+
+部署输入 `storage_profiles` 列出允许使用的 HTTPS S3 端点、region、bucket、基础 namespace 和 CA 文件。`rustfs_administrator` 只供部署进程执行固定 IAM 创建动作；导入其它 S3 凭据时提供 `boundary_verifier`，用于确认租户前缀之外的实际对象确实存在。管理 HTTP 只接受 profile 名称，不能提交任意端点或部署管理员材料。
+
+业务管理员调用 `POST /api/v1/storage/connections`，携带 UUID `Idempotency-Key`，请求包含 `expectedRevision`、`profile`、`source`。`source.kind=generate` 在领域保护侧生成 RustFS 工作负载身份；`source.kind=import` 导入 `access_key`、`secret_key`，可选 `session_token` 和 `expires_at`，临时 token 必须有有效期限。材料加密入库后返回 202，供应方准备异步执行。`GET /api/v1/storage/connections` 投影当前目录；`GET /api/v1/storage/connections/operations/{id}` 查询原操作，未知提交不得换操作 ID 重建凭据。
+
+部署进程在首次外部调用前固定端点、桶、命名空间与信任材料。自动创建验证 IAM 用户、策略和绑定；两条路径都验证 TLS、桶版本控制、真实版本化读写、精确版本删除以及对已确认存在的外部前缀对象的拒绝。失败保持原操作和凭据，可恢复重试；运行服务无权限自行标记供应方校验成功。桶须预先存在并启用版本控制。每个租户使用 `namespace/<tenant UUID>`；更新凭据不能改绑到其它桶或前缀。
+
+合格版本进入宿主期望配置，经固定部署进程重启和真实 HTTPS 观察后才算应用。运行配置 `content.storage` 只引用材料 `revision`，不再接受 S3 端点或凭据文件。旧有效版本可支撑失败回退；过期或撤销材料在实际内容操作时被拒绝。资格回执是当次验证证据，不代表供应方永久健康。
+
 
 
 MDM 宿主使用同一份运行配置生成两份公开 bootstrap 输入：`ui.json` 的

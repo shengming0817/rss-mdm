@@ -3454,6 +3454,8 @@ name = "rss-mdm-app"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "aws-credential-types",
+ "aws-sigv4",
  "axum",
  "base64 0.22.1",
  "cms",
@@ -3801,6 +3803,8 @@ dependencies = [
  "futures",
  "libc",
  "quick-xml 0.42.0",
+ "ring",
+ "rss-audit-postgres",
  "rss-contract",
  "rss-identity-core",
  "rss-mdm-audit-integration",

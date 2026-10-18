@@ -21,6 +21,8 @@ pub enum Permission {
     CertificateArchiveUnlock,
     CertificateArchiveExport,
     RuntimeDiagnosticsRead,
+    StorageConfigurationRead,
+    StorageConfigurationWrite,
     /// Tenant-wide native enrollment configuration, admission and quota reads.
     RegistrationConfigurationRead,
     /// Tenant-wide native enrollment configuration, admission and quota mutations.
@@ -137,6 +139,8 @@ impl Permission {
             | Self::CertificateArchiveExport
             | Self::InventorySensitiveRead
             | Self::InventoryFieldsWrite
+            | Self::StorageConfigurationRead
+            | Self::StorageConfigurationWrite
             | Self::RuntimeDiagnosticsRead
             | Self::RegistrationConfigurationRead
             | Self::RegistrationConfigurationWrite
@@ -395,6 +399,8 @@ pub fn tenant_administrator_rule(user: User) -> Rule {
         Permission::CertificateArchiveUnlock,
         Permission::CertificateArchiveExport,
         Permission::RuntimeDiagnosticsRead,
+        Permission::StorageConfigurationRead,
+        Permission::StorageConfigurationWrite,
         Permission::RegistrationConfigurationRead,
         Permission::RegistrationConfigurationWrite,
         Permission::AuditRead,

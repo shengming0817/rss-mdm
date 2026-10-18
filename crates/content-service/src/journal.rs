@@ -123,6 +123,9 @@ impl Store {
             .map_err(|e| journal::pg_error(concat!(file!(), ":", line!()), e))?;
         sqlx::query("SELECT set_config('rss.tenant_id',$1,true),set_config('statement_timeout','6000',true),set_config('lock_timeout','6000',true)")
    .bind(self.tenant.to_string()).execute(&mut *tx).await.map_err(|e|journal::pg_error(concat!(file!(), ":", line!()),e))?;
+        if let Storage::S3(s3) = &self.config.storage {
+            crate::connections::require_live(&mut tx, self.tenant, s3.revision).await?;
+        }
         Ok(tx)
     }
     pub(super) async fn quota(

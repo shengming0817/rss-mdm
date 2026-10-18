@@ -299,5 +299,9 @@ pub(super) fn units() -> Vec<(&'static str, &'static str)> {
             "task-signing-trust-v1",
             rss_mdm_execution_service::task_signing::trust::INSTALL_SQL,
         ),
+        (
+            "content-connections-v1",
+            rss_mdm_content_service::connections::INSTALL_SQL,
+        ),
     ]
 }

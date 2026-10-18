@@ -2,6 +2,110 @@
 use crate::test_support::software::Fixture;
 use crate::test_support::*;
 use rss_mdm_content_service::{Binding, Purpose, ResourceBinding, StorageClass};
+
+#[tokio::test]
+#[ignore = "MODULE=content.storage: durable credential replay, provider authority and expiry fences"]
+async fn connection_operations_bind_actor_material_and_provider_authority() -> Result<()> {
+    use rss_mdm_content_service::connections as c;
+    use sqlx::Connection;
+    let config = crate::test_support::identity::config(case_tenant())?;
+    let tenant = rss_request_context::TenantId::parse(case_tenant())?;
+    let protection = config.native_protector()?;
+    let mut connection = sqlx::PgConnection::connect_with(&config.access_options()?).await?;
+    let mut tx = connection.begin().await?;
+    sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
+        .bind(case_tenant())
+        .execute(&mut *tx)
+        .await?;
+    let operation = Uuid::new_v4();
+    let mut input = c::Request {
+        expected_revision: 0,
+        profile: "rustfs".into(),
+        source: c::Source::Generate,
+    };
+    let first = c::prepare(
+        &mut tx,
+        tenant,
+        operation,
+        &input,
+        "operator-a",
+        &protection,
+    )
+    .await?;
+    let original = c::pending(&mut tx, tenant, operation, &protection).await?;
+    let replay = c::prepare(
+        &mut tx,
+        tenant,
+        operation,
+        &input,
+        "operator-a",
+        &protection,
+    )
+    .await?;
+    ensure!(serde_json::to_value(&first)? == serde_json::to_value(replay)?);
+    ensure!(
+        c::pending(&mut tx, tenant, operation, &protection)
+            .await?
+            .credentials
+            .secret_key
+            == original.credentials.secret_key
+    );
+    ensure!(
+        c::prepare(
+            &mut tx,
+            tenant,
+            operation,
+            &input,
+            "operator-b",
+            &protection
+        )
+        .await
+        .is_err()
+    );
+    input.profile = "other".into();
+    ensure!(
+        c::prepare(
+            &mut tx,
+            tenant,
+            operation,
+            &input,
+            "operator-a",
+            &protection
+        )
+        .await
+        .is_err()
+    );
+    ensure!(c::load(&mut tx, tenant, 1, &protection).await.is_err());
+    let metadata = c::Metadata {
+        endpoint: "https://storage.example.test".into(),
+        region: "us-east-1".into(),
+        bucket: "content".into(),
+        namespace: "content".into(),
+        private_ca: vec![],
+    };
+    ensure!(
+        c::qualify(&mut tx, tenant, operation, &metadata, 1)
+            .await
+            .is_err()
+    );
+    ensure!(
+        c::bind_metadata(&mut tx, tenant, operation, &metadata)
+            .await
+            .is_err()
+    );
+    sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
+        .bind(Uuid::new_v4().to_string())
+        .execute(&mut *tx)
+        .await?;
+    ensure!(
+        c::operation_receipt(&mut tx, tenant, operation)
+            .await
+            .is_err()
+    );
+    tx.rollback().await?;
+    connection.close().await?;
+    Ok(())
+}
 fn binding(bytes: &[u8], class: StorageClass) -> Binding {
     Binding {
         purpose: Purpose::Resource(ResourceBinding {
@@ -40,10 +144,8 @@ fn s3_storage() -> Result<(tempfile::TempDir, Value)> {
     ))?;
     let _: rss_mdm_content_service::Config = serde_json::from_value(example.clone())?;
     let mut storage = example["storage"].clone();
-    let actual = json!({"kind":"s3","endpoint":provider["endpoint"],"region":provider["region"],"bucket":provider["bucket"],"namespace":provider["namespace"],"credentials_reference":"content-test","access_key_file":private.path().join("access"),"secret_key_file":private.path().join("secret"),"private_ca_file":provider["ca"],"max_concurrent":4,"connect_seconds":5});
-    for (key, value) in actual.as_object().unwrap() {
-        storage[key] = value.clone();
-    }
+    storage["revision"] = json!(1);
+    storage["max_concurrent"] = json!(4);
     Ok((private, storage))
 }
 async fn stores(
@@ -61,6 +163,7 @@ async fn stores(
     config["content"]["max_artifact_bytes"] = json!(160 * 1024 * 1024);
     config["content"]["max_temporary_bytes"] = json!(512 * 1024 * 1024);
     let config: crate::config::Config = serde_json::from_value(config)?;
+    crate::test_support::storage::seed(&config).await?;
     let (resources, (first, second)) = Resources::build(|resources| {
         Box::pin(async move {
             let first =
@@ -380,7 +483,7 @@ async fn s3_workload_policy(provider: &Value, access: &str, write: bool) -> Resu
 async fn s3_rejected_writes_release_quota_after_permission_recovery_and_expiry() -> Result<()> {
     let provider: Value =
         serde_json::from_slice(&std::fs::read(std::env::var("MDM_S3_FIXTURE")?)?)?;
-    let (secrets, storage) = s3_storage()?;
+    let (_secrets, storage) = s3_storage()?;
     let access = format!("quota-{}", case_tenant());
     let secret = Uuid::new_v4().to_string();
     use futures::FutureExt;
@@ -398,9 +501,7 @@ async fn s3_rejected_writes_release_quota_after_permission_recovery_and_expiry()
         json!({}),
     )
     .await?;
-    // Replace private file contents before host construction; no runtime secret mutation.
-    std::fs::write(secrets.path().join("access"), access.as_bytes())?;
-    std::fs::write(secrets.path().join("secret"), secret.as_bytes())?;
+    // 在持久权威中建立本测试的受限凭据，再构造实际运行消费者。
     let mut cfg: Value =
         serde_json::from_slice(&std::fs::read(std::env::var("MDM_TEST_CONFIG")?)?)?;
     cfg["content"]["storage"] = storage;
@@ -408,6 +509,10 @@ async fn s3_rejected_writes_release_quota_after_permission_recovery_and_expiry()
     cfg["content"]["max_temporary_bytes"] = json!(8192);
     cfg["content"]["max_bundle_bytes"] = json!(4096);
     let cfg: crate::config::Config = serde_json::from_value(cfg)?;
+    let mut scoped_provider=provider.clone();
+    scoped_provider["accessKey"]=json!(access);
+    scoped_provider["secretKey"]=json!(secret);
+    crate::test_support::storage::seed_provider(&cfg,&scoped_provider).await?;
     let (resources, store) = Resources::build(|resources| {
         Box::pin(async move {
             let store = crate::execution_assembly::open_content(&cfg, cfg.native_protector()?)

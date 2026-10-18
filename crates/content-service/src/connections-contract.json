@@ -1,0 +1,28 @@
+{
+  "tables": [
+    {
+      "schema": "mdm_content_connections",
+      "table": "heads",
+      "read_write": false,
+      "read_only": true,
+      "updates": [],
+      "delete_policy": null
+    },
+    {
+      "schema": "mdm_content_connections",
+      "table": "versions",
+      "read_write": false,
+      "read_only": true,
+      "updates": [],
+      "delete_policy": null
+    }
+  ],
+  "functions": [
+    {
+      "name": "mdm_content_connections.reserve",
+      "search_path": "search_path=pg_catalog, pg_temp"
+    }
+  ],
+  "external_relations": [],
+  "verified_schemas": []
+}

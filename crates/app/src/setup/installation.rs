@@ -41,6 +41,8 @@ pub struct Input {
     pub deployment: super::deployment::Config,
     #[serde(default)]
     pub additional_hosts: Vec<super::tenant_hosts::Slot>,
+    #[serde(default)]
+    pub storage_profiles: Vec<super::providers::storage::Profile>,
     pub database: DatabaseInput,
     pub audit_mode: AuditMode,
     pub organization_name: String,

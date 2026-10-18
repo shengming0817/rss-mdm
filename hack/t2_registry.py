@@ -2076,3 +2076,8 @@ consume(('crates/app/src/setup/host.rs',), 'api.diagnostics apple.host')
 consume(('crates/app/src/tenant_provisioning.rs','crates/app/schema/provisioning.sql'), 'deployment.management-tenant')
 
 consume(('crates/app/tests/support/task_signing.rs',), 'execution.agent.task_trust execution.agent.delivery')
+
+add('installation.providers', selectors=('setup::providers::storage::tests::real_storage_creation_replay_and_broad_import_rejection',), profile='none', fixtures=('s3',),
+    sources=('crates/app/src/setup/providers/*',), tests=('crates/app/tests/setup/providers.rs',), support=('hack/s3_fixtures.py','fixtures/s3-provider.lock.json'))
+consume(('crates/content-service/src/connections*','crates/content-service/schema/connections.sql','crates/management-http/src/content/connections.rs','crates/app/tests/support/storage.rs'), 'content.storage')
+consume(('crates/app/src/setup/application.rs',), 'deployment.management-tenant content.storage execution.agent.task_trust apple.host')

@@ -69,6 +69,7 @@ pub async fn reconcile(input: &Input) -> Result<usize> {
     if !locked {
         return Err(Error::Busy);
     }
+    super::providers::reconcile::storage(input, &compiled.config, &mut c).await?;
     let mut reservations: BTreeMap<Uuid, usize> =
         journal.load("host-reservations.json")?.unwrap_or_default();
     let pending: Vec<Value> = sqlx::query_scalar("SELECT receipt FROM public.mdm_tenant_operations WHERE action='provision' AND receipt->'result'->>'phase'='host_pending' ORDER BY operation_id LIMIT 32")
@@ -146,6 +147,7 @@ pub async fn reconcile(input: &Input) -> Result<usize> {
             return Err(Error::Conflict);
         }
     }
+    completed += super::application::reconcile(input, &reservations, &mut c).await?;
     c.close().await.map_err(|_| Error::Storage)?;
     Ok(completed)
 }
@@ -203,10 +205,8 @@ pub(super) async fn activate(
     });
     match deployment::apply(directory, deployment, runtime).await {
         Ok(observed) => {
-            let now = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map_err(|_| Error::Storage)?
-                .as_secs();
+            let now = crate::clock::Clock::unix_seconds(&crate::clock::SystemClock)
+                .map_err(|_| Error::Storage)?;
             progress
                 .application
                 .as_mut()
@@ -216,7 +216,7 @@ pub(super) async fn activate(
                 process_generation: observed.process_generation,
                 applied_revision: observed.revision,
                 material_digest: observed.material_digest,
-                observed_at: i64::try_from(now).map_err(|_| Error::Storage)?,
+                observed_at: now,
                 failure: None,
             });
             progress.blocked = None;
