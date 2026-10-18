@@ -99,10 +99,9 @@ MDM→Agent 的前置条件是有效的原生注册、当前设备管理权限�
 {
   "bootstrap": {
     "trust_file": "/etc/rss-mdm/agent-bootstrap-trust.json",
-    "challenge_id": "bootstrap-challenge",
-    "challenge_key_file": "/run/secrets/bootstrap-challenge.key",
-    "notify_id": "bootstrap-notify",
-    "notify_key_file": "/run/secrets/bootstrap-notify.key"
+    "webhooks": [{"issuer":"REPLACE-issuer-sha256",
+      "challenge":{"id":"bootstrap-challenge","secret_file":"/run/secrets/bootstrap-challenge.key"},
+      "notify":{"id":"bootstrap-notify","secret_file":"/run/secrets/bootstrap-notify.key"}}]
   }
 }
 ```

@@ -1,5 +1,7 @@
 """Disposable Apple credentials; public CA and APNs are never contacted by T2."""
 import base64
+import hashlib
+import ssl
 import json
 import os
 from pathlib import Path
@@ -45,8 +47,10 @@ def generate(root, tls_certificate, tls_key):
                         certificate_file=str(tls_certificate), private_key_file=str(root/'apple-tls.pk8')),
         trust_file=str(root/'apple-trust.json'),
         materials=dict(apns=1,profile=1,accounts={'organization':1}),
-        challenge_webhook=dict(id='rss-challenge',secret_file=str(root/'apple-challenge-secret')),
-        notify_webhook=dict(id='rss-notify',secret_file=str(root/'apple-notify-secret')))
+        identity_seed=dict(challengeId='rss-challenge',notifyId='rss-notify'),
+        webhooks=[dict(issuer=hashlib.sha256(ssl.PEM_cert_to_DER_cert((root/'apple-issuer.pem').read_text())).hexdigest(),
+            challenge=dict(id='rss-challenge',secret_file=str(root/'apple-challenge-secret')),
+            notify=dict(id='rss-notify',secret_file=str(root/'apple-notify-secret')))])
     materials = dict(profile_certificate_file=str(root/'apple-profile.pem'), profile_private_key_file=str(root/'apple-profile.pk8'),
         apns_certificate_file=str(root/'apple-apns.pem'), apns_private_key_file=str(root/'apple-apns.key'), apns_topic='com.apple.mgmt.rss-t2')
     (root/'apple-materials.json').write_text(json.dumps(materials))

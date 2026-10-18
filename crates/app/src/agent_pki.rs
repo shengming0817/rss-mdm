@@ -40,10 +40,7 @@ impl Lifetime {
 #[serde(deny_unknown_fields)]
 pub struct BootstrapConfig {
     pub trust_file: PathBuf,
-    pub challenge_id: String,
-    pub challenge_key_file: PathBuf,
-    pub notify_id: String,
-    pub notify_key_file: PathBuf,
+    pub webhooks: Vec<crate::ca_webhooks::Credentials>,
 }
 pub(crate) struct AgentPki {
     pub issuer: Arc<AgentIssuer>,
@@ -202,10 +199,7 @@ impl Config {
             rss_mdm_agent_wire::pki::Purpose::AgentBootstrap,
             now,
         )?;
-        if trust.public().map_err(|_| invalid())?.origin != endpoint.origin
-            || input.challenge_id.is_empty()
-            || input.notify_id.is_empty()
-        {
+        if trust.public().map_err(|_| invalid())?.origin != endpoint.origin {
             return Err(invalid());
         }
         let issuer = trust.active().map_err(|_| invalid())?;
@@ -227,18 +221,9 @@ impl Config {
             root,
             root_thumbprint: thumb,
         };
-        let challenge = crate::config::read(&input.challenge_key_file, 4096, true)?;
-        let notify = crate::config::read(&input.notify_key_file, 4096, true)?;
-        if challenge.len() < 32 || notify.len() < 32 {
-            return Err(invalid());
-        }
-        let configuration = rss_mdm_registration_service::agent::bootstrap::Configuration {
-            trust,
-            challenge_id: input.challenge_id.clone(),
-            notify_id: input.notify_id.clone(),
-            challenge_key: rss_mdm_pki_service::scep::key(&challenge).map_err(|_| invalid())?,
-            notify_key: rss_mdm_pki_service::scep::key(&notify).map_err(|_| invalid())?,
-        };
+        let webhooks = crate::ca_webhooks::load(&input.webhooks, &trust)?;
+        let configuration =
+            rss_mdm_registration_service::agent::bootstrap::Configuration { trust, webhooks };
         Ok(Some((Arc::new(configuration), deployment)))
     }
 }

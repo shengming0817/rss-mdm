@@ -415,7 +415,7 @@ pub async fn rewrap(
 ) -> Result<u64, Error> {
     use sqlx::Row;
     let prefix = protection.ciphertext_prefix();
-    let rows=sqlx::query("SELECT purpose,revision,key_id,private_key FROM mdm_apple_runtime.versions WHERE tenant_id=$1::uuid AND substring(private_key FROM 1 FOR $2)<>$3 ORDER BY purpose,revision LIMIT 64 FOR UPDATE SKIP LOCKED").bind(tenant).bind(prefix.len() as i32).bind(prefix).fetch_all(&mut *c).await.map_err(db)?;
+    let rows=sqlx::query("SELECT purpose,revision,key_id,private_key FROM mdm_apple_runtime.versions WHERE tenant_id=$1::uuid AND substring(private_key FROM 1 FOR $2)<>$3 ORDER BY purpose,revision LIMIT 64 FOR UPDATE").bind(tenant).bind(prefix.len() as i32).bind(prefix).fetch_all(&mut *c).await.map_err(db)?;
     for row in &rows {
         let purpose: String = row.try_get("purpose").map_err(db)?;
         let purpose: Purpose =

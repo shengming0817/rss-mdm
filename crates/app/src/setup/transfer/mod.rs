@@ -446,6 +446,7 @@ async fn resume(mut saved: Saved, journal: &Journal) -> Result<Receipt> {
             let host = &mut saved.hosts[index];
             let mut runtime = host.source.clone();
             let protection = materials::protection(&mut runtime)?;
+            materials::bootstrap(&mut runtime)?;
             if let Some(windows) = runtime["native_protocols"]["windows"].as_object_mut() {
                 let original = windows.remove("protocol_key_file").ok_or(Error::Corrupt)?;
                 windows.insert("protocol_protection".into(),json!({"active_file":original,"historical_files":[],"fingerprint_file":original}));

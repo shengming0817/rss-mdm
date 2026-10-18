@@ -682,8 +682,8 @@ fn startup_diagnostics(root: &std::path::Path) -> Result<()> {
         serde_json::from_slice(&std::fs::read(root.join("apple.json"))?)?;
     for (pointer, category) in [
         ("/trust_file", "AgentPki"),
-        ("/challenge_webhook/secret_file", "AppleChallengeWebhook"),
-        ("/notify_webhook/secret_file", "AppleNotifyWebhook"),
+        ("/webhooks/0/challenge/secret_file", "AppleChallengeWebhook"),
+        ("/webhooks/0/notify/secret_file", "AppleNotifyWebhook"),
     ] {
         let mut input = original.clone();
         *input.pointer_mut(pointer).unwrap() = json!("private-material-path-must-not-be-logged");

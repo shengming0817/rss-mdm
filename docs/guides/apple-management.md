@@ -119,8 +119,10 @@ operation observation 分别返回 expected、synchronization、nativeStatus、e
   "management":{"listen":"0.0.0.0:8445","origin":"https://apple.example.test:8445","certificate_file":"/run/mdm/apple-tls.pem","private_key_file":"/run/mdm/apple-tls.pk8"},
   "trust_file":"/run/mdm/apple-trust.json",
   "materials":{"apns":2,"profile":2,"accounts":{}},
-  "challenge_webhook":{"id":"REPLACE-challenge-id","secret_file":"/run/mdm/challenge-secret"},
-  "notify_webhook":{"id":"REPLACE-notify-id","secret_file":"/run/mdm/notify-secret"}
+  "identity_seed":{"challengeId":"ORIGINAL-challenge-id","notifyId":"ORIGINAL-notify-id"},
+  "webhooks":[{"issuer":"REPLACE-issuer-sha256",
+    "challenge":{"id":"REPLACE-challenge-id","secret_file":"/run/mdm/challenge-secret"},
+    "notify":{"id":"REPLACE-notify-id","secret_file":"/run/mdm/notify-secret"}}]
 }}
 ```
 
@@ -179,3 +181,5 @@ CA 公共证书由单独的受管理 `com.rss-mdm.pki.<registration>` Profile �
 每项保留 operation、注册世代、通道、inputVersion、声明 ServerToken 和既有 nativeStatus；历史世代通过原操作详情读取。
 查询使用 OperationRead 和原生值权限，`nativeValuesRedacted` 明确标识脱敏。缺失、Unknown、原生错误与乱序冲突不会转成成功；
 publication 或 synchronized 不证明设置生效、合规或卸载。未注册设备返回 no_current_registration，不能解释为设备已清空配置。
+
+`identity_seed` 在第一次启用前固定。转交保留 V4 原始两个 ID，CA 轮换不能改变此种子；`webhooks` 列出 trust 中每个保留 issuer 的独立回调凭据。未知或重复 ID、跨阶段签名和签发者错配均拒绝。

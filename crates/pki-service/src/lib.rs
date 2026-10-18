@@ -66,6 +66,23 @@ pub struct Sign<'a> {
 }
 impl StepCa {
     pub fn new(config: Configuration, tls_root: &[u8], pkcs8: &[u8]) -> Result<Self, Error> {
+        Self::connect(config, tls_root, pkcs8, None)
+    }
+    /// Deployment qualification pins the approved peer while preserving TLS hostname verification.
+    pub fn at_address(
+        config: Configuration,
+        tls_root: &[u8],
+        pkcs8: &[u8],
+        address: std::net::SocketAddr,
+    ) -> Result<Self, Error> {
+        Self::connect(config, tls_root, pkcs8, Some(address))
+    }
+    fn connect(
+        config: Configuration,
+        tls_root: &[u8],
+        pkcs8: &[u8],
+        address: Option<std::net::SocketAddr>,
+    ) -> Result<Self, Error> {
         let invalid = || Error::Configuration;
         let origin = url::Url::parse(&config.origin).map_err(|_| invalid())?;
         if origin.scheme() != "https"
@@ -85,16 +102,24 @@ impl StepCa {
             return Err(invalid());
         }
         let key = signature::RsaKeyPair::from_pkcs8(pkcs8).map_err(|_| invalid())?;
-        let client = reqwest::Client::builder()
+        let mut client = reqwest::Client::builder()
             .https_only(true)
             .no_proxy()
             .tls_built_in_root_certs(false)
             .add_root_certificate(reqwest::Certificate::from_pem(tls_root).map_err(|_| invalid())?)
             .redirect(reqwest::redirect::Policy::none())
             .connect_timeout(Duration::from_secs(3))
-            .timeout(Duration::from_secs(8))
-            .build()
-            .map_err(|_| invalid())?;
+            .timeout(Duration::from_secs(8));
+        if let Some(address) = address {
+            if origin.port_or_known_default() != Some(address.port())
+                || address.ip().is_unspecified()
+                || address.ip().is_multicast()
+            {
+                return Err(invalid());
+            }
+            client = client.resolve(origin.host_str().ok_or_else(invalid)?, address);
+        }
+        let client = client.build().map_err(|_| invalid())?;
         Ok(Self {
             client,
             origin,
@@ -162,6 +187,99 @@ impl StepCa {
     }
     /// ref: smallstep/certificates v0.30.2 api/api.go IntermediatesResponse.
     /// Check the actual CA issuer before a generation can authorize new signing.
+    /// 导入前核对真实 CA 的公开 JWK；不需要或接收管理凭据。
+    pub async fn verify_provisioner(&self) -> Result<(), Error> {
+        #[derive(Deserialize)]
+        struct Jwk {
+            kty: String,
+            kid: Option<String>,
+            n: Option<String>,
+            e: Option<String>,
+        }
+        #[derive(Deserialize)]
+        struct Provisioner {
+            #[serde(rename = "type")]
+            kind: String,
+            name: String,
+            key: Option<Jwk>,
+        }
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct Page {
+            provisioners: Vec<Provisioner>,
+            #[serde(default)]
+            next_cursor: String,
+        }
+        let mut cursor = String::new();
+        for _ in 0..16 {
+            let mut url = self.url("/provisioners");
+            if !cursor.is_empty() {
+                url.query_pairs_mut().append_pair("cursor", &cursor);
+            }
+            let mut response = self
+                .client
+                .get(url)
+                .send()
+                .await
+                .map_err(|_| Error::Storage)?;
+            if !response.status().is_success()
+                || response.content_length().is_some_and(|n| n > 131072)
+            {
+                return Err(Error::Storage);
+            }
+            let mut body = zeroize::Zeroizing::new(Vec::new());
+            while let Some(chunk) = response.chunk().await.map_err(|_| Error::Storage)? {
+                if body.len() + chunk.len() > 131072 {
+                    return Err(Error::Storage);
+                }
+                body.extend_from_slice(&chunk);
+            }
+            let page: Page = serde_json::from_slice(&body).map_err(|_| Error::Configuration)?;
+            for provider in page.provisioners {
+                if provider.name != self.provisioner {
+                    continue;
+                }
+                let key = provider.key.ok_or(Error::Configuration)?;
+                if provider.kind != "JWK"
+                    || key.kty != "RSA"
+                    || key.kid.as_deref() != Some(&self.kid)
+                {
+                    return Err(Error::Configuration);
+                }
+                let n = URL_SAFE_NO_PAD
+                    .decode(key.n.ok_or(Error::Configuration)?)
+                    .map_err(|_| Error::Configuration)?;
+                let e = URL_SAFE_NO_PAD
+                    .decode(key.e.ok_or(Error::Configuration)?)
+                    .map_err(|_| Error::Configuration)?;
+                if n.len() < 256 || n.len() > 512 || e.is_empty() || e.len() > 8 {
+                    return Err(Error::Configuration);
+                }
+                let public = openssl::rsa::Rsa::from_public_components(
+                    openssl::bn::BigNum::from_slice(&n).map_err(|_| Error::Configuration)?,
+                    openssl::bn::BigNum::from_slice(&e).map_err(|_| Error::Configuration)?,
+                )
+                .map_err(|_| Error::Configuration)?;
+                if public
+                    .public_key_to_der_pkcs1()
+                    .map_err(|_| Error::Configuration)?
+                    .as_slice()
+                    != self.key.public_key().as_ref()
+                {
+                    return Err(Error::Configuration);
+                }
+                return Ok(());
+            }
+            if page.next_cursor.is_empty() || page.next_cursor == cursor {
+                return Err(Error::Configuration);
+            }
+            if page.next_cursor.len() > 1024 {
+                return Err(Error::Configuration);
+            }
+            cursor = page.next_cursor;
+        }
+        Err(Error::Configuration)
+    }
     pub async fn verify_issuer(&self, expected: &str) -> Result<(), Error> {
         #[derive(Deserialize)]
         struct Intermediates {

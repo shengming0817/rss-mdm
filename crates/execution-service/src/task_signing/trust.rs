@@ -477,7 +477,7 @@ pub async fn rewrap(
     protection: &Protector,
 ) -> Result<u64, Error> {
     let prefix = protection.ciphertext_prefix();
-    let rows=sqlx::query("SELECT key_id,private_key FROM mdm_task_signing.keys WHERE tenant_id=$1::uuid AND substring(private_key FROM 1 FOR $2)<>$3 ORDER BY key_id LIMIT 64 FOR UPDATE SKIP LOCKED").bind(tenant.to_string()).bind(prefix.len() as i32).bind(prefix).fetch_all(&mut *c).await.map_err(db)?;
+    let rows=sqlx::query("SELECT key_id,private_key FROM mdm_task_signing.keys WHERE tenant_id=$1::uuid AND substring(private_key FROM 1 FOR $2)<>$3 ORDER BY key_id LIMIT 64 FOR UPDATE").bind(tenant.to_string()).bind(prefix.len() as i32).bind(prefix).fetch_all(&mut *c).await.map_err(db)?;
     for row in &rows {
         let id: String = row.try_get("key_id").map_err(db)?;
         let sealed: Vec<u8> = row.try_get("private_key").map_err(db)?;

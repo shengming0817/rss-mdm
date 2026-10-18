@@ -35,10 +35,7 @@ impl Apple {
             .map_err(|_| Error::Configuration(ConfigIssue::AppleScep))?;
         let push = load_push(&config, &materials)
             .map_err(|_| Error::Configuration(ConfigIssue::AppleApns))?;
-        let challenge_key = webhook_key(&config.challenge_webhook)
-            .map_err(|_| Error::Configuration(ConfigIssue::AppleChallengeWebhook))?;
-        let notify_key = webhook_key(&config.notify_webhook)
-            .map_err(|_| Error::Configuration(ConfigIssue::AppleNotifyWebhook))?;
+        let webhooks = crate::ca_webhooks::load(&config.webhooks, &authority.trust)?;
         let tls =
             crate::native::tls::configuration(&config.management, Some(authority.verifier()))?;
         let options = rss_mdm_apple_channel::Config {
@@ -46,11 +43,9 @@ impl Apple {
                 origin: config.management.origin.clone(),
             },
             apns_topic: materials.apns_topic.clone(),
-            challenge_webhook: rss_mdm_apple_channel::Webhook {
-                id: config.challenge_webhook.id.clone(),
-            },
-            notify_webhook: rss_mdm_apple_channel::Webhook {
-                id: config.notify_webhook.id.clone(),
+            identity_seed: rss_mdm_apple_channel::IdentitySeed {
+                challenge_id: config.identity_seed.challenge_id.clone(),
+                notify_id: config.identity_seed.notify_id.clone(),
             },
         };
         let channel = Arc::new(
@@ -61,8 +56,7 @@ impl Apple {
                 materials.profile,
                 push,
                 materials.binding,
-                challenge_key,
-                notify_key,
+                webhooks,
                 providers,
             )
             .with_account_keys(materials.accounts),
@@ -103,12 +97,6 @@ fn load_push(
         Arc::new(crate::clock::SystemClock),
     )?)
 }
-fn webhook_key(config: &config::Webhook) -> Result<ring::hmac::Key, Error> {
-    let secret = crate::config::read(&config.secret_file, 1024, true)?;
-    rss_mdm_pki_service::scep::key(&secret)
-        .map_err(|_| Error::Configuration(ConfigIssue::SecretContents))
-}
-
 pub(crate) fn router(
     apple: Option<&Apple>,
     app: Arc<rss_mdm_apple_channel::HttpState>,

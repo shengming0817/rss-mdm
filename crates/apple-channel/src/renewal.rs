@@ -309,7 +309,7 @@ async fn current(
     )
     .await?
     .ok_or(Error::Unauthorized)?;
-    let row=sqlx::query("SELECT s.state,s.scep_provisioner,s.enrollment::text,s.registration::text,s.renewal_of::text,s.configuration,s.challenge_hash,s.transaction_id,s.csr_digest,s.spki,s.fingerprint,s.generation,a.udid,$3::text AS device,old.spki AS old_spki FROM mdm_apple.scep_attempts s JOIN mdm_apple.scep_attempts old ON (old.tenant_id,old.id)=(s.tenant_id,s.renewal_of) JOIN mdm_apple.devices a ON (a.tenant_id,a.registration)=(s.tenant_id,s.registration) WHERE s.tenant_id=$1::uuid AND s.id=$2::uuid AND s.state IN ('prepared','consumed') AND s.expires_at>clock_timestamp() AND old.state='bound' AND old.not_after>extract(epoch FROM clock_timestamp()) AND s.generation=$4 AND a.state='active' AND EXISTS(SELECT 1 FROM mdm_apple.attempts delivery WHERE (delivery.tenant_id,delivery.certificate)=(s.tenant_id,s.id) AND delivery.phase='renew' AND delivery.state IN ('sent','not_now','acknowledged') AND delivery.deadline>clock_timestamp()) FOR UPDATE OF s,old,a").bind(tenant).bind(id).bind(device).bind(generation).fetch_optional(&mut *tx).await.map_err(db)?.ok_or(Error::Unauthorized)?;
+    let row=sqlx::query("SELECT s.state,s.issuer,s.scep_provisioner,s.enrollment::text,s.registration::text,s.renewal_of::text,s.configuration,s.challenge_hash,s.transaction_id,s.csr_digest,s.spki,s.fingerprint,s.generation,a.udid,$3::text AS device,old.spki AS old_spki FROM mdm_apple.scep_attempts s JOIN mdm_apple.scep_attempts old ON (old.tenant_id,old.id)=(s.tenant_id,s.renewal_of) JOIN mdm_apple.devices a ON (a.tenant_id,a.registration)=(s.tenant_id,s.registration) WHERE s.tenant_id=$1::uuid AND s.id=$2::uuid AND s.state IN ('prepared','consumed') AND s.expires_at>clock_timestamp() AND old.state='bound' AND old.not_after>extract(epoch FROM clock_timestamp()) AND s.generation=$4 AND a.state='active' AND EXISTS(SELECT 1 FROM mdm_apple.attempts delivery WHERE (delivery.tenant_id,delivery.certificate)=(s.tenant_id,s.id) AND delivery.phase='renew' AND delivery.state IN ('sent','not_now','acknowledged') AND delivery.deadline>clock_timestamp()) FOR UPDATE OF s,old,a").bind(tenant).bind(id).bind(device).bind(generation).fetch_optional(&mut *tx).await.map_err(db)?.ok_or(Error::Unauthorized)?;
     Ok(Some(row))
 }
 pub async fn challenge(
@@ -318,20 +318,22 @@ pub async fn challenge(
     secret: &str,
     transaction: &str,
     provisioner: &str,
+    issuer: &str,
     audit: &RequestAudit,
 ) -> Result<bool, Error> {
     let budget =
         rss_mdm_audit_integration::budget::AuditBudget::new(std::time::Duration::from_secs(2));
     let control = budget.control();
-    let outcome = app.audit_store.write(app.identity.tenant(), &control, (app, csr, secret, transaction, provisioner, audit),
-        |(app, csr, secret, transaction, provisioner, audit), tx| Box::pin(async move {
-            let replayed = tx.with_connection_context(&mut (*app, *csr, *secret, *transaction, *provisioner, *audit), |(app, csr, secret, transaction, provisioner, audit), c| Box::pin(async move {
-                let app = *app; let csr = *csr; let secret = *secret; let transaction = *transaction; let provisioner=*provisioner; let audit = *audit;
+    let outcome = app.audit_store.write(app.identity.tenant(), &control, (app, csr, secret, transaction, provisioner, issuer, audit),
+        |(app, csr, secret, transaction, provisioner, issuer, audit), tx| Box::pin(async move {
+            let replayed = tx.with_connection_context(&mut (*app, *csr, *secret, *transaction, *provisioner, *issuer, *audit), |(app, csr, secret, transaction, provisioner, issuer, audit), c| Box::pin(async move {
+                let app = *app; let csr = *csr; let secret = *secret; let transaction = *transaction; let provisioner=*provisioner; let issuer=*issuer; let audit = *audit;
     let tenant = app.identity.tenant().to_string();
     let Some(row) = current(c, &tenant, csr.attempt()).await? else {
         return Ok::<_, Error>(None);
     };
-    if row.try_get::<Option<String>,_>("scep_provisioner").map_err(db)?.as_deref()!=Some(provisioner)
+    let frozen=row.try_get::<Vec<u8>,_>("issuer").map_err(db)?.iter().map(|b|format!("{b:02x}")).collect::<String>();
+    if frozen!=issuer || row.try_get::<Option<String>,_>("scep_provisioner").map_err(db)?.as_deref()!=Some(provisioner)
         || row.try_get::<String, _>("state").map_err(db)? != "prepared"
         || rss_mdm_registration_service::enrollment::store::uuid(&row, "enrollment")? != csr.enrollment()
         || row.try_get::<Vec<u8>, _>("configuration").map_err(db)? != app.apple()?.configuration

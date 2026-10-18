@@ -120,6 +120,8 @@ def offline(root, case_root, env, purpose):
         crl=encode((root/'issuer.crl.der').read_bytes()), root_crl=encode((root/'root.crl.der').read_bytes()),
         provisioner=provisioner, kid='' if purpose == 'apple' else purpose+'-t2-key')])
     config['trust_file'] = str(private(root/(purpose+'-trust.json'), trust_value))
+    if purpose == 'apple':
+        config['webhooks'][0]['issuer'] = digest
     private(case_root/('agent-pki.json' if purpose == 'agent' else purpose+'.json'), config)
     # Construction metadata only: ordinary seeds never contact a signing provider.
     provider = dict(purpose=purpose, issuer=digest, origin='https://localhost:1',

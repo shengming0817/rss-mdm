@@ -377,6 +377,15 @@ pub struct PrivateProvider {
     pub cidrs: Vec<String>,
 }
 impl OidcConfig {
+    pub(crate) fn credential_keys(&self) -> Result<rss_identity_postgres::CredentialKeys, Error> {
+        let keys = self
+            .credential_keys
+            .iter()
+            .map(|(id, path)| Ok((id.clone(), *key(path)?)))
+            .collect::<Result<Vec<_>, Error>>()?;
+        rss_identity_postgres::CredentialKeys::new(self.active_credential_key.clone(), keys)
+            .map_err(failure)
+    }
     fn require_business_tenant(&self, tenant: &str) -> Result<(), Error> {
         if self
             .assurance_profiles
@@ -450,11 +459,6 @@ impl OidcConfig {
         instance: InstanceId,
         oidc: Arc<dyn rss_identity_core::federation::UpstreamOidc>,
     ) -> Result<rss_identity_postgres::Federation, Error> {
-        let keys = self
-            .credential_keys
-            .iter()
-            .map(|(id, path)| Ok((id.clone(), *key(path)?)))
-            .collect::<Result<Vec<_>, Error>>()?;
         rss_identity_postgres::Federation::new(
             rss_identity_core::groups::GroupFactsMaxAge::new(self.group_facts_max_age_seconds)
                 .map_err(|_| invalid())?,
@@ -467,13 +471,7 @@ impl OidcConfig {
             .map_err(|_| invalid())?,
             rss_identity_postgres::FederationConfig {
                 callback: format!("{origin}/api/v1/identity/oidc/callback"),
-                credential_keys: Arc::new(
-                    rss_identity_postgres::CredentialKeys::new(
-                        self.active_credential_key.clone(),
-                        keys,
-                    )
-                    .map_err(failure)?,
-                ),
+                credential_keys: Arc::new(self.credential_keys()?),
                 targets: {
                     let mut targets = self.return_targets.clone();
                     let bridge = format!("{origin}/api/v1/apple/account-enrollment/authenticate");

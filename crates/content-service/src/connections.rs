@@ -398,7 +398,7 @@ pub async fn rewrap(
     protection: &Protector,
 ) -> Result<u64, Error> {
     let prefix = protection.ciphertext_prefix();
-    let rows=sqlx::query("SELECT revision,credentials FROM mdm_content_connections.versions WHERE tenant_id=$1::uuid AND substring(credentials FROM 1 FOR $2)<>$3 ORDER BY revision LIMIT 64 FOR UPDATE SKIP LOCKED").bind(tenant.to_string()).bind(prefix.len() as i32).bind(prefix).fetch_all(&mut *c).await.map_err(db)?;
+    let rows=sqlx::query("SELECT revision,credentials FROM mdm_content_connections.versions WHERE tenant_id=$1::uuid AND substring(credentials FROM 1 FOR $2)<>$3 ORDER BY revision LIMIT 64 FOR UPDATE").bind(tenant.to_string()).bind(prefix.len() as i32).bind(prefix).fetch_all(&mut *c).await.map_err(db)?;
     for row in &rows {
         let revision: i64 = row.try_get("revision").map_err(db)?;
         let sealed: Vec<u8> = row.try_get("credentials").map_err(db)?;

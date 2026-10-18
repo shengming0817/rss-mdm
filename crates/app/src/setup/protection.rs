@@ -11,12 +11,61 @@ use uuid::Uuid;
 pub enum Purpose {
     Native,
     Windows,
+    OidcCredentials,
+    Recovery,
 }
 impl Purpose {
     fn path(self) -> &'static str {
         match self {
             Self::Native => "/native_protection",
             Self::Windows => "/native_protocols/windows/protocol_protection",
+            Self::OidcCredentials => "/identity/oidc",
+            Self::Recovery => "/recovery_credentials",
+        }
+    }
+    fn stages(
+        self,
+        original: &Value,
+        next: &std::path::Path,
+        key_id: &str,
+    ) -> Result<(Value, Value)> {
+        match self {
+            Self::Native | Self::Windows => key_stages(original, next),
+            Self::OidcCredentials | Self::Recovery => {
+                let (map, active, limit) = if self == Self::OidcCredentials {
+                    ("credential_keys", "active_credential_key", 8)
+                } else {
+                    ("key_files", "active_key", 32)
+                };
+                let mut read = original.clone();
+                let keys = read[map].as_object_mut().ok_or(Error::Corrupt)?;
+                if keys.len() >= limit || keys.contains_key(key_id) {
+                    return Err(Error::Conflict);
+                }
+                keys.insert(key_id.into(), json!(next));
+                let mut write = read.clone();
+                write[active] = json!(key_id);
+                Ok((read, write))
+            }
+        }
+    }
+    fn active_id(self, config: &crate::config::Config) -> Result<String> {
+        match self {
+            Self::Native | Self::Windows => Ok(self.protector(config)?.id().to_owned()),
+            Self::OidcCredentials => {
+                let oidc = config.identity.oidc.as_ref().ok_or(Error::Corrupt)?;
+                oidc.credential_keys().map_err(|_| Error::Corrupt)?;
+                Ok(oidc.active_credential_key.clone())
+            }
+            Self::Recovery => Ok(config
+                .recovery_credentials
+                .as_ref()
+                .ok_or(Error::Corrupt)?
+                .open()
+                .map_err(|_| Error::Corrupt)?
+                .keys
+                .active()
+                .to_owned()),
         }
     }
     fn protector(
@@ -25,6 +74,7 @@ impl Purpose {
     ) -> Result<std::sync::Arc<rss_mdm_native_protection::Protector>> {
         match self {
             Self::Native => config.native_protector().map_err(|_| Error::Corrupt),
+            Self::OidcCredentials | Self::Recovery => Err(Error::Input),
             Self::Windows => config
                 .native_protocols
                 .windows
@@ -175,7 +225,13 @@ pub async fn rotate(request: Request) -> Result<Receipt> {
             .to_owned();
         let write_protection = base
             .pointer(request.purpose.path())
-            .map(|p| key_stages(p, &next_path).map(|(_, w)| w))
+            .filter(|p| p.is_object())
+            .map(|p| {
+                request
+                    .purpose
+                    .stages(p, &next_path, &key_id)
+                    .map(|(_, w)| w)
+            })
             .transpose()?;
         let slots: BTreeMap<Uuid, usize> =
             journal.load("host-reservations.json")?.unwrap_or_default();
@@ -195,10 +251,14 @@ pub async fn rotate(request: Request) -> Result<Receipt> {
             )?;
             let runtime: Value = root.load("requested-runtime.json")?.ok_or(Error::Corrupt)?;
             // 存量租户可有不同旧钥；保留各自比较身份与历史读钥。
-            let Some(original) = runtime.pointer(request.purpose.path()) else {
+            let Some(original) = runtime
+                .pointer(request.purpose.path())
+                .filter(|p| p.is_object())
+            else {
                 continue;
             };
-            let (read_protection, write_protection) = key_stages(original, &next_path)?;
+            let (read_protection, write_protection) =
+                request.purpose.stages(original, &next_path, &key_id)?;
             let read = successor(runtime, read_protection, request.purpose)?;
             let write = successor(read.clone(), write_protection, request.purpose)?;
             hosts.push(Host {
@@ -248,7 +308,7 @@ pub async fn rotate(request: Request) -> Result<Receipt> {
     for host in &saved.hosts {
         let candidate: crate::config::Config =
             serde_json::from_value(host.write.clone()).map_err(|_| Error::Corrupt)?;
-        if request.purpose.protector(&candidate)?.id() != saved.receipt.key_id {
+        if request.purpose.active_id(&candidate)? != saved.receipt.key_id {
             return Err(Error::Conflict);
         }
     }
@@ -273,7 +333,6 @@ pub async fn rotate(request: Request) -> Result<Receipt> {
         for host in &saved.hosts {
             let config: crate::config::Config =
                 serde_json::from_value(host.write.clone()).map_err(|_| Error::Corrupt)?;
-            let protector = request.purpose.protector(&config)?;
             let tenant = rss_request_context::TenantId::parse(&host.tenant.to_string())
                 .map_err(|_| Error::Corrupt)?;
             let mut tx = c.begin().await.map_err(|_| Error::Storage)?;
@@ -282,7 +341,31 @@ pub async fn rotate(request: Request) -> Result<Receipt> {
                 .execute(&mut *tx)
                 .await
                 .map_err(|_| Error::Storage)?;
-            if request.purpose == Purpose::Windows {
+            if request.purpose == Purpose::OidcCredentials {
+                let oidc = config.identity.oidc.as_ref().ok_or(Error::Corrupt)?;
+                let keys = oidc.credential_keys().map_err(|_| Error::Corrupt)?;
+                let instance = rss_identity_core::InstanceId::parse(&config.identity.instance_id)
+                    .map_err(|_| Error::Corrupt)?;
+                rewritten += keys
+                    .reencrypt_tenant(&mut tx, instance, tenant)
+                    .await
+                    .map_err(|_| Error::Corrupt)? as u64;
+            } else if request.purpose == Purpose::Recovery {
+                let recovery = config
+                    .recovery_credentials
+                    .as_ref()
+                    .ok_or(Error::Corrupt)?
+                    .open()
+                    .map_err(|_| Error::Corrupt)?;
+                rewritten += rss_mdm_recovery_credentials::storage::rewrap_in(
+                    &mut tx,
+                    host.tenant,
+                    &recovery.keys,
+                )
+                .await
+                .map_err(|_| Error::Corrupt)?;
+            } else if request.purpose == Purpose::Windows {
+                let protector = request.purpose.protector(&config)?;
                 rewritten += rss_mdm_windows_channel::enrollment_store::rewrap_protocol(
                     &mut tx,
                     &host.tenant.to_string(),
@@ -291,6 +374,7 @@ pub async fn rotate(request: Request) -> Result<Receipt> {
                 .await
                 .map_err(|_| Error::Corrupt)?;
             } else {
+                let protector = request.purpose.protector(&config)?;
                 rewritten += rss_mdm_mail_service::store::rewrap(
                     &mut tx,
                     &host.tenant.to_string(),
@@ -329,7 +413,7 @@ pub async fn rotate(request: Request) -> Result<Receipt> {
             .rewritten
             .checked_add(rewritten)
             .ok_or(Error::Corrupt)?;
-        if rewritten == 0 {
+        if rewritten == 0 || request.purpose == Purpose::OidcCredentials {
             saved.receipt.phase = Phase::Complete;
         }
         operation.save("rotation.json", &saved)?;

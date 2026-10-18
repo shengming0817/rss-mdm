@@ -183,7 +183,8 @@ pub(super) async fn apple(
         .await
         .map_err(|_| Error::Conflict)?;
     }
-    runtime["native_protocols"]["apple"] = json!({"management":source.management,"trust_file":source.trust_file,"materials":{"apns":1,"profile":1,"accounts":accounts},"challenge_webhook":source.challenge_webhook,"notify_webhook":source.notify_webhook});
+    let issuer = original_issuer(&source.trust_file)?;
+    runtime["native_protocols"]["apple"] = json!({"management":source.management,"trust_file":source.trust_file,"materials":{"apns":1,"profile":1,"accounts":accounts},"identity_seed":{"challengeId":source.challenge_webhook["id"],"notifyId":source.notify_webhook["id"]},"webhooks":[{"issuer":issuer,"challenge":source.challenge_webhook,"notify":source.notify_webhook}]});
     runtime["apple_material_roots"] = json!(roots);
     Ok(())
 }
@@ -201,4 +202,39 @@ pub(super) fn apple_keys(runtime: &Value) -> Result<BTreeMap<String, Uuid>> {
         keys.insert(format!("account:{alias}"), Uuid::new_v4());
     }
     Ok(keys)
+}
+
+fn original_issuer(path: &std::path::Path) -> Result<String> {
+    let bytes = crate::config::read(path, 4 * 1024 * 1024, false).map_err(|_| Error::Corrupt)?;
+    let trust: rss_mdm_agent_wire::pki::Trust =
+        serde_json::from_slice(&bytes).map_err(|_| Error::Corrupt)?;
+    // V4 carries only one callback credential pair; never guess bindings across several CAs.
+    if trust.issuers.len() != 1 {
+        return Err(Error::Conflict);
+    }
+    Ok(trust.issuers[0].digest.clone())
+}
+pub(super) fn bootstrap(runtime: &mut Value) -> Result<()> {
+    let Some(input) = runtime["agent_pki"]["bootstrap"].as_object_mut() else {
+        return Ok(());
+    };
+    if input.contains_key("webhooks") {
+        return Err(Error::Conflict);
+    }
+    let issuer = original_issuer(std::path::Path::new(
+        input
+            .get("trust_file")
+            .and_then(Value::as_str)
+            .ok_or(Error::Input)?,
+    ))?;
+    let mut callbacks = json!({"issuer":issuer});
+    for phase in ["challenge", "notify"] {
+        let id = input.remove(&format!("{phase}_id")).ok_or(Error::Input)?;
+        let secret = input
+            .remove(&format!("{phase}_key_file"))
+            .ok_or(Error::Input)?;
+        callbacks[phase] = json!({"id":id,"secret_file":secret});
+    }
+    input.insert("webhooks".into(), json!([callbacks]));
+    Ok(())
 }

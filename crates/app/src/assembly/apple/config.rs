@@ -11,24 +11,8 @@ pub struct Config {
     pub management: TlsEndpoint,
     pub trust_file: PathBuf,
     pub materials: rss_mdm_apple_channel::runtime_materials::runtime::Selection,
-    pub challenge_webhook: Webhook,
-    pub notify_webhook: Webhook,
-}
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct Webhook {
-    pub id: String,
-    pub secret_file: PathBuf,
-}
-impl Webhook {
-    fn valid(&self) -> bool {
-        !self.id.is_empty()
-            && self.id.len() <= 128
-            && self
-                .id
-                .bytes()
-                .all(|v| v.is_ascii_alphanumeric() || b"-_".contains(&v))
-    }
+    pub identity_seed: rss_mdm_apple_channel::IdentitySeed,
+    pub webhooks: Vec<crate::ca_webhooks::Credentials>,
 }
 impl Config {
     pub(crate) fn validate(&self, browser: SocketAddr) -> Result<(), Error> {
@@ -47,11 +31,18 @@ impl Config {
         {
             return Err(bad(ConfigIssue::AppleApns));
         }
-        if !self.challenge_webhook.valid() {
+        let valid = |id: &str| {
+            !id.is_empty()
+                && id.len() <= 128
+                && id
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b"-_".contains(&b))
+        };
+        if !valid(&self.identity_seed.challenge_id)
+            || !valid(&self.identity_seed.notify_id)
+            || self.identity_seed.challenge_id == self.identity_seed.notify_id
+        {
             return Err(bad(ConfigIssue::AppleChallengeWebhook));
-        }
-        if !self.notify_webhook.valid() || self.challenge_webhook.id == self.notify_webhook.id {
-            return Err(bad(ConfigIssue::AppleNotifyWebhook));
         }
         Ok(())
     }

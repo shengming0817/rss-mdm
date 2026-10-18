@@ -211,14 +211,15 @@ async fn bootstrap_challenge(
     bytes: axum::body::Bytes,
 ) -> Result<Json<serde_json::Value>, HttpFailure> {
     let cfg = s.bootstrap_configuration()?;
-    let input = rss_mdm_pki_service::scep::decode(
-        &cfg.challenge_key,
-        &cfg.challenge_id,
-        &headers,
-        &bytes,
-        time::OffsetDateTime::now_utc().unix_timestamp(),
-    )
-    .map_err(|_| Failure::from(rss_mdm_registration_service::Error::Unauthorized))?;
+    let input = cfg
+        .webhooks
+        .verify(
+            rss_mdm_pki_service::scep::Stage::Challenge,
+            &headers,
+            &bytes,
+            time::OffsetDateTime::now_utc().unix_timestamp(),
+        )
+        .map_err(|_| Failure::from(rss_mdm_registration_service::Error::Unauthorized))?;
     Ok(Json(s.bootstrap_challenge(input, &a).await?))
 }
 async fn bootstrap_notify(
@@ -228,14 +229,15 @@ async fn bootstrap_notify(
     bytes: axum::body::Bytes,
 ) -> Result<Json<serde_json::Value>, HttpFailure> {
     let cfg = s.bootstrap_configuration()?;
-    let input = rss_mdm_pki_service::scep::decode(
-        &cfg.notify_key,
-        &cfg.notify_id,
-        &headers,
-        &bytes,
-        time::OffsetDateTime::now_utc().unix_timestamp(),
-    )
-    .map_err(|_| Failure::from(rss_mdm_registration_service::Error::Unauthorized))?;
+    let input = cfg
+        .webhooks
+        .verify(
+            rss_mdm_pki_service::scep::Stage::Notify,
+            &headers,
+            &bytes,
+            time::OffsetDateTime::now_utc().unix_timestamp(),
+        )
+        .map_err(|_| Failure::from(rss_mdm_registration_service::Error::Unauthorized))?;
     s.bootstrap_notify(input, &a).await?;
     Ok(Json(serde_json::json!({"allow":true})))
 }

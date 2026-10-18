@@ -198,6 +198,7 @@ mod certificate_archive;
 mod certificate_archive_tests;
 
 pub mod agent_pki;
+mod ca_webhooks;
 
 #[cfg(all(test, feature = "integration"))]
 #[path = "../tests/agent_pki/recovery.rs"]

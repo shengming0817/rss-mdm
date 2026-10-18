@@ -522,6 +522,12 @@ impl Registry {
                         let unknown:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_pki.signing s JOIN mdm_pki.rotations r ON r.tenant_id=s.tenant_id AND r.purpose=s.purpose AND r.previous=s.issuer WHERE r.tenant_id=$1::uuid AND r.id=$2 AND (s.state IN ('signing','unknown') OR (s.state='prepared' AND s.deadline>$3)))")
                             .bind(p.tenant_id()).bind(*id).bind(*now).fetch_one(&mut *c).await.map_err(|_|Error::Storage)?;
                         if unknown {return Err(Error::Conflict);}
+                        if trust.purpose==Purpose::AgentBootstrap {
+                            // Unknown CA outcomes remain fenced even after the native deadline or cleanup.
+                            let unsettled:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_access.agent_bootstraps b JOIN mdm_pki.rotations r ON r.tenant_id=b.tenant_id AND r.previous=b.issuer WHERE r.tenant_id=$1::uuid AND r.id=$2 AND (b.state='signing' OR (b.state IN ('prepared','issued','consumed') AND b.deadline>$3)))")
+                                .bind(p.tenant_id()).bind(*id).bind(*now).fetch_one(&mut *c).await.map_err(|_|Error::Storage)?;
+                            if unsettled{return Err(Error::Conflict);}
+                        }
                         if trust.purpose==Purpose::Apple {
                             let unsettled:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_apple.scep_attempts s JOIN mdm_pki.rotations r ON r.tenant_id=s.tenant_id AND r.previous=encode(s.issuer,'hex') WHERE r.tenant_id=$1::uuid AND r.id=$2 AND ((s.state='consumed' AND s.certificate IS NULL) OR (s.state='prepared' AND s.expires_at>clock_timestamp())))")
                                 .bind(p.tenant_id()).bind(*id).fetch_one(&mut *c).await.map_err(|_|Error::Storage)?;

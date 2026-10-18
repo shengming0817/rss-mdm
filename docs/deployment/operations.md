@@ -220,3 +220,13 @@ Windows 保护配置现在使用 `protocol_protection`，包含 `active_file`、
 邮件 owner 加密保存凭据；部署进程对精确地址验证 TLS 名字、认证并实际投递。STARTTLS 失败不会降级，TLS 后重新 EHLO，再执行 AUTH PLAIN。DATA 发送前提交持久检查点；服务器明确拒绝与连接中断/响应丢失分别记录，未知结果不自动重投。`GET /api/v1/smtp/operations/{id}` 查询原操作，`GET /api/v1/smtp` 返回版本及选择状态。`accepted` 仅表示 SMTP DATA 取得 250 回应，不证明收件箱送达。正式 DTO 见 [Mail schema](../../crates/mail-service/schema/Mail.json)。未知操作应按原 Message-ID 从邮件系统核对，不能用新操作掩盖原结果。
 
 实现依据 [RFC 3207](https://www.rfc-editor.org/rfc/rfc3207)、[RFC 4954](https://www.rfc-editor.org/rfc/rfc4954) 和 [RFC 5321](https://www.rfc-editor.org/rfc/rfc5321)。不新增通知订阅产品。
+
+### CA 准备及回调身份
+
+`prepare-ca` 是部署操作，不是业务 HTTP 任意 CA 管理入口。输入绑定安装、租户、用途、operation_id、expected_revision、确切 CA 地址/TLS 根及管理 X509 身份。`create` 只创建固定名字和固定模板；`import` 仅接受原 kid、原私钥及完全匹配的远端用途、有效链、签名 CRL 和权限配置。原操作目录保存请求、材料及外部副作用检查点；重新执行相同输入恢复未知创建结果。已有同名但不同配置的资源拒绝覆盖。
+
+SCEP 使用独立 RSA 解密叶证书，核对用途、签名、有效期、撤销和私钥匹配；MDM 运行宿主不读取其私钥。管理返回的两个 webhook ID/secret 分开绑定到确切 issuer 与 challenge/notify 阶段。`runtime-callbacks.json` 是受保护部署输入，不能作为公开 API 返回。`verified` 只说明 CA 身份与准备结果通过核对，`pending_channel_observation` 仍需真实 SCEP 双向回调，不表示设备注册通过。实现依据 [固定 step-ca admin client](https://github.com/smallstep/certificates/blob/v0.30.2/ca/adminClient.go) 和 [linkedca 合同](https://github.com/smallstep/linkedca/blob/v0.25.0/spec/linkedca/provisioners.proto)。
+
+Apple 的 `identity_seed` 永久保留原 challenge/notify ID，实际凭据放在 issuer 绑定的 `webhooks` 集合。Agent bootstrap 冻结签发者，切换活跃 CA 后原请求仍沿原 CA 完成；新请求在事务内复核当前活跃 CA。未知签发不因超时或设备清理完成而解除退役门禁。
+
+`rotate-protection` 另支持 `oidc_credentials` 和 `recovery`：复用先分发读钥、再切换写钥的宿主阶段；OIDC provider 密文由固定 Identity 依赖的原领域方法在租户事务内重加密，恢复凭据由原 recovery owner 分批重包。OIDC state 签名、恢复 RSA recipient、原凭据身份及操作摘要保持不变。旧读钥继续保留用于历史、未决操作和备份；`complete` 不能解释为可以删除历史密钥。行锁超时保留原操作重试，不把暂时锁住的密文算作迁移完成。

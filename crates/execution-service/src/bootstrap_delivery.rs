@@ -46,6 +46,11 @@ impl ExecutionService {
         let provisioner = deployment.provisioner.clone();
         let challenge = Sha256::digest(secret.as_bytes()).to_vec();
         tx.with_connection(move|c|Box::pin(async move {
+            sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,2639))").bind(tenant.to_string()).execute(&mut *c).await?;
+            let active:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_pki.trust t CROSS JOIN LATERAL jsonb_array_elements(convert_from(t.body,'UTF8')::jsonb->'issuers') i WHERE t.tenant_id=$1::uuid AND t.purpose='agent_bootstrap' AND i->>'mode'='active' AND i->>'digest'=$2)")
+                .bind(tenant.to_string()).bind(&issuer).fetch_one(&mut *c).await?;
+            // A stale process must refresh its deployment snapshot before creating new attempts.
+            if !active {return Err(sqlx::Error::Protocol("bootstrap issuer application required".into()));}
             let credential:Uuid=sqlx::query_scalar("SELECT id FROM mdm_access.credentials WHERE tenant_id=$1::uuid AND registration=$2 AND channel='mdm' AND state='active'")
                 .bind(tenant.to_string()).bind(registration).fetch_one(&mut *c).await?;
             let proof=serde_json::json!({"installation":installation,"registration":registration,"credential":credential,"generation":generation,"source":source,"runtime":null,"bootstrap":id});

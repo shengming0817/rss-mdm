@@ -21,7 +21,7 @@ async fn execute() -> Result<(), ProcessError> {
     let args: Vec<_> = std::env::args().skip(1).collect();
     if args == ["--help"] {
         println!(
-            "rss-mdm install|provision-hosts|rotate-protection|transfer-v4|restore-v4|serve|migrate|tenant-get|tenant-list|tenant-update|tenant-delete|tenant-operation-status|initialize|initialize-authorization|recover-password --config /absolute/private-config.json\nrss-mdm --version|--describe"
+            "rss-mdm install|provision-hosts|rotate-protection|transfer-v4|restore-v4|prepare-ca|serve|migrate|tenant-get|tenant-list|tenant-update|tenant-delete|tenant-operation-status|initialize|initialize-authorization|recover-password --config /absolute/private-config.json\nrss-mdm --version|--describe"
         );
         return Ok(());
     }
@@ -71,6 +71,15 @@ async fn execute() -> Result<(), ProcessError> {
             println!(
                 "{}",
                 serde_json::to_string(&receipt).expect("public restore receipt")
+            );
+            Ok(())
+        }
+        #[cfg(unix)]
+        "prepare-ca" => {
+            let receipt=rss_mdm_app::setup::providers::step_ca::run(config::load(path)?).await.map_err(|_|ProcessError::Stage {stage:"installation.ca",kind:"CA preparation incomplete; query and resume the original protected operation"})?;
+            println!(
+                "{}",
+                serde_json::to_string(&receipt).expect("public CA receipt")
             );
             Ok(())
         }

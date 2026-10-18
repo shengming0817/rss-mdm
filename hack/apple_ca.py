@@ -81,7 +81,8 @@ def running(root, env, *, case):
                 raise RuntimeError('fixed step CLI omitted webhook credentials')
             private_value(hook[2])
             secret = private(root/('apple-'+phase+'-secret'),hook[2])
-            config[phase+'_webhook'] = dict(id=hook[1],secret_file=str(secret))
+            config['webhooks'][0][phase] = dict(id=hook[1],secret_file=str(secret))
+            config['identity_seed'][phase+'Id'] = hook[1]
         key=root/'apple-revocation.pem'
         subprocess.run(['openssl','genpkey','-algorithm','RSA','-pkeyopt','rsa_keygen_bits:2048','-out',str(key)],check=True,capture_output=True,timeout=30)
         key.chmod(0o600)
@@ -103,6 +104,7 @@ def running(root, env, *, case):
         config.pop('scep_url',None)
         config.pop('scep_provisioner',None)
         config.update(trust_file=str(trust(root,'apple',config['management']['origin'],tenant,'rss','',origin)))
+        config['webhooks'][0]['issuer'] = json.loads(Path(config['trust_file']).read_text())['issuers'][0]['digest']
         private(case_root/'apple.json',config)
         providers_file=case_root/'device-pki.json'
         providers=json.loads(providers_file.read_text()) if providers_file.exists() else []

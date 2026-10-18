@@ -15,10 +15,10 @@ def configure(root, value, env):
         issuer['provisioner'] = 'rss-agent-bootstrap'
         issuer['kid'] = ''
     trust_path = private(root / 'agent-bootstrap-trust.json', trust)
-    configuration = dict(trust_file=str(trust_path))
+    callbacks = dict(issuer=trust['issuers'][0]['digest'])
+    configuration = dict(trust_file=str(trust_path), webhooks=[callbacks])
     for phase in ('challenge', 'notify'):
-        configuration[phase + '_id'] = 'bootstrap-' + phase
-        configuration[phase + '_key_file'] = str(private(root / ('bootstrap-' + phase + '.key'), base64.b64encode(secrets.token_bytes(32)).decode()))
+        callbacks[phase] = dict(id='bootstrap-' + phase, secret_file=str(private(root / ('bootstrap-' + phase + '.key'), base64.b64encode(secrets.token_bytes(32)).decode())))
     agent['bootstrap'] = configuration
     original = next(p for p in value['device_pki'] if p['purpose'] == 'agent' and p['issuer'] == trust['issuers'][0]['digest'])
     provider = copy.deepcopy(original)
