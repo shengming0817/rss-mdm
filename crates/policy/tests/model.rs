@@ -147,7 +147,7 @@ fn invalid_restored_aggregate_cannot_produce_checked_change() {
 #[test]
 fn native_delivery_source_and_ring_are_execution_semantics() {
     let id = uuid::Uuid::new_v4();
-    let mut value = serde_json::json!({"scope":id,"action":{"kind":"software","resource":{"kind":"software","id":"acme","version":"1","variants":{"windows_x86_64":"default"}},"delivery":{"kind":"direct"},"intent":"required_install","runLifetimeSeconds":600,"rollout":{"stages":[{"scope":id,"opensAt":0}]}}});
+    let mut value = serde_json::json!({"scope":id,"action":{"kind":"software","channel":"agent","resource":{"kind":"software","id":"acme","version":"1","variants":{"windows_x86_64":"default"}},"delivery":{"kind":"direct"},"intent":"required_install","runLifetimeSeconds":600,"rollout":{"stages":[{"scope":id,"opensAt":0}]}}});
     let direct: rss_mdm_policy::Definition = serde_json::from_value(value.clone()).unwrap();
     value["action"]["delivery"] =
         serde_json::json!({"kind":"native","source":"enterprise","ring":"test"});
@@ -306,7 +306,7 @@ fn self_service_requires_explicit_bounded_access_and_supports_only_available_sof
         "explicit_uninstall",
     ] {
         let mut software = base.clone();
-        software["action"] = json!({"kind":"software","resource":{"kind":"software","id":"acme","version":"1","variants":{"macos_aarch64":"default"}},"delivery":{"kind":"direct"},"intent":intent,"runLifetimeSeconds":600,"rollout":{"stages":[{"scope":id,"opensAt":0}]}});
+        software["action"] = json!({"kind":"software","channel":"agent","resource":{"kind":"software","id":"acme","version":"1","variants":{"macos_aarch64":"default"}},"delivery":{"kind":"direct"},"intent":intent,"runLifetimeSeconds":600,"rollout":{"stages":[{"scope":id,"opensAt":0}]}});
         assert_eq!(
             serde_json::from_value::<Definition>(software.clone())
                 .unwrap()
@@ -446,4 +446,30 @@ fn archive_is_terminal_and_preserves_semantic_history() {
         serde_json::to_value(Change::Archive).unwrap(),
         json!({"action":"archive"})
     );
+}
+
+#[test]
+fn software_channel_defaults_only_at_the_management_boundary() {
+    let fixtures: Value =
+        serde_json::from_str(include_str!("fixtures/semantic-identities.json")).unwrap();
+    let mut definition = fixtures[3]["definition"].clone();
+    definition["action"]
+        .as_object_mut()
+        .unwrap()
+        .remove("channel");
+    assert!(serde_json::from_value::<Definition>(definition.clone()).is_err());
+    let change: Change =
+        serde_json::from_value(json!({"action":"put","enabled":false,"definition":definition}))
+            .unwrap();
+    let Change::Put { definition, .. } = change else {
+        panic!("put")
+    };
+    assert_eq!(definition.action.target_channel(), SoftwareChannel::Agent);
+    let agent = definition.semantic().unwrap();
+    let mut mdm = (*definition).clone();
+    if let Action::Software { channel, .. } = &mut mdm.action {
+        *channel = SoftwareChannel::Mdm;
+    }
+    assert_ne!(agent, mdm.semantic().unwrap());
+    assert_eq!(mdm.action.target_channel(), SoftwareChannel::Mdm);
 }

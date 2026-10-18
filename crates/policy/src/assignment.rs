@@ -194,8 +194,10 @@ pub enum Action {
         /// What to do when this configuration no longer has an owner.
         exit: Exit,
     },
-    /// Enterprise software installed or removed through the Agent.
+    /// Enterprise software on exactly one explicitly selected channel.
     Software {
+        /// The only channel allowed to write this assignment.
+        channel: crate::SoftwareChannel,
         /// Explicit content or frozen native-source delivery authority.
         delivery: SoftwareDelivery,
         /// Approved logical software release and exact platform variants.
@@ -311,6 +313,16 @@ impl Definition {
             return Err(Error::Malformed);
         }
         self.action.validate()?;
+        if matches!(
+            self.action,
+            Action::Software {
+                channel: crate::SoftwareChannel::Mdm,
+                ..
+            }
+        ) && self.self_service.is_some()
+        {
+            return Err(Error::Malformed);
+        }
         if let Some(config) = &self.self_service {
             if !matches!(
                 self.action,
@@ -491,6 +503,8 @@ impl Action {
                 }
             }
             Action::Software {
+                channel,
+                intent,
                 schedule,
                 run_lifetime_seconds,
                 rollout,
@@ -498,6 +512,12 @@ impl Action {
                 ..
             } => {
                 schedule.validate()?;
+                if *channel == crate::SoftwareChannel::Mdm
+                    && (!matches!(delivery, SoftwareDelivery::Direct)
+                        || !matches!(intent, SoftwareIntent::RequiredInstall))
+                {
+                    return Err(Error::Malformed);
+                }
                 if let SoftwareDelivery::Native { source, .. } = delivery
                     && (source.is_empty()
                         || source.len() > 128
@@ -605,7 +625,7 @@ mod tests {
     fn software_policy_selects_exact_variants_for_one_logical_application() {
         let value = json!({
             "scope": "11111111-1111-1111-1111-111111111111",
-            "action": {"resource": {
+            "action": {"channel": "agent", "resource": {
                 "kind": "software",
                 "id": "acme.editor",
                 "version": "v2",

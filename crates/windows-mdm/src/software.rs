@@ -98,6 +98,27 @@ impl Installer {
             items: vec![self.item(Some(Secret(self.xml()?)))],
         })
     }
+    /// Observe exact product status and version without executing or retrying installation.
+    pub fn observe(&self, id: u32) -> Command {
+        Command::Get {
+            id,
+            meta: None,
+            items: ["Status", "Version"]
+                .into_iter()
+                .map(|property| Item {
+                    more_data: false,
+                    target: Some(format!(
+                        "{}%7B{}%7D/{property}",
+                        root(self.0.scope),
+                        self.0.product.to_uppercase()
+                    )),
+                    source: None,
+                    meta: None,
+                    data: None,
+                })
+                .collect(),
+        }
+    }
     fn item(&self, data: Option<Secret<String>>) -> Item {
         Item {
             more_data: false,

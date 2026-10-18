@@ -101,6 +101,7 @@ impl From<rss_mdm_execution_service::Error> for Error {
     fn from(e: rss_mdm_execution_service::Error) -> Self {
         use rss_mdm_execution_service::Error as E;
         match e {
+            E::MdmSoftwareDisabled => Self::MdmSoftwareDisabled,
             E::Malformed => Self::Malformed,
             E::Unauthorized => Self::Unauthorized,
             E::Forbidden => Self::Forbidden,

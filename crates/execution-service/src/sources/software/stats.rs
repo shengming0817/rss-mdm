@@ -32,9 +32,14 @@ impl SoftwareAssignment {
         let reader = source.clone();
         let tenant = tx.tenant_id();
         let scope_input = scopes.clone();
+        let channel = self.channel();
         let resolved = tx
             .with_connection(move |c| {
-                Box::pin(async move { Ok(reader.rollout_input_on(c, tenant, &scope_input).await) })
+                Box::pin(async move {
+                    Ok(reader
+                        .rollout_input_on(c, tenant, &scope_input, channel)
+                        .await)
+                })
             })
             .await??;
         let Some(resolved) = resolved else {
@@ -105,11 +110,12 @@ impl SoftwareAssignment {
                 let tenant = tx.tenant_id();
                 let runs = build.input.runs.clone();
                 let cursor = build.cursor.clone();
+                let channel = self.channel();
                 let page = tx
                     .with_connection(move |c| {
                         Box::pin(async move {
                             Ok(reader
-                                .rollout_devices_on(c, tenant, &runs, cursor.as_deref())
+                                .rollout_devices_on(c, tenant, &runs, channel, cursor.as_deref())
                                 .await)
                         })
                     })
@@ -250,18 +256,26 @@ impl SoftwareAssignment {
             }
         }
         count.unsupported_capability = 1;
-        for binding in crate::channels::agent_targets_in(
-            tx,
-            service.agent_store.clone(),
-            vec![target.device.clone()],
-        )
-        .await?
-        {
-            if binding.registration == target.registration_id
-                && binding.generation == target.generation
-                && self.supported_in(service, tx, &binding.binding).await?
+        if self.channel() == rss_mdm_inventory::Channel::Mdm {
+            count.unsupported_capability = u64::from(
+                crate::native_software::target_in(tx, &target.device)
+                    .await?
+                    .is_none(),
+            );
+        } else {
+            for binding in crate::channels::agent_targets_in(
+                tx,
+                service.agent_store.clone(),
+                vec![target.device.clone()],
+            )
+            .await?
             {
-                count.unsupported_capability = 0;
+                if binding.registration == target.registration_id
+                    && binding.generation == target.generation
+                    && self.supported_in(service, tx, &binding.binding).await?
+                {
+                    count.unsupported_capability = 0;
+                }
             }
         }
         macro_rules! replace {($($field:ident),*)=>{$(build.counts.$field=build.counts.$field.checked_sub(old.$field).and_then(|v|v.checked_add(count.$field)).ok_or(Error::Malformed)?;)*};}

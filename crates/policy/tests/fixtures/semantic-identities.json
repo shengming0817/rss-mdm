@@ -122,11 +122,12 @@
           },
           "until": null,
           "window": null
-        }
+        },
+        "channel": "agent"
       },
       "scope": "11111111-1111-4111-8111-111111111111"
     },
-    "digest": "425383bfc03a451ff32510491763d91f50de3bd930eef735c66a43461ffe1b54"
+    "digest": "de15a23cdbcae5d21bee1ddd05252bc5084f55a2f762333d8816cb5ba0b7bba9"
   },
   {
     "definition": {

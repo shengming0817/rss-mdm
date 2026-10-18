@@ -478,6 +478,8 @@ pub enum SoftwareProvenance {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SoftwareSignature {
+    /// Immutable reviewed platform verification report, bound to these exact installer bytes.
+    pub evidence: Option<SoftwareArtifact>,
     /// Runtime artifact key to which the check applies.
     pub artifact: String,
     /// Required platform trust mechanism.

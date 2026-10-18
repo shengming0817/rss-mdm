@@ -7,6 +7,7 @@ impl Inputs {
         version: &resource::Version,
     ) -> Result<FrozenSoftwareAction> {
         let PublicationInput::Software {
+            channel,
             binding: selection,
             delivery,
             intent,
@@ -44,7 +45,33 @@ impl Inputs {
                 },
             )
             .await?;
+        let mut native_packages = std::collections::BTreeMap::new();
+        if *channel == rss_mdm_policy::SoftwareChannel::Mdm {
+            for (target, key) in &selection.variants {
+                let (platform, architecture) = crate::agent_install::resource_target(*target);
+                let variant = version
+                    .resolve(
+                        platform,
+                        architecture,
+                        &resource::Id::new(key).map_err(|_| Error::Malformed)?,
+                    )
+                    .map_err(|_| Error::Malformed)?;
+                let resource::Declaration::Software { definition } = variant.declaration() else {
+                    return Err(Error::Malformed.into());
+                };
+                native_packages.insert(
+                    *target,
+                    crate::native_software::Package::compile(
+                        definition,
+                        self.product_origin.clone(),
+                    )?,
+                );
+            }
+        }
         let action = FrozenSoftwareAction {
+            native_packages,
+            channel: *channel,
+            grants: Default::default(),
             delivery: (*delivery).clone(),
             resource_digest: version.digest().bytes(),
             resource: binding.id().to_owned(),

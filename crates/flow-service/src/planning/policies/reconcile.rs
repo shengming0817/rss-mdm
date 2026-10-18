@@ -12,7 +12,7 @@ impl super::super::Planning {
         };
         use rss_mdm_execution_service::source_authority::{Availability, SourceAuthority};
         let channel =
-            rss_mdm_execution_service::source_authority::action_channel(p.definition.action.kind());
+            rss_mdm_execution_service::source_authority::action_channel(&p.definition.action);
         let source = crate::planning::execution_source::ExecutionSource::new(self.objects.clone());
         let tenant = tx.tenant_id();
         let scope = p.definition.scope;

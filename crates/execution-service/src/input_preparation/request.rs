@@ -117,6 +117,7 @@ pub enum PublicationInput<'a> {
         exit: Exit,
     },
     Software {
+        channel: rss_mdm_policy::SoftwareChannel,
         binding: &'a SoftwareResourceBinding,
         delivery: &'a SoftwareDelivery,
         intent: SoftwareIntent,
@@ -216,6 +217,7 @@ impl<'a> From<&'a Action> for PublicationInput<'a> {
                 exit: *exit,
             },
             Action::Software {
+                channel,
                 resource,
                 delivery,
                 intent,
@@ -223,6 +225,7 @@ impl<'a> From<&'a Action> for PublicationInput<'a> {
                 run_lifetime_seconds,
                 ..
             } => Self::Software {
+                channel: *channel,
                 binding: resource,
                 delivery,
                 intent: *intent,

@@ -103,6 +103,8 @@ fn enabled<'de, D: serde::Deserializer<'de>, T: Deserialize<'de>>(
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
+    #[serde(default)]
+    pub software_distribution: rss_mdm_execution_service::SoftwareDistribution,
     pub agent_pki: crate::agent_pki::Config,
     pub device_pki: Vec<crate::device_pki::Provider>,
     pub native_protection_key_file: PathBuf,

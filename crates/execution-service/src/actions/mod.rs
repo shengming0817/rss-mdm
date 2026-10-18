@@ -22,3 +22,5 @@ pub(crate) mod software;
 pub(crate) mod evidence;
 
 mod native_enrollment;
+
+pub(crate) mod native_software;

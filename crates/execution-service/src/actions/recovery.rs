@@ -214,6 +214,11 @@ pub async fn recover_one(
     {
         super::native_collection::advance_run(service, tx, &mut run, native, now).await?;
     }
+    if let db::ScheduledPolicy::Software(software) = &plan
+        && software.assignment.channel() == rss_mdm_inventory::Channel::Mdm
+    {
+        super::native_software::advance_run(service, tx, &mut run, software, now).await?;
+    }
     // A sealed protocol result is durable execution evidence, even after worker downtime.
     run.state.expire(now, plan.timeout_seconds());
     if run.state.execution == Execution::NotStarted

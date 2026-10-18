@@ -6,6 +6,7 @@ CREATE TABLE mdm_policy.policies (
  current_version uuid NOT NULL, version_number bigint NOT NULL CHECK(version_number>0),
  execution_binding bytea CHECK(execution_binding IS NULL OR octet_length(execution_binding)=32),
  state text NOT NULL CHECK(state IN ('enabled','disabled','archived')), definition jsonb NOT NULL CHECK(octet_length(definition::text)<=4194304),
+ CHECK(definition->'action'->>'kind'<>'software' OR coalesce(definition->'action'->>'channel' IN ('agent','mdm'),false)),
  author jsonb NOT NULL, updated_at bigint NOT NULL CHECK(updated_at>=0), PRIMARY KEY(tenant_id,id)
 );
 CREATE TABLE mdm_policy.versions (
@@ -15,6 +16,7 @@ CREATE TABLE mdm_policy.versions (
  CHECK((resource IS NULL) = (resource_version IS NULL)),
  CHECK((action_kind IN ('credential','ensure_agent_installed','request_mdm_enrollment')) = (resource IS NULL)),
  frozen jsonb NOT NULL CHECK(octet_length(frozen::text)<=25165824),
+ CHECK(action_kind<>'software' OR coalesce(frozen->'action'->>'channel' IN ('agent','mdm'),false)),
  fingerprint bytea NOT NULL CHECK(octet_length(fingerprint)=32),
  PRIMARY KEY(tenant_id,id),UNIQUE(tenant_id,policy,number),
  FOREIGN KEY(tenant_id,policy) REFERENCES mdm_policy.policies(tenant_id,id)

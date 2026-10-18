@@ -2037,3 +2037,11 @@ for name, selector in (
         fixtures=tuple(dict.fromkeys((*module.fixtures, 'scep' if name == 'apple.onboarding' else 'ca_windows'))))))
 
 consume(('crates/apple-channel/src/recovery_credentials.rs',), 'apple.commands')
+
+# Explicit software channel uses the existing Policy, shared Run and protocol owners.
+consume(('crates/execution-service/src/native_software.rs',
+         'crates/execution-service/src/actions/native_software.rs',
+         'crates/management-http/src/software_content.rs'),
+        'execution.software.offer execution.software.recovery execution.commands.onboarding apple.onboarding planning.software')
+T1_INPUTS += ('crates/execution-service/tests/native_software_unit.rs',)
+consume(('crates/app/tests/execution/commands/onboarding/native_software.rs',), 'execution.commands.onboarding')

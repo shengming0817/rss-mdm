@@ -9,6 +9,7 @@ impl IntoResponse for Error {
         let (status, code) = match &self {
             Error::Archive(e) => archive_error(e),
             Error::RecoveryCredentials(e) => recovery_error(e),
+            Error::MdmSoftwareDisabled => (StatusCode::CONFLICT, "mdm_software_disabled"),
             Error::EnrollmentPaused => (StatusCode::CONFLICT, "enrollment_paused"),
             Error::RegistrationLimit => (StatusCode::TOO_MANY_REQUESTS, "registration_limit"),
             Error::Conflict => (StatusCode::CONFLICT, "operation_conflict"),

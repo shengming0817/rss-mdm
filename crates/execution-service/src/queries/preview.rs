@@ -18,7 +18,8 @@ use serde::Deserialize;
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Preview {
-    pub definition: Definition,
+    #[serde(deserialize_with = "rss_mdm_policy::definition_input")]
+    pub definition: Box<Definition>,
     pub after: Option<String>,
     pub scope_result: Option<Uuid>,
 }
@@ -50,7 +51,7 @@ pub async fn preview(
         } else { None };
         let onboarding = if let PreviewInputs::Onboarding(frozen) = &prepared { Some(frozen) } else { None };
         authorization.require_all_devices(proof,Permission::InventoryRead)?;
-        let source=s.source.clone();let tenant=tx.tenant_id();let scope=input.definition.scope;let after=input.after.clone();let channel=crate::source_authority::action_channel(input.definition.action.kind());
+        let source=s.source.clone();let tenant=tx.tenant_id();let scope=input.definition.scope;let after=input.after.clone();let channel=crate::source_authority::action_channel(&input.definition.action);
         let mut objects=tx.with_connection(move|c|Box::pin(async move {Ok(source.assignment_objects_on(c,tenant,scope,channel,after.as_deref()).await)})).await??;
         let source=s.source.clone();let tenant=tx.tenant_id();
         let result=tx.with_connection(move|c|Box::pin(async move {Ok(source.preview_scope_on(c,tenant,scope,channel,None).await)})).await??.result;

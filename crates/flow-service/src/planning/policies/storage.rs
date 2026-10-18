@@ -88,7 +88,7 @@ pub async fn enqueue_change_in(
     // Software statistics also need this owner before any execution exists.
     if old.is_some()
         || policy.definition.action.kind() == rss_mdm_policy::ActionKind::Software
-        || policy.definition.action.kind().assignment_behavior()
+        || policy.definition.action.assignment_behavior()
             == rss_mdm_policy::AssignmentBehavior::NativeCollectionRecovery
     {
         rss_mdm_execution_service::sources::storage::wake_execution_in(tx, policy.id).await?;

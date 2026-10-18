@@ -15,6 +15,7 @@ pub fn routes(queries: Arc<rss_mdm_execution_service::queries::Queries>) -> Rout
                 .route("/policies/{id}/assignments", get(assignments))
                 .with_state(queries),
         )
+        .route("/policies/capabilities", get(capabilities))
         .route("/policies", get(list))
         .route("/policies/{id}", get(read).post(change).delete(delete))
         .route("/policies/{id}/reruns", post(rerun))
@@ -145,4 +146,16 @@ async fn delete(
         .await
         .map(Json)
         .map_err(Error::from)
+}
+
+async fn capabilities(
+    State(service): State<Arc<Policies>>,
+    Extension(auth): Extension<RequestAuth>,
+    Extension(audit): Extension<RequestAudit>,
+) -> Result<Json<Value>, Error> {
+    service
+        .capabilities(&auth.proof, &audit)
+        .await
+        .map(Json)
+        .map_err(Into::into)
 }

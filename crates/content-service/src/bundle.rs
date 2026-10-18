@@ -36,6 +36,48 @@ impl ContentPort for Store {
                 let Declaration::Software { definition } = variant.declaration() else {
                     return Err(catalog::Error::Input);
                 };
+                for signature in &definition.spec().signatures {
+                    if let Some(evidence) = &signature.evidence {
+                        if evidence.length > 65536 {
+                            return Err(catalog::Error::Input);
+                        }
+                        let artifact = evidence.artifact().map_err(|_| catalog::Error::Input)?;
+                        let file = files
+                            .iter()
+                            .find(|v| v.artifact() == &artifact)
+                            .ok_or(catalog::Error::Content)?;
+                        let mut tmp = file
+                            .materialize(0)
+                            .await
+                            .map_err(|_| catalog::Error::Content)?;
+                        #[derive(serde::Deserialize)]
+                        #[serde(deny_unknown_fields)]
+                        struct Report {
+                            sha256: [u8; 32],
+                            mechanism: rss_mdm_resource::SignatureMechanism,
+                            publisher: String,
+                            verified: bool,
+                        }
+                        tmp.file
+                            .as_file_mut()
+                            .rewind()
+                            .map_err(|_| catalog::Error::Content)?;
+                        let report: Report = serde_json::from_reader(tmp.file.as_file_mut())
+                            .map_err(|_| catalog::Error::Content)?;
+                        let installer = definition
+                            .spec()
+                            .artifacts
+                            .get(&signature.artifact)
+                            .ok_or(catalog::Error::Input)?;
+                        if !report.verified
+                            || report.sha256 != installer.sha256
+                            || report.mechanism != signature.mechanism
+                            || report.publisher != signature.publisher
+                        {
+                            return Err(catalog::Error::Content);
+                        }
+                    }
+                }
                 if definition.spec().behavior.bundle().is_some()
                     || matches!(
                         definition.spec().behavior,

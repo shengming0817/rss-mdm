@@ -6,21 +6,29 @@ use sqlx::{PgConnection, Row};
 use uuid::Uuid;
 
 pub struct ExecutionSource {
+    pub mdm_software_enabled: bool,
     pub objects: std::sync::Arc<dyn rss_mdm_inventory_service::objects::ObjectReader>,
 }
 impl ExecutionSource {
     pub fn new(
         objects: std::sync::Arc<dyn rss_mdm_inventory_service::objects::ObjectReader>,
     ) -> Self {
-        Self { objects }
+        Self {
+            objects,
+            mdm_software_enabled: false,
+        }
     }
 }
 impl SourceAuthority for ExecutionSource {
+    fn mdm_software_enabled(&self) -> bool {
+        self.mdm_software_enabled
+    }
     fn rollout_input_on<'a>(
         &'a self,
         c: &'a mut PgConnection,
         tenant: TenantId,
         scopes: &'a [Uuid],
+        channel: Channel,
     ) -> Pending<'a, Option<Vec<ScopeResult>>> {
         Box::pin(async move {
             rss_mdm_inventory_postgres::lock_watermark_in(c, tenant).await?;
@@ -34,7 +42,7 @@ impl SourceAuthority for ExecutionSource {
                 if status["state"] != "fresh" {
                     return Ok(None);
                 }
-                let (run,revision)=sqlx::query_as::<_,(Uuid,i64)>("SELECT resolution,agent_resolution_revision FROM mdm_planning.scopes WHERE tenant_id=$1::uuid AND id=$2 AND NOT deleted").bind(tenant.to_string()).bind(scope).fetch_one(&mut *c).await?;
+                let (run,revision)=sqlx::query_as::<_,(Uuid,i64)>("SELECT resolution,CASE WHEN $3='mdm' THEN mdm_resolution_revision ELSE agent_resolution_revision END FROM mdm_planning.scopes WHERE tenant_id=$1::uuid AND id=$2 AND NOT deleted").bind(tenant.to_string()).bind(scope).bind(channel.as_str()).fetch_one(&mut *c).await?;
                 runs.push(ScopeResult { run, revision });
             }
             Ok(Some(runs))
@@ -45,6 +53,7 @@ impl SourceAuthority for ExecutionSource {
         c: &'a mut PgConnection,
         tenant: TenantId,
         runs: &'a [Uuid],
+        channel: Channel,
         after: Option<&'a str>,
     ) -> Pending<'a, RolloutPage> {
         Box::pin(async move {
@@ -52,7 +61,7 @@ impl SourceAuthority for ExecutionSource {
                 [root, stage, ..] => (root, stage),
                 _ => return Err(SourceError::Invariant),
             };
-            let mut rows=sqlx::query_as::<_,(String,Value,bool)>("WITH page AS (SELECT * FROM mdm_planning.scope_channel_results WHERE tenant_id=$1::uuid AND run=$3 AND channel='agent' AND device>coalesce($5,'') COLLATE \"C\" ORDER BY device LIMIT 17) SELECT s.device,s.target,s.matched AND NOT s.pending AND EXISTS(SELECT 1 FROM mdm_planning.scope_channel_results r WHERE r.tenant_id=s.tenant_id AND r.run=$2 AND r.device=s.device AND r.channel=s.channel AND r.target=s.target AND r.matched AND NOT r.pending) AND NOT EXISTS(SELECT 1 FROM mdm_planning.scope_channel_results e WHERE e.tenant_id=s.tenant_id AND e.run=ANY($4) AND e.channel=s.channel AND e.device=s.device AND (e.matched OR e.pending)) FROM page s ORDER BY s.device").bind(tenant.to_string()).bind(root).bind(stage).bind(&runs[2..]).bind(after).fetch_all(c).await?;
+            let mut rows=sqlx::query_as::<_,(String,Value,bool)>("WITH page AS (SELECT * FROM mdm_planning.scope_channel_results WHERE tenant_id=$1::uuid AND run=$3 AND channel=$6 AND device>coalesce($5,'') COLLATE \"C\" ORDER BY device LIMIT 17) SELECT s.device,s.target,s.matched AND NOT s.pending AND EXISTS(SELECT 1 FROM mdm_planning.scope_channel_results r WHERE r.tenant_id=s.tenant_id AND r.run=$2 AND r.device=s.device AND r.channel=s.channel AND r.target=s.target AND r.matched AND NOT r.pending) AND NOT EXISTS(SELECT 1 FROM mdm_planning.scope_channel_results e WHERE e.tenant_id=s.tenant_id AND e.run=ANY($4) AND e.channel=s.channel AND e.device=s.device AND (e.matched OR e.pending)) FROM page s ORDER BY s.device").bind(tenant.to_string()).bind(root).bind(stage).bind(&runs[2..]).bind(after).bind(channel.as_str()).fetch_all(c).await?;
             let has_more = rows.len() > 16;
             rows.truncate(16);
             let after = rows.last().map(|r| r.0.clone());
@@ -181,7 +190,7 @@ impl SourceAuthority for ExecutionSource {
     ) -> Pending<'a, bool> {
         let kinds = rss_mdm_policy::AssignmentBehavior::NativeDesired.kinds();
         Box::pin(async move {
-            Ok(sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_policy.policies p JOIN mdm_planning.policy_assignments a ON(a.tenant_id,a.policy,a.version)=(p.tenant_id,p.id,p.current_version) WHERE p.tenant_id=$1::uuid AND (p.state='enabled') AND p.definition->'action'->>'kind'=ANY($3::text[]) AND a.channel='mdm' AND a.target->>'device'=$2 AND a.input->'admission'->>'state'<>'excluded')")
+            Ok(sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_policy.policies p JOIN mdm_planning.policy_assignments a ON(a.tenant_id,a.policy,a.version)=(p.tenant_id,p.id,p.current_version) WHERE p.tenant_id=$1::uuid AND (p.state='enabled') AND (p.definition->'action'->>'kind'=ANY($3::text[]) OR (p.definition->'action'->>'kind'='software' AND p.definition->'action'->>'channel'='mdm')) AND a.channel='mdm' AND a.target->>'device'=$2 AND a.input->'admission'->>'state'<>'excluded')")
                 .bind(tenant.to_string()).bind(device).bind(kinds).fetch_one(connection).await?)
         })
     }

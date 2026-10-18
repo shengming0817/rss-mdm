@@ -299,7 +299,35 @@ impl ExecutionService {
                 {
                     return Err(Error::Unsupported.into());
                 }
-            } else if !matches!(input.task, Task::Macos { .. }) {
+            } else if let ExecutionAuthority::Software {
+                version, operation, ..
+            } = &authority
+            {
+                let (_, frozen) =
+                    crate::sources::storage::version_in(&self.policy_reader, tx, *version).await?;
+                let crate::frozen::Frozen::Software { action } = frozen else {
+                    return Err(Error::Unsupported.into());
+                };
+                let (_, platform, architecture) = crate::native_software::target_in(tx, device)
+                    .await?
+                    .ok_or(Error::Unsupported)?;
+                let package = action
+                    .native_packages
+                    .get(&rss_mdm_policy::SoftwareTarget::new(platform, architecture))
+                    .ok_or(Error::Unsupported)?;
+                if !self.inputs.software_distribution.mdm_enabled
+                    || *operation != input.operation_id
+                    || input.target != NativeTarget::Device
+                    || checked_input(serde_json::to_vec(&input.task))?
+                        != checked_input(serde_json::to_vec(&package.task(
+                            *operation,
+                            &self.protection,
+                            self.tenant,
+                        )?))?
+                {
+                    return Err(Error::Unsupported.into());
+                }
+            } else {
                 return Err(Error::Unsupported.into());
             }
         }
@@ -393,7 +421,8 @@ impl ExecutionService {
             ExecutionAuthority::DeviceControl { .. } | ExecutionAuthority::Credential { .. } => {
                 ("direct", None)
             }
-            ExecutionAuthority::AgentInstall { version, .. }
+            ExecutionAuthority::Software { version, .. }
+            | ExecutionAuthority::AgentInstall { version, .. }
             | ExecutionAuthority::Policy { version, .. } => ("policy", Some(*version)),
         };
         let authority = checked_input(serde_json::to_string(&authority))?;

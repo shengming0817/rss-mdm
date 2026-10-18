@@ -14,6 +14,13 @@ pub enum AgentInstallStage {
 #[derive(Clone, Deserialize, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ExecutionAuthority {
+    Software {
+        tenant: String,
+        version: uuid::Uuid,
+        device: String,
+        operation: uuid::Uuid,
+        required: Vec<Permission>,
+    },
     AgentInstall {
         stage: AgentInstallStage,
         source_objects: Vec<crate::source_authority::DeviceObject>,
@@ -56,6 +63,11 @@ impl ExecutionAuthority {
         c: &mut PgConnection,
     ) -> Result<bool, Error> {
         match self {
+            Self::Software {
+                tenant, operation, ..
+            } => Ok((source.mdm_software_enabled()
+                || crate::agent_install::dispatched_on(c, tenant, *operation).await?)
+                && crate::native_software::authority_on(source, c, self, true).await?),
             Self::AgentInstall {
                 stage: AgentInstallStage::Cleanup { .. },
                 ..
@@ -144,7 +156,7 @@ impl ExecutionAuthority {
                 format!("user:{}:{}", user.instance_id, user.principal_id)
             }
             Self::Policy { unit, .. } => format!("configuration:{unit}"),
-            Self::AgentInstall { .. } => {
+            Self::Software { .. } | Self::AgentInstall { .. } => {
                 format!("operation:{operation}")
             }
         })
@@ -153,6 +165,7 @@ impl ExecutionAuthority {
         match self {
             Self::Credential { required, .. }
             | Self::DeviceControl { required, .. }
+            | Self::Software { required, .. }
             | Self::AgentInstall { required, .. }
             | Self::Policy { required, .. } => required,
         }
@@ -161,6 +174,7 @@ impl ExecutionAuthority {
         match self {
             Self::Credential { required, .. }
             | Self::DeviceControl { required, .. }
+            | Self::Software { required, .. }
             | Self::AgentInstall { required, .. }
             | Self::Policy { required, .. } => *required = permissions,
         }
@@ -267,6 +281,12 @@ impl ExecutionAuthority {
         now: i64,
     ) -> Result<bool, Error> {
         match self {
+            Self::Software { .. } => {
+                if permission != Permission::SoftwareDeploy {
+                    return Ok(false);
+                }
+                crate::native_software::authority_on(source, conn, self, false).await
+            }
             Self::AgentInstall { stage, .. } => {
                 let allowed = match stage {
                     AgentInstallStage::Install => permission == Permission::SoftwareDeploy,

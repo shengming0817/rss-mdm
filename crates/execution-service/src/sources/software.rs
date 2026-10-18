@@ -38,6 +38,7 @@ pub struct StageCounts {
 #[serde(rename_all = "snake_case")]
 pub enum TaskAdmissionState {
     Paused,
+    MdmSoftwareDisabled,
     OutsideWindow,
     OutsideScope,
     ScopePending,
@@ -97,6 +98,12 @@ pub async fn read_in(
     })
 }
 impl SoftwareAssignment {
+    pub fn channel(&self) -> rss_mdm_inventory::Channel {
+        match self.frozen.channel {
+            rss_mdm_policy::SoftwareChannel::Agent => rss_mdm_inventory::Channel::Agent,
+            rss_mdm_policy::SoftwareChannel::Mdm => rss_mdm_inventory::Channel::Mdm,
+        }
+    }
     pub(crate) fn draft(
         scope: Uuid,
         rollout: SoftwareRollout,
@@ -125,15 +132,7 @@ impl SoftwareAssignment {
             return Ok(None);
         }
         Ok(
-            match storage::admission_in(
-                source,
-                tx,
-                self.scope,
-                rss_mdm_inventory::Channel::Agent,
-                device,
-            )
-            .await?
-            {
+            match storage::admission_in(source, tx, self.scope, self.channel(), device).await? {
                 crate::source_authority::ScopeAdmission::Eligible { entry } => Some(entry),
                 _ => None,
             },
@@ -172,8 +171,7 @@ impl SoftwareAssignment {
         for (index, stage) in stages.iter().enumerate() {
             let scope = stage.scope;
             let admission =
-                storage::admission_in(source, tx, scope, rss_mdm_inventory::Channel::Agent, device)
-                    .await?;
+                storage::admission_in(source, tx, scope, self.channel(), device).await?;
             match admission {
                 crate::source_authority::ScopeAdmission::Eligible { .. } => {
                     let (total, verified) = if stage.minimum_verified_percent.is_some() {
@@ -201,6 +199,9 @@ impl SoftwareAssignment {
         tx: &mut PgTransaction<'_>,
         binding: &crate::channels::AgentBinding,
     ) -> Result<bool> {
+        if self.channel() != rss_mdm_inventory::Channel::Agent {
+            return Ok(false);
+        }
         let platform = match binding.platform.as_str() {
             "windows" => Platform::Windows,
             "macos" => Platform::Macos,
@@ -372,6 +373,14 @@ impl SoftwareAssignment {
         device: &str,
         now: i64,
     ) -> Result<TaskAdmission> {
+        if self.channel() == rss_mdm_inventory::Channel::Mdm
+            && !service.software_distribution.mdm_enabled
+        {
+            return Ok(TaskAdmission::new(
+                TaskAdmissionState::MdmSoftwareDisabled,
+                None,
+            ));
+        }
         if !self.active {
             return Ok(TaskAdmission::new(TaskAdmissionState::Paused, None));
         }
@@ -388,14 +397,8 @@ impl SoftwareAssignment {
         let mut stage_index = None;
         for (index, stage) in self.stages().iter().enumerate() {
             let scope = stage.scope;
-            let state = storage::admission_in(
-                &service.source,
-                tx,
-                scope,
-                rss_mdm_inventory::Channel::Agent,
-                device,
-            )
-            .await?;
+            let state =
+                storage::admission_in(&service.source, tx, scope, self.channel(), device).await?;
             match state {
                 crate::source_authority::ScopeAdmission::Eligible { .. } => {
                     stage_index = Some(index);
@@ -434,6 +437,25 @@ impl SoftwareAssignment {
                     Some(index),
                 ));
             }
+        }
+        if self.channel() == rss_mdm_inventory::Channel::Mdm {
+            let (reason, target) = crate::native_software::target_admission_in(tx, device).await?;
+            let state = match target {
+                None => reason,
+                Some((_, platform, architecture)) => {
+                    if self.variant(platform, architecture).is_some()
+                        && self
+                            .admitted_in(service, tx, platform, architecture)
+                            .await?
+                            .is_some()
+                    {
+                        TaskAdmissionState::Eligible
+                    } else {
+                        TaskAdmissionState::UnsupportedCapability
+                    }
+                }
+            };
+            return Ok(TaskAdmission::new(state, Some(index)));
         }
         let registrations = crate::channels::agent_targets_in(
             tx,

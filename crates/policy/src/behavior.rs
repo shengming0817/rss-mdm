@@ -44,17 +44,6 @@ impl ActionKind {
         Self::EnsureAgentInstalled,
         Self::RequestMdmEnrollment,
     ];
-    /// Original endpoint channel selected by this action; no peer broadcast is permitted.
-    pub const fn target_channel(self) -> &'static str {
-        match self {
-            Self::Credential
-            | Self::AgentCollection
-            | Self::Execution
-            | Self::Software
-            | Self::RequestMdmEnrollment => "agent",
-            Self::NativeCollection | Self::Configuration | Self::EnsureAgentInstalled => "mdm",
-        }
-    }
     /// Persisted discriminator.
     pub const fn as_str(self) -> &'static str {
         match self {
@@ -68,18 +57,6 @@ impl ActionKind {
             Self::RequestMdmEnrollment => "request_mdm_enrollment",
         }
     }
-    /// Select the existing assignment driver.
-    pub const fn assignment_behavior(self) -> AssignmentBehavior {
-        match self {
-            Self::Credential
-            | Self::AgentCollection
-            | Self::Execution
-            | Self::Software
-            | Self::RequestMdmEnrollment => AssignmentBehavior::AgentCheckIn,
-            Self::NativeCollection => AssignmentBehavior::NativeCollectionRecovery,
-            Self::Configuration | Self::EnsureAgentInstalled => AssignmentBehavior::NativeDesired,
-        }
-    }
     /// Whether the existing Agent execution path consumes explicit Policy triggers.
     pub const fn supports_rerun(self) -> bool {
         matches!(
@@ -88,13 +65,59 @@ impl ActionKind {
         )
     }
 }
+impl crate::Action {
+    /// Select exactly one write channel from the complete authored action.
+    pub const fn target_channel(&self) -> SoftwareChannel {
+        use crate::Action;
+        match self {
+            Action::Software { channel, .. } => *channel,
+            Action::NativeCollection { .. }
+            | Action::Configuration { .. }
+            | Action::EnsureAgentInstalled { .. } => SoftwareChannel::Mdm,
+            _ => SoftwareChannel::Agent,
+        }
+    }
+    /// Select the existing driver using the complete authored input.
+    pub const fn assignment_behavior(&self) -> AssignmentBehavior {
+        match self {
+            crate::Action::NativeCollection { .. } => AssignmentBehavior::NativeCollectionRecovery,
+            _ if matches!(self.target_channel(), SoftwareChannel::Mdm) => {
+                AssignmentBehavior::NativeDesired
+            }
+            _ => AssignmentBehavior::AgentCheckIn,
+        }
+    }
+}
+/// A software assignment has one write channel; there is no automatic fallback.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Deserialize, Serialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum SoftwareChannel {
+    /// Existing Agent task execution.
+    Agent,
+    /// Native MDM package execution.
+    Mdm,
+}
+impl SoftwareChannel {
+    /// Canonical persisted discriminator.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Agent => "agent",
+            Self::Mdm => "mdm",
+        }
+    }
+}
 impl AssignmentBehavior {
-    /// Derive SQL discriminator parameters from the canonical behavior mapping.
+    /// Fixed-channel kinds. Software additionally requires its authored channel predicate.
     pub fn kinds(self) -> Vec<&'static str> {
-        ActionKind::ALL
-            .into_iter()
-            .filter(|kind| kind.assignment_behavior() == self)
-            .map(ActionKind::as_str)
-            .collect()
+        match self {
+            Self::AgentCheckIn => vec![
+                "credential",
+                "agent_collection",
+                "execution",
+                "request_mdm_enrollment",
+            ],
+            Self::NativeCollectionRecovery => vec!["native_collection"],
+            Self::NativeDesired => vec!["configuration", "ensure_agent_installed"],
+        }
     }
 }

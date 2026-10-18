@@ -32,6 +32,7 @@ pub enum Change {
     /// Create or replace the complete definition at an expected CAS.
     Put {
         /// Replacement definition.
+        #[serde(deserialize_with = "definition_input")]
         definition: Box<Definition>,
         /// Requested enabled state.
         enabled: bool,
@@ -196,13 +197,15 @@ impl crate::Action {
         match self {
             Self::Software {
                 resource,
+                channel,
                 delivery,
                 intent,
                 schedule,
                 run_lifetime_seconds,
                 ..
             } => serde_json::to_vec(&(
-                Some(resource),
+                resource,
+                channel,
                 delivery,
                 intent,
                 schedule,
@@ -279,4 +282,21 @@ impl State {
             Self::Archived => "archived",
         }
     }
+}
+
+/// Normalize the current request default only; persisted Definition remains strict.
+pub fn definition_input<'de, D: serde::Deserializer<'de>>(
+    d: D,
+) -> Result<Box<Definition>, D::Error> {
+    let mut value = serde_json::Value::deserialize(d)?;
+    if let Some(action) = value
+        .get_mut("action")
+        .and_then(serde_json::Value::as_object_mut)
+        && action.get("kind").and_then(serde_json::Value::as_str) == Some("software")
+    {
+        action
+            .entry("channel")
+            .or_insert_with(|| serde_json::json!("agent"));
+    }
+    serde_json::from_value(value).map_err(serde::de::Error::custom)
 }

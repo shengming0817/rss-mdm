@@ -336,7 +336,7 @@ pub async fn queue_run_in(
     let reader = service.source.clone();
     let tenant = tx.tenant_id();
     let scope = policy.definition.scope;
-    let channel = crate::source_authority::action_channel(policy.definition.action.kind());
+    let channel = crate::source_authority::action_channel(&policy.definition.action);
     let device = target.device.clone();
     let evidence = tx
         .with_connection(move |c| {

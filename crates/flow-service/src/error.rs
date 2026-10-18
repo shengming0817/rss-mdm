@@ -2,6 +2,8 @@ use crate::{Failure, planning, resource_catalog};
 #[derive(Clone, Debug, thiserror::Error, serde::Serialize)]
 #[serde(tag = "kind", content = "reason", rename_all = "snake_case")]
 pub enum Error {
+    #[error("MDM software distribution is disabled")]
+    MdmSoftwareDisabled,
     #[error("invalid request")]
     Malformed,
     #[error(transparent)]

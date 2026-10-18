@@ -149,7 +149,7 @@ impl From<&rss_mdm_audit_integration::Error> for Error {
 impl From<rss_mdm_execution_service::Error> for Error {
     fn from(e: rss_mdm_execution_service::Error) -> Self {
         use rss_mdm_execution_service::Error as E;
-        match e { E::Malformed => Self::Malformed, E::CertificateRequest => Self::CertificateRequest,
+        match e { E::MdmSoftwareDisabled => Self::Forbidden, E::Malformed => Self::Malformed, E::CertificateRequest => Self::CertificateRequest,
             E::Unauthorized => Self::Unauthorized, E::Forbidden => Self::Forbidden, E::Conflict | E::EnrollmentPaused | E::WindowsDeclaredEnrollmentNotReady => Self::Conflict,
             E::CommitUnknown => Self::CommitUnknown, E::RollbackFailed => Self::RollbackFailed, E::Unsupported => Self::Unsupported,
             E::NotFound => Self::NotFound, E::Resource(_) => Self::Missing(Missing::Resource),

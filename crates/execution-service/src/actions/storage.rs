@@ -205,6 +205,17 @@ impl ScheduledPolicy {
             }
             Self::Enrollment(v) => v.authorized_in(service, tx, target, now).await,
             Self::Software(v) => {
+                if v.assignment.channel() == rss_mdm_inventory::Channel::Mdm {
+                    let Some((_, p, a)) =
+                        crate::native_software::target_in(tx, &target.device).await?
+                    else {
+                        return Ok(false);
+                    };
+                    return v
+                        .assignment
+                        .authorized_in(&service.admission(), tx, &target.device, p, a, now)
+                        .await;
+                }
                 let Some(binding) = crate::channels::agent_binding_in(
                     tx,
                     service.agent_store.clone(),
@@ -247,7 +258,9 @@ impl ScheduledPolicy {
         now: i64,
     ) -> Result<bool> {
         if run.state.started_at.is_none() {
-            let channel = if matches!(self, Self::Native(_)) {
+            let channel = if matches!(self, Self::Native(_))
+                || matches!(self, Self::Software(v) if v.assignment.channel()==rss_mdm_inventory::Channel::Mdm)
+            {
                 rss_mdm_inventory::Channel::Mdm
             } else {
                 rss_mdm_inventory::Channel::Agent
@@ -307,6 +320,17 @@ impl ScheduledPolicy {
                 .await;
         }
         if let Self::Software(v) = self {
+            if v.assignment.channel() == rss_mdm_inventory::Channel::Mdm {
+                let Some((_, p, a)) = crate::native_software::target_in(tx, &target.device).await?
+                else {
+                    return Ok(false);
+                };
+                return Ok(v
+                    .assignment
+                    .admitted_in(&service.admission(), tx, p, a)
+                    .await?
+                    .is_some());
+            }
             let Some((platform, architecture)) =
                 agent_profile_in(service, tx, target.registration).await?
             else {

@@ -4,7 +4,7 @@ Resource.Script 和 Resource.Software 分别持有不可变执行定义。管理
 
 ## 配置与内容
 
-内容与任务签名分别配置；仅维护软件目录需要 `content`，脚本和软件任务都需要 `content` 与 `task_signing`：
+内容与任务签名分别配置；仅维护软件目录需要 `content`，Agent 脚本和软件任务需要 `content` 与 `task_signing`，原生 MDM 软件只使用 `content` 及既有原生通道凭据：
 
 ```json
 {
@@ -159,3 +159,13 @@ Run 保存服务端选择的访问依据，用户模式只保存 Identity 签发
 契约由源码 owner 生成：管理 schema 见 `crates/management-http/schema/{PolicyWrite,Policy}.json`；调用 DTO 见 `crates/agent-wire/schema/runtime/self-service-*.json`；通用授权、资源坐标与签名任务以 task schema 为准。`agent-wire/examples/protocol_schema.rs` 从当前 Rust DTO 生成两族完整协议 schema；`hack/agent_wire_artifact.py --write` 物化 schema 并计算 fingerprint。协议包只提供规范签名字节；签名校验与本机执行条件由独立 Agent 持有，服务端执行资格和软件结果判定由产品 owner 持有。#2677/#2678 固定最终提交与契约指纹完成实际 Agent/员工 UI 集成；本 PR 的后端接缝结果不替代真机或浏览器闭环。软件本地检测及三 provider 产品验证继续归 #2657。
 
 长上传在最终内容核验后复核原浏览器会话与当前权限，保持租户、实例、用户和 session 不变；复核不续会话 idle、不轮换凭据。传输期间会话撤销或权限失效时不创建内容绑定。镜像响应头等待、传输及绑定同样使用内容操作预算。
+
+## 软件 Policy 的显式投递通道
+
+软件 `action.channel` 只接受 `agent`、`mdm`；省略时输入边界保存为 `agent`。主机 `software_distribution.mdm_enabled` 默认 false，修改配置后重启生效；`GET /api/v1/policies/capabilities` 在 PolicyRead 授权下返回默认通道和开关。开关不改写策略。关闭时启用 MDM 软件返回 `mdm_software_disabled`，已排队但未开始原生执行的任务停止投递；已发出的副作用继续按原任务回收，不声称已撤销安装。
+
+MDM v1 仅支持系统 MSI、签名单包 MSIX 的 device provisioning、签名 PKG。每个安装包的 `signatures[].evidence` 指向不可变报告 artifact；报告 JSON 持有 `sha256`、`mechanism`、`publisher`、`verified:true`，由平台打包/验证流程产生，经现有 Catalog 启用审批校验和固定。服务端验证报告与材料匹配，不执行平台签名工具。自定义环境/参数、依赖包、EXE、DMG、Bundle、用户安装、MDM 自助和卸载均不准入。Agent 原有能力独立保留。
+
+安装命令和下载都绑定原 action run、Policy/Resource 版本、注册世代及当前权限。切换通道产生新执行版本；未解决的安装效果按关联设备及所有包身份阻止重复写入，失败或离线不回退到另一通道。Windows MSI 通过原生 Status/Version，MSIX 通过精确 PackageFullName 的 IsProvisioned/Version 证明效果；缺失状态节点不算成功。PKG ACK 只证明协议受理，保持 Unknown，不推动成功率门禁。普通 PKG manifest 的 receipt 标识不被当作 InstalledApplicationList 的应用 bundle 标识。
+
+当前 schema 与冻结输入不读取旧通道格式。已有数据库只使用与其安装清单匹配的原 artifact 恢复；部署新版本使用当前安装流程，不重写历史 ledger 或删除 Unknown 运行。设备上的安装真实性由独立产品 T3 验收提供。

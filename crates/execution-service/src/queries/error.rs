@@ -11,6 +11,8 @@ pub enum Missing {
 }
 #[derive(Clone, Debug, thiserror::Error)]
 pub enum QueryError {
+    #[error("MDM software distribution is disabled")]
+    MdmSoftwareDisabled,
     #[error("invalid query")]
     Malformed,
     #[error("identity rejected")]
@@ -41,6 +43,7 @@ impl From<crate::Error> for QueryError {
             Error::Unauthorized => Self::Unauthorized,
             Error::Forbidden => Self::Forbidden,
             Error::Conflict => Self::Conflict,
+            Error::MdmSoftwareDisabled => Self::MdmSoftwareDisabled,
             Error::WindowsDeclaredEnrollmentNotReady => Self::WindowsDeclaredEnrollmentNotReady,
             Error::CommitUnknown => Self::CommitUnknown,
             Error::RollbackFailed => Self::RollbackFailed,

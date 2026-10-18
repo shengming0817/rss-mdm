@@ -50,6 +50,12 @@ pub struct Services {
     pub apple: bool,
 }
 pub fn router(state: Services, envelope: crate::boundary::Envelope) -> Router {
+    let software_content = Router::new()
+        .route(
+            "/api/v1/software/installations/{id}/package",
+            get(crate::software_content::download),
+        )
+        .with_state(state.execution.clone());
     let directory = Arc::new(crate::enrollment::directory::HttpState {
         devices: state.devices.clone(),
         assets: state.assets.clone(),
@@ -155,7 +161,10 @@ pub fn router(state: Services, envelope: crate::boundary::Envelope) -> Router {
             crate::authorization::http::protect,
         ));
     crate::boundary::wrap(
-        Router::new().merge(host_context).nest("/api/v1", protected),
+        Router::new()
+            .merge(software_content)
+            .merge(host_context)
+            .nest("/api/v1", protected),
         envelope,
     )
 }

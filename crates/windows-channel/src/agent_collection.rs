@@ -210,7 +210,9 @@ pub async fn receive(
                 channel::abandon_in(c, &p.tenant().to_string(), id, "message_budget").await?,
             );
         } else if complete && message.final_message {
-            let mut absent = query.catalog.complete && query.exe_absent;
+            let mut absent = query.catalog.complete
+                && query.exe_absent
+                && (!query.catalog.identities.is_empty() || !query.catalog.win32.is_empty());
             let mut installed = false;
             let mut provisioned = false;
             let mut identity = query.present_win32.first().cloned().unwrap_or_default();
@@ -350,9 +352,6 @@ pub async fn send(
             ReportSource::MdmWindows,
         )
         .await?;
-        if catalog.identities.is_empty() && catalog.win32.is_empty() && catalog.complete {
-            return Ok(false);
-        }
         let query = query(catalog)?;
         let state = query.plans[query.batch]
             .start("agent-observation")

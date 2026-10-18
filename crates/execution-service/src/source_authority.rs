@@ -71,12 +71,16 @@ pub enum SourceError {
 }
 /// Implementations use this connection's snapshot and locks; they never settle a transaction.
 pub trait SourceAuthority: Send + Sync {
+    fn mdm_software_enabled(&self) -> bool {
+        false
+    }
     /// Freeze current published root, selected stage and earlier stages, or wait.
     fn rollout_input_on<'a>(
         &'a self,
         c: &'a mut PgConnection,
         tenant: TenantId,
         scopes: &'a [Uuid],
+        channel: Channel,
     ) -> Pending<'a, Option<Vec<ScopeResult>>>;
     /// One durable statistics page from immutable channel results; no online owner revalidation.
     fn rollout_devices_on<'a>(
@@ -84,6 +88,7 @@ pub trait SourceAuthority: Send + Sync {
         c: &'a mut PgConnection,
         tenant: TenantId,
         runs: &'a [Uuid],
+        channel: Channel,
         after: Option<&'a str>,
     ) -> Pending<'a, RolloutPage>;
     fn preview_scope_on<'a>(
@@ -178,8 +183,8 @@ pub enum Availability {
 }
 
 /// Convert the pure authored action channel at the service boundary.
-pub fn action_channel(kind: rss_mdm_policy::ActionKind) -> Channel {
-    if kind.target_channel() == "mdm" {
+pub fn action_channel(action: &rss_mdm_policy::Action) -> Channel {
+    if action.target_channel() == rss_mdm_policy::SoftwareChannel::Mdm {
         Channel::Mdm
     } else {
         Channel::Agent
