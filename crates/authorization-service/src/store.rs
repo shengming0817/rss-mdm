@@ -517,39 +517,32 @@ async fn initialize_on(
     }
     let id = Uuid::new_v4();
     let installation = crate::tenancy::InstallationTenants::load(tx).await?;
-    let permissions: &[Permission] = if installation.is_management(&user.tenant_id) {
-        &[
-            Permission::AuthorizationRead,
-            Permission::AuthorizationWrite,
-            Permission::TenantCreate,
-            Permission::TenantRead,
-            Permission::TenantUpdate,
-            Permission::TenantDelete,
-            Permission::TenantAdministratorCreate,
-            Permission::IdentityAccountsManage,
-        ]
-    } else {
-        &[
-            Permission::AuthorizationRead,
-            Permission::AuthorizationWrite,
-            Permission::UserGroupRead,
-            Permission::UserGroupWrite,
-            Permission::DepartmentRead,
-            Permission::IdentityAccountsManage,
-            Permission::IdentityProvidersManage,
-        ]
-    };
-    let rule = Rule {
-        subject: Subject::User { user: user.clone() },
-        grants: permissions
-            .iter()
-            .copied()
+    let rule = if installation.is_management(&user.tenant_id) {
+        Rule {
+            subject: Subject::User { user: user.clone() },
+            grants: [
+                Permission::AuthorizationRead,
+                Permission::AuthorizationWrite,
+                Permission::TenantCreate,
+                Permission::TenantRead,
+                Permission::TenantUpdate,
+                Permission::TenantDelete,
+                Permission::TenantAdministratorCreate,
+                Permission::IdentityAccountsManage,
+            ]
+            .into_iter()
             .map(|operation| Grant {
                 operation,
                 scope: Scope::Tenant,
             })
             .collect(),
+        }
+    } else {
+        // Installation and later provisioning grant the same complete business role.
+        // This never grants installation-wide permissions to a business administrator.
+        tenant_administrator_rule(user.clone())
     };
+    installation.validate_rule(&user.tenant_id, &rule)?;
     sqlx::query("INSERT INTO mdm_access.authorization_initializations(tenant_id,instance,operation_id,principal) VALUES($1::uuid,$2::uuid,$3::uuid,$4::uuid)").bind(&user.tenant_id).bind(&user.instance_id).bind(key.to_string()).bind(&user.principal_id).execute(&mut *tx).await.map_err(db)?;
     sqlx::query("INSERT INTO mdm_access.authorization_rules(tenant_id,instance,id,revision,document) VALUES($1::uuid,$2::uuid,$3::uuid,1,$4::jsonb)").bind(&user.tenant_id).bind(&user.instance_id).bind(id.to_string()).bind(serde_json::to_string(&rule).map_err(|_| Error::Malformed)?).execute(&mut *tx).await.map_err(db)?;
     let receipt = Receipt {

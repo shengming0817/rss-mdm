@@ -40,7 +40,7 @@ impl FrozenAction {
 pub struct FrozenSoftwareAction {
     pub native_packages: BTreeMap<rss_mdm_policy::SoftwareTarget, crate::native_software::Package>,
     pub channel: rss_mdm_policy::SoftwareChannel,
-    pub grants: BTreeMap<String, Vec<crate::authorization::UserGrant>>,
+    pub grants: BTreeMap<String, Vec<crate::authorization::OperationAuthority>>,
     pub delivery: rss_mdm_policy::SoftwareDelivery,
     pub resource: String,
     pub version: String,

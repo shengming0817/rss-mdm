@@ -211,7 +211,7 @@ impl Service {
             Action::Create => Permission::TenantCreate,
             Action::Update => Permission::TenantUpdate,
             Action::Delete => Permission::TenantDelete,
-            Action::AdministratorCreate => return Err(Error::Malformed),
+            Action::AdministratorCreate | Action::Provision => return Err(Error::Malformed),
         };
         proof.require(permission, None)?;
         audit.operation(input.operation_id, "tenant_registry_write");
@@ -308,14 +308,6 @@ enum Read {
 }
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct CreateBody {
-    tenant_id: String,
-    initial_epoch: i64,
-    name: Option<String>,
-    notes: Option<String>,
-}
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct UpdateBody {
     expected_revision: i64,
     name: Option<String>,
@@ -344,7 +336,9 @@ pub(crate) fn routes(service: Option<Arc<Service>>) -> Router {
         return Router::new();
     };
     Router::new()
-        .route("/tenants", post(create).get(list))
+        .route("/tenants", get(list))
+        .route("/provisionings", post(provisioning::create))
+        .route("/provisionings/{operation}", get(receipt))
         .route("/tenants/{tenant}", get(detail).put(update).delete(delete))
         .route("/tenants/{tenant}/administrators", post(administrator))
         .route("/operations/{operation}", get(receipt))
@@ -380,33 +374,6 @@ async fn receipt(
         .read(
             &auth.proof,
             Read::Operation(path.map_err(|_| HttpFailure(Error::Malformed))?.0),
-        )
-        .await
-        .map(Json)
-        .map_err(HttpFailure)
-}
-async fn create(
-    State(service): State<Arc<Service>>,
-    Extension(auth): Extension<RequestAuth>,
-    Extension(audit): Extension<RequestAudit>,
-    headers: HeaderMap,
-    body: std::result::Result<Json<CreateBody>, axum::extract::rejection::JsonRejection>,
-) -> std::result::Result<Json<Receipt>, HttpFailure> {
-    let Json(body) = body.map_err(|e| HttpFailure(Error::Http(e.into())))?;
-    service
-        .mutate(
-            &auth.proof,
-            &audit,
-            Mutation {
-                installation: &service.installation,
-                tenant_id: &body.tenant_id,
-                operation_id: operation(&headers)?,
-                action: Action::Create,
-                initial_epoch: Some(body.initial_epoch),
-                expected_revision: None,
-                name: body.name.as_deref(),
-                notes: body.notes.as_deref(),
-            },
         )
         .await
         .map(Json)
@@ -468,6 +435,9 @@ async fn delete(
         .map(Json)
         .map_err(HttpFailure)
 }
+#[path = "tenant_provisioning.rs"]
+mod provisioning;
+
 #[path = "tenant_administrator.rs"]
 mod administrator;
 use administrator::administrator;

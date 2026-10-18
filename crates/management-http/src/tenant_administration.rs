@@ -23,7 +23,11 @@ pub fn router(
                         audit: envelope.audit_store.clone(),
                     },
                 )))
-                .merge(registry),
+                .merge(registry)
+                .route(
+                    "/settings/catalog",
+                    axum::routing::get(crate::settings::platform),
+                ),
         )
         .route_layer(middleware::from_fn_with_state(
             authentication.clone(),

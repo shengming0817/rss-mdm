@@ -97,6 +97,7 @@ pub fn router(state: Services, envelope: crate::boundary::Envelope) -> Router {
         windows: state.windows,
     });
     let core = Router::new()
+        .route("/settings/catalog", get(crate::settings::tenant))
         .merge(crate::webhooks::routes(state.webhooks))
         .merge(crate::api_access::key_routes(Arc::new(
             crate::api_access::Management {

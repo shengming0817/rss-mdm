@@ -5,7 +5,7 @@ use rss_mdm_management_http::{Error as HttpError, webhooks::Command};
 use rss_mdm_webhook_service as webhooks;
 use rss_request_context::TenantId;
 use serde_json::Value;
-use sqlx::{PgConnection, Row};
+use sqlx::PgConnection;
 use std::{
     sync::{Arc, Mutex},
     time::Duration,

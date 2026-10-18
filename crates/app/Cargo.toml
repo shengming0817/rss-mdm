@@ -1,5 +1,6 @@
 [package]
 name = "rss-mdm-app"
+autotests = false
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -137,3 +138,7 @@ workspace = true
 [[bin]]
 name = "rss-mdm"
 path = "src/main.rs"
+
+[[test]]
+name = "publication"
+path = "tests/publication.rs"

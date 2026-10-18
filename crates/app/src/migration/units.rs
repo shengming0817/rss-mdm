@@ -287,5 +287,9 @@ pub(super) fn units() -> Vec<(&'static str, &'static str)> {
             "channel-maintenance-history-v1",
             rss_mdm_inventory_service::CHANNEL_MAINTENANCE_SQL,
         ),
+        (
+            "tenant-provisioning-v1",
+            include_str!("../../schema/provisioning.sql"),
+        ),
     ]
 }

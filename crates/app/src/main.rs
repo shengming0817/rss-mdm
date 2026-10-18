@@ -21,7 +21,7 @@ async fn execute() -> Result<(), ProcessError> {
     let args: Vec<_> = std::env::args().skip(1).collect();
     if args == ["--help"] {
         println!(
-            "rss-mdm serve|migrate|tenant-create|tenant-get|tenant-list|tenant-update|tenant-delete|tenant-operation-status|initialize|initialize-authorization|recover-password --config /absolute/private-config.json\nrss-mdm --version|--describe"
+            "rss-mdm install|serve|migrate|tenant-create|tenant-get|tenant-list|tenant-update|tenant-delete|tenant-operation-status|initialize|initialize-authorization|recover-password --config /absolute/private-config.json\nrss-mdm --version|--describe"
         );
         return Ok(());
     }
@@ -41,6 +41,21 @@ async fn execute() -> Result<(), ProcessError> {
     }
     let path = std::path::Path::new(&args[2]);
     match args[0].as_str() {
+        #[cfg(unix)]
+        "install" => {
+            let input = config::load(path)?;
+            let receipt = rss_mdm_app::setup::installation::install(input)
+                .await
+                .map_err(|_| ProcessError::Stage {
+                    stage: "installation",
+                    kind: "installation failed; preserve the original journal and credentials",
+                })?;
+            println!(
+                "{}",
+                serde_json::to_string(&receipt).expect("public installation receipt")
+            );
+            Ok(())
+        }
         "serve" => {
             rss_mdm_app::serve(config::load(path)?, rss_mdm_app::signal(), monotonic()).await
         }

@@ -9,6 +9,8 @@ mod self_service;
 
 /// Public device trust revisions and installation acknowledgements.
 pub mod pki;
+/// Public task-signing trust updates and durable installation acknowledgements.
+pub mod task_trust;
 
 mod collection_scope;
 pub use collection_scope::CollectionScope;

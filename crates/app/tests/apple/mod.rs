@@ -256,7 +256,18 @@ impl Fixture {
             rss_request_context::TenantId::parse(case_tenant())?,
             &[7; 32],
         )?);
+        let binding = rss_transactional_messaging::fence::ExecutionBinding::new(
+            rss_transactional_messaging::fence::StorageIdentity::new(config.flow.storage.target, config.flow.storage.lineage)?,
+            vec![(identity.tenant, rss_transactional_messaging::fence::Epoch::new(config.flow.storage.epoch)?)],
+        )?;
+        let webhooks = crate::webhooks::Backend::open(
+            config.webhooks, execution.runtime.clone(), identity.tenant,
+            agent_audit.clone(), clock.clone(), execution.protection.clone(), binding,
+        ).await?;
+        execution.webhooks.set(webhooks.clone()).map_err(|_| anyhow::anyhow!("webhook fixture already assembled"))?;
+        resources.resource((*webhooks).clone());
         let app = Arc::new(Assembly {
+            webhooks,
             associations,
             pki,
             agent_enrollment,
