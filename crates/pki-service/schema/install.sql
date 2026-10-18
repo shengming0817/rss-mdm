@@ -2,25 +2,25 @@
 BEGIN;
 CREATE SCHEMA mdm_pki;
 GRANT USAGE ON SCHEMA mdm_pki TO mdm_access;
-CREATE TABLE mdm_pki.issuers (tenant_id uuid NOT NULL, purpose text NOT NULL CHECK(purpose IN ('windows','apple','agent')), digest text NOT NULL CHECK(digest ~ '^[0-9a-f]{64}$'), revision bigint NOT NULL CHECK(revision>0), state text NOT NULL CHECK(state IN ('prepared','active','verify_only','retired')), chain bytea NOT NULL CHECK(octet_length(chain) BETWEEN 1 AND 67108864), provider text NOT NULL CHECK(provider IN ('step_ca','legacy')), not_after bigint NOT NULL, PRIMARY KEY(tenant_id,purpose,digest));
+CREATE TABLE mdm_pki.issuers (tenant_id uuid NOT NULL, purpose text NOT NULL CHECK(purpose IN ('windows','apple','agent','agent_bootstrap')), digest text NOT NULL CHECK(digest ~ '^[0-9a-f]{64}$'), revision bigint NOT NULL CHECK(revision>0), state text NOT NULL CHECK(state IN ('prepared','active','verify_only','retired')), chain bytea NOT NULL CHECK(octet_length(chain) BETWEEN 1 AND 67108864), provider text NOT NULL CHECK(provider IN ('step_ca','legacy')), not_after bigint NOT NULL, PRIMARY KEY(tenant_id,purpose,digest));
 ALTER TABLE mdm_pki.issuers ENABLE ROW LEVEL SECURITY;
 ALTER TABLE mdm_pki.issuers FORCE ROW LEVEL SECURITY;
 CREATE POLICY tenant ON mdm_pki.issuers USING(tenant_id=NULLIF(current_setting('rss.tenant_id',true),'')::uuid) WITH CHECK(tenant_id=NULLIF(current_setting('rss.tenant_id',true),'')::uuid);
 GRANT SELECT,INSERT ON mdm_pki.issuers TO mdm_access;
 GRANT UPDATE(state) ON mdm_pki.issuers TO mdm_access;
-CREATE TABLE mdm_pki.signing (tenant_id uuid NOT NULL, attempt uuid NOT NULL, purpose text NOT NULL CHECK(purpose IN ('windows','apple','agent')), issuer text NOT NULL CHECK(issuer ~ '^[0-9a-f]{64}$'), binding bytea NOT NULL CHECK(octet_length(binding) BETWEEN 1 AND 131072), deadline bigint NOT NULL, digest bytea NOT NULL CHECK(octet_length(digest)=32), state text NOT NULL CHECK(state IN ('prepared','signing','unknown','issued')), chain bytea CHECK(octet_length(chain) BETWEEN 1 AND 524288), created_at timestamptz NOT NULL DEFAULT clock_timestamp(), PRIMARY KEY(tenant_id,attempt), CHECK((state='issued')=(chain IS NOT NULL)));
+CREATE TABLE mdm_pki.signing (tenant_id uuid NOT NULL, attempt uuid NOT NULL, purpose text NOT NULL CHECK(purpose IN ('windows','apple','agent','agent_bootstrap')), issuer text NOT NULL CHECK(issuer ~ '^[0-9a-f]{64}$'), binding bytea NOT NULL CHECK(octet_length(binding) BETWEEN 1 AND 131072), deadline bigint NOT NULL, digest bytea NOT NULL CHECK(octet_length(digest)=32), state text NOT NULL CHECK(state IN ('prepared','signing','unknown','issued')), chain bytea CHECK(octet_length(chain) BETWEEN 1 AND 524288), created_at timestamptz NOT NULL DEFAULT clock_timestamp(), PRIMARY KEY(tenant_id,attempt), CHECK((state='issued')=(chain IS NOT NULL)));
 ALTER TABLE mdm_pki.signing ENABLE ROW LEVEL SECURITY;
 ALTER TABLE mdm_pki.signing FORCE ROW LEVEL SECURITY;
 CREATE POLICY tenant ON mdm_pki.signing USING(tenant_id=NULLIF(current_setting('rss.tenant_id',true),'')::uuid) WITH CHECK(tenant_id=NULLIF(current_setting('rss.tenant_id',true),'')::uuid);
 GRANT SELECT,INSERT ON mdm_pki.signing TO mdm_access;
 GRANT UPDATE(state,chain) ON mdm_pki.signing TO mdm_access;
-CREATE TABLE mdm_pki.certificates (tenant_id uuid NOT NULL, purpose text NOT NULL CHECK(purpose IN ('windows','apple','agent')), fingerprint bytea NOT NULL CHECK(octet_length(fingerprint)=32), issuer text NOT NULL CHECK(issuer ~ '^[0-9a-f]{64}$'), serial text NOT NULL CHECK(serial ~ '^[1-9][0-9]*$'), registration uuid, not_after bigint NOT NULL, certificate bytea NOT NULL CHECK(octet_length(certificate) BETWEEN 1 AND 32768), PRIMARY KEY(tenant_id,purpose,fingerprint), UNIQUE(tenant_id,purpose,issuer,serial));
+CREATE TABLE mdm_pki.certificates (tenant_id uuid NOT NULL, purpose text NOT NULL CHECK(purpose IN ('windows','apple','agent','agent_bootstrap')), fingerprint bytea NOT NULL CHECK(octet_length(fingerprint)=32), issuer text NOT NULL CHECK(issuer ~ '^[0-9a-f]{64}$'), serial text NOT NULL CHECK(serial ~ '^[1-9][0-9]*$'), registration uuid, not_after bigint NOT NULL, certificate bytea NOT NULL CHECK(octet_length(certificate) BETWEEN 1 AND 32768), PRIMARY KEY(tenant_id,purpose,fingerprint), UNIQUE(tenant_id,purpose,issuer,serial));
 ALTER TABLE mdm_pki.certificates ENABLE ROW LEVEL SECURITY;
 ALTER TABLE mdm_pki.certificates FORCE ROW LEVEL SECURITY;
 CREATE POLICY tenant ON mdm_pki.certificates USING(tenant_id=NULLIF(current_setting('rss.tenant_id',true),'')::uuid) WITH CHECK(tenant_id=NULLIF(current_setting('rss.tenant_id',true),'')::uuid);
 GRANT SELECT,INSERT ON mdm_pki.certificates TO mdm_access;
 GRANT UPDATE(registration) ON mdm_pki.certificates TO mdm_access;
-CREATE TABLE mdm_pki.rotations (tenant_id uuid NOT NULL, id uuid NOT NULL, purpose text NOT NULL CHECK(purpose IN ('windows','apple','agent')), previous text NOT NULL, candidate text NOT NULL, revision bigint NOT NULL CHECK(revision>0), state text NOT NULL CHECK(state IN ('distributing','approved','activated','retired')), PRIMARY KEY(tenant_id,id));
+CREATE TABLE mdm_pki.rotations (tenant_id uuid NOT NULL, id uuid NOT NULL, purpose text NOT NULL CHECK(purpose IN ('windows','apple','agent','agent_bootstrap')), previous text NOT NULL, candidate text NOT NULL, revision bigint NOT NULL CHECK(revision>0), state text NOT NULL CHECK(state IN ('distributing','approved','activated','retired')), PRIMARY KEY(tenant_id,id));
 ALTER TABLE mdm_pki.rotations ENABLE ROW LEVEL SECURITY;
 ALTER TABLE mdm_pki.rotations FORCE ROW LEVEL SECURITY;
 CREATE POLICY tenant ON mdm_pki.rotations USING(tenant_id=NULLIF(current_setting('rss.tenant_id',true),'')::uuid) WITH CHECK(tenant_id=NULLIF(current_setting('rss.tenant_id',true),'')::uuid);
@@ -32,13 +32,13 @@ ALTER TABLE mdm_pki.acknowledgements FORCE ROW LEVEL SECURITY;
 CREATE POLICY tenant ON mdm_pki.acknowledgements USING(tenant_id=NULLIF(current_setting('rss.tenant_id',true),'')::uuid) WITH CHECK(tenant_id=NULLIF(current_setting('rss.tenant_id',true),'')::uuid);
 GRANT SELECT,INSERT ON mdm_pki.acknowledgements TO mdm_access;
 GRANT UPDATE(revision,digest,confirmed_at) ON mdm_pki.acknowledgements TO mdm_access;
-CREATE TABLE mdm_pki.revocations (tenant_id uuid NOT NULL, purpose text NOT NULL CHECK(purpose IN ('windows','apple','agent')), issuer text NOT NULL, serial text NOT NULL CHECK(serial ~ '^[1-9][0-9]*$'), attempt uuid NOT NULL, state text NOT NULL CHECK(state IN ('pending','submitted','published')), failures integer NOT NULL DEFAULT 0 CHECK(failures BETWEEN 0 AND 32), next_attempt timestamptz NOT NULL DEFAULT clock_timestamp(), crl_number bigint, PRIMARY KEY(tenant_id,purpose,issuer,serial), UNIQUE(tenant_id,attempt));
+CREATE TABLE mdm_pki.revocations (tenant_id uuid NOT NULL, purpose text NOT NULL CHECK(purpose IN ('windows','apple','agent','agent_bootstrap')), issuer text NOT NULL, serial text NOT NULL CHECK(serial ~ '^[1-9][0-9]*$'), attempt uuid NOT NULL, state text NOT NULL CHECK(state IN ('pending','submitted','published')), failures integer NOT NULL DEFAULT 0 CHECK(failures BETWEEN 0 AND 32), next_attempt timestamptz NOT NULL DEFAULT clock_timestamp(), crl_number bigint, PRIMARY KEY(tenant_id,purpose,issuer,serial), UNIQUE(tenant_id,attempt));
 ALTER TABLE mdm_pki.revocations ENABLE ROW LEVEL SECURITY;
 ALTER TABLE mdm_pki.revocations FORCE ROW LEVEL SECURITY;
 CREATE POLICY tenant ON mdm_pki.revocations USING(tenant_id=NULLIF(current_setting('rss.tenant_id',true),'')::uuid) WITH CHECK(tenant_id=NULLIF(current_setting('rss.tenant_id',true),'')::uuid);
 GRANT SELECT,INSERT ON mdm_pki.revocations TO mdm_access;
 GRANT UPDATE(state,failures,next_attempt,crl_number) ON mdm_pki.revocations TO mdm_access;
-CREATE TABLE mdm_pki.crls (tenant_id uuid NOT NULL, purpose text NOT NULL CHECK(purpose IN ('windows','apple','agent')), issuer text NOT NULL, number bigint NOT NULL CHECK(number>=0), this_update bigint NOT NULL, next_update bigint NOT NULL CHECK(next_update>this_update), der bytea NOT NULL CHECK(octet_length(der) BETWEEN 1 AND 16777216), PRIMARY KEY(tenant_id,purpose,issuer));
+CREATE TABLE mdm_pki.crls (tenant_id uuid NOT NULL, purpose text NOT NULL CHECK(purpose IN ('windows','apple','agent','agent_bootstrap')), issuer text NOT NULL, number bigint NOT NULL CHECK(number>=0), this_update bigint NOT NULL, next_update bigint NOT NULL CHECK(next_update>this_update), der bytea NOT NULL CHECK(octet_length(der) BETWEEN 1 AND 16777216), PRIMARY KEY(tenant_id,purpose,issuer));
 ALTER TABLE mdm_pki.crls ENABLE ROW LEVEL SECURITY;
 ALTER TABLE mdm_pki.crls FORCE ROW LEVEL SECURITY;
 CREATE POLICY tenant ON mdm_pki.crls USING(tenant_id=NULLIF(current_setting('rss.tenant_id',true),'')::uuid) WITH CHECK(tenant_id=NULLIF(current_setting('rss.tenant_id',true),'')::uuid);
@@ -92,7 +92,7 @@ CREATE POLICY tenant ON mdm_windows.trust_deliveries USING(tenant_id=NULLIF(curr
 CREATE POLICY expired_only ON mdm_windows.trust_deliveries AS RESTRICTIVE FOR DELETE USING(EXISTS(SELECT 1 FROM mdm_access.management_sessions s WHERE s.tenant_id=trust_deliveries.tenant_id AND s.registration=trust_deliveries.registration AND s.session_id=trust_deliveries.session::text AND s.expires_at<clock_timestamp()));
 GRANT SELECT,INSERT,DELETE ON mdm_windows.trust_deliveries TO mdm_access;
 GRANT UPDATE(results,confirmed) ON mdm_windows.trust_deliveries TO mdm_access;
-CREATE TABLE mdm_pki.installations(tenant_id uuid NOT NULL,purpose text NOT NULL CHECK(purpose IN ('windows','apple','agent')),registration uuid NOT NULL,
+CREATE TABLE mdm_pki.installations(tenant_id uuid NOT NULL,purpose text NOT NULL CHECK(purpose IN ('windows','apple','agent','agent_bootstrap')),registration uuid NOT NULL,
  revision bigint NOT NULL CHECK(revision>0),digest text NOT NULL CHECK(digest ~ '^[0-9a-f]{64}$'),body bytea NOT NULL CHECK(octet_length(body) BETWEEN 1 AND 67108864),
  confirmed_at timestamptz NOT NULL DEFAULT clock_timestamp(),PRIMARY KEY(tenant_id,purpose,registration),
  FOREIGN KEY(tenant_id,registration) REFERENCES mdm_access.registrations(tenant_id,id));

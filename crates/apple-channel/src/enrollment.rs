@@ -53,7 +53,16 @@ async fn authorized(
     let row = request(&mut tx, &tenant, id).await?;
     let kind: String = row.try_get("authority_kind").map_err(db)?;
     tx.rollback().await.map_err(db)?;
-    let proof = if kind == "apple_ade" {
+    let proof = if kind == "agent_policy" {
+        rss_mdm_registration_service::enrollment::native::agent_policy(
+            &app.access.registration(),
+            &tenant,
+            id,
+            secret,
+            app.execution.clone(),
+        )
+        .await?
+    } else if kind == "apple_ade" {
         rss_mdm_registration_service::enrollment::native::organization(
             &app.access.registration(),
             &tenant,

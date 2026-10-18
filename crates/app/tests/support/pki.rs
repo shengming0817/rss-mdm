@@ -122,7 +122,7 @@ pub(crate) fn leaf(
     std::fs::write(
         dir.join("ca.conf"),
         format!(
-            "[ca]\ndefault_ca=CA\n[CA]\ndatabase={0}/index\nserial={0}/serial\nnew_certs_dir={0}\ncertificate={1}\nprivate_key={2}\ndefault_md=sha256\npolicy=policy\nx509_extensions=leaf\n[policy]\ncommonName=supplied\n[leaf]\nbasicConstraints=critical,CA:FALSE\nkeyUsage=critical,digitalSignature\nextendedKeyUsage=clientAuth\n{extra}",
+            "[ca]\ndefault_ca=CA\n[CA]\ndatabase={0}/index\nserial={0}/serial\nnew_certs_dir={0}\ncertificate={1}\nprivate_key={2}\ndefault_md=sha256\npolicy=policy\nx509_extensions=leaf\n[policy]\ncommonName=supplied\norganizationalUnitName=optional\n[leaf]\nbasicConstraints=critical,CA:FALSE\nkeyUsage=critical,digitalSignature\nextendedKeyUsage=clientAuth\n{extra}",
             dir.display(),
             issuer.certificate.display(),
             issuer.key.display()
@@ -156,7 +156,13 @@ pub(crate) fn leaf(
         .arg("-in")
         .arg(dir.join("csr.pem"))
         .arg("-subj")
-        .arg(format!("/CN={subject}"))
+        .arg(
+            if let Some(cn) = subject.strip_prefix("OU=rss-mdm-agent-bootstrap,CN=") {
+                format!("/OU=rss-mdm-agent-bootstrap/CN={cn}")
+            } else {
+                format!("/CN={subject}")
+            },
+        )
         .arg("-startdate")
         .arg(date(start)?)
         .arg("-enddate")

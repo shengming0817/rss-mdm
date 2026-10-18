@@ -3412,6 +3412,7 @@ dependencies = [
  "rss-mdm-execution-service",
  "rss-mdm-inventory",
  "rss-mdm-inventory-service",
+ "rss-mdm-pki-service",
  "rss-mdm-registration-service",
  "rss-mdm-software-service",
  "rss-observation",
@@ -3422,6 +3423,7 @@ dependencies = [
  "sha2 0.10.9",
  "sqlx",
  "thiserror 2.0.20",
+ "time",
  "tokio",
  "tokio-util",
  "uuid",
@@ -3906,6 +3908,7 @@ dependencies = [
  "rss-mdm-apple-mdm",
  "rss-mdm-audit-integration",
  "rss-mdm-authorization-service",
+ "rss-mdm-certificate",
  "rss-mdm-content-service",
  "rss-mdm-inventory",
  "rss-mdm-inventory-postgres",
@@ -4159,6 +4162,7 @@ name = "rss-mdm-pki-service"
 version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
+ "http 1.5.0",
  "reqwest",
  "ring",
  "rss-audit-postgres",

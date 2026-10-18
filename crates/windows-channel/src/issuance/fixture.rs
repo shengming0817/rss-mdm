@@ -123,3 +123,20 @@ pub async fn current_in(
         provision_request(w, i, seed.certificate, seed.request, tenant)?,
     ))
 }
+
+/// Observe protocol-issued state without authorizing or synthesizing an enrollment.
+pub async fn observed(
+    c: &mut sqlx::PgConnection,
+    tenant: &str,
+    request: Uuid,
+) -> Result<(Intent, Vec<u8>), Error> {
+    let row = crate::enrollment_store::intent(c, tenant, request.to_string())
+        .await
+        .map_err(db)?
+        .ok_or(Error::Conflict)?;
+    let intent = super::intent(row)?;
+    let certificate = crate::enrollment_store::required_certificate(c, tenant, request.to_string())
+        .await
+        .map_err(db)?;
+    Ok((intent, certificate))
+}

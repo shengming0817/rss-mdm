@@ -423,7 +423,7 @@ for part in ('cms', 'apns', 'scep', 'collection', 'profile', 'policy', 'onboardi
     selectors = {'cms': ('apple::certificate::tests::',), 'apns': ('apple::push::tests::',)}.get(part, (f'apple::tests::{part}::',))
     source = {
         'cms': ('certificate.rs',), 'apns': ('push.rs',),
-        'scep': ('enrollment.rs','webhook.rs'), 'collection': ('checkin.rs','protocol.rs'),
+        'scep': ('enrollment.rs',), 'collection': ('checkin.rs','protocol.rs'),
         'profile': ('profile.rs',), 'policy': ('profile.rs','attempt.rs'),
         'onboarding': ('agent_collection.rs','flow_store.rs','checkin.rs'),
         'renewal': ('renewal.rs',), 'identity': ('checkin.rs','enrollment.rs'),
@@ -1870,6 +1870,7 @@ for name in ('agent.registration', 'windows.declared', 'windows.issuance', 'wind
 for module_id, selector, fixture in (
     ('apple.onboarding', 'apple::tests::onboarding::absent_agent_group_installs_fixed_package_and_registers_independently', 'ca_agent'),
     ('execution.commands.onboarding', 'execution::t2::commands::onboarding::windows_policy_install_register_and_replay_use_independent_identity', 'ca_agent'),
+    ('execution.commands.onboarding', 'execution::t2::commands::onboarding::historical_bootstrap_cleanup_survives_current_identity_completion', 'ca_agent'),
     ('execution.commands.onboarding', 'execution::t2::commands::onboarding::windows_policy_install_register_and_replay_use_independent_identity', 'ca_windows'),
     ('execution.commands.onboarding', 'execution::t2::commands::onboarding::replacement_rejects_old_installation_and_requires_current_epoch_absence', 'ca_windows'),
     ('execution.commands.configuration', 'execution::t2::commands::configuration::native_object_sets_share_a_device_and_withdraw_only_their_own_objects', 'ca_windows'),
@@ -1994,3 +1995,34 @@ consume(('crates/execution-service/src/queries/ddm.rs',), 'apple.ddm')
 
 T1_INPUTS += ('crates/timeline-service/tests/model.rs',)
 consume(('crates/device-trust/src/windows/*', 'crates/device-trust/fixtures/*'), 'windows.issuance windows.management')
+
+# Dedicated bootstrap protocol scenarios consume real CA material and isolated lifecycle state.
+for name in ('execution.commands.onboarding', 'apple.onboarding', 'planning.onboarding'):
+    module = MODULES[name]
+    MODULES[name] = replace(module, materials=(*module.materials, 'agent-bootstrap'),
+        production_inputs=(*module.production_inputs, 'crates/registration-service/src/agent/bootstrap.rs',
+            'crates/registration-service/src/enrollment/agent_policy.rs', 'crates/execution-service/src/bootstrap_delivery.rs',
+            'crates/execution-service/src/actions/native_enrollment.rs', 'crates/windows-channel/src/agent_enrollment.rs',
+            'crates/windows-mdm/src/software/*', 'crates/certificate/src/bootstrap.rs'),
+        support_inputs=(*module.support_inputs, 'hack/bootstrap_fixtures.py', 'crates/app/tests/support/bootstrap.rs', 'crates/app/tests/support/native_handoff.rs'))
+
+module = MODULES['apple.onboarding']
+MODULES['apple.onboarding'] = replace(module, policies=(*module.policies, CasePolicy(
+    'apple::tests::onboarding::agent_handoff_completes_native_registration_and_token_update',
+    db_mode='reuse', scope='tenant', fixtures=tuple(dict.fromkeys((*module.fixtures, 'scep'))))))
+
+# The webhook unit carrier moved from the Apple channel to its shared PKI owner.
+T1_INPUTS += ('crates/apple-channel/tests/webhook.rs', 'crates/pki-service/tests/scep.rs')
+consume(('crates/agent-wire/schema/enroll/native-enrollment-request-v1.schema.json',
+         'crates/agent-wire/schema/enroll/native-enrollment-receipt-v1.schema.json'),
+        'execution.commands.onboarding apple.onboarding planning.onboarding')
+
+for name, selector in (
+    ('execution.commands.onboarding', 'execution::t2::commands::onboarding::agent_handoff_completes_windows_issuance_and_authenticated_signin'),
+    ('apple.onboarding', 'apple::tests::onboarding::agent_handoff_completes_native_registration_and_token_update')):
+    module = MODULES[name]
+    policies = tuple(p for p in module.policies if p.selector != selector)
+    MODULES[name] = replace(module, policies=(*policies, CasePolicy(selector,
+        db_mode='reuse', scope='tenant',
+        actors=tuple(dict.fromkeys((*module.actors, ('tenant', 'other')))),
+        fixtures=tuple(dict.fromkeys((*module.fixtures, 'scep' if name == 'apple.onboarding' else 'ca_windows'))))))

@@ -11,6 +11,8 @@ pub enum Config {
         endpoint: Box<crate::native::TlsEndpoint>,
         trust_file: PathBuf,
         #[serde(default)]
+        bootstrap: Option<BootstrapConfig>,
+        #[serde(default)]
         lifetime: Lifetime,
     },
 }
@@ -34,8 +36,18 @@ impl Lifetime {
         }
     }
 }
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BootstrapConfig {
+    pub trust_file: PathBuf,
+    pub challenge_id: String,
+    pub challenge_key_file: PathBuf,
+    pub notify_id: String,
+    pub notify_key_file: PathBuf,
+}
 pub(crate) struct AgentPki {
     pub issuer: Arc<AgentIssuer>,
+    pub bootstrap: Option<Arc<rss_mdm_registration_service::agent::bootstrap::Configuration>>,
     pub listen: std::net::SocketAddr,
     pub origin: String,
     pub tls: Arc<tokio_rustls::rustls::ServerConfig>,
@@ -54,6 +66,7 @@ impl Config {
             endpoint,
             trust_file,
             lifetime,
+            ..
         } = self
         else {
             return Ok(None);
@@ -80,6 +93,8 @@ impl Config {
             rss_mdm_device_trust::agent::AgentTrust::from_trust(device_trust, days)
                 .map_err(|_| invalid())?,
         );
+        let prepared_bootstrap = self.bootstrap_materials(&providers, clock.unix_seconds()?)?;
+        let bootstrap = prepared_bootstrap.map(|(configuration, _)| configuration);
         let issuer = AgentIssuer::new(
             providers,
             days,
@@ -88,16 +103,20 @@ impl Config {
             Arc::new(PkiClock(clock.clone())),
         )
         .map_err(|_| invalid())?;
-        let tls = crate::native::tls::configuration(
-            endpoint,
-            Some(issuer.trust().enrollment_verifier()),
-        )?;
+        let mut purposes = vec![issuer.trust().trust.clone()];
+        if let Some(bootstrap) = &bootstrap {
+            purposes.push(bootstrap.trust.clone());
+        }
+        let verifier =
+            rss_mdm_device_trust::enrollment_verifier(purposes).map_err(|_| invalid())?;
+        let tls = crate::native::tls::configuration(endpoint, Some(verifier))?;
         Ok(Some(Arc::new(AgentPki {
             listen: endpoint.listen,
             origin: endpoint.origin.clone(),
             tls,
             pki_clock: Arc::new(PkiClock(clock.clone())),
             issuer: Arc::new(issuer),
+            bootstrap,
             clock,
             required_seconds: i64::from(days) * 86400,
         })))
@@ -157,6 +176,73 @@ fn health(expires: i64, now: i64, required: i64) -> &'static str {
         "healthy"
     }
 }
+impl Config {
+    pub(crate) fn bootstrap_materials(
+        &self,
+        providers: &rss_mdm_pki_service::providers::Providers,
+        now: i64,
+    ) -> Result<
+        Option<(
+            Arc<rss_mdm_registration_service::agent::bootstrap::Configuration>,
+            rss_mdm_registration_service::agent::bootstrap::Deployment,
+        )>,
+        Error,
+    > {
+        let Self::StepCa {
+            endpoint,
+            bootstrap: Some(input),
+            ..
+        } = self
+        else {
+            return Ok(None);
+        };
+        let invalid = || Error::Configuration(ConfigIssue::AgentPki);
+        let trust = crate::device_pki::load(
+            &input.trust_file,
+            rss_mdm_agent_wire::pki::Purpose::AgentBootstrap,
+            now,
+        )?;
+        if trust.public().map_err(|_| invalid())?.origin != endpoint.origin
+            || input.challenge_id.is_empty()
+            || input.notify_id.is_empty()
+        {
+            return Err(invalid());
+        }
+        let issuer = trust.active().map_err(|_| invalid())?;
+        let url = providers
+            .bootstrap_scep(&issuer.digest)
+            .map_err(|_| invalid())?
+            .to_owned();
+        let root = rss_mdm_device_trust::decode(&issuer.root, 32768).map_err(|_| invalid())?;
+        // SHA1 is only the Windows CSP's certificate locator, never a signing or integrity algorithm.
+        let thumb = ring::digest::digest(&ring::digest::SHA1_FOR_LEGACY_USE_ONLY, &root)
+            .as_ref()
+            .iter()
+            .map(|b| format!("{b:02X}"))
+            .collect();
+        let deployment = rss_mdm_registration_service::agent::bootstrap::Deployment {
+            issuer: issuer.digest,
+            provisioner: issuer.provisioner,
+            scep_url: url,
+            root,
+            root_thumbprint: thumb,
+        };
+        let challenge = crate::config::read(&input.challenge_key_file, 4096, true)?;
+        let notify = crate::config::read(&input.notify_key_file, 4096, true)?;
+        if challenge.len() < 32 || notify.len() < 32 {
+            return Err(invalid());
+        }
+        let configuration = rss_mdm_registration_service::agent::bootstrap::Configuration {
+            trust,
+            challenge_id: input.challenge_id.clone(),
+            notify_id: input.notify_id.clone(),
+            challenge_key: rss_mdm_pki_service::scep::key(&challenge).map_err(|_| invalid())?,
+            notify_key: rss_mdm_pki_service::scep::key(&notify).map_err(|_| invalid())?,
+        };
+        Ok(Some((Arc::new(configuration), deployment)))
+    }
+}
+
 #[cfg(test)]
 #[path = "../tests/agent_pki/health.rs"]
 mod tests;

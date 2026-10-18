@@ -195,6 +195,13 @@ fn project(error: Error) -> Response {
 }
 fn route_action(route: &str) -> &'static str {
     match route {
+        "/api/v1/agent/enroll/native-grants" | "/native-grants" => "agent_native_grant",
+        "/api/v1/agent/enroll/bootstrap/scep/challenge" | "/bootstrap/scep/challenge" => {
+            "agent_bootstrap_sign"
+        }
+        "/api/v1/agent/enroll/bootstrap/scep/notify" | "/bootstrap/scep/notify" => {
+            "agent_bootstrap_issued"
+        }
         "/api/v1/agent/enroll/certificates" | "/certificates" => "agent_certificate_authorize",
         "/api/v1/agent/enroll/activate" | "/activate" => "agent_certificate_activate",
         "/api/v1/agent/runtime/reports" | "/reports" => "agent_report",

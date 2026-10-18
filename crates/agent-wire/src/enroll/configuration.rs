@@ -200,6 +200,30 @@ pub struct Cancel {
     /// This machine's grant secret, never the shared configuration secret.
     pub secret: Secret,
 }
+/// Package format is part of the immutable release identity, never inferred from a URL.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum InstallerFormat {
+    /// Independently installed Windows NSIS executable.
+    NsisExe,
+    /// Windows Installer package for native desktop management.
+    WindowsMsi,
+    /// Windows packaged application for native modern management.
+    WindowsMsix,
+    /// macOS enterprise installer package.
+    MacosPkg,
+}
+impl InstallerFormat {
+    /// Fixed public suffix; no caller-controlled filename.
+    pub const fn extension(self) -> &'static str {
+        match self {
+            Self::NsisExe => "exe",
+            Self::WindowsMsi => "msi",
+            Self::WindowsMsix => "msix",
+            Self::MacosPkg => "pkg",
+        }
+    }
+}
 /// Public metadata for one explicitly published fixed installer.
 #[derive(Clone, Debug, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -218,7 +242,9 @@ pub struct Package {
     pub target: Target,
     /// Frozen product version.
     pub version: String,
-    /// Secret-free EXE or PKG filename.
+    /// Exact installer format frozen by publication.
+    pub format: InstallerFormat,
+    /// Secret-free installer filename.
     pub filename: String,
     /// Installer byte length.
     pub length: u64,

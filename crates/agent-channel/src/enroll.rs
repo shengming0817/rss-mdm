@@ -20,6 +20,9 @@ pub fn router(service: Arc<Service>, envelope: crate::boundary::Envelope) -> Rou
     crate::boundary::wrap_enroll(
         Router::new()
             .route("/requests", post(request))
+            .route("/native-grants", post(native_grant))
+            .route("/bootstrap/scep/challenge", post(bootstrap_challenge))
+            .route("/bootstrap/scep/notify", post(bootstrap_notify))
             .route("/configurations/exchange", post(exchange))
             .route("/configurations/status", post(exchange_status))
             .route("/reservations/cancel", post(cancel))
@@ -187,4 +190,52 @@ async fn cancel(
 ) -> Result<Json<wire::GrantReceipt>, HttpFailure> {
     bootstrap(&headers)?;
     Ok(Json(s.cancel_reservation(&body(input)?, &a).await?))
+}
+
+async fn native_grant(
+    State(s): State<Arc<Service>>,
+    Extension(a): Extension<RequestAudit>,
+    peer: Option<Extension<HandshakePeer>>,
+    headers: HeaderMap,
+    input: Body<wire::NativeGrantRequest>,
+) -> Result<Json<wire::GrantReceipt>, HttpFailure> {
+    bootstrap(&headers)?;
+    let peer =
+        peer.ok_or_else(|| Failure::from(rss_mdm_registration_service::Error::Unauthorized))?;
+    Ok(Json(s.native_grant(&peer.0, &body(input)?, &a).await?))
+}
+async fn bootstrap_challenge(
+    State(s): State<Arc<Service>>,
+    Extension(a): Extension<RequestAudit>,
+    headers: HeaderMap,
+    bytes: axum::body::Bytes,
+) -> Result<Json<serde_json::Value>, HttpFailure> {
+    let cfg = s.bootstrap_configuration()?;
+    let input = rss_mdm_pki_service::scep::decode(
+        &cfg.challenge_key,
+        &cfg.challenge_id,
+        &headers,
+        &bytes,
+        time::OffsetDateTime::now_utc().unix_timestamp(),
+    )
+    .map_err(|_| Failure::from(rss_mdm_registration_service::Error::Unauthorized))?;
+    Ok(Json(s.bootstrap_challenge(input, &a).await?))
+}
+async fn bootstrap_notify(
+    State(s): State<Arc<Service>>,
+    Extension(a): Extension<RequestAudit>,
+    headers: HeaderMap,
+    bytes: axum::body::Bytes,
+) -> Result<Json<serde_json::Value>, HttpFailure> {
+    let cfg = s.bootstrap_configuration()?;
+    let input = rss_mdm_pki_service::scep::decode(
+        &cfg.notify_key,
+        &cfg.notify_id,
+        &headers,
+        &bytes,
+        time::OffsetDateTime::now_utc().unix_timestamp(),
+    )
+    .map_err(|_| Failure::from(rss_mdm_registration_service::Error::Unauthorized))?;
+    s.bootstrap_notify(input, &a).await?;
+    Ok(Json(serde_json::json!({"allow":true})))
 }

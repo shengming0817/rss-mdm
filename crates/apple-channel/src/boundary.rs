@@ -45,18 +45,13 @@ pub async fn admit(State(envelope): State<Envelope>, mut request: Request, next:
         .get::<axum::extract::MatchedPath>()
         .map(|p| p.as_str())
         .unwrap_or("");
-    let agent = route == "/api/v1/agent/enroll/native-grants";
     let audit = RequestAudit::new(envelope.tenant.clone(), route_action(route));
     let id = audit.request_id();
     let _permit = match envelope.admission.clone().try_acquire_owned() {
         Ok(p) => p,
         Err(_) => {
             audit.finalize(None);
-            return if agent {
-                secure(agent_response(limited(id)), id)
-            } else {
-                limited(id)
-            };
+            return limited(id);
         }
     };
     request.extensions_mut().insert(audit.clone());
@@ -72,9 +67,6 @@ pub async fn admit(State(envelope): State<Envelope>, mut request: Request, next:
     } else {
         body(request, next, envelope.requests).await
     };
-    if agent {
-        response = agent_response(response);
-    }
     let failure = classify(response.extensions().get::<Error>());
     if let Some(replacement) = rss_mdm_audit_integration::completion::complete(
         &envelope.audit_store,
@@ -91,9 +83,6 @@ pub async fn admit(State(envelope): State<Envelope>, mut request: Request, next:
         });
     }
 
-    if agent {
-        response = agent_response(response);
-    }
     let snapshot = audit.snapshot();
     if let Some(key) = snapshot.operation_id {
         response.headers_mut().insert(
@@ -154,7 +143,6 @@ fn project(error: Error) -> Response {
 }
 fn route_action(route: &str) -> &'static str {
     match route {
-        "/api/v1/agent/enroll/native-grants" => "agent_native_grant",
         "/checkin" => "apple_checkin",
         "/native/apple/ddm/assets/{operation}/{identifier}" => "apple_asset",
         "/mdm" => "apple_management",
@@ -162,66 +150,4 @@ fn route_action(route: &str) -> &'static str {
         p if p.starts_with("/api/v1/enrollments/") && p.ends_with("/profile") => "apple_profile",
         _ => "protected_request",
     }
-}
-
-fn agent_response(response: Response) -> Response {
-    if response.status().is_success() {
-        return response;
-    }
-    use rss_mdm_execution_service::channels::Rejection as R;
-    let rejection = response
-        .extensions()
-        .get::<Error>()
-        .cloned()
-        .map(R::from)
-        .unwrap_or_else(|| {
-            if response.status().is_client_error()
-                && response.status() != StatusCode::TOO_MANY_REQUESTS
-            {
-                R::Malformed
-            } else {
-                R::Storage
-            }
-        });
-    if let Some(body) = response
-        .extensions()
-        .get::<rss_mdm_agent_wire::enroll::ErrorBody>()
-        .cloned()
-    {
-        let (parts, _) = response.into_parts();
-        let mut projected = (StatusCode::BAD_REQUEST, Json(body)).into_response();
-        projected.extensions_mut().extend(parts.extensions);
-        return projected;
-    }
-    let (status, body) = response
-        .extensions()
-        .get::<rss_mdm_agent_wire::runtime::ErrorBody>()
-        .copied()
-        .map(|body| (400, body))
-        .unwrap_or_else(|| rejection.agent_error());
-    use rss_mdm_agent_wire::enroll::{ErrorBody, ErrorCode as C};
-    let code = match body.code {
-        rss_mdm_agent_wire::runtime::ErrorCode::InvalidIdentity => C::InvalidIdentity,
-        rss_mdm_agent_wire::runtime::ErrorCode::PermissionDenied => C::PermissionDenied,
-        rss_mdm_agent_wire::runtime::ErrorCode::OperationConflict => C::OperationConflict,
-        rss_mdm_agent_wire::runtime::ErrorCode::OperationUnknown => C::ActivationUnknown,
-        rss_mdm_agent_wire::runtime::ErrorCode::ServiceUnavailable => C::ServiceUnavailable,
-        _ => C::MalformedRequest,
-    };
-    let (parts, _) = response.into_parts();
-    let mut projected = (
-        StatusCode::from_u16(status).expect("closed status"),
-        Json(ErrorBody {
-            code,
-            issuance_id: None,
-        }),
-    )
-        .into_response();
-    projected.extensions_mut().extend(parts.extensions);
-    if let Some(retry) = parts.headers.get(header::RETRY_AFTER) {
-        projected
-            .headers_mut()
-            .insert(header::RETRY_AFTER, retry.clone());
-    }
-    projected
 }

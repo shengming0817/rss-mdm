@@ -11,7 +11,7 @@ use uuid::Uuid;
 pub const API_VERSION: u8 = 1;
 /// Canonical enrollment schema manifest.
 pub const SCHEMA_FINGERPRINT: &str =
-    "4c1168b4f9581eacc0921886f77a03db911cca0077787aa0ff50831b3d3a0a51";
+    "a4d36f3126cdb6abe4e3d5395920ae76e97d1f09648c1c2ee6f01a65fde46bb8";
 /// Canonical enrollment schema manifest.
 pub const SCHEMA_MANIFEST: &str = include_str!("../schema/enroll/manifest.json");
 /// A bounded runtime profile, frozen when a grant is consumed.
@@ -365,4 +365,35 @@ fn optional_uuid<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<Uuid>,
         Uuid,
     );
     Ok(Option::<Strict>::deserialize(d)?.map(|v| v.0))
+}
+
+/// Exchange a started signed enrollment task for one short-lived OS handoff.
+#[derive(Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct NativeEnrollmentRequest {
+    #[serde(with = "crate::runtime::strict_uuid")]
+    #[schemars(schema_with = "crate::runtime::uuid_schema")]
+    /// Stable exchange operation retained across unknown results.
+    pub operation_id: Uuid,
+    #[serde(with = "crate::runtime::strict_uuid")]
+    #[schemars(schema_with = "crate::runtime::uuid_schema")]
+    /// Exact started task attempt.
+    pub attempt_id: Uuid,
+    /// Locally generated handoff secret; preserved for exact retry, never in a URL.
+    pub password: Secret,
+}
+/// Non-secret native protocol coordinates. Opening the entry is not completion.
+#[derive(Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct NativeEnrollmentReceipt {
+    /// Server-owned native registration request.
+    pub enrollment_id: Uuid,
+    /// Original handoff deadline in Unix seconds.
+    pub expires_at: i64,
+    /// Standard OS entry fixed by the organization.
+    pub entry: crate::runtime::EnrollmentEntry,
+    /// Windows protocol username; absent on macOS.
+    pub username: Option<String>,
+    /// macOS profile POST location; absent on Windows.
+    pub profile_url: Option<String>,
 }

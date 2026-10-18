@@ -14,7 +14,7 @@
 
 1. 普通用户在 Agent 内登录企业会话。Agent 先通过 `POST /api/v1/agent/enroll/requests` 提交稳定 operationId、独立随机 secret、platform 与本机私钥签名的 base64 DER CSR；桌面会话调用 `POST /api/v1/agent-requests/{id}/authorize` 授权这一个请求。Agent 和网页消费由各自仓库交付；服务端不提供网页注册、确认页或深链接。所有新请求都必须绑定 CSR，客户端不能选择期限、数量或不限量。
 2. 管理员调用 `POST /api/v1/agent-configurations` 创建一个完整签名 JSON 文件，必须明确 `quantity:{"kind":"finite","count":N}`（N > 0）或 `quantity:{"kind":"unlimited"}`，指定 targets 与 channels；可选 lifetimeSeconds 最多 365 天，默认后台 24 小时。管理客户端生成并保留 32 字节随机 secret；响应文件包含 configuration 元数据、secret 与 signature。相同创建 operation 和完整输入可重新取得原文件，数据库与审计不保存 secret。网页在请求提交后清除本地 secret；响应丢失时用原 operationId 调用 `GET /api/v1/agent-configuration-operations/{operationId}`，仅原创建主体和实例可读到无秘密元数据。返回 null 表示仍未知（原创建可能迟到提交），不得自动重新创建或恢复 secret；找到旧配置后先确认撤销成功，再创建新配置。`GET /api/v1/agent-configurations/{id}` 只返回元数据、状态、reserved、consumed 和 remaining；有限数量的 remaining 为 count−reserved−consumed，无限数量为 null，期限和撤销状态仍独立生效；`POST .../{id}/revoke` 禁止新交换。独立权限为 `agent_enrollment_read` / `agent_enrollment_write`。
-3. 原生 MDM 安装在原生管理 TLS 监听器调用 `POST /api/v1/agent/enroll/native-grants`，提交 installationOperation、operationId、secret、CSR、runtime profile。服务端验证真实原生客户端证书、当前来源注册、冻结安装/软件/策略授权、已下发事实与原期限，只返回 grant。
+3. 原生 MDM 安装使用专用短期引导证书，在 Agent TLS 监听器调用 `POST /api/v1/agent/enroll/native-grants`。提交 installationOperation、operationId、secret、独立日常密钥的 CSR 和 runtime；服务端从引导证书记录恢复来源注册、安装和 release，复查当前授权后返回 grant。原生 Windows / Apple 监听器不再挂载此入口，MDM 日常证书不能交换授权。
 
 管理员配置使用配置自身的租户额度，默认责任人为 null；创建者仅作为审计身份，不占用其普通用户 20 台额度，也不构成终端 ownership。每台设备独立生成私钥、CSR、operation 和 grant secret，调用 `POST /api/v1/agent/enroll/configurations/exchange`，提交完整 file、runtime 和 installation（releaseId、candidateSha256）。同一 operation 的精确重试只返回原授权；同一配置下换 operation 重用 CSR 公钥被拒绝。`POST .../configurations/status` 使用原 configurationId、operationId 和独立设备 secret 查回授权，不重新分配。
 
@@ -70,11 +70,11 @@ snapshot、partial、failed 分别表达完整快照、部分结果和失败。�
 
 新 V1 继续拒绝软件 ownership 和 AppCopy 的 materialSha256，旧字段即使为 null 也拒绝；AppCopy 仍绑定完整 DMG 摘要、明确的包路径和目标名、bundle ID、版本、执行身份与独立前后检测。软件 Resource 继续沿用既有 V4 摘要域和持久化标记，其它 Resource 格式不变。独立 Agent #2663 须更新到本项交付的完整 Git rev 和两个 V1 指纹，当前服务端测试不代表 Agent 或真机已完成。
 
-原生安装命令生成的固定包 URL 为 `/api/v1/agent/enroll/installations/{operation}/package`，`agent_installation.content_origin` 必须与 Agent TLS origin 相同。引导下载每次验证固定安装 operation、有效期、原生注册、投递记录和业务授权。所有 runtime 入口要求 Agent mTLS。
+原生安装命令生成的固定包 URL 为 `/api/v1/agent/enroll/installations/{operation}/package`，origin 从现有 `agent_pki.endpoint.origin` 派生。引导下载每次验证固定安装 operation、有效期、原生注册、投递记录和业务授权。所有 runtime 入口要求 Agent mTLS。
 
 ## 固定安装包发布与匿名下载
 
-服务器消费外部构建、签名和 notarization 完成的 Windows NSIS EXE / macOS PKG，不在 Linux 构建或签名。固定包及候选 manifest 通过现有 Software Resource 和 Content 上传，来源注册即启用，版本由启用或安装包发布完成技术校验；候选 manifest 是独立、摘要校验的 Resource artifact。它冻结 wireVersion、tenantId、原生 target、version、HTTPS origin、signingKeys，以及 `packaging` 的 nsis_exe（publisher、signature_evidence）或 macos_pkg（team、notarization_evidence）外部证据。Windows EXE 的 Resource layout 仅声明固定 EXE 与该 manifest；PKG 同样拥有两份材料。公开下载只返回 EXE / PKG。
+服务器消费外部构建、签名和 notarization 完成的 Windows NSIS EXE、MSI、MSIX / macOS PKG，不在 Linux 构建或签名。固定包及候选 manifest 通过现有 Software Resource 和 Content 上传，来源注册即启用，版本由启用或安装包发布完成技术校验；候选 manifest 是独立、摘要校验的 Resource artifact。它冻结 wireVersion、tenantId、原生 target、version、HTTPS origin、signingKeys，以及 `packaging` 的 nsis_exe（publisher、signature_evidence）、windows_msi / windows_msix（publisher、signature_evidence）或 macos_pkg（bundle、team、notarization_evidence）外部证据。Windows EXE 的 Resource layout 仅声明固定 EXE 与该 manifest；PKG 同样拥有两份材料。公开下载返回被准入格式的固定包；响应的 format 与文件后缀必须一致。
 
 `POST /api/v1/agent-packages` 要求 release_publish；草稿自动启用还要求 software_write，输入 operationId、resource、version、variant、target、channel、manifestArtifact。服务端验证两份材料的长度和摘要、完整当前软件生命周期与依赖闭包及系统安装范围，冻结 installerSha256 与独立 candidateSha256；服务器按 target 生成固定文件名，不接收包含秘密的名称或安装 argv。`POST /api/v1/agent-packages/{id}/withdraw` 要求 software_withdraw，阻止该候选的新交换和下载。外部打包及真实签名、notarization、导入、服务安装效果由产品 T3 验收；这些声明和受控服务端测试不代替平台证据。
 
@@ -88,3 +88,45 @@ Agent HTTPS 监听器公开 `GET /api/v1/agent/enroll/packages`、`GET .../packa
 和 [标准包操作](assets.md#agent-安全账户证书与更新标准包)。Agent 必须固定交付的完整 revision，
 更新当前用户 GeneratedUID、精确引擎声明及 scan 证据；不沿用旧 Collection V2 或省略新增必填成员。
 本候选只接纳匹配的精确安装 manifest，不承诺旧数据库原地升级。旧实例按原版本结算任务并保留注册、journal、审计和历史资产，不清库或重新注册绕过安装拒绝；任务排空不等于持久格式迁移完成。
+
+## 原生互注册的前置条件与流程
+
+MDM→Agent 的前置条件是有效的原生注册、当前设备管理权限、已启用且经 Agent 发布准入的固定包、当前 Group / Scope / Policy 授权，以及产品 PKI 的专用 `agent_bootstrap` 信任与 SCEP provisioner。Windows 需要设备级 SCEP CSP 和相应应用部署 CSP；macOS 需要 Profile/SCEP、企业应用安装和应用查询权限。设备应已信任 SCEP CA 与 Agent HTTPS 服务端证书，能访问相应 HTTPS origin。安装包签名信任、私钥 ACL、Agent 服务读取系统证书及无人登录运行由平台交付验证。
+
+在既有 `agent_pki` 的 `step_ca` 配置内增加以下块；文件使用部署秘密权限，密钥内容是 step-ca 返回的 base64 HMAC key。`device_pki` 中另配置 purpose=`agent_bootstrap` 的现有 provider，绑定信任中相同 issuer 及其 `scep_url`。独立信任文件的 purpose 必须是 `agent_bootstrap`，origin 必须等于 Agent HTTPS origin。
+
+```json
+{
+  "bootstrap": {
+    "trust_file": "/etc/rss-mdm/agent-bootstrap-trust.json",
+    "challenge_id": "bootstrap-challenge",
+    "challenge_key_file": "/run/secrets/bootstrap-challenge.key",
+    "notify_id": "bootstrap-notify",
+    "notify_key_file": "/run/secrets/bootstrap-notify.key"
+  }
+}
+```
+
+SCEP provisioner 的挑战和签发通知 webhook 分别指向 Agent origin 的 `/api/v1/agent/enroll/bootstrap/scep/challenge` 与 `/notify`，启用签名原始请求和时间戳校验。挑战 webhook 名称设为 `rss`，证书模板仅消费服务端批准的字段：
+
+```json
+{
+  "subject": {{ toJson .Webhooks.rss.subject }},
+  "notAfter": {{ toJson .Webhooks.rss.notAfter }},
+  "keyUsage": ["digitalSignature"],
+  "extKeyUsage": ["clientAuth"],
+  "basicConstraints": {"isCA": false}
+}
+```
+
+模板不继承 CSR 中的 SAN 或任意扩展，CA 的有效期约束应允许服务端给出的短期限。参考 [step-ca 模板](https://smallstep.com/docs/step-ca/templates/) 和 [Windows SCEP CSP](https://learn.microsoft.com/en-us/windows/client-management/mdm/clientcertificateinstall-csp)。
+
+1. 策略冻结 release、来源世代及安装授权；服务端创建独立引导投递，期限不超过安装期限和 30 分钟。
+2. Windows 由设备级 SCEP CSP、macOS 由 Profile/SCEP 产生引导私钥。安装包单独投递；包、下载 URL 和安装参数均不携带引导秘密。
+3. 未签发的引导投递沿用原安装总期限，短期证书期限从实际 SCEP challenge 起算，最长 30 分钟且不超过原总期限。挑战校验安装、来源、投递、发布和权限，冻结 CSR/SPKI/事务；同请求响应丢失可精确重试，不同请求拒绝。签发通知验证真实证书并保存指纹。已知签发、过期且尚未交换 grant 的尝试可在原授权内更换引导尝试，保留旧记录且不重装；signing 结果未知不会自动重签。
+4. Agent 用该证书完成专用 mTLS，另行产生日常密钥和 CSR。交换后的 grant 已绑定日常公钥，继续受自身及原安装期限、当前来源与权限限制，不因已消费引导证书自然到期而失效。服务端拒绝引导与日常密钥复用；现有 grant → certificates → activate 完成后保存可信关联，并通过原生通道清理引导配置。每次尝试分别持有清理职责，当前身份清理完成不会撤销历史尝试的重试资格；命令授权绑定确切 bootstrap ID，并仅允许对应 SCEP/Profile 删除。清理仅针对该操作的确切 SCEP/Profile 对象，独立于之后的策略启停或包撤回；确认原生命令成功后才结束，过期/拒绝保留原历史并重排清理。
+5. 独立日常身份按已有续期与撤销路径存续；包已下载、安装 ACK、MSIX provisioning 均不能证明 Agent 已激活或服务在线。
+
+Agent→MDM 复用 `request_mdm_enrollment` 的签名任务和 Start permit。只有已启动任务的当前 Agent 可以 `POST /api/v1/agent/runtime/tasks/{task}/enrollment`，提交稳定 operationId、attemptId 和客户端生成的 password；服务端仅存口令摘要。返回短期 enrollmentId、期限及平台入口，Windows 还提供用户名、macOS 提供 profileUrl。客户端保留用户系统确认；入口 opened 或客户端报告不建立原生注册事实，必须经 Windows 认证签入，或 Apple Authenticate、TokenUpdate 与当前准入。两端 Device/Registration 独立，仅按服务端请求关联。
+
+诊断从既有 Policy assignment 与 operation API 读取：先核对 taskAdmission 的包选择和当前授权，再查看 agentInstallation 中的 delivery、installation、bootstrap（state / delivery / cleanup / deadline）和 agentRegistration。EXE 沿用 Software 定义的系统 Uninstall registry / DisplayVersion 检测信息，通过现有 Win32 清单遍历核对；文件检测或其它无法映射为可靠原生证据的发布保持 unknown。目录变化使旧缺失证据失效。未知安装或其它格式已存在时继续核实原状态，不换包重装。撤回发布会阻止新下载和交换。#2636 的服务端验证与交接不依赖实际 Agent 包制作、代码签名配置或真机验收；这些由后续任务承担。

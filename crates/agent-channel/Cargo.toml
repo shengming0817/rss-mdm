@@ -6,6 +6,8 @@ rust-version.workspace=true
 publish.workspace=true
 autotests=false
 [dependencies]
+rss-mdm-pki-service.workspace = true
+time.workspace = true
 rss-identity-core.workspace=true
 rss-mdm-certificate.workspace = true
 rss-mdm-software-service.workspace = true

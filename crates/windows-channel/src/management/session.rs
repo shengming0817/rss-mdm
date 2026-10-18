@@ -418,14 +418,7 @@ impl WindowsSession for Session {
                     pending |=
                         crate::push_channel::send(c, key, &self.windows, p, response, &self.limits)
                             .await?;
-                    pending |= crate::agent_collection::send(
-                        c,
-                        key,
-                        p,
-                        response,
-                        self.windows.agent_identity.as_ref(),
-                    )
-                    .await?;
+                    pending |= crate::agent_collection::send(c, key, p, response).await?;
                     pending |= crate::template_collection::send(
                         source,
                         c,

@@ -1,6 +1,7 @@
 WITH tables AS (
  SELECT c.* FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='mdm_commands' AND c.relkind='r'
 ), update_columns(relation, col) AS (VALUES
+ ('mdm_access.agent_bootstraps','active'),('mdm_access.agent_bootstraps','cleanup'),('mdm_access.agent_bootstraps','cleanup_complete'),('mdm_access.agent_bootstraps','cleanup_retry_at'),
  ('mdm_pki.installations','revision'),('mdm_pki.installations','digest'),('mdm_pki.installations','body'),('mdm_pki.installations','confirmed_at'),
  ('mdm_pki.acknowledgements','revision'),('mdm_pki.acknowledgements','digest'),('mdm_pki.acknowledgements','confirmed_at'),
  ('mdm_windows.trust_deliveries','results'),('mdm_windows.trust_deliveries','confirmed'),
@@ -38,7 +39,7 @@ WITH tables AS (
  ('public.mdm_installation','instance_id'),('public.mdm_installation','management_tenant_id'),
  ('mdm_access.agent_issuances','tenant_id'),('mdm_access.agent_issuances','credential'),('mdm_access.agent_issuances','not_after')
 ), allowed(relation,sel,ins,del) AS (VALUES
- ('mdm_pki.trust',true,false,false),('mdm_pki.rotations',true,false,false),('mdm_pki.installations',true,true,false),('mdm_pki.acknowledgements',true,true,false),
+ ('mdm_pki.certificates',true,false,false),('mdm_pki.revocations',true,false,false),('mdm_agent_packages.releases',true,false,false),('mdm_access.agent_bootstraps',true,true,false),('mdm_access.agent_native_enrollments',true,true,false),('mdm_access.grants',true,true,false),('mdm_pki.trust',true,false,false),('mdm_pki.rotations',true,false,false),('mdm_pki.installations',true,true,false),('mdm_pki.acknowledgements',true,true,false),
  ('mdm_windows.trust_deliveries',true,true,false),('mdm_apple.trust_deliveries',true,true,false),
  ('mdm_content.manifests',true,false,false),('mdm_flow.native_protection',true,true,false),('mdm_access.agent_grants',true,true,false),('mdm_access.agent_enrollment_settings',true,false,false),
  ('mdm.inventory',true,false,false),
@@ -48,7 +49,7 @@ WITH tables AS (
  ('mdm_commands.output_chunks',true,true,false),('mdm_commands.action_polls',true,true,false),('mdm_commands.action_runs',true,true,false),('mdm_commands.action_receipts',true,true,false),('mdm_commands.action_attempts',true,true,false),('mdm_resource.aggregates',true,false,false),('mdm_resource.immutable',true,false,false),('mdm_agent.bindings',true,false,false),
  ('mdm_planning.scopes',true,false,false),('mdm_planning.scope_results',true,false,false),('mdm_planning.scope_channel_results',true,false,false),('mdm_planning.scope_source_members',true,false,false),('mdm_planning.scope_runs',true,false,false),('mdm_planning.policy_source_grants',true,false,false),('mdm_planning.policy_assignments',true,false,false),('mdm_devices.checkpoints',true,false,false),('mdm_devices.input_snapshots',true,false,false),('mdm_devices.input_objects',true,false,false),
  ('mdm_software.sources',true,false,false),('mdm_software.versions',true,false,false),('mdm_software.materials',true,false,false),
- ('mdm_apple.declarations',true,true,false),('mdm_apple.status_reports',true,true,false),('mdm_apple.attempts',true,true,false),('mdm_apple.profiles',true,true,false),('mdm_apple.devices',true,false,false),('mdm_apple.channels',true,false,false),('mdm_access.requests',true,false,false),
+ ('mdm_apple.declarations',true,true,false),('mdm_apple.status_reports',true,true,false),('mdm_apple.attempts',true,true,false),('mdm_apple.profiles',true,true,false),('mdm_apple.devices',true,false,false),('mdm_apple.channels',true,false,false),('mdm_access.requests',true,true,false),
 
 ('mdm_commands.capabilities',true,true,false),
 ('mdm_commands.capability_queries',true,true,false),
@@ -99,7 +100,7 @@ SELECT current_user='mdm_command_runtime' AND session_user=current_user
  AND NOT EXISTS(SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace
   WHERE n.nspname NOT LIKE 'pg_%' AND n.nspname NOT IN('information_schema','rss_device_command','rss_reconcile')
   AND p.oid IS DISTINCT FROM to_regprocedure('mdm_apple.account_current(uuid,uuid,bigint,uuid,text)')
- AND p.oid NOT IN('mdm.lock_asset_watermark(uuid)'::regprocedure,'rss_audit.reserve(uuid)'::regprocedure,'rss_audit.append(uuid,text,text,bigint,bytea,bigint)'::regprocedure,'rss_ledger.prepare_append(uuid,text,text,smallint)'::regprocedure,'rss_ledger.insert_entry(uuid,text,text,bigint,bytea,bytea,bytea,text,smallint)'::regprocedure,'mdm_planning.scope_admission(uuid,text)'::regprocedure,'mdm_planning.policy_lock(uuid)'::regprocedure,'rss_transactional_messaging.check_execution()'::regprocedure,'rss_transactional_messaging.prepare_outbox_partitions(jsonb)'::regprocedure,'rss_transactional_messaging.append_outbox(bytea,jsonb)'::regprocedure,'rss_transactional_messaging.claim_outbox(uuid,text,integer,bigint)'::regprocedure,'rss_transactional_messaging.next_outbox_wakeup(uuid,text)'::regprocedure,'rss_transactional_messaging.outbox_lease(uuid,bigint,uuid,bigint,bigint,uuid)'::regprocedure,'rss_transactional_messaging.settle_outbox(uuid,bigint,uuid,bigint,text,uuid)'::regprocedure)
+ AND p.oid NOT IN('mdm_commands.installation_status(uuid)'::regprocedure,'mdm.lock_asset_watermark(uuid)'::regprocedure,'rss_audit.reserve(uuid)'::regprocedure,'rss_audit.append(uuid,text,text,bigint,bytea,bigint)'::regprocedure,'rss_ledger.prepare_append(uuid,text,text,smallint)'::regprocedure,'rss_ledger.insert_entry(uuid,text,text,bigint,bytea,bytea,bytea,text,smallint)'::regprocedure,'mdm_planning.scope_admission(uuid,text)'::regprocedure,'mdm_planning.policy_lock(uuid)'::regprocedure,'rss_transactional_messaging.check_execution()'::regprocedure,'rss_transactional_messaging.prepare_outbox_partitions(jsonb)'::regprocedure,'rss_transactional_messaging.append_outbox(bytea,jsonb)'::regprocedure,'rss_transactional_messaging.claim_outbox(uuid,text,integer,bigint)'::regprocedure,'rss_transactional_messaging.next_outbox_wakeup(uuid,text)'::regprocedure,'rss_transactional_messaging.outbox_lease(uuid,bigint,uuid,bigint,bigint,uuid)'::regprocedure,'rss_transactional_messaging.settle_outbox(uuid,bigint,uuid,bigint,text,uuid)'::regprocedure)
   AND has_function_privilege(current_user,p.oid,'EXECUTE'))
  AND NOT EXISTS(SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE c.relkind='S' AND n.nspname NOT LIKE 'pg_%' AND has_sequence_privilege(current_user,c.oid,'SELECT,USAGE,UPDATE'))
 
@@ -112,3 +113,4 @@ SELECT current_user='mdm_command_runtime' AND session_user=current_user
  AND (a.grantee=0 OR (a.grantee=(SELECT oid FROM pg_roles WHERE rolname=current_user) AND a.is_grantable))))
 
  AND has_function_privilege(current_user,'mdm.lock_asset_watermark(uuid)','EXECUTE')
+ AND has_function_privilege(current_user,'mdm_commands.installation_status(uuid)','EXECUTE')

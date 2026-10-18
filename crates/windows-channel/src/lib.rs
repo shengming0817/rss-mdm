@@ -22,6 +22,7 @@ pub use error::Error;
 use rss_mdm_authorization_service as authorization;
 use rss_mdm_registration_service::{device, enrollment};
 mod agent_collection;
+mod agent_enrollment;
 mod collection;
 mod large_object;
 mod notifications;
@@ -49,7 +50,6 @@ pub struct Windows {
     pub poll: rss_mdm_windows_mdm::provisioning::Poll,
     pub push: Option<push::Push>,
     pub additional_management_origins: Vec<String>,
-    pub agent_identity: Option<rss_mdm_execution_service::agent_install::Identity>,
     pub enrollment_origin: String,
     pub management_origin: String,
     pub provider_id: String,
@@ -119,7 +119,6 @@ impl Windows {
             poll,
             push: None,
             additional_management_origins: Vec::new(),
-            agent_identity: None,
             enrollment_origin,
             management_origin,
             provider_id,
@@ -203,11 +202,7 @@ pub fn routers(
         );
     let management = Router::new()
         .route("/ManagementServer/MDM.svc", post(management::manage))
-        .route("/ManagementServer/Declared.svc", post(management::manage))
-        .route(
-            "/api/v1/agent/enroll/native-grants",
-            post(management::register_agent),
-        );
+        .route("/ManagementServer/Declared.svc", post(management::manage));
     (
         boundary::wrap(
             enrollment
@@ -443,6 +438,11 @@ async fn enrollment(
             .windows()?
             .parse_enrollment_username(&token.username.0)?;
         let password = Password::new(token.password.0.clone()).map_err(|_| Error::Unauthorized)?;
+        if let Some(response) =
+            agent_enrollment::try_enrollment(&app, id, &password, &message, &audit, issuing).await?
+        {
+            return Ok(response);
+        }
         let auth = crate::enrollment::store::enrollment_authorization(
             &app.access.registration(),
             &app.identity.tenant().to_string(),

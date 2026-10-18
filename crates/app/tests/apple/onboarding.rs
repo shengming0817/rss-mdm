@@ -4,7 +4,7 @@ use crate::test_support::{channel_onboarding as setup, credential, pg};
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 #[ignore = "MODULE=apple.onboarding: real native peer and durable Policy"]
 async fn absent_agent_group_installs_fixed_package_and_registers_independently() -> Result<()> {
-    let mut f = Fixture::with_agent(Some(setup::pin(false))).await?;
+    let mut f = Fixture::with_agent(None).await?;
     let (peer, device) = f.ready_local_peer().await?;
     let mut owner = rss_runtime::ShutdownStack::try_new(
         rss_runtime::TotalDrainBudget::new(Duration::from_secs(30))?,
@@ -148,14 +148,36 @@ async fn absent_agent_group_installs_fixed_package_and_registers_independently()
         "{state}"
     );
     let input = json!({"wireVersion":1,"operationId":Uuid::new_v4(),"installationOperation":operation,"secret":credential("managed-apple-agent"),"csr":crate::test_support::agent::csr()?,"runtime":{"executionContext":crate::test_support::software_execution::context(crate::test_support::software_execution::Platform::MacOs),"platform":"macos","architecture":"aarch64","capabilities":["inventory.collect.v1","mdm.enrollment.v1"]}});
-    let url = format!("{}/api/v1/agent/enroll/native-grants", peer.origin);
-    let response = peer.client.post(&url).json(&input).send().await?;
+    let (bootstrap_delivery, bootstrap_payload) = peer.next("InstallProfile").await?;
+    ensure!(
+        bootstrap_payload.contains_key("Payload"),
+        "native bootstrap must deliver a profile"
+    );
+    peer.manage("Acknowledged", Some(bootstrap_delivery), None)
+        .await?;
+    let bootstrap_peer = crate::test_support::bootstrap::issue_apple(
+        &f.app,
+        &f.router,
+        &f.root,
+        operation,
+        &bootstrap_payload,
+    )
+    .await?;
+    // The native daily identity is no longer mounted as an Agent authorization endpoint.
+    ensure!(
+        peer.client
+            .post(format!("{}/api/v1/agent/enroll/native-grants", peer.origin))
+            .json(&input)
+            .send()
+            .await?
+            .status()
+            == StatusCode::NOT_FOUND
+    );
+    let response =
+        crate::test_support::bootstrap::grant(&f.router, &bootstrap_peer, &input).await?;
     let status = response.status();
     let receipt: serde_json::Value = response.json().await?;
-    ensure!(
-        status == StatusCode::CREATED,
-        "register {status}: {receipt}"
-    );
+    ensure!(status == StatusCode::OK, "register {status}: {receipt}");
     ensure!(receipt["state"] == "available");
     ensure!(pg(&format!("SELECT count(*) FROM mdm_apple.attempts WHERE tenant_id='{}' AND operation='{operation}' AND phase='execute'",case_tenant()))?.trim()=="1");
     ensure!(pg(&format!("SELECT count(*) FROM mdm_access.agent_grants WHERE tenant_id='{}' AND source='native' AND (native_authority ? 'secret' OR native_authority ? 'input')",case_tenant()))?.trim()=="0", "native authority must not persist bootstrap secrets");
@@ -181,10 +203,10 @@ async fn absent_agent_group_installs_fixed_package_and_registers_independently()
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
-#[ignore = "MODULE=apple.onboarding: optional installation config retains bound attempt identity"]
-async fn agent_installation_configuration_preserves_bound_attempt_identity() -> Result<()> {
+#[ignore = "MODULE=apple.onboarding: Agent publication retains bound attempt identity"]
+async fn agent_publication_preserves_bound_attempt_identity() -> Result<()> {
     use sqlx::{Connection, Row};
-    let f = Fixture::start().await?;
+    let mut f = Fixture::start().await?;
     let (device, der) = f.seed_local_identity().await?;
     let peer = f.authenticate_peer(&device, &der).await?;
     peer.token().await?;
@@ -193,8 +215,7 @@ async fn agent_installation_configuration_preserves_bound_attempt_identity() -> 
     config.management.origin = f.app.apple()?.config.management.origin.clone();
     config.management.listen = f.app.apple()?.config.management.listen;
     config.trust_file = f.app.apple()?.config.trust_file.clone();
-    let pin: rss_mdm_execution_service::agent_install::Config =
-        serde_json::from_value(setup::pin(false))?;
+    setup::publish_macos_release(&mut f.browser, &f.router, &f.app).await?;
     let original_rights: i32 = pg(&format!(
         "SELECT access_rights FROM mdm_apple.devices WHERE tenant_id='{}' AND state='active'",
         case_tenant()
@@ -206,7 +227,6 @@ async fn agent_installation_configuration_preserves_bound_attempt_identity() -> 
         config,
         f.app.clock.unix_seconds()?,
         super::fixture_providers(&f.root)?,
-        pin.identity(rss_mdm_policy::Platform::Macos).cloned(),
     )?;
     let trust = rss_mdm_device_trust::apple::AppleDeviceTrust::from_trust(
         f.app.apple()?.channel.device_trust().clone(),
@@ -267,8 +287,9 @@ async fn next_after_cooldown(
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 #[ignore = "MODULE=apple.onboarding: native bundle evidence never verifies the publisher"]
 async fn collected_bundle_presence_remains_unknown() -> Result<()> {
-    let mut f = Fixture::with_agent(Some(setup::pin(false))).await?;
+    let mut f = Fixture::with_agent(None).await?;
     let (peer, device) = f.ready_local_peer().await?;
+    setup::publish_macos_release(&mut f.browser, &f.router, &f.app).await?;
     let (platform, _) = peer.next("DeviceInformation").await?;
     let bytes = peer
         .manage(
@@ -311,6 +332,65 @@ async fn collected_bundle_presence_remains_unknown() -> Result<()> {
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
     }).await??;
+    drop(device);
+    f.close().await
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+#[ignore = "MODULE=apple.onboarding: started Agent handoff completes real SCEP and native check-in"]
+async fn agent_handoff_completes_native_registration_and_token_update() -> Result<()> {
+    let mut f = Fixture::start().await?;
+    let handoff =
+        crate::test_support::native_handoff::Handoff::new(rss_mdm_resource::Platform::MacOS)
+            .await?;
+    let id = Uuid::parse_str(handoff.receipt["enrollmentId"].as_str().unwrap())?;
+    let request = Request::builder()
+        .method(Method::POST)
+        .uri(format!("/api/v1/enrollments/{id}/profile"))
+        .header("host", "mdm.example.test")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            json!({"password":credential("wrong-native-handoff")}).to_string(),
+        ))?;
+    ensure!(f.router.clone().oneshot(request).await?.status() == StatusCode::UNAUTHORIZED);
+    let (enrollment, attempt, password) = f.profile_request(id, handoff.password.clone()).await?;
+    let device = scep_client::Device::new(enrollment, attempt, &password)?;
+    let request = device.request(
+        &f.root.join("apple-issuer.pem"),
+        &Uuid::new_v4().to_string(),
+        f.app.clock.unix_seconds()?,
+    )?;
+    let der = device
+        .enroll(
+            &f.client()?,
+            &f.app.apple()?.channel.scep_fixture()?.0,
+            &request,
+        )
+        .await?;
+    let peer = f.authenticate_peer(&device, &der).await?;
+    peer.token().await?;
+    let linked = pg(&format!(
+        "SELECT count(*) FROM mdm_access.agent_native_enrollments l JOIN mdm_access.requests q ON(q.tenant_id,q.id)=(l.tenant_id,l.request) JOIN mdm_access.registrations r ON(r.tenant_id,r.request_id)=(q.tenant_id,q.id) JOIN mdm_apple.devices a ON(a.tenant_id,a.registration)=(r.tenant_id,r.id) WHERE l.tenant_id='{}' AND l.request='{id}' AND l.source_registration='{}' AND q.state='bound' AND r.state='active' AND a.state='active' AND r.id<>l.source_registration",
+        case_tenant(),
+        handoff.source["registrationId"].as_str().unwrap()
+    ))?;
+    ensure!(
+        linked.trim() == "1",
+        "native registration must follow its exact Agent task"
+    );
+    crate::test_support::identity::set_grants(case_tenant(), &handoff.fixture.author_id, vec![])
+        .await?;
+    let request = Request::builder()
+        .method(Method::POST)
+        .uri(format!("/api/v1/enrollments/{id}/profile"))
+        .header("host", "mdm.example.test")
+        .header("content-type", "application/json")
+        .body(Body::from(json!({"password":handoff.password}).to_string()))?;
+    ensure!(
+        f.router.clone().oneshot(request).await?.status() == StatusCode::FORBIDDEN,
+        "withdrawn Agent task authority must not enroll MDM"
+    );
+    handoff.close().await?;
     drop(device);
     f.close().await
 }

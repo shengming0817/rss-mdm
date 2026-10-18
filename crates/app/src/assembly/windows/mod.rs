@@ -96,7 +96,6 @@ impl Windows {
         config: WindowsConfig,
         now: i64,
         providers: Arc<rss_mdm_pki_service::providers::Providers>,
-        agent: Option<rss_mdm_execution_service::agent_install::Identity>,
     ) -> Result<Self, Error> {
         let trust = crate::device_pki::load(
             &config.trust_file,
@@ -159,7 +158,6 @@ impl Windows {
                 .map_err(|_| Error::Configuration(ConfigIssue::WindowsPush))?,
             );
         }
-        channel.agent_identity = agent;
         let channel = Arc::new(channel);
         Ok(Self {
             config,

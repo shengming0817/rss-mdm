@@ -242,9 +242,13 @@
               "const": "ensure_agent_installed",
               "type": "string"
             },
-            "resource": {
-              "$ref": "#/$defs/SoftwareResourceBinding",
-              "description": "Exact approved Agent release; product identity is checked at publication."
+            "packages": {
+              "additionalProperties": {
+                "format": "uuid",
+                "type": "string"
+              },
+              "description": "One explicitly published Agent release per native target; no format fallback.",
+              "type": "object"
             },
             "runLifetimeSeconds": {
               "description": "Bounded lifetime of this installation and its registration handoff.",
@@ -272,7 +276,7 @@
           },
           "required": [
             "kind",
-            "resource",
+            "packages",
             "runLifetimeSeconds"
           ],
           "type": "object"

@@ -148,6 +148,7 @@ impl ExecutionService {
         audit: &RequestAudit,
     ) -> Result<Value> {
         if let ExecutionAuthority::AgentInstall {
+            stage: crate::authority::AgentInstallStage::Install,
             version,
             source_objects,
             ..
@@ -168,6 +169,22 @@ impl ExecutionService {
                     })
                 })
                 .await??;
+        }
+        if let ExecutionAuthority::AgentInstall {
+            stage: crate::authority::AgentInstallStage::Cleanup { bootstrap },
+            package,
+            ..
+        } = &authority
+            && (input.target != NativeTarget::Device
+                || checked_input(serde_json::to_vec(&input.task))?
+                    != checked_input(serde_json::to_vec(
+                        &crate::bootstrap_delivery::cleanup_task(
+                            package.target.parts().0,
+                            *bootstrap,
+                        ),
+                    ))?)
+        {
+            return Err(Error::Unsupported.into());
         }
         let now = self.store.now(tx).await? / 1_000_000;
         input.validate(now)?;

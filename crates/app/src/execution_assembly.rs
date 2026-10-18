@@ -193,7 +193,6 @@ pub(crate) async fn open(
                 return Err(bad());
             }
         };
-        config.agent_installation.validate()?;
         config.enrollment_entries.validate()?;
         let source: Arc<dyn rss_mdm_execution_service::source_authority::SourceAuthority> =
             Arc::new(
@@ -223,7 +222,17 @@ pub(crate) async fn open(
             rss_mdm_execution_service::InputDependencies {
                 protection: protection.clone(),
                 software,
-                agent_installation: config.agent_installation.clone(),
+                agent_origin: match &config.agent_pki {
+                    crate::agent_pki::Config::StepCa { endpoint, .. } => endpoint.origin.clone(),
+                    _ => String::new(),
+                },
+                bootstrap: config
+                    .agent_pki
+                    .bootstrap_materials(
+                        crate::device_pki::providers(&config.device_pki)?.as_ref(),
+                        time::OffsetDateTime::now_utc().unix_timestamp(),
+                    )?
+                    .map(|(_, deployment)| deployment),
                 enrollment_entries: config.enrollment_entries.clone(),
                 runtime: runtime.clone(),
                 tenant,

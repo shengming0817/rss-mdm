@@ -1,5 +1,8 @@
 //! Native EnterpriseDesktopAppManagement MSI jobs; product software admission belongs to callers.
 //! ref: Microsoft EnterpriseDesktopAppManagement CSP DownloadInstall XSD Schema.
+mod msix;
+pub use msix::MsixInstall;
+
 use crate::{
     CodecError as E, CodecLimits, Result, Secret,
     native::Scope,

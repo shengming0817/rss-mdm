@@ -160,7 +160,7 @@ pub struct Csr {
     spki: [u8; 32],
     digest: [u8; 32],
 }
-pub fn csr(bytes: &[u8]) -> Result<Csr, Error> {
+pub(crate) fn verified_rsa_csr(bytes: &[u8]) -> Result<CertReq, Error> {
     if bytes.len() > 32768 {
         return Err(Error::CertificateRequest);
     }
@@ -184,6 +184,10 @@ pub fn csr(bytes: &[u8]) -> Result<Csr, Error> {
         c.signature.as_bytes().ok_or(Error::CertificateRequest)?,
     )
     .map_err(invalid)?;
+    Ok(c)
+}
+pub fn csr(bytes: &[u8]) -> Result<Csr, Error> {
+    let c = verified_rsa_csr(bytes)?;
     let (enrollment, attempt) = parse_subject(&c.info.subject)?;
     Ok(Csr {
         enrollment,

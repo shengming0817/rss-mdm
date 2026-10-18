@@ -370,7 +370,7 @@
       "versions",
       "versions_check1",
       "c",
-      "CHECK (((action_kind = 'request_mdm_enrollment'::text) = (resource IS NULL)))",
+      "CHECK (((action_kind = ANY (ARRAY['ensure_agent_installed'::text, 'request_mdm_enrollment'::text])) = (resource IS NULL)))",
       true
     ],
     [

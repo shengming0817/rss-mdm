@@ -61,7 +61,13 @@ pub trait OrganizationAuthority: Send + Sync {
 pub trait EntraPolicyAuthority: Send + Sync {
     fn current<'a>(&'a self, c: &'a mut PgConnection, coordinates: &'a Coordinates) -> Pending<'a>;
 }
+pub trait AgentPolicyAuthority: Send + Sync {
+    fn current<'a>(&'a self, c: &'a mut PgConnection, coordinates: &'a Coordinates) -> Pending<'a>;
+}
 enum Basis {
+    AgentPolicy {
+        authority: Arc<dyn AgentPolicyAuthority>,
+    },
     Entra {
         proof: rss_mdm_authorization_service::entra::RevalidatedAccount,
         authority: Arc<dyn EntraPolicyAuthority>,
@@ -150,10 +156,18 @@ impl Admission {
     }
     pub fn check_live(&self) -> Result<(), Error> {
         match &self.basis {
-            Basis::Organization { .. } => Ok(()),
+            Basis::Organization { .. } | Basis::AgentPolicy { .. } => Ok(()),
             Basis::Entra { proof, .. } => proof.check_live().map_err(|_| Error::Unauthorized),
             Basis::Password { proof, .. } => proof.check_live().map_err(Into::into),
             Basis::Account { proof, .. } => proof.check_live().map_err(|_| Error::Unauthorized),
+        }
+    }
+    /// Producer identity for native enrollment without a live human session.
+    pub fn service_actor(&self) -> Option<&'static str> {
+        match self.basis {
+            Basis::AgentPolicy { .. } => Some("service:agent-policy"),
+            Basis::Organization { .. } => Some("service:apple-ade"),
+            _ => None,
         }
     }
     pub fn bind_audit(&self, audit: &RequestAudit) -> Result<(), Error> {
@@ -162,11 +176,15 @@ impl Admission {
                 rss_mdm_authorization_service::context::bind_native_audit(proof, audit)
                     .map_err(Into::into)
             }
-            Basis::Organization { .. } => {
+            Basis::Organization { .. } | Basis::AgentPolicy { .. } => {
                 if audit.tenant() != self.data.tenant {
                     return Err(Error::Unauthorized);
                 }
-                audit.identify_service("service:apple-ade");
+                audit.identify_service(if matches!(self.basis, Basis::AgentPolicy { .. }) {
+                    "service:agent-policy"
+                } else {
+                    "service:apple-ade"
+                });
                 Ok(())
             }
             Basis::Password { proof, .. } => proof.bind_audit(audit).map_err(Into::into),
@@ -197,6 +215,9 @@ impl Admission {
         if let Basis::Entra { authority, .. } = &self.basis {
             authority.current(c, d).await?;
         }
+        if let Basis::AgentPolicy { authority } = &self.basis {
+            authority.current(c, d).await?;
+        }
         let row = request(c, &d.tenant, d.id).await?;
         if row.try_get::<String, _>("state").map_err(db)? == "cancelled"
             || !row.try_get::<bool, _>("live").map_err(db)?
@@ -211,6 +232,9 @@ impl Admission {
         }
         let kind: String = row.try_get("authority_kind").map_err(db)?;
         match &self.basis {
+            Basis::AgentPolicy { .. }
+                if kind == "agent_policy"
+                    && row.try_get::<i64, _>("password_version").map_err(db)? == d.version => {}
             Basis::Entra { .. }
                 if kind == "windows_entra"
                     && !row.try_get::<bool, _>("self_service").map_err(db)?
@@ -627,4 +651,46 @@ impl Admission {
             _ => Err(Error::Unauthorized),
         }
     }
+}
+
+/// A native password handoff can originate from an authenticated Agent task without a browser session.
+pub async fn agent_policy(
+    database: &crate::Store,
+    tenant: &str,
+    id: Uuid,
+    secret: Option<&str>,
+    authority: Arc<dyn AgentPolicyAuthority>,
+) -> Result<Admission, Error> {
+    let mut tx = database.begin(tenant).await?;
+    let row = request(&mut tx, tenant, id).await?;
+    if row.try_get::<String, _>("authority_kind").map_err(db)? != "agent_policy" {
+        return Err(Error::Unauthorized);
+    }
+    let device: String = row.try_get("device").map_err(db)?;
+    if let Some(secret) = secret {
+        let password = super::Password::new(secret.to_owned())?;
+        if password.digest(tenant, &device)?
+            != row.try_get::<String, _>("password_digest").map_err(db)?
+        {
+            return Err(Error::Unauthorized);
+        }
+    }
+    let admission = Admission {
+        data: Coordinates {
+            tenant: tenant.into(),
+            id,
+            device,
+            actor: row.try_get("actor").map_err(db)?,
+            instance: row.try_get("instance").map_err(db)?,
+            version: row.try_get("password_version").map_err(db)?,
+            expected_generation: row.try_get("expected_generation").map_err(db)?,
+            operation: uuid(&row, "issuance_operation")?,
+            source: ReportSource::parse(&row.try_get::<String, _>("source").map_err(db)?)
+                .map_err(|_| Error::Corrupt)?,
+        },
+        basis: Basis::AgentPolicy { authority },
+    };
+    admission.current_request(&mut tx).await?;
+    tx.rollback().await.map_err(db)?;
+    Ok(admission)
 }

@@ -48,6 +48,50 @@ fn installation_write(command: &s::Command) -> bool {
         _ => false,
     }
 }
+fn reported_value<'a>(uri: &str, response: &'a s::Message) -> &'a str {
+    if uri.starts_with("./Device/Vendor/MSFT/RootCATrustedCertificates/") {
+        return response
+            .commands
+            .iter()
+            .find_map(|command| match command {
+                s::Command::Add { items, .. } => items.iter().find_map(|item| {
+                    (item.target.as_deref() == Some(uri))
+                        .then(|| item.data.as_ref().unwrap().0.as_str())
+                }),
+                _ => None,
+            })
+            .expect("CA CSP readback requires the delivered certificate");
+    }
+    let leaf = uri.rsplit('/').next().unwrap();
+    if uri.contains("/Win32AppInventory/") {
+        return match leaf {
+            "Win32InstalledProgram" => "exe-installed",
+            "RegKey" => "rss-agent",
+            "Publisher" => "RSS controlled publisher",
+            "Version" => "1.2.3",
+            "Source" => "Add/Remove Programs",
+            _ => "RSS Agent",
+        };
+    }
+    if uri.contains("EnterpriseModernAppManagement") {
+        return match leaf {
+            "Publisher" => "CN=RSS",
+            "Version" => "1.2.3.0",
+            "IsProvisioned" => "true",
+            "Status" => "3",
+            _ => "0",
+        };
+    }
+    match leaf {
+        "Mod" => "MDM-only",
+        "Edition" => "48",
+        "ProcessorArchitecture" => "AMD64",
+        "Publisher" => "RSS controlled publisher",
+        "Version" => "1.2.3",
+        "Status" => "70",
+        _ => "10.0.19045.0",
+    }
+}
 fn reply(initial: &s::Message, response: &s::Message, installed: bool) -> s::Message {
     let message = response.header.message_id;
     let mut output = s::Message {
@@ -74,11 +118,24 @@ fn reply(initial: &s::Message, response: &s::Message, installed: bool) -> s::Mes
         }));
     };
     status(0, s::CommandName::SyncHdr, 200);
-    for c in &response.commands {
+    let mut commands = Vec::new();
+    fn flatten<'a>(input: &'a [s::Command], output: &mut Vec<&'a s::Command>) {
+        for command in input {
+            output.push(command);
+            if let s::Command::Sequence { commands, .. } | s::Command::Atomic { commands, .. } =
+                command
+            {
+                flatten(commands, output);
+            }
+        }
+    }
+    flatten(&response.commands, &mut commands);
+    for c in commands {
         match c {
             s::Command::Get { id, items, .. } => {
                 let uri = items[0].target.as_deref().unwrap();
-                let is_product = uri.contains("EnterpriseDesktopAppManagement");
+                let is_product = uri.contains("EnterpriseDesktopAppManagement")
+                    || uri.contains("EnterpriseModernAppManagement");
                 let code = if is_product && !installed { 404 } else { 200 };
                 output.commands.push(s::Command::Status(s::Status {
                     id: output.commands.len() as u32 + 1,
@@ -93,35 +150,7 @@ fn reply(initial: &s::Message, response: &s::Message, installed: bool) -> s::Mes
                     credential: None,
                 }));
                 if code == 200 {
-                    let value = if uri
-                        .starts_with("./Device/Vendor/MSFT/RootCATrustedCertificates/")
-                    {
-                        response
-                            .commands
-                            .iter()
-                            .find_map(|command| match command {
-                                s::Command::Add { items, .. } => items.iter().find_map(|item| {
-                                    (item.target.as_deref() == Some(uri))
-                                        .then(|| item.data.as_ref().unwrap().0.as_str())
-                                }),
-                                _ => None,
-                            })
-                            .expect("CA CSP readback requires the delivered certificate")
-                    } else if uri.ends_with("/Mod") {
-                        "MDM-only"
-                    } else if uri.ends_with("/Edition") {
-                        "48"
-                    } else if uri.ends_with("ProcessorArchitecture") {
-                        "AMD64"
-                    } else if uri.ends_with("/Publisher") {
-                        "RSS controlled publisher"
-                    } else if uri.ends_with("/Version") {
-                        "1.2.3"
-                    } else if uri.ends_with("/Status") {
-                        "70"
-                    } else {
-                        "10.0.19045.0"
-                    };
+                    let value = reported_value(uri, response);
                     output.commands.push(s::Command::Results(s::Results {
                         id: output.commands.len() as u32 + 1,
                         message_ref: Some(message),
@@ -138,9 +167,16 @@ fn reply(initial: &s::Message, response: &s::Message, installed: bool) -> s::Mes
                     }));
                 }
             }
-            s::Command::Add { id, .. } | s::Command::Exec { id, .. } => {
+            s::Command::Add { id, .. }
+            | s::Command::Exec { id, .. }
+            | s::Command::Sequence { id, .. }
+            | s::Command::Atomic { id, .. } => {
                 let command = if matches!(c, s::Command::Add { .. }) {
                     s::CommandName::Add
+                } else if matches!(c, s::Command::Sequence { .. }) {
+                    s::CommandName::Sequence
+                } else if matches!(c, s::Command::Atomic { .. }) {
+                    s::CommandName::Atomic
                 } else {
                     s::CommandName::Exec
                 };
@@ -166,12 +202,21 @@ fn reply(initial: &s::Message, response: &s::Message, installed: bool) -> s::Mes
 #[ignore = "make t2 MODULE=execution.commands.onboarding"]
 async fn agent_maintenance_without_deadline_completes_more_data() -> Result<()> {
     let mut host = crate::windows::test_support::Host::with_agent(
-        Some(setup::pin(true)),
+        None,
         rss_device_command_postgres::CommandClock::Postgres,
     )
     .await?;
     host.listen().await?;
     let peer = host.peer().await?;
+    let mut client = Client::start(host.browser.clone(), host.app.clone()).await?;
+    setup::publish(
+        &mut client.browser,
+        &client.router,
+        case_device(),
+        &host.app,
+        true,
+    )
+    .await?;
     let (initial, query) = begin(&peer, 951).await?;
     let run = pg(&format!(
         "SELECT r.id FROM mdm_windows.collections w JOIN mdm_access.collection_runs r USING(tenant_id,id) WHERE w.tenant_id='{}' AND w.session_id='951' AND w.kind='agent' AND r.deadline IS NULL AND r.sealed_at IS NULL",
@@ -235,19 +280,35 @@ async fn windows_policy_install_register_and_replay_use_independent_identity() -
             && state["operationIds"] == json!([operation]),
         "{state}"
     );
-    let (initial, execute) =
+    let (initial, execute, delivered_bootstrap) =
         installation(&peer, &mut client, policy, operation, AttemptPhase::Execute).await?;
-    let url = peer.url.replace(
-        "/ManagementServer/MDM.svc",
-        "/api/v1/agent/enroll/native-grants",
-    );
+    let bootstrap_peer = bootstrap::issue_windows(
+        &host.app,
+        &client.router,
+        &host.root,
+        operation,
+        delivered_bootstrap
+            .as_ref()
+            .context("native bootstrap delivery")?,
+    )
+    .await?;
     let input = json!({"wireVersion":1,"operationId":Uuid::new_v4(),"installationOperation":operation,"secret":credential("managed-agent"),"csr":crate::test_support::agent::csr()?,"runtime":{"executionContext":crate::test_support::software_execution::context(crate::test_support::software_execution::Platform::Windows),"platform":"windows","architecture":"x86_64","capabilities":["inventory.collect.v1","task.execute.v1"]}});
     let mut wrong = input.clone();
     wrong["runtime"]["architecture"] = json!("aarch64");
-    ensure!(peer.mutual.post(&url).json(&wrong).send().await?.status() == StatusCode::FORBIDDEN);
+    ensure!(
+        bootstrap::grant(&client.router, &bootstrap_peer, &wrong)
+            .await?
+            .status()
+            == StatusCode::FORBIDDEN
+    );
     wrong["runtime"]["architecture"] = json!("x86_64");
     wrong["installationOperation"] = json!(Uuid::new_v4());
-    ensure!(peer.mutual.post(&url).json(&wrong).send().await?.status() == StatusCode::FORBIDDEN);
+    ensure!(
+        bootstrap::grant(&client.router, &bootstrap_peer, &wrong)
+            .await?
+            .status()
+            == StatusCode::FORBIDDEN
+    );
     let installer = execute
         .commands
         .iter()
@@ -294,22 +355,30 @@ async fn windows_policy_install_register_and_replay_use_independent_identity() -
     // Stop producers before fault injection, then restart the existing command runtime.
     ensure!(commands.shutdown().join().await?.is_clean());
     ensure!(owner.shutdown().join().await?.is_clean());
-    host.command_audit
-        .inject_next_fault(rss_audit_postgres::PgFault::BeforeCommitPending);
-    let unknown = peer.mutual.post(&url).json(&input).send().await?;
+    let unknown = bootstrap::grant_fault(
+        &client.router,
+        &bootstrap_peer,
+        &input,
+        Some(rss_audit_postgres::PgFault::BeforeCommitPending),
+    )
+    .await?;
     ensure!(
         unknown.status() == StatusCode::SERVICE_UNAVAILABLE
             && unknown.json::<Value>().await?["code"] == "activation_unknown"
     );
     ensure!(pg(&format!("SELECT count(*) FROM mdm_access.registrations WHERE tenant_id='{}' AND channel='agent'",case_tenant()))?.trim()=="0");
-    host.command_audit
-        .inject_next_fault(rss_audit_postgres::PgFault::CommitUnknownAfterAck);
-    let unknown = peer.mutual.post(&url).json(&input).send().await?;
+    let unknown = bootstrap::grant_fault(
+        &client.router,
+        &bootstrap_peer,
+        &input,
+        Some(rss_audit_postgres::PgFault::CommitUnknownAfterAck),
+    )
+    .await?;
     ensure!(
         unknown.status() == StatusCode::SERVICE_UNAVAILABLE
             && unknown.json::<Value>().await?["code"] == "activation_unknown"
     );
-    let response = peer.mutual.post(&url).json(&input).send().await?;
+    let response = bootstrap::grant(&client.router, &bootstrap_peer, &input).await?;
     let status = response.status();
     let receipt: Value = response.json().await?;
     ensure!(
@@ -317,24 +386,31 @@ async fn windows_policy_install_register_and_replay_use_independent_identity() -
         "managed recovery {status}: {receipt}"
     );
     ensure!(receipt["state"] == "available");
-    let again = peer.mutual.post(&url).json(&input).send().await?;
+    let again = bootstrap::grant(&client.router, &bootstrap_peer, &input).await?;
     ensure!(again.status() == StatusCode::OK);
     ensure!(again.json::<Value>().await? == receipt);
     let mut changed = input.clone();
     changed["secret"] = json!(credential("different-secret"));
-    ensure!(peer.mutual.post(&url).json(&changed).send().await?.status() == StatusCode::CONFLICT);
+    ensure!(
+        bootstrap::grant(&client.router, &bootstrap_peer, &changed)
+            .await?
+            .status()
+            == StatusCode::CONFLICT
+    );
     let mut duplicate = input.clone();
     duplicate["operationId"] = json!(Uuid::new_v4());
     ensure!(
-        peer.mutual
-            .post(&url)
-            .json(&duplicate)
-            .send()
+        bootstrap::grant(&client.router, &bootstrap_peer, &duplicate)
             .await?
             .status()
             == StatusCode::CONFLICT
     );
     ensure!(pg(&format!("SELECT count(*) FROM mdm_access.agent_grants WHERE tenant_id='{}' AND source='native' AND (native_authority ? 'secret' OR native_authority ? 'input')",case_tenant()))?.trim()=="0", "native authority must not persist bootstrap secrets");
+    // The consumed grant is already bound to its independent daily key and total install budget.
+    pg(&format!(
+        "UPDATE mdm_access.agent_bootstraps SET deadline=floor(extract(epoch FROM clock_timestamp()))::bigint-1 WHERE tenant_id='{}' AND installation='{operation}' AND state='consumed'",
+        case_tenant()
+    ))?;
     let receipt = crate::test_support::agent::complete_grant(
         host.app.agent_enrollment.as_ref().unwrap(),
         &receipt,
@@ -368,20 +444,66 @@ async fn windows_policy_install_register_and_replay_use_independent_identity() -
     ensure!(
         installed.1["agentInstallation"]["agentRegistration"]["deviceId"] == receipt["deviceId"]
     );
+    let cleanup = pg(&format!(
+        "SELECT cleanup FROM mdm_access.agent_bootstraps WHERE tenant_id='{}' AND installation='{operation}'",
+        case_tenant()
+    ))?;
+    let cleanup = Uuid::parse_str(cleanup.trim()).context("activation queues bootstrap cleanup")?;
+    let view = client
+        .browser
+        .call(
+            &client.router,
+            Method::GET,
+            &format!("/api/v1/policies/{policy}"),
+            None,
+        )
+        .await?;
+    software::write(
+        &mut client.browser,
+        &client.router,
+        &format!("/api/v1/policies/{policy}"),
+        1,
+        json!({"action":"put","enabled":false,"definition":view.1["definition"]}),
+    )
+    .await?;
+    let future = crate::clock::Clock::unix_seconds(&crate::clock::SystemClock)? + 301;
+    host.app
+        .execution
+        .advance_installation_authorization_to(future)?;
+    begin(&peer, 1600).await?;
+    let recovered = pg(&format!(
+        "SELECT cleanup FROM mdm_access.agent_bootstraps WHERE tenant_id='{}' AND installation='{operation}'",
+        case_tenant()
+    ))?;
+    ensure!(
+        Uuid::parse_str(recovered.trim())? != cleanup,
+        "expired cleanup must be retried even after Policy withdrawal"
+    );
+    ensure!(
+        pg(&format!(
+            "SELECT count(*) FROM mdm_commands.operations WHERE tenant_id='{}' AND id='{cleanup}'",
+            case_tenant()
+        ))?
+        .trim()
+            == "1",
+        "cleanup retry preserves original command history"
+    );
     ensure!(commands.shutdown().join().await?.is_clean());
     let subject = browser_subject(&client.browser, &client.router).await?;
     identity::set_grants(case_tenant(), &subject, vec![]).await?;
     ensure!(package_status(&client.router, operation).await? == StatusCode::FORBIDDEN);
     ensure!(
-        peer.mutual
-            .post(&url)
-            .json(&duplicate)
-            .send()
+        bootstrap::grant(&client.router, &bootstrap_peer, &duplicate)
             .await?
             .status()
             == StatusCode::FORBIDDEN
     );
-    ensure!(peer.mutual.post(&url).json(&input).send().await?.status() == StatusCode::FORBIDDEN);
+    ensure!(
+        bootstrap::grant(&client.router, &bootstrap_peer, &input)
+            .await?
+            .status()
+            == StatusCode::FORBIDDEN
+    );
     setup::grants(&client.browser, &client.router).await?;
     begin(&peer, 945).await?;
     let incomplete = pg(&format!(
@@ -411,7 +533,12 @@ async fn windows_policy_install_register_and_replay_use_independent_identity() -
         terminal.payload
     );
     ensure!(package_status(&client.router, operation).await? == StatusCode::FORBIDDEN);
-    ensure!(peer.mutual.post(&url).json(&input).send().await?.status() == StatusCode::UNAUTHORIZED);
+    ensure!(
+        bootstrap::grant(&client.router, &bootstrap_peer, &input)
+            .await?
+            .status()
+            == StatusCode::FORBIDDEN
+    );
     let report = json!({"wireVersion":1,"collection":receipt["collections"][0],"reportId":Uuid::new_v4(),"sequence":0,"observedAt":1,"body":{"kind":"failed","code":"collectionFailed"}});
     ensure!(
         agent_call(
@@ -463,8 +590,23 @@ async fn start_fixture_until(
     Uuid,
     Option<i64>,
 )> {
+    start_fixture_format(window_seconds, false).await
+}
+async fn start_fixture_format(
+    window_seconds: Option<i64>,
+    msix: bool,
+) -> Result<(
+    crate::windows::test_support::Host,
+    Client,
+    crate::windows::test_support::Peer,
+    rss_runtime::ShutdownStack,
+    rss_runtime::ShutdownStack,
+    Uuid,
+    Uuid,
+    Option<i64>,
+)> {
     let mut host = crate::windows::test_support::Host::with_agent(
-        Some(setup::pin(true)),
+        None,
         rss_device_command_postgres::CommandClock::Postgres,
     )
     .await?;
@@ -503,15 +645,25 @@ async fn start_fixture_until(
                 .map(|now| now + window)
         })
         .transpose()?;
-    let policy = setup::publish_until(
-        &mut client.browser,
-        &client.router,
-        case_device(),
-        &host.app,
-        true,
-        until,
-    )
-    .await?;
+    let policy = if msix {
+        setup::publish_msix(
+            &mut client.browser,
+            &client.router,
+            case_device(),
+            &host.app,
+        )
+        .await?
+    } else {
+        setup::publish_until(
+            &mut client.browser,
+            &client.router,
+            case_device(),
+            &host.app,
+            true,
+            until,
+        )
+        .await?
+    };
     let (initial, response) = begin(&peer, 901).await?;
     ensure!(
         response
@@ -519,10 +671,17 @@ async fn start_fixture_until(
             .iter()
             .filter(|c| matches!(c, s::Command::Get { items, .. } if !items[0].target.as_deref().unwrap().starts_with("./Device/Vendor/MSFT/RootCATrustedCertificates/")))
             .count()
-            == 6
+            == if msix {9} else {6}
     );
     post(&peer, &reply(&initial, &response, false)).await?;
     let operation = setup::operation(policy).await?;
+    tokio::time::timeout(Duration::from_secs(30), async {
+        loop {
+            let published = pg(&format!("SELECT EXISTS(SELECT 1 FROM mdm_access.agent_bootstraps b JOIN rss_device_command.commands d ON d.tenant_id=b.tenant_id AND d.command_id=b.delivery::text WHERE b.tenant_id='{}' AND b.installation='{operation}' AND d.status='published')",case_tenant()))?;
+            if published.trim()=="t" {break Ok::<_,anyhow::Error>(());}
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    }).await??;
     Ok((
         host, client, peer, commands, owner, policy, operation, until,
     ))
@@ -593,7 +752,7 @@ async fn installation(
     policy: Uuid,
     operation: Uuid,
     phase: AttemptPhase,
-) -> Result<(s::Message, s::Message)> {
+) -> Result<(s::Message, s::Message, Option<s::Message>)> {
     use sqlx::Connection;
     let mut connection = sqlx::PgConnection::connect_with(
         &crate::device::test_support::options("mdm_command_runtime")?.password("runtime-fixture"),
@@ -603,10 +762,16 @@ async fn installation(
     let result = tokio::time::timeout(Duration::from_secs(30), async {
         let (mut initial, mut next) = begin(peer, 902).await?;
         let mut session = 910;
+        let mut bootstrap=None;
         loop {
+            if !bootstrap::windows_fields(&next.commands).is_empty(){bootstrap=Some(next.clone());}
             if let Some(command) = installation_command(&next, phase) {
                 ensure!(pg(&format!("SELECT EXISTS(SELECT 1 FROM mdm_commands.attempts a JOIN mdm_commands.attempt_items i ON(i.tenant_id,i.attempt)=(a.tenant_id,a.id) WHERE a.tenant_id='{}' AND a.operation='{operation}' AND a.phase='{}' AND a.session={} AND a.message={} AND i.command={command} AND i.uri='{INSTALL_URI}')",case_tenant(),phase.as_str(),next.header.session_id,next.header.message_id))?.trim()=="t", "installation command has no correlated durable attempt");
-                return Ok((initial, next));
+                if phase==AttemptPhase::Execute && bootstrap.is_none() {
+                    let diagnostic=pg(&format!("SELECT jsonb_build_object('status',(SELECT status FROM rss_device_command.commands WHERE tenant_id=o.tenant_id AND command_id=o.id::text),'accepted',o.gateway_accepted,'failure',o.dispatch_failure,'required',o.authority->'required','stage',o.authority->'stage','attempts',(SELECT jsonb_agg(jsonb_build_object('phase',a.phase,'session',a.session)) FROM mdm_commands.attempts a WHERE a.tenant_id=o.tenant_id AND a.operation=o.id)) FROM mdm_access.agent_bootstraps b JOIN mdm_commands.operations o ON(o.tenant_id,o.id)=(b.tenant_id,b.delivery) WHERE b.tenant_id='{}' AND b.installation='{operation}'",case_tenant()))?;
+                    anyhow::bail!("bootstrap delivery missing: {diagnostic}");
+                }
+                return Ok((initial, next, bootstrap));
             }
             if next.commands.iter().any(|c| !matches!(c, s::Command::Status(_))) {
                 next = post(peer, &reply(&initial, &next, false)).await?;
@@ -659,7 +824,7 @@ async fn installation(
 #[ignore = "make t2 MODULE=execution.commands.onboarding"]
 async fn failed_prepare_rejects_without_dispatching_installation() -> Result<()> {
     let (host, mut client, peer, commands, owner, policy, operation) = start_fixture().await?;
-    let (initial, prepare) =
+    let (initial, prepare, _) =
         installation(&peer, &mut client, policy, operation, AttemptPhase::Prepare).await?;
     let command =
         installation_command(&prepare, AttemptPhase::Prepare).expect("correlated MSI prepare");
@@ -696,7 +861,7 @@ async fn failed_prepare_rejects_without_dispatching_installation() -> Result<()>
 async fn native_enforcement_failure_is_separate_from_delivery_and_never_reinstalled() -> Result<()>
 {
     let (host, mut client, peer, commands, owner, policy, operation) = start_fixture().await?;
-    let (initial, execute) =
+    let (initial, execute, _) =
         installation(&peer, &mut client, policy, operation, AttemptPhase::Execute).await?;
     post(&peer, &reply(&initial, &execute, false)).await?;
     let (initial, query) = begin(&peer, 903).await?;
@@ -769,6 +934,7 @@ async fn native_enforcement_failure_is_separate_from_delivery_and_never_reinstal
 async fn cancellation_blocks_registration_and_preserves_uncertain_native_effect() -> Result<()> {
     let (host, mut client, peer, commands, owner, policy, operation) = start_fixture().await?;
     installation(&peer, &mut client, policy, operation, AttemptPhase::Execute).await?;
+    let bootstrap_peer = bootstrap::issue(&host.app, &client.router, &host.root, operation).await?;
     let result = client
         .call(
             Method::POST,
@@ -799,12 +965,13 @@ async fn cancellation_blocks_registration_and_preserves_uncertain_native_effect(
     )
     .await?;
     client.publish_operation(operation).await?;
-    let url = peer.url.replace(
-        "/ManagementServer/MDM.svc",
-        "/api/v1/agent/enroll/native-grants",
-    );
     let input = json!({"wireVersion":1,"operationId":Uuid::new_v4(),"installationOperation":operation,"secret":credential("cancelled-agent"),"csr":crate::test_support::agent::csr()?,"runtime":{"executionContext":crate::test_support::software_execution::context(crate::test_support::software_execution::Platform::Windows),"platform":"windows","architecture":"x86_64","capabilities":["inventory.collect.v1","task.execute.v1"]}});
-    ensure!(peer.mutual.post(url).json(&input).send().await?.status() == StatusCode::FORBIDDEN);
+    ensure!(
+        bootstrap::grant(&client.router, &bootstrap_peer, &input)
+            .await?
+            .status()
+            == StatusCode::FORBIDDEN
+    );
     ensure!(package_status(&client.router, operation).await? == StatusCode::FORBIDDEN);
     let state = client
         .call(Method::GET, &format!("/{operation}"), None)
@@ -828,6 +995,7 @@ async fn schedule_expiry_caps_installation_and_blocks_new_agent_registration() -
         start_fixture_until(Some(300)).await?;
     let until = until.expect("scheduled fixture");
     installation(&peer, &mut client, policy, operation, AttemptPhase::Execute).await?;
+    let bootstrap_peer = bootstrap::issue(&host.app, &client.router, &host.root, operation).await?;
     ensure!(
         client
             .call(Method::GET, &format!("/{operation}"), None)
@@ -843,12 +1011,13 @@ async fn schedule_expiry_caps_installation_and_blocks_new_agent_registration() -
         .app
         .execution
         .advance_installation_authorization_to(until)?;
-    let url = peer.url.replace(
-        "/ManagementServer/MDM.svc",
-        "/api/v1/agent/enroll/native-grants",
-    );
     let input = json!({"wireVersion":1,"operationId":Uuid::new_v4(),"installationOperation":operation,"secret":credential("expired-agent"),"csr":crate::test_support::agent::csr()?,"runtime":{"executionContext":crate::test_support::software_execution::context(crate::test_support::software_execution::Platform::Windows),"platform":"windows","architecture":"x86_64","capabilities":["inventory.collect.v1","task.execute.v1"]}});
-    ensure!(peer.mutual.post(url).json(&input).send().await?.status() == StatusCode::FORBIDDEN);
+    ensure!(
+        bootstrap::grant(&client.router, &bootstrap_peer, &input)
+            .await?
+            .status()
+            == StatusCode::FORBIDDEN
+    );
     ensure!(package_status(&client.router, operation).await? == StatusCode::FORBIDDEN);
     let state = client
         .call(Method::GET, &format!("/{operation}"), None)
@@ -872,22 +1041,27 @@ async fn schedule_expiry_caps_installation_and_blocks_new_agent_registration() -
 async fn replacement_rejects_old_installation_and_requires_current_epoch_absence() -> Result<()> {
     let (host, mut client, peer, commands, owner, policy, operation) = start_fixture().await?;
     installation(&peer, &mut client, policy, operation, AttemptPhase::Execute).await?;
+    let bootstrap_peer = bootstrap::issue(&host.app, &client.router, &host.root, operation).await?;
     let current = host.enrolled_peer().await?;
-    let url = peer.url.replace(
-        "/ManagementServer/MDM.svc",
-        "/api/v1/agent/enroll/native-grants",
-    );
     let input = json!({"wireVersion":1,"operationId":Uuid::new_v4(),"installationOperation":operation,"secret":credential("replacement-agent"),"csr":crate::test_support::agent::csr()?,"runtime":{"executionContext":crate::test_support::software_execution::context(crate::test_support::software_execution::Platform::Windows),"platform":"windows","architecture":"x86_64","capabilities":["inventory.collect.v1","task.execute.v1"]}});
-    ensure!(peer.mutual.post(&url).json(&input).send().await?.status() == StatusCode::UNAUTHORIZED);
+    ensure!(
+        bootstrap::grant(&client.router, &bootstrap_peer, &input)
+            .await?
+            .status()
+            == StatusCode::FORBIDDEN
+    );
     ensure!(
         current
             .mutual
-            .post(&url)
+            .post(current.url.replace(
+                "/ManagementServer/MDM.svc",
+                "/api/v1/agent/enroll/native-grants"
+            ))
             .json(&input)
             .send()
             .await?
             .status()
-            == StatusCode::FORBIDDEN
+            == StatusCode::NOT_FOUND
     );
     ensure!(package_status(&client.router, operation).await? == StatusCode::FORBIDDEN);
     ensure!(pg(&format!("SELECT count(*) FROM mdm_access.registrations WHERE tenant_id='{}' AND channel='agent'",case_tenant()))?.trim()=="0");
@@ -902,7 +1076,7 @@ async fn replacement_rejects_old_installation_and_requires_current_epoch_absence
     ensure!(!query.commands.iter().any(installation_write));
     let count = || {
         pg(&format!(
-            "SELECT count(*) FROM mdm_commands.operations WHERE tenant_id='{}' AND authority->>'kind'='agent_install'",
+            "SELECT count(*) FROM mdm_commands.operations WHERE tenant_id='{}' AND authority->>'kind'='agent_install' AND authority->>'stage'='install'",
             case_tenant()
         ))
     };
@@ -934,6 +1108,7 @@ async fn replacement_rejects_old_installation_and_requires_current_epoch_absence
 async fn scope_exit_preserves_dispatched_installation_authority_until_its_deadline() -> Result<()> {
     let (host, mut client, peer, commands, owner, policy, operation) = start_fixture().await?;
     installation(&peer, &mut client, policy, operation, AttemptPhase::Execute).await?;
+    let bootstrap_peer = bootstrap::issue(&host.app, &client.router, &host.root, operation).await?;
     let policy_view = client
         .browser
         .call(
@@ -973,16 +1148,12 @@ async fn scope_exit_preserves_dispatched_installation_authority_until_its_deadli
         "Scope exit not visible: {state}"
     );
     ensure!(package_status(&client.router, operation).await? == StatusCode::OK);
-    let url = peer.url.replace(
-        "/ManagementServer/MDM.svc",
-        "/api/v1/agent/enroll/native-grants",
-    );
     let input = json!({"wireVersion":1,"operationId":Uuid::new_v4(),"installationOperation":operation,"secret":credential("scope-exit-agent"),"csr":crate::test_support::agent::csr()?,"runtime":{"executionContext":crate::test_support::software_execution::context(crate::test_support::software_execution::Platform::Windows),"platform":"windows","architecture":"x86_64","capabilities":["inventory.collect.v1","task.execute.v1"]}});
-    let response = peer.mutual.post(&url).json(&input).send().await?;
+    let response = bootstrap::grant(&client.router, &bootstrap_peer, &input).await?;
     let status = response.status();
     let receipt: Value = response.json().await?;
     ensure!(
-        status == StatusCode::CREATED && receipt["state"] == "available",
+        status == StatusCode::OK && receipt["state"] == "available",
         "{status}: {receipt}"
     );
     let grant: Value = serde_json::from_str(pg(&format!("SELECT jsonb_build_object('device',device,'installation',native_authority->>'installation','state',state) FROM mdm_access.agent_grants WHERE tenant_id='{}' AND operation_id='{}'",case_tenant(),input["operationId"].as_str().unwrap()))?.trim())?;
@@ -1016,9 +1187,14 @@ async fn policy_freeze_distinguishes_superseded_identity_from_withdrawn_authorit
         .await?;
     ensure!(original.0 == StatusCode::OK, "{original:?}");
     let definition = original.1["definition"].clone();
-    let resource = definition["action"]["resource"]["id"]
+    let release = definition["action"]["packages"]["windows_x86_64"]
         .as_str()
-        .ok_or_else(|| anyhow::anyhow!("missing software resource: {original:?}"))?;
+        .unwrap();
+    let resource = pg(&format!(
+        "SELECT binding->>'resource' FROM mdm_agent_packages.releases WHERE tenant_id='{}' AND id='{release}'",
+        case_tenant()
+    ))?;
+    let resource = resource.trim();
     let mut wrong = definition.clone();
     wrong["action"]["admissionOperation"] = json!(Uuid::new_v4());
     let rejected = client
@@ -1065,7 +1241,7 @@ async fn policy_freeze_distinguishes_superseded_identity_from_withdrawn_authorit
 async fn installed_report_blocks_execute_after_preparation() -> Result<()> {
     use sqlx::Row;
     let (host, mut client, peer, commands, owner, policy, operation) = start_fixture().await?;
-    let (initial, prepare) =
+    let (initial, prepare, _) =
         installation(&peer, &mut client, policy, operation, AttemptPhase::Prepare).await?;
     // A pending maintenance query preserves the previous sealed channel fact,
     // including when Group reads its historical quality at a newer watermark.
@@ -1096,6 +1272,543 @@ async fn installed_report_blocks_execute_after_preparation() -> Result<()> {
     ensure!(installation_command(&response, AttemptPhase::Execute).is_none());
     ensure!(pg(&format!("SELECT count(*) FROM mdm_commands.attempts WHERE tenant_id='{}' AND operation='{operation}' AND phase='execute'", case_tenant()))?.trim()=="0");
     ensure!(pg(&format!("SELECT EXISTS(SELECT 1 FROM mdm_access.collection_runs WHERE tenant_id='{}' AND source='mdm.windows' AND result='snapshot' AND evidence->>'version'='1.2.3' AND sealed_at IS NOT NULL)", case_tenant()))?.trim()=="t");
+    ensure!(commands.shutdown().join().await?.is_clean());
+    ensure!(owner.shutdown().join().await?.is_clean());
+    host.close().await
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+#[ignore = "make t2 MODULE=execution.commands.onboarding"]
+async fn msix_hosted_install_is_frozen_and_provisioning_is_not_agent_activation() -> Result<()> {
+    let (host, mut client, peer, commands, owner, _policy, operation, _) =
+        start_fixture_format(None, true).await?;
+    fn hosted(commands: &[s::Command]) -> Option<&str> {
+        for command in commands {
+            match command {
+                s::Command::Exec { items, .. } => {
+                    if let Some(item) = items.first()
+                        && item
+                            .target
+                            .as_deref()
+                            .is_some_and(|uri| uri.ends_with("/HostedInstall"))
+                    {
+                        return item.data.as_ref().map(|d| d.0.as_str());
+                    }
+                }
+                s::Command::Sequence { commands, .. } | s::Command::Atomic { commands, .. } => {
+                    if let Some(value) = hosted(commands) {
+                        return Some(value);
+                    }
+                }
+                _ => (),
+            }
+        }
+        None
+    }
+    let (initial, execution) = tokio::time::timeout(Duration::from_secs(30), async {
+        for session in 1000..1100 {
+            let (initial, next) = begin(&peer, session).await?;
+            if hosted(&next.commands).is_some() {
+                return Ok::<_, anyhow::Error>((initial, next));
+            }
+            post(&peer, &reply(&initial, &next, false)).await?;
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        anyhow::bail!("HostedInstall never dispatched")
+    })
+    .await??;
+    let xml = hosted(&execution.commands).unwrap();
+    ensure!(
+        xml.contains(&format!("/installations/{operation}/package"))
+            && xml.contains("ValidateDependencies=\"1\"")
+            && !xml.contains("CommandLine"),
+        "{xml}"
+    );
+    ensure!(package_status(&client.router, operation).await? == StatusCode::OK);
+    post(&peer, &reply(&initial, &execution, false)).await?;
+    let (initial, query) = begin(&peer, 1101).await?;
+    post(&peer, &reply(&initial, &query, true)).await?;
+    let state = client
+        .call(Method::GET, &format!("/{operation}"), None)
+        .await?;
+    ensure!(
+        state.0 == StatusCode::OK && state.1["agentInstallation"]["installation"] == "provisioned",
+        "{state:?}"
+    );
+    ensure!(state.1["agentInstallation"]["agentRegistration"].is_null());
+    let (initial, next) = begin(&peer, 1102).await?;
+    ensure!(
+        hosted(&next.commands).is_none(),
+        "provisioning must not run a second installer"
+    );
+    post(&peer, &reply(&initial, &next, true)).await?;
+    ensure!(commands.shutdown().join().await?.is_clean());
+    ensure!(owner.shutdown().join().await?.is_clean());
+    host.close().await
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+#[ignore = "make t2 MODULE=execution.commands.onboarding"]
+async fn agent_handoff_completes_windows_issuance_and_authenticated_signin() -> Result<()> {
+    let mut host = crate::windows::test_support::Host::open().await?;
+    host.listen().await?;
+    let handoff =
+        crate::test_support::native_handoff::Handoff::new(rss_mdm_resource::Platform::Windows)
+            .await?;
+    let id = Uuid::parse_str(handoff.receipt["enrollmentId"].as_str().unwrap())?;
+    let peer = host
+        .peer_from_agent_handoff(id, handoff.password.clone())
+        .await?;
+    begin(&peer, 2101).await?;
+    let count = pg(&format!(
+        "SELECT count(*) FROM mdm_access.agent_native_enrollments l JOIN mdm_access.registrations r ON(r.tenant_id,r.request_id)=(l.tenant_id,l.request) WHERE l.tenant_id='{}' AND l.request='{id}' AND l.source_registration='{}' AND r.state='active' AND r.first_authenticated_at IS NOT NULL AND r.id<>l.source_registration",
+        case_tenant(),
+        handoff.source["registrationId"].as_str().unwrap()
+    ))?;
+    ensure!(
+        count.trim() == "1",
+        "native authenticated sign-in must bind the originating Agent task"
+    );
+    handoff.close().await?;
+    host.close().await
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+#[ignore = "make t2 MODULE=execution.commands.onboarding"]
+async fn installed_exe_invalidates_prior_msi_absence_and_blocks_second_installer() -> Result<()> {
+    let (host, mut client, peer, commands, owner, _policy, operation) = start_fixture().await?;
+    setup::publish_exe(
+        &mut client.browser,
+        &client.router,
+        case_device(),
+        &host.app,
+    )
+    .await?;
+    let (initial, mut response) = begin(&peer, 2200).await?;
+    let frozen: Value = serde_json::from_str(&pg(&format!(
+        "SELECT jsonb_build_object('id',w.id,'digest',r.evidence->'catalogDigest','catalog',w.channel_state->'catalog') FROM mdm_windows.collections w JOIN mdm_access.collection_runs r USING(tenant_id,id) WHERE w.tenant_id='{}' AND w.session_id='2200' AND w.kind='agent'",
+        case_tenant()
+    ))?)?;
+    let collection = frozen["id"].as_str().context("new catalog collection")?;
+    ensure!(
+        frozen["catalog"]["win32"]
+            .as_array()
+            .is_some_and(|v| v.iter().any(|v| v["key"] == "rss-agent"))
+    );
+    let mut evidence = None;
+    for _ in 0..24 {
+        ensure!(
+            !response.commands.iter().any(installation_write),
+            "new catalog invalidates old absence before dispatch"
+        );
+        response = post(&peer, &reply(&initial, &response, false)).await?;
+        let observed = pg(&format!(
+            "SELECT evidence FROM mdm_access.collection_runs WHERE tenant_id='{}' AND id='{collection}' AND sealed_at IS NOT NULL",
+            case_tenant()
+        ))?;
+        if !observed.trim().is_empty() {
+            evidence = Some(serde_json::from_str::<Value>(&observed)?);
+            break;
+        }
+    }
+    let evidence = evidence.context("new Win32 traversal did not seal")?;
+    ensure!(
+        evidence["catalog_digest"] == frozen["digest"] && evidence["identity"] == "win32:rss-agent",
+        "EXE evidence must belong to the current catalog: {evidence}"
+    );
+    ensure!(
+        evidence["checked_identities"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|v| v == "win32:rss-agent")
+    );
+    crate::test_support::planning_http::await_ingress().await?;
+    ensure!(pg(&format!("SELECT count(*) FROM mdm_commands.attempts WHERE tenant_id='{}' AND operation='{operation}' AND phase='execute'",case_tenant()))?.trim()=="0");
+    let state = client
+        .call(Method::GET, &format!("/{operation}"), None)
+        .await?;
+    ensure!(state.1["agentInstallation"]["agentRegistration"].is_null());
+    ensure!(commands.shutdown().join().await?.is_clean());
+    ensure!(owner.shutdown().join().await?.is_clean());
+    host.close().await
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+#[ignore = "make t2 MODULE=execution.commands.onboarding"]
+async fn historical_msix_catalog_crosses_native_read_batch_without_losing_absence() -> Result<()> {
+    let mut host = crate::windows::test_support::Host::with_agent(
+        None,
+        rss_device_command_postgres::CommandClock::Postgres,
+    )
+    .await?;
+    host.listen().await?;
+    let peer = host.peer().await?;
+    let mut client = Client::start(host.browser.clone(), host.app.clone()).await?;
+    for patch in 0..11 {
+        setup::publish_msix_release(
+            &mut client.browser,
+            &client.router,
+            &host.app,
+            &format!("1.2.{patch}.0"),
+        )
+        .await?;
+    }
+    let (initial, mut response) = begin(&peer, 2300).await?;
+    let frozen: Value = serde_json::from_str(&pg(&format!(
+        "SELECT jsonb_build_object('id',w.id,'digest',r.evidence->'catalogDigest','batches',jsonb_array_length(w.channel_state->'plans')) FROM mdm_windows.collections w JOIN mdm_access.collection_runs r USING(tenant_id,id) WHERE w.tenant_id='{}' AND w.session_id='2300' AND w.kind='agent'",
+        case_tenant()
+    ))?)?;
+    ensure!(
+        frozen["batches"] == 2,
+        "67 reads must traverse two bounded plans"
+    );
+    let collection = frozen["id"].as_str().context("historical collection")?;
+    let mut evidence = None;
+    for _ in 0..24 {
+        response = post(&peer, &reply(&initial, &response, false)).await?;
+        let value = pg(&format!(
+            "SELECT evidence FROM mdm_access.collection_runs WHERE tenant_id='{}' AND id='{collection}' AND sealed_at IS NOT NULL",
+            case_tenant()
+        ))?;
+        if !value.trim().is_empty() {
+            evidence = Some(serde_json::from_str::<Value>(&value)?);
+            break;
+        }
+    }
+    let evidence = evidence.context("complete historical catalog never sealed")?;
+    ensure!(
+        evidence["catalog_digest"] == frozen["digest"]
+            && evidence["checked_identities"].as_array().unwrap().len() == 11
+    );
+    let missing = pg(&format!(
+        "SELECT count(*) FROM mdm_windows.collections w,LATERAL jsonb_array_elements(w.channel_state->'statuses') status WHERE w.tenant_id='{}' AND w.id='{collection}' AND status='404'::jsonb",
+        case_tenant()
+    ))?;
+    ensure!(
+        missing.trim() == "66",
+        "all 11 historical identities must be observed"
+    );
+    host.close().await
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+#[ignore = "make t2 MODULE=execution.commands.onboarding"]
+async fn expired_known_bootstrap_recovers_without_reinstall_or_unknown_resigning() -> Result<()> {
+    let (host, mut client, peer, commands, owner, policy, operation) = start_fixture().await?;
+    let parent_deadline = pg(&format!(
+        "SELECT input_context->>'deadline' FROM mdm_commands.operations WHERE tenant_id='{}' AND id='{operation}'",
+        case_tenant()
+    ))?;
+    let prepared_deadline = pg(&format!(
+        "SELECT deadline FROM mdm_access.agent_bootstraps WHERE tenant_id='{}' AND installation='{operation}' AND active",
+        case_tenant()
+    ))?;
+    ensure!(
+        parent_deadline == prepared_deadline,
+        "offline time must not consume certificate lifetime before signing"
+    );
+    let (initial, execute, delivered) =
+        installation(&peer, &mut client, policy, operation, AttemptPhase::Execute).await?;
+    let old = bootstrap::issue_windows(
+        &host.app,
+        &client.router,
+        &host.root,
+        operation,
+        delivered.as_ref().context("first bootstrap")?,
+    )
+    .await?;
+    post(&peer, &reply(&initial, &execute, false)).await?;
+    pg(&format!(
+        "UPDATE mdm_access.agent_bootstraps SET deadline=floor(extract(epoch FROM clock_timestamp()))::bigint-1 WHERE tenant_id='{}' AND installation='{operation}' AND state='issued'",
+        case_tenant()
+    ))?;
+    begin(&peer, 2400).await?;
+    let count = pg(&format!(
+        "SELECT jsonb_build_array(count(*),count(*) FILTER(WHERE active)) FROM mdm_access.agent_bootstraps WHERE tenant_id='{}' AND installation='{operation}'",
+        case_tenant()
+    ))?;
+    ensure!(
+        serde_json::from_str::<Value>(&count)? == json!([2, 1]),
+        "expired known identity must retain history and create one attempt"
+    );
+    ensure!(pg(&format!("SELECT count(*) FROM mdm_commands.operations WHERE tenant_id='{}' AND authority->>'stage'='install'",case_tenant()))?.trim()=="1");
+    let input = json!({"wireVersion":1,"operationId":Uuid::new_v4(),"installationOperation":operation,"secret":credential("retired-bootstrap"),"csr":crate::test_support::agent::csr()?,"runtime":{"executionContext":crate::test_support::software_execution::context(crate::test_support::software_execution::Platform::Windows),"platform":"windows","architecture":"x86_64","capabilities":["inventory.collect.v1","task.execute.v1"]}});
+    ensure!(
+        bootstrap::grant(&client.router, &old, &input)
+            .await?
+            .status()
+            == StatusCode::FORBIDDEN
+    );
+    // An unconfirmed CA dispatch is not permission to create a fresh identity.
+    pg(&format!(
+        "UPDATE mdm_access.agent_bootstraps SET state='signing',deadline=floor(extract(epoch FROM clock_timestamp()))::bigint-1 WHERE tenant_id='{}' AND installation='{operation}' AND active",
+        case_tenant()
+    ))?;
+    begin(&peer, 2401).await?;
+    ensure!(pg(&format!("SELECT count(*) FROM mdm_access.agent_bootstraps WHERE tenant_id='{}' AND installation='{operation}'",case_tenant()))?.trim()=="2");
+    ensure!(
+        pg(&format!(
+            "SELECT input_context->>'deadline' FROM mdm_commands.operations WHERE tenant_id='{}' AND id='{operation}'",
+            case_tenant()
+        ))? == parent_deadline
+    );
+    ensure!(commands.shutdown().join().await?.is_clean());
+    ensure!(owner.shutdown().join().await?.is_clean());
+    host.close().await
+}
+
+fn cleanup_reply(initial: &s::Message, response: &s::Message, fail: Option<Uuid>) -> s::Message {
+    let mut out = reply(initial, response, false);
+    fn visit(
+        commands: &[s::Command],
+        fail: Option<Uuid>,
+        out: &mut s::Message,
+        message: u32,
+    ) -> bool {
+        let mut failed = false;
+        for command in commands {
+            match command {
+                s::Command::Get { id, items, .. }
+                    if items.iter().all(|item| {
+                        item.target.as_deref().is_some_and(|uri| {
+                            uri.contains("/ClientCertificateInstall/SCEP/")
+                                && uri
+                                    .rsplit('/')
+                                    .next()
+                                    .is_some_and(|key| Uuid::parse_str(key).is_ok())
+                        })
+                    }) =>
+                {
+                    let still_present = fail.is_some_and(|id| {
+                        items.iter().any(|i| {
+                            i.target
+                                .as_ref()
+                                .is_some_and(|uri| uri.ends_with(&id.to_string()))
+                        })
+                    });
+                    if !still_present {
+                        out.commands.retain(|entry|!matches!(entry,s::Command::Results(r) if r.command_ref==Some(*id)));
+                        for entry in &mut out.commands {
+                            if let s::Command::Status(status) = entry
+                                && status.command_ref == *id
+                            {
+                                status.code = 404;
+                            }
+                        }
+                    }
+                }
+                s::Command::Delete { id, items, .. } => {
+                    let rejected = fail.is_some_and(|id| {
+                        items.iter().any(|i| {
+                            i.target
+                                .as_ref()
+                                .is_some_and(|uri| uri.contains(&id.to_string()))
+                        })
+                    });
+                    out.commands.push(s::Command::Status(s::Status {
+                        id: out.commands.len() as u32 + 1,
+                        message_ref: message,
+                        command_ref: *id,
+                        command: s::CommandName::Delete,
+                        target_refs: vec![],
+                        source_refs: vec![],
+                        code: if rejected { 500 } else { 200 },
+                        items: vec![],
+                        challenge: None,
+                        credential: None,
+                    }));
+                    failed |= rejected;
+                }
+                s::Command::Atomic { id, commands } | s::Command::Sequence { id, commands }
+                    if visit(commands, fail, out, message) =>
+                {
+                    for entry in &mut out.commands {
+                        if let s::Command::Status(status) = entry
+                            && status.command_ref == *id
+                        {
+                            status.code = 500;
+                        }
+                    }
+                    failed = true;
+                }
+                _ => (),
+            }
+        }
+        failed
+    }
+    visit(
+        &response.commands,
+        fail,
+        &mut out,
+        response.header.message_id,
+    );
+    // Results removed for 404 must not leave duplicate IDs when Delete receipts are appended.
+    for (index, command) in out.commands.iter_mut().enumerate() {
+        match command {
+            s::Command::Status(status) => status.id = index as u32 + 1,
+            s::Command::Results(result) => result.id = index as u32 + 1,
+            _ => unreachable!("fixture replies contain only correlated statuses and results"),
+        }
+    }
+    out
+}
+
+// Consume every server continuation in its originating session; do not lose readbacks.
+async fn cleanup_session(
+    peer: &crate::windows::test_support::Peer,
+    session: u32,
+    fail: Option<Uuid>,
+    trace: &mut std::collections::BTreeSet<(Uuid, &'static str)>,
+) -> Result<()> {
+    fn observe(
+        commands: &[s::Command],
+        trace: &mut std::collections::BTreeSet<(Uuid, &'static str)>,
+    ) {
+        for command in commands {
+            let (items, phase) = match command {
+                s::Command::Delete { items, .. } => (items, "delete"),
+                s::Command::Get { items, .. } => (items, "readback"),
+                s::Command::Atomic { commands, .. } | s::Command::Sequence { commands, .. } => {
+                    observe(commands, trace);
+                    continue;
+                }
+                _ => continue,
+            };
+            for item in items {
+                if let Some(uri) = item.target.as_deref()
+                    && uri.contains("/ClientCertificateInstall/SCEP/")
+                    && let Some(id) = uri.rsplit('/').next().and_then(|v| Uuid::parse_str(v).ok())
+                {
+                    trace.insert((id, phase));
+                }
+            }
+        }
+    }
+    let (initial, mut wire) = begin(peer, session).await?;
+    loop {
+        if wire
+            .commands
+            .iter()
+            .all(|c| matches!(c, s::Command::Status(_)))
+        {
+            return Ok(());
+        }
+        ensure!(
+            (wire.header.message_id as usize) < CodecLimits::default().session_messages,
+            "cleanup session exhausted protocol message budget: {trace:?}"
+        );
+        observe(&wire.commands, trace);
+        let response = cleanup_reply(&initial, &wire, fail);
+        wire = post(peer, &response).await?;
+    }
+}
+
+async fn finish_cleanup(
+    peer: &crate::windows::test_support::Peer,
+    object: Uuid,
+    first_session: u32,
+    fail: Option<Uuid>,
+) -> Result<std::collections::BTreeSet<(Uuid, &'static str)>> {
+    let mut trace = std::collections::BTreeSet::new();
+    let result=tokio::time::timeout(Duration::from_secs(30),async {
+        let mut session=first_session;
+        loop {
+            cleanup_session(peer,session,fail,&mut trace).await?;
+            let state=pg(&format!("SELECT cleanup_complete FROM mdm_access.agent_bootstraps WHERE tenant_id='{}' AND id='{object}'",case_tenant()))?;
+            if state.trim()=="t" && fail.is_none_or(|pending|trace.contains(&(pending,"delete"))) {return Ok::<_,anyhow::Error>(());}
+            session+=1;
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    }).await;
+    result.map_err(|error| {
+        anyhow::anyhow!(
+            "cleanup {object} did not finish: {error}; correlated native commands: {trace:?}"
+        )
+    })??;
+    ensure!(
+        trace.contains(&(object, "delete")) && trace.contains(&(object, "readback")),
+        "cleanup completed without both actual Delete and absence readback: {trace:?}"
+    );
+    Ok(trace)
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+#[ignore = "make t2 MODULE=execution.commands.onboarding"]
+async fn historical_bootstrap_cleanup_survives_current_identity_completion() -> Result<()> {
+    let (host, mut client, peer, commands, owner, policy, operation) = start_fixture().await?;
+    let (initial, execute, wire) =
+        installation(&peer, &mut client, policy, operation, AttemptPhase::Execute).await?;
+    bootstrap::issue_windows(
+        &host.app,
+        &client.router,
+        &host.root,
+        operation,
+        wire.as_ref().context("initial identity")?,
+    )
+    .await?;
+    post(&peer, &reply(&initial, &execute, false)).await?;
+    let old:Uuid=Uuid::parse_str(pg(&format!("SELECT id FROM mdm_access.agent_bootstraps WHERE tenant_id='{}' AND installation='{operation}' AND active",case_tenant()))?.trim())?;
+    pg(&format!(
+        "UPDATE mdm_access.agent_bootstraps SET deadline=floor(extract(epoch FROM clock_timestamp()))::bigint-1 WHERE tenant_id='{}' AND id='{old}'",
+        case_tenant()
+    ))?;
+    let mut replacement = None;
+    for session in 2500..2540 {
+        let (start, wire) = begin(&peer, session).await?;
+        if !bootstrap::windows_fields(&wire.commands).is_empty() {
+            replacement = Some(
+                bootstrap::issue_windows(&host.app, &client.router, &host.root, operation, &wire)
+                    .await?,
+            );
+            post(&peer, &reply(&start, &wire, false)).await?;
+            break;
+        }
+        post(&peer, &reply(&start, &wire, false)).await?;
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    let replacement = replacement.context("replacement identity was not delivered")?;
+    let current = pg(&format!(
+        "SELECT id FROM mdm_access.agent_bootstraps WHERE tenant_id='{}' AND installation='{operation}' AND active",
+        case_tenant()
+    ))?;
+    let current = current.trim();
+    let secret = credential("independent-cleanup");
+    let input = json!({"wireVersion":1,"operationId":Uuid::new_v4(),"installationOperation":operation,"secret":secret,"csr":crate::test_support::agent::csr()?,"runtime":{"executionContext":crate::test_support::software_execution::context(crate::test_support::software_execution::Platform::Windows),"platform":"windows","architecture":"x86_64","capabilities":["inventory.collect.v1","task.execute.v1"]}});
+    let response = bootstrap::grant(&client.router, &replacement, &input).await?;
+    ensure!(response.status() == StatusCode::OK);
+    let grant: Value = response.json().await?;
+    crate::test_support::agent::complete_grant(
+        host.app.agent_enrollment.as_ref().unwrap(),
+        &grant,
+        &input,
+        &secret,
+    )
+    .await?;
+    let current = Uuid::parse_str(current)?;
+    let trace = finish_cleanup(&peer, current, 2600, Some(old)).await?;
+    ensure!(
+        trace.contains(&(old, "delete")),
+        "old identity must receive its deliberately failed deletion"
+    );
+    let original = pg(&format!(
+        "SELECT cleanup FROM mdm_access.agent_bootstraps WHERE tenant_id='{}' AND id='{old}' AND NOT cleanup_complete",
+        case_tenant()
+    ))?;
+    let original = Uuid::parse_str(original.trim()).context("historical cleanup stays pending")?;
+    host.app.execution.advance_installation_authorization_to(
+        crate::clock::Clock::unix_seconds(&crate::clock::SystemClock)? + 301,
+    )?;
+    finish_cleanup(&peer, old, 2700, None).await?;
+    ensure!(
+        pg(&format!(
+            "SELECT count(*) FROM mdm_commands.operations WHERE tenant_id='{}' AND id='{original}'",
+            case_tenant()
+        ))?
+        .trim()
+            == "1"
+    );
+    ensure!(pg(&format!("SELECT count(*) FROM mdm_commands.operations WHERE tenant_id='{}' AND authority->>'stage'='install'",case_tenant()))?.trim()=="1");
     ensure!(commands.shutdown().join().await?.is_clean());
     ensure!(owner.shutdown().join().await?.is_clean());
     host.close().await

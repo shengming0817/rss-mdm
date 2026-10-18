@@ -18,6 +18,7 @@ fn body<T>(v: Body<T>) -> Result<T, Error> {
 pub(crate) fn routes() -> Router<Arc<TaskState>> {
     Router::new()
         .route("/tasks/claim", post(claim))
+        .route("/tasks/{id}/enrollment", post(native_enrollment))
         .route("/self-service", get(directory))
         .route(
             "/self-service/invocations",
@@ -252,6 +253,28 @@ async fn invocation_status(
             .await
             .map(Json)
             .map_err(task_error)
+    })
+    .await
+}
+
+async fn native_enrollment(
+    State(app): State<Arc<TaskState>>,
+    Extension(audit): Extension<RequestAudit>,
+    peer: Option<Extension<rss_mdm_certificate::HandshakePeer>>,
+    headers: HeaderMap,
+    Path(id): Path<Uuid>,
+    input: Body<rss_mdm_agent_wire::enroll::NativeEnrollmentRequest>,
+) -> Result<Json<rss_mdm_agent_wire::enroll::NativeEnrollmentReceipt>, crate::AgentError> {
+    crate::bounded(async {
+        let input = body(input)?;
+        let principal = authenticate(&app, &headers, peer.as_ref().map(|p| &p.0), &audit).await?;
+        audit.operation(input.operation_id, "agent_native_enrollment");
+        Ok(Json(
+            app.execution
+                .native_enrollment(&principal, id, &input, &audit)
+                .await
+                .map_err(task_error)?,
+        ))
     })
     .await
 }

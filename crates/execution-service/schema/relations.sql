@@ -181,7 +181,7 @@ GRANT USAGE ON SCHEMA mdm_commands TO mdm_access;
 
 GRANT SELECT ON TABLE mdm_commands.operations, mdm_commands.attempts, mdm_commands.attempt_items TO mdm_access;
 
-GRANT EXECUTE ON FUNCTION mdm_commands.installation_status(uuid) TO mdm_access;
+GRANT EXECUTE ON FUNCTION mdm_commands.installation_status(uuid) TO mdm_access,mdm_command_runtime;
 
 GRANT SELECT,INSERT ON mdm_commands.output_chunks TO mdm_command_runtime;
 

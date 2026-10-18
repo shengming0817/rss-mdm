@@ -19,7 +19,7 @@ impl Providers {
         for (i, p) in entries.iter().enumerate() {
             if let Some(endpoint) = &p.scep_url {
                 let url = url::Url::parse(endpoint).map_err(|_| Error::Configuration)?;
-                if p.purpose != Purpose::Apple
+                if !matches!(p.purpose, Purpose::Apple | Purpose::AgentBootstrap)
                     || url.origin() != p.client.origin.origin()
                     || !url.username().is_empty()
                     || url.password().is_some()
@@ -30,7 +30,7 @@ impl Providers {
                 {
                     return Err(Error::Configuration);
                 }
-            } else if p.purpose == Purpose::Apple {
+            } else if matches!(p.purpose, Purpose::Apple | Purpose::AgentBootstrap) {
                 return Err(Error::Configuration);
             }
             if p.issuer.len() != 64
@@ -58,6 +58,13 @@ impl Providers {
         self.entries
             .iter()
             .find(|p| p.purpose == Purpose::Apple && p.issuer == issuer)
+            .and_then(|p| p.scep_url.as_deref())
+            .ok_or(Error::Configuration)
+    }
+    pub fn bootstrap_scep(&self, issuer: &str) -> Result<&str, Error> {
+        self.entries
+            .iter()
+            .find(|p| p.purpose == Purpose::AgentBootstrap && p.issuer == issuer)
             .and_then(|p| p.scep_url.as_deref())
             .ok_or(Error::Configuration)
     }

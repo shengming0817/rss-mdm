@@ -489,6 +489,9 @@ class RunFixtures:
                 if (root/'agent-pki.json').exists():value['agent_pki']=json.loads((root/'agent-pki.json').read_text())
                 for channel in ('windows','apple'):
                     if (root/(channel+'.json')).exists():value['native_protocols'][channel]=json.loads((root/(channel+'.json')).read_text())
+                if 'agent-bootstrap' in module.materials:
+                    from bootstrap_fixtures import configure
+                    configure(root, value, env)
                 private(Path(env['MDM_TEST_CONFIG']),value)
             if 'shared_worker' in module.fixtures:
                 host = stack.enter_context(self.workers(job, database, env['MDM_TEST_CONFIG']))

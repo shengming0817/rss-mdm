@@ -455,6 +455,18 @@ impl DeviceTrust {
                     return Err(Error::Unauthorized);
                 }
             }
+            Purpose::AgentBootstrap => {
+                rss_mdm_certificate::bootstrap::parse_subject(&t.subject)
+                    .map_err(|_| Error::Unauthorized)?;
+                let start = t.validity.not_before.to_unix_duration().as_secs();
+                let end = t.validity.not_after.to_unix_duration().as_secs();
+                if end <= start
+                    || end - start > 604800
+                    || t.get::<SubjectAltName>().map_err(invalid)?.is_some()
+                {
+                    return Err(Error::Unauthorized);
+                }
+            }
             Purpose::Apple => {
                 rss_mdm_certificate::apple::parse_subject(&t.subject)
                     .map_err(|_| Error::Unauthorized)?;
@@ -746,5 +758,68 @@ impl From<Error> for rss_mdm_certificate::Error {
             Error::Conflict => Self::Conflict,
             Error::Expired => Self::Expired,
         }
+    }
+}
+
+/// One TLS listener can authenticate multiple explicitly separated certificate purposes.
+/// Each HTTP boundary must still verify its exact purpose before constructing authority.
+pub fn enrollment_verifier(trusts: Vec<DeviceTrust>) -> Result<Arc<dyn ClientCertVerifier>, Error> {
+    if trusts.is_empty() {
+        return Err(Error::Malformed);
+    }
+    let signature = trusts[0].verifier(true);
+    Ok(Arc::new(EnrollmentVerifier { trusts, signature }))
+}
+#[derive(Debug)]
+struct EnrollmentVerifier {
+    trusts: Vec<DeviceTrust>,
+    signature: Arc<dyn ClientCertVerifier>,
+}
+impl ClientCertVerifier for EnrollmentVerifier {
+    fn client_auth_mandatory(&self) -> bool {
+        false
+    }
+    fn root_hint_subjects(&self) -> &[DistinguishedName] {
+        &[]
+    }
+    fn verify_client_cert(
+        &self,
+        end: &CertificateDer<'_>,
+        intermediates: &[CertificateDer<'_>],
+        now: UnixTime,
+    ) -> Result<ClientCertVerified, rustls::Error> {
+        let chain: Vec<_> = std::iter::once(end.clone())
+            .chain(intermediates.iter().cloned())
+            .collect();
+        if self
+            .trusts
+            .iter()
+            .any(|t| t.verify(&chain, now.as_secs() as i64).is_ok())
+        {
+            Ok(ClientCertVerified::assertion())
+        } else {
+            Err(rustls::Error::InvalidCertificate(
+                rustls::CertificateError::UnknownIssuer,
+            ))
+        }
+    }
+    fn verify_tls12_signature(
+        &self,
+        message: &[u8],
+        cert: &CertificateDer<'_>,
+        dss: &DigitallySignedStruct,
+    ) -> Result<HandshakeSignatureValid, rustls::Error> {
+        self.signature.verify_tls12_signature(message, cert, dss)
+    }
+    fn verify_tls13_signature(
+        &self,
+        message: &[u8],
+        cert: &CertificateDer<'_>,
+        dss: &DigitallySignedStruct,
+    ) -> Result<HandshakeSignatureValid, rustls::Error> {
+        self.signature.verify_tls13_signature(message, cert, dss)
+    }
+    fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {
+        self.signature.supported_verify_schemes()
     }
 }

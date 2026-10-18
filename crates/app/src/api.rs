@@ -264,7 +264,6 @@ pub(crate) async fn from_compiled(
         .strip_prefix("https://")
         .ok_or(Error::Configuration(ConfigIssue::ProductOrigin))?
         .to_owned();
-    let native_agent = config.agent_installation.clone();
     let providers = crate::device_pki::providers(&config.device_pki)?;
     let windows = config
         .native_protocols
@@ -293,14 +292,8 @@ pub(crate) async fn from_compiled(
                         .map_err(Error::from)
                 })
                 .transpose()?;
-            let mut windows = crate::windows::Windows::load(
-                config,
-                clock.unix_seconds()?,
-                providers.clone(),
-                native_agent
-                    .identity(rss_mdm_policy::Platform::Windows)
-                    .cloned(),
-            )?;
+            let mut windows =
+                crate::windows::Windows::load(config, clock.unix_seconds()?, providers.clone())?;
             Arc::get_mut(&mut windows.channel)
                 .ok_or(Error::Conflict)?
                 .entra = entra;
@@ -316,9 +309,6 @@ pub(crate) async fn from_compiled(
                 config,
                 clock.unix_seconds()?,
                 providers.clone(),
-                native_agent
-                    .identity(rss_mdm_policy::Platform::Macos)
-                    .cloned(),
             )
             .map(Arc::new)
         })
@@ -335,6 +325,9 @@ pub(crate) async fn from_compiled(
     }
     if let Some(a) = &agent_pki {
         trusts.push(a.issuer.trust().trust.clone());
+        if let Some(bootstrap) = &a.bootstrap {
+            trusts.push(bootstrap.trust.clone());
+        }
     }
     let pki = Arc::new(rss_mdm_pki_service::registry::Registry::new(
         access.archive_pool(),
@@ -354,6 +347,7 @@ pub(crate) async fn from_compiled(
                     clock: pki.pki_clock.clone(),
                     binding: Arc::new(rss_mdm_agent_channel::Bindings),
                     native: execution.clone(),
+                    bootstrap: pki.bootstrap.clone(),
                     origin: pki.origin.clone(),
                     configuration_signer: Arc::new(crate::agent_configurations::signer(
                         config

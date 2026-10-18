@@ -1,6 +1,7 @@
 //! Persistent Agent enrollment and online certificate authority.
 //! ref: smallstep/certificates api/sign.go@v0.30.2; sqlx-core/src/transaction.rs@v0.9.0.
 mod activation;
+pub mod bootstrap;
 pub mod configurations;
 mod grants;
 pub(crate) mod issuance;
@@ -77,6 +78,18 @@ pub trait RuntimeBinding: Send + Sync {
 }
 /// Execution owns rechecking the exact frozen native installation authorization.
 pub trait NativeAdmission: Send + Sync {
+    fn bootstrap<'a>(
+        &'a self,
+        c: &'a mut PgConnection,
+        source: &'a native::Source,
+    ) -> Pending<'a, ()>;
+    fn grant<'a>(
+        &'a self,
+        c: &'a mut PgConnection,
+        source: &'a native::Source,
+        input: &'a wire::NativeGrantRequest,
+    ) -> Pending<'a, (wire::GrantReceipt, bool)>;
+
     fn validate<'a>(
         &'a self,
         c: &'a mut PgConnection,
@@ -94,6 +107,7 @@ pub struct Service {
     origin: String,
     configuration_signer: Arc<configurations::Signer>,
     installations: Arc<dyn configurations::InstallationAdmission>,
+    bootstrap: Option<Arc<bootstrap::Configuration>>,
 }
 pub struct Assembly {
     pub tenant: rss_request_context::TenantId,
@@ -106,6 +120,7 @@ pub struct Assembly {
     pub origin: String,
     pub configuration_signer: Arc<configurations::Signer>,
     pub installations: Arc<dyn configurations::InstallationAdmission>,
+    pub bootstrap: Option<Arc<bootstrap::Configuration>>,
 }
 struct Change<R> {
     value: R,
@@ -125,6 +140,7 @@ impl Service {
             origin: a.origin,
             configuration_signer: a.configuration_signer,
             installations: a.installations,
+            bootstrap: a.bootstrap,
         })
     }
     pub fn trust(&self) -> &Arc<AgentTrust> {
