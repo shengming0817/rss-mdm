@@ -870,7 +870,7 @@ consume(('crates/backend-postgres-support/src/access*', 'crates/*/src/access-con
 # Webhook-specific product risks; RSS owns transport/signature and retry conformance.
 add('webhooks.product', selectors=('webhook_tests::',), fixtures=('identity','tls'),
     sources=('crates/webhook-service/src/*','crates/webhook-service/schema/*','crates/app/src/webhooks/*','crates/management-http/src/webhooks.rs','crates/registration-service/src/webhook.rs'),
-    tests=('crates/app/tests/webhooks.rs',), support=('hack/source_fixtures.py',))
+    tests=('crates/app/tests/webhooks/mod.rs',), support=('hack/source_fixtures.py',))
 
 for name, module in tuple(MODULES.items()):
     if module.build == APP:

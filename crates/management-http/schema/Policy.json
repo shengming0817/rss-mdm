@@ -1130,41 +1130,16 @@
               "const": "native",
               "type": "string"
             },
-            "ring": {
-              "$ref": "#/$defs/SoftwareDeliveryRing",
-              "description": "Exact enterprise publication environment."
-            },
-            "source": {
+            "target": {
               "description": "Exact configured logical output source; imported provenance remains separate.",
               "type": "string"
             }
           },
           "required": [
             "kind",
-            "source",
-            "ring"
+            "target"
           ],
           "type": "object"
-        }
-      ]
-    },
-    "SoftwareDeliveryRing": {
-      "description": "Explicit software publication environment selected by the deployment author.",
-      "oneOf": [
-        {
-          "const": "test",
-          "description": "Test publication.",
-          "type": "string"
-        },
-        {
-          "const": "pilot",
-          "description": "Pilot publication.",
-          "type": "string"
-        },
-        {
-          "const": "production",
-          "description": "Production publication.",
-          "type": "string"
         }
       ]
     },

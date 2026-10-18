@@ -46,7 +46,6 @@ async fn publication_http_authority_receipts_and_public_native_binding() -> Resu
         "scope_read",
         "scope_write",
         "release_read",
-        "release_write",
         "release_publish",
         "release_recover",
         "release_withdraw",
@@ -87,123 +86,103 @@ async fn publication_http_authority_receipts_and_public_native_binding() -> Resu
             None,
         )
         .await?;
-    let path = format!(
-        "/api/v1/software-sources/{}/candidates/{}",
-        server.logical,
-        Uuid::new_v4()
-    );
-    let input = json!({"action":"candidate","resource":resource,"version":"v1","expectedResourceRevision":2,"resourceDigest":catalog.1["resourceDigest"]});
+    let targets = f
+        .author
+        .call(
+            &f.router,
+            Method::GET,
+            "/api/v1/software/publication-targets?limit=1",
+            None,
+        )
+        .await?;
+    ensure!(targets.0 == StatusCode::OK && targets.1["items"].as_array().unwrap().len() == 1);
+    let target = &targets.1["items"][0];
+    ensure!(target["id"] == server.logical);
+    let sources = f
+        .author
+        .call(
+            &f.router,
+            Method::GET,
+            "/api/v1/software/sources?limit=1",
+            None,
+        )
+        .await?;
+    ensure!(sources.0 == StatusCode::OK && !sources.1["items"].as_array().unwrap().is_empty());
+    let input = json!({"action":"publish","resource":resource,"version":"v1","expectedResourceRevision":2,"resourceDigest":catalog.1["resourceDigest"],"target":server.logical,"targetDigest":target["digest"]});
     let operation = Uuid::new_v4();
     let request = json!({"operationId":operation,"expectedRevision":0,"input":input});
-    let mut old = request.clone();
-    old["input"]["document"] = json!({});
-    let malformed = Request::builder()
-        .method(Method::POST)
-        .uri(&path)
-        .header("host", "mdm.example.test")
-        .header("origin", "https://mdm.example.test")
-        .header("x-identity-request", "1")
-        .header("x-csrf-token", f.author.csrf.as_ref().unwrap())
-        .header(
-            "cookie",
-            f.author
-                .cookies
-                .iter()
-                .map(|(k, v)| format!("{k}={v}"))
-                .collect::<Vec<_>>()
-                .join("; "),
-        )
-        .header("content-type", "application/json")
-        .body(Body::from(serde_json::to_vec(&old)?))?;
-    let rejected = f.router.clone().oneshot(malformed).await?;
+    let collection = "/api/v1/software/publications";
+    let path = format!("{collection}/{operation}");
+    let mut malformed = request.clone();
+    malformed["input"]["unexpected"] = json!(true);
     ensure!(
-        rejected.status() == StatusCode::BAD_REQUEST,
-        "independent manifest input accepted"
+        f.author
+            .call(&f.router, Method::POST, collection, Some(malformed))
+            .await?
+            .0
+            == StatusCode::BAD_REQUEST
     );
-    let body = axum::body::to_bytes(rejected.into_body(), 1024).await?;
-    ensure!(serde_json::from_slice::<Value>(&body)?["code"] == "malformed_request");
     let csrf = f.author.csrf.take();
     ensure!(
         f.author
-            .call(&f.router, Method::POST, &path, Some(request.clone()))
+            .call(&f.router, Method::POST, collection, Some(request.clone()))
             .await?
             .0
             == StatusCode::FORBIDDEN
     );
     f.author.csrf = csrf;
-    let candidate = f
-        .author
-        .call(&f.router, Method::POST, &path, Some(request.clone()))
-        .await?;
-    ensure!(candidate.0 == StatusCode::OK, "candidate: {candidate:?}");
-    let replay = f
-        .author
-        .call(&f.router, Method::POST, &path, Some(request))
-        .await?;
-    ensure!(
-        replay.0 == StatusCode::OK && replay.1 == candidate.1,
-        "candidate replay: {replay:?}"
-    );
-    let catalog = f
-        .author
-        .call(
-            &f.router,
-            Method::GET,
-            &format!("/api/v1/software/resources/{resource}/versions/v1"),
-            None,
-        )
-        .await?;
-    ensure!(catalog.0 == StatusCode::OK);
-    ensure!(
-        catalog.1["lifecycle"].is_null(),
-        "saving a draft enabled it: {catalog:?}"
-    );
-    let saved = f.author.call(&f.router, Method::GET, &path, None).await?;
-    ensure!(saved.0 == StatusCode::OK, "saved candidate: {saved:?}");
     let without_enable = grants
         .iter()
         .filter(|g| g.operation != crate::authorization::Permission::SoftwareWrite)
         .cloned()
         .collect();
     crate::test_support::identity::set_grants(case_tenant(), &subject, without_enable).await?;
-    let denied=f.author.call(&f.router,Method::POST,&path,Some(json!({"operationId":Uuid::new_v4(),"expectedRevision":candidate.1["revision"],"input":{"action":"publish","ring":"test"}}))).await?;
+    let denied = f
+        .author
+        .call(&f.router, Method::POST, collection, Some(request.clone()))
+        .await?;
     ensure!(
         denied.0 == StatusCode::FORBIDDEN,
-        "draft publish without enable permission: {denied:?}"
+        "draft permission: {denied:?}"
     );
-    let still_draft = f
+    ensure!(f.author.call(&f.router, Method::GET, &path, None).await?.0 == StatusCode::NOT_FOUND);
+    crate::test_support::identity::set_grants(case_tenant(), &subject, grants).await?;
+    let accepted = f
+        .author
+        .call(&f.router, Method::POST, collection, Some(request.clone()))
+        .await?;
+    ensure!(
+        accepted.0 == StatusCode::ACCEPTED,
+        "direct publish: {accepted:?}"
+    );
+    let pending = accepted.1;
+    let replay = f
+        .author
+        .call(&f.router, Method::POST, collection, Some(request))
+        .await?;
+    ensure!(
+        replay.0 == StatusCode::ACCEPTED
+            && replay.1["id"] == pending["id"]
+            && replay.1["attempt"] == 1
+    );
+    let found = f
         .author
         .call(
             &f.router,
             Method::GET,
-            &format!("/api/v1/software/resources/{resource}/versions/v1"),
+            &format!("{collection}?operationId={operation}"),
             None,
         )
         .await?;
-    ensure!(still_draft.0 == StatusCode::OK && still_draft.1["lifecycle"].is_null());
-    let unchanged = f.author.call(&f.router, Method::GET, &path, None).await?;
-    ensure!(
-        unchanged.0 == StatusCode::OK && unchanged.1 == saved.1,
-        "rejected publication mutated candidate: {unchanged:?}"
-    );
-    crate::test_support::identity::set_grants(case_tenant(), &subject, grants).await?;
-    let pending = write(
-        &mut f.author,
-        &f.router,
-        &path,
-        candidate.1["revision"].as_u64().unwrap(),
-        json!({"action":"publish","ring":"test"}),
-    )
-    .await?;
-    let publication = &pending["rings"][0]["publication"];
-    let id = publication["id"]
+    ensure!(found.0 == StatusCode::OK && found.1["items"][0]["id"] == operation.to_string());
+    let id = pending["publication"]
         .as_array()
         .unwrap()
         .iter()
         .map(|n| format!("{:02x}", n.as_u64().unwrap()))
         .collect::<String>();
     let native = format!(
-        "/api/v1/software/native/sources/{}/test/exports/{id}",
+        "/api/v1/software/native/sources/{}/exports/{id}",
         server.logical
     );
     let public = |method: Method, url: String, body: Body| {
@@ -227,7 +206,14 @@ async fn publication_http_authority_receipts_and_public_native_binding() -> Resu
             .status()
             == StatusCode::NOT_FOUND
     );
-    let published=write(&mut f.author,&f.router,&path,pending["revision"].as_u64().unwrap(),json!({"action":"recover","ring":"test","publication":publication["id"],"attempt":publication["attempt"]})).await?;
+    let _published = write(
+        &mut f.author,
+        &f.router,
+        &path,
+        pending["revision"].as_u64().unwrap(),
+        json!({"action":"recover"}),
+    )
+    .await?;
     let info = f
         .router
         .clone()
@@ -255,7 +241,7 @@ async fn publication_http_authority_receipts_and_public_native_binding() -> Resu
     ensure!(search["Data"][0]["PackageIdentifier"] == "Acme.App");
     for prefix in [
         native.clone(),
-        format!("/api/v1/software/native/sources/{}/test", server.logical),
+        format!("/api/v1/software/native/sources/{}", server.logical),
     ] {
         let response = f
             .router
@@ -303,7 +289,7 @@ async fn publication_http_authority_receipts_and_public_native_binding() -> Resu
     ensure!(served.into_body().collect().await?.to_bytes() == bytes.as_slice());
     let policy = Uuid::new_v4();
     let policy_path = format!("/api/v1/policies/{policy}");
-    write(&mut f.author,&f.router,&policy_path,0,json!({"action":"put","enabled":true,"definition":{"scope":f.scope,"action":{"kind":"software","resource":{"kind":"software","id":resource,"version":"v1","variants":{"windows_x86_64":"default"}},"intent":"required_install","delivery":{"kind":"native","source":server.logical,"ring":"test"},"runLifetimeSeconds":600,"rollout":{"stages":[{"scope":f.scope,"opensAt":0}]}}}})).await?;
+    write(&mut f.author,&f.router,&policy_path,0,json!({"action":"put","enabled":true,"definition":{"scope":f.scope,"action":{"kind":"software","resource":{"kind":"software","id":resource,"version":"v1","variants":{"windows_x86_64":"default"}},"intent":"required_install","delivery":{"kind":"native","target":server.logical},"runLifetimeSeconds":600,"rollout":{"stages":[{"scope":f.scope,"opensAt":0}]}}}})).await?;
     {
         use sqlx::Connection;
         let mut owner =
@@ -382,11 +368,26 @@ async fn publication_http_authority_receipts_and_public_native_binding() -> Resu
     write(
         &mut f.author,
         &f.router,
-        &path,
-        published["revision"].as_u64().unwrap(),
-        json!({"action":"withdraw","ring":"test"}),
+        &format!("/api/v1/software/resources/{resource}/versions/v1"),
+        1,
+        json!({"action":"withdraw"}),
     )
     .await?;
+    let revoked = f.author.call(&f.router, Method::GET, &path, None).await?;
+    ensure!(
+        revoked.0 == StatusCode::OK
+            && revoked.1["withdrawn"] == true
+            && !revoked.1["withdrawal"].is_null()
+    );
+    let completed = write(
+        &mut f.author,
+        &f.router,
+        &path,
+        revoked.1["revision"].as_u64().unwrap(),
+        json!({"action":"recover"}),
+    )
+    .await?;
+    ensure!(completed["withdrawal"] == "withdrawn");
     ensure!(
         execution::event_with(&f.router, &f.credential, &task, json!({"kind":"start"}))
             .await?

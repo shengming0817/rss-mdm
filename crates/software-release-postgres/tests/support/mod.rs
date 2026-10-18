@@ -124,7 +124,7 @@ pub fn publication(
     let binding = PublicationBinding {
         publication: id.clone(),
         content: content.digest(),
-        target: TargetId::new(id.tenant(), "internal").unwrap(),
+        target: TargetId::new(id.tenant(), &content.software().fields().source).unwrap(),
         target_digest: Digest::from_bytes([2; 32]),
         evidence: Evidence {
             actor: actor.clone(),

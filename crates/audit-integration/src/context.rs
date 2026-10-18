@@ -60,7 +60,6 @@ pub struct SoftwareFact {
     pub operation: String,
     pub publication: Option<String>,
     pub attempt: Option<u64>,
-    pub ring: Option<u8>,
     pub binding: Option<String>,
     pub stage: &'static str,
     pub outcome: &'static str,

@@ -2,7 +2,7 @@ use crate::publication_support::{Server, pg, seed};
 use crate::resource_catalog::{self as resources, Command};
 use std::sync::Arc;
 
-fn archive(input: &rss_mdm_software_service::publication::CandidateInput) -> Command {
+fn archive(input: &rss_mdm_software_service::publication::PublishInput) -> Command {
     Command::Resource {
         id: input.resource.as_str().to_owned(),
         change: crate::planning::test_support::operation(
@@ -15,19 +15,16 @@ fn archive(input: &rss_mdm_software_service::publication::CandidateInput) -> Com
 }
 
 #[tokio::test]
-#[ignore = "real PG retained candidate reference + HTTPS: make t2 MODULE=planning.resource_archive"]
-async fn candidate_reference_survives_admission_withdrawal_and_fences_archive() {
+#[ignore = "real PG retained publication reference + HTTPS: make t2 MODULE=planning.resource_archive"]
+async fn publication_reference_survives_admission_withdrawal_and_fences_archive() {
     let server = Server::new().await;
     let runtime = pg::runtime().await;
     let publication = server.service(runtime.clone(), server.winget()).await;
     let planning = crate::planning::test_support::planning(pg::tenant()).await;
 
     let referenced = seed(runtime.clone(), &server, server.winget_document()).await;
-    publication
-        .create_candidate(&referenced, pg::cutoff())
-        .await
-        .unwrap();
-    crate::publication_support::withdraw_version_admission(&referenced).await;
+    crate::publication_support::submit_publication(&publication, &referenced).await;
+    crate::publication_support::withdraw_version(&referenced).await;
     assert!(matches!(
         execute(&planning, &archive(&referenced)).await,
         Err(crate::Error::Flow(rss_mdm_flow_service::Error::Conflict))

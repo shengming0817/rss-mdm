@@ -45,21 +45,35 @@ RSS Bundle 的 manifest 位于 `behavior.manifest`，ZIP `manifest.json` 为规�
 
 ## 派生导出、自托管与恢复
 
-发布候选请求只引用冻结的 Resource/version/resourceDigest、expectedResourceRevision 与目标来源。manifest/Recipe 是派生制品，没有独立可写 Submission。导出 identity 绑定 tenant、来源配置、ring、完整定义、依赖、文档及材料。Bundle/MSIX、签名要求或无法完整表达的行为返回 Unsupported；EXE→WinGet、DMG→Brew 只支持受限可表达子集。
+发布请求引用精确 Resource/version/resourceDigest、expectedResourceRevision 和实际 target/targetDigest；服务端校验并固定导出内容，在同一事务内创建发布记录、首个尝试、源执行意图及审计。一个合法目标即可工作，各目标独立发布。manifest/Recipe 由定义派生，没有独立编辑入口；Bundle/MSIX 或无法完整表达的行为返回 Unsupported，EXE→WinGet、DMG→Brew 仅支持受限可表达子集。
 
-Test → Pilot → Production 每环由有权限管理员提交一次 Publish，后端完成技术校验并冻结当前来源、版本及依赖的生命周期绑定；后一环要求前一环已确认发布。Publish 返回 202 和持久 Pending；后台驱动实际发布并保存结果。草稿在同一事务内启用并创建发布意图，需要 SoftwareWrite 与 ReleasePublish；已启用版本只需 ReleasePublish，撤回版本必须先显式 Enable。没有审批状态、指定发布人或自动审批记录。发布与撤回使用现有事务、锁、审计、Outbox 和投影。
+`GET /software/sources` 分页发现来源修订，`GET /software/publication-targets` 返回可选实际目标及摘要；`GET /software/publications` 支持目标、资源、版本和 operationId 筛选。目录均返回 items/nextCursor，默认 20、最多 100 项；来源读取需要 SoftwareRead，目标和发布记录读取需要 ReleaseRead。目录可见不代表发布已获授权。
 
-候选接口 `/software-sources/{source}/candidates/{id}`：candidate 使用 ReleaseWrite；publish 使用 ReleasePublish；recover/retry 使用 ReleaseRecover；withdraw 使用 ReleaseWithdraw。保存候选不改变可用性、不创建发布意图。Pending/Unknown 只恢复原 publication/attempt；只有明确 NotApplied 才能显式 Retry。publication 身份绑定候选、内容、环与前环快照，不依赖操作者、时间或重试次数。
+`POST /software/publications` 使用 operationId、expectedRevision=0 和 input.action=publish，一次提交即受理发布，返回 202 和持久记录。记录 ID 等于原创建 operationId。草稿自动启用需要 SoftwareWrite 与 ReleasePublish，已启用版本只需 ReleasePublish；已撤回版本必须显式 Enable。`GET /software/publications/{id}` 查询实际结果；同路径 POST recover/retry 使用 ReleaseRecover，withdraw 使用 ReleaseWithdraw，携带 operationId 与当前 expectedRevision。attempt、发布摘要和目标绑定由服务端读取。Unknown 核对原身份，明确 NotApplied 才允许 Retry；源发布成功不代表设备安装成功。
 
-WinGet 由 rss-mdm 公开只读托管，挂载 `/api/v1/software/native/sources/{source}/{ring}/`：information、manifestSearch、精确 packageManifests，以及 `/exports/{publication}/` 冻结来源。仅启用并发布的内容可读取，响应 no-store。发布/撤回直接更新本地事务和投影，不 HTTP 调用自己。没有 Entra、代理或认证占位；WinGet 配置的 credentials 必须为空。
+单目标撤回只阻止该发布的新消费，并原子登记下架意图。版本全局撤回在目录生命周期事务内登记全部对应发布的下架意图；后台复用原 worker 推进，不自动卸载。已发生的成功和未知结果保留，其他目标的独立撤回互不影响。目标摘要仅绑定本目标配置，增加另一目标不会修改既有发布身份。
 
-Brew 将专用系统 Git bare 仓库固定映射到来源/ring，生成无父提交的不可变 Tap，保留 bottle/token/依赖布局，Formula 的 source install 明确拒绝。`/exports/{publication}.git` 只提供固定 namespace 的 upload-pack，不提供 receive-pack、任意 SHA want 或通用 Git 服务。只有 Brew 使用来源范围只读 credential_reference；秘密来自宿主配置，wire 只包含引用。撤回移除该快照的读取权，不影响其他版本或包。
+WinGet 由 rss-mdm 公开只读托管，挂载 `/api/v1/software/native/sources/{source}/`：information、manifestSearch、精确 packageManifests，以及 `/exports/{publication}/` 冻结来源。仅启用并发布的内容可读取，响应 no-store。发布/撤回直接更新本地事务和投影，不 HTTP 调用自己。没有 Entra、代理或认证占位；WinGet 配置的 credentials 必须为空。
+
+Brew 将专用系统 Git bare 仓库固定映射到实际来源，生成无父提交的不可变 Tap，保留 bottle/token/依赖布局，Formula 的 source install 明确拒绝。`/exports/{publication}.git` 只提供固定 namespace 的 upload-pack，不提供 receive-pack、任意 SHA want 或通用 Git 服务。只有 Brew 使用来源范围只读 credential_reference；秘密来自宿主配置，wire 只包含引用。撤回移除该快照的读取权，不影响其他版本或包。
 
 配置的 native base 与 artifacts_base 必须匹配 product_origin 下实际挂载。`flow.publication.sources` 是固定仓库/来源装配，导入网络仍由 content.imports 单独控制，见[配置示例](../../fixtures/mdm-config.example.json)。
 
 生命周期 worker 每页最多扫描 32 条既有未完成记录，调用原 reconcile；扫描公平分页、单来源有界预算。CommitUnknown 或 Git 外部结果未知保留原 publication/attempt、目标 commit 与调用身份；不新增通用任务表或恢复状态机。旧 attempt 不阻断当前工作。撤回只约束新的托管读取，不能清除已下载对象、客户端缓存或自动卸载。
 
-Native Policy 明确 `delivery: {kind: native, source, ring}`，直接材料则为 `delivery: {kind: direct}`。Policy 软件动作只提交资源、版本、变体和部署意图，不接受 admissionOperation；后台冻结完整依赖闭包的生命周期绑定。版本撤回或来源停用后，即使重新启用，旧 Policy/Offer/安装包绑定也不会恢复有效，需重新提交。Offer 冻结 publication、sourceDigest、resourceDigest、definitionDigest、documentSha256、精确依赖、全部材料 URI 及 Brew commit；Start 用同一个准入判断重新核对，来源撤回或执行上下文变化拒绝旧 Offer。设备执行由独立 Agent 持有，服务端发布成功不代表安装成功。
+Native Policy 明确 `delivery: {kind: native, target}`，直接材料则为 `delivery: {kind: direct}`。Policy 软件动作只提交资源、版本、变体和部署意图，不接受 admissionOperation；后台冻结完整依赖闭包的生命周期绑定。版本撤回或来源停用后，即使重新启用，旧 Policy/Offer/安装包绑定也不会恢复有效，需重新提交。Offer 冻结 publication、targetDigest、resourceDigest、definitionDigest、documentSha256、精确依赖、全部材料 URI 及 Brew commit；Start 用同一个准入判断重新核对，来源撤回或执行上下文变化拒绝旧 Offer。设备执行由独立 Agent 持有，服务端发布成功不代表安装成功。
+
+## 部署与更新
+
+普通安装包使用 Direct Policy，不要求配置或发布 WinGet/Brew 源。更新通过修改现有 Policy 的精确资源版本完成；新版本发布不自动改变旧策略。RequiredInstall 表示达到指定版本，未安装设备也可能安装；AvailableInstall 保持自助安装。升级与降级遵循软件定义，不能将安装策略等同于“只更新已安装软件”的补丁服务。
+
+同一源、同一版本可按设备 Scope 分批部署。每批配置 UTC opensAt，可选 minimumVerifiedPercent 对上一批已核实成功比例设门槛；时间满足且门槛达标后自动获得准入资格。统计未就绪、样本为空、Pending/Unknown、离线或待重启均不能冒充成功。每批受总 Scope 约束，重叠设备归最早阶段；暂停 Policy 阻止后续准入。一次全量部署复用单阶段，不要求管理员设置灰度。这里的设备阶段不改变软件源或发布记录，也不触发自动回滚。
+
+单目标配置示例（位于 flow.publication.sources，导入来源仍独立配置）：
+
+```json
+[{"name":"internal","credentials":{},"target":{"Winget":{"base":"https://mdm.example/api/v1/software/native/sources/internal/","artifacts_base":"https://mdm.example/api/v1/software/native/sources/internal/artifacts/"}}}]
+```
 
 ## 来源与证据边界
 

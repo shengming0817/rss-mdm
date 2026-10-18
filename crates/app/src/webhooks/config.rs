@@ -2,14 +2,14 @@ use super::*;
 use serde::Deserialize;
 use std::{collections::BTreeMap, net::SocketAddr, path::PathBuf};
 use webhooks::transport::{AuthorizedTarget, NetworkAccess, SigningKey, SigningKeys, TrustRoots};
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
     pub keys: Vec<Key>,
     pub networks: Vec<Network>,
     pub recovery_database: crate::config::Database,
 }
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Key {
     pub tenant: Uuid,
@@ -18,14 +18,14 @@ pub struct Key {
     pub current_file: PathBuf,
     pub retiring: Option<Retiring>,
 }
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Retiring {
     pub version: u64,
     pub key_file: PathBuf,
     pub until: i64,
 }
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Network {
     pub tenant: Uuid,

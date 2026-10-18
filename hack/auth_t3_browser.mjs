@@ -88,7 +88,7 @@ try{
   if(faults)assert(sql(`SELECT count(*) FROM mdm_group.groups WHERE id='${group}'`)==='0','denied database write had effect');
   assert((await post(admin,groupPath,change)).status===200,'management permit');
   assert((await request(admin,groupPath)).status===200,'management read');
-  const publisher='/api/v1/software-sources/unconfigured/candidates/candidate-2364';
+  const publisher='/api/v1/software/publications/unconfigured-2364';
   assert((await request(member,publisher)).status===403,'publisher permission deny');
   assert((await request(admin,publisher)).status===404,'publisher permitted source lookup');
   assert((await request(member,api+'/accounts')).status===403,'hidden accounts not authoritative');checks.permissions=true;

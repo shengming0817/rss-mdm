@@ -1,22 +1,15 @@
 use rss_mdm_agent_wire::runtime::*;
 use serde_json::json;
 #[test]
-fn a_hash_marker_cannot_stand_in_for_a_frozen_native_source() {
-    let invocation = json!({"runAs":"system","arguments":[],"environment":{},"timeoutSeconds":60,"outputBytes":4096,"exitCodes":{"success":[0],"reboot":[]}});
-    let step = json!({"action":{"package":"Acme.App","version":"1","behavior":{"kind":"winget","installer":"installer","scope":"system","install":invocation,"upgradeInvocation":invocation,"upgrade":"in_place","uninstall":null,"detect":{"kind":"msi_product","productCode":"{AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE}","version":"1"}},"signatures":[],"reboot":"report","downgrade":"deny"},"artifacts":[{"key":"0/installer","length":1,"sha256":vec![1;32]}],"target":{"kind":"device"},"exportIdentity":"sha256.marker"});
-    assert!(serde_json::from_value::<SoftwareTaskStep>(step).is_err());
-}
-#[test]
 fn frozen_source_binds_tenant_material_and_scoped_credentials_without_a_token_field() {
     let id = uuid::Uuid::new_v4();
     let invocation = json!({"runAs":"system","arguments":[],"environment":{},"timeoutSeconds":60,"outputBytes":4096,"exitCodes":{"success":[0],"reboot":[]}});
     let action:SoftwareTaskAction=serde_json::from_value(json!({"package":"Acme.App","version":"1","behavior":{"kind":"winget","installer":"installer","scope":"system","install":invocation,"upgradeInvocation":invocation,"upgrade":"in_place","uninstall":null,"detect":{"kind":"msi_product","productCode":"{AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE}","version":"1"}},"signatures":[],"reboot":"report","downgrade":"deny"})).unwrap();
     let binding = SoftwareExportBinding {
-        source: "enterprise".into(),
+        target: "enterprise".into(),
         tenant_id: id,
-        ring: SoftwareExportRing::Pilot,
         publication: [1; 32],
-        source_digest: [2; 32],
+        target_digest: [2; 32],
         resource: "acme".into(),
         resource_version: "v1".into(),
         resource_digest: [3; 32],
@@ -42,7 +35,7 @@ fn frozen_source_binds_tenant_material_and_scoped_credentials_without_a_token_fi
         export: SoftwareTaskExport::Winget {
             binding: binding.clone(),
             uri:
-                "https://mdm.example/api/v1/software/native/sources/enterprise/pilot/exports/publication/"
+                "https://mdm.example/api/v1/software/native/sources/enterprise/exports/publication/"
                     .into(),
             identifier: "rss.publication".into(),
         },

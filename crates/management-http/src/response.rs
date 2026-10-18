@@ -76,8 +76,8 @@ impl IntoResponse for Error {
                     software_publication::error::PublicationError::MissingSource => {
                         "software_source_not_found"
                     }
-                    software_publication::error::PublicationError::MissingCandidate => {
-                        "software_candidate_not_found"
+                    software_publication::error::PublicationError::MissingPublication => {
+                        "software_publication_not_found"
                     }
                 },
             ),

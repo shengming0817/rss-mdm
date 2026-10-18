@@ -1,6 +1,5 @@
 use crate::publication_support as p;
 use crate::test_support::*;
-use rss_mdm_software_release as release;
 use rss_mdm_software_service::publication::SourceConfig;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
@@ -9,36 +8,25 @@ async fn immutable_native_tap_is_consumed_by_git_and_homebrew_and_withdrawn() ->
     let peer = p::Server::new().await;
     let runtime = p::pg::runtime().await;
     let (root, mut config) = p::brew_config();
-    for (ring, source) in [
-        ("test", &mut config.test),
-        ("pilot", &mut config.pilot),
-        ("production", &mut config.production),
-    ] {
-        let SourceConfig::Brew(source) = source else {
-            unreachable!()
-        };
-        source.base = format!(
-            "https://mdm.example.test/api/v1/software/native/sources/{}/{ring}/",
-            peer.logical
-        );
-        source.artifacts_base = format!(
-            "https://mdm.example.test/api/v1/software/native/sources/{}/artifacts/",
-            peer.logical
-        );
-    }
+    let SourceConfig::Brew(source) = &mut config else {
+        unreachable!()
+    };
+    source.base = format!(
+        "https://mdm.example.test/api/v1/software/native/sources/{}/",
+        peer.logical
+    );
+    source.artifacts_base = format!(
+        "https://mdm.example.test/api/v1/software/native/sources/{}/artifacts/",
+        peer.logical
+    );
     let service = Arc::new(peer.service(runtime.clone(), config).await);
     let input = p::seed(runtime.clone(), &peer, p::formula(&peer)).await;
-    service.create_candidate(&input, p::pg::cutoff()).await?;
-    let publication = p::submit_publication(&service, &input.candidate, release::Ring::Test).await;
+    let publication = p::submit_publication(&service, &input).await;
     service
         .publish(publication.id(), 1, p::pg::at(10), p::pg::cutoff())
         .await?;
     let frozen = service
-        .published(
-            release::Ring::Test,
-            publication.id().digest().bytes(),
-            p::pg::cutoff(),
-        )
+        .published(publication.id().digest().bytes(), p::pg::cutoff())
         .await?;
     let snapshot = frozen.snapshot.unwrap();
     let directory = Arc::new(
@@ -69,7 +57,7 @@ async fn immutable_native_tap_is_consumed_by_git_and_homebrew_and_withdrawn() ->
         .map(|b| format!("{b:02x}"))
         .collect::<String>();
     let url = format!(
-        "http://{address}/api/v1/software/native/sources/{}/test/exports/{id}.git",
+        "http://{address}/api/v1/software/native/sources/{}/exports/{id}.git",
         peer.logical
     );
     let client = Client::builder().no_proxy().build()?;
@@ -211,12 +199,12 @@ async fn immutable_native_tap_is_consumed_by_git_and_homebrew_and_withdrawn() ->
         ensure!(fetched.status() == StatusCode::OK);
         ensure!(fetched.bytes().await? == b"abc".as_slice());
     }
-    let request = p::request_for(&service, &input.candidate).await;
+    let request = p::request_for(&service, &input.record).await;
     service
         .withdraw(
-            &input.candidate,
-            release::Ring::Test,
+            &input.record,
             &request,
+            &p::TestPublishAccess,
             p::pg::cutoff(),
         )
         .await?;

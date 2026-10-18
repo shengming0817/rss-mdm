@@ -5,7 +5,7 @@ use rss_mdm_management_http::{Error as HttpError, webhooks::Command};
 use rss_mdm_webhook_service as webhooks;
 use rss_request_context::TenantId;
 use serde_json::Value;
-use sqlx::{PgConnection, Row};
+use sqlx::PgConnection;
 use std::{
     sync::{Arc, Mutex},
     time::Duration,
@@ -416,12 +416,13 @@ impl rss_mdm_management_http::webhooks::Source for Backend {
         })
     }
 }
-impl rss_runtime::ManagedResource for Backend {
+pub(crate) struct Resource(pub Arc<Backend>);
+impl rss_runtime::ManagedResource for Resource {
     fn name(&self) -> &str {
         "webhook-recovery"
     }
     async fn shutdown(&self) -> Result<(), rss_runtime::ShutdownError> {
-        self.recovery.close().await;
+        self.0.recovery.close().await;
         Ok(())
     }
     fn shutdown_timeout(&self) -> Duration {

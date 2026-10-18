@@ -7,7 +7,7 @@ pub enum Missing {
     Operation,
     Task,
     SoftwareSource,
-    SoftwareCandidate,
+    SoftwarePublication,
 }
 #[derive(Clone, Debug, thiserror::Error)]
 pub enum QueryError {
@@ -56,8 +56,8 @@ impl From<crate::Error> for QueryError {
             Error::Publication(PublicationError::MissingSource) => {
                 Self::Missing(Missing::SoftwareSource)
             }
-            Error::Publication(PublicationError::MissingCandidate) => {
-                Self::Missing(Missing::SoftwareCandidate)
+            Error::Publication(PublicationError::MissingPublication) => {
+                Self::Missing(Missing::SoftwarePublication)
             }
             Error::EnrollmentPaused | Error::Configuration(_) | Error::CertificateRequest => {
                 Self::Unavailable(crate::Failure::CommandInvariant)

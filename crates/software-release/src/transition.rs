@@ -264,6 +264,8 @@ impl Publication {
         self.tenant(b.actor.tenant())?;
         self.evidence(&b.evidence, b.at)?;
         if b.publication != self.0.id
+            || b.target.value() != self.0.content.software().fields().source
+            || b.target_digest != self.0.content.source_snapshot()
             || b.content != self.0.content.digest()
             || b.target_digest == Digest::from_bytes([0; 32])
         {
