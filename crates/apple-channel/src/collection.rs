@@ -28,13 +28,18 @@ pub async fn receive(
         Some(Reception::Ready(attempt)) => attempt,
     };
     let collection = attempt.collection.ok_or(Error::Malformed)?;
-    if !rss_mdm_execution_service::actions::native_collection::eligible_on(source, c, p, collection)
+    let current =
+        rss_mdm_inventory_service::apple_collection::current(c, &tenant, collection).await?;
+    if !current
+        || !rss_mdm_execution_service::actions::native_collection::eligible_on(
+            source, c, p, collection,
+        )
         .await?
-        || !rss_mdm_inventory_service::apple_collection::current(c, &tenant, collection).await?
     {
         attempt.settle(c, status, false).await?;
         let mut run = store::load_on(c, &tenant, collection).await?;
-        if run.sealed_at.is_none() {
+        // Expiry and already settled evidence retain the collection owner's reason.
+        if current && run.sealed_at.is_none() {
             facts.extend(store::seal(c, &mut run, "revoked").await?);
         }
         return Ok(Some((collection, false)));
@@ -165,6 +170,11 @@ pub async fn send(
     for row in rows {
         let id = uuid(&row, "id")?;
         let collection: Uuid = row.try_get("collection").map_err(db)?;
+        if !rss_mdm_inventory_service::apple_collection::current(c, &tenant, collection).await? {
+            sqlx::query("UPDATE mdm_apple.attempts SET next_attempt=clock_timestamp()+interval '30 seconds' WHERE tenant_id=$1::uuid AND id=$2::uuid").bind(&tenant).bind(id.to_string()).execute(&mut *c).await.map_err(db)?;
+            crate::notify(c, "apple").await.map_err(db)?;
+            continue;
+        }
         if !rss_mdm_execution_service::actions::native_collection::delivery_eligible_on(
             source, c, p, collection,
         )
@@ -174,10 +184,6 @@ pub async fn send(
             if run.sealed_at.is_none() {
                 facts.extend(store::seal(c, &mut run, "revoked").await?);
             }
-        }
-        if !rss_mdm_inventory_service::apple_collection::current(c, &tenant, collection).await? {
-            sqlx::query("UPDATE mdm_apple.attempts SET next_attempt=clock_timestamp()+interval '30 seconds' WHERE tenant_id=$1::uuid AND id=$2::uuid").bind(&tenant).bind(id.to_string()).execute(&mut *c).await.map_err(db)?;
-            crate::notify(c, "apple").await.map_err(db)?;
             continue;
         }
         sqlx::query("UPDATE mdm_apple.attempts SET state='sent',next_attempt=clock_timestamp()+interval '30 seconds' WHERE tenant_id=$1::uuid AND id=$2::uuid")

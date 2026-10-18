@@ -310,7 +310,7 @@ async fn template_flow(
             .await?;
     let pending = tokio::time::timeout(Duration::from_secs(20), async {
         loop {
-            let ready: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_commands.action_runs WHERE tenant_id=$1::uuid AND gateway_accepted AND state->>'execution'='not_started')")
+            let ready: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_commands.action_runs WHERE tenant_id=$1::uuid AND gateway_accepted AND state->>'execution' IN('not_started','running'))")
                 .bind(case_tenant()).fetch_one(&mut pg).await?;
             if ready { break; }
             tokio::time::sleep(Duration::from_millis(100)).await;
@@ -452,6 +452,20 @@ async fn template_flow(
     let browser = f.browser.clone();
     drop(f);
     host = host.restart().await?;
+    let mut resumed = rss_runtime::ShutdownStack::try_new(
+        rss_runtime::TotalDrainBudget::new(Duration::from_secs(15))?,
+        Arc::new(crate::lifecycle::RuntimeTimer),
+    )?;
+    let mut launch = resumed.startup()?.commit();
+    launch.stage_deferred_task_with_token(
+        host.app
+            .execution
+            .clone()
+            .registration(host.notifications.signals.execution())
+            .critical(),
+    );
+    launch.finish();
+    owner = Some(resumed);
     f = Client::with_browser(host.browser.clone(), host.app.clone(), browser);
     let mut end = packet.clone();
     end.header.message_id += 1;
@@ -547,6 +561,7 @@ async fn template_flow(
         id: 2,
         alert: s::Alert::UnenrollmentRequested,
     }];
+    crate::test_support::stop_worker(owner.take()).await?;
     authenticate_during_recovery(&host, &peer, &mut pg).await?;
     ensure!(
         native::post(&peer.mutual, &peer.url, &notification)

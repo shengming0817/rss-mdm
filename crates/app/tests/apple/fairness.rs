@@ -171,7 +171,8 @@ async fn checkin_sweep_coalesces_and_resumes_after_interrupted_item() -> Result<
         .bind(case_tenant())
         .execute(&mut *held)
         .await?;
-    sqlx::query("SELECT mdm_planning.policy_lock($1)")
+    sqlx::query("SELECT id FROM mdm_policy.policies WHERE tenant_id=$1::uuid AND id=$2 FOR UPDATE")
+        .bind(case_tenant())
         .bind(policies[32])
         .execute(&mut *held)
         .await?;

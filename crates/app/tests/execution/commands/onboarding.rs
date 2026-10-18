@@ -1754,17 +1754,41 @@ async fn historical_bootstrap_cleanup_survives_current_identity_completion() -> 
         case_tenant()
     ))?;
     let mut replacement = None;
-    for session in 2500..2540 {
-        let (start, wire) = begin(&peer, session).await?;
-        if !bootstrap::windows_fields(&wire.commands).is_empty() {
-            replacement = Some(
-                bootstrap::issue_windows(&host.app, &client.router, &host.root, operation, &wire)
+    'sessions: for session in 2500..2540 {
+        let (start, mut wire) = begin(&peer, session).await?;
+        for _ in 0..CodecLimits::default().session_messages {
+            if !bootstrap::windows_fields(&wire.commands).is_empty() {
+                replacement = Some(
+                    bootstrap::issue_windows(
+                        &host.app,
+                        &client.router,
+                        &host.root,
+                        operation,
+                        &wire,
+                    )
                     .await?,
-            );
-            post(&peer, &reply(&start, &wire, false)).await?;
-            break;
+                );
+                post(&peer, &reply(&start, &wire, false)).await?;
+                break 'sessions;
+            }
+            // A newly prepared identity can arrive in any response of this session.
+            // Consume that response before opening another session.
+            wire = post(&peer, &reply(&start, &wire, false)).await?;
+            if !wire.commands.iter().any(|command| {
+                matches!(
+                    command,
+                    s::Command::Get { .. }
+                        | s::Command::Add { .. }
+                        | s::Command::Replace { .. }
+                        | s::Command::Delete { .. }
+                        | s::Command::Exec { .. }
+                        | s::Command::Sequence { .. }
+                        | s::Command::Atomic { .. }
+                )
+            }) {
+                break;
+            }
         }
-        post(&peer, &reply(&start, &wire, false)).await?;
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
     let replacement = replacement.context("replacement identity was not delivered")?;

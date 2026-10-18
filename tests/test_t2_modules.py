@@ -94,8 +94,9 @@ class ModuleImpactTests(unittest.TestCase):
     def test_collection_inputs_select_their_actual_protocol_consumers(self):
         cases={
             'crates/execution-service/src/actions/output.rs': {'execution.agent.delivery'},
-            'crates/execution-service/src/actions/native_collection.rs': {'windows.management','apple.collection'},
-            'crates/execution-service/src/actions/recovery.rs': {'windows.management','apple.collection','execution.agent.recovery','execution.software.recovery'},
+            'crates/execution-service/src/actions/native_collection.rs': {'windows.management','apple.collection','apple.fairness','apple.identity'},
+            'crates/execution-service/src/actions/native_recovery.rs': {'windows.management','apple.collection','apple.fairness','apple.identity'},
+            'crates/execution-service/src/actions/recovery.rs': {'windows.management','apple.collection','apple.fairness','apple.identity','execution.agent.recovery','execution.software.recovery'},
         }
         for path,expected in cases.items():
             selected=select_inputs([path])

@@ -122,6 +122,9 @@ async fn profile_confirmation_rolls_back_with_execution_and_audit() -> Result<()
             profile_manifest(profile, "com.apple.security.firewall"),
         ),
     ]);
+    // The fixture runtime fault is consumed by one transaction. Stop background consumers
+    // after preparation so only the real protocol request can consume it.
+    f.stop_execution_worker().await?;
     // The commit fault is consumed after channel confirmation, reducer and audit SQL have run.
     f.app
         .execution

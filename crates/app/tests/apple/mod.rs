@@ -45,6 +45,7 @@ struct Fixture {
     browser: Browser,
     router: Router,
     owner: rss_runtime::ShutdownStack,
+    execution_owner: Option<rss_runtime::ShutdownStack>,
     signals: Arc<crate::worker_wake::Signals>,
     root: PathBuf,
     lose_notify: Arc<std::sync::atomic::AtomicBool>,
@@ -390,12 +391,7 @@ impl Fixture {
                 )
                 .critical(),
             );
-            launch.stage_deferred_task_with_token(
-                execution
-                    .service
-                    .registration(signals.execution())
-                    .critical(),
-            );
+
             launch.stage_deferred_task_with_token(
                 runtime
                     .registration(signals.handle(crate::worker_wake::Work::Inventory))
@@ -403,6 +399,13 @@ impl Fixture {
             );
             launch.finish();
         }
+        let mut execution_owner = rss_runtime::ShutdownStack::try_new(
+            rss_runtime::TotalDrainBudget::new(Duration::from_secs(15))?,
+            Arc::new(crate::lifecycle::RuntimeTimer),
+        )?;
+        let mut launch = execution_owner.startup()?.commit();
+        launch.stage_deferred_task_with_token(execution.service.registration(signals.execution()).critical());
+        launch.finish();
         if !preserve_authorization {
             crate::test_support::identity::set_grants(
                 case_tenant(),
@@ -432,6 +435,7 @@ impl Fixture {
             browser,
             router,
             owner,
+            execution_owner: Some(execution_owner),
             signals,
             root,
             lose_notify,
@@ -706,16 +710,21 @@ mod push;
 mod renewal;
 
 impl Fixture {
+    async fn stop_execution_worker(&mut self) -> Result<()> {
+        crate::test_support::stop_worker(self.execution_owner.take()).await
+    }
     async fn close(self) -> Result<()> {
         let Self {
             resources,
             owner,
+            execution_owner,
             app,
             ..
         } = self;
         resources
             .finish(async move {
                 let report = owner.shutdown().join().await?;
+                crate::test_support::stop_worker(execution_owner).await?;
                 if !report.is_clean() {
                     let diagnostics = app
                         .inventory
