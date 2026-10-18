@@ -197,6 +197,10 @@ pub(super) fn units() -> Vec<(&'static str, &'static str)> {
             rss_mdm_timeline_service::INSTALL_SQL,
         ),
         (
+            "recovery-credentials-schema-v1",
+            rss_mdm_recovery_credentials::INSTALL_SQL,
+        ),
+        (
             "certificate-archive-schema-v1",
             rss_mdm_certificate_archive_service::INSTALL_SQL,
         ),

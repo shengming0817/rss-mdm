@@ -11,6 +11,9 @@ use uuid::Uuid;
     deny_unknown_fields
 )]
 pub enum Material {
+    Credential {
+        task: Box<wire::CredentialTaskSpec>,
+    },
     Collection {
         plan: wire::NativeCollectionPlan,
         resource_digest: [u8; 32],
@@ -28,6 +31,7 @@ pub enum Material {
 impl Material {
     pub fn from_payload(payload: &wire::TaskPayload) -> Option<Self> {
         match payload {
+            wire::TaskPayload::Credential(spec) => Some(Self::Credential { task: spec.clone() }),
             wire::TaskPayload::Collection(spec) => Some(Self::Collection {
                 plan: spec.plan.clone(),
                 resource_digest: spec.resource_digest,

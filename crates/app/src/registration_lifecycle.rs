@@ -23,6 +23,9 @@ impl rss_mdm_registration_service::Retirement for Bridge {
             rss_mdm_execution_service::retire_in(tx, facts, tenant, registration)
                 .await
                 .map_err(|_| rss_mdm_registration_service::Error::Retirement)?;
+            rss_mdm_recovery_credentials::storage::retire_in(tx, tenant, registration)
+                .await
+                .map_err(|_| rss_mdm_registration_service::Error::Retirement)?;
             rss_mdm_windows_channel::retire_in(tx, tenant, registration)
                 .await
                 .map_err(|_| rss_mdm_registration_service::Error::Retirement)?;

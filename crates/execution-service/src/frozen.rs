@@ -5,6 +5,10 @@ use serde::{Deserialize, Serialize};
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Frozen {
+    Credential {
+        action: Box<crate::credential_tasks::FrozenCredential>,
+        frequency: Frequency,
+    },
     AgentCollection {
         action: Box<FrozenAgentCollection>,
         frequency: Frequency,
@@ -48,6 +52,7 @@ impl Frozen {
         owner: configuration::Owner,
     ) -> std::result::Result<(), Error> {
         let (mut permissions, grants) = match self {
+            Self::Credential { action, .. } => (vec![action.permission()], &mut action.grants),
             Self::Configuration { native, grants, .. } => {
                 let native = native.open(key, tenant, owner)?;
                 let mut permissions = native.apply.permissions()?;

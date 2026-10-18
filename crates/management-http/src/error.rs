@@ -4,6 +4,8 @@ use crate::{ConfigIssue, Failure, planning, resource_catalog};
 #[serde(tag = "kind", content = "reason", rename_all = "snake_case")]
 pub enum Error {
     #[error(transparent)]
+    RecoveryCredentials(#[from] rss_mdm_recovery_credentials::Error),
+    #[error(transparent)]
     Archive(#[from] rss_mdm_certificate_archive_service::Error),
     #[error("invalid product configuration")]
     Configuration(ConfigIssue),

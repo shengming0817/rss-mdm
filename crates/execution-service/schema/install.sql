@@ -236,7 +236,7 @@ CREATE TABLE mdm_commands.operations (
     policy_version uuid,
     CONSTRAINT operation_authority_source CHECK (COALESCE(
 CASE source_kind
-    WHEN 'direct'::text THEN ((authority ->> 'kind'::text) = 'device_control'::text)
+    WHEN 'direct'::text THEN ((authority ->> 'kind'::text) IN ('device_control'::text,'credential'::text))
     WHEN 'policy'::text THEN (((authority ->> 'kind'::text) IN ('policy'::text,'agent_install'::text)) AND ((authority ->> 'tenant'::text) = (tenant_id)::text) AND ((authority ->> 'device'::text) = device) AND ((authority ->> 'version'::text) = (policy_version)::text))
     ELSE NULL::boolean
 END, false)),
@@ -548,3 +548,5 @@ BEGIN
 END;$$;
 REVOKE ALL ON FUNCTION mdm_commands.advance_software_results(),mdm_commands.advance_software_bindings() FROM PUBLIC;
 CREATE TRIGGER software_results AFTER INSERT OR UPDATE OF state,result ON mdm_commands.action_runs FOR EACH ROW EXECUTE FUNCTION mdm_commands.advance_software_results();
+
+GRANT UPDATE(request) ON mdm_commands.operations TO mdm_command_runtime;

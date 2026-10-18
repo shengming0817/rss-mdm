@@ -209,3 +209,21 @@ step ca provisioner add rss-windows --type JWK --public-key windows-provisioner.
 ```
 
 其私钥按同一受保护 PKCS#8 流程配置到 Windows provider。模板只从已验签令牌的 `.Token.sub` 生成登记 CN，不复制 CSR 的主体、SAN 或扩展；服务端冻结原 CSR/SPKI 和授权登记，并校验签发结果。令牌中的 CSR 输入名称仅供 step-ca 的前置校验，原 CSR 指纹绑定仍必须验证。不要替换为默认模板或 `.Insecure.CR`。生产叶证书完整 90 天；开发时同步配置明确的有效期和 CA max/default。Docker 候选将 Windows 与 Agent 模板一并哈希交付，运行夹具也消费这份模板。
+
+### 恢复凭据密钥与接收证书
+
+启用恢复凭据时配置顶层 `recovery_credentials`：
+
+```json
+{
+  "active_key": "recovery-2026",
+  "key_files": { "recovery-2026": "/run/mdm/recovery.key" },
+  "active_recipient": "接收证书DER的SHA256小写十六进制指纹",
+  "recipients": [{
+    "certificate_file": "/run/mdm/recovery-recipient.crt",
+    "private_key_file": "/run/mdm/recovery-recipient.key"
+  }]
+}
+```
+
+每个密钥文件恰好 32 个随机原始字节，私密文件权限为 0600。凭据密钥、接收 RSA 私钥、现有 native protection 密钥及 APNs/身份密钥分别生成与保管。接收证书和私钥必须匹配，RSA 至少 2048 位。FileVault 使用该证书接收 CMS，Agent 使用其公钥包裹 AES-GCM 数据密钥；不在客户端配置服务端私钥。未配置时不开放恢复凭据接口或派发该类 Agent 任务，macOS 锁定 PIN 托管也不可用。
