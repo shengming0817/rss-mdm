@@ -374,3 +374,60 @@ async fn employee_enrollment_is_opt_in_idempotent_and_rechecks_publication() -> 
         Ok(())
     }).await
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+#[ignore = "make t2 MODULE=planning.onboarding"]
+async fn native_continuation_rejects_independent_source_read_revocation_after_opened() -> Result<()>
+{
+    use crate::authorization::{Permission, UserGrant};
+    use sqlx::{Connection, Row};
+    let mut f = fixture().await?;
+    let resources = std::mem::take(&mut f.resources);
+    resources.finish(async {
+        let management = f.grants.iter().filter(|g| g.operation != Permission::InventoryRead).cloned().collect();
+        identity::independent_source_read(case_tenant(), &f.author_id, management).await?;
+        let automation = start_automation(&f.base).await?;
+        let workers = worker(&f.base).await?;
+        report(&f, 0, "unenrolled").await?;
+        let id = Uuid::new_v4();
+        let policy = post(&mut f.author, &f.router, &format!("/api/v1/policies/{id}"), json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"put","enabled":true,"definition":{
+            "scope":case_task_scope(),"action":{"kind":"request_mdm_enrollment","organization":case_tenant(),"runLifetimeSeconds":300,"schedule":{"trigger":{"kind":"manual"},"misfire":{"kind":"coalesce_one"},"notBefore":0,"until":null,"jitterSeconds":0,"window":null}},
+            "selfService":{"access":{"kind":"device"},"published":true,"allowAi":false,"displayName":"Register MDM","description":"Join","prerequisites":"OS confirmation","sideEffects":"Device management","category":"Device","keywords":[]}}}})).await?;
+        let invoke = json!({"operationId":Uuid::new_v4(),"policyId":id,"policyRevision":policy["revision"],"policyVersion":policy["versionId"],"source":"human","confirmed":true,"parameters":{}});
+        let accepted = agent_call(&f.router, Method::POST, "/api/v1/agent/runtime/self-service/invocations", Some(case_credential()), Some(invoke)).await?;
+        ensure!(accepted.0 == StatusCode::ACCEPTED, "{accepted:?}");
+        let task = claim(&f.router).await?;
+        task_event(&f.router, &task, json!({"kind":"received"})).await?;
+        task_event(&f.router, &task, json!({"kind":"start"})).await?;
+        let native = agent_call(&f.router, Method::POST, &format!("/api/v1/agent/runtime/tasks/{}/enrollment", task["payload"]["task"]["taskId"].as_str().unwrap()), Some(case_credential()), Some(json!({"operationId":Uuid::new_v4(),"attemptId":task["payload"]["task"]["attemptId"],"password":credential("source-read-continuation")}))).await?;
+        ensure!(native.0 == StatusCode::OK, "{native:?}");
+        task_event(&f.router, &task, json!({"kind":"enrollment_result","outcome":"opened"})).await?;
+        let request = Uuid::parse_str(native.1["enrollmentId"].as_str().unwrap())?;
+        let access = crate::Database::connect(crate::device::test_support::options("mdm_access")?).await?;
+        let admission = rss_mdm_registration_service::enrollment::native::agent_policy(&access.registration(), case_tenant(), request, Some(&credential("source-read-continuation")), f.execution.clone()).await?;
+        let mut admin = Browser::default();
+        ensure!(admin.login(&f.router, "admin").await? == StatusCode::OK);
+        let mut c = sqlx::PgConnection::connect_with(&crate::device::test_support::options("mdm_access")?).await?;
+        let mut tx = c.begin().await?;
+        crate::Database::configure_transaction(&mut tx, case_tenant()).await?;
+        let rule = sqlx::query("SELECT id,revision FROM mdm_access.authorization_rules WHERE tenant_id=$1::uuid AND document->'subject'->'user'->>'principalId'=$2 AND jsonb_array_length(document->'grants')=1 AND document->'grants'->0->>'operation'='inventory_read'")
+            .bind(case_tenant()).bind(&f.author_id).fetch_one(&mut *tx).await?;
+        let grant: Value = sqlx::query_scalar("SELECT authority FROM mdm_access.agent_native_enrollments WHERE tenant_id=$1::uuid AND request=$2").bind(case_tenant()).bind(request).fetch_one(&mut *tx).await?;
+        let grant: UserGrant = serde_json::from_value(grant)?;
+        tx.rollback().await?;
+        let removed = admin.call(&f.router, Method::PUT, &format!("/api/v1/authorization/rules/{}",rule.try_get::<Uuid,_>("id")?), Some(json!({"operationId":Uuid::new_v4(),"expectedRevision":rule.try_get::<i64,_>("revision")?,"value":null}))).await?;
+        ensure!(removed.0 == StatusCode::OK, "{removed:?}");
+        let mut tx = c.begin().await?;
+        crate::Database::configure_transaction(&mut tx, case_tenant()).await?;
+        admission.lock_authority_in(&mut tx).await?;
+        ensure!(grant.valid(&mut tx, Permission::Enrollment, crate::clock::Clock::unix_seconds(&crate::clock::SystemClock)?).await?, "Enrollment grant must remain independently valid");
+        ensure!(matches!(admission.current_request(&mut tx).await, Err(rss_mdm_registration_service::Error::Forbidden)), "revoked source read must stop native continuation");
+        tx.rollback().await?;
+        ensure!(pg(&format!("SELECT count(*) FROM mdm_access.registrations WHERE tenant_id='{}' AND channel='mdm'",case_tenant()))?.trim() == "0");
+        c.close().await?;
+        access.close().await;
+        stop_worker(workers).await?;
+        stop_worker(automation).await?;
+        Ok(())
+    }).await
+}
