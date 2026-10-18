@@ -171,8 +171,12 @@ impl ExecutionService {
                 },
                 wire::TaskEvent::CredentialResult(value) => {
                     if !matches!(plan,db::ScheduledPolicy::Credential(_)) || !effect_allowed || !matches!(run.state.execution,Execution::Running|Execution::Unknown) || run.state.started_at.is_none() || !run.state.trusts_result(now,plan.timeout_seconds()) { return Err(Error::Forbidden.into()); }
-                    let success=crate::credential_tasks::finish(service,tx,&run,input.attempt_id(),value).await?;
-                    if matches!(value.failure,Some(wire::CredentialFailure::NativeFailure|wire::CredentialFailure::RecoveryState)) || value.items.iter().any(|i|i.outcome==wire::CredentialOutcome::Unknown) {run.state.uncertain_result(input.attempt_id())?;} else {run.state.result(input.attempt_id(),success)?;}
+                    match crate::credential_tasks::finish(service,tx,&run,input.attempt_id(),value).await? {
+                        Execution::Unknown=>run.state.uncertain_result(input.attempt_id())?,
+                        Execution::Succeeded=>run.state.result(input.attempt_id(),true)?,
+                        Execution::Failed=>run.state.result(input.attempt_id(),false)?,
+                        _=>return Err(Error::Conflict.into()),
+                    }
                     run.result=Some(checked_input(serde_json::to_value(value))?);
                 },
                 wire::TaskEvent::EnrollmentResult { outcome } => {

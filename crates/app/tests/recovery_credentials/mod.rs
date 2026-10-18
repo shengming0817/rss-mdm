@@ -283,3 +283,22 @@ async fn retention_sweep_skips_protected_registrations_and_advances_past_blocked
         tx.rollback().await?;Ok(())
     }).await
 }
+
+#[tokio::test]
+#[ignore = "make t2 MODULE=recovery-credentials.http"]
+async fn unescrowed_agent_mutation_protects_retired_material_from_expiry() -> Result<()> {
+    let mut authority = authority::Authority::open().await?;
+    let resources = std::mem::take(&mut authority.resources);
+    resources.finish(async{
+        let ring=keys("first",true);
+        let original=seed(&authority,&ring,case::name("guard-retention"),"possibly-still-current-password").await?;
+        let mut tx=begin(&authority).await?;
+        storage::start_agent_in(&mut tx,original.tenant,original.binding.registration,original.binding.generation,Uuid::new_v4(),Uuid::new_v4()).await?;
+        storage::retire_in(&mut tx,case_tenant(),original.binding.registration).await?;
+        sqlx::query("UPDATE mdm_recovery.versions SET invalidated_at=floor(extract(epoch FROM clock_timestamp()))::bigint-7776001 WHERE tenant_id=$1 AND entry=$2").bind(original.tenant).bind(original.material).execute(&mut *tx).await?;
+        ensure!(!storage::expired_in(&mut tx,original.tenant).await?.iter().any(|v|v.id==original.material));
+        storage::clear_expired_in(&mut tx,original.tenant,original.material,original.version).await?;
+        let retained:bool=sqlx::query_scalar("SELECT sealed IS NOT NULL AND key_id IS NOT NULL AND NOT pending FROM mdm_recovery.versions WHERE tenant_id=$1 AND entry=$2 AND version=$3").bind(original.tenant).bind(original.material).bind(original.version).fetch_one(&mut *tx).await?;
+        ensure!(retained);tx.rollback().await?;Ok(())
+    }).await
+}

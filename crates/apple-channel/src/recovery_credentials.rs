@@ -128,6 +128,27 @@ pub(crate) async fn receive(
 /// Secret carriers are absent from ordinary evidence and retained raw responses.
 /// The original response HMAC still proves exact replay without retaining another secret copy.
 pub(crate) fn redact(body: &mut plist::Dictionary) {
+    // Keep bounded native error codes, never descriptions, arbitrary domains or extensions.
+    // ref: https://developer.apple.com/documentation/devicemanagement/sending-mdm-commands-to-a-device
+    if let Some(chain) = body.remove("ErrorChain") {
+        let safe: Vec<_> = chain
+            .as_array()
+            .into_iter()
+            .flatten()
+            .take(16)
+            .filter_map(plist::Value::as_dictionary)
+            .filter_map(|item| {
+                item.get("ErrorCode")
+                    .and_then(plist::Value::as_signed_integer)
+            })
+            .map(|code| {
+                plist::Value::Dictionary(protocol::dictionary([("ErrorCode", code.into())]))
+            })
+            .collect();
+        if !safe.is_empty() {
+            body.insert("ErrorChain".into(), plist::Value::Array(safe));
+        }
+    }
     for key in [
         "FDE_PersonalRecoveryKeyCMS",
         "EncryptedNewRecoveryKey",
@@ -142,7 +163,6 @@ pub(crate) fn redact(body: &mut plist::Dictionary) {
         "FirmwarePassword",
         "ActivationLockBypassCode",
         "FileVaultUnlock",
-        "ErrorChain",
     ] {
         body.remove(key);
     }

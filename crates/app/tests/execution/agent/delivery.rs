@@ -1624,8 +1624,11 @@ fn credential_envelope(
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 #[ignore = "make t2 MODULE=execution.agent.delivery"]
 async fn credential_unknown_without_escrow_recovers_after_server_restart() -> Result<()> {
-    recover_unknown_after_restart(rss_mdm_agent_wire::runtime::CredentialRecoveryOutcome::Applied)
-        .await
+    recover_unknown_after_restart(
+        rss_mdm_agent_wire::runtime::CredentialRecoveryOutcome::Applied,
+        false,
+    )
+    .await
 }
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 #[ignore = "make t2 MODULE=execution.agent.delivery"]
@@ -1633,11 +1636,22 @@ async fn credential_unknown_without_os_attempt_can_settle_without_inventing_a_pa
 -> Result<()> {
     recover_unknown_after_restart(
         rss_mdm_agent_wire::runtime::CredentialRecoveryOutcome::NotAttempted,
+        false,
+    )
+    .await
+}
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+#[ignore = "make t2 MODULE=execution.agent.delivery"]
+async fn credential_rotation_escrow_without_verification_remains_unknown() -> Result<()> {
+    recover_unknown_after_restart(
+        rss_mdm_agent_wire::runtime::CredentialRecoveryOutcome::Applied,
+        true,
     )
     .await
 }
 async fn recover_unknown_after_restart(
     effect: rss_mdm_agent_wire::runtime::CredentialRecoveryOutcome,
+    escrow_only: bool,
 ) -> Result<()> {
     use rss_mdm_agent_wire::runtime as wire;
     let mut f = Fixture::new().await?;
@@ -1654,9 +1668,17 @@ async fn recover_unknown_after_restart(
         credential_policy(&mut f,json!({"kind":"rotate_local_administrator","sid":sid})).await?;
         let task=claim_credential(&f,&context).await?;
         for event in [json!({"kind":"received"}),json!({"kind":"start"})]{let response=credential_event(&f,&context,&task,event).await?;ensure!(response.0==StatusCode::OK,"start {response:?}");}
-        let response=credential_event(&f,&context,&task,serde_json::to_value(wire::TaskEvent::CredentialResult(wire::CredentialResult{recovery:None,definition_digest:task.definition_digest,complete:false,failure:Some(wire::CredentialFailure::RecoveryState),items:vec![]}))?).await?;
+        let outcome=if escrow_only {
+            let subject=wire::CredentialSubject::LocalAdministrator{sid:sid.into()};
+            let envelope=credential_envelope(&task,subject.clone(),b"persisted-before-os-change-2789")?;
+            let response=credential_event(&f,&context,&task,serde_json::to_value(wire::TaskEvent::CredentialEscrow(wire::CredentialEscrow{definition_digest:task.definition_digest,materials:vec![envelope]}))?).await?;
+            ensure!(response.0==StatusCode::OK);
+            wire::CredentialResult{recovery:None,definition_digest:task.definition_digest,complete:true,failure:None,items:vec![wire::CredentialItemResult{subject,outcome:wire::CredentialOutcome::Escrowed}]}
+        }else{wire::CredentialResult{recovery:None,definition_digest:task.definition_digest,complete:false,failure:Some(wire::CredentialFailure::RecoveryState),items:vec![]}};
+        let response=credential_event(&f,&context,&task,serde_json::to_value(wire::TaskEvent::CredentialResult(outcome))?).await?;
         ensure!(response.0==StatusCode::OK,"unknown: {response:?}");
-        ensure!(pg(&format!("SELECT count(*) FROM mdm_recovery.versions WHERE tenant_id='{}' AND operation='{}'",case_tenant(),task.task_id))?.trim()=="0");
+        ensure!(pg(&format!("SELECT state->>'execution' FROM mdm_commands.action_runs WHERE tenant_id='{}' AND id='{}'",case_tenant(),task.task_id))?.trim()=="unknown");
+        ensure!(pg(&format!("SELECT count(*) FROM mdm_recovery.versions WHERE tenant_id='{}' AND operation='{}'",case_tenant(),task.task_id))?.trim()==if escrow_only{"1"}else{"0"});
         Ok(task)
     }).await?;
     let base = f.base.clone();

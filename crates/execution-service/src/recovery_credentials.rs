@@ -484,6 +484,14 @@ pub(crate) fn requires_owner(task: &Task) -> bool {
             .payloads
             .iter()
             .any(|p| p.schema == "mdm/profiles/com.apple.security.FDERecoveryKeyEscrow.yaml"),
+        Task::Macos {
+            request: Request::Declarations { assets, .. },
+        } => assets.iter().any(|asset| {
+            asset
+                .profile_schemas
+                .iter()
+                .any(|schema| schema == "mdm/profiles/com.apple.security.FDERecoveryKeyEscrow.yaml")
+        }),
         _ => false,
     }
 }

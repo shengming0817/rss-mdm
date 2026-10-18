@@ -423,7 +423,7 @@ pub async fn finish(
     run: &actions::storage::Run,
     attempt: Uuid,
     value: &wire::CredentialResult,
-) -> Result<bool> {
+) -> Result<actions::state::Execution> {
     checked_input(value.validate())?;
     let actions::evidence::Material::Credential { task } =
         actions::evidence::load_in(tx, run.id, attempt).await?
@@ -437,12 +437,20 @@ pub async fn finish(
         return Err(Error::Conflict.into());
     }
     let value = value.clone();
-    let (success, recovered) = tx
+    let (success, uncertain, recovered) = tx
         .with_connection(move |c| {
             Box::pin(async move {
                 let result = async {
                     let mut recovered = Vec::new();
-                    let mut success = value.complete && value.failure.is_none();
+                    let requires_verification =
+                        !matches!(task.operation, wire::CredentialOperation::CollectBitlocker);
+                    let mut success = value.complete
+                        && value.failure.is_none()
+                        && (!requires_verification
+                            || value
+                                .items
+                                .iter()
+                                .all(|i| i.outcome == wire::CredentialOutcome::Verified));
                     let escrowed = materials::agent_materials_in(
                         c,
                         task.tenant_id,
@@ -499,6 +507,9 @@ pub async fn finish(
                                     materials::verify_in(c, &coordinates, material.operation)
                                         .await?;
                                 }
+                            } else if requires_verification {
+                                materials::unknown_in(c, task.tenant_id, material.operation)
+                                    .await?;
                             } else {
                                 materials::settled_in(c, &coordinates, material.operation).await?;
                             }
@@ -619,22 +630,32 @@ pub async fn finish(
                         )
                         .await?;
                     }
-                    if success
-                        || (escrowed.is_empty()
-                            && matches!(
-                                value.failure,
-                                Some(
-                                    wire::CredentialFailure::NoMaterials
-                                        | wire::CredentialFailure::Unsupported
-                                        | wire::CredentialFailure::PermissionDenied
-                                        | wire::CredentialFailure::OwnerConflict
-                                        | wire::CredentialFailure::TargetMissing
-                                )
-                            ))
-                    {
+                    let no_effect = escrowed.is_empty()
+                        && matches!(
+                            value.failure,
+                            Some(
+                                wire::CredentialFailure::NoMaterials
+                                    | wire::CredentialFailure::Unsupported
+                                    | wire::CredentialFailure::PermissionDenied
+                                    | wire::CredentialFailure::OwnerConflict
+                                    | wire::CredentialFailure::TargetMissing
+                            )
+                        );
+                    let uncertain = matches!(
+                        value.failure,
+                        Some(
+                            wire::CredentialFailure::NativeFailure
+                                | wire::CredentialFailure::RecoveryState
+                        )
+                    ) || value
+                        .items
+                        .iter()
+                        .any(|i| i.outcome == wire::CredentialOutcome::Unknown)
+                        || (requires_verification && !success && !no_effect);
+                    if success || no_effect {
                         materials::finish_agent_in(c, task.tenant_id, task.task_id).await?;
                     }
-                    Ok::<_, vault::Error>((success, recovered))
+                    Ok::<_, vault::Error>((success, uncertain, recovered))
                 }
                 .await;
                 Ok(result)
@@ -664,7 +685,13 @@ pub async fn finish(
         }
     }
     let _ = service;
-    Ok(success)
+    Ok(if uncertain {
+        actions::state::Execution::Unknown
+    } else if success {
+        actions::state::Execution::Succeeded
+    } else {
+        actions::state::Execution::Failed
+    })
 }
 
 pub async fn start(

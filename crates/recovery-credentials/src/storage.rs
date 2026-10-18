@@ -366,7 +366,7 @@ pub async fn rewrap_in(c: &mut PgConnection, tenant: Uuid, keys: &KeyRing) -> Re
 
 /// The execution owner must scrub its terminal input copies before clearing these bytes.
 pub async fn expired_in(c: &mut PgConnection, tenant: Uuid) -> Result<Vec<Material>, Error> {
-    sqlx::query(select_material!(" WHERE e.tenant_id=$1 AND NOT v.pending AND NOT EXISTS(SELECT 1 FROM mdm_recovery.entries held JOIN mdm_recovery.versions unresolved ON(unresolved.tenant_id,unresolved.entry)=(held.tenant_id,held.id) WHERE held.tenant_id=e.tenant_id AND held.registration=e.registration AND unresolved.pending) AND v.sealed IS NOT NULL AND v.invalidated_at<=floor(extract(epoch FROM clock_timestamp()))::bigint-7776000 ORDER BY v.cleanup_checked_at,v.invalidated_at,e.id,v.version LIMIT 100 FOR UPDATE OF v SKIP LOCKED"))
+    sqlx::query(select_material!(" WHERE e.tenant_id=$1 AND NOT v.pending AND NOT EXISTS(SELECT 1 FROM mdm_recovery.agent_guards g WHERE g.tenant_id=e.tenant_id AND g.registration=e.registration AND g.generation=e.generation) AND NOT EXISTS(SELECT 1 FROM mdm_recovery.entries held JOIN mdm_recovery.versions unresolved ON(unresolved.tenant_id,unresolved.entry)=(held.tenant_id,held.id) WHERE held.tenant_id=e.tenant_id AND held.registration=e.registration AND unresolved.pending) AND v.sealed IS NOT NULL AND v.invalidated_at<=floor(extract(epoch FROM clock_timestamp()))::bigint-7776000 ORDER BY v.cleanup_checked_at,v.invalidated_at,e.id,v.version LIMIT 100 FOR UPDATE OF v SKIP LOCKED"))
         .bind(tenant).fetch_all(c).await?.iter().map(decode).collect()
 }
 pub async fn clear_expired_in(
@@ -375,7 +375,7 @@ pub async fn clear_expired_in(
     id: Uuid,
     version: i64,
 ) -> Result<(), Error> {
-    sqlx::query("UPDATE mdm_recovery.versions SET sealed=NULL,key_id=NULL WHERE tenant_id=$1 AND entry=$2 AND version=$3 AND NOT pending AND invalidated_at<=floor(extract(epoch FROM clock_timestamp()))::bigint-7776000")
+    sqlx::query("UPDATE mdm_recovery.versions v SET sealed=NULL,key_id=NULL FROM mdm_recovery.entries e WHERE (e.tenant_id,e.id)=(v.tenant_id,v.entry) AND v.tenant_id=$1 AND v.entry=$2 AND v.version=$3 AND NOT v.pending AND v.invalidated_at<=floor(extract(epoch FROM clock_timestamp()))::bigint-7776000 AND NOT EXISTS(SELECT 1 FROM mdm_recovery.agent_guards g WHERE g.tenant_id=e.tenant_id AND g.registration=e.registration AND g.generation=e.generation) AND NOT EXISTS(SELECT 1 FROM mdm_recovery.entries held JOIN mdm_recovery.versions unresolved ON(unresolved.tenant_id,unresolved.entry)=(held.tenant_id,held.id) WHERE held.tenant_id=e.tenant_id AND held.registration=e.registration AND unresolved.pending)")
         .bind(tenant).bind(id).bind(version).execute(c).await?;
     Ok(())
 }
@@ -508,10 +508,16 @@ pub async fn source_operation_in(
 /// A correlated native clear receipt removes the current pointer as well as disclosure eligibility.
 pub async fn cleared_in(c: &mut PgConnection, coordinates: &Coordinates) -> Result<(), Error> {
     active_in(c, coordinates.tenant, &coordinates.binding).await?;
-    sqlx::query("UPDATE mdm_recovery.versions SET validity='revoked',pending=false,invalidated_at=coalesce(invalidated_at,floor(extract(epoch FROM clock_timestamp()))::bigint) WHERE tenant_id=$1 AND entry=$2 AND version=$3")
-        .bind(coordinates.tenant).bind(coordinates.material).bind(coordinates.version).execute(&mut *c).await?;
-    sqlx::query("UPDATE mdm_recovery.entries SET current_version=NULL WHERE tenant_id=$1 AND id=$2 AND current_version=$3")
-        .bind(coordinates.tenant).bind(coordinates.material).bind(coordinates.version).execute(c).await?;
+    locked_version(c, coordinates).await?;
+    sqlx::query("UPDATE mdm_recovery.versions SET validity='revoked',pending=false,invalidated_at=coalesce(invalidated_at,floor(extract(epoch FROM clock_timestamp()))::bigint) WHERE tenant_id=$1 AND entry=$2 AND (invalidated_at IS NULL OR pending)")
+        .bind(coordinates.tenant).bind(coordinates.material).execute(&mut *c).await?;
+    sqlx::query(
+        "UPDATE mdm_recovery.entries SET current_version=NULL WHERE tenant_id=$1 AND id=$2",
+    )
+    .bind(coordinates.tenant)
+    .bind(coordinates.material)
+    .execute(c)
+    .await?;
     Ok(())
 }
 
