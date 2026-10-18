@@ -197,6 +197,32 @@ class ExecutionProof(unittest.TestCase):
             with self.assertRaises(ProcessLookupError):
                 os.kill(int(marker.read_text()), 0)
 
+    def test_python_child_receives_parent_recovery_material(self):
+        from types import SimpleNamespace
+        from unittest.mock import Mock, patch
+        import json
+        import os
+        import t2_execution
+        with tempfile.TemporaryDirectory() as directory, patch('t2_execution.lease_fds', return_value=()):
+            root = Path(directory)
+            (root/'hack').mkdir()
+            recovery = {'active_key': 'fixture', 'key_files': {'fixture': '/run/recovery.key'},
+                        'active_recipient': 'recipient', 'recipients': []}
+            context = SimpleNamespace(recovery_config=Mock(return_value=recovery))
+            fixture = SimpleNamespace(root=root, database='tenant_test', migration_config=None,
+                                      binary='mdm', env=dict(os.environ), context=context)
+            (root/'hack/t2_python.py').write_text(
+                'import json,sys; from pathlib import Path; '
+                'print(json.loads(Path(sys.argv[2]).read_text())["recovery_credentials"])')
+            builds = Builds.__new__(Builds)
+            builds.processes = Processes()
+            with patch.object(t2_execution, 'ROOT', root):
+                builds.execute_python(MODULES['installation.tenants'], fixture, root)
+            self.assertEqual(json.loads((root/'fixture.json').read_text())['recovery_credentials'], recovery)
+            self.assertIn('/run/recovery.key', (root/'test.log').read_text())
+            self.assertEqual((root/'fixture.json').stat().st_mode & 0o777, 0o600)
+            context.recovery_config.assert_called_once_with()
+
 
 class ProcessOwnership(unittest.TestCase):
     def test_ownership_check_cancellation_reaps_children_and_restores_handlers(self):

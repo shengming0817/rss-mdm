@@ -129,7 +129,8 @@ class RunFixtures:
             private(root / 'case.json', self.case_contexts[job.key])
         self.costs.increment('plannedActors', sum(len(value['actors']) for value in self.case_contexts.values()))
 
-    def runtime_config(self, pool, root, database, tenant):
+    @staticmethod
+    def runtime_config(pool, root, database, tenant, *, native_key, recovery_credentials):
         config = json.loads((ROOT / 'fixtures/mdm-config.example.json').read_text())
         db = pool.database_config
         for key, role in [('access_database', 'mdm_access'), ('runtime_database', 'mdm_runtime')]:
@@ -144,8 +145,8 @@ class RunFixtures:
         config['identity']['tenant_id'] = tenant
         config['native_protocols'] = {}
         config['device_pki'] = []
-        config['native_protection_key_file'] = str(self.native_key)
-        config['recovery_credentials'] = self.recovery_config()
+        config['native_protection_key_file'] = str(native_key)
+        config['recovery_credentials'] = recovery_credentials
         return config
 
     def recovery_config(self):
@@ -196,7 +197,8 @@ class RunFixtures:
                     root.mkdir()
                     private(root / 'ca.crt', (pool.owner.root / 'ca.crt').read_text())
                     management = pool.owner.sql('SELECT management_tenant_id::text FROM public.mdm_installation', database)
-                    config = self.runtime_config(pool, root, database, management)
+                    config = self.runtime_config(pool, root, database, management,
+                        native_key=self.native_key, recovery_credentials=self.recovery_config())
                     private(root / 'runtime.json', config)
                     password = private(root / 'account-password', 'Fixture-only-correct-horse-battery-2026!')
                     maintenance = pool.database_config(root, database, 'mdm_identity_maintenance', 'identity-maintenance-fixture')
@@ -222,7 +224,8 @@ class RunFixtures:
         shared, management, source = self.identity_environment(pool, database, output)
         root = self.root / job.key
         context = self.case_contexts[job.key]
-        config = self.runtime_config(pool, root, database, context['tenant'])
+        config = self.runtime_config(pool, root, database, context['tenant'],
+            native_key=self.native_key, recovery_credentials=self.recovery_config())
         config['content'] = json.loads((shared / 'content.json').read_text())
         config['task_signing'] = json.loads((shared / 'task-signing.json').read_text())
         private(root / 'runtime.json', config)

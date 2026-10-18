@@ -114,11 +114,10 @@ async fn absent_agent_group_installs_fixed_package_and_registers_independently()
     let deferred = peer.manage("NotNow", Some(install), None).await?;
     if !deferred.is_empty() {
         let (id, payload) = lifecycle::command(&deferred, "InstallProfile")?;
-        ensure!(
-            peer.manage("Acknowledged", Some(id), None)
-                .await?
-                .is_empty()
-        );
+        let next = peer.confirm_managed_profile(id, &payload).await?;
+        if !next.is_empty() {
+            peer.pending_replies.lock().await.push_back(next);
+        }
         early_bootstrap = Some(payload);
     }
     ensure!(f.operation(operation).await?["agentInstallation"]["delivery"] == "deferred");
@@ -177,7 +176,11 @@ async fn absent_agent_group_installs_fixed_package_and_registers_independently()
         payload
     } else {
         let (id, payload) = peer.next("InstallProfile").await?;
-        peer.manage("Acknowledged", Some(id), None).await?;
+        let next = peer.confirm_managed_profile(id, &payload).await?;
+        ensure!(
+            next.is_empty(),
+            "unexpected command after bootstrap confirmation"
+        );
         payload
     };
     ensure!(
