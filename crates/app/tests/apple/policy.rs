@@ -444,7 +444,7 @@ impl Fixture {
         // Publish a new collection only after its own current authorization is restored.
         self.policy_grants().await?;
         let owner = self.policy_worker().await?;
-        let queued = self.pending_collections(&definition, 1).await;
+        let queued = self.pending_collections(&definition, 1, peer).await;
         crate::test_support::stop_worker(Some(owner)).await?;
         let run = queued?[0];
         ensure!(peer.next_collection().await?.0 == run);

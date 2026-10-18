@@ -192,7 +192,7 @@ async fn published_native_template_uses_policy_and_direct_collection_progress() 
     // New evidence below the minimum, or missing its OS version, must not
     // dispatch business queries even when historical context exists.
     for version in [Some("14.0"), None] {
-        let (_, unsupported) = f.queue_collection(&current_definition).await?;
+        let (_, unsupported) = f.queue_collection(&current_definition, &peer).await?;
         let (prerequisite, _) = peer.next("DeviceInformation").await?;
         let mut facts = protocol::dictionary([
             ("IsSupervised", true.into()), ("IsAppleSilicon", true.into()),
@@ -314,7 +314,7 @@ async fn withdrawn_template(dispatched: bool, withdrawal: &str) -> Result<()> {
     f.policy_grants().await?;
     let definition = f.collection_template().await?;
     let owner = f.policy_worker().await?;
-    let queued = f.queue_collection(&definition).await;
+    let queued = f.queue_collection(&definition, &peer).await;
     crate::test_support::stop_worker(Some(owner)).await?;
     let (policy, run) = queued?;
     if dispatched {
@@ -402,7 +402,7 @@ async fn user_collection_cannot_cross_device_or_other_user_namespace() -> Result
         })
         .await?;
     let worker = f.policy_worker().await?;
-    let (_, run) = f.queue_collection(&template).await?;
+    let (_, run) = f.queue_collection(&template, &peer).await?;
     let (prerequisite, _) = peer.next("DeviceInformation").await?;
     let security = peer
         .manage(
