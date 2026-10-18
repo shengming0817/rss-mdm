@@ -324,6 +324,43 @@ async fn employee_enrollment_is_opt_in_idempotent_and_rechecks_publication() -> 
         crate::Database::configure_transaction(&mut tx, case_tenant()).await?;
         f.execution.current(&mut tx, &coordinates).await?;
         tx.rollback().await?;
+        let access = crate::Database::connect(crate::device::test_support::options("mdm_access")?).await?;
+        let admission = rss_mdm_registration_service::enrollment::native::agent_policy(
+            &access.registration(), case_tenant(), coordinates.id, Some(&credential("employee-mdm")), f.execution.clone(),
+        ).await?;
+        // Hold the execution watermark first. Native authentication must wait there,
+        // without holding the registration lock needed by an in-flight handoff.
+        let mut blocker = sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?).await?;
+        let mut observer = sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?).await?;
+        let mut blocked = blocker.begin().await?;
+        crate::Database::configure_transaction(&mut blocked, case_tenant()).await?;
+        let tenant = rss_request_context::TenantId::parse(case_tenant())?;
+        rss_mdm_inventory_postgres::lock_watermark_in(&mut blocked, tenant).await?;
+        let mut native_connection = sqlx::PgConnection::connect_with(&crate::device::test_support::options("mdm_access")?).await?;
+        let mut native_tx = native_connection.begin().await?;
+        crate::Database::configure_transaction(&mut native_tx, case_tenant()).await?;
+        let native_pid: i32 = sqlx::query_scalar("SELECT pg_backend_pid()").fetch_one(&mut *native_tx).await?;
+        let release = async {
+            tokio::time::timeout(Duration::from_secs(3), async {
+                loop {
+                    let waiting: bool = sqlx::query_scalar("SELECT coalesce(wait_event_type='Lock',false) FROM pg_stat_activity WHERE pid=$1")
+                        .bind(native_pid).fetch_one(&mut observer).await?;
+                    if waiting { break; }
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+                let free: bool = sqlx::query_scalar("SELECT pg_try_advisory_xact_lock(hashtextextended($1,2670))")
+                    .bind(case_tenant()).fetch_one(&mut *blocked).await?;
+                ensure!(free, "native waiter must not hold registration admission before watermark");
+                Ok::<_,anyhow::Error>(())
+            }).await??;
+            blocked.rollback().await?;
+            Ok::<_,anyhow::Error>(())
+        };
+        let (authenticated, released) = tokio::join!(admission.current_request(&mut native_tx), release);
+        released?; authenticated?;
+        native_tx.rollback().await?;
+        blocker.close().await?; observer.close().await?; access.close().await;
+
         definition["selfService"]["published"] = json!(false);
         post(&mut f.author, &f.router, &path, json!({"operationId":Uuid::new_v4(),"expectedRevision":policy["revision"],
             "input":{"action":"put","enabled":true,"definition":definition}})).await?;

@@ -162,14 +162,31 @@ impl Peer {
     }
     pub async fn next_collection(&self) -> Result<(Uuid, plist::Dictionary)> {
         command(
-            &self.next_bytes_mode("DeviceInformation", true).await?,
+            &self
+                .next_bytes_mode("DeviceInformation", true, None)
+                .await?,
             "DeviceInformation",
         )
     }
     pub async fn next_bytes(&self, kind: &str) -> Result<Vec<u8>> {
-        self.next_bytes_mode(kind, false).await
+        self.next_bytes_mode(kind, false, None).await
     }
-    async fn next_bytes_mode(&self, kind: &str, collection: bool) -> Result<Vec<u8>> {
+    pub async fn next_managed(
+        &self,
+        kind: &str,
+        bootstrap: &mut Option<plist::Dictionary>,
+    ) -> Result<(Uuid, plist::Dictionary)> {
+        command(
+            &self.next_bytes_mode(kind, false, Some(bootstrap)).await?,
+            kind,
+        )
+    }
+    async fn next_bytes_mode(
+        &self,
+        kind: &str,
+        collection: bool,
+        mut bootstrap: Option<&mut Option<plist::Dictionary>>,
+    ) -> Result<Vec<u8>> {
         let mut resolving = false;
         for _ in 0..100 {
             let mut bytes = self.manage("Idle", None, None).await?;
@@ -181,6 +198,14 @@ impl Peer {
                 let id = Uuid::parse_str(protocol::text(&dictionary, "CommandUUID")?)?;
                 let payload = dictionary["Command"].as_dictionary().unwrap();
                 let actual = protocol::text(payload, "RequestType")?;
+                if actual == "InstallProfile"
+                    && let Some(slot) = bootstrap.as_deref_mut()
+                {
+                    ensure!(slot.is_none(), "duplicate managed bootstrap profile");
+                    *slot = Some(payload.clone());
+                    bytes = self.manage("Acknowledged", Some(id), None).await?;
+                    continue;
+                }
                 let prerequisite_device = actual == "DeviceInformation"
                     && payload.get("Queries")
                         == Some(&plist::Value::Array(vec![

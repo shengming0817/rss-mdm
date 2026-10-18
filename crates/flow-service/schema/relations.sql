@@ -566,3 +566,7 @@ GRANT UPDATE(matched,pending,target,entry_revision) ON mdm_planning.scope_channe
 
 GRANT UPDATE(channel_hashes) ON mdm_planning.scope_runs TO mdm_flow_runtime;
 GRANT UPDATE(agent_resolution_revision,mdm_resolution_revision) ON mdm_planning.scopes TO mdm_flow_runtime;
+
+-- Native continuation reuses the same live Scope and self-service policy checks.
+GRANT EXECUTE ON FUNCTION mdm_planning.policy_lock(uuid) TO mdm_access;
+GRANT SELECT ON mdm_planning.scopes,mdm_planning.scope_runs,mdm_planning.scope_source_members,mdm_planning.scope_channel_results TO mdm_access;

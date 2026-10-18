@@ -63,7 +63,7 @@
   "mdm_planning.configuration_objects": "b8180b8acd8f7b0030f6cd73b872fe815db02eac3204094b7d311ccecc653791",
   "mdm_planning.operations": "f07fce52551f984dcac68308ebe3766022d671f587b9d3e47e0f8a503fc1faa6",
   "mdm_planning.policy_assignments": "eae84500c893379f6801ad2116f32e6e83f94b957e38acac2f0e6968fd6e812e",
-  "mdm_planning.policy_lock(p_policy uuid)": "d37d1882e3cd02200a1615d8647b2daf0edb4b4855f4dfeb8539fdf9d41e0c0a",
+  "mdm_planning.policy_lock(p_policy uuid)": "3518c58e124663391b6664e53b59f8ca85d1745eb7bbcfeb3dccc9c0e2def573",
   "mdm_planning.policy_source_grants": "62e9f994705f7dc40db6a7edca1abac6eb4a4496e538afd5538122bd5e9f17a3",
   "mdm_planning.scope_admission(p_scope uuid, p_device text)": "876c24210fe5d6f6d819d75edac279294e506d1bc3eb22b1001f5e45e6e01dcf",
   "mdm_planning.scope_channel_results": "83c238a38d7443bcc336d2cae0fb98aa02f257b839ecaad731e806c5cbe203d3",

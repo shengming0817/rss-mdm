@@ -139,6 +139,25 @@ impl ExecutionService {
     }
 }
 impl AgentPolicyAuthority for ExecutionService {
+    fn lock_in<'a>(
+        &'a self,
+        c: &'a mut PgConnection,
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<
+                    Output = std::result::Result<(), rss_mdm_registration_service::Error>,
+                > + Send
+                + 'a,
+        >,
+    > {
+        Box::pin(async move {
+            rss_mdm_inventory_postgres::lock_watermark_in(c, self.tenant)
+                .await
+                .map(|_| ())
+                .map_err(|_| rss_mdm_registration_service::Error::Storage)
+        })
+    }
+
     fn current<'a>(
         &'a self,
         c: &'a mut PgConnection,
@@ -156,6 +175,7 @@ impl AgentPolicyAuthority for ExecutionService {
             if self.tenant.to_string() != d.tenant {
                 return Err(E::Forbidden);
             }
+            <Self as AgentPolicyAuthority>::lock_in(self, c).await?;
             enrollment::agent_policy::current_source_in(c, self.tenant, d.id).await?;
             let row=sqlx::query("SELECT l.authority,r.invocation,r.device,p.id AS policy,p.definition,r.state AS task_state,r.deadline,(p.state='enabled') AND p.current_version=v.id AS live FROM mdm_access.agent_native_enrollments l JOIN mdm_commands.action_runs r ON(r.tenant_id,r.id,r.registration,r.generation)=(l.tenant_id,l.task,l.source_registration,l.source_generation) JOIN mdm_policy.versions v ON(v.tenant_id,v.id)=(r.tenant_id,r.policy_version) JOIN mdm_policy.policies p ON(p.tenant_id,p.id)=(v.tenant_id,v.policy) JOIN mdm_access.registrations g ON(g.tenant_id,g.id,g.generation)=(l.tenant_id,l.source_registration,l.source_generation) WHERE l.tenant_id=$1::uuid AND l.request=$2 AND g.state='active' AND g.channel='agent' AND EXISTS(SELECT 1 FROM mdm_access.credentials k WHERE k.tenant_id=g.tenant_id AND k.registration=g.id AND k.state='active')")
                 .bind(&d.tenant).bind(d.id).fetch_optional(&mut *c).await.map_err(|_|E::Storage)?.ok_or(E::Forbidden)?;

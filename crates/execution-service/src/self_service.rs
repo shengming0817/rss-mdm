@@ -324,6 +324,12 @@ async fn prepare_in(
                 true,
             )
             .await?;
+            let occurrence = format!("self-service:{request}");
+            if !production::occurrence_available_in(tx, enrollment.id, target, &occurrence, now)
+                .await?
+            {
+                return Ok(None);
+            }
             let schedule = &enrollment.frozen.schedule;
             if pending || !production::check_in_interval_elapsed(&schedule.trigger, last, now) {
                 return Ok(None);
@@ -354,7 +360,7 @@ async fn prepare_in(
                 },
                 parameters: Default::default(),
                 slot: InvocationSlot {
-                    occurrence: format!("self-service:{request}"),
+                    occurrence,
                     available,
                     deadline,
                 },
