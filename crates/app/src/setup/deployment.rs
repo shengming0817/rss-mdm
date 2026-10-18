@@ -83,6 +83,8 @@ fn public_file(name: &str) -> bool {
     matches!(
         name,
         "ca_file"
+            | "tls_root_file"
+            | "private_ca_file"
             | "certificate_file"
             | "trust_file"
             | "profile_certificate_file"
@@ -99,11 +101,14 @@ fn project(
             for (name, value) in values {
                 if name.ends_with("_file") && value.is_string() {
                     project_file(value, journal, mounts, !public_file(name))?;
-                } else if name == "key_files" {
+                } else if matches!(name.as_str(), "key_files" | "credential_keys") {
                     for key in value.as_object_mut().ok_or(Error::Input)?.values_mut() {
                         project_file(key, journal, mounts, true)?;
                     }
-                } else if name == "apple_material_roots" || name == "historical_files" {
+                } else if matches!(
+                    name.as_str(),
+                    "apple_material_roots" | "historical_files" | "ca_files"
+                ) {
                     for root in value.as_array_mut().ok_or(Error::Input)? {
                         project_file(root, journal, mounts, name == "historical_files")?;
                     }
@@ -131,7 +136,7 @@ fn project_file(
     if !source.is_absolute() {
         return Err(Error::Input);
     }
-    let bytes = crate::config::read(source, 1024 * 1024, private).map_err(|_| Error::Input)?;
+    let bytes = crate::config::read(source, 64 * 1024 * 1024, private).map_err(|_| Error::Input)?;
     let filename = format!(
         "input-{:x}",
         Sha256::digest(source.as_os_str().as_encoded_bytes())

@@ -44,6 +44,7 @@ pub(crate) struct Identity {
     pub(crate) management_tenant: TenantId,
     pub(crate) tenant_administration: Option<Arc<crate::tenant_registry::http::Service>>,
     pub(crate) audit_readiness: Arc<crate::identity_audit::Readiness>,
+    pub(crate) federation: Option<rss_identity_postgres::Federation>,
     routes: Router,
     bearer_routes: Router,
     http: rss_identity_http_axum::HttpConfig,
@@ -144,6 +145,7 @@ impl Identity {
             rss_identity_http_axum::router(authority.clone(), http.clone()).map_err(failure)?;
         let bearer_routes = rss_identity_http_axum::bearer_router(authority.clone(), http.clone())
             .map_err(failure)?;
+        let mut configured_federation = None;
         if let Some(oidc) = &config.identity.oidc {
             oidc.require_business_tenant(&config.identity.tenant_id)?;
             let federation = federation(
@@ -153,6 +155,7 @@ impl Identity {
                 instance,
                 tenant,
             )?;
+            configured_federation = Some(federation.clone());
             routes = routes.merge(
                 rss_identity_http_axum::federated_router(federation, http.clone())
                     .map_err(failure)?
@@ -169,6 +172,7 @@ impl Identity {
             management_tenant,
             tenant_administration,
             audit_readiness: Arc::default(),
+            federation: configured_federation,
             routes,
             bearer_routes,
             http,

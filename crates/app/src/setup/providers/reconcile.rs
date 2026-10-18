@@ -105,3 +105,59 @@ pub async fn storage(
     }
     Ok(())
 }
+
+/// WNS 只对固定 Microsoft OAuth 入口验证；不把令牌取得等同于设备送达。
+pub async fn wns(input: &Input, c: &mut PgConnection) -> Result<()> {
+    let hosts:Vec<(Uuid,String)>=sqlx::query_as("SELECT tenant_id,receipt->'result'->>'hostId' FROM public.mdm_tenant_operations WHERE action='provision' AND receipt->'result'->>'phase'='enabled' ORDER BY operation_id").fetch_all(&mut *c).await.map_err(|_|Error::Storage)?;
+    for (tenant, host) in hosts {
+        let host = Uuid::parse_str(&host).map_err(|_| Error::Corrupt)?;
+        let journal = crate::setup::local::Journal::open(
+            &input.directory.join(format!("rss-mdm-{}", host.simple())),
+        )?;
+        let runtime: crate::config::Config = journal
+            .load("requested-runtime.json")?
+            .ok_or(Error::Corrupt)?;
+        let key = runtime.native_protector().map_err(|_| Error::Corrupt)?;
+        let mut tx = c.begin().await.map_err(|_| Error::Storage)?;
+        scope(&mut tx, tenant).await?;
+        let revision:Option<i64>=sqlx::query_scalar("SELECT v.revision FROM mdm_wns.versions v JOIN mdm_wns.heads h USING(tenant_id,revision) WHERE v.tenant_id=$1 AND NOT revoked AND qualified_at IS NULL AND (attempted_at IS NULL OR attempted_at<extract(epoch FROM clock_timestamp())-60)").bind(tenant).fetch_optional(&mut *tx).await.map_err(|_|Error::Storage)?;
+        let Some(revision) = revision else {
+            tx.rollback().await.map_err(|_| Error::Storage)?;
+            continue;
+        };
+        let push = rss_mdm_windows_channel::wns_materials::load(
+            &mut tx,
+            &tenant.to_string(),
+            revision,
+            &key,
+            std::sync::Arc::new(crate::Monotonic(std::time::Instant::now)),
+            false,
+        )
+        .await
+        .map_err(|_| Error::Corrupt)?;
+        tx.rollback().await.map_err(|_| Error::Storage)?;
+        let result = push.validate_credentials().await;
+        let mut tx = c.begin().await.map_err(|_| Error::Storage)?;
+        scope(&mut tx, tenant).await?;
+        if result.is_err() {
+            sqlx::query("UPDATE mdm_wns.versions SET attempted_at=floor(extract(epoch FROM clock_timestamp()))::bigint,failure_reason='oauth_validation_failed' WHERE tenant_id=$1 AND revision=$2 AND qualified_at IS NULL").bind(tenant).bind(revision).execute(&mut *tx).await.map_err(|_|Error::Storage)?;
+        }
+        if result.is_ok() {
+            let now: i64 =
+                sqlx::query_scalar("SELECT floor(extract(epoch FROM clock_timestamp()))::bigint")
+                    .fetch_one(&mut *tx)
+                    .await
+                    .map_err(|_| Error::Storage)?;
+            rss_mdm_windows_channel::wns_materials::qualify(
+                &mut tx,
+                &tenant.to_string(),
+                revision,
+                now,
+            )
+            .await
+            .map_err(|_| Error::Conflict)?;
+        }
+        tx.commit().await.map_err(|_| Error::Storage)?;
+    }
+    Ok(())
+}

@@ -31,7 +31,7 @@ RSS 提供其明确接纳的公共契约、事务消息、Saga、投影、状态
 
 ## MDM 产品审计接入（#2498）
 
-`rss-mdm-audit-integration` 是产品内唯一审计接缝，直接消费者限定为 App、device-service、pki-service、certificate-archive-service、recovery-credentials、timeline-service、software-service、authorization-service、registration-service、inventory-service、flow-service、execution-service、content-service，以及 management-http、agent-channel、windows-channel、apple-channel；实际依赖集合由 CI 校验。
+`rss-mdm-audit-integration` 是产品内唯一审计接缝，直接消费者限定为 App、device-service、pki-service、certificate-archive-service、recovery-credentials、timeline-service、software-service、authorization-service、registration-service、inventory-service、flow-service、execution-service、content-service，以及 mail-service、management-http、agent-channel、windows-channel、apple-channel；实际依赖集合由 CI 校验。
 不反向依赖 App、Identity 或任何 MDM 领域/应用包，纯领域核心不得依赖它。
 共同 envelope、精确 canonical 字节/指纹回执、恢复核对、请求结算和取消诊断归此包；
 业务事件及主体真实性、资源授权仍归各业务 owner。组件 schema/锁/追加实现归 Audit/Ledger，
@@ -48,3 +48,5 @@ RSS 提供其明确接纳的公共契约、事务消息、Saga、投影、状态
 ActorId。结构守卫限制原始字段写入这些 owner。事实构造失败使用不含输入值的闭合类别；宿主区分
 契约错误、完整性错误和中断，结算状态仍由原事务 owner 决定。宿主预算对象仅持有 timer、绝对
 截止时间与取消 token，借出原组件 Control；重复借用不延长预算，不提供事务执行或结算接口。
+
+`mail-service` 仅持有 SMTP 材料、资格和固定测试投递，不拥有通知订阅产品。管理入口复用产品授权和 Audit，网络资格由固定部署执行器消费。

@@ -84,7 +84,6 @@ async fn publish_version(
     windows: bool,
     version: &str,
 ) -> Result<(w::configuration::Package, Value)> {
-    let base: Value = serde_json::from_slice(&std::fs::read(std::env::var("MDM_TEST_CONFIG")?)?)?;
     let (platform, architecture, format, _filename) = if windows {
         ("windows", "x86_64", "exe", "rss-agent.exe")
     } else {

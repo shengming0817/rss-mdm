@@ -56,8 +56,8 @@ impl Container {
             use sha2::{Digest, Sha256};
             let original = Path::new(value.as_str().ok_or(Error::Input)?);
             let source = owner.resolve(original)?;
-            let bytes =
-                crate::config::read(&source, 1024 * 1024, private).map_err(|_| Error::Input)?;
+            let bytes = crate::config::read(&source, 64 * 1024 * 1024, private)
+                .map_err(|_| Error::Input)?;
             let name = format!(
                 "input-{:x}",
                 Sha256::digest(source.as_os_str().as_encoded_bytes())
@@ -80,9 +80,13 @@ impl Container {
                                 | "private_ca_file"
                         );
                         file(self, journal, value, !public)?;
-                    } else if name == "key_files" {
+                    } else if matches!(name.as_str(), "key_files" | "credential_keys") {
                         for value in value.as_object_mut().ok_or(Error::Input)?.values_mut() {
                             file(self, journal, value, true)?;
+                        }
+                    } else if name == "ca_files" {
+                        for value in value.as_array_mut().ok_or(Error::Input)? {
+                            file(self, journal, value, false)?;
                         }
                     } else {
                         self.copy_inputs(journal, value)?;

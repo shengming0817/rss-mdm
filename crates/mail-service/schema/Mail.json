@@ -1,0 +1,181 @@
+{
+  "Directory": {
+    "$defs": {
+      "Receipt": {
+        "properties": {
+          "acceptedAt": {
+            "format": "int64",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "attemptedAt": {
+            "format": "int64",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "failureReason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "operationId": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "profile": {
+            "type": "string"
+          },
+          "revision": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "state": {
+            "$ref": "#/$defs/State"
+          }
+        },
+        "required": [
+          "operationId",
+          "revision",
+          "profile",
+          "state"
+        ],
+        "type": "object"
+      },
+      "State": {
+        "enum": [
+          "pending",
+          "submitting",
+          "accepted",
+          "failed",
+          "unknown"
+        ],
+        "type": "string"
+      }
+    },
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "properties": {
+      "revision": {
+        "format": "int64",
+        "type": "integer"
+      },
+      "selectedRevision": {
+        "format": "int64",
+        "type": [
+          "integer",
+          "null"
+        ]
+      },
+      "versions": {
+        "items": {
+          "$ref": "#/$defs/Receipt"
+        },
+        "type": "array"
+      }
+    },
+    "required": [
+      "revision",
+      "versions"
+    ],
+    "title": "Directory",
+    "type": "object"
+  },
+  "Operation": {
+    "$defs": {
+      "State": {
+        "enum": [
+          "pending",
+          "submitting",
+          "accepted",
+          "failed",
+          "unknown"
+        ],
+        "type": "string"
+      }
+    },
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "properties": {
+      "acceptedAt": {
+        "format": "int64",
+        "type": [
+          "integer",
+          "null"
+        ]
+      },
+      "attemptedAt": {
+        "format": "int64",
+        "type": [
+          "integer",
+          "null"
+        ]
+      },
+      "failureReason": {
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "operationId": {
+        "format": "uuid",
+        "type": "string"
+      },
+      "profile": {
+        "type": "string"
+      },
+      "revision": {
+        "format": "int64",
+        "type": "integer"
+      },
+      "state": {
+        "$ref": "#/$defs/State"
+      }
+    },
+    "required": [
+      "operationId",
+      "revision",
+      "profile",
+      "state"
+    ],
+    "title": "Receipt",
+    "type": "object"
+  },
+  "Qualification": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "additionalProperties": false,
+    "properties": {
+      "expectedRevision": {
+        "format": "int64",
+        "type": "integer"
+      },
+      "password": {
+        "type": "string"
+      },
+      "profile": {
+        "type": "string"
+      },
+      "recipient": {
+        "type": "string"
+      },
+      "sender": {
+        "type": "string"
+      },
+      "username": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "expectedRevision",
+      "profile",
+      "sender",
+      "recipient",
+      "username",
+      "password"
+    ],
+    "title": "Request",
+    "type": "object"
+  }
+}

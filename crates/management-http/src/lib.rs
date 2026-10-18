@@ -55,3 +55,5 @@ pub mod recovery_credentials;
 
 mod software_content;
 pub mod webhooks;
+
+pub mod mail;

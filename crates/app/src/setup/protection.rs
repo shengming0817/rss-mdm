@@ -291,6 +291,20 @@ pub async fn rotate(request: Request) -> Result<Receipt> {
                 .await
                 .map_err(|_| Error::Corrupt)?;
             } else {
+                rewritten += rss_mdm_mail_service::store::rewrap(
+                    &mut tx,
+                    &host.tenant.to_string(),
+                    &protector,
+                )
+                .await
+                .map_err(|_| Error::Corrupt)?;
+                rewritten += rss_mdm_windows_channel::wns_materials::rewrap(
+                    &mut tx,
+                    &host.tenant.to_string(),
+                    &protector,
+                )
+                .await
+                .map_err(|_| Error::Corrupt)?;
                 rewritten +=
                     rss_mdm_content_service::connections::rewrap(&mut tx, tenant, &protector)
                         .await

@@ -3506,6 +3506,7 @@ dependencies = [
  "rss-mdm-inventory",
  "rss-mdm-inventory-postgres",
  "rss-mdm-inventory-service",
+ "rss-mdm-mail-service",
  "rss-mdm-management-http",
  "rss-mdm-native-protection",
  "rss-mdm-pki-service",
@@ -4107,6 +4108,30 @@ dependencies = [
 ]
 
 [[package]]
+name = "rss-mdm-mail-service"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "httpdate",
+ "rss-audit-postgres",
+ "rss-mdm-audit-integration",
+ "rss-mdm-authorization-service",
+ "rss-mdm-native-protection",
+ "rss-request-context",
+ "rss-transactional-messaging",
+ "schemars 1.2.2",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "sqlx",
+ "thiserror 2.0.20",
+ "tokio",
+ "tokio-rustls",
+ "uuid",
+ "zeroize",
+]
+
+[[package]]
 name = "rss-mdm-management-http"
 version = "0.1.0"
 dependencies = [
@@ -4130,6 +4155,7 @@ dependencies = [
  "rss-mdm-flow-service",
  "rss-mdm-inventory",
  "rss-mdm-inventory-service",
+ "rss-mdm-mail-service",
  "rss-mdm-pki-service",
  "rss-mdm-policy",
  "rss-mdm-recovery-credentials",
@@ -4495,6 +4521,7 @@ dependencies = [
  "rss-request-context",
  "rss-runtime",
  "rss-transactional-messaging",
+ "schemars 1.2.2",
  "serde",
  "serde_json",
  "sha2 0.10.9",

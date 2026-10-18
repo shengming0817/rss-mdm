@@ -3,3 +3,5 @@ mod signed_http;
 pub mod storage;
 
 pub mod reconcile;
+
+pub mod mail;

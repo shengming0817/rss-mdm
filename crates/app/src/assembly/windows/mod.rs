@@ -24,12 +24,13 @@ pub struct WindowsConfig {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct WindowsPushConfig {
-    pub package_family_name: String,
-    pub sid: String,
-    pub client_secret_file: PathBuf,
+    pub revision: i64,
 }
 impl WindowsConfig {
     pub(crate) fn validate(&self, browser: SocketAddr) -> Result<(), Error> {
+        if self.push.as_ref().is_some_and(|p| p.revision < 1) {
+            return Err(Error::Configuration(ConfigIssue::WindowsPush));
+        }
         self.poll
             .validate()
             .map_err(|_| Error::Configuration(ConfigIssue::WindowsPoll))?;
@@ -96,6 +97,7 @@ impl Windows {
         config: WindowsConfig,
         now: i64,
         providers: Arc<rss_mdm_pki_service::providers::Providers>,
+        push: Option<rss_mdm_windows_channel::push::Push>,
     ) -> Result<Self, Error> {
         let trust = crate::device_pki::load(
             &config.trust_file,
@@ -146,21 +148,7 @@ impl Windows {
             .iter()
             .map(|endpoint| tls::configuration(endpoint, Some(channel.ca.verifier())))
             .collect::<Result<Vec<_>, _>>()?;
-        if let Some(push) = &config.push {
-            let bytes = crate::config::read(&push.client_secret_file, 4096, true)
-                .map_err(|_| Error::Configuration(ConfigIssue::WindowsPush))?;
-            let secret = std::str::from_utf8(&bytes)
-                .map_err(|_| Error::Configuration(ConfigIssue::WindowsPush))?;
-            channel.push = Some(
-                rss_mdm_windows_channel::push::Push::new(
-                    push.package_family_name.clone(),
-                    push.sid.clone(),
-                    secret.trim_end_matches(['\r', '\n']).to_owned(),
-                    Arc::new(crate::Monotonic(std::time::Instant::now)),
-                )
-                .map_err(|_| Error::Configuration(ConfigIssue::WindowsPush))?,
-            );
-        }
+        channel.push = push;
         let channel = Arc::new(channel);
         Ok(Self {
             config,

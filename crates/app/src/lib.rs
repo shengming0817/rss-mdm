@@ -221,3 +221,5 @@ pub mod webhooks;
 #[cfg(all(test, feature = "integration"))]
 #[path = "../tests/webhooks.rs"]
 mod webhook_tests;
+
+mod settings;

@@ -49,3 +49,68 @@ async fn rotation_requires_exact_generation_ack_and_keeps_original_operation() -
         Ok(())
     }).await
 }
+
+#[tokio::test]
+#[ignore = "MODULE=execution.agent.task_trust: settings directory reads the actual task authority and filters inaccessible owners"]
+async fn settings_catalog_projects_authority_without_cross_session_or_secret_exposure() -> Result<()>
+{
+    let mut f = Fixture::new().await?;
+    let resources = std::mem::take(&mut f.resources);
+    resources
+        .finish(async {
+            let (status, before) = f
+                .author
+                .call(&f.router, Method::GET, "/api/v1/settings/catalog", None)
+                .await?;
+            ensure!(status == StatusCode::OK, "catalog: {status} {before}");
+            ensure!(
+                !before["items"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|i| i["id"] == "task-key")
+            );
+            f.grants.push(crate::authorization::Grant {
+                operation: crate::authorization::Permission::RegistrationConfigurationRead,
+                scope: crate::authorization::Scope::Tenant,
+            });
+            crate::test_support::identity::set_grants(
+                case_tenant(),
+                &f.author_id,
+                f.grants.clone(),
+            )
+            .await?;
+            let (status, after) = f
+                .author
+                .call(&f.router, Method::GET, "/api/v1/settings/catalog", None)
+                .await?;
+            ensure!(status == StatusCode::OK, "catalog: {status} {after}");
+            let items = after["items"].as_array().unwrap();
+            let task = items.iter().find(|i| i["id"] == "task-key").unwrap();
+            ensure!(task["revision"] == 1 && task["status"] == "configured");
+            ensure!(task["actions"][0]["href"] == "/api/v1/task-signing/trust");
+            ensure!(
+                !items
+                    .iter()
+                    .any(|i| i["id"] == "storage" || i["id"] == "s3-key" || i["id"] == "instance")
+            );
+            let text = serde_json::to_string(&after)?;
+            ensure!(
+                !text.contains("private_key")
+                    && !text.contains("password")
+                    && !text.contains("active_file")
+            );
+            let (status, _) = f
+                .author
+                .call(
+                    &f.router,
+                    Method::GET,
+                    "/api/v1/tenant-administration/settings/catalog",
+                    None,
+                )
+                .await?;
+            ensure!(status == StatusCode::FORBIDDEN || status == StatusCode::UNAUTHORIZED);
+            Ok(())
+        })
+        .await
+}

@@ -204,3 +204,19 @@ Apple 的 challenge/notify webhook ID 和 HMAC 秘密属于稳定协议配置。
 原链、材料、内容校验通过后，恢复沿同一个转交用例继续迁入新权威、核对真实认证、启动并观察实际宿主。任一步失败保留原操作与归档；重复运行同一输入。该入口不接受替换 Ledger 密钥、不重签审计历史、不自动切换 Plain。此入口仅消费转交前的 V4 联合快照，不代表日常 V5 在线备份或跨地址恢复已经实现。
 
 Windows 保护配置现在使用 `protocol_protection`，包含 `active_file`、`historical_files`、`fingerprint_file`。仅离线 V4 导入器识别旧 `protocol_key_file`。Windows 轮换先向所有启用 Windows 的宿主分发读钥，再切换写钥并分批重包注册秘密；固定 fingerprint 维持原注册/续期配置身份。旧钥继续保留供历史与备份恢复，完成写钥切换不表示旧钥可以删除。
+
+### WNS 凭据与宿主应用
+
+`POST /api/v1/windows/wns` 使用真实业务管理员会话、`RegistrationConfigurationWrite`、最近认证和 `Idempotency-Key`；正文是 `expectedRevision`、`packageFamilyName`、`sid`、`clientSecret`。Windows owner 加密保存候选，普通服务没有更新资格状态的数据库权限。`GET /api/v1/windows/wns` 返回当前 revision、期望版本和公开版本列表；`/api/v1/windows/wns/operations/{id}` 返回带 kind 的原操作回执。两者都不返回 SID 或秘密。`POST /api/v1/windows/wns/revoke` 接受 `expectedRevision`、`materialRevision` 和独立 `Idempotency-Key`，撤销后运行消费者拒绝该版本，旧操作可重复查询。正式 DTO 见 [WNS schema](../../crates/windows-channel/schema/Wns.json)。
+
+部署进程调用固定 Microsoft OAuth 入口验证候选，保存资格时间及失败类别；失败至少一分钟后才重试原候选。成功后申请受控宿主重启，运行配置为 `push: {"revision": N}`，删除旧秘密文件 loader。相同 PFN/SID 的秘密轮换沿用原设备通道绑定，不要求设备因服务器秘密变化而重新注册；改变应用身份产生不同绑定，等待设备的真实 PFN/ChannelURI 查询结果。资格通过仅证明 OAuth 凭据在核验时可用，不证明离线设备收到唤醒。推送租约复核原版本仍被选择且未撤销。
+
+设置目录 `/api/v1/settings/catalog` 和平台目录 `/api/v1/tenant-administration/settings/catalog` 使用 [SettingsCatalog schema](../../crates/management-http/schema/SettingsCatalog.json)。`configured` 只描述领域已有配置，`loaded` 只描述当前进程装载，`pending` 要求宿主应用或其他领域动作，`unknown` 明确要求 owner 观察；这些状态均不等同于真实设备验收。权限过滤先于领域读取，平台会话不会转换为业务会话。
+
+### SMTP 固定资格投递
+
+部署输入 `mail_profiles` 给出受限 profile ID、`hostname`、确切 `address`、`tls`（`implicit` 或 `starttls`）和 `ca_file`。普通服务只提交 profile ID，不接收任意服务器地址或 CA 管理材料。`POST /api/v1/smtp` 接受 `expectedRevision`、`profile`、`sender`、`recipient`、`username`、`password`，要求最近认证的业务管理会话、注册配置写权限与 `Idempotency-Key`。这一动作授权发送一封固定资格消息，不接收主题、正文、附件或额外收件人。
+
+邮件 owner 加密保存凭据；部署进程对精确地址验证 TLS 名字、认证并实际投递。STARTTLS 失败不会降级，TLS 后重新 EHLO，再执行 AUTH PLAIN。DATA 发送前提交持久检查点；服务器明确拒绝与连接中断/响应丢失分别记录，未知结果不自动重投。`GET /api/v1/smtp/operations/{id}` 查询原操作，`GET /api/v1/smtp` 返回版本及选择状态。`accepted` 仅表示 SMTP DATA 取得 250 回应，不证明收件箱送达。正式 DTO 见 [Mail schema](../../crates/mail-service/schema/Mail.json)。未知操作应按原 Message-ID 从邮件系统核对，不能用新操作掩盖原结果。
+
+实现依据 [RFC 3207](https://www.rfc-editor.org/rfc/rfc3207)、[RFC 4954](https://www.rfc-editor.org/rfc/rfc4954) 和 [RFC 5321](https://www.rfc-editor.org/rfc/rfc5321)。不新增通知订阅产品。

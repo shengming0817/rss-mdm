@@ -24,7 +24,7 @@ use x509_cert::der::Decode;
 pub(crate) fn case_tenant() -> &'static str {
     crate::test_support::case::tenant()
 }
-pub(super) fn root() -> anyhow::Result<PathBuf> {
+pub(crate) fn root() -> anyhow::Result<PathBuf> {
     Ok(std::env::var("MDM_WINDOWS_FIXTURES")?.into())
 }
 pub(crate) fn now() -> i64 {
@@ -32,7 +32,7 @@ pub(crate) fn now() -> i64 {
 }
 pub(super) fn windows() -> anyhow::Result<Windows> {
     let config = serde_json::from_slice(&std::fs::read(root()?.join("windows.json"))?)?;
-    Ok(Windows::load(config, now(), fixture_providers()?)?)
+    Ok(Windows::load(config, now(), fixture_providers()?, None)?)
 }
 pub(super) async fn complete(
     store: &rss_mdm_audit_integration::AuditStore,
@@ -289,12 +289,7 @@ impl Host {
         if mdm_software { value["task_signing"] = original["task_signing"].clone(); }
         value["device_pki"] = original["device_pki"].clone();
         value["native_protection"] = original["native_protection"].clone();
-        if push {
-            let secret = root.join(format!("wns-{}-secret", Uuid::new_v4()));
-            std::fs::write(&secret, "fixture-secret")?;
-            std::fs::set_permissions(&secret, std::fs::Permissions::from_mode(0o600))?;
-            value["native_protocols"]["windows"]["push"] = serde_json::json!({"package_family_name":"fixture.pfn","sid":"fixture-sid","client_secret_file":secret});
-        }
+        if push {value["native_protocols"]["windows"]["push"] = serde_json::json!({"revision":1});}
         if let Some(listener) = &additional_manage {
             let mut endpoint = value["native_protocols"]["windows"]["management"].clone();
             endpoint["listen"] = serde_json::json!(listener.local_addr()?.to_string());
@@ -390,6 +385,21 @@ impl Host {
                 )
             })
             .transpose()?;
+        let wns=if push {
+            // 预置受控 WNS 资格用于协议测试，不作为真实 Microsoft 资格证据。
+            use sqlx::Connection;
+            let mut owner=sqlx::PgConnection::connect_with(&std::env::var("MDM_OWNER_URL")?.parse::<sqlx::postgres::PgConnectOptions>()?.ssl_mode(sqlx::postgres::PgSslMode::VerifyFull).ssl_root_cert(std::env::var("PG_CA_FILE")?)).await?;
+            let mut tx=owner.begin().await?;
+            sqlx::query("SELECT set_config('rss.tenant_id',$1,true)").bind(case_tenant()).execute(&mut *tx).await?;
+            let material_key=config.native_protector()?;
+            let existing:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_wns.versions WHERE tenant_id=$1::uuid AND revision=1)").bind(case_tenant()).fetch_one(&mut *tx).await?;
+            if !existing {
+                rss_mdm_windows_channel::wns_materials::prepare(&mut tx,case_tenant(),Uuid::new_v4(),"controlled-protocol-fixture",&rss_mdm_windows_channel::wns_materials::Request{expected_revision:0,package_family_name:"fixture.pfn".into(),sid:"fixture-sid".to_owned().into(),client_secret:"fixture-secret".to_owned().into()},&material_key).await?;
+                rss_mdm_windows_channel::wns_materials::qualify(&mut tx,case_tenant(),1,now()).await?;
+            }
+            let value=rss_mdm_windows_channel::wns_materials::load(&mut tx,case_tenant(),1,&material_key,crate::test_support::monotonic(),true).await?;
+            tx.commit().await?;owner.close().await?;Some(value)
+        }else{None};
         let mut windows = Windows::load(
             config
                 .native_protocols
@@ -397,6 +407,7 @@ impl Host {
                 .expect("Windows test configuration"),
             now(),
             crate::device_pki::providers(&config.device_pki)?,
+            wns,
         )?;
         if let Some((mut binding, verifier, jit)) = entra {
             let view = provider(&identity, &secret, &binding.token, jit).await?;

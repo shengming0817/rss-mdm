@@ -47,6 +47,12 @@ pub async fn cycle(
     let mut after = Uuid::nil();
     loop {
         let mut read = dbase.begin_read(tenant).await?;
+        if let Some(revision) = push.material_revision {
+            let live:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_wns.versions WHERE tenant_id=$1::uuid AND revision=$2 AND selected AND NOT revoked AND qualified_at IS NOT NULL)").bind(tenant).bind(revision).fetch_one(&mut *read).await.map_err(db)?;
+            if !live {
+                return Err(Error::Conflict);
+            }
+        }
         let rows=sqlx::query("SELECT p.registration,p.generation,p.revision,r.device FROM mdm_windows.push_channels p JOIN mdm_access.registrations r ON(r.tenant_id,r.id,r.generation)=(p.tenant_id,p.registration,p.generation) WHERE p.tenant_id=$1::uuid AND p.registration>$2 AND p.configuration=$3 AND p.expires_at>clock_timestamp() AND p.next_push<=clock_timestamp() AND (p.lease_until IS NULL OR p.lease_until<=clock_timestamp()) AND (p.outcome IS NULL OR p.outcome IN ('accepted','retryable','unknown')) AND r.state='active' ORDER BY p.registration LIMIT 32")
             .bind(tenant).bind(after).bind(push.configuration.as_slice()).fetch_all(&mut *read).await.map_err(db)?;
         read.rollback().await.map_err(db)?;
@@ -62,13 +68,13 @@ pub async fn cycle(
             let budget =
                 rss_mdm_audit_integration::budget::AuditBudget::new(Duration::from_secs(3));
             let control = budget.control();
-            let outcome=store.write(TenantId::parse(tenant).map_err(|_| Error::Malformed)?,&control,(store,&audit,eligibility,tenant,device.as_str(),registration,generation,revision,id,push.configuration),|inputs,tx|Box::pin(async move {
-                let (store,audit,eligibility,tenant,device,registration,generation,revision,id,configuration)=*inputs;
-                let sealed=tx.with_connection_context(&mut (eligibility,tenant,device,registration,generation,revision,id,configuration),|(eligibility,tenant,device,registration,generation,revision,id,configuration),c|Box::pin(async move {
+            let outcome=store.write(TenantId::parse(tenant).map_err(|_| Error::Malformed)?,&control,(store,&audit,eligibility,tenant,device.as_str(),registration,generation,revision,id,push.configuration,push.material_revision),|inputs,tx|Box::pin(async move {
+                let (store,audit,eligibility,tenant,device,registration,generation,revision,id,configuration,material_revision)=*inputs;
+                let sealed=tx.with_connection_context(&mut (eligibility,tenant,device,registration,generation,revision,id,configuration,material_revision),|(eligibility,tenant,device,registration,generation,revision,id,configuration,material_revision),c|Box::pin(async move {
                     if !eligibility.pending_in(c, device, *registration, *generation).await? { return Ok::<_,Error>(None) }
                     if !crate::device::store::active_source_in(c,tenant,*registration,rss_mdm_inventory::ReportSource::MdmWindows).await? {return Ok::<_,Error>(None)}
-                    sqlx::query_scalar::<_,Vec<u8>>("UPDATE mdm_windows.push_channels SET lease_id=$6,lease_until=clock_timestamp()+interval '30 seconds',settled_id=NULL WHERE tenant_id=$1::uuid AND registration=$2 AND generation=$3 AND revision=$4 AND configuration=$5 AND expires_at>clock_timestamp() AND next_push<=clock_timestamp() AND (lease_until IS NULL OR lease_until<=clock_timestamp()) AND (outcome IS NULL OR outcome IN ('accepted','retryable','unknown')) RETURNING uri")
-                        .bind(*tenant).bind(*registration).bind(*generation).bind(*revision).bind(configuration.as_slice()).bind(*id).fetch_optional(c).await.map_err(db)
+                    sqlx::query_scalar::<_,Vec<u8>>("UPDATE mdm_windows.push_channels SET lease_id=$6,lease_until=clock_timestamp()+interval '30 seconds',settled_id=NULL WHERE tenant_id=$1::uuid AND registration=$2 AND generation=$3 AND revision=$4 AND configuration=$5 AND expires_at>clock_timestamp() AND next_push<=clock_timestamp() AND (lease_until IS NULL OR lease_until<=clock_timestamp()) AND (outcome IS NULL OR outcome IN ('accepted','retryable','unknown')) AND ($7::bigint IS NULL OR EXISTS(SELECT 1 FROM mdm_wns.versions w WHERE w.tenant_id=$1::uuid AND w.revision=$7 AND w.selected AND NOT w.revoked AND w.qualified_at IS NOT NULL)) RETURNING uri")
+                        .bind(*tenant).bind(*registration).bind(*generation).bind(*revision).bind(configuration.as_slice()).bind(*id).bind(*material_revision).fetch_optional(c).await.map_err(db)
                 })).await?;
                 if sealed.is_some() {
                     let input=serde_json::to_vec(&(registration,generation,revision,id)).map_err(|_|Error::Malformed)?;

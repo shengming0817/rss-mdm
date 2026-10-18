@@ -407,10 +407,12 @@ pub(super) fn restore_volume(journal: &Journal, id: uuid::Uuid, destination: &Pa
         match std::fs::symlink_metadata(&root) {
             Ok(meta) if meta.is_dir() => (),
             Ok(_) => return Err(Error::Input),
-            Err(e) if e.kind()==std::io::ErrorKind::NotFound => {
-                std::fs::create_dir(&root).map_err(|_|Error::Storage)?;
-                std::fs::set_permissions(&root,std::fs::Permissions::from_mode(0o700)).map_err(|_|Error::Storage)?;
-                std::os::unix::fs::chown(&root,Some(10001),Some(10001)).map_err(|_|Error::Storage)?;
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                std::fs::create_dir(&root).map_err(|_| Error::Storage)?;
+                std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700))
+                    .map_err(|_| Error::Storage)?;
+                std::os::unix::fs::chown(&root, Some(10001), Some(10001))
+                    .map_err(|_| Error::Storage)?;
             }
             Err(_) => return Err(Error::Storage),
         }

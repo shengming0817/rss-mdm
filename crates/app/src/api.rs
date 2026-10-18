@@ -271,6 +271,44 @@ pub(crate) async fn from_compiled(
         .ok_or(Error::Configuration(ConfigIssue::ProductOrigin))?
         .to_owned();
     let providers = crate::device_pki::providers(&config.device_pki)?;
+    let windows_push = if let Some(push) = config
+        .native_protocols
+        .windows
+        .as_ref()
+        .and_then(|w| w.push.as_ref())
+    {
+        use sqlx::Connection;
+        let mut c = sqlx::PgConnection::connect_with(&config.access_database.options()?)
+            .await
+            .map_err(|_| Error::Unavailable(crate::Failure::Database))?;
+        let mut tx = c
+            .begin()
+            .await
+            .map_err(|_| Error::Unavailable(crate::Failure::Database))?;
+        sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
+            .bind(identity.tenant.to_string())
+            .execute(&mut *tx)
+            .await
+            .map_err(|_| Error::Unavailable(crate::Failure::Database))?;
+        let value = rss_mdm_windows_channel::wns_materials::load(
+            &mut tx,
+            &identity.tenant.to_string(),
+            push.revision,
+            &protection,
+            monotonic.clone(),
+            true,
+        )
+        .await?;
+        tx.rollback()
+            .await
+            .map_err(|_| Error::Unavailable(crate::Failure::Database))?;
+        c.close()
+            .await
+            .map_err(|_| Error::Unavailable(crate::Failure::Database))?;
+        Some(value)
+    } else {
+        None
+    };
     let windows = config
         .native_protocols
         .windows
@@ -298,8 +336,12 @@ pub(crate) async fn from_compiled(
                         .map_err(Error::from)
                 })
                 .transpose()?;
-            let mut windows =
-                crate::windows::Windows::load(config, clock.unix_seconds()?, providers.clone())?;
+            let mut windows = crate::windows::Windows::load(
+                config,
+                clock.unix_seconds()?,
+                providers.clone(),
+                windows_push,
+            )?;
             Arc::get_mut(&mut windows.channel)
                 .ok_or(Error::Conflict)?
                 .entra = entra;
@@ -572,6 +614,11 @@ pub(crate) fn from_state(
     };
     let authentication =
         rss_mdm_management_http::authentication_routes(authentication, management_boundary.clone());
+    let settings: Arc<dyn rss_mdm_management_http::settings::Source> =
+        Arc::new(crate::settings::Directory {
+            state: state.clone(),
+            apple: apple_state.clone(),
+        });
     let tenant_administration = rss_mdm_management_http::tenant_administration::router(
         Arc::new(
             rss_mdm_management_http::authorization::http::AuthenticationState {
@@ -581,6 +628,7 @@ pub(crate) fn from_state(
             },
         ),
         crate::tenant_registry::http::routes(state.identity.tenant_administration.clone()),
+        settings.clone(),
         state.identity_management.clone(),
         rss_mdm_management_http::boundary::Envelope {
             tenant: state.identity.management_tenant.to_string(),
@@ -602,8 +650,29 @@ pub(crate) fn from_state(
             )),
         management_boundary.clone(),
     );
+    let wns_management = rss_mdm_management_http::boundary::wrap(
+        rss_mdm_windows_channel::wns_materials::routes(windows_state.clone()).route_layer(
+            middleware::from_fn_with_state(
+                Arc::new(
+                    rss_mdm_management_http::authorization::http::AuthenticationState {
+                        identity: state.identity.browser(),
+                        access: state.access.authorization_store(),
+                        requests: state.requests.clone(),
+                    },
+                ),
+                rss_mdm_management_http::authorization::http::protect,
+            ),
+        ),
+        management_boundary.clone(),
+    );
     let management = rss_mdm_management_http::router(
         rss_mdm_management_http::Services {
+            mail: Arc::new(rss_mdm_mail_service::authority::Authority {
+                tenant: state.identity.tenant,
+                protection: state.protection.clone(),
+                audit: state.audit_store.clone(),
+            }),
+            settings,
             webhooks: state.webhooks.clone(),
             registration_channels: Arc::new(crate::registration_channels::Channels {
                 windows: state.windows.clone(),
@@ -798,6 +867,7 @@ pub(crate) fn from_state(
     let browser = Router::new()
         .merge(tenant_administration)
         .merge(management)
+        .merge(wns_management)
         .merge(apple_management)
         .merge(rss_mdm_apple_channel::browser_routes(
             apple_state.clone(),

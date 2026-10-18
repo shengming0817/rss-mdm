@@ -6,6 +6,7 @@ mod ledger;
 mod materials;
 pub mod recovery;
 mod storage;
+mod wns;
 use super::{Error, Result, deployment, installation, local::Journal};
 pub use accounts::OriginalAccount;
 use serde::{Deserialize, Serialize};
@@ -62,6 +63,7 @@ struct Host {
     operation: Uuid,
     authorization: Uuid,
     storage_operation: Uuid,
+    wns_operation: Uuid,
     keys: BTreeMap<String, Uuid>,
     source: Value,
     runtime: Option<Value>,
@@ -232,6 +234,7 @@ async fn prepare(input: &Request, journal: &Journal) -> Result<Saved> {
             operation,
             authorization: Uuid::new_v4(),
             storage_operation: Uuid::new_v4(),
+            wns_operation: Uuid::new_v4(),
             keys,
             source: runtime,
             runtime: None,
@@ -311,6 +314,14 @@ async fn prepare(input: &Request, journal: &Journal) -> Result<Saved> {
                 .map_err(|_| Error::Input)?,
             deployment: clone(&host.input.deployment)?,
         });
+    }
+    for (index, profile) in operator.mail_profiles.iter_mut().enumerate() {
+        profile.ca_file = copy_file(
+            journal,
+            &format!("smtp-{index}-ca.pem"),
+            &profile.ca_file,
+            false,
+        )?;
     }
     super::tenant_hosts::validate_slots(&operator)?;
     Ok(Saved {
@@ -483,6 +494,7 @@ async fn resume(mut saved: Saved, journal: &Journal) -> Result<Receipt> {
                 },
             )
             .await?;
+            wns::import(&mut c, &mut runtime, host.wns_operation, &protection).await?;
             let digest = super::application::fingerprint(&runtime)?;
             runtime["runtime_binding"] = json!({"host_id":host.id,"operation_id":host.operation,"revision":1,"material_digest":digest});
             let config: crate::config::Config =

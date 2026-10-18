@@ -150,6 +150,13 @@ async fn status(
     Extension(auth): Extension<RequestAuth>,
     Path(purpose): Path<Purpose>,
 ) -> Result<Json<Value>, Error> {
+    directory(&app, &auth, purpose).await.map(Json)
+}
+pub async fn directory(
+    app: &HttpState,
+    auth: &RequestAuth,
+    purpose: Purpose,
+) -> Result<Value, Error> {
     let p = proof(&app, &auth, false)?;
     let mut tx = app.access.begin_read(p.tenant_id()).await?;
     let (revision, desired) = storage::head(&mut tx, p.tenant_id(), purpose).await?;
@@ -164,10 +171,11 @@ async fn status(
         .collect::<std::collections::BTreeMap<_, _>>();
     tx.rollback().await.map_err(db)?;
     p.check_live()?;
-    Ok(Json(
+    Ok(
         json!({"revision":revision,"desiredRevision":desired,"versions":values,"runtimeObservation":"separate","accountBindings":accounts}),
-    ))
+    )
 }
+
 async fn operation(
     State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,

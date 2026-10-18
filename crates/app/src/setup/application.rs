@@ -30,6 +30,12 @@ async fn desired(c: &mut PgConnection, tenant: Uuid, runtime: &mut Value) -> Res
         runtime["content"]["storage"] =
             json!({"kind":"s3","revision":revision,"max_concurrent":8,"connect_seconds":5});
     }
+    if runtime["native_protocols"]["windows"].is_object() {
+        let revision:Option<i64>=sqlx::query_scalar("SELECT desired_revision FROM mdm_wns.heads WHERE tenant_id=$1 AND desired_revision IS NOT NULL").bind(tenant).fetch_optional(&mut *tx).await.map_err(|_|Error::Storage)?;
+        if let Some(revision) = revision {
+            runtime["native_protocols"]["windows"]["push"] = json!({"revision":revision});
+        }
+    }
     // 通道其余供应方材料尚未就绪时不凭空启用 Apple。
     if runtime["native_protocols"]["apple"].is_object() {
         let versions: Vec<(String,i64)> = sqlx::query_as("SELECT purpose,desired_revision FROM mdm_apple_runtime.heads WHERE tenant_id=$1 AND desired_revision IS NOT NULL").bind(tenant).fetch_all(&mut *tx).await.map_err(|_| Error::Storage)?;

@@ -14,6 +14,7 @@ mod push_worker;
 mod renewal;
 pub mod retention;
 mod unenrollment;
+pub mod wns_materials;
 pub use database::Store;
 mod diagnostic;
 pub use diagnostic::{ConfigIssue, Failure};

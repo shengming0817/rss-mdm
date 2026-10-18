@@ -2085,3 +2085,8 @@ consume(('crates/app/src/setup/application.rs',), 'deployment.management-tenant 
 consume(('crates/app/src/setup/protection.rs',), 'content.storage execution.agent.task_trust apple.host')
 
 consume(('crates/content-service/src/backup.rs','crates/app/src/setup/transfer/*'), 'content.storage installation.migration audit.integrity apple.host')
+
+consume(('crates/app/src/settings.rs','crates/management-http/src/settings.rs','crates/management-http/schema/SettingsCatalog.json'), 'execution.agent.task_trust')
+consume(('crates/windows-channel/src/wns_materials.rs','crates/windows-channel/schema/wns-materials.sql'), 'windows.management')
+add('installation.smtp_transport', selectors=('setup::providers::mail::tests::real_tls_authentication_and_unknown_submission_are_distinct',), profile='none', fixtures=('windows',), sources=('crates/mail-service/src/transport.rs',), tests=('crates/app/tests/setup/mail.rs',))
+add('installation.smtp', selectors=('setup::providers::mail::tests::unknown_submission_is_not_requeued_and_materials_rewrap',), fixtures=('windows',), sources=('crates/mail-service/src/*','crates/mail-service/schema/*','crates/app/src/setup/providers/mail.rs','crates/management-http/src/mail.rs'), tests=('crates/app/tests/setup/mail.rs',))

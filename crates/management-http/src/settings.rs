@@ -1,10 +1,12 @@
 //! Permission-filtered settings directory. Domain services remain the only write/state owners.
 use crate::{Error, authorization::context::RequestAuth};
 use axum::{Extension, Json};
+use rss_mdm_audit_integration::RequestAudit;
 use rss_mdm_authorization_service::{Permission, context::AuthorizedPrincipal};
 use serde::Serialize;
+use std::sync::Arc;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum Scope {
     Deployment,
@@ -12,7 +14,7 @@ pub enum Scope {
     Tenant,
     Device,
 }
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum Custody {
     DeploymentOperator,
@@ -23,7 +25,7 @@ pub enum Custody {
     Device,
 }
 /// Applicable lifecycle, not a claim that any external qualification has been observed.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum Lifecycle {
     DeploymentMaintenance,
@@ -38,7 +40,7 @@ pub enum Lifecycle {
     SignedPackage,
     DeviceGenerated,
 }
-#[derive(Clone, Copy, Debug, Serialize)]
+#[derive(Clone, Copy, Debug, Serialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct Item {
     pub id: &'static str,
@@ -47,6 +49,7 @@ pub struct Item {
     pub custody: Custody,
     pub lifecycle: Lifecycle,
     #[serde(skip)]
+    #[schemars(skip)]
     permission: Permission,
 }
 macro_rules! item {
@@ -173,7 +176,7 @@ pub const CATALOG: &[Item] = &[
         "execution-service",
         DomainService,
         SigningTrust,
-        AgentEnrollmentRead
+        RegistrationConfigurationRead
     ),
     item!(
         "oidc-state",
@@ -362,7 +365,7 @@ pub const CATALOG: &[Item] = &[
     item!(
         "smtp",
         Tenant,
-        "integrations",
+        "mail-service",
         DomainService,
         ProviderCredential,
         RegistrationConfigurationRead
@@ -405,7 +408,7 @@ pub const CATALOG: &[Item] = &[
         "registration-service",
         DomainService,
         BusinessConfiguration,
-        RegistrationConfigurationRead
+        AgentEnrollmentRead
     ),
 ];
 fn catalog(proof: &AuthorizedPrincipal, platform: bool) -> Result<Vec<Item>, Error> {
@@ -426,23 +429,118 @@ fn catalog(proof: &AuthorizedPrincipal, platform: bool) -> Result<Vec<Item>, Err
     proof.check_live()?;
     Ok(items)
 }
+#[derive(Clone, Copy, Debug, Serialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum Status {
+    Unknown,
+    Unconfigured,
+    Configured,
+    Loaded,
+    Pending,
+    Unavailable,
+}
+#[derive(Clone, Serialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct Projection {
+    pub status: Status,
+    pub revision: Option<i64>,
+    pub desired_revision: Option<i64>,
+    pub applied_revision: Option<i64>,
+    pub configured_count: Option<usize>,
+    pub reason: Option<&'static str>,
+    pub actions: Vec<Action>,
+}
+#[derive(Clone, Serialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct Action {
+    pub name: &'static str,
+    pub href: String,
+}
+impl Projection {
+    pub fn unknown(href: Option<&'static str>) -> Self {
+        Self {
+            status: Status::Unknown,
+            revision: None,
+            desired_revision: None,
+            applied_revision: None,
+            configured_count: None,
+            reason: Some("owner_observation_required"),
+            actions: href
+                .map(|href| {
+                    vec![Action {
+                        name: "inspect",
+                        href: href.into(),
+                    }]
+                })
+                .unwrap_or_default(),
+        }
+    }
+}
+#[derive(Serialize, schemars::JsonSchema)]
+pub struct Entry {
+    #[serde(flatten)]
+    pub item: Item,
+    #[serde(flatten)]
+    pub projection: Projection,
+}
+#[derive(Serialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct Catalog {
+    pub items: Vec<Entry>,
+}
+pub trait Source: Send + Sync {
+    fn project<'a>(
+        &'a self,
+        proof: Arc<AuthorizedPrincipal>,
+        audit: RequestAudit,
+        continuation: crate::http_operation::RequestContinuation,
+        items: Vec<Item>,
+    ) -> futures::future::BoxFuture<'a, Result<Vec<Entry>, Error>>;
+}
+async fn directory(
+    source: Arc<dyn Source>,
+    auth: RequestAuth,
+    audit: RequestAudit,
+    continuation: crate::http_operation::RequestContinuation,
+    platform: bool,
+) -> Result<Json<Catalog>, Error> {
+    let items = catalog(&auth.proof, platform)?;
+    let expected = items.iter().map(|i| i.id).collect::<Vec<_>>();
+    let entries = source
+        .project(auth.proof.clone(), audit, continuation, items)
+        .await?;
+    if entries.iter().map(|e| e.item.id).collect::<Vec<_>>() != expected {
+        return Err(Error::Conflict);
+    }
+    auth.proof.check_live()?;
+    Ok(Json(Catalog { items: entries }))
+}
 pub(crate) async fn tenant(
+    Extension(source): Extension<Arc<dyn Source>>,
     Extension(auth): Extension<RequestAuth>,
-) -> Result<Json<serde_json::Value>, Error> {
-    Ok(Json(
-        serde_json::json!({"items":catalog(&auth.proof,false)?}),
-    ))
+    Extension(audit): Extension<RequestAudit>,
+    Extension(continuation): Extension<crate::http_operation::RequestContinuation>,
+) -> Result<Json<Catalog>, Error> {
+    directory(source, auth, audit, continuation, false).await
 }
 pub(crate) async fn platform(
+    Extension(source): Extension<Arc<dyn Source>>,
     Extension(auth): Extension<RequestAuth>,
-) -> Result<Json<serde_json::Value>, Error> {
-    Ok(Json(
-        serde_json::json!({"items":catalog(&auth.proof,true)?}),
-    ))
+    Extension(audit): Extension<RequestAudit>,
+    Extension(continuation): Extension<crate::http_operation::RequestContinuation>,
+) -> Result<Json<Catalog>, Error> {
+    directory(source, auth, audit, continuation, true).await
 }
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn published_catalog_schema_matches_runtime_dto() {
+        let actual = serde_json::to_value(schemars::schema_for!(Catalog)).unwrap();
+        let published: serde_json::Value =
+            serde_json::from_str(include_str!("../schema/SettingsCatalog.json")).unwrap();
+        assert_eq!(actual, published);
+    }
     #[test]
     fn catalog_keeps_fixed_ledger_and_device_custody_distinct() {
         assert_eq!(CATALOG.len(), 43);

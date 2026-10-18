@@ -300,8 +300,16 @@ pub(super) fn units() -> Vec<(&'static str, &'static str)> {
             rss_mdm_execution_service::task_signing::trust::INSTALL_SQL,
         ),
         (
+            "windows-wns-materials-v1",
+            rss_mdm_windows_channel::wns_materials::INSTALL_SQL,
+        ),
+        (
             "content-connections-v1",
             rss_mdm_content_service::connections::INSTALL_SQL,
+        ),
+        (
+            "mail-materials-v1",
+            rss_mdm_mail_service::store::INSTALL_SQL,
         ),
     ]
 }

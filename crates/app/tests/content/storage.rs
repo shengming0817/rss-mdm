@@ -702,7 +702,7 @@ async fn restored_provider_version_rebinds_atomically_without_reissuing_content(
     resources
         .finish(async {
             let now = crate::windows::test_support::now();
-            let bytes = b"native-ciphertext-restore-fixture";
+            let bytes: &[u8] = b"native-ciphertext-restore-fixture";
             let binding = binding(bytes, StorageClass::NativeConfiguration);
             let artifact = binding.artifact()?;
             let operation = Uuid::new_v4();

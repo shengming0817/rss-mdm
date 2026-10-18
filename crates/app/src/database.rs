@@ -164,6 +164,7 @@ async fn admission(pool: &PgPool) -> Result<(), Error> {
         .map_err(db)?;
     let contracts = [
         crate::tenant_registry::ACCESS_CONTRACT,
+        rss_mdm_mail_service::ACCESS_CONTRACT,
         rss_mdm_content_service::connections::ACCESS_CONTRACT,
         rss_mdm_webhook_service::ACCESS_CONTRACT,
         rss_mdm_authorization_service::ACCESS_CONTRACT,

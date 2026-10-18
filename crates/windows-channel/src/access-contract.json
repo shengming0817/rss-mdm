@@ -139,6 +139,33 @@
         "accepted"
       ],
       "delete_policy": "expires_at<clock_timestamp"
+    },
+    {
+      "schema": "mdm_wns",
+      "table": "heads",
+      "read_write": true,
+      "updates": [
+        "revision"
+      ],
+      "delete_policy": null,
+      "insert_policy": "current_user::text='mdm_owner'::textorrevision=0anddesired_revisionisnull"
+    },
+    {
+      "schema": "mdm_wns",
+      "table": "versions",
+      "read_write": true,
+      "updates": [
+        "revoked"
+      ],
+      "delete_policy": null,
+      "insert_policy": "current_user::text='mdm_owner'::textorqualified_atisnullandattempted_atisnullandfailure_reasonisnullandnotselectedandnotrevoked"
+    },
+    {
+      "schema": "mdm_wns",
+      "table": "revocations",
+      "read_write": true,
+      "updates": [],
+      "delete_policy": null
     }
   ],
   "functions": [],

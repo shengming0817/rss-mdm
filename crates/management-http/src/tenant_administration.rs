@@ -7,6 +7,7 @@ use std::sync::Arc;
 pub fn router(
     authentication: Arc<AuthenticationState>,
     registry: Router,
+    settings: Arc<dyn crate::settings::Source>,
     policy: Arc<crate::authorization::identity_management::IdentityManagementPolicy>,
     envelope: crate::boundary::Envelope,
 ) -> Router {
@@ -26,7 +27,7 @@ pub fn router(
                 .merge(registry)
                 .route(
                     "/settings/catalog",
-                    axum::routing::get(crate::settings::platform),
+                    axum::routing::get(crate::settings::platform).layer(axum::Extension(settings)),
                 ),
         )
         .route_layer(middleware::from_fn_with_state(
