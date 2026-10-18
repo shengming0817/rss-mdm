@@ -303,15 +303,15 @@ async fn template_flow(
     let mut ready = native::post(&peer.mutual, &peer.url, &report).await?;
     ensure!(ready.status() == StatusCode::OK);
     // Applicability requires authenticated native capability facts before admission.
-    // The existing outbox accepts the action before its native read can be sent.
+    // Both outbox acceptance and the worker-created CollectionRun precede protocol delivery.
     use sqlx::Connection;
     let mut pg =
         sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?)
             .await?;
     let pending = tokio::time::timeout(Duration::from_secs(20), async {
         loop {
-            let ready: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_commands.action_runs WHERE tenant_id=$1::uuid AND gateway_accepted AND state->>'execution' IN('not_started','running'))")
-                .bind(case_tenant()).fetch_one(&mut pg).await?;
+            let ready: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_commands.action_runs r JOIN mdm_policy.versions v ON(v.tenant_id,v.id)=(r.tenant_id,r.policy_version) JOIN mdm_access.collection_runs c ON(c.tenant_id,c.id)=(r.tenant_id,r.id) WHERE r.tenant_id=$1::uuid AND v.policy=$2 AND r.gateway_accepted AND c.sealed_at IS NULL)")
+                .bind(case_tenant()).bind(policy).fetch_one(&mut pg).await?;
             if ready { break; }
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
@@ -537,7 +537,7 @@ async fn template_flow(
     // History is retained, but it cannot occupy the entire check-in recovery page.
     sqlx::query("INSERT INTO mdm_commands.action_runs(tenant_id,id,policy_version,device,registration,generation,occurrence,created_at,available_at,deadline,state,gateway_accepted,dispatch_fingerprint,source_objects) SELECT tenant_id,gen_random_uuid(),policy_version,device,registration,generation,'blocked-history:'||n,created_at-1000,available_at,deadline,jsonb_set(jsonb_set(state,'{execution}',to_jsonb(CASE WHEN n<=65 THEN 'unknown' ELSE 'not_started' END::text)),'{cancellation}',to_jsonb(CASE WHEN n<=65 THEN 'none' ELSE 'confirmed' END::text)),gateway_accepted,dispatch_fingerprint,source_objects FROM mdm_commands.action_runs CROSS JOIN generate_series(1,130) n WHERE tenant_id=$1::uuid AND id=$2")
         .bind(case_tenant()).bind(runs[0]).execute(&mut pg).await?;
-    let next:Uuid=sqlx::query_scalar("UPDATE mdm_commands.action_runs SET gateway_accepted=true WHERE tenant_id=$1::uuid AND id<>$2 AND occurrence NOT LIKE 'blocked-history:%' RETURNING id")
+    let next:Uuid=sqlx::query_scalar("SELECT id FROM mdm_commands.action_runs WHERE tenant_id=$1::uuid AND id<>$2 AND occurrence NOT LIKE 'blocked-history:%'")
         .bind(case_tenant()).bind(runs[0]).fetch_one(&mut pg).await?;
     tokio::time::timeout(std::time::Duration::from_secs(30), async {
         loop {
