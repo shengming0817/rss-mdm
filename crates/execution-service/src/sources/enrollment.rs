@@ -87,6 +87,14 @@ impl EnrollmentPolicy {
             .entries
             .for_platform(platform)
             .ok_or(Error::Unsupported)?;
+        let run = crate::actions::storage::load_run(tx, issue.run).await?;
+        let authorization = run.invocation.map_or(
+            wire::TaskAuthorization::Policy {
+                policy_id: self.owner,
+                policy_version: self.id,
+            },
+            |invocation| invocation.authorization,
+        );
         checked_input(
             wire::EnrollmentTaskSpec {
                 wire_version: wire::WIRE_VERSION,
@@ -107,6 +115,7 @@ impl EnrollmentPolicy {
                 permit: issue.permit,
                 expires_at: issue.expiry,
                 organization: self.frozen.organization,
+                authorization,
                 entry,
             }
             .try_into(),

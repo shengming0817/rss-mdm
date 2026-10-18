@@ -241,6 +241,13 @@ pub struct SelfServiceDirectoryItem {
     deny_unknown_fields
 )]
 pub enum SelfServiceTask {
+    /// Administrator-published native MDM enrollment; no caller-supplied parameters.
+    Enrollment {
+        /// Organization selected by Policy.
+        organization: Uuid,
+        /// Fixed OS enrollment entry.
+        entry: crate::runtime::EnrollmentEntry,
+    },
     /// Resource-owned script execution interface.
     Script {
         /// Exact Resource selection.
@@ -371,6 +378,11 @@ pub struct SelfServiceStatus {
 #[derive(Clone, Debug, Deserialize, Serialize, schemars::JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum SelfServiceResult {
+    /// OS entry outcome, not proof of completed MDM registration.
+    Enrollment {
+        /// Observed entry outcome.
+        outcome: crate::runtime::EnrollmentEntryOutcome,
+    },
     /// Script evidence returned only when output-read permissions permit it.
     Script {
         /// Original bounded script evidence.

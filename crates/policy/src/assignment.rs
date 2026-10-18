@@ -302,6 +302,7 @@ impl Definition {
             if !matches!(
                 self.action,
                 Action::Execution { .. }
+                    | Action::RequestMdmEnrollment { .. }
                     | Action::Software {
                         intent: SoftwareIntent::AvailableInstall,
                         ..

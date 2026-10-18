@@ -1,5 +1,40 @@
 {
   "$defs": {
+    "EnrollmentEntryOutcome": {
+      "description": "Outcome of asking the OS to open its enrollment UI; never a claim of active MDM authority.",
+      "oneOf": [
+        {
+          "const": "opened",
+          "description": "Entry opened; enrollment still awaits independent observation and MDM registration.",
+          "type": "string"
+        },
+        {
+          "const": "user_required",
+          "description": "The OS requires a logged-in user or explicit approval.",
+          "type": "string"
+        },
+        {
+          "const": "third_party_conflict",
+          "description": "Another MDM owns enrollment.",
+          "type": "string"
+        },
+        {
+          "const": "unsupported",
+          "description": "The local platform does not support this entry.",
+          "type": "string"
+        },
+        {
+          "const": "failed",
+          "description": "Opening failed.",
+          "type": "string"
+        },
+        {
+          "const": "unknown",
+          "description": "Result is uncertain; reconcile local state before attempting again.",
+          "type": "string"
+        }
+      ]
+    },
     "OutputQuality": {
       "description": "Output completeness controls whether collection facts may be accepted.",
       "oneOf": [
@@ -140,6 +175,25 @@
     "SelfServiceResult": {
       "description": "Authorized evidence; execution state is available independently from sensitive output.",
       "oneOf": [
+        {
+          "additionalProperties": false,
+          "description": "OS entry outcome, not proof of completed MDM registration.",
+          "properties": {
+            "kind": {
+              "const": "enrollment",
+              "type": "string"
+            },
+            "outcome": {
+              "$ref": "#/$defs/EnrollmentEntryOutcome",
+              "description": "Observed entry outcome."
+            }
+          },
+          "required": [
+            "kind",
+            "outcome"
+          ],
+          "type": "object"
+        },
         {
           "additionalProperties": false,
           "description": "Script evidence returned only when output-read permissions permit it.",

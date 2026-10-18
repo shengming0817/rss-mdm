@@ -1,5 +1,52 @@
 {
   "$defs": {
+    "EnrollmentEntry": {
+      "description": "Platform-owned enrollment entry; opening it never proves enrollment completed.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "description": "Open Windows' standard device-enrollment UI for this HTTPS discovery authority.",
+          "properties": {
+            "kind": {
+              "const": "windows",
+              "type": "string"
+            },
+            "server": {
+              "description": "Organization's discovery server.",
+              "maxLength": 2048,
+              "pattern": "^https://[^/@?#\\s]+/?$",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "server"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Open the organization's HTTPS profile enrollment page; user/system approval remains required.",
+          "properties": {
+            "kind": {
+              "const": "macos",
+              "type": "string"
+            },
+            "url": {
+              "description": "Organization's managed enrollment entry.",
+              "maxLength": 2048,
+              "pattern": "^https://[^/@?#\\s]+(?:/[^#\\s]*)?$",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "url"
+          ],
+          "type": "object"
+        }
+      ]
+    },
     "ExecutionIdentity": {
       "description": "Required operating-system execution identity.",
       "oneOf": [
@@ -211,6 +258,31 @@
     "SelfServiceTask": {
       "description": "One directory interface; software does not inherit script parameter semantics.",
       "oneOf": [
+        {
+          "additionalProperties": false,
+          "description": "Administrator-published native MDM enrollment; no caller-supplied parameters.",
+          "properties": {
+            "entry": {
+              "$ref": "#/$defs/EnrollmentEntry",
+              "description": "Fixed OS enrollment entry."
+            },
+            "kind": {
+              "const": "enrollment",
+              "type": "string"
+            },
+            "organization": {
+              "description": "Organization selected by Policy.",
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "organization",
+            "entry"
+          ],
+          "type": "object"
+        },
         {
           "additionalProperties": false,
           "description": "Resource-owned script execution interface.",

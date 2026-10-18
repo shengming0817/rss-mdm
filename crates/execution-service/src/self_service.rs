@@ -34,17 +34,20 @@ pub struct Invocation {
     pub authorization: wire::TaskAuthorization,
     pub parameters: std::collections::BTreeMap<String, Value>,
     pub basis: access::Basis,
-    pub execution_target: wire::SoftwareExecutionTarget,
+    pub execution_target: Option<wire::SoftwareExecutionTarget>,
 }
 impl Invocation {
-    pub async fn valid_in(
+    /// Recheck the same employee publication/qualification at Start and native authentication.
+    /// The borrowed connection keeps revocation and scope checks in the caller's transaction.
+    pub(crate) async fn qualified_on(
         &self,
-        service: &ExecutionService,
-        tx: &mut PgTransaction<'_>,
-        plan: &db::ScheduledPolicy,
-        target: &Target,
-        now: i64,
-    ) -> Result<bool> {
+        c: &mut sqlx::PgConnection,
+        owner: Uuid,
+        tenant: rss_request_context::TenantId,
+        instance: &str,
+        sessions: &crate::authorization::session::SessionAuthority,
+    ) -> Result<Option<Uuid>> {
+        use sqlx::Row;
         let wire::TaskAuthorization::SelfService {
             subject,
             source,
@@ -57,36 +60,86 @@ impl Invocation {
             ..
         } = &self.authorization
         else {
-            return Ok(false);
+            return Ok(None);
         };
-        let Some(policy) =
-            crate::sources::storage::read_in(&service.policy_reader, tx, *policy_id).await?
-        else {
-            return Ok(false);
+        if owner != *policy_id {
+            return Ok(None);
+        }
+        sqlx::query("SELECT mdm_planning.policy_lock($1)")
+            .bind(owner)
+            .execute(&mut *c)
+            .await
+            .map_err(crate::database::db)?;
+        let row = sqlx::query("SELECT revision,current_version,definition FROM mdm_policy.policies WHERE tenant_id=$1::uuid AND id=$2 AND state='enabled'")
+            .bind(tenant.to_string()).bind(owner).fetch_optional(&mut *c).await.map_err(crate::database::db)?;
+        let Some(row) = row else {
+            return Ok(None);
         };
-        let Some(config) = &policy.definition.self_service else {
-            return Ok(false);
+        let definition: rss_mdm_policy::Definition = stored(serde_json::from_value(
+            row.try_get("definition").map_err(crate::database::db)?,
+        ))?;
+        let Some(config) = &definition.self_service else {
+            return Ok(None);
         };
-        let risk = effective_risk(&policy);
-        if policy.id != plan.owner()
-            || policy.version != *policy_version
-            || policy.revision as u64 != *policy_revision
-            || !policy.state.is_enabled()
+        let risk = if matches!(definition.action, rss_mdm_policy::Action::Software { .. }) {
+            2
+        } else {
+            config.risk_level.map_or(2, |r| r.value())
+        };
+        if row
+            .try_get::<Uuid, _>("current_version")
+            .map_err(crate::database::db)?
+            != *policy_version
+            || row
+                .try_get::<i64, _>("revision")
+                .map_err(crate::database::db)? as u64
+                != *policy_revision
             || !config.published
             || config.allow_ai != Some(*allow_ai)
             || risk != *risk_level
             || (*source == wire::SelfServiceCaller::Ai
                 && (!*allow_ai || (risk == 2 && !*confirmed)))
         {
-            return Ok(false);
+            return Ok(None);
         }
-        if access::qualify_in(service, tx, config, &self.basis)
+        if access::qualify_on(c, config, &self.basis, tenant, instance, sessions)
             .await?
             .as_ref()
             != Some(subject)
         {
-            return Ok(false);
+            return Ok(None);
         }
+        Ok(Some(definition.scope))
+    }
+    pub async fn valid_in(
+        &self,
+        service: &ExecutionService,
+        tx: &mut PgTransaction<'_>,
+        plan: &db::ScheduledPolicy,
+        target: &Target,
+        now: i64,
+    ) -> Result<bool> {
+        let invocation = self.clone();
+        let owner = plan.owner();
+        let tenant = service.tenant;
+        let instance = service.instance.clone();
+        let sessions = service.sessions.clone();
+        let current = tx
+            .with_connection(move |c| {
+                Box::pin(async move {
+                    Ok(invocation
+                        .qualified_on(c, owner, tenant, &instance, &sessions)
+                        .await)
+                })
+            })
+            .await??;
+        let Some(_) = current else {
+            return Ok(false);
+        };
+        let wire::TaskAuthorization::SelfService { policy_version, .. } = &self.authorization
+        else {
+            return Ok(false);
+        };
         match plan {
             db::ScheduledPolicy::Script(script) if script.id == *policy_version => {
                 if script
@@ -103,13 +156,13 @@ impl Invocation {
                     && software.assignment.intent()
                         == rss_mdm_policy::SoftwareIntent::AvailableInstall
                     && self.parameters.is_empty() => {}
+            db::ScheduledPolicy::Enrollment(enrollment)
+                if enrollment.id == *policy_version
+                    && self.parameters.is_empty()
+                    && self.execution_target.is_none() => {}
             _ => return Ok(false),
         }
-        if execution_target_in(service, tx, plan, target)
-            .await?
-            .as_ref()
-            != Some(&self.execution_target)
-        {
+        if execution_target_in(service, tx, plan, target).await? != self.execution_target {
             return Ok(false);
         }
         plan.authorized_in(service, tx, target, now).await
@@ -135,7 +188,7 @@ struct Prepared {
     parameters: std::collections::BTreeMap<String, Value>,
     slot: InvocationSlot,
     effect: Option<Value>,
-    execution_target: wire::SoftwareExecutionTarget,
+    execution_target: Option<wire::SoftwareExecutionTarget>,
 }
 async fn prepare_in(
     service: &ExecutionService,
@@ -184,9 +237,11 @@ async fn prepare_in(
                 parameters,
                 slot,
                 effect: None,
-                execution_target: execution_target_in(service, tx, plan, target)
-                    .await?
-                    .ok_or(Error::Forbidden)?,
+                execution_target: Some(
+                    execution_target_in(service, tx, plan, target)
+                        .await?
+                        .ok_or(Error::Forbidden)?,
+                ),
             }))
         }
         db::ScheduledPolicy::Software(software)
@@ -253,7 +308,58 @@ async fn prepare_in(
                     deadline: slot.deadline,
                 },
                 effect: Some(slot.effect),
-                execution_target: root.target.clone(),
+                execution_target: Some(root.target.clone()),
+            }))
+        }
+        db::ScheduledPolicy::Enrollment(enrollment) => {
+            if input.is_some_and(|input| !input.is_empty()) {
+                return Err(Error::Malformed.into());
+            }
+            let (pending, last) = production::policy_pending_in(
+                tx,
+                enrollment.owner,
+                enrollment.id,
+                target,
+                now,
+                true,
+            )
+            .await?;
+            let schedule = &enrollment.frozen.schedule;
+            if pending || !production::check_in_interval_elapsed(&schedule.trigger, last, now) {
+                return Ok(None);
+            }
+            let Some(slot) = schedule.occurrence(now, target.device.as_bytes())? else {
+                return Ok(None);
+            };
+            let available = slot.available_at.max(now);
+            let deadline = available
+                .checked_add(i64::from(enrollment.frozen.run_lifetime_seconds))
+                .ok_or(Error::Malformed)?
+                .min(schedule.ends_at())
+                .min(slot.window_end.unwrap_or(i64::MAX));
+            if deadline <= available {
+                return Ok(None);
+            }
+            let (platform, _) = db::agent_profile_in(service, tx, target.registration)
+                .await?
+                .ok_or(Error::Forbidden)?;
+            Ok(Some(Prepared {
+                task: wire::SelfServiceTask::Enrollment {
+                    organization: enrollment.frozen.organization,
+                    entry: enrollment
+                        .frozen
+                        .entries
+                        .for_platform(platform)
+                        .ok_or(Error::Unsupported)?,
+                },
+                parameters: Default::default(),
+                slot: InvocationSlot {
+                    occurrence: format!("self-service:{request}"),
+                    available,
+                    deadline,
+                },
+                effect: None,
+                execution_target: None,
             }))
         }
         _ => Ok(None),
@@ -491,6 +597,7 @@ impl ExecutionService {
                     if can_read { Some(wire::SelfServiceResult::Script { evidence: stored(serde_json::from_value(result.clone()))? }) } else { None }
                 }
                 (db::ScheduledPolicy::Software(_), Some(result)) => Some(wire::SelfServiceResult::Software { effect: stored(serde_json::from_value(result["effect"].clone()))? }),
+                (db::ScheduledPolicy::Enrollment(_), Some(result)) => Some(wire::SelfServiceResult::Enrollment { outcome: stored(serde_json::from_value(result["entryOutcome"].clone()))? }),
                 _ => None,
             };
             if let Some(proof) = proof { proof.check_live()?; }

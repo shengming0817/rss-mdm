@@ -58,10 +58,10 @@
     },
     {
       "family": "enrollment",
-      "payloadJson": "{\"kind\":\"enrollment\",\"task\":{\"wireVersion\":1,\"tenantId\":\"11111111-2222-4333-8444-555555555555\",\"deviceId\":\"agent\",\"platform\":\"macos\",\"architecture\":\"aarch64\",\"registrationId\":\"11111111-2222-4333-8444-555555555555\",\"generation\":7,\"taskId\":\"11111111-2222-4333-8444-555555555555\",\"attemptId\":\"11111111-2222-4333-8444-555555555555\",\"permit\":\"offer\",\"expiresAt\":200,\"organization\":\"11111111-2222-4333-8444-555555555555\",\"entry\":{\"kind\":\"macos\",\"url\":\"https://mdm.example.test/enroll\"}}}",
-      "signature": "-d3OKk6sEH-EtFqI5TFQHwzeqe2W-m2O3pDhUsAui8AJLvPgbQMoOoydrgdrBu6Wnu3X3dND_jmd1BSmFTdmBQ",
-      "signingBytesLength": 507,
-      "signingBytesSha256": "2d65e2f1b768f9bf0719876bd760cd0c08fdc57a6a162d7ec8790edd88ca514f"
+      "payloadJson": "{\"kind\":\"enrollment\",\"task\":{\"wireVersion\":1,\"tenantId\":\"11111111-2222-4333-8444-555555555555\",\"deviceId\":\"agent\",\"platform\":\"macos\",\"architecture\":\"aarch64\",\"registrationId\":\"11111111-2222-4333-8444-555555555555\",\"generation\":7,\"taskId\":\"11111111-2222-4333-8444-555555555555\",\"attemptId\":\"11111111-2222-4333-8444-555555555555\",\"permit\":\"offer\",\"expiresAt\":200,\"organization\":\"11111111-2222-4333-8444-555555555555\",\"authorization\":{\"kind\":\"policy\",\"policyId\":\"11111111-2222-4333-8444-555555555555\",\"policyVersion\":\"11111111-2222-4333-8444-555555555555\"},\"entry\":{\"kind\":\"macos\",\"url\":\"https://mdm.example.test/enroll\"}}}",
+      "signature": "TR1irJTEanrK2E2qG5xDOWjjioqcLpZuU04LQENTI1F6ZMOLyW0W7Zq5sZ251EgP8_lj6TDIL7f-yioZSAneBw",
+      "signingBytesLength": 646,
+      "signingBytesSha256": "8f758da65d64f9a05ccd7cf5356812e9dd7595bad58557cf3b7d7f621c7cdf28"
     }
   ],
   "collectionRevision": "COLLECT-M01 explicit device scope"

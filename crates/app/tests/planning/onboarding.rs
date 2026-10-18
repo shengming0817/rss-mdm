@@ -263,3 +263,77 @@ async fn uncertain_entry_survives_application_restart_and_policy_disable() -> Re
         })
         .await
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+#[ignore = "make t2 MODULE=planning.onboarding"]
+async fn employee_enrollment_is_opt_in_idempotent_and_rechecks_publication() -> Result<()> {
+    use rss_mdm_registration_service::enrollment::native::{AgentPolicyAuthority, Coordinates};
+    use sqlx::Connection;
+    let mut f = fixture().await?;
+    let resources = std::mem::take(&mut f.resources);
+    resources.finish(async {
+        let automation = start_automation(&f.base).await?;
+        let workers = worker(&f.base).await?;
+        report(&f, 0, "unenrolled").await?;
+        let directory = "/api/v1/agent/runtime/self-service?source=human";
+        let invoke = "/api/v1/agent/runtime/self-service/invocations";
+        ensure!(claim_request(&f.router, Uuid::new_v4()).await?.1["task"].is_null());
+        ensure!(agent_call(&f.router, Method::GET, directory, Some(case_credential()), None).await?.1["items"] == json!([]));
+        let id = Uuid::new_v4();
+        let mut definition = json!({"scope":case_task_scope(),"action":{
+            "kind":"request_mdm_enrollment","organization":case_tenant(),"runLifetimeSeconds":300,
+            "schedule":{"trigger":{"kind":"manual"},"misfire":{"kind":"coalesce_one"},"notBefore":0,"until":null,"jitterSeconds":0,"window":null}},
+            "selfService":{"access":{"kind":"device"},"published":false,"allowAi":false,
+            "displayName":"Register MDM","description":"Join the organization","prerequisites":"OS confirmation",
+            "sideEffects":"Device management","category":"Device","keywords":[]}});
+        let path = format!("/api/v1/policies/{id}");
+        post(&mut f.author, &f.router, &path, json!({"operationId":Uuid::new_v4(),"expectedRevision":0,
+            "input":{"action":"put","enabled":true,"definition":definition}})).await?;
+        ensure!(agent_call(&f.router, Method::GET, directory, Some(case_credential()), None).await?.1["items"] == json!([]));
+        definition["selfService"]["published"] = json!(true);
+        let policy = post(&mut f.author, &f.router, &path, json!({"operationId":Uuid::new_v4(),"expectedRevision":1,
+            "input":{"action":"put","enabled":true,"definition":definition}})).await?;
+        let available = agent_call(&f.router, Method::GET, directory, Some(case_credential()), None).await?;
+        ensure!(available.0 == StatusCode::OK && available.1["items"][0]["task"]["kind"] == "enrollment", "{available:?}");
+        ensure!(run_count(id)?.trim() == "0", "directory cannot initiate enrollment");
+        let input = json!({"operationId":Uuid::new_v4(),"policyId":id,"policyRevision":policy["revision"],
+            "policyVersion":policy["versionId"],"source":"human","confirmed":true,"parameters":{}});
+        let accepted = agent_call(&f.router, Method::POST, invoke, Some(case_credential()), Some(input.clone())).await?;
+        ensure!(accepted.0 == StatusCode::ACCEPTED, "{accepted:?}");
+        ensure!(agent_call(&f.router, Method::POST, invoke, Some(case_credential()), Some(input.clone())).await? == accepted);
+        let mut duplicate = input.clone(); duplicate["operationId"] = json!(Uuid::new_v4());
+        ensure!(agent_call(&f.router, Method::POST, invoke, Some(case_credential()), Some(duplicate)).await?.0 == StatusCode::CONFLICT);
+        let task = claim(&f.router).await?;
+        ensure!(task["payload"]["task"]["taskId"] == accepted.1["runId"]);
+        ensure!(task["payload"]["task"]["authorization"]["requestId"] == input["operationId"]);
+        task_event(&f.router, &task, json!({"kind":"received"})).await?;
+        task_event(&f.router, &task, json!({"kind":"start"})).await?;
+        let handoff = json!({"operationId":Uuid::new_v4(),"attemptId":task["payload"]["task"]["attemptId"],"password":credential("employee-mdm")});
+        let handoff_path = format!("/api/v1/agent/runtime/tasks/{}/enrollment", task["payload"]["task"]["taskId"].as_str().unwrap());
+        let native = agent_call(&f.router, Method::POST, &handoff_path, Some(case_credential()), Some(handoff)).await?;
+        ensure!(native.0 == StatusCode::OK, "{native:?}");
+        task_event(&f.router, &task, json!({"kind":"enrollment_result","outcome":"opened"})).await?;
+        let status = agent_call(&f.router, Method::GET, &format!("{invoke}/{}", input["operationId"].as_str().unwrap()), Some(case_credential()), None).await?;
+        ensure!(status.0 == StatusCode::OK && status.1["result"] == json!({"kind":"enrollment","outcome":"opened"}), "{status:?}");
+        ensure!(pg(&format!("SELECT count(*) FROM mdm_access.registrations WHERE tenant_id='{}' AND channel='mdm'",case_tenant()))?.trim() == "0");
+        let coordinates = Coordinates { tenant: case_tenant().into(), id: Uuid::parse_str(native.1["enrollmentId"].as_str().unwrap())?,
+            device: String::new(), actor: String::new(), instance: String::new(), version: 1, expected_generation: 0,
+            operation: Uuid::new_v4(), source: rss_mdm_inventory::ReportSource::MdmApple };
+        let mut connection = sqlx::PgConnection::connect_with(&crate::device::test_support::options("mdm_command_runtime")?.password("runtime-fixture")).await?;
+        let mut tx = connection.begin().await?;
+        crate::Database::configure_transaction(&mut tx, case_tenant()).await?;
+        f.execution.current(&mut tx, &coordinates).await?;
+        tx.rollback().await?;
+        definition["selfService"]["published"] = json!(false);
+        post(&mut f.author, &f.router, &path, json!({"operationId":Uuid::new_v4(),"expectedRevision":policy["revision"],
+            "input":{"action":"put","enabled":true,"definition":definition}})).await?;
+        let mut tx = connection.begin().await?;
+        crate::Database::configure_transaction(&mut tx, case_tenant()).await?;
+        ensure!(matches!(f.execution.current(&mut tx, &coordinates).await, Err(rss_mdm_registration_service::Error::Forbidden)));
+        tx.rollback().await?;
+        connection.close().await?;
+        stop_worker(workers).await?;
+        stop_worker(automation).await?;
+        Ok(())
+    }).await
+}
