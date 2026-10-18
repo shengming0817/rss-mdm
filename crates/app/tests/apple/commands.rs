@@ -48,7 +48,7 @@ async fn native_controls_are_closed_and_never_claim_effects() -> Result<()> {
     let detail = f.operation(failed).await?;
     ensure!(
         detail["observation"]["error"]["ErrorChain"]["value"][0]["value"]["ErrorCode"]["value"]
-            == 12021,
+            == "12021",
         "safe native diagnostic missing: {detail}"
     );
     ensure!(!detail.to_string().contains(canary));

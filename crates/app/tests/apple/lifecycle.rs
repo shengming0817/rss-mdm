@@ -243,7 +243,8 @@ impl Peer {
                     .manage("Acknowledged", Some(id), Some(response))
                     .await?;
             }
-            tokio::time::sleep(Duration::from_millis(100)).await;
+            // Keep idle polling below the native peer admission rate (four requests/second).
+            tokio::time::sleep(Duration::from_millis(300)).await;
         }
         anyhow::bail!("native {kind} dispatch deadline")
     }
