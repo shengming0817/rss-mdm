@@ -32,6 +32,7 @@ fn secret(root: &std::path::Path, name: &str, value: &str) -> PathBuf {
 async fn real_storage_creation_replay_and_broad_import_rejection() -> anyhow::Result<()> {
     let fixture: Value = serde_json::from_slice(&std::fs::read(std::env::var("MDM_S3_FIXTURE")?)?)?;
     let root = tempfile::tempdir()?;
+    let directory = root.path().canonicalize()?;
     let profile = Profile {
         id: "controlled".into(),
         endpoint: fixture["endpoint"].as_str().unwrap().into(),
@@ -67,16 +68,16 @@ async fn real_storage_creation_replay_and_broad_import_rejection() -> anyhow::Re
         .into(),
         token: None,
     };
-    let first = prepare(root.path(), &profile, tenant, operation, &material).await?;
+    let first = prepare(&directory, &profile, tenant, operation, &material).await?;
     anyhow::ensure!(
         first.qualified && first.namespace == format!("{}/{tenant}", profile.namespace)
     );
-    let replay = prepare(root.path(), &profile, tenant, operation, &material).await?;
+    let replay = prepare(&directory, &profile, tenant, operation, &material).await?;
     anyhow::ensure!(serde_json::to_value(first)? == serde_json::to_value(replay)?);
     let mut changed = material;
     changed.secret = uuid::Uuid::new_v4().to_string().into();
     anyhow::ensure!(matches!(
-        prepare(root.path(), &profile, tenant, operation, &changed).await,
+        prepare(&directory, &profile, tenant, operation, &changed).await,
         Err(Error::Conflict)
     ));
     let broad = Workload {
@@ -86,7 +87,7 @@ async fn real_storage_creation_replay_and_broad_import_rejection() -> anyhow::Re
         token: None,
     };
     anyhow::ensure!(
-        prepare(root.path(), &profile, tenant, uuid::Uuid::new_v4(), &broad)
+        prepare(&directory, &profile, tenant, uuid::Uuid::new_v4(), &broad)
             .await
             .is_err()
     );
