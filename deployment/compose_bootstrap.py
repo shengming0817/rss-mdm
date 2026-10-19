@@ -77,8 +77,8 @@ def main():
     def leaf(prefix, names):
         key = inputs / (prefix+'.key')
         cert = inputs / (prefix+'.crt')
-        renew = prefix == 'postgres' and (os.environ.get('MDM_RENEW_POSTGRES_TLS') == '1'
-            or (cert.exists() and subprocess.run(['openssl','x509','-in',str(cert),'-checkend','604800','-noout'],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,timeout=5).returncode != 0))
+        renew = prefix == 'gateway-next' or (prefix == 'postgres' and (os.environ.get('MDM_RENEW_POSTGRES_TLS') == '1'
+            or (cert.exists() and subprocess.run(['openssl','x509','-in',str(cert),'-checkend','604800','-noout'],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,timeout=5).returncode != 0)))
         if cert.exists() and not renew:
             return
         extensions = inputs / (prefix+'.extensions')
@@ -101,6 +101,10 @@ def main():
         trust = inputs/'gateway-ca.crt'
     else:
         raise ValueError('unsupported TLS mode')
+    if os.environ.get('MDM_RENEW_GATEWAY_TLS') == '1':
+        if os.environ['MDM_TLS_MODE'] != 'local':
+            raise ValueError('import organization gateway TLS through configure-host')
+        leaf('gateway-next', sorted({p.hostname for p in parsed}))
     for name in ('platform-password', 'administrator-password'):
         source = Path('/inputs')/name
         if source.exists():

@@ -71,6 +71,7 @@ class AmbientEnvironment(unittest.TestCase):
             def command(*args):
                 if args[:3]==('docker','context','inspect'):
                     return json.dumps([{'Endpoints':{'docker':{'Host':'unix:///tmp/docker.sock'}}}])
+                if args[:2]==('docker','run'):return '0'
                 return image
             metadata=mock.Mock(st_mode=0o140660,st_gid=0)
             with mock.patch('candidate_runtime.verify_candidate',return_value=manifest),mock.patch('candidate_runtime.load_ui',return_value={'id':image,'os':'linux','architecture':'arm64'}),\

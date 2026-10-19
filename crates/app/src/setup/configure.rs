@@ -50,6 +50,11 @@ pub struct Channels {
 #[derive(Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Change {
+    GatewayTls {
+        certificate_file: PathBuf,
+        private_key_file: PathBuf,
+        trust_file: PathBuf,
+    },
     WebhookNetworks {
         networks: Vec<crate::webhooks::Network>,
     },
@@ -527,6 +532,22 @@ pub async fn run(request: Request) -> Result<Receipt> {
             return Err(Error::Conflict);
         }
         match &request.change {
+            Change::GatewayTls {
+                certificate_file,
+                private_key_file,
+                trust_file,
+            } => {
+                let tls = super::deployment::GatewayTls::prepare(
+                    &journal,
+                    certificate_file,
+                    private_key_file,
+                    trust_file,
+                )?;
+                journal.secret(
+                    "gateway.json",
+                    &serde_json::to_vec(&tls).map_err(|_| Error::Input)?,
+                )?;
+            }
             Change::Oidc { settings } => oidc(&journal, &mut runtime, settings)?,
             Change::WebhookNetworks { networks } => {
                 let tenant = runtime["identity"]["tenant_id"]
@@ -552,7 +573,9 @@ pub async fn run(request: Request) -> Result<Receipt> {
             .checked_add(1)
             .filter(|r| *r <= i64::MAX as u64)
             .ok_or(Error::Input)?;
-        let digest = super::application::fingerprint(&runtime)?;
+        let digest = super::application::fingerprint(
+            &serde_json::json!({"runtime":runtime,"gateway":journal.load::<super::deployment::GatewayTls>("gateway.json")?}),
+        )?;
         runtime["runtime_binding"] = json!({"host_id":request.host_id,"operation_id":request.operation_id,"revision":revision,"material_digest":digest});
         let config: crate::config::Config =
             serde_json::from_value(runtime.clone()).map_err(|_| Error::Input)?;
@@ -573,6 +596,7 @@ pub async fn run(request: Request) -> Result<Receipt> {
     };
     root.save("configuration-operation.json", &Some(request.operation_id))?;
     host.save("requested-runtime.json", &candidate)?;
+    publish_gateway(&journal, &host)?;
     drop(host);
     let old = progress
         .application
@@ -612,6 +636,13 @@ pub async fn run(request: Request) -> Result<Receipt> {
     root.save("configuration-operation.json", &Option::<Uuid>::None)?;
     c.close().await.map_err(|_| Error::Storage)?;
     Ok(result)
+}
+
+fn publish_gateway(journal: &Journal, host: &Journal) -> Result<()> {
+    if let Some(tls) = journal.load::<super::deployment::GatewayTls>("gateway.json")? {
+        host.save("gateway-tls.json", &tls)?;
+    }
+    Ok(())
 }
 
 async fn admit_configuration(root: &Journal, operation: Uuid) -> Result<()> {

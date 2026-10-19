@@ -9,7 +9,7 @@ use std::{
     time::Duration,
 };
 
-#[derive(Deserialize, Serialize)]
+#[derive(Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
     /// Fixed local OCI image ID or a repository digest, never a mutable tag.
@@ -23,6 +23,53 @@ pub struct Config {
     pub state_volume: String,
     pub network: String,
     pub publish_ip: std::net::IpAddr,
+}
+#[derive(Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct GatewayTls {
+    pub certificate_file: PathBuf,
+    pub private_key_file: PathBuf,
+    pub trust_file: PathBuf,
+    pub digest: String,
+}
+impl GatewayTls {
+    pub(super) fn prepare(
+        journal: &Journal,
+        certificate: &Path,
+        key: &Path,
+        trust: &Path,
+    ) -> Result<Self> {
+        let certificate =
+            crate::config::read(certificate, 128 * 1024, false).map_err(|_| Error::Input)?;
+        let key = crate::config::read(key, 32768, true).map_err(|_| Error::Input)?;
+        let trust = crate::config::read(trust, 128 * 1024, false).map_err(|_| Error::Input)?;
+        let cert = openssl::x509::X509::from_pem(&certificate).map_err(|_| Error::Input)?;
+        let private = openssl::pkey::PKey::private_key_from_pem(&key).map_err(|_| Error::Input)?;
+        if !cert
+            .public_key()
+            .map_err(|_| Error::Input)?
+            .public_eq(&private)
+        {
+            return Err(Error::Input);
+        }
+        reqwest::Certificate::from_pem(&trust).map_err(|_| Error::Input)?;
+        let mut digest = Sha256::new();
+        for bytes in [certificate.as_slice(), key.as_slice(), trust.as_slice()] {
+            digest.update((bytes.len() as u64).to_be_bytes());
+            digest.update(bytes);
+        }
+        Ok(Self {
+            certificate_file: journal.secret("gateway.crt", &certificate)?,
+            private_key_file: journal.secret("gateway.key", &key)?,
+            trust_file: journal.secret("gateway-ca.crt", &trust)?,
+            digest: format!("{:x}", digest.finalize()),
+        })
+    }
+    fn apply(&self, config: &mut Config) {
+        config.certificate_file = self.certificate_file.clone();
+        config.private_key_file = self.private_key_file.clone();
+        config.trust_file = self.trust_file.clone();
+    }
 }
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -231,6 +278,14 @@ fn network_origin(decoded: &crate::config::Config) -> Result<url::Url> {
 /// Apply an immutable, already prepared runtime snapshot and verify the actual HTTPS process.
 /// Returns no success receipt until readyz reports the exact host, tenant, operation and revision.
 pub async fn apply(directory: &Path, config: &Config, runtime: &Value) -> Result<Applied> {
+    apply_snapshot(directory, config, runtime, true).await
+}
+async fn apply_snapshot(
+    directory: &Path,
+    config: &Config,
+    runtime: &Value,
+    requested: bool,
+) -> Result<Applied> {
     let decoded: crate::config::Config =
         serde_json::from_value(runtime.clone()).map_err(|_| Error::Input)?;
     let compiled = decoded.compile().map_err(|_| Error::Input)?;
@@ -240,15 +295,20 @@ pub async fn apply(directory: &Path, config: &Config, runtime: &Value) -> Result
     infrastructure_name(&config.network)?;
     image_present(&config.server_image).await?;
     image_present(&config.gateway_image).await?;
+    let name = format!("rss-mdm-{}", decoded.runtime_binding.host_id.simple());
+    let host_root = directory.join(&name);
+    let owner = Journal::open(&host_root)?;
+    let mut effective = config.clone();
+    if requested && let Some(tls) = owner.load::<GatewayTls>("gateway-tls.json")? {
+        tls.apply(&mut effective);
+    }
+    let config = &effective;
     let certificate = crate::config::read(&config.certificate_file, 128 * 1024, false)
         .map_err(|_| Error::Input)?;
     let key =
         crate::config::read(&config.private_key_file, 32768, true).map_err(|_| Error::Input)?;
     let root =
         crate::config::read(&config.trust_file, 128 * 1024, false).map_err(|_| Error::Input)?;
-    let name = format!("rss-mdm-{}", decoded.runtime_binding.host_id.simple());
-    let host_root = directory.join(&name);
-    let owner = Journal::open(&host_root)?;
     let previous = owner.load::<Applied>("applied.json")?;
     if let Some(previous) = &previous {
         admit_successor(
@@ -266,7 +326,9 @@ pub async fn apply(directory: &Path, config: &Config, runtime: &Value) -> Result
         "source-runtime.json",
         &serde_json::to_vec(runtime).map_err(|_| Error::Input)?,
     )?;
-    owner.save("requested-runtime.json", runtime)?;
+    if requested {
+        owner.save("requested-runtime.json", runtime)?;
+    }
     let mut projected = runtime.clone();
     let mut mounts = BTreeMap::new();
     project(&mut projected, &server_journal, &mut mounts, false)?;
@@ -274,6 +336,14 @@ pub async fn apply(directory: &Path, config: &Config, runtime: &Value) -> Result
     server_journal.secret("runtime.json", &bytes)?;
     gateway_journal.secret("tls.crt", &certificate)?;
     gateway_journal.secret("tls.key", &key)?;
+    let mut frozen = config.clone();
+    frozen.certificate_file = gateway_journal.path("tls.crt")?;
+    frozen.private_key_file = gateway_journal.path("tls.key")?;
+    frozen.trust_file = journal.secret("gateway-ca.crt", &root)?;
+    journal.secret(
+        "deployment-config.json",
+        &serde_json::to_vec(&frozen).map_err(|_| Error::Input)?,
+    )?;
     let authority = origin[url::Position::BeforeHost..url::Position::AfterPort].to_owned();
     let hostname = origin.host_str().ok_or(Error::Input)?;
     if !hostname
@@ -331,27 +401,7 @@ pub async fn apply(directory: &Path, config: &Config, runtime: &Value) -> Result
     } else if config.content_volume.is_some() {
         return Err(Error::Conflict);
     }
-    let mut ports = vec![
-        json!({"target":8445,"published":origin.port_or_known_default().ok_or(Error::Input)?.to_string(),"host_ip":config.publish_ip.to_string()}),
-    ];
-    let mut native = Vec::new();
-    if let Some(windows) = &decoded.native_protocols.windows {
-        native.extend([windows.enrollment.listen, windows.management.listen]);
-        native.extend(windows.additional_management.iter().map(|e| e.listen));
-    }
-    if let Some(apple) = &decoded.native_protocols.apple {
-        native.push(apple.management.listen);
-    }
-    if let crate::agent_pki::Config::StepCa { endpoint, .. } = &decoded.agent_pki {
-        native.push(endpoint.listen);
-    }
-    let mut used = std::collections::BTreeSet::from([8445, decoded.listen.port()]);
-    for listen in native {
-        if listen.ip().is_loopback() || !used.insert(listen.port()) {
-            return Err(Error::Input);
-        }
-        ports.push(json!({"target":listen.port(),"published":listen.port().to_string(),"host_ip":config.publish_ip.to_string()}));
-    }
+    let ports = published_ports(decoded, &origin, config.publish_ip)?;
     let compose = json!({"services":{
         "server":{"image":config.server_image,"user":"10001:10001","restart":"unless-stopped","read_only":true,"cap_drop":["ALL"],"security_opt":["no-new-privileges:true"],"tmpfs":["/tmp:rw,noexec,nosuid,size=64m"],"volumes":server_mounts,"command":["serve","--config","/run/mdm/runtime.json"],"ports":ports,"networks":{"product":{"aliases":[hostname]}},"labels":{"rss.mdm.host":decoded.runtime_binding.host_id,"rss.mdm.operation":decoded.runtime_binding.operation_id}},
         "gateway":{"image":config.gateway_image,"user":"10001:10001","restart":"unless-stopped","network_mode":"service:server","depends_on":["server"],"read_only":true,"cap_drop":["ALL"],"security_opt":["no-new-privileges:true"],"tmpfs":["/tmp:rw,noexec,nosuid,size=64m"],"entrypoint":["nginx"],"command":["-e","stderr","-c","/run/gateway/nginx.conf","-g","daemon off;"],"volumes":[volume_mount(config,&stage.join("gateway"),"/run/gateway",true)?],"labels":{"rss.mdm.host":decoded.runtime_binding.host_id,"rss.mdm.operation":decoded.runtime_binding.operation_id}}
@@ -410,6 +460,12 @@ pub async fn apply(directory: &Path, config: &Config, runtime: &Value) -> Result
                 let previous_path = host_root
                     .join(previous.operation_id.to_string())
                     .join("compose.json");
+                let old = Journal::open(&host_root.join(previous.operation_id.to_string()))?;
+                let old_config: Config =
+                    old.load("deployment-config.json")?.ok_or(Error::Corrupt)?;
+                let old_root = crate::config::read(&old_config.trust_file, 128 * 1024, false)
+                    .map_err(|_| Error::Corrupt)?;
+                drop(old);
                 let restored = async {
                     compose_up(&name, previous_path.to_str().ok_or(Error::Input)?).await?;
                     let binding = Binding {
@@ -419,7 +475,7 @@ pub async fn apply(directory: &Path, config: &Config, runtime: &Value) -> Result
                         material_digest: previous.material_digest.clone(),
                     };
                     wait_ready(
-                        &root,
+                        &old_root,
                         &name,
                         previous_path.to_str().ok_or(Error::Input)?,
                         &decoded.product_origin,
@@ -438,6 +494,35 @@ pub async fn apply(directory: &Path, config: &Config, runtime: &Value) -> Result
         }
     }
 }
+fn published_ports(
+    decoded: &crate::config::Config,
+    origin: &url::Url,
+    publish_ip: std::net::IpAddr,
+) -> Result<Vec<Value>> {
+    let mut ports = vec![
+        json!({"target":8445,"published":origin.port_or_known_default().ok_or(Error::Input)?.to_string(),"host_ip":publish_ip.to_string()}),
+    ];
+    let mut native = Vec::new();
+    if let Some(windows) = &decoded.native_protocols.windows {
+        native.extend([windows.enrollment.listen, windows.management.listen]);
+        native.extend(windows.additional_management.iter().map(|e| e.listen));
+    }
+    if let Some(apple) = &decoded.native_protocols.apple {
+        native.push(apple.management.listen);
+    }
+    if let crate::agent_pki::Config::StepCa { endpoint, .. } = &decoded.agent_pki {
+        native.push(endpoint.listen);
+    }
+    let mut used = std::collections::BTreeSet::from([8445, decoded.listen.port()]);
+    for listen in native {
+        if listen.ip().is_loopback() || !used.insert(listen.port()) {
+            return Err(Error::Input);
+        }
+        ports.push(json!({"target":listen.port(),"published":listen.port().to_string(),"host_ip":publish_ip.to_string()}));
+    }
+    Ok(ports)
+}
+
 fn admit_successor(
     previous: &Applied,
     binding: &Binding,
@@ -552,7 +637,10 @@ async fn probe_client(
 pub async fn resume_hosts(input: &super::installation::Input) -> Result<()> {
     let mut failed = false;
     for (runtime, config) in recorded_hosts(input)? {
-        if apply(&input.directory, &config, &runtime).await.is_err() {
+        if apply_snapshot(&input.directory, &config, &runtime, false)
+            .await
+            .is_err()
+        {
             failed = true;
         }
     }
@@ -640,22 +728,25 @@ fn recorded_hosts(input: &super::installation::Input) -> Result<Vec<(Value, Conf
         };
         let binding: Binding = serde_json::from_value(runtime["runtime_binding"].clone())
             .map_err(|_| Error::Corrupt)?;
-        let config = reservations
-            .get(&binding.host_id)
-            .map(|index| {
-                input
-                    .additional_hosts
-                    .get(*index)
-                    .map(|slot| &slot.deployment)
-                    .ok_or(Error::Conflict)
-            })
-            .transpose()?
-            .unwrap_or(&input.deployment);
-        hosts.push((
-            runtime,
-            serde_json::from_value(serde_json::to_value(config).map_err(|_| Error::Input)?)
-                .map_err(|_| Error::Input)?,
-        ));
+        let stage = Journal::open(&entry.path().join(binding.operation_id.to_string()))?;
+        let recorded = stage.load::<Config>("deployment-config.json")?;
+        let config = if let Some(config) = recorded {
+            config
+        } else {
+            let configured = reservations
+                .get(&binding.host_id)
+                .map(|index| {
+                    input
+                        .additional_hosts
+                        .get(*index)
+                        .map(|slot| &slot.deployment)
+                        .ok_or(Error::Conflict)
+                })
+                .transpose()?
+                .unwrap_or(&input.deployment);
+            configured.clone()
+        };
+        hosts.push((runtime, config));
     }
     Ok(hosts)
 }

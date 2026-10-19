@@ -772,7 +772,7 @@ async fn freeze_host(
         .split_whitespace()
         .map(str::to_owned)
         .collect::<Vec<_>>();
-    if ids.len() != 2 {
+    if !ids.is_empty() && ids.len() != 2 {
         return Err(Error::Conflict);
     }
     for id in &ids {

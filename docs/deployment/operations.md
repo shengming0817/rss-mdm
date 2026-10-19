@@ -302,3 +302,5 @@ docker compose -p rss-mdm-my-install -f /absolute/deployment/compose.yaml restar
 维护前确认根 CA 尚在有效期；根到期会明确拒绝，不能删除 `ca.key/ca.crt` 重新生成来掩盖。根 CA 更替需要完整可信根分发及宿主配置版本应用，不能以叶证书续期替代。受组织签发的网关材料按其自身期限和配置应用流程更新，不继承本地 PG 续期行为。
 
 CA 联合备份使用命名卷映射：每个 authority 显式提供 `volume`、`volume_subpath` 和 operator 可见的 `online_directory`，step-ca 将该卷子目录挂在自己的配置根；operator 通过同一卷映射读取材料。恢复保留 volume 类型、确切子目录及原 bridge 网络，不读取 daemon 的 `/var/lib/docker/volumes`，不转换成 host bind。离线根材料仅挂维护容器，仍不进入在线 CA 或 HTTP 服务。
+
+网关 TLS 使用 `configure-host` 的 `change.kind=gateway_tls`，同时提供 `certificate_file`、`private_key_file`、`trust_file`。先通过上述 stdin 导入新材料到新的卷内文件，再提交原安装、确切 `host_id`、当前 `expected_revision` 及新的 `operation_id`。产品核对证书/私钥配对，冻结材料并创建新运行 revision，实际 HTTPS 观察成功才报告 applied；失败保留原 applied 的证书与信任，不降低 requested revision。组织证书续期使用新文件，不覆盖旧输入。默认本地 CA 的入口可先执行 `docker compose ... run --rm -e MDM_RENEW_GATEWAY_TLS=1 bootstrap`，在 `inputs/gateway-next.crt`、`inputs/gateway-next.key` 生成新叶证书；随后仍通过同一 `gateway_tls` 操作应用，`trust_file` 指向 `inputs/ca.crt`。此过程不重置账户、租户或数据库。

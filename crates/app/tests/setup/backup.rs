@@ -102,3 +102,31 @@ async fn original_restart_policy_is_restored_after_quiescence() -> Result<()> {
     cleanup?;
     Ok(())
 }
+
+#[test]
+fn ca_volume_mapping_uses_operator_view_and_rejects_daemon_bind_paths() {
+    let directory = tempfile::tempdir().unwrap();
+    let online = directory.path().canonicalize().unwrap().join("online");
+    std::fs::create_dir(&online).unwrap();
+    std::fs::write(online.join("ca.json"), b"{}").unwrap();
+    let authority = Authority {
+        purpose: rss_mdm_agent_wire::pki::Purpose::Agent,
+        issuer: "issuer".into(),
+        container_id: "a".repeat(64),
+        online_directory: online.clone(),
+        volume: "installation_state".into(),
+        volume_subpath: "ca/agent".into(),
+        offline_directory: directory.path().join("offline"),
+        root_private_key_file: directory.path().join("offline/root.key"),
+        root_password_file: directory.path().join("offline/password"),
+    };
+    let mut actual = json!({"Mounts":[{"Type":"volume","Name":"installation_state","Source":"/daemon-only/path","Destination":"/home/step","RW":true}],"HostConfig":{"Mounts":[{"Type":"volume","Source":"installation_state","Target":"/home/step","VolumeOptions":{"Subpath":"ca/agent"}}]}});
+    assert_eq!(
+        mounted(&authority, &actual, "/home/step/ca.json").unwrap(),
+        online.join("ca.json")
+    );
+    actual["HostConfig"]["Mounts"][0]["VolumeOptions"]["Subpath"] = json!("ca/other");
+    assert!(mounted(&authority, &actual, "/home/step/ca.json").is_err());
+    actual["Mounts"][0]["Type"] = json!("bind");
+    assert!(mounted(&authority, &actual, "/home/step/ca.json").is_err());
+}

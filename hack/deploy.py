@@ -31,7 +31,7 @@ def prepare(candidate, output, *, origin='https://localhost:8445', additional_or
     project = project or 'rss-mdm-'+uuid.uuid4().hex[:12]
     if not re.fullmatch(r'[a-z][a-z0-9-]{0,55}', project):
         raise ValueError('invalid project name')
-    endpoint = os.environ.get('DOCKER_HOST')
+    endpoint = None if os.environ.get('DOCKER_CONTEXT') else os.environ.get('DOCKER_HOST')
     if not endpoint:
         context = json.loads(run('docker', 'context', 'inspect'))[0]
         endpoint = context['Endpoints']['docker']['Host']
@@ -45,11 +45,19 @@ def prepare(candidate, output, *, origin='https://localhost:8445', additional_or
     inputs = input_directory.resolve(strict=True) if input_directory else output/'inputs'
     if input_directory is None:
         inputs.mkdir(mode=0o700)
+    server_image=run('docker','image','inspect','--format','{{.Id}}',manifest['image'].split('@')[0])
+    installer_image=run('docker','image','inspect','--format','{{.Id}}',manifest['installer']['image'].split('@')[0])
+    # Docker Desktop translates socket ownership. Inspect the daemon-visible mount,
+    # rather than applying the macOS filesystem's staff group inside a Linux container.
+    socket_group=run('docker','run','--rm','--network','none','--user','10001:10001',
+        '--mount','type=bind,source='+str(socket)+',target=/run/docker.sock',
+        '--entrypoint','stat',installer_image,'-c','%g','/run/docker.sock')
+    if not socket_group.isdecimal():
+        raise ValueError('Docker socket group probe failed')
     values = dict(COMPOSE_PROJECT_NAME=project,
-        MDM_SERVER_IMAGE=run('docker', 'image', 'inspect', '--format', '{{.Id}}', manifest['image'].split('@')[0]),
-        MDM_INSTALLER_IMAGE=run('docker', 'image', 'inspect', '--format', '{{.Id}}', manifest['installer']['image'].split('@')[0]),
+        MDM_SERVER_IMAGE=server_image, MDM_INSTALLER_IMAGE=installer_image,
         MDM_WEB_IMAGE=ui['id'], MDM_POSTGRES_IMAGE=manifest['providers']['postgres'],
-        MDM_DOCKER_SOCKET=str(socket), MDM_DOCKER_GID=str(metadata.st_gid),
+        MDM_DOCKER_SOCKET=str(socket), MDM_DOCKER_GID=socket_group,
         MDM_INPUT_DIRECTORY=str(inputs), MDM_PRODUCT_ORIGIN=origin,
         MDM_ADDITIONAL_ORIGINS=additional_origins, MDM_PUBLISH_IP=publish_ip, MDM_TLS_MODE=tls_mode)
     # Single-quoted Compose env values preserve paths with spaces without interpolation.

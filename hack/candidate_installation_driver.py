@@ -183,6 +183,15 @@ def qualify(owner, origin, other_origin):
     check(json.loads(owner.script(digest_code))==identities,'maintenance replaced installation identity')
     check(json.loads(owner.read(host+'/requested-runtime.json'))['runtime_binding']['operation_id']==change['operation_id'],'installation replay overwrote applied configuration')
     owner.compose('stop','operator')
+    # Renew an actual gateway certificate and apply a new revision without changing identity.
+    owner.compose('run','--rm','--no-deps','-T','-e','MDM_RENEW_GATEWAY_TLS=1','bootstrap')
+    runtime=json.loads(owner.read(host+'/requested-runtime.json'))
+    renewed=dict(installation=operator,operation_id=str(uuid.uuid4()),host_id=first['hostId'],
+        expected_revision=runtime['runtime_binding']['revision'],change=dict(kind='gateway_tls',
+        certificate_file='/var/lib/rss-mdm/inputs/gateway-next.crt',private_key_file='/var/lib/rss-mdm/inputs/gateway-next.key',
+        trust_file='/var/lib/rss-mdm/inputs/ca.crt'))
+    check(owner.product('configure-host',owner.save('gateway-renewal.json',renewed))['applied'] is not None,'gateway TLS renewal')
+    renewed_browser=Browser(origin,ca);renewed_browser.login(first['tenantId'],'administrator',administrator)
     # Docker failure is scoped to one maintenance container, never the shared daemon.
     runtime=json.loads(owner.read(host+'/requested-runtime.json'))
     failed_change=dict(installation=operator,operation_id=str(uuid.uuid4()),host_id=first['hostId'],
@@ -232,4 +241,4 @@ def qualify(owner, origin, other_origin):
         'repeat_install_identity','fixed_ledger_key','platform_business_isolation','second_tenant_host',
         'original_operation_replay','operator_restart_resume','tenant_host_isolation','nonroot_volume_runtime',
         'bridge_network','server_without_docker_authority','configuration_application','maintenance_identity_preservation','failed_configuration_correction','joint_cold_backup_restore',
-        'original_ledger_and_protection_material','restored_operator_consumes_work'])
+        'original_ledger_and_protection_material','restored_operator_consumes_work','gateway_tls_renewal'])
