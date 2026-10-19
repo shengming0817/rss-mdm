@@ -8,7 +8,7 @@ use uuid::Uuid;
 
 /// Fingerprint of the generated, fixed public schema artifact.
 pub const SCHEMA_FINGERPRINT: &str =
-    "d8a681c51e149aaafe2539bd4760e0a3e87afa98eb900e1027e94ccc9d59cc16";
+    "6e97457abf404e76701d56ee479091fbcbd9da6fbdd3dbac05624b2ea90779ae";
 /// Canonical manifest for fixed consumer artifacts.
 pub const SCHEMA_MANIFEST: &str = include_str!("../schema/task_trust/manifest.json");
 /// Task-signing trust protocol version.
@@ -204,28 +204,36 @@ pub struct Observation {
     #[schemars(schema_with = "crate::runtime::uuid_schema")]
     pub operation: Uuid,
     /// Exact observation format.
+    #[schemars(extend("const" = 1))]
     pub version: u8,
     /// Authenticated registration identity.
     #[serde(with = "crate::runtime::strict_uuid")]
     #[schemars(schema_with = "crate::runtime::uuid_schema")]
     pub registration: Uuid,
     /// Authenticated registration generation.
+    #[schemars(extend("minimum" = 1, "maximum" = i64::MAX))]
     pub generation: u64,
     /// Monotonic sequence within this registration generation and domain.
+    #[schemars(extend("minimum" = 1, "maximum" = i64::MAX))]
     pub sequence: u64,
     /// Target revision, absent when fetching the target failed.
+    #[schemars(extend("minimum" = 1, "maximum" = i64::MAX))]
     pub target_revision: Option<u64>,
     /// Target installation digest, paired with target_revision.
+    #[schemars(extend("pattern" = "^[0-9a-f]{64}$", "minLength" = 64, "maxLength" = 64))]
     pub target_digest: Option<String>,
     /// Last durably installed revision, absent when no state can be read.
+    #[schemars(extend("minimum" = 1, "maximum" = i64::MAX))]
     pub actual_revision: Option<u64>,
     /// Read-back installation digest, paired with actual_revision.
+    #[schemars(extend("pattern" = "^[0-9a-f]{64}$", "minLength" = 64, "maxLength" = 64))]
     pub actual_digest: Option<String>,
     /// Local result; applied does not imply ACK confirmation or current connectivity.
     pub state: ObservationState,
     /// Closed, non-secret failure category.
     pub reason: Option<ObservationReason>,
     /// Device observation time in Unix seconds; not ordering authority.
+    #[schemars(extend("minimum" = 0))]
     pub observed_at: i64,
 }
 /// Installation result independently reported by the device.
@@ -260,6 +268,7 @@ pub enum ObservationReason {
 }
 impl Observation {
     /// Validate shape, state consistency and bounded coordinates. The service authenticates identity.
+    /// Consumers must call this method: JSON Schema alone cannot compare installation digests.
     pub fn validate(&self) -> Result<(), WireError> {
         let number = |v: u64| (1..=i64::MAX as u64).contains(&v);
         let material = |revision: Option<u64>, digest: &Option<String>| match (revision, digest) {

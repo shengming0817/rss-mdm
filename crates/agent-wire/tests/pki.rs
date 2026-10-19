@@ -13,6 +13,11 @@ fn trust_json() -> Value {
 fn ack_json() -> Value {
     serde_json::from_str(vectors()["acknowledgementJson"].as_str().unwrap()).unwrap()
 }
+fn observation_json() -> Value {
+    json!({"operation":Uuid::from_u128(1),"version":1,"registration":Uuid::from_u128(2),
+        "generation":1,"sequence":1,"target_revision":null,"target_digest":null,
+        "actual_revision":null,"actual_digest":null,"state":"unknown","reason":"restart","observed_at":1})
+}
 fn validator(trust: bool) -> jsonschema::Validator {
     let schema: Value = serde_json::from_str(if trust {
         include_str!("../schema/pki/trust-v1.schema.json")
@@ -52,6 +57,8 @@ fn pki_artifact_is_complete_and_independent() {
         let value = match entry["type"].as_str().unwrap() {
             "Trust" => trust_json(),
             "Acknowledgement" => ack_json(),
+            "Observation" => observation_json(),
+            "ObservedInstallation" => json!({"observation":observation_json(),"received_at":1}),
             unexpected => panic!("unexpected PKI root: {unexpected}"),
         };
         assert!(validator.is_valid(&value));
@@ -325,4 +332,35 @@ fn observation_rejects_false_applied_and_unbounded_or_ambiguous_coordinates() {
     assert!(value.validate().is_err());
     value.reason = Some(ObservationReason::Restart);
     assert!(value.validate().is_ok());
+}
+
+#[test]
+fn observation_schema_rejects_invalid_coordinates() {
+    let schema: serde_json::Value =
+        serde_json::from_str(include_str!("../schema/pki/observation-v1.schema.json")).unwrap();
+    let validator = jsonschema::validator_for(&schema).unwrap();
+    let valid = serde_json::json!({"operation":uuid::Uuid::from_u128(1),"version":1,"registration":uuid::Uuid::from_u128(2),
+        "generation":1,"sequence":1,"target_revision":null,"target_digest":null,
+        "actual_revision":null,"actual_digest":null,"state":"unknown","reason":"restart","observed_at":1});
+    assert!(validator.is_valid(&valid));
+    for (field, value) in [
+        ("version", serde_json::json!(0)),
+        ("generation", serde_json::json!(0)),
+        ("sequence", serde_json::json!(u64::MAX)),
+        ("target_revision", serde_json::json!(0)),
+        ("actual_revision", serde_json::json!(u64::MAX)),
+        ("observed_at", serde_json::json!(-1)),
+        ("target_digest", serde_json::json!("bad")),
+        ("actual_digest", serde_json::json!("A".repeat(64))),
+    ] {
+        let mut invalid = valid.clone();
+        invalid[field] = value;
+        assert!(!validator.is_valid(&invalid), "{field}");
+        assert!(
+            serde_json::from_value::<rss_mdm_agent_wire::pki::Observation>(invalid)
+                .unwrap()
+                .validate()
+                .is_err()
+        );
+    }
 }

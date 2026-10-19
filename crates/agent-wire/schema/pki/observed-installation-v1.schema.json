@@ -6,6 +6,9 @@
       "properties": {
         "actual_digest": {
           "description": "Read-back installation digest, paired with actual_revision.",
+          "maxLength": 64,
+          "minLength": 64,
+          "pattern": "^[0-9a-f]{64}$",
           "type": [
             "string",
             "null"
@@ -14,7 +17,8 @@
         "actual_revision": {
           "description": "Last durably installed revision, absent when no state can be read.",
           "format": "uint64",
-          "minimum": 0,
+          "maximum": 9223372036854775807,
+          "minimum": 1,
           "type": [
             "integer",
             "null"
@@ -23,12 +27,14 @@
         "generation": {
           "description": "Authenticated registration generation.",
           "format": "uint64",
-          "minimum": 0,
+          "maximum": 9223372036854775807,
+          "minimum": 1,
           "type": "integer"
         },
         "observed_at": {
           "description": "Device observation time in Unix seconds; not ordering authority.",
           "format": "int64",
+          "minimum": 0,
           "type": "integer"
         },
         "operation": {
@@ -63,7 +69,8 @@
         "sequence": {
           "description": "Monotonic sequence within this registration generation and domain.",
           "format": "uint64",
-          "minimum": 0,
+          "maximum": 9223372036854775807,
+          "minimum": 1,
           "type": "integer"
         },
         "state": {
@@ -72,6 +79,9 @@
         },
         "target_digest": {
           "description": "Target installation digest, paired with target_revision.",
+          "maxLength": 64,
+          "minLength": 64,
+          "pattern": "^[0-9a-f]{64}$",
           "type": [
             "string",
             "null"
@@ -80,13 +90,15 @@
         "target_revision": {
           "description": "Target revision, absent when fetching the target failed.",
           "format": "uint64",
-          "minimum": 0,
+          "maximum": 9223372036854775807,
+          "minimum": 1,
           "type": [
             "integer",
             "null"
           ]
         },
         "version": {
+          "const": 1,
           "description": "Exact observation format.",
           "format": "uint8",
           "maximum": 255,

@@ -795,6 +795,47 @@ async fn production_agent_listener_bootstraps_activates_and_rechecks_revocation(
             .0,
         200
     );
+    let secret = crate::test_support::identity::login(&host.app.identity, "other").await?;
+    let mut observer = crate::test_support::Browser {
+        cookies: std::collections::BTreeMap::from([(
+            "__Host-identity-session".into(),
+            secret.expose().into(),
+        )]),
+        csrf: Some(secret.csrf()),
+        ..Default::default()
+    };
+    let subject = crate::test_support::browser_subject(&observer, &host.browser).await?;
+    let query_path = format!(
+        "/api/v1/pki/agent/trust/devices/{}/observation",
+        active.runtime.device_id
+    );
+    crate::test_support::identity::set_grants(
+        case_a(),
+        &subject,
+        crate::test_support::identity::device_grants(
+            Some(&active.runtime.device_id),
+            &["inventory_read"],
+        )?,
+    )
+    .await?;
+    let (status, body) = observer
+        .call(&host.browser, axum::http::Method::GET, &query_path, None)
+        .await?;
+    assert_eq!(status, 200, "management observation: {body}");
+    assert_eq!(body["observation"], observation);
+    crate::test_support::identity::set_grants(
+        case_a(),
+        &subject,
+        crate::test_support::identity::device_grants(Some("another-device"), &["inventory_read"])?,
+    )
+    .await?;
+    assert_eq!(
+        observer
+            .call(&host.browser, axum::http::Method::GET, &query_path, None)
+            .await?
+            .0,
+        403
+    );
     let ack = rss_mdm_agent_wire::pki::Acknowledgement {
         operation: Uuid::new_v4(),
         version: 1,
