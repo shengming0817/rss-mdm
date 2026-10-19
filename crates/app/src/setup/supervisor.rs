@@ -104,10 +104,20 @@ async fn activate(journal: &Journal, input: &Input, instance: uuid::Uuid) -> Res
     let executable = journal.path("rss-mdm-deployer")?;
     let input_path = journal.path("deployer-input.json")?;
     let contents = unit(&executable, &input_path, &name)?;
-    journal.secret(
-        "deployer-input.json",
-        &serde_json::to_vec(input).map_err(|_| Error::Input)?,
-    )?;
+    // The operator may rewrite the protected JSON when allocating host capacity.
+    // Preserve the exact validated configuration, independent of JSON whitespace.
+    if let Some(existing) = journal.load::<Input>("deployer-input.json")? {
+        if serde_json::to_value(&existing).map_err(|_| Error::Corrupt)?
+            != serde_json::to_value(input).map_err(|_| Error::Input)?
+        {
+            return Err(Error::Conflict);
+        }
+    } else {
+        journal.secret(
+            "deployer-input.json",
+            &serde_json::to_vec(input).map_err(|_| Error::Input)?,
+        )?;
+    }
     let unit_path = journal.secret(&name, contents.as_bytes())?;
     systemctl(&["link", unit_path.to_str().ok_or(Error::Input)?]).await?;
     systemctl(&["daemon-reload"]).await?;

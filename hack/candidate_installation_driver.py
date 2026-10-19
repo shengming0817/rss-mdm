@@ -247,6 +247,7 @@ def main():
         backup_manifest_sha256=captured['manifestSha256'],administrator=administrator,accounts=accounts))
     interrupted=subprocess.run([BIN,'restore-installation','--config',restore_config],capture_output=True,text=True,timeout=300)
     check(interrupted.returncode!=0,'masked real supervisor falsely reported restored')
+    check(': storage_unavailable:' in interrupted.stderr,'restore failed before the masked supervisor boundary')
     progress=json.loads((ROOT/'backup/restore-progress.json').read_text())
     check(progress['stage']=='contents','restore did not reach real supervisor failure')
     run('systemctl','unmask',service)
