@@ -872,6 +872,8 @@ consume(('crates/backend-postgres-support/src/access*', 'crates/*/src/access-con
 add('webhooks.product', selectors=('webhook_tests::',), fixtures=('identity','tls'),
     sources=('crates/webhook-service/src/*','crates/webhook-service/schema/*','crates/app/src/webhooks/*','crates/management-http/src/webhooks.rs','crates/registration-service/src/webhook.rs'),
     tests=('crates/app/tests/webhooks/mod.rs',), support=('hack/source_fixtures.py',))
+# This case owns its relay and material configuration; retained ordinary hosts must not claim its deliveries.
+MODULES['webhooks.product'] = replace(MODULES['webhooks.product'], scope='tenant')
 
 for name, module in tuple(MODULES.items()):
     if module.build == APP:

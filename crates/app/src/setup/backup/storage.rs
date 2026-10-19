@@ -3,7 +3,6 @@ use rss_mdm_content_service::connections as domain;
 use rss_mdm_native_protection::Protector;
 use serde_json::{Value, json};
 use sqlx::{Connection, PgConnection};
-use std::path::Path;
 use uuid::Uuid;
 #[derive(serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
