@@ -1,17 +1,6 @@
 //! Frozen native package-manager read authority, derived by the publication owner.
 use super::*;
 use serde::{Deserialize, Serialize};
-/// Exact enterprise release ring.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
-#[serde(rename_all = "snake_case")]
-pub enum SoftwareExportRing {
-    /// Test publication.
-    Test,
-    /// Pilot publication.
-    Pilot,
-    /// Production publication.
-    Production,
-}
 /// One exact definition included in the frozen native source.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -46,19 +35,17 @@ pub struct SoftwareExportArtifact {
 pub struct SoftwareExportBinding {
     /// Exact logical output source, distinct from imported provenance.
     #[schemars(extend("minLength" = 1, "maxLength" = 128, "pattern" = "^[^\\x00-\\x1f\\x7f]+$"))]
-    pub source: String,
+    pub target: String,
     /// Publication tenant from the signed task.
     #[serde(with = "crate::runtime::strict_uuid")]
     #[schemars(schema_with = "crate::runtime::uuid_schema")]
     pub tenant_id: Uuid,
-    /// Exact release environment.
-    pub ring: SoftwareExportRing,
     /// Immutable publication receipt identity.
     #[schemars(schema_with = "crate::runtime::nonzero_digest_schema")]
     pub publication: [u8; 32],
     /// Complete configured source snapshot identity.
     #[schemars(schema_with = "crate::runtime::nonzero_digest_schema")]
-    pub source_digest: [u8; 32],
+    pub target_digest: [u8; 32],
     /// Root definition coordinate included in this source.
     #[schemars(extend("minLength" = 1, "maxLength" = 128, "pattern" = "^[^\\x00-\\x1f\\x7f]+$"))]
     pub resource: String,
@@ -187,7 +174,7 @@ impl SoftwareTaskExport {
             _ => return Err(WireError::InvalidValue),
         };
         https(uri)?;
-        text(&binding.source, 128)?;
+        text(&binding.target, 128)?;
         text(&binding.resource, 128)?;
         text(&binding.resource_version, 128)?;
         if binding.tenant_id != tenant
@@ -196,7 +183,7 @@ impl SoftwareTaskExport {
             || binding.artifacts.len() > 256
             || [
                 binding.publication,
-                binding.source_digest,
+                binding.target_digest,
                 binding.resource_digest,
                 binding.definition_digest,
                 binding.document_sha256,

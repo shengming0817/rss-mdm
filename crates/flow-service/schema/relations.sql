@@ -421,7 +421,7 @@ GRANT UPDATE(lifecycle) ON TABLE mdm_software.sources TO mdm_flow_runtime;
 
 GRANT SELECT,INSERT ON TABLE mdm_software_composition.authorities TO mdm_software_driver;
 
-GRANT UPDATE(candidate) ON TABLE mdm_software_composition.authorities TO mdm_software_driver;
+GRANT UPDATE(record) ON TABLE mdm_software_composition.authorities TO mdm_software_driver;
 
 GRANT SELECT,INSERT ON TABLE mdm_software_composition.bindings TO mdm_software_driver;
 

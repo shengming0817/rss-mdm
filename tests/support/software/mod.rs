@@ -121,23 +121,16 @@ impl Server {
         )
         .unwrap()
     }
-    pub fn winget(&self) -> RingSources {
-        let [test, pilot, production] = ["test", "pilot", "production"].map(|ring| {
-            SourceConfig::Winget(WingetConfig {
-                base: format!("{}{ring}/", self.base),
-                artifacts_base: format!("{}hosted/artifacts/", self.base),
-            })
-        });
-        RingSources {
-            test,
-            pilot,
-            production,
-        }
+    pub fn winget(&self) -> SourceConfig {
+        SourceConfig::Winget(WingetConfig {
+            base: format!("{}internal/", self.base),
+            artifacts_base: format!("{}hosted/artifacts/", self.base),
+        })
     }
     pub async fn service(
         &self,
         runtime: Arc<rss_transactional_messaging_postgres::PgRuntime>,
-        config: RingSources,
+        config: SourceConfig,
     ) -> PublicationService {
         PublicationService::connect(
             host(runtime, audit_store().await).await,
@@ -281,7 +274,7 @@ pub fn actors() -> ServiceIdentity {
 pub fn id(s: &str) -> resource::Id {
     resource::Id::new(s).unwrap()
 }
-pub fn request(c: &rel::Candidate) -> ServiceRequest {
+pub fn request(c: &rel::Publication) -> ServiceRequest {
     ServiceRequest {
         actor: rel::ActorId::new(tenant(), "publisher").unwrap(),
         id: rel::RequestId::new(tenant(), uuid::Uuid::new_v4().to_string()).unwrap(),
@@ -293,14 +286,14 @@ pub async fn seed(
     runtime: Arc<rss_transactional_messaging_postgres::PgRuntime>,
     server: &Server,
     document: ExportDocument,
-) -> CandidateInput {
+) -> PublishInput {
     seed_version(runtime, server, document, true).await
 }
 pub async fn seed_draft(
     runtime: Arc<rss_transactional_messaging_postgres::PgRuntime>,
     server: &Server,
     document: ExportDocument,
-) -> CandidateInput {
+) -> PublishInput {
     seed_version(runtime, server, document, false).await
 }
 #[allow(
@@ -312,7 +305,7 @@ async fn seed_version(
     server: &Server,
     document: ExportDocument,
     enabled: bool,
-) -> CandidateInput {
+) -> PublishInput {
     let store = resource_pg::ResourceStore::new(runtime, tenant(), deadline())
         .await
         .unwrap();
@@ -572,70 +565,63 @@ async fn seed_version(
     if enabled {
         admit_version(&version).await;
     }
-    CandidateInput {
+    PublishInput {
         actor: rel::ActorId::new(tenant(), "publisher").unwrap(),
-        candidate: rel::CandidateId::new(tenant(), unique()).unwrap(),
-        request: rel::RequestId::new(tenant(), unique()).unwrap(),
+        record: rel::PublicationKey::new(tenant(), unique()).unwrap(),
+        request: rel::RequestId::new(tenant(), uuid::Uuid::new_v4().to_string()).unwrap(),
         resource: key,
         version: id("one"),
         expected_resource_revision: 2,
         resource_digest: version.digest().bytes(),
+        target_digest: [0; 32],
         as_of: at(1),
     }
 }
+pub fn bound_input(service: &PublicationService, input: &PublishInput) -> PublishInput {
+    let mut input = input.clone();
+    input.target_digest = serde_json::from_value(service.target()["digest"].clone()).unwrap();
+    input
+}
 pub async fn submit_publication(
     service: &PublicationService,
-    id: &rel::CandidateId,
-    ring: rel::Ring,
-) -> rel::Publication {
-    let c = service.candidate(id, cutoff()).await.unwrap().unwrap();
-    let r = request(&c);
-    let result = service
-        .submit(id, ring, &r, &TestPublishAccess, cutoff())
+    input: &PublishInput,
+) -> rel::Attempt {
+    service
+        .submit(&bound_input(service, input), &TestPublishAccess, cutoff())
         .await
         .unwrap();
-    let rel::Transition::Applied {
-        decision: rel::Decision::Publish(p),
-        ..
-    } = result
-    else {
-        panic!()
-    };
-    *p
+    service
+        .record(&input.record, cutoff())
+        .await
+        .unwrap()
+        .unwrap()
+        .snapshot()
+        .attempt
+        .clone()
 }
 fn hex(b: &[u8]) -> String {
     b.iter().map(|v| format!("{v:02x}")).collect()
 }
 
-pub fn brew_config() -> (tempfile::TempDir, RingSources) {
+pub fn brew_config() -> (tempfile::TempDir, SourceConfig) {
     let root = tempfile::tempdir().unwrap();
-    let config = ["test", "pilot", "production"].map(|ring| {
-        let repository = root.path().join(format!("{ring}.git"));
-        assert!(
-            std::process::Command::new("/usr/bin/git")
-                .args(["init", "--quiet", "--bare"])
-                .arg(&repository)
-                .status()
-                .unwrap()
-                .success()
-        );
-        SourceConfig::Brew(BrewConfig {
-            base: format!("https://hosted.example.test/brew/{ring}/"),
-            artifacts_base: "https://hosted.example.test/artifacts/".into(),
-            credential_reference: "source-key".into(),
-            tap: format!("acme/{ring}"),
-            repository,
-        })
+    let repository = root.path().join("internal.git");
+    assert!(
+        std::process::Command::new("/usr/bin/git")
+            .args(["init", "--quiet", "--bare"])
+            .arg(&repository)
+            .status()
+            .unwrap()
+            .success()
+    );
+    let config = SourceConfig::Brew(BrewConfig {
+        base: "https://hosted.example.test/brew/internal/".into(),
+        artifacts_base: "https://hosted.example.test/artifacts/".into(),
+        credential_reference: "source-key".into(),
+        tap: "acme/internal".into(),
+        repository,
     });
-    let [test, pilot, production] = config;
-    (
-        root,
-        RingSources {
-            test,
-            pilot,
-            production,
-        },
-    )
+    (root, config)
 }
 pub fn cask(server: &Server, package: &str, version: &str) -> ExportDocument {
     ExportDocument::Brew {
@@ -705,8 +691,8 @@ pub fn formula(server: &Server) -> ExportDocument {
         .into(),
     }
 }
-pub fn git(config: &RingSources, args: &[&str]) -> String {
-    let SourceConfig::Brew(c) = &config.test else {
+pub fn git(config: &SourceConfig, args: &[&str]) -> String {
+    let SourceConfig::Brew(c) = config else {
         panic!()
     };
     let out = std::process::Command::new("/usr/bin/git")
@@ -719,8 +705,8 @@ pub fn git(config: &RingSources, args: &[&str]) -> String {
     String::from_utf8(out.stdout).unwrap()
 }
 
-pub async fn request_for(service: &PublicationService, id: &rel::CandidateId) -> ServiceRequest {
-    request(&service.candidate(id, cutoff()).await.unwrap().unwrap())
+pub async fn request_for(service: &PublicationService, id: &rel::PublicationKey) -> ServiceRequest {
+    request(&service.record(id, cutoff()).await.unwrap().unwrap())
 }
 
 /// Complete immutable fixture shared with product HTTP tests.
@@ -949,15 +935,12 @@ async fn admit_version(version: &resource::Version) {
     runtime.close().await;
 }
 
-/// Withdraw only the enterprise admission; an existing publication reference still fences archival.
-pub async fn withdraw_version_admission(input: &CandidateInput) {
+/// Exercise catalog revocation and publication intents in the same product transaction.
+pub async fn withdraw_version(input: &PublishInput) {
     use rss_mdm_software_service::catalog as c;
     let runtime = pg::runtime_at(None, "mdm_flow_runtime").await;
-    let catalog = c::Catalog::new(
-        runtime.clone(),
-        tenant(),
-        Arc::new(TestAudit(pg::audit_store_for("mdm_flow_runtime").await)),
-    );
+    let audit = Arc::new(TestAudit(pg::audit_store_for("mdm_flow_runtime").await));
+    let catalog = c::Catalog::new(runtime.clone(), tenant(), audit.clone());
     let request =
         rss_mdm_audit_integration::RequestAudit::new(tenant().to_string(), "software_withdraw");
     request.set_principal("publisher", INSTANCE);
@@ -970,10 +953,10 @@ pub async fn withdraw_version_admission(input: &CandidateInput) {
         .local_tx_with_context(
             tenant(),
             pg::deadline(),
-            (&catalog, &request, &op, input),
-            |(catalog, request, op, input), tx| {
+            (&catalog, &request, &op, input, audit.as_ref()),
+            |(catalog, request, op, input, audit), tx| {
                 Box::pin(async move {
-                    catalog
+                    let value = catalog
                         .version_change_in(
                             tx,
                             request,
@@ -983,10 +966,20 @@ pub async fn withdraw_version_admission(input: &CandidateInput) {
                             None,
                         )
                         .await
-                        .map(|_| ())
                         .map_err(|_| {
-                            sqlx::Error::Protocol("fixture admission withdrawal".into()).into()
-                        })
+                            rss_transactional_messaging_postgres::PgError::from(
+                                sqlx::Error::Protocol("fixture admission withdrawal".into()),
+                            )
+                        })?;
+                    rss_mdm_software_service::publication::withdraw_version_in(
+                        tx,
+                        input.resource.as_str(),
+                        input.version.as_str(),
+                        value["lifecycle"]["at"].as_i64().unwrap(),
+                        *audit,
+                        &input.actor,
+                    )
+                    .await
                 })
             },
         )

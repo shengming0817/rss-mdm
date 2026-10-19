@@ -195,7 +195,7 @@ class RunFixtures:
             root = self.root / database
             try:
                 if state is None:
-                    root.mkdir()
+                    root.mkdir(exist_ok=True)
                     private(root / 'ca.crt', (pool.owner.root / 'ca.crt').read_text())
                     management = pool.owner.sql('SELECT management_tenant_id::text FROM public.mdm_installation', database)
                     config = self.runtime_config(pool, root, database, management,

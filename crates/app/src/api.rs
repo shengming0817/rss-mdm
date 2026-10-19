@@ -182,7 +182,7 @@ pub(crate) async fn application_fixture(
             },
         )
         .await?;
-        resources.resource((*fixture_routers.webhooks).clone());
+        resources.resource(crate::webhooks::Resource(fixture_routers.webhooks.clone()));
         crate::test_support::pki::seed_trust(
             &access.archive_pool(),
             fixture_routers.pki.bindings(),

@@ -1,5 +1,5 @@
 use crate::{
-    ActorId, CandidateId, Digest, Error, PublicationId,
+    ActorId, Digest, Error, PublicationId, PublicationKey, TargetId,
     identity::{Encoding, checked_name, validate_name},
 };
 use rss_contract::Timepoint;
@@ -177,7 +177,7 @@ impl Content {
     pub fn variants(&self) -> &[VariantContent] {
         &self.variants
     }
-    /// Canonical V2 content identity; V1 single-variant identities are retired.
+    /// Canonical identity of the complete immutable export content.
     pub fn digest(&self) -> Digest {
         let mut e = Encoding::new(b"rss-mdm-software-release/content/v2");
         for part in self.software.fields().values() {
@@ -199,171 +199,89 @@ impl Content {
         e.finish()
     }
 }
-/// Fixed promotion order; each ring requires its own validation and publication binding.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum Ring {
-    /// First ring; validation must not predate the current content.
-    Test,
-    /// Requires a confirmed Test publication and subsequent validation evidence.
-    Pilot,
-    /// Requires a confirmed Pilot publication and subsequent validation evidence.
-    Production,
-}
-impl Ring {
-    /// All rings in their only supported promotion order.
-    pub const ALL: [Self; 3] = [Self::Test, Self::Pilot, Self::Production];
-    pub(crate) const fn index(self) -> usize {
-        match self {
-            Self::Test => 0,
-            Self::Pilot => 1,
-            Self::Production => 2,
-        }
-    }
-}
-/// Candidate-wide publication permission, independent of recorded backend facts.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum Disposition {
-    /// New validations, publication bindings and publication decisions remain possible.
-    Active,
-    /// Closed by quarantine; no reopening, but late results remain recordable.
-    Quarantined,
-    /// Closed by deprecation; no reopening or conversion to quarantine.
-    Deprecated,
-}
-/// Caller-attested validation conclusion; the core does not execute validation.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum Verdict {
-    /// The bound content passed the caller's required checks.
-    Passed,
-    /// Validation failed; any existing publication binding is invalidated.
-    Failed,
-    /// Validation is inconclusive; it cannot support an publication binding.
-    Unknown,
-}
-
-/// Caller-attested evidence; authenticity and completeness are the caller's responsibility.
+/// Caller-attested source observation; the adapter authenticates it.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Evidence {
-    /// Tenant-scoped attesting actor, authenticated by the adapter.
+    /// Tenant-scoped attesting actor.
     pub actor: ActorId,
-    /// Digest binding the caller's retained evidence record.
+    /// Digest of the retained technical evidence.
     pub digest: Digest,
-    /// Explicit UTC observation time; checked against the facts it supports.
+    /// Explicit UTC observation time.
     pub at: Timepoint,
 }
-/// Validation of one candidate's exact content for a specific ring.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct Validation {
-    /// Candidate identity, including its tenant.
-    pub candidate: CandidateId,
-    /// Current [`Content::digest`]; stale content is rejected.
-    pub content: Digest,
-    /// Ring for which this evidence was collected.
-    pub ring: Ring,
-    /// Evidence no earlier than current content or predecessor success, and not from the future.
-    pub evidence: Evidence,
-    /// Conclusion that determines whether this validation can support publication binding.
-    pub verdict: Verdict,
-}
-/// Immutable technical binding captured by the single publish operation.
-/// Actor and time record provenance; they never restrict later operators or derive identity.
+/// Immutable authority for one actual target publication.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PublicationBinding {
-    /// Automatically verified exact content and target ring.
-    pub validation: Validation,
-    /// Current source/version/dependency lifecycle fingerprint.
+    /// Tenant-scoped record identity, fixed by the original creation request.
+    pub publication: PublicationKey,
+    /// Complete frozen export content digest.
+    pub content: Digest,
+    /// Actual independently configured output target.
+    pub target: TargetId,
+    /// Exact physical target and protocol configuration snapshot.
+    pub target_digest: Digest,
+    /// Technical verification performed before accepting publication.
+    pub evidence: Evidence,
+    /// Source, version and dependency lifecycle fingerprint.
     pub lifecycle: Digest,
-    /// Original authenticated operator, retained for audit.
+    /// Original authenticated operator.
     pub actor: ActorId,
-    /// Time of the original publication decision.
+    /// Original publication decision time.
     pub at: Timepoint,
-    /// Confirmed predecessor publication, absent for Test.
-    pub predecessor: Option<PublicationId>,
 }
 impl PublicationBinding {
-    /// Identity binds immutable content (including source), tenant/candidate and target ring.
-    /// Validation evidence, actor, time, lifecycle generation and attempts are not identity inputs.
+    /// Stable effect identity; retries and other targets cannot change it.
     pub fn publication_id(&self) -> PublicationId {
-        let mut e = Encoding::new(b"rss-mdm-software-release/publication/v3");
-        e.object(
-            self.validation.candidate.tenant(),
-            self.validation.candidate.value(),
-        );
-        e.digest(self.validation.content);
-        e.number(self.validation.ring.index() as u64);
-        match self.predecessor {
-            Some(id) => {
-                e.number(1);
-                e.digest(id.digest());
-            }
-            None => e.number(0),
-        }
+        let mut e = Encoding::new(b"rss-mdm-software-release/publication/v4");
+        e.object(self.publication.tenant(), self.publication.value());
+        e.digest(self.content);
+        e.object(self.target.tenant(), self.target.value());
+        e.digest(self.target_digest);
         PublicationId(e.finish())
     }
 }
-/// Result states always retain the authorization, even after withdrawal.
+/// Current attempt state, independent of withdrawal admission.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum PublicationOutcome {
-    /// Authorized locally; whether an external call started or succeeded is still unconfirmed.
+    /// Accepted, with an unconfirmed effect.
     Pending,
-    /// Caller-attested observation for the current attempt.
+    /// Source observation for this attempt.
     Reported(PublicationResult),
 }
-/// An observation of an external attempt; Pending is not a reportable result.
+/// An observation; a missing source record alone does not prove non-application.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum PublicationResult {
-    /// Uncertain outcome: reconcile the original identity and never retry blindly.
+    /// Reconcile the original effect identity; do not blindly retry.
     Unknown(Evidence),
-    /// This attempt did not apply and can no longer apply; permits an explicit retry.
-    /// A temporarily missing backend record does not establish this conclusion.
+    /// This attempt cannot apply any more; explicit retry is allowed.
     NotApplied(Evidence),
-    /// Backend content was verified against the publication binding; contradictory results are rejected.
+    /// Exact source content was verified.
     Applied(Evidence),
 }
 impl PublicationResult {
-    /// Returns the evidence retained by every reportable result.
+    /// Retained evidence for every observation.
     pub fn evidence(&self) -> &Evidence {
         match self {
             Self::Unknown(e) | Self::NotApplied(e) | Self::Applied(e) => e,
         }
     }
 }
-/// Current external attempt, retaining its original publication binding even after withdrawal.
+/// Current source attempt; its authority is immutable across retries.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct Publication {
-    /// Original authority snapshot, unchanged across retries.
+pub struct Attempt {
+    /// Original target and content authority.
     pub binding: PublicationBinding,
-    /// Nonzero attempt number, incremented only after confirmed NotApplied.
+    /// Positive attempt number.
     pub attempt: u64,
-    /// UTC time this attempt was requested; result evidence cannot predate it.
+    /// UTC time this attempt was requested.
     pub requested_at: Timepoint,
-    /// Current attempt's pending state or retained backend report.
+    /// Pending or observed source result.
     pub outcome: PublicationOutcome,
 }
-impl Publication {
-    /// Returns the publication binding-derived identity, stable across attempts.
+impl Attempt {
+    /// Stable effect identity shared by retries of this publication.
     pub fn id(&self) -> PublicationId {
         self.binding.publication_id()
-    }
-}
-/// Public storage input; only [`crate::Candidate::restore`] admits it as a valid aggregate.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum RingState {
-    /// No validation has begun; valid only for Pilot and Production.
-    NotStarted,
-    /// Awaiting passed validation, including after failed or unknown validation.
-    Candidate,
-    /// A requested attempt and its pending or reported outcome.
-    Publication(Box<Publication>),
-}
-impl RingState {
-    /// Reports only confirmed Applied, even if the candidate has since been withdrawn.
-    pub fn is_published(&self) -> bool {
-        matches!(
-            self,
-            Self::Publication(p)
-                if matches!(p.outcome, PublicationOutcome::Reported(PublicationResult::Applied(_)))
-        )
     }
 }
 pub(crate) fn encode_time(e: &mut Encoding, time: Timepoint) {
@@ -373,15 +291,4 @@ pub(crate) fn encode_evidence(e: &mut Encoding, evidence: &Evidence) {
     e.object(evidence.actor.tenant(), evidence.actor.value());
     e.digest(evidence.digest);
     encode_time(e, evidence.at);
-}
-pub(crate) fn encode_validation(e: &mut Encoding, v: &Validation) {
-    e.object(v.candidate.tenant(), v.candidate.value());
-    e.digest(v.content);
-    e.number(v.ring.index() as u64);
-    encode_evidence(e, &v.evidence);
-    e.number(match v.verdict {
-        Verdict::Passed => 0,
-        Verdict::Failed => 1,
-        Verdict::Unknown => 2,
-    });
 }

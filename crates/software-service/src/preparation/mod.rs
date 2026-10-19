@@ -24,10 +24,7 @@ pub struct Target {
 }
 pub enum Delivery<'a> {
     Direct,
-    Native {
-        source: &'a str,
-        ring: rss_mdm_software_release::Ring,
-    },
+    Native { target: &'a str },
 }
 /// Transient view of the existing immutable binding, never a second persisted model.
 pub struct Selection<'a> {

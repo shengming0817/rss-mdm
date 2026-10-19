@@ -283,7 +283,8 @@ pub async fn replay(
         return Ok(response);
     }
     let binding = storage::binding(c, t, source).await?;
-    let state:String=sqlx::query_scalar("SELECT status FROM rss_transactional_messaging.outbox WHERE tenant_id=$1 AND message_id=$2 FOR UPDATE").bind(t).bind(source.to_string()).fetch_one(&mut *c).await?;
+    // Replay reads the failed delivery and creates a separate identity; it never mutates the source outbox row.
+    let state:String=sqlx::query_scalar("SELECT status FROM rss_transactional_messaging.outbox WHERE tenant_id=$1 AND message_id=$2").bind(t).bind(source.to_string()).fetch_one(&mut *c).await?;
     if state != "dead_letter" {
         return Err(Error::Conflict);
     }

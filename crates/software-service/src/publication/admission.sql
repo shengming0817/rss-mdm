@@ -29,7 +29,7 @@ SELECT
  WHERE n.nspname='mdm_software_composition' AND (a.grantee=0 OR (a.grantee IN(SELECT oid FROM reachable) AND a.is_grantable)))
  AND NOT EXISTS(SELECT 1 FROM tables t JOIN pg_attribute a ON a.attrelid=t.oid WHERE a.attnum>0 AND NOT a.attisdropped
  AND (has_column_privilege(current_user,t.oid,a.attnum,'UPDATE') <>
-  (t.relname='authorities' AND a.attname='candidate' OR t.relname='slots' AND a.attname IN('operation','cursor') OR t.relname='targets' AND a.attname IN('attempted','acknowledged','call_generation') OR t.relname='withdrawals' AND a.attname='complete' OR t.relname='projections' AND a.attname='publication')
+  (t.relname='authorities' AND a.attname='record' OR t.relname='slots' AND a.attname IN('operation','cursor') OR t.relname='targets' AND a.attname IN('attempted','acknowledged','call_generation') OR t.relname='withdrawals' AND a.attname='complete' OR t.relname='projections' AND a.attname='publication')
  OR has_column_privilege(current_user,t.oid,a.attnum,'REFERENCES')))
  AND NOT EXISTS(SELECT 1 FROM tables t JOIN pg_attribute a ON a.attrelid=t.oid,
  LATERAL aclexplode(a.attacl) acl WHERE acl.grantee=0

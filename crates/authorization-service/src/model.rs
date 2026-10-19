@@ -75,7 +75,6 @@ pub enum Permission {
     SoftwareWrite,
     SoftwareWithdraw,
     ReleaseRead,
-    ReleaseWrite,
     ReleasePublish,
     ReleaseWithdraw,
     ReleaseRecover,
@@ -166,7 +165,6 @@ impl Permission {
             | Self::SoftwareWrite
             | Self::SoftwareWithdraw
             | Self::ReleaseRead
-            | Self::ReleaseWrite
             | Self::ReleasePublish
             | Self::ReleaseWithdraw
             | Self::ReleaseRecover => false,
@@ -449,7 +447,6 @@ pub fn tenant_administrator_rule(user: User) -> Rule {
         Permission::SoftwareWrite,
         Permission::SoftwareWithdraw,
         Permission::ReleaseRead,
-        Permission::ReleaseWrite,
         Permission::ReleasePublish,
         Permission::ReleaseWithdraw,
         Permission::ReleaseRecover,

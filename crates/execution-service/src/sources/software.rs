@@ -618,18 +618,7 @@ fn task_platform(platform: Platform) -> rss_mdm_agent_wire::runtime::TaskPlatfor
 fn delivery(input: &rss_mdm_policy::SoftwareDelivery) -> Delivery<'_> {
     match input {
         rss_mdm_policy::SoftwareDelivery::Direct => Delivery::Direct,
-        rss_mdm_policy::SoftwareDelivery::Native { source, ring } => Delivery::Native {
-            source,
-            ring: match ring {
-                rss_mdm_policy::SoftwareDeliveryRing::Test => rss_mdm_software_release::Ring::Test,
-                rss_mdm_policy::SoftwareDeliveryRing::Pilot => {
-                    rss_mdm_software_release::Ring::Pilot
-                }
-                rss_mdm_policy::SoftwareDeliveryRing::Production => {
-                    rss_mdm_software_release::Ring::Production
-                }
-            },
-        },
+        rss_mdm_policy::SoftwareDelivery::Native { target } => Delivery::Native { target },
     }
 }
 

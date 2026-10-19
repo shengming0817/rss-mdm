@@ -8,7 +8,6 @@ use axum::{
     routing::{get, post},
 };
 use base64::Engine;
-use rss_mdm_software_release::Ring;
 use rss_mdm_software_service::management::publication::service::PublicationDirectory;
 use rss_mdm_software_service::publication::{
     self as p, ExportDocument, PublicationService, PublishedSoftware,
@@ -35,14 +34,6 @@ fn cutoff() -> Result<rss_request_context::Deadline, StatusCode> {
     rss_request_context::Deadline::from_timeout(&Timer, Duration::from_secs(6))
         .map_err(|_| StatusCode::SERVICE_UNAVAILABLE)
 }
-fn ring(value: &str) -> Result<Ring, StatusCode> {
-    match value {
-        "test" => Ok(Ring::Test),
-        "pilot" => Ok(Ring::Pilot),
-        "production" => Ok(Ring::Production),
-        _ => Err(StatusCode::NOT_FOUND),
-    }
-}
 fn digest(value: &str) -> Result<[u8; 32], StatusCode> {
     if value.len() != 64
         || !value
@@ -60,7 +51,7 @@ fn digest(value: &str) -> Result<[u8; 32], StatusCode> {
 }
 fn failure(e: p::Error) -> StatusCode {
     match e {
-        p::Error::CandidateNotFound | p::Error::Content | p::Error::Identity => {
+        p::Error::PublicationNotFound | p::Error::Content | p::Error::Identity => {
             StatusCode::NOT_FOUND
         }
         p::Error::Input => StatusCode::BAD_REQUEST,
@@ -98,12 +89,8 @@ fn token(headers: &HeaderMap) -> Option<String> {
     }
     Some(token.into())
 }
-fn authenticated(
-    service: &PublicationService,
-    ring: Ring,
-    headers: &HeaderMap,
-) -> Result<(), StatusCode> {
-    if service.native_read_allowed(ring, token(headers).as_deref()) {
+fn authenticated(service: &PublicationService, headers: &HeaderMap) -> Result<(), StatusCode> {
+    if service.native_read_allowed(token(headers).as_deref()) {
         Ok(())
     } else {
         Err(StatusCode::UNAUTHORIZED)
@@ -117,48 +104,46 @@ fn contract(headers: &HeaderMap) -> Result<(), StatusCode> {
 }
 pub fn routes() -> Router<Arc<StateData>> {
     Router::new()
-      .route("/api/v1/software/native/sources/{source}/{ring}/information",get(information))
-      .route("/api/v1/software/native/sources/{source}/{ring}/manifestSearch",post(search))
-      .route("/api/v1/software/native/sources/{source}/{ring}/packageManifests/{package}",get(manifest))
-      .route("/api/v1/software/native/sources/{source}/{ring}/exports/{publication}/information",get(frozen_information))
-      .route("/api/v1/software/native/sources/{source}/{ring}/exports/{publication}/manifestSearch",post(frozen_search))
-      .route("/api/v1/software/native/sources/{source}/{ring}/exports/{publication}/packageManifests/{package}",get(frozen_manifest))
-      .route("/api/v1/software/native/sources/{source}/{ring}/exports/{publication}/info/refs",get(refs))
-      .route("/api/v1/software/native/sources/{source}/{ring}/exports/{publication}/git-upload-pack",post(upload_pack))
+      .route("/api/v1/software/native/sources/{source}/information",get(information))
+      .route("/api/v1/software/native/sources/{source}/manifestSearch",post(search))
+      .route("/api/v1/software/native/sources/{source}/packageManifests/{package}",get(manifest))
+      .route("/api/v1/software/native/sources/{source}/exports/{publication}/information",get(frozen_information))
+      .route("/api/v1/software/native/sources/{source}/exports/{publication}/manifestSearch",post(frozen_search))
+      .route("/api/v1/software/native/sources/{source}/exports/{publication}/packageManifests/{package}",get(frozen_manifest))
+      .route("/api/v1/software/native/sources/{source}/exports/{publication}/info/refs",get(refs))
+      .route("/api/v1/software/native/sources/{source}/exports/{publication}/git-upload-pack",post(upload_pack))
       .route("/api/v1/software/native/sources/{source}/artifacts/{resource}/{version}/{digest}/{*file}",get(artifact))
       .layer(axum::extract::DefaultBodyLimit::max(1024*1024))
       .layer(axum::middleware::from_fn(no_store))
 }
 async fn information(
     State(state): State<Arc<StateData>>,
-    Path((source, r)): Path<(String, String)>,
+    Path(source): Path<String>,
     headers: HeaderMap,
 ) -> Result<Json<Value>, StatusCode> {
-    let ring = ring(&r)?;
     let s = service(&state, &source)?;
-    if !s.native_winget(ring) {
+    if !s.native_winget() {
         return Err(StatusCode::NOT_FOUND);
     }
     contract(&headers)?;
     Ok(Json(
-        json!({"Data":{"SourceIdentifier":s.native_identifier(ring,None),"ServerSupportedVersions":["1.0.0"]}}),
+        json!({"Data":{"SourceIdentifier":s.native_identifier(None),"ServerSupportedVersions":["1.0.0"]}}),
     ))
 }
 async fn frozen_information(
     State(state): State<Arc<StateData>>,
-    Path((source, r, id)): Path<(String, String, String)>,
+    Path((source, id)): Path<(String, String)>,
     headers: HeaderMap,
 ) -> Result<Json<Value>, StatusCode> {
-    let ring = ring(&r)?;
     let id = digest(&id)?;
     let s = service(&state, &source)?;
-    if !s.native_winget(ring) {
+    if !s.native_winget() {
         return Err(StatusCode::NOT_FOUND);
     }
     contract(&headers)?;
-    s.published(ring, id, cutoff()?).await.map_err(failure)?;
+    s.published(id, cutoff()?).await.map_err(failure)?;
     Ok(Json(
-        json!({"Data":{"SourceIdentifier":s.native_identifier(ring,Some(id)),"ServerSupportedVersions":["1.0.0"]}}),
+        json!({"Data":{"SourceIdentifier":s.native_identifier(Some(id)),"ServerSupportedVersions":["1.0.0"]}}),
     ))
 }
 #[derive(Clone, Deserialize)]
@@ -284,21 +269,20 @@ fn search_row(document: &ExportDocument) -> Result<Value, StatusCode> {
 }
 async fn page(
     s: &PublicationService,
-    ring: Ring,
     after: &str,
 ) -> Result<(Vec<(String, PublishedSoftware)>, Option<String>), StatusCode> {
     let cutoff = cutoff()?;
     let candidates = s
-        .published_page(ring, after, 100, cutoff)
+        .published_page(after, 100, cutoff)
         .await
         .map_err(failure)?;
     let next =
         (candidates.len() == 100).then(|| candidates.last().expect("page nonempty").0.clone());
     let mut values = Vec::new();
     for (coordinate, id) in candidates {
-        match s.published(ring, id, cutoff).await {
+        match s.published(id, cutoff).await {
             Ok(v) => values.push((coordinate, v)),
-            Err(p::Error::Content | p::Error::CandidateNotFound) => {}
+            Err(p::Error::Content | p::Error::PublicationNotFound) => {}
             Err(e) => return Err(failure(e)),
         }
     }
@@ -306,7 +290,7 @@ async fn page(
 }
 async fn search(
     State(state): State<Arc<StateData>>,
-    Path((source, r)): Path<(String, String)>,
+    Path(source): Path<String>,
     headers: HeaderMap,
     Json(input): Json<Search>,
 ) -> Result<Json<Value>, StatusCode> {
@@ -315,9 +299,8 @@ async fn search(
         .clone()
         .try_acquire_owned()
         .map_err(|_| StatusCode::SERVICE_UNAVAILABLE)?;
-    let ring = ring(&r)?;
     let s = service(&state, &source)?;
-    if !s.native_winget(ring) {
+    if !s.native_winget() {
         return Err(StatusCode::NOT_FOUND);
     }
     contract(&headers)?;
@@ -327,7 +310,7 @@ async fn search(
         .map(|v| v.to_str().map_err(|_| StatusCode::BAD_REQUEST))
         .transpose()?
         .unwrap_or("");
-    let (values, next) = page(s, ring, after).await?;
+    let (values, next) = page(s, after).await?;
     search_results(
         &input,
         limit,
@@ -379,19 +362,18 @@ fn search_results(
 
 async fn frozen_search(
     State(state): State<Arc<StateData>>,
-    Path((source, r, id)): Path<(String, String, String)>,
+    Path((source, id)): Path<(String, String)>,
     headers: HeaderMap,
     Json(input): Json<Search>,
 ) -> Result<Json<Value>, StatusCode> {
-    let ring = ring(&r)?;
     let s = service(&state, &source)?;
-    if !s.native_winget(ring) {
+    if !s.native_winget() {
         return Err(StatusCode::NOT_FOUND);
     }
     contract(&headers)?;
     input.validate()?;
     let value = s
-        .published(ring, digest(&id)?, cutoff()?)
+        .published(digest(&id)?, cutoff()?)
         .await
         .map_err(failure)?;
     let rows = std::iter::once(&value.document)
@@ -411,7 +393,7 @@ struct VersionQuery {
 }
 async fn manifest(
     State(state): State<Arc<StateData>>,
-    Path((source, r, package)): Path<(String, String, String)>,
+    Path((source, package)): Path<(String, String)>,
     headers: HeaderMap,
     Query(query): Query<VersionQuery>,
 ) -> Result<Json<Value>, StatusCode> {
@@ -420,9 +402,8 @@ async fn manifest(
         .clone()
         .try_acquire_owned()
         .map_err(|_| StatusCode::SERVICE_UNAVAILABLE)?;
-    let ring = ring(&r)?;
     let s = service(&state, &source)?;
-    if !s.native_winget(ring) {
+    if !s.native_winget() {
         return Err(StatusCode::NOT_FOUND);
     }
     contract(&headers)?;
@@ -440,7 +421,7 @@ async fn manifest(
     let mut documents = Vec::new();
     if let Some(version) = &query.version {
         documents.push(
-            s.published_coordinate(ring, &format!("{package}/{version}"), deadline)
+            s.published_coordinate(&format!("{package}/{version}"), deadline)
                 .await
                 .map_err(failure)?
                 .document,
@@ -450,7 +431,7 @@ async fn manifest(
         let mut after = prefix.clone();
         'pages: loop {
             let rows = s
-                .published_page(ring, &after, 100, deadline)
+                .published_page(&after, 100, deadline)
                 .await
                 .map_err(failure)?;
             let full = rows.len() == 100;
@@ -459,10 +440,10 @@ async fn manifest(
                     break 'pages;
                 }
                 after = coordinate;
-                let value = match s.published(ring, id, deadline).await {
+                let value = match s.published(id, deadline).await {
                     Ok(value) => value,
                     Err(
-                        rss_mdm_software_service::publication::Error::CandidateNotFound
+                        rss_mdm_software_service::publication::Error::PublicationNotFound
                         | rss_mdm_software_service::publication::Error::Blocked,
                     ) => continue,
                     Err(error) => return Err(failure(error)),
@@ -481,18 +462,17 @@ async fn manifest(
 }
 async fn frozen_manifest(
     State(state): State<Arc<StateData>>,
-    Path((source, r, id, package)): Path<(String, String, String, String)>,
+    Path((source, id, package)): Path<(String, String, String)>,
     headers: HeaderMap,
     Query(query): Query<VersionQuery>,
 ) -> Result<Json<Value>, StatusCode> {
-    let ring = ring(&r)?;
     let s = service(&state, &source)?;
-    if !s.native_winget(ring) {
+    if !s.native_winget() {
         return Err(StatusCode::NOT_FOUND);
     }
     contract(&headers)?;
     let value = s
-        .published(ring, digest(&id)?, cutoff()?)
+        .published(digest(&id)?, cutoff()?)
         .await
         .map_err(failure)?;
     manifest_response(
@@ -540,14 +520,13 @@ enum GitRead<'a> {
 }
 async fn refs(
     State(state): State<Arc<StateData>>,
-    Path((source, r, id)): Path<(String, String, String)>,
+    Path((source, id)): Path<(String, String)>,
     Query(query): Query<GitQuery>,
     headers: HeaderMap,
 ) -> Response {
     git(
         &state,
         &source,
-        &r,
         &id,
         &headers,
         GitRead::Advertise(&query.service),
@@ -557,18 +536,17 @@ async fn refs(
 }
 async fn upload_pack(
     State(state): State<Arc<StateData>>,
-    Path((source, r, id)): Path<(String, String, String)>,
+    Path((source, id)): Path<(String, String)>,
     headers: HeaderMap,
     body: Bytes,
 ) -> Response {
-    git(&state, &source, &r, &id, &headers, GitRead::Upload(&body))
+    git(&state, &source, &id, &headers, GitRead::Upload(&body))
         .await
         .unwrap_or_else(|e| e)
 }
 async fn git(
     state: &StateData,
     source: &str,
-    r: &str,
     id: &str,
     headers: &HeaderMap,
     read: GitRead<'_>,
@@ -582,12 +560,11 @@ async fn git(
         .clone()
         .try_acquire_owned()
         .map_err(|_| StatusCode::SERVICE_UNAVAILABLE.into_response())?;
-    let ring = ring(r).map_err(IntoResponse::into_response)?;
     let s = service(state, source).map_err(IntoResponse::into_response)?;
-    if s.native_winget(ring) {
+    if s.native_winget() {
         return Err(StatusCode::NOT_FOUND.into_response());
     }
-    authenticated(s, ring, headers).map_err(|status| {
+    authenticated(s, headers).map_err(|status| {
         (
             status,
             [(
@@ -615,7 +592,6 @@ async fn git(
     };
     let bytes = s
         .upload_pack(
-            ring,
             digest(
                 id.strip_suffix(".git")
                     .ok_or_else(|| StatusCode::NOT_FOUND.into_response())?,
@@ -673,13 +649,10 @@ async fn artifact(
             .ok_or_else(|| StatusCode::SERVICE_UNAVAILABLE.into_response())?;
         let credential = token(&headers);
         let mut authorized = false;
-        for ring in [Ring::Test, Ring::Pilot, Ring::Production] {
-            if !s.native_read_allowed(ring, credential.as_deref()) {
-                continue;
-            }
+        if s.native_read_allowed(credential.as_deref()) {
             authorized = true;
             let values = s
-                .published_resource(ring, &resource, &version, deadline)
+                .published_resource(&resource, &version, deadline)
                 .await
                 .map_err(|e| failure(e).into_response())?;
             for value in values {
@@ -715,7 +688,7 @@ async fn artifact(
                         .verify(&descriptor)
                         .await
                         .map_err(|_| StatusCode::SERVICE_UNAVAILABLE.into_response())?;
-                    s.published(ring, value.publication, deadline)
+                    s.published(value.publication, deadline)
                         .await
                         .map_err(|e| failure(e).into_response())?;
                     return crate::content::http::response(verified, &headers)

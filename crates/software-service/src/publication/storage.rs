@@ -13,6 +13,7 @@ use sqlx::Row;
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct Subject {
+    pub target: String,
     pub format: u8,
     pub resource: String,
     pub version: String,
@@ -25,11 +26,10 @@ pub(super) struct Subject {
 #[serde(deny_unknown_fields)]
 pub(super) struct Target {
     pub format: u8,
-    pub candidate: String,
+    pub record: String,
     pub publication: [u8; 32],
     pub lifecycle: [u8; 32],
     pub attempt: u64,
-    pub ring: u8,
     pub binding: Vec<u8>,
     pub coordinate: String,
     pub slot: String,
@@ -48,14 +48,6 @@ impl Target {
     }
     pub fn withdrawal_key(&self) -> String {
         format!("w:{}:{}", super::hex(&self.publication), self.attempt)
-    }
-    pub fn ring(&self) -> Result<rel::Ring> {
-        match self.ring {
-            0 => Ok(rel::Ring::Test),
-            1 => Ok(rel::Ring::Pilot),
-            2 => Ok(rel::Ring::Production),
-            _ => Err(Error::Input),
-        }
     }
 }
 pub(super) struct Call {
@@ -169,7 +161,7 @@ pub(super) fn fact(
 }
 /// App-owned binding of the complete public release request, independent of the component codec.
 pub(super) fn request_fingerprint(
-    candidate: &str,
+    record: &str,
     r: &rel::Request,
 ) -> std::result::Result<Vec<u8>, PgError> {
     use serde_json::json;
@@ -177,44 +169,26 @@ pub(super) fn request_fingerprint(
     let evidence =
         |e: &rel::Evidence| json!([actor(&e.actor), e.digest.bytes(), e.at.unix_seconds()]);
     let operation = match &r.operation {
-        rel::Operation::Replace(c) => json!(["replace", c.digest().bytes()]),
-        rel::Operation::Publish {
-            validation: v,
-            lifecycle,
-        } => json!([
-            "publish",
-            v.candidate.tenant().to_string(),
-            v.candidate.value(),
-            v.content.bytes(),
-            v.ring as u8,
-            evidence(&v.evidence),
-            format!("{:?}", v.verdict),
-            lifecycle.bytes()
-        ]),
         rel::Operation::Retry {
-            ring,
             publication,
             attempt,
-        } => json!(["retry", *ring as u8, publication.digest().bytes(), attempt]),
+        } => json!(["retry", publication.digest().bytes(), attempt]),
         rel::Operation::Record {
-            ring,
             publication,
             attempt,
             outcome,
         } => json!([
             "record",
-            *ring as u8,
             publication.digest().bytes(),
             attempt,
             result_tag(outcome),
             evidence(outcome.evidence())
         ]),
-        rel::Operation::Quarantine => json!(["quarantine"]),
-        rel::Operation::Deprecate => json!(["deprecate"]),
+        rel::Operation::Withdraw => json!(["withdraw"]),
     };
     encode(&json!([
         "mdm.software.audit.request/v2",
-        candidate,
+        record,
         r.id.tenant().to_string(),
         r.id.value(),
         actor(&r.actor),
@@ -234,11 +208,12 @@ pub(super) async fn register(
     audit_store: &dyn crate::AuditPort,
     tx: &mut PgTransaction<'_>,
     sources: &Sources,
-    heads: &[Option<String>; 3],
+    head: &Option<String>,
     actor: &rel::ActorId,
 ) -> InTransaction<()> {
     verify(tx).await?;
-    for (i, b) in sources.bindings.iter().enumerate() {
+    {
+        let b = &sources.binding;
         let tenant = tx.tenant_id().to_string();
         let identity = b.identity.clone();
         let configuration = b.configuration.clone();
@@ -269,7 +244,7 @@ pub(super) async fn register(
         if matches!(b.driver, Driver::Brew { .. }) {
             let t = tx.tenant_id().to_string();
             let binding = b.identity.clone();
-            let head = heads[i].clone();
+            let head = head.clone();
             tx.with_connection(move |c| {
                 Box::pin(async move {
                     sqlx::query(INSERT_TAP_SLOT_SQL)
@@ -288,11 +263,10 @@ pub(super) async fn register(
             actor,
             &sources.logical,
             "software_binding",
-            binding_fact(&b.identity, i as u8),
+            binding_fact(&b.identity),
             &encode(&(
                 "binding/v1",
                 &sources.logical,
-                i,
                 &b.identity,
                 &b.configuration,
             ))?,
@@ -306,9 +280,9 @@ pub(super) async fn register(
 }
 pub(super) async fn subject(
     tx: &mut PgTransaction<'_>,
-    candidate: &str,
+    record: &str,
 ) -> std::result::Result<Option<Subject>, PgError> {
-    let (t, id) = (tx.tenant_id().to_string(), candidate.to_owned());
+    let (t, id) = (tx.tenant_id().to_string(), record.to_owned());
     let row = tx
         .with_connection(move |c| {
             Box::pin(async move {
@@ -338,12 +312,12 @@ pub(super) async fn subject(
 }
 pub(super) async fn insert_subject(
     tx: &mut PgTransaction<'_>,
-    candidate: &str,
+    record: &str,
     s: &Subject,
 ) -> std::result::Result<(), PgError> {
     let (t, id, resource, version, bytes) = (
         tx.tenant_id().to_string(),
-        candidate.to_owned(),
+        record.to_owned(),
         s.resource.clone(),
         s.version.clone(),
         encode(s)?,
@@ -375,7 +349,7 @@ pub(super) fn software_key(c: &rel::Content) -> std::result::Result<Vec<u8>, PgE
 pub(super) async fn authority(
     tx: &mut PgTransaction<'_>,
     key: &[u8],
-) -> std::result::Result<Option<(String, Vec<u8>)>, PgError> {
+) -> std::result::Result<Option<String>, PgError> {
     let (t, k) = (tx.tenant_id().to_string(), key.to_vec());
     let row = tx
         .with_connection(move |c| {
@@ -389,23 +363,20 @@ pub(super) async fn authority(
         })
         .await?;
 
-    row.map(|r| Ok((r.try_get("candidate")?, r.try_get("material")?)))
-        .transpose()
+    Ok(row.map(|r| r.try_get("record")).transpose()?)
 }
 pub(super) async fn set_authority(
     tx: &mut PgTransaction<'_>,
     key: Vec<u8>,
-    material: Vec<u8>,
-    candidate: &str,
+    record: &str,
 ) -> std::result::Result<(), PgError> {
-    let (t, id) = (tx.tenant_id().to_string(), candidate.to_owned());
+    let (t, id) = (tx.tenant_id().to_string(), record.to_owned());
     let n = tx
         .with_connection(move |c| {
             Box::pin(async move {
                 sqlx::query(SET_AUTHORITY_SQL)
                     .bind(t)
                     .bind(key)
-                    .bind(material)
                     .bind(id)
                     .execute(c)
                     .await
@@ -543,11 +514,7 @@ pub(super) async fn call(
             r.try_get::<&[u8], _>("document")?,
             r.try_get::<&[u8], _>("digest")?,
         )?;
-        if target.format != 1
-            || target.attempt == 0
-            || target.binding.len() != 32
-            || target.ring > 2
-        {
+        if target.format != 1 || target.attempt == 0 || target.binding.len() != 32 {
             return Err(fault());
         }
         Ok(Call {
@@ -566,23 +533,23 @@ pub(super) async fn insert_call(
     table: Table,
     t: &Target,
 ) -> std::result::Result<(), PgError> {
-    let (tenant, id, candidate, bytes) = (
+    let (tenant, id, record, bytes) = (
         tx.tenant_id().to_string(),
         if matches!(table, Table::Publish) {
             t.key()
         } else {
             t.withdrawal_key()
         },
-        t.candidate.clone(),
+        t.record.clone(),
         encode(t)?,
     );
     let hash = Sha256::digest(&bytes).to_vec();
     let q = match table {
         Table::Publish => {
-            "INSERT INTO mdm_software_composition.targets(tenant_id,id,candidate,document,digest) VALUES($1::uuid,$2,$3,$4,$5)"
+            "INSERT INTO mdm_software_composition.targets(tenant_id,id,record,document,digest) VALUES($1::uuid,$2,$3,$4,$5)"
         }
         Table::Withdraw => {
-            "INSERT INTO mdm_software_composition.withdrawals(tenant_id,id,candidate,document,digest) VALUES($1::uuid,$2,$3,$4,$5)"
+            "INSERT INTO mdm_software_composition.withdrawals(tenant_id,id,record,document,digest) VALUES($1::uuid,$2,$3,$4,$5)"
         }
     };
     tx.with_connection(move |c| {
@@ -590,7 +557,7 @@ pub(super) async fn insert_call(
             sqlx::query(q)
                 .bind(tenant)
                 .bind(id)
-                .bind(candidate)
+                .bind(record)
                 .bind(bytes)
                 .bind(hash)
                 .execute(c)
@@ -687,10 +654,8 @@ pub(super) async fn project(
     })
     .await
 }
-pub(super) fn core_publication(c: &rel::Candidate, t: &Target) -> Result<rel::Publication> {
-    let rel::RingState::Publication(p) = c.snapshot().ring_state(t.ring()?) else {
-        return Err(Error::Conflict);
-    };
+pub(super) fn core_publication(c: &rel::Publication, t: &Target) -> Result<rel::Attempt> {
+    let p = &c.snapshot().attempt;
     if p.id() != t.publication_id()
         || p.attempt != t.attempt
         || p.binding.lifecycle.bytes() != t.lifecycle
@@ -698,10 +663,10 @@ pub(super) fn core_publication(c: &rel::Candidate, t: &Target) -> Result<rel::Pu
     {
         return Err(Error::Conflict);
     }
-    Ok(p.as_ref().clone())
+    Ok(p.clone())
 }
 pub(super) fn record_request(
-    c: &rel::Candidate,
+    c: &rel::Publication,
     t: &Target,
     actor: &rel::ActorId,
     result: rel::PublicationResult,
@@ -712,10 +677,9 @@ pub(super) fn record_request(
         "mdm.software.record/v1",
         actor.tenant().to_string(),
         actor.value(),
-        &t.candidate,
+        &t.record,
         t.publication,
         t.attempt,
-        t.ring,
         result_tag(&result),
         evidence.actor.value(),
         evidence.digest.bytes(),
@@ -733,7 +697,6 @@ pub(super) fn record_request(
         expected_revision: c.snapshot().revision,
         as_of: at,
         operation: rel::Operation::Record {
-            ring: t.ring()?,
             publication: t.publication_id(),
             attempt: t.attempt,
             outcome: result,
@@ -768,10 +731,10 @@ pub(super) async fn prepare_withdrawal(
     tx: &mut PgTransaction<'_>,
     target: &Target,
 ) -> std::result::Result<(), PgError> {
-    let (tenant, id, candidate, bytes) = (
+    let (tenant, id, record, bytes) = (
         tx.tenant_id().to_string(),
         target.withdrawal_key(),
-        target.candidate.clone(),
+        target.record.clone(),
         encode(target)?,
     );
     let digest = Sha256::digest(&bytes).to_vec();
@@ -781,7 +744,7 @@ pub(super) async fn prepare_withdrawal(
                 sqlx::query(PREPARE_WITHDRAWAL_SQL)
                     .bind(tenant)
                     .bind(id)
-                    .bind(candidate)
+                    .bind(record)
                     .bind(bytes)
                     .bind(digest)
                     .execute(c)
@@ -820,29 +783,22 @@ pub(super) async fn complete_noop(
 
 pub(super) fn request_fact(
     id: &str,
-    ring: Option<rel::Ring>,
     stage: &'static str,
 ) -> rss_mdm_audit_integration::SoftwareFact {
     rss_mdm_audit_integration::SoftwareFact {
         operation: super::hex(&Sha256::digest(id.as_bytes())),
         publication: None,
         attempt: None,
-        ring: ring.map(|r| match r {
-            rel::Ring::Test => 0,
-            rel::Ring::Pilot => 1,
-            rel::Ring::Production => 2,
-        }),
         binding: None,
         stage,
         outcome: "applied",
     }
 }
-fn binding_fact(binding: &[u8], ring: u8) -> rss_mdm_audit_integration::SoftwareFact {
+fn binding_fact(binding: &[u8]) -> rss_mdm_audit_integration::SoftwareFact {
     rss_mdm_audit_integration::SoftwareFact {
         operation: super::hex(binding),
         publication: None,
         attempt: None,
-        ring: Some(ring),
         binding: Some(super::hex(binding)),
         stage: "binding-register",
         outcome: "applied",
@@ -866,7 +822,7 @@ pub(super) fn record_fact(
     outcome: &'static str,
 ) -> rss_mdm_audit_integration::SoftwareFact {
     let mut fact = target_fact(t, Table::Publish, stage, outcome);
-    fact.operation = request_fact(r.id.value(), None, stage).operation;
+    fact.operation = request_fact(r.id.value(), stage).operation;
     fact
 }
 pub(super) fn target_fact(
@@ -882,7 +838,6 @@ pub(super) fn target_fact(
         },
         publication: Some(super::hex(&t.publication)),
         attempt: Some(t.attempt),
-        ring: Some(t.ring),
         binding: Some(super::hex(&t.binding)),
         stage,
         outcome,
@@ -892,28 +847,55 @@ pub(super) fn transition_fact(
     r: &rel::Request,
     stage: &'static str,
 ) -> rss_mdm_audit_integration::SoftwareFact {
-    let ring = match &r.operation {
-        rel::Operation::Publish { validation, .. } => Some(validation.ring),
-        _ => None,
-    };
-    request_fact(r.id.value(), ring, stage)
+    request_fact(r.id.value(), stage)
 }
 
 const INSERT_BINDING_SQL: &str = "INSERT INTO mdm_software_composition.bindings(tenant_id,identity,configuration) VALUES($1::uuid,$2,$3) ON CONFLICT DO NOTHING";
 const READ_BINDING_SQL: &str = "SELECT configuration FROM mdm_software_composition.bindings WHERE tenant_id=$1::uuid AND identity=$2";
 const INSERT_TAP_SLOT_SQL: &str = "INSERT INTO mdm_software_composition.slots(tenant_id,binding,coordinate,cursor) VALUES($1::uuid,$2,'tap',$3) ON CONFLICT DO NOTHING";
-const SUBJECT_SQL: &str = "SELECT resource,version,document,digest FROM mdm_software_composition.subjects WHERE tenant_id=$1::uuid AND candidate=$2";
-const INSERT_SUBJECT_SQL: &str = "INSERT INTO mdm_software_composition.subjects(tenant_id,candidate,resource,version,document,digest) VALUES($1::uuid,$2,$3,$4,$5,$6)";
-const AUTHORITY_SQL: &str = "SELECT candidate,material FROM mdm_software_composition.authorities WHERE tenant_id=$1::uuid AND software=$2 FOR UPDATE";
-const SET_AUTHORITY_SQL: &str = "INSERT INTO mdm_software_composition.authorities(tenant_id,software,material,candidate) VALUES($1::uuid,$2,$3,$4) ON CONFLICT(tenant_id,software) DO UPDATE SET candidate=EXCLUDED.candidate WHERE mdm_software_composition.authorities.material=EXCLUDED.material";
+const SUBJECT_SQL: &str = "SELECT resource,version,document,digest FROM mdm_software_composition.subjects WHERE tenant_id=$1::uuid AND record=$2";
+const INSERT_SUBJECT_SQL: &str = "INSERT INTO mdm_software_composition.subjects(tenant_id,record,resource,version,document,digest) VALUES($1::uuid,$2,$3,$4,$5,$6)";
+const AUTHORITY_SQL: &str = "SELECT record FROM mdm_software_composition.authorities WHERE tenant_id=$1::uuid AND software=$2 FOR UPDATE";
+const SET_AUTHORITY_SQL: &str = "INSERT INTO mdm_software_composition.authorities(tenant_id,software,record) VALUES($1::uuid,$2,$3) ON CONFLICT(tenant_id,software) DO UPDATE SET record=EXCLUDED.record";
 const SLOT_SQL: &str = "SELECT operation,cursor FROM mdm_software_composition.slots WHERE tenant_id=$1::uuid AND binding=$2 AND coordinate=$3";
 const RESERVE_SQL: &str = "INSERT INTO mdm_software_composition.slots(tenant_id,binding,coordinate,operation,cursor) VALUES($1::uuid,$2,$3,$4,$5) ON CONFLICT(tenant_id,binding,coordinate) DO UPDATE SET operation=EXCLUDED.operation WHERE mdm_software_composition.slots.operation IS NULL AND mdm_software_composition.slots.cursor IS NOT DISTINCT FROM EXCLUDED.cursor";
 const RELEASE_SLOT_SQL: &str = "UPDATE mdm_software_composition.slots SET operation=NULL,cursor=coalesce($5,cursor) WHERE tenant_id=$1::uuid AND binding=$2 AND coordinate=$3 AND operation=$4";
 const MARK_ATTEMPT_SQL: &str = "UPDATE mdm_software_composition.targets SET call_generation=call_generation+CASE WHEN attempted THEN 0 ELSE 1 END,attempted=true,acknowledged=acknowledged OR $3 WHERE tenant_id=$1::uuid AND id=$2";
 const COMPLETE_WITHDRAWAL_SQL: &str = "UPDATE mdm_software_composition.withdrawals SET complete=true WHERE tenant_id=$1::uuid AND id=$2";
 const PROJECTION_SQL: &str = "SELECT publication FROM mdm_software_composition.projections WHERE tenant_id=$1::uuid AND binding=$2 AND coordinate=$3";
-const PREPARE_WITHDRAWAL_SQL: &str = "INSERT INTO mdm_software_composition.targets(tenant_id,id,candidate,document,digest,withdrawal_id) SELECT $1::uuid,$2,$3,$4,$5,$2 WHERE EXISTS(SELECT 1 FROM mdm_software_composition.withdrawals WHERE tenant_id=$1::uuid AND id=$2 AND NOT complete)";
+const PREPARE_WITHDRAWAL_SQL: &str = "INSERT INTO mdm_software_composition.targets(tenant_id,id,record,document,digest,withdrawal_id) SELECT $1::uuid,$2,$3,$4,$5,$2 WHERE EXISTS(SELECT 1 FROM mdm_software_composition.withdrawals WHERE tenant_id=$1::uuid AND id=$2 AND NOT complete)";
 const COMPLETE_NOOP_SQL: &str = "UPDATE mdm_software_composition.withdrawals w SET complete=true WHERE tenant_id=$1::uuid AND id=$2 AND NOT EXISTS(SELECT 1 FROM mdm_software_composition.targets t WHERE t.tenant_id=w.tenant_id AND t.id=w.id AND t.attempted)";
+
+/// Persist the immutable withdrawal intent and its queue audit exactly once.
+/// Subsequent commands have their own management audit and reuse this original intent.
+pub(super) async fn queue_withdrawal_in(
+    tx: &mut PgTransaction<'_>,
+    audit: &dyn crate::AuditPort,
+    actor: &rel::ActorId,
+    target: &Target,
+) -> std::result::Result<(), PgError> {
+    lock(tx, "withdrawal", &target.withdrawal_key()).await?;
+    if call(tx, Table::Withdraw, &target.withdrawal_key())
+        .await?
+        .is_some()
+    {
+        return Ok(());
+    }
+    insert_call(tx, Table::Withdraw, target).await?;
+    let fact = fact(
+        tx.tenant_id(),
+        actor,
+        &target.record,
+        "software_withdraw",
+        target_fact(target, Table::Withdraw, "queue_withdrawal", "queued"),
+        &encode(target)?,
+    )?;
+    audit
+        .append_in(tx, &fact, false)
+        .await
+        .map_err(PgError::from)?;
+    Ok(())
+}
 
 #[cfg(test)]
 mod audit_tests {
@@ -926,10 +908,9 @@ mod audit_tests {
         Target {
             lifecycle: [0; 32],
             format: 1,
-            candidate: "candidate".into(),
+            record: "record".into(),
             publication: [1; 32],
             attempt: 1,
-            ring: 0,
             binding: vec![2; 32],
             coordinate: "software".into(),
             slot: "slot".into(),
@@ -947,37 +928,25 @@ mod audit_tests {
             actor: rel::ActorId::new(tenant(), "actor").unwrap(),
             expected_revision: 3,
             as_of: Timepoint::try_from(10).unwrap(),
-            operation: rel::Operation::Quarantine,
+            operation: rel::Operation::Withdraw,
         };
-        let original = request_fingerprint("candidate", &r).unwrap();
-        assert_eq!(
-            original,
-            request_fingerprint("candidate", &r.clone()).unwrap()
-        );
+        let original = request_fingerprint("record", &r).unwrap();
+        assert_eq!(original, request_fingerprint("record", &r.clone()).unwrap());
         let mut changed = r.clone();
         changed.expected_revision += 1;
-        assert_ne!(
-            original,
-            request_fingerprint("candidate", &changed).unwrap()
-        );
+        assert_ne!(original, request_fingerprint("record", &changed).unwrap());
         changed = r.clone();
         changed.actor = rel::ActorId::new(tenant(), "other").unwrap();
-        assert_ne!(
-            original,
-            request_fingerprint("candidate", &changed).unwrap()
-        );
+        assert_ne!(original, request_fingerprint("record", &changed).unwrap());
         changed = r.clone();
         changed.as_of = Timepoint::try_from(11).unwrap();
-        assert_ne!(
-            original,
-            request_fingerprint("candidate", &changed).unwrap()
-        );
+        assert_ne!(original, request_fingerprint("record", &changed).unwrap());
         changed = r;
-        changed.operation = rel::Operation::Deprecate;
-        assert_ne!(
-            original,
-            request_fingerprint("candidate", &changed).unwrap()
-        );
+        changed.operation = rel::Operation::Retry {
+            publication: rel::PublicationId::from_digest(rel::Digest::from_bytes([8; 32])),
+            attempt: 1,
+        };
+        assert_ne!(original, request_fingerprint("record", &changed).unwrap());
     }
     #[test]
     fn new_external_call_has_new_fact_but_same_call_replay_keeps_identity() {
@@ -987,7 +956,7 @@ mod audit_tests {
             fact(
                 tenant(),
                 &actor,
-                &t.candidate,
+                &t.record,
                 "software_call",
                 call_fact(&t, Table::Withdraw, generation, "start_call", "attempted"),
                 &encode(&(&t, generation)).unwrap(),

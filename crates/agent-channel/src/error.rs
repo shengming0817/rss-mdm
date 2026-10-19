@@ -36,7 +36,7 @@ pub enum Missing {
     Operation,
     Task,
     SoftwareSource,
-    SoftwareCandidate,
+    SoftwarePublication,
 }
 
 impl From<rss_mdm_authorization_service::error::AuthorizationError> for Error {
@@ -154,7 +154,7 @@ impl From<rss_mdm_execution_service::Error> for Error {
             E::CommitUnknown => Self::CommitUnknown, E::RollbackFailed => Self::RollbackFailed, E::Unsupported => Self::Unsupported,
             E::NotFound => Self::NotFound, E::Resource(_) => Self::Missing(Missing::Resource),
             E::Execution(e) => Self::Missing(match e { rss_mdm_execution_service::missing::ExecutionError::MissingOperation => Missing::Operation, rss_mdm_execution_service::missing::ExecutionError::MissingTask => Missing::Task }),
-            E::Publication(e) => Self::Missing(match e { rss_mdm_software_service::management::publication::error::PublicationError::MissingSource => Missing::SoftwareSource, rss_mdm_software_service::management::publication::error::PublicationError::MissingCandidate => Missing::SoftwareCandidate }),
+            E::Publication(e) => Self::Missing(match e { rss_mdm_software_service::management::publication::error::PublicationError::MissingSource => Missing::SoftwareSource, rss_mdm_software_service::management::publication::error::PublicationError::MissingPublication => Missing::SoftwarePublication }),
             E::Configuration(c) => Self::Unavailable(Failure::ExecutionConfiguration(c)),
             E::Unavailable(f) => Self::Unavailable(match f {
                 rss_mdm_execution_service::Failure::RequestDeadline => Failure::RequestDeadline,

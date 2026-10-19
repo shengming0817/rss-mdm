@@ -220,7 +220,7 @@ mod recovery_credentials_tests;
 pub mod webhooks;
 
 #[cfg(all(test, feature = "integration"))]
-#[path = "../tests/webhooks.rs"]
+#[path = "../tests/webhooks/mod.rs"]
 mod webhook_tests;
 
 mod settings;

@@ -90,8 +90,8 @@ fn brew_requires_a_non_root_interactive_account() {
 #[test]
 fn native_read_credentials_require_the_exact_source_and_reference_pair() {
     let export: SoftwareTaskExport = serde_json::from_value(json!({"kind":"brew",
-        "binding":{"source":"enterprise","tenantId":Uuid::new_v4(),"ring":"pilot",
-            "publication":vec![1;32],"sourceDigest":vec![2;32],"resource":"app","resourceVersion":"1",
+        "binding":{"target":"enterprise","tenantId":Uuid::new_v4(),
+            "publication":vec![1;32],"targetDigest":vec![2;32],"resource":"app","resourceVersion":"1",
             "resourceDigest":vec![3;32],"definitionDigest":vec![4;32],"documentSha256":vec![5;32],
             "dependencies":[],"artifacts":[{"url":"https://mdm.example.test/app","length":1,"sha256":vec![6;32]}]},
         "uri":"https://mdm.example.test/tap","commit":"a".repeat(40),"tap":"enterprise/app","credentialReference":"read-one"})).unwrap();

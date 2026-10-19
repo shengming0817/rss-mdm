@@ -49,9 +49,16 @@ async fn absent_agent_group_installs_fixed_package_and_registers_independently()
             )),
         )
         .await?;
+    let mut early_bootstrap = None;
     let (query, payload) = match lifecycle::command(&bytes, "InstalledApplicationList") {
         Ok(value) => value,
-        Err(_) => peer.next("InstalledApplicationList").await?,
+        Err(_) => {
+            if !bytes.is_empty() {
+                peer.pending_replies.lock().await.push_back(bytes);
+            }
+            peer.next_managed("InstalledApplicationList", &mut early_bootstrap)
+                .await?
+        }
     };
     ensure!(payload["Identifiers"] == plist::Value::Array(vec!["com.rss.agent".into()]));
     let next = peer
@@ -71,7 +78,6 @@ async fn absent_agent_group_installs_fixed_package_and_registers_independently()
             && state["operationIds"] == json!([operation]),
         "{state}"
     );
-    let mut early_bootstrap = None;
     let (install, payload) = peer
         .next_managed("InstallEnterpriseApplication", &mut early_bootstrap)
         .await?;

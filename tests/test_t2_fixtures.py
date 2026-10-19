@@ -238,6 +238,10 @@ class PreparationTests(unittest.TestCase):
             fixture.runtime_config = Mock(return_value={})
             fixture.recovery_config = Mock(return_value={})
             fixture.builds.executables = {'rss-mdm': '/fixture/mdm'}
+            # Publication-only cases may populate content before identity is first requested.
+            content = fixture.root / 'shared' / 'content'
+            content.mkdir(parents=True)
+            (content / 'artifact').write_text('retained')
             stages = []
             def helper(root, manifest, output, database):
                 stages.append(manifest['stage'])
@@ -261,6 +265,7 @@ class PreparationTests(unittest.TestCase):
                 self.assertEqual({value[2] for value in refreshed}, {'2'})
                 # Previously returned snapshots remain valid strings, not mutable file handles.
                 self.assertEqual(initial[0][2], '1')
+                self.assertEqual((content / 'artifact').read_text(), 'retained')
 
     def test_shared_materials_copy_private_bytes_and_relocate_configuration(self):
         with tempfile.TemporaryDirectory() as tmp:

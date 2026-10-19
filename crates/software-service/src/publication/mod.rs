@@ -15,10 +15,10 @@ pub use read::PublishedSoftware;
 mod storage;
 mod worker;
 pub use artifact::{ArtifactOrigin, ArtifactReader};
-pub use config::{BrewConfig, RingSources, ServiceIdentity, SourceConfig, WingetConfig};
+pub use config::{BrewConfig, ServiceIdentity, SourceConfig, WingetConfig};
 pub use driver::{Withdrawal, WithdrawalExecution};
 use rss_transactional_messaging_postgres::PgError;
-pub use service::{CandidateInput, PublicationService, ServiceRequest};
+pub use service::{PublicationService, PublishInput, ServiceRequest};
 pub use spec::{
     BottleInput, BrewArtifact, BrewDependency, BrewPayload, BrewRecipe, CaskInstall,
     ExportDocument, PublicArtifact,
@@ -26,8 +26,8 @@ pub use spec::{
 pub use worker::{PublicationWork, PublicationWorkPage};
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
-    #[error("software candidate not found")]
-    CandidateNotFound,
+    #[error("software record not found")]
+    PublicationNotFound,
     /// Sanitized lower-level failure with its owning operation stage.
     #[error("{stage}: {category}: {source}")]
     Diagnostic {
@@ -189,3 +189,46 @@ mod diagnostics_tests {
 }
 
 pub mod references;
+
+/// Compose version revocation with durable per-publication withdrawal intents in the caller transaction.
+/// The catalog lifecycle lock must already be held. No source I/O or transaction commit occurs here.
+pub async fn withdraw_version_in(
+    tx: &mut rss_transactional_messaging_postgres::PgTransaction<'_>,
+    resource: &str,
+    version: &str,
+    at: i64,
+    audit: &dyn crate::AuditPort,
+    actor: &rss_mdm_software_release::ActorId,
+) -> std::result::Result<(), rss_transactional_messaging_postgres::PgError> {
+    let tenant = tx.tenant_id();
+    let resource = resource.to_owned();
+    let version = version.to_owned();
+    let records=tx.with_connection(move|c|Box::pin(async move {
+        sqlx::query_scalar::<_,String>("SELECT record FROM mdm_software_composition.subjects WHERE tenant_id=$1::uuid AND resource=$2 AND version=$3 ORDER BY record COLLATE \"C\"")
+            .bind(tenant.to_string()).bind(resource).bind(version).fetch_all(c).await
+    })).await?;
+    for record in records {
+        let id = storage::required(
+            "version withdrawal",
+            rss_mdm_software_release::PublicationKey::new(tenant, &record),
+        )?;
+        let c = storage::required(
+            "version withdrawal",
+            rss_mdm_software_release_postgres::lock_publication_reference_in(tx, &id).await?,
+        )?;
+        let p = &c.snapshot().attempt;
+        let call = storage::call(
+            tx,
+            storage::Table::Publish,
+            &format!("p:{}:{}", hex(&p.id().digest().bytes()), p.attempt),
+        )
+        .await?
+        .ok_or_else(storage::fault)?;
+        let mut intent = call.target;
+        intent.base = None;
+        intent.commit = None;
+        intent.commit_at = at.max(c.snapshot().at.unix_seconds());
+        storage::queue_withdrawal_in(tx, audit, actor, &intent).await?;
+    }
+    Ok(())
+}

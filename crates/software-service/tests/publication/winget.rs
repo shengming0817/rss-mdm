@@ -7,13 +7,10 @@ async fn full_version_publication_recovery_and_public_artifact_boundary() {
     let runtime = runtime().await;
     let service = server.service(runtime.clone(), server.winget()).await;
     let input = seed(runtime.clone(), &server, server.winget_document()).await;
-    service.create_candidate(&input, cutoff()).await.unwrap();
-    let p = submit_publication(&service, &input.candidate, rel::Ring::Test).await;
+    let p = submit_publication(&service, &input).await;
     assert!(matches!(
-        service
-            .published(rel::Ring::Test, p.id().digest().bytes(), cutoff())
-            .await,
-        Err(Error::CandidateNotFound)
+        service.published(p.id().digest().bytes(), cutoff()).await,
+        Err(Error::PublicationNotFound)
     ));
     sql(
         "CREATE FUNCTION public.reject_release_result() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'fixture result failure'; END $$; CREATE TRIGGER reject_result BEFORE UPDATE ON mdm_software_release.aggregates FOR EACH ROW EXECUTE FUNCTION public.reject_release_result();",
@@ -40,7 +37,7 @@ async fn full_version_publication_recovery_and_public_artifact_boundary() {
         rel::PublicationOutcome::Reported(rel::PublicationResult::Applied(_))
     ));
     let served = service
-        .published(rel::Ring::Test, p.id().digest().bytes(), cutoff())
+        .published(p.id().digest().bytes(), cutoff())
         .await
         .unwrap();
     assert_eq!(served.resource_digest, input.resource_digest);
@@ -76,7 +73,7 @@ async fn full_version_publication_recovery_and_public_artifact_boundary() {
         );
     }
     assert_eq!(served.artifacts.len(), 1);
-    assert_publication_audit(&p, &input.candidate, "applied");
+    assert_publication_audit(&p, &input.record, "applied");
     assert!(
         service
             .reconciliation_page("", 32, cutoff())
@@ -85,20 +82,18 @@ async fn full_version_publication_recovery_and_public_artifact_boundary() {
             .work
             .is_empty()
     );
-    let request = request_for(&service, &input.candidate).await;
+    let request = request_for(&service, &input.record).await;
     assert_eq!(
         service
-            .withdraw(&input.candidate, rel::Ring::Test, &request, cutoff())
+            .withdraw(&input.record, &request, &TestPublishAccess, cutoff())
             .await
             .unwrap()
             .outcome,
         Withdrawal::Complete
     );
     assert!(matches!(
-        service
-            .published(rel::Ring::Test, p.id().digest().bytes(), cutoff())
-            .await,
-        Err(Error::CandidateNotFound)
+        service.published(p.id().digest().bytes(), cutoff()).await,
+        Err(Error::PublicationNotFound)
     ));
     assert_eq!(
         service
@@ -119,8 +114,7 @@ async fn unstarted_publication_recovery_preserves_its_original_identity() {
     let runtime = runtime().await;
     let service = server.service(runtime.clone(), server.winget()).await;
     let input = seed(runtime.clone(), &server, server.winget_document()).await;
-    service.create_candidate(&input, cutoff()).await.unwrap();
-    let p = submit_publication(&service, &input.candidate, rel::Ring::Test).await;
+    let p = submit_publication(&service, &input).await;
     let page = service.reconciliation_page("", 32, cutoff()).await.unwrap();
     let work = page
         .work
@@ -135,15 +129,12 @@ async fn unstarted_publication_recovery_preserves_its_original_identity() {
             .unwrap(),
         rel::PublicationOutcome::Reported(rel::PublicationResult::Applied(_))
     ));
-    let candidate = service
-        .candidate(&input.candidate, cutoff())
+    let record = service
+        .record(&input.record, cutoff())
         .await
         .unwrap()
         .unwrap();
-    let rel::RingState::Publication(current) = candidate.snapshot().ring_state(rel::Ring::Test)
-    else {
-        panic!("publication")
-    };
+    let current = &record.snapshot().attempt;
     assert_eq!(current.id(), p.id());
     assert_eq!(current.attempt, p.attempt);
     assert!(
@@ -165,13 +156,7 @@ async fn draft_publication_rolls_back_every_write_and_replay_rechecks_access() {
     let runtime = runtime().await;
     let service = server.service(runtime.clone(), server.winget()).await;
     let input = seed_draft(runtime.clone(), &server, server.winget_document()).await;
-    service.create_candidate(&input, cutoff()).await.unwrap();
-    let original = service
-        .candidate(&input.candidate, cutoff())
-        .await
-        .unwrap()
-        .unwrap();
-    let request = request_for(&service, &input.candidate).await;
+    let input = bound_input(&service, &input);
     let counts = || {
         sql(
             "SELECT (SELECT count(*) FROM mdm_software.versions),(SELECT count(*) FROM mdm_software.materials),(SELECT count(*) FROM rss_transactional_messaging.outbox),(SELECT count(*) FROM mdm_software_composition.targets),(SELECT count(*) FROM mdm_software_composition.slots WHERE operation IS NOT NULL)",
@@ -191,9 +176,7 @@ async fn draft_publication_rolls_back_every_write_and_replay_rechecks_access() {
         ));
         let result = service
             .submit(
-                &input.candidate,
-                rel::Ring::Test,
-                &request,
+                &input,
                 &TestPublishAccess,
                 cutoff(),
             )
@@ -211,24 +194,11 @@ async fn draft_publication_rolls_back_every_write_and_replay_rechecks_access() {
             before,
             "failed publication committed partial effects"
         );
-        assert_eq!(
-            service
-                .candidate(&input.candidate, cutoff())
-                .await
-                .unwrap()
-                .unwrap(),
-            original
-        );
+        assert!(service.record(&input.record,cutoff()).await.unwrap().is_none());
     }
     sql("DROP SEQUENCE public.draft_fault_reached");
     let applied = service
-        .submit(
-            &input.candidate,
-            rel::Ring::Test,
-            &request,
-            &TestPublishAccess,
-            cutoff(),
-        )
+        .submit(&input, &TestPublishAccess, cutoff())
         .await
         .unwrap();
     assert_eq!(
@@ -238,14 +208,18 @@ async fn draft_publication_rolls_back_every_write_and_replay_rechecks_access() {
         )),
         "1"
     );
-    let rel::Transition::Applied { next, receipt, .. } = applied else {
-        panic!("first successful submit must apply");
-    };
+    let (receipt, replayed) = applied;
+    assert!(!replayed);
+    let next = service
+        .record(&input.record, cutoff())
+        .await
+        .unwrap()
+        .unwrap();
     let persisted_receipt = || {
         sql(&format!(
             "SELECT to_jsonb(r) FROM mdm_software_release.requests r WHERE tenant_id='{}' AND id='{}'",
             tenant(),
-            request.id.value()
+            input.request.value()
         ))
     };
     let original_receipt = persisted_receipt();
@@ -255,7 +229,7 @@ async fn draft_publication_rolls_back_every_write_and_replay_rechecks_access() {
             .iter()
             .filter(|r| {
                 r.event().facts().action().as_str() == "software_publish"
-                    && r.event().facts().resource().id().as_str() == input.candidate.value()
+                    && r.event().facts().resource().id().as_str() == input.record.value()
             })
             .count()
     };
@@ -263,24 +237,18 @@ async fn draft_publication_rolls_back_every_write_and_replay_rechecks_access() {
     let after = counts();
     assert_eq!(
         service
-            .submit(
-                &input.candidate,
-                rel::Ring::Test,
-                &request,
-                &TestPublishAccess,
-                cutoff()
-            )
+            .submit(&input, &TestPublishAccess, cutoff())
             .await
             .unwrap(),
-        rel::Transition::Replayed(receipt)
+        (receipt, true)
     );
     assert_eq!(
         service
-            .candidate(&input.candidate, cutoff())
+            .record(&input.record, cutoff())
             .await
             .unwrap()
             .unwrap(),
-        *next
+        next
     );
     assert_eq!(persisted_receipt(), original_receipt);
     assert_eq!(publish_audits(), 1);
@@ -296,15 +264,7 @@ async fn draft_publication_rolls_back_every_write_and_replay_rechecks_access() {
         }
     }
     assert!(matches!(
-        service
-            .submit(
-                &input.candidate,
-                rel::Ring::Test,
-                &request,
-                &Revoked,
-                cutoff()
-            )
-            .await,
+        service.submit(&input, &Revoked, cutoff()).await,
         Err(Error::Identity)
     ));
     assert_eq!(counts(), after);

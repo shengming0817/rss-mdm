@@ -9,7 +9,22 @@ use sha2::{Digest, Sha256};
 async fn publication_http_authority_receipts_and_public_native_binding() -> Result<()> {
     let server = publication_support::Server::new().await;
     let base: Value = serde_json::from_slice(&std::fs::read(std::env::var("MDM_TEST_CONFIG")?)?)?;
-    let cfg = publication_http::configuration(&base, &server);
+    let mut cfg = publication_http::configuration(&base, &server);
+    let secondary = format!("{}-secondary", server.logical);
+    let mut target_config = cfg["flow"]["publication"]["sources"][0].clone();
+    target_config["name"] = json!(secondary);
+    target_config["target"]["Winget"]["base"] = json!(format!(
+        "{}/api/v1/software/native/sources/{secondary}/",
+        base["product_origin"].as_str().unwrap()
+    ));
+    target_config["target"]["Winget"]["artifacts_base"] = json!(format!(
+        "{}/api/v1/software/native/sources/{secondary}/artifacts/",
+        base["product_origin"].as_str().unwrap()
+    ));
+    cfg["flow"]["publication"]["sources"]
+        .as_array_mut()
+        .unwrap()
+        .push(target_config);
     let mut local = execution::context(Platform::Windows);
     local["interactiveUser"] = json!({"generatedUid":null,"identity":"S-1-5-21-100-200-300-1001","sessionId":Uuid::new_v4(),"administrator":true});
     let mut f = execution::Fixture::with_config(
@@ -46,7 +61,6 @@ async fn publication_http_authority_receipts_and_public_native_binding() -> Resu
         "scope_read",
         "scope_write",
         "release_read",
-        "release_write",
         "release_publish",
         "release_recover",
         "release_withdraw",
@@ -87,123 +101,232 @@ async fn publication_http_authority_receipts_and_public_native_binding() -> Resu
             None,
         )
         .await?;
-    let path = format!(
-        "/api/v1/software-sources/{}/candidates/{}",
-        server.logical,
-        Uuid::new_v4()
+    let targets = f
+        .author
+        .call(
+            &f.router,
+            Method::GET,
+            "/api/v1/software/publication-targets?limit=1",
+            None,
+        )
+        .await?;
+    ensure!(targets.0 == StatusCode::OK && targets.1["items"].as_array().unwrap().len() == 1);
+    let target = targets.1["items"][0].clone();
+    ensure!(target["id"] == server.logical);
+    ensure!(targets.1["nextCursor"] == server.logical);
+    let target_page = discovery_page(
+        &mut f,
+        &format!(
+            "/api/v1/software/publication-targets?limit=1&after={}",
+            server.logical
+        ),
+    )
+    .await?;
+    ensure!(
+        target_page["items"].as_array().unwrap().len() == 1
+            && target_page["items"][0]["id"] == secondary
     );
-    let input = json!({"action":"candidate","resource":resource,"version":"v1","expectedResourceRevision":2,"resourceDigest":catalog.1["resourceDigest"]});
+    ensure!(target_page["nextCursor"].is_null());
+    let secondary_target = target_page["items"][0].clone();
+    let empty = discovery_page(
+        &mut f,
+        &format!("/api/v1/software/publication-targets?after={secondary}"),
+    )
+    .await?;
+    ensure!(empty["items"] == json!([]) && empty["nextCursor"].is_null());
+    let source = Uuid::new_v4().to_string();
+    for revision in ["a", "b"] {
+        write(&mut f.author, &f.router, &format!("/api/v1/software/sources/{source}/revisions/{revision}"), 0,
+            json!({"action":"register","definition":{"id":source,"revision":revision,"protocol":{"kind":"private"}}})).await?;
+    }
+    write(
+        &mut f.author,
+        &f.router,
+        &format!("/api/v1/software/sources/{source}/revisions/b"),
+        1,
+        json!({"action":"disable"}),
+    )
+    .await?;
+    let source_url = format!("/api/v1/software/sources?source={source}&limit=1");
+    let sources = discovery_page(&mut f, &source_url).await?;
+    ensure!(
+        sources["items"].as_array().unwrap().len() == 1
+            && sources["items"][0]["source"]["revision"] == "a"
+    );
+    let cursor = sources["nextCursor"].as_str().unwrap();
+    let query = url::form_urlencoded::Serializer::new(String::new())
+        .append_pair("after", cursor)
+        .finish();
+    let sources = discovery_page(&mut f, &format!("{source_url}&{query}")).await?;
+    ensure!(
+        sources["items"].as_array().unwrap().len() == 1
+            && sources["items"][0]["source"]["revision"] == "b"
+    );
+    ensure!(sources["nextCursor"].is_null());
+    for (filter, expected) in [
+        ("protocol=private", 2),
+        ("protocol=winget_rest", 0),
+        ("state=enabled", 1),
+        ("state=disabled", 1),
+    ] {
+        let page = discovery_page(
+            &mut f,
+            &format!("/api/v1/software/sources?source={source}&{filter}"),
+        )
+        .await?;
+        ensure!(
+            page["items"].as_array().unwrap().len() == expected,
+            "source filter {filter}: {page}"
+        );
+        if expected == 1 {
+            ensure!(
+                page["items"][0]["lifecycle"]["state"] == filter.strip_prefix("state=").unwrap()
+            );
+        }
+    }
+    let missing = discovery_page(
+        &mut f,
+        &format!("/api/v1/software/sources?source={}", Uuid::new_v4()),
+    )
+    .await?;
+    ensure!(missing["items"] == json!([]));
+    let input = json!({"action":"publish","resource":resource,"version":"v1","expectedResourceRevision":2,"resourceDigest":catalog.1["resourceDigest"],"target":server.logical,"targetDigest":target["digest"]});
     let operation = Uuid::new_v4();
     let request = json!({"operationId":operation,"expectedRevision":0,"input":input});
-    let mut old = request.clone();
-    old["input"]["document"] = json!({});
-    let malformed = Request::builder()
-        .method(Method::POST)
-        .uri(&path)
-        .header("host", "mdm.example.test")
-        .header("origin", "https://mdm.example.test")
-        .header("x-identity-request", "1")
-        .header("x-csrf-token", f.author.csrf.as_ref().unwrap())
-        .header(
-            "cookie",
-            f.author
-                .cookies
-                .iter()
-                .map(|(k, v)| format!("{k}={v}"))
-                .collect::<Vec<_>>()
-                .join("; "),
-        )
-        .header("content-type", "application/json")
-        .body(Body::from(serde_json::to_vec(&old)?))?;
-    let rejected = f.router.clone().oneshot(malformed).await?;
+    let collection = "/api/v1/software/publications";
+    let path = format!("{collection}/{operation}");
+    let mut malformed = request.clone();
+    malformed["input"]["unexpected"] = json!(true);
     ensure!(
-        rejected.status() == StatusCode::BAD_REQUEST,
-        "independent manifest input accepted"
+        f.author
+            .call(&f.router, Method::POST, collection, Some(malformed))
+            .await?
+            .0
+            == StatusCode::BAD_REQUEST
     );
-    let body = axum::body::to_bytes(rejected.into_body(), 1024).await?;
-    ensure!(serde_json::from_slice::<Value>(&body)?["code"] == "malformed_request");
     let csrf = f.author.csrf.take();
     ensure!(
         f.author
-            .call(&f.router, Method::POST, &path, Some(request.clone()))
+            .call(&f.router, Method::POST, collection, Some(request.clone()))
             .await?
             .0
             == StatusCode::FORBIDDEN
     );
     f.author.csrf = csrf;
-    let candidate = f
-        .author
-        .call(&f.router, Method::POST, &path, Some(request.clone()))
-        .await?;
-    ensure!(candidate.0 == StatusCode::OK, "candidate: {candidate:?}");
-    let replay = f
-        .author
-        .call(&f.router, Method::POST, &path, Some(request))
-        .await?;
-    ensure!(
-        replay.0 == StatusCode::OK && replay.1 == candidate.1,
-        "candidate replay: {replay:?}"
-    );
-    let catalog = f
-        .author
-        .call(
-            &f.router,
-            Method::GET,
-            &format!("/api/v1/software/resources/{resource}/versions/v1"),
-            None,
-        )
-        .await?;
-    ensure!(catalog.0 == StatusCode::OK);
-    ensure!(
-        catalog.1["lifecycle"].is_null(),
-        "saving a draft enabled it: {catalog:?}"
-    );
-    let saved = f.author.call(&f.router, Method::GET, &path, None).await?;
-    ensure!(saved.0 == StatusCode::OK, "saved candidate: {saved:?}");
     let without_enable = grants
         .iter()
         .filter(|g| g.operation != crate::authorization::Permission::SoftwareWrite)
         .cloned()
         .collect();
     crate::test_support::identity::set_grants(case_tenant(), &subject, without_enable).await?;
-    let denied=f.author.call(&f.router,Method::POST,&path,Some(json!({"operationId":Uuid::new_v4(),"expectedRevision":candidate.1["revision"],"input":{"action":"publish","ring":"test"}}))).await?;
+    let denied = f
+        .author
+        .call(&f.router, Method::POST, collection, Some(request.clone()))
+        .await?;
     ensure!(
         denied.0 == StatusCode::FORBIDDEN,
-        "draft publish without enable permission: {denied:?}"
+        "draft permission: {denied:?}"
     );
-    let still_draft = f
+    ensure!(f.author.call(&f.router, Method::GET, &path, None).await?.0 == StatusCode::NOT_FOUND);
+    crate::test_support::identity::set_grants(case_tenant(), &subject, grants).await?;
+    let accepted = f
+        .author
+        .call(&f.router, Method::POST, collection, Some(request.clone()))
+        .await?;
+    ensure!(
+        accepted.0 == StatusCode::ACCEPTED,
+        "direct publish: {accepted:?}"
+    );
+    let pending = accepted.1;
+    let replay = f
+        .author
+        .call(&f.router, Method::POST, collection, Some(request))
+        .await?;
+    ensure!(
+        replay.0 == StatusCode::ACCEPTED
+            && replay.1["id"] == pending["id"]
+            && replay.1["attempt"] == 1
+    );
+    let found = f
         .author
         .call(
             &f.router,
             Method::GET,
-            &format!("/api/v1/software/resources/{resource}/versions/v1"),
+            &format!("{collection}?operationId={operation}"),
             None,
         )
         .await?;
-    ensure!(still_draft.0 == StatusCode::OK && still_draft.1["lifecycle"].is_null());
-    let unchanged = f.author.call(&f.router, Method::GET, &path, None).await?;
+    ensure!(found.0 == StatusCode::OK && found.1["items"][0]["id"] == operation.to_string());
+    let other_operation = Uuid::new_v4();
+    let mut other_input = input.clone();
+    other_input["target"] = json!(secondary);
+    other_input["targetDigest"] = secondary_target["digest"].clone();
+    let other = f
+        .author
+        .call(
+            &f.router,
+            Method::POST,
+            collection,
+            Some(json!({"operationId":other_operation,"expectedRevision":0,"input":other_input})),
+        )
+        .await?;
+    ensure!(other.0 == StatusCode::ACCEPTED, "second target: {other:?}");
+    let mut ids = [operation.to_string(), other_operation.to_string()];
+    ids.sort();
+    let first_page =
+        discovery_page(&mut f, &format!("{collection}?resource={resource}&limit=1")).await?;
     ensure!(
-        unchanged.0 == StatusCode::OK && unchanged.1 == saved.1,
-        "rejected publication mutated candidate: {unchanged:?}"
+        first_page["items"].as_array().unwrap().len() == 1
+            && first_page["items"][0]["id"] == ids[0]
     );
-    crate::test_support::identity::set_grants(case_tenant(), &subject, grants).await?;
-    let pending = write(
-        &mut f.author,
-        &f.router,
-        &path,
-        candidate.1["revision"].as_u64().unwrap(),
-        json!({"action":"publish","ring":"test"}),
+    ensure!(first_page["nextCursor"] == ids[0] && first_page["items"][0].get("document").is_none());
+    let last_page = discovery_page(
+        &mut f,
+        &format!("{collection}?resource={resource}&limit=1&after={}", ids[0]),
     )
     .await?;
-    let publication = &pending["rings"][0]["publication"];
-    let id = publication["id"]
+    ensure!(
+        last_page["items"].as_array().unwrap().len() == 1 && last_page["items"][0]["id"] == ids[1]
+    );
+    ensure!(last_page["nextCursor"].is_null());
+    for (filter, expected) in [
+        (format!("target={}", server.logical), Some(operation)),
+        (format!("target={secondary}"), Some(other_operation)),
+        ("target=missing".into(), None),
+        ("version=v1".into(), Some(operation)),
+        ("version=missing".into(), None),
+        (format!("operationId={operation}"), Some(operation)),
+        (format!("operationId={}", Uuid::new_v4()), None),
+    ] {
+        let page = discovery_page(
+            &mut f,
+            &format!("{collection}?resource={resource}&{filter}"),
+        )
+        .await?;
+        let items = page["items"].as_array().unwrap();
+        if let Some(id) = expected {
+            ensure!(
+                items.iter().any(|item| item["id"] == id.to_string()),
+                "record filter {filter}: {page}"
+            );
+            if !filter.starts_with("version=") {
+                ensure!(items.len() == 1);
+            }
+        } else {
+            ensure!(items.is_empty(), "record filter {filter}: {page}");
+        }
+    }
+    let missing =
+        discovery_page(&mut f, &format!("{collection}?resource={}", Uuid::new_v4())).await?;
+    ensure!(missing["items"] == json!([]));
+    let id = pending["publication"]
         .as_array()
         .unwrap()
         .iter()
         .map(|n| format!("{:02x}", n.as_u64().unwrap()))
         .collect::<String>();
     let native = format!(
-        "/api/v1/software/native/sources/{}/test/exports/{id}",
+        "/api/v1/software/native/sources/{}/exports/{id}",
         server.logical
     );
     let public = |method: Method, url: String, body: Body| {
@@ -227,7 +350,32 @@ async fn publication_http_authority_receipts_and_public_native_binding() -> Resu
             .status()
             == StatusCode::NOT_FOUND
     );
-    let published=write(&mut f.author,&f.router,&path,pending["revision"].as_u64().unwrap(),json!({"action":"recover","ring":"test","publication":publication["id"],"attempt":publication["attempt"]})).await?;
+    let recovery = json!({"operationId":Uuid::new_v4(),"expectedRevision":pending["revision"],"input":{"action":"recover"}});
+    let published = f
+        .author
+        .call(&f.router, Method::POST, &path, Some(recovery.clone()))
+        .await?;
+    ensure!(published.0 == StatusCode::OK && published.1["outcome"] == "published");
+    ensure!(published.1["revision"] != pending["revision"]);
+    let replayed = f
+        .author
+        .call(&f.router, Method::POST, &path, Some(recovery.clone()))
+        .await?;
+    ensure!(replayed.0 == StatusCode::OK && replayed.1 == published.1);
+    let found = f
+        .author
+        .call(
+            &f.router,
+            Method::GET,
+            &format!(
+                "{collection}?operationId={}",
+                recovery["operationId"].as_str().unwrap()
+            ),
+            None,
+        )
+        .await?;
+    ensure!(found.0 == StatusCode::OK && found.1["items"][0]["id"] == published.1["id"]);
+
     let info = f
         .router
         .clone()
@@ -255,7 +403,7 @@ async fn publication_http_authority_receipts_and_public_native_binding() -> Resu
     ensure!(search["Data"][0]["PackageIdentifier"] == "Acme.App");
     for prefix in [
         native.clone(),
-        format!("/api/v1/software/native/sources/{}/test", server.logical),
+        format!("/api/v1/software/native/sources/{}", server.logical),
     ] {
         let response = f
             .router
@@ -303,7 +451,7 @@ async fn publication_http_authority_receipts_and_public_native_binding() -> Resu
     ensure!(served.into_body().collect().await?.to_bytes() == bytes.as_slice());
     let policy = Uuid::new_v4();
     let policy_path = format!("/api/v1/policies/{policy}");
-    write(&mut f.author,&f.router,&policy_path,0,json!({"action":"put","enabled":true,"definition":{"scope":f.scope,"action":{"kind":"software","resource":{"kind":"software","id":resource,"version":"v1","variants":{"windows_x86_64":"default"}},"intent":"required_install","delivery":{"kind":"native","source":server.logical,"ring":"test"},"runLifetimeSeconds":600,"rollout":{"stages":[{"scope":f.scope,"opensAt":0}]}}}})).await?;
+    write(&mut f.author,&f.router,&policy_path,0,json!({"action":"put","enabled":true,"definition":{"scope":f.scope,"action":{"kind":"software","resource":{"kind":"software","id":resource,"version":"v1","variants":{"windows_x86_64":"default"}},"intent":"required_install","delivery":{"kind":"native","target":server.logical},"runLifetimeSeconds":600,"rollout":{"stages":[{"scope":f.scope,"opensAt":0}]}}}})).await?;
     {
         use sqlx::Connection;
         let mut owner =
@@ -382,11 +530,26 @@ async fn publication_http_authority_receipts_and_public_native_binding() -> Resu
     write(
         &mut f.author,
         &f.router,
-        &path,
-        published["revision"].as_u64().unwrap(),
-        json!({"action":"withdraw","ring":"test"}),
+        &format!("/api/v1/software/resources/{resource}/versions/v1"),
+        1,
+        json!({"action":"withdraw"}),
     )
     .await?;
+    let revoked = f.author.call(&f.router, Method::GET, &path, None).await?;
+    ensure!(
+        revoked.0 == StatusCode::OK
+            && revoked.1["withdrawn"] == true
+            && !revoked.1["withdrawal"].is_null()
+    );
+    let completed = write(
+        &mut f.author,
+        &f.router,
+        &path,
+        revoked.1["revision"].as_u64().unwrap(),
+        json!({"action":"recover"}),
+    )
+    .await?;
+    ensure!(completed["withdrawal"] == "withdrawn");
     ensure!(
         execution::event_with(&f.router, &f.credential, &task, json!({"kind":"start"}))
             .await?
@@ -410,4 +573,13 @@ async fn publication_http_authority_receipts_and_public_native_binding() -> Resu
     );
     crate::test_support::stop_worker(stack).await?;
     Ok(())
+}
+
+async fn discovery_page(f: &mut execution::Fixture, url: &str) -> Result<Value> {
+    let response = f.author.call(&f.router, Method::GET, url, None).await?;
+    ensure!(
+        response.0 == StatusCode::OK,
+        "discovery {url}: {response:?}"
+    );
+    Ok(response.1)
 }
