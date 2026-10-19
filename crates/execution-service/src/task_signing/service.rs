@@ -233,3 +233,109 @@ impl ExecutionService {
         settle(result, audit, true)
     }
 }
+
+impl ExecutionService {
+    pub async fn observe_task_trust(
+        &self,
+        p: &crate::device::DevicePrincipal,
+        audit: &RequestAudit,
+        input: &rss_mdm_agent_wire::task_trust::Observation,
+    ) -> Result<(), Error> {
+        input.validate().map_err(|_| Error::Malformed)?;
+        if p.tenant() != self.tenant
+            || input.registration != p.registration()
+            || input.generation != p.generation() as u64
+        {
+            return Err(Error::Forbidden);
+        }
+        audit.operation(input.operation, "task_trust_observe");
+        audit.require_request_settlement();
+        let budget = AuditBudget::new(Duration::from_secs(6));
+        let result = self
+            .audit_store
+            .write(
+                self.tenant,
+                &budget.control(),
+                (self, p, audit, input),
+                |(service, p, audit, input), tx| {
+                    Box::pin(async move {
+                        let mut context = (*p, *input);
+                        let replayed = tx
+                            .with_connection_context(&mut context, |(p, input), c| {
+                                Box::pin(async move {
+                                    crate::device::store::revalidate_source(
+                                        c,
+                                        p,
+                                        rss_mdm_inventory::ReportSource::AgentBuiltin,
+                                    )
+                                    .await?;
+                                    super::observations::record_in(
+                                        c,
+                                        &p.tenant().to_string(),
+                                        input,
+                                    )
+                                    .await
+                                })
+                            })
+                            .await?;
+                        let bytes = serde_json::to_vec(input).map_err(|_| Error::Malformed)?;
+                        let fact = Fact::business(
+                            audit,
+                            &format!("task-trust-observe:{}", input.operation),
+                            &bytes,
+                            200,
+                            "success",
+                            None,
+                        )
+                        .map_err(|_| Error::Malformed)?;
+                        service.audit_store.append(tx, &fact, replayed).await?;
+                        audit.mark_commit_started();
+                        Ok(())
+                    })
+                },
+            )
+            .await;
+        settle(result, audit, true)
+    }
+    pub async fn task_trust_observation(
+        &self,
+        p: &AuthorizedPrincipal,
+        audit: &RequestAudit,
+        device: &str,
+    ) -> Result<Option<rss_mdm_agent_wire::task_trust::ObservedInstallation>, Error> {
+        if p.tenant_id() != self.tenant.to_string() {
+            return Err(Error::Forbidden);
+        }
+        p.require(Permission::InventoryRead, Some(device))?;
+        p.bind_audit(audit)?;
+        let budget = AuditBudget::new(Duration::from_secs(6));
+        let result = self
+            .audit_store
+            .read(
+                self.tenant,
+                &budget.control(),
+                (self, p, device),
+                |(service, p, device), tx| {
+                    Box::pin(async move {
+                        let mut context = (*service, *device);
+                        let value = tx
+                            .with_connection_context(&mut context, |(service, device), c| {
+                                Box::pin(async move {
+                                    super::observations::latest_in(
+                                        c,
+                                        &service.tenant.to_string(),
+                                        device,
+                                    )
+                                    .await
+                                })
+                            })
+                            .await?;
+                        p.check_live()?;
+                        Ok(value)
+                    })
+                },
+            )
+            .await;
+        settle(result, audit, false)
+    }
+}

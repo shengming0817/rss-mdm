@@ -17,6 +17,7 @@ fn body<T>(v: Body<T>) -> Result<T, Error> {
 }
 pub(crate) fn routes() -> Router<Arc<TaskState>> {
     Router::new()
+        .route("/task-trust/observations", post(observe_task_trust))
         .route("/task-trust", get(task_trust).post(acknowledge_task_trust))
         .route("/tasks/claim", post(claim))
         .route("/tasks/{id}/enrollment", post(native_enrollment))
@@ -322,6 +323,26 @@ async fn acknowledge_task_trust(
             authenticate_for(&app, &headers, peer.as_ref().map(|p| &p.0), &audit, false).await?;
         app.execution
             .acknowledge_task_trust(&p, &audit, &input)
+            .await
+            .map_err(task_error)?;
+        Ok(Json(input))
+    })
+    .await
+}
+
+async fn observe_task_trust(
+    State(app): State<Arc<TaskState>>,
+    Extension(audit): Extension<RequestAudit>,
+    peer: Option<Extension<rss_mdm_certificate::HandshakePeer>>,
+    headers: HeaderMap,
+    input: Body<rss_mdm_agent_wire::task_trust::Observation>,
+) -> Result<Json<rss_mdm_agent_wire::task_trust::Observation>, crate::AgentError> {
+    crate::bounded(async {
+        let input = body(input)?;
+        let p =
+            authenticate_for(&app, &headers, peer.as_ref().map(|p| &p.0), &audit, false).await?;
+        app.execution
+            .observe_task_trust(&p, &audit, &input)
             .await
             .map_err(task_error)?;
         Ok(Json(input))

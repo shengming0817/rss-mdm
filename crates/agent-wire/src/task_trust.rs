@@ -8,7 +8,7 @@ use uuid::Uuid;
 
 /// Fingerprint of the generated, fixed public schema artifact.
 pub const SCHEMA_FINGERPRINT: &str =
-    "2f56d707531fb0e6dd2820359e8d1dd3ccccc71f982cbaecaddf0999518e4c0e";
+    "6e97457abf404e76701d56ee479091fbcbd9da6fbdd3dbac05624b2ea90779ae";
 /// Canonical manifest for fixed consumer artifacts.
 pub const SCHEMA_MANIFEST: &str = include_str!("../schema/task_trust/manifest.json");
 /// Task-signing trust protocol version.
@@ -193,4 +193,126 @@ impl Acknowledgement {
         self.validate()?;
         Ok(self.revision == trust.revision && self.digest == trust.installation_digest()?)
     }
+}
+
+/// Device-reported installation observation; never a rotation acknowledgement.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct Observation {
+    /// Stable report operation, retained across response loss.
+    #[serde(with = "crate::runtime::strict_uuid")]
+    #[schemars(schema_with = "crate::runtime::uuid_schema")]
+    pub operation: Uuid,
+    /// Exact observation format.
+    #[schemars(extend("const" = 1))]
+    pub version: u8,
+    /// Authenticated registration identity.
+    #[serde(with = "crate::runtime::strict_uuid")]
+    #[schemars(schema_with = "crate::runtime::uuid_schema")]
+    pub registration: Uuid,
+    /// Authenticated registration generation.
+    #[schemars(extend("minimum" = 1, "maximum" = i64::MAX))]
+    pub generation: u64,
+    /// Monotonic sequence within this registration generation and domain.
+    #[schemars(extend("minimum" = 1, "maximum" = i64::MAX))]
+    pub sequence: u64,
+    /// Target revision, absent when fetching the target failed.
+    #[schemars(extend("minimum" = 1, "maximum" = i64::MAX))]
+    pub target_revision: Option<u64>,
+    /// Target installation digest, paired with target_revision.
+    #[schemars(extend("pattern" = "^[0-9a-f]{64}$", "minLength" = 64, "maxLength" = 64))]
+    pub target_digest: Option<String>,
+    /// Last durably installed revision, absent when no state can be read.
+    #[schemars(extend("minimum" = 1, "maximum" = i64::MAX))]
+    pub actual_revision: Option<u64>,
+    /// Read-back installation digest, paired with actual_revision.
+    #[schemars(extend("pattern" = "^[0-9a-f]{64}$", "minLength" = 64, "maxLength" = 64))]
+    pub actual_digest: Option<String>,
+    /// Local result; applied does not imply ACK confirmation or current connectivity.
+    pub state: ObservationState,
+    /// Closed, non-secret failure category.
+    pub reason: Option<ObservationReason>,
+    /// Device observation time in Unix seconds; not ordering authority.
+    #[schemars(extend("minimum" = 0))]
+    pub observed_at: i64,
+}
+/// Installation result independently reported by the device.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ObservationState {
+    /// Target received but not durably installed.
+    Received,
+    /// Commit and readback completed.
+    Applied,
+    /// Attempt failed; prior installed state may remain usable.
+    Failed,
+    /// Local installed state cannot be determined.
+    Unknown,
+}
+/// Closed failure reasons; raw errors and material bytes are excluded.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ObservationReason {
+    /// Authenticated transport unavailable.
+    Transport,
+    /// Material or successor validation failed.
+    Validation,
+    /// Durable write or readback failed.
+    Storage,
+    /// Device credential unavailable or rejected.
+    Credential,
+    /// Local machine trust installation failed.
+    Installation,
+    /// Restart requires a fresh observation.
+    Restart,
+}
+impl Observation {
+    /// Validate shape, state consistency and bounded coordinates. The service authenticates identity.
+    /// Consumers must call this method: JSON Schema alone cannot compare installation digests.
+    pub fn validate(&self) -> Result<(), WireError> {
+        let number = |v: u64| (1..=i64::MAX as u64).contains(&v);
+        let material = |revision: Option<u64>, digest: &Option<String>| match (revision, digest) {
+            (None, None) => true,
+            (Some(r), Some(d)) => {
+                number(r)
+                    && d.len() == 64
+                    && d.bytes()
+                        .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+            }
+            _ => false,
+        };
+        if self.version != API_VERSION
+            || self.operation.is_nil()
+            || self.registration.is_nil()
+            || !number(self.generation)
+            || !number(self.sequence)
+            || self.observed_at < 0
+            || !material(self.target_revision, &self.target_digest)
+            || !material(self.actual_revision, &self.actual_digest)
+            || match self.state {
+                ObservationState::Applied => {
+                    self.reason.is_some()
+                        || self.target_revision.is_none()
+                        || self.target_revision != self.actual_revision
+                        || self.target_digest != self.actual_digest
+                }
+                ObservationState::Received => {
+                    self.reason.is_some() || self.target_revision.is_none()
+                }
+                ObservationState::Failed | ObservationState::Unknown => self.reason.is_none(),
+            }
+        {
+            return Err(WireError::InvalidValue);
+        }
+        Ok(())
+    }
+}
+/// Last report with server reception time. Absence means unknown, never successful installation.
+#[derive(Clone, Debug, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ObservedInstallation {
+    /// Device statement, not a server assertion of disk contents or CRL freshness.
+    pub observation: Observation,
+    /// Server receipt time in Unix seconds.
+    pub received_at: i64,
 }

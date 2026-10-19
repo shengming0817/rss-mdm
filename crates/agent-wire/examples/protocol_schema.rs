@@ -3,10 +3,14 @@ use rss_mdm_agent_wire::{enroll, pki, runtime};
 fn main() {
     let schemas = serde_json::json!({
         "task_trust": {
+            "Observation": schemars::schema_for!(rss_mdm_agent_wire::task_trust::Observation),
+            "ObservedInstallation": schemars::schema_for!(rss_mdm_agent_wire::task_trust::ObservedInstallation),
             "Trust": schemars::schema_for!(rss_mdm_agent_wire::task_trust::Trust),
             "Acknowledgement": schemars::schema_for!(rss_mdm_agent_wire::task_trust::Acknowledgement),
         },
         "pki": {
+            "Observation": schemars::schema_for!(rss_mdm_agent_wire::pki::Observation),
+            "ObservedInstallation": schemars::schema_for!(rss_mdm_agent_wire::pki::ObservedInstallation),
             "Trust": schemars::schema_for!(pki::Trust),
             "Acknowledgement": schemars::schema_for!(pki::Acknowledgement),
         },

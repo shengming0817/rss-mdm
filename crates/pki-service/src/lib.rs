@@ -540,3 +540,5 @@ fn csr_input_names(pem: &str) -> Result<Vec<String>, Error> {
     }
     Ok(names)
 }
+
+pub mod observations;

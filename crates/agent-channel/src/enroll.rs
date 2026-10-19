@@ -32,6 +32,7 @@ pub fn router(service: Arc<Service>, envelope: crate::boundary::Envelope) -> Rou
             .route("/renewal-grants", post(renew))
             .route("/renewal-grants/status", post(renewal_status))
             .route("/trust", get(trust))
+            .route("/trust/observations", post(observe_trust))
             .route("/trust/acknowledgements", post(acknowledge))
             .with_state(service),
         envelope,
@@ -240,4 +241,19 @@ async fn bootstrap_notify(
         .map_err(|_| Failure::from(rss_mdm_registration_service::Error::Unauthorized))?;
     s.bootstrap_notify(input, &a).await?;
     Ok(Json(serde_json::json!({"allow":true})))
+}
+
+async fn observe_trust(
+    State(s): State<Arc<Service>>,
+    Extension(a): Extension<RequestAudit>,
+    peer: Option<Extension<HandshakePeer>>,
+    headers: HeaderMap,
+    input: Body<rss_mdm_agent_wire::pki::Observation>,
+) -> Result<Json<rss_mdm_agent_wire::pki::Observation>, HttpFailure> {
+    bootstrap(&headers)?;
+    let peer =
+        peer.ok_or_else(|| Failure::from(rss_mdm_registration_service::Error::Unauthorized))?;
+    let input = body(input)?;
+    s.observe_trust(&peer.0, &input, &a).await?;
+    Ok(Json(input))
 }

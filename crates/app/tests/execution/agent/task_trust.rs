@@ -28,6 +28,27 @@ async fn rotation_requires_exact_generation_ack_and_keeps_original_operation() -
         ensure!(f.author.call(&f.router,Method::POST,"/api/v1/task-signing/trust",Some(activate.clone())).await?.0==StatusCode::CONFLICT);
         let (status,distribution)=agent_call(&f.router,Method::GET,"/api/v1/agent/runtime/task-trust",Some(case_credential()),None).await?;
         ensure!(status==StatusCode::OK && distribution==body);
+        let observation_path="/api/v1/agent/runtime/task-trust/observations";
+        let query_path=format!("/api/v1/task-signing/trust/devices/{}/observation",registration["deviceId"].as_str().unwrap());
+        ensure!(f.author.call(&f.router,Method::GET,&query_path,None).await?==(StatusCode::OK,Value::Null));
+        let mut observation=json!({"operation":Uuid::new_v4(),"version":1,"registration":registration["registrationId"],"generation":registration["generation"],"sequence":2,"target_revision":prepared.revision,"target_digest":prepared.installation_digest()?,"actual_revision":prepared.revision,"actual_digest":prepared.installation_digest()?,"state":"applied","reason":null,"observed_at":2});
+        let mut invalid=observation.clone();invalid["generation"]=json!(registration["generation"].as_u64().unwrap()+1);
+        ensure!(agent_call(&f.router,Method::POST,observation_path,Some(case_credential()),Some(invalid)).await?.0==StatusCode::FORBIDDEN);
+        for _ in 0..2 {
+            ensure!(agent_call(&f.router,Method::POST,observation_path,Some(case_credential()),Some(observation.clone())).await?==(StatusCode::OK,observation.clone()));
+        }
+        let (status,latest)=f.author.call(&f.router,Method::GET,&query_path,None).await?;
+        ensure!(status==StatusCode::OK && latest["observation"]==observation && latest["received_at"].as_i64().unwrap()>0);
+        let denied_grants=f.grants.iter().filter(|g|g.operation!=crate::authorization::Permission::InventoryRead).cloned().collect();
+        crate::test_support::identity::set_grants(case_tenant(),&f.author_id,denied_grants).await?;
+        ensure!(f.author.call(&f.router,Method::GET,&query_path,None).await?.0==StatusCode::FORBIDDEN);
+        crate::test_support::identity::set_grants(case_tenant(),&f.author_id,f.grants.clone()).await?;
+        let mut conflict=observation.clone();conflict["observed_at"]=json!(3);
+        ensure!(agent_call(&f.router,Method::POST,observation_path,Some(case_credential()),Some(conflict)).await?.0==StatusCode::CONFLICT);
+        observation["operation"]=json!(Uuid::new_v4());observation["sequence"]=json!(1);observation["state"]=json!("failed");observation["reason"]=json!("storage");observation["observed_at"]=json!(999999);
+        ensure!(agent_call(&f.router,Method::POST,observation_path,Some(case_credential()),Some(observation)).await?.0==StatusCode::OK);
+        ensure!(f.author.call(&f.router,Method::GET,&query_path,None).await?==(StatusCode::OK,latest.clone()));
+        ensure!(f.author.call(&f.router,Method::POST,"/api/v1/task-signing/trust",Some(activate.clone())).await?.0==StatusCode::CONFLICT,"applied observation must not satisfy activation");
         let mut ack=Acknowledgement {operation:Uuid::new_v4(),version:1,registration:Uuid::parse_str(registration["registrationId"].as_str().unwrap())?,generation:registration["generation"].as_u64().unwrap(),revision:prepared.revision,digest:prepared.installation_digest()?};
         ack.generation+=1;
         ensure!(agent_call(&f.router,Method::POST,"/api/v1/agent/runtime/task-trust",Some(case_credential()),Some(serde_json::to_value(&ack)?)).await?.0==StatusCode::FORBIDDEN);
@@ -46,6 +67,22 @@ async fn rotation_requires_exact_generation_ack_and_keeps_original_operation() -
         let protection=config.native_protector()?;
         let loaded=crate::task_signing::open(&crate::task_signing::Config {revision:3},&config.access_database,rss_request_context::TenantId::parse(case_tenant())?,&protection).await?;
         ensure!(loaded.task.key_id()==key);
+        // Query lifecycle is independent of authenticated intake: retain old rows while changing only the registration fixture.
+        let registration_id=registration["registrationId"].as_str().unwrap();
+        pg(&format!("UPDATE mdm_access.registrations SET state='revoked' WHERE tenant_id='{}' AND id='{registration_id}'",case_tenant()))?;
+        ensure!(f.author.call(&f.router,Method::GET,&query_path,None).await?==(StatusCode::OK,Value::Null));
+        pg(&format!("UPDATE mdm_access.registrations SET state='active',generation=generation+1 WHERE tenant_id='{}' AND id='{registration_id}'",case_tenant()))?;
+        ensure!(f.author.call(&f.router,Method::GET,&query_path,None).await?==(StatusCode::OK,Value::Null));
+        let mut next:rss_mdm_agent_wire::task_trust::Observation=serde_json::from_value(latest["observation"].clone())?;
+        next.operation=Uuid::new_v4();next.generation+=1;next.sequence=1;
+        use sqlx::Connection;
+        let mut c=sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?).await?;
+        sqlx::query("SELECT set_config('rss.tenant_id',$1,false)").bind(case_tenant()).execute(&mut c).await?;
+        rss_mdm_execution_service::task_signing::observations::record_in(&mut c,case_tenant(),&next).await?;
+        let (status,current)=f.author.call(&f.router,Method::GET,&query_path,None).await?;
+        ensure!(status==StatusCode::OK && current["observation"]==serde_json::to_value(next)?);
+        c.close().await?;
+
         Ok(())
     }).await
 }

@@ -138,3 +138,18 @@ Agent→MDM 复用 `request_mdm_enrollment` 的签名任务和 Start permit。�
 租户管理通过 `GET/POST /api/v1/task-signing/trust` 读取、准备或激活密钥，写入使用 `Idempotency-Key`、`expectedRevision` 和近期真实管理员会话。准备新密钥只发布 prepared 公钥；所有当前 Agent 注册世代确认包含该键的准备版本后才能激活。任务发放再次核对当前 active key 和目标设备 ACK，覆盖分发期间新注册的设备。原键转为 verify_only，保留历史验证材料。新激活键由受控重启消费，旧进程不能继续用已退出 active 状态的键签发任务。准备阶段仍有效的旧签名权威可以重启加载。
 
 `GET /api/v1/task-signing/operations/{id}` 查询原管理操作，后续轮换不会改写其结果。该服务端合同不代表 Agent 已实现持久安装；Agent 消费实现与真实设备资格由对应后续任务验收。
+
+
+设备分别向 `POST /api/v1/agent/runtime/task-trust/observations` 与
+`POST /api/v1/agent/enroll/trust/observations` 上报任务信任、Agent PKI 的安装观察。
+两者使用各自正式 DTO；保持原注册世代和单调观察序号，响应丢失重放原 operation 与正文。
+目标获取失败可不填目标版本和摘要；无法读回时不声称已应用。失败原因仅使用闭合枚举，不发送证书、秘密或原始错误。
+
+管理侧使用设备的 `InventoryRead` 权限查询
+`GET /api/v1/task-signing/trust/devices/{device}/observation` 或
+`GET /api/v1/pki/agent/trust/devices/{device}/observation`。
+结果只代表当前注册世代最后序号的设备观察，另带服务端接收时间；无记录返回 null，表示未知。
+迟到的旧报告不会覆盖新结果。同一操作或序号的异内容报告被拒绝。
+失联时只能展示最后观察及时间，不能据此宣称当前在线或仍然已应用。
+这些接口不创建成功 ACK，也不满足密钥激活门槛；PKI 安装摘要不包含 CRL 刷新内容，不能作为 CRL 新鲜度证明。
+离线设备可让轮换继续待完成，但无需等待其 ACK 才能部署、启动或开通租户。

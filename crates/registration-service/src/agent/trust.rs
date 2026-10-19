@@ -90,3 +90,50 @@ impl Service {
         .map_err(Into::into)
     }
 }
+
+impl Service {
+    pub async fn observe_trust(
+        &self,
+        peer: &HandshakePeer,
+        input: &rss_mdm_agent_wire::pki::Observation,
+        a: &RequestAudit,
+    ) -> Result<(), Failure> {
+        input.validate().map_err(|_| Error::Malformed)?;
+        let p = self.authenticate(peer).await?;
+        if input.registration != p.registration() || input.generation != p.generation() as u64 {
+            return Err(Error::Forbidden.into());
+        }
+        a.identify_device(p.registration());
+        a.target(p.device());
+        a.operation(input.operation, "agent_trust_observe");
+        let d = digest(&(p.registration(), input))?;
+        self.write(a, (self, p, input, d), |ctx, c| {
+            Box::pin(async move {
+                let (service, p, input, d) = ctx;
+                crate::device::store::revalidate_source(
+                    c,
+                    p,
+                    rss_mdm_inventory::ReportSource::AgentBuiltin,
+                )
+                .await?;
+                let replay = rss_mdm_pki_service::observations::record_in(
+                    c,
+                    &service.tenant.to_string(),
+                    input,
+                )
+                .await
+                .map_err(|e| match e {
+                    rss_mdm_pki_service::Error::Conflict => Error::Conflict,
+                    _ => Error::Storage,
+                })?;
+                Ok(Change {
+                    value: (),
+                    replay,
+                    digest: d.clone(),
+                })
+            })
+        })
+        .await
+        .map_err(Into::into)
+    }
+}

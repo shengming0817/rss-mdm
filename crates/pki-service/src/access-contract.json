@@ -100,6 +100,13 @@
         "confirmed_at"
       ],
       "delete_policy": null
+    },
+    {
+      "schema": "mdm_pki",
+      "table": "trust_observations",
+      "read_write": true,
+      "updates": [],
+      "delete_policy": null
     }
   ],
   "functions": [],
