@@ -63,103 +63,102 @@ pub async fn run(input: Request) -> Result<Receipt> {
     }
     super::super::backup::recovery_administrator(&input.administrator).await?;
     if progress.stage == Stage::Reserved {
-        let mut c =
-            PgConnection::connect_with(&input.administrator.options().map_err(|_| Error::Input)?)
-                .await
-                .map_err(|_| Error::Storage)?;
-        super::super::backup::connection_fence(&mut c, &journal, true).await?;
-        stopped(&mut c).await?;
-        sqlx::query("SELECT pg_advisory_lock(2823,4)")
-            .execute(&mut c)
-            .await
-            .map_err(|_| Error::Storage)?;
-        let reserved: bool =
-            sqlx::query_scalar("SELECT to_regclass('public.mdm_restore_operation') IS NOT NULL")
-                .fetch_one(&mut c)
-                .await
-                .map_err(|_| Error::Storage)?;
-        if !reserved {
-            let count:i64=sqlx::query_scalar("SELECT count(*) FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname NOT IN('pg_catalog','information_schema') AND n.nspname NOT LIKE 'pg_toast%' AND c.relkind IN('r','p','v','m','S','f')").fetch_one(&mut c).await.map_err(|_|Error::Storage)?;
-            if count != 0 {
-                return Err(Error::Conflict);
-            }
-            let mut tx = c.begin().await.map_err(|_| Error::Storage)?;
-            sqlx::raw_sql("CREATE TABLE public.mdm_restore_operation(singleton boolean PRIMARY KEY CHECK(singleton),operation uuid NOT NULL,manifest text NOT NULL); REVOKE ALL ON public.mdm_restore_operation FROM PUBLIC").execute(&mut *tx).await.map_err(|_|Error::Storage)?;
-            sqlx::query("INSERT INTO public.mdm_restore_operation VALUES(true,$1,$2)")
-                .bind(input.operation_id)
-                .bind(&input.backup_manifest_sha256)
-                .execute(&mut *tx)
-                .await
-                .map_err(|_| Error::Storage)?;
-            tx.commit().await.map_err(|_| Error::Storage)?;
-        }
-        let marker: (Uuid, String) = sqlx::query_as(
-            "SELECT operation,manifest FROM public.mdm_restore_operation WHERE singleton",
-        )
-        .fetch_one(&mut c)
-        .await
-        .map_err(|_| Error::Storage)?;
-        if marker != (input.operation_id, input.backup_manifest_sha256.clone()) {
-            return Err(Error::Conflict);
-        }
-        let committed: bool =
-            sqlx::query_scalar("SELECT to_regclass('public.mdm_installation') IS NOT NULL")
-                .fetch_one(&mut c)
-                .await
-                .map_err(|_| Error::Storage)?;
-        if !committed {
-            backup::restore_database(&journal, &input.administrator).await?;
-        }
-        exact_source(&mut c).await?;
-        crate::migration::verify_identity(&mut c, &saved.installation)
-            .await
-            .map_err(|_| Error::Conflict)?;
-        c.close().await.map_err(|_| Error::Storage)?;
-        progress.stage = Stage::Database;
-        journal.save("recovery.json", &progress)?;
+        restore_database(&input, &journal, &saved, &mut progress).await?;
     }
     if progress.stage == Stage::Database {
-        let mut c = PgConnection::connect_with(&saved.owner.options().map_err(|_| Error::Input)?)
-            .await
-            .map_err(|_| Error::Storage)?;
-        super::super::backup::connection_fence(&mut c, &journal, true).await?;
-        stopped(&mut c).await?;
-        for host in &saved.hosts {
-            if let Some(volume) = &host.input.deployment.content_volume {
-                backup::restore_volume(&journal, host.id, volume)?;
-            }
-            storage::restore(&mut c, &journal, host.id, &host.source).await?;
-        }
-        let expected: Vec<ledger::Head> = journal
-            .load("ledger-checkpoints.json")?
-            .ok_or(Error::Corrupt)?;
-        for head in expected {
-            let runtime = saved
-                .hosts
-                .iter()
-                .find(|h| h.source["identity"]["tenant_id"].as_str() == Some(&head.tenant))
-                .unwrap_or(&saved.hosts[0]);
-            let actual = ledger::verify_operator(
-                &runtime.source,
-                std::slice::from_ref(&head.tenant),
-                &input.administrator,
-            )
-            .await?;
-            if serde_json::to_value(&actual[0]).map_err(|_| Error::Corrupt)?
-                != serde_json::to_value(&head).map_err(|_| Error::Corrupt)?
-            {
-                return Err(Error::Corrupt);
-            }
-        }
-        c.close().await.map_err(|_| Error::Storage)?;
-        // 数据和原链均通过后才允许新权威迁入、真实认证及宿主重启。
-        journal.save("transfer.json", &saved)?;
-        progress.stage = Stage::Contents;
-        journal.save("recovery.json", &progress)?;
+        restore_contents(&input, &journal, &saved, &mut progress).await?;
     }
     let current: Saved = journal.load("transfer.json")?.ok_or(Error::Corrupt)?;
     let receipt = resume(current, &journal).await?;
     progress.stage = Stage::Complete;
     journal.save("recovery.json", &progress)?;
     Ok(receipt)
+}
+
+async fn restore_database(
+    input: &Request,
+    journal: &Journal,
+    saved: &Saved,
+    progress: &mut Progress,
+) -> Result<()> {
+    let mut c =
+        PgConnection::connect_with(&input.administrator.options().map_err(|_| Error::Input)?)
+            .await
+            .map_err(|_| Error::Storage)?;
+    super::super::backup::connection_fence(&mut c, journal, true).await?;
+    stopped(&mut c).await?;
+    sqlx::query("SELECT pg_advisory_lock(2823,4)")
+        .execute(&mut c)
+        .await
+        .map_err(|_| Error::Storage)?;
+    super::super::backup::reserve_restore(
+        &mut c,
+        input.operation_id,
+        &input.backup_manifest_sha256,
+    )
+    .await?;
+    let committed: bool =
+        sqlx::query_scalar("SELECT to_regclass('public.mdm_installation') IS NOT NULL")
+            .fetch_one(&mut c)
+            .await
+            .map_err(|_| Error::Storage)?;
+    if !committed {
+        backup::restore_database(journal, &input.administrator).await?;
+    }
+    exact_source(&mut c).await?;
+    crate::migration::verify_identity(&mut c, &saved.installation)
+        .await
+        .map_err(|_| Error::Conflict)?;
+    c.close().await.map_err(|_| Error::Storage)?;
+    progress.stage = Stage::Database;
+    journal.save("recovery.json", progress)?;
+
+    Ok(())
+}
+
+async fn restore_contents(
+    input: &Request,
+    journal: &Journal,
+    saved: &Saved,
+    progress: &mut Progress,
+) -> Result<()> {
+    let mut c = PgConnection::connect_with(&saved.owner.options().map_err(|_| Error::Input)?)
+        .await
+        .map_err(|_| Error::Storage)?;
+    super::super::backup::connection_fence(&mut c, journal, true).await?;
+    stopped(&mut c).await?;
+    for host in &saved.hosts {
+        if let Some(volume) = &host.input.deployment.content_volume {
+            backup::restore_volume(journal, host.id, volume)?;
+        }
+        storage::restore(&mut c, journal, host.id, &host.source).await?;
+    }
+    let expected: Vec<ledger::Head> = journal
+        .load("ledger-checkpoints.json")?
+        .ok_or(Error::Corrupt)?;
+    for head in expected {
+        let runtime = saved
+            .hosts
+            .iter()
+            .find(|h| h.source["identity"]["tenant_id"].as_str() == Some(&head.tenant))
+            .unwrap_or(&saved.hosts[0]);
+        let actual = ledger::verify_operator(
+            &runtime.source,
+            std::slice::from_ref(&head.tenant),
+            &input.administrator,
+        )
+        .await?;
+        if serde_json::to_value(&actual[0]).map_err(|_| Error::Corrupt)?
+            != serde_json::to_value(&head).map_err(|_| Error::Corrupt)?
+        {
+            return Err(Error::Corrupt);
+        }
+    }
+    c.close().await.map_err(|_| Error::Storage)?;
+    // 数据和原链均通过后才允许新权威迁入、真实认证及宿主重启。
+    journal.save("transfer.json", saved)?;
+    progress.stage = Stage::Contents;
+    journal.save("recovery.json", progress)?;
+
+    Ok(())
 }

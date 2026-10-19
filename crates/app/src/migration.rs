@@ -128,53 +128,7 @@ async fn migrate_units(
     {
         verify_installation(conn, installation, instance).await?;
     }
-    let progress_exists: bool =
-        sqlx::query_scalar("SELECT to_regclass('public.mdm_installation_progress') IS NOT NULL")
-            .fetch_one(&mut *conn)
-            .await
-            .map_err(|_| MigrationError::at("installation", "progress read"))?;
-    let source_length = current
-        .iter()
-        .position(|(name, _)| *name == "tenant-provisioning-v1");
-    if !installed.is_empty() && !progress_exists && source_length != Some(installed.len()) {
-        return Err(MigrationError::at(
-            "installation",
-            "unrecognized resumable installation source",
-        ));
-    }
-    if !installed.is_empty() && !progress_exists {
-        let transfer: bool = sqlx::query_scalar(
-            "SELECT to_regclass('public.mdm_installation_transfer') IS NOT NULL",
-        )
-        .fetch_one(&mut *conn)
-        .await
-        .map_err(|_| MigrationError::at("installation", "transfer qualification unavailable"))?;
-        if !transfer {
-            return Err(MigrationError::at(
-                "installation",
-                "qualified offline source transfer required",
-            ));
-        }
-        let evidence:Option<(String,String,String)>=sqlx::query_as("SELECT source_revision,inputs_sha256,instance_id::text FROM public.mdm_installation_transfer WHERE singleton AND phase IN('verified','transferred')").fetch_optional(&mut *conn).await.map_err(|_|MigrationError::at("installation","source transfer qualification rejected"))?;
-        let admitted = evidence.is_some_and(|(revision, inputs, instance)| {
-            #[cfg(unix)]
-            {
-                instance == installation.instance_id
-                    && crate::setup::source::admitted(&revision, &inputs)
-            }
-            #[cfg(not(unix))]
-            {
-                let _ = (revision, inputs, instance);
-                false
-            }
-        });
-        if !admitted {
-            return Err(MigrationError::at(
-                "installation",
-                "source transfer qualification rejected",
-            ));
-        }
-    }
+    qualify_progress(conn, installation, current, &installed).await?;
     bind_progress(conn, installation).await?;
     for &(name, sql) in current {
         apply_unit(conn, installation, instance, name, sql).await?;
@@ -211,12 +165,7 @@ async fn apply_unit(
             .execute(&mut *tx)
             .await
             .map_err(|_| MigrationError::at(name, "owner role"))?;
-        for statement in transaction_body(sql)? {
-            sqlx::raw_sql(statement)
-                .execute(&mut *tx)
-                .await
-                .map_err(|_| MigrationError::at(name, "component schema"))?;
-        }
+        execute_schema(&mut tx, name, sql, "component schema").await?;
         sqlx::query("SET LOCAL ROLE mdm_owner")
             .execute(&mut *tx)
             .await
@@ -226,17 +175,13 @@ async fn apply_unit(
             .await
             .map_err(|_| MigrationError::at(name, "identity installation"))?;
     } else if name != "identity-audit-runtime-v1" || installation.audit_mode == AuditMode::Ledger {
-        for statement in transaction_body(sql)? {
-            sqlx::raw_sql(statement)
-                .execute(&mut *tx)
-                .await
-                .map_err(|_| {
-                    MigrationError::at(
-                        name,
-                        "component SQL failed; original transaction rolled back",
-                    )
-                })?;
-        }
+        execute_schema(
+            &mut tx,
+            name,
+            sql,
+            "component SQL failed; original transaction rolled back",
+        )
+        .await?;
     }
     sqlx::query("INSERT INTO public.mdm_migrations(name,digest,complete) VALUES($1,$2,true)")
         .bind(name)
@@ -559,6 +504,77 @@ async fn verify_installation(
             "instance, storage binding or runtime profiles differ",
         )
     })
+}
+
+async fn qualify_progress(
+    conn: &mut PgConnection,
+    installation: &Installation,
+    current: &[(&'static str, &'static str)],
+    installed: &[(String, String, bool)],
+) -> Result<()> {
+    let progress_exists: bool =
+        sqlx::query_scalar("SELECT to_regclass('public.mdm_installation_progress') IS NOT NULL")
+            .fetch_one(&mut *conn)
+            .await
+            .map_err(|_| MigrationError::at("installation", "progress read"))?;
+    let source_length = current
+        .iter()
+        .position(|(name, _)| *name == "tenant-provisioning-v1");
+    if !installed.is_empty() && !progress_exists && source_length != Some(installed.len()) {
+        return Err(MigrationError::at(
+            "installation",
+            "unrecognized resumable installation source",
+        ));
+    }
+    if !installed.is_empty() && !progress_exists {
+        let transfer: bool = sqlx::query_scalar(
+            "SELECT to_regclass('public.mdm_installation_transfer') IS NOT NULL",
+        )
+        .fetch_one(&mut *conn)
+        .await
+        .map_err(|_| MigrationError::at("installation", "transfer qualification unavailable"))?;
+        if !transfer {
+            return Err(MigrationError::at(
+                "installation",
+                "qualified offline source transfer required",
+            ));
+        }
+        let evidence:Option<(String,String,String)>=sqlx::query_as("SELECT source_revision,inputs_sha256,instance_id::text FROM public.mdm_installation_transfer WHERE singleton AND phase IN('verified','transferred')").fetch_optional(&mut *conn).await.map_err(|_|MigrationError::at("installation","source transfer qualification rejected"))?;
+        let admitted = evidence.is_some_and(|(revision, inputs, instance)| {
+            #[cfg(unix)]
+            {
+                instance == installation.instance_id
+                    && crate::setup::source::admitted(&revision, &inputs)
+            }
+            #[cfg(not(unix))]
+            {
+                let _ = (revision, inputs, instance);
+                false
+            }
+        });
+        if !admitted {
+            return Err(MigrationError::at(
+                "installation",
+                "source transfer qualification rejected",
+            ));
+        }
+    }
+    Ok(())
+}
+
+async fn execute_schema(
+    c: &mut PgConnection,
+    name: &'static str,
+    sql: &'static str,
+    stage: &'static str,
+) -> Result<()> {
+    for statement in transaction_body(sql)? {
+        sqlx::raw_sql(statement)
+            .execute(&mut *c)
+            .await
+            .map_err(|_| MigrationError::at(name, stage))?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]

@@ -57,11 +57,33 @@ pub(super) fn protection(
     );
     Ok(std::sync::Arc::new(protection))
 }
+pub(super) fn task_origin<'a>(runtime: &'a Value, planned: Option<&'a str>) -> Result<&'a str> {
+    let actual = runtime["agent_pki"]["endpoint"]["origin"].as_str();
+    if actual
+        .zip(planned)
+        .is_some_and(|(actual, planned)| actual != planned)
+    {
+        return Err(Error::Conflict);
+    }
+    let origin = actual.or(planned).ok_or(Error::Input)?;
+    let url = url::Url::parse(origin).map_err(|_| Error::Input)?;
+    if url.scheme() != "https"
+        || url.host_str().is_none()
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.origin().ascii_serialization() != origin
+        || runtime["product_origin"].as_str() == Some(origin)
+    {
+        return Err(Error::Input);
+    }
+    Ok(origin)
+}
 pub(super) async fn signing(
     c: &mut PgConnection,
     runtime: &mut Value,
     operation: Uuid,
     protection: &rss_mdm_native_protection::Protector,
+    planned_origin: Option<&str>,
 ) -> Result<()> {
     if runtime["task_signing"].is_null() {
         return Ok(());
@@ -76,11 +98,12 @@ pub(super) async fn signing(
             .ok_or(Error::Input)?,
     )
     .map_err(|_| Error::Input)?;
+    let origin = task_origin(runtime, planned_origin)?;
     let trust = rss_mdm_execution_service::task_signing::trust::import(
         c,
         tenant,
         operation,
-        runtime["product_origin"].as_str().ok_or(Error::Input)?,
+        origin,
         &source.key_id,
         &bytes,
         &source.trusted_keys,
@@ -315,4 +338,26 @@ pub(super) async fn webhooks(
         .map_err(|_| Error::Conflict)?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn retained_task_trust_uses_the_runtime_origin_not_the_browser_origin() {
+        let mut source = json!({"product_origin":"https://console.example.test","agent_pki":{"mode":"disabled"}});
+        assert!(task_origin(&source, None).is_err());
+        assert!(task_origin(&source, Some("https://console.example.test")).is_err());
+        assert_eq!(
+            task_origin(&source, Some("https://agent.example.test")).unwrap(),
+            "https://agent.example.test"
+        );
+        source["agent_pki"] =
+            json!({"mode":"step_ca","endpoint":{"origin":"https://original.example.test"}});
+        assert_eq!(
+            task_origin(&source, None).unwrap(),
+            "https://original.example.test"
+        );
+        assert!(task_origin(&source, Some("https://replacement.example.test")).is_err());
+    }
 }

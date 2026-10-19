@@ -129,73 +129,7 @@ fn runtime(input: &Input, host: Uuid) -> Result<Value> {
 pub(in crate::setup) async fn reconcile(input: &Input, c: &mut PgConnection) -> Result<()> {
     let hosts:Vec<Value>=sqlx::query_scalar("SELECT receipt->'result' FROM public.mdm_tenant_operations WHERE action='provision' AND receipt->'result'->>'phase'='enabled'").fetch_all(&mut *c).await.map_err(|_|Error::Storage)?;
     for host in hosts {
-        let id: Uuid =
-            serde_json::from_value(host["hostId"].clone()).map_err(|_| Error::Corrupt)?;
-        let Ok(runtime) = runtime(input, id) else {
-            continue;
-        };
-        let config: crate::config::Config =
-            serde_json::from_value(runtime).map_err(|_| Error::Corrupt)?;
-        let tenant = Uuid::parse_str(&config.identity.tenant_id).map_err(|_| Error::Corrupt)?;
-        let protection = config.native_protector().map_err(|_| Error::Corrupt)?;
-        let configuration = config
-            .webhooks
-            .material_configuration()
-            .map_err(|_| Error::Corrupt)?;
-        let mut tx = c.begin().await.map_err(|_| Error::Storage)?;
-        scope(&mut tx, tenant).await?;
-        let directory = materials::directory(&mut tx, tenant)
-            .await
-            .map_err(|_| Error::Storage)?;
-        tx.rollback().await.map_err(|_| Error::Storage)?;
-        for material in directory.materials {
-            let now = crate::clock::Clock::unix_seconds(&crate::clock::SystemClock)
-                .map_err(|_| Error::Storage)?;
-            if material.confirmed
-                || material.revoked
-                || material.configuration_sha256 != configuration
-                || material.attempted_at.is_some_and(|at| now - at < 60)
-            {
-                continue;
-            }
-            let Some(network) = config.webhooks.networks.iter().find(|n| {
-                n.tenant == tenant && material.network_reference.as_deref() == Some(&n.reference)
-            }) else {
-                continue;
-            };
-            let mut tx = c.begin().await.map_err(|_| Error::Storage)?;
-            scope(&mut tx, tenant).await?;
-            let (_, secret) = materials::export(
-                &mut tx,
-                tenant,
-                &material.reference,
-                material.revision,
-                &protection,
-            )
-            .await
-            .map_err(|_| Error::Storage)?;
-            sqlx::query("UPDATE mdm_webhook.key_materials SET attempted_at=$4,failure_reason='confirmation_pending' WHERE tenant_id=$1 AND reference=$2 AND revision=$3 AND NOT confirmed AND NOT revoked").bind(tenant).bind(&material.reference).bind(material.revision).bind(now).execute(&mut *tx).await.map_err(|_|Error::Storage)?;
-            tx.commit().await.map_err(|_| Error::Storage)?;
-            let response = probe(network, &material, tenant, &secret).await;
-            let mut tx = c.begin().await.map_err(|_| Error::Storage)?;
-            scope(&mut tx, tenant).await?;
-            match response {
-                Ok(proof) => materials::confirm(
-                    &mut tx,
-                    tenant,
-                    &material.reference,
-                    material.revision,
-                    &proof,
-                    &protection,
-                )
-                .await
-                .map_err(|_| Error::Conflict)?,
-                Err(_) => {
-                    sqlx::query("UPDATE mdm_webhook.key_materials SET failure_reason='receiver_confirmation_unavailable' WHERE tenant_id=$1 AND reference=$2 AND revision=$3 AND NOT confirmed").bind(tenant).bind(&material.reference).bind(material.revision).execute(&mut *tx).await.map_err(|_|Error::Storage)?;
-                }
-            }
-            tx.commit().await.map_err(|_| Error::Storage)?;
-        }
+        qualify_host(input, c, host).await?;
     }
     Ok(())
 }
@@ -305,6 +239,98 @@ pub async fn export(input: Export) -> Result<ExportReceipt> {
         revision: input.revision,
         key_digest: material.key_digest,
     })
+}
+
+async fn qualify_host(input: &Input, c: &mut PgConnection, host: Value) -> Result<()> {
+    let id: Uuid = serde_json::from_value(host["hostId"].clone()).map_err(|_| Error::Corrupt)?;
+    let Ok(runtime) = runtime(input, id) else {
+        return Ok(());
+    };
+    let config: crate::config::Config =
+        serde_json::from_value(runtime).map_err(|_| Error::Corrupt)?;
+    let tenant = Uuid::parse_str(&config.identity.tenant_id).map_err(|_| Error::Corrupt)?;
+    let protection = config.native_protector().map_err(|_| Error::Corrupt)?;
+    let configuration = config
+        .webhooks
+        .material_configuration()
+        .map_err(|_| Error::Corrupt)?;
+    let mut tx = c.begin().await.map_err(|_| Error::Storage)?;
+    scope(&mut tx, tenant).await?;
+    let directory = materials::directory(&mut tx, tenant)
+        .await
+        .map_err(|_| Error::Storage)?;
+    tx.rollback().await.map_err(|_| Error::Storage)?;
+    for material in directory.materials {
+        qualify_material(
+            c,
+            tenant,
+            &config.webhooks,
+            protection.as_ref(),
+            &configuration,
+            material,
+        )
+        .await?;
+    }
+
+    Ok(())
+}
+
+async fn qualify_material(
+    c: &mut PgConnection,
+    tenant: Uuid,
+    config: &crate::webhooks::Config,
+    protection: &rss_mdm_native_protection::Protector,
+    configuration: &str,
+    material: materials::Material,
+) -> Result<()> {
+    let now = crate::clock::Clock::unix_seconds(&crate::clock::SystemClock)
+        .map_err(|_| Error::Storage)?;
+    if material.confirmed
+        || material.revoked
+        || material.configuration_sha256 != configuration
+        || material.attempted_at.is_some_and(|at| now - at < 60)
+    {
+        return Ok(());
+    }
+    let Some(network) = config.networks.iter().find(|n| {
+        n.tenant == tenant && material.network_reference.as_deref() == Some(&n.reference)
+    }) else {
+        return Ok(());
+    };
+    let mut tx = c.begin().await.map_err(|_| Error::Storage)?;
+    scope(&mut tx, tenant).await?;
+    let (_, secret) = materials::export(
+        &mut tx,
+        tenant,
+        &material.reference,
+        material.revision,
+        protection,
+    )
+    .await
+    .map_err(|_| Error::Storage)?;
+    sqlx::query("UPDATE mdm_webhook.key_materials SET attempted_at=$4,failure_reason='confirmation_pending' WHERE tenant_id=$1 AND reference=$2 AND revision=$3 AND NOT confirmed AND NOT revoked").bind(tenant).bind(&material.reference).bind(material.revision).bind(now).execute(&mut *tx).await.map_err(|_|Error::Storage)?;
+    tx.commit().await.map_err(|_| Error::Storage)?;
+    let response = probe(network, &material, tenant, &secret).await;
+    let mut tx = c.begin().await.map_err(|_| Error::Storage)?;
+    scope(&mut tx, tenant).await?;
+    match response {
+        Ok(proof) => materials::confirm(
+            &mut tx,
+            tenant,
+            &material.reference,
+            material.revision,
+            &proof,
+            protection,
+        )
+        .await
+        .map_err(|_| Error::Conflict)?,
+        Err(_) => {
+            sqlx::query("UPDATE mdm_webhook.key_materials SET failure_reason='receiver_confirmation_unavailable' WHERE tenant_id=$1 AND reference=$2 AND revision=$3 AND NOT confirmed").bind(tenant).bind(&material.reference).bind(material.revision).execute(&mut *tx).await.map_err(|_|Error::Storage)?;
+        }
+    }
+    tx.commit().await.map_err(|_| Error::Storage)?;
+
+    Ok(())
 }
 
 #[cfg(test)]

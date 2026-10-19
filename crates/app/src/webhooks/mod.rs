@@ -417,13 +417,13 @@ impl Backend {
             false
         })
     }
-    async fn execute_on(
+    async fn materials_on(
         &self,
         c: &mut PgConnection,
         p: &AuthorizedPrincipal,
         command: &Command,
+        replayed: bool,
     ) -> Result<(Value, bool), HttpError> {
-        p.manage(required(command))?;
         if matches!(
             command,
             Command::PrepareMaterial(..) | Command::TransitionMaterial(..)
@@ -442,7 +442,6 @@ impl Backend {
             }
         }
         let t = self.host.tenant;
-        let replayed = self.lock_operation_on(c, command).await?;
         let value = match command {
             Command::Materials => {
                 serde_json::json!({"configurationSha256":self.host.policies.digest(),"keys":webhooks::materials::directory(c,t).await.map_err(map_error)?})
@@ -505,6 +504,26 @@ impl Backend {
                     .await
                     .map_err(map_error)?;
                 response
+            }
+            _ => return Err(HttpError::Malformed),
+        };
+        Ok((value, replayed))
+    }
+    async fn execute_on(
+        &self,
+        c: &mut PgConnection,
+        p: &AuthorizedPrincipal,
+        command: &Command,
+    ) -> Result<(Value, bool), HttpError> {
+        p.manage(required(command))?;
+        let t = self.host.tenant;
+        let replayed = self.lock_operation_on(c, command).await?;
+        let value = match command {
+            Command::Materials
+            | Command::MaterialOperation(..)
+            | Command::PrepareMaterial(..)
+            | Command::TransitionMaterial(..) => {
+                return self.materials_on(c, p, command, replayed).await;
             }
             Command::Health => {
                 let counts=sqlx::query_scalar::<_,Value>("SELECT coalesce(jsonb_agg(jsonb_build_object('domain',domain,'status',status,'count',n)),'[]'::jsonb) FROM (SELECT domain,status,count(*) AS n FROM rss_transactional_messaging.outbox WHERE tenant_id=$1 AND domain IN('mdm-webhook-source','mdm-webhook-delivery') GROUP BY domain,status) s").bind(t).fetch_one(&mut *c).await.map_err(|_|unavailable())?;

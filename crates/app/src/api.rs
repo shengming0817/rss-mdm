@@ -271,44 +271,8 @@ pub(crate) async fn from_compiled(
         .ok_or(Error::Configuration(ConfigIssue::ProductOrigin))?
         .to_owned();
     let providers = crate::device_pki::providers(&config.device_pki)?;
-    let windows_push = if let Some(push) = config
-        .native_protocols
-        .windows
-        .as_ref()
-        .and_then(|w| w.push.as_ref())
-    {
-        use sqlx::Connection;
-        let mut c = sqlx::PgConnection::connect_with(&config.access_database.options()?)
-            .await
-            .map_err(|_| Error::Unavailable(crate::Failure::Database))?;
-        let mut tx = c
-            .begin()
-            .await
-            .map_err(|_| Error::Unavailable(crate::Failure::Database))?;
-        sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
-            .bind(identity.tenant.to_string())
-            .execute(&mut *tx)
-            .await
-            .map_err(|_| Error::Unavailable(crate::Failure::Database))?;
-        let value = rss_mdm_windows_channel::wns_materials::load(
-            &mut tx,
-            &identity.tenant.to_string(),
-            push.revision,
-            &protection,
-            monotonic.clone(),
-            true,
-        )
-        .await?;
-        tx.rollback()
-            .await
-            .map_err(|_| Error::Unavailable(crate::Failure::Database))?;
-        c.close()
-            .await
-            .map_err(|_| Error::Unavailable(crate::Failure::Database))?;
-        Some(value)
-    } else {
-        None
-    };
+    let windows_push =
+        load_windows_push(&config, identity.tenant, &protection, monotonic.clone()).await?;
     let windows = config
         .native_protocols
         .windows
@@ -924,10 +888,6 @@ async fn ready(
 }
 
 #[cfg(test)]
-#[path = "../tests/api/diagnostics.rs"]
-mod tests;
-
-#[cfg(test)]
 #[path = "../tests/api/mod.rs"]
 pub(crate) mod t2;
 
@@ -1002,3 +962,55 @@ async fn apple_management_settlement(
     }
     response
 }
+
+async fn load_windows_push(
+    config: &crate::config::Config,
+    tenant: rss_request_context::TenantId,
+    protection: &rss_mdm_native_protection::Protector,
+    monotonic: Arc<dyn rss_observation::Clock>,
+) -> Result<Option<rss_mdm_windows_channel::push::Push>, Error> {
+    Ok(
+        if let Some(push) = config
+            .native_protocols
+            .windows
+            .as_ref()
+            .and_then(|w| w.push.as_ref())
+        {
+            use sqlx::Connection;
+            let mut c = sqlx::PgConnection::connect_with(&config.access_database.options()?)
+                .await
+                .map_err(|_| Error::Unavailable(crate::Failure::Database))?;
+            let mut tx = c
+                .begin()
+                .await
+                .map_err(|_| Error::Unavailable(crate::Failure::Database))?;
+            sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
+                .bind(tenant.to_string())
+                .execute(&mut *tx)
+                .await
+                .map_err(|_| Error::Unavailable(crate::Failure::Database))?;
+            let value = rss_mdm_windows_channel::wns_materials::load(
+                &mut tx,
+                &tenant.to_string(),
+                push.revision,
+                protection,
+                monotonic.clone(),
+                true,
+            )
+            .await?;
+            tx.rollback()
+                .await
+                .map_err(|_| Error::Unavailable(crate::Failure::Database))?;
+            c.close()
+                .await
+                .map_err(|_| Error::Unavailable(crate::Failure::Database))?;
+            Some(value)
+        } else {
+            None
+        },
+    )
+}
+
+#[cfg(test)]
+#[path = "../tests/api/diagnostics.rs"]
+mod tests;

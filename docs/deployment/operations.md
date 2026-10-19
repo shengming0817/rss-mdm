@@ -275,3 +275,5 @@ rss-mdm.webhook-key/v1
 该响应与请求签名使用不同消息，不能通过回显请求签名伪造确认。TLS 地址固定、无代理、无重定向，证书名字/根和网络边界均校验；失败保留原候选并至少一分钟后重试。普通运行角色无权写入 `confirmed`，也不能在 INSERT 时伪造确认。确认仅证明指定接收端在核验时持有确切候选，不代表业务事件已投递。
 
 `POST /api/v1/webhooks/materials/transitions` 接受 reference、expectedRevision 和 action（`activate`/`revoke` 的 materialRevision，或 `retire_previous`），同样要求 Idempotency-Key。激活须有真实 receiver confirmation；当前被撤销时失败关闭，不退回旧钥。旧双签仍有未决投递或恢复时拒绝退出，已退出材料继续加密保留供历史及联合备份。一次性 V4 转交保留原 whsec 字节、版本及尚有效的双签，显式标记 `legacyImport`，不能把旧来源验证当作新的接收端确认。公开 DTO 和接收合同见 [Webhook Materials schema](../../crates/webhook-service/schema/Materials.json)。
+
+V4 任务签名导入保留原 key ID 和密钥，并将信任绑定到原 Agent endpoint 的 origin。若旧实例仅预置任务签名钥、尚未配置 Agent endpoint，转交输入的对应 host 必须明确提供 `task_runtime_origin`；不得将浏览器 product origin 静默当成 Agent 的运行 origin。已配置 endpoint 时，额外提供的值必须与其完全一致。

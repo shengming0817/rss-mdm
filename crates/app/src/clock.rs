@@ -65,3 +65,11 @@ impl rss_mdm_software_service::management::Clock for ContentClock {
         self.0.unix_seconds().ok()
     }
 }
+
+#[allow(
+    clippy::disallowed_methods,
+    reason = "deployment composition selects the monotonic provider; clients receive Clock"
+)]
+pub(crate) fn monotonic() -> std::sync::Arc<dyn rss_observation::Clock> {
+    std::sync::Arc::new(crate::Monotonic(std::time::Instant::now))
+}

@@ -108,7 +108,7 @@ def main():
     request=dict(operation_id=str(uuid.uuid4()),deployment=installation,owner=root_owner,source_candidate=str(source),
         source_manifest_sha256=hashlib.sha256((source/'candidate.json').read_bytes()).hexdigest(),
         platform_administrator=dict(principal_id=platform,login='administrator',password_file=delivery),
-        hosts=[dict(container_id=old,administrator=dict(principal_id=admin,login='administrator',password_file=delivery),deployment=deployment,apple_material_roots=[],storage_profile=None,storage_expires_at=None)])
+        hosts=[dict(container_id=old,administrator=dict(principal_id=admin,login='administrator',password_file=delivery),deployment=deployment,apple_material_roots=[],task_runtime_origin="https://localhost:9445",storage_profile=None,storage_expires_at=None)])
     path=write('transfer.json',request)
     migrated=json.loads(run(BIN,'transfer-v4','--config',path,timeout=300))
     check(migrated['phase']=='transferred','V4 transfer incomplete')
@@ -117,7 +117,7 @@ def main():
     status,subject=browser.call('GET','/api/v1/authorization')
     check(status==200 and subject['instanceId']==instance and subject['principalId']==admin,'V4 account identity changed')
     status,trust=browser.call('GET','/api/v1/task-signing/trust')
-    check(status==200 and trust['keys'][0]['id']=='original-task' and trust['keys'][0]['publicKey']==base64.urlsafe_b64encode(public).decode().rstrip('='),'V4 signing identity changed')
+    check(status==200 and trust['keys'][0]['id']=='original-task' and trust['keys'][0]['public_key']==base64.urlsafe_b64encode(public).decode().rstrip('='),'V4 signing identity changed')
     ledger_id=sql("SELECT DISTINCT key_id FROM rss_ledger.heads")
     check(ledger_id=='original-ledger','V4 Ledger identity changed')
     check(json.loads(run('docker','inspect',old))[0]['State']['Running'] is False,'V4 old writer restarted')

@@ -82,10 +82,7 @@ impl Client {
             Id::RSA if key.bits() >= 2048 && key.bits() <= 4096 => (),
             Id::EC
                 if key.ec_key().map_err(|_| Error::Input)?.group().curve_name()
-                    == Some(openssl::nid::Nid::X9_62_PRIME256V1) =>
-            {
-                ()
-            }
+                    == Some(openssl::nid::Nid::X9_62_PRIME256V1) => {}
             _ => return Err(Error::Input),
         }
         let chain = certificates

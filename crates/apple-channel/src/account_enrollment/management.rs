@@ -77,7 +77,7 @@ pub async fn directory(
         .map_err(db)?;
         let ade = ade
             .as_ref()
-            .map(|r| crate::ade::management::status_row(r, crate::ade::now(&app)?))
+            .map(|r| crate::ade::management::status_row(r, crate::ade::now(app)?))
             .transpose()?;
         let Some(row) = sqlx::query(
             "SELECT * FROM mdm_apple.account_configuration WHERE tenant_id=$1::uuid AND id=$2",

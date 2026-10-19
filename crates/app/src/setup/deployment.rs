@@ -363,19 +363,17 @@ pub async fn apply(directory: &Path, config: &Config, runtime: &Value) -> Result
             &decoded.identity.tenant_id,
             &decoded.identity.instance_id,
         )
-    }) {
-        if let Ok(current) = observe(
-            &client,
-            &decoded.product_origin,
-            &decoded.runtime_binding,
-            &decoded.identity.tenant_id,
-            &decoded.identity.instance_id,
-        )
-        .await
-        {
-            owner.save("applied.json", &current)?;
-            return Ok(current);
-        }
+    }) && let Ok(current) = observe(
+        &client,
+        &decoded.product_origin,
+        &decoded.runtime_binding,
+        &decoded.identity.tenant_id,
+        &decoded.identity.instance_id,
+    )
+    .await
+    {
+        owner.save("applied.json", &current)?;
+        return Ok(current);
     }
     let applied = async {
         compose_up(&name, path).await?;
@@ -397,32 +395,32 @@ pub async fn apply(directory: &Path, config: &Config, runtime: &Value) -> Result
         Err(error) => {
             // Restoring an earlier immutable snapshot is an operator action; it never advances
             // applied revision and never reports the rejected candidate as healthy.
-            if let Some(previous) = previous {
-                if previous.operation_id != decoded.runtime_binding.operation_id {
-                    let previous_path = host_root
-                        .join(previous.operation_id.to_string())
-                        .join("compose.json");
-                    let restored = async {
-                        compose_up(&name, previous_path.to_str().ok_or(Error::Input)?).await?;
-                        let binding = Binding {
-                            host_id: previous.host_id,
-                            operation_id: previous.operation_id,
-                            revision: previous.revision,
-                            material_digest: previous.material_digest.clone(),
-                        };
-                        wait_ready(
-                            &client,
-                            &decoded.product_origin,
-                            &binding,
-                            &previous.tenant_id,
-                            &previous.instance_id,
-                        )
-                        .await
-                    }
-                    .await;
-                    if let Ok(observed) = restored {
-                        owner.save("applied.json", &observed)?;
-                    }
+            if let Some(previous) = previous
+                && previous.operation_id != decoded.runtime_binding.operation_id
+            {
+                let previous_path = host_root
+                    .join(previous.operation_id.to_string())
+                    .join("compose.json");
+                let restored = async {
+                    compose_up(&name, previous_path.to_str().ok_or(Error::Input)?).await?;
+                    let binding = Binding {
+                        host_id: previous.host_id,
+                        operation_id: previous.operation_id,
+                        revision: previous.revision,
+                        material_digest: previous.material_digest.clone(),
+                    };
+                    wait_ready(
+                        &client,
+                        &decoded.product_origin,
+                        &binding,
+                        &previous.tenant_id,
+                        &previous.instance_id,
+                    )
+                    .await
+                }
+                .await;
+                if let Ok(observed) = restored {
+                    owner.save("applied.json", &observed)?;
                 }
             }
             Err(error)
@@ -471,16 +469,16 @@ async fn wait_ready(
     tenant: &str,
     instance: &str,
 ) -> Result<Applied> {
-    let end = tokio::time::Instant::now() + Duration::from_secs(90);
-    loop {
-        if let Ok(observed) = observe(client, origin, binding, tenant, instance).await {
-            return Ok(observed);
+    tokio::time::timeout(Duration::from_secs(90), async {
+        loop {
+            if let Ok(observed) = observe(client, origin, binding, tenant, instance).await {
+                return observed;
+            }
+            tokio::time::sleep(Duration::from_millis(500)).await;
         }
-        if tokio::time::Instant::now() >= end {
-            return Err(Error::Storage);
-        }
-        tokio::time::sleep(Duration::from_millis(500)).await;
-    }
+    })
+    .await
+    .map_err(|_| Error::Storage)
 }
 
 fn matches(value: &Applied, binding: &Binding, tenant: &str, instance: &str) -> bool {

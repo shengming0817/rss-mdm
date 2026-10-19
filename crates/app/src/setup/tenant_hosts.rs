@@ -24,40 +24,7 @@ pub struct Slot {
 pub async fn reconcile(input: &Input) -> Result<usize> {
     validate_slots(input)?;
     let journal = Journal::open(&input.directory)?;
-    if journal
-        .load::<Option<Uuid>>("backup-operation.json")?
-        .flatten()
-        .is_some()
-    {
-        return Err(Error::Busy);
-    }
-    if journal
-        .load::<Option<Uuid>>("configuration-operation.json")?
-        .flatten()
-        .is_some()
-    {
-        return Err(Error::Busy);
-    }
-
-    if journal
-        .load::<serde_json::Value>("recovery.json")?
-        .is_some_and(|v| v["stage"] != "complete")
-    {
-        return Err(Error::Busy);
-    }
-    if journal
-        .load::<serde_json::Value>("transfer.json")?
-        .is_some_and(|v| v["receipt"]["phase"] != "transferred")
-    {
-        return Err(Error::Busy);
-    }
-    if journal
-        .load::<Option<Uuid>>("protection-operation.json")?
-        .flatten()
-        .is_some()
-    {
-        return Err(Error::Busy);
-    }
+    admit_reconciliation(&journal).await?;
     for (index, slot) in input.additional_hosts.iter().enumerate() {
         journal.secret(
             &format!("host-slot-{index}.json"),
@@ -69,40 +36,7 @@ pub async fn reconcile(input: &Input) -> Result<usize> {
         serde_json::from_value(runtime.clone()).map_err(|_| Error::Corrupt)?;
     let compiled = decoded.compile().map_err(|_| Error::Corrupt)?;
     let base = &compiled.config;
-    let installation = crate::migration::Installation {
-        instance_id: base.identity.instance_id.clone(),
-        target: base.flow.storage.target,
-        lineage: base.flow.storage.lineage,
-        audit_mode: base.audit.mode(),
-    };
-    let mut c = sqlx::PgConnection::connect_with(
-        &input
-            .database("mdm_owner")?
-            .options()
-            .map_err(|_| Error::Input)?,
-    )
-    .await
-    .map_err(|_| Error::Storage)?;
-    sqlx::raw_sql("SET statement_timeout='10s'; SET lock_timeout='6s'")
-        .execute(&mut c)
-        .await
-        .map_err(|_| Error::Storage)?;
-    if !crate::migration::owner_admitted(&mut c)
-        .await
-        .map_err(|_| Error::Storage)?
-    {
-        return Err(Error::Input);
-    }
-    crate::migration::verify_identity(&mut c, &installation)
-        .await
-        .map_err(|_| Error::Conflict)?;
-    let locked: bool = sqlx::query_scalar("SELECT pg_try_advisory_lock(2823,1)")
-        .fetch_one(&mut c)
-        .await
-        .map_err(|_| Error::Storage)?;
-    if !locked {
-        return Err(Error::Busy);
-    }
+    let mut c = operator_connection(input, base).await?;
     super::providers::reconcile::storage(input, &compiled.config, &mut c).await?;
     super::providers::reconcile::wns(input, &mut c).await?;
     super::providers::mail::reconcile(input, &mut c).await?;
@@ -113,75 +47,17 @@ pub async fn reconcile(input: &Input) -> Result<usize> {
         .fetch_all(&mut c).await.map_err(|_|Error::Storage)?;
     let mut completed = 0;
     for original in pending {
-        let mut receipt: Receipt =
-            serde_json::from_value(original.clone()).map_err(|_| Error::Corrupt)?;
-        let ReceiptResult::Provisioning(progress) = &mut receipt.result else {
-            return Err(Error::Corrupt);
-        };
-        let before = progress.clone();
-        if progress.administrator_id.is_none() || progress.phase != Phase::HostPending {
-            return Err(Error::Corrupt);
-        }
-        let slot = if let Some(index) = reservations.get(&progress.host_id) {
-            Some(*index)
-        } else {
-            (0..input.additional_hosts.len())
-                .find(|index| !reservations.values().any(|used| used == index))
-        };
-        if let Some(index) = slot {
-            let slot = input.additional_hosts.get(index).ok_or(Error::Conflict)?;
-            // Immutable reservation precedes the first Docker side effect; retries never choose another slot.
-            reservations.insert(progress.host_id, index);
-            journal.save("host-reservations.json", &reservations)?;
-            let mut candidate = runtime.clone();
-            candidate["native_protocols"] = serde_json::json!({});
-            candidate["agent_pki"] = serde_json::json!({"mode":"disabled"});
-            candidate["device_pki"] = serde_json::json!([]);
-            for field in ["task_signing", "recovery_credentials", "content"] {
-                candidate[field] = Value::Null;
-            }
-            candidate["identity"]["oidc"] = Value::Null;
-            candidate["webhooks"]["networks"] = serde_json::json!([]);
-            candidate["identity"]["tenant_id"] = serde_json::json!(progress.tenant_id);
-            candidate["product_origin"] = serde_json::json!(slot.origin);
-            candidate["listen"] = serde_json::json!(slot.listen);
-            candidate["trusted_gateway"] = serde_json::json!(slot.listen.ip());
-            let digest = {
-                use sha2::{Digest, Sha256};
-                format!(
-                    "{:x}",
-                    Sha256::digest(
-                        serde_json::to_vec(&(
-                            progress.operation_id,
-                            progress.host_id,
-                            progress.tenant_id,
-                            &slot.origin,
-                            slot.listen,
-                            &candidate
-                        ))
-                        .map_err(|_| Error::Input)?
-                    )
-                )
-            };
-            candidate["runtime_binding"] = serde_json::json!({"host_id":progress.host_id,"operation_id":progress.operation_id,"revision":1,"material_digest":digest});
-            if activate(&input.directory, &slot.deployment, &candidate, progress)
-                .await
-                .is_ok()
-            {
-                completed += 1;
-            }
-        } else {
-            progress.blocked = Some(BlockedReason::Capacity);
-        }
-        if *progress == before {
-            continue;
-        }
-        progress.revision = progress.revision.checked_add(1).ok_or(Error::Corrupt)?;
-        let updated = sqlx::query("UPDATE public.mdm_tenant_operations SET receipt=$2 WHERE operation_id=$1 AND action='provision' AND receipt=$3")
-            .bind(receipt.operation_id).bind(serde_json::to_value(&receipt).map_err(|_|Error::Corrupt)?).bind(original).execute(&mut c).await.map_err(|_|Error::Storage)?;
-        if updated.rows_affected() != 1 {
-            return Err(Error::Conflict);
-        }
+        completed += usize::from(
+            provision_pending(
+                input,
+                &runtime,
+                &journal,
+                &mut reservations,
+                &mut c,
+                original,
+            )
+            .await?,
+        );
     }
     completed += super::application::reconcile(input, &reservations, &mut c).await?;
     c.close().await.map_err(|_| Error::Storage)?;
@@ -264,4 +140,166 @@ pub(super) async fn activate(
             Err(error)
         }
     }
+}
+
+async fn admit_reconciliation(journal: &Journal) -> Result<()> {
+    if journal
+        .load::<Option<Uuid>>("backup-operation.json")?
+        .flatten()
+        .is_some()
+    {
+        return Err(Error::Busy);
+    }
+    if journal
+        .load::<Option<Uuid>>("configuration-operation.json")?
+        .flatten()
+        .is_some()
+    {
+        return Err(Error::Busy);
+    }
+
+    if journal
+        .load::<serde_json::Value>("recovery.json")?
+        .is_some_and(|v| v["stage"] != "complete")
+    {
+        return Err(Error::Busy);
+    }
+    if journal
+        .load::<serde_json::Value>("transfer.json")?
+        .is_some_and(|v| v["receipt"]["phase"] != "transferred")
+    {
+        return Err(Error::Busy);
+    }
+    if journal
+        .load::<Option<Uuid>>("protection-operation.json")?
+        .flatten()
+        .is_some()
+    {
+        return Err(Error::Busy);
+    }
+    Ok(())
+}
+
+async fn provision_pending(
+    input: &Input,
+    runtime: &Value,
+    journal: &Journal,
+    reservations: &mut BTreeMap<Uuid, usize>,
+    c: &mut sqlx::PgConnection,
+    original: Value,
+) -> Result<bool> {
+    let mut completed = 0;
+
+    let mut receipt: Receipt =
+        serde_json::from_value(original.clone()).map_err(|_| Error::Corrupt)?;
+    let ReceiptResult::Provisioning(progress) = &mut receipt.result else {
+        return Err(Error::Corrupt);
+    };
+    let before = progress.clone();
+    if progress.administrator_id.is_none() || progress.phase != Phase::HostPending {
+        return Err(Error::Corrupt);
+    }
+    let slot = if let Some(index) = reservations.get(&progress.host_id) {
+        Some(*index)
+    } else {
+        (0..input.additional_hosts.len())
+            .find(|index| !reservations.values().any(|used| used == index))
+    };
+    if let Some(index) = slot {
+        let slot = input.additional_hosts.get(index).ok_or(Error::Conflict)?;
+        // Immutable reservation precedes the first Docker side effect; retries never choose another slot.
+        reservations.insert(progress.host_id, index);
+        journal.save("host-reservations.json", reservations)?;
+        let mut candidate = runtime.clone();
+        candidate["native_protocols"] = serde_json::json!({});
+        candidate["agent_pki"] = serde_json::json!({"mode":"disabled"});
+        candidate["device_pki"] = serde_json::json!([]);
+        for field in ["task_signing", "recovery_credentials", "content"] {
+            candidate[field] = Value::Null;
+        }
+        candidate["identity"]["oidc"] = Value::Null;
+        candidate["webhooks"]["networks"] = serde_json::json!([]);
+        candidate["identity"]["tenant_id"] = serde_json::json!(progress.tenant_id);
+        candidate["product_origin"] = serde_json::json!(slot.origin);
+        candidate["listen"] = serde_json::json!(slot.listen);
+        candidate["trusted_gateway"] = serde_json::json!(slot.listen.ip());
+        let digest = {
+            use sha2::{Digest, Sha256};
+            format!(
+                "{:x}",
+                Sha256::digest(
+                    serde_json::to_vec(&(
+                        progress.operation_id,
+                        progress.host_id,
+                        progress.tenant_id,
+                        &slot.origin,
+                        slot.listen,
+                        &candidate
+                    ))
+                    .map_err(|_| Error::Input)?
+                )
+            )
+        };
+        candidate["runtime_binding"] = serde_json::json!({"host_id":progress.host_id,"operation_id":progress.operation_id,"revision":1,"material_digest":digest});
+        if activate(&input.directory, &slot.deployment, &candidate, progress)
+            .await
+            .is_ok()
+        {
+            completed += 1;
+        }
+    } else {
+        progress.blocked = Some(BlockedReason::Capacity);
+    }
+    if *progress == before {
+        return Ok(false);
+    }
+    progress.revision = progress.revision.checked_add(1).ok_or(Error::Corrupt)?;
+    let updated = sqlx::query("UPDATE public.mdm_tenant_operations SET receipt=$2 WHERE operation_id=$1 AND action='provision' AND receipt=$3")
+        .bind(receipt.operation_id).bind(serde_json::to_value(&receipt).map_err(|_|Error::Corrupt)?).bind(original).execute(&mut *c).await.map_err(|_|Error::Storage)?;
+    if updated.rows_affected() != 1 {
+        return Err(Error::Conflict);
+    }
+
+    Ok(completed == 1)
+}
+
+async fn operator_connection(
+    input: &Input,
+    base: &crate::config::Config,
+) -> Result<sqlx::PgConnection> {
+    let installation = crate::migration::Installation {
+        instance_id: base.identity.instance_id.clone(),
+        target: base.flow.storage.target,
+        lineage: base.flow.storage.lineage,
+        audit_mode: base.audit.mode(),
+    };
+    let mut c = sqlx::PgConnection::connect_with(
+        &input
+            .database("mdm_owner")?
+            .options()
+            .map_err(|_| Error::Input)?,
+    )
+    .await
+    .map_err(|_| Error::Storage)?;
+    sqlx::raw_sql("SET statement_timeout='10s'; SET lock_timeout='6s'")
+        .execute(&mut c)
+        .await
+        .map_err(|_| Error::Storage)?;
+    if !crate::migration::owner_admitted(&mut c)
+        .await
+        .map_err(|_| Error::Storage)?
+    {
+        return Err(Error::Input);
+    }
+    crate::migration::verify_identity(&mut c, &installation)
+        .await
+        .map_err(|_| Error::Conflict)?;
+    let locked: bool = sqlx::query_scalar("SELECT pg_try_advisory_lock(2823,1)")
+        .fetch_one(&mut c)
+        .await
+        .map_err(|_| Error::Storage)?;
+    if !locked {
+        return Err(Error::Busy);
+    }
+    Ok(c)
 }

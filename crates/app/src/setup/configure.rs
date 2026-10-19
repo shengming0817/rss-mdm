@@ -54,7 +54,7 @@ pub enum Change {
         networks: Vec<crate::webhooks::Network>,
     },
     Channels {
-        settings: Channels,
+        settings: Box<Channels>,
     },
     Oidc {
         settings: Oidc,
@@ -433,38 +433,7 @@ pub async fn run(request: Request) -> Result<Receipt> {
     }
     let input = &request.installation;
     let root = Journal::open(&input.directory)?;
-    if root
-        .load::<Option<Uuid>>("backup-operation.json")?
-        .flatten()
-        .is_some()
-    {
-        return Err(Error::Busy);
-    }
-    for (file, pointer, complete) in [
-        ("recovery.json", "/stage", "complete"),
-        ("transfer.json", "/receipt/phase", "transferred"),
-    ] {
-        if root
-            .load::<Value>(file)?
-            .is_some_and(|v| v.pointer(pointer).and_then(Value::as_str) != Some(complete))
-        {
-            return Err(Error::Busy);
-        }
-    }
-    if root
-        .load::<Option<Uuid>>("protection-operation.json")?
-        .flatten()
-        .is_some()
-    {
-        return Err(Error::Busy);
-    }
-    if root
-        .load::<Option<Uuid>>("configuration-operation.json")?
-        .flatten()
-        .is_some_and(|id| id != request.operation_id)
-    {
-        return Err(Error::Busy);
-    }
+    admit_configuration(&root, request.operation_id).await?;
     let journal = Journal::open(
         &input
             .directory
@@ -537,6 +506,16 @@ pub async fn run(request: Request) -> Result<Receipt> {
             .directory
             .join(format!("rss-mdm-{}", request.host_id.simple())),
     )?;
+    if let Some(previous) = journal.load::<Receipt>("receipt.json")? {
+        let requested: Value = host.load("requested-runtime.json")?.ok_or(Error::Corrupt)?;
+        if previous.applied.is_none()
+            && requested["runtime_binding"]["operation_id"] != json!(request.operation_id)
+        {
+            // A durably failed operation remains queryable after a correction supersedes it.
+            // Replaying that original request must never overwrite the newer desired runtime.
+            return Ok(previous);
+        }
+    }
     let candidate = if let Some(candidate) = journal.load::<Value>("candidate.json")? {
         candidate
     } else {
@@ -624,11 +603,64 @@ pub async fn run(request: Request) -> Result<Receipt> {
     };
     let now = crate::clock::Clock::unix_seconds(&crate::clock::SystemClock)
         .map_err(|_| Error::Storage)?;
+    record_application(progress, &mut result, outcome, now)?;
+    progress.revision = progress.revision.checked_add(1).ok_or(Error::Corrupt)?;
+    super::application::save(&mut c, &receipt, &original).await?;
+    journal.save("receipt.json", &result)?;
+    // A persisted failure is a recoverable outcome, not an indefinitely active operation.
+    // Unknown persistence outcomes above retain the fence until the original request resumes.
+    root.save("configuration-operation.json", &Option::<Uuid>::None)?;
+    c.close().await.map_err(|_| Error::Storage)?;
+    Ok(result)
+}
+
+async fn admit_configuration(root: &Journal, operation: Uuid) -> Result<()> {
+    if root
+        .load::<Option<Uuid>>("backup-operation.json")?
+        .flatten()
+        .is_some()
+    {
+        return Err(Error::Busy);
+    }
+    for (file, pointer, complete) in [
+        ("recovery.json", "/stage", "complete"),
+        ("transfer.json", "/receipt/phase", "transferred"),
+    ] {
+        if root
+            .load::<Value>(file)?
+            .is_some_and(|v| v.pointer(pointer).and_then(Value::as_str) != Some(complete))
+        {
+            return Err(Error::Busy);
+        }
+    }
+    if root
+        .load::<Option<Uuid>>("protection-operation.json")?
+        .flatten()
+        .is_some()
+    {
+        return Err(Error::Busy);
+    }
+    if root
+        .load::<Option<Uuid>>("configuration-operation.json")?
+        .flatten()
+        .is_some_and(|id| id != operation)
+    {
+        return Err(Error::Busy);
+    }
+    Ok(())
+}
+
+fn record_application(
+    progress: &mut super::model::Provisioning,
+    result: &mut Receipt,
+    outcome: Result<super::deployment::Applied>,
+    now: i64,
+) -> Result<()> {
     match outcome {
         Ok(observed) => {
-            if observed.host_id != request.host_id
-                || observed.operation_id != request.operation_id
-                || observed.tenant_id != tenant.to_string()
+            if observed.host_id != result.host_id
+                || observed.operation_id != result.operation_id
+                || observed.tenant_id != progress.tenant_id.to_string()
             {
                 return Err(Error::Conflict);
             }
@@ -659,14 +691,7 @@ pub async fn run(request: Request) -> Result<Receipt> {
             }
         }
     }
-    progress.revision = progress.revision.checked_add(1).ok_or(Error::Corrupt)?;
-    super::application::save(&mut c, &receipt, &original).await?;
-    journal.save("receipt.json", &result)?;
-    if result.applied.is_some() {
-        root.save("configuration-operation.json", &Option::<Uuid>::None)?;
-    }
-    c.close().await.map_err(|_| Error::Storage)?;
-    Ok(result)
+    Ok(())
 }
 
 #[cfg(test)]

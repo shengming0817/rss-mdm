@@ -71,6 +71,10 @@ END $prepare$;"#).execute(&mut *tx).await.map_err(|_|Error::Conflict)?;
         .map_err(|_| Error::Storage)?;
     }
     c.close().await.map_err(|_| Error::Storage)?;
+    prepare_roles(input, &tag, &secrets).await
+}
+async fn prepare_roles(input: &Input, tag: &str, secrets: &str) -> Result<()> {
+    let admin = &input.database.administrator;
     let mut target = admin.clone();
     target.name = input.database.name.clone();
     let mut c = sqlx::PgConnection::connect_with(&target.options().map_err(|_| Error::Input)?)
@@ -78,7 +82,7 @@ END $prepare$;"#).execute(&mut *tx).await.map_err(|_|Error::Conflict)?;
         .map_err(|_| Error::Storage)?;
     let mut tx = c.begin().await.map_err(|_| Error::Storage)?;
     sqlx::query("SELECT pg_advisory_xact_lock(2823,2),set_config('rss.installation.identity',$1,true),set_config('rss.installation.roles',$2,true)")
-        .bind(&tag).bind(secrets.as_str()).execute(&mut *tx).await.map_err(|_|Error::Storage)?;
+        .bind(tag).bind(secrets).execute(&mut *tx).await.map_err(|_|Error::Storage)?;
     let marker: Option<String> = sqlx::query_scalar(
         "SELECT shobj_description(oid,'pg_authid') FROM pg_roles WHERE rolname='mdm_owner'",
     )

@@ -170,6 +170,28 @@ def main():
     until(recovered,180)
     third=Browser(8447)
     third.login(pending['result']['tenantId'],'third',pending_request['administratorPassword'])
+    # Freeze only the daemon process: PostgreSQL and the valid old service keep running.
+    # This forces the real external application boundary to fail after its checkpoint.
+    run('systemctl','stop',service)
+    host_directory=protected/('rss-mdm-'+first['hostId'].replace('-',''))
+    revision=json.loads((host_directory/'requested-runtime.json').read_text())['runtime_binding']['revision']
+    failed_operation=str(uuid.uuid4())
+    failed_input=write('failed-configuration.json',dict(installation=operator,operation_id=failed_operation,
+        host_id=first['hostId'],expected_revision=revision,change=dict(kind='webhook_networks',networks=[])))
+    run('systemctl','kill','--kill-who=main','--signal=STOP','docker.service')
+    try:
+        failed=json.loads(run(BIN,'configure-host','--config',failed_input,timeout=180))
+        check(failed['applied'] is None,'unavailable Docker falsely applied configuration')
+    finally:run('systemctl','kill','--kill-who=main','--signal=CONT','docker.service')
+    repaired_operation=str(uuid.uuid4())
+    repaired_input=write('corrected-configuration.json',dict(installation=operator,operation_id=repaired_operation,
+        host_id=first['hostId'],expected_revision=failed['requestedRevision'],change=dict(kind='webhook_networks',networks=[])))
+    repaired=json.loads(run(BIN,'configure-host','--config',repaired_input,timeout=180))
+    check(repaired['applied'] is not None,'failed configuration permanently fenced corrective input')
+    check(json.loads(run(BIN,'configure-host','--config',failed_input))==failed,'old failed operation lost its receipt')
+    check(json.loads((host_directory/'requested-runtime.json').read_text())['runtime_binding']['operation_id']==repaired_operation,
+          'old failed operation replaced corrected runtime')
+    run('systemctl','start',service)
     # Preserve external account delivery files; recovery must authenticate originals.
     accounts=[]
     for tenant,principal,login,password in [
@@ -224,7 +246,7 @@ def main():
     until(lambda:after_platform.call('GET',endpoint+'/'+fresh_operation)[1]['result']['blocked']=='capacity',90)
     print(json.dumps(dict(status='passed',checks=['fixed_operator_binary','single_input_install','repeat_install_identity',
         'fixed_ledger_key','independent_administrators','real_authentication','platform_business_isolation',
-        'second_tenant_host','original_operation_replay','tenant_host_isolation','real_systemd_supervisor','capacity_original_operation_recovery','joint_cold_backup_restore','original_ledger_and_protection_material','interrupted_restore_replay','restored_supervisor_consumes_work'])))
+        'second_tenant_host','original_operation_replay','tenant_host_isolation','real_systemd_supervisor','capacity_original_operation_recovery','failed_configuration_correction','joint_cold_backup_restore','original_ledger_and_protection_material','interrupted_restore_replay','restored_supervisor_consumes_work'])))
 
 if __name__=='__main__':
     try:main()

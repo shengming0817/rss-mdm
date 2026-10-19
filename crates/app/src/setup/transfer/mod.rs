@@ -22,6 +22,8 @@ pub struct HostInput {
     pub administrator: OriginalAccount,
     pub deployment: deployment::Config,
     pub apple_material_roots: Vec<PathBuf>,
+    /// Required for retained task keys when the V4 Agent endpoint was not configured yet.
+    pub task_runtime_origin: Option<String>,
     pub storage_profile: Option<String>,
     #[serde(default)]
     pub create_storage_identity: bool,
@@ -224,6 +226,9 @@ async fn prepare(input: &Request, journal: &Journal) -> Result<Saved> {
         for (index, root) in owned.apple_material_roots.iter_mut().enumerate() {
             *root = copy_file(&material, &format!("apple-root-{index}.pem"), root, false)?;
         }
+        if !runtime["task_signing"].is_null() {
+            materials::task_origin(&runtime, source.task_runtime_origin.as_deref())?;
+        }
         let keys = materials::apple_keys(&runtime)?;
         material.secret(
             "source.json",
@@ -367,167 +372,23 @@ async fn resume(mut saved: Saved, journal: &Journal) -> Result<Receipt> {
     if saved.receipt.phase == Phase::Transferred {
         return Ok(saved.receipt);
     }
-    let mut c = PgConnection::connect_with(&saved.owner.options().map_err(|_| Error::Input)?)
-        .await
-        .map_err(|_| Error::Storage)?;
-    sqlx::raw_sql("SET statement_timeout='30s'; SET lock_timeout='10s'")
-        .execute(&mut c)
-        .await
-        .map_err(|_| Error::Storage)?;
-    if !crate::migration::owner_admitted(&mut c)
-        .await
-        .map_err(|_| Error::Storage)?
-    {
-        return Err(Error::Input);
-    }
-    crate::migration::verify_identity(&mut c, &saved.installation)
-        .await
-        .map_err(|_| Error::Conflict)?;
-    sqlx::query("SELECT pg_advisory_lock(2346)")
-        .execute(&mut c)
-        .await
-        .map_err(|_| Error::Storage)?;
+    let mut c = source_connection(&saved).await?;
     let administrator = super::backup::administrator(&saved.operator)?;
     super::backup::recovery_administrator(&administrator).await?;
     if saved.receipt.phase == Phase::Prepared {
-        exact_source(&mut c).await?;
-        super::backup::connection_fence(&mut c, journal, true).await?;
-        containers::stop(&saved.containers).await?;
-        saved.receipt.phase = Phase::Stopped;
-        journal.save("transfer.json", &saved)?;
+        stop_source(&mut saved, journal, &mut c).await?;
     }
     if saved.receipt.phase == Phase::Stopped {
-        super::backup::connection_fence(&mut c, journal, true).await?;
-        stopped(&mut c).await?;
-        let mut heads = Vec::new();
-        for host in &saved.hosts {
-            let tenant = host.source["identity"]["tenant_id"]
-                .as_str()
-                .ok_or(Error::Corrupt)?
-                .to_owned();
-            check_protection(&mut c, &host.source).await?;
-            heads.extend(ledger::verify_operator(&host.source, &[tenant], &administrator).await?);
-        }
-        let management: String =
-            sqlx::query_scalar("SELECT management_tenant_id::text FROM public.mdm_installation")
-                .fetch_one(&mut c)
-                .await
-                .map_err(|_| Error::Storage)?;
-        heads.extend(
-            ledger::verify_operator(&saved.hosts[0].source, &[management], &administrator).await?,
-        );
-        journal.secret(
-            "ledger-checkpoints.json",
-            &serde_json::to_vec(&heads).map_err(|_| Error::Corrupt)?,
-        )?;
-        let mut database = saved.operator.database.administrator.clone();
-        database.name = saved.owner.name.clone();
-        backup::capture(&journal, &database).await?;
-        for host in &saved.hosts {
-            if let Some(source) = &host.input.deployment.content_volume {
-                backup::volume(&journal, host.id, source)?;
-            }
-            storage::backup(&mut c, &journal, host.id, &host.source).await?;
-        }
-        saved.receipt.phase = Phase::BackedUp;
-        journal.secret(
-            "restore-source.json",
-            &serde_json::to_vec(&saved).map_err(|_| Error::Corrupt)?,
-        )?;
-        saved.receipt.backup_manifest_sha256 =
-            Some(backup::seal(&journal, saved.receipt.operation_id)?);
-        journal.save("transfer.json", &saved)?;
+        backup_source(&mut saved, journal, &mut c, &administrator).await?;
     }
     if saved.receipt.phase == Phase::BackedUp {
-        stopped(&mut c).await?;
-        qualify_database(&mut c, &saved).await?;
-        crate::migration::migrate_on(&mut c, &saved.installation)
-            .await
-            .map_err(|_| Error::Storage)?;
-        saved.receipt.phase = Phase::Migrated;
-        journal.save("transfer.json", &saved)?;
+        migrate_source(&mut saved, journal, &mut c).await?;
     }
     if saved.receipt.phase == Phase::Migrated {
-        for index in 0..saved.hosts.len() {
-            let host = &mut saved.hosts[index];
-            let mut runtime = host.source.clone();
-            let protection = materials::protection(&mut runtime)?;
-            materials::bootstrap(&mut runtime)?;
-            if let Some(windows) = runtime["native_protocols"]["windows"].as_object_mut() {
-                let original = windows.remove("protocol_key_file").ok_or(Error::Corrupt)?;
-                windows.insert("protocol_protection".into(),json!({"active_file":original,"historical_files":[],"fingerprint_file":original}));
-            }
-            let tenant = runtime["identity"]["tenant_id"]
-                .as_str()
-                .ok_or(Error::Corrupt)?
-                .to_owned();
-            let mut tx = c.begin().await.map_err(|_| Error::Storage)?;
-            sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
-                .bind(&tenant)
-                .execute(&mut *tx)
-                .await
-                .map_err(|_| Error::Storage)?;
-            let now: i64 =
-                sqlx::query_scalar("SELECT floor(extract(epoch FROM clock_timestamp()))::bigint")
-                    .fetch_one(&mut *tx)
-                    .await
-                    .map_err(|_| Error::Storage)?;
-            materials::webhooks(&mut tx, &mut runtime, host.operation, &protection, now).await?;
-            materials::signing(&mut tx, &mut runtime, host.operation, &protection).await?;
-            let deferred_apple = materials::apple(
-                &mut tx,
-                &mut runtime,
-                &host.keys,
-                &host.input.apple_material_roots,
-                now,
-                &protection,
-            )
-            .await?;
-            if let Some(settings) = deferred_apple {
-                journal.secret(
-                    &format!("deferred-apple-{}.json", host.id.simple()),
-                    &serde_json::to_vec(&settings).map_err(|_| Error::Corrupt)?,
-                )?;
-            }
-            tx.commit().await.map_err(|_| Error::Storage)?;
-            let profile = host
-                .input
-                .storage_profile
-                .as_ref()
-                .and_then(|id| saved.operator.storage_profiles.iter().find(|p| &p.id == id));
-            storage::import(
-                &mut c,
-                &mut runtime,
-                &protection,
-                storage::Request {
-                    directory: &saved.operator.directory,
-                    profile,
-                    operation: host.storage_operation,
-                    expires: host.input.storage_expires_at,
-                    generate: host.input.create_storage_identity,
-                },
-            )
-            .await?;
-            wns::import(&mut c, &mut runtime, host.wns_operation, &protection).await?;
-            let digest = super::application::fingerprint(&runtime)?;
-            runtime["runtime_binding"] = json!({"host_id":host.id,"operation_id":host.operation,"revision":1,"material_digest":digest});
-            let config: crate::config::Config =
-                serde_json::from_value(runtime.clone()).map_err(|_| Error::Corrupt)?;
-            config.compile().map_err(|_| Error::Corrupt)?;
-            host.runtime = Some(runtime);
-            journal.save("transfer.json", &saved)?;
-        }
-        saved.receipt.phase = Phase::Imported;
-        journal.save("transfer.json", &saved)?;
+        import_materials(&mut saved, journal, &mut c).await?;
     }
     if saved.receipt.phase == Phase::Imported {
-        // Immutable backup, migration and material transfer finished; only now admit
-        // runtime connections for real authentication and new-authority activation.
-        super::backup::connection_fence(&mut c, journal, false).await?;
-        activate(&mut c, &journal, &mut saved).await?;
-        sqlx::query("UPDATE public.mdm_installation_transfer SET phase='transferred' WHERE singleton AND operation_id=$1").bind(saved.receipt.operation_id).execute(&mut c).await.map_err(|_|Error::Storage)?;
-        saved.receipt.phase = Phase::Transferred;
-        journal.save("transfer.json", &saved)?;
+        activate_source(&mut saved, journal, &mut c).await?;
     }
     c.close().await.map_err(|_| Error::Storage)?;
     Ok(saved.receipt)
@@ -747,4 +608,201 @@ async fn publish(
         sqlx::query("INSERT INTO public.mdm_tenant_operations(operation_id,tenant_id,action,request,receipt,operator) VALUES($1,$2,'provision',$3,$4,$5)").bind(host.operation).bind(tenant).bind(request).bind(serde_json::to_value(receipt).map_err(|_|Error::Corrupt)?).bind(json!({"kind":"offline_transfer","instanceId":saved.installation.instance_id,"principalId":saved.platform.principal_id})).execute(&mut *tx).await.map_err(|_|Error::Storage)?;
     }
     tx.commit().await.map_err(|_| Error::Storage)
+}
+
+async fn backup_source(
+    saved: &mut Saved,
+    journal: &Journal,
+    c: &mut PgConnection,
+    administrator: &crate::config::Database,
+) -> Result<()> {
+    super::backup::connection_fence(&mut *c, journal, true).await?;
+    stopped(&mut *c).await?;
+    let mut heads = Vec::new();
+    for host in &saved.hosts {
+        let tenant = host.source["identity"]["tenant_id"]
+            .as_str()
+            .ok_or(Error::Corrupt)?
+            .to_owned();
+        check_protection(&mut *c, &host.source).await?;
+        heads.extend(ledger::verify_operator(&host.source, &[tenant], administrator).await?);
+    }
+    let management: String =
+        sqlx::query_scalar("SELECT management_tenant_id::text FROM public.mdm_installation")
+            .fetch_one(&mut *c)
+            .await
+            .map_err(|_| Error::Storage)?;
+    heads.extend(
+        ledger::verify_operator(&saved.hosts[0].source, &[management], administrator).await?,
+    );
+    journal.secret(
+        "ledger-checkpoints.json",
+        &serde_json::to_vec(&heads).map_err(|_| Error::Corrupt)?,
+    )?;
+    let mut database = saved.operator.database.administrator.clone();
+    database.name = saved.owner.name.clone();
+    backup::capture(journal, &database).await?;
+    for host in &saved.hosts {
+        if let Some(source) = &host.input.deployment.content_volume {
+            backup::volume(journal, host.id, source)?;
+        }
+        storage::backup(&mut *c, journal, host.id, &host.source).await?;
+    }
+    saved.receipt.phase = Phase::BackedUp;
+    journal.secret(
+        "restore-source.json",
+        &serde_json::to_vec(saved).map_err(|_| Error::Corrupt)?,
+    )?;
+    saved.receipt.backup_manifest_sha256 = Some(backup::seal(journal, saved.receipt.operation_id)?);
+    journal.save("transfer.json", saved)?;
+
+    Ok(())
+}
+
+async fn import_materials(
+    saved: &mut Saved,
+    journal: &Journal,
+    c: &mut PgConnection,
+) -> Result<()> {
+    for index in 0..saved.hosts.len() {
+        let host = &mut saved.hosts[index];
+        let mut runtime = host.source.clone();
+        let protection = materials::protection(&mut runtime)?;
+        materials::bootstrap(&mut runtime)?;
+        if let Some(windows) = runtime["native_protocols"]["windows"].as_object_mut() {
+            let original = windows.remove("protocol_key_file").ok_or(Error::Corrupt)?;
+            windows.insert(
+                "protocol_protection".into(),
+                json!({"active_file":original,"historical_files":[],"fingerprint_file":original}),
+            );
+        }
+        let tenant = runtime["identity"]["tenant_id"]
+            .as_str()
+            .ok_or(Error::Corrupt)?
+            .to_owned();
+        let mut tx = c.begin().await.map_err(|_| Error::Storage)?;
+        sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
+            .bind(&tenant)
+            .execute(&mut *tx)
+            .await
+            .map_err(|_| Error::Storage)?;
+        let now: i64 =
+            sqlx::query_scalar("SELECT floor(extract(epoch FROM clock_timestamp()))::bigint")
+                .fetch_one(&mut *tx)
+                .await
+                .map_err(|_| Error::Storage)?;
+        materials::webhooks(&mut tx, &mut runtime, host.operation, &protection, now).await?;
+        materials::signing(
+            &mut tx,
+            &mut runtime,
+            host.operation,
+            &protection,
+            host.input.task_runtime_origin.as_deref(),
+        )
+        .await?;
+        let deferred_apple = materials::apple(
+            &mut tx,
+            &mut runtime,
+            &host.keys,
+            &host.input.apple_material_roots,
+            now,
+            &protection,
+        )
+        .await?;
+        if let Some(settings) = deferred_apple {
+            journal.secret(
+                &format!("deferred-apple-{}.json", host.id.simple()),
+                &serde_json::to_vec(&settings).map_err(|_| Error::Corrupt)?,
+            )?;
+        }
+        tx.commit().await.map_err(|_| Error::Storage)?;
+        let profile = host
+            .input
+            .storage_profile
+            .as_ref()
+            .and_then(|id| saved.operator.storage_profiles.iter().find(|p| &p.id == id));
+        storage::import(
+            &mut *c,
+            &mut runtime,
+            &protection,
+            storage::Request {
+                directory: &saved.operator.directory,
+                profile,
+                operation: host.storage_operation,
+                expires: host.input.storage_expires_at,
+                generate: host.input.create_storage_identity,
+            },
+        )
+        .await?;
+        wns::import(&mut *c, &mut runtime, host.wns_operation, &protection).await?;
+        let digest = super::application::fingerprint(&runtime)?;
+        runtime["runtime_binding"] = json!({"host_id":host.id,"operation_id":host.operation,"revision":1,"material_digest":digest});
+        let config: crate::config::Config =
+            serde_json::from_value(runtime.clone()).map_err(|_| Error::Corrupt)?;
+        config.compile().map_err(|_| Error::Corrupt)?;
+        host.runtime = Some(runtime);
+        journal.save("transfer.json", saved)?;
+    }
+    saved.receipt.phase = Phase::Imported;
+    journal.save("transfer.json", saved)?;
+
+    Ok(())
+}
+
+async fn source_connection(saved: &Saved) -> Result<PgConnection> {
+    let mut c = PgConnection::connect_with(&saved.owner.options().map_err(|_| Error::Input)?)
+        .await
+        .map_err(|_| Error::Storage)?;
+    sqlx::raw_sql("SET statement_timeout='30s'; SET lock_timeout='10s'")
+        .execute(&mut c)
+        .await
+        .map_err(|_| Error::Storage)?;
+    if !crate::migration::owner_admitted(&mut c)
+        .await
+        .map_err(|_| Error::Storage)?
+    {
+        return Err(Error::Input);
+    }
+    crate::migration::verify_identity(&mut c, &saved.installation)
+        .await
+        .map_err(|_| Error::Conflict)?;
+    sqlx::query("SELECT pg_advisory_lock(2346)")
+        .execute(&mut c)
+        .await
+        .map_err(|_| Error::Storage)?;
+    Ok(c)
+}
+
+async fn stop_source(saved: &mut Saved, journal: &Journal, c: &mut PgConnection) -> Result<()> {
+    exact_source(&mut *c).await?;
+    super::backup::connection_fence(&mut *c, journal, true).await?;
+    containers::stop(&saved.containers).await?;
+    saved.receipt.phase = Phase::Stopped;
+    journal.save("transfer.json", saved)?;
+
+    Ok(())
+}
+
+async fn migrate_source(saved: &mut Saved, journal: &Journal, c: &mut PgConnection) -> Result<()> {
+    stopped(&mut *c).await?;
+    qualify_database(&mut *c, saved).await?;
+    crate::migration::migrate_on(&mut *c, &saved.installation)
+        .await
+        .map_err(|_| Error::Storage)?;
+    saved.receipt.phase = Phase::Migrated;
+    journal.save("transfer.json", saved)?;
+
+    Ok(())
+}
+
+async fn activate_source(saved: &mut Saved, journal: &Journal, c: &mut PgConnection) -> Result<()> {
+    // Immutable backup, migration and material transfer finished; only now admit
+    // runtime connections for real authentication and new-authority activation.
+    super::backup::connection_fence(&mut *c, journal, false).await?;
+    activate(&mut *c, journal, saved).await?;
+    sqlx::query("UPDATE public.mdm_installation_transfer SET phase='transferred' WHERE singleton AND operation_id=$1").bind(saved.receipt.operation_id).execute(&mut *c).await.map_err(|_|Error::Storage)?;
+    saved.receipt.phase = Phase::Transferred;
+    journal.save("transfer.json", saved)?;
+
+    Ok(())
 }

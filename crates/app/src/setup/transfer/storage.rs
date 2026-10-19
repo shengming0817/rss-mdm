@@ -54,10 +54,10 @@ pub(super) async fn import(
         return Err(Error::Conflict);
     }
     let ca = crate::config::read(&profile.ca_file, 1024 * 1024, false).map_err(|_| Error::Input)?;
-    if let Some(path) = legacy.private_ca_file {
-        if *crate::config::read(&path, 1024 * 1024, false).map_err(|_| Error::Input)? != *ca {
-            return Err(Error::Conflict);
-        }
+    if let Some(path) = legacy.private_ca_file
+        && *crate::config::read(&path, 1024 * 1024, false).map_err(|_| Error::Input)? != *ca
+    {
+        return Err(Error::Conflict);
     }
     let tenant = runtime["identity"]["tenant_id"]
         .as_str()
@@ -220,9 +220,6 @@ async fn backup_with(
     store: rss_mdm_content_s3::Store,
     protection: std::sync::Arc<Protector>,
 ) -> Result<()> {
-    use futures::StreamExt;
-    use sha2::{Digest, Sha256};
-    use tokio::io::AsyncWriteExt;
     if runtime["content"]["storage"]["kind"] != "s3" {
         return Ok(());
     }
@@ -261,109 +258,11 @@ async fn backup_with(
         }
         for record in page {
             after = Some(record.id);
-            let name = format!("{}.json", record.id.simple());
-            if let Some(previous) = objects.load::<SavedObject>(&name)? {
-                if serde_json::to_value(&previous.record).map_err(|_| Error::Corrupt)?
-                    != serde_json::to_value(&record).map_err(|_| Error::Corrupt)?
-                {
-                    return Err(Error::Conflict);
-                }
-                if let Some(file) = previous.body_file {
-                    let actual = super::backup::file_digest(&objects.path(&file)?)?;
-                    if actual.bytes != record.content.length
-                        || actual.sha256
-                            != record
-                                .content
-                                .sha256
-                                .iter()
-                                .map(|v| format!("{v:02x}"))
-                                .collect::<String>()
-                    {
-                        return Err(Error::Corrupt);
-                    }
-                    copied += 1;
-                } else {
-                    unresolved += 1;
-                }
-                continue;
-            }
-            let verified = match &record.object {
-                Some(object) => match store
-                    .verify(object, record.content, budget(record.content.length)?)
-                    .await
-                {
-                    Ok(value) => Some(value),
-                    Err(rss_mdm_content_s3::Error::Missing) if !record.required => None,
-                    Err(_) => return Err(Error::Corrupt),
-                },
-                None => match store
-                    .recover(&record.write, budget(record.content.length)?)
-                    .await
-                    .map_err(|_| Error::Storage)?
-                {
-                    rss_mdm_content_s3::Recovery::Matched(
-                        rss_mdm_content_s3::Written::Verified(object),
-                    ) => Some(object),
-                    rss_mdm_content_s3::Recovery::Matched(
-                        rss_mdm_content_s3::Written::Unverified { .. },
-                    ) => return Err(Error::Corrupt),
-                    rss_mdm_content_s3::Recovery::Unresolved if !record.required => None,
-                    rss_mdm_content_s3::Recovery::Unresolved => return Err(Error::Corrupt),
-                },
-            };
-            let (copied_object, body_file) = if let Some(verified) = verified {
-                let name = format!("{}.body", record.id.simple());
-                let stage = objects.path(&format!("copy-{}.pending", Uuid::new_v4()))?;
-                let mut options = tokio::fs::OpenOptions::new();
-                options.create_new(true).write(true).mode(0o600);
-                let mut output = options.open(&stage).await.map_err(|_| Error::Storage)?;
-                let mut stream = store
-                    .read(
-                        &verified,
-                        0,
-                        record.content.length,
-                        budget(record.content.length)?,
-                    )
-                    .await
-                    .map_err(|_| Error::Storage)?;
-                let mut hash = Sha256::new();
-                let mut count = 0u64;
-                while let Some(chunk) = stream.next().await {
-                    let chunk = chunk.map_err(|_| Error::Storage)?;
-                    count = count
-                        .checked_add(chunk.len() as u64)
-                        .ok_or(Error::Corrupt)?;
-                    if count > record.content.length {
-                        return Err(Error::Corrupt);
-                    }
-                    hash.update(&chunk);
-                    output.write_all(&chunk).await.map_err(|_| Error::Storage)?;
-                }
-                if count != record.content.length
-                    || <[u8; 32]>::from(hash.finalize()) != record.content.sha256
-                {
-                    return Err(Error::Corrupt);
-                }
-                output.sync_all().await.map_err(|_| Error::Storage)?;
-                drop(output);
-                std::fs::rename(&stage, objects.path(&name)?).map_err(|_| Error::Storage)?;
-                std::fs::File::open(&root)
-                    .and_then(|f| f.sync_all())
-                    .map_err(|_| Error::Storage)?;
+            if backup_object(&objects, &root, &store, record).await? {
                 copied += 1;
-                (Some(verified.object().clone()), Some(name))
             } else {
                 unresolved += 1;
-                (None, None)
-            };
-            objects.save(
-                &format!("{}.json", record.id.simple()),
-                &SavedObject {
-                    record,
-                    copied_object,
-                    body_file,
-                },
-            )?;
+            }
         }
     }
     objects.save("snapshot.json",&json!({"tenant":tenant,"copiedObjects":copied,"unavailableUnreferencedObjects":unresolved}))
@@ -472,88 +371,7 @@ async fn restore_with(
     }
     names.sort();
     for name in names {
-        let saved: SavedObject = objects.load(&name)?.ok_or(Error::Corrupt)?;
-        let Some(original) = &saved.record.object else {
-            continue;
-        };
-        let record = &saved.record;
-        let verified = match store
-            .verify(original, record.content, budget(record.content.length)?)
-            .await
-        {
-            Ok(value) => value,
-            Err(rss_mdm_content_s3::Error::Missing) => {
-                let Some(body_file) = saved.body_file else {
-                    if record.required {
-                        return Err(Error::Corrupt);
-                    }
-                    continue;
-                };
-                // 同一原写入恢复未知提交；禁止换 operation 来掩盖未知结果。
-                match store
-                    .recover(&record.write, budget(record.content.length)?)
-                    .await
-                    .map_err(|_| Error::Storage)?
-                {
-                    rss_mdm_content_s3::Recovery::Matched(
-                        rss_mdm_content_s3::Written::Verified(value),
-                    ) => value,
-                    rss_mdm_content_s3::Recovery::Matched(_) => return Err(Error::Corrupt),
-                    rss_mdm_content_s3::Recovery::Unresolved => {
-                        let file = tokio::fs::File::open(objects.path(&body_file)?)
-                            .await
-                            .map_err(|_| Error::Storage)?;
-                        let stream = futures::stream::try_unfold(file, |mut file| async move {
-                            use tokio::io::AsyncReadExt;
-                            let mut bytes = vec![0u8; 65536];
-                            let n = file
-                                .read(&mut bytes)
-                                .await
-                                .map_err(|_| rss_mdm_content_s3::Error::Configuration)?;
-                            if n == 0 {
-                                return Ok(None);
-                            }
-                            bytes.truncate(n);
-                            Ok(Some((axum::body::Bytes::from(bytes), file)))
-                        });
-                        match store
-                            .put(
-                                &record.write,
-                                Box::pin(stream),
-                                budget(record.content.length)?,
-                            )
-                            .await
-                            .map_err(|_| Error::Storage)?
-                        {
-                            rss_mdm_content_s3::Mutation::Confirmed(
-                                rss_mdm_content_s3::Written::Verified(value),
-                            ) => value,
-                            _ => return Err(Error::Storage),
-                        }
-                    }
-                }
-            }
-            Err(_) => return Err(Error::Storage),
-        };
-        if verified.object() != original {
-            let mut tx = c.begin().await.map_err(|_| Error::Storage)?;
-            sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
-                .bind(tenant)
-                .execute(&mut *tx)
-                .await
-                .map_err(|_| Error::Storage)?;
-            rss_mdm_content_service::backup::rebind(
-                &mut tx,
-                id,
-                record,
-                original,
-                &verified,
-                &protection,
-            )
-            .await
-            .map_err(|_| Error::Corrupt)?;
-            tx.commit().await.map_err(|_| Error::Storage)?;
-        }
+        restore_object(c, tenant, &objects, &store, &protection, &name).await?;
     }
     let mut tx = c.begin().await.map_err(|_| Error::Storage)?;
     sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
@@ -609,4 +427,209 @@ async fn current_source(
     .await
     .map_err(|_| Error::Storage)?;
     Ok((store, protection))
+}
+
+async fn backup_object(
+    objects: &crate::setup::local::Journal,
+    root: &std::path::Path,
+    store: &rss_mdm_content_s3::Store,
+    record: rss_mdm_content_service::backup::ObjectRecord,
+) -> Result<bool> {
+    use futures::StreamExt;
+    use sha2::{Digest, Sha256};
+    use tokio::io::AsyncWriteExt;
+
+    let name = format!("{}.json", record.id.simple());
+    if let Some(previous) = objects.load::<SavedObject>(&name)? {
+        if serde_json::to_value(&previous.record).map_err(|_| Error::Corrupt)?
+            != serde_json::to_value(&record).map_err(|_| Error::Corrupt)?
+        {
+            return Err(Error::Conflict);
+        }
+        if let Some(file) = &previous.body_file {
+            let actual = super::backup::file_digest(&objects.path(file)?)?;
+            if actual.bytes != record.content.length
+                || actual.sha256
+                    != record
+                        .content
+                        .sha256
+                        .iter()
+                        .map(|v| format!("{v:02x}"))
+                        .collect::<String>()
+            {
+                return Err(Error::Corrupt);
+            }
+        }
+        return Ok(previous.body_file.is_some());
+    }
+    let verified = match &record.object {
+        Some(object) => match store
+            .verify(object, record.content, budget(record.content.length)?)
+            .await
+        {
+            Ok(value) => Some(value),
+            Err(rss_mdm_content_s3::Error::Missing) if !record.required => None,
+            Err(_) => return Err(Error::Corrupt),
+        },
+        None => match store
+            .recover(&record.write, budget(record.content.length)?)
+            .await
+            .map_err(|_| Error::Storage)?
+        {
+            rss_mdm_content_s3::Recovery::Matched(rss_mdm_content_s3::Written::Verified(
+                object,
+            )) => Some(object),
+            rss_mdm_content_s3::Recovery::Matched(rss_mdm_content_s3::Written::Unverified {
+                ..
+            }) => return Err(Error::Corrupt),
+            rss_mdm_content_s3::Recovery::Unresolved if !record.required => None,
+            rss_mdm_content_s3::Recovery::Unresolved => return Err(Error::Corrupt),
+        },
+    };
+    let (copied_object, body_file) = if let Some(verified) = verified {
+        let name = format!("{}.body", record.id.simple());
+        let stage = objects.path(&format!("copy-{}.pending", Uuid::new_v4()))?;
+        let mut options = tokio::fs::OpenOptions::new();
+        options.create_new(true).write(true).mode(0o600);
+        let mut output = options.open(&stage).await.map_err(|_| Error::Storage)?;
+        let mut stream = store
+            .read(
+                &verified,
+                0,
+                record.content.length,
+                budget(record.content.length)?,
+            )
+            .await
+            .map_err(|_| Error::Storage)?;
+        let mut hash = Sha256::new();
+        let mut count = 0u64;
+        while let Some(chunk) = stream.next().await {
+            let chunk = chunk.map_err(|_| Error::Storage)?;
+            count = count
+                .checked_add(chunk.len() as u64)
+                .ok_or(Error::Corrupt)?;
+            if count > record.content.length {
+                return Err(Error::Corrupt);
+            }
+            hash.update(&chunk);
+            output.write_all(&chunk).await.map_err(|_| Error::Storage)?;
+        }
+        if count != record.content.length
+            || <[u8; 32]>::from(hash.finalize()) != record.content.sha256
+        {
+            return Err(Error::Corrupt);
+        }
+        output.sync_all().await.map_err(|_| Error::Storage)?;
+        drop(output);
+        std::fs::rename(&stage, objects.path(&name)?).map_err(|_| Error::Storage)?;
+        std::fs::File::open(root)
+            .and_then(|f| f.sync_all())
+            .map_err(|_| Error::Storage)?;
+
+        (Some(verified.object().clone()), Some(name))
+    } else {
+        (None, None)
+    };
+    let did_copy = body_file.is_some();
+    objects.save(
+        &format!("{}.json", record.id.simple()),
+        &SavedObject {
+            record,
+            copied_object,
+            body_file,
+        },
+    )?;
+
+    Ok(did_copy)
+}
+
+async fn restore_object(
+    c: &mut PgConnection,
+    tenant: &str,
+    objects: &crate::setup::local::Journal,
+    store: &rss_mdm_content_s3::Store,
+    protection: &Protector,
+    name: &str,
+) -> Result<()> {
+    let id = rss_request_context::TenantId::parse(tenant).map_err(|_| Error::Input)?;
+
+    let saved: SavedObject = objects.load(name)?.ok_or(Error::Corrupt)?;
+    let Some(original) = &saved.record.object else {
+        return Ok(());
+    };
+    let record = &saved.record;
+    let verified = match store
+        .verify(original, record.content, budget(record.content.length)?)
+        .await
+    {
+        Ok(value) => value,
+        Err(rss_mdm_content_s3::Error::Missing) => {
+            let Some(body_file) = saved.body_file else {
+                if record.required {
+                    return Err(Error::Corrupt);
+                }
+                return Ok(());
+            };
+            // 同一原写入恢复未知提交；禁止换 operation 来掩盖未知结果。
+            match store
+                .recover(&record.write, budget(record.content.length)?)
+                .await
+                .map_err(|_| Error::Storage)?
+            {
+                rss_mdm_content_s3::Recovery::Matched(rss_mdm_content_s3::Written::Verified(
+                    value,
+                )) => value,
+                rss_mdm_content_s3::Recovery::Matched(_) => return Err(Error::Corrupt),
+                rss_mdm_content_s3::Recovery::Unresolved => {
+                    let file = tokio::fs::File::open(objects.path(&body_file)?)
+                        .await
+                        .map_err(|_| Error::Storage)?;
+                    let stream = futures::stream::try_unfold(file, |mut file| async move {
+                        use tokio::io::AsyncReadExt;
+                        let mut bytes = vec![0u8; 65536];
+                        let n = file
+                            .read(&mut bytes)
+                            .await
+                            .map_err(|_| rss_mdm_content_s3::Error::Configuration)?;
+                        if n == 0 {
+                            return Ok(None);
+                        }
+                        bytes.truncate(n);
+                        Ok(Some((axum::body::Bytes::from(bytes), file)))
+                    });
+                    match store
+                        .put(
+                            &record.write,
+                            Box::pin(stream),
+                            budget(record.content.length)?,
+                        )
+                        .await
+                        .map_err(|_| Error::Storage)?
+                    {
+                        rss_mdm_content_s3::Mutation::Confirmed(
+                            rss_mdm_content_s3::Written::Verified(value),
+                        ) => value,
+                        _ => return Err(Error::Storage),
+                    }
+                }
+            }
+        }
+        Err(_) => return Err(Error::Storage),
+    };
+    if verified.object() != original {
+        let mut tx = c.begin().await.map_err(|_| Error::Storage)?;
+        sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
+            .bind(tenant)
+            .execute(&mut *tx)
+            .await
+            .map_err(|_| Error::Storage)?;
+        rss_mdm_content_service::backup::rebind(
+            &mut tx, id, record, original, &verified, protection,
+        )
+        .await
+        .map_err(|_| Error::Corrupt)?;
+        tx.commit().await.map_err(|_| Error::Storage)?;
+    }
+
+    Ok(())
 }

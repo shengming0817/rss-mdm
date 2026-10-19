@@ -251,12 +251,11 @@ pub(super) fn historical_certificate(
             earliest = earliest.max(start);
             latest = latest.min(end.saturating_sub(1));
         }
-        if earliest <= latest {
-            if let Ok(original) =
+        if earliest <= latest
+            && let Ok(original) =
                 certificate(purpose, pem, private, std::slice::from_ref(root), latest)
-            {
-                return Ok(original);
-            }
+        {
+            return Ok(original);
         }
     }
     Err(Error::CertificateRequest)

@@ -395,7 +395,6 @@ pub async fn prepare(
     operation: uuid::Uuid,
     material: &Workload,
 ) -> Result<Evidence> {
-    use futures::StreamExt;
     use sha2::{Digest, Sha256};
     if operation.is_nil() {
         return Err(Error::Input);
@@ -481,44 +480,7 @@ pub async fn prepare(
     if denied.status != reqwest::StatusCode::FORBIDDEN {
         return Err(Error::Conflict);
     }
-    let own = probe(&workload, &journal, "workload", operation, body.as_bytes()).await?;
-    let mut stream = workload
-        .read(&own, 0, body.len() as u64, budget()?)
-        .await
-        .map_err(|_| Error::Storage)?;
-    let mut actual = Vec::new();
-    while let Some(bytes) = stream.next().await {
-        actual.extend_from_slice(&bytes.map_err(|_| Error::Storage)?);
-        if actual.len() > 4096 {
-            return Err(Error::Storage);
-        }
-    }
-    if actual != body.as_bytes() {
-        return Err(Error::Conflict);
-    }
-    let cleanup_name = "cleanup-object.json";
-    let cleanup = if let Some(object) = journal.load::<rss_mdm_content_s3::Object>(cleanup_name)? {
-        object
-    } else {
-        probe(&workload, &journal, "cleanup", operation, body.as_bytes())
-            .await?
-            .object()
-            .clone()
-    };
-    match workload
-        .delete(&cleanup, budget()?)
-        .await
-        .map_err(|_| Error::Storage)?
-    {
-        rss_mdm_content_s3::Mutation::Confirmed(()) => (),
-        rss_mdm_content_s3::Mutation::Unknown(_) => return Err(Error::Storage),
-    }
-    if !matches!(
-        workload.inspect(&cleanup, budget()?).await,
-        Err(rss_mdm_content_s3::Error::Missing)
-    ) {
-        return Err(Error::Storage);
-    }
+    qualify_workload(&workload, &journal, operation, body.as_bytes()).await?;
     // Exact probe versions are retained as qualification evidence for recovery/re-observation;
     // they are not inferred from mutable current objects or a successful metadata-only request.
     let evidence = Evidence {
@@ -539,6 +501,54 @@ pub async fn prepare(
     };
     journal.save("qualified.json", &evidence)?;
     Ok(evidence)
+}
+
+async fn qualify_workload(
+    workload: &rss_mdm_content_s3::Store,
+    journal: &Journal,
+    operation: uuid::Uuid,
+    body: &[u8],
+) -> Result<()> {
+    use futures::StreamExt;
+    let own = probe(workload, journal, "workload", operation, body).await?;
+    let mut stream = workload
+        .read(&own, 0, body.len() as u64, budget()?)
+        .await
+        .map_err(|_| Error::Storage)?;
+    let mut actual = Vec::new();
+    while let Some(bytes) = stream.next().await {
+        actual.extend_from_slice(&bytes.map_err(|_| Error::Storage)?);
+        if actual.len() > 4096 {
+            return Err(Error::Storage);
+        }
+    }
+    if actual != body {
+        return Err(Error::Conflict);
+    }
+    let cleanup_name = "cleanup-object.json";
+    let cleanup = if let Some(object) = journal.load::<rss_mdm_content_s3::Object>(cleanup_name)? {
+        object
+    } else {
+        probe(workload, journal, "cleanup", operation, body)
+            .await?
+            .object()
+            .clone()
+    };
+    match workload
+        .delete(&cleanup, budget()?)
+        .await
+        .map_err(|_| Error::Storage)?
+    {
+        rss_mdm_content_s3::Mutation::Confirmed(()) => (),
+        rss_mdm_content_s3::Mutation::Unknown(_) => return Err(Error::Storage),
+    }
+    if !matches!(
+        workload.inspect(&cleanup, budget()?).await,
+        Err(rss_mdm_content_s3::Error::Missing)
+    ) {
+        return Err(Error::Storage);
+    }
+    Ok(())
 }
 
 #[cfg(test)]

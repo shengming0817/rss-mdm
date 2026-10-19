@@ -228,8 +228,7 @@ fn coordinates(input: &Input, saved: &Saved) -> Installation {
 /// Resume the original installation. Host activation is separately observed by the deployment owner.
 /// Passwords are delivered through owner-only journal files, never the serialized receipt or logs.
 pub async fn install(input: Input) -> Result<Receipt> {
-    input.validate()?;
-    let journal = Journal::open(&input.directory)?;
+    let journal = admit_installation(&input)?;
     if journal
         .load::<Option<Uuid>>("backup-operation.json")?
         .flatten()
@@ -293,7 +292,7 @@ pub async fn install(input: Input) -> Result<Receipt> {
         )
         .as_ref(),
     );
-    let mut saved = if let Some(saved) = previous {
+    let saved = if let Some(saved) = previous {
         if saved.version != 1 || saved.fingerprint != fingerprint {
             return Err(Error::Conflict);
         }
@@ -320,51 +319,29 @@ pub async fn install(input: Input) -> Result<Receipt> {
         journal.save("installation.json", &saved)?;
         saved
     };
-    if saved.receipt.stage == Stage::Prepared {
-        super::postgres::prepare(&input, saved.receipt.instance_id).await?;
+    resume(&input, &journal, saved).await
+}
+fn admit_installation(input: &Input) -> Result<Journal> {
+    use std::os::unix::fs::MetadataExt;
+    if !cfg!(target_os = "linux") {
+        return Err(Error::Input);
     }
-    crate::migration::migrate(
-        &input.database("mdm_owner")?.options().map_err(invalid)?,
-        &coordinates(&input, &saved),
-    )
-    .await
-    .map_err(|_| Error::Storage)?;
-    if saved.receipt.stage == Stage::Prepared {
-        saved.receipt.stage = Stage::Database;
-        journal.save("installation.json", &saved)?;
+    input.validate()?;
+    let journal = Journal::open(&input.directory)?;
+    if std::fs::metadata(&input.directory)
+        .map_err(|_| Error::Storage)?
+        .uid()
+        != 0
+    {
+        return Err(Error::Input);
     }
-    let tenants = crate::tenant_registry::list(crate::tenant_registry::List {
-        database: input.database("mdm_owner")?,
-        installation: coordinates(&input, &saved),
-    })
-    .await
-    .map_err(|_| Error::Storage)?;
-    let management = tenants
-        .iter()
-        .find(|t| t.management)
-        .ok_or(Error::Corrupt)?
-        .tenant_id
-        .clone();
-    if saved.receipt.stage == Stage::Database {
-        initialize_account(
-            &input,
-            &journal,
-            &saved,
-            &management,
-            saved.receipt.platform_principal_id,
-            &input.platform_login,
-            "platform-password",
-            saved.platform_authorization,
-        )
-        .await?;
-    }
-    if saved.receipt.stage == Stage::Database {
-        saved.receipt.stage = Stage::Platform;
-        journal.save("installation.json", &saved)?;
-    }
+    Ok(journal)
+}
+async fn resume(input: &Input, journal: &Journal, mut saved: Saved) -> Result<Receipt> {
+    initialize_platform(input, journal, &mut saved).await?;
     crate::tenant_registry::create(crate::tenant_registry::Create {
         database: input.database("mdm_owner")?,
-        installation: coordinates(&input, &saved),
+        installation: coordinates(input, &saved),
         tenant_id: saved.receipt.tenant_id.to_string(),
         initial_epoch: 1,
         operation_id: saved.tenant_operation,
@@ -373,11 +350,11 @@ pub async fn install(input: Input) -> Result<Receipt> {
     })
     .await
     .map_err(|_| Error::Storage)?;
-    publish_progress(&input, &saved, false, None).await?;
+    publish_progress(input, &saved, false, None).await?;
     if saved.receipt.stage == Stage::Platform {
         initialize_account(
-            &input,
-            &journal,
+            input,
+            journal,
             &saved,
             &saved.receipt.tenant_id.to_string(),
             saved.receipt.administrator_id,
@@ -401,10 +378,10 @@ pub async fn install(input: Input) -> Result<Receipt> {
             host.load("requested-runtime.json")?.ok_or(Error::Corrupt)?;
         drop(host);
         super::deployment::apply(&input.directory, &input.deployment, &current).await?;
-        super::supervisor::install(&journal, &input, saved.receipt.instance_id).await?;
+        super::supervisor::install(journal, input, saved.receipt.instance_id).await?;
         return Ok(saved.receipt);
     }
-    let runtime = runtime(&input, &journal, &saved)?;
+    let runtime = runtime(input, journal, &saved)?;
     // Reuse the actual runtime decoder, not a second interpretation of configuration.
     let _: crate::config::Config = serde_json::from_value(runtime.clone()).map_err(invalid)?;
     journal.save("runtime.json", &runtime)?;
@@ -422,9 +399,9 @@ pub async fn install(input: Input) -> Result<Receipt> {
     let applied =
         super::tenant_hosts::activate(&input.directory, &input.deployment, &runtime, &mut progress)
             .await;
-    publish_progress(&input, &saved, true, Some(progress)).await?;
+    publish_progress(input, &saved, true, Some(progress)).await?;
     applied?;
-    super::supervisor::install(&journal, &input, saved.receipt.instance_id).await?;
+    super::supervisor::install(journal, input, saved.receipt.instance_id).await?;
     saved.receipt.stage = Stage::Enabled;
     journal.save("installation.json", &saved)?;
     Ok(saved.receipt)
@@ -579,6 +556,52 @@ impl Saved {
         use sha2::{Digest, Sha256};
         format!("{:x}", Sha256::digest(self.fingerprint.as_bytes()))
     }
+}
+
+async fn initialize_platform(input: &Input, journal: &Journal, saved: &mut Saved) -> Result<()> {
+    if saved.receipt.stage == Stage::Prepared {
+        super::postgres::prepare(input, saved.receipt.instance_id).await?;
+    }
+    crate::migration::migrate(
+        &input.database("mdm_owner")?.options().map_err(invalid)?,
+        &coordinates(input, saved),
+    )
+    .await
+    .map_err(|_| Error::Storage)?;
+    if saved.receipt.stage == Stage::Prepared {
+        saved.receipt.stage = Stage::Database;
+        journal.save("installation.json", saved)?;
+    }
+    let tenants = crate::tenant_registry::list(crate::tenant_registry::List {
+        database: input.database("mdm_owner")?,
+        installation: coordinates(input, saved),
+    })
+    .await
+    .map_err(|_| Error::Storage)?;
+    let management = tenants
+        .iter()
+        .find(|t| t.management)
+        .ok_or(Error::Corrupt)?
+        .tenant_id
+        .clone();
+    if saved.receipt.stage == Stage::Database {
+        initialize_account(
+            input,
+            journal,
+            saved,
+            &management,
+            saved.receipt.platform_principal_id,
+            &input.platform_login,
+            "platform-password",
+            saved.platform_authorization,
+        )
+        .await?;
+    }
+    if saved.receipt.stage == Stage::Database {
+        saved.receipt.stage = Stage::Platform;
+        journal.save("installation.json", saved)?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]

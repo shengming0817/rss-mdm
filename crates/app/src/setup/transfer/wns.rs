@@ -27,7 +27,7 @@ pub(super) async fn import(
         source.package_family_name.clone(),
         source.sid.clone(),
         secret.to_string(),
-        std::sync::Arc::new(crate::Monotonic(std::time::Instant::now)),
+        crate::clock::monotonic(),
     )
     .map_err(|_| Error::Input)?;
     let mut tx = c.begin().await.map_err(|_| Error::Storage)?;

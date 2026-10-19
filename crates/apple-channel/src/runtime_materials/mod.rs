@@ -164,7 +164,7 @@ pub async fn directory(
     auth: &RequestAuth,
     purpose: Purpose,
 ) -> Result<Value, Error> {
-    let p = proof(&app, &auth, false)?;
+    let p = proof(app, auth, false)?;
     let mut tx = app.access.begin_read(p.tenant_id()).await?;
     let (revision, desired) = storage::head(&mut tx, p.tenant_id(), purpose).await?;
     let values = storage::versions(&mut tx, p.tenant_id(), purpose).await?;

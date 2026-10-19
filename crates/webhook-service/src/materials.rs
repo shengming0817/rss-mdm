@@ -472,6 +472,10 @@ pub async fn confirm(
 }
 
 /// Exact-source offline transfer only. Retained legacy keys keep their bytes and version identities.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "exact offline source coordinates and both retained key identities remain explicit"
+)]
 pub async fn import_legacy(
     c: &mut PgConnection,
     tenant: Uuid,

@@ -244,7 +244,7 @@ pub async fn challenge(
     if super::renewal::challenge(
         &app,
         &csr,
-        &challenge,
+        challenge,
         &input.transaction,
         provisioner,
         issuer,
@@ -256,7 +256,7 @@ pub async fn challenge(
             serde_json::json!({"allow":true,"data":{"subject":certificate::subject(csr.enrollment(),csr.attempt())}}),
         ));
     }
-    let (auth, proof) = authorized(&app, csr.enrollment(), Some(&challenge), &audit).await?;
+    let (auth, proof) = authorized(&app, csr.enrollment(), Some(challenge), &audit).await?;
     let budget =
         rss_mdm_audit_integration::budget::AuditBudget::new(std::time::Duration::from_secs(2));
     let control = budget.control();

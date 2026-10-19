@@ -229,21 +229,7 @@ async fn ensure_provider(
 }
 /// 仅准备真实 CA 用途材料；已有 trust 的激活仍必须经过业务管理会话和设备确认。
 pub async fn run(input: Request) -> Result<Receipt> {
-    if input.operation_id.is_nil()
-        || input.tenant_id.is_nil()
-        || (input.preparation == Preparation::Import && matches!(input.key, KeySource::Generate))
-    {
-        return Err(Error::Input);
-    }
-    origin(&input.device_origin)?;
-    if names(input.purpose).1.is_some() != input.scep.is_some()
-        || input.scep.is_some() != input.callback_origin.is_some()
-    {
-        return Err(Error::Input);
-    }
-    if let Some(callback) = &input.callback_origin {
-        origin(callback)?;
-    }
+    validate_request(&input).await?;
     let root = Journal::open(&input.installation.directory)?;
     if root
         .load::<Option<Uuid>>("backup-operation.json")?
@@ -267,60 +253,7 @@ pub async fn run(input: Request) -> Result<Receipt> {
     {
         return Ok(receipt);
     }
-    let runtime: crate::config::Config = root.load("runtime.json")?.ok_or(Error::Corrupt)?;
-    let mut connection = PgConnection::connect_with(
-        &input
-            .installation
-            .database("mdm_owner")?
-            .options()
-            .map_err(|_| Error::Input)?,
-    )
-    .await
-    .map_err(|_| Error::Storage)?;
-    if !crate::migration::owner_admitted(&mut connection)
-        .await
-        .map_err(|_| Error::Storage)?
-    {
-        return Err(Error::Input);
-    }
-    let installation = crate::migration::Installation {
-        instance_id: runtime.identity.instance_id.clone(),
-        target: runtime.flow.storage.target,
-        lineage: runtime.flow.storage.lineage,
-        audit_mode: runtime.audit.mode(),
-    };
-    crate::migration::verify_identity(&mut connection, &installation)
-        .await
-        .map_err(|_| Error::Conflict)?;
-    let mut tx = connection.begin().await.map_err(|_| Error::Storage)?;
-    sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
-        .bind(input.tenant_id.to_string())
-        .execute(&mut *tx)
-        .await
-        .map_err(|_| Error::Storage)?;
-    let tenant:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM public.mdm_tenants WHERE tenant_id=$1 AND NOT deleted AND tenant_id<>(SELECT management_tenant_id FROM public.mdm_installation))").bind(input.tenant_id).fetch_one(&mut *tx).await.map_err(|_|Error::Storage)?;
-    if !tenant {
-        return Err(Error::Conflict);
-    }
-    let previous: Option<Vec<u8>> =
-        sqlx::query_scalar("SELECT body FROM mdm_pki.trust WHERE tenant_id=$1 AND purpose=$2")
-            .bind(input.tenant_id)
-            .bind(rss_mdm_pki_service::registry::purpose(input.purpose))
-            .fetch_optional(&mut *tx)
-            .await
-            .map_err(|_| Error::Storage)?;
-    let previous: Option<Trust> = previous
-        .map(|v| serde_json::from_slice(&v).map_err(|_| Error::Corrupt))
-        .transpose()?;
-    if previous.as_ref().map_or(0, |t| t.revision) != input.expected_revision
-        || previous
-            .as_ref()
-            .is_some_and(|t| t.origin != input.device_origin)
-    {
-        return Err(Error::Conflict);
-    }
-    tx.rollback().await.map_err(|_| Error::Storage)?;
-    connection.close().await.map_err(|_| Error::Storage)?;
+    let previous = previous_trust(&input, &root).await?;
     let issuer_path = copy(
         &journal,
         "issuer.pem",
@@ -352,44 +285,12 @@ pub async fn run(input: Request) -> Result<Receipt> {
         return Err(Error::Conflict);
     }
     journal.save("receipt.json", &receipt)?;
-    let key_file = journal.path("provisioner.pk8")?;
-    if !key_file.exists() {
-        if receipt.stage != Stage::Preparing {
-            return Err(Error::Corrupt);
-        }
-        let bytes = match &input.key {
-            KeySource::Generate => tokio::task::spawn_blocking(|| {
-                openssl::rsa::Rsa::generate(2048)
-                    .and_then(openssl::pkey::PKey::from_rsa)
-                    .and_then(|p| p.private_key_to_pkcs8())
-                    .map(zeroize::Zeroizing::new)
-            })
-            .await
-            .map_err(|_| Error::Storage)?
-            .map_err(|_| Error::Storage)?,
-            KeySource::Import {
-                private_key_file, ..
-            } => crate::config::read(private_key_file, 32768, true).map_err(|_| Error::Input)?,
-        };
-        jwk(&bytes, None)?;
-        journal.secret("provisioner.pk8", &bytes)?;
-    }
-    let private = crate::config::read(&key_file, 32768, true).map_err(|_| Error::Corrupt)?;
-    let (kid, public) = jwk(
-        &private,
-        match &input.key {
-            KeySource::Generate => None,
-            KeySource::Import { kid, .. } => Some(kid),
-        },
-    )?;
-    if receipt.key_id.as_ref().is_some_and(|old| old != &kid) {
-        return Err(Error::Conflict);
-    }
-    receipt.key_id = Some(kid.clone());
-    if receipt.stage < Stage::MaterialReserved {
-        receipt.stage = Stage::MaterialReserved;
-    }
-    journal.save("receipt.json", &receipt)?;
+    let SigningMaterial {
+        path: key_file,
+        private,
+        kid,
+        public,
+    } = reserve_signing_material(&input, &journal, &mut receipt).await?;
     let tls_root = copy(
         &journal,
         "provider-tls-root.pem",
@@ -472,10 +373,7 @@ pub async fn run(input: Request) -> Result<Receipt> {
         input.preparation,
     )
     .await?;
-    if receipt.stage < Stage::ProvisionerPrepared {
-        receipt.stage = Stage::ProvisionerPrepared;
-    }
-    journal.save("receipt.json", &receipt)?;
+    advance(&journal, &mut receipt, Stage::ProvisionerPrepared)?;
     if let Some(expected) = &scep {
         prepare_scep(
             input.purpose,
@@ -489,10 +387,7 @@ pub async fn run(input: Request) -> Result<Receipt> {
     } else if input.scep.is_some() {
         return Err(Error::Input);
     }
-    if receipt.stage < Stage::WebhooksPrepared {
-        receipt.stage = Stage::WebhooksPrepared;
-    }
-    journal.save("receipt.json", &receipt)?;
+    advance(&journal, &mut receipt, Stage::WebhooksPrepared)?;
     provider
         .verify_provisioner()
         .await
@@ -722,6 +617,147 @@ async fn prepare_scep(
         return Err(Error::Conflict);
     }
     Ok(())
+}
+
+async fn validate_request(input: &Request) -> Result<()> {
+    if input.operation_id.is_nil()
+        || input.tenant_id.is_nil()
+        || (input.preparation == Preparation::Import && matches!(input.key, KeySource::Generate))
+    {
+        return Err(Error::Input);
+    }
+    origin(&input.device_origin)?;
+    if names(input.purpose).1.is_some() != input.scep.is_some()
+        || input.scep.is_some() != input.callback_origin.is_some()
+    {
+        return Err(Error::Input);
+    }
+    if let Some(callback) = &input.callback_origin {
+        origin(callback)?;
+    }
+    Ok(())
+}
+
+async fn previous_trust(input: &Request, root: &Journal) -> Result<Option<Trust>> {
+    let runtime: crate::config::Config = root.load("runtime.json")?.ok_or(Error::Corrupt)?;
+    let mut connection = PgConnection::connect_with(
+        &input
+            .installation
+            .database("mdm_owner")?
+            .options()
+            .map_err(|_| Error::Input)?,
+    )
+    .await
+    .map_err(|_| Error::Storage)?;
+    if !crate::migration::owner_admitted(&mut connection)
+        .await
+        .map_err(|_| Error::Storage)?
+    {
+        return Err(Error::Input);
+    }
+    let installation = crate::migration::Installation {
+        instance_id: runtime.identity.instance_id.clone(),
+        target: runtime.flow.storage.target,
+        lineage: runtime.flow.storage.lineage,
+        audit_mode: runtime.audit.mode(),
+    };
+    crate::migration::verify_identity(&mut connection, &installation)
+        .await
+        .map_err(|_| Error::Conflict)?;
+    let mut tx = connection.begin().await.map_err(|_| Error::Storage)?;
+    sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
+        .bind(input.tenant_id.to_string())
+        .execute(&mut *tx)
+        .await
+        .map_err(|_| Error::Storage)?;
+    let tenant:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM public.mdm_tenants WHERE tenant_id=$1 AND NOT deleted AND tenant_id<>(SELECT management_tenant_id FROM public.mdm_installation))").bind(input.tenant_id).fetch_one(&mut *tx).await.map_err(|_|Error::Storage)?;
+    if !tenant {
+        return Err(Error::Conflict);
+    }
+    let previous: Option<Vec<u8>> =
+        sqlx::query_scalar("SELECT body FROM mdm_pki.trust WHERE tenant_id=$1 AND purpose=$2")
+            .bind(input.tenant_id)
+            .bind(rss_mdm_pki_service::registry::purpose(input.purpose))
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(|_| Error::Storage)?;
+    let previous: Option<Trust> = previous
+        .map(|v| serde_json::from_slice(&v).map_err(|_| Error::Corrupt))
+        .transpose()?;
+    if previous.as_ref().map_or(0, |t| t.revision) != input.expected_revision
+        || previous
+            .as_ref()
+            .is_some_and(|t| t.origin != input.device_origin)
+    {
+        return Err(Error::Conflict);
+    }
+    tx.rollback().await.map_err(|_| Error::Storage)?;
+    connection.close().await.map_err(|_| Error::Storage)?;
+    Ok(previous)
+}
+
+struct SigningMaterial {
+    path: PathBuf,
+    private: zeroize::Zeroizing<Vec<u8>>,
+    kid: String,
+    public: serde_json::Value,
+}
+async fn reserve_signing_material(
+    input: &Request,
+    journal: &Journal,
+    receipt: &mut Receipt,
+) -> Result<SigningMaterial> {
+    let key_file = journal.path("provisioner.pk8")?;
+    if !key_file.exists() {
+        if receipt.stage != Stage::Preparing {
+            return Err(Error::Corrupt);
+        }
+        let bytes = match &input.key {
+            KeySource::Generate => tokio::task::spawn_blocking(|| {
+                openssl::rsa::Rsa::generate(2048)
+                    .and_then(openssl::pkey::PKey::from_rsa)
+                    .and_then(|p| p.private_key_to_pkcs8())
+                    .map(zeroize::Zeroizing::new)
+            })
+            .await
+            .map_err(|_| Error::Storage)?
+            .map_err(|_| Error::Storage)?,
+            KeySource::Import {
+                private_key_file, ..
+            } => crate::config::read(private_key_file, 32768, true).map_err(|_| Error::Input)?,
+        };
+        jwk(&bytes, None)?;
+        journal.secret("provisioner.pk8", &bytes)?;
+    }
+    let private = crate::config::read(&key_file, 32768, true).map_err(|_| Error::Corrupt)?;
+    let (kid, public) = jwk(
+        &private,
+        match &input.key {
+            KeySource::Generate => None,
+            KeySource::Import { kid, .. } => Some(kid),
+        },
+    )?;
+    if receipt.key_id.as_ref().is_some_and(|old| old != &kid) {
+        return Err(Error::Conflict);
+    }
+    receipt.key_id = Some(kid.clone());
+    if receipt.stage < Stage::MaterialReserved {
+        receipt.stage = Stage::MaterialReserved;
+    }
+    journal.save("receipt.json", receipt)?;
+    Ok(SigningMaterial {
+        path: key_file,
+        private,
+        kid,
+        public,
+    })
+}
+
+fn advance(journal: &Journal, receipt: &mut Receipt, stage: Stage) -> Result<()> {
+    if receipt.stage < stage {
+        receipt.stage = stage;
+    }
+    journal.save("receipt.json", receipt)
 }
 
 #[cfg(test)]

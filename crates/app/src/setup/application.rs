@@ -36,19 +36,7 @@ async fn desired(c: &mut PgConnection, tenant: Uuid, runtime: &mut Value) -> Res
             runtime["native_protocols"]["windows"]["push"] = json!({"revision":revision});
         }
     }
-    // 通道其余供应方材料尚未就绪时不凭空启用 Apple。
-    if runtime["native_protocols"]["apple"].is_object() {
-        let versions: Vec<(String,i64)> = sqlx::query_as("SELECT purpose,desired_revision FROM mdm_apple_runtime.heads WHERE tenant_id=$1 AND desired_revision IS NOT NULL").bind(tenant).fetch_all(&mut *tx).await.map_err(|_| Error::Storage)?;
-        for (purpose, revision) in versions {
-            if purpose == "apns" || purpose == "profile" {
-                runtime["native_protocols"]["apple"]["materials"][purpose] = json!(revision);
-            }
-        }
-        let accounts:Vec<(String,i64)>=sqlx::query_as("SELECT alias,revision FROM mdm_apple_runtime.account_bindings WHERE tenant_id=$1 ORDER BY alias").bind(tenant).fetch_all(&mut *tx).await.map_err(|_|Error::Storage)?;
-        for (alias, revision) in accounts {
-            runtime["native_protocols"]["apple"]["materials"]["accounts"][alias] = json!(revision);
-        }
-    }
+    desired_apple(&mut tx, tenant, runtime).await?;
     tx.commit().await.map_err(|_| Error::Storage)
 }
 pub(super) fn fingerprint(runtime: &Value) -> Result<String> {
@@ -182,4 +170,21 @@ pub(super) async fn reconcile(
         save(c, &receipt, &original).await?;
     }
     Ok(completed)
+}
+
+async fn desired_apple(c: &mut PgConnection, tenant: Uuid, runtime: &mut Value) -> Result<()> {
+    // 通道其余供应方材料尚未就绪时不凭空启用 Apple。
+    if runtime["native_protocols"]["apple"].is_object() {
+        let versions: Vec<(String,i64)> = sqlx::query_as("SELECT purpose,desired_revision FROM mdm_apple_runtime.heads WHERE tenant_id=$1 AND desired_revision IS NOT NULL").bind(tenant).fetch_all(&mut *c).await.map_err(|_| Error::Storage)?;
+        for (purpose, revision) in versions {
+            if purpose == "apns" || purpose == "profile" {
+                runtime["native_protocols"]["apple"]["materials"][purpose] = json!(revision);
+            }
+        }
+        let accounts:Vec<(String,i64)>=sqlx::query_as("SELECT alias,revision FROM mdm_apple_runtime.account_bindings WHERE tenant_id=$1 ORDER BY alias").bind(tenant).fetch_all(&mut *c).await.map_err(|_|Error::Storage)?;
+        for (alias, revision) in accounts {
+            runtime["native_protocols"]["apple"]["materials"]["accounts"][alias] = json!(revision);
+        }
+    }
+    Ok(())
 }
