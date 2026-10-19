@@ -49,10 +49,20 @@ class FormalInstallation(unittest.TestCase):
             self.assertFalse(service.get('privileged',False))
         self.assertFalse(any(m['target']=='/run/docker.sock' for m in model['services']['bootstrap']['volumes']))
 
+    def test_explicit_empty_additional_origins_disables_slots(self):
+        import os
+        import subprocess
+        values=dict(os.environ,MDM_INSTALLER_IMAGE='installer',MDM_SERVER_IMAGE='server',MDM_WEB_IMAGE='web',
+            MDM_POSTGRES_IMAGE='postgres',MDM_INPUT_DIRECTORY='/tmp',MDM_DOCKER_SOCKET='/tmp/docker.sock',
+            COMPOSE_PROJECT_NAME='empty-slots',MDM_ADDITIONAL_ORIGINS='')
+        model=json.loads(subprocess.check_output(['docker','compose','-f',str(ROOT/'deployment/production.compose.yaml'),
+            'config','--format','json'],env=values,text=True))
+        self.assertEqual(model['services']['bootstrap']['environment']['MDM_ADDITIONAL_ORIGINS'],'')
+
     def test_bootstrap_rejects_noncanonical_origins(self):
         spec=importlib.util.spec_from_file_location('compose_bootstrap',ROOT/'deployment/compose_bootstrap.py')
         bootstrap=importlib.util.module_from_spec(spec);spec.loader.exec_module(bootstrap)
-        for invalid in ('http://localhost:8445','https://user:pass@example.test','https://example.test/path'):
+        for invalid in ('http://localhost:8445','https://user:pass@example.test','https://example.test/path','https://127.0.0.1:8445','https://[::1]:8445'):
             with self.assertRaises(ValueError):bootstrap.origin(invalid)
         self.assertEqual(bootstrap.origin('https://localhost:8445').port,8445)
 

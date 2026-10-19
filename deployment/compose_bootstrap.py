@@ -43,17 +43,16 @@ def origin(value):
             or parsed.path or parsed.query or parsed.fragment
             or not re.fullmatch(r'[a-z0-9.-]+', parsed.hostname) or not parsed.port and value.endswith(':')):
         raise ValueError('canonical HTTPS origin required')
+    try:
+        ipaddress.ip_address(parsed.hostname)
+    except ValueError:
+        pass
+    else:
+        raise ValueError('DNS origin required; IP literals are not supported')
     return parsed
 
 
 def main():
-    STATE.mkdir(exist_ok=True)
-    STATE.chmod(0o700)
-    os.chown(STATE, 10001, 10001)
-    inputs = STATE / 'inputs'
-    inputs.mkdir(mode=0o700, exist_ok=True)
-    inputs.chmod(0o700)
-    os.chown(inputs, 10001, 10001)
     origins = [os.environ['MDM_PRODUCT_ORIGIN']]
     origins += [v for v in os.environ.get('MDM_ADDITIONAL_ORIGINS', '').split(',') if v]
     parsed = [origin(v) for v in origins]
@@ -64,6 +63,13 @@ def main():
         if not re.fullmatch(r'(?:[^\s]+@)?sha256:[0-9a-f]{64}', os.environ[key]):
             raise ValueError('immutable image required')
     ipaddress.ip_address(os.environ['MDM_PUBLISH_IP'])
+    STATE.mkdir(exist_ok=True)
+    STATE.chmod(0o700)
+    os.chown(STATE, 10001, 10001)
+    inputs = STATE / 'inputs'
+    inputs.mkdir(mode=0o700, exist_ok=True)
+    inputs.chmod(0o700)
+    os.chown(inputs, 10001, 10001)
     for name in ('database-password',):
         target = inputs / name
         write(target, target.read_bytes() if target.exists() else secrets.token_urlsafe(32))

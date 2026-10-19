@@ -110,6 +110,27 @@ class Browser:
         check(status==200,'real account login')
 
 
+def peer_certificate(origin, ca):
+    url=urlsplit(origin)
+    connection=http.client.HTTPSConnection(url.hostname,url.port or 443,
+        context=ssl.create_default_context(cafile=str(ca)),timeout=10)
+    try:
+        connection.connect()
+        return hashlib.sha256(connection.sock.getpeercert(binary_form=True)).hexdigest()
+    finally:connection.close()
+
+
+def peer_matches(origin, ca, expected):
+    try:return peer_certificate(origin,ca)==expected
+    except (OSError,ssl.SSLError,http.client.HTTPException):return False
+
+
+def operator_state(owner):
+    identifier=owner.compose('ps','--all','--quiet','operator')
+    check(bool(identifier),'operator container missing')
+    return json.loads(subprocess.check_output(['docker','inspect',identifier],text=True))[0]['State']
+
+
 def qualify(owner, origin, other_origin):
     owner.compose('up','-d',timeout=600)
     first=owner.receipt()
@@ -139,7 +160,11 @@ def qualify(owner, origin, other_origin):
     operation=str(uuid.uuid4());password=secrets.token_urlsafe(32)
     request=dict(name='Second organization',administratorLogin='second',administratorPassword=password)
     endpoint='/api/v1/tenant-administration/provisionings'
-    owner.compose('pause','operator')
+    old_operator=operator_state(owner)
+    owner.compose('stop','operator')
+    check(not operator_state(owner)['Running'],'old operator still running')
+    # Resume only the first product host; install never starts its dependent operator.
+    owner.compose('run','--rm','--no-deps','-T','install',timeout=300)
     status,receipt=platform.call('POST',endpoint,request,operation)
     check(status in (200,202) and receipt['operationId']==operation,'complete provisioning admission')
     original=receipt['result']
@@ -151,8 +176,11 @@ def qualify(owner, origin, other_origin):
         return value['result']['phase']=='enabled'
     # The Compose operator must resume the original receipt after a real restart.
     check(original['phase']!='enabled','pending operation was already completed')
-    owner.compose('unpause','operator')
-    owner.compose('restart','operator')
+    check(not operator_state(owner)['Running'],'old operator consumed pending work')
+    check(platform.call('GET',endpoint+'/'+operation)[1]['result']['phase']!='enabled','pending operation completed without an operator')
+    owner.compose('start','operator')
+    new_operator=operator_state(owner)
+    check(new_operator['Running'] and new_operator['StartedAt']!=old_operator['StartedAt'],'new operator process not observed')
     until(enabled)
     status,replayed=platform.call('POST',endpoint,request,operation)
     check(status==200 and replayed['result']['phase']=='enabled','original operation replay')
@@ -182,6 +210,7 @@ def qualify(owner, origin, other_origin):
     owner.compose('run','--rm','--no-deps','-T','install',timeout=300)
     check(json.loads(owner.script(digest_code))==identities,'maintenance replaced installation identity')
     check(json.loads(owner.read(host+'/requested-runtime.json'))['runtime_binding']['operation_id']==change['operation_id'],'installation replay overwrote applied configuration')
+    old_leaf=peer_certificate(origin,ca)
     owner.compose('stop','operator')
     # Renew an actual gateway certificate and apply a new revision without changing identity.
     owner.compose('run','--rm','--no-deps','-T','-e','MDM_RENEW_GATEWAY_TLS=1','bootstrap')
@@ -191,7 +220,15 @@ def qualify(owner, origin, other_origin):
         certificate_file='/var/lib/rss-mdm/inputs/gateway-next.crt',private_key_file='/var/lib/rss-mdm/inputs/gateway-next.key',
         trust_file='/var/lib/rss-mdm/inputs/ca.crt'))
     check(owner.product('configure-host',owner.save('gateway-renewal.json',renewed))['applied'] is not None,'gateway TLS renewal')
+    expected_leaf=hashlib.sha256(ssl.PEM_cert_to_DER_cert(owner.read('/var/lib/rss-mdm/inputs/gateway-next.crt'))).hexdigest()
+    check(expected_leaf!=old_leaf,'renewal reused old certificate')
+    check(peer_certificate(origin,ca)==expected_leaf,'gateway did not present the new certificate')
     renewed_browser=Browser(origin,ca);renewed_browser.login(first['tenantId'],'administrator',administrator)
+    owner.compose('start','operator')
+    owner.compose('restart','operator')
+    until(lambda:peer_matches(origin,ca,expected_leaf))
+    check(peer_certificate(origin,ca)==expected_leaf,'operator restart lost renewed certificate')
+    owner.compose('stop','operator')
     # Docker failure is scoped to one maintenance container, never the shared daemon.
     runtime=json.loads(owner.read(host+'/requested-runtime.json'))
     failed_change=dict(installation=operator,operation_id=str(uuid.uuid4()),host_id=first['hostId'],

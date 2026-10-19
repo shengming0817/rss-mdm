@@ -37,6 +37,8 @@ Compose 按顺序运行 `bootstrap → postgres → install → operator`。boot
 
 首次准备默认使用 localhost 的本地 TLS CA、两个不同端口的入口和随机密码。它们是当前真实安装的材料，不包含演示账户或业务成功数据。用 `docker compose ... cp bootstrap:/var/lib/rss-mdm/inputs/ca.crt /absolute/ca.crt` 导出公共 CA 并配置专用浏览器信任；密码通过 `docker compose ... run --rm --no-deps --entrypoint cat operator /var/lib/rss-mdm/installation/administrator-password` 从私有终端读取，平台密码对应 `platform-password`，不要保存到日志。默认登录名分别为 `administrator` 和 `platform`。
 
+入口使用 DNS 名称（包括 localhost），当前正式模板明确拒绝 IP 字面量。额外入口显式设为空时不预留任何额外租户槽位。
+
 设备访问前，在准备阶段用 `--origin`、`--additional-origins`、`--publish-ip`、`--tls-mode supplied` 和 `--input-directory` 指定实际输入，冻结后不直接改生成的 Compose 文件。私有输入目录提供 `gateway.crt`、`gateway.key`、`gateway-ca.crt`，证书须覆盖所有选用的域名。可选 `platform-password` 和 `administrator-password` 文件固定首次密码。每个租户槽位使用独立外部 HTTPS 端口；管理 API 不对宿主发布。真实设备须能解析域名、访问对应发布端口并信任 TLS。本地 CA 不能替代 APNs/Profile 或设备 purpose trust。
 
 安装输入结构仍由 [安装输入](../../crates/app/src/setup/installation.rs) 持有。`database.administrator` 只归安装/部署容器，运行 HTTP 服务不接收该凭据；`deployment` 指定固定镜像、Docker 命名卷、bridge 网络、发布 IP 和卷内 TLS 路径。Compose 准备程序生成同一契约，不是第二套初始化引擎。后续租户通过完整 provisionings API 开通并占用 `additional_hosts` 中的固定槽位；容量不足保留原操作，不能换 ID 或复制运行 JSON 冒充新租户。
