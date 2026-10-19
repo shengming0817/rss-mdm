@@ -305,17 +305,14 @@ pub async fn apply(directory: &Path, config: &Config, runtime: &Value) -> Result
             "location / { return 404; }",
         );
     let gateway_path = journal.secret("nginx.conf", gateway.as_bytes())?;
+    let public = super::public_configuration::read(decoded).await?;
     let ui_path = journal.public(
         "ui.json",
-        &serde_json::to_vec(&json!({"canonicalOrigin":decoded.product_origin,"oidcEnabled":decoded.identity.oidc.is_some()}))
-            .map_err(|_| Error::Input)?,
+        &serde_json::to_vec(&public.identity).map_err(|_| Error::Input)?,
     )?;
     let mdm_path = journal.public(
         "mdm.json",
-        &serde_json::to_vec(
-            &json!({"canonicalOrigin":decoded.product_origin,"tenant":decoded.identity.tenant_id}),
-        )
-        .map_err(|_| Error::Input)?,
+        &serde_json::to_vec(&public.mdm).map_err(|_| Error::Input)?,
     )?;
     let mount = |source: &Path, target: String| json!({"type":"bind","source":source,"target":target,"read_only":true,"bind":{"create_host_path":false}});
     let mut server_mounts = mounts

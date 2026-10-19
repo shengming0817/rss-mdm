@@ -21,13 +21,6 @@ from candidate_fixture import INSTANCE, ADMIN, TENANTS, installation
 TENANT = TENANTS[0]
 PASSWORD = "Candidate-only-correct-horse-battery-2026!"
 
-def public_host_inputs(config):
-    """Only public bootstrap fields derived from the product's existing runtime input."""
-    return {
-        "ui.json": {"canonicalOrigin": config["product_origin"], "oidcEnabled": config["identity"]["oidc"] is not None},
-        "mdm.json": {"canonicalOrigin": config["product_origin"], "tenant": config["identity"]["tenant_id"]},
-    }
-
 def require(condition, message):
     if not condition:
         raise RuntimeError(message)
@@ -55,6 +48,7 @@ class Stage(StrEnum):
     INITIALIZE = "initialize"
     AUTHORIZATION_INITIALIZE = "authorization_initialize"
     AUTHORIZATION_REPLAY = "authorization_replay"
+    HOST_CONFIGURATION = "host-configuration"
     GATEWAY = "gateway-start"
     SERVER = "server-start"
     PORT = "gateway-port"
@@ -429,8 +423,7 @@ class Candidate:
             gateway=(self.root/'nginx.conf').read_text().replace('mdm.example.test',self.host)
             if self.web is None:gateway=gateway.replace('location / { try_files $uri $uri/ /index.html; }','location / { return 404; }')
             private(self.root/'nginx.conf',gateway)
-            for name,value in public_host_inputs(self.config).items():private(self.root/name,value)
-            for name in ['nginx.conf','ui.json','mdm.json']:shutil.copyfile(self.root/name,gateway_dir/name)
+            shutil.copyfile(self.root/'nginx.conf',gateway_dir/'nginx.conf')
             roles=''.join("CREATE ROLE "+role+" LOGIN PASSWORD '"+role+"-fixture' NOSUPERUSER NOBYPASSRLS;" for role in ['mdm_owner','mdm_api','mdm_access','mdm_runtime'])
             roles+='GRANT CREATE ON DATABASE mdm_test TO mdm_owner; GRANT CREATE ON SCHEMA public TO mdm_owner;'
             for owner in ROLE_NAMES:roles+=(self.directory/f'deployment/{owner}-roles.sql').read_text()
@@ -439,6 +432,9 @@ class Candidate:
             self.copy_runtime()
             self.runtime_volume=self.name+'_runtime';self.operator_volume=self.name+'_operator';self.gateway_inputs=self.name+'_gateway'
             for stage in [Stage.MIGRATION,Stage.REPLAY]:self.operator('migrate','migrate.json',stage)
+            public=json.loads(self.compose('run','--rm','--no-deps','server','public-host-config','--config','/run/mdm/config.json',stage=Stage.HOST_CONFIGURATION))
+            for name in ['ui.json','mdm.json']:private(gateway_dir/name,public[name])
+            self.copy_runtime()
             # Configured protocol/browser fixture: registration is precondition, not install evidence.
             # Complete installation is independently exercised by candidate_installation.py.
             tenant=str(uuid.UUID(self.tenant))

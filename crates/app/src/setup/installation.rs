@@ -379,14 +379,6 @@ async fn resume(input: &Input, journal: &Journal, mut saved: Saved) -> Result<Re
     // Reuse the actual runtime decoder, not a second interpretation of configuration.
     let _: crate::config::Config = serde_json::from_value(runtime.clone()).map_err(invalid)?;
     journal.save("runtime.json", &runtime)?;
-    journal.save(
-        "ui.json",
-        &serde_json::json!({"canonicalOrigin":input.origin,"oidcEnabled":false}),
-    )?;
-    journal.save(
-        "mdm.json",
-        &serde_json::json!({"canonicalOrigin":input.origin,"tenant":saved.receipt.tenant_id}),
-    )?;
     saved.receipt.stage = Stage::HostPending;
     journal.save("installation.json", &saved)?;
     let mut progress = initial_progress(&saved, true);

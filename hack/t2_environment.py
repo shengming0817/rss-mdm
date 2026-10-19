@@ -422,9 +422,6 @@ class Environment:
             nginx=nginx.replace('/etc/nginx/mime.types',mime)
             nginx=nginx.replace('/usr/share/nginx/html',os.environ.get('MDM_WEB_ROOT',str(gateway/'html')))
         private(gateway/'nginx.conf',nginx)
-        from candidate_runtime import public_host_inputs
-        for name, value in public_host_inputs(config).items():
-            private(gateway/name, value)
         if mode=='container':self.compose('--profile','product','run','--rm','inputs')
         else:
             result=run(['cargo','build','--locked','-p','rss-mdm-app','--bin','rss-mdm','--message-format=json'],cwd=ROOT,capture_output=True)
@@ -439,6 +436,13 @@ class Environment:
             with self.phase(verb):
                 if mode=='container':self.compose('--profile','product','run','--rm','operator',verb,'--config','/run/mdm/'+file)
                 else:run([binaries[0],verb,'--config',operator/file],capture_output=True)
+        if mode=='container':
+            public=self.compose('--profile','product','run','--rm','--no-deps','server','public-host-config','--config','/run/mdm/runtime.json')
+        else:
+            public=run([binaries[0],'public-host-config','--config',runtime/'runtime.json'],capture_output=True).stdout
+        public=json.loads(public)
+        for name in ('ui.json','mdm.json'):private(gateway/name,public[name])
+        if mode=='container':self.compose('--profile','product','run','--rm','inputs')
         private(self.root/(mode+'-initialized.json'),dict(origin=origin,configuration=str(runtime/'runtime.json'),https_port=https_port))
         return dict(origin=origin,configuration=str(runtime/'runtime.json'),gateway=str(gateway/'nginx.conf'))
 

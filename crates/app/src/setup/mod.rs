@@ -14,6 +14,7 @@ pub mod installation;
 #[cfg(unix)]
 mod local;
 pub mod model;
+pub mod public_configuration;
 #[cfg(unix)]
 mod postgres;
 #[cfg(unix)]
