@@ -180,13 +180,7 @@ async fn runtime_owner(paths: impl Iterator<Item = PathBuf>) -> Result<()> {
     }
     Ok(())
 }
-/// Apply an immutable, already prepared runtime snapshot and verify the actual HTTPS process.
-/// Returns no success receipt until readyz reports the exact host, tenant, operation and revision.
-pub async fn apply(directory: &Path, config: &Config, runtime: &Value) -> Result<Applied> {
-    let decoded: crate::config::Config =
-        serde_json::from_value(runtime.clone()).map_err(|_| Error::Input)?;
-    let compiled = decoded.compile().map_err(|_| Error::Input)?;
-    let decoded = &compiled.config;
+fn network_origin(decoded: &crate::config::Config) -> Result<url::Url> {
     if !decoded.listen.ip().is_loopback() || decoded.trusted_gateway != decoded.listen.ip() {
         return Err(Error::Input);
     }
@@ -221,6 +215,17 @@ pub async fn apply(directory: &Path, config: &Config, runtime: &Value) -> Result
     if ports.iter().any(|port| *port == 0 || *port == gateway_port) {
         return Err(Error::Input);
     }
+    Ok(origin)
+}
+
+/// Apply an immutable, already prepared runtime snapshot and verify the actual HTTPS process.
+/// Returns no success receipt until readyz reports the exact host, tenant, operation and revision.
+pub async fn apply(directory: &Path, config: &Config, runtime: &Value) -> Result<Applied> {
+    let decoded: crate::config::Config =
+        serde_json::from_value(runtime.clone()).map_err(|_| Error::Input)?;
+    let compiled = decoded.compile().map_err(|_| Error::Input)?;
+    let decoded = &compiled.config;
+    let origin = network_origin(decoded)?;
     image_present(&config.server_image).await?;
     image_present(&config.gateway_image).await?;
     let certificate = crate::config::read(&config.certificate_file, 128 * 1024, false)

@@ -14,13 +14,13 @@ pub mod installation;
 #[cfg(unix)]
 mod local;
 pub mod model;
-pub mod public_configuration;
 #[cfg(unix)]
 mod postgres;
 #[cfg(unix)]
 pub mod protection;
 #[cfg(unix)]
 pub mod providers;
+pub mod public_configuration;
 #[cfg(unix)]
 mod snapshot_tree;
 #[cfg(unix)]
