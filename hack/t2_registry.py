@@ -20,7 +20,7 @@ MODULES: dict[str, Module] = {}
 
 
 def add(name, *, build=APP, selectors=(), profile='product', fixtures=(),
-        sources=(), tests=(), support=(), python=None, children=()):
+        sources=(), tests=(), support=(), python=None, children=(), actors=()):
     if name in MODULES:
         raise ValueError('duplicate module: ' + name)
     if build is not None and not selectors:
@@ -28,7 +28,7 @@ def add(name, *, build=APP, selectors=(), profile='product', fixtures=(),
     MODULES[name] = Module(name, build, tuple(selectors), profile, tuple(fixtures),
                           tuple(sources), tuple(tests), tuple(support),
                           db_mode=None if profile == 'none' else 'reuse',
-                          scope=None if profile == 'none' else 'objects', python=python, children=tuple(children))
+                          scope=None if profile == 'none' else 'objects', python=python, children=tuple(children), actors=tuple(actors))
 
 
 CAPABILITY_INPUTS = {'identity.local': ('crates/app/src/identity.rs',),
@@ -2096,7 +2096,7 @@ add('installation.ca_admin', selectors=('setup::providers::step_ca::tests::authe
 MODULES['agent.pki'] = replace(MODULES['agent.pki'], policies=(*MODULES['agent.pki'].policies, CasePolicy('agent_pki_tests::bootstrap_sources_select_current_issuer_and_reject_missing_application', 'reuse', 'tenant', ('identity','agent_pki','pki_rotation'))))
 add('installation.backup', selectors=('setup::backup::tests::database_connection_fence_replays_and_restores_original_grants',), profile='empty', sources=('crates/app/src/setup/backup.rs','crates/app/src/setup/snapshot_tree.rs','crates/app/src/setup/transfer/backup.rs','crates/app/src/setup/transfer/ledger.rs'), tests=('crates/app/tests/setup/backup.rs',))
 MODULES['installation.backup'] = replace(MODULES['installation.backup'], db_mode='instance', scope='objects')
-add('installation.ca', selectors=('setup::providers::step_ca::tests::actual_ca_creates_and_imports_exact_purpose_resources',), fixtures=('identity','agent_pki','ca_agent'), sources=('crates/app/src/setup/providers/step_ca/*',), tests=('crates/app/tests/setup/ca_admin.rs',))
+add('installation.ca', selectors=('setup::providers::step_ca::tests::actual_ca_creates_and_imports_exact_purpose_resources',), fixtures=('identity','agent_pki','ca_agent'), sources=('crates/app/src/setup/providers/step_ca/*',), tests=('crates/app/tests/setup/ca_admin.rs',), actors=(('tenant','admin'),))
 add('installation.webhook', selectors=('setup::providers::webhook::tests::receiver_possession_gates_activation_and_old_ciphertexts_remain_readable',), fixtures=('windows',), sources=('crates/app/src/setup/providers/webhook.rs','crates/app/src/webhooks/*','crates/webhook-service/src/materials.rs','crates/webhook-service/schema/materials.sql'), tests=('crates/app/tests/setup/webhook.rs',))
 add('installation.native_rewrap', selectors=('setup::protection::tests::ade_original_material_survives_rotation_and_corrupt_rows_roll_back',), sources=('crates/apple-channel/src/rewrap.rs','crates/app/src/setup/protection.rs'), tests=('crates/app/tests/setup/native_rewrap.rs',))
 

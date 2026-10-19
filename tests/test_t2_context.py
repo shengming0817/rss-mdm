@@ -17,6 +17,16 @@ def job(name, scope='objects', invocation=0):
 
 
 class ContextTests(unittest.TestCase):
+    def test_ca_installation_declares_its_required_identity_actor(self):
+        from t2_model import resolve_cases
+        module = MODULES['installation.ca']
+        name = module.selectors[0]
+        policy = resolve_cases(module, [name])[0]
+        invocation = Invocation(policy, Case(module.build, 'binary', '/binary', name))
+        value = contexts('ca-installation', [invocation])[invocation.key]
+        self.assertEqual([(actor['tenant'], actor['role']) for actor in value['actors']],
+                         [(value['tenant'], 'admin')])
+
     def test_contract_rejects_missing_wrong_typed_and_unprepared_fields(self):
         from copy import deepcopy
         value = next(iter(contexts('run', [job('a')]).values()))
