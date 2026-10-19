@@ -1556,9 +1556,8 @@ async fn bootstrap_sources_select_current_issuer_and_reject_missing_application(
 -> anyhow::Result<()> {
     use rss_mdm_agent_wire::pki::{Mode, Purpose, Trust};
     use rss_mdm_registration_service::agent::bootstrap::Deployment;
-    let config = deployment();
     let mut previous: Trust =
-        serde_json::from_slice(&std::fs::read(config["trust_file"].as_str().unwrap())?)?;
+        serde_json::from_slice(&std::fs::read(root().join("agent-trust.json"))?)?;
     let candidate = PathBuf::from(std::env::var("MDM_AGENT_PKI_CANDIDATE_FIXTURES")?);
     let next: Trust = serde_json::from_slice(&std::fs::read(candidate.join("agent-trust.json"))?)?;
     previous.purpose = Purpose::AgentBootstrap;

@@ -18,7 +18,7 @@ ARG DAEMON
 FROM ${DAEMON} AS daemon
 FROM ${OPERATOR}
 USER 0:0
-RUN apt-get update && apt-get install -y --no-install-recommends systemd dbus iptables iproute2 && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y --no-install-recommends systemd systemd-sysv dbus iptables iproute2 && rm -rf /var/lib/apt/lists/*
 COPY --from=daemon /usr/local/bin/ /usr/local/bin/
 COPY docker.service /etc/systemd/system/docker.service
 RUN systemctl enable docker.service
@@ -30,11 +30,18 @@ DOCKER_UNIT = '''[Unit]
 Description=Disposable qualification Docker daemon
 After=network.target
 [Service]
-ExecStart=/usr/local/bin/dockerd --host=unix:///var/run/docker.sock --storage-driver=vfs
+ExecStart=/usr/local/bin/dockerd --host=unix:///var/run/docker.sock --feature containerd-snapshotter=true --storage-driver=native
 Restart=on-failure
 [Install]
 WantedBy=multi-user.target
 '''
+
+def load_archive(node, path):
+    result=subprocess.run(['docker','exec',node,'docker','load','--input',path],
+                          capture_output=True,text=True,timeout=180)
+    # This command imports a public candidate archive before any credentials exist.
+    require(result.returncode==0,'candidate archive import failed: '+result.stderr[-2000:])
+
 
 def qualify(directory, legacy=None):
     manifest=verify_candidate(directory)
@@ -65,7 +72,19 @@ def qualify(directory, legacy=None):
             docker('exec',name,'mkdir','-m','700','/workspace',stage=Stage.RUNTIME_INPUTS)
             for archive in [manifest['archive']['file']]:
                 docker('cp',directory/archive,name+':/workspace/'+archive,stage=Stage.RUNTIME_INPUTS,timeout=180)
-                docker('exec',name,'docker','load','--input','/workspace/'+archive,stage=Stage.LOAD,timeout=180)
+                load_archive(name,'/workspace/'+archive)
+            # Export only pinned public dependencies; the node needs no registry credentials.
+            provider_images={}
+            for provider in ('postgres','nginx'):
+                reference=manifest['providers'][provider]
+                docker('pull',reference,stage=Stage.LOAD,timeout=300)
+                provider_images[provider]=dict(reference=reference,image=docker('image','inspect','--format','{{.Id}}',reference,stage=Stage.IMAGE_INSPECT).strip())
+                archive=context/(provider+'.tar')
+                docker('save','--output',archive,reference,stage=Stage.LOAD,timeout=180)
+                docker('cp',archive,name+':/workspace/'+archive.name,stage=Stage.LOAD,timeout=180)
+                load_archive(name,'/workspace/'+archive.name)
+            (context/'providers.json').write_text(json.dumps(provider_images))
+            docker('cp',context/'providers.json',name+':/workspace/providers.json',stage=Stage.RUNTIME_INPUTS)
             # Only the fixed test driver and candidate metadata cross this boundary.
             driver=Path(__file__).with_name('candidate_installation_driver.py')
             docker('cp',driver,name+':/workspace/driver.py',stage=Stage.RUNTIME_INPUTS)
@@ -75,11 +94,12 @@ def qualify(directory, legacy=None):
                 source=json.loads((legacy/'candidate.json').read_text())
                 require(source.get('format_version')==4,'V4 source candidate required')
                 docker('cp',legacy,name+':/workspace/source',stage=Stage.RUNTIME_INPUTS,timeout=300)
-                docker('exec',name,'docker','load','--input','/workspace/source/'+source['archive']['file'],stage=Stage.LOAD,timeout=180)
+                load_archive(name,'/workspace/source/'+source['archive']['file'])
                 docker('cp',Path(__file__).with_name('candidate_transfer_driver.py'),name+':/workspace/transfer.py',stage=Stage.RUNTIME_INPUTS)
                 entry='/workspace/transfer.py'
-            raw=docker('exec',name,'python3',entry,stage=Stage.INITIALIZE,timeout=900)
-            result=json.loads(raw)
+            execution=subprocess.run(['docker','exec',name,'python3',entry],capture_output=True,text=True,timeout=900)
+            result=json.loads(execution.stdout)
+            require(execution.returncode==0,'candidate qualification failed: '+json.dumps(result))
             require(result.get('status')=='passed','installation qualification failed')
             result['candidate']=manifest['archive']['manifest_digest']
             result['platform']=manifest['platform']

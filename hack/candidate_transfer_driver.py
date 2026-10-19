@@ -9,7 +9,7 @@ import secrets
 import shutil
 import subprocess
 import uuid
-from driver import ROOT, BIN, Browser, check, run, write, until
+from driver import ROOT, BIN, Browser, check, run, write, until, imported_providers
 
 
 def main():
@@ -20,8 +20,7 @@ def main():
     check(hashlib.sha256((source/legacy['archive']['file']).read_bytes()).hexdigest()==legacy['archive']['sha256'],'V4 archive digest')
     for name,digest in legacy['deployment'].items():
         check(hashlib.sha256((source/name).read_bytes()).hexdigest()==digest,'V4 deployment digest')
-    providers=current['providers']
-    for provider in ['postgres','nginx']:run('docker','pull',providers[provider],timeout=300)
+    providers=imported_providers(current)
     run('openssl','req','-x509','-newkey','rsa:2048','-nodes','-days','2','-subj','/CN=Transfer TLS root',
         '-addext','basicConstraints=critical,CA:TRUE','-addext','keyUsage=critical,keyCertSign,cRLSign',
         '-keyout',str(ROOT/'ca.key'),'-out',str(ROOT/'ca.crt'))

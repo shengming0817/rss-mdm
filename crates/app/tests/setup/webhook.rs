@@ -112,12 +112,19 @@ async fn receiver_possession_gates_activation_and_old_ciphertexts_remain_readabl
                 .unwrap()
                 .to_owned();
             let mut body = request.into_body();
-            let mut bytes = Vec::new();
-            while let Some(chunk) = body.data().await {
-                let chunk = chunk?;
-                body.flow_control().release_capacity(chunk.len())?;
-                bytes.extend_from_slice(&chunk);
-            }
+            let read = async {
+                let mut bytes = Vec::new();
+                while let Some(chunk) = body.data().await {
+                    let chunk = chunk?;
+                    body.flow_control().release_capacity(chunk.len())?;
+                    bytes.extend_from_slice(&chunk);
+                }
+                anyhow::Ok(bytes)
+            };
+            let bytes = tokio::select! {
+                bytes=read=>bytes?,
+                _=h2.accept()=>anyhow::bail!("unexpected concurrent fixture request"),
+            };
             let message: materials::ConfirmationRequest = serde_json::from_slice(&bytes)?;
             ensure!(
                 message.challenge == expected.challenge
@@ -142,6 +149,7 @@ async fn receiver_possession_gates_activation_and_old_ciphertexts_remain_readabl
             let mut send = response
                 .send_response(axum::http::Response::builder().status(200).body(())?, false)?;
             send.send_data(axum::body::Bytes::from(response_body), true)?;
+            h2.graceful_shutdown();
             while h2.accept().await.is_some() {}
         }
         anyhow::Ok(())

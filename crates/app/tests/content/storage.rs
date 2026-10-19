@@ -849,7 +849,11 @@ async fn restored_provider_version_rebinds_atomically_without_reissuing_content(
             rss_mdm_content_service::backup::validate_catalog(&mut tx, tenant, &protection).await?;
             tx.commit().await?;
             let mut output = store
-                .verify(&artifact)
+                .verify_class(
+                    &artifact,
+                    StorageClass::NativeConfiguration,
+                    store.upload_budget()?.operation_deadline(),
+                )
                 .await?
                 .stream(0, artifact.length())
                 .await?;

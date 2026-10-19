@@ -139,8 +139,13 @@ async fn real_tls_authentication_and_unknown_submission_are_distinct() -> Result
 async fn unknown_submission_is_not_requeued_and_materials_rewrap() -> Result<()> {
     runtime_role_cannot_insert_provider_success().await?;
     let tenant = crate::test_support::case_tenant();
-    let mut c =
-        PgConnection::connect_with(&crate::device::test_support::options("mdm_owner")?).await?;
+    let mut c = PgConnection::connect_with(
+        &std::env::var("MDM_OWNER_URL")?
+            .parse::<sqlx::postgres::PgConnectOptions>()?
+            .ssl_mode(sqlx::postgres::PgSslMode::VerifyFull)
+            .ssl_root_cert(std::env::var("PG_CA_FILE")?),
+    )
+    .await?;
     let mut tx = c.begin().await?;
     scope(&mut tx, Uuid::parse_str(tenant)?).await?;
     let key = rss_mdm_native_protection::Protector::new(&[41; 32])?;

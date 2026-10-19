@@ -31,7 +31,9 @@ fn secret(root: &std::path::Path, name: &str, value: &str) -> PathBuf {
 #[ignore = "MODULE=installation.providers: actual RustFS identity, versioned I/O, cross-prefix denial and replay"]
 async fn real_storage_creation_replay_and_broad_import_rejection() -> anyhow::Result<()> {
     let fixture: Value = serde_json::from_slice(&std::fs::read(std::env::var("MDM_S3_FIXTURE")?)?)?;
-    let root = tempfile::tempdir()?;
+    let temporary = tempfile::tempdir()?;
+    let directory = temporary.path().canonicalize()?;
+    let root = directory.as_path();
     let profile = Profile {
         id: "controlled".into(),
         endpoint: fixture["endpoint"].as_str().unwrap().into(),
@@ -41,12 +43,12 @@ async fn real_storage_creation_replay_and_broad_import_rejection() -> anyhow::Re
         ca_file: PathBuf::from(fixture["ca"].as_str().unwrap()),
         rustfs_administrator: Some(Administrator {
             access_key_file: secret(
-                root.path(),
+                root,
                 "admin-access",
                 fixture["rootAccessKey"].as_str().unwrap(),
             ),
             secret_key_file: secret(
-                root.path(),
+                root,
                 "admin-secret",
                 fixture["rootSecretKey"].as_str().unwrap(),
             ),
@@ -67,16 +69,16 @@ async fn real_storage_creation_replay_and_broad_import_rejection() -> anyhow::Re
         .into(),
         token: None,
     };
-    let first = prepare(root.path(), &profile, tenant, operation, &material).await?;
+    let first = prepare(root, &profile, tenant, operation, &material).await?;
     anyhow::ensure!(
         first.qualified && first.namespace == format!("{}/{tenant}", profile.namespace)
     );
-    let replay = prepare(root.path(), &profile, tenant, operation, &material).await?;
+    let replay = prepare(root, &profile, tenant, operation, &material).await?;
     anyhow::ensure!(serde_json::to_value(first)? == serde_json::to_value(replay)?);
     let mut changed = material;
     changed.secret = uuid::Uuid::new_v4().to_string().into();
     anyhow::ensure!(matches!(
-        prepare(root.path(), &profile, tenant, operation, &changed).await,
+        prepare(root, &profile, tenant, operation, &changed).await,
         Err(Error::Conflict)
     ));
     let broad = Workload {
@@ -86,7 +88,7 @@ async fn real_storage_creation_replay_and_broad_import_rejection() -> anyhow::Re
         token: None,
     };
     anyhow::ensure!(
-        prepare(root.path(), &profile, tenant, uuid::Uuid::new_v4(), &broad)
+        prepare(root, &profile, tenant, uuid::Uuid::new_v4(), &broad)
             .await
             .is_err()
     );

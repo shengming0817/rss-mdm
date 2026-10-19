@@ -15,12 +15,20 @@ import uuid
 ROOT=Path('/workspace')
 BIN='/usr/local/bin/rss-mdm-installer'
 
+class QualificationFailure(RuntimeError):
+    pass
+
 def check(value,message):
-    if not value:raise RuntimeError(message)
+    if not value:raise QualificationFailure(message)
 
 def run(*args,timeout=180):
     result=subprocess.run(args,text=True,capture_output=True,timeout=timeout)
-    check(result.returncode==0,'qualification command failed: '+Path(args[0]).name)
+    if result.returncode:
+        category=next((value for value in ('input_rejected','busy','conflict','corrupt','storage_unavailable')
+                       if value+':' in result.stderr),'unclassified')
+        saved=ROOT/'installation/installation.json'
+        phase=json.loads(saved.read_text()).get('receipt',{}).get('stage','unreserved') if saved.exists() else 'unreserved'
+        check(False,'qualification command failed: '+Path(args[0]).name+' '+str(args[1])+' category='+category+' installation='+phase)
     return result.stdout.strip()
 
 def write(name,value):
@@ -64,13 +72,23 @@ class Browser:
         check(self.call('POST','/api/v1/identity/tenants/'+tenant+'/login',
                         dict(login=login,password=password))[0]==200,'real account login')
 
+def imported_providers(manifest):
+    imported=json.loads((ROOT/'providers.json').read_text())
+    providers={}
+    for provider in ['postgres','nginx']:
+        image=imported[provider]
+        check(image['reference']==manifest['providers'][provider],'provider reference changed')
+        check(run('docker','image','inspect','--format','{{.Id}}',image['image'])==image['image'],
+              'imported provider identity changed')
+        providers[provider]=image['image']
+    return providers
+
 def main():
     os.umask(0o077)
     manifest=json.loads((ROOT/'candidate.json').read_text())
     check(hashlib.sha256(Path(BIN).read_bytes()).hexdigest()==manifest['installer']['sha256'],
           'operator binary differs from fixed server binary')
-    providers=manifest['providers']
-    for provider in ['postgres','nginx']:run('docker','pull',providers[provider],timeout=300)
+    providers=imported_providers(manifest)
     run('openssl','req','-x509','-newkey','rsa:2048','-nodes','-days','2','-subj','/CN=Candidate TLS CA',
         '-addext','basicConstraints=critical,CA:TRUE','-addext','keyUsage=critical,keyCertSign,cRLSign',
         '-keyout',str(ROOT/'ca.key'),'-out',str(ROOT/'ca.crt'))
@@ -252,5 +270,5 @@ if __name__=='__main__':
     try:main()
     except Exception as error:
         # No tracebacks, HTTP bodies, SQL or operator stderr containing private data.
-        print(json.dumps(dict(status='failed',error_class=type(error).__name__)))
+        print(json.dumps(dict(status='failed',error_class=type(error).__name__,reason=str(error) if isinstance(error,QualificationFailure) else 'unexpected exception')))
         raise SystemExit(1)

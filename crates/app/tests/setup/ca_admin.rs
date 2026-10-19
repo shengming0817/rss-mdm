@@ -37,10 +37,10 @@ async fn authenticated_readback_recovers_original_provider() -> Result<()> {
                 tokio::select! {()=stop.cancelled()=>break,accept=listener.accept()=>accept?};
             let tls = acceptor.accept(tcp).await?;
             let mut connection = h2::server::handshake(tls).await?;
-            loop {
+            {
                 let request = tokio::select! {()=stop.cancelled()=>return anyhow::Ok(()),request=connection.accept()=>request};
                 let Some(request) = request else {
-                    break;
+                    continue;
                 };
                 let (request, mut response) = request?;
                 let token = request.headers().get("authorization").unwrap().to_str()?;
@@ -78,17 +78,24 @@ async fn authenticated_readback_recovers_original_provider() -> Result<()> {
                 let method = request.method().clone();
                 let path = request.uri().path().to_owned();
                 let mut stream = request.into_body();
-                let mut bytes = Vec::new();
-                while let Some(chunk) = stream.data().await {
-                    let chunk = chunk?;
-                    stream.flow_control().release_capacity(chunk.len())?;
-                    bytes.extend_from_slice(&chunk);
-                }
+                let read = async {
+                    let mut bytes = Vec::new();
+                    while let Some(chunk) = stream.data().await {
+                        let chunk = chunk?;
+                        stream.flow_control().release_capacity(chunk.len())?;
+                        bytes.extend_from_slice(&chunk);
+                    }
+                    anyhow::Ok(bytes)
+                };
+                let bytes = tokio::select! {
+                    bytes=read=>bytes?,
+                    _=connection.accept()=>anyhow::bail!("unexpected concurrent fixture request"),
+                };
                 if method == reqwest::Method::POST {
                     ensure!(path == "/admin/provisioners" && observed.lock().unwrap().is_none());
                     *observed.lock().unwrap() = Some(serde_json::from_slice(&bytes)?);
                     // CA committed, but its response was lost. Do not synthesize success.
-                    break;
+                    continue;
                 }
                 ensure!(path == "/admin/provisioners/rss-agent");
                 let value = observed.lock().unwrap().clone();
@@ -100,6 +107,8 @@ async fn authenticated_readback_recovers_original_provider() -> Result<()> {
                     false,
                 )?;
                 send.send_data(axum::body::Bytes::from(body), true)?;
+                connection.graceful_shutdown();
+                while connection.accept().await.is_some() {}
             }
         }
         anyhow::Ok(())
@@ -145,6 +154,11 @@ fn imported_provider_compares_semantics_and_rejects_privilege_expansion() {
     actual.details.jwk.as_mut().unwrap().public_key =
         STANDARD.encode(serde_json::to_string_pretty(&public).unwrap());
     assert!(actual.matches(&expected).is_ok());
+    actual.deleted_at = Some("0001-01-01T00:00:00Z".into());
+    assert!(actual.matches(&expected).is_ok());
+    actual.deleted_at = Some("2026-10-19T00:00:00Z".into());
+    assert!(actual.matches(&expected).is_err());
+    actual.deleted_at = None;
     actual.claims.ssh.enabled = true;
     assert!(actual.matches(&expected).is_err());
     actual.claims.ssh.enabled = false;

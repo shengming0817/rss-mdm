@@ -7,9 +7,13 @@ use uuid::Uuid;
 #[ignore = "MODULE=installation.native_rewrap: retained ADE credentials re-encrypt atomically without changing identity or replay metadata"]
 async fn ade_original_material_survives_rotation_and_corrupt_rows_roll_back() -> Result<()> {
     let tenant = crate::test_support::case::tenant();
-    let mut c =
-        sqlx::PgConnection::connect_with(&crate::device::test_support::options("mdm_owner")?)
-            .await?;
+    let mut c = sqlx::PgConnection::connect_with(
+        &std::env::var("MDM_OWNER_URL")?
+            .parse::<sqlx::postgres::PgConnectOptions>()?
+            .ssl_mode(sqlx::postgres::PgSslMode::VerifyFull)
+            .ssl_root_cert(std::env::var("PG_CA_FILE")?),
+    )
+    .await?;
     let old = Protector::new(&[81; 32])?;
     let next = Protector::with_fingerprint(&[82; 32], &[&[81; 32]], &[81; 32])?;
     let organization = Uuid::new_v4();
