@@ -139,18 +139,14 @@ async fn absent_agent_group_installs_fixed_package_and_registers_independently()
     // The reference server receives the ACK; the product loses this transport message.
     // Both then continue on the same device, so the oracle still checks query syntax.
     peer.oracle
-        .compare(
-            "/mdm",
-            &protocol::xml(protocol::dictionary([
-                ("Status", "Acknowledged".into()),
-                (
-                    "UDID",
-                    crate::test_support::case::name("rss-t2-apple").into(),
-                ),
-                ("CommandUUID", install.to_string().into()),
-            ]))?,
-            &[],
-        )
+        .acknowledge_without_product(&protocol::xml(protocol::dictionary([
+            ("Status", "Acknowledged".into()),
+            (
+                "UDID",
+                crate::test_support::case::name("rss-t2-apple").into(),
+            ),
+            ("CommandUUID", install.to_string().into()),
+        ]))?)
         .await?;
     // An unacknowledged install is queried; it is never sent again as a new install.
     let (observe, _) = peer

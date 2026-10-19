@@ -136,7 +136,7 @@ def offline(root, case_root, env, purpose):
 
 
 @contextmanager
-def running(root, env, *, case, windows=False, agent=False, agent_origin=None, agent_template=None, windows_template=None, compose_file=None, providers=None, generation=None, configuration_devices=0, materials=()):
+def running(root, env, *, case, windows=False, agent=False, agent_origin=None, agent_template=None, windows_template=None, compose_file=None, providers=None, generation=None, configuration_devices=0, materials=(), owner_root=None):
     import shutil
     case_root=Path(root).resolve()
     purpose='agent' if agent else 'windows'
@@ -144,7 +144,7 @@ def running(root, env, *, case, windows=False, agent=False, agent_origin=None, a
     root=case_root/'pki'/(purpose+('-'+generation if generation else ''));root.mkdir(mode=0o700,parents=True)
     for name in ('ca.crt','server.crt','case.json'):
         shutil.copyfile(case_root/name,root/name);(root/name).chmod(0o600)
-    provider=Provider(root,hashlib.sha256((case+':'+purpose+(':'+generation if generation else '')).encode()).hexdigest()[:20], compose_file=compose_file, providers=providers);step=binary('step')
+    provider=Provider(root,hashlib.sha256((case+':'+purpose+(':'+generation if generation else '')).encode()).hexdigest()[:20], compose_file=compose_file, providers=providers, owner_root=owner_root);step=binary('step')
     subprocess.run(['openssl','pkcs8','-topk8','-nocrypt','-in',str(case_root/'server.key'),'-outform','DER',
                     '-out',str(root/'agent-tls.pk8')],check=True,capture_output=True,timeout=30)
     (root/'agent-tls.pk8').chmod(0o600)

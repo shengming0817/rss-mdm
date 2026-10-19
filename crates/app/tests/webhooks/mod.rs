@@ -217,7 +217,13 @@ async fn subscription_versions_atomic_fanout_and_same_id_https_retry() -> Result
         // The integration belongs to the tenant even after its creator loses all business grants.
         identity::set_grants(case_tenant(),case::admin(),vec![]).await?;
         worker=Some(tokio::spawn(backend.clone().work(stop.clone())));
-        let requests=tokio::time::timeout(Duration::from_secs(30),&mut server).await???;
+        let requests=match tokio::time::timeout(Duration::from_secs(30),&mut server).await {
+            Ok(result)=>result??,
+            Err(error)=>{
+                let diagnostic=pg(&format!("SELECT coalesce(jsonb_agg(row_to_json(s)),'[]') FROM (SELECT last_stage,last_reason,last_outcome,count(*) AS count FROM mdm_webhook.deliveries WHERE tenant_id='{tenant}' GROUP BY last_stage,last_reason,last_outcome) s"))?;
+                anyhow::bail!("webhook receiver deadline: {error}; delivery stages: {diagnostic}");
+            }
+        };
         let first:Vec<_>=requests.iter().filter(|r|r.0=="/first").collect();ensure!(first.len()==2 && first[0].1==first[1].1 && first[0].2==first[1].2);
         ensure!(requests.iter().all(|r|serde_json::from_slice::<Value>(&r.2).ok().is_some_and(|v|v["eventId"]==event.event_id.to_string())));
         tokio::time::timeout(Duration::from_secs(10),async {loop {if pg(&format!("SELECT count(*) FROM mdm_webhook.deliveries d JOIN rss_transactional_messaging.outbox o ON(o.tenant_id,o.message_id)=(d.tenant_id,d.id::text) WHERE d.event_id='{}' AND o.status='published'",event.event_id))?.trim()==(rss_mdm_webhook_service::PAGE+1).to_string(){return Ok::<_,anyhow::Error>(())}tokio::time::sleep(Duration::from_millis(100)).await;}}).await??;

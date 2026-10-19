@@ -22,7 +22,14 @@ def check(value,message):
     if not value:raise QualificationFailure(message)
 
 def run(*args,timeout=180):
-    result=subprocess.run(args,text=True,capture_output=True,timeout=timeout)
+    deadline=time.monotonic()+timeout
+    while True:
+        result=subprocess.run(args,text=True,capture_output=True,timeout=max(1,deadline-time.monotonic()))
+        if result.returncode and args[0]==BIN and ': busy:' in result.stderr and time.monotonic()+.5<deadline:
+            # A Busy rejection is safe to retry with the exact original operation input.
+            time.sleep(.5)
+            continue
+        break
     if result.returncode:
         category=next((value for value in ('input_rejected','busy','conflict','corrupt','storage_unavailable')
                        if value+':' in result.stderr),'unclassified')

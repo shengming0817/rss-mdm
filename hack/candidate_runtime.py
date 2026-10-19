@@ -350,10 +350,10 @@ class Candidate:
         private(self.root/'windows.json',windows)
         private(self.root/'case.json',dict(tenant=self.tenant))
         env={**os.environ}
-        windows_provider=self.pki_stack.enter_context(running(self.root,env,case=self.name,windows=True, windows_template=self.directory/'deployment/windows-leaf.tpl', compose_file=self.directory/'deployment/compose.yaml', providers=self.providers))
+        windows_provider=self.pki_stack.enter_context(running(self.root,env,case=self.name,windows=True, windows_template=self.directory/'deployment/windows-leaf.tpl', compose_file=self.directory/'deployment/compose.yaml', providers=self.providers, owner_root=self.root))
         agent_origin='https://localhost:'+self.compose('port','runtime-netns','9445',stage=Stage.PORT).rsplit(':',1)[1]
         self.agent_provider=self.pki_stack.enter_context(running(self.root,env,case=self.name,agent=True,agent_origin=agent_origin,
-                                            agent_template=self.directory/'deployment/agent-leaf.tpl', compose_file=self.directory/'deployment/compose.yaml', providers=self.providers))
+                                            agent_template=self.directory/'deployment/agent-leaf.tpl', compose_file=self.directory/'deployment/compose.yaml', providers=self.providers, owner_root=self.root))
         def copy_file(source):
             source=Path(source)
             target=self.runtime/(sha(source)[:32]+'-'+source.name)
@@ -367,7 +367,13 @@ class Candidate:
         agent=json.loads((self.root/'agent-pki.json').read_text());agent['endpoint']['listen']='0.0.0.0:9445'
         self.config['agent_pki']=copy(agent)
         providers=json.loads((self.root/'device-pki.json').read_text())
+        self.agent_external_origin=next(item['origin'] for item in providers if item['purpose']=='agent')
         for config, provider in zip(providers, [windows_provider, self.agent_provider], strict=True):
+            from urllib.parse import urlsplit
+            from t2_environment import PKI_CA
+            external=urlsplit(config['origin'])
+            require(external.scheme=='https' and external.hostname=='localhost' and external.port,'invalid fixture CA origin')
+            provider.owner.extra['MDM_PKI_PUBLISH']=f'127.0.0.1:{external.port}:{PKI_CA["port"]}'
             docker('network','connect', provider.owner.project+'_default', self.container('runtime-netns'), stage=Stage.SERVER)
             config['origin']='https://'+provider.internal_host+':19443'
         self.config['device_pki']=copy(providers)
@@ -376,9 +382,9 @@ class Candidate:
     def __enter__(self):
         try:
             from t2_environment import ROOT, project_name, private
-            self.worktree_identity=project_name(ROOT)
             self.temporary=tempfile.TemporaryDirectory(prefix=self.name+"-")
             self.root=Path(self.temporary.name)
+            self.worktree_identity=project_name(self.root)
             self.runtime,self.operator_root=inputs(self.root,self.directory/"mdm-config.example.json",
                                                   self.directory/"deployment/nginx.conf",database_host=self.pg_host)
             self.compose_environment={**{key:value for key,value in os.environ.items() if not key.startswith('COMPOSE_')},
@@ -489,7 +495,7 @@ class Candidate:
             subprocess.run(['docker','exec',self.pg,'pg_dump','-U','postgres','-d','mdm_test','-Fc'],stdout=output,check=True,timeout=60)
         database.chmod(0o600)
         origin=self.agent_provider.restore(snapshot)
-        require(origin==json.loads((self.root/'device-pki.json').read_text())[1]['origin'],'restored CA changed frozen origin')
+        require(origin==self.agent_external_origin,'restored CA changed frozen origin')
         self.command('exec',self.pg,'dropdb','-U','postgres','--force','mdm_test',stage=Stage.SQL)
         self.command('exec',self.pg,'createdb','-U','postgres','mdm_test',stage=Stage.SQL)
         with database.open('rb') as source:
@@ -524,7 +530,7 @@ class Candidate:
             try:cleanup([],self.volumes)
             except BaseException as failure:failures.append(failure)
             if failures:
-                if error:error.add_note('candidate cleanup failed');record(error)
+                if error:error.add_note('candidate cleanup failed')
                 else:record(failures[0]);raise failures[0]
         finally:
             if self.temporary and not failures:self.temporary.cleanup()

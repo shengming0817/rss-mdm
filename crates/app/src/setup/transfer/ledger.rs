@@ -11,7 +11,8 @@ pub(in crate::setup) struct Head {
     pub tag: Option<Vec<u8>>,
     pub verified_records: Option<u64>,
 }
-/// The deployment operator opens a privileged connection, then drops to the existing read role.
+/// The trusted deployment operator connects before adopting the existing reader identity.
+/// Both session_user and current_user must satisfy Audit/Ledger admission.
 /// This permits integrity verification while ordinary runtime CONNECT privileges are fenced.
 pub(in crate::setup) async fn verify_operator(
     runtime: &Value,
@@ -23,7 +24,9 @@ pub(in crate::setup) async fn verify_operator(
         .acquire_timeout(std::time::Duration::from_secs(5))
         .after_connect(|c, _| {
             Box::pin(async move {
-                sqlx::query("SET ROLE mdm_access").execute(c).await?;
+                sqlx::query("SET SESSION AUTHORIZATION mdm_access")
+                    .execute(c)
+                    .await?;
                 Ok(())
             })
         })

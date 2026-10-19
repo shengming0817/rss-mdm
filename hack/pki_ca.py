@@ -21,11 +21,11 @@ from t2_processes import check_cancelled, cleanup, private_value, record_output,
 
 
 class Provider:
-    def __init__(self, root, case, *, compose_file=None, providers=None, internal_host=None):
+    def __init__(self, root, case, *, compose_file=None, providers=None, internal_host=None, owner_root=None):
         if not re.fullmatch(r'[0-9a-f]{20}', case):
             raise ValueError('invalid PKI fixture case identity')
         self.root = Path(root).resolve()
-        self.owner = Environment(group='t2-pki-'+case, compose_file=compose_file, providers=providers)
+        self.owner = Environment(owner_root or ROOT, group='t2-pki-'+case, compose_file=compose_file, providers=providers)
         self.internal_host = internal_host or 'ca-'+case
         self.owner.extra = {'MDM_PKI_ROOT':str(self.root), 'MDM_PKI_INTERNAL_HOST':self.internal_host, 'MDM_NETWORK_NAME':self.owner.project+'_default'}
         self.container = None
