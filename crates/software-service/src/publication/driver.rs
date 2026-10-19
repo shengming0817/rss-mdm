@@ -19,12 +19,12 @@ pub enum Withdrawal {
     AwaitingConfirmation,
     Complete,
 }
-/// Settled quarantine operation and external withdrawal status.
+/// Settled withdrawal operation and external withdrawal status.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct WithdrawalExecution {
     /// Current external withdrawal outcome; unresolved outcomes must not imply completion.
     pub outcome: Withdrawal,
-    /// True only when both the quarantine request and terminal withdrawal were replayed.
+    /// True only when both the withdrawal request and terminal withdrawal were replayed.
     pub replayed: bool,
 }
 #[derive(Clone, Copy)]
@@ -65,9 +65,9 @@ impl PublicationService {
     ) -> Result<rel::PublicationOutcome> {
         let key = format!("p:{}:{attempt}", hex(&id.digest().bytes()));
         let call = self.load_call(Table::Publish, &key, cutoff).await?;
-        let candidate = rel::CandidateId::new(self.tenant(), &call.target.candidate)
+        let record = rel::PublicationKey::new(self.tenant(), &call.target.record)
             .map_err(|cause| Error::Identity.context("driver::publish", cause))?;
-        let (c, subject, prepared) = self.context(&candidate, cutoff).await?;
+        let (c, subject, prepared) = self.context(&record, cutoff).await?;
         let p = db::core_publication(&c, &call.target)?;
         if matches!(
             p.outcome,
@@ -77,10 +77,7 @@ impl PublicationService {
         ) {
             return self.recover_result(&call.target, cutoff).await;
         }
-        if matches!(
-            self.sources.binding(call.target.ring()?).driver,
-            Driver::Winget { .. }
-        ) {
+        if matches!(self.sources.binding().driver, Driver::Winget { .. }) {
             if !call.attempted {
                 self.verify(&prepared, cutoff).await?;
                 self.start_call(Table::Publish, &call.target, cutoff)
@@ -125,9 +122,9 @@ impl PublicationService {
                 cutoff,
             )
             .await?;
-        let candidate = rel::CandidateId::new(self.tenant(), &call.target.candidate)
+        let record = rel::PublicationKey::new(self.tenant(), &call.target.record)
             .map_err(|cause| Error::Identity.context("driver::reconcile", cause))?;
-        let (c, subject, _) = self.context(&candidate, cutoff).await?;
+        let (c, subject, _) = self.context(&record, cutoff).await?;
         let p = db::core_publication(&c, &call.target)?;
         if matches!(
             p.outcome,
@@ -140,10 +137,7 @@ impl PublicationService {
         if !call.attempted {
             return Box::pin(self.publish(id, attempt, at, cutoff)).await;
         }
-        if matches!(
-            self.sources.binding(call.target.ring()?).driver,
-            Driver::Winget { .. }
-        ) {
+        if matches!(self.sources.binding().driver, Driver::Winget { .. }) {
             return self
                 .record_result(&call.target, Observation::Applied, at, cutoff)
                 .await;
@@ -161,7 +155,7 @@ impl PublicationService {
                     tenant = %self.tenant(),
                     publication = %hex(&call.target.publication),
                     attempt = call.target.attempt,
-                    ring = call.target.ring,
+
                     source_binding = %hex(&call.target.binding),
                     stage = "reconcile",
                     reason = "deadline",
@@ -225,15 +219,15 @@ impl PublicationService {
                                 .await
                                 .map_err(|_| Error::Content)
                         );
-                        tx.prepare_outbox_partitions(&[s.releases.partition(&t.candidate)?])
+                        tx.prepare_outbox_partitions(&[s.releases.partition(&t.record)?])
                             .await?;
                         let id = db::required(
                             "recover_result",
-                            rel::CandidateId::new(s.tenant(), &t.candidate),
+                            rel::PublicationKey::new(s.tenant(), &t.record),
                         )?;
                         let c = input!(
                             s.releases
-                                .lock_candidate_in(tx, &id)
+                                .lock_publication_in(tx, &id)
                                 .await?
                                 .map_err(|_| Error::Conflict)
                         );
@@ -251,7 +245,7 @@ impl PublicationService {
     async fn recover_record_in(
         &self,
         tx: &mut rss_transactional_messaging_postgres::PgTransaction<'_>,
-        c: &rel::Candidate,
+        c: &rel::Publication,
         t: &Target,
         result: &rel::PublicationResult,
     ) -> std::result::Result<(), rss_transactional_messaging_postgres::PgError> {
@@ -294,10 +288,10 @@ impl PublicationService {
         let fact = db::fact(
             tx.tenant_id(),
             &self.actors.backend,
-            &t.candidate,
+            &t.record,
             "software_result",
             db::record_fact(&request, t, stage, outcome),
-            &db::request_fingerprint(&t.candidate, &request)?,
+            &db::request_fingerprint(&t.record, &request)?,
         )?;
         self.audit_store
             .append_in(tx, &fact, true)
@@ -315,7 +309,7 @@ impl PublicationService {
                 .await,
         )?;
         let t = &call.target;
-        if t.binding != self.sources.binding(t.ring()?).identity
+        if t.binding != self.sources.binding().identity
             || if matches!(table, Table::Publish) {
                 t.key() != key
             } else {
@@ -368,7 +362,7 @@ impl PublicationService {
                             }
                             if matches!(table, Table::Publish) {
                                 let subject =
-                                    db::subject(tx, &t.candidate).await?.ok_or_else(db::fault)?;
+                                    db::subject(tx, &t.record).await?.ok_or_else(db::fault)?;
                                 input!(
                                     s.exports()
                                         .resource_usable(tx, &subject, t.lifecycle)
@@ -377,14 +371,18 @@ impl PublicationService {
                             }
                             let id = db::required(
                                 "driver::start_call",
-                                rel::CandidateId::new(s.tenant(), &t.candidate),
+                                rel::PublicationKey::new(s.tenant(), &t.record),
                             )?;
-                            let c = input!(s.releases.lock_candidate_in(tx, &id).await?.map_err(
+                            let c = input!(s.releases.lock_publication_in(tx, &id).await?.map_err(
                                 |cause| Error::Conflict.context("driver::start_call", cause)
                             ));
                             let p = input!(db::core_publication(&c, t));
+
                             if matches!(table, Table::Publish) {
-                                if c.snapshot().disposition != rel::Disposition::Active
+                                if (c.snapshot().withdrawn
+                                    || db::call(tx, Table::Withdraw, &t.withdrawal_key())
+                                        .await?
+                                        .is_some())
                                     || !(matches!(p.outcome, rel::PublicationOutcome::Pending)
                                         || call.attempted
                                             && matches!(
@@ -408,7 +406,7 @@ impl PublicationService {
                                 let fact = db::fact(
                                     tx.tenant_id(),
                                     &s.actors.backend,
-                                    &t.candidate,
+                                    &t.record,
                                     "software_call",
                                     db::call_fact(
                                         t,
@@ -429,7 +427,7 @@ impl PublicationService {
                             let fact = db::fact(
                                 tx.tenant_id(),
                                 &s.actors.backend,
-                                &t.candidate,
+                                &t.record,
                                 "software_call",
                                 db::call_fact(t, table, generation, "start_call", "attempted"),
                                 &db::encode(&(t, generation))?,
@@ -478,7 +476,7 @@ impl PublicationService {
                             let fact = db::fact(
                                 tx.tenant_id(),
                                 &s.actors.backend,
-                                &t.candidate,
+                                &t.record,
                                 "software_call",
                                 db::call_fact(
                                     t,
@@ -506,7 +504,7 @@ impl PublicationService {
         s: &db::Subject,
         remove: bool,
     ) -> Result<WriteObservation> {
-        match &self.sources.binding(t.ring()?).driver {
+        match &self.sources.binding().driver {
             Driver::Winget { .. } => Err(Error::Unsupported),
             Driver::Brew { repo, tap, .. } => self.write_brew(repo, tap, t, s, remove).await,
         }
@@ -550,7 +548,7 @@ impl PublicationService {
                         tenant = %self.tenant(),
                         publication = %hex(&t.publication),
                         attempt = t.attempt,
-                        ring = t.ring,
+
                         source_binding = %hex(&t.binding),
                     ?reason,
                     stage = "source",
@@ -567,7 +565,7 @@ impl PublicationService {
                     tenant = %self.tenant(),
                     publication = %hex(&t.publication),
                     attempt = t.attempt,
-                    ring = t.ring,
+
                     source_binding = %hex(&t.binding),
                 backend = "brew",
                 ?reason,
@@ -581,7 +579,7 @@ impl PublicationService {
         })
     }
     async fn inspect_source(&self, t: &Target, s: &db::Subject, remove: bool) -> Result<bool> {
-        match &self.sources.binding(t.ring()?).driver {
+        match &self.sources.binding().driver {
             Driver::Winget { .. } => Err(Error::Unsupported),
             Driver::Brew { repo, tap, .. } => {
                 let ExportDocument::Brew { recipe } = &s.document else {
@@ -639,18 +637,19 @@ impl PublicationService {
                                     .await
                                     .map_err(|_| Error::Content)
                             );
-                            tx.prepare_outbox_partitions(&[s.releases.partition(&t.candidate)?])
+                            tx.prepare_outbox_partitions(&[s.releases.partition(&t.record)?])
                                 .await?;
                             db::lock(tx, "source", &format!("{}:{}", hex(&t.binding), t.slot))
                                 .await?;
                             let id = db::required(
                                 "driver::record_result",
-                                rel::CandidateId::new(s.tenant(), &t.candidate),
+                                rel::PublicationKey::new(s.tenant(), &t.record),
                             )?;
-                            let c = input!(s.releases.lock_candidate_in(tx, &id).await?.map_err(
+                            let c = input!(s.releases.lock_publication_in(tx, &id).await?.map_err(
                                 |cause| Error::Conflict.context("driver::record_result", cause)
                             ));
                             let current = input!(db::core_publication(&c, t));
+                            let at = at.max(c.snapshot().at);
                             let evidence = rel::Evidence {
                                 actor: s.actors.backend.clone(),
                                 digest: rel::Digest::of(&db::encode(&serde_json::json!([
@@ -717,10 +716,10 @@ impl PublicationService {
                             let fact = db::fact(
                                 tx.tenant_id(),
                                 &s.actors.backend,
-                                &t.candidate,
+                                &t.record,
                                 "software_result",
                                 db::record_fact(&request, t, "record_result", observed.tag()),
-                                &db::request_fingerprint(&t.candidate, &request)?,
+                                &db::request_fingerprint(&t.record, &request)?,
                             )?;
                             s.audit_store
                                 .append_in(tx, &fact, replayed)
@@ -735,25 +734,27 @@ impl PublicationService {
     }
     pub async fn withdraw(
         &self,
-        id: &rel::CandidateId,
-        ring: rel::Ring,
+        id: &rel::PublicationKey,
         request: &ServiceRequest,
+        access: &dyn PublishAccess,
         cutoff: Deadline,
     ) -> Result<WithdrawalExecution> {
-        let at = request.as_of;
-        let r = request.core(&request.actor, rel::Operation::Quarantine);
-        let replayed = settle(
+        let r = request.core(&request.actor, rel::Operation::Withdraw);
+        let (publish, replayed) = settle(
             self.runtime
                 .local_tx_with_context(
                     self.tenant(),
                     budget(cutoff),
-                    (self, id, &r),
-                    |(s, id, r), tx| {
+                    (self, id, &r, access),
+                    |(s, id, r, access), tx| {
                         Box::pin(async move {
                             s.audit_store
                                 .lock_in(tx)
                                 .await
                                 .map_err(rss_transactional_messaging_postgres::PgError::from)?;
+                            tx.prepare_outbox_partitions(&[s.releases.partition(id.value())?])
+                                .await?;
+                            input!(access.check(tx).await);
                             input!(
                                 s.catalog
                                     .reader()
@@ -761,69 +762,62 @@ impl PublicationService {
                                     .await
                                     .map_err(|_| Error::Content)
                             );
-                            tx.prepare_outbox_partitions(&[s.releases.partition(id.value())?])
-                                .await?;
-                            let result =
-                                input!(s.releases.transition_in(tx, id, r).await?.map_err(
-                                    |cause| Error::Conflict.context("driver::withdraw", cause)
-                                ));
-                            {
-                                let fact = db::fact(
-                                    tx.tenant_id(),
-                                    &r.actor,
-                                    id.value(),
-                                    "software_withdraw",
-                                    db::request_fact(r.id.value(), Some(ring), "withdraw-request"),
-                                    &db::encode(&(
-                                        db::request_fingerprint(id.value(), r)?,
-                                        ring as u8,
-                                    ))?,
-                                )?;
-                                s.audit_store
-                                    .append_in(
-                                        tx,
-                                        &fact,
-                                        matches!(result, rel::Transition::Replayed(_)),
-                                    )
-                                    .await
-                                    .map_err(rss_transactional_messaging_postgres::PgError::from)?;
-                            }
-                            Ok(Ok(matches!(result, rel::Transition::Replayed(_))))
+                            let c = input!(
+                                s.releases
+                                    .lock_publication_in(tx, id)
+                                    .await?
+                                    .map_err(|_| Error::Conflict)
+                            );
+                            let p = &c.snapshot().attempt;
+                            let publish = db::call(
+                                tx,
+                                Table::Publish,
+                                &format!("p:{}:{}", hex(&p.id().digest().bytes()), p.attempt),
+                            )
+                            .await?
+                            .ok_or_else(db::fault)?;
+                            let result = input!(
+                                s.releases
+                                    .transition_in(tx, id, r)
+                                    .await?
+                                    .map_err(|_| Error::Conflict)
+                            );
+                            let mut intent = publish.target.clone();
+                            intent.base = None;
+                            intent.commit = None;
+                            intent.commit_at = r.as_of.unix_seconds();
+                            s.queue_withdrawal_in(tx, &intent).await?;
+                            let fact = db::fact(
+                                tx.tenant_id(),
+                                &r.actor,
+                                id.value(),
+                                "software_withdraw",
+                                db::request_fact(r.id.value(), "withdraw-request"),
+                                &db::request_fingerprint(id.value(), r)?,
+                            )?;
+                            let replayed = matches!(result, rel::Transition::Replayed(_));
+                            s.audit_store
+                                .append_in(tx, &fact, replayed)
+                                .await
+                                .map_err(rss_transactional_messaging_postgres::PgError::from)?;
+                            db::required("withdraw authorization", access.check(tx).await)?;
+                            Ok(Ok((publish, replayed)))
                         })
                     },
                 )
                 .await,
         )?;
-        let c = self
-            .releases
-            .get(id, budget(cutoff))
-            .await?
-            .ok_or(Error::Conflict)?;
-        let rel::RingState::Publication(p) = c.snapshot().ring_state(ring) else {
-            return Ok(WithdrawalExecution {
-                outcome: Withdrawal::NotPublished,
-                replayed,
-            });
-        };
-        let replayed = replayed
-            && self.withdrawal_status(p.id(), p.attempt, cutoff).await?
-                == Some(Withdrawal::Complete);
-        let publish = self
-            .load_call(
-                Table::Publish,
-                &format!("p:{}:{}", hex(&p.id().digest().bytes()), p.attempt),
+        if !publish.attempted {
+            self.cancel_unstarted(&publish.target, request.as_of, cutoff)
+                .await?;
+        }
+        let outcome = self
+            .drive_withdrawal(
+                publish.target.publication_id(),
+                publish.target.attempt,
                 cutoff,
             )
             .await?;
-        let mut intent = publish.target.clone();
-        intent.base = None;
-        intent.commit = None;
-        intent.commit_at = at.unix_seconds();
-        self.queue_withdrawal(&intent, cutoff).await?;
-        if !publish.attempted {
-            self.cancel_unstarted(&publish.target, at, cutoff).await?;
-        }
-        let outcome = self.drive_withdrawal(p.id(), p.attempt, cutoff).await?;
         Ok(WithdrawalExecution { outcome, replayed })
     }
     #[tracing::instrument(skip_all, fields(tenant = %self.tenant(), publication = %hex(&id.digest().bytes()), attempt))]
@@ -868,29 +862,19 @@ impl PublicationService {
                             let Some(call) = db::call(tx, Table::Withdraw, key).await? else {
                                 return Ok(Ok(None));
                             };
-                            if call.complete {
-                                return Ok(Ok(Some(Withdrawal::Complete)));
-                            }
-                            let candidate = input!(
-                                rel::CandidateId::new(s.tenant(), &call.target.candidate)
+                            let record = input!(
+                                rel::PublicationKey::new(s.tenant(), &call.target.record)
                                     .map_err(|cause| Error::Identity
                                         .context("driver::withdrawal_status", cause))
                             );
-                            let c =
-                                input!(s.releases.get_in(tx, &candidate).await?.map_err(|cause| {
-                                    Error::Conflict.context("driver::withdrawal_status", cause)
-                                }))
-                                .ok_or_else(db::fault)?;
-                            let publication = input!(db::core_publication(&c, &call.target));
-                            let status = match publication.outcome {
-                                rel::PublicationOutcome::Reported(
-                                    rel::PublicationResult::Applied(_),
-                                ) => withdrawal_progress(&call),
-                                rel::PublicationOutcome::Reported(
-                                    rel::PublicationResult::NotApplied(_),
-                                ) => Withdrawal::NotPublished,
-                                _ => Withdrawal::WaitingPublication,
-                            };
+                            let c = input!(
+                                s.releases
+                                    .get_in(tx, &record)
+                                    .await?
+                                    .map_err(|_| Error::Conflict)
+                            )
+                            .ok_or_else(db::fault)?;
+                            let status = input!(withdrawal_state(&c, &call));
                             Ok(Ok(Some(status)))
                         })
                     },
@@ -898,48 +882,12 @@ impl PublicationService {
                 .await,
         )
     }
-    async fn queue_withdrawal(&self, t: &Target, cutoff: Deadline) -> Result<()> {
-        settle(
-            self.runtime
-                .local_tx_with_context(self.tenant(), budget(cutoff), (self, t), |(s, t), tx| {
-                    Box::pin(async move {
-                        s.audit_store
-                            .lock_in(tx)
-                            .await
-                            .map_err(rss_transactional_messaging_postgres::PgError::from)?;
-                        input!(
-                            s.catalog
-                                .reader()
-                                .lock_in(tx)
-                                .await
-                                .map_err(|_| Error::Content)
-                        );
-                        db::lock(tx, "withdrawal", &t.withdrawal_key()).await?;
-                        let replayed = db::call(tx, Table::Withdraw, &t.withdrawal_key())
-                            .await?
-                            .is_some();
-                        if !replayed {
-                            db::insert_call(tx, Table::Withdraw, t).await?;
-                        }
-                        {
-                            let fact = db::fact(
-                                tx.tenant_id(),
-                                &s.actors.backend,
-                                &t.candidate,
-                                "software_withdraw",
-                                db::target_fact(t, Table::Withdraw, "queue_withdrawal", "queued"),
-                                &db::encode(t)?,
-                            )?;
-                            s.audit_store
-                                .append_in(tx, &fact, replayed)
-                                .await
-                                .map_err(rss_transactional_messaging_postgres::PgError::from)?;
-                        }
-                        Ok(Ok(()))
-                    })
-                })
-                .await,
-        )
+    pub(super) async fn queue_withdrawal_in(
+        &self,
+        tx: &mut rss_transactional_messaging_postgres::PgTransaction<'_>,
+        t: &Target,
+    ) -> std::result::Result<(), rss_transactional_messaging_postgres::PgError> {
+        db::queue_withdrawal_in(tx, self.audit_store.as_ref(), &self.actors.backend, t).await
     }
     async fn cancel_unstarted(&self, t: &Target, at: Timepoint, cutoff: Deadline) -> Result<()> {
         settle(
@@ -961,7 +909,7 @@ impl PublicationService {
                                     .await
                                     .map_err(|_| Error::Content)
                             );
-                            tx.prepare_outbox_partitions(&[s.releases.partition(&t.candidate)?])
+                            tx.prepare_outbox_partitions(&[s.releases.partition(&t.record)?])
                                 .await?;
                             db::lock(tx, "source", &format!("{}:{}", hex(&t.binding), t.slot))
                                 .await?;
@@ -973,15 +921,16 @@ impl PublicationService {
                             }
                             let id = db::required(
                                 "driver::cancel_unstarted",
-                                rel::CandidateId::new(s.tenant(), &t.candidate),
+                                rel::PublicationKey::new(s.tenant(), &t.record),
                             )?;
-                            let c = input!(s.releases.lock_candidate_in(tx, &id).await?.map_err(
+                            let c = input!(s.releases.lock_publication_in(tx, &id).await?.map_err(
                                 |cause| Error::Conflict.context("driver::cancel_unstarted", cause)
                             ));
-                            if c.snapshot().disposition == rel::Disposition::Active {
+                            if !c.snapshot().withdrawn {
                                 return Ok(Err(Error::Blocked));
                             }
                             let p = input!(db::core_publication(&c, t));
+                            let at = at.max(c.snapshot().at);
                             if matches!(p.outcome, rel::PublicationOutcome::Pending) {
                                 let evidence = rel::Evidence {
                                     actor: s.actors.backend.clone(),
@@ -1006,10 +955,10 @@ impl PublicationService {
                                 let fact = db::fact(
                                     tx.tenant_id(),
                                     &s.actors.backend,
-                                    &t.candidate,
+                                    &t.record,
                                     "software_result",
                                     db::record_fact(&r, t, "cancel_unstarted", "not-applied"),
-                                    &db::request_fingerprint(&t.candidate, &r)?,
+                                    &db::request_fingerprint(&t.record, &r)?,
                                 )?;
                                 s.audit_store
                                     .append_in(tx, &fact, false)
@@ -1031,7 +980,7 @@ impl PublicationService {
         cutoff: Deadline,
     ) -> Result<Option<Observation>> {
         tokio::time::timeout_at(cutoff.instant().into(), async {
-            Ok(match &self.sources.binding(publish.ring()?).driver {
+            Ok(match &self.sources.binding().driver {
                 Driver::Winget { .. } => Some(Observation::NotApplied),
                 Driver::Brew { repo, .. } => {
                     if self.inspect_source(publish, subject, false).await? {
@@ -1084,12 +1033,12 @@ impl PublicationService {
             let at = Timepoint::try_from(call.target.commit_at).map_err(|_| Error::Content)?;
             if !publish.attempted {
                 self.cancel_unstarted(&publish.target, at, cutoff).await?;
-                let id = rel::CandidateId::new(self.tenant(), &call.target.candidate)
+                let id = rel::PublicationKey::new(self.tenant(), &call.target.record)
                     .map_err(|_| Error::Identity)?;
-                let (candidate, _, _) = self.context(&id, cutoff).await?;
-                return Ok(db::core_publication(&candidate, &call.target)?.outcome);
+                let (record, _, _) = self.context(&id, cutoff).await?;
+                return Ok(db::core_publication(&record, &call.target)?.outcome);
             }
-            // Read the original operation only. Quarantine must never replay a publication write.
+            // Read the original operation only. Withdrawal must never replay a publication write.
             let observed = self
                 .observe_withdrawn_publication(&publish.target, subject, cutoff)
                 .await?;
@@ -1112,9 +1061,10 @@ impl PublicationService {
         if call.complete {
             return Ok(Withdrawal::Complete);
         }
-        let candidate = rel::CandidateId::new(self.tenant(), &call.target.candidate)
+        let record = rel::PublicationKey::new(self.tenant(), &call.target.record)
             .map_err(|cause| Error::Identity.context("driver::drive_withdrawal", cause))?;
-        let (c, subject, _) = self.context(&candidate, cutoff).await?;
+        self.close_for_intent(&call.target, cutoff).await?;
+        let (c, subject, _) = self.context(&record, cutoff).await?;
         let outcome = self
             .settle_withdrawing_publication(
                 &call,
@@ -1140,10 +1090,7 @@ impl PublicationService {
             }
             call = self.load_call(Table::Withdraw, &key, cutoff).await?;
         }
-        if matches!(
-            self.sources.binding(call.target.ring()?).driver,
-            Driver::Winget { .. }
-        ) {
+        if matches!(self.sources.binding().driver, Driver::Winget { .. }) {
             if !call.attempted {
                 self.start_call(Table::Withdraw, &call.target, cutoff)
                     .await?;
@@ -1154,6 +1101,83 @@ impl PublicationService {
         self.run_withdrawal_call(&call.target, &subject, cutoff)
             .await?;
         self.settle_withdrawal(&key, &subject, cutoff).await
+    }
+    async fn close_for_intent(&self, t: &Target, cutoff: Deadline) -> Result<()> {
+        settle(
+            self.runtime
+                .local_tx_with_context(self.tenant(), budget(cutoff), (self, t), |(s, t), tx| {
+                    Box::pin(async move {
+                        s.audit_store
+                            .lock_in(tx)
+                            .await
+                            .map_err(rss_transactional_messaging_postgres::PgError::from)?;
+                        tx.prepare_outbox_partitions(&[s.releases.partition(&t.record)?])
+                            .await?;
+                        input!(
+                            s.catalog
+                                .reader()
+                                .lock_in(tx)
+                                .await
+                                .map_err(|_| Error::Content)
+                        );
+                        let id = input!(
+                            rel::PublicationKey::new(s.tenant(), &t.record)
+                                .map_err(|_| Error::Identity)
+                        );
+                        let c = input!(
+                            s.releases
+                                .lock_publication_in(tx, &id)
+                                .await?
+                                .map_err(|_| Error::Conflict)
+                        );
+                        if c.snapshot().withdrawn {
+                            return Ok(Ok(()));
+                        }
+                        if db::call(tx, Table::Withdraw, &t.withdrawal_key())
+                            .await?
+                            .is_none()
+                        {
+                            return Ok(Err(Error::Conflict));
+                        }
+                        let r = rel::Request {
+                            id: input!(
+                                rel::RequestId::new(
+                                    s.tenant(),
+                                    format!("withdraw-intent/{}", hex(&t.publication))
+                                )
+                                .map_err(|_| Error::Identity)
+                            ),
+                            actor: s.actors.backend.clone(),
+                            expected_revision: c.snapshot().revision,
+                            as_of: input!(
+                                Timepoint::try_from(t.commit_at).map_err(|_| Error::Content)
+                            )
+                            .max(c.snapshot().at),
+                            operation: rel::Operation::Withdraw,
+                        };
+                        input!(
+                            s.releases
+                                .transition_in(tx, &id, &r)
+                                .await?
+                                .map_err(|_| Error::Conflict)
+                        );
+                        let fact = db::fact(
+                            tx.tenant_id(),
+                            &r.actor,
+                            &t.record,
+                            "software_withdraw",
+                            db::request_fact(r.id.value(), "withdraw-intent"),
+                            &db::request_fingerprint(&t.record, &r)?,
+                        )?;
+                        s.audit_store
+                            .append_in(tx, &fact, false)
+                            .await
+                            .map_err(rss_transactional_messaging_postgres::PgError::from)?;
+                        Ok(Ok(()))
+                    })
+                })
+                .await,
+        )
     }
     async fn complete_unpublished(&self, key: &str, cutoff: Deadline) -> Result<()> {
         settle(
@@ -1178,11 +1202,14 @@ impl PublicationService {
                             let call = db::call(tx, Table::Withdraw, key)
                                 .await?
                                 .ok_or_else(db::fault)?;
+                            if call.complete {
+                                return Ok(Ok(()));
+                            }
                             db::complete_noop(tx, key).await?;
                             let fact = db::fact(
                                 tx.tenant_id(),
                                 &s.actors.backend,
-                                &call.target.candidate,
+                                &call.target.record,
                                 "software_withdraw",
                                 db::target_fact(
                                     &call.target,
@@ -1193,7 +1220,7 @@ impl PublicationService {
                                 &db::encode(&call.target)?,
                             )?;
                             s.audit_store
-                                .append_in(tx, &fact, call.complete)
+                                .append_in(tx, &fact, false)
                                 .await
                                 .map_err(rss_transactional_messaging_postgres::PgError::from)?;
                             Ok(Ok(()))
@@ -1223,7 +1250,7 @@ impl PublicationService {
                     tenant = %self.tenant(),
                     publication = %hex(&target.publication),
                     attempt = target.attempt,
-                    ring = target.ring,
+
                     source_binding = %hex(&target.binding),
                 stage = "withdraw",
                 reason = "unknown",
@@ -1242,10 +1269,7 @@ impl PublicationService {
         if call.complete {
             return Ok(Withdrawal::Complete);
         }
-        if matches!(
-            self.sources.binding(call.target.ring()?).driver,
-            Driver::Winget { .. }
-        ) {
+        if matches!(self.sources.binding().driver, Driver::Winget { .. }) {
             if !call.attempted {
                 return Ok(Withdrawal::PreflightRetryable);
             }
@@ -1253,11 +1277,8 @@ impl PublicationService {
             return Ok(Withdrawal::Complete);
         }
         // Git revocation is resolved against the same immutable snapshot reference.
-        let can_settle = call.acknowledged
-            || matches!(
-                self.sources.binding(call.target.ring()?).driver,
-                Driver::Brew { .. }
-            );
+        let can_settle =
+            call.acknowledged || matches!(self.sources.binding().driver, Driver::Brew { .. });
         if can_settle
             && matches!(
                 tokio::time::timeout_at(
@@ -1290,7 +1311,7 @@ impl PublicationService {
                     tenant = %self.tenant(),
                     publication = %hex(&t.publication),
                     attempt = t.attempt,
-                    ring = t.ring,
+
                     source_binding = %hex(&t.binding),
                 stage = "withdraw_prepare",
                 reason = "deadline",
@@ -1349,7 +1370,7 @@ impl PublicationService {
                                 let fact = db::fact(
                                     tx.tenant_id(),
                                     &s.actors.backend,
-                                    &t.candidate,
+                                    &t.record,
                                     "software_withdraw",
                                     db::target_fact(
                                         t,
@@ -1376,7 +1397,7 @@ impl PublicationService {
         }
         let mut prepared = t.clone();
         prepared.base = slot.cursor;
-        if let Driver::Brew { repo, .. } = &self.sources.binding(t.ring()?).driver {
+        if let Driver::Brew { repo, .. } = &self.sources.binding().driver {
             if repo
                 .head()
                 .await
@@ -1465,7 +1486,7 @@ impl PublicationService {
                         let fact = db::fact(
                             tx.tenant_id(),
                             &s.actors.backend,
-                            &t.candidate,
+                            &t.record,
                             "software_withdraw",
                             db::target_fact(t, Table::Withdraw, "finish_withdrawal", "applied"),
                             &db::encode(t)?,
@@ -1489,4 +1510,22 @@ fn withdrawal_progress(call: &Call) -> Withdrawal {
     } else {
         Withdrawal::AwaitingConfirmation
     }
+}
+
+// Shared by detail and page readers; neither path performs source I/O.
+pub(super) fn withdrawal_state(record: &rel::Publication, call: &Call) -> Result<Withdrawal> {
+    let publication = db::core_publication(record, &call.target)?;
+    Ok(if call.complete {
+        Withdrawal::Complete
+    } else {
+        match publication.outcome {
+            rel::PublicationOutcome::Reported(rel::PublicationResult::Applied(_)) => {
+                withdrawal_progress(call)
+            }
+            rel::PublicationOutcome::Reported(rel::PublicationResult::NotApplied(_)) => {
+                Withdrawal::NotPublished
+            }
+            _ => Withdrawal::WaitingPublication,
+        }
+    })
 }

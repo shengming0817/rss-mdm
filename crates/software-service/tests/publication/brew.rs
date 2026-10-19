@@ -8,8 +8,7 @@ async fn brew_immutable_tap_recovery_and_version_specific_withdrawal() {
     let (_root, config) = brew_config();
     let service = server.service(runtime.clone(), config.clone()).await;
     let first = seed(runtime.clone(), &server, cask(&server, "app", "1")).await;
-    service.create_candidate(&first, cutoff()).await.unwrap();
-    let p1 = submit_publication(&service, &first.candidate, rel::Ring::Test).await;
+    let p1 = submit_publication(&service, &first).await;
     sql(
         "CREATE FUNCTION public.reject_brew_result() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'fixture result failure'; END $$; CREATE TRIGGER reject_result BEFORE UPDATE ON mdm_software_release.aggregates FOR EACH ROW EXECUTE FUNCTION public.reject_brew_result();",
     );
@@ -27,12 +26,16 @@ async fn brew_immutable_tap_recovery_and_version_specific_withdrawal() {
         .contains(snapshot.trim())
     );
     let pending = service
-        .candidate(&first.candidate, cutoff())
+        .record(&first.record, cutoff())
         .await
         .unwrap()
         .unwrap();
     assert!(
-        matches!(&pending.snapshot().rings[0], rel::RingState::Publication(p) if p.id() == p1.id() && matches!(p.outcome, rel::PublicationOutcome::Pending))
+        pending.snapshot().attempt.id() == p1.id()
+            && matches!(
+                pending.snapshot().attempt.outcome,
+                rel::PublicationOutcome::Pending
+            )
     );
     // Re-enabling the source changes its generation while the external result is unknown.
     sql(&format!(
@@ -50,27 +53,23 @@ async fn brew_immutable_tap_recovery_and_version_specific_withdrawal() {
         rel::PublicationOutcome::Reported(rel::PublicationResult::Applied(_))
     ));
     assert!(matches!(
-        service
-            .published(rel::Ring::Test, p1.id().digest().bytes(), cutoff())
-            .await,
+        service.published(p1.id().digest().bytes(), cutoff()).await,
         Err(Error::Content)
     ));
     let old = git(&config, &["rev-parse", "refs/heads/main"]);
     let other = seed(runtime.clone(), &server, formula(&server)).await;
-    service.create_candidate(&other, cutoff()).await.unwrap();
-    let p2 = submit_publication(&service, &other.candidate, rel::Ring::Test).await;
+    let p2 = submit_publication(&service, &other).await;
     service.publish(p2.id(), 1, at(10), cutoff()).await.unwrap();
     let second = seed(runtime.clone(), &server, cask(&server, "app", "2")).await;
-    service.create_candidate(&second, cutoff()).await.unwrap();
-    let p3 = submit_publication(&service, &second.candidate, rel::Ring::Test).await;
+    let p3 = submit_publication(&service, &second).await;
     service.publish(p3.id(), 1, at(10), cutoff()).await.unwrap();
     let current = git(&config, &["rev-parse", "refs/heads/main"]);
     assert_eq!(
         service
             .withdraw(
-                &first.candidate,
-                rel::Ring::Test,
-                &request_for(&service, &first.candidate).await,
+                &first.record,
+                &request_for(&service, &first.record).await,
+                &TestPublishAccess,
                 cutoff()
             )
             .await
@@ -83,9 +82,9 @@ async fn brew_immutable_tap_recovery_and_version_specific_withdrawal() {
     assert_eq!(
         service
             .withdraw(
-                &second.candidate,
-                rel::Ring::Test,
-                &request_for(&service, &second.candidate).await,
+                &second.record,
+                &request_for(&service, &second.record).await,
+                &TestPublishAccess,
                 cutoff()
             )
             .await
@@ -95,7 +94,7 @@ async fn brew_immutable_tap_recovery_and_version_specific_withdrawal() {
     );
     // Each native Tap contains precisely its frozen definition and dependencies.
     let other_snapshot = service
-        .published(rel::Ring::Test, p2.id().digest().bytes(), cutoff())
+        .published(p2.id().digest().bytes(), cutoff())
         .await
         .unwrap()
         .snapshot
@@ -109,21 +108,17 @@ async fn brew_immutable_tap_recovery_and_version_specific_withdrawal() {
     );
     assert!(
         service
-            .published(rel::Ring::Test, p2.id().digest().bytes(), cutoff())
+            .published(p2.id().digest().bytes(), cutoff())
             .await
             .is_ok()
     );
     assert!(matches!(
-        service
-            .published(rel::Ring::Test, p1.id().digest().bytes(), cutoff())
-            .await,
-        Err(Error::CandidateNotFound)
+        service.published(p1.id().digest().bytes(), cutoff()).await,
+        Err(Error::PublicationNotFound)
     ));
     assert!(matches!(
-        service
-            .published(rel::Ring::Test, p3.id().digest().bytes(), cutoff())
-            .await,
-        Err(Error::CandidateNotFound)
+        service.published(p3.id().digest().bytes(), cutoff()).await,
+        Err(Error::PublicationNotFound)
     ));
     assert_eq!(
         git(
@@ -156,8 +151,7 @@ async fn attempted_publication_withdrawal_recovers_original_git_snapshot_after_r
     let (_root, config) = brew_config();
     let service = server.service(runtime.clone(), config.clone()).await;
     let input = seed(runtime.clone(), &server, cask(&server, "app", "1")).await;
-    service.create_candidate(&input, cutoff()).await.unwrap();
-    let p = submit_publication(&service, &input.candidate, rel::Ring::Test).await;
+    let p = submit_publication(&service, &input).await;
     sql(
         "CREATE FUNCTION public.reject_brew_result() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'fixture result failure'; END $$; CREATE TRIGGER reject_result BEFORE UPDATE ON mdm_software_release.aggregates FOR EACH ROW EXECUTE FUNCTION public.reject_brew_result();",
     );
@@ -171,7 +165,7 @@ async fn attempted_publication_withdrawal_recovers_original_git_snapshot_after_r
         "DROP TRIGGER reject_result ON mdm_software_release.aggregates; DROP FUNCTION public.reject_brew_result();",
     );
     let snapshot = git(&config, &["rev-parse", "refs/heads/main"]);
-    let SourceConfig::Brew(source) = &config.test else {
+    let SourceConfig::Brew(source) = &config else {
         panic!("Brew")
     };
     let lock = source.repository.join(format!(
@@ -184,9 +178,9 @@ async fn attempted_publication_withdrawal_recovers_original_git_snapshot_after_r
         .open(&lock)
         .unwrap();
     let lock = tempfile::TempPath::try_from_path(lock).unwrap();
-    let request = request_for(&service, &input.candidate).await;
+    let request = request_for(&service, &input.record).await;
     service
-        .withdraw(&input.candidate, rel::Ring::Test, &request, cutoff())
+        .withdraw(&input.record, &request, &TestPublishAccess, cutoff())
         .await
         .unwrap();
     assert_ne!(
@@ -253,16 +247,14 @@ async fn unknown_withdrawal_only_settles_absence_after_original_cas_is_fenced() 
     let (_root, config) = brew_config();
     let service = server.service(runtime.clone(), config.clone()).await;
     let first = seed(runtime.clone(), &server, cask(&server, "app", "1")).await;
-    service.create_candidate(&first, cutoff()).await.unwrap();
-    let initial = submit_publication(&service, &first.candidate, rel::Ring::Test).await;
+    let initial = submit_publication(&service, &first).await;
     service
         .publish(initial.id(), initial.attempt, at(10), cutoff())
         .await
         .unwrap();
     let second = seed(runtime.clone(), &server, cask(&server, "app", "2")).await;
-    service.create_candidate(&second, cutoff()).await.unwrap();
-    let p = submit_publication(&service, &second.candidate, rel::Ring::Test).await;
-    let SourceConfig::Brew(source) = &config.test else {
+    let p = submit_publication(&service, &second).await;
+    let SourceConfig::Brew(source) = &config else {
         panic!("Brew");
     };
     let lock = source.repository.join("refs/heads/main.lock");
@@ -274,11 +266,11 @@ async fn unknown_withdrawal_only_settles_absence_after_original_cas_is_fenced() 
             .unwrap(),
         rel::PublicationOutcome::Reported(rel::PublicationResult::Unknown(_))
     ));
-    let original: serde_json::Value = serde_json::from_str(&sql(&format!("SELECT convert_from(document,'UTF8') FROM mdm_software_composition.targets WHERE tenant_id='{}' AND candidate='{}' AND left(id,2)='p:'", tenant(), second.candidate.value()))).unwrap();
-    let request = request_for(&service, &second.candidate).await;
+    let original: serde_json::Value = serde_json::from_str(&sql(&format!("SELECT convert_from(document,'UTF8') FROM mdm_software_composition.targets WHERE tenant_id='{}' AND record='{}' AND left(id,2)='p:'", tenant(), second.record.value()))).unwrap();
+    let request = request_for(&service, &second.record).await;
     assert_eq!(
         service
-            .withdraw(&second.candidate, rel::Ring::Test, &request, cutoff())
+            .withdraw(&second.record, &request, &TestPublishAccess, cutoff())
             .await
             .unwrap()
             .outcome,
@@ -309,7 +301,7 @@ async fn unknown_withdrawal_only_settles_absence_after_original_cas_is_fenced() 
     );
     let commit = original["commit"].as_str().unwrap();
     let base = original["base"].as_str().unwrap();
-    let SourceConfig::Brew(source) = &config.test else {
+    let SourceConfig::Brew(source) = &config else {
         panic!("Brew")
     };
     let replay = std::process::Command::new("/usr/bin/git")
@@ -340,6 +332,80 @@ async fn unknown_withdrawal_only_settles_absence_after_original_cas_is_fenced() 
     assert_eq!(
         sql("SELECT count(*) FROM mdm_software_composition.targets WHERE left(id,2)='p:'"),
         "2"
+    );
+    runtime.close().await;
+}
+
+#[tokio::test]
+#[ignore = "real PG + HTTPS + bare Git: make t2 MODULE=publication.brew"]
+async fn withdrawal_settles_a_result_observed_after_its_intent() {
+    let server = Server::new().await;
+    let runtime = runtime().await;
+    let (_root, config) = brew_config();
+    let service = server.service(runtime.clone(), config).await;
+    let input = seed(runtime.clone(), &server, cask(&server, "late", "1")).await;
+    let p = submit_publication(&service, &input).await;
+    sql(
+        "CREATE FUNCTION public.reject_late_result() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'fixture result failure'; END $$; CREATE TRIGGER reject_late_result BEFORE UPDATE ON mdm_software_release.aggregates FOR EACH ROW EXECUTE FUNCTION public.reject_late_result();",
+    );
+    let result = service.publish(p.id(), 1, at(10), cutoff()).await;
+    sql(
+        "DROP TRIGGER reject_late_result ON mdm_software_release.aggregates; DROP FUNCTION public.reject_late_result();",
+    );
+    assert!(matches!(result, Err(Error::RolledBack(_))));
+    withdraw_version(&input).await;
+    let observed_at = at(sql(&format!("SELECT (convert_from(document,'UTF8')::jsonb->>'commit_at')::bigint+20 FROM mdm_software_composition.withdrawals WHERE record='{}'", input.record.value())).parse().unwrap());
+    // Reproduce an in-flight observation committing after the withdrawal intent.
+    let store =
+        rss_mdm_software_release_postgres::ReleaseStore::new(runtime.clone(), tenant(), deadline())
+            .await
+            .unwrap();
+    store
+        .transition(
+            &input.record,
+            &rel::Request {
+                id: rel::RequestId::new(tenant(), unique()).unwrap(),
+                actor: input.actor.clone(),
+                expected_revision: 0,
+                as_of: observed_at,
+                operation: rel::Operation::Record {
+                    publication: p.id(),
+                    attempt: 1,
+                    outcome: rel::PublicationResult::Unknown(rel::Evidence {
+                        actor: input.actor.clone(),
+                        digest: rel::Digest::from_bytes([17; 32]),
+                        at: observed_at,
+                    }),
+                },
+            },
+            deadline(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        service
+            .reconcile_withdrawal(p.id(), 1, cutoff())
+            .await
+            .unwrap(),
+        Withdrawal::Complete
+    );
+    let record = service
+        .record(&input.record, cutoff())
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(record.snapshot().withdrawn);
+    assert!(record.snapshot().at >= observed_at);
+    assert!(matches!(
+        record.snapshot().attempt.outcome,
+        rel::PublicationOutcome::Reported(rel::PublicationResult::Applied(_))
+    ));
+    assert_eq!(
+        service
+            .reconcile_withdrawal(p.id(), 1, cutoff())
+            .await
+            .unwrap(),
+        Withdrawal::Complete
     );
     runtime.close().await;
 }

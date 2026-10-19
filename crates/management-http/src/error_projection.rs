@@ -468,7 +468,7 @@ impl From<rss_mdm_execution_service::queries::QueryError> for Error {
                 Missing::Operation => Self::Execution(rss_mdm_execution_service::missing::ExecutionError::MissingOperation),
                 Missing::Task => Self::Execution(rss_mdm_execution_service::missing::ExecutionError::MissingTask),
                 Missing::SoftwareSource => Self::Publication(rss_mdm_software_service::management::publication::error::PublicationError::MissingSource),
-                Missing::SoftwareCandidate => Self::Publication(rss_mdm_software_service::management::publication::error::PublicationError::MissingCandidate),
+                Missing::SoftwarePublication => Self::Publication(rss_mdm_software_service::management::publication::error::PublicationError::MissingPublication),
             },
         }
     }

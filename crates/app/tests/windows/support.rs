@@ -285,6 +285,7 @@ impl Host {
         let original: serde_json::Value =
             serde_json::from_slice(&std::fs::read(std::env::var("MDM_TEST_CONFIG")?)?)?;
         value["content"] = original["content"].clone();
+        value["webhooks"] = original["webhooks"].clone();
         value["agent_pki"] = original["agent_pki"].clone();
         if mdm_software { value["task_signing"] = original["task_signing"].clone(); }
         value["device_pki"] = original["device_pki"].clone();
@@ -433,7 +434,14 @@ impl Host {
             rss_request_context::TenantId::parse(case_tenant())?,
             &[7; 32],
         )?);
+        let binding=rss_transactional_messaging::fence::ExecutionBinding::new(
+            rss_transactional_messaging::fence::StorageIdentity::new(config.flow.storage.target,config.flow.storage.lineage)?,
+            vec![(identity.tenant,rss_transactional_messaging::fence::Epoch::new(config.flow.storage.epoch)?)])?;
+        let webhooks=crate::webhooks::Backend::open(config.webhooks.clone(),execution.runtime.clone(),identity.tenant,agent_audit.clone(),clock.clone(),execution.protection.clone(),binding).await?;
+        execution.webhooks.set(webhooks.clone()).map_err(|_|anyhow::anyhow!("duplicate fixture webhook owner"))?;
+        resources.resource(crate::webhooks::Resource(webhooks.clone()));
         let app = Arc::new(Assembly {
+            webhooks,
             associations,
             pki,
             agent_enrollment,

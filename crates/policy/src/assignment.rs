@@ -107,21 +107,8 @@ pub enum SoftwareDelivery {
     /// Native package managers consume already published immutable snapshots from this output source.
     Native {
         /// Exact configured logical output source; imported provenance remains separate.
-        source: String,
-        /// Exact enterprise publication environment.
-        ring: SoftwareDeliveryRing,
+        target: String,
     },
-}
-/// Explicit software publication environment selected by the deployment author.
-#[derive(schemars::JsonSchema, Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum SoftwareDeliveryRing {
-    /// Test publication.
-    Test,
-    /// Pilot publication.
-    Pilot,
-    /// Production publication.
-    Production,
 }
 #[derive(schemars::JsonSchema, Clone, Debug, Deserialize, Serialize)]
 #[serde(
@@ -535,10 +522,10 @@ impl Action {
                 {
                     return Err(Error::Malformed);
                 }
-                if let SoftwareDelivery::Native { source, .. } = delivery
-                    && (source.is_empty()
-                        || source.len() > 128
-                        || !source
+                if let SoftwareDelivery::Native { target } = delivery
+                    && (target.is_empty()
+                        || target.len() > 128
+                        || !target
                             .bytes()
                             .all(|b| b.is_ascii_alphanumeric() || b"._-".contains(&b)))
                 {

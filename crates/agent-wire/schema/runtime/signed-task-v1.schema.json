@@ -2483,18 +2483,14 @@
           "pattern": "^[^\\x00-\\x1f\\x7f]+$",
           "type": "string"
         },
-        "ring": {
-          "$ref": "#/$defs/SoftwareExportRing",
-          "description": "Exact release environment."
-        },
-        "source": {
+        "target": {
           "description": "Exact logical output source, distinct from imported provenance.",
           "maxLength": 128,
           "minLength": 1,
           "pattern": "^[^\\x00-\\x1f\\x7f]+$",
           "type": "string"
         },
-        "sourceDigest": {
+        "targetDigest": {
           "description": "Complete configured source snapshot identity.",
           "items": {
             "format": "uint8",
@@ -2553,11 +2549,10 @@
         }
       },
       "required": [
-        "source",
+        "target",
         "tenantId",
-        "ring",
         "publication",
-        "sourceDigest",
+        "targetDigest",
         "resource",
         "resourceVersion",
         "resourceDigest",
@@ -2641,26 +2636,6 @@
         "sha256"
       ],
       "type": "object"
-    },
-    "SoftwareExportRing": {
-      "description": "Exact enterprise release ring.",
-      "oneOf": [
-        {
-          "const": "test",
-          "description": "Test publication.",
-          "type": "string"
-        },
-        {
-          "const": "pilot",
-          "description": "Pilot publication.",
-          "type": "string"
-        },
-        {
-          "const": "production",
-          "description": "Production publication.",
-          "type": "string"
-        }
-      ]
     },
     "SoftwareInteractiveUser": {
       "additionalProperties": false,

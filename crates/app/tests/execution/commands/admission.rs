@@ -282,7 +282,7 @@ impl Client {
         let mut pg =
             sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?)
                 .await?;
-        for relation in ["mdm_policy.requests", "mdm_group.groups"] {
+        for relation in ["mdm_policy.requests", "mdm_group.operations"] {
             let permitted: bool =
                 sqlx::query_scalar("SELECT has_table_privilege('mdm_command_runtime',$1,'SELECT')")
                     .bind(relation)
@@ -291,6 +291,20 @@ impl Client {
             ensure!(
                 !permitted,
                 "command role reads private owner relation {relation}"
+            );
+        }
+        // Webhook eligibility consumes published group membership and compliance results read-only.
+        for relation in [
+            "mdm_group.groups",
+            "mdm_group.member_runs",
+            "mdm_group.member_changes",
+            "mdm_compliance.results",
+        ] {
+            let permitted: bool = sqlx::query_scalar("SELECT has_table_privilege('mdm_command_runtime',$1,'SELECT') AND NOT has_table_privilege('mdm_command_runtime',$1,'INSERT,UPDATE,DELETE') AND NOT has_any_column_privilege('mdm_command_runtime',$1,'INSERT,UPDATE')")
+                .bind(relation).fetch_one(&mut pg).await?;
+            ensure!(
+                permitted,
+                "webhook eligibility must remain read-only: {relation}"
             );
         }
         // Native delivery may append native grants, never self/recovery authority
@@ -341,8 +355,8 @@ impl Client {
                 "GRANT SELECT(instance_id) ON public.mdm_installation TO mdm_command_runtime",
             ),
             (
-                "GRANT SELECT ON mdm_group.groups TO mdm_command_runtime",
-                "REVOKE SELECT ON mdm_group.groups FROM mdm_command_runtime",
+                "GRANT SELECT ON mdm_group.operations TO mdm_command_runtime",
+                "REVOKE SELECT ON mdm_group.operations FROM mdm_command_runtime",
             ),
             (
                 "ALTER FUNCTION mdm_planning.scope_admission(uuid,text) SECURITY INVOKER",

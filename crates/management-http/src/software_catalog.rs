@@ -2,7 +2,7 @@
 use crate::{Error, authorization::context::RequestAuth};
 use axum::{
     Extension, Json, Router,
-    extract::{Path, State},
+    extract::{Path, Query, State},
     routing::{get, post},
 };
 use rss_mdm_audit_integration::RequestAudit;
@@ -17,6 +17,7 @@ pub fn routes() -> Router<Arc<HttpState>> {
         .route("/agent-packages", post(publish_agent))
         .route("/agent-packages/{id}/withdraw", post(withdraw_agent))
         .route("/software/imports", post(import))
+        .route("/software/sources", get(sources))
         .route(
             "/software/resources/{id}/versions/{version}/content",
             get(download),
@@ -220,4 +221,24 @@ async fn agent_package_content(
             .map_err(|_| Error::Malformed)?,
     );
     Ok(response)
+}
+
+async fn sources(
+    State(app): State<Arc<HttpState>>,
+    Extension(auth): Extension<RequestAuth>,
+    Extension(audit): Extension<RequestAudit>,
+    q: Result<
+        Query<rss_mdm_software_service::management::catalog::SourceQuery>,
+        axum::extract::rejection::QueryRejection,
+    >,
+) -> Result<Json<Value>, Error> {
+    rss_mdm_software_service::management::catalog::sources(
+        &app,
+        &auth.proof,
+        &audit,
+        q.map_err(|_| Error::Malformed)?.0,
+    )
+    .await
+    .map(Json)
+    .map_err(Into::into)
 }

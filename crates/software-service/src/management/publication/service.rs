@@ -1,12 +1,11 @@
 use super::{
-    model::{Change, Ring},
+    model::{Change, Query},
     wire,
 };
-use crate::publication as service;
 use crate::{
     catalog::Operation,
-    management::transaction::*,
-    management::{Error, Failure},
+    management::{Error, Failure, transaction::checked_input},
+    publication as service,
 };
 use rss_contract::Timepoint;
 use rss_mdm_audit_integration::{ManagementResult as Effect, RequestAudit};
@@ -16,13 +15,6 @@ use rss_request_context::{Deadline, TenantId};
 use rss_transactional_messaging_postgres::PgRuntime;
 use serde_json::{Value, json};
 use std::{sync::Arc, time::Duration};
-fn actor(
-    tenant: TenantId,
-    instance: &str,
-    subject: &str,
-) -> std::result::Result<rel::ActorId, Error> {
-    rel::ActorId::new(tenant, json!([instance, subject]).to_string()).map_err(|_| Error::Malformed)
-}
 fn failure(e: service::Error) -> Error {
     match e {
         service::Error::Diagnostic { category, .. } => failure(*category),
@@ -32,232 +24,14 @@ fn failure(e: service::Error) -> Error {
         | service::Error::ArtifactAddress
         | service::Error::ArtifactBudget
         | service::Error::ArtifactDigest => Error::Malformed,
-        service::Error::CandidateNotFound => Error::Publication(
-            crate::management::publication::error::PublicationError::MissingCandidate,
-        ),
+        service::Error::PublicationNotFound => {
+            Error::Publication(super::error::PublicationError::MissingPublication)
+        }
         service::Error::Identity => Error::Forbidden,
         service::Error::Conflict | service::Error::Blocked => Error::Conflict,
         service::Error::CommitUnknown(_) => Error::CommitUnknown,
         service::Error::RollbackFailed(_) => Error::RollbackFailed,
         _ => Error::Unavailable(Failure::Runtime),
-    }
-}
-pub async fn read(
-    directory: &PublicationDirectory,
-    _authorization: &rss_mdm_authorization_service::Store,
-    proof: &AuthorizedPrincipal,
-    audit: &RequestAudit,
-    source: String,
-    id: String,
-) -> std::result::Result<wire::Candidate, Error> {
-    audit.set_action("management_read");
-    audit.target(&id);
-    proof.manage(Permission::ReleaseRead)?;
-    let service = directory.services.get(&source).ok_or(Error::Publication(
-        crate::management::publication::error::PublicationError::MissingSource,
-    ))?;
-    let id = rel::CandidateId::new(directory.tenant, id).map_err(|_| Error::Malformed)?;
-    let candidate = service
-        .candidate(&id, cutoff())
-        .await
-        .map_err(failure)?
-        .ok_or(Error::Publication(
-            crate::management::publication::error::PublicationError::MissingCandidate,
-        ))?;
-    let mut view = summary(&candidate);
-    view.document = Some(service.document(&id, cutoff()).await.map_err(failure)?);
-    Ok(view)
-}
-pub async fn write(
-    directory: &PublicationDirectory,
-    authorization: &rss_mdm_authorization_service::Store,
-    proof: &AuthorizedPrincipal,
-    audit: &RequestAudit,
-    source: String,
-    id: String,
-    request: Operation<Change>,
-) -> std::result::Result<wire::Candidate, Error> {
-    let permission = match request.input {
-        Change::Candidate { .. } => Permission::ReleaseWrite,
-        Change::Publish { .. } => Permission::ReleasePublish,
-        Change::Recover { .. } | Change::Retry { .. } => Permission::ReleaseRecover,
-        Change::Withdraw { .. } => Permission::ReleaseWithdraw,
-    };
-    audit.set_action("management_write");
-    audit.target(&id);
-    audit.operation(request.operation_id, "management_write");
-    proof.manage(permission)?;
-    let service = directory.services.get(&source).ok_or(Error::Publication(
-        crate::management::publication::error::PublicationError::MissingSource,
-    ))?;
-    let tenant = directory.tenant;
-    let candidate_id = rel::CandidateId::new(tenant, &id).map_err(|_| Error::Malformed)?;
-    let operator = actor(tenant, proof.instance_id(), proof.principal_id())?;
-    audit.set_action("management_write");
-    audit.target(&id);
-    audit.operation(request.operation_id, "management_write");
-    let intent_audit = audit.transaction_copy();
-    intent_audit.set_action("software_preflight");
-    intent_audit.software(rss_mdm_audit_integration::SoftwareFact {
-        operation: request.operation_id.to_string(),
-        publication: None,
-        attempt: None,
-        ring: None,
-        binding: Some(source.clone()),
-        stage: "management_admission",
-        outcome: "accepted",
-    });
-    let intent = directory
-        .authorize_intent(&source, &id, &request, &intent_audit, &|| {
-            proof.manage(permission).map_err(Error::from)
-        })
-        .await;
-    intent_audit.finalize(intent.as_ref().err().and_then(|e| {
-        e.is_audit_transaction_failure()
-            .then_some(rss_mdm_audit_integration::FailureReason::Transaction)
-    }));
-    let intent = intent?;
-    let at = Timepoint::try_from(intent["as_of"].as_i64().ok_or(Error::Conflict)?)
-        .map_err(|_| Error::Conflict)?;
-    let operation = rel::RequestId::new(tenant, request.operation_id.to_string())
-        .map_err(|_| Error::Malformed)?;
-    let call = service::ServiceRequest {
-        actor: operator.clone(),
-        id: operation.clone(),
-        expected_revision: request.expected_revision,
-        as_of: at,
-    };
-    let current =
-        rss_mdm_authorization_service::store::authorization_snapshot(authorization, proof).await?;
-    current.require(proof, permission, None)?;
-    audit.require_request_settlement();
-    audit.mark_commit_started();
-    let outcome = perform(
-        service,
-        &candidate_id,
-        &request.input,
-        &call,
-        &crate::publication::ManagementAccess { proof, permission },
-    )
-    .await;
-    // The service persists actual domain outcomes. The envelope separately audits
-    // this HTTP result, including its request ID, after external effect uncertainty.
-    match outcome {
-        Ok(effect) => {
-            audit.management_result(effect);
-            if matches!(effect, Effect::Unknown) {
-                return Err(Error::CommitUnknown);
-            }
-            audit.mark_committed();
-            let candidate = service
-                .candidate(&candidate_id, cutoff())
-                .await
-                .map_err(failure)?
-                .ok_or(Error::Publication(
-                    crate::management::publication::error::PublicationError::MissingCandidate,
-                ))?;
-            Ok(summary(&candidate))
-        }
-        Err(e) => {
-            if matches!(e, Error::RollbackFailed) {
-                audit.mark_rollback_failed();
-            }
-            Err(e)
-        }
-    }
-}
-async fn perform(
-    service: &service::PublicationService,
-    id: &rel::CandidateId,
-    change: &Change,
-    request: &service::ServiceRequest,
-    access: &dyn crate::publication::PublishAccess,
-) -> std::result::Result<Effect, Error> {
-    let cutoff = cutoff();
-    match change {
-        Change::Candidate {
-            resource,
-            version,
-            expected_resource_revision,
-            resource_digest,
-        } => {
-            if request.expected_revision != 0 {
-                return Err(Error::Conflict);
-            }
-            let (_, replayed) = service
-                .create_candidate(
-                    &service::CandidateInput {
-                        actor: request.actor.clone(),
-                        candidate: id.clone(),
-                        request: request.id.clone(),
-                        resource: rss_mdm_resource::Id::new(resource)
-                            .map_err(|_| Error::Malformed)?,
-                        version: rss_mdm_resource::Id::new(version)
-                            .map_err(|_| Error::Malformed)?,
-                        expected_resource_revision: *expected_resource_revision,
-                        resource_digest: *resource_digest,
-                        as_of: request.as_of,
-                    },
-                    cutoff,
-                )
-                .await
-                .map_err(failure)?;
-            Ok(effect(replayed))
-        }
-        Change::Publish { ring } => {
-            let result = service
-                .submit(id, ring.core(), request, access, cutoff)
-                .await
-                .map_err(failure)?;
-            Ok(transition_effect(result))
-        }
-        Change::Retry { ring, attempt } => {
-            let result = service
-                .retry(id, ring.core(), *attempt, request, access, cutoff)
-                .await
-                .map_err(failure)?;
-            Ok(transition_effect(result))
-        }
-        Change::Withdraw { ring } => withdraw(service, id, *ring, request, cutoff).await,
-        Change::Recover {
-            ring,
-            publication,
-            attempt,
-        } => {
-            let c = service
-                .candidate(id, cutoff)
-                .await
-                .map_err(failure)?
-                .ok_or(Error::Publication(
-                    crate::management::publication::error::PublicationError::MissingCandidate,
-                ))?;
-            let snap = c.snapshot();
-            let rel::RingState::Publication(p) = snap.ring_state(ring.core()) else {
-                return Err(Error::Conflict);
-            };
-            if p.id().digest().bytes() != *publication || p.attempt != *attempt {
-                return Err(Error::Conflict);
-            }
-            let completed = matches!(
-                p.outcome,
-                rel::PublicationOutcome::Reported(
-                    rel::PublicationResult::Applied(_) | rel::PublicationResult::NotApplied(_)
-                )
-            );
-            let result = service
-                .reconcile(p.id(), p.attempt, request.as_of, cutoff)
-                .await
-                .map_err(failure)?;
-            Ok(match result {
-                rel::PublicationOutcome::Reported(
-                    rel::PublicationResult::Applied(_) | rel::PublicationResult::NotApplied(_),
-                ) if completed => Effect::Replayed,
-                rel::PublicationOutcome::Reported(
-                    rel::PublicationResult::Applied(_) | rel::PublicationResult::NotApplied(_),
-                ) => Effect::Performed,
-                _ => Effect::Unknown,
-            })
-        }
     }
 }
 fn cutoff() -> Deadline {
@@ -267,103 +41,325 @@ fn cutoff() -> Deadline {
     )
     .expect("constant budget")
 }
-fn summary(c: &rel::Candidate) -> wire::Candidate {
-    let snapshot = c.snapshot();
-    let rings = rel::Ring::ALL
-        .iter()
-        .map(|ring| {
-            let (state, publication) = match snapshot.ring_state(*ring) {
-                rel::RingState::Publication(p) => (
-                    "publication",
-                    Some(wire::Publication {
-                        id: p.id().digest().bytes(),
-                        attempt: p.attempt,
-                        outcome: match p.outcome {
-                            rel::PublicationOutcome::Reported(rel::PublicationResult::Applied(
-                                _,
-                            )) => "published",
-                            rel::PublicationOutcome::Reported(
-                                rel::PublicationResult::NotApplied(_),
-                            ) => "not_applied",
-                            rel::PublicationOutcome::Pending => "pending",
-                            _ => "unknown",
-                        }
-                        .into(),
-                    }),
-                ),
-                _ => ("candidate", None),
-            };
-            wire::CandidateRing {
-                ring: ring_name(*ring).into(),
-                state: state.into(),
-                publication,
-            }
-        })
-        .collect();
-    wire::Candidate {
-        id: snapshot.id.value().into(),
-        revision: snapshot.revision,
-        content_digest: snapshot.content.digest().bytes(),
-        disposition: disposition(snapshot.disposition).into(),
-        manifest_digest: snapshot.content.manifest().bytes(),
-        source_snapshot: snapshot.content.source_snapshot().bytes(),
-        rings,
-        document: None,
-    }
+async fn authorize(
+    store: &rss_mdm_authorization_service::Store,
+    proof: &AuthorizedPrincipal,
+    permission: Permission,
+) -> Result<(), Error> {
+    proof.manage(permission)?;
+    let current =
+        rss_mdm_authorization_service::store::authorization_snapshot(store, proof).await?;
+    current.require(proof, permission, None)?;
+    proof.check_live()?;
+    Ok(())
 }
-
-fn disposition(d: rel::Disposition) -> &'static str {
-    match d {
-        rel::Disposition::Active => "active",
-        rel::Disposition::Quarantined => "quarantined",
-        rel::Disposition::Deprecated => "deprecated",
-    }
+pub async fn read(
+    directory: &PublicationDirectory,
+    authorization: &rss_mdm_authorization_service::Store,
+    proof: &AuthorizedPrincipal,
+    audit: &RequestAudit,
+    id: String,
+) -> Result<wire::Publication, Error> {
+    audit.set_action("management_read");
+    audit.target(&id);
+    authorize(authorization, proof, Permission::ReleaseRead).await?;
+    let view = read_view(directory, id).await?;
+    authorize(authorization, proof, Permission::ReleaseRead).await?;
+    Ok(view)
 }
-fn ring_name(r: rel::Ring) -> &'static str {
-    match r {
-        rel::Ring::Test => "test",
-        rel::Ring::Pilot => "pilot",
-        rel::Ring::Production => "production",
-    }
-}
-
-fn effect(replayed: bool) -> Effect {
-    if replayed {
-        Effect::Replayed
-    } else {
-        Effect::Performed
-    }
-}
-fn transition_effect(result: rel::Transition) -> Effect {
-    effect(matches!(result, rel::Transition::Replayed(_)))
-}
-
-async fn withdraw(
-    service: &service::PublicationService,
-    id: &rel::CandidateId,
-    ring: Ring,
-    request: &service::ServiceRequest,
-    cutoff: Deadline,
-) -> std::result::Result<Effect, Error> {
-    service
-        .candidate(id, cutoff)
+async fn read_view(
+    directory: &PublicationDirectory,
+    id: String,
+) -> Result<wire::Publication, Error> {
+    let (target, resource, version) = directory.coordinate(&id).await?;
+    let service = directory.services.get(&target).ok_or(Error::Publication(
+        super::error::PublicationError::MissingSource,
+    ))?;
+    let key = rel::PublicationKey::new(directory.tenant, &id).map_err(|_| Error::Malformed)?;
+    let record = service
+        .record(&key, cutoff())
         .await
         .map_err(failure)?
         .ok_or(Error::Publication(
-            crate::management::publication::error::PublicationError::MissingCandidate,
+            super::error::PublicationError::MissingPublication,
         ))?;
-    let result = service
-        .withdraw(id, ring.core(), request, cutoff)
+    let p = &record.snapshot().attempt;
+    let withdrawal = service
+        .withdrawal_status(p.id(), p.attempt, cutoff())
         .await
         .map_err(failure)?;
-    Ok(match result.outcome {
-        service::Withdrawal::Complete | service::Withdrawal::NotPublished => {
-            effect(result.replayed)
+    let document = Some(service.document(&key, cutoff()).await.map_err(failure)?);
+    view(
+        id,
+        (target, resource, version),
+        &record,
+        withdrawal,
+        document,
+    )
+}
+fn view(
+    id: String,
+    (target, resource, version): (String, String, String),
+    record: &rel::Publication,
+    withdrawal: Option<service::Withdrawal>,
+    document: Option<service::ExportDocument>,
+) -> Result<wire::Publication, Error> {
+    let snapshot = record.snapshot();
+    let p = &snapshot.attempt;
+    if p.binding.target.value() != target {
+        return Err(Error::Conflict);
+    }
+    let withdrawal = withdrawal.map(|w| {
+        match w {
+            service::Withdrawal::Complete => "withdrawn",
+            service::Withdrawal::NotPublished => "not_published",
+            service::Withdrawal::WaitingPublication => "waiting_publication",
+            service::Withdrawal::PreflightRetryable => "preflight_retryable",
+            service::Withdrawal::AwaitingConfirmation => "unknown",
         }
-        _ => Effect::Unknown,
+        .to_owned()
+    });
+    Ok(wire::Publication {
+        id,
+        revision: snapshot.revision,
+        target,
+        resource,
+        version,
+        publication: p.id().digest().bytes(),
+        content_digest: snapshot.content.digest().bytes(),
+        manifest_digest: snapshot.content.manifest().bytes(),
+        target_digest: p.binding.target_digest.bytes(),
+        attempt: p.attempt,
+        outcome: match p.outcome {
+            rel::PublicationOutcome::Pending => "pending",
+            rel::PublicationOutcome::Reported(rel::PublicationResult::Unknown(_)) => "unknown",
+            rel::PublicationOutcome::Reported(rel::PublicationResult::NotApplied(_)) => {
+                "not_applied"
+            }
+            rel::PublicationOutcome::Reported(rel::PublicationResult::Applied(_)) => "published",
+        }
+        .into(),
+        withdrawn: snapshot.withdrawn || withdrawal.is_some(),
+        withdrawal,
+        document,
     })
 }
 
+pub async fn write(
+    directory: &PublicationDirectory,
+    authorization: &rss_mdm_authorization_service::Store,
+    proof: &AuthorizedPrincipal,
+    audit: &RequestAudit,
+    path_id: Option<String>,
+    request: Operation<Change>,
+) -> Result<wire::Publication, Error> {
+    let permission = match request.input {
+        Change::Publish { .. } => Permission::ReleasePublish,
+        Change::Recover | Change::Retry => Permission::ReleaseRecover,
+        Change::Withdraw => Permission::ReleaseWithdraw,
+    };
+    audit.set_action("management_write");
+    audit.target(
+        path_id
+            .as_deref()
+            .unwrap_or(&request.operation_id.to_string()),
+    );
+    audit.operation(request.operation_id, "management_write");
+    authorize(authorization, proof, permission).await?;
+    let (id, target) = match (&request.input, path_id) {
+        (Change::Publish { target, .. }, None) if request.expected_revision == 0 => {
+            (request.operation_id.to_string(), target.clone())
+        }
+        (Change::Publish { .. }, _) => return Err(Error::Malformed),
+        (_, Some(id)) => {
+            let (target, _, _) = directory.coordinate(&id).await?;
+            (id, target)
+        }
+        _ => return Err(Error::Malformed),
+    };
+    let service = directory.services.get(&target).ok_or(Error::Publication(
+        super::error::PublicationError::MissingSource,
+    ))?;
+    let key = rel::PublicationKey::new(directory.tenant, &id).map_err(|_| Error::Malformed)?;
+    let actor = rel::ActorId::new(
+        directory.tenant,
+        json!([proof.instance_id(), proof.principal_id()]).to_string(),
+    )
+    .map_err(|_| Error::Malformed)?;
+    let intent_audit = audit.transaction_copy();
+    intent_audit.set_action("software_preflight");
+    intent_audit.software(rss_mdm_audit_integration::SoftwareFact {
+        operation: request.operation_id.to_string(),
+        publication: None,
+        attempt: None,
+        binding: Some(target.clone()),
+        stage: "management_admission",
+        outcome: "accepted",
+    });
+    let intent = directory
+        .authorize_intent(&target, &id, &request, &intent_audit, proof, permission)
+        .await;
+    intent_audit.finalize(intent.as_ref().err().and_then(|e| {
+        e.is_audit_transaction_failure()
+            .then_some(rss_mdm_audit_integration::FailureReason::Transaction)
+    }));
+    let (intent, replayed) = intent?;
+    let at = Timepoint::try_from(intent["as_of"].as_i64().ok_or(Error::Conflict)?)
+        .map_err(|_| Error::Conflict)?;
+    let call = service::ServiceRequest {
+        actor: actor.clone(),
+        id: rel::RequestId::new(directory.tenant, request.operation_id.to_string())
+            .map_err(|_| Error::Malformed)?,
+        expected_revision: request.expected_revision,
+        as_of: at,
+    };
+    let access = service::ManagementAccess { proof, permission };
+    audit.require_request_settlement();
+    audit.mark_commit_started();
+    let result: Result<Effect, Error> = async {
+        match &request.input {
+            Change::Publish {
+                resource,
+                version,
+                expected_resource_revision,
+                resource_digest,
+                target_digest,
+                ..
+            } => {
+                let (_, replayed) = service
+                    .submit(
+                        &service::PublishInput {
+                            actor,
+                            record: key.clone(),
+                            request: call.id.clone(),
+                            resource: rss_mdm_resource::Id::new(resource)
+                                .map_err(|_| Error::Malformed)?,
+                            version: rss_mdm_resource::Id::new(version)
+                                .map_err(|_| Error::Malformed)?,
+                            expected_resource_revision: *expected_resource_revision,
+                            resource_digest: *resource_digest,
+                            target_digest: *target_digest,
+                            as_of: at,
+                        },
+                        &access,
+                        cutoff(),
+                    )
+                    .await
+                    .map_err(failure)?;
+                Ok(if replayed {
+                    Effect::Replayed
+                } else {
+                    Effect::Performed
+                })
+            }
+            Change::Retry => {
+                let c = service
+                    .record(&key, cutoff())
+                    .await
+                    .map_err(failure)?
+                    .ok_or(Error::Conflict)?;
+                let result = service
+                    .retry(&key, c.snapshot().attempt.attempt, &call, &access, cutoff())
+                    .await
+                    .map_err(failure)?;
+                Ok(if matches!(result, rel::Transition::Replayed(_)) {
+                    Effect::Replayed
+                } else {
+                    Effect::Performed
+                })
+            }
+            Change::Withdraw => {
+                let result = service
+                    .withdraw(&key, &call, &access, cutoff())
+                    .await
+                    .map_err(failure)?;
+                Ok(
+                    if matches!(
+                        result.outcome,
+                        service::Withdrawal::Complete | service::Withdrawal::NotPublished
+                    ) {
+                        if result.replayed {
+                            Effect::Replayed
+                        } else {
+                            Effect::Performed
+                        }
+                    } else {
+                        Effect::Unknown
+                    },
+                )
+            }
+            Change::Recover => {
+                let recovery = &intent["recovery"];
+                let digest: [u8; 32] = serde_json::from_value(recovery["publication"].clone())
+                    .map_err(|_| Error::Conflict)?;
+                let publication = rel::PublicationId::from_digest(rel::Digest::from_bytes(digest));
+                let attempt = recovery["attempt"].as_u64().ok_or(Error::Conflict)?;
+                let current = service
+                    .record(&key, cutoff())
+                    .await
+                    .map_err(failure)?
+                    .ok_or(Error::Conflict)?;
+                // Retry is permitted only after a terminal NotApplied result. A newer attempt
+                // proves the accepted attempt settled; never redirect recovery to the retry.
+                if current.snapshot().attempt.attempt > attempt {
+                    return Ok(Effect::Replayed);
+                }
+                // A later withdrawal takes precedence over recovery of a publish call.
+                let withdrawing = recovery["withdrawn"].as_bool().ok_or(Error::Conflict)?
+                    || service
+                        .withdrawal_status(publication, attempt, cutoff())
+                        .await
+                        .map_err(failure)?
+                        .is_some();
+                let complete = if withdrawing {
+                    matches!(
+                        service
+                            .reconcile_withdrawal(publication, attempt, cutoff())
+                            .await
+                            .map_err(failure)?,
+                        service::Withdrawal::Complete | service::Withdrawal::NotPublished
+                    )
+                } else {
+                    matches!(
+                        service
+                            .reconcile(publication, attempt, at, cutoff())
+                            .await
+                            .map_err(failure)?,
+                        rel::PublicationOutcome::Reported(
+                            rel::PublicationResult::Applied(_)
+                                | rel::PublicationResult::NotApplied(_)
+                        )
+                    )
+                };
+                Ok(if !complete {
+                    Effect::Unknown
+                } else if replayed {
+                    Effect::Replayed
+                } else {
+                    Effect::Performed
+                })
+            }
+        }
+    }
+    .await;
+    match result {
+        Ok(effect) => {
+            audit.management_result(effect);
+            if matches!(effect, Effect::Unknown) {
+                return Err(Error::CommitUnknown);
+            }
+            audit.mark_committed();
+        }
+        Err(e) => {
+            if matches!(e, Error::RollbackFailed) {
+                audit.mark_rollback_failed();
+            }
+            return Err(e);
+        }
+    }
+    authorize(authorization, proof, permission).await?;
+    read_view(directory, id).await
+}
 pub struct PublicationDirectory {
     pub services: std::collections::BTreeMap<String, Arc<service::PublicationService>>,
     pub tenant: TenantId,
@@ -378,18 +374,138 @@ impl PublicationDirectory {
         id: &str,
         request: &Operation<Change>,
         audit: &RequestAudit,
-        authorize: &(dyn Fn() -> std::result::Result<(), Error> + Sync),
-    ) -> std::result::Result<Value, Error> {
-        authorize()?;
-        crate::management::transaction::run(&self.audit_store,&self.runtime,self.tenant,audit,&(self,source,id,request,audit,authorize),|ctx,tx|Box::pin(async move{
-   let (s,source,id,request,audit,authorize)=*ctx;crate::management::transaction::lock(tx).await?;authorize()?;
-   if request.operation_id.is_nil(){return Err(Error::Malformed.into());}
-   use sha2::Digest;
-   let hash=sha2::Sha256::digest(checked_input(serde_json::to_vec(&("publication",audit.tenant(),audit.snapshot().actor,audit.snapshot().instance,source,id,request)))?).to_vec();
-   if let Some(old)=super::receipts::replay(tx,audit,request.operation_id,&hash).await?{super::receipts::audit(tx,&*s.audit_store,audit,Some((request.operation_id,&hash)),true).await?;authorize()?;return Ok(old);}
-   let value=serde_json::json!({"as_of":s.clock.unix_seconds().ok_or(Error::Unavailable(Failure::Clock))?});
-   super::receipts::receipt(tx,audit,request.operation_id,&hash,&value).await?;
-   super::receipts::audit(tx,&*s.audit_store,audit,Some((request.operation_id,&hash)),false).await?;authorize()?;Ok(value)
-  }),crate::management::transaction::TransactionOwner::Publication).await
+        proof: &AuthorizedPrincipal,
+        permission: Permission,
+    ) -> std::result::Result<(Value, bool), Error> {
+        proof.manage(permission)?;
+        crate::management::transaction::run(
+            &self.audit_store, &self.runtime, self.tenant, audit,
+            (self, source, id, request, audit, proof),
+            |ctx, tx| Box::pin(async move {
+                let (s, source, id, request, audit, proof) = *ctx;
+                crate::management::transaction::lock(tx).await?;
+                crate::management::transaction::current(tx, proof).await?.require(proof, permission, None)?;
+                if request.operation_id.is_nil() { return Err(Error::Malformed.into()); }
+                use sha2::Digest;
+                let hash = sha2::Sha256::digest(checked_input(serde_json::to_vec(&(
+                    "direct-publication", audit.tenant(), audit.snapshot().actor,
+                    audit.snapshot().instance, source, id, request,
+                )))?).to_vec();
+                if let Some(old) = super::receipts::replay(tx, audit, request.operation_id, &hash).await? {
+                    super::receipts::audit(tx, &*s.audit_store, audit, Some((request.operation_id, &hash)), true).await?;
+                    proof.check_live()?;
+                    return Ok((old, true));
+                }
+                let mut value = json!({"record": id, "as_of": s.clock.unix_seconds().ok_or(Error::Unavailable(Failure::Clock))?});
+                if matches!(request.input, Change::Recover) {
+                    let key = rel::PublicationKey::new(s.tenant, id).map_err(|_| Error::Malformed)?;
+                    let record = rss_mdm_software_release_postgres::lock_publication_reference_in(tx, &key)
+                        .await?.map_err(|_| Error::Conflict)?;
+                    let snapshot = record.snapshot();
+                    if snapshot.revision != request.expected_revision || snapshot.attempt.binding.target.value() != source {
+                        return Err(Error::Conflict.into());
+                    }
+                    value["recovery"] = json!({"publication": snapshot.attempt.id().digest().bytes(),
+                        "attempt": snapshot.attempt.attempt, "withdrawn": snapshot.withdrawn});
+                }
+                super::receipts::receipt(tx, audit, request.operation_id, &hash, &value).await?;
+                super::receipts::audit(tx, &*s.audit_store, audit, Some((request.operation_id, &hash)), false).await?;
+                proof.check_live()?;
+                Ok((value, false))
+            }), crate::management::transaction::TransactionOwner::Publication,
+        ).await
     }
+}
+
+impl PublicationDirectory {
+    async fn coordinate(&self, id: &str) -> Result<(String, String, String), Error> {
+        let key = rel::PublicationKey::new(self.tenant, id).map_err(|_| Error::Malformed)?;
+        crate::management::transaction::inspect(&self.runtime,self.tenant,key,|key,tx|Box::pin(async move {
+            let tenant=tx.tenant_id().to_string();let key=key.value().to_owned();
+            let row=tx.with_connection(move|c|Box::pin(async move {
+                sqlx::query_as::<_,(String,String,String)>("SELECT convert_from(document,'UTF8')::jsonb->>'target',resource,version FROM mdm_software_composition.subjects WHERE tenant_id=$1::uuid AND record=$2")
+                    .bind(tenant).bind(key).fetch_optional(c).await
+            })).await?;
+            Ok(row.ok_or(Error::Publication(super::error::PublicationError::MissingPublication))?)
+        }),crate::management::transaction::TransactionOwner::Publication).await
+    }
+}
+pub async fn list(
+    directory: &PublicationDirectory,
+    authorization: &rss_mdm_authorization_service::Store,
+    proof: &AuthorizedPrincipal,
+    audit: &RequestAudit,
+    q: Query,
+) -> Result<Value, Error> {
+    if !q.validate() {
+        return Err(Error::Malformed);
+    }
+    authorize(authorization, proof, Permission::ReleaseRead).await?;
+    audit.set_action("management_read");
+    let (items, next) = crate::management::transaction::inspect(
+        &directory.runtime, directory.tenant, (directory, q), |(directory, q), tx| Box::pin(async move {
+            directory.audit_store.lock_in(tx).await.map_err(Error::from)?;
+            crate::catalog::storage::lock(tx).await.map_err(|_| Error::Conflict)?;
+            let tenant = tx.tenant_id().to_string();
+            let after = q.after.clone();
+            let target = q.target.clone();
+            let resource = q.resource.clone();
+            let version = q.version.clone();
+            let operation = q.operation_id.map(|id| id.to_string());
+            let limit = q.limit;
+            let mut rows = tx.with_connection(move |c| Box::pin(async move {
+                sqlx::query_as::<_, (String, String, String, String)>(
+                    r#"SELECT record, convert_from(document,'UTF8')::jsonb->>'target', resource, version
+                       FROM mdm_software_composition.subjects s
+                       WHERE tenant_id=$1::uuid AND ($2::text IS NULL OR record COLLATE "C">$2)
+                         AND ($3::text IS NULL OR convert_from(document,'UTF8')::jsonb->>'target'=$3)
+                         AND ($4::text IS NULL OR resource=$4) AND ($5::text IS NULL OR version=$5)
+                         AND ($6::text IS NULL OR EXISTS(
+                             SELECT 1 FROM mdm_publication.operations o WHERE o.tenant_id=s.tenant_id
+                             AND o.id::text=$6 AND o.response->>'record'=s.record))
+                       ORDER BY record COLLATE "C" LIMIT $7"#)
+                    .bind(tenant).bind(after).bind(target).bind(resource).bind(version)
+                    .bind(operation).bind((limit+1) as i64).fetch_all(c).await
+            })).await?;
+            let next = if rows.len() > limit { rows.get(limit-1).map(|row| row.0.clone()) } else { None };
+            rows.truncate(limit);
+            let mut items = Vec::with_capacity(rows.len());
+            for (id, target, resource, version) in rows {
+                let service = directory.services.get(&target).ok_or(Error::Publication(
+                    super::error::PublicationError::MissingSource))?;
+                let key = rel::PublicationKey::new(directory.tenant, &id).map_err(|_| Error::Malformed)?;
+                let (record, withdrawal) = service.record_status_in(tx, &key).await?.map_err(failure)?;
+                items.push(view(id, (target, resource, version), &record, withdrawal, None)?);
+            }
+            Ok((items, next))
+        }), crate::management::transaction::TransactionOwner::Publication,
+    ).await?;
+    authorize(authorization, proof, Permission::ReleaseRead).await?;
+    Ok(json!({"items":items,"nextCursor":next}))
+}
+
+pub async fn targets(
+    directory: &PublicationDirectory,
+    authorization: &rss_mdm_authorization_service::Store,
+    proof: &AuthorizedPrincipal,
+    q: Query,
+) -> Result<Value, Error> {
+    if !q.validate() {
+        return Err(Error::Malformed);
+    }
+    authorize(authorization, proof, Permission::ReleaseRead).await?;
+    let mut values = directory
+        .services
+        .iter()
+        .filter(|(id, _)| q.after.as_ref().is_none_or(|a| *id > a))
+        .take(q.limit + 1)
+        .map(|(id, s)| (id.clone(), s.target()))
+        .collect::<Vec<_>>();
+    let next = if values.len() > q.limit {
+        values.truncate(q.limit);
+        values.last().map(|(id, _)| id.clone())
+    } else {
+        None
+    };
+    Ok(json!({"items":values.into_iter().map(|(_,v)|v).collect::<Vec<_>>(),"nextCursor":next}))
 }

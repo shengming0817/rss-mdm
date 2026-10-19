@@ -5,7 +5,7 @@ use rss_mdm_management_http::{Error as HttpError, webhooks::Command};
 use rss_mdm_webhook_service as webhooks;
 use rss_request_context::TenantId;
 use serde_json::Value;
-use sqlx::{PgConnection, Row};
+use sqlx::PgConnection;
 use std::{
     sync::{Arc, Mutex},
     time::Duration,
@@ -239,15 +239,115 @@ impl Backend {
             |_| Err(unavailable()),
         )
     }
-    async fn execute_on(
+    async fn test_on(
         &self,
         c: &mut PgConnection,
         p: &AuthorizedPrincipal,
-        command: &Command,
+        subscription: Uuid,
+        operation: Uuid,
+        device: &str,
     ) -> Result<(Value, bool), HttpError> {
-        p.manage(required(command))?;
         let t = self.host.tenant;
-        let replayed = if let Some(op) = operation(command) {
+        let input = ("test", subscription, operation, device);
+        let s = storage::get(c, t, subscription).await.map_err(map_error)?;
+        p.require(Permission::InventoryRead, Some(device))?;
+        if let Some(old) = storage::replay_operation(c, t, operation, &input)
+            .await
+            .map_err(map_error)?
+        {
+            return Ok((old, true));
+        }
+        if !s.enabled || s.deleted {
+            return Err(HttpError::Conflict);
+        }
+        let event = Event {
+            event_id: events::identity(operation, "webhook-test"),
+            event_type: EventType::Test,
+            version: 1,
+            occurred_at: events::now_on(c).await.map_err(map_error)?,
+            tenant_id: t,
+            device_id: device.to_owned(),
+            data: EventData::Test,
+        };
+        if !self.host.eligible(c, &s, &event).await.map_err(map_error)? {
+            return Err(HttpError::Forbidden);
+        }
+        // Test is targeted, so persist its immutable event without broadcasting a source job.
+        event.validate().map_err(map_error)?;
+        sqlx::query(
+            "INSERT INTO mdm_webhook.events(tenant_id,id,document,body) VALUES($1,$2,$3,$4)",
+        )
+        .bind(t)
+        .bind(event.event_id)
+        .bind(serde_json::to_value(&event).map_err(|_| HttpError::Malformed)?)
+        .bind(serde_json::to_vec(&event).map_err(|_| HttpError::Malformed)?)
+        .execute(&mut *c)
+        .await
+        .map_err(|_| unavailable())?;
+        let id = webhooks::fanout::queue(c, &event, &s, Some(operation), None)
+            .await
+            .map_err(map_error)?;
+        let response = serde_json::json!({"id":id,"eventId":event.event_id});
+        storage::record_operation(c, t, operation, &input, &response)
+            .await
+            .map_err(map_error)?;
+        Ok((response, false))
+    }
+    async fn deliveries_on(
+        &self,
+        c: &mut PgConnection,
+        p: &AuthorizedPrincipal,
+        after: Option<Uuid>,
+        only: Option<Uuid>,
+    ) -> Result<Value, HttpError> {
+        let t = self.host.tenant;
+        let rows = storage::deliveries(c, t, after, only)
+            .await
+            .map_err(map_error)?;
+        let next = rows.last().and_then(|v| v.get("id")).cloned();
+        let mut items = Vec::new();
+        for row in rows {
+            let id = serde_json::from_value(row["eventId"].clone()).map_err(|_| unavailable())?;
+            let event = storage::event(c, t, id).await.map_err(map_error)?;
+            if authority::read(p, &event).is_ok() {
+                items.push(row)
+            }
+        }
+        if only.is_some() && items.is_empty() {
+            return Err(HttpError::NotFound);
+        }
+        Ok(serde_json::json!({"items":items,"nextCursor":next}))
+    }
+    async fn change_on(
+        &self,
+        c: &mut PgConnection,
+        p: &AuthorizedPrincipal,
+        id: Uuid,
+        mutation: &storage::Mutation,
+    ) -> Result<Value, HttpError> {
+        let t = self.host.tenant;
+        match &mutation.change {
+            storage::Change::Put(settings) => {
+                self.host.policies.check(t, settings)?;
+                authority::settings(p, settings)?;
+            }
+            storage::Change::Enabled(true) => {
+                let settings = storage::get(c, t, id).await.map_err(map_error)?.settings;
+                self.host.policies.check(t, &settings)?;
+                authority::settings(p, &settings)?;
+            }
+            // Stopping an integration must work even after its network/key config is removed.
+            storage::Change::Enabled(false) | storage::Change::Delete => (),
+        }
+        storage::mutate(c, t, id, mutation).await.map_err(map_error)
+    }
+    async fn lock_operation_on(
+        &self,
+        c: &mut PgConnection,
+        command: &Command,
+    ) -> Result<bool, HttpError> {
+        let t = self.host.tenant;
+        Ok(if let Some(op) = operation(command) {
             sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,2796))")
                 .bind(format!("{t}:{op}"))
                 .execute(&mut *c)
@@ -263,7 +363,17 @@ impl Backend {
             .map_err(|_| unavailable())?
         } else {
             false
-        };
+        })
+    }
+    async fn execute_on(
+        &self,
+        c: &mut PgConnection,
+        p: &AuthorizedPrincipal,
+        command: &Command,
+    ) -> Result<(Value, bool), HttpError> {
+        p.manage(required(command))?;
+        let t = self.host.tenant;
+        let replayed = self.lock_operation_on(c, command).await?;
         let value = match command {
             Command::Health => {
                 let counts=sqlx::query_scalar::<_,Value>("SELECT coalesce(jsonb_agg(jsonb_build_object('domain',domain,'status',status,'count',n)),'[]'::jsonb) FROM (SELECT domain,status,count(*) AS n FROM rss_transactional_messaging.outbox WHERE tenant_id=$1 AND domain IN('mdm-webhook-source','mdm-webhook-delivery') GROUP BY domain,status) s").bind(t).fetch_one(&mut *c).await.map_err(|_|unavailable())?;
@@ -277,96 +387,18 @@ impl Backend {
                 serde_json::to_value(storage::get(c, t, *id).await.map_err(map_error)?)
                     .map_err(|_| HttpError::Malformed)?
             }
-            Command::Change(id, mutation) => {
-                match &mutation.change {
-                    storage::Change::Put(settings) => {
-                        self.host.policies.check(t, settings)?;
-                        authority::settings(p, settings)?;
-                    }
-                    storage::Change::Enabled(true) => {
-                        let settings = storage::get(c, t, *id).await.map_err(map_error)?.settings;
-                        self.host.policies.check(t, &settings)?;
-                        authority::settings(p, &settings)?;
-                    }
-                    // Stopping an integration must work even after its network/key config is removed.
-                    storage::Change::Enabled(false) | storage::Change::Delete => (),
-                }
-                storage::mutate(c, t, *id, mutation)
-                    .await
-                    .map_err(map_error)?
-            }
+            Command::Change(id, mutation) => self.change_on(c, p, *id, mutation).await?,
+
             Command::Test {
                 subscription,
                 operation,
                 device,
             } => {
-                let input = ("test", subscription, operation, device);
-                let s = storage::get(c, t, *subscription).await.map_err(map_error)?;
-                p.require(Permission::InventoryRead, Some(device))?;
-                if let Some(old) = storage::replay_operation(c, t, *operation, &input)
-                    .await
-                    .map_err(map_error)?
-                {
-                    return Ok((old, true));
-                }
-                if !s.enabled || s.deleted {
-                    return Err(HttpError::Conflict);
-                }
-                let event = Event {
-                    event_id: events::identity(*operation, "webhook-test"),
-                    event_type: EventType::Test,
-                    version: 1,
-                    occurred_at: events::now_on(c).await.map_err(map_error)?,
-                    tenant_id: t,
-                    device_id: device.clone(),
-                    data: EventData::Test,
-                };
-                if !self.host.eligible(c, &s, &event).await.map_err(map_error)? {
-                    return Err(HttpError::Forbidden);
-                }
-                // Test is targeted, so persist its immutable event without broadcasting a source job.
-                event.validate().map_err(map_error)?;
-                sqlx::query("INSERT INTO mdm_webhook.events(tenant_id,id,document,body) VALUES($1,$2,$3,$4)")
-                    .bind(t)
-                    .bind(event.event_id)
-                    .bind(serde_json::to_value(&event).map_err(|_| HttpError::Malformed)?)
-                    .bind(serde_json::to_vec(&event).map_err(|_| HttpError::Malformed)?)
-                    .execute(&mut *c)
-                    .await
-                    .map_err(|_| unavailable())?;
-                let id = webhooks::fanout::queue(c, &event, &s, Some(*operation), None)
-                    .await
-                    .map_err(map_error)?;
-                let response = serde_json::json!({"id":id,"eventId":event.event_id});
-                storage::record_operation(c, t, *operation, &input, &response)
-                    .await
-                    .map_err(map_error)?;
-                response
+                return self.test_on(c, p, *subscription, *operation, device).await;
             }
-            Command::Deliveries(_) | Command::Delivery(_) => {
-                let (after, only) = match command {
-                    Command::Deliveries(a) => (*a, None),
-                    Command::Delivery(id) => (None, Some(*id)),
-                    _ => unreachable!(),
-                };
-                let rows = storage::deliveries(c, t, after, only)
-                    .await
-                    .map_err(map_error)?;
-                let next = rows.last().and_then(|v| v.get("id")).cloned();
-                let mut items = Vec::new();
-                for row in rows {
-                    let id = serde_json::from_value(row["eventId"].clone())
-                        .map_err(|_| unavailable())?;
-                    let event = storage::event(c, t, id).await.map_err(map_error)?;
-                    if authority::read(p, &event).is_ok() {
-                        items.push(row)
-                    }
-                }
-                if only.is_some() && items.is_empty() {
-                    return Err(HttpError::NotFound);
-                }
-                serde_json::json!({"items":items,"nextCursor":next})
-            }
+
+            Command::Deliveries(after) => self.deliveries_on(c, p, *after, None).await?,
+            Command::Delivery(id) => self.deliveries_on(c, p, None, Some(*id)).await?,
             Command::Replay {
                 delivery,
                 operation,
@@ -416,12 +448,13 @@ impl rss_mdm_management_http::webhooks::Source for Backend {
         })
     }
 }
-impl rss_runtime::ManagedResource for Backend {
+pub(crate) struct Resource(pub Arc<Backend>);
+impl rss_runtime::ManagedResource for Resource {
     fn name(&self) -> &str {
         "webhook-recovery"
     }
     async fn shutdown(&self) -> Result<(), rss_runtime::ShutdownError> {
-        self.recovery.close().await;
+        self.0.recovery.close().await;
         Ok(())
     }
     fn shutdown_timeout(&self) -> Duration {

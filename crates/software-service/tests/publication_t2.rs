@@ -4,7 +4,7 @@ use rss_mdm_software_service::publication::*;
 mod publication_support;
 use publication_support::pg::*;
 use publication_support::*;
-fn assert_publication_audit(p: &rel::Publication, candidate: &rel::CandidateId, outcome: &str) {
+fn assert_publication_audit(p: &rel::Attempt, record: &rel::PublicationKey, outcome: &str) {
     let digest: String = p
         .id()
         .digest()
@@ -25,14 +25,13 @@ fn assert_publication_audit(p: &rel::Publication, candidate: &rel::CandidateId, 
     let fact = &rows[0]["software"];
     let request_hash = sql(&format!(
         "SELECT encode(sha256(convert_to(id,'UTF8')),'hex') FROM mdm_software_release.requests WHERE tenant_id='{}' AND owner='{}' AND id LIKE 'record/%'",
-        candidate.tenant(),
-        candidate.value()
+        record.tenant(),
+        record.value()
     ));
     assert_eq!(request_hash.lines().count(), 1);
     assert_eq!(fact["operation"], request_hash);
     assert_eq!(fact["publication"], digest);
     assert_eq!(fact["attempt"], p.attempt);
-    assert_eq!(fact["ring"], 0);
     assert_eq!(fact["binding"].as_str().unwrap().len(), 64);
     assert_eq!(fact["outcome"], outcome);
     assert_eq!(
@@ -47,7 +46,7 @@ fn assert_publication_audit(p: &rel::Publication, candidate: &rel::CandidateId, 
         rows[0]["status"],
         if outcome == "unknown" { 202 } else { 200 }
     );
-    assert_eq!(fact.as_object().unwrap().len(), 7);
+    assert_eq!(fact.as_object().unwrap().len(), 6);
 }
 #[path = "publication/artifact.rs"]
 mod artifact;

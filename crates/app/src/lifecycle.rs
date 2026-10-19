@@ -329,7 +329,9 @@ pub async fn serve(
                         )
                         .await
                         .map_err(assembly_error)?;
-                        startup.stage_resource(DynManagedResource::new_box(app.webhooks.clone()));
+                        startup.stage_resource(DynManagedResource::new_box(
+                            crate::webhooks::Resource(app.webhooks.clone()),
+                        ));
                         app.pki
                             .admit(
                                 rss_request_context::TenantId::parse(&tenant).map_err(|_| {

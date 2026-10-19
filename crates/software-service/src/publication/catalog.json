@@ -20,16 +20,7 @@
     ],
     [
       "authorities",
-      "material",
-      "bytea",
-      true,
-      null,
-      "",
-      ""
-    ],
-    [
-      "authorities",
-      "candidate",
+      "record",
       "text",
       true,
       null,
@@ -155,7 +146,7 @@
     ],
     [
       "subjects",
-      "candidate",
+      "record",
       "text",
       true,
       null,
@@ -218,7 +209,7 @@
     ],
     [
       "targets",
-      "candidate",
+      "record",
       "text",
       true,
       null,
@@ -299,7 +290,7 @@
     ],
     [
       "withdrawals",
-      "candidate",
+      "record",
       "text",
       true,
       null,
@@ -334,88 +325,7 @@
       ""
     ]
   ],
-  "indexes": [
-    [
-      "authorities",
-      "authorities_pkey",
-      "CREATE UNIQUE INDEX authorities_pkey ON mdm_software_composition.authorities USING btree (tenant_id, software)",
-      true,
-      true,
-      true
-    ],
-    [
-      "bindings",
-      "bindings_pkey",
-      "CREATE UNIQUE INDEX bindings_pkey ON mdm_software_composition.bindings USING btree (identity)",
-      true,
-      true,
-      true
-    ],
-    [
-      "bindings",
-      "bindings_tenant_id_identity_key",
-      "CREATE UNIQUE INDEX bindings_tenant_id_identity_key ON mdm_software_composition.bindings USING btree (tenant_id, identity)",
-      true,
-      true,
-      true
-    ],
-    [
-      "projections",
-      "projections_pkey",
-      "CREATE UNIQUE INDEX projections_pkey ON mdm_software_composition.projections USING btree (tenant_id, binding, coordinate)",
-      true,
-      true,
-      true
-    ],
-    [
-      "slots",
-      "slots_pkey",
-      "CREATE UNIQUE INDEX slots_pkey ON mdm_software_composition.slots USING btree (tenant_id, binding, coordinate)",
-      true,
-      true,
-      true
-    ],
-    [
-      "subjects",
-      "resource_references",
-      "CREATE INDEX resource_references ON mdm_software_composition.subjects USING btree (tenant_id, resource, version)",
-      true,
-      true,
-      true
-    ],
-    [
-      "subjects",
-      "subjects_pkey",
-      "CREATE UNIQUE INDEX subjects_pkey ON mdm_software_composition.subjects USING btree (tenant_id, candidate)",
-      true,
-      true,
-      true
-    ],
-    [
-      "targets",
-      "targets_pkey",
-      "CREATE UNIQUE INDEX targets_pkey ON mdm_software_composition.targets USING btree (tenant_id, id)",
-      true,
-      true,
-      true
-    ],
-    [
-      "withdrawals",
-      "withdrawals_pkey",
-      "CREATE UNIQUE INDEX withdrawals_pkey ON mdm_software_composition.withdrawals USING btree (tenant_id, id)",
-      true,
-      true,
-      true
-    ]
-  ],
   "constraints": [
-    [
-      "authorities",
-      "authorities_material_check",
-      "c",
-      "CHECK ((octet_length(material) = 32))",
-      true
-    ],
     [
       "authorities",
       "authorities_pkey",
@@ -432,9 +342,9 @@
     ],
     [
       "authorities",
-      "authorities_tenant_id_candidate_fkey",
+      "authorities_tenant_id_record_fkey",
       "f",
-      "FOREIGN KEY (tenant_id, candidate) REFERENCES mdm_software_composition.subjects(tenant_id, candidate) DEFERRABLE INITIALLY DEFERRED",
+      "FOREIGN KEY (tenant_id, record) REFERENCES mdm_software_composition.subjects(tenant_id, record) DEFERRABLE INITIALLY DEFERRED",
       true
     ],
     [
@@ -530,13 +440,6 @@
     ],
     [
       "subjects",
-      "subjects_candidate_check",
-      "c",
-      "CHECK (((octet_length(candidate) >= 1) AND (octet_length(candidate) <= 128)))",
-      true
-    ],
-    [
-      "subjects",
       "subjects_digest_check",
       "c",
       "CHECK ((octet_length(digest) = 32))",
@@ -553,14 +456,21 @@
       "subjects",
       "subjects_pkey",
       "p",
-      "PRIMARY KEY (tenant_id, candidate)",
+      "PRIMARY KEY (tenant_id, record)",
       true
     ],
     [
       "subjects",
-      "subjects_tenant_id_candidate_fkey",
+      "subjects_record_check",
+      "c",
+      "CHECK (((octet_length(record) >= 1) AND (octet_length(record) <= 128)))",
+      true
+    ],
+    [
+      "subjects",
+      "subjects_tenant_id_record_fkey",
       "f",
-      "FOREIGN KEY (tenant_id, candidate) REFERENCES mdm_software_release.aggregates(tenant_id, id)",
+      "FOREIGN KEY (tenant_id, record) REFERENCES mdm_software_release.aggregates(tenant_id, id)",
       true
     ],
     [
@@ -621,9 +531,9 @@
     ],
     [
       "targets",
-      "targets_tenant_id_candidate_fkey",
+      "targets_tenant_id_record_fkey",
       "f",
-      "FOREIGN KEY (tenant_id, candidate) REFERENCES mdm_software_composition.subjects(tenant_id, candidate)",
+      "FOREIGN KEY (tenant_id, record) REFERENCES mdm_software_composition.subjects(tenant_id, record)",
       true
     ],
     [
@@ -663,9 +573,83 @@
     ],
     [
       "withdrawals",
-      "withdrawals_tenant_id_candidate_fkey",
+      "withdrawals_tenant_id_record_fkey",
       "f",
-      "FOREIGN KEY (tenant_id, candidate) REFERENCES mdm_software_composition.subjects(tenant_id, candidate)",
+      "FOREIGN KEY (tenant_id, record) REFERENCES mdm_software_composition.subjects(tenant_id, record)",
+      true
+    ]
+  ],
+  "indexes": [
+    [
+      "authorities",
+      "authorities_pkey",
+      "CREATE UNIQUE INDEX authorities_pkey ON mdm_software_composition.authorities USING btree (tenant_id, software)",
+      true,
+      true,
+      true
+    ],
+    [
+      "bindings",
+      "bindings_pkey",
+      "CREATE UNIQUE INDEX bindings_pkey ON mdm_software_composition.bindings USING btree (identity)",
+      true,
+      true,
+      true
+    ],
+    [
+      "bindings",
+      "bindings_tenant_id_identity_key",
+      "CREATE UNIQUE INDEX bindings_tenant_id_identity_key ON mdm_software_composition.bindings USING btree (tenant_id, identity)",
+      true,
+      true,
+      true
+    ],
+    [
+      "projections",
+      "projections_pkey",
+      "CREATE UNIQUE INDEX projections_pkey ON mdm_software_composition.projections USING btree (tenant_id, binding, coordinate)",
+      true,
+      true,
+      true
+    ],
+    [
+      "slots",
+      "slots_pkey",
+      "CREATE UNIQUE INDEX slots_pkey ON mdm_software_composition.slots USING btree (tenant_id, binding, coordinate)",
+      true,
+      true,
+      true
+    ],
+    [
+      "subjects",
+      "resource_references",
+      "CREATE INDEX resource_references ON mdm_software_composition.subjects USING btree (tenant_id, resource, version)",
+      true,
+      true,
+      true
+    ],
+    [
+      "subjects",
+      "subjects_pkey",
+      "CREATE UNIQUE INDEX subjects_pkey ON mdm_software_composition.subjects USING btree (tenant_id, record)",
+      true,
+      true,
+      true
+    ],
+    [
+      "targets",
+      "targets_pkey",
+      "CREATE UNIQUE INDEX targets_pkey ON mdm_software_composition.targets USING btree (tenant_id, id)",
+      true,
+      true,
+      true
+    ],
+    [
+      "withdrawals",
+      "withdrawals_pkey",
+      "CREATE UNIQUE INDEX withdrawals_pkey ON mdm_software_composition.withdrawals USING btree (tenant_id, id)",
+      true,
+      true,
       true
     ]
   ]

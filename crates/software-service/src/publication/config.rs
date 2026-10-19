@@ -25,19 +25,6 @@ pub enum SourceConfig {
     Winget(WingetConfig),
     Brew(BrewConfig),
 }
-/// Fixed, named publication environments; each must own a distinct physical source.
-#[derive(Clone, serde::Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct RingSources {
-    pub test: SourceConfig,
-    pub pilot: SourceConfig,
-    pub production: SourceConfig,
-}
-impl RingSources {
-    fn ordered(self) -> [SourceConfig; 3] {
-        [self.test, self.pilot, self.production]
-    }
-}
 /// Identities are attested by this controlled process, never by an HTTP request body.
 pub struct ServiceIdentity {
     pub backend: rel::ActorId,
@@ -67,92 +54,48 @@ pub(super) enum Driver {
 pub(super) struct Binding {
     pub identity: Vec<u8>,
     pub configuration: Vec<u8>,
-    pub physical: String,
     pub driver: Driver,
 }
 pub(super) struct Sources {
     pub tenant: TenantId,
     pub logical: String,
-    pub bindings: [Binding; 3],
+    pub binding: Binding,
     pub digest: [u8; 32],
 }
 impl Sources {
     pub async fn new(
         tenant: TenantId,
         logical: String,
-        config: RingSources,
+        config: SourceConfig,
         credentials: &dyn crate::Credentials,
     ) -> Result<Self> {
-        rel::SoftwareIdentity::new(rel::SoftwareIdentityFields {
-            source: logical.clone(),
-            package: "validation".into(),
-            version: "1".into(),
-            platform: "validation".into(),
-        })
-        .map_err(|cause| Error::Input.context("config::new", cause))?;
-        let mut values = Vec::new();
-        for (ring, config) in config.ordered().into_iter().enumerate() {
-            let mut binding = compile(tenant, &logical, config, credentials).await?;
-            binding.configuration = serde_json::to_vec(&serde_json::json!([
-                1,
-                logical,
-                ring,
-                binding.configuration
-            ]))
-            .map_err(|cause| Error::Input.context("config::new", cause))?;
-            values.push(binding);
-        }
-        if values
-            .iter()
-            .any(|b| std::mem::discriminant(&b.driver) != std::mem::discriminant(&values[0].driver))
-        {
-            return Err(Error::Input);
-        }
-        let artifact_base = |b: &Binding| match &b.driver {
-            Driver::Winget { artifacts_base, .. } | Driver::Brew { artifacts_base, .. } => {
-                artifacts_base.clone()
-            }
-        };
-        if values
-            .iter()
-            .any(|b| artifact_base(b) != artifact_base(&values[0]))
-        {
-            return Err(Error::Input);
-        }
-        let mut seen = std::collections::BTreeSet::new();
-        if values.iter().any(|v| !seen.insert(&v.physical)) {
-            return Err(Error::Identity);
-        }
+        rel::TargetId::new(tenant, &logical).map_err(|_| Error::Input)?;
+        let mut binding = compile(tenant, &logical, config, credentials).await?;
+        binding.configuration = serde_json::to_vec(&serde_json::json!([
+            1,
+            tenant.to_string(),
+            logical,
+            binding.configuration
+        ]))
+        .map_err(|_| Error::Input)?;
         let envelope = serde_json::to_vec(&serde_json::json!([
             1,
             tenant.to_string(),
             logical,
-            values
-                .iter()
-                .map(|b| (&b.identity, &b.configuration))
-                .collect::<Vec<_>>()
+            binding.identity,
+            binding.configuration
         ]))
-        .map_err(|cause| Error::Input.context("config::new", cause))?;
+        .map_err(|_| Error::Input)?;
         let digest = Sha256::digest(envelope).into();
-        let bindings = values
-            .try_into()
-            .map_err(|cause| Error::Input.context("config::new", cause))?;
         Ok(Self {
             tenant,
             logical,
-            bindings,
+            binding,
             digest,
         })
     }
-    pub fn binding(&self, ring: rel::Ring) -> &Binding {
-        &self.bindings[index(ring)]
-    }
-}
-pub(super) fn index(r: rel::Ring) -> usize {
-    match r {
-        rel::Ring::Test => 0,
-        rel::Ring::Pilot => 1,
-        rel::Ring::Production => 2,
+    pub fn binding(&self) -> &Binding {
+        &self.binding
     }
 }
 async fn compile(
@@ -227,7 +170,6 @@ async fn compile(
     Ok(Binding {
         identity: Sha256::digest(physical.as_bytes()).to_vec(),
         configuration,
-        physical,
         driver,
     })
 }
@@ -254,82 +196,42 @@ pub(super) struct ExportSources {
     pub tenant: TenantId,
     pub logical: String,
     pub digest: [u8; 32],
-    pub bindings: [ExportBinding; 3],
+    pub binding: ExportBinding,
     pub artifacts_base: String,
 }
 impl Sources {
     pub(super) fn exports(&self) -> ExportSources {
+        let b = &self.binding;
         ExportSources {
             tenant: self.tenant,
             logical: self.logical.clone(),
             digest: self.digest,
-            artifacts_base: match &self.bindings[0].driver {
+            artifacts_base: match &b.driver {
                 Driver::Winget { artifacts_base, .. } | Driver::Brew { artifacts_base, .. } => {
                     artifacts_base.clone()
                 }
             },
-            bindings: std::array::from_fn(|i| {
-                let binding = &self.bindings[i];
-                ExportBinding {
-                    identity: binding.identity.clone(),
-                    protocol: match &binding.driver {
-                        Driver::Winget { base, .. } => {
-                            ExportProtocol::Winget { base: base.clone() }
-                        }
-                        Driver::Brew {
-                            base,
-                            tap,
-                            credential_reference,
-                            ..
-                        } => ExportProtocol::Brew {
-                            base: base.clone(),
-                            tap: tap.clone(),
-                            credential_reference: credential_reference.clone(),
-                        },
+            binding: ExportBinding {
+                identity: b.identity.clone(),
+                protocol: match &b.driver {
+                    Driver::Winget { base, .. } => ExportProtocol::Winget { base: base.clone() },
+                    Driver::Brew {
+                        base,
+                        tap,
+                        credential_reference,
+                        ..
+                    } => ExportProtocol::Brew {
+                        base: base.clone(),
+                        tap: tap.clone(),
+                        credential_reference: credential_reference.clone(),
                     },
-                }
-            }),
+                },
+            },
         }
     }
 }
 impl ExportSources {
-    pub(super) fn binding(&self, ring: rel::Ring) -> &ExportBinding {
-        &self.bindings[index(ring)]
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    struct NoCredentials;
-    impl crate::Credentials for NoCredentials {
-        fn brew_read(&self, _: TenantId, _: &str, _: &str) -> Result<crate::BrewReadAccess> {
-            panic!("hosted Winget needs no source credentials")
-        }
-    }
-    #[tokio::test]
-    async fn rings_require_distinct_physical_sources() {
-        let source = |ring| {
-            SourceConfig::Winget(WingetConfig {
-                base: format!("https://mdm.example.test/{ring}/"),
-                artifacts_base: "https://mdm.example.test/artifacts/".into(),
-            })
-        };
-        let mut rings = RingSources {
-            test: source("test"),
-            pilot: source("pilot"),
-            production: source("production"),
-        };
-        let tenant = TenantId::parse("10000000-0000-0000-0000-000000000001").unwrap();
-        assert!(
-            Sources::new(tenant, "private".into(), rings.clone(), &NoCredentials)
-                .await
-                .is_ok()
-        );
-        rings.pilot = rings.test.clone();
-        assert!(matches!(
-            Sources::new(tenant, "private".into(), rings, &NoCredentials).await,
-            Err(Error::Identity)
-        ));
+    pub(super) fn binding(&self) -> &ExportBinding {
+        &self.binding
     }
 }

@@ -161,7 +161,7 @@ async fn subscription_versions_atomic_fanout_and_same_id_https_retry() -> Result
         let mut browser=Browser::default();ensure!(browser.login(&router,"admin").await?==StatusCode::OK);
         let device=case::name("webhook-device");pg(&format!("INSERT INTO mdm_access.devices(tenant_id,id) VALUES('{}','{}')",case_tenant(),device))?;
         let tenant=Uuid::parse_str(case_tenant())?;
-        let event=Event{event_id:Uuid::new_v4(),event_type:EventType::Registered,version:1,occurred_at:crate::clock::Clock::unix_seconds(&crate::clock::SystemClock)?,tenant_id:tenant,device_id:device.clone(),data:EventData::Registration {registration_id:Uuid::new_v4(),generation:1,channel:"agent".into(),state:"active".into()}};
+        let event=Event{event_id:Uuid::new_v4(),event_type:EventType::Registered,version:1,occurred_at:crate::clock::Clock::unix_seconds(&crate::clock::SystemClock)?,tenant_id:tenant,device_id:device.to_owned(),data:EventData::Registration {registration_id:Uuid::new_v4(),generation:1,channel:"agent".into(),state:"active".into()}};
         let mut subscriptions=Vec::new();
         for index in 0..rss_mdm_webhook_service::PAGE + 1 {
             let name = match index { 0 => "first".to_owned(), 1 => "second".to_owned(), _ => format!("receiver-{index}") };
@@ -171,7 +171,7 @@ async fn subscription_versions_atomic_fanout_and_same_id_https_retry() -> Result
                 let request=json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"change":{"kind":"put","value":settings}});
                 identity::set_grants(case_tenant(),case::admin(),vec![Grant {operation:Permission::WebhookWrite,scope:Scope::Tenant}]).await?;
                 ensure!(browser.call(&router,Method::PUT,&path,Some(request.clone())).await?.0==StatusCode::FORBIDDEN);
-                identity::set_grants(case_tenant(),case::admin(),vec![Grant {operation:Permission::WebhookWrite,scope:Scope::Tenant},Grant {operation:Permission::InventoryRead,scope:Scope::Device{id:device.clone()}}]).await?;
+                identity::set_grants(case_tenant(),case::admin(),vec![Grant {operation:Permission::WebhookWrite,scope:Scope::Tenant},Grant {operation:Permission::InventoryRead,scope:Scope::Device{id:device.to_owned()}}]).await?;
                 ensure!(browser.call(&router,Method::PUT,&path,Some(request)).await?.0==StatusCode::FORBIDDEN,"one-device grant expanded to all devices");
                 ensure!(pg(&format!("SELECT count(*) FROM mdm_webhook.subscriptions WHERE tenant_id='{tenant}' AND id='{id}'"))?.trim()=="0","denied create left a subscription");
                 identity::set_grants(case_tenant(),case::admin(),grants.clone()).await?;
@@ -185,7 +185,7 @@ async fn subscription_versions_atomic_fanout_and_same_id_https_retry() -> Result
         let rollback_event=Event{event_id:Uuid::new_v4(),..event.clone()};let copied=rollback_event.clone();
         let rolled=execution.runtime.local_tx(rss_request_context::TenantId::parse(case_tenant())?,crate::webhooks::deadline(),move|tx|Box::pin(async move {events::emit_in(tx,copied).await.map_err(rss_transactional_messaging_postgres::PgError::from)?;Err::<(),_>(sqlx::Error::Protocol("deliberate business rollback".into()).into())})).await;
         ensure!(rolled.fold(|_|false,|_|false,|_|true,|_|false,|_|false,|_|false));
-        ensure!(pg(&format!("SELECT count(*) FROM mdm_webhook.events WHERE id='{}'",rollback_event.event_id))?=="0");
+        ensure!(pg(&format!("SELECT count(*) FROM mdm_webhook.events WHERE id='{}'",rollback_event.event_id))?.trim()=="0");
         let copied=event.clone();execution.runtime.local_tx(rss_request_context::TenantId::parse(case_tenant())?,crate::webhooks::deadline(),move|tx|Box::pin(async move {events::emit_in(tx,copied).await.map_err(rss_transactional_messaging_postgres::PgError::from)})).await.fold(Ok,Err,Err,Err,Err,Err)?;
         // The integration belongs to the tenant even after its creator loses all business grants.
         identity::set_grants(case_tenant(),case::admin(),vec![]).await?;
@@ -193,7 +193,7 @@ async fn subscription_versions_atomic_fanout_and_same_id_https_retry() -> Result
         let requests=tokio::time::timeout(Duration::from_secs(30),&mut server).await???;
         let first:Vec<_>=requests.iter().filter(|r|r.0=="/first").collect();ensure!(first.len()==2 && first[0].1==first[1].1 && first[0].2==first[1].2);
         ensure!(requests.iter().all(|r|serde_json::from_slice::<Value>(&r.2).ok().is_some_and(|v|v["eventId"]==event.event_id.to_string())));
-        tokio::time::timeout(Duration::from_secs(10),async {loop {if pg(&format!("SELECT count(*) FROM mdm_webhook.deliveries d JOIN rss_transactional_messaging.outbox o ON(o.tenant_id,o.message_id)=(d.tenant_id,d.id::text) WHERE d.event_id='{}' AND o.status='published'",event.event_id))?==(rss_mdm_webhook_service::PAGE+1).to_string(){return Ok::<_,anyhow::Error>(())}tokio::time::sleep(Duration::from_millis(100)).await;}}).await??;
+        tokio::time::timeout(Duration::from_secs(10),async {loop {if pg(&format!("SELECT count(*) FROM mdm_webhook.deliveries d JOIN rss_transactional_messaging.outbox o ON(o.tenant_id,o.message_id)=(d.tenant_id,d.id::text) WHERE d.event_id='{}' AND o.status='published'",event.event_id))?.trim()==(rss_mdm_webhook_service::PAGE+1).to_string(){return Ok::<_,anyhow::Error>(())}tokio::time::sleep(Duration::from_millis(100)).await;}}).await??;
         stop.cancel();
         if let Some(mut task)=worker.take() {
             match tokio::time::timeout(Duration::from_secs(20),&mut task).await {
@@ -241,7 +241,7 @@ async fn subscription_versions_atomic_fanout_and_same_id_https_retry() -> Result
         ensure!(browser.call(&router,Method::POST,&replay_path,Some(json!({"operationId":Uuid::new_v4()}))).await?.0==StatusCode::FORBIDDEN,"new replay ignored retired target");
         let another=case::name("another-device");
         pg(&format!("INSERT INTO mdm_access.devices(tenant_id,id) VALUES('{tenant}','{another}')"))?;
-        let limited=vec![Grant {operation:Permission::WebhookRead,scope:Scope::Tenant},Grant {operation:Permission::WebhookReplay,scope:Scope::Tenant},Grant {operation:Permission::InventoryRead,scope:Scope::Device{id:another}}];
+        let limited=vec![Grant {operation:Permission::WebhookRead,scope:Scope::Tenant},Grant {operation:Permission::WebhookReplay,scope:Scope::Tenant},Grant {operation:Permission::InventoryRead,scope:Scope::Device{id:another.to_owned()}}];
         identity::set_grants(case_tenant(),case::admin(),limited).await?;
         ensure!(browser.call(&router,Method::GET,&format!("/api/v1/webhooks/deliveries/{source}"),None).await?.0==StatusCode::NOT_FOUND);
         ensure!(browser.call(&router,Method::POST,&replay_path,Some(replay_request)).await?.0==StatusCode::FORBIDDEN,"receipt bypassed current event read permission");
@@ -261,14 +261,13 @@ async fn subscription_versions_atomic_fanout_and_same_id_https_retry() -> Result
         Ok::<_,anyhow::Error>(())
     }.await;
     stop.cancel();
-    if let Some(mut task) = worker {
-        if tokio::time::timeout(Duration::from_secs(20), &mut task)
+    if let Some(mut task) = worker
+        && tokio::time::timeout(Duration::from_secs(20), &mut task)
             .await
             .is_err()
-        {
-            task.abort();
-            let _ = task.await;
-        }
+    {
+        task.abort();
+        let _ = task.await;
     }
     if !server.is_finished() {
         server.abort();

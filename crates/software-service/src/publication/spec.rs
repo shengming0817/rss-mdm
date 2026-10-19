@@ -81,7 +81,6 @@ pub enum ExportDocument {
 pub(super) struct PreparedContent {
     pub resources: Vec<resource::Version>,
     pub content: rel::Content,
-    pub artifacts: Vec<PublicArtifact>,
     pub coordinate: String,
     pub document: ExportDocument,
 }
@@ -104,7 +103,7 @@ pub(super) fn prepare(
     let exported = super::derive::exported_materials(version, dependencies, artifact_base)?;
     let (platform, package, package_version, manifest, coordinate) = match &document {
         ExportDocument::Winget { manifest } => {
-            if !matches!(sources.bindings[0].protocol, ExportProtocol::Winget { .. }) {
+            if !matches!(sources.binding.protocol, ExportProtocol::Winget { .. }) {
                 return Err(Error::Unsupported);
             }
             let m = winget::VersionManifest::parse(
@@ -122,18 +121,10 @@ pub(super) fn prepare(
             )
         }
         ExportDocument::Brew { recipe } => {
-            let ExportProtocol::Brew { tap, .. } = &sources.bindings[0].protocol else {
+            let ExportProtocol::Brew { tap, .. } = &sources.binding.protocol else {
                 return Err(Error::Unsupported);
             };
             let rendered = recipe.render(sources.tenant, tap)?;
-            for binding in &sources.bindings {
-                let ExportProtocol::Brew { tap, .. } = &binding.protocol else {
-                    return Err(Error::Unsupported);
-                };
-                if recipe.render(sources.tenant, tap)?.bytes() != rendered.bytes() {
-                    return Err(Error::Content);
-                }
-            }
             (
                 resource::Platform::MacOS,
                 recipe.package.clone(),
@@ -223,7 +214,6 @@ pub(super) fn prepare(
             .chain(dependencies.iter().cloned())
             .collect(),
         content,
-        artifacts: unique.into_values().collect(),
         coordinate,
         document,
     })

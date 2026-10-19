@@ -241,7 +241,7 @@ impl Config {
                 },
                 tenant,
                 source.name.clone(),
-                source.rings.clone(),
+                source.target.clone(),
                 p::ServiceIdentity {
                     backend: rss_mdm_software_release::ActorId::new(tenant, "mdm-software-backend")
                         .map_err(|_| invalid())?,

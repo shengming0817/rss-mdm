@@ -41,7 +41,7 @@ macro_rules! identities {
         }
     )+ };
 }
-identities!(CandidateId, RequestId);
+identities!(PublicationKey, TargetId, RequestId);
 /// Opaque tenant-scoped principal identity, including product-attested structured subjects.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ActorId {
@@ -104,7 +104,7 @@ impl Digest {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct PublicationId(pub(crate) Digest);
 impl PublicationId {
-    /// Reconstructs a stored identity; this does not validate an approval or backend fact.
+    /// Reconstructs a stored identity; this does not validate a backend fact.
     pub const fn from_digest(digest: Digest) -> Self {
         Self(digest)
     }

@@ -145,17 +145,16 @@ fn invalid_restored_aggregate_cannot_produce_checked_change() {
     }
 }
 #[test]
-fn native_delivery_source_and_ring_are_execution_semantics() {
+fn native_delivery_target_is_execution_semantics() {
     let id = uuid::Uuid::new_v4();
     let mut value = serde_json::json!({"scope":id,"action":{"kind":"software","channel":"agent","resource":{"kind":"software","id":"acme","version":"1","variants":{"windows_x86_64":"default"}},"delivery":{"kind":"direct"},"intent":"required_install","runLifetimeSeconds":600,"rollout":{"stages":[{"scope":id,"opensAt":0}]}}});
     let direct: rss_mdm_policy::Definition = serde_json::from_value(value.clone()).unwrap();
-    value["action"]["delivery"] =
-        serde_json::json!({"kind":"native","source":"enterprise","ring":"test"});
-    let test: rss_mdm_policy::Definition = serde_json::from_value(value.clone()).unwrap();
-    value["action"]["delivery"]["ring"] = serde_json::json!("production");
-    let production: rss_mdm_policy::Definition = serde_json::from_value(value.clone()).unwrap();
-    assert_ne!(direct.semantic().unwrap(), test.semantic().unwrap());
-    assert_ne!(test.semantic().unwrap(), production.semantic().unwrap());
+    value["action"]["delivery"] = serde_json::json!({"kind":"native","target":"internal"});
+    let internal: rss_mdm_policy::Definition = serde_json::from_value(value.clone()).unwrap();
+    value["action"]["delivery"]["target"] = serde_json::json!("external");
+    let external: rss_mdm_policy::Definition = serde_json::from_value(value.clone()).unwrap();
+    assert_ne!(direct.semantic().unwrap(), internal.semantic().unwrap());
+    assert_ne!(internal.semantic().unwrap(), external.semantic().unwrap());
     value["action"].as_object_mut().unwrap().remove("delivery");
     assert!(serde_json::from_value::<rss_mdm_policy::Definition>(value).is_err());
 }

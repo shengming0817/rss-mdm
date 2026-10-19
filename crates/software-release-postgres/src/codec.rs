@@ -1,4 +1,4 @@
-//! V3 core projection in a single V1 storage envelope; no legacy decoder.
+//! Direct publication storage projection.
 use crate::{STORAGE, core::*};
 use rss_contract::Timepoint;
 use rss_mdm_backend_postgres_support::digest;
@@ -45,12 +45,12 @@ fn read_actor(v: &Value) -> Result<ActorId, PgError> {
     let (t, v) = fields(v)?;
     crate::error::decode_domain("codec::read_actor", ActorId::new(t, v))
 }
-fn candidate(v: &CandidateId) -> Value {
+fn publication_key(v: &PublicationKey) -> Value {
     object(v.tenant(), v.value())
 }
-pub(crate) fn read_candidate(v: &Value) -> Result<CandidateId, PgError> {
+pub(crate) fn read_publication_key(v: &Value) -> Result<PublicationKey, PgError> {
     let (t, v) = fields(v)?;
-    crate::error::decode_domain("codec::read_candidate", CandidateId::new(t, v))
+    crate::error::decode_domain("codec::read_publication_key", PublicationKey::new(t, v))
 }
 fn request_id(v: &RequestId) -> Value {
     object(v.tenant(), v.value())
@@ -58,21 +58,6 @@ fn request_id(v: &RequestId) -> Value {
 pub(crate) fn read_request_id(v: &Value) -> Result<RequestId, PgError> {
     let (t, v) = fields(v)?;
     crate::error::decode_domain("codec::read_request_id", RequestId::new(t, v))
-}
-pub(crate) fn ring(r: Ring) -> u8 {
-    match r {
-        Ring::Test => 0,
-        Ring::Pilot => 1,
-        Ring::Production => 2,
-    }
-}
-fn read_ring(v: &Value) -> Result<Ring, PgError> {
-    match n(v)? {
-        0 => Ok(Ring::Test),
-        1 => Ok(Ring::Pilot),
-        2 => Ok(Ring::Production),
-        _ => Err(STORAGE.fault("codec::read_ring")),
-    }
 }
 pub(crate) fn content(c: &Content) -> Value {
     let s = c.software().fields();
@@ -154,55 +139,30 @@ fn read_evidence(v: &Value) -> Result<Evidence, PgError> {
         at: time(&a[2])?,
     })
 }
-fn validation(v: &Validation) -> Value {
-    json!([
-        candidate(&v.candidate),
-        v.content.bytes(),
-        ring(v.ring),
-        evidence(&v.evidence),
-        match v.verdict {
-            Verdict::Passed => 0,
-            Verdict::Failed => 1,
-            Verdict::Unknown => 2,
-        }
-    ])
-}
-fn read_validation(v: &Value) -> Result<Validation, PgError> {
-    let a = array(v, 5)?;
-    Ok(Validation {
-        candidate: read_candidate(&a[0])?,
-        content: hash(&a[1])?,
-        ring: read_ring(&a[2])?,
-        evidence: read_evidence(&a[3])?,
-        verdict: match n(&a[4])? {
-            0 => Verdict::Passed,
-            1 => Verdict::Failed,
-            2 => Verdict::Unknown,
-            _ => return Err(STORAGE.fault("codec::read_validation")),
-        },
-    })
-}
 fn binding(b: &PublicationBinding) -> Value {
     json!([
-        validation(&b.validation),
+        publication_key(&b.publication),
+        b.content.bytes(),
+        object(b.target.tenant(), b.target.value()),
+        b.target_digest.bytes(),
+        evidence(&b.evidence),
         b.lifecycle.bytes(),
         actor(&b.actor),
-        b.at.unix_seconds(),
-        b.predecessor.map(|p| p.digest().bytes())
+        b.at.unix_seconds()
     ])
 }
 fn read_binding(v: &Value) -> Result<PublicationBinding, PgError> {
-    let a = array(v, 5)?;
+    let a = array(v, 8)?;
+    let (tenant, target) = fields(&a[2])?;
     Ok(PublicationBinding {
-        validation: read_validation(&a[0])?,
-        lifecycle: hash(&a[1])?,
-        actor: read_actor(&a[2])?,
-        at: time(&a[3])?,
-        predecessor: if a[4].is_null() {
-            None
-        } else {
-            Some(PublicationId::from_digest(hash(&a[4])?))
-        },
+        publication: read_publication_key(&a[0])?,
+        content: hash(&a[1])?,
+        target: crate::error::decode_domain("codec::target", TargetId::new(tenant, target))?,
+        target_digest: hash(&a[3])?,
+        evidence: read_evidence(&a[4])?,
+        lifecycle: hash(&a[5])?,
+        actor: read_actor(&a[6])?,
+        at: time(&a[7])?,
     })
 }
 fn outcome(p: &PublicationResult) -> Value {
@@ -219,10 +179,10 @@ fn read_outcome(v: &Value) -> Result<PublicationResult, PgError> {
         0 => Ok(PublicationResult::Unknown(e)),
         1 => Ok(PublicationResult::NotApplied(e)),
         2 => Ok(PublicationResult::Applied(e)),
-        _ => Err(STORAGE.fault("codec::read_outcome")),
+        _ => Err(STORAGE.fault("codec::outcome")),
     }
 }
-pub(crate) fn publication(p: &Publication) -> Value {
+pub(crate) fn attempt(p: &Attempt) -> Value {
     json!([
         binding(&p.binding),
         p.attempt,
@@ -233,9 +193,9 @@ pub(crate) fn publication(p: &Publication) -> Value {
         }
     ])
 }
-pub(crate) fn read_publication(v: &Value) -> Result<Publication, PgError> {
+pub(crate) fn read_attempt(v: &Value) -> Result<Attempt, PgError> {
     let a = array(v, 4)?;
-    Ok(Publication {
+    Ok(Attempt {
         binding: read_binding(&a[0])?,
         attempt: n(&a[1])?,
         requested_at: time(&a[2])?,
@@ -246,121 +206,65 @@ pub(crate) fn read_publication(v: &Value) -> Result<Publication, PgError> {
         },
     })
 }
-fn ring_state(r: &RingState) -> Value {
-    match r {
-        RingState::NotStarted => json!([0]),
-        RingState::Candidate => json!([1]),
-        RingState::Publication(v) => json!([4, publication(v)]),
-    }
-}
-fn read_ring_state(v: &Value) -> Result<RingState, PgError> {
-    let a = v
-        .as_array()
-        .ok_or_else(|| STORAGE.fault("codec::read_ring_state"))?;
-    let tag = n(a
-        .first()
-        .ok_or_else(|| STORAGE.fault("codec::read_ring_state"))?)?;
-    if tag < 2 {
-        array(v, 1)?;
-        return Ok(if tag == 0 {
-            RingState::NotStarted
-        } else {
-            RingState::Candidate
-        });
-    }
-    let a = array(v, 2)?;
-    match tag {
-        4 => Ok(RingState::Publication(Box::new(read_publication(&a[1])?))),
-        _ => Err(STORAGE.fault("codec::read_ring_state")),
-    }
-}
-pub(crate) fn snapshot(c: &Candidate) -> Result<Vec<u8>, PgError> {
-    let s = c.snapshot();
+pub(crate) fn snapshot(p: &Publication) -> Result<Vec<u8>, PgError> {
+    let s = p.snapshot();
     STORAGE.encode(&json!([
-        3,
-        candidate(&s.id),
+        4,
+        publication_key(&s.id),
         s.revision,
         s.at.unix_seconds(),
-        s.content_at.unix_seconds(),
         content(&s.content),
-        match s.disposition {
-            Disposition::Active => 0,
-            Disposition::Quarantined => 1,
-            Disposition::Deprecated => 2,
-        },
-        s.rings.iter().map(ring_state).collect::<Vec<_>>()
+        s.withdrawn,
+        attempt(&s.attempt)
     ]))
 }
-pub(crate) fn read_snapshot(bytes: &[u8]) -> Result<Candidate, PgError> {
+pub(crate) fn read_snapshot(bytes: &[u8]) -> Result<Publication, PgError> {
     let v: Value = STORAGE.decode(bytes)?;
-    let a = array(&v, 8)?;
-    if n(&a[0])? != 3 {
-        return Err(STORAGE.fault("codec::read_snapshot"));
+    let a = array(&v, 7)?;
+    if n(&a[0])? != 4 {
+        return Err(STORAGE.fault("codec::snapshot"));
     }
-    let rings = array(&a[7], 3)?;
     crate::error::decode_domain(
-        "codec::read_snapshot",
-        Candidate::restore(Snapshot {
-            id: read_candidate(&a[1])?,
+        "codec::snapshot",
+        Publication::restore(Snapshot {
+            id: read_publication_key(&a[1])?,
             revision: n(&a[2])?,
             at: time(&a[3])?,
-            content_at: time(&a[4])?,
-            content: read_content(&a[5])?,
-            disposition: match n(&a[6])? {
-                0 => Disposition::Active,
-                1 => Disposition::Quarantined,
-                2 => Disposition::Deprecated,
-                _ => return Err(STORAGE.fault("codec::read_snapshot")),
-            },
-            rings: [
-                read_ring_state(&rings[0])?,
-                read_ring_state(&rings[1])?,
-                read_ring_state(&rings[2])?,
-            ],
+            content: read_content(&a[4])?,
+            withdrawn: a[5]
+                .as_bool()
+                .ok_or_else(|| STORAGE.fault("codec::withdrawn"))?,
+            attempt: read_attempt(&a[6])?,
         }),
     )
 }
-pub(crate) fn request(c: &CandidateId, r: &Request) -> Result<Vec<u8>, PgError> {
-    let operation = match &r.operation {
-        Operation::Replace(c) => json!([0, content(c)]),
-        Operation::Publish {
-            validation: v,
-            lifecycle,
-        } => json!([1, validation(v), lifecycle.bytes()]),
+pub(crate) fn request(p: &PublicationKey, r: &Request) -> Result<Vec<u8>, PgError> {
+    let op = match &r.operation {
         Operation::Retry {
-            ring: r,
             publication,
             attempt,
-        } => json!([4, ring(*r), publication.digest().bytes(), attempt]),
+        } => json!([0, publication.digest().bytes(), attempt]),
         Operation::Record {
-            ring: r,
             publication,
             attempt,
             outcome: o,
-        } => json!([
-            5,
-            ring(*r),
-            publication.digest().bytes(),
-            attempt,
-            outcome(o)
-        ]),
-        Operation::Quarantine => json!([6]),
-        Operation::Deprecate => json!([7]),
+        } => json!([1, publication.digest().bytes(), attempt, outcome(o)]),
+        Operation::Withdraw => json!([2]),
     };
     STORAGE.encode(&json!([
-        3,
-        candidate(c),
+        4,
+        publication_key(p),
         request_id(&r.id),
         actor(&r.actor),
         r.expected_revision,
         r.as_of.unix_seconds(),
-        operation
+        op
     ]))
 }
 pub(crate) fn receipt(r: &Receipt) -> Value {
     json!([
-        3,
-        candidate(&r.candidate),
+        4,
+        publication_key(&r.publication),
         request_id(&r.request),
         r.fingerprint.bytes(),
         r.before_revision,
@@ -370,11 +274,11 @@ pub(crate) fn receipt(r: &Receipt) -> Value {
 }
 pub(crate) fn read_receipt(v: &Value) -> Result<Receipt, PgError> {
     let a = array(v, 7)?;
-    if n(&a[0])? != 3 {
-        return Err(STORAGE.fault("codec::read_receipt"));
+    if n(&a[0])? != 4 {
+        return Err(STORAGE.fault("codec::receipt"));
     }
     Ok(Receipt {
-        candidate: read_candidate(&a[1])?,
+        publication: read_publication_key(&a[1])?,
         request: read_request_id(&a[2])?,
         fingerprint: hash(&a[3])?,
         before_revision: n(&a[4])?,
@@ -388,62 +292,42 @@ pub(crate) fn material(c: &Content) -> Result<(String, Vec<u8>), PgError> {
     let key = crate::hex(&digest(&STORAGE.encode(&doc[0])?));
     Ok((key, STORAGE.encode(&doc)?))
 }
-pub(crate) fn read_request(bytes: &[u8]) -> Result<Option<(CandidateId, Request)>, PgError> {
+pub(crate) fn read_request(bytes: &[u8]) -> Result<Option<(PublicationKey, Request)>, PgError> {
     let v: Value = STORAGE.decode(bytes)?;
-    if v.as_array().and_then(|a| a.first()).and_then(Value::as_str) == Some("create-v3") {
+    if v.as_array().and_then(|a| a.first()).and_then(Value::as_str) == Some("publish-v4") {
         return Ok(None);
     }
     let a = array(&v, 7)?;
-    if n(&a[0])? != 3 {
-        return Err(STORAGE.fault("codec::read_request"));
+    if n(&a[0])? != 4 {
+        return Err(STORAGE.fault("codec::request"));
     }
     let o = a[6]
         .as_array()
-        .ok_or_else(|| STORAGE.fault("codec::read_request"))?;
-    let tag = n(o
-        .first()
-        .ok_or_else(|| STORAGE.fault("codec::read_request"))?)?;
-    let operation = match tag {
+        .ok_or_else(|| STORAGE.fault("codec::request"))?;
+    let operation = match n(o.first().ok_or_else(|| STORAGE.fault("codec::request"))?)? {
         0 => {
-            array(&a[6], 2)?;
-            Operation::Replace(read_content(&o[1])?)
+            array(&a[6], 3)?;
+            Operation::Retry {
+                publication: PublicationId::from_digest(hash(&o[1])?),
+                attempt: n(&o[2])?,
+            }
         }
         1 => {
-            array(&a[6], 3)?;
-            Operation::Publish {
-                validation: read_validation(&o[1])?,
-                lifecycle: hash(&o[2])?,
-            }
-        }
-        4 => {
             array(&a[6], 4)?;
-            Operation::Retry {
-                ring: read_ring(&o[1])?,
-                publication: PublicationId::from_digest(hash(&o[2])?),
-                attempt: n(&o[3])?,
-            }
-        }
-        5 => {
-            array(&a[6], 5)?;
             Operation::Record {
-                ring: read_ring(&o[1])?,
-                publication: PublicationId::from_digest(hash(&o[2])?),
-                attempt: n(&o[3])?,
-                outcome: read_outcome(&o[4])?,
+                publication: PublicationId::from_digest(hash(&o[1])?),
+                attempt: n(&o[2])?,
+                outcome: read_outcome(&o[3])?,
             }
         }
-        6 => {
+        2 => {
             array(&a[6], 1)?;
-            Operation::Quarantine
+            Operation::Withdraw
         }
-        7 => {
-            array(&a[6], 1)?;
-            Operation::Deprecate
-        }
-        _ => return Err(STORAGE.fault("codec::read_request")),
+        _ => return Err(STORAGE.fault("codec::request")),
     };
     Ok(Some((
-        read_candidate(&a[1])?,
+        read_publication_key(&a[1])?,
         Request {
             id: read_request_id(&a[2])?,
             actor: read_actor(&a[3])?,

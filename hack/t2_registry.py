@@ -290,7 +290,7 @@ for name in ('projection', 'recovery', 'process'):
         sources=('crates/examples/src/app.rs', 'crates/inventory-postgres/src/*'),
         tests=(f'crates/examples/src/app/t2/{name}.rs',),
         support=('crates/examples/src/app/t2/mod.rs',))
-add('worker.wake', selectors=('worker_wake::tests::',),
+add('worker.wake', selectors=('worker_wake::tests::',), fixtures=('identity',),
     sources=('crates/app/src/worker_wake.rs',),
     tests=('crates/app/tests/worker_wake/mod.rs',), support=())
 MODULES['worker.wake'] = replace(MODULES['worker.wake'], policies=(CasePolicy('worker_wake::tests::committed_hints_reconnect_and_restart_preserve_durable_markers', 'reuse', 'pair'),))
@@ -395,7 +395,7 @@ for part in ('winget', 'brew', 'mapping', 'withdrawal', 'recovery', 'artifact'):
             'artifact': ('artifact.rs',),
         }[part]),
         tests=(f'crates/software-service/tests/publication/{part}.rs',),
-        support=('tests/support/software/*',))
+        support=('tests/support/software/*', 'crates/software-service/tests/publication_t2.rs'))
 add('sources.winget', build=Build('rss-mdm-winget-source', 'test', 't2_http'), selectors=('',),
     profile='none', fixtures=('tls',), sources=('crates/winget-source/src/*',),
     tests=('crates/winget-source/tests/t2_http.rs',), support=())
@@ -405,7 +405,7 @@ add('sources.brew_git', build=Build('rss-mdm-brew-source', 'test', 't2_git'), se
 add('sources.brew_recovery', build=Build('rss-mdm-brew-source'),
     selectors=('git::recovery_tests::',), profile='none', fixtures=('git',),
     sources=('crates/brew-source/src/git.rs',))
-add('native.tls', selectors=('native::tls::tests::',), profile='product', fixtures=('windows',),
+add('native.tls', selectors=('native::tls::tests::',), profile='product', fixtures=('windows','identity'),
     sources=('crates/app/src/native/*',),
     tests=('crates/app/tests/native/tls.rs',))
 app_family('windows',
@@ -852,7 +852,7 @@ consume(('crates/software-service/src/management/catalog.rs', 'crates/software-s
          'crates/software-service/src/management/error.rs', 'crates/software-service/src/management/transaction.rs',
          'crates/software-service/src/management/mod.rs'), 'software.http')
 consume(('crates/software-service/src/management/publication/*',), 'software.http catalog.contract')
-consume(('crates/software-service/src/publication/access.rs', 'crates/software-service/src/publication/read.rs'), 'software.http publication.winget publication.brew publication.mapping publication.withdrawal publication.recovery')
+consume(('crates/software-service/src/publication/access.rs', 'crates/software-service/src/publication/read.rs', 'crates/software-service/src/publication/worker.rs', 'crates/software-service/src/publication/derive.rs'), 'software.http publication.winget publication.brew publication.mapping publication.withdrawal publication.recovery')
 consume(('crates/content-service/src/software.rs',), 'software.http')
 
 # App router assembly and channel registrars select every actual ingress consumer.
@@ -870,7 +870,7 @@ consume(('crates/backend-postgres-support/src/access*', 'crates/*/src/access-con
 # Webhook-specific product risks; RSS owns transport/signature and retry conformance.
 add('webhooks.product', selectors=('webhook_tests::',), fixtures=('identity','tls'),
     sources=('crates/webhook-service/src/*','crates/webhook-service/schema/*','crates/app/src/webhooks/*','crates/management-http/src/webhooks.rs','crates/registration-service/src/webhook.rs'),
-    tests=('crates/app/tests/webhooks.rs',), support=('hack/source_fixtures.py',))
+    tests=('crates/app/tests/webhooks/mod.rs',), support=('hack/source_fixtures.py',))
 
 for name, module in tuple(MODULES.items()):
     if module.build == APP:

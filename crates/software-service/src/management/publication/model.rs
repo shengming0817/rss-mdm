@@ -1,4 +1,3 @@
-use rss_mdm_software_release as rel;
 use serde::{Deserialize, Serialize};
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(
@@ -8,69 +7,41 @@ use serde::{Deserialize, Serialize};
     deny_unknown_fields
 )]
 pub enum Change {
-    Candidate {
+    Publish {
         resource: String,
         version: String,
         expected_resource_revision: u64,
         resource_digest: [u8; 32],
+        target: String,
+        target_digest: [u8; 32],
     },
-    Publish {
-        ring: Ring,
-    },
-    Recover {
-        ring: Ring,
-        publication: [u8; 32],
-        attempt: u64,
-    },
-    Retry {
-        ring: Ring,
-        attempt: u64,
-    },
-    Withdraw {
-        ring: Ring,
-    },
+    Recover,
+    Retry,
+    Withdraw,
 }
-#[derive(Clone, Copy, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Ring {
-    Test,
-    Pilot,
-    Production,
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct Query {
+    pub after: Option<String>,
+    #[serde(default = "page_size")]
+    pub limit: usize,
+    pub target: Option<String>,
+    pub resource: Option<String>,
+    pub version: Option<String>,
+    pub operation_id: Option<uuid::Uuid>,
 }
-impl Ring {
-    pub(super) fn core(self) -> rel::Ring {
-        match self {
-            Self::Test => rel::Ring::Test,
-            Self::Pilot => rel::Ring::Pilot,
-            Self::Production => rel::Ring::Production,
-        }
-    }
+fn page_size() -> usize {
+    20
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use serde_json::json;
-    #[test]
-    fn direct_publication_rejects_retired_actions_and_actor_fields() {
-        for action in ["validate", "approve", "authorize"] {
-            assert!(
-                serde_json::from_value::<Change>(json!({"action":action,"ring":"test"})).is_err()
-            );
-        }
-        for field in [
-            "publisherSubject",
-            "approval",
-            "evidence",
-            "publication",
-            "attempt",
-        ] {
-            let mut value = json!({"action":"publish","ring":"test"});
-            value[field] = json!("retired");
-            assert!(serde_json::from_value::<Change>(value).is_err());
-        }
-        assert!(
-            serde_json::from_value::<Change>(json!({"action":"publish","ring":"test"})).is_ok()
-        );
+impl Query {
+    pub fn validate(&self) -> bool {
+        (1..=100).contains(&self.limit)
+            && [&self.after, &self.target, &self.resource, &self.version]
+                .iter()
+                .all(|v| {
+                    v.as_ref().is_none_or(|s| {
+                        !s.is_empty() && s.len() <= 128 && !s.chars().any(char::is_control)
+                    })
+                })
     }
 }

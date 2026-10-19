@@ -38,8 +38,8 @@ async fn protocol_ack_loss_recovers_original_request() {
             ],
         )
         .unwrap();
-        let request = core::Candidate::new(
-            core::CandidateId::new(tenant(), package).unwrap(),
+        let request = support::publication(
+            core::PublicationKey::new(tenant(), package).unwrap(),
             content,
             at(10),
         );

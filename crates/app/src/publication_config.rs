@@ -5,19 +5,19 @@ use serde::Deserialize;
 pub(crate) struct SourceConfig {
     pub(crate) name: String,
     pub(crate) credentials: std::collections::BTreeMap<String, std::path::PathBuf>,
-    pub(crate) rings: service::RingSources,
+    pub(crate) target: service::SourceConfig,
 }
-#[derive(serde::Deserialize)]
+#[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct Config {
     pub(crate) database: crate::config::Database,
     pub(crate) sources: Vec<SourceConfig>,
 }
 impl Config {
-    /// This product owns every served output URI. Import origins are configured separately.
     pub(crate) fn validate_hosted(&self, origin: &str) -> Result<(), crate::Error> {
         let invalid = || crate::Error::Configuration(crate::ConfigIssue::Publication);
         let mut names = std::collections::BTreeSet::new();
+        let mut physical = std::collections::BTreeSet::new();
         for source in &self.sources {
             if source.name.is_empty()
                 || source.name.len() > 128
@@ -29,45 +29,36 @@ impl Config {
             {
                 return Err(invalid());
             }
-            let mut references = std::collections::BTreeSet::new();
-            let mut winget = 0;
-            for (name, ring) in [
-                ("test", &source.rings.test),
-                ("pilot", &source.rings.pilot),
-                ("production", &source.rings.production),
-            ] {
-                let (base, artifacts) = match ring {
-                    service::SourceConfig::Winget(config) => {
-                        winget += 1;
-                        (&config.base, &config.artifacts_base)
-                    }
-                    service::SourceConfig::Brew(config) => {
-                        references.insert(&config.credential_reference);
-                        (&config.base, &config.artifacts_base)
-                    }
-                };
-                if base
+            let (base, artifacts, reference, identity) = match &source.target {
+                service::SourceConfig::Winget(c) => {
+                    (&c.base, &c.artifacts_base, None, c.base.clone())
+                }
+                service::SourceConfig::Brew(c) => (
+                    &c.base,
+                    &c.artifacts_base,
+                    Some(&c.credential_reference),
+                    c.repository
+                        .canonicalize()
+                        .map_err(|_| invalid())?
+                        .to_string_lossy()
+                        .into_owned(),
+                ),
+            };
+            if base != &format!("{origin}/api/v1/software/native/sources/{}/", source.name)
+                || artifacts
                     != &format!(
-                        "{origin}/api/v1/software/native/sources/{}/{name}/",
+                        "{origin}/api/v1/software/native/sources/{}/artifacts/",
                         source.name
                     )
-                    || artifacts
-                        != &format!(
-                            "{origin}/api/v1/software/native/sources/{}/artifacts/",
-                            source.name
-                        )
-                {
-                    return Err(invalid());
-                }
-            }
-            if winget != 0 && winget != 3 {
+                || !physical.insert(identity)
+            {
                 return Err(invalid());
             }
             if source
                 .credentials
                 .keys()
                 .collect::<std::collections::BTreeSet<_>>()
-                != references
+                != reference.into_iter().collect()
             {
                 return Err(invalid());
             }

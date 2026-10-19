@@ -30,15 +30,15 @@ fn content(package: &str, byte: u8) -> r::Content {
     )
     .unwrap()
 }
-fn candidate() -> r::Candidate {
+fn fresh_publication() -> r::Publication {
     let p = unique();
-    r::Candidate::new(
-        r::CandidateId::new(tenant(), &p).unwrap(),
+    support::publication(
+        r::PublicationKey::new(tenant(), &p).unwrap(),
         content(&p, 4),
         at(1),
     )
 }
-fn request(c: &r::Candidate, who: &str, operation: r::Operation) -> r::Request {
+fn request(c: &r::Publication, who: &str, operation: r::Operation) -> r::Request {
     r::Request {
         id: request_id(),
         actor: actor(who),
@@ -47,7 +47,12 @@ fn request(c: &r::Candidate, who: &str, operation: r::Operation) -> r::Request {
         operation,
     }
 }
-async fn apply(s: &ReleaseStore, c: &mut r::Candidate, who: &str, op: r::Operation) -> r::Decision {
+async fn apply(
+    s: &ReleaseStore,
+    c: &mut r::Publication,
+    who: &str,
+    op: r::Operation,
+) -> r::Decision {
     let r = request(c, who, op);
     let result = s
         .transition(&c.snapshot().id, &r, deadline())
@@ -67,27 +72,6 @@ async fn apply(s: &ReleaseStore, c: &mut r::Candidate, who: &str, op: r::Operati
         _ => panic!(),
     }
 }
-async fn authorize(s: &ReleaseStore, c: &mut r::Candidate) -> r::Publication {
-    let validation = r::Validation {
-        candidate: c.snapshot().id.clone(),
-        content: c.snapshot().content.digest(),
-        ring: r::Ring::Test,
-        evidence: r::Evidence {
-            actor: actor("validator"),
-            digest: r::Digest::from_bytes([8; 32]),
-            at: at(10),
-        },
-        verdict: r::Verdict::Passed,
-    };
-    let op = r::Operation::Publish {
-        validation,
-        lifecycle: r::Digest::from_bytes([7; 32]),
-    };
-    let r::Decision::Publish(p) = apply(s, c, "publisher", op).await else {
-        panic!()
-    };
-    *p
-}
 #[tokio::test]
 #[ignore = "real PostgreSQL: make t2 MODULE=software_release.persistence"]
 async fn release_publication_unknown_retry_history_and_late_results() {
@@ -95,12 +79,12 @@ async fn release_publication_unknown_retry_history_and_late_results() {
     let s = ReleaseStore::new(runtime.clone(), tenant(), deadline())
         .await
         .unwrap();
-    let mut c = candidate();
+    let mut c = fresh_publication();
     let create = request_id();
     let receipt = s.create(&create, &c, deadline()).await.unwrap();
     assert_eq!(receipt, s.create(&create, &c, deadline()).await.unwrap());
     assert_event(c.snapshot().id.value(), create.value(), 0, 1);
-    let p = authorize(&s, &mut c).await;
+    let p = c.snapshot().attempt.clone();
     let evidence = || r::Evidence {
         actor: actor("backend"),
         digest: r::Digest::from_bytes([9; 32]),
@@ -115,7 +99,6 @@ async fn release_publication_unknown_retry_history_and_late_results() {
             &mut c,
             "backend",
             r::Operation::Record {
-                ring: r::Ring::Test,
                 publication: p.id(),
                 attempt: 1,
                 outcome,
@@ -128,7 +111,6 @@ async fn release_publication_unknown_retry_history_and_late_results() {
         &mut c,
         "publisher",
         r::Operation::Retry {
-            ring: r::Ring::Test,
             publication: p.id(),
             attempt: 1,
         },
@@ -139,21 +121,23 @@ async fn release_publication_unknown_retry_history_and_late_results() {
     };
     assert_eq!(p.id(), next.id());
     assert_eq!(next.attempt, 2);
-    apply(&s, &mut c, "operator", r::Operation::Quarantine).await;
+    apply(&s, &mut c, "operator", r::Operation::Withdraw).await;
     apply(
         &s,
         &mut c,
         "backend",
         r::Operation::Record {
-            ring: r::Ring::Test,
             publication: p.id(),
             attempt: 2,
             outcome: r::PublicationResult::Applied(evidence()),
         },
     )
     .await;
-    assert_eq!(c.snapshot().disposition, r::Disposition::Quarantined);
-    assert!(c.snapshot().rings[0].is_published());
+    assert!(c.snapshot().withdrawn);
+    assert!(matches!(
+        c.snapshot().attempt.outcome,
+        r::PublicationOutcome::Reported(r::PublicationResult::Applied(_))
+    ));
     let restarted = ReleaseStore::new(runtime.clone(), tenant(), deadline())
         .await
         .unwrap();
@@ -168,10 +152,10 @@ async fn release_publication_unknown_retry_history_and_late_results() {
     let observed = history
         .iter()
         .map(|h| {
-            assert_eq!(h.publication.id(), p.id());
+            assert_eq!(h.attempt.id(), p.id());
             (
-                h.publication.attempt,
-                match h.publication.outcome {
+                h.attempt.attempt,
+                match h.attempt.outcome {
                     r::PublicationOutcome::Pending => "pending",
                     r::PublicationOutcome::Reported(r::PublicationResult::Unknown(_)) => "unknown",
                     r::PublicationOutcome::Reported(r::PublicationResult::NotApplied(_)) => {
@@ -199,7 +183,7 @@ async fn release_publication_unknown_retry_history_and_late_results() {
     assert!(
         foreign_store
             .get(
-                &r::CandidateId::new(foreign(), c.snapshot().id.value()).unwrap(),
+                &r::PublicationKey::new(foreign(), c.snapshot().id.value()).unwrap(),
                 deadline()
             )
             .await
@@ -214,11 +198,11 @@ async fn release_immutable_version_request_uniqueness_and_rollback() {
     let s = ReleaseStore::new(runtime.clone(), tenant(), deadline())
         .await
         .unwrap();
-    let c = candidate();
+    let c = fresh_publication();
     let id = request_id();
     s.create(&id, &c, deadline()).await.unwrap();
-    let other = r::Candidate::new(
-        r::CandidateId::new(tenant(), unique()).unwrap(),
+    let other = support::publication(
+        r::PublicationKey::new(tenant(), unique()).unwrap(),
         content(&c.snapshot().content.software().fields().package, 5),
         at(1),
     );
@@ -233,11 +217,11 @@ async fn release_immutable_version_request_uniqueness_and_rollback() {
             .is_none()
     );
     assert!(matches!(
-        s.create(&id, &candidate(), deadline()).await,
+        s.create(&id, &fresh_publication(), deadline()).await,
         Err(Error::Rejected(Rejection::IdentityConflict))
     ));
-    let a = request(&c, "operator", r::Operation::Quarantine);
-    let b = request(&c, "operator", r::Operation::Deprecate);
+    let a = request(&c, "operator", r::Operation::Withdraw);
+    let b = request(&c, "operator", r::Operation::Withdraw);
     let (a, b) = tokio::join!(
         s.transition(&c.snapshot().id, &a, deadline()),
         s.transition(&c.snapshot().id, &b, deadline())
@@ -254,9 +238,9 @@ async fn release_immutable_version_request_uniqueness_and_rollback() {
         s.get(&c.snapshot().id, deadline()).await.unwrap(),
         Some(*next)
     );
-    let fresh = candidate();
+    let fresh = fresh_publication();
     s.create(&request_id(), &fresh, deadline()).await.unwrap();
-    let change = request(&fresh, "operator", r::Operation::Quarantine);
+    let change = request(&fresh, "operator", r::Operation::Withdraw);
     let result = runtime
         .local_tx_with_context(
             tenant(),
@@ -295,7 +279,7 @@ async fn release_event_failure_and_runtime_admission() {
     let s = ReleaseStore::new(runtime.clone(), tenant(), deadline())
         .await
         .unwrap();
-    let c = candidate();
+    let c = fresh_publication();
     let id = request_id();
     sql(
         "REVOKE EXECUTE ON FUNCTION rss_transactional_messaging.append_outbox(bytea,jsonb) FROM mdm_software_release_runtime",
