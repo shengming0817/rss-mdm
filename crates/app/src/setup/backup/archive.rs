@@ -235,7 +235,7 @@ pub(in crate::setup) fn verify(journal: &Journal, expected: &str) -> Result<Bund
                 return Err(Error::Corrupt);
             }
         }
-        let actual = file_database_digest(&path)?;
+        let actual = file_digest(&path)?;
         if actual.sha256 != record.sha256 || actual.bytes != record.bytes {
             return Err(Error::Corrupt);
         }
