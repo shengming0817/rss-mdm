@@ -694,6 +694,7 @@ async fn s3_rejected_writes_release_quota_after_permission_recovery_and_expiry()
 #[tokio::test]
 #[ignore = "MODULE=content.storage: exact S3 version restore preserves native ciphertext, logical identity and upload frontier"]
 async fn restored_provider_version_rebinds_atomically_without_reissuing_content() -> Result<()> {
+    use anyhow::Context as _;
     use futures::StreamExt;
     use sqlx::Connection;
     use std::str::FromStr;
@@ -735,8 +736,12 @@ async fn restored_provider_version_rebinds_atomically_without_reissuing_content(
                 .bind(case_tenant())
                 .execute(&mut *tx)
                 .await?;
-            rss_mdm_content_service::backup::validate_catalog(&mut tx, tenant, &protection).await?;
-            let records = rss_mdm_content_service::backup::s3_page(&mut tx, tenant, None).await?;
+            rss_mdm_content_service::backup::validate_catalog(&mut tx, tenant, &protection)
+                .await
+                .context("initial catalog before restore")?;
+            let records = rss_mdm_content_service::backup::s3_page(&mut tx, tenant, None)
+                .await
+                .context("original physical object directory")?;
             ensure!(records.len() == 1 && records[0].required);
             let record = records[0].clone();
             let loaded = std::sync::Arc::new(
@@ -770,7 +775,10 @@ async fn restored_provider_version_rebinds_atomically_without_reissuing_content(
             )
             .await?;
             let original = record.object.as_ref().unwrap();
-            let verified = provider.verify(original, record.content, budget()?).await?;
+            let verified = provider
+                .verify(original, record.content, budget()?)
+                .await
+                .context("verify original S3 version")?;
             let mut encrypted = Vec::new();
             let mut stream = provider
                 .read(&verified, 0, record.content.length, budget()?)
@@ -816,7 +824,8 @@ async fn restored_provider_version_rebinds_atomically_without_reissuing_content(
                     &restored,
                     &protection
                 )
-                .await?
+                .await
+                .context("rebind signed object and upload catalogs")?
             );
             tx.rollback().await?;
             let mut tx = c.begin().await?;
@@ -833,7 +842,8 @@ async fn restored_provider_version_rebinds_atomically_without_reissuing_content(
                     &restored,
                     &protection
                 )
-                .await?
+                .await
+                .context("rebind signed object and upload catalogs")?
             );
             ensure!(
                 !rss_mdm_content_service::backup::rebind(
@@ -844,9 +854,12 @@ async fn restored_provider_version_rebinds_atomically_without_reissuing_content(
                     &restored,
                     &protection
                 )
-                .await?
+                .await
+                .context("rebind signed object and upload catalogs")?
             );
-            rss_mdm_content_service::backup::validate_catalog(&mut tx, tenant, &protection).await?;
+            rss_mdm_content_service::backup::validate_catalog(&mut tx, tenant, &protection)
+                .await
+                .context("catalog after version rebind")?;
             tx.commit().await?;
             let mut output = store
                 .verify_class(

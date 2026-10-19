@@ -154,10 +154,11 @@ impl Provisioner {
     pub fn matches(&self, expected: &Self) -> Result<()> {
         // 只排除服务器分配的身份/时间和独立核对的 webhook；其余安全配置必须精确一致。
         if (expected.kind == "JWK" && !self.webhooks.is_empty())
+            // step-ca v0.30.2 encodes an active database record's zero time in readback.
             || self
                 .deleted_at
                 .as_deref()
-                .is_some_and(|value| value != "0001-01-01T00:00:00Z")
+                .is_some_and(|time| time != "0001-01-01T00:00:00Z")
             || self.kind != expected.kind
             || self.name != expected.name
             || self.policy.is_some()

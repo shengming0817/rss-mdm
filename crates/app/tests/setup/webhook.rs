@@ -1,5 +1,5 @@
 use super::*;
-use anyhow::{Result, ensure};
+use anyhow::{Context as _, Result, ensure};
 use std::sync::Arc;
 #[tokio::test]
 #[ignore = "MODULE=installation.webhook: real TLS receiver proof, failed-candidate retention and encrypted rewrap"]
@@ -103,59 +103,73 @@ async fn receiver_possession_gates_activation_and_old_ciphertexts_remain_readabl
             let tls = acceptor.accept(tcp).await?;
             let mut h2 = h2::server::handshake(tls).await?;
             let (request, mut response) = h2.accept().await.unwrap()?;
-            ensure!(request.method() == reqwest::Method::POST && request.uri().path() == "/events");
-            let timestamp = request.headers()["webhook-timestamp"].to_str()?.to_owned();
-            ensure!(request.headers()["webhook-id"].to_str()? == expected.operation_id.to_string());
-            let signature = request.headers()["webhook-signature"]
-                .to_str()?
-                .strip_prefix("v1,")
-                .unwrap()
-                .to_owned();
-            let mut body = request.into_body();
-            let read = async {
+            // Drive the connection while the handler awaits DATA frames.
+            let handle = async {
+                ensure!(
+                    request.method() == reqwest::Method::POST && request.uri().path() == "/events"
+                );
+                let timestamp = request.headers()["webhook-timestamp"].to_str()?.to_owned();
+                ensure!(
+                    request.headers()["webhook-id"].to_str()? == expected.operation_id.to_string()
+                );
+                let signature = request.headers()["webhook-signature"]
+                    .to_str()?
+                    .strip_prefix("v1,")
+                    .unwrap()
+                    .to_owned();
+                let mut body = request.into_body();
                 let mut bytes = Vec::new();
                 while let Some(chunk) = body.data().await {
                     let chunk = chunk?;
                     body.flow_control().release_capacity(chunk.len())?;
                     bytes.extend_from_slice(&chunk);
                 }
-                anyhow::Ok(bytes)
+                let message: materials::ConfirmationRequest = serde_json::from_slice(&bytes)?;
+                ensure!(
+                    message.challenge == expected.challenge
+                        && message.configuration_sha256 == expected.configuration_sha256
+                );
+                let key = ring::hmac::Key::new(ring::hmac::HMAC_SHA256, &[9u8; 32]);
+                let mut signed = format!("{}.{timestamp}.", expected.operation_id).into_bytes();
+                signed.extend_from_slice(&bytes);
+                ring::hmac::verify(&key, &signed, &STANDARD.decode(signature)?)
+                    .map_err(|_| anyhow::anyhow!("qualification request signature rejected"))?;
+                let proof = if correct {
+                    STANDARD.encode(
+                        ring::hmac::sign(&key, &materials::confirmation_message(tenant, &expected))
+                            .as_ref(),
+                    )
+                } else {
+                    STANDARD.encode([0u8; 32])
+                };
+                let response_body = serde_json::to_vec(&materials::ConfirmationResponse {
+                    confirmation_proof: proof,
+                })?;
+                let mut send = response
+                    .send_response(axum::http::Response::builder().status(200).body(())?, false)?;
+                send.send_data(axum::body::Bytes::from(response_body), true)?;
+                anyhow::Ok(())
             };
-            let bytes = tokio::select! {
-                bytes=read=>bytes?,
-                _=h2.accept()=>anyhow::bail!("unexpected concurrent fixture request"),
-            };
-            let message: materials::ConfirmationRequest = serde_json::from_slice(&bytes)?;
-            ensure!(
-                message.challenge == expected.challenge
-                    && message.configuration_sha256 == expected.configuration_sha256
-            );
-            let key = ring::hmac::Key::new(ring::hmac::HMAC_SHA256, &[9u8; 32]);
-            let mut signed = format!("{}.{timestamp}.", expected.operation_id).into_bytes();
-            signed.extend_from_slice(&bytes);
-            ring::hmac::verify(&key, &signed, &STANDARD.decode(signature)?)
-                .map_err(|_| anyhow::anyhow!("qualification request signature rejected"))?;
-            let proof = if correct {
-                STANDARD.encode(
-                    ring::hmac::sign(&key, &materials::confirmation_message(tenant, &expected))
-                        .as_ref(),
-                )
-            } else {
-                STANDARD.encode([0u8; 32])
-            };
-            let response_body = serde_json::to_vec(&materials::ConfirmationResponse {
-                confirmation_proof: proof,
-            })?;
-            let mut send = response
-                .send_response(axum::http::Response::builder().status(200).body(())?, false)?;
-            send.send_data(axum::body::Bytes::from(response_body), true)?;
+            tokio::pin!(handle);
+            tokio::select! {
+                result = &mut handle => result?,
+                _ = h2.accept() => anyhow::bail!("receiver closed before confirmation completed"),
+            }
             h2.graceful_shutdown();
             while h2.accept().await.is_some() {}
         }
         anyhow::Ok(())
     });
-    ensure!(probe(&network, &first, tenant, &secret).await.is_err());
-    let proof = probe(&network, &first, tenant, &secret).await?;
+    ensure!(
+        matches!(
+            probe(&network, &first, tenant, &secret).await,
+            Err(Error::Conflict)
+        ),
+        "invalid receiver proof must reach cryptographic rejection"
+    );
+    let proof = probe(&network, &first, tenant, &secret)
+        .await
+        .context("valid receiver possession proof")?;
     server.await??;
     let mut tx = owner.begin().await?;
     scope(&mut tx, tenant).await?;

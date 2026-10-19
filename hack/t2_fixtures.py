@@ -480,6 +480,10 @@ class RunFixtures:
                                  container=owner.container(), database=database))
                 env.update(BACKEND_PG_CONFIG=str(config), GROUP_PG_CONFIG=str(config))
                 migration_config = pool.installation_config(root, database)
+                if 'runtime_config' in module.fixtures:
+                    value = self.runtime_config(pool, root, database, self.case_contexts[job.key]['tenant'],
+                        native_key=self.native_key, recovery_credentials=self.recovery_config())
+                    env['MDM_TEST_CONFIG'] = str(private(root / 'runtime.json', value))
                 if 'identity' in module.fixtures:
                     self.configure_identity(pool, database, job, output / 'identity-setup')
                     value = json.loads((root / 'runtime.json').read_text())

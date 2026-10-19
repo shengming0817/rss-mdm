@@ -17,6 +17,28 @@ def job(name, scope='objects', invocation=0):
 
 
 class ContextTests(unittest.TestCase):
+    def test_catalog_recovery_owns_its_complete_tenant_observation(self):
+        from t2_model import resolve_cases
+        module = MODULES['content.storage']
+        name = 'content::t2::storage::restored_provider_version_rebinds_atomically_without_reissuing_content'
+        module = replace(module, policies=tuple(p for p in module.policies if p.matches(name)))
+        policy = resolve_cases(module, [name])[0]
+        case = Case(module.build, 'binary', '/binary', name)
+        jobs = [Invocation(policy, case, invocation=i) for i in range(2)]
+        values = contexts('catalog-recovery', jobs)
+        self.assertNotEqual(values[jobs[0].key]['tenant'], values[jobs[1].key]['tenant'])
+
+    def test_ca_installation_declares_only_provider_dependencies(self):
+        from t2_model import resolve_cases
+        module = MODULES['installation.ca']
+        name = module.selectors[0]
+        policy = resolve_cases(module, [name])[0]
+        invocation = Invocation(policy, Case(module.build, 'binary', '/binary', name))
+        value = contexts('ca-installation', [invocation])[invocation.key]
+        self.assertEqual(value['actors'], [])
+        self.assertFalse(policy.postgres)
+        self.assertEqual(set(policy.fixtures), {'agent_pki', 'ca_agent'})
+
     def test_contract_rejects_missing_wrong_typed_and_unprepared_fields(self):
         from copy import deepcopy
         value = next(iter(contexts('run', [job('a')]).values()))

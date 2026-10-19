@@ -30,6 +30,24 @@ async fn database_connection_fence_replays_and_restores_original_grants() -> Res
     let grantable:bool=sqlx::query_scalar("SELECT bool_or(a.is_grantable) FROM pg_database d CROSS JOIN LATERAL aclexplode(d.datacl) a WHERE d.datname=current_database() AND a.grantee='mdm_runtime'::regrole AND a.privilege_type='CONNECT'").fetch_one(&mut owner).await?;
     ensure!(grantable);
     connection_fence(&mut owner, &journal, false).await?;
+    let operation = Uuid::new_v4();
+    let manifest = "a".repeat(64);
+    reserve_restore(&mut owner, operation, &manifest).await?;
+    reserve_restore(&mut owner, operation, &manifest).await?;
+    ensure!(matches!(
+        reserve_restore(&mut owner, Uuid::new_v4(), &manifest).await,
+        Err(Error::Conflict)
+    ));
+    ensure!(matches!(
+        reserve_restore(&mut owner, operation, &"b".repeat(64)).await,
+        Err(Error::Conflict)
+    ));
+    let retained: (Uuid, String) = sqlx::query_as(
+        "SELECT operation,manifest FROM public.mdm_restore_operation WHERE singleton",
+    )
+    .fetch_one(&mut owner)
+    .await?;
+    ensure!(retained == (operation, manifest));
     owner.close().await?;
     Ok(())
 }

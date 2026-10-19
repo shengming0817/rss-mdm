@@ -37,10 +37,10 @@ async fn authenticated_readback_recovers_original_provider() -> Result<()> {
                 tokio::select! {()=stop.cancelled()=>break,accept=listener.accept()=>accept?};
             let tls = acceptor.accept(tcp).await?;
             let mut connection = h2::server::handshake(tls).await?;
-            {
+            loop {
                 let request = tokio::select! {()=stop.cancelled()=>return anyhow::Ok(()),request=connection.accept()=>request};
                 let Some(request) = request else {
-                    continue;
+                    break;
                 };
                 let (request, mut response) = request?;
                 let token = request.headers().get("authorization").unwrap().to_str()?;
@@ -78,24 +78,17 @@ async fn authenticated_readback_recovers_original_provider() -> Result<()> {
                 let method = request.method().clone();
                 let path = request.uri().path().to_owned();
                 let mut stream = request.into_body();
-                let read = async {
-                    let mut bytes = Vec::new();
-                    while let Some(chunk) = stream.data().await {
-                        let chunk = chunk?;
-                        stream.flow_control().release_capacity(chunk.len())?;
-                        bytes.extend_from_slice(&chunk);
-                    }
-                    anyhow::Ok(bytes)
-                };
-                let bytes = tokio::select! {
-                    bytes=read=>bytes?,
-                    _=connection.accept()=>anyhow::bail!("unexpected concurrent fixture request"),
-                };
+                let mut bytes = Vec::new();
+                while let Some(chunk) = stream.data().await {
+                    let chunk = chunk?;
+                    stream.flow_control().release_capacity(chunk.len())?;
+                    bytes.extend_from_slice(&chunk);
+                }
                 if method == reqwest::Method::POST {
                     ensure!(path == "/admin/provisioners" && observed.lock().unwrap().is_none());
                     *observed.lock().unwrap() = Some(serde_json::from_slice(&bytes)?);
                     // CA committed, but its response was lost. Do not synthesize success.
-                    continue;
+                    break;
                 }
                 ensure!(path == "/admin/provisioners/rss-agent");
                 let value = observed.lock().unwrap().clone();
@@ -107,8 +100,6 @@ async fn authenticated_readback_recovers_original_provider() -> Result<()> {
                     false,
                 )?;
                 send.send_data(axum::body::Bytes::from(body), true)?;
-                connection.graceful_shutdown();
-                while connection.accept().await.is_some() {}
             }
         }
         anyhow::Ok(())
@@ -156,8 +147,10 @@ fn imported_provider_compares_semantics_and_rejects_privilege_expansion() {
     assert!(actual.matches(&expected).is_ok());
     actual.deleted_at = Some("0001-01-01T00:00:00Z".into());
     assert!(actual.matches(&expected).is_ok());
-    actual.deleted_at = Some("2026-10-19T00:00:00Z".into());
-    assert!(actual.matches(&expected).is_err());
+    for deleted_at in ["2026-10-19T00:00:00Z", "invalid", ""] {
+        actual.deleted_at = Some(deleted_at.into());
+        assert!(actual.matches(&expected).is_err());
+    }
     actual.deleted_at = None;
     actual.claims.ssh.enabled = true;
     assert!(actual.matches(&expected).is_err());
@@ -170,6 +163,7 @@ fn imported_provider_compares_semantics_and_rejects_privilege_expansion() {
 #[tokio::test]
 #[ignore = "MODULE=installation.ca: actual fixed step-ca JWK/SCEP creation, authenticated import and webhook readback"]
 async fn actual_ca_creates_and_imports_exact_purpose_resources() -> Result<()> {
+    use anyhow::Context as _;
     use openssl::{
         asn1::Asn1Time,
         hash::MessageDigest,
@@ -221,8 +215,12 @@ async fn actual_ca_creates_and_imports_exact_purpose_resources() -> Result<()> {
     let private = zeroize::Zeroizing::new(key.private_key_to_pkcs8()?);
     let (kid, public) = jwk(&private, None)?;
     let expected = jwk_provisioner(Purpose::Windows, public)?;
-    ensure_provider(&client, &expected, Preparation::Create).await?;
-    ensure_provider(&client, &expected, Preparation::Import).await?;
+    ensure_provider(&client, &expected, Preparation::Create)
+        .await
+        .context("create/read back exact Windows JWK provisioner")?;
+    ensure_provider(&client, &expected, Preparation::Import)
+        .await
+        .context("import exact Windows JWK provisioner")?;
     let provider = rss_mdm_pki_service::StepCa::at_address(
         rss_mdm_pki_service::Configuration {
             origin,
@@ -233,7 +231,10 @@ async fn actual_ca_creates_and_imports_exact_purpose_resources() -> Result<()> {
         &private,
         address,
     )?;
-    provider.verify_provisioner().await?;
+    provider
+        .verify_provisioner()
+        .await
+        .context("public purpose JWK verification")?;
     let changed = jwk_provisioner(
         Purpose::Windows,
         json!({"kty":"RSA","kid":"changed","n":"AQ","e":"AQAB"}),
@@ -288,7 +289,10 @@ async fn actual_ca_creates_and_imports_exact_purpose_resources() -> Result<()> {
         certificate_file,
         private_key_file,
     };
-    let crl = provider.published_crl().await?;
+    let crl = provider
+        .published_crl()
+        .await
+        .context("read fixture issuer CRL")?;
     let expected = scep_provisioner(
         Purpose::Apple,
         &source,
