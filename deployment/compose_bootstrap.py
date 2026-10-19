@@ -69,21 +69,24 @@ def main():
         write(target, target.read_bytes() if target.exists() else secrets.token_urlsafe(32))
     ca = inputs / 'ca.crt'
     if not ca.exists():
-        command('openssl', 'req', '-x509', '-newkey', 'rsa:3072', '-nodes', '-days', '30',
+        command('openssl', 'req', '-x509', '-newkey', 'rsa:3072', '-nodes', '-days', '3650',
                 '-subj', '/CN=RSS local installation TLS CA', '-addext', 'basicConstraints=critical,CA:TRUE',
                 '-addext', 'keyUsage=critical,keyCertSign,cRLSign', '-keyout', str(inputs/'ca.key'), '-out', str(ca))
+    command('openssl','x509','-in',str(ca),'-checkend','86400','-noout')
     # PostgreSQL has its own DNS identity; TLS is always verified by the product.
     def leaf(prefix, names):
         key = inputs / (prefix+'.key')
         cert = inputs / (prefix+'.crt')
-        if cert.exists():
+        renew = prefix == 'postgres' and (os.environ.get('MDM_RENEW_POSTGRES_TLS') == '1'
+            or (cert.exists() and subprocess.run(['openssl','x509','-in',str(cert),'-checkend','604800','-noout'],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,timeout=5).returncode != 0))
+        if cert.exists() and not renew:
             return
         extensions = inputs / (prefix+'.extensions')
         write(extensions, 'basicConstraints=critical,CA:FALSE\nkeyUsage=critical,digitalSignature,keyEncipherment\nextendedKeyUsage=serverAuth\nsubjectAltName='+','.join('DNS:'+n for n in names)+'\n')
         command('openssl', 'req', '-new', '-newkey', 'rsa:2048', '-nodes', '-subj', '/CN='+names[0],
                 '-keyout', str(key), '-out', str(inputs/(prefix+'.csr')))
         command('openssl', 'x509', '-req', '-in', str(inputs/(prefix+'.csr')), '-CA', str(ca),
-                '-CAkey', str(inputs/'ca.key'), '-CAcreateserial', '-days', '30',
+                '-CAkey', str(inputs/'ca.key'), '-CAcreateserial', '-days', '90',
                 '-extfile', str(extensions), '-out', str(cert))
     leaf('postgres', ['postgres'])
     if os.environ['MDM_TLS_MODE'] == 'local':
@@ -113,7 +116,13 @@ def main():
     pg.mkdir(exist_ok=True)
     pg.chmod(0o755)
     for source, destination in [('postgres.crt','server.crt'), ('postgres.key','server.key'), ('database-password','database-password')]:
-        write(pg/destination, (inputs/source).read_bytes(), uid=999)
+        data=(inputs/source).read_bytes()
+        if source in ('postgres.crt','postgres.key') and (pg/destination).exists() and (pg/destination).read_bytes()!=data:
+            temporary=pg/(destination+'.next')
+            write(temporary,data,uid=999)
+            temporary.replace(pg/destination)
+        else:
+            write(pg/destination,data,uid=999)
     deployment = dict(server_image=os.environ['MDM_SERVER_IMAGE'], gateway_image=os.environ['MDM_WEB_IMAGE'],
         certificate_file=str(inputs/'gateway.crt'), private_key_file=str(inputs/'gateway.key'), trust_file=str(trust),
         content_volume=None, state_volume=os.environ['MDM_STATE_VOLUME'], network=os.environ['MDM_NETWORK'],

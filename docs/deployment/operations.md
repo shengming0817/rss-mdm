@@ -188,7 +188,7 @@ Apple 的 challenge/notify webhook ID 和 HMAC 秘密属于稳定协议配置。
 
 ### 原生加密写钥切换
 
-`rss-mdm-installer rotate-protection --config /absolute/private-rotation.json` 接受 `installation`（原部署输入）、`purpose`（`native` 或 `windows`）和稳定 UUID `operation_id`。专用部署进程与该操作互斥。操作先在最终保管目录生成新钥并保存每个宿主的两个不可变输入：第一阶段让全部实际进程读取新旧钥，第二阶段才切换新密文写钥。每个阶段都要求 HTTPS 返回确切宿主、操作、版本、摘要与新进程观察；失败使用原 operation ID 重试，不能手工跳过剩余宿主。
+`docker compose -p rss-mdm-my-install -f /absolute/deployment/compose.yaml run --rm --no-deps operator rotate-protection --config /var/lib/rss-mdm/private-rotation.json` 接受 `installation`（原部署输入）、`purpose`（`native` 或 `windows`）和稳定 UUID `operation_id`。专用部署进程与该操作互斥。操作先在最终保管目录生成新钥并保存每个宿主的两个不可变输入：第一阶段让全部实际进程读取新旧钥，第二阶段才切换新密文写钥。每个阶段都要求 HTTPS 返回确切宿主、操作、版本、摘要与新进程观察；失败使用原 operation ID 重试，不能手工跳过剩余宿主。
 
 写钥切换完成后，每次调用以有界领域事务重加密 APNs/Profile/Managed Apple Account、任务签名私钥和 S3 凭据；`rewrapping` 表示还需继续用原输入调用，`complete` 表示该轮切换和上述运行材料批次已完成。私钥身份、材料版本、签名信任、ACK、原请求指纹和证书均不改变。中断可重放，单批失败回滚。
 
@@ -281,3 +281,24 @@ Compose 拓扑与配置归属见[安装指南](installation.md#单机部署设�
 恢复测试保留原账户、设备、issuer/kid、内容版本及 Ledger/保护材料，不能用换钥、重新注册、清库或重置密码代替核验。
 
 真机与故障记录使用[验收清单](installation.md#真机验收清单与证据)，区分服务恢复、历史身份可验证和终端实际恢复；缺材料或结果未知时保留原检查点与 blocked/unknown，不发布成功结论。
+
+## Compose 维护材料与数据库 TLS 续期
+
+维护命令统一在正式 `operator` 镜像内运行，不调用宿主 `rss-mdm-installer`。将私有材料通过 stdin 导入命名卷；路径必须是明确的 `/var/lib/rss-mdm/` 下容器路径，不能把宿主路径写进维护 JSON。例如：
+
+```sh
+docker compose -p rss-mdm-my-install -f /absolute/deployment/compose.yaml run --rm --no-deps -T --entrypoint python3 operator -c 'import pathlib,sys;p=pathlib.Path("/var/lib/rss-mdm/recover.json");p.write_bytes(sys.stdin.buffer.read());p.chmod(0o600)' < /absolute/private/recover.json
+```
+
+密码、CA 或轮换输入使用同一方式写入各自明确命名的 0600 文件，JSON 的引用指向这些容器路径。不要在命令行参数、环境值或日志中放材料正文。先停 operator，执行维护命令后再启动；完整配置、轮换及恢复仍沿原 operation/revision，不换身份。
+
+Compose 自管 PostgreSQL 使用独立 TLS 叶证书。默认本地根 CA 为十年，叶证书为九十天；bootstrap 在叶证书剩余不足七天时更新，保留原 CA、数据库密码、安装身份及账户。显式续期并重新加载：
+
+```sh
+docker compose -p rss-mdm-my-install -f /absolute/deployment/compose.yaml run --rm -e MDM_RENEW_POSTGRES_TLS=1 bootstrap
+docker compose -p rss-mdm-my-install -f /absolute/deployment/compose.yaml restart postgres
+```
+
+维护前确认根 CA 尚在有效期；根到期会明确拒绝，不能删除 `ca.key/ca.crt` 重新生成来掩盖。根 CA 更替需要完整可信根分发及宿主配置版本应用，不能以叶证书续期替代。受组织签发的网关材料按其自身期限和配置应用流程更新，不继承本地 PG 续期行为。
+
+CA 联合备份使用命名卷映射：每个 authority 显式提供 `volume`、`volume_subpath` 和 operator 可见的 `online_directory`，step-ca 将该卷子目录挂在自己的配置根；operator 通过同一卷映射读取材料。恢复保留 volume 类型、确切子目录及原 bridge 网络，不读取 daemon 的 `/var/lib/docker/volumes`，不转换成 host bind。离线根材料仅挂维护容器，仍不进入在线 CA 或 HTTP 服务。

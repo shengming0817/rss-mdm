@@ -75,6 +75,7 @@ def build(out, header, web_image=None, target_platform=None):
         staged.rename(out)
     print("candidate: " + str(out / "candidate.json"))
 
+RUNTIME_TOOLS = ("release.py", "candidate_runtime.py", "candidate_fixture.py", "deploy.py", "candidate_installation.py", "candidate_installation_driver.py")
 ROLE_NAMES = ("software-publication", "flow", "identity", "commands", "audit", "webhook")
 DEPLOYMENT_FILES = ('deployment/production.compose.yaml', 'deployment/compose_bootstrap.py', 'deployment/compose.yaml', 'deployment/providers.lock.json', 'fixtures/pki-tools.lock.json', 'deployment/agent-leaf.tpl', 'deployment/windows-leaf.tpl', "mdm-config.example.json", "deployment/nginx.conf", *(
     f"deployment/{name}-roles.sql" for name in ROLE_NAMES))
@@ -200,6 +201,12 @@ def build_staged(out, header, web_image=None, target_platform=None):
         build.mkdir()
         for name in ("Cargo.lock", "rust-toolchain.toml"):
             shutil.copy(source / name, build / name)
+        tools = {}
+        for tool in RUNTIME_TOOLS:
+            target = out / "tools" / tool
+            target.parent.mkdir(exist_ok=True)
+            shutil.copy(ROOT / "hack" / tool, target)
+            tools[tool] = sha(target)
         manifest = {
             "format_version": 6,
             "installer": {"image":operator_image+"@"+operator_digest,
@@ -208,7 +215,7 @@ def build_staged(out, header, web_image=None, target_platform=None):
             "version": version, "platform": platform(config), "migrations": migrations,
             "image": image + "@" + digest,
             "archive": {"file": output.name, "sha256": sha(output), "manifest_digest": digest},
-            "providers": providers, "deployment": deployment,
+            "providers": providers, "deployment": deployment, "tools": tools,
         }
         if ui is not None:
             manifest["ui"] = ui

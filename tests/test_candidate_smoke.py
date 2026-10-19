@@ -208,7 +208,10 @@ class CandidateInputs(unittest.TestCase):
                 deployment[name] = release.sha(path)
             installer=root/'rss-mdm-installer';installer.write_bytes(b'fixed-binary')
             operator=root/'installer.oci.tar';operator.write_bytes(b'operator-oci')
-            manifest = {'format_version':6, 'installer':{'file':installer.name,'sha256':release.sha(installer),'image':'operator@sha256:fixture','archive':{'file':operator.name,'sha256':release.sha(operator),'manifest_digest':'sha256:fixture'}}, 'archive':{'file':archive.name,'sha256':release.sha(archive),'manifest_digest':'sha256:fixture'}, 'platform':'linux/arm64', 'deployment':deployment,'providers':json.loads((root/'deployment/providers.lock.json').read_text())}
+            tools={}
+            for name in release.RUNTIME_TOOLS:
+                path=root/'tools'/name;path.parent.mkdir(exist_ok=True);path.write_bytes((release.ROOT/'hack'/name).read_bytes());tools[name]=release.sha(path)
+            manifest = {'format_version':6, 'tools':tools, 'installer':{'file':installer.name,'sha256':release.sha(installer),'image':'operator@sha256:fixture','archive':{'file':operator.name,'sha256':release.sha(operator),'manifest_digest':'sha256:fixture'}}, 'archive':{'file':archive.name,'sha256':release.sha(archive),'manifest_digest':'sha256:fixture'}, 'platform':'linux/arm64', 'deployment':deployment,'providers':json.loads((root/'deployment/providers.lock.json').read_text())}
             (root / 'candidate.json').write_text(json.dumps(manifest))
             with mock.patch.object(candidate, 'oci_identity', return_value=('sha256:fixture', {'os':'linux','architecture':'arm64'})), mock.patch.object(candidate, 'docker') as docker:
                 candidate.verify_candidate(root)

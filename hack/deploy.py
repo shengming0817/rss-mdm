@@ -59,7 +59,12 @@ def prepare(candidate, output, *, origin='https://localhost:8445', additional_or
     env.write_text(''.join(f"{k}='{v}'\n" for k,v in values.items()))
     env.chmod(0o600)
     compose = output/'compose.yaml'
-    compose.write_bytes((candidate/'deployment/production.compose.yaml').read_bytes())
+    # Freeze the actual Compose model once. Ambient MDM/COMPOSE variables cannot rebind
+    # already prepared images, volumes, credentials or endpoints on later invocations.
+    environment={k:v for k,v in os.environ.items() if not k.startswith(('COMPOSE_', 'MDM_'))}
+    model=json.loads(subprocess.check_output(['docker','compose','--project-name',project,'--env-file',str(env),
+        '-f',str(candidate/'deployment/production.compose.yaml'),'config','--format','json'],env=environment,text=True))
+    compose.write_text(json.dumps(model).replace('$','$$')+'\n')
     (output/'deployment.json').write_text(json.dumps(dict(project=project, candidate=str(candidate),
         platform=manifest['platform'], host=dict(os=platform.system(), architecture=platform.machine())), indent=2)+'\n')
     return dict(project=project, environment=str(env), compose=str(compose), origin=origin)
@@ -79,4 +84,4 @@ if __name__ == '__main__':
         additional_origins=args.additional_origins, project=args.project, publish_ip=args.publish_ip,
         tls_mode=args.tls_mode, input_directory=args.input_directory)
     print(json.dumps(result))
-    print('docker compose --env-file '+shlex.quote(result['environment'])+' -f '+shlex.quote(result['compose'])+' up -d')
+    print('docker compose --project-name '+shlex.quote(result['project'])+' -f '+shlex.quote(result['compose'])+' up -d')

@@ -550,12 +550,16 @@ async fn probe_client(
 /// Resume/stop only the per-tenant projects recorded by this installation.
 /// Compose owns the operator's process lifetime; the HTTP server has no Docker access.
 pub async fn resume_hosts(input: &super::installation::Input) -> Result<()> {
+    let mut failed = false;
     for (runtime, config) in recorded_hosts(input)? {
-        apply(&input.directory, &config, &runtime).await?;
+        if apply(&input.directory, &config, &runtime).await.is_err() {
+            failed = true;
+        }
     }
-    Ok(())
+    if failed { Err(Error::Storage) } else { Ok(()) }
 }
 pub async fn stop_hosts(input: &super::installation::Input) -> Result<()> {
+    let mut tasks = tokio::task::JoinSet::new();
     for (runtime, _) in recorded_hosts(input)? {
         let binding: Binding = serde_json::from_value(runtime["runtime_binding"].clone())
             .map_err(|_| Error::Corrupt)?;
@@ -565,21 +569,36 @@ pub async fn stop_hosts(input: &super::installation::Input) -> Result<()> {
             .join(&name)
             .join(binding.operation_id.to_string())
             .join("compose.json");
-        docker(&[
-            "compose",
-            "--env-file",
-            "/dev/null",
-            "-p",
-            &name,
-            "-f",
-            path.to_str().ok_or(Error::Input)?,
-            "stop",
-            "--timeout",
-            "20",
-        ])
-        .await?;
+        // A prepared candidate has no resources until its Compose input has been persisted.
+        if !path.is_file() {
+            continue;
+        }
+        tasks.spawn(async move {
+            // Removing only this tenant's containers releases external volume/network references.
+            // Docker-managed persistent data belongs to the outer Compose project and is retained.
+            docker(&[
+                "compose",
+                "--env-file",
+                "/dev/null",
+                "-p",
+                &name,
+                "-f",
+                path.to_str().ok_or(Error::Input)?,
+                "down",
+                "--timeout",
+                "45",
+            ])
+            .await
+            .map(|_| ())
+        });
     }
-    Ok(())
+    let mut failed = false;
+    while let Some(result) = tasks.join_next().await {
+        if !matches!(result, Ok(Ok(()))) {
+            failed = true;
+        }
+    }
+    if failed { Err(Error::Storage) } else { Ok(()) }
 }
 fn recorded_hosts(input: &super::installation::Input) -> Result<Vec<(Value, Config)>> {
     let installation = Journal::open(&input.directory)?;
@@ -607,8 +626,17 @@ fn recorded_hosts(input: &super::installation::Input) -> Result<Vec<(Value, Conf
             return Err(Error::Input);
         }
         let journal = Journal::open(&entry.path())?;
-        let Some(runtime) = journal.load::<Value>("requested-runtime.json")? else {
-            continue;
+        // A failed requested candidate must not block recovery of a confirmed prior runtime.
+        let runtime = if let Some(applied) = journal.load::<Applied>("applied.json")? {
+            let previous = Journal::open(&entry.path().join(applied.operation_id.to_string()))?;
+            previous
+                .load::<Value>("source-runtime.json")?
+                .ok_or(Error::Corrupt)?
+        } else {
+            let Some(runtime) = journal.load::<Value>("requested-runtime.json")? else {
+                continue;
+            };
+            runtime
         };
         let binding: Binding = serde_json::from_value(runtime["runtime_binding"].clone())
             .map_err(|_| Error::Corrupt)?;

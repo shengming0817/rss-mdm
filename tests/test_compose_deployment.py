@@ -49,7 +49,7 @@ class FormalInstallation(unittest.TestCase):
             self.assertFalse(service.get('privileged',False))
         self.assertFalse(any(m['target']=='/run/docker.sock' for m in model['services']['bootstrap']['volumes']))
 
-    def test_bootstrap_never_calls_database_or_product_seed(self):
+    def test_bootstrap_rejects_noncanonical_origins(self):
         spec=importlib.util.spec_from_file_location('compose_bootstrap',ROOT/'deployment/compose_bootstrap.py')
         bootstrap=importlib.util.module_from_spec(spec);spec.loader.exec_module(bootstrap)
         for invalid in ('http://localhost:8445','https://user:pass@example.test','https://example.test/path'):
@@ -57,3 +57,28 @@ class FormalInstallation(unittest.TestCase):
         self.assertEqual(bootstrap.origin('https://localhost:8445').port,8445)
 
 if __name__=='__main__':unittest.main()
+
+class AmbientEnvironment(unittest.TestCase):
+    def test_frozen_compose_rejects_ambient_project_and_image_overrides(self):
+        import os
+        import subprocess
+        import deploy
+        with tempfile.TemporaryDirectory() as temporary:
+            root=Path(temporary);candidate=root/'candidate';(candidate/'deployment').mkdir(parents=True)
+            (candidate/'deployment/production.compose.yaml').write_bytes((ROOT/'deployment/production.compose.yaml').read_bytes())
+            image='sha256:'+'a'*64
+            manifest={'platform':'linux/arm64','image':'server@sha256:manifest','installer':{'image':'installer@sha256:manifest'},'providers':{'postgres':'postgres:17'},'ui':{'id':image}}
+            def command(*args):
+                if args[:3]==('docker','context','inspect'):
+                    return json.dumps([{'Endpoints':{'docker':{'Host':'unix:///tmp/docker.sock'}}}])
+                return image
+            metadata=mock.Mock(st_mode=0o140660,st_gid=0)
+            with mock.patch('candidate_runtime.verify_candidate',return_value=manifest),mock.patch('candidate_runtime.load_ui',return_value={'id':image,'os':'linux','architecture':'arm64'}),\
+                 mock.patch.object(deploy,'run',side_effect=command),mock.patch.object(Path,'resolve',autospec=True,side_effect=lambda self,**kwargs:self),\
+                 mock.patch.object(Path,'stat',return_value=metadata),mock.patch.dict(os.environ,{'COMPOSE_PROJECT_NAME':'ambient','MDM_SERVER_IMAGE':'wrong'}):
+                result=deploy.prepare(candidate,root/'deployment',project='frozen')
+            model=json.loads(subprocess.check_output(['docker','compose','-p','frozen','-f',result['compose'],'config','--format','json'],
+                env=dict(os.environ,COMPOSE_PROJECT_NAME='ambient',MDM_SERVER_IMAGE='wrong'),text=True))
+            self.assertEqual(model['name'],'frozen')
+            self.assertEqual(model['services']['install']['image'],image)
+            self.assertEqual(model['volumes']['state']['name'],'frozen_state')

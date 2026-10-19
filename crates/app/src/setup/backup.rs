@@ -23,6 +23,9 @@ pub struct Authority {
     pub issuer: String,
     pub container_id: String,
     pub online_directory: PathBuf,
+    /// Named Docker volume and subdirectory mounted at online_directory in the operator.
+    pub volume: String,
+    pub volume_subpath: PathBuf,
     pub offline_directory: PathBuf,
     pub root_private_key_file: PathBuf,
     pub root_password_file: PathBuf,
@@ -84,7 +87,7 @@ async fn inspect(id: &str) -> Result<Value> {
     }
     values.into_iter().next().ok_or(Error::Corrupt)
 }
-fn mounted(actual: &Value, file: &str) -> Result<PathBuf> {
+fn mounted(authority: &Authority, actual: &Value, file: &str) -> Result<PathBuf> {
     let path = std::path::Path::new(file);
     if !path.is_absolute()
         || path
@@ -104,7 +107,24 @@ fn mounted(actual: &Value, file: &str) -> Result<PathBuf> {
         .filter(|(d, _)| path.starts_with(d))
         .max_by_key(|(d, _)| d.components().count())
         .ok_or(Error::Input)?;
-    let target = std::path::Path::new(mount.1["Source"].as_str().ok_or(Error::Input)?)
+    if mount.1["Type"] != "volume" || mount.1["Name"].as_str() != Some(authority.volume.as_str()) {
+        return Err(Error::Input);
+    }
+    let requested = actual["HostConfig"]["Mounts"]
+        .as_array()
+        .ok_or(Error::Input)?
+        .iter()
+        .find(|m| m["Target"].as_str() == mount.1["Destination"].as_str())
+        .ok_or(Error::Input)?;
+    if requested["Type"] != "volume"
+        || requested["Source"].as_str() != Some(authority.volume.as_str())
+        || requested["VolumeOptions"]["Subpath"].as_str().unwrap_or("")
+            != authority.volume_subpath.to_str().ok_or(Error::Input)?
+    {
+        return Err(Error::Conflict);
+    }
+    let target = authority
+        .online_directory
         .join(path.strip_prefix(mount.0).map_err(|_| Error::Input)?);
     if target.canonicalize().map_err(|_| Error::Input)? != target {
         return Err(Error::Input);
@@ -116,8 +136,16 @@ fn ca_identity(authority: &Authority, actual: &Value) -> Result<()> {
     if arguments.len() != 3 || arguments[1] != "--password-file" {
         return Err(Error::Input);
     }
-    let configuration = mounted(actual, arguments[0].as_str().ok_or(Error::Input)?)?;
-    let password = mounted(actual, arguments[2].as_str().ok_or(Error::Input)?)?;
+    let configuration = mounted(
+        authority,
+        actual,
+        arguments[0].as_str().ok_or(Error::Input)?,
+    )?;
+    let password = mounted(
+        authority,
+        actual,
+        arguments[2].as_str().ok_or(Error::Input)?,
+    )?;
     if !configuration.starts_with(&authority.online_directory)
         || !password.starts_with(&authority.online_directory)
         || !authority
@@ -135,7 +163,11 @@ fn ca_identity(authority: &Authority, actual: &Value) -> Result<()> {
     .map_err(|_| Error::Input)?;
     let issuer = openssl::x509::X509::from_pem(
         &crate::config::read(
-            &mounted(actual, config["crt"].as_str().ok_or(Error::Input)?)?,
+            &mounted(
+                authority,
+                actual,
+                config["crt"].as_str().ok_or(Error::Input)?,
+            )?,
             131072,
             false,
         )
@@ -163,7 +195,7 @@ fn ca_identity(authority: &Authority, actual: &Value) -> Result<()> {
     let mut matched = 0;
     for root in roots {
         let root = openssl::x509::X509::from_pem(
-            &crate::config::read(&mounted(actual, root)?, 131072, false)
+            &crate::config::read(&mounted(authority, actual, root)?, 131072, false)
                 .map_err(|_| Error::Input)?,
         )
         .map_err(|_| Error::Input)?;
@@ -521,10 +553,13 @@ async fn resume_ca(
     {
         return Err(Error::Input);
     }
-    let mounts=saved["Mounts"].as_array().ok_or(Error::Corrupt)?.iter().map(|m| {
-        let source=m["Source"].as_str().ok_or(Error::Corrupt)?;
-        if !std::path::Path::new(source).starts_with(&authority.online_directory){return Err(Error::Conflict);}
-        Ok(json!({"type":"bind","source":source,"target":m["Destination"],"read_only":!m["RW"].as_bool().ok_or(Error::Corrupt)?}))
+    let saved_mounts = saved["Mounts"].as_array().ok_or(Error::Corrupt)?;
+    if saved_mounts.len() != 1 {
+        return Err(Error::Input);
+    }
+    let mounts = saved_mounts.iter().map(|m| {
+        if m["Type"] != "volume" || m["Name"].as_str() != Some(authority.volume.as_str()) { return Err(Error::Conflict); }
+        Ok(json!({"type":"volume","source":"ca-state","target":m["Destination"],"read_only":!m["RW"].as_bool().ok_or(Error::Corrupt)?,"volume":{"nocopy":true,"subpath":authority.volume_subpath}}))
     }).collect::<Result<Vec<_>>>()?;
     let mut service = json!({"image":image,"user":user,"read_only":true,"cap_drop":["ALL"],"security_opt":["no-new-privileges:true"],"tmpfs":["/tmp:rw,noexec,nosuid,size=64m"],"entrypoint":[saved["Path"]],"command":saved["Args"],"volumes":mounts,"labels":{"rss.mdm.ca.restore":operation,"rss.mdm.ca.issuer":authority.issuer}});
     service["restart"] = json!(restart_policy(&saved)?);
@@ -577,7 +612,7 @@ async fn resume_ca(
     if let Some(hosts) = saved["HostConfig"]["ExtraHosts"].as_array() {
         service["extra_hosts"] = json!(hosts);
     }
-    let compose = json!({"services":{"step-ca":service}});
+    let compose = json!({"services":{"step-ca":service},"volumes":{"ca-state":{"external":true,"name":authority.volume}}});
     let path = root.secret(
         &format!("restore-ca-{index}.json"),
         &serde_json::to_vec(&compose).map_err(|_| Error::Corrupt)?,
@@ -657,12 +692,18 @@ async fn freeze_backup(input: Request, root: &Journal, journal: &Journal) -> Res
             return Err(Error::Input);
         }
         let mounts = actual["Mounts"].as_array().ok_or(Error::Input)?;
-        if mounts.is_empty()
-            || mounts.iter().any(|m| {
-                m["Source"].as_str().is_none_or(|source| {
-                    !std::path::Path::new(source).starts_with(&authority.online_directory)
-                })
-            })
+        if mounts.len() != 1
+            || authority.volume.is_empty()
+            || !authority
+                .volume
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b"_.-".contains(&b))
+            || authority
+                .volume_subpath
+                .components()
+                .any(|p| !matches!(p, std::path::Component::Normal(_)))
+            || mounts[0]["Type"] != "volume"
+            || mounts[0]["Name"].as_str() != Some(authority.volume.as_str())
         {
             return Err(Error::Conflict);
         }

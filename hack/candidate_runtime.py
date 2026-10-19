@@ -15,7 +15,7 @@ import tempfile
 import time
 import uuid
 from contextlib import ExitStack
-from release import oci_identity, platform, sha, image_metadata, immutable_image, DEPLOYMENT_FILES, ROLE_NAMES
+from release import oci_identity, platform, sha, image_metadata, immutable_image, DEPLOYMENT_FILES, ROLE_NAMES, RUNTIME_TOOLS
 from candidate_fixture import INSTANCE, ADMIN, TENANTS, installation
 
 TENANT = TENANTS[0]
@@ -252,9 +252,10 @@ def verify_candidate(directory):
                 and sha(path) == digest, "candidate deployment input mismatch")
     require(json.loads((directory/'deployment/providers.lock.json').read_text())==manifest['providers'],
             'candidate provider lock differs from its manifest')
-    from t2_environment import ROOT
-    require(sha(directory/'fixtures/pki-tools.lock.json')==sha(ROOT/'fixtures/pki-tools.lock.json'),
-            'candidate PKI tools differ from the supported fixed runtime helper')
+    require(set(manifest.get("tools", {})) == set(RUNTIME_TOOLS), "candidate runtime tools mismatch")
+    for name, digest in manifest["tools"].items():
+        path = directory / "tools" / name
+        require(path.is_file() and not path.is_symlink() and sha(path) == digest, "candidate runtime tool mismatch")
     docker("load","--input",archive,stage=Stage.LOAD)
     docker("load","--input",operator_archive,stage=Stage.LOAD)
     return manifest

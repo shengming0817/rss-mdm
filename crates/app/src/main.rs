@@ -148,7 +148,12 @@ async fn execute() -> Result<(), ProcessError> {
                         return result.map_err(|_| ProcessError::Stage {stage:"deployment.signal",kind:"shutdown signal unavailable"});
                     },
                     result=async {
-                        if !resumed { rss_mdm_app::setup::deployment::resume_hosts(&input).await?; resumed=true; }
+                        if !resumed {
+                            if let Err(error) = rss_mdm_app::setup::deployment::resume_hosts(&input).await {
+                                eprintln!("{}", serde_json::json!({"event":"tenant_resume_incomplete","reason":error.to_string()}));
+                            }
+                            resumed=true;
+                        }
                         rss_mdm_app::setup::tenant_hosts::reconcile(&input).await
                     }=>result,
                 };

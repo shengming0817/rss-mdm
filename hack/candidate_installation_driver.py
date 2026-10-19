@@ -15,7 +15,8 @@ from urllib.parse import urlsplit
 class Installation:
     def __init__(self, deployment):
         self.root = deployment
-        self.prefix = ['docker','compose','--env-file',str(deployment/'compose.env'),'-f',str(deployment/'compose.yaml')]
+        project=json.loads((deployment/'deployment.json').read_text())['project']
+        self.prefix = ['docker','compose','--project-name',project,'-f',str(deployment/'compose.yaml')]
 
     def compose(self, *args, timeout=300):
         result = subprocess.run([*self.prefix, *args], capture_output=True, text=True, timeout=timeout)
@@ -62,6 +63,7 @@ class Installation:
         if candidates:
             subprocess.run(['docker','rm','-f',*candidates],check=True,capture_output=True)
         self.compose('down','--volumes','--remove-orphans')
+        check(not candidates,'operator did not remove its tenant containers on shutdown')
 
 
 def check(value, reason):
@@ -95,7 +97,10 @@ class Browser:
             cookies=response.headers.get_all('set-cookie') or []
             if cookies:self.cookie='; '.join(value.split(';',1)[0] for value in cookies)
             raw=response.read()
-            value=json.loads(raw) if raw else None
+            try:value=json.loads(raw) if raw else None
+            except json.JSONDecodeError:
+                if response.status in (502,503):value=None
+                else:raise
             if isinstance(value,dict) and value.get('csrfToken'):self.csrf=value['csrfToken']
             return response.status,value
         finally:connection.close()
@@ -134,15 +139,19 @@ def qualify(owner, origin, other_origin):
     operation=str(uuid.uuid4());password=secrets.token_urlsafe(32)
     request=dict(name='Second organization',administratorLogin='second',administratorPassword=password)
     endpoint='/api/v1/tenant-administration/provisionings'
+    owner.compose('pause','operator')
     status,receipt=platform.call('POST',endpoint,request,operation)
     check(status in (200,202) and receipt['operationId']==operation,'complete provisioning admission')
     original=receipt['result']
     def enabled():
-        status,value=platform.call('GET',endpoint+'/'+operation)
+        try:status,value=platform.call('GET',endpoint+'/'+operation)
+        except (OSError,ssl.SSLError,http.client.HTTPException):return False
         if status!=200:return False
         check(value['result']['tenantId']==original['tenantId'] and value['result']['hostId']==original['hostId'],'provisioning identity changed')
         return value['result']['phase']=='enabled'
     # The Compose operator must resume the original receipt after a real restart.
+    check(original['phase']!='enabled','pending operation was already completed')
+    owner.compose('unpause','operator')
     owner.compose('restart','operator')
     until(enabled)
     status,replayed=platform.call('POST',endpoint,request,operation)
