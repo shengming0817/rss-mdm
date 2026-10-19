@@ -2131,9 +2131,8 @@ consume_dependencies('installation.backup installation.migration', normal='libc'
 
 TOOL_INPUTS['hack/candidate_transfer_driver.py'] = ('test_candidate_smoke',)
 
-# These no-write assertions observe all tenant facts, not just one operation.
+# This no-write assertion observes all tenant facts, not just one operation.
 module = MODULES['planning.agent_policy']
-MODULES['planning.agent_policy'] = replace(module, policies=(*module.policies, *(
-    CasePolicy('planning::t2::agent_policy::'+name, 'reuse', 'tenant', actors=module.actors)
-    for name in ('script_preparation_is_shared_without_preview_effects',
-                 'registered_script_eligibility_gates_preview_and_automatic'))))
+MODULES['planning.agent_policy'] = replace(module, policies=(*module.policies, CasePolicy(
+    'planning::t2::agent_policy::registered_script_eligibility_gates_preview_and_automatic',
+    'reuse', 'tenant', actors=module.actors)))
