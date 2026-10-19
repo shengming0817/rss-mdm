@@ -290,3 +290,39 @@ fn exact_json_and_installation_binding_preserve_baseline_bytes() {
         );
     }
 }
+
+#[test]
+fn observation_rejects_false_applied_and_unbounded_or_ambiguous_coordinates() {
+    use rss_mdm_agent_wire::pki::{Observation, ObservationReason, ObservationState};
+    let mut value = Observation {
+        operation: uuid::Uuid::new_v4(),
+        version: 1,
+        registration: uuid::Uuid::new_v4(),
+        generation: 1,
+        sequence: 1,
+        target_revision: Some(2),
+        target_digest: Some("a".repeat(64)),
+        actual_revision: Some(1),
+        actual_digest: Some("b".repeat(64)),
+        state: ObservationState::Failed,
+        reason: Some(ObservationReason::Storage),
+        observed_at: 1,
+    };
+    assert!(value.validate().is_ok());
+    value.state = ObservationState::Applied;
+    value.reason = None;
+    assert!(value.validate().is_err());
+    value.actual_revision = value.target_revision;
+    value.actual_digest = value.target_digest.clone();
+    assert!(value.validate().is_ok());
+    value.sequence = u64::MAX;
+    assert!(value.validate().is_err());
+    value.sequence = 1;
+    value.actual_digest = None;
+    assert!(value.validate().is_err());
+    value.actual_revision = None;
+    value.state = ObservationState::Unknown;
+    assert!(value.validate().is_err());
+    value.reason = Some(ObservationReason::Restart);
+    assert!(value.validate().is_ok());
+}

@@ -75,3 +75,5 @@ impl Signer {
 
 pub mod service;
 pub mod trust;
+
+pub mod observations;

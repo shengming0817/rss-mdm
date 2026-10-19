@@ -740,6 +740,61 @@ async fn production_agent_listener_bootstraps_activates_and_rechecks_revocation(
         agent_http(&mut anonymous, "GET", "/api/v1/agent/enroll/trust", None).await?;
     assert_eq!(status, 200);
     let trust: rss_mdm_agent_wire::pki::Trust = serde_json::from_value(body)?;
+    let observation_path = "/api/v1/agent/enroll/trust/observations";
+    let observation = serde_json::json!({"operation":Uuid::new_v4(),"version":1,
+        "registration":active.runtime.registration_id,"generation":active.runtime.generation,
+        "sequence":2,"target_revision":trust.revision,"target_digest":trust.installation_digest(),
+        "actual_revision":trust.revision,"actual_digest":trust.installation_digest(),
+        "state":"applied","reason":null,"observed_at":1});
+    assert_eq!(
+        agent_http(
+            &mut anonymous,
+            "POST",
+            observation_path,
+            Some(observation.clone())
+        )
+        .await?
+        .0,
+        401
+    );
+    for _ in 0..2 {
+        let (status, body) = agent_http(
+            &mut certified,
+            "POST",
+            observation_path,
+            Some(observation.clone()),
+        )
+        .await?;
+        assert_eq!(status, 200, "observation: {body}");
+        assert_eq!(body, observation);
+    }
+    let mut invalid = observation.clone();
+    invalid["generation"] = serde_json::json!(active.runtime.generation + 1);
+    assert_eq!(
+        agent_http(&mut certified, "POST", observation_path, Some(invalid))
+            .await?
+            .0,
+        403
+    );
+    let mut conflict = observation.clone();
+    conflict["observed_at"] = serde_json::json!(2);
+    assert_eq!(
+        agent_http(&mut certified, "POST", observation_path, Some(conflict))
+            .await?
+            .0,
+        409
+    );
+    let mut older = observation.clone();
+    older["operation"] = serde_json::json!(Uuid::new_v4());
+    older["sequence"] = serde_json::json!(1);
+    older["state"] = serde_json::json!("failed");
+    older["reason"] = serde_json::json!("storage");
+    assert_eq!(
+        agent_http(&mut certified, "POST", observation_path, Some(older))
+            .await?
+            .0,
+        200
+    );
     let ack = rss_mdm_agent_wire::pki::Acknowledgement {
         operation: Uuid::new_v4(),
         version: 1,
@@ -751,6 +806,12 @@ async fn production_agent_listener_bootstraps_activates_and_rechecks_revocation(
         .bind(case_a())
         .execute(&mut *tx)
         .await?;
+    let latest =
+        rss_mdm_pki_service::observations::latest_in(&mut tx, case_a(), &active.runtime.device_id)
+            .await?
+            .expect("persisted observation");
+    assert_eq!(serde_json::to_value(latest.observation)?, observation);
+    assert!(latest.received_at > 0);
     let installations = "SELECT count(*) FROM mdm_pki.installations WHERE tenant_id=$1::uuid AND purpose='agent' AND registration=$2";
     assert_eq!(
         sqlx::query_scalar::<_, i64>(installations)

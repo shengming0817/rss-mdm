@@ -28,6 +28,23 @@ async fn rotation_requires_exact_generation_ack_and_keeps_original_operation() -
         ensure!(f.author.call(&f.router,Method::POST,"/api/v1/task-signing/trust",Some(activate.clone())).await?.0==StatusCode::CONFLICT);
         let (status,distribution)=agent_call(&f.router,Method::GET,"/api/v1/agent/runtime/task-trust",Some(case_credential()),None).await?;
         ensure!(status==StatusCode::OK && distribution==body);
+        let observation_path="/api/v1/agent/runtime/task-trust/observations";
+        let query_path=format!("/api/v1/task-signing/trust/devices/{}/observation",registration["deviceId"].as_str().unwrap());
+        ensure!(f.author.call(&f.router,Method::GET,&query_path,None).await?==(StatusCode::OK,Value::Null));
+        let mut observation=json!({"operation":Uuid::new_v4(),"version":1,"registration":registration["registrationId"],"generation":registration["generation"],"sequence":2,"target_revision":prepared.revision,"target_digest":prepared.installation_digest()?,"actual_revision":prepared.revision,"actual_digest":prepared.installation_digest()?,"state":"applied","reason":null,"observed_at":2});
+        let mut invalid=observation.clone();invalid["generation"]=json!(registration["generation"].as_u64().unwrap()+1);
+        ensure!(agent_call(&f.router,Method::POST,observation_path,Some(case_credential()),Some(invalid)).await?.0==StatusCode::FORBIDDEN);
+        for _ in 0..2 {
+            ensure!(agent_call(&f.router,Method::POST,observation_path,Some(case_credential()),Some(observation.clone())).await?==(StatusCode::OK,observation.clone()));
+        }
+        let (status,latest)=f.author.call(&f.router,Method::GET,&query_path,None).await?;
+        ensure!(status==StatusCode::OK && latest["observation"]==observation && latest["received_at"].as_i64().unwrap()>0);
+        let mut conflict=observation.clone();conflict["observed_at"]=json!(3);
+        ensure!(agent_call(&f.router,Method::POST,observation_path,Some(case_credential()),Some(conflict)).await?.0==StatusCode::CONFLICT);
+        observation["operation"]=json!(Uuid::new_v4());observation["sequence"]=json!(1);observation["state"]=json!("failed");observation["reason"]=json!("storage");observation["observed_at"]=json!(999999);
+        ensure!(agent_call(&f.router,Method::POST,observation_path,Some(case_credential()),Some(observation)).await?.0==StatusCode::OK);
+        ensure!(f.author.call(&f.router,Method::GET,&query_path,None).await?==(StatusCode::OK,latest));
+        ensure!(f.author.call(&f.router,Method::POST,"/api/v1/task-signing/trust",Some(activate.clone())).await?.0==StatusCode::CONFLICT,"applied observation must not satisfy activation");
         let mut ack=Acknowledgement {operation:Uuid::new_v4(),version:1,registration:Uuid::parse_str(registration["registrationId"].as_str().unwrap())?,generation:registration["generation"].as_u64().unwrap(),revision:prepared.revision,digest:prepared.installation_digest()?};
         ack.generation+=1;
         ensure!(agent_call(&f.router,Method::POST,"/api/v1/agent/runtime/task-trust",Some(case_credential()),Some(serde_json::to_value(&ack)?)).await?.0==StatusCode::FORBIDDEN);

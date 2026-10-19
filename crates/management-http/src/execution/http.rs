@@ -13,6 +13,10 @@ use rss_mdm_execution_service::{
 use serde_json::Value;
 pub fn routes(queries: Arc<rss_mdm_execution_service::queries::Queries>) -> Router<Arc<HttpState>> {
     Router::new()
+        .route(
+            "/task-signing/trust/devices/{device}/observation",
+            get(task_trust_observation),
+        )
         .route("/task-signing/operations/{id}", get(task_trust_operation))
         .route(
             "/task-signing/trust",
@@ -205,6 +209,20 @@ async fn task_trust_operation(
 ) -> std::result::Result<Json<rss_mdm_agent_wire::task_trust::Trust>, Error> {
     app.execution
         .task_trust_operation(&auth.proof, &audit, id)
+        .await
+        .map(Json)
+        .map_err(Error::from)
+}
+
+async fn task_trust_observation(
+    State(s): State<Arc<HttpState>>,
+    Extension(auth): Extension<RequestAuth>,
+    Extension(audit): Extension<RequestAudit>,
+    Path(device): Path<String>,
+) -> std::result::Result<Json<Option<rss_mdm_agent_wire::task_trust::ObservedInstallation>>, Error>
+{
+    s.execution
+        .task_trust_observation(&auth.proof, &audit, &device)
         .await
         .map(Json)
         .map_err(Error::from)

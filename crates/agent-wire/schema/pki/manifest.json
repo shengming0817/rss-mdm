@@ -8,6 +8,14 @@
     {
       "type": "Acknowledgement",
       "file": "acknowledgement-v1.schema.json"
+    },
+    {
+      "type": "Observation",
+      "file": "observation-v1.schema.json"
+    },
+    {
+      "type": "ObservedInstallation",
+      "file": "observed-installation-v1.schema.json"
     }
   ]
 }

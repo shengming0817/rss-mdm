@@ -2142,3 +2142,6 @@ add('installation.restart', selectors=('setup::backup::tests::original_restart_p
 
 add('installation.storage_reconcile', selectors=('setup::providers::reconcile::tests::failed_candidates_and_expired_evidence_do_not_block_later_work',), fixtures=('runtime_config','s3'), sources=('crates/app/src/setup/providers/reconcile.rs','crates/content-service/src/connections.rs','crates/content-service/schema/connections.sql'), tests=('crates/app/tests/setup/reconcile.rs',))
 MODULES['installation.storage_reconcile'] = replace(MODULES['installation.storage_reconcile'], db_mode='fresh', scope='pair')
+
+consume(('crates/execution-service/src/task_signing/observations.sql',), 'execution.agent.task_trust installation.migration catalog.contract')
+consume(('crates/pki-service/src/observations.rs','crates/pki-service/schema/observations.sql'), 'agent.pki installation.migration catalog.contract')

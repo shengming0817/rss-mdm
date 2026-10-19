@@ -1,0 +1,190 @@
+{
+  "$defs": {
+    "Observation": {
+      "additionalProperties": false,
+      "description": "Device-reported installation observation; never a rotation acknowledgement.",
+      "properties": {
+        "actual_digest": {
+          "description": "Read-back installation digest, paired with actual_revision.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "actual_revision": {
+          "description": "Last durably installed revision, absent when no state can be read.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "generation": {
+          "description": "Authenticated registration generation.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "observed_at": {
+          "description": "Device observation time in Unix seconds; not ordering authority.",
+          "format": "int64",
+          "type": "integer"
+        },
+        "operation": {
+          "description": "Stable report operation, retained across response loss.",
+          "format": "uuid",
+          "not": {
+            "const": "00000000-0000-0000-0000-000000000000"
+          },
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+          "type": "string"
+        },
+        "reason": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ObservationReason"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Closed, non-secret failure category."
+        },
+        "registration": {
+          "description": "Authenticated registration identity.",
+          "format": "uuid",
+          "not": {
+            "const": "00000000-0000-0000-0000-000000000000"
+          },
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+          "type": "string"
+        },
+        "sequence": {
+          "description": "Monotonic sequence within this registration generation and domain.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "state": {
+          "$ref": "#/$defs/ObservationState",
+          "description": "Local result; applied does not imply ACK confirmation or current connectivity."
+        },
+        "target_digest": {
+          "description": "Target installation digest, paired with target_revision.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "target_revision": {
+          "description": "Target revision, absent when fetching the target failed.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "version": {
+          "description": "Exact observation format.",
+          "format": "uint8",
+          "maximum": 255,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "operation",
+        "version",
+        "registration",
+        "generation",
+        "sequence",
+        "state",
+        "observed_at"
+      ],
+      "type": "object"
+    },
+    "ObservationReason": {
+      "description": "Closed failure reasons; raw errors and material bytes are excluded.",
+      "oneOf": [
+        {
+          "const": "transport",
+          "description": "Authenticated transport unavailable.",
+          "type": "string"
+        },
+        {
+          "const": "validation",
+          "description": "Material or successor validation failed.",
+          "type": "string"
+        },
+        {
+          "const": "storage",
+          "description": "Durable write or readback failed.",
+          "type": "string"
+        },
+        {
+          "const": "credential",
+          "description": "Device credential unavailable or rejected.",
+          "type": "string"
+        },
+        {
+          "const": "installation",
+          "description": "Local machine trust installation failed.",
+          "type": "string"
+        },
+        {
+          "const": "restart",
+          "description": "Restart requires a fresh observation.",
+          "type": "string"
+        }
+      ]
+    },
+    "ObservationState": {
+      "description": "Installation result independently reported by the device.",
+      "oneOf": [
+        {
+          "const": "received",
+          "description": "Target received but not durably installed.",
+          "type": "string"
+        },
+        {
+          "const": "applied",
+          "description": "Commit and readback completed.",
+          "type": "string"
+        },
+        {
+          "const": "failed",
+          "description": "Attempt failed; prior installed state may remain usable.",
+          "type": "string"
+        },
+        {
+          "const": "unknown",
+          "description": "Local installed state cannot be determined.",
+          "type": "string"
+        }
+      ]
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Last report with server reception time. Absence means unknown, never successful installation.",
+  "properties": {
+    "observation": {
+      "$ref": "#/$defs/Observation",
+      "description": "Device statement, not a server assertion of disk contents or CRL freshness."
+    },
+    "received_at": {
+      "description": "Server receipt time in Unix seconds.",
+      "format": "int64",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "observation",
+    "received_at"
+  ],
+  "title": "ObservedInstallation",
+  "type": "object",
+  "$id": "https://rss.example/agent/task-trust/v1/ObservedInstallation"
+}

@@ -15,6 +15,10 @@ pub(crate) struct HttpState {
 }
 pub(crate) fn routes() -> Router<Arc<HttpState>> {
     Router::new()
+        .route(
+            "/pki/agent/trust/devices/{device}/observation",
+            get(agent_trust_observation),
+        )
         .route("/pki/{purpose}/trust", get(trust))
         .route("/pki/rotations", post(prepare))
         .route("/pki/signing/recover", post(recover))
@@ -129,4 +133,16 @@ async fn publish(
         .await
         .map_err(error)?;
     Ok(axum::http::StatusCode::NO_CONTENT)
+}
+
+async fn agent_trust_observation(
+    State(s): State<Arc<HttpState>>,
+    Extension(auth): Extension<RequestAuth>,
+    Path(device): Path<String>,
+) -> Result<Json<Option<rss_mdm_agent_wire::pki::ObservedInstallation>>, Error> {
+    s.registry
+        .agent_trust_observation(&auth.proof, &device)
+        .await
+        .map(Json)
+        .map_err(error)
 }
