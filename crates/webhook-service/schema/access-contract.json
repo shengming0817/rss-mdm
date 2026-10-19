@@ -87,7 +87,7 @@
         "revoked"
       ],
       "delete_policy": null,
-      "insert_policy": "current_user::text='mdm_owner'::textornotconfirmedandnotrevokedandnotlegacy_importandattempted_atisnullandconfirmed_atisnullandfailure_reasonisnull"
+      "insert_policy": "notconfirmedandnotrevokedandattempted_atisnullandconfirmed_atisnullandfailure_reasonisnull"
     }
   ],
   "functions": [

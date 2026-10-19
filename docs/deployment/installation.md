@@ -154,7 +154,7 @@ docker run --rm --network host --mount type=bind,src=/private/mdm-operator,dst=/
 
 `identity.audit_worker` 必须配置独立 `mdm_identity_audit` 登录角色及秘密文件；host、port、name 必须与 `identity.database` 一致。安装器通过 Identity 公共 worker 授权接口赋予 consumer 与 Audit 权限，并通过 Ledger 的公开 SQL 接缝赋予追加能力；worker 不具有身份私表、producer、DDL 或直接审计表写权限。运行服务同时挂入 worker 密码，maintenance 密码仍仅归 operator。现有安装集合新增 `identity-audit-runtime-v1`，旧候选安装账本不会被静默升级。
 
-所有运行模式（含 Apple-only 与 Agent-only）必须配置顶层 `native_protection`，包含 `active_file`、`historical_files` 与 `fingerprint_file`。每个文件恰好包含 32 字节原始随机密钥，权限 0600；不是 hex/Base64/PEM 文本。全新安装分别生成加密钥与比较钥。`active_file` 只用于新密文，最多保留 15 个历史解密钥，按密文中确切 key ID 读取。`fingerprint_file` 维持原有请求、材料与设备比较身份，不能随密文重加密替换。Ledger、Windows 协议保护材料和恢复凭据专用钥集合仍分别保管。旧 `native_protection_key_file` 运行字段已删除，存量只能由受支持的离线转交进入新合同。
+所有运行模式（含 Apple-only 与 Agent-only）必须配置顶层 `native_protection`，包含 `active_file`、`historical_files` 与 `fingerprint_file`。每个文件恰好包含 32 字节原始随机密钥，权限 0600；不是 hex/Base64/PEM 文本。全新安装分别生成加密钥与比较钥。`active_file` 只用于新密文，最多保留 15 个历史解密钥，按密文中确切 key ID 读取。`fingerprint_file` 维持原有请求、材料与设备比较身份，不能随密文重加密替换。Ledger、Windows 协议保护材料和恢复凭据专用钥集合仍分别保管。旧 `native_protection_key_file` 配置不再接受，也不提供转换入口。
 
 运行配置和 `initialize-authorization` 配置必须显式填写 `audit`：Plain 为 `{"mode":"plain"}`；Ledger 为 `{"mode":"ledger","key_id":"部署提供的标识","key_file":"/run/mdm/audit-key"}`。密钥文件保存至少 32 字节的原始密钥，必须受文件权限保护；服务不自动生成、轮换或在错误时降级。所有运行角色使用 READ COMMITTED，恢复入口拒绝其他隔离级别。
 
@@ -266,12 +266,8 @@ execution epoch 来自原宿主配置，在连接建立时固定；源事件复�
 
 安装资格检查单输入安装、原凭据及 Ledger 密钥不变的重复安装、平台与业务的独立主体及真实登录、第二租户宿主、原开通操作重放及宿主租户隔离。成功记录 `installation-result.json` 绑定服务 OCI 摘要和平台，只有清理成功后才发布。协议/浏览器的 `candidate_smoke.py` 使用合法业务预置数据，独立证明原生协议与会话消费；它不承担完整开通证明。发布验收必须同时保留两种结果，真实设备资格仍由独立 T3 提供。
 
-V4 转交可以保管已经过期、但其原始链、用途和密钥匹配仍可在历史有效期验证的 Apple 材料，保留真实到期时间，不将历史校验作为当前可用证明。此时基础管理宿主可启动，Apple 通道保持关闭；原通道设置保存在安装目录的 `deferred-apple-<host>.json`，操作员更新领域证书后通过 `configure-host` 恢复原通道。原设备身份、组织绑定及私钥不替换，旧文件不重新成为运行权威。错误私钥、用途、主题或不受信链仍拒绝迁移。
-
 Native 保护轮换重加密运行凭据及 Apple 的 ADE、账户开通、设备令牌、命令和 DDM 证据行，不修改逻辑版本或重放 MAC。不可变内容对象、已有执行快照、证书归档以及历史备份仍可能依赖旧读取钥；因此本入口保留旧钥，未提供可绕过这些保留条件的删除动作。历史读取钥最多 15 份，达到上限会明确拒绝继续轮换，须完成对应历史数据和备份退出后再处理，不能删除旧钥冒充完成。
 
 当前冷备/恢复操作要求部署侧 PostgreSQL 管理员为 superuser，并在停宿主或撤销 CONNECT 之前检查；该连接只交给离线部署操作员。它用于停写后重新连接、检查全部会话和原角色恢复，不能下发给业务服务。普通运行账户仍保持既有最小权限。
 
 `configure-host channels` 不允许删除已经建立身份的 Windows/Apple 配置，避免重新启用时更换固定 fingerprint 或 identity seed。未配置通道可保持关闭；已配置材料过期或撤销时由领域运行校验降为不可用，更新仍沿原身份进行。
-
-`python3 hack/candidate_installation.py /absolute/v5-candidate --legacy-candidate /absolute/v4-candidate` 在另一独立 Linux 节点中验证固定 V4 管理宿主来源：真实旧版启动、原账户认证、Ledger 和任务签名身份保留、转交原操作重放，以及 `restore-v4` 在真实 systemd 故障后的续跑。来源必须匹配受支持的精确 V4 清单，不能用修改 manifest 冒充旧候选。该管理宿主场景不宣称已证明有存量设备或供应方数据的完整迁移；相应场景须保留独立资格记录。

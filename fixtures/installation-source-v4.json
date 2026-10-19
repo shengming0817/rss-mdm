@@ -1,6 +1,0 @@
-{
-  "sourceRevision": "5dbcc81469b9524e86e72a0ef141df8f8cd4d9e2",
-  "candidateFormatVersion": 4,
-  "inputsSha256": "7ed2d7f5d969abeb4f1af970279a5d4250e07ee76a45c621305f372d4e94276f",
-  "sourceAlgorithm": "hack/release.py source_inputs/copy_source at sourceRevision; tracked Git blobs and canonical Git file modes"
-}

@@ -1,173 +1,9 @@
-use crate::setup::{
-    Error, Result,
-    providers::storage::{Profile, Workload},
-};
+use crate::setup::{Error, Result};
 use rss_mdm_content_service::connections as domain;
 use rss_mdm_native_protection::Protector;
-use serde::Deserialize;
 use serde_json::{Value, json};
 use sqlx::{Connection, PgConnection};
-use std::path::{Path, PathBuf};
 use uuid::Uuid;
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Legacy {
-    kind: String,
-    endpoint: String,
-    region: String,
-    bucket: String,
-    namespace: String,
-    credentials_reference: String,
-    access_key_file: PathBuf,
-    secret_key_file: PathBuf,
-    session_token_file: Option<PathBuf>,
-    private_ca_file: Option<PathBuf>,
-    max_concurrent: usize,
-    connect_seconds: u64,
-}
-pub(super) struct Request<'a> {
-    pub directory: &'a Path,
-    pub profile: Option<&'a Profile>,
-    pub operation: Uuid,
-    pub expires: Option<i64>,
-    pub generate: bool,
-}
-pub(super) async fn import(
-    c: &mut PgConnection,
-    runtime: &mut Value,
-    protection: &Protector,
-    input: Request<'_>,
-) -> Result<()> {
-    if runtime["content"].is_null() || runtime["content"]["storage"]["kind"] == "volume" {
-        return Ok(());
-    }
-    let legacy: Legacy =
-        serde_json::from_value(runtime["content"]["storage"].clone()).map_err(|_| Error::Input)?;
-    let profile = input.profile.ok_or(Error::Input)?;
-    if legacy.kind != "s3"
-        || legacy.endpoint != profile.endpoint
-        || legacy.region != profile.region
-        || legacy.bucket != profile.bucket
-        || legacy.namespace != profile.namespace
-        || legacy.credentials_reference.is_empty()
-    {
-        return Err(Error::Conflict);
-    }
-    let ca = crate::config::read(&profile.ca_file, 1024 * 1024, false).map_err(|_| Error::Input)?;
-    if let Some(path) = legacy.private_ca_file
-        && *crate::config::read(&path, 1024 * 1024, false).map_err(|_| Error::Input)? != *ca
-    {
-        return Err(Error::Conflict);
-    }
-    let tenant = runtime["identity"]["tenant_id"]
-        .as_str()
-        .ok_or(Error::Input)?;
-    let id = rss_request_context::TenantId::parse(tenant).map_err(|_| Error::Input)?;
-    let source = if input.generate {
-        domain::Source::Generate
-    } else {
-        domain::Source::Import {
-            access_key: crate::config::secret(&legacy.access_key_file)
-                .map_err(|_| Error::Corrupt)?,
-            secret_key: crate::config::secret(&legacy.secret_key_file)
-                .map_err(|_| Error::Corrupt)?,
-            session_token: legacy
-                .session_token_file
-                .as_ref()
-                .map(|p| crate::config::secret(p).map_err(|_| Error::Corrupt))
-                .transpose()?,
-            expires_at: input.expires,
-        }
-    };
-    let metadata = domain::Metadata {
-        endpoint: profile.endpoint.clone(),
-        region: profile.region.clone(),
-        bucket: profile.bucket.clone(),
-        namespace: profile.namespace.clone(),
-        private_ca: ca.to_vec(),
-    };
-    let mut tx = c.begin().await.map_err(|_| Error::Storage)?;
-    sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
-        .bind(tenant)
-        .execute(&mut *tx)
-        .await
-        .map_err(|_| Error::Storage)?;
-    let receipt = domain::prepare(
-        &mut tx,
-        id,
-        input.operation,
-        &domain::Request {
-            expected_revision: 0,
-            profile: profile.id.clone(),
-            source,
-        },
-        "offline-v4-transfer",
-        protection,
-    )
-    .await
-    .map_err(|_| Error::Conflict)?;
-    domain::bind_metadata(&mut tx, id, input.operation, &metadata)
-        .await
-        .map_err(|_| Error::Conflict)?;
-    let pending = domain::pending(&mut tx, id, input.operation, protection)
-        .await
-        .map_err(|_| Error::Corrupt)?;
-    tx.commit().await.map_err(|_| Error::Storage)?;
-    let workload = Workload {
-        create_identity: pending.generated,
-        access: pending.credentials.access_key,
-        secret: pending.credentials.secret_key,
-        token: pending.credentials.session_token,
-    };
-    let evidence = crate::setup::providers::storage::prepare(
-        input.directory,
-        profile,
-        Uuid::parse_str(tenant).map_err(|_| Error::Input)?,
-        input.operation,
-        &workload,
-    )
-    .await?;
-    let mut tx = c.begin().await.map_err(|_| Error::Storage)?;
-    sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
-        .bind(tenant)
-        .execute(&mut *tx)
-        .await
-        .map_err(|_| Error::Storage)?;
-    domain::qualify(
-        &mut tx,
-        id,
-        input.operation,
-        &metadata,
-        evidence.qualified_at,
-    )
-    .await
-    .map_err(|_| Error::Conflict)?;
-    tx.commit().await.map_err(|_| Error::Storage)?;
-    runtime["content"]["storage"] = json!({"kind":"s3","revision":receipt.revision,"max_concurrent":legacy.max_concurrent,"connect_seconds":legacy.connect_seconds});
-    Ok(())
-}
-
-struct BackupSecrets {
-    access: zeroize::Zeroizing<String>,
-    secret: zeroize::Zeroizing<String>,
-    token: Option<zeroize::Zeroizing<String>>,
-}
-impl rss_mdm_content_s3::Secrets for BackupSecrets {
-    fn resolve(
-        &self,
-        reference: &str,
-    ) -> rss_mdm_content_s3::Result<rss_mdm_content_s3::Credentials> {
-        if reference != "transfer-backup" {
-            return Err(rss_mdm_content_s3::Error::Configuration);
-        }
-        rss_mdm_content_s3::Credentials::new(
-            self.access.to_string(),
-            self.secret.to_string(),
-            self.token.as_ref().map(|v| v.to_string()),
-            None,
-        )
-    }
-}
 #[derive(serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 struct SavedObject {
@@ -185,8 +21,7 @@ fn budget(bytes: u64) -> Result<rss_mdm_content_s3::Budget> {
     )
     .map_err(|_| Error::Input)
 }
-/// 保存确切版本的物理字节；未确认的原写入仍明确记录为 unresolved。
-pub(super) async fn backup(
+pub(in crate::setup) async fn capture(
     c: &mut PgConnection,
     journal: &crate::setup::local::Journal,
     host: Uuid,
@@ -195,34 +30,7 @@ pub(super) async fn backup(
     if runtime["content"]["storage"]["kind"] != "s3" {
         return Ok(());
     }
-    let store = connect(runtime).await?;
-    let mut copy = runtime.clone();
-    let protection = super::materials::protection(&mut copy)?;
-    backup_with(c, journal, host, runtime, store, protection).await
-}
-pub(in crate::setup) async fn backup_current(
-    c: &mut PgConnection,
-    journal: &crate::setup::local::Journal,
-    host: Uuid,
-    runtime: &Value,
-) -> Result<()> {
-    if runtime["content"]["storage"]["kind"] != "s3" {
-        return Ok(());
-    }
-    let (store, protection) = current_source(c, runtime).await?;
-    backup_with(c, journal, host, runtime, store, protection).await
-}
-async fn backup_with(
-    c: &mut PgConnection,
-    journal: &crate::setup::local::Journal,
-    host: Uuid,
-    runtime: &Value,
-    store: rss_mdm_content_s3::Store,
-    protection: std::sync::Arc<Protector>,
-) -> Result<()> {
-    if runtime["content"]["storage"]["kind"] != "s3" {
-        return Ok(());
-    }
+    let (store, protection) = load_connection(c, runtime).await?;
     let tenant = runtime["identity"]["tenant_id"]
         .as_str()
         .ok_or(Error::Input)?;
@@ -268,51 +76,7 @@ async fn backup_with(
     objects.save("snapshot.json",&json!({"tenant":tenant,"copiedObjects":copied,"unavailableUnreferencedObjects":unresolved}))
 }
 
-async fn connect(runtime: &Value) -> Result<rss_mdm_content_s3::Store> {
-    let legacy: Legacy =
-        serde_json::from_value(runtime["content"]["storage"].clone()).map_err(|_| Error::Input)?;
-    let tenant = runtime["identity"]["tenant_id"]
-        .as_str()
-        .ok_or(Error::Input)?;
-    let namespace = format!("{}/{}", legacy.namespace, tenant);
-    let store = rss_mdm_content_s3::Store::connect(
-        rss_mdm_content_s3::Config {
-            endpoint: legacy.endpoint,
-            region: legacy.region,
-            bucket: legacy.bucket,
-            namespace,
-            credentials_reference: "transfer-backup".into(),
-            private_ca_pem: legacy
-                .private_ca_file
-                .as_ref()
-                .map(|p| {
-                    crate::config::read(p, 1024 * 1024, false)
-                        .map(|v| v.to_vec())
-                        .map_err(|_| Error::Input)
-                })
-                .transpose()?,
-            max_concurrent: 1,
-            connect_timeout: std::time::Duration::from_secs(5),
-        },
-        std::sync::Arc::new(BackupSecrets {
-            access: crate::config::secret(&legacy.access_key_file).map_err(|_| Error::Corrupt)?,
-            secret: crate::config::secret(&legacy.secret_key_file).map_err(|_| Error::Corrupt)?,
-            token: legacy
-                .session_token_file
-                .as_ref()
-                .map(|p| crate::config::secret(p).map_err(|_| Error::Corrupt))
-                .transpose()?,
-        }),
-        std::sync::Arc::new(crate::lifecycle::RuntimeTimer),
-        budget(4096)?,
-    )
-    .await
-    .map_err(|_| Error::Storage)?;
-    Ok(store)
-}
-
-/// 恢复只修复已知物理版本；原本未知且无引用的写入保持原 intent。
-pub(super) async fn restore(
+pub(in crate::setup) async fn restore(
     c: &mut PgConnection,
     journal: &crate::setup::local::Journal,
     host: Uuid,
@@ -321,34 +85,7 @@ pub(super) async fn restore(
     if runtime["content"]["storage"]["kind"] != "s3" {
         return Ok(());
     }
-    let store = connect(runtime).await?;
-    let mut copy = runtime.clone();
-    let protection = super::materials::protection(&mut copy)?;
-    restore_with(c, journal, host, runtime, store, protection).await
-}
-pub(in crate::setup) async fn restore_current(
-    c: &mut PgConnection,
-    journal: &crate::setup::local::Journal,
-    host: Uuid,
-    runtime: &Value,
-) -> Result<()> {
-    if runtime["content"]["storage"]["kind"] != "s3" {
-        return Ok(());
-    }
-    let (store, protection) = current_source(c, runtime).await?;
-    restore_with(c, journal, host, runtime, store, protection).await
-}
-async fn restore_with(
-    c: &mut PgConnection,
-    journal: &crate::setup::local::Journal,
-    host: Uuid,
-    runtime: &Value,
-    store: rss_mdm_content_s3::Store,
-    protection: std::sync::Arc<Protector>,
-) -> Result<()> {
-    if runtime["content"]["storage"]["kind"] != "s3" {
-        return Ok(());
-    }
+    let (store, protection) = load_connection(c, runtime).await?;
     let tenant = runtime["identity"]["tenant_id"]
         .as_str()
         .ok_or(Error::Input)?;
@@ -385,7 +122,7 @@ async fn restore_with(
     tx.rollback().await.map_err(|_| Error::Storage)
 }
 
-async fn current_source(
+async fn load_connection(
     c: &mut PgConnection,
     runtime: &Value,
 ) -> Result<(rss_mdm_content_s3::Store, std::sync::Arc<Protector>)> {
@@ -447,7 +184,7 @@ async fn backup_object(
             return Err(Error::Conflict);
         }
         if let Some(file) = &previous.body_file {
-            let actual = super::backup::file_digest(&objects.path(file)?)?;
+            let actual = super::archive::file_digest(&objects.path(file)?)?;
             if actual.bytes != record.content.length
                 || actual.sha256
                     != record

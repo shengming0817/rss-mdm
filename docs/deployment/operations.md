@@ -127,11 +127,13 @@ Compose 中 PostgreSQL 启动期每秒检查，稳定运行后每十秒检查。
 
 首次安装先持久绑定 instance、存储 target/lineage 与审计模式。每个组件的 SQL 变更和完成回执在同一数据库事务提交；进程中断或提交响应丢失后，使用原输入重试，安装器核对当前清单的精确已完成前缀并从下一单元继续。运行宿主仍只接受完整清单，不接纳部分安装。
 
-摘要变化、缺失中间单元、重复回执、旧的不完整 intent 或安装身份不符均拒绝接续。保留数据库与原安装 journal，调查或恢复一致备份；不得改写 `mdm_migrations.complete`、删除回执、重签摘要或清空已有业务数据。兼容来源之外的旧安装不能靠重试升级。运行角色无 DDL，启动检查 schema、权限和 RLS；修复漂移不能从生产库覆盖固定 catalog。
+摘要变化、缺失中间单元、重复回执、旧的不完整 intent 或安装身份不符均拒绝接续。保留数据库与原安装 journal，调查或恢复一致备份；不得改写 `mdm_migrations.complete`、删除回执、重签摘要或清空已有业务数据。当前不支持旧候选数据库升级；清单不匹配不能靠重试接入。运行角色无 DDL，启动检查 schema、权限和 RLS；修复漂移不能从生产库覆盖固定 catalog。
 
 安装 journal 中的 Ledger 密钥是固定安装密钥。重放校验同时绑定原保护材料，缺失、损坏或替换时失败；恢复必须提供原密钥和一致备份，不切换新链、不重签历史，也不自动降级 Plain。该约束不提供同链 HMAC 换钥能力。
 
-当前准确迁移集合由二进制 --describe 与 [迁移源码](../../crates/app/src/migration.rs) 持有。升级须停旧写入口；回退恢复匹配数据库、制品、密钥与旧服务，不能仅降级二进制。数据库角色与首次安装见 [安装指南](installation.md)。Apple 证书、APNs 与 CA 排障见 [Apple 管理](../guides/apple-management.md)。
+当前准确安装集合由二进制 `--describe` 与 [安装源码](../../crates/app/src/migration.rs) 持有。正常恢复要求数据库、候选制品、配置、内容与密钥共同匹配；清理前候选的数据库和备份不能直接接入清理后的候选。恢复旧候选时使用其匹配的原制品及一致备份，不能仅降级或替换二进制。数据库角色与首次安装见 [安装指南](installation.md)。Apple 证书、APNs 与 CA 排障见 [Apple 管理](../guides/apple-management.md)。
+
+未来升级以真实待升级发布版本和部署需求为起点另立实施项；固定旧/新发布制品、schema、配置、数据及秘密清单，明确支持版本范围，设计停写、升级、中断恢复与备份回退，并在会改变已部署合同的版本发布前完成验证。Git 历史只提供实现参考，不自动成为受支持来源。当前没有可核验的旧部署证据，不能据此宣称已完成部署调查。
 
 内容仓的 PostgreSQL journal 持有上传进度、对象版本、清单、额度和读 pin；服务端卷与 S3 都不能通过扫描目录或 bucket 重建业务状态。旧目录配置、上传 Saved JSON 和 checkpoint 不接受，也不自动迁移。全新安装须使用匹配 schema 和空内容 namespace；恢复旧部署时恢复匹配数据库、内容、密钥与二进制。
 
@@ -193,17 +195,7 @@ Apple 的 challenge/notify webhook ID 和 HMAC 秘密属于稳定协议配置。
 完成回执始终标记 `historicalKeysRetained=true`。历史原生输入、协议回执、物理内容块和备份仍可能引用旧加密钥，不能仅凭运行材料批次为零就删除旧钥。稳定比较钥另有持久身份用途，密文轮换不表示比较 HMAC 轮换。恢复须联合取回全部仍被记录或备份引用的材料；此流程不会自动退出旧钥，也不会修改固定安装 Ledger HMAC。
 
 
-### 固定 V4 转交及灾难恢复
-
-`rss-mdm-installer transfer-v4 --config /absolute/private-transfer.json` 只接受源提交 `5dbcc81469b9524e86e72a0ef141df8f8cd4d9e2` 对应的正式 V4 清单、独立取得的清单摘要，以及正在使用该候选的确切 Docker 容器 ID。输入包含原平台管理员和每个业务管理员的主体 ID、登录名及原密码文件。导入器真实登录并核对主体，不重置密码或把初始化拒绝视为成功。
-
-部署目录必须独立且仅 owner 可读。首次副作用前保存稳定宿主、授权与操作身份，将原运行文件及网关 TLS、供应方管理材料复制到该目录；随后关闭旧容器自动重启、停写、核验原 Ledger 全历史并联合归档 PostgreSQL、内容卷及确切 S3 版本。`backupManifestSha256` 是返回的公开备份回执，应独立保存。备份目录本身包含秘密，按部署保管材料保护；不可只保留数据库 dump。
-
-`rss-mdm-installer restore-v4 --config /absolute/private-restore.json` 的输入为 `directory`、新的稳定 `operation_id`、独立保存的 `backup_manifest_sha256` 和目标 `administrator` 数据库配置。当前入口是同址恢复：部署目录、数据库地址/名称和卷的容器路径保持原值；目标数据库必须为空，受限角色及原密码须已恢复。它拒绝覆盖已有业务库及内容冲突，使用单事务 `pg_restore`，以数据库内恢复身份解决未知提交。S3 原版本确实缺失时，用原写入身份恢复归档物理字节，再在领域事务内更新确切版本引用和内容 MAC；逻辑 SHA、设备身份、上传进度和 Ledger 历史不变。原本未确认且无引用的对象仍保留未知状态。
-
-原链、材料、内容校验通过后，恢复沿同一个转交用例继续迁入新权威、核对真实认证、启动并观察实际宿主。任一步失败保留原操作与归档；重复运行同一输入。该入口不接受替换 Ledger 密钥、不重签审计历史、不自动切换 Plain。此入口仅消费转交前的 V4 联合快照，不代表日常 V5 在线备份或跨地址恢复已经实现。
-
-Windows 保护配置现在使用 `protocol_protection`，包含 `active_file`、`historical_files`、`fingerprint_file`。仅离线 V4 导入器识别旧 `protocol_key_file`。Windows 轮换先向所有启用 Windows 的宿主分发读钥，再切换写钥并分批重包注册秘密；固定 fingerprint 维持原注册/续期配置身份。旧钥继续保留供历史与备份恢复，完成写钥切换不表示旧钥可以删除。
+Windows 保护配置现在使用 `protocol_protection`，包含 `active_file`、`historical_files`、`fingerprint_file`。Windows 轮换先向所有启用 Windows 的宿主分发读钥，再切换写钥并分批重包注册秘密；固定 fingerprint 维持原注册/续期配置身份。旧钥继续保留供历史与备份恢复，完成写钥切换不表示旧钥可以删除。
 
 ### WNS 凭据与宿主应用
 
@@ -274,6 +266,4 @@ rss-mdm.webhook-key/v1
 
 该响应与请求签名使用不同消息，不能通过回显请求签名伪造确认。TLS 地址固定、无代理、无重定向，证书名字/根和网络边界均校验；失败保留原候选并至少一分钟后重试。普通运行角色无权写入 `confirmed`，也不能在 INSERT 时伪造确认。确认仅证明指定接收端在核验时持有确切候选，不代表业务事件已投递。
 
-`POST /api/v1/webhooks/materials/transitions` 接受 reference、expectedRevision 和 action（`activate`/`revoke` 的 materialRevision，或 `retire_previous`），同样要求 Idempotency-Key。激活须有真实 receiver confirmation；当前被撤销时失败关闭，不退回旧钥。旧双签仍有未决投递或恢复时拒绝退出，已退出材料继续加密保留供历史及联合备份。一次性 V4 转交保留原 whsec 字节、版本及尚有效的双签，显式标记 `legacyImport`，不能把旧来源验证当作新的接收端确认。公开 DTO 和接收合同见 [Webhook Materials schema](../../crates/webhook-service/schema/Materials.json)。
-
-V4 任务签名导入保留原 key ID 和密钥，并将信任绑定到原 Agent endpoint 的 origin。若旧实例仅预置任务签名钥、尚未配置 Agent endpoint，转交输入的对应 host 必须明确提供 `task_runtime_origin`；不得将浏览器 product origin 静默当成 Agent 的运行 origin。已配置 endpoint 时，额外提供的值必须与其完全一致。
+`POST /api/v1/webhooks/materials/transitions` 接受 reference、expectedRevision 和 action（`activate`/`revoke` 的 materialRevision，或 `retire_previous`），同样要求 Idempotency-Key。激活须有真实 receiver confirmation；当前被撤销时失败关闭，不退回旧钥。旧双签仍有未决投递或恢复时拒绝退出，已退出材料继续加密保留供历史及联合备份。公开 DTO 和接收合同见 [Webhook Materials schema](../../crates/webhook-service/schema/Materials.json)。

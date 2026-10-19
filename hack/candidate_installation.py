@@ -43,12 +43,12 @@ def load_archive(node, path):
     require(result.returncode==0,'candidate archive import failed: '+result.stderr[-2000:])
 
 
-def qualify(directory, legacy=None):
+def qualify(directory):
     manifest=verify_candidate(directory)
     name='mdm-install-'+uuid.uuid4().hex
     created=[]
     built=False
-    marker=directory/('transfer-result.json' if legacy else 'installation-result.json')
+    marker=directory/'installation-result.json'
     marker.unlink(missing_ok=True)
     try:
         with tempfile.TemporaryDirectory(prefix=name) as temporary:
@@ -89,15 +89,7 @@ def qualify(directory, legacy=None):
             driver=Path(__file__).with_name('candidate_installation_driver.py')
             docker('cp',driver,name+':/workspace/driver.py',stage=Stage.RUNTIME_INPUTS)
             docker('cp',directory/'candidate.json',name+':/workspace/candidate.json',stage=Stage.RUNTIME_INPUTS)
-            entry='/workspace/driver.py'
-            if legacy:
-                source=json.loads((legacy/'candidate.json').read_text())
-                require(source.get('format_version')==4,'V4 source candidate required')
-                docker('cp',legacy,name+':/workspace/source',stage=Stage.RUNTIME_INPUTS,timeout=300)
-                load_archive(name,'/workspace/source/'+source['archive']['file'])
-                docker('cp',Path(__file__).with_name('candidate_transfer_driver.py'),name+':/workspace/transfer.py',stage=Stage.RUNTIME_INPUTS)
-                entry='/workspace/transfer.py'
-            execution=subprocess.run(['docker','exec',name,'python3',entry],capture_output=True,text=True,timeout=900)
+            execution=subprocess.run(['docker','exec',name,'python3','/workspace/driver.py'],capture_output=True,text=True,timeout=900)
             result=json.loads(execution.stdout)
             require(execution.returncode==0,'candidate qualification failed: '+json.dumps(result))
             require(result.get('status')=='passed','installation qualification failed')
@@ -115,6 +107,5 @@ def qualify(directory, legacy=None):
 if __name__=='__main__':
     parser=argparse.ArgumentParser()
     parser.add_argument('candidate',type=Path)
-    parser.add_argument('--legacy-candidate',type=Path)
     args=parser.parse_args()
-    qualify(args.candidate.resolve(),args.legacy_candidate.resolve() if args.legacy_candidate else None)
+    qualify(args.candidate.resolve())

@@ -43,63 +43,78 @@ async fn authenticated_readback_recovers_original_provider() -> Result<()> {
                     break;
                 };
                 let (request, mut response) = request?;
-                let token = request.headers().get("authorization").unwrap().to_str()?;
-                ensure!(!token.starts_with("Bearer "));
-                let parts = token.split('.').collect::<Vec<_>>();
-                ensure!(parts.len() == 3);
-                let header: serde_json::Value =
-                    serde_json::from_slice(&URL_SAFE_NO_PAD.decode(parts[0])?)?;
-                let claims: serde_json::Value =
-                    serde_json::from_slice(&URL_SAFE_NO_PAD.decode(parts[1])?)?;
-                let cert = openssl::x509::X509::from_der(
-                    &STANDARD.decode(header["x5c"][0].as_str().unwrap())?,
-                )?;
-                let public = cert.public_key()?;
-                let mut verifier =
-                    openssl::sign::Verifier::new(openssl::hash::MessageDigest::sha256(), &public)?;
-                verifier.update(format!("{}.{}", parts[0], parts[1]).as_bytes())?;
-                let signature = URL_SAFE_NO_PAD.decode(parts[2])?;
-                let signature = if header["alg"] == "ES256" {
-                    ensure!(signature.len() == 64);
-                    openssl::ecdsa::EcdsaSig::from_private_components(
-                        openssl::bn::BigNum::from_slice(&signature[..32])?,
-                        openssl::bn::BigNum::from_slice(&signature[32..])?,
-                    )?
-                    .to_der()?
-                } else {
-                    signature
+                let handle = async {
+                    let token = request.headers().get("authorization").unwrap().to_str()?;
+                    ensure!(!token.starts_with("Bearer "));
+                    let parts = token.split('.').collect::<Vec<_>>();
+                    ensure!(parts.len() == 3);
+                    let header: serde_json::Value =
+                        serde_json::from_slice(&URL_SAFE_NO_PAD.decode(parts[0])?)?;
+                    let claims: serde_json::Value =
+                        serde_json::from_slice(&URL_SAFE_NO_PAD.decode(parts[1])?)?;
+                    let cert = openssl::x509::X509::from_der(
+                        &STANDARD.decode(header["x5c"][0].as_str().unwrap())?,
+                    )?;
+                    let public = cert.public_key()?;
+                    let mut verifier = openssl::sign::Verifier::new(
+                        openssl::hash::MessageDigest::sha256(),
+                        &public,
+                    )?;
+                    verifier.update(format!("{}.{}", parts[0], parts[1]).as_bytes())?;
+                    let signature = URL_SAFE_NO_PAD.decode(parts[2])?;
+                    let signature = if header["alg"] == "ES256" {
+                        ensure!(signature.len() == 64);
+                        openssl::ecdsa::EcdsaSig::from_private_components(
+                            openssl::bn::BigNum::from_slice(&signature[..32])?,
+                            openssl::bn::BigNum::from_slice(&signature[32..])?,
+                        )?
+                        .to_der()?
+                    } else {
+                        signature
+                    };
+                    ensure!(verifier.verify(&signature)?);
+                    ensure!(
+                        claims["iss"] == "step-admin-client/1.0"
+                            && claims["aud"] == format!("{server_origin}{}", request.uri().path())
+                    );
+                    ensure!(
+                        claims["exp"].as_i64().unwrap() - claims["iat"].as_i64().unwrap() == 60
+                    );
+                    let method = request.method().clone();
+                    let path = request.uri().path().to_owned();
+                    let mut stream = request.into_body();
+                    let mut bytes = Vec::new();
+                    while let Some(chunk) = stream.data().await {
+                        let chunk = chunk?;
+                        stream.flow_control().release_capacity(chunk.len())?;
+                        bytes.extend_from_slice(&chunk);
+                    }
+                    if method == reqwest::Method::POST {
+                        ensure!(
+                            path == "/admin/provisioners" && observed.lock().unwrap().is_none()
+                        );
+                        *observed.lock().unwrap() = Some(serde_json::from_slice(&bytes)?);
+                        // CA committed, but its response was lost. Do not synthesize success.
+                        return anyhow::Ok(true);
+                    }
+                    ensure!(path == "/admin/provisioners/rss-agent");
+                    let value = observed.lock().unwrap().clone();
+                    let status = if value.is_some() { 200 } else { 404 };
+                    let body =
+                        serde_json::to_vec(&value.unwrap_or_else(|| json!({"type":"notFound"})))?;
+                    let mut send = response.send_response(
+                        axum::http::Response::builder().status(status).body(())?,
+                        false,
+                    )?;
+                    send.send_data(axum::body::Bytes::from(body), true)?;
+                    anyhow::Ok(false)
                 };
-                ensure!(verifier.verify(&signature)?);
-                ensure!(
-                    claims["iss"] == "step-admin-client/1.0"
-                        && claims["aud"] == format!("{server_origin}{}", request.uri().path())
-                );
-                ensure!(claims["exp"].as_i64().unwrap() - claims["iat"].as_i64().unwrap() == 60);
-                let method = request.method().clone();
-                let path = request.uri().path().to_owned();
-                let mut stream = request.into_body();
-                let mut bytes = Vec::new();
-                while let Some(chunk) = stream.data().await {
-                    let chunk = chunk?;
-                    stream.flow_control().release_capacity(chunk.len())?;
-                    bytes.extend_from_slice(&chunk);
+                tokio::pin!(handle);
+                tokio::select! {
+                    () = stop.cancelled() => return anyhow::Ok(()),
+                    result = &mut handle => if result? { break; },
+                    _ = connection.accept() => anyhow::bail!("CA connection closed before request completed"),
                 }
-                if method == reqwest::Method::POST {
-                    ensure!(path == "/admin/provisioners" && observed.lock().unwrap().is_none());
-                    *observed.lock().unwrap() = Some(serde_json::from_slice(&bytes)?);
-                    // CA committed, but its response was lost. Do not synthesize success.
-                    break;
-                }
-                ensure!(path == "/admin/provisioners/rss-agent");
-                let value = observed.lock().unwrap().clone();
-                let status = if value.is_some() { 200 } else { 404 };
-                let body =
-                    serde_json::to_vec(&value.unwrap_or_else(|| json!({"type":"notFound"})))?;
-                let mut send = response.send_response(
-                    axum::http::Response::builder().status(status).body(())?,
-                    false,
-                )?;
-                send.send_data(axum::body::Bytes::from(body), true)?;
             }
         }
         anyhow::Ok(())

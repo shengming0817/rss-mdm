@@ -14,17 +14,51 @@ pub(crate) async fn seed(tenant: &str, config: &crate::config::Config) -> Result
         .bind(tenant)
         .execute(&mut *tx)
         .await?;
-    rss_mdm_execution_service::task_signing::trust::import(
-        &mut tx,
-        rss_request_context::TenantId::parse(tenant)?,
-        Uuid::from_u128(1),
-        "https://mdm.example.test:9445",
-        input["key_id"].as_str().unwrap(),
-        &private,
-        &serde_json::from_value(input["trusted_keys"].clone())?,
-        config.native_protector()?.as_ref(),
-    )
-    .await?;
+    use rss_mdm_agent_wire::task_trust::{KeyState, PublicKey, Trust};
+    use rss_mdm_native_protection::ProtectionContext;
+    let tenant_id = rss_request_context::TenantId::parse(tenant)?;
+    let operation = Uuid::from_u128(1);
+    let key_id = input["key_id"].as_str().unwrap();
+    let keys: std::collections::BTreeMap<String, String> =
+        serde_json::from_value(input["trusted_keys"].clone())?;
+    let trust = Trust {
+        version: 1,
+        tenant: Uuid::parse_str(tenant)?,
+        origin: "https://mdm.example.test:9445".into(),
+        revision: 1,
+        keys: keys
+            .into_iter()
+            .map(|(id, public_key)| PublicKey {
+                state: if id == key_id {
+                    KeyState::Active
+                } else {
+                    KeyState::VerifyOnly
+                },
+                id,
+                public_key,
+            })
+            .collect(),
+    };
+    trust.validate()?;
+    let protection = config.native_protector()?;
+    let private_context =
+        ProtectionContext::new(tenant_id, key_id, "task-signing.private-key", 1)?.derive();
+    let sealed = protection.seal_bytes(&private, &private_context)?;
+    let request_context = ProtectionContext::new(
+        tenant_id,
+        &operation.to_string(),
+        "task-signing.operation",
+        1,
+    )?
+    .derive();
+    let fingerprint = protection.mac(b"fixed task signing fixture", &request_context)?;
+    sqlx::query("INSERT INTO mdm_task_signing.heads(tenant_id,revision) VALUES($1::uuid,1) ON CONFLICT DO NOTHING")
+        .bind(tenant).execute(&mut *tx).await?;
+    sqlx::query("INSERT INTO mdm_task_signing.keys(tenant_id,key_id,private_key) VALUES($1::uuid,$2,$3) ON CONFLICT DO NOTHING")
+        .bind(tenant).bind(key_id).bind(sealed).execute(&mut *tx).await?;
+    sqlx::query("INSERT INTO mdm_task_signing.versions(tenant_id,revision,operation_id,fingerprint_key,fingerprint,body,digest) VALUES($1::uuid,1,$2,$3,$4,$5,$6) ON CONFLICT DO NOTHING")
+        .bind(tenant).bind(operation).bind(protection.fingerprint_id()).bind(fingerprint.as_slice())
+        .bind(serde_json::to_value(&trust)?).bind(trust.installation_digest()?).execute(&mut *tx).await?;
     tx.commit().await?;
     c.close().await?;
     Ok(())

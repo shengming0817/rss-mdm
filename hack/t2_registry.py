@@ -872,6 +872,8 @@ consume(('crates/backend-postgres-support/src/access*', 'crates/*/src/access-con
 add('webhooks.product', selectors=('webhook_tests::',), fixtures=('identity','tls'),
     sources=('crates/webhook-service/src/*','crates/webhook-service/schema/*','crates/app/src/webhooks/*','crates/management-http/src/webhooks.rs','crates/registration-service/src/webhook.rs'),
     tests=('crates/app/tests/webhooks/mod.rs',), support=('hack/source_fixtures.py',))
+# This case owns its relay and material configuration; retained ordinary hosts must not claim its deliveries.
+MODULES['webhooks.product'] = replace(MODULES['webhooks.product'], scope='tenant')
 
 for name, module in tuple(MODULES.items()):
     if module.build == APP:
@@ -2086,7 +2088,7 @@ consume(('crates/app/src/setup/application.rs',), 'deployment.management-tenant 
 
 consume(('crates/app/src/setup/protection.rs',), 'content.storage execution.agent.task_trust apple.host')
 
-consume(('crates/content-service/src/backup.rs','crates/app/src/setup/transfer/*'), 'content.storage installation.migration audit.integrity apple.host')
+consume(('crates/content-service/src/backup.rs','crates/app/src/setup/backup/storage.rs'), 'content.storage installation.migration audit.integrity apple.host')
 
 consume(('crates/app/src/settings.rs','crates/management-http/src/settings.rs','crates/management-http/schema/SettingsCatalog.json'), 'execution.agent.task_trust')
 consume(('crates/windows-channel/src/wns_materials.rs','crates/windows-channel/schema/wns-materials.sql'), 'windows.management')
@@ -2094,7 +2096,7 @@ add('installation.smtp_transport', selectors=('setup::providers::mail::tests::re
 add('installation.smtp', selectors=('setup::providers::mail::tests::unknown_submission_is_not_requeued_and_materials_rewrap',), fixtures=('windows','runtime_config'), sources=('crates/mail-service/src/*','crates/mail-service/schema/*','crates/app/src/setup/providers/mail.rs','crates/management-http/src/mail.rs'), tests=('crates/app/tests/setup/mail.rs',))
 add('installation.ca_admin', selectors=('setup::providers::step_ca::tests::authenticated_readback_recovers_original_provider',), profile='none', fixtures=('windows',), sources=('crates/app/src/setup/providers/step_ca/*',), tests=('crates/app/tests/setup/ca_admin.rs',))
 MODULES['agent.pki'] = replace(MODULES['agent.pki'], policies=(*MODULES['agent.pki'].policies, CasePolicy('agent_pki_tests::bootstrap_sources_select_current_issuer_and_reject_missing_application', 'reuse', 'tenant', ('identity','agent_pki','pki_rotation'))))
-add('installation.backup', selectors=('setup::backup::tests::database_connection_fence_replays_and_restores_original_grants',), profile='empty', sources=('crates/app/src/setup/backup.rs','crates/app/src/setup/snapshot_tree.rs','crates/app/src/setup/transfer/backup.rs','crates/app/src/setup/transfer/ledger.rs'), tests=('crates/app/tests/setup/backup.rs',))
+add('installation.backup', selectors=('setup::backup::tests::database_connection_fence_replays_and_restores_original_grants',), profile='empty', sources=('crates/app/src/setup/backup.rs','crates/app/src/setup/snapshot_tree.rs','crates/app/src/setup/backup/archive.rs','crates/app/src/setup/backup/ledger.rs','crates/app/src/setup/backup/accounts.rs'), tests=('crates/app/tests/setup/backup.rs',))
 MODULES['installation.backup'] = replace(MODULES['installation.backup'], db_mode='instance', scope='objects')
 add('installation.ca', selectors=('setup::providers::step_ca::tests::actual_ca_creates_and_imports_exact_purpose_resources',), profile='none', fixtures=('agent_pki','ca_agent'), sources=('crates/app/src/setup/providers/step_ca/*',), tests=('crates/app/tests/setup/ca_admin.rs',))
 add('installation.webhook', selectors=('setup::providers::webhook::tests::receiver_possession_gates_activation_and_old_ciphertexts_remain_readable',), fixtures=('windows','runtime_config'), sources=('crates/app/src/setup/providers/webhook.rs','crates/app/src/webhooks/*','crates/webhook-service/src/materials.rs','crates/webhook-service/schema/materials.sql'), tests=('crates/app/tests/setup/webhook.rs',))
@@ -2120,16 +2122,15 @@ consume(('crates/app/src/task_signing.rs',), 'execution.agent.task_trust')
 consume(('crates/apple-channel/src/database.rs',), 'apple.host')
 consume(('crates/management-http/src/content/mod.rs',), 'content.storage')
 consume(('crates/windows-channel/schema/Wns.json',), 'windows.management')
-T1_INPUTS += ('crates/app/src/setup/local.rs','crates/app/src/setup/mod.rs','crates/app/src/setup/model.rs','crates/app/src/setup/source.rs',
-              'fixtures/installation-source-v4.json','crates/app/tests/setup/deployment.rs','crates/app/tests/setup/installation.rs',
-              'crates/app/tests/setup/postgres.rs','crates/app/tests/setup/source.rs','crates/app/tests/setup/supervisor.rs',
+T1_INPUTS += ('crates/app/src/setup/local.rs','crates/app/src/setup/mod.rs','crates/app/src/setup/model.rs',
+              'crates/app/tests/setup/deployment.rs','crates/app/tests/setup/installation.rs',
+              'crates/app/tests/setup/postgres.rs','crates/app/tests/setup/supervisor.rs',
               'crates/mail-service/examples/mail_schema.rs','crates/webhook-service/examples/materials_schema.rs','crates/windows-channel/examples/wns_schema.rs')
 TOOL_INPUTS['deployment/Dockerfile'] = ('test_release',)
 consume_dependencies('installation.providers', normal='aws-credential-types aws-sigv4')
 consume_dependencies('installation.ca installation.native_rewrap', normal='openssl')
 consume_dependencies('installation.backup installation.migration', normal='libc')
 
-TOOL_INPUTS['hack/candidate_transfer_driver.py'] = ('test_candidate_smoke',)
 
 # This no-write assertion observes all tenant facts, not just one operation.
 module = MODULES['planning.agent_policy']

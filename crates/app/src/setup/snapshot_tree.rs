@@ -1,5 +1,5 @@
 //! Exact cold filesystem snapshots; no symlink traversal or overwrite of different restored bytes.
-use super::{Error, Result, local::Journal, transfer::backup::file_digest};
+use super::{Error, Result, backup::archive::file_digest, local::Journal};
 use serde::{Deserialize, Serialize};
 use std::{
     io::{Read, Write},

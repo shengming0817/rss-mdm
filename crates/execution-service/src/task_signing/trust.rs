@@ -325,69 +325,6 @@ pub async fn load(
     })
 }
 
-/// One-time offline transfer. The deployment caller must verify the exact source and stop writers.
-/// An existing authority can only replay the original import; files never overwrite later revisions.
-#[allow(clippy::too_many_arguments)]
-pub async fn import(
-    c: &mut PgConnection,
-    tenant: TenantId,
-    operation: Uuid,
-    origin: &str,
-    key_id: &str,
-    private: &[u8],
-    keys: &std::collections::BTreeMap<String, String>,
-    protection: &Protector,
-) -> Result<Trust, Error> {
-    if operation.is_nil() || private.len() > 4096 {
-        return Err(Error::Malformed);
-    }
-    super::Signer::from_bytes(private, key_id, keys)?;
-    let request = zeroize::Zeroizing::new(
-        serde_json::to_vec(&("import", origin, key_id, private, keys))
-            .map_err(|_| Error::Malformed)?,
-    );
-    let revision = lock(c, tenant).await?;
-    if let Some(previous) = replay(c, tenant, operation, protection, &request).await? {
-        return Ok(previous);
-    }
-    if revision != 0 {
-        return Err(Error::Conflict);
-    }
-    let trust = Trust {
-        version: 1,
-        tenant: Uuid::parse_str(&tenant.to_string()).map_err(|_| Error::Malformed)?,
-        origin: origin.into(),
-        revision: 1,
-        keys: keys
-            .iter()
-            .map(|(id, key)| PublicKey {
-                id: id.clone(),
-                public_key: key.clone(),
-                state: if id == key_id {
-                    KeyState::Active
-                } else {
-                    KeyState::VerifyOnly
-                },
-            })
-            .collect(),
-    };
-    trust.validate().map_err(|_| Error::Malformed)?;
-    let sealed = protection
-        .seal_bytes(private, &aad(tenant, key_id)?)
-        .map_err(|_| Error::Conflict)?;
-    sqlx::query(
-        "INSERT INTO mdm_task_signing.keys(tenant_id,key_id,private_key) VALUES($1::uuid,$2,$3)",
-    )
-    .bind(tenant.to_string())
-    .bind(key_id)
-    .bind(sealed)
-    .execute(&mut *c)
-    .await
-    .map_err(db)?;
-    save(c, tenant, operation, protection, &request, &trust).await?;
-    Ok(trust)
-}
-
 pub async fn operation(c: &mut PgConnection, tenant: TenantId, id: Uuid) -> Result<Trust, Error> {
     let body: serde_json::Value = sqlx::query_scalar(
         "SELECT body FROM mdm_task_signing.versions WHERE tenant_id=$1::uuid AND operation_id=$2",

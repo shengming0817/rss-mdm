@@ -8,37 +8,12 @@ pub(in crate::setup) struct DatabaseBackup {
     pub sha256: String,
     pub bytes: u64,
 }
-fn digest(path: &Path) -> Result<DatabaseBackup> {
-    use sha2::{Digest, Sha256};
-    let mut file = std::fs::OpenOptions::new()
-        .read(true)
-        .custom_flags(libc::O_NOFOLLOW)
-        .open(path)
-        .map_err(|_| Error::Storage)?;
-    let before = file.metadata().map_err(|_| Error::Storage)?;
-    if !before.is_file() || before.len() == 0 {
+fn database_digest(path: &Path) -> Result<DatabaseBackup> {
+    let value = file_digest(path)?;
+    if value.bytes == 0 {
         return Err(Error::Corrupt);
     }
-    let mut hash = Sha256::new();
-    let mut bytes = 0u64;
-    let mut block = [0u8; 65536];
-    loop {
-        let n = file.read(&mut block).map_err(|_| Error::Storage)?;
-        if n == 0 {
-            break;
-        }
-        hash.update(&block[..n]);
-        bytes = bytes.checked_add(n as u64).ok_or(Error::Corrupt)?;
-    }
-    if bytes != before.len()
-        || file.metadata().map_err(|_| Error::Storage)?.modified().ok() != before.modified().ok()
-    {
-        return Err(Error::Conflict);
-    }
-    Ok(DatabaseBackup {
-        sha256: format!("{:x}", hash.finalize()),
-        bytes,
-    })
+    Ok(value)
 }
 pub(in crate::setup) async fn capture(
     journal: &Journal,
@@ -46,7 +21,7 @@ pub(in crate::setup) async fn capture(
 ) -> Result<DatabaseBackup> {
     let path = journal.path("database.dump")?;
     if let Some(previous) = journal.load::<DatabaseBackup>("database-backup.json")? {
-        let actual = digest(&path)?;
+        let actual = database_digest(&path)?;
         if previous.sha256 != actual.sha256 || previous.bytes != actual.bytes {
             return Err(Error::Corrupt);
         }
@@ -96,7 +71,7 @@ pub(in crate::setup) async fn capture(
     std::fs::File::open(&stage)
         .and_then(|f| f.sync_all())
         .map_err(|_| Error::Storage)?;
-    let receipt = digest(&stage)?;
+    let receipt = database_digest(&stage)?;
     std::fs::rename(&stage, &path).map_err(|_| Error::Storage)?;
     std::fs::File::open(path.parent().ok_or(Error::Input)?)
         .and_then(|f| f.sync_all())
@@ -111,111 +86,6 @@ struct FileRecord {
     relative: std::path::PathBuf,
     sha256: String,
     bytes: u64,
-}
-#[derive(Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct Volume {
-    source: std::path::PathBuf,
-    files: Vec<FileRecord>,
-}
-/// 内容卷逐文件归档，不跟随符号链接，不把数据库备份当作物理内容备份。
-pub(in crate::setup) fn volume(journal: &Journal, id: uuid::Uuid, source: &Path) -> Result<()> {
-    use std::{
-        io::Write,
-        os::unix::fs::{MetadataExt, PermissionsExt},
-    };
-    let archive = journal.path(&format!("volume-{}", id.simple()))?;
-    std::fs::create_dir_all(&archive).map_err(|_| Error::Storage)?;
-    std::fs::set_permissions(&archive, std::fs::Permissions::from_mode(0o700))
-        .map_err(|_| Error::Storage)?;
-    let manifest = format!("volume-{}.json", id.simple());
-    if let Some(saved) = journal.load::<Volume>(&manifest)? {
-        if saved.source != source {
-            return Err(Error::Conflict);
-        }
-        for file in saved.files {
-            if !file
-                .relative
-                .components()
-                .all(|c| matches!(c, std::path::Component::Normal(_)))
-            {
-                return Err(Error::Corrupt);
-            }
-            let actual = file_digest(&archive.join(&file.relative))?;
-            if actual.sha256 != file.sha256 || actual.bytes != file.bytes {
-                return Err(Error::Corrupt);
-            }
-        }
-        return Ok(());
-    }
-    let mut queue = vec![std::path::PathBuf::new()];
-    let mut files = Vec::new();
-    while let Some(relative) = queue.pop() {
-        if relative.components().count() > 32 {
-            return Err(Error::Input);
-        }
-        let directory = source.join(&relative);
-        let metadata = std::fs::symlink_metadata(&directory).map_err(|_| Error::Storage)?;
-        if !metadata.is_dir() || metadata.uid() != 10001 || metadata.mode() & 0o077 != 0 {
-            return Err(Error::Input);
-        }
-        let output = archive.join(&relative);
-        std::fs::create_dir_all(&output).map_err(|_| Error::Storage)?;
-        std::fs::set_permissions(&output, std::fs::Permissions::from_mode(0o700))
-            .map_err(|_| Error::Storage)?;
-        for entry in std::fs::read_dir(&directory).map_err(|_| Error::Storage)? {
-            let entry = entry.map_err(|_| Error::Storage)?;
-            let path = entry.path();
-            let metadata = std::fs::symlink_metadata(&path).map_err(|_| Error::Storage)?;
-            let relative = relative.join(entry.file_name());
-            if metadata.is_dir() {
-                queue.push(relative);
-                continue;
-            }
-            if !metadata.is_file() || metadata.uid() != 10001 || metadata.mode() & 0o077 != 0 {
-                return Err(Error::Input);
-            }
-            let final_path = archive.join(&relative);
-            let temporary = output.join(format!(".copy-{}", uuid::Uuid::new_v4()));
-            let mut input = std::fs::OpenOptions::new()
-                .read(true)
-                .custom_flags(libc::O_NOFOLLOW)
-                .open(&path)
-                .map_err(|_| Error::Storage)?;
-            let mut target = std::fs::OpenOptions::new()
-                .create_new(true)
-                .write(true)
-                .mode(0o600)
-                .open(&temporary)
-                .map_err(|_| Error::Storage)?;
-            std::io::copy(&mut input, &mut target)
-                .and_then(|_| target.flush())
-                .and_then(|_| target.sync_all())
-                .map_err(|_| Error::Storage)?;
-            let copied = file_digest(&temporary)?;
-            let original = file_digest(&path)?;
-            if copied.sha256 != original.sha256 || copied.bytes != original.bytes {
-                return Err(Error::Conflict);
-            }
-            std::fs::rename(&temporary, &final_path).map_err(|_| Error::Storage)?;
-            std::fs::File::open(&output)
-                .and_then(|f| f.sync_all())
-                .map_err(|_| Error::Storage)?;
-            files.push(FileRecord {
-                relative,
-                sha256: copied.sha256,
-                bytes: copied.bytes,
-            });
-        }
-    }
-    files.sort_by(|a, b| a.relative.cmp(&b.relative));
-    journal.save(
-        &manifest,
-        &Volume {
-            source: source.into(),
-            files,
-        },
-    )
 }
 pub(in crate::setup) fn file_digest(path: &Path) -> Result<DatabaseBackup> {
     use sha2::{Digest, Sha256};
@@ -288,9 +158,7 @@ pub(in crate::setup) fn seal(journal: &Journal, operation: uuid::Uuid) -> Result
                 || (relative.as_os_str().is_empty()
                     && matches!(
                         name,
-                        "transfer.json"
-                            | "transfer-request.json"
-                            | "backup-manifest.json"
+                        "backup-manifest.json"
                             | "backup-progress.json"
                             | "restore-progress.json"
                             | "restore-request.json"
@@ -389,110 +257,6 @@ pub(in crate::setup) fn verify(journal: &Journal, expected: &str) -> Result<Bund
     Ok(bundle)
 }
 
-pub(in crate::setup) fn restore_volume(
-    journal: &Journal,
-    id: uuid::Uuid,
-    destination: &Path,
-) -> Result<()> {
-    use std::os::unix::fs::PermissionsExt;
-    let volume: Volume = journal
-        .load(&format!("volume-{}.json", id.simple()))?
-        .ok_or(Error::Corrupt)?;
-    if volume.source != destination {
-        return Err(Error::Conflict);
-    }
-    // 同名内容只允许字节完全一致，恢复不能覆盖仍在使用的另一份内容。
-    let archive = journal.path(&format!("volume-{}", id.simple()))?;
-    if !destination.is_absolute()
-        || destination
-            .components()
-            .any(|c| matches!(c, std::path::Component::ParentDir))
-    {
-        return Err(Error::Input);
-    }
-    // 空卷同样需要恢复实际挂载目录，逐级检查以拒绝符号链接。
-    let mut root = std::path::PathBuf::new();
-    for part in destination.components() {
-        root.push(part);
-        match std::fs::symlink_metadata(&root) {
-            Ok(meta) if meta.is_dir() => (),
-            Ok(_) => return Err(Error::Input),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                std::fs::create_dir(&root).map_err(|_| Error::Storage)?;
-                std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700))
-                    .map_err(|_| Error::Storage)?;
-                std::os::unix::fs::chown(&root, Some(10001), Some(10001))
-                    .map_err(|_| Error::Storage)?;
-            }
-            Err(_) => return Err(Error::Storage),
-        }
-    }
-    for record in volume.files {
-        if record.relative.as_os_str().is_empty()
-            || !record
-                .relative
-                .components()
-                .all(|c| matches!(c, std::path::Component::Normal(_)))
-        {
-            return Err(Error::Corrupt);
-        }
-        let path = destination.join(&record.relative);
-        let parent = path.parent().ok_or(Error::Input)?;
-        let mut current = std::path::PathBuf::new();
-        for part in parent.components() {
-            current.push(part);
-            match std::fs::symlink_metadata(&current) {
-                Ok(meta) if meta.is_dir() => (),
-                Ok(_) => return Err(Error::Input),
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                    std::fs::create_dir(&current).map_err(|_| Error::Storage)?;
-                    std::fs::set_permissions(&current, std::fs::Permissions::from_mode(0o700))
-                        .map_err(|_| Error::Storage)?;
-                    std::os::unix::fs::chown(&current, Some(10001), Some(10001))
-                        .map_err(|_| Error::Storage)?;
-                }
-                Err(_) => return Err(Error::Storage),
-            }
-        }
-        match std::fs::symlink_metadata(&path) {
-            Ok(meta) if meta.is_file() => {
-                let actual = file_digest(&path)?;
-                if actual.sha256 != record.sha256 || actual.bytes != record.bytes {
-                    return Err(Error::Conflict);
-                }
-            }
-            Ok(_) => return Err(Error::Input),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                let mut input = std::fs::OpenOptions::new()
-                    .read(true)
-                    .custom_flags(libc::O_NOFOLLOW)
-                    .open(archive.join(&record.relative))
-                    .map_err(|_| Error::Storage)?;
-                let temporary = parent.join(format!(".restore-{}", uuid::Uuid::new_v4()));
-                let mut output = std::fs::OpenOptions::new()
-                    .write(true)
-                    .create_new(true)
-                    .mode(0o600)
-                    .open(&temporary)
-                    .map_err(|_| Error::Storage)?;
-                std::io::copy(&mut input, &mut output)
-                    .and_then(|_| output.sync_all())
-                    .map_err(|_| Error::Storage)?;
-                std::os::unix::fs::chown(&temporary, Some(10001), Some(10001))
-                    .map_err(|_| Error::Storage)?;
-                // hard_link 不覆盖并发出现的目标；后续重放会核对字节。
-                std::fs::hard_link(&temporary, &path).map_err(|_| Error::Conflict)?;
-                std::fs::remove_file(&temporary).map_err(|_| Error::Storage)?;
-                std::fs::File::open(parent)
-                    .and_then(|f| f.sync_all())
-                    .map_err(|_| Error::Storage)?;
-            }
-            Err(_) => return Err(Error::Storage),
-        }
-    }
-    Ok(())
-}
-
 pub(in crate::setup) async fn restore_database(
     journal: &Journal,
     database: &crate::config::Database,
@@ -501,7 +265,7 @@ pub(in crate::setup) async fn restore_database(
         .load("database-backup.json")?
         .ok_or(Error::Corrupt)?;
     let path = journal.path("database.dump")?;
-    let actual = digest(&path)?;
+    let actual = database_digest(&path)?;
     if expected.sha256 != actual.sha256 || expected.bytes != actual.bytes {
         return Err(Error::Corrupt);
     }

@@ -622,17 +622,6 @@ async fn admit_configuration(root: &Journal, operation: Uuid) -> Result<()> {
     {
         return Err(Error::Busy);
     }
-    for (file, pointer, complete) in [
-        ("recovery.json", "/stage", "complete"),
-        ("transfer.json", "/receipt/phase", "transferred"),
-    ] {
-        if root
-            .load::<Value>(file)?
-            .is_some_and(|v| v.pointer(pointer).and_then(Value::as_str) != Some(complete))
-        {
-            return Err(Error::Busy);
-        }
-    }
     if root
         .load::<Option<Uuid>>("protection-operation.json")?
         .flatten()

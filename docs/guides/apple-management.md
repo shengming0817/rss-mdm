@@ -182,4 +182,4 @@ CA 公共证书由单独的受管理 `com.rss-mdm.pki.<registration>` Profile �
 查询使用 OperationRead 和原生值权限，`nativeValuesRedacted` 明确标识脱敏。缺失、Unknown、原生错误与乱序冲突不会转成成功；
 publication 或 synchronized 不证明设置生效、合规或卸载。未注册设备返回 no_current_registration，不能解释为设备已清空配置。
 
-`identity_seed` 在第一次启用前固定。转交保留 V4 原始两个 ID，CA 轮换不能改变此种子；`webhooks` 列出 trust 中每个保留 issuer 的独立回调凭据。未知或重复 ID、跨阶段签名和签发者错配均拒绝。
+`identity_seed` 在第一次启用前固定。CA 轮换不能改变此种子；`webhooks` 列出 trust 中每个保留 issuer 的独立回调凭据。未知或重复 ID、跨阶段签名和签发者错配均拒绝。

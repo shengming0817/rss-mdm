@@ -2,7 +2,6 @@
 mod crypto;
 pub mod runtime;
 mod storage;
-pub mod transfer;
 use crate::{Error, Failure, HttpState, database::db};
 use axum::{
     Extension, Json, Router,
