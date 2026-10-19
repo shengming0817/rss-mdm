@@ -144,7 +144,7 @@ struct Material {
     token: zeroize::Zeroizing<String>,
     challenge: zeroize::Zeroizing<String>,
 }
-fn aad(
+pub(crate) fn aad(
     tenant: &str,
     flow: Uuid,
     part: &str,

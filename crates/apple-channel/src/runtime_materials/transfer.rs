@@ -49,7 +49,7 @@ pub async fn import(
         material.purpose,
         Some(std::str::from_utf8(&pem).map_err(|_| Error::CertificateRequest)?),
     )?;
-    let certificate = crypto::certificate(
+    let certificate = crypto::historical_certificate(
         material.purpose,
         material.certificate_chain_pem,
         &key.private,
@@ -98,7 +98,9 @@ pub async fn import(
             Some((material.certificate_chain_pem, &certificate)),
         )
         .await?;
-        storage::select(c, tenant, material.purpose, material.revision).await?;
+        if certificate.expires > now {
+            storage::select(c, tenant, material.purpose, material.revision).await?;
+        }
     }
     if material.purpose == Purpose::ManagedAccount {
         let alias = material.account_alias.ok_or(Error::Malformed)?;

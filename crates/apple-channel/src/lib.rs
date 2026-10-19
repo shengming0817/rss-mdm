@@ -22,6 +22,7 @@ mod profiles;
 mod protection;
 pub mod push;
 pub mod renewal;
+pub mod rewrap;
 pub mod runtime_materials;
 mod trust_installation;
 pub use database::Store;

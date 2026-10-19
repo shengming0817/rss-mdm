@@ -201,6 +201,23 @@ fn administrator(input: &Input) -> Result<crate::config::Database> {
     value["name"] = json!(input.database.name);
     serde_json::from_value(value).map_err(|_| Error::Input)
 }
+// Cold recovery reconnects after runtime CONNECT grants have been withdrawn. Admit the
+// deployment administrator before stopping anything; never discover this after quiescence.
+async fn recovery_administrator(database: &crate::config::Database) -> Result<()> {
+    let mut c = sqlx::PgConnection::connect_with(&database.options().map_err(|_| Error::Input)?)
+        .await
+        .map_err(|_| Error::Storage)?;
+    let admitted: bool =
+        sqlx::query_scalar("SELECT rolsuper FROM pg_roles WHERE rolname=current_user")
+            .fetch_one(&mut c)
+            .await
+            .map_err(|_| Error::Storage)?;
+    c.close().await.map_err(|_| Error::Storage)?;
+    if !admitted {
+        return Err(Error::Input);
+    }
+    Ok(())
+}
 async fn connection_fence(
     c: &mut sqlx::PgConnection,
     journal: &Journal,
@@ -467,6 +484,7 @@ pub async fn capture(input: Request) -> Result<Receipt> {
         )?;
         frozen
     };
+    recovery_administrator(&administrator(&frozen.request.installation)?).await?;
     root.save("backup-operation.json", &Some(progress.operation_id))?;
     journal.save("backup-progress.json", &progress)?;
     if progress.stage == Stage::Reserved {
@@ -672,6 +690,7 @@ pub async fn restore(input: Restore) -> Result<Receipt> {
     {
         return Err(Error::Conflict);
     }
+    recovery_administrator(&input.administrator).await?;
     if progress.stage != RestoreStage::Contents {
         let mut c = sqlx::PgConnection::connect_with(
             &input.administrator.options().map_err(|_| Error::Input)?,

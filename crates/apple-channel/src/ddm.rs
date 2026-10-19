@@ -31,7 +31,7 @@ struct Publication {
     context: Context,
     legacy: Vec<native::ddm::LegacyProfile>,
 }
-fn aad_parts(
+pub(crate) fn aad_parts(
     tenant: &str,
     registration: Uuid,
     generation: i64,

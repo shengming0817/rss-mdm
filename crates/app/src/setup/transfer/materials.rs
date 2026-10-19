@@ -98,14 +98,14 @@ pub(super) async fn apple(
     roots: &[PathBuf],
     now: i64,
     protection: &rss_mdm_native_protection::Protector,
-) -> Result<()> {
+) -> Result<Option<Value>> {
     use rss_mdm_apple_channel::runtime_materials::{
         Purpose,
         transfer::{Material, PrivateKey, import},
     };
     if runtime["native_protocols"]["apple"].is_null() {
         runtime["apple_material_roots"] = json!(roots);
-        return Ok(());
+        return Ok(None);
     }
     let source: Apple = serde_json::from_value(runtime["native_protocols"]["apple"].clone())
         .map_err(|_| Error::Input)?;
@@ -154,12 +154,13 @@ pub(super) async fn apple(
         ));
         accounts.insert(alias, revision);
     }
+    let mut unavailable = false;
     for (name, purpose, revision, pair, topic) in materials {
         let private =
             crate::config::read(&pair.private_key_file, 32768, true).map_err(|_| Error::Corrupt)?;
         let certificate = crate::config::read(&pair.certificate_file, 131072, false)
             .map_err(|_| Error::Corrupt)?;
-        import(
+        let imported = import(
             c,
             tenant,
             Material {
@@ -182,11 +183,17 @@ pub(super) async fn apple(
         )
         .await
         .map_err(|_| Error::Conflict)?;
+        unavailable |= imported.expires_at.is_none_or(|expires| expires <= now);
     }
     let issuer = original_issuer(&source.trust_file)?;
     runtime["native_protocols"]["apple"] = json!({"management":source.management,"trust_file":source.trust_file,"materials":{"apns":1,"profile":1,"accounts":accounts},"identity_seed":{"challengeId":source.challenge_webhook["id"],"notifyId":source.notify_webhook["id"]},"webhooks":[{"issuer":issuer,"challenge":source.challenge_webhook,"notify":source.notify_webhook}]});
     runtime["apple_material_roots"] = json!(roots);
-    Ok(())
+    if unavailable {
+        let deferred = runtime["native_protocols"]["apple"].take();
+        Ok(Some(deferred))
+    } else {
+        Ok(None)
+    }
 }
 pub(super) fn apple_keys(runtime: &Value) -> Result<BTreeMap<String, Uuid>> {
     if runtime["native_protocols"]["apple"].is_null() {

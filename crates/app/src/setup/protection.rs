@@ -432,6 +432,13 @@ pub async fn rotate(request: Request) -> Result<Receipt> {
                 )
                 .await
                 .map_err(|_| Error::Corrupt)?;
+                rewritten += rss_mdm_apple_channel::rewrap::run(
+                    &mut tx,
+                    &host.tenant.to_string(),
+                    &protector,
+                )
+                .await
+                .map_err(|_| Error::Corrupt)?;
                 rewritten += rss_mdm_apple_channel::runtime_materials::rewrap(
                     &mut tx,
                     &host.tenant.to_string(),
@@ -499,3 +506,7 @@ fn key_stages(original: &Value, next: &std::path::Path) -> Result<(Value, Value)
         .push(previous);
     Ok((read, write))
 }
+
+#[cfg(all(test, feature = "integration"))]
+#[path = "../../tests/setup/native_rewrap.rs"]
+mod tests;

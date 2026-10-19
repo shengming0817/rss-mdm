@@ -468,7 +468,7 @@ async fn resume(mut saved: Saved, journal: &Journal) -> Result<Receipt> {
                     .map_err(|_| Error::Storage)?;
             materials::webhooks(&mut tx, &mut runtime, host.operation, &protection, now).await?;
             materials::signing(&mut tx, &mut runtime, host.operation, &protection).await?;
-            materials::apple(
+            let deferred_apple = materials::apple(
                 &mut tx,
                 &mut runtime,
                 &host.keys,
@@ -477,6 +477,12 @@ async fn resume(mut saved: Saved, journal: &Journal) -> Result<Receipt> {
                 &protection,
             )
             .await?;
+            if let Some(settings) = deferred_apple {
+                journal.secret(
+                    &format!("deferred-apple-{}.json", host.id.simple()),
+                    &serde_json::to_vec(&settings).map_err(|_| Error::Corrupt)?,
+                )?;
+            }
             tx.commit().await.map_err(|_| Error::Storage)?;
             let profile = host
                 .input

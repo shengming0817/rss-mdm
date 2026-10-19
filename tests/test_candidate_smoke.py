@@ -25,6 +25,7 @@ class SmokeCompletion(unittest.TestCase):
     def test_readiness_retries_temporary_html_gateway_error(self):
         browser = smoke.Browser.__new__(smoke.Browser)
         browser.port, browser.context, browser.cookie, browser.csrf = 443, None, "", ""
+        browser.host="mdm.example.test"
         unavailable = mock.Mock(status=502)
         unavailable.getheaders.return_value = []
         unavailable.getheader.side_effect = lambda name, default=None: {"Content-Type":"text/html"}.get(name, default)
@@ -110,7 +111,7 @@ class RuntimeOwnership(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             (root / 'candidate.json').write_text('{"format_version":2}')
-            with self.assertRaisesRegex(RuntimeError, 'V4 required'):
+            with self.assertRaisesRegex(RuntimeError, 'V5 required'):
                 smoke.smoke(root)
             record = json.loads((root / 'smoke-failure.json').read_text())
             self.assertEqual(record, {'status':'failed', 'error_class':'RuntimeError', 'containers':{}})
@@ -207,7 +208,7 @@ class ExternalReviewRegressions(unittest.TestCase):
                 command.assert_not_called()
 
 class CandidateInputs(unittest.TestCase):
-    def test_v4_uses_only_delivered_files_and_rejects_missing_or_changed_inputs(self):
+    def test_v5_uses_only_delivered_files_and_rejects_missing_or_changed_inputs(self):
         import release
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -216,11 +217,13 @@ class CandidateInputs(unittest.TestCase):
             for name in release.DEPLOYMENT_FILES:
                 path = root / name; path.parent.mkdir(parents=True, exist_ok=True); path.write_bytes((release.ROOT/('fixtures/'+name if name == 'mdm-config.example.json' else 'crates/app/schema/'+Path(name).name if name.endswith('-roles.sql') else name)).read_bytes())
                 deployment[name] = release.sha(path)
-            manifest = {'format_version':4, 'archive':{'file':archive.name,'sha256':release.sha(archive),'manifest_digest':'sha256:fixture'}, 'platform':'linux/arm64', 'deployment':deployment,'providers':json.loads((root/'deployment/providers.lock.json').read_text())}
+            installer=root/'rss-mdm-installer';installer.write_bytes(b'fixed-binary')
+            operator=root/'installer.oci.tar';operator.write_bytes(b'operator-oci')
+            manifest = {'format_version':5, 'installer':{'file':installer.name,'sha256':release.sha(installer),'image':'operator@sha256:fixture','archive':{'file':operator.name,'sha256':release.sha(operator),'manifest_digest':'sha256:fixture'}}, 'archive':{'file':archive.name,'sha256':release.sha(archive),'manifest_digest':'sha256:fixture'}, 'platform':'linux/arm64', 'deployment':deployment,'providers':json.loads((root/'deployment/providers.lock.json').read_text())}
             (root / 'candidate.json').write_text(json.dumps(manifest))
             with mock.patch.object(candidate, 'oci_identity', return_value=('sha256:fixture', {'os':'linux','architecture':'arm64'})), mock.patch.object(candidate, 'docker') as docker:
                 candidate.verify_candidate(root)
-                docker.assert_called_once()
+                self.assertEqual(docker.call_count,2)
                 docker.reset_mock()
                 path = root / 'deployment/flow-roles.sql'; path.write_text('changed')
                 with self.assertRaisesRegex(RuntimeError, 'deployment input'): candidate.verify_candidate(root)
@@ -237,7 +240,7 @@ class CandidateInputs(unittest.TestCase):
                 with self.assertRaisesRegex(RuntimeError, 'deployment inputs'): candidate.verify_candidate(root)
                 manifest['format_version'] = 2
                 (root / 'candidate.json').write_text(json.dumps(manifest))
-                with self.assertRaisesRegex(RuntimeError, 'V4 required'): candidate.verify_candidate(root)
+                with self.assertRaisesRegex(RuntimeError, 'V5 required'): candidate.verify_candidate(root)
                 docker.assert_not_called()
 
 if __name__ == "__main__":

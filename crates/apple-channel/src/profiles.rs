@@ -11,7 +11,7 @@ use rss_mdm_native_protection::{DerivedAad, ProtectionContext, Protector};
 use sqlx::{PgConnection, Row, postgres::PgRow};
 use uuid::Uuid;
 
-fn aad(row: &PgRow) -> Result<DerivedAad, Error> {
+pub(crate) fn aad(row: &PgRow) -> Result<DerivedAad, Error> {
     let tenant: Uuid = row.try_get("tenant_id").map_err(db)?;
     let owner = serde_json::to_string(&(
         row.try_get::<Uuid, _>("operation").map_err(db)?,

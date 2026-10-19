@@ -1082,6 +1082,8 @@ TOOL_INPUTS = {
     'hack/auth_t3_browser.mjs': ('test_auth_t3',),
     'hack/release.py': ('test_release',),
     'hack/candidate_runtime.py': ('test_candidate_smoke',),
+    'hack/candidate_installation.py': ('test_candidate_smoke',),
+    'hack/candidate_installation_driver.py': ('test_candidate_smoke',),
     'hack/candidate_fixture.py': ('test_candidate_smoke', 'test_t2_context'),
     'hack/candidate_smoke.py': ('test_candidate_smoke',),
 }
@@ -2096,3 +2098,4 @@ add('installation.backup', selectors=('setup::backup::tests::database_connection
 MODULES['installation.backup'] = replace(MODULES['installation.backup'], db_mode='instance', scope='objects')
 add('installation.ca', selectors=('setup::providers::step_ca::tests::actual_ca_creates_and_imports_exact_purpose_resources',), fixtures=('identity','agent_pki'), sources=('crates/app/src/setup/providers/step_ca/*',), tests=('crates/app/tests/setup/ca_admin.rs',))
 add('installation.webhook', selectors=('setup::providers::webhook::tests::receiver_possession_gates_activation_and_old_ciphertexts_remain_readable',), fixtures=('windows',), sources=('crates/app/src/setup/providers/webhook.rs','crates/app/src/webhooks/*','crates/webhook-service/src/materials.rs','crates/webhook-service/schema/materials.sql'), tests=('crates/app/tests/setup/webhook.rs',))
+add('installation.native_rewrap', selectors=('setup::protection::tests::ade_original_material_survives_rotation_and_corrupt_rows_roll_back',), sources=('crates/apple-channel/src/rewrap.rs','crates/app/src/setup/protection.rs'), tests=('crates/app/tests/setup/native_rewrap.rs',))

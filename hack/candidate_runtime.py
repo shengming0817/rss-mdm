@@ -121,18 +121,7 @@ def inputs(root, example, gateway_file, *, database_host="postgres"):
     native_key.write_bytes(os.urandom(32))
     config=json.loads(example.read_text())
     config["native_protection"]=dict(active_file="/run/mdm/native-data.key",historical_files=[],fingerprint_file="/run/mdm/native-data.key")
-    # Agent registration consumes the same explicit signing input as runtime tasks.
-    key_file=runtime/'task-signing.pk8';key_file.touch(mode=0o600)
-    openssl('genpkey','-algorithm','ED25519','-outform','DER','-out',key_file)
-    public=subprocess.check_output(['openssl','pkey','-inform','DER','-in',str(key_file),'-pubout','-outform','DER'],timeout=30)
-    private=key_file.read_bytes()
-    require(private[:16]==bytes.fromhex('302e020100300506032b657004220420') and len(private)==48
-            and public[:12]==bytes.fromhex('302a300506032b6570032100') and len(public)==44,
-            'candidate Ed25519 key encoding')
-    # ref: ring 0.17.14 ed25519/signing.rs: from_pkcs8 requires v2 with the public key.
-    key_file.write_bytes(bytes.fromhex('3051020101300506032b657004220420')+private[-32:]+bytes.fromhex('812100')+public[-32:])
-    config['task_signing']=dict(private_key_file='/run/mdm/task-signing.pk8',key_id='candidate',
-                                trusted_keys={'candidate':base64.urlsafe_b64encode(public[-32:]).decode().rstrip('=')})
+    config["task_signing"]=None
     config["native_protocols"]={}
     config["device_pki"]=[]
     for field,role in [("access_database","mdm_access"),("runtime_database","mdm_runtime")]:
@@ -141,12 +130,14 @@ def inputs(root, example, gateway_file, *, database_host="postgres"):
     config["webhooks"]["recovery_database"]=database(runtime,"mdm_webhook_operator")
     config["identity"]["database"]=database(runtime,"mdm_identity_runtime")
     config["identity"]["audit_worker"]=database(runtime,"mdm_identity_audit")
+    config["tenant_administration"]=dict(registry_database=database(runtime,"mdm_tenant_registry"),
+        provisioning_database=database(runtime,"mdm_identity_provisioning"),
+        fingerprint_key_file="/run/mdm/native-data.key")
     config["flow"]["storage"]["database"]=database(runtime,"mdm_flow_runtime")
     config["flow"]["publication"]["database"]=database(runtime,"mdm_software_driver")
     write(operator,"authorization.json",dict(audit={"mode":"plain"},database=database(operator,"mdm_access"),identityDatabase=database(operator,"mdm_identity_runtime"),installation=installation(),expectedEpoch=1,login="admin",passwordFile="/run/mdm/account-password",operationId=str(uuid.uuid4()),user=dict(instanceId=INSTANCE,tenantId=TENANT,principalId=ADMIN)))
     write(runtime,"config.json",config)
     write(operator,"migrate.json",dict(database=database(operator,"mdm_owner"),installation=installation()))
-    write(operator,"tenant-create.json",dict(database=database(operator,"mdm_owner"),installation=installation(),tenant_id=TENANT,initial_epoch=1,operation_id=str(uuid.uuid4())))
     write(operator,"initialize.json",dict(database=database(operator,"mdm_identity_maintenance"),installation=installation(),tenant_id=TENANT,expected_epoch=1,principal_id=ADMIN,
                                           login="admin",password_file=write(operator,"account-password",PASSWORD)))
     gateway=gateway_file.read_text().replace("listen 443 ssl;","listen 8445 ssl;")
@@ -252,6 +243,15 @@ def verify_candidate(directory):
     require(archive.parent==directory and not archive.is_symlink() and sha(archive)==manifest["archive"]["sha256"],"candidate archive mismatch")
     digest,config=oci_identity(archive)
     require(digest==manifest["archive"]["manifest_digest"] and platform(config)==manifest["platform"],"candidate image mismatch")
+    operator=manifest["installer"]
+    operator_archive=directory/operator["archive"]["file"]
+    require(operator_archive.parent==directory and not operator_archive.is_symlink()
+            and operator_archive.is_file() and sha(operator_archive)==operator["archive"]["sha256"],
+            "candidate operator archive mismatch")
+    operator_digest,operator_config=oci_identity(operator_archive,expected_user="0:0")
+    require(operator_digest==operator["archive"]["manifest_digest"]
+            and operator["image"].endswith("@"+operator_digest)
+            and platform(operator_config)==manifest["platform"],"candidate operator image mismatch")
     require(set(manifest["deployment"]) == set(DEPLOYMENT_FILES), "candidate deployment inputs mismatch")
     for name, digest in manifest["deployment"].items():
         path = directory / name
@@ -264,6 +264,7 @@ def verify_candidate(directory):
     require(sha(directory/'fixtures/pki-tools.lock.json')==sha(ROOT/'fixtures/pki-tools.lock.json'),
             'candidate PKI tools differ from the supported fixed runtime helper')
     docker("load","--input",archive,stage=Stage.LOAD)
+    docker("load","--input",operator_archive,stage=Stage.LOAD)
     return manifest
 
 class Candidate:
@@ -411,9 +412,9 @@ class Candidate:
             self.prepare_pki()
             self.register_private_files()
             private(self.runtime/'config.json',self.config)
-            for file in ['migrate.json','tenant-create.json','initialize.json']:
+            for file in ['migrate.json','initialize.json']:
                 path=self.operator_root/file;value=json.loads(path.read_text());value['installation']['instance_id']=self.instance
-                if file in ('tenant-create.json','initialize.json'):value['tenant_id']=self.tenant
+                if file == 'initialize.json':value['tenant_id']=self.tenant
                 private(path,value)
             path=self.operator_root/'authorization.json';authorization=json.loads(path.read_text())
             authorization['user'].update(instanceId=self.instance,tenantId=self.tenant)
@@ -427,12 +428,15 @@ class Candidate:
             roles=''.join("CREATE ROLE "+role+" LOGIN PASSWORD '"+role+"-fixture' NOSUPERUSER NOBYPASSRLS;" for role in ['mdm_owner','mdm_api','mdm_access','mdm_runtime'])
             roles+='GRANT CREATE ON DATABASE mdm_test TO mdm_owner; GRANT CREATE ON SCHEMA public TO mdm_owner;'
             for owner in ROLE_NAMES:roles+=(self.directory/f'deployment/{owner}-roles.sql').read_text()
-            for role in ['mdm_command_runtime','mdm_flow_runtime','mdm_software_driver','mdm_identity_runtime','mdm_identity_maintenance','mdm_identity_audit','mdm_webhook_operator']:roles+="ALTER ROLE "+role+" LOGIN PASSWORD '"+role+"-fixture';"
+            for role in ['mdm_command_runtime','mdm_flow_runtime','mdm_software_driver','mdm_identity_runtime','mdm_identity_maintenance','mdm_identity_audit','mdm_webhook_operator','mdm_tenant_registry','mdm_identity_provisioning']:roles+="ALTER ROLE "+role+" LOGIN PASSWORD '"+role+"-fixture';"
             self.sql(roles)
             self.copy_runtime()
             self.runtime_volume=self.name+'_runtime';self.operator_volume=self.name+'_operator';self.gateway_inputs=self.name+'_gateway'
             for stage in [Stage.MIGRATION,Stage.REPLAY]:self.operator('migrate','migrate.json',stage)
-            self.operator('tenant-create','tenant-create.json',Stage.REGISTRATION)
+            # Configured protocol/browser fixture: registration is precondition, not install evidence.
+            # Complete installation is independently exercised by candidate_installation.py.
+            tenant=str(uuid.UUID(self.tenant))
+            self.sql("SET ROLE mdm_owner; SELECT public.create_new_tenant('"+tenant+"'::uuid,1,'Candidate fixture',NULL)")
             self.operator('initialize','initialize.json',Stage.INITIALIZE)
             self.operator('initialize-authorization','authorization.json',Stage.AUTHORIZATION_INITIALIZE)
             self.operator('initialize-authorization','authorization.json',Stage.AUTHORIZATION_REPLAY)
@@ -449,8 +453,27 @@ class Candidate:
             self.copy_runtime()
             self.operator('initialize','management-initialize.json',Stage.INITIALIZE)
             self.operator('initialize-authorization','management-authorization.json',Stage.AUTHORIZATION_INITIALIZE)
+            agent=self.config['agent_pki']
+            self.config['agent_pki']={'mode':'disabled'}
+            private(self.runtime/'config.json',self.config)
+            self.copy_runtime()
             self.start_server();self.start_gateway()
             self.port=int(self.compose('port','runtime-netns','8445',stage=Stage.PORT).rsplit(':',1)[1])
+            self.ready()
+            # First signing authority is generated in its final encrypted owner through real HTTP.
+            from candidate_smoke import Browser
+            browser=Browser(self.port,self.root/'ca.crt',host=self.host)
+            require(browser.call('POST','/api/v1/identity/tenants/'+self.tenant+'/login',
+                                 dict(login='admin',password=PASSWORD))[0]==200,'fixture login failed')
+            status,trust=browser.call('POST','/api/v1/task-signing/trust',
+                dict(action='prepare',expectedRevision=0,origin=self.agent_origin),str(uuid.uuid4()))
+            require(status==200 and trust['revision']==1,'fixture signing authority failed')
+            self.config['task_signing']={'revision':trust['revision']}
+            self.config['agent_pki']=agent
+            private(self.runtime/'config.json',self.config)
+            self.compose('stop','--timeout','45','server',stage=Stage.STOP)
+            self.copy_runtime()
+            self.start_server()
             self.ready()
             return self
         except BaseException:

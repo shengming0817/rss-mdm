@@ -14,7 +14,7 @@ python3 hack/build_run.py -- python3 hack/candidate_smoke.py --candidate artifac
 
 授权头文件须为 owner 独占普通文件，只以 BuildKit secret 供依赖获取使用。构建从一次源码副本生成正式 OCI，复用正常缓存；失败不发布候选目录，已有输出不覆盖。
 
-V5 候选包含 server.oci.tar、rss-mdm-installer、candidate.json、示例配置、deployment 下的角色 SQL、nginx 配置与 Agent 叶证书模板，以及普通构建记录。传入 `--web-image` 时另包含 identity-ui.image.tar 和 manifest 的 `ui` 信息，并保留前端镜像身份、运行用户和归档完整性检查；省略时不检查或归档前端。V5 候选包含与服务镜像一致的 Linux 安装二进制，摘要单独绑定到 manifest；缺少当前契约的旧二进制候选必须重新构建。manifest 固定实际镜像身份、归档摘要、平台、依赖提供者及全部部署输入摘要。恢复时先核验归档与部署输入，再 docker load；不从 tag 拉取替代品。V2 必须重新构建，没有兼容解析或转换器。
+V5 候选包含 server.oci.tar、installer.oci.tar、rss-mdm-installer、candidate.json、示例配置、deployment 下的角色 SQL、nginx 配置与 Agent 叶证书模板，以及普通构建记录。传入 `--web-image` 时另包含 identity-ui.image.tar 和 manifest 的 `ui` 信息，并保留前端镜像身份、运行用户和归档完整性检查；省略时不检查或归档前端。V5 候选包含与服务镜像一致的 Linux 安装二进制，摘要单独绑定到 manifest；缺少当前契约的旧二进制候选必须重新构建。manifest 固定实际镜像身份、归档摘要、平台、依赖提供者及全部部署输入摘要。恢复时先核验归档与部署输入，再 docker load；不从 tag 拉取替代品。V2 必须重新构建，没有兼容解析或转换器。
 
 安装、smoke 与认证验收不要求 matching checkout、Git 元数据或 clean HEAD。把运行工具与候选放到独立目录也可执行，工具从候选目录读取角色和网关文件。候选摘要保护所交付内容的一致性，不替代分发渠道信任。
 
@@ -270,3 +270,15 @@ adapter 按批准 IP 连接并验证原 hostname；地址变更需更新配置�
 这些配置只描述允许范围；管理员仍须创建并明确启用订阅。访问池的 storage target、lineage 和
 execution epoch 来自原宿主配置，在连接建立时固定；源事件复用 RSS 正式 SQL Outbox append 与
 原 Audit 事务原子提交，失败不会触发事务后的直接 HTTP。新增组件迁移由既有 installer 执行。
+
+### 固定候选的完整安装资格
+
+`python3 hack/candidate_installation.py /absolute/candidate` 在独立 Linux 节点中消费候选的安装器镜像与服务镜像，使用真实 systemd 和 Docker daemon。节点以受限用途的 privileged 容器提供内核能力，不挂载宿主 Docker socket 或产品源码；测试 PostgreSQL、TLS 私钥和所有租户宿主均在节点内生成并随节点清除。宿主内核必须支持嵌套 Docker 与 systemd/cgroup；不满足时结果是资格缺失，不能将模拟 systemctl 或仅运行应用容器算作安装通过。
+
+安装资格检查单输入安装、原凭据及 Ledger 密钥不变的重复安装、平台与业务的独立主体及真实登录、第二租户宿主、原开通操作重放及宿主租户隔离。成功记录 `installation-result.json` 绑定服务 OCI 摘要和平台，只有清理成功后才发布。协议/浏览器的 `candidate_smoke.py` 使用合法业务预置数据，独立证明原生协议与会话消费；它不承担完整开通证明。发布验收必须同时保留两种结果，真实设备资格仍由独立 T3 提供。
+
+V4 转交可以保管已经过期、但其原始链、用途和密钥匹配仍可在历史有效期验证的 Apple 材料，保留真实到期时间，不将历史校验作为当前可用证明。此时基础管理宿主可启动，Apple 通道保持关闭；原通道设置保存在安装目录的 `deferred-apple-<host>.json`，操作员更新领域证书后通过 `configure-host` 恢复原通道。原设备身份、组织绑定及私钥不替换，旧文件不重新成为运行权威。错误私钥、用途、主题或不受信链仍拒绝迁移。
+
+Native 保护轮换重加密运行凭据及 Apple 的 ADE、账户开通、设备令牌、命令和 DDM 证据行，不修改逻辑版本或重放 MAC。不可变内容对象、已有执行快照、证书归档以及历史备份仍可能依赖旧读取钥；因此本入口保留旧钥，未提供可绕过这些保留条件的删除动作。历史读取钥最多 15 份，达到上限会明确拒绝继续轮换，须完成对应历史数据和备份退出后再处理，不能删除旧钥冒充完成。
+
+当前冷备/恢复操作要求部署侧 PostgreSQL 管理员为 superuser，并在停宿主或撤销 CONNECT 之前检查；该连接只交给离线部署操作员。它用于停写后重新连接、检查全部会话和原角色恢复，不能下发给业务服务。普通运行账户仍保持既有最小权限。
