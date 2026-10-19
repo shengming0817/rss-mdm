@@ -305,7 +305,10 @@ class ExternalGatewayTests(unittest.TestCase):
     def test_external_initialize_updates_all_consumers_and_persists_source(self):
         directory=self.certificates()
         tls=self.env.gateway_settings()
+        generated={'ui.json':dict(canonicalOrigin='https://mdm.example.test',oidcEnabled=False),
+                   'mdm.json':dict(canonicalOrigin='https://mdm.example.test',tenant='11111111-1111-4111-8111-111111111111',managementTenant='aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa')}
         def compose(*args):
+            if 'public-host-config' in args:return json.dumps(generated)
             return '0.0.0.0:443' if args[0]=='port' else ''
         with patch.object(self.env,'gateway_settings',return_value=tls),patch.object(self.env,'up'),patch.object(self.env,'roles'),patch.object(self.env,'sql',return_value='1'), \
              patch.object(self.env,'compose',side_effect=compose), \
@@ -315,7 +318,7 @@ class ExternalGatewayTests(unittest.TestCase):
         origin='https://mdm.example.test'
         self.assertEqual(json.loads((container/'runtime/runtime.json').read_text())['product_origin'],origin)
         for name in ('ui.json','mdm.json'):
-            self.assertEqual(json.loads((container/'gateway'/name).read_text())['canonicalOrigin'],origin)
+            self.assertEqual(json.loads((container/'gateway'/name).read_text()),generated[name])
         nginx=(container/'gateway/nginx.conf').read_text()
         self.assertIn('listen 8445 ssl;',nginx)
         self.assertIn('server_name mdm.example.test;',nginx)
