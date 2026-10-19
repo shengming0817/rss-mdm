@@ -230,9 +230,7 @@ def load_ui(directory, ui):
 
 def verify_candidate(directory):
     manifest=json.loads((directory/"candidate.json").read_text())
-    require(manifest.get("format_version")==5,"candidate V5 required; rebuild the candidate")
-    installer=directory/manifest["installer"]["file"]
-    require(installer.parent==directory and not installer.is_symlink() and installer.is_file() and sha(installer)==manifest["installer"]["sha256"],"candidate installer mismatch")
+    require(manifest.get("format_version")==6,"candidate V6 required; rebuild the candidate")
     archive=directory/manifest["archive"]["file"]
     require(archive.parent==directory and not archive.is_symlink() and sha(archive)==manifest["archive"]["sha256"],"candidate archive mismatch")
     digest,config=oci_identity(archive)
@@ -242,7 +240,7 @@ def verify_candidate(directory):
     require(operator_archive.parent==directory and not operator_archive.is_symlink()
             and operator_archive.is_file() and sha(operator_archive)==operator["archive"]["sha256"],
             "candidate operator archive mismatch")
-    operator_digest,operator_config=oci_identity(operator_archive,expected_user="0:0")
+    operator_digest,operator_config=oci_identity(operator_archive,expected_user="10001:10001")
     require(operator_digest==operator["archive"]["manifest_digest"]
             and operator["image"].endswith("@"+operator_digest)
             and platform(operator_config)==manifest["platform"],"candidate operator image mismatch")

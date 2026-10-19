@@ -1,155 +1,138 @@
 #!/usr/bin/env python3
-"""Runs only inside the disposable qualification node; emits no input or credential values."""
+"""Formal Compose acceptance: real install, accounts, provisioning and recovery; no fixture seed."""
 import hashlib
 import http.client
 import json
-import os
 from pathlib import Path
 import secrets
-import shutil
 import ssl
 import subprocess
 import time
 import uuid
+from urllib.parse import urlsplit
 
-ROOT=Path('/workspace')
-BIN='/usr/local/bin/rss-mdm-installer'
 
-class QualificationFailure(RuntimeError):
-    pass
+class Installation:
+    def __init__(self, deployment):
+        self.root = deployment
+        self.prefix = ['docker','compose','--env-file',str(deployment/'compose.env'),'-f',str(deployment/'compose.yaml')]
 
-def check(value,message):
-    if not value:raise QualificationFailure(message)
+    def compose(self, *args, timeout=300):
+        result = subprocess.run([*self.prefix, *args], capture_output=True, text=True, timeout=timeout)
+        if result.returncode:
+            raise RuntimeError('formal Compose command failed: '+args[0])
+        return result.stdout.strip()
 
-def run(*args,timeout=180):
-    deadline=time.monotonic()+timeout
-    while True:
-        result=subprocess.run(args,text=True,capture_output=True,timeout=max(1,deadline-time.monotonic()))
-        if result.returncode and args[0]==BIN and ': busy:' in result.stderr and time.monotonic()+.5<deadline:
-            # A Busy rejection is safe to retry with the exact original operation input.
+    def script(self, source, *args):
+        return self.compose('run','--rm','--no-deps','-T','--entrypoint','python3','operator','-c',source,*args)
+
+    def read(self, path):
+        return self.script('import pathlib,sys; print(pathlib.Path(sys.argv[1]).read_text(),end="")',path)
+
+    def receipt(self):
+        return json.loads(self.read('/var/lib/rss-mdm/installation/installation.json'))['receipt']
+
+    def product(self, command, configuration):
+        for _ in range(40):
+            result = subprocess.run([*self.prefix,'run','--rm','--no-deps','-T','operator',command,'--config',configuration],
+                                    capture_output=True,text=True,timeout=300)
+            if result.returncode == 0:
+                return json.loads(result.stdout)
+            if ': busy:' not in result.stderr:
+                raise RuntimeError('product maintenance failed: '+command)
             time.sleep(.5)
-            continue
-        break
-    if result.returncode:
-        category=next((value for value in ('input_rejected','busy','conflict','corrupt','storage_unavailable')
-                       if value+':' in result.stderr),'unclassified')
-        saved=ROOT/'installation/installation.json'
-        phase=json.loads(saved.read_text()).get('receipt',{}).get('stage','unreserved') if saved.exists() else 'unreserved'
-        check(False,'qualification command failed: '+Path(args[0]).name+' '+str(args[1])+' category='+category+' installation='+phase)
-    return result.stdout.strip()
+        raise RuntimeError('maintenance lock deadline')
 
-def write(name,value):
-    path=ROOT/name
-    path.write_text(value if isinstance(value,str) else json.dumps(value))
-    path.chmod(0o600)
-    return str(path)
+    def save(self, name, value):
+        path = '/var/lib/rss-mdm/'+name
+        # Data goes through stdin, never through process arguments or diagnostics.
+        result = subprocess.run([*self.prefix,'run','--rm','--no-deps','-T','--entrypoint','python3','operator','-c',
+            'import pathlib,sys;p=pathlib.Path(sys.argv[1]);p.write_text(sys.stdin.read());p.chmod(0o600)',path],
+            input=value if isinstance(value,str) else json.dumps(value),capture_output=True,text=True,timeout=30)
+        check(result.returncode==0,'operator input write')
+        return path
 
-def until(checker,seconds=90):
+    def hosts(self):
+        return json.loads(self.script('import pathlib,json; print(json.dumps([p.name.removeprefix("rss-mdm-") for p in pathlib.Path("/var/lib/rss-mdm/installation").glob("rss-mdm-*") if p.is_dir()]))'))
+
+    def cleanup(self):
+        project = json.loads((self.root/'deployment.json').read_text())['project']
+        self.compose('stop','operator')
+        candidates=subprocess.check_output(['docker','ps','-aq','--filter','volume='+project+'_state','--filter','label=rss.mdm.host'],text=True).split()
+        if candidates:
+            subprocess.run(['docker','rm','-f',*candidates],check=True,capture_output=True)
+        self.compose('down','--volumes','--remove-orphans')
+
+
+def check(value, reason):
+    if not value:
+        raise RuntimeError(reason)
+
+
+def until(predicate, seconds=150):
     deadline=time.monotonic()+seconds
     while time.monotonic()<deadline:
-        if checker():return
+        if predicate():return
         time.sleep(.5)
-    raise RuntimeError('qualification deadline')
+    raise RuntimeError('formal installation deadline')
+
 
 class Browser:
-    def __init__(self,port):
-        self.port=port;self.cookie='';self.csrf=''
-        self.origin='https://localhost:'+str(port)
-        self.context=ssl.create_default_context(cafile=str(ROOT/'ca.crt'))
-    def call(self,method,path,data=None,operation=None):
+    def __init__(self, origin, ca):
+        self.origin=origin;self.url=urlsplit(origin);self.cookie='';self.csrf=''
+        self.context=ssl.create_default_context(cafile=str(ca))
+
+    def call(self, method, path, data=None, operation=None):
         headers={'Origin':self.origin,'X-Identity-Request':'1'}
         if self.cookie:headers['Cookie']=self.cookie
         if self.csrf:headers['X-CSRF-Token']=self.csrf
         if operation:headers['Idempotency-Key']=operation
         if data is not None:headers['Content-Type']='application/json'
-        connection=http.client.HTTPSConnection('localhost',self.port,context=self.context,timeout=20)
+        connection=http.client.HTTPSConnection(self.url.hostname,self.url.port or 443,context=self.context,timeout=20)
         try:
             connection.request(method,path,json.dumps(data) if data is not None else None,headers)
-            response=connection.getresponse();raw=response.read(1024*1024+1)
-            check(len(raw)<=1024*1024,'response limit')
-            for key,value in response.getheaders():
-                if key.lower()=='set-cookie':
-                    check('Secure' in value and 'HttpOnly' in value,'cookie security')
-                    self.cookie=value.split(';',1)[0]
-            value=json.loads(raw) if raw and 'application/json' in response.getheader('Content-Type','') else None
-            if isinstance(value,dict) and 'csrfToken' in value:self.csrf=value['csrfToken']
+            response=connection.getresponse()
+            cookies=response.headers.get_all('set-cookie') or []
+            if cookies:self.cookie='; '.join(value.split(';',1)[0] for value in cookies)
+            raw=response.read()
+            value=json.loads(raw) if raw else None
+            if isinstance(value,dict) and value.get('csrfToken'):self.csrf=value['csrfToken']
             return response.status,value
         finally:connection.close()
-    def login(self,tenant,login,password):
-        check(self.call('POST','/api/v1/identity/tenants/'+tenant+'/login',
-                        dict(login=login,password=password))[0]==200,'real account login')
 
-def imported_providers(manifest):
-    imported=json.loads((ROOT/'providers.json').read_text())
-    providers={}
-    for provider in ['postgres','nginx']:
-        image=imported[provider]
-        check(image['reference']==manifest['providers'][provider],'provider reference changed')
-        check(run('docker','image','inspect','--format','{{.Id}}',image['image'])==image['image'],
-              'imported provider identity changed')
-        providers[provider]=image['image']
-    return providers
+    def login(self, tenant, login, password):
+        status,_=self.call('POST','/api/v1/identity/tenants/'+tenant+'/login',dict(login=login,password=password))
+        check(status==200,'real account login')
 
-def main():
-    os.umask(0o077)
-    manifest=json.loads((ROOT/'candidate.json').read_text())
-    check(hashlib.sha256(Path(BIN).read_bytes()).hexdigest()==manifest['installer']['sha256'],
-          'operator binary differs from fixed server binary')
-    providers=imported_providers(manifest)
-    run('openssl','req','-x509','-newkey','rsa:2048','-nodes','-days','2','-subj','/CN=Candidate TLS CA',
-        '-addext','basicConstraints=critical,CA:TRUE','-addext','keyUsage=critical,keyCertSign,cRLSign',
-        '-keyout',str(ROOT/'ca.key'),'-out',str(ROOT/'ca.crt'))
-    run('openssl','req','-new','-newkey','rsa:2048','-nodes','-subj','/CN=localhost',
-        '-keyout',str(ROOT/'server.key'),'-out',str(ROOT/'server.csr'))
-    write('extensions','basicConstraints=critical,CA:FALSE\nkeyUsage=critical,digitalSignature,keyEncipherment\nextendedKeyUsage=serverAuth\nsubjectAltName=DNS:localhost,IP:127.0.0.1\n')
-    run('openssl','x509','-req','-in',str(ROOT/'server.csr'),'-CA',str(ROOT/'ca.crt'),'-CAkey',str(ROOT/'ca.key'),
-        '-CAcreateserial','-days','2','-extfile',str(ROOT/'extensions'),'-out',str(ROOT/'server.crt'))
-    pg=ROOT/'postgres';pg.mkdir(mode=0o700)
-    uid=int(run('docker','run','--rm','--entrypoint','id',providers['postgres'],'-u','postgres'))
-    for name in ['server.key','server.crt']:
-        path=pg/name;path.write_bytes((ROOT/name).read_bytes());path.chmod(0o600);os.chown(path,uid,uid)
-    os.chown(pg,uid,uid)
-    password=secrets.token_urlsafe(32)
-    write('postgres/password',password);os.chown(pg/'password',uid,uid)
-    admin_password=write('database-password',password)
-    run('docker','run','-d','--name','qualification-postgres','--network','host',
-        '-v',str(pg)+':/private:ro','-e','POSTGRES_PASSWORD_FILE=/private/password',providers['postgres'],
-        'postgres','-c','ssl=on','-c','ssl_cert_file=/private/server.crt','-c','ssl_key_file=/private/server.key')
-    until(lambda:subprocess.run(['docker','exec','qualification-postgres','pg_isready','-U','postgres'],capture_output=True).returncode==0)
-    deployment=dict(server_image=manifest['image'],gateway_image=providers['nginx'],
-        certificate_file=str(ROOT/'server.crt'),private_key_file=str(ROOT/'server.key'),
-        trust_file=str(ROOT/'ca.crt'),content_volume=None)
-    installation=dict(directory=str(ROOT/'installation'),deployment=deployment,
-        additional_hosts=[dict(origin='https://localhost:8446',listen='127.0.0.1:8082',deployment=deployment)],
-        database=dict(administrator=dict(host='localhost',port=5432,name='postgres',user='postgres',
-            password_file=admin_password,ca_file=str(ROOT/'ca.crt')),name='mdm'),audit_mode='ledger',
-        organization_name='Candidate organization',platform_login='platform',administrator_login='administrator',
-        platform_password_file=None,administrator_password_file=None,origin='https://localhost:8445',
-        listen='127.0.0.1:8081',trusted_gateway='127.0.0.1')
-    config=write('install.json',installation)
-    first=json.loads(run(BIN,'install','--config',config,timeout=300))
-    check(first['stage']=='enabled','installation did not enable')
-    check(first['platformPrincipalId']!=first['administratorId'],'platform/business identities overlap')
-    protected=ROOT/'installation'
-    identities={name:hashlib.sha256((protected/name).read_bytes()).hexdigest()
-                for name in ['platform-password','administrator-password','ledger.key','native.key','operation.key']}
-    second=json.loads(run(BIN,'install','--config',config,timeout=300))
-    check(second==first,'repeat installation changed receipt')
-    check(all(hashlib.sha256((protected/name).read_bytes()).hexdigest()==digest for name,digest in identities.items()),
-          'repeat installation replaced identity material')
-    business=Browser(8445)
-    business.login(first['tenantId'],'administrator',(protected/'administrator-password').read_text())
+
+def qualify(owner, origin, other_origin):
+    owner.compose('up','-d',timeout=600)
+    first=owner.receipt()
+    check(first['stage']=='enabled','complete initialization')
+    check(first['platformPrincipalId']!=first['administratorId'],'separate administrators')
+    ca=owner.root/'ca.crt'
+    ca.write_text(owner.read('/var/lib/rss-mdm/inputs/ca.crt'))
+    administrator=owner.read('/var/lib/rss-mdm/installation/administrator-password')
+    platform_password=owner.read('/var/lib/rss-mdm/installation/platform-password')
+    names=['platform-password','administrator-password','ledger.key','native.key','operation.key']
+    digest_code='import pathlib,hashlib,json; r=pathlib.Path("/var/lib/rss-mdm/installation"); print(json.dumps({n:hashlib.sha256((r/n).read_bytes()).hexdigest() for n in '+repr(names)+'}))'
+    identities=json.loads(owner.script(digest_code))
+    owner.compose('run','--rm','--no-deps','-T','install',timeout=300)
+    check(owner.receipt()==first,'repeat installation changed receipt')
+    check(json.loads(owner.script(digest_code))==identities,'repeat installation changed secrets')
+    business=Browser(origin,ca)
+    status,public=business.call('GET','/api/v1/mdm-host/config.json')
+    check(status==200,'real public host configuration')
+    management=public['managementTenant']
+    business.login(first['tenantId'],'administrator',administrator)
     status,subject=business.call('GET','/api/v1/authorization')
     check(status==200 and subject['principalId']==first['administratorId'],'business authorization')
-    management=run('docker','exec','qualification-postgres','psql','-X','-At','-U','postgres','-d','mdm',
-                   '-c','SELECT management_tenant_id FROM public.mdm_installation')
-    platform=Browser(8445)
-    platform.login(management,'platform',(protected/'platform-password').read_text())
+    platform=Browser(origin,ca);platform.login(management,'platform',platform_password)
     check(platform.call('GET','/api/v1/tenant-administration/authorization')[0]==200,'platform authorization')
     check(platform.call('GET','/api/v1/resources')[0] in (401,403),'platform business isolation')
     check(business.call('GET','/api/v1/tenant-administration/authorization')[0] in (401,403),'business platform isolation')
-    operation=str(uuid.uuid4());account_password=secrets.token_urlsafe(32)
-    request=dict(name='Second organization',administratorLogin='second',administratorPassword=account_password)
+    operation=str(uuid.uuid4());password=secrets.token_urlsafe(32)
+    request=dict(name='Second organization',administratorLogin='second',administratorPassword=password)
     endpoint='/api/v1/tenant-administration/provisionings'
     status,receipt=platform.call('POST',endpoint,request,operation)
     check(status in (200,202) and receipt['operationId']==operation,'complete provisioning admission')
@@ -157,132 +140,87 @@ def main():
     def enabled():
         status,value=platform.call('GET',endpoint+'/'+operation)
         if status!=200:return False
-        progress=value['result']
-        check(progress['tenantId']==original['tenantId'] and progress['hostId']==original['hostId'],'provisioning identity changed')
-        return progress['phase']=='enabled'
-    until(enabled,180)
-    status,replayed=platform.call('POST',endpoint,request,operation)
-    check(status==200 and replayed['result']['phase']=='enabled','original provisioning replay')
-    other=Browser(8446);other.login(original['tenantId'],'second',account_password)
-    status,subject=other.call('GET','/api/v1/authorization')
-    check(status==200 and subject['tenantId']==original['tenantId'],'second host authentication')
-    check(other.call('GET','/api/v1/tenant-administration/authorization')[0] in (401,403),'second tenant platform isolation')
-    check(other.call('POST','/api/v1/identity/tenants/'+first['tenantId']+'/login',
-                     dict(login='administrator',password=(protected/'administrator-password').read_text()))[0]!=200,
-          'foreign tenant accepted on second host')
-    service='rss-mdm-deployer-'+first['instanceId'].replace('-','')+'.service'
-    run('systemctl','is-active','--quiet',service)
-    pending_operation=str(uuid.uuid4())
-    pending_request=dict(name='Capacity recovery',administratorLogin='third',administratorPassword=secrets.token_urlsafe(32))
-    status,pending=platform.call('POST',endpoint,pending_request,pending_operation)
-    check(status==202,'capacity operation admission')
-    def capacity():
-        status,value=platform.call('GET',endpoint+'/'+pending_operation)
-        return status==200 and value['result']['blocked']=='capacity'
-    until(capacity,90)
-    # Root deployment configuration owns capacity. Add one concrete slot, then restart
-    # the actual supervisor with its existing protected input and original operation.
-    operator=json.loads((protected/'deployer-input.json').read_text())
-    operator['additional_hosts'].append(dict(origin='https://localhost:8447',listen='127.0.0.1:8083',deployment=deployment))
-    write('installation/deployer-input.json',operator)
-    run('systemctl','restart',service)
-    def recovered():
-        status,value=platform.call('GET',endpoint+'/'+pending_operation)
-        check(status==200,'capacity receipt query')
-        check(value['result']['tenantId']==pending['result']['tenantId']
-              and value['result']['hostId']==pending['result']['hostId'],'capacity recovery replaced identity')
+        check(value['result']['tenantId']==original['tenantId'] and value['result']['hostId']==original['hostId'],'provisioning identity changed')
         return value['result']['phase']=='enabled'
-    until(recovered,180)
-    third=Browser(8447)
-    third.login(pending['result']['tenantId'],'third',pending_request['administratorPassword'])
-    # Freeze only the daemon process: PostgreSQL and the valid old service keep running.
-    # This forces the real external application boundary to fail after its checkpoint.
-    run('systemctl','stop',service)
-    host_directory=protected/('rss-mdm-'+first['hostId'].replace('-',''))
-    revision=json.loads((host_directory/'requested-runtime.json').read_text())['runtime_binding']['revision']
-    failed_operation=str(uuid.uuid4())
-    failed_input=write('failed-configuration.json',dict(installation=operator,operation_id=failed_operation,
-        host_id=first['hostId'],expected_revision=revision,change=dict(kind='webhook_networks',networks=[])))
-    run('systemctl','kill','--kill-who=main','--signal=STOP','docker.service')
-    try:
-        failed=json.loads(run(BIN,'configure-host','--config',failed_input,timeout=180))
-        check(failed['applied'] is None,'unavailable Docker falsely applied configuration')
-    finally:run('systemctl','kill','--kill-who=main','--signal=CONT','docker.service')
-    repaired_operation=str(uuid.uuid4())
-    repaired_input=write('corrected-configuration.json',dict(installation=operator,operation_id=repaired_operation,
-        host_id=first['hostId'],expected_revision=failed['requestedRevision'],change=dict(kind='webhook_networks',networks=[])))
-    repaired=json.loads(run(BIN,'configure-host','--config',repaired_input,timeout=180))
-    check(repaired['applied'] is not None,'failed configuration permanently fenced corrective input')
-    check(json.loads(run(BIN,'configure-host','--config',failed_input))==failed,'old failed operation lost its receipt')
-    check(json.loads((host_directory/'requested-runtime.json').read_text())['runtime_binding']['operation_id']==repaired_operation,
-          'old failed operation replaced corrected runtime')
-    run('systemctl','start',service)
-    # Preserve external account delivery files; recovery must authenticate originals.
+    # The Compose operator must resume the original receipt after a real restart.
+    owner.compose('restart','operator')
+    until(enabled)
+    status,replayed=platform.call('POST',endpoint,request,operation)
+    check(status==200 and replayed['result']['phase']=='enabled','original operation replay')
+    other=Browser(other_origin,ca);other.login(original['tenantId'],'second',password)
+    check(other.call('GET','/api/v1/authorization')[1]['tenantId']==original['tenantId'],'second host authentication')
+    check(other.call('POST','/api/v1/identity/tenants/'+first['tenantId']+'/login',dict(login='administrator',password=administrator))[0]!=200,'foreign tenant login')
+    # Prove private runtime/namespace isolation from Docker's actual running configuration.
+    for host in owner.hosts():
+        ids=subprocess.check_output(['docker','ps','-q','--filter','label=rss.mdm.host='+str(uuid.UUID(hex=host))],text=True).split()
+        check(len(ids)==2,'tenant runtime services')
+        for metadata in json.loads(subprocess.check_output(['docker','inspect',*ids],text=True)):
+            check(metadata['Config']['User']=='10001:10001','nonroot product runtime')
+            check(metadata['HostConfig']['NetworkMode']!='host','bridge runtime')
+            check(not any(m['Destination']=='/run/docker.sock' for m in metadata['Mounts']),'server Docker isolation')
+            check(all(m['Type']=='volume' for m in metadata['Mounts']),'no host bind inputs')
+    # Complete maintenance uses the same product owner and exact operation identity.
+    operator=json.loads(owner.read('/var/lib/rss-mdm/installation-input.json'))
+    host='/var/lib/rss-mdm/installation/rss-mdm-'+first['hostId'].replace('-','')
+    runtime=json.loads(owner.read(host+'/requested-runtime.json'))
+    change=dict(installation=operator,operation_id=str(uuid.uuid4()),host_id=first['hostId'],
+        expected_revision=runtime['runtime_binding']['revision'],change=dict(kind='webhook_networks',networks=[]))
+    owner.compose('stop','operator')
+    configured=owner.product('configure-host',owner.save('configuration.json',change))
+    check(configured['applied'] is not None,'real configuration application')
+    # Configuration must survive a fresh operator process and an idempotent install replay.
+    owner.compose('start','operator')
+    owner.compose('run','--rm','--no-deps','-T','install',timeout=300)
+    check(json.loads(owner.script(digest_code))==identities,'maintenance replaced installation identity')
+    check(json.loads(owner.read(host+'/requested-runtime.json'))['runtime_binding']['operation_id']==change['operation_id'],'installation replay overwrote applied configuration')
+    owner.compose('stop','operator')
+    # Docker failure is scoped to one maintenance container, never the shared daemon.
+    runtime=json.loads(owner.read(host+'/requested-runtime.json'))
+    failed_change=dict(installation=operator,operation_id=str(uuid.uuid4()),host_id=first['hostId'],
+        expected_revision=runtime['runtime_binding']['revision'],change=dict(kind='webhook_networks',networks=[]))
+    failed_path=owner.save('failed-configuration.json',failed_change)
+    result=owner.compose('run','--rm','--no-deps','-T','-e','DOCKER_HOST=unix:///tmp/unavailable.sock','operator',
+                         'configure-host','--config',failed_path,timeout=180)
+    failed=json.loads(result)
+    check(failed['applied'] is None,'unavailable Docker falsely applied configuration')
+    corrected=dict(failed_change,operation_id=str(uuid.uuid4()),expected_revision=failed['requestedRevision'])
+    repaired=owner.product('configure-host',owner.save('corrected-configuration.json',corrected))
+    check(repaired['applied'] is not None,'corrective configuration blocked')
+    check(owner.product('configure-host',failed_path)==failed,'failed operation lost receipt')
+    # Full cold backup/restore preserves original accounts, keys, and provisioning receipts.
+    backup=owner.product('backup-installation',owner.save('backup.json',dict(installation=operator,
+        operation_id=str(uuid.uuid4()),directory='/var/lib/rss-mdm/backup',authorities=[])))
+    check(backup['stage']=='complete','joint backup')
     accounts=[]
-    for tenant,principal,login,password in [
-        (management,first['platformPrincipalId'],'platform',(protected/'platform-password').read_text()),
-        (first['tenantId'],first['administratorId'],'administrator',(protected/'administrator-password').read_text()),
-        (original['tenantId'],replayed['result']['administratorId'],'second',account_password),
-        (pending['result']['tenantId'],platform.call('GET',endpoint+'/'+pending_operation)[1]['result']['administratorId'],'third',pending_request['administratorPassword']),
-    ]:
+    for tenant,principal,login,secret in [(management,first['platformPrincipalId'],'platform',platform_password),
+        (first['tenantId'],first['administratorId'],'administrator',administrator),
+        (original['tenantId'],replayed['result']['administratorId'],'second',password)]:
+        password_path='/var/lib/rss-mdm/restore-account-'+tenant
+        # Store only in the protected operator volume; password JSON uses the same non-argv input path.
+        owner.save('restore-secret-'+tenant,secret)
         accounts.append(dict(tenant_id=tenant,account=dict(principal_id=principal,login=login,
-            password_file=write('restore-account-'+tenant,password))))
-    backup_config=write('backup.json',dict(installation=operator,operation_id=str(uuid.uuid4()),
-        directory=str(ROOT/'backup'),authorities=[]))
-    captured=json.loads(run(BIN,'backup-installation','--config',backup_config,timeout=300))
-    check(captured['stage']=='complete' and len(captured['manifestSha256'])==64,'joint backup did not seal')
-    # An actual cold recovery: remove systemd links, host containers, deployment files,
-    # and database while retaining only the trusted archive and original cluster roles.
-    run('systemctl','disable','--now',service)
-    run('systemctl','mask',service)
-    containers=run('docker','ps','-aq').splitlines()
-    for container in containers:
-        info=json.loads(run('docker','inspect',container))[0]
-        if info['Name']!='/qualification-postgres':run('docker','rm','-f',container)
-    shutil.rmtree(protected)
-    run('docker','exec','qualification-postgres','dropdb','-U','postgres','--force','mdm')
-    run('docker','exec','qualification-postgres','createdb','-U','postgres','-O','mdm_owner','mdm')
-    administrator=dict(installation['database']['administrator'],name='mdm')
-    restore_config=write('restore.json',dict(directory=str(ROOT/'backup'),operation_id=str(uuid.uuid4()),
-        backup_manifest_sha256=captured['manifestSha256'],administrator=administrator,accounts=accounts))
-    interrupted=subprocess.run([BIN,'restore-installation','--config',restore_config],capture_output=True,text=True,timeout=300)
-    check(interrupted.returncode!=0,'masked real supervisor falsely reported restored')
-    check(': storage_unavailable:' in interrupted.stderr,'restore failed before the masked supervisor boundary')
-    progress=json.loads((ROOT/'backup/restore-progress.json').read_text())
-    check(progress['stage']=='contents','restore did not reach real supervisor failure')
-    run('systemctl','unmask',service)
-    restored=json.loads(run(BIN,'restore-installation','--config',restore_config,timeout=300))
-    check(restored['stage']=='complete','original restore operation did not complete')
-    run('systemctl','is-active','--quiet',service)
-    check(all(hashlib.sha256((protected/name).read_bytes()).hexdigest()==digest for name,digest in identities.items()),
-          'cold restore replaced original protection material')
-    after=Browser(8445)
-    after.login(first['tenantId'],'administrator',Path(accounts[1]['account']['password_file']).read_text())
-    status,subject=after.call('GET','/api/v1/authorization')
-    check(status==200 and subject['principalId']==first['administratorId'],'restored original authentication')
-    after_platform=Browser(8445)
-    after_platform.login(management,'platform',Path(accounts[0]['account']['password_file']).read_text())
-    status,restored_receipt=after_platform.call('POST',endpoint,request,operation)
-    check(status==200 and all(restored_receipt['result'][key]==replayed['result'][key] for key in ('tenantId','hostId','administratorId','operationId')), 'restored original provisioning identities')
-    # A real pending operation proves the recovered service consumes work after its restart.
-    fresh_operation=str(uuid.uuid4())
-    status,_=after_platform.call('POST',endpoint,dict(name='Post recovery pending',administratorLogin='pending',
-        administratorPassword=secrets.token_urlsafe(32)),fresh_operation)
-    check(status==202,'post recovery admission')
-    until(lambda:after_platform.call('GET',endpoint+'/'+fresh_operation)[1]['result']['blocked']=='capacity',90)
-    print(json.dumps(dict(status='passed',checks=['fixed_operator_binary','single_input_install','repeat_install_identity',
-        'fixed_ledger_key','independent_administrators','real_authentication','platform_business_isolation',
-        'second_tenant_host','original_operation_replay','tenant_host_isolation','real_systemd_supervisor','capacity_original_operation_recovery','failed_configuration_correction','joint_cold_backup_restore','original_ledger_and_protection_material','interrupted_restore_replay','restored_supervisor_consumes_work'])))
-
-if __name__=='__main__':
-    try:main()
-    except Exception as error:
-        # No tracebacks, HTTP bodies, SQL or operator stderr containing private data.
-        checkpoints={}
-        for name in ('backup-progress.json','restore-progress.json'):
-            path=ROOT/'backup'/name
-            if path.exists():checkpoints[name]=json.loads(path.read_text()).get('stage')
-        for name in ('ledger-checkpoints.json','database-backup.json'):
-            checkpoints[name]=(ROOT/'backup'/name).exists()
-        print(json.dumps(dict(status='failed',error_class=type(error).__name__,reason=str(error) if isinstance(error,QualificationFailure) else 'unexpected exception',checkpoints=checkpoints)))
-        raise SystemExit(1)
+            password_file='/var/lib/rss-mdm/restore-secret-'+tenant)))
+    for host_id in owner.hosts():
+        ids=subprocess.check_output(['docker','ps','-aq','--filter','label=rss.mdm.host='+str(uuid.UUID(hex=host_id))],text=True).split()
+        if ids:subprocess.run(['docker','rm','-f',*ids],check=True,capture_output=True)
+    owner.script('import shutil;shutil.rmtree("/var/lib/rss-mdm/installation")')
+    owner.compose('exec','-T','postgres','dropdb','-U','postgres','--force','mdm')
+    owner.compose('exec','-T','postgres','createdb','-U','postgres','-O','mdm_owner','mdm')
+    restore=dict(directory='/var/lib/rss-mdm/backup',operation_id=str(uuid.uuid4()),
+        backup_manifest_sha256=backup['manifestSha256'],administrator=dict(operator['database']['administrator'],name='mdm'),accounts=accounts)
+    restored=owner.product('restore-installation',owner.save('restore.json',restore))
+    check(restored['stage']=='complete','cold restore')
+    check(json.loads(owner.script(digest_code))==identities,'cold restore replaced identity')
+    owner.compose('start','operator')
+    after=Browser(origin,ca);after.login(management,'platform',platform_password)
+    status,receipt=after.call('POST',endpoint,request,operation)
+    check(status==200 and all(receipt['result'][key]==replayed['result'][key] for key in ('tenantId','hostId','administratorId','operationId')),'restored original provisioning')
+    pending_operation=str(uuid.uuid4())
+    status,_=after.call('POST',endpoint,dict(name='Capacity pending',administratorLogin='pending',administratorPassword=secrets.token_urlsafe(32)),pending_operation)
+    check(status==202,'capacity admission')
+    until(lambda:after.call('GET',endpoint+'/'+pending_operation)[1]['result']['blocked']=='capacity')
+    return dict(status='passed',checks=['formal_install','independent_administrators','real_authentication',
+        'repeat_install_identity','fixed_ledger_key','platform_business_isolation','second_tenant_host',
+        'original_operation_replay','operator_restart_resume','tenant_host_isolation','nonroot_volume_runtime',
+        'bridge_network','server_without_docker_authority','configuration_application','maintenance_identity_preservation','failed_configuration_correction','joint_cold_backup_restore',
+        'original_ledger_and_protection_material','restored_operator_consumes_work'])

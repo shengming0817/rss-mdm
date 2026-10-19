@@ -68,7 +68,7 @@ class CandidatePublication(unittest.TestCase):
                         Path(command[-1]).write_bytes(b"fixed-binary")
                 def snapshot(reference, archive):
                     archive.write_bytes(b"synthetic-ui")
-                    return {"id": reference, "archive": {"file": archive.name, "sha256": release.sha(archive)}}
+                    return {"id": reference, "os":"linux", "architecture":"arm64", "archive": {"file": archive.name, "sha256": release.sha(archive)}}
                 with mock.patch.object(release, "copy_source", side_effect=copy_inputs), \
                      mock.patch.object(release.subprocess, "run", side_effect=docker_command), \
                      mock.patch.object(release, "oci_identity", return_value=("sha256:fixture", {"os":"linux", "architecture":"arm64"})), \

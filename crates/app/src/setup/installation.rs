@@ -316,19 +316,8 @@ pub async fn install(input: Input) -> Result<Receipt> {
     resume(&input, &journal, saved).await
 }
 fn admit_installation(input: &Input) -> Result<Journal> {
-    use std::os::unix::fs::MetadataExt;
-    if !cfg!(target_os = "linux") {
-        return Err(Error::Input);
-    }
     input.validate()?;
     let journal = Journal::open(&input.directory)?;
-    if std::fs::metadata(&input.directory)
-        .map_err(|_| Error::Storage)?
-        .uid()
-        != 0
-    {
-        return Err(Error::Input);
-    }
     Ok(journal)
 }
 async fn resume(input: &Input, journal: &Journal, mut saved: Saved) -> Result<Receipt> {
@@ -372,7 +361,6 @@ async fn resume(input: &Input, journal: &Journal, mut saved: Saved) -> Result<Re
             host.load("requested-runtime.json")?.ok_or(Error::Corrupt)?;
         drop(host);
         super::deployment::apply(&input.directory, &input.deployment, &current).await?;
-        super::supervisor::install(journal, input, saved.receipt.instance_id).await?;
         return Ok(saved.receipt);
     }
     let runtime = runtime(input, journal, &saved)?;
@@ -387,7 +375,6 @@ async fn resume(input: &Input, journal: &Journal, mut saved: Saved) -> Result<Re
             .await;
     publish_progress(input, &saved, true, Some(progress)).await?;
     applied?;
-    super::supervisor::install(journal, input, saved.receipt.instance_id).await?;
     saved.receipt.stage = Stage::Enabled;
     journal.save("installation.json", &saved)?;
     Ok(saved.receipt)

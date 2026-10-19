@@ -9,3 +9,5 @@
 - [文档导航](docs/README.md)
 - [协作规则](AGENTS.md)
 - [历史来源与恢复](reference/README.md)
+
+完整容器部署与初始化从[安装指南](docs/deployment/installation.md#全新实例安装)开始，使用正式 Compose 和真实安装入口；宿主可使用 macOS/Linux 的 Docker Desktop/Engine。开发 fixture 不作为正式初始化或 T3 证据。

@@ -19,6 +19,10 @@ pub struct Config {
     pub private_key_file: PathBuf,
     pub trust_file: PathBuf,
     pub content_volume: Option<PathBuf>,
+    /// Docker-managed operator volume and bridge network, shared with the Compose installer.
+    pub state_volume: String,
+    pub network: String,
+    pub publish_ip: std::net::IpAddr,
 }
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -51,8 +55,6 @@ pub(super) async fn docker(args: &[&str]) -> Result<Vec<u8>> {
         Duration::from_secs(90),
         tokio::process::Command::new("docker")
             .args(args)
-            .env_remove("DOCKER_CONTEXT")
-            .env("DOCKER_HOST", "unix:///var/run/docker.sock")
             .env_remove("COMPOSE_FILE")
             .env_remove("COMPOSE_PROJECT_NAME")
             .kill_on_drop(true)
@@ -160,26 +162,34 @@ fn project_file(
 pub(super) fn freeze(runtime: &mut Value, journal: &Journal) -> Result<()> {
     project(runtime, journal, &mut BTreeMap::new(), true)
 }
-async fn runtime_owner(paths: impl Iterator<Item = PathBuf>) -> Result<()> {
-    // The dedicated deployment operator owns this action. The server never receives chown or Docker authority.
-    for path in paths {
-        let status = tokio::time::timeout(
-            Duration::from_secs(5),
-            tokio::process::Command::new("chown")
-                .arg("10001:10001")
-                .arg(&path)
-                .kill_on_drop(true)
-                .output(),
-        )
-        .await
-        .map_err(|_| Error::Storage)?
-        .map_err(|_| Error::Storage)?;
-        if !status.status.success() {
-            return Err(Error::Storage);
-        }
+fn infrastructure_name(value: &str) -> Result<()> {
+    if value.is_empty()
+        || value.len() > 128
+        || !value
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b"_.-".contains(&b))
+    {
+        return Err(Error::Input);
     }
     Ok(())
 }
+fn volume_mount(_config: &Config, source: &Path, target: &str, readonly: bool) -> Result<Value> {
+    let subpath = source
+        .strip_prefix("/var/lib/rss-mdm")
+        .map_err(|_| Error::Input)?;
+    if subpath.as_os_str().is_empty()
+        || subpath
+            .components()
+            .any(|c| !matches!(c, std::path::Component::Normal(_)))
+    {
+        return Err(Error::Input);
+    }
+    Ok(
+        json!({"type":"volume","source":"operator-state","target":target,
+        "read_only":readonly,"volume":{"nocopy":true,"subpath":subpath}}),
+    )
+}
+
 fn network_origin(decoded: &crate::config::Config) -> Result<url::Url> {
     if !decoded.listen.ip().is_loopback() || decoded.trusted_gateway != decoded.listen.ip() {
         return Err(Error::Input);
@@ -226,6 +236,8 @@ pub async fn apply(directory: &Path, config: &Config, runtime: &Value) -> Result
     let compiled = decoded.compile().map_err(|_| Error::Input)?;
     let decoded = &compiled.config;
     let origin = network_origin(decoded)?;
+    infrastructure_name(&config.state_volume)?;
+    infrastructure_name(&config.network)?;
     image_present(&config.server_image).await?;
     image_present(&config.gateway_image).await?;
     let certificate = crate::config::read(&config.certificate_file, 128 * 1024, false)
@@ -234,15 +246,6 @@ pub async fn apply(directory: &Path, config: &Config, runtime: &Value) -> Result
         crate::config::read(&config.private_key_file, 32768, true).map_err(|_| Error::Input)?;
     let root =
         crate::config::read(&config.trust_file, 128 * 1024, false).map_err(|_| Error::Input)?;
-    let client = reqwest::Client::builder()
-        .no_proxy()
-        .https_only(true)
-        .redirect(reqwest::redirect::Policy::none())
-        .connect_timeout(Duration::from_secs(3))
-        .timeout(Duration::from_secs(8))
-        .add_root_certificate(reqwest::Certificate::from_pem(&root).map_err(|_| Error::Input)?)
-        .build()
-        .map_err(|_| Error::Input)?;
     let name = format!("rss-mdm-{}", decoded.runtime_binding.host_id.simple());
     let host_root = directory.join(&name);
     let owner = Journal::open(&host_root)?;
@@ -256,7 +259,9 @@ pub async fn apply(directory: &Path, config: &Config, runtime: &Value) -> Result
         )?;
     }
     let stage = host_root.join(decoded.runtime_binding.operation_id.to_string());
-    let journal = Journal::projection(&stage)?;
+    let journal = Journal::open(&stage)?;
+    let server_journal = Journal::open(&stage.join("server"))?;
+    let gateway_journal = Journal::open(&stage.join("gateway"))?;
     journal.secret(
         "source-runtime.json",
         &serde_json::to_vec(runtime).map_err(|_| Error::Input)?,
@@ -264,18 +269,11 @@ pub async fn apply(directory: &Path, config: &Config, runtime: &Value) -> Result
     owner.save("requested-runtime.json", runtime)?;
     let mut projected = runtime.clone();
     let mut mounts = BTreeMap::new();
-    project(&mut projected, &journal, &mut mounts, false)?;
+    project(&mut projected, &server_journal, &mut mounts, false)?;
     let bytes = serde_json::to_vec(&projected).map_err(|_| Error::Input)?;
-    let runtime_path = journal.secret("runtime.json", &bytes)?;
-    runtime_owner(
-        mounts
-            .values()
-            .cloned()
-            .chain(std::iter::once(runtime_path.clone())),
-    )
-    .await?;
-    let certificate_path = journal.secret("tls.crt", &certificate)?;
-    let key_path = journal.secret("tls.key", &key)?;
+    server_journal.secret("runtime.json", &bytes)?;
+    gateway_journal.secret("tls.crt", &certificate)?;
+    gateway_journal.secret("tls.key", &key)?;
     let authority = origin[url::Position::BeforeHost..url::Position::AfterPort].to_owned();
     let hostname = origin.host_str().ok_or(Error::Input)?;
     if !hostname
@@ -286,13 +284,7 @@ pub async fn apply(directory: &Path, config: &Config, runtime: &Value) -> Result
     }
     let gateway = include_str!("../../../../deployment/nginx.conf")
         .replace("127.0.0.1:8081", &decoded.listen.to_string())
-        .replace(
-            "listen 443 ssl;",
-            &format!(
-                "listen {} ssl;",
-                origin.port_or_known_default().ok_or(Error::Input)?
-            ),
-        )
+        .replace("listen 443 ssl;", "listen 8445 ssl;")
         .replace(
             "server_name mdm.example.test;",
             &format!("server_name {hostname};"),
@@ -304,60 +296,72 @@ pub async fn apply(directory: &Path, config: &Config, runtime: &Value) -> Result
         .replace("/private/mdm-tls.crt", "/run/gateway/tls.crt")
         .replace("/private/mdm-tls.key", "/run/gateway/tls.key")
         .replace("/run/config/ui.json", "/run/gateway/ui.json")
-        .replace("/run/config/mdm.json", "/run/gateway/mdm.json")
-        .replace(
-            "location / { try_files $uri $uri/ /index.html; }",
-            "location / { return 404; }",
-        );
-    let gateway_path = journal.secret("nginx.conf", gateway.as_bytes())?;
+        .replace("/run/config/mdm.json", "/run/gateway/mdm.json");
+    gateway_journal.secret("nginx.conf", gateway.as_bytes())?;
     let public = super::public_configuration::read(decoded).await?;
-    let ui_path = journal.public(
+    gateway_journal.public(
         "ui.json",
         &serde_json::to_vec(&public.identity).map_err(|_| Error::Input)?,
     )?;
-    let mdm_path = journal.public(
+    gateway_journal.public(
         "mdm.json",
         &serde_json::to_vec(&public.mdm).map_err(|_| Error::Input)?,
     )?;
-    let mount = |source: &Path, target: String| json!({"type":"bind","source":source,"target":target,"read_only":true,"bind":{"create_host_path":false}});
-    let mut server_mounts = mounts
-        .iter()
-        .map(|(name, path)| mount(path, format!("/run/mdm/{name}")))
-        .collect::<Vec<_>>();
-    server_mounts.push(mount(&runtime_path, "/run/mdm/runtime.json".into()));
+    let mut server_mounts = vec![volume_mount(
+        config,
+        &stage.join("server"),
+        "/run/mdm",
+        true,
+    )?];
     if let Some(directory) = decoded
         .content
         .as_ref()
         .and_then(|v| v.storage.volume_directory())
     {
-        use std::os::unix::fs::MetadataExt;
         let source = config.content_volume.as_ref().ok_or(Error::Input)?;
-        let meta = std::fs::symlink_metadata(source).map_err(|_| Error::Input)?;
-        if !source.is_absolute()
-            || source.canonicalize().map_err(|_| Error::Input)? != *source
-            || !meta.is_dir()
-            || meta.uid() != 10001
-            || meta.mode() & 0o077 != 0
-            || !directory.is_absolute()
-            || directory == Path::new("/")
-        {
-            return Err(Error::Input);
-        }
-        server_mounts.push(json!({"type":"bind","source":source,"target":directory,"read_only":false,"bind":{"create_host_path":false}}));
+        // Both paths are inside Docker volumes. No daemon-side host path or host chown.
+        let content = Journal::open(source)?;
+        drop(content);
+        server_mounts.push(volume_mount(
+            config,
+            source,
+            directory.to_str().ok_or(Error::Input)?,
+            false,
+        )?);
     } else if config.content_volume.is_some() {
         return Err(Error::Conflict);
     }
-
+    let mut ports = vec![
+        json!({"target":8445,"published":origin.port_or_known_default().ok_or(Error::Input)?.to_string(),"host_ip":config.publish_ip.to_string()}),
+    ];
+    let mut native = Vec::new();
+    if let Some(windows) = &decoded.native_protocols.windows {
+        native.extend([windows.enrollment.listen, windows.management.listen]);
+        native.extend(windows.additional_management.iter().map(|e| e.listen));
+    }
+    if let Some(apple) = &decoded.native_protocols.apple {
+        native.push(apple.management.listen);
+    }
+    if let crate::agent_pki::Config::StepCa { endpoint, .. } = &decoded.agent_pki {
+        native.push(endpoint.listen);
+    }
+    let mut used = std::collections::BTreeSet::from([8445, decoded.listen.port()]);
+    for listen in native {
+        if listen.ip().is_loopback() || !used.insert(listen.port()) {
+            return Err(Error::Input);
+        }
+        ports.push(json!({"target":listen.port(),"published":listen.port().to_string(),"host_ip":config.publish_ip.to_string()}));
+    }
     let compose = json!({"services":{
-        "server":{"image":config.server_image,"network_mode":"host","user":"10001:10001","read_only":true,"cap_drop":["ALL"],"security_opt":["no-new-privileges:true"],"tmpfs":["/tmp:rw,noexec,nosuid,size=64m"],"volumes":server_mounts,"command":["serve","--config","/run/mdm/runtime.json"],"labels":{"rss.mdm.host":decoded.runtime_binding.host_id,"rss.mdm.operation":decoded.runtime_binding.operation_id}},
-        "gateway":{"image":config.gateway_image,"network_mode":"host","read_only":true,"cap_drop":["ALL"],"cap_add":["NET_BIND_SERVICE","SETUID","SETGID","CHOWN"],"security_opt":["no-new-privileges:true"],"tmpfs":["/tmp:rw,noexec,nosuid,size=64m"],"entrypoint":["nginx"],"command":["-e","stderr","-c","/run/gateway/nginx.conf","-g","daemon off;"],"volumes":[mount(&gateway_path,"/run/gateway/nginx.conf".into()),mount(&certificate_path,"/run/gateway/tls.crt".into()),mount(&key_path,"/run/gateway/tls.key".into()),mount(&ui_path,"/run/gateway/ui.json".into()),mount(&mdm_path,"/run/gateway/mdm.json".into())],"labels":{"rss.mdm.host":decoded.runtime_binding.host_id,"rss.mdm.operation":decoded.runtime_binding.operation_id}}
-    }});
+        "server":{"image":config.server_image,"user":"10001:10001","restart":"unless-stopped","read_only":true,"cap_drop":["ALL"],"security_opt":["no-new-privileges:true"],"tmpfs":["/tmp:rw,noexec,nosuid,size=64m"],"volumes":server_mounts,"command":["serve","--config","/run/mdm/runtime.json"],"ports":ports,"networks":{"product":{"aliases":[hostname]}},"labels":{"rss.mdm.host":decoded.runtime_binding.host_id,"rss.mdm.operation":decoded.runtime_binding.operation_id}},
+        "gateway":{"image":config.gateway_image,"user":"10001:10001","restart":"unless-stopped","network_mode":"service:server","depends_on":["server"],"read_only":true,"cap_drop":["ALL"],"security_opt":["no-new-privileges:true"],"tmpfs":["/tmp:rw,noexec,nosuid,size=64m"],"entrypoint":["nginx"],"command":["-e","stderr","-c","/run/gateway/nginx.conf","-g","daemon off;"],"volumes":[volume_mount(config,&stage.join("gateway"),"/run/gateway",true)?],"labels":{"rss.mdm.host":decoded.runtime_binding.host_id,"rss.mdm.operation":decoded.runtime_binding.operation_id}}
+    },"volumes":{"operator-state":{"external":true,"name":config.state_volume}},"networks":{"product":{"external":true,"name":config.network}}});
     let compose_path = journal.secret(
         "compose.json",
         &serde_json::to_vec(&compose).map_err(|_| Error::Input)?,
     )?;
     let path = compose_path.to_str().ok_or(Error::Input)?;
-    // Verify every immutable projected input before accepting an idempotent replay.
+    // Replays validate all frozen bytes before observing the existing process.
     if previous.as_ref().is_some_and(|value| {
         matches(
             value,
@@ -365,14 +369,15 @@ pub async fn apply(directory: &Path, config: &Config, runtime: &Value) -> Result
             &decoded.identity.tenant_id,
             &decoded.identity.instance_id,
         )
-    }) && let Ok(current) = observe(
-        &client,
-        &decoded.product_origin,
-        &decoded.runtime_binding,
-        &decoded.identity.tenant_id,
-        &decoded.identity.instance_id,
-    )
-    .await
+    }) && let Ok(client) = probe_client(&root, &name, path, &decoded.product_origin).await
+        && let Ok(current) = observe(
+            &client.0,
+            &client.1,
+            &decoded.runtime_binding,
+            &decoded.identity.tenant_id,
+            &decoded.identity.instance_id,
+        )
+        .await
     {
         owner.save("applied.json", &current)?;
         return Ok(current);
@@ -380,7 +385,9 @@ pub async fn apply(directory: &Path, config: &Config, runtime: &Value) -> Result
     let applied = async {
         compose_up(&name, path).await?;
         wait_ready(
-            &client,
+            &root,
+            &name,
+            path,
             &decoded.product_origin,
             &decoded.runtime_binding,
             &decoded.identity.tenant_id,
@@ -412,7 +419,9 @@ pub async fn apply(directory: &Path, config: &Config, runtime: &Value) -> Result
                         material_digest: previous.material_digest.clone(),
                     };
                     wait_ready(
-                        &client,
+                        &root,
+                        &name,
+                        previous_path.to_str().ok_or(Error::Input)?,
                         &decoded.product_origin,
                         &binding,
                         &previous.tenant_id,
@@ -458,6 +467,7 @@ async fn compose_up(name: &str, path: &str) -> Result<()> {
         "up",
         "-d",
         "--no-build",
+        "--force-recreate",
         "--pull",
         "never",
     ])
@@ -465,15 +475,20 @@ async fn compose_up(name: &str, path: &str) -> Result<()> {
     Ok(())
 }
 async fn wait_ready(
-    client: &reqwest::Client,
+    root: &[u8],
+    project: &str,
+    compose: &str,
     origin: &str,
     binding: &Binding,
     tenant: &str,
     instance: &str,
 ) -> Result<Applied> {
+    let (client, internal) = probe_client(root, project, compose, origin).await?;
     tokio::time::timeout(Duration::from_secs(90), async {
         loop {
-            if let Ok(observed) = observe(client, origin, binding, tenant, instance).await {
+            if let Ok(observed) =
+                observe(&client, internal.as_str(), binding, tenant, instance).await
+            {
                 return observed;
             }
             tokio::time::sleep(Duration::from_millis(500)).await;
@@ -481,6 +496,140 @@ async fn wait_ready(
     })
     .await
     .map_err(|_| Error::Storage)
+}
+
+async fn probe_client(
+    root: &[u8],
+    project: &str,
+    compose: &str,
+    origin: &str,
+) -> Result<(reqwest::Client, String)> {
+    let id = docker(&[
+        "compose",
+        "--env-file",
+        "/dev/null",
+        "-p",
+        project,
+        "-f",
+        compose,
+        "ps",
+        "-q",
+        "server",
+    ])
+    .await?;
+    let id = std::str::from_utf8(&id).map_err(|_| Error::Storage)?.trim();
+    let metadata = docker(&["inspect", id]).await?;
+    let metadata: Value = serde_json::from_slice(&metadata).map_err(|_| Error::Storage)?;
+    let networks = metadata[0]["NetworkSettings"]["Networks"]
+        .as_object()
+        .ok_or(Error::Storage)?;
+    if networks.len() != 1 {
+        return Err(Error::Input);
+    }
+    let address: std::net::IpAddr = networks.values().next().ok_or(Error::Storage)?["IPAddress"]
+        .as_str()
+        .ok_or(Error::Storage)?
+        .parse()
+        .map_err(|_| Error::Storage)?;
+    let mut internal = url::Url::parse(origin).map_err(|_| Error::Input)?;
+    let hostname = internal.host_str().ok_or(Error::Input)?.to_owned();
+    internal.set_port(Some(8445)).map_err(|_| Error::Input)?;
+    let client = reqwest::Client::builder()
+        .no_proxy()
+        .https_only(true)
+        .redirect(reqwest::redirect::Policy::none())
+        .connect_timeout(Duration::from_secs(3))
+        .timeout(Duration::from_secs(8))
+        .resolve(&hostname, std::net::SocketAddr::new(address, 8445))
+        .add_root_certificate(reqwest::Certificate::from_pem(root).map_err(|_| Error::Input)?)
+        .build()
+        .map_err(|_| Error::Input)?;
+    Ok((client, internal.as_str().trim_end_matches('/').to_owned()))
+}
+
+/// Resume/stop only the per-tenant projects recorded by this installation.
+/// Compose owns the operator's process lifetime; the HTTP server has no Docker access.
+pub async fn resume_hosts(input: &super::installation::Input) -> Result<()> {
+    for (runtime, config) in recorded_hosts(input)? {
+        apply(&input.directory, &config, &runtime).await?;
+    }
+    Ok(())
+}
+pub async fn stop_hosts(input: &super::installation::Input) -> Result<()> {
+    for (runtime, _) in recorded_hosts(input)? {
+        let binding: Binding = serde_json::from_value(runtime["runtime_binding"].clone())
+            .map_err(|_| Error::Corrupt)?;
+        let name = format!("rss-mdm-{}", binding.host_id.simple());
+        let path = input
+            .directory
+            .join(&name)
+            .join(binding.operation_id.to_string())
+            .join("compose.json");
+        docker(&[
+            "compose",
+            "--env-file",
+            "/dev/null",
+            "-p",
+            &name,
+            "-f",
+            path.to_str().ok_or(Error::Input)?,
+            "stop",
+            "--timeout",
+            "20",
+        ])
+        .await?;
+    }
+    Ok(())
+}
+fn recorded_hosts(input: &super::installation::Input) -> Result<Vec<(Value, Config)>> {
+    let installation = Journal::open(&input.directory)?;
+    if installation
+        .load::<Option<uuid::Uuid>>("backup-operation.json")?
+        .flatten()
+        .is_some()
+    {
+        return Err(Error::Busy);
+    }
+    let reservations: BTreeMap<uuid::Uuid, usize> = installation
+        .load("host-reservations.json")?
+        .unwrap_or_default();
+    let mut hosts = Vec::new();
+    for entry in std::fs::read_dir(&input.directory).map_err(|_| Error::Storage)? {
+        let entry = entry.map_err(|_| Error::Storage)?;
+        if !entry
+            .file_name()
+            .to_str()
+            .is_some_and(|name| name.starts_with("rss-mdm-"))
+        {
+            continue;
+        }
+        if !entry.file_type().map_err(|_| Error::Storage)?.is_dir() {
+            return Err(Error::Input);
+        }
+        let journal = Journal::open(&entry.path())?;
+        let Some(runtime) = journal.load::<Value>("requested-runtime.json")? else {
+            continue;
+        };
+        let binding: Binding = serde_json::from_value(runtime["runtime_binding"].clone())
+            .map_err(|_| Error::Corrupt)?;
+        let config = reservations
+            .get(&binding.host_id)
+            .map(|index| {
+                input
+                    .additional_hosts
+                    .get(*index)
+                    .map(|slot| &slot.deployment)
+                    .ok_or(Error::Conflict)
+            })
+            .transpose()?
+            .unwrap_or(&input.deployment);
+        hosts.push((
+            runtime,
+            serde_json::from_value(serde_json::to_value(config).map_err(|_| Error::Input)?)
+                .map_err(|_| Error::Input)?,
+        ));
+    }
+    Ok(hosts)
 }
 
 fn matches(value: &Applied, binding: &Binding, tenant: &str, instance: &str) -> bool {

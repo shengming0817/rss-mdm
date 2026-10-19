@@ -2112,10 +2112,10 @@ MODULES['content.storage'] = replace(module, policies=(*module.policies, CasePol
 
 consume(('crates/agent-wire/schema/task_trust/*',), 'execution.agent.task_trust')
 
-# Installation orchestration is additionally qualified against fixed Linux candidates.
+# Installation orchestration is additionally qualified against fixed Compose candidates.
 # Its shared SQL/authentication and restore seams retain their existing T2 owners.
 consume(('crates/app/src/setup/configure.rs','crates/app/src/setup/deployment.rs','crates/app/src/setup/installation.rs',
-         'crates/app/src/setup/postgres.rs','crates/app/src/setup/tenant_hosts.rs','crates/app/src/setup/supervisor.rs'),
+         'crates/app/src/setup/postgres.rs','crates/app/src/setup/tenant_hosts.rs'),
         'deployment.management-tenant installation.backup')
 consume(('crates/app/src/setup/public_configuration.rs',), 'deployment.management-tenant')
 consume(('crates/app/src/ca_webhooks.rs',), 'apple.scep agent.pki')
@@ -2125,7 +2125,7 @@ consume(('crates/management-http/src/content/mod.rs',), 'content.storage')
 consume(('crates/windows-channel/schema/Wns.json',), 'windows.management')
 T1_INPUTS += ('crates/app/src/setup/local.rs','crates/app/src/setup/mod.rs','crates/app/src/setup/model.rs',
               'crates/app/tests/setup/deployment.rs','crates/app/tests/setup/installation.rs',
-              'crates/app/tests/setup/postgres.rs','crates/app/tests/setup/supervisor.rs','crates/app/tests/setup/public_configuration.rs',
+              'crates/app/tests/setup/postgres.rs','crates/app/tests/setup/public_configuration.rs',
               'crates/mail-service/examples/mail_schema.rs','crates/webhook-service/examples/materials_schema.rs','crates/windows-channel/examples/wns_schema.rs')
 TOOL_INPUTS['deployment/Dockerfile'] = ('test_release',)
 consume_dependencies('installation.providers', normal='aws-credential-types aws-sigv4')
@@ -2152,3 +2152,9 @@ MODULES['agent.pki'] = replace(module, policies=tuple(
     replace(policy, actors=(*module.actors, ('tenant', 'other')))
     if policy.selector == 'agent_pki_tests::production_agent_listener_bootstraps_activates_and_rechecks_revocation'
     else policy for policy in module.policies))
+
+TOOL_INPUTS['deployment/production.compose.yaml'] = ('test_release', 'test_compose_deployment')
+TOOL_INPUTS['deployment/compose_bootstrap.py'] = ('test_release', 'test_compose_deployment')
+TOOL_INPUTS['hack/deploy.py'] = ('test_compose_deployment',)
+TOOL_INPUTS['hack/candidate_installation_driver.py'] = ('test_compose_deployment',)
+TOOL_INPUTS['hack/candidate_installation.py'] = ('test_compose_deployment',)

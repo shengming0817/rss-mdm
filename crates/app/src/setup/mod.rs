@@ -24,8 +24,6 @@ pub mod public_configuration;
 #[cfg(unix)]
 mod snapshot_tree;
 #[cfg(unix)]
-mod supervisor;
-#[cfg(unix)]
 pub mod tenant_hosts;
 #[derive(Debug, thiserror::Error)]
 pub enum Error {

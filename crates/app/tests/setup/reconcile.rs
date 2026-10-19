@@ -28,7 +28,7 @@ fn input(root: &Path, config: &crate::config::Config, fixture: &Value) -> Result
         session_token_file: None,
     };
     let mut input: Input = serde_json::from_value(json!({
-        "directory":root,"deployment":{"server_image":"sha256:0000000000000000000000000000000000000000000000000000000000000000","gateway_image":"sha256:0000000000000000000000000000000000000000000000000000000000000000","certificate_file":root.join("unused-cert"),"private_key_file":root.join("unused-key"),"trust_file":root.join("unused-ca")},
+        "directory":root,"deployment":{"server_image":"sha256:0000000000000000000000000000000000000000000000000000000000000000","gateway_image":"sha256:0000000000000000000000000000000000000000000000000000000000000000","certificate_file":root.join("unused-cert"),"private_key_file":root.join("unused-key"),"trust_file":root.join("unused-ca"),"state_volume":"installation-state","network":"installation-default","publish_ip":"127.0.0.1"},
         "database":{"administrator":config.identity.database,"name":config.identity.database.name},
         "audit_mode":"plain","organization_name":"fixture","platform_login":"platform","administrator_login":"administrator","origin":"https://localhost:8445","listen":"127.0.0.1:8081","trusted_gateway":"127.0.0.1"
     }))?;

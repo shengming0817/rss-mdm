@@ -12,7 +12,6 @@ pub(super) struct Journal {
     root: PathBuf,
     _lock: File,
     uid: u32,
-    projection_uid: Option<u32>,
 }
 impl Journal {
     pub(super) fn open(root: &Path) -> Result<Self> {
@@ -63,13 +62,7 @@ impl Journal {
             root: root.into(),
             _lock: lock,
             uid,
-            projection_uid: None,
         })
-    }
-    pub(super) fn projection(root: &Path) -> Result<Self> {
-        let mut journal = Self::open(root)?;
-        journal.projection_uid = Some(10001);
-        Ok(journal)
     }
     pub(super) fn path(&self, name: &str) -> Result<PathBuf> {
         if name.is_empty()
@@ -151,7 +144,7 @@ impl Journal {
         match fs::symlink_metadata(&path) {
             Ok(meta) => {
                 if !meta.is_file()
-                    || (meta.uid() != self.uid && Some(meta.uid()) != self.projection_uid)
+                    || meta.uid() != self.uid
                     || (private && meta.mode() & 0o077 != 0)
                     || (!private && meta.mode() & 0o022 != 0)
                 {

@@ -41,4 +41,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends libxml2 python3
 COPY --from=build /out/rss-mdm /usr/local/bin/rss-mdm-installer
 COPY --from=docker-tools /usr/local/bin/docker /usr/local/bin/docker
 COPY --from=docker-tools /usr/local/libexec/docker/cli-plugins/docker-compose /usr/local/libexec/docker/cli-plugins/docker-compose
+COPY source/deployment/compose_bootstrap.py /usr/local/lib/rss-mdm/compose_bootstrap.py
+USER 10001:10001
 ENTRYPOINT ["/usr/local/bin/rss-mdm-installer"]

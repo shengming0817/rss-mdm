@@ -111,3 +111,34 @@ fn candidate_freezes_material_bytes_before_application_digest() {
         super::super::application::fingerprint(&changed).unwrap()
     );
 }
+
+#[test]
+fn runtime_mounts_are_scoped_to_named_volume_subdirectories() {
+    let config = Config {
+        server_image: format!("sha256:{}", "a".repeat(64)),
+        gateway_image: format!("sha256:{}", "b".repeat(64)),
+        certificate_file: "/unused/certificate".into(),
+        private_key_file: "/unused/key".into(),
+        trust_file: "/unused/ca".into(),
+        content_volume: None,
+        state_volume: "installation_state".into(),
+        network: "installation_default".into(),
+        publish_ip: "127.0.0.1".parse().unwrap(),
+    };
+    let mount = volume_mount(
+        &config,
+        Path::new("/var/lib/rss-mdm/installation/host/operation/server"),
+        "/run/mdm",
+        true,
+    )
+    .unwrap();
+    assert_eq!(mount["type"], "volume");
+    assert_eq!(
+        mount["volume"]["subpath"],
+        "installation/host/operation/server"
+    );
+    assert_eq!(mount["read_only"], true);
+    for path in ["/etc", "/var/lib/rss-mdm", "/var/lib/rss-mdm/../secret"] {
+        assert!(volume_mount(&config, Path::new(path), "/run/mdm", true).is_err());
+    }
+}

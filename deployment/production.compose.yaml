@@ -1,0 +1,79 @@
+# Formal installation. No development fixture, host networking, systemd or privileged node.
+services:
+  bootstrap:
+    image: ${MDM_INSTALLER_IMAGE:?fixed installer image required}
+    user: "0:0"
+    network_mode: none
+    entrypoint: [python3, /usr/local/lib/rss-mdm/compose_bootstrap.py]
+    environment:
+      MDM_SERVER_IMAGE: ${MDM_SERVER_IMAGE:?fixed server image required}
+      MDM_WEB_IMAGE: ${MDM_WEB_IMAGE:?fixed MDM UI image required}
+      MDM_STATE_VOLUME: ${COMPOSE_PROJECT_NAME}_state
+      MDM_NETWORK: ${COMPOSE_PROJECT_NAME}_default
+      MDM_PRODUCT_ORIGIN: ${MDM_PRODUCT_ORIGIN:-https://localhost:8445}
+      MDM_ADDITIONAL_ORIGINS: ${MDM_ADDITIONAL_ORIGINS:-https://localhost:8446}
+      MDM_PUBLISH_IP: ${MDM_PUBLISH_IP:-127.0.0.1}
+      MDM_ORGANIZATION: ${MDM_ORGANIZATION:-My organization}
+      MDM_PLATFORM_LOGIN: ${MDM_PLATFORM_LOGIN:-platform}
+      MDM_ADMINISTRATOR_LOGIN: ${MDM_ADMINISTRATOR_LOGIN:-administrator}
+      MDM_TLS_MODE: ${MDM_TLS_MODE:-local}
+    volumes:
+      - state:/var/lib/rss-mdm
+      - pg-input:/pg-input
+      - type: bind
+        source: ${MDM_INPUT_DIRECTORY:?private input directory required (may be empty for local TLS)}
+        target: /inputs
+        read_only: true
+        bind: {create_host_path: false}
+  postgres:
+    image: ${MDM_POSTGRES_IMAGE:?fixed PostgreSQL image required}
+    depends_on:
+      bootstrap: {condition: service_completed_successfully}
+    environment:
+      POSTGRES_PASSWORD_FILE: /pg-input/database-password
+    volumes:
+      - pg:/var/lib/postgresql/data
+      - pg-input:/pg-input:ro
+    command: [postgres, -c, ssl=on, -c, ssl_cert_file=/pg-input/server.crt, -c, ssl_key_file=/pg-input/server.key]
+    healthcheck:
+      test: [CMD, pg_isready, -U, postgres]
+      interval: 2s
+      timeout: 3s
+      retries: 45
+    restart: unless-stopped
+  install:
+    image: ${MDM_INSTALLER_IMAGE:?}
+    user: "10001:10001"
+    group_add: ["${MDM_DOCKER_GID:-0}"]
+    depends_on:
+      postgres: {condition: service_healthy}
+    environment:
+      DOCKER_HOST: unix:///run/docker.sock
+    volumes:
+      - state:/var/lib/rss-mdm
+      - type: bind
+        source: ${MDM_DOCKER_SOCKET:?socket from the selected Docker context required}
+        target: /run/docker.sock
+        bind: {create_host_path: false}
+    command: [install, --config, /var/lib/rss-mdm/installation-input.json]
+  operator:
+    image: ${MDM_INSTALLER_IMAGE:?}
+    user: "10001:10001"
+    group_add: ["${MDM_DOCKER_GID:-0}"]
+    depends_on:
+      install: {condition: service_completed_successfully}
+    environment:
+      DOCKER_HOST: unix:///run/docker.sock
+    volumes:
+      - state:/var/lib/rss-mdm
+      - type: bind
+        source: ${MDM_DOCKER_SOCKET:?}
+        target: /run/docker.sock
+        bind: {create_host_path: false}
+    command: [provision-hosts, --config, /var/lib/rss-mdm/installation-input.json]
+    restart: unless-stopped
+    stop_grace_period: 2m
+volumes:
+  state:
+  pg:
+  pg-input:

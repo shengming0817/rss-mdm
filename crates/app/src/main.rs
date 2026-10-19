@@ -139,11 +139,18 @@ async fn execute() -> Result<(), ProcessError> {
             let shutdown = rss_mdm_app::signal();
             tokio::pin!(shutdown);
             let mut failed = false;
+            let mut resumed = false;
             loop {
                 let result = tokio::select! {
                     biased;
-                    result=&mut shutdown=>return result.map_err(|_| ProcessError::Stage {stage:"deployment.signal",kind:"shutdown signal unavailable"}),
-                    result=rss_mdm_app::setup::tenant_hosts::reconcile(&input)=>result,
+                    result=&mut shutdown=>{
+                        rss_mdm_app::setup::deployment::stop_hosts(&input).await.map_err(|e| setup_failure("deployment.stop",e))?;
+                        return result.map_err(|_| ProcessError::Stage {stage:"deployment.signal",kind:"shutdown signal unavailable"});
+                    },
+                    result=async {
+                        if !resumed { rss_mdm_app::setup::deployment::resume_hosts(&input).await?; resumed=true; }
+                        rss_mdm_app::setup::tenant_hosts::reconcile(&input).await
+                    }=>result,
                 };
                 if result.is_err() != failed {
                     failed = result.is_err();
@@ -153,7 +160,10 @@ async fn execute() -> Result<(), ProcessError> {
                     );
                 }
                 tokio::select! {
-                    result=&mut shutdown=>return result.map_err(|_| ProcessError::Stage {stage:"deployment.signal",kind:"shutdown signal unavailable"}),
+                    result=&mut shutdown=>{
+                        rss_mdm_app::setup::deployment::stop_hosts(&input).await.map_err(|e| setup_failure("deployment.stop",e))?;
+                        return result.map_err(|_| ProcessError::Stage {stage:"deployment.signal",kind:"shutdown signal unavailable"});
+                    },
                     ()=tokio::time::sleep(std::time::Duration::from_secs(5))=>{},
                 }
             }

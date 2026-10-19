@@ -1,8 +1,8 @@
 # 候选构建与安装
 
-## 构建 V5 候选
+## 构建 V6 候选
 
-构建使用当前工作区源码，包含未提交修改、已加入 Git 索引的新文件及删除；源码路径由 workspace 成员与构建输入限定。范围内未跟踪文件默认拒绝，新增源码须先逐项检查并加入索引，不要求 commit 或 clean HEAD。复制前后核对文件内容与状态，变化则终止构建；candidate 记录实际复制输入的摘要，运行验收不依赖源码 checkout。构建机需要 Docker Buildx 和私有 Git 只读凭据。后端可独立发布；前后端一起交付时，额外提供不可变 rss-web MDM image ID/repository digest。
+构建使用当前工作区源码，包含未提交修改、已加入 Git 索引的新文件及删除；源码路径由 workspace 成员与构建输入限定。范围内未跟踪文件默认拒绝，新增源码须先逐项检查并加入索引，不要求 commit 或 clean HEAD。复制前后核对文件内容与状态，变化则终止构建；candidate 记录实际复制输入的摘要，运行验收不依赖源码 checkout。构建机需要 Docker Buildx 和私有 Git 只读凭据。部署宿主使用 macOS 或 Linux，arm64 或 amd64；容器平台显式选择 `linux/arm64` 或 `linux/amd64`，不要求宿主安装 Rust、nginx、systemd 或使用 sudo。后端可独立发布；前后端一起交付时，额外提供不可变 rss-web MDM image ID/repository digest。
 
 ```sh
 # 仅后端
@@ -14,7 +14,9 @@ python3 hack/build_run.py -- python3 hack/candidate_smoke.py --candidate artifac
 
 授权头文件须为 owner 独占普通文件，只以 BuildKit secret 供依赖获取使用。构建从一次源码副本生成正式 OCI，复用正常缓存；失败不发布候选目录，已有输出不覆盖。
 
-V5 候选包含 server.oci.tar、installer.oci.tar、rss-mdm-installer、candidate.json、示例配置、deployment 下的角色 SQL、nginx 配置与 Agent 叶证书模板，以及普通构建记录。传入 `--web-image` 时另包含 identity-ui.image.tar 和 manifest 的 `ui` 信息，并保留前端镜像身份、运行用户和归档完整性检查；省略时不检查或归档前端。V5 候选包含与服务镜像一致的 Linux 安装二进制，摘要单独绑定到 manifest；缺少当前契约的旧二进制候选必须重新构建。manifest 固定实际镜像身份、归档摘要、平台、依赖提供者及全部部署输入摘要。恢复时先核验归档与部署输入，再 docker load；不从 tag 拉取替代品。V2 必须重新构建，没有兼容解析或转换器。
+V6 候选包含 server.oci.tar、installer.oci.tar、candidate.json、正式 `deployment/production.compose.yaml`、卷输入准备程序、角色 SQL、网关配置和设备证书模板。`--web-image` 固定并归档真实 MDM 控制台；正式控制台部署必须包含它。用 `--platform linux/arm64` 或 `--platform linux/amd64` 指定容器架构，服务、安装器和 UI 必须一致；省略时使用 Docker 默认平台并核验实际 OCI。macOS arm64 上运行 amd64 容器属于仿真，不能作为 amd64 宿主已验收的证据。
+
+安装器只以容器镜像交付，不再交付宿主 Linux 二进制。服务和安装器默认 UID/GID 10001。manifest 固定实际镜像身份、平台、归档和部署输入摘要；旧候选须重建，不提供旧 systemd 安装目录转换。恢复前核验归档和部署输入，不以 tag 替换已交付镜像。
 
 安装、smoke 与认证验收不要求 matching checkout、Git 元数据或 clean HEAD。把运行工具与候选放到独立目录也可执行，工具从候选目录读取角色和网关文件。候选摘要保护所交付内容的一致性，不替代分发渠道信任。
 
@@ -22,18 +24,32 @@ smoke 启动实际 OCI、自有 TLS PostgreSQL 与 HTTPS 网关，验证迁移�
 
 ## 全新实例安装
 
-Linux 单机安装由固定候选中的 `rss-mdm-installer install --config /absolute/private-input.json` 执行。宿主需要 systemd、Docker Engine/Compose、受信 TLS 入口及二进制运行依赖。安装器先保存稳定身份和秘密，再准备专用 PostgreSQL 数据库与受限角色、初始化独立平台/业务管理员、应用默认租户宿主。数据库引导连接只由部署操作员持有，服务容器不接收该凭据。
+正式入口为候选内的 `deployment/production.compose.yaml`。从所选 Docker context 取得 socket；宿主用户仅需已有 Docker/Compose 使用权限。准备工具核验候选并生成只含公开坐标、固定镜像及路径的 Compose 环境文件，不写业务表、不生成租户或账户：
 
-部署输入结构由 [安装输入](../../crates/app/src/setup/installation.rs) 持有。`database` 包含目标 `name` 和引导 `administrator` 连接；角色密码由安装目录生成。`deployment` 固定服务/网关镜像摘要及 TLS 材料；`additional_hosts` 列出后续租户可用的独立入口、监听和部署参数；当前单机模板为每个租户运行独立网关，HTTPS 端口和后端监听不得重复。没有可用槽位时保留原开通操作并显示 capacity，不另建租户或账户。槽位预留不可改绑，新增容量需追加配置并重启部署进程。
+```sh
+python3 hack/deploy.py --candidate /absolute/combined-candidate --output /absolute/new-deployment
+# 使用上一步输出的文件路径；后续全部生命周期由 Compose 驱动。
+docker compose --env-file /absolute/new-deployment/compose.env -f /absolute/new-deployment/compose.yaml up -d
+docker compose --env-file /absolute/new-deployment/compose.env -f /absolute/new-deployment/compose.yaml ps --all
+```
 
-安装器将部署二进制复制到 root 独占安装目录，注册 `rss-mdm-deployer-<instance>.service`。该进程消费已有开通回执和领域期望版本，使用固定 Docker Compose 模板部署宿主；管理 HTTP 不接受任意命令或维护凭据。实例目录、原凭据、角色密码和固定 Ledger 密钥必须联合备份。重试使用原输入和原目录；密码或密钥丢失时恢复原材料，不重新生成替代身份。
+Compose 按顺序运行 `bootstrap → postgres → install → operator`。bootstrap 只在 Docker 命名卷中准备 TLS、数据库引导密码和安装输入，不连接数据库；install 调用正式 Rust `install`，准备真实受限角色和迁移、独立平台/业务管理员、首业务租户与宿主；成功后才启动持续消费开通回执和领域期望版本的 operator。不能以预制数据库、合成 tenant 或 `make dev` fixture 代替此过程。`install` 成功且保存的安装回执 `stage=enabled` 后，才可登录和开始相应 T3。
+
+首次准备默认使用 localhost 的本地 TLS CA、两个不同端口的入口和随机密码。它们是当前真实安装的材料，不包含演示账户或业务成功数据。用 `docker compose ... cp bootstrap:/var/lib/rss-mdm/inputs/ca.crt /absolute/ca.crt` 导出公共 CA 并配置专用浏览器信任；密码通过 `docker compose ... run --rm --no-deps --entrypoint cat operator /var/lib/rss-mdm/installation/administrator-password` 从私有终端读取，平台密码对应 `platform-password`，不要保存到日志。默认登录名分别为 `administrator` 和 `platform`。
+
+设备访问前，在首次启动前配置 `compose.env` 中的 `MDM_PRODUCT_ORIGIN`、逗号分隔的 `MDM_ADDITIONAL_ORIGINS`、`MDM_PUBLISH_IP`，并设置 `MDM_TLS_MODE=supplied`。私有输入目录提供 `gateway.crt`、`gateway.key`、`gateway-ca.crt`，证书须覆盖所有选用的域名。可选 `platform-password` 和 `administrator-password` 文件固定首次密码。每个租户槽位使用独立外部 HTTPS 端口；管理 API 不对宿主发布。真实设备须能解析域名、访问对应发布端口并信任 TLS。本地 CA 不能替代 APNs/Profile 或设备 purpose trust。
+
+安装输入结构仍由 [安装输入](../../crates/app/src/setup/installation.rs) 持有。`database.administrator` 只归安装/部署容器，运行 HTTP 服务不接收该凭据；`deployment` 指定固定镜像、Docker 命名卷、bridge 网络、发布 IP 和卷内 TLS 路径。Compose 准备程序生成同一契约，不是第二套初始化引擎。后续租户通过完整 provisionings API 开通并占用 `additional_hosts` 中的固定槽位；容量不足保留原操作，不能换 ID 或复制运行 JSON 冒充新租户。
+
+operator、install 和运行服务使用非 root UID 10001。短暂的 bootstrap 容器以容器内 root 初始化 Docker 卷权限；它没有 Docker socket、网络或 privileged 权限，也不更改宿主文件属主。只有 install/operator 持有 Docker socket，仍属于部署管理权限；socket 路径和附加组来自所选 Docker context，支持 Docker Desktop 与本地/rootless Engine，不硬编码宿主 `/var/run/docker.sock`。HTTP 服务和网关只取得自己所需的卷子目录。
+
+重放使用原候选、原 Compose 项目和原卷，执行 `docker compose ... run --rm --no-deps install`。密码、身份和密钥缺失时恢复原材料，不通过重新 bootstrap 或清卷换身份。停止使用 `docker compose ... stop operator postgres`，operator 收到信号后停止本安装登记的租户服务；重启使用 `docker compose ... start postgres operator`。`down` 保留命名卷；`down -v` 会删除安装材料，不能作为故障恢复方法。
 
 ### 单机部署设计与配置归属
 
-单台 Linux 主机可承载 MDM 后端、HTTPS 网关、PostgreSQL、RustFS 和 step-ca；Identity 嵌入后端，真实 Windows/Mac 和独立交付的 Agent 在设备侧。该拓扑是部署与验收设计，不表示共享 CA、真机效果或高可用已通过验证。正式安装以本节安装器为入口，Compose 由[部署器](../../crates/app/src/setup/deployment.rs)生成；不另维护手工建租户、复制运行 JSON 的安装流程。
+Docker Desktop/Engine 可承载 MDM 后端、HTTPS 网关、PostgreSQL，以及按所选设备能力准备的对象存储和设备 CA。Identity 嵌入后端，Windows/Mac 与 Agent 在设备侧。本次正式交付为 Compose；Kubernetes/HA 未提供交付或验收承诺。
 
-当前部署器为后端和网关使用 `network_mode: host`。管理 API 仅监听回环，`trusted_gateway` 与该监听 IP 相同；每个业务宿主拥有独立入口和不冲突的监听。新增业务租户使用完整开通 API 与预留的 `additional_hosts`，不能只改请求 tenant 或复制一份 JSON 冒充第二宿主。PostgreSQL、对象存储及 CA 的部署和持久目录由运维准备，不将它们的管理员凭据交给日常服务。
-
+每个租户的 server 使用 bridge 网络，gateway 共享该 server 的容器网络命名空间。管理 API 继续只监听内部回环，`trusted_gateway` 对应该回环地址。网关内部监听 8445，Compose 将公开 origin 的端口映射到它；不同租户可以复用相同内部管理端口。原生协议各自发布实际启用的 TLS/mTLS 监听，不能用代理头替代设备证书身份。所有运行材料通过命名卷子目录交付，不使用宿主 bind 路径、host 网络或宿主 chown。
 | 入口 | 路由与信任边界 |
 |---|---|
 | 控制台/管理 API | 组织 HTTPS origin → 受信网关 → 后端回环；前端需独立固定 MDM UI 镜像并验证实际页面与会话，仅后端候选不提供控制台 |
@@ -176,7 +192,7 @@ create/update/delete 的 operation_id 共用一个全局命名空间。同一操
 准备独立 recover.json，沿用初始化配置的 installation、tenant_id 与既有 principal_id；`login` 必须为 null，`password_file` 指向新密码文件，database 使用 mdm_identity_maintenance。该操作轮换密码并撤销旧会话，不创建主体，也不恢复 MDM 业务授权。
 
 ```sh
-docker run --rm --network host --mount type=bind,src=/private/mdm-operator,dst=/run/mdm,readonly IMAGE recover-password --config /run/mdm/recover.json
+docker compose --env-file /absolute/deployment/compose.env -f /absolute/deployment/compose.yaml run --rm --no-deps operator recover-password --config /var/lib/rss-mdm/recover.json
 ```
 
 配置与秘密为 owner 独占的普通 0600 文件，末级路径不得为符号链接；CA 为可读 PEM。maintenance 密码与恢复文件仅挂入 operator 容器，不挂入运行服务。恢复后验证新登录并按受控秘密管理流程处置临时密码文件。
@@ -191,7 +207,7 @@ docker run --rm --network host --mount type=bind,src=/private/mdm-operator,dst=/
 
 运行配置和 `initialize-authorization` 配置必须显式填写 `audit`：Plain 为 `{"mode":"plain"}`；Ledger 为 `{"mode":"ledger","key_id":"部署提供的标识","key_file":"/run/mdm/audit-key"}`。密钥文件保存至少 32 字节的原始密钥，必须受文件权限保护；服务不自动生成、轮换或在错误时降级。所有运行角色使用 READ COMMITTED，恢复入口拒绝其他隔离级别。
 
-Linux host 网络使回环浏览器监听与同机 HTTPS 网关配合；Windows 协议由产品直接终止 TLS/mTLS。采用 `deployment/nginx.conf`，替换产品域名和证书路径；覆盖 X-Forwarded-For 为真实 peer，清空 Forwarded，限制真实 peer 的登录频率、连接数、正文与读取时间。后端只在真实 TCP peer 匹配 trusted_gateway 后采用覆盖后的单一来源地址。不能把浏览器监听直接暴露或接到未受控转发器。
+每租户容器网络命名空间使内部回环管理监听与同租户 HTTPS 网关配合；Windows 协议由产品直接终止 TLS/mTLS。采用 `deployment/nginx.conf`，替换产品域名和证书路径；覆盖 X-Forwarded-For 为真实 peer，清空 Forwarded，限制真实 peer 的登录频率、连接数、正文与读取时间。后端只在真实 TCP peer 匹配 trusted_gateway 后采用覆盖后的单一来源地址。不能把浏览器监听直接暴露或接到未受控转发器。
 
 资源/计划/执行使用当前全新安装结构。产品配置中的 `flow.storage` 持有数据库连接及 target/lineage/epoch，`flow.publication` 持有发布数据库与 sources，`execution.database` 持有执行数据库连接；具体字段以[配置示例](../../fixtures/mdm-config.example.json)为准。旧综合 `management` 和混合 `tasks` 配置不再接受。`content.storage` 显式选择 `volume` 或启用版本控制的 HTTPS `s3`（[S3 配置示例](../../fixtures/mdm-content-s3.example.json)）；PostgreSQL 持有内容控制状态，`content` 配置共享内容仓，`task_signing` 单独配置任务签名；脚本任务要求两者齐备，软件入库/启用不需要任务私钥，原生协议的 `management` 监听配置保持独立。本版本按全新安装交付，安装清单只持有当前完整 schema。
 
@@ -295,9 +311,9 @@ execution epoch 来自原宿主配置，在连接建立时固定；源事件复�
 
 ### 固定候选的完整安装资格
 
-`python3 hack/candidate_installation.py /absolute/candidate` 在独立 Linux 节点中消费候选的安装器镜像与服务镜像，使用真实 systemd 和 Docker daemon。节点以受限用途的 privileged 容器提供内核能力，不挂载宿主 Docker socket 或产品源码；测试 PostgreSQL、TLS 私钥和所有租户宿主均在节点内生成并随节点清除。宿主内核必须支持嵌套 Docker 与 systemd/cgroup；不满足时结果是资格缺失，不能将模拟 systemctl 或仅运行应用容器算作安装通过。
+`python3 hack/candidate_installation.py /absolute/candidate` 在当前选定 Docker context 上消费正式候选 Compose。它创建独立项目和空库，调用同一个真实 install/开通/配置/备份恢复入口；不创建 privileged DinD 节点，不使用 systemd，不挂载源码，不使用开发/T2 fixture 预置。覆盖独立管理员登录、重复安装保持密码及 Ledger、第二租户真实开通与隔离、operator 重启续跑、配置应用失败后修复及联合冷恢复。
 
-安装资格检查单输入安装、原凭据及 Ledger 密钥不变的重复安装、平台与业务的独立主体及真实登录、第二租户宿主、原开通操作重放及宿主租户隔离。成功记录 `installation-result.json` 绑定服务 OCI 摘要和平台，只有清理成功后才发布。协议/浏览器的 `candidate_smoke.py` 使用合法业务预置数据，独立证明原生协议与会话消费；它不承担完整开通证明。发布验收必须同时保留两种结果，真实设备资格仍由独立 T3 提供。
+只有验证与清理都完成才发布 `installation-result.json`，绑定候选/Compose 摘要、宿主 OS/架构和容器平台。arm64 与 amd64 候选分别运行；仿真、原生及不同宿主的结果分别记录，不能由一台 Mac 推导所有宿主均通过。协议 `candidate_smoke.py` 的合法预置仅证明相应协议接缝，不是本入口的完整初始化证据。浏览器与真机 T3 按各自输入继续，不能用安装、readiness 或 smoke 代替终端效果。
 
 Native 保护轮换重加密运行凭据及 Apple 的 ADE、账户开通、设备令牌、命令和 DDM 证据行，不修改逻辑版本或重放 MAC。不可变内容对象、已有执行快照、证书归档以及历史备份仍可能依赖旧读取钥；因此本入口保留旧钥，未提供可绕过这些保留条件的删除动作。历史读取钥最多 15 份，达到上限会明确拒绝继续轮换，须完成对应历史数据和备份退出后再处理，不能删除旧钥冒充完成。
 
@@ -311,7 +327,7 @@ Native 保护轮换重加密运行凭据及 Apple 的 ADE、账户开通、设�
 
 ### 输入就绪与范围冻结
 
-- 保存候选 manifest 摘要、后端/UI/Agent 制品实际镜像或包摘要、依赖 lock 和实际镜像身份、目标 Linux/CPU、Docker/Compose 版本。含控制台的验收必须使用真实 MDM 前端；Agent 包按平台提供正式签名/公证及匹配 wire 和信任材料。
+- 保存候选 manifest 摘要、后端/UI/Agent 制品实际镜像或包摘要、依赖 lock 和实际镜像身份、实际宿主 OS/CPU、容器 OS/架构、原生或仿真方式及 Docker/Compose 版本。含控制台的验收必须使用真实 MDM 前端；Agent 包按平台提供正式签名/公证及匹配 wire 和信任材料。
 - 从设备网络检查域名、公开端口、TLS 完整链、主机名及设备时间；从实际服务身份检查 PostgreSQL/RustFS/CA TLS、权限、持久目录与可恢复空间。容器内部可达不代表设备可达，不使用跳过证书验证的参数。
 - 按所选能力提供真实 APNs/Profile、ABM/ASM/Entra/IdP 等组织资格、CA 模板/CRL/webhook 和受控签名材料。冻结设备 OS edition/build、架构、注册方式、用户/系统执行身份、浏览器及 Agent 版本；不从一次注册推断所有平台或权限组合可用。
 - 准备平台管理员、独立业务管理员、只读/受限账户及合法第二租户宿主；通过领域 API 发布测试资源、软件版本、Group/Scope/Policy。安装器不制造业务成功数据，跨租户场景不能只修改请求中的 tenant。

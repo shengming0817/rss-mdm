@@ -288,8 +288,7 @@ END $backup$;"#}).execute(&mut *tx).await.map_err(|_|Error::Storage)?;
     tx.commit().await.map_err(|_| Error::Storage)
 }
 pub async fn capture(input: Request) -> Result<Receipt> {
-    if !cfg!(target_os = "linux")
-        || input.operation_id.is_nil()
+    if input.operation_id.is_nil()
         || input.directory.starts_with(&input.installation.directory)
         || input.installation.directory.starts_with(&input.directory)
     {
@@ -391,7 +390,7 @@ struct RestoreProgress {
     stage: RestoreStage,
 }
 pub async fn restore(input: Restore) -> Result<Receipt> {
-    if !cfg!(target_os = "linux") || input.operation_id.is_nil() {
+    if input.operation_id.is_nil() {
         return Err(Error::Input);
     }
     let journal = Journal::open(&input.directory)?;
@@ -533,7 +532,7 @@ async fn resume_ca(
         .as_str()
         .ok_or(Error::Corrupt)?;
     if mode == "host" {
-        service["network_mode"] = json!("host");
+        return Err(Error::Input);
     } else {
         // Named networks are deployment infrastructure. Never join an inferred replacement network.
         if mode != "default" && mode != "bridge" {
@@ -1068,12 +1067,6 @@ async fn activate_restored(
         .await?;
     }
     c.close().await.map_err(|_| Error::Storage)?;
-    super::supervisor::restore(
-        root,
-        &frozen.request.installation,
-        Uuid::parse_str(&frozen.installation.instance_id).map_err(|_| Error::Corrupt)?,
-    )
-    .await?;
     Ok(())
 }
 

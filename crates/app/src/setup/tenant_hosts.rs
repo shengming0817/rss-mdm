@@ -70,7 +70,6 @@ pub(super) fn validate_slots(input: &Input) -> Result<()> {
         .map_err(|_| Error::Input)?
         .port_or_known_default()
         .ok_or(Error::Input)?]);
-    let mut listeners = std::collections::BTreeSet::from([input.listen]);
     if input.additional_hosts.len() > 1023 {
         return Err(Error::Input);
     }
@@ -84,7 +83,6 @@ pub(super) fn validate_slots(input: &Input) -> Result<()> {
             || slot.listen.port() == 0
             || !ports.insert(url.port_or_known_default().ok_or(Error::Input)?)
             || !origins.insert(slot.origin.clone())
-            || !listeners.insert(slot.listen)
         {
             return Err(Error::Input);
         }

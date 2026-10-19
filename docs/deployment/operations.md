@@ -237,11 +237,11 @@ Apple 的 `identity_seed` 永久保留原 challenge/notify ID，实际凭据放�
 
 `backup-installation` 接受安装输入、稳定操作 ID、位于安装目录之外的私有备份目录，以及每个保留 CA 的确切容器 ID、issuer、purpose、在线与离线目录、离线 root 私钥和密码文件。准备阶段核对已启用宿主、实际 provider issuer、CA 容器挂载、在线 issuer 与原离线 root 私钥对应关系；不接受用另一份目录冒充原 CA。备份中包含秘密，公开回执只返回操作、阶段和需独立保存的 manifest SHA-256。
 
-操作先持久保存原身份，关闭容器自动重启并停写，保存和暂时收回普通运行角色的数据库 CONNECT 授权。数据库 owner 和受控管理员用于原样 dump 及切换到原只读角色后的 Ledger 验证。联合归档保留部署文件的原 UID/GID/权限、原保护材料、内容卷、S3 确切物理版本和 CA 在线/离线目录。未决对象继续保持未知；原 Ledger 历史逐页验证，不更换 HMAC 密钥。归档封存后按原权限恢复连接并重新观察宿主。
+操作先持久保存原身份，关闭容器自动重启并停写，保存和暂时收回普通运行角色的数据库 CONNECT 授权。数据库 owner 和受控管理员用于原样 dump 及切换到原只读角色后的 Ledger 验证。联合归档保留 Docker 卷内固定服务 UID/GID/权限、原保护材料、内容卷、S3 确切物理版本和 CA 在线/离线目录。未决对象继续保持未知；原 Ledger 历史逐页验证，不更换 HMAC 密钥。归档封存后按原权限恢复连接并重新观察宿主。
 
 `restore-installation` 使用备份目录、独立保存的 manifest 摘要、新恢复操作 ID、目标管理员数据库连接，以及平台和每个已启用业务租户的 `accounts`（tenant_id、原 principal_id/login/password_file）。这是同址恢复：数据库名称/地址、安装路径、材料路径和内容路径保持原值；目标库必须为空，受限角色及原凭据须已恢复，外置材料父目录须存在。拒绝覆盖不同文件内容或已有业务库。恢复数据库使用单事务和持久操作标记，原角色授权在验证完成后恢复；原账户执行真实认证及授权核对，不以密码重置代替验证。
 
-CA 原容器仍存在时核对原 image/command/mount 后启动；容器缺失时从封存元数据生成固定、受限的 step-ca Compose 服务，复用原不可变 image、挂载和数据库，不重新初始化 CA。自定义 Docker 网络及固定 image 属于需预先恢复的部署基础设施。任何材料、旧密钥、权限、网络或外部 S3 资格缺失均停在原检查点，不能宣称恢复成功。
+CA 原容器仍存在时核对原 image/command/mount 后启动；容器缺失时从封存元数据生成固定、受限的 step-ca Compose 服务，复用原不可变 image、挂载和数据库，不重新初始化 CA。原 Docker 命名卷、bridge 网络及固定 image 属于需预先恢复的部署基础设施。恢复容器使用与原安装相同的卷内路径和 UID 10001；不恢复宿主 uid0 或 systemd 二进制。任何材料、旧密钥、权限、网络或外部 S3 资格缺失均停在原检查点，不能宣称恢复成功。
 
 `configure-host` 的 `channels` 变更接受严格的 Windows/Apple/Agent 配置、完整 provider 集合及 Apple 导入信任根。通道尚未就绪时保持关闭；可以先仅安装材料校验根，再由原材料 API 导入证书，最后启用通道。Windows 部署输入省略 `protocol_protection` 时，首次启用生成独立材料，已有通道沿用原材料；更换写钥必须走 `rotate-protection`。Apple 已建立的 `identity_seed` 不可被通道更新替换。所有文件输入在副作用前复制到按内容摘要命名的私有文件，应用摘要绑定实际材料字节；原输入文件随后变化不能改变已冻结的候选。
 
@@ -270,7 +270,7 @@ rss-mdm.webhook-key/v1
 
 ## 单机部署的重启与恢复边界
 
-同机拓扑与配置归属见[安装指南](installation.md#单机部署设计与配置归属)。当前安装器生成的 server/gateway 使用 host 网络，不采用共享容器网络命名空间的手工模板；不套用“重建 server 后必须因旧 namespace 重建 gateway”的旧操作。宿主配置变更沿原 `configure-host`/部署进程执行，核对 requested/applied revision、材料摘要、宿主/租户/operation 以及新的进程观察；直接改生成文件或仅重启进程不构成应用成功。
+Compose 拓扑与配置归属见[安装指南](installation.md#单机部署设计与配置归属)。正式 server 使用 bridge，gateway 共享该租户 server 的网络命名空间；部署器重建 server 时同时重建 gateway，保留内部回环管理边界。进程生命周期由 Compose 管理，宿主不安装 systemd unit 或部署二进制。宿主配置变更沿原 `configure-host`/部署进程执行，核对 requested/applied revision、材料摘要、宿主/租户/operation 以及新的进程观察；直接改生成文件或仅重启进程不构成应用成功。
 
 服务 TLS 变更后分别检查网关与原生设备入口的证书链、主机名及实际连接；设备证书仍由后端验证，不借助代理头。CA、SCEP/webhook 和根/issuer CRL 变化按各自原 owner 验证，单机上的 DNS/容器健康不替代外部设备网络检查。APNs/Profile/WNS 等材料使用领域版本与受控应用流程，不恢复启动秘密文件 loader。
 

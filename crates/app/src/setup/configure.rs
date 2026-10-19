@@ -428,7 +428,7 @@ fn ca(input: &Input, runtime: &mut Value, operation: Uuid) -> Result<()> {
 }
 
 pub async fn run(request: Request) -> Result<Receipt> {
-    if !cfg!(target_os = "linux") || request.operation_id.is_nil() || request.host_id.is_nil() {
+    if request.operation_id.is_nil() || request.host_id.is_nil() {
         return Err(Error::Input);
     }
     let input = &request.installation;
