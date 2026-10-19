@@ -942,6 +942,46 @@ async fn production_agent_listener_bootstraps_activates_and_rechecks_revocation(
         body["code"], "credential_revoked",
         "same TLS connection must recheck revoked credentials"
     );
+    crate::test_support::identity::set_grants(
+        case_a(),
+        &subject,
+        crate::test_support::identity::device_grants(
+            Some(&active.runtime.device_id),
+            &["inventory_read"],
+        )?,
+    )
+    .await?;
+    assert_eq!(
+        observer
+            .call(&host.browser, axum::http::Method::GET, &query_path, None)
+            .await?,
+        (axum::http::StatusCode::OK, serde_json::Value::Null)
+    );
+    // Minimal successor fixture for the read boundary; this does not reactivate a credential.
+    let mut c = sqlx::PgConnection::connect_with(&options("postgres")?).await?;
+    sqlx::query("SELECT set_config('rss.tenant_id',$1,false)")
+        .bind(case_a())
+        .execute(&mut c)
+        .await?;
+    sqlx::query("UPDATE mdm_access.registrations SET state='active',generation=generation+1 WHERE tenant_id=$1::uuid AND id=$2")
+        .bind(case_a()).bind(active.runtime.registration_id).execute(&mut c).await?;
+    assert_eq!(
+        observer
+            .call(&host.browser, axum::http::Method::GET, &query_path, None)
+            .await?,
+        (axum::http::StatusCode::OK, serde_json::Value::Null)
+    );
+    let mut next: rss_mdm_agent_wire::pki::Observation = serde_json::from_value(observation)?;
+    next.operation = Uuid::new_v4();
+    next.generation += 1;
+    next.sequence = 1;
+    rss_mdm_pki_service::observations::record_in(&mut c, case_a(), &next).await?;
+    let (status, current) = observer
+        .call(&host.browser, axum::http::Method::GET, &query_path, None)
+        .await?;
+    assert_eq!(status, 200);
+    assert_eq!(current["observation"], serde_json::to_value(next)?);
+    c.close().await?;
     drop(certified);
     drop(anonymous);
     assert!(owner.shutdown().join().await?.is_clean());
