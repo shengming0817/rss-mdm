@@ -277,5 +277,11 @@ if __name__=='__main__':
     try:main()
     except Exception as error:
         # No tracebacks, HTTP bodies, SQL or operator stderr containing private data.
-        print(json.dumps(dict(status='failed',error_class=type(error).__name__,reason=str(error) if isinstance(error,QualificationFailure) else 'unexpected exception')))
+        checkpoints={}
+        for name in ('backup-progress.json','restore-progress.json'):
+            path=ROOT/'backup'/name
+            if path.exists():checkpoints[name]=json.loads(path.read_text()).get('stage')
+        for name in ('ledger-checkpoints.json','database-backup.json'):
+            checkpoints[name]=(ROOT/'backup'/name).exists()
+        print(json.dumps(dict(status='failed',error_class=type(error).__name__,reason=str(error) if isinstance(error,QualificationFailure) else 'unexpected exception',checkpoints=checkpoints)))
         raise SystemExit(1)

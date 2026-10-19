@@ -782,7 +782,9 @@ async fn capture_stopped(frozen: &Frozen, journal: &Journal, progress: &mut Rece
         storage::backup_current(&mut c, journal, host.id, &host.runtime).await?;
     }
     no_writers(&mut c).await?;
-    archive::capture(journal, &owner).await?;
+    // Forced RLS must not filter a whole-installation archive. The deployment
+    // administrator was admitted before quiescence; runtime roles remain fenced.
+    archive::capture(journal, &administrator(&frozen.request.installation)?).await?;
     c.close().await.map_err(|_| Error::Storage)?;
     for (index, authority) in frozen.request.authorities.iter().enumerate() {
         snapshot_tree::capture(journal, &format!("ca-{index}"), &authority.online_directory)?;
