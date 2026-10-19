@@ -36,12 +36,12 @@ Restart=on-failure
 WantedBy=multi-user.target
 '''
 
-def qualify(directory):
+def qualify(directory, legacy=None):
     manifest=verify_candidate(directory)
     name='mdm-install-'+uuid.uuid4().hex
     created=[]
     built=False
-    marker=directory/'installation-result.json'
+    marker=directory/('transfer-result.json' if legacy else 'installation-result.json')
     marker.unlink(missing_ok=True)
     try:
         with tempfile.TemporaryDirectory(prefix=name) as temporary:
@@ -70,7 +70,15 @@ def qualify(directory):
             driver=Path(__file__).with_name('candidate_installation_driver.py')
             docker('cp',driver,name+':/workspace/driver.py',stage=Stage.RUNTIME_INPUTS)
             docker('cp',directory/'candidate.json',name+':/workspace/candidate.json',stage=Stage.RUNTIME_INPUTS)
-            raw=docker('exec',name,'python3','/workspace/driver.py',stage=Stage.INITIALIZE,timeout=900)
+            entry='/workspace/driver.py'
+            if legacy:
+                source=json.loads((legacy/'candidate.json').read_text())
+                require(source.get('format_version')==4,'V4 source candidate required')
+                docker('cp',legacy,name+':/workspace/source',stage=Stage.RUNTIME_INPUTS,timeout=300)
+                docker('exec',name,'docker','load','--input','/workspace/source/'+source['archive']['file'],stage=Stage.LOAD,timeout=180)
+                docker('cp',Path(__file__).with_name('candidate_transfer_driver.py'),name+':/workspace/transfer.py',stage=Stage.RUNTIME_INPUTS)
+                entry='/workspace/transfer.py'
+            raw=docker('exec',name,'python3',entry,stage=Stage.INITIALIZE,timeout=900)
             result=json.loads(raw)
             require(result.get('status')=='passed','installation qualification failed')
             result['candidate']=manifest['archive']['manifest_digest']
@@ -87,4 +95,6 @@ def qualify(directory):
 if __name__=='__main__':
     parser=argparse.ArgumentParser()
     parser.add_argument('candidate',type=Path)
-    qualify(parser.parse_args().candidate.resolve())
+    parser.add_argument('--legacy-candidate',type=Path)
+    args=parser.parse_args()
+    qualify(args.candidate.resolve(),args.legacy_candidate.resolve() if args.legacy_candidate else None)

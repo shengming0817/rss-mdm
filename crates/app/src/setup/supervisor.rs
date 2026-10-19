@@ -41,8 +41,6 @@ pub(super) async fn install(journal: &Journal, input: &Input, instance: uuid::Uu
     if !cfg!(target_os = "linux") {
         return Err(Error::Input);
     }
-    let name = format!("rss-mdm-deployer-{}.service", instance.simple());
-    let input_path = journal.path("deployer-input.json")?;
     use std::io::Write;
     use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
     if std::fs::metadata(&input.directory)
@@ -84,6 +82,27 @@ pub(super) async fn install(journal: &Journal, input: &Input, instance: uuid::Uu
             .and_then(|f| f.sync_all())
             .map_err(|_| Error::Storage)?;
     }
+    activate(journal, input, instance).await
+}
+/// The sealed recovery archive owns the restored deployer binary. Do not substitute
+/// the recovery command's executable or require both release versions to match.
+pub(super) async fn restore(journal: &Journal, input: &Input, instance: uuid::Uuid) -> Result<()> {
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+    let executable = journal.path("rss-mdm-deployer")?;
+    let metadata = std::fs::symlink_metadata(&executable).map_err(|_| Error::Corrupt)?;
+    if !metadata.is_file()
+        || metadata.uid() != 0
+        || metadata.permissions().mode() & 0o077 != 0
+        || metadata.permissions().mode() & 0o100 == 0
+    {
+        return Err(Error::Corrupt);
+    }
+    activate(journal, input, instance).await
+}
+async fn activate(journal: &Journal, input: &Input, instance: uuid::Uuid) -> Result<()> {
+    let name = format!("rss-mdm-deployer-{}.service", instance.simple());
+    let executable = journal.path("rss-mdm-deployer")?;
+    let input_path = journal.path("deployer-input.json")?;
     let contents = unit(&executable, &input_path, &name)?;
     journal.secret(
         "deployer-input.json",
@@ -95,6 +114,7 @@ pub(super) async fn install(journal: &Journal, input: &Input, instance: uuid::Uu
     systemctl(&["enable", "--now", &name]).await?;
     systemctl(&["is-active", "--quiet", &name]).await
 }
+
 #[cfg(test)]
 #[path = "../../tests/setup/supervisor.rs"]
 mod tests;

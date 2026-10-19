@@ -170,12 +170,11 @@ def lost_commit_ack(config,password,sql,builds,root,stack,authenticated,tenant):
         finally:
             proxy.discard.clear()
         require(browser.call('GET',BASE+'/tenants')[0] == 200, 'cancelled connection poisoned registry pool')
-    for kind in ('create','administrator_create'):
+    for kind in ('provision','administrator_create'):
         operation = str(uuid.uuid4())
-        if kind == 'create':
-            target = str(uuid.uuid4())
-            route = '/tenants'
-            body = dict(tenantId=target,initialEpoch=1)
+        if kind == 'provision':
+            route = '/provisionings'
+            body = dict(name='Lost acknowledgement',administratorLogin='ack-provision-admin',administratorPassword=password)
             role = 'mdm_tenant_registry'
         else:
             target = tenant
@@ -199,7 +198,16 @@ def lost_commit_ack(config,password,sql,builds,root,stack,authenticated,tenant):
         require(sql(f"SELECT count(*) FROM public.mdm_tenant_operations WHERE operation_id='{operation}'") == '1', 'COMMIT did not durably reach PostgreSQL')
         status, receipt = browser.call('GET',BASE+'/operations/'+operation)
         require(status == 200, 'durable unknown operation not queryable')
-        require(browser.call('POST',BASE+route,body,{'Idempotency-Key':operation}) == (200,receipt), 'unknown operation did not replay')
+        if kind == 'provision':
+            original=receipt['result']
+            status,resumed=browser.call('POST',BASE+route,body,{'Idempotency-Key':operation})
+            require(status==202 and resumed['result']['administratorId'] is not None, 'unknown provisioning did not finish administrator phase')
+            require(all(resumed['result'][key]==original[key] for key in ('tenantId','hostId','operationId')), 'unknown provisioning replaced reserved identity')
+            require(browser.call('POST',BASE+route,body,{'Idempotency-Key':operation})==(202,resumed), 'provisioning replay changed completed administrator')
+            target=resumed['result']['tenantId']
+            require(sql(f"SELECT count(*) FROM identity_authority.local_credentials WHERE tenant_id='{target}' AND login_key='ack-provision-admin'")=='1', 'provisioning duplicated account')
+        else:
+            require(browser.call('POST',BASE+route,body,{'Idempotency-Key':operation}) == (200,receipt), 'unknown operation did not replay')
         if kind == 'administrator_create':
             require(sql(f"SELECT count(*) FROM identity_authority.local_credentials WHERE tenant_id='{target}' AND login_key='ack-admin'") == '1', 'unknown commit duplicated account')
             require(sql(f"SELECT count(*) FROM mdm_access.authorization_rules WHERE tenant_id='{target}' AND id='{receipt['result']['ruleId']}'") == '1', 'unknown commit duplicated rule')

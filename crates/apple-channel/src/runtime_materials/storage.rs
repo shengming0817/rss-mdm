@@ -168,12 +168,7 @@ pub(super) async fn bind_account(
     alias: &str,
     revision: i64,
 ) -> Result<(), Error> {
-    if alias.is_empty()
-        || alias.len() > 128
-        || !alias
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || b".-_".contains(&b))
-    {
+    if !super::account_alias_valid(alias) {
         return Err(Error::Malformed);
     }
     let admissible:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_apple_runtime.versions WHERE tenant_id=$1::uuid AND purpose='managed_account' AND revision=$3 AND NOT revoked AND certificate IS NOT NULL) AND ((SELECT count(*) FROM mdm_apple_runtime.account_bindings WHERE tenant_id=$1::uuid)<16 OR EXISTS(SELECT 1 FROM mdm_apple_runtime.account_bindings WHERE tenant_id=$1::uuid AND alias=$2))").bind(tenant).bind(alias).bind(revision).fetch_one(&mut *c).await.map_err(db)?;

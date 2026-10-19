@@ -195,7 +195,7 @@ async fn no_writers(c: &mut sqlx::PgConnection) -> Result<()> {
     }
     Ok(())
 }
-fn administrator(input: &Input) -> Result<crate::config::Database> {
+pub(super) fn administrator(input: &Input) -> Result<crate::config::Database> {
     let mut value =
         serde_json::to_value(&input.database.administrator).map_err(|_| Error::Input)?;
     value["name"] = json!(input.database.name);
@@ -203,7 +203,7 @@ fn administrator(input: &Input) -> Result<crate::config::Database> {
 }
 // Cold recovery reconnects after runtime CONNECT grants have been withdrawn. Admit the
 // deployment administrator before stopping anything; never discover this after quiescence.
-async fn recovery_administrator(database: &crate::config::Database) -> Result<()> {
+pub(super) async fn recovery_administrator(database: &crate::config::Database) -> Result<()> {
     let mut c = sqlx::PgConnection::connect_with(&database.options().map_err(|_| Error::Input)?)
         .await
         .map_err(|_| Error::Storage)?;
@@ -218,7 +218,7 @@ async fn recovery_administrator(database: &crate::config::Database) -> Result<()
     }
     Ok(())
 }
-async fn connection_fence(
+pub(super) async fn connection_fence(
     c: &mut sqlx::PgConnection,
     journal: &Journal,
     enable: bool,
@@ -248,8 +248,7 @@ async fn connection_fence(
 DECLARE entry jsonb; role_name text;
 BEGIN
  EXECUTE format('REVOKE CONNECT ON DATABASE %I FROM PUBLIC',current_database());
- FOR entry IN SELECT value FROM jsonb_array_elements(current_setting('rss.backup.roles')::jsonb) LOOP
-  role_name:=entry->>0;
+ FOR role_name IN SELECT DISTINCT pg_get_userbyid(a.grantee)::text FROM pg_database d CROSS JOIN LATERAL aclexplode(coalesce(d.datacl,acldefault('d',d.datdba))) a WHERE d.datname=current_database() AND a.privilege_type='CONNECT' AND a.grantee NOT IN (0,d.datdba) LOOP
   IF role_name=current_user THEN CONTINUE; END IF;
   EXECUTE format('REVOKE CONNECT ON DATABASE %I FROM %s',current_database(),CASE WHEN role_name='PUBLIC' THEN 'PUBLIC' ELSE quote_ident(role_name) END);
  END LOOP;
@@ -905,6 +904,12 @@ pub async fn restore(input: Restore) -> Result<Receipt> {
         .await?;
     }
     c.close().await.map_err(|_| Error::Storage)?;
+    super::supervisor::restore(
+        &root,
+        &frozen.request.installation,
+        Uuid::parse_str(&frozen.installation.instance_id).map_err(|_| Error::Corrupt)?,
+    )
+    .await?;
     progress.stage = RestoreStage::Complete;
     journal.save("restore-progress.json", &progress)?;
     root.save("backup-operation.json", &Option::<Uuid>::None)?;

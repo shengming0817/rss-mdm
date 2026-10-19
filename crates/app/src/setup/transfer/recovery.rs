@@ -61,11 +61,13 @@ pub async fn run(input: Request) -> Result<Receipt> {
         }
         return Ok(restored.receipt);
     }
+    super::super::backup::recovery_administrator(&input.administrator).await?;
     if progress.stage == Stage::Reserved {
         let mut c =
             PgConnection::connect_with(&input.administrator.options().map_err(|_| Error::Input)?)
                 .await
                 .map_err(|_| Error::Storage)?;
+        super::super::backup::connection_fence(&mut c, &journal, true).await?;
         stopped(&mut c).await?;
         sqlx::query("SELECT pg_advisory_lock(2823,4)")
             .execute(&mut c)
@@ -120,6 +122,7 @@ pub async fn run(input: Request) -> Result<Receipt> {
         let mut c = PgConnection::connect_with(&saved.owner.options().map_err(|_| Error::Input)?)
             .await
             .map_err(|_| Error::Storage)?;
+        super::super::backup::connection_fence(&mut c, &journal, true).await?;
         stopped(&mut c).await?;
         for host in &saved.hosts {
             if let Some(volume) = &host.input.deployment.content_volume {
@@ -136,8 +139,12 @@ pub async fn run(input: Request) -> Result<Receipt> {
                 .iter()
                 .find(|h| h.source["identity"]["tenant_id"].as_str() == Some(&head.tenant))
                 .unwrap_or(&saved.hosts[0]);
-            let actual =
-                ledger::verify(&runtime.source, std::slice::from_ref(&head.tenant)).await?;
+            let actual = ledger::verify_operator(
+                &runtime.source,
+                std::slice::from_ref(&head.tenant),
+                &input.administrator,
+            )
+            .await?;
             if serde_json::to_value(&actual[0]).map_err(|_| Error::Corrupt)?
                 != serde_json::to_value(&head).map_err(|_| Error::Corrupt)?
             {

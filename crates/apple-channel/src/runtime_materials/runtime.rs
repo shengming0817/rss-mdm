@@ -68,12 +68,7 @@ pub async fn load(
     )?;
     let mut accounts = BTreeMap::new();
     for (id, revision) in &selection.accounts {
-        if id.is_empty()
-            || id.len() > 128
-            || !id
-                .bytes()
-                .all(|v| v.is_ascii_alphanumeric() || b"_-".contains(&v))
-        {
+        if !super::account_alias_valid(id) {
             return Err(Error::Malformed);
         }
         let material = read(

@@ -39,6 +39,13 @@ impl Purpose {
         }
     }
 }
+pub(super) fn account_alias_valid(alias: &str) -> bool {
+    !alias.is_empty()
+        && alias.len() <= 128
+        && alias
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b".-_".contains(&b))
+}
 #[derive(Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum KeySource {

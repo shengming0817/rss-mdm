@@ -2096,6 +2096,29 @@ add('installation.ca_admin', selectors=('setup::providers::step_ca::tests::authe
 MODULES['agent.pki'] = replace(MODULES['agent.pki'], policies=(*MODULES['agent.pki'].policies, CasePolicy('agent_pki_tests::bootstrap_sources_select_current_issuer_and_reject_missing_application', 'reuse', 'tenant', ('identity','agent_pki','pki_rotation'))))
 add('installation.backup', selectors=('setup::backup::tests::database_connection_fence_replays_and_restores_original_grants',), profile='empty', sources=('crates/app/src/setup/backup.rs','crates/app/src/setup/snapshot_tree.rs','crates/app/src/setup/transfer/backup.rs','crates/app/src/setup/transfer/ledger.rs'), tests=('crates/app/tests/setup/backup.rs',))
 MODULES['installation.backup'] = replace(MODULES['installation.backup'], db_mode='instance', scope='objects')
-add('installation.ca', selectors=('setup::providers::step_ca::tests::actual_ca_creates_and_imports_exact_purpose_resources',), fixtures=('identity','agent_pki'), sources=('crates/app/src/setup/providers/step_ca/*',), tests=('crates/app/tests/setup/ca_admin.rs',))
+add('installation.ca', selectors=('setup::providers::step_ca::tests::actual_ca_creates_and_imports_exact_purpose_resources',), fixtures=('identity','agent_pki','ca_agent'), sources=('crates/app/src/setup/providers/step_ca/*',), tests=('crates/app/tests/setup/ca_admin.rs',))
 add('installation.webhook', selectors=('setup::providers::webhook::tests::receiver_possession_gates_activation_and_old_ciphertexts_remain_readable',), fixtures=('windows',), sources=('crates/app/src/setup/providers/webhook.rs','crates/app/src/webhooks/*','crates/webhook-service/src/materials.rs','crates/webhook-service/schema/materials.sql'), tests=('crates/app/tests/setup/webhook.rs',))
 add('installation.native_rewrap', selectors=('setup::protection::tests::ade_original_material_survives_rotation_and_corrupt_rows_roll_back',), sources=('crates/apple-channel/src/rewrap.rs','crates/app/src/setup/protection.rs'), tests=('crates/app/tests/setup/native_rewrap.rs',))
+
+consume(('crates/agent-wire/schema/task_trust/*',), 'execution.agent.task_trust')
+
+# Installation orchestration is additionally qualified against fixed Linux candidates.
+# Its shared SQL/authentication and restore seams retain their existing T2 owners.
+consume(('crates/app/src/setup/configure.rs','crates/app/src/setup/deployment.rs','crates/app/src/setup/installation.rs',
+         'crates/app/src/setup/postgres.rs','crates/app/src/setup/tenant_hosts.rs','crates/app/src/setup/supervisor.rs'),
+        'deployment.management-tenant installation.backup')
+consume(('crates/app/src/ca_webhooks.rs',), 'apple.scep agent.pki')
+consume(('crates/app/src/task_signing.rs',), 'execution.agent.task_trust')
+consume(('crates/apple-channel/src/database.rs',), 'apple.host')
+consume(('crates/management-http/src/content/mod.rs',), 'content.storage')
+consume(('crates/windows-channel/schema/Wns.json',), 'windows.management')
+T1_INPUTS += ('crates/app/src/setup/local.rs','crates/app/src/setup/mod.rs','crates/app/src/setup/model.rs','crates/app/src/setup/source.rs',
+              'fixtures/installation-source-v4.json','crates/app/tests/setup/deployment.rs','crates/app/tests/setup/installation.rs',
+              'crates/app/tests/setup/postgres.rs','crates/app/tests/setup/source.rs','crates/app/tests/setup/supervisor.rs',
+              'crates/mail-service/examples/mail_schema.rs','crates/webhook-service/examples/materials_schema.rs','crates/windows-channel/examples/wns_schema.rs')
+TOOL_INPUTS['deployment/Dockerfile'] = ('test_release',)
+consume_dependencies('installation.providers', normal='aws-credential-types aws-sigv4')
+consume_dependencies('installation.ca installation.native_rewrap', normal='openssl')
+consume_dependencies('installation.backup installation.migration', normal='libc')
+
+TOOL_INPUTS['hack/candidate_transfer_driver.py'] = ('test_candidate_smoke',)

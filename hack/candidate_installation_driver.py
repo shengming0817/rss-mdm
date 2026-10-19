@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import secrets
+import shutil
 import ssl
 import subprocess
 import time
@@ -169,9 +170,61 @@ def main():
     until(recovered,180)
     third=Browser(8447)
     third.login(pending['result']['tenantId'],'third',pending_request['administratorPassword'])
+    # Preserve external account delivery files; recovery must authenticate originals.
+    accounts=[]
+    for tenant,principal,login,password in [
+        (management,first['platformPrincipalId'],'platform',(protected/'platform-password').read_text()),
+        (first['tenantId'],first['administratorId'],'administrator',(protected/'administrator-password').read_text()),
+        (original['tenantId'],replayed['result']['administratorId'],'second',account_password),
+        (pending['result']['tenantId'],platform.call('GET',endpoint+'/'+pending_operation)[1]['result']['administratorId'],'third',pending_request['administratorPassword']),
+    ]:
+        accounts.append(dict(tenant_id=tenant,account=dict(principal_id=principal,login=login,
+            password_file=write('restore-account-'+tenant,password))))
+    backup_config=write('backup.json',dict(installation=operator,operation_id=str(uuid.uuid4()),
+        directory=str(ROOT/'backup'),authorities=[]))
+    captured=json.loads(run(BIN,'backup-installation','--config',backup_config,timeout=300))
+    check(captured['stage']=='complete' and len(captured['manifestSha256'])==64,'joint backup did not seal')
+    # An actual cold recovery: remove systemd links, host containers, deployment files,
+    # and database while retaining only the trusted archive and original cluster roles.
+    run('systemctl','disable','--now',service)
+    run('systemctl','mask',service)
+    containers=run('docker','ps','-aq').splitlines()
+    for container in containers:
+        info=json.loads(run('docker','inspect',container))[0]
+        if info['Name']!='/qualification-postgres':run('docker','rm','-f',container)
+    shutil.rmtree(protected)
+    run('docker','exec','qualification-postgres','dropdb','-U','postgres','--force','mdm')
+    run('docker','exec','qualification-postgres','createdb','-U','postgres','-O','mdm_owner','mdm')
+    administrator=dict(installation['database']['administrator'],name='mdm')
+    restore_config=write('restore.json',dict(directory=str(ROOT/'backup'),operation_id=str(uuid.uuid4()),
+        backup_manifest_sha256=captured['manifestSha256'],administrator=administrator,accounts=accounts))
+    interrupted=subprocess.run([BIN,'restore-installation','--config',restore_config],capture_output=True,text=True,timeout=300)
+    check(interrupted.returncode!=0,'masked real supervisor falsely reported restored')
+    progress=json.loads((ROOT/'backup/restore-progress.json').read_text())
+    check(progress['stage']=='contents','restore did not reach real supervisor failure')
+    run('systemctl','unmask',service)
+    restored=json.loads(run(BIN,'restore-installation','--config',restore_config,timeout=300))
+    check(restored['stage']=='complete','original restore operation did not complete')
+    run('systemctl','is-active','--quiet',service)
+    check(all(hashlib.sha256((protected/name).read_bytes()).hexdigest()==digest for name,digest in identities.items()),
+          'cold restore replaced original protection material')
+    after=Browser(8445)
+    after.login(first['tenantId'],'administrator',Path(accounts[1]['account']['password_file']).read_text())
+    status,subject=after.call('GET','/api/v1/authorization')
+    check(status==200 and subject['principalId']==first['administratorId'],'restored original authentication')
+    after_platform=Browser(8445)
+    after_platform.login(management,'platform',Path(accounts[0]['account']['password_file']).read_text())
+    status,restored_receipt=after_platform.call('POST',endpoint,request,operation)
+    check(status==200 and all(restored_receipt['result'][key]==replayed['result'][key] for key in ('tenantId','hostId','administratorId','operationId')), 'restored original provisioning identities')
+    # A real pending operation proves the recovered service consumes work after its restart.
+    fresh_operation=str(uuid.uuid4())
+    status,_=after_platform.call('POST',endpoint,dict(name='Post recovery pending',administratorLogin='pending',
+        administratorPassword=secrets.token_urlsafe(32)),fresh_operation)
+    check(status==202,'post recovery admission')
+    until(lambda:after_platform.call('GET',endpoint+'/'+fresh_operation)[1]['result']['blocked']=='capacity',90)
     print(json.dumps(dict(status='passed',checks=['fixed_operator_binary','single_input_install','repeat_install_identity',
         'fixed_ledger_key','independent_administrators','real_authentication','platform_business_isolation',
-        'second_tenant_host','original_operation_replay','tenant_host_isolation','real_systemd_supervisor','capacity_original_operation_recovery'])))
+        'second_tenant_host','original_operation_replay','tenant_host_isolation','real_systemd_supervisor','capacity_original_operation_recovery','joint_cold_backup_restore','original_ledger_and_protection_material','interrupted_restore_replay','restored_supervisor_consumes_work'])))
 
 if __name__=='__main__':
     try:main()

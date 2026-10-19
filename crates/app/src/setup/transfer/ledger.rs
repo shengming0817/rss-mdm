@@ -11,17 +11,6 @@ pub(in crate::setup) struct Head {
     pub tag: Option<Vec<u8>>,
     pub verified_records: Option<u64>,
 }
-pub(in crate::setup) async fn verify(runtime: &Value, tenants: &[String]) -> Result<Vec<Head>> {
-    let database: crate::config::Database =
-        serde_json::from_value(runtime["access_database"].clone()).map_err(|_| Error::Input)?;
-    let pool = sqlx::postgres::PgPoolOptions::new()
-        .max_connections(1)
-        .acquire_timeout(std::time::Duration::from_secs(5))
-        .connect_with(database.options().map_err(|_| Error::Input)?)
-        .await
-        .map_err(|_| Error::Storage)?;
-    verify_pool(runtime, tenants, pool).await
-}
 /// The deployment operator opens a privileged connection, then drops to the existing read role.
 /// This permits integrity verification while ordinary runtime CONNECT privileges are fenced.
 pub(in crate::setup) async fn verify_operator(

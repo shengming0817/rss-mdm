@@ -122,16 +122,7 @@ create/update/delete 的 operation_id 共用一个全局命名空间。同一操
 
 每个宿主通过 identity.tenant_id 和 flow.storage.epoch 绑定一个已登记业务租户，启动核验安装身份、audit mode、登记和期望 epoch。同库其它租户使用各自合法绑定宿主；新增登记不自动切换已有宿主。
 
-~~~sh
-docker load --input server.oci.tar
-docker run --rm --network host --mount type=bind,src=/private/mdm-operator,dst=/run/mdm,readonly IMAGE migrate --config /run/mdm/migrate.json
-docker run --rm --network host --mount type=bind,src=/private/mdm-operator,dst=/run/mdm,readonly IMAGE tenant-create --config /run/mdm/tenant-create.json
-docker run --rm --network host --mount type=bind,src=/private/mdm-operator,dst=/run/mdm,readonly IMAGE initialize --config /run/mdm/initialize.json
-docker run --rm --network host --mount type=bind,src=/private/mdm-operator,dst=/run/mdm,readonly IMAGE initialize-authorization --config /run/mdm/authorization.json
-docker run --name rss-mdm --network host --mount type=bind,src=/private/mdm-runtime,dst=/run/mdm,readonly IMAGE serve --config /run/mdm/config.json
-~~~
-
-IMAGE 替换为 candidate.json 固定镜像身份。秘密和配置文件由 UID 10001 持有且权限 0600。安装目录与运行目录分开准备；镜像不嵌入配置或私钥。
+新实例使用前述 `install` 单输入入口，后续租户使用完整 provisionings 资源。`migrate`、`initialize` 与 `initialize-authorization` 保留给各自维护用途，不能组合成另一条公共租户创建路径。安装器按固定镜像身份准备运行输入，秘密由 UID 10001 持有且权限 0600；镜像不嵌入配置或私钥。
 
 ## 客户端入口与服务器证书交付
 
@@ -252,15 +243,11 @@ step ca provisioner add rss-windows --type JWK --public-key windows-provisioner.
 
 ### Webhook 宿主输入
 
-顶层 `webhooks` 是必填闭合配置，示例中的空 keys/networks 表示没有获准的接收端。
+顶层 `webhooks` 是必填闭合配置，示例中的空 networks 表示没有获准的接收端。
 recovery_database 使用独立登录角色，具备 `mdm_webhook_operator` 的能力；按现有角色文件先部署
 `webhook-roles.sql`，密码由部署秘密提供，不与访问或投递角色混用。恢复能力不暴露原始 runtime。
 
-每条 keys 配置包含 tenant、reference、正整数 version、current_file 和可选 retiring
-（version、key_file、until，UTC Unix 秒）。文件存 Standard Webhooks 的 `whsec_<Base64>`，
-解码后为 24–64 随机字节，0600；不得复用入站 API 凭据。轮换时配置新 current 与有期限的旧 key，
-重启原宿主；过渡期同时签名，到期停止旧签名，再删除旧文件。相同引用保持接收方身份，
-更换引用通过订阅版本显式生效。
+Webhook 密钥由 `/api/v1/webhooks/materials` 的领域权威加密持久化，接收端持钥确认后才能激活。安全交付、确认与旧签名退出见[Webhook 材料运维](operations.md#出站-webhook-签名材料)。运行配置不接受 keys/current_file/retiring，修改旧文件不能覆盖数据库材料。
 
 每条 networks 配置包含 tenant、reference、hostname、port、addresses（IP:port）、cidrs 和 ca_files。
 所有地址端口须匹配，地址须全部在允许 CIDR 内；CA 为 PEM。首版 DNS 策略为宿主固定地址快照，
@@ -282,3 +269,7 @@ V4 转交可以保管已经过期、但其原始链、用途和密钥匹配仍�
 Native 保护轮换重加密运行凭据及 Apple 的 ADE、账户开通、设备令牌、命令和 DDM 证据行，不修改逻辑版本或重放 MAC。不可变内容对象、已有执行快照、证书归档以及历史备份仍可能依赖旧读取钥；因此本入口保留旧钥，未提供可绕过这些保留条件的删除动作。历史读取钥最多 15 份，达到上限会明确拒绝继续轮换，须完成对应历史数据和备份退出后再处理，不能删除旧钥冒充完成。
 
 当前冷备/恢复操作要求部署侧 PostgreSQL 管理员为 superuser，并在停宿主或撤销 CONNECT 之前检查；该连接只交给离线部署操作员。它用于停写后重新连接、检查全部会话和原角色恢复，不能下发给业务服务。普通运行账户仍保持既有最小权限。
+
+`configure-host channels` 不允许删除已经建立身份的 Windows/Apple 配置，避免重新启用时更换固定 fingerprint 或 identity seed。未配置通道可保持关闭；已配置材料过期或撤销时由领域运行校验降为不可用，更新仍沿原身份进行。
+
+`python3 hack/candidate_installation.py /absolute/v5-candidate --legacy-candidate /absolute/v4-candidate` 在另一独立 Linux 节点中验证固定 V4 管理宿主来源：真实旧版启动、原账户认证、Ledger 和任务签名身份保留、转交原操作重放，以及 `restore-v4` 在真实 systemd 故障后的续跑。来源必须匹配受支持的精确 V4 清单，不能用修改 manifest 冒充旧候选。该管理宿主场景不宣称已证明有存量设备或供应方数据的完整迁移；相应场景须保留独立资格记录。

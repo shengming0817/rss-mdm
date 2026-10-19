@@ -408,43 +408,69 @@ impl Source for Directory {
                                     &mut projection,
                                     value["versions"].as_array().map_or(0, Vec::len),
                                 );
-                                let loaded =
-                                    self.state.apple.as_ref().and_then(|apple| match purpose {
-                                        Purpose::Apns => Some(apple.config.materials.apns),
-                                        Purpose::Profile => Some(apple.config.materials.profile),
-                                        Purpose::ManagedAccount => None,
+                                if purpose == Purpose::ManagedAccount {
+                                    let desired: BTreeMap<String, i64> =
+                                        serde_json::from_value(value["accountBindings"].clone())
+                                            .map_err(|_| Error::Malformed)?;
+                                    let loaded = self
+                                        .state
+                                        .apple
+                                        .as_ref()
+                                        .map(|apple| &apple.config.materials.accounts);
+                                    projection.desired_revision = None;
+                                    projection.applied_revision = None;
+                                    projection.status = account_material_status(
+                                        &value,
+                                        &desired,
+                                        loaded,
+                                        self.state.clock.unix_seconds().ok(),
+                                    )?;
+                                    projection.reason = Some(match projection.status {
+                                        Status::Unavailable => "bound_account_material_unusable",
+                                        Status::Pending => "host_application_observation_required",
+                                        _ => "current_process_loaded_not_device_confirmation",
                                     });
-                                projection.applied_revision = loaded;
-                                if let Some(revision) = loaded {
-                                    let selected =
-                                        value["versions"].as_array().and_then(|versions| {
-                                            versions
-                                                .iter()
-                                                .find(|v| v["revision"].as_i64() == Some(revision))
+                                } else {
+                                    let loaded =
+                                        self.state.apple.as_ref().and_then(|apple| match purpose {
+                                            Purpose::Apns => Some(apple.config.materials.apns),
+                                            Purpose::Profile => {
+                                                Some(apple.config.materials.profile)
+                                            }
+                                            Purpose::ManagedAccount => None,
                                         });
-                                    let now = self.state.clock.unix_seconds().ok();
-                                    let usable = selected.is_some_and(|v| {
-                                        v["revoked"].as_bool() == Some(false)
-                                            && v["expiresAt"].as_i64().is_some_and(|expires| {
-                                                now.is_some_and(|t| t < expires)
-                                            })
-                                    });
-                                    projection.status = if !usable {
-                                        Status::Unavailable
-                                    } else if Some(revision) == projection.desired_revision {
-                                        Status::Loaded
-                                    } else {
-                                        Status::Pending
-                                    };
-                                    projection.reason = Some(if usable {
-                                        "current_process_loaded_not_device_confirmation"
-                                    } else {
-                                        "applied_material_unusable"
-                                    });
-                                } else if projection.desired_revision.is_some() {
-                                    projection.status = Status::Pending;
-                                    projection.reason =
-                                        Some("host_application_observation_required");
+                                    projection.applied_revision = loaded;
+                                    if let Some(revision) = loaded {
+                                        let selected =
+                                            value["versions"].as_array().and_then(|versions| {
+                                                versions.iter().find(|v| {
+                                                    v["revision"].as_i64() == Some(revision)
+                                                })
+                                            });
+                                        let now = self.state.clock.unix_seconds().ok();
+                                        let usable = selected.is_some_and(|v| {
+                                            v["revoked"].as_bool() == Some(false)
+                                                && v["expiresAt"].as_i64().is_some_and(|expires| {
+                                                    now.is_some_and(|t| t < expires)
+                                                })
+                                        });
+                                        projection.status = if !usable {
+                                            Status::Unavailable
+                                        } else if Some(revision) == projection.desired_revision {
+                                            Status::Loaded
+                                        } else {
+                                            Status::Pending
+                                        };
+                                        projection.reason = Some(if usable {
+                                            "current_process_loaded_not_device_confirmation"
+                                        } else {
+                                            "applied_material_unusable"
+                                        });
+                                    } else if projection.desired_revision.is_some() {
+                                        projection.status = Status::Pending;
+                                        projection.reason =
+                                            Some("host_application_observation_required");
+                                    }
                                 }
                             }
                             Err(rss_mdm_apple_channel::Error::Forbidden) => {
@@ -661,5 +687,65 @@ impl Source for Directory {
             proof.check_live()?;
             Ok(result)
         })
+    }
+}
+
+fn account_material_status(
+    value: &serde_json::Value,
+    desired: &BTreeMap<String, i64>,
+    loaded: Option<&BTreeMap<String, i64>>,
+    now: Option<i64>,
+) -> Result<Status, Error> {
+    let versions = value["versions"].as_array().ok_or(Error::Malformed)?;
+    let usable = |revision: &i64| {
+        versions
+            .iter()
+            .find(|v| v["revision"].as_i64() == Some(*revision))
+            .is_some_and(|v| {
+                v["revoked"] == false
+                    && v["expiresAt"]
+                        .as_i64()
+                        .is_some_and(|expires| now.is_some_and(|now| now < expires))
+            })
+    };
+    if desired.values().any(|r| !usable(r))
+        || loaded.is_some_and(|m| m.values().any(|r| !usable(r)))
+    {
+        return Ok(Status::Unavailable);
+    }
+    Ok(if loaded == Some(desired) && !desired.is_empty() {
+        Status::Loaded
+    } else if !desired.is_empty() || loaded.is_some_and(|m| !m.is_empty()) {
+        Status::Pending
+    } else if versions.is_empty() {
+        Status::Unconfigured
+    } else {
+        Status::Configured
+    })
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn account_bindings_require_exact_loaded_set_and_current_materials() {
+        let mut value = serde_json::json!({"versions":[{"revision":1,"expiresAt":100,"revoked":false},{"revision":2,"expiresAt":200,"revoked":false}]});
+        let selected = BTreeMap::from([("org.example".into(), 1), ("second".into(), 2)]);
+        assert!(matches!(
+            account_material_status(&value, &selected, Some(&selected), Some(99)).unwrap(),
+            Status::Loaded
+        ));
+        assert!(matches!(
+            account_material_status(&value, &selected, None, Some(99)).unwrap(),
+            Status::Pending
+        ));
+        assert!(matches!(
+            account_material_status(&value, &selected, Some(&selected), Some(100)).unwrap(),
+            Status::Unavailable
+        ));
+        value["versions"][0]["revoked"] = serde_json::json!(true);
+        assert!(matches!(
+            account_material_status(&value, &selected, Some(&selected), Some(99)).unwrap(),
+            Status::Unavailable
+        ));
     }
 }

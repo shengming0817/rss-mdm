@@ -46,10 +46,7 @@ async fn execute() -> Result<(), ProcessError> {
             let input = config::load(path)?;
             let receipt = rss_mdm_app::setup::installation::install(input)
                 .await
-                .map_err(|_| ProcessError::Stage {
-                    stage: "installation",
-                    kind: "installation failed; preserve the original journal and credentials",
-                })?;
+                .map_err(|error| setup_failure("installation", error))?;
             println!(
                 "{}",
                 serde_json::to_string(&receipt).expect("public installation receipt")
@@ -58,7 +55,9 @@ async fn execute() -> Result<(), ProcessError> {
         }
         #[cfg(unix)]
         "transfer-v4" => {
-            let receipt=rss_mdm_app::setup::transfer::run(config::load(path)?).await.map_err(|_|ProcessError::Stage {stage:"installation.transfer",kind:"transfer incomplete; retain the original journal, backup and credentials"})?;
+            let receipt = rss_mdm_app::setup::transfer::run(config::load(path)?)
+                .await
+                .map_err(|error| setup_failure("installation.transfer", error))?;
             println!(
                 "{}",
                 serde_json::to_string(&receipt).expect("public transfer receipt")
@@ -67,7 +66,9 @@ async fn execute() -> Result<(), ProcessError> {
         }
         #[cfg(unix)]
         "restore-v4" => {
-            let receipt=rss_mdm_app::setup::transfer::recovery::run(config::load(path)?).await.map_err(|_|ProcessError::Stage {stage:"installation.restore",kind:"restore incomplete; preserve the trusted backup receipt and resume the same operation"})?;
+            let receipt = rss_mdm_app::setup::transfer::recovery::run(config::load(path)?)
+                .await
+                .map_err(|error| setup_failure("installation.restore", error))?;
             println!(
                 "{}",
                 serde_json::to_string(&receipt).expect("public restore receipt")
@@ -78,10 +79,7 @@ async fn execute() -> Result<(), ProcessError> {
         "export-webhook-key" => {
             let receipt = rss_mdm_app::setup::providers::webhook::export(config::load(path)?)
                 .await
-                .map_err(|_| ProcessError::Stage {
-                    stage: "webhook.delivery",
-                    kind: "secure key delivery incomplete; resume original operation",
-                })?;
+                .map_err(|error| setup_failure("webhook.delivery", error))?;
             println!(
                 "{}",
                 serde_json::to_string(&receipt).expect("public receipt")
@@ -92,7 +90,7 @@ async fn execute() -> Result<(), ProcessError> {
         "configure-host" => {
             let receipt = rss_mdm_app::setup::configure::run(config::load(path)?)
                 .await
-                .map_err(|_| ProcessError::Stage{stage:"host.configuration",kind:"configuration incomplete; query and resume the original protected operation"})?;
+                .map_err(|error| setup_failure("host.configuration", error))?;
             println!(
                 "{}",
                 serde_json::to_string(&receipt).expect("public receipt")
@@ -103,10 +101,7 @@ async fn execute() -> Result<(), ProcessError> {
         "restore-installation" => {
             let receipt = rss_mdm_app::setup::backup::restore(config::load(path)?)
                 .await
-                .map_err(|_| ProcessError::Stage {
-                    stage: "installation.restore",
-                    kind: "joint restore incomplete; resume the original protected operation",
-                })?;
+                .map_err(|error| setup_failure("installation.restore", error))?;
             println!(
                 "{}",
                 serde_json::to_string(&receipt).expect("public receipt")
@@ -117,10 +112,7 @@ async fn execute() -> Result<(), ProcessError> {
         "backup-installation" => {
             let receipt = rss_mdm_app::setup::backup::capture(config::load(path)?)
                 .await
-                .map_err(|_| ProcessError::Stage {
-                    stage: "installation.backup",
-                    kind: "joint backup incomplete; resume the original protected operation",
-                })?;
+                .map_err(|error| setup_failure("installation.backup", error))?;
             println!(
                 "{}",
                 serde_json::to_string(&receipt).expect("public receipt")
@@ -129,7 +121,9 @@ async fn execute() -> Result<(), ProcessError> {
         }
         #[cfg(unix)]
         "prepare-ca" => {
-            let receipt=rss_mdm_app::setup::providers::step_ca::run(config::load(path)?).await.map_err(|_|ProcessError::Stage {stage:"installation.ca",kind:"CA preparation incomplete; query and resume the original protected operation"})?;
+            let receipt = rss_mdm_app::setup::providers::step_ca::run(config::load(path)?)
+                .await
+                .map_err(|error| setup_failure("installation.ca", error))?;
             println!(
                 "{}",
                 serde_json::to_string(&receipt).expect("public CA receipt")
@@ -138,7 +132,9 @@ async fn execute() -> Result<(), ProcessError> {
         }
         #[cfg(unix)]
         "rotate-protection" => {
-            let receipt=rss_mdm_app::setup::protection::rotate(config::load(path)?).await.map_err(|_|ProcessError::Stage {stage:"protection.rotation",kind:"rotation incomplete; resume the original operation and retain all original materials"})?;
+            let receipt = rss_mdm_app::setup::protection::rotate(config::load(path)?)
+                .await
+                .map_err(|error| setup_failure("protection.rotation", error))?;
             println!(
                 "{}",
                 serde_json::to_string(&receipt).expect("public protection receipt")
@@ -154,7 +150,7 @@ async fn execute() -> Result<(), ProcessError> {
             loop {
                 let result = tokio::select! {
                     biased;
-                    result=&mut shutdown=>return result.map_err(|_|ProcessError::Stage {stage:"deployment.signal",kind:"shutdown signal unavailable"}),
+                    result=&mut shutdown=>return result.map_err(|_| ProcessError::Stage {stage:"deployment.signal",kind:"shutdown signal unavailable"}),
                     result=rss_mdm_app::setup::tenant_hosts::reconcile(&input)=>result,
                 };
                 if result.is_err() != failed {
@@ -165,7 +161,7 @@ async fn execute() -> Result<(), ProcessError> {
                     );
                 }
                 tokio::select! {
-                    result=&mut shutdown=>return result.map_err(|_|ProcessError::Stage {stage:"deployment.signal",kind:"shutdown signal unavailable"}),
+                    result=&mut shutdown=>return result.map_err(|_| ProcessError::Stage {stage:"deployment.signal",kind:"shutdown signal unavailable"}),
                     ()=tokio::time::sleep(std::time::Duration::from_secs(5))=>{},
                 }
             }
@@ -249,4 +245,25 @@ async fn execute() -> Result<(), ProcessError> {
 )]
 fn monotonic() -> std::sync::Arc<dyn rss_observation::Clock> {
     std::sync::Arc::new(rss_mdm_app::Monotonic(std::time::Instant::now))
+}
+
+#[cfg(unix)]
+fn setup_failure(stage: &'static str, error: rss_mdm_app::setup::Error) -> ProcessError {
+    use rss_mdm_app::setup::Error;
+    let kind = match error {
+        Error::Input => "input_rejected: correct deployment inputs before retrying",
+        Error::Busy => {
+            "busy: preserve the operation and retry after the active maintenance finishes"
+        }
+        Error::Conflict => {
+            "conflict: inspect the original operation and exact input; do not replace identities"
+        }
+        Error::Corrupt => {
+            "corrupt: restore the original journal and protection materials before retrying"
+        }
+        Error::Storage => {
+            "storage_unavailable: query the original operation before retrying; outcome may be unknown"
+        }
+    };
+    ProcessError::Stage { stage, kind }
 }

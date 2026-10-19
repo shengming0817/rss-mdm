@@ -95,9 +95,9 @@ pub async fn verify_local(
     Ok(VerifiedLocal(user))
 }
 
-/// 离线转交复用原管理员身份补齐业务授权；调用者先完成 verify_local。
+/// 离线转交复用原管理员身份补齐所属租户的完整授权；调用者先完成 verify_local。
 /// 原主体必须仍有直接租户授权管理权，审计和授权在同一事务提交。
-pub async fn complete_verified_business_administrator(
+pub async fn complete_verified_administrator(
     store: &AuditStore,
     verified: VerifiedLocal,
     operation: uuid::Uuid,
@@ -111,8 +111,8 @@ pub async fn complete_verified_business_administrator(
     audit.set_principal(&user.principal_id, &user.instance_id);
     audit.operation(operation, "authorization_transfer");
     audit.require_request_settlement();
-    let desired = crate::tenant_administrator_rule(user.clone());
-    let bytes = serde_json::to_vec(&desired).map_err(|_| Error::Malformed)?;
+    let bytes =
+        serde_json::to_vec(&("administrator-transfer", &user)).map_err(|_| Error::Malformed)?;
     let fact = rss_mdm_audit_integration::Fact::business(
         audit,
         &format!("authorization-transfer:{operation}"),
@@ -124,18 +124,20 @@ pub async fn complete_verified_business_administrator(
     let budget =
         rss_mdm_audit_integration::budget::AuditBudget::new(std::time::Duration::from_secs(6));
     let tenant = TenantId::parse(&user.tenant_id).map_err(|_| Error::Malformed)?;
-    let result=store.write(tenant,&budget.control(),(store,&user,&desired,operation,audit,fact),|(store,user,desired,operation,audit,fact),tx|Box::pin(async move {
-        let mut context=(*user,*desired,*operation);
-        let (receipt,replay)=tx.with_connection_context(&mut context,|(user,desired,operation),c|Box::pin(async move {
+    let result=store.write(tenant,&budget.control(),(store,&user,operation,audit,fact),|(store,user,operation,audit,fact),tx|Box::pin(async move {
+        let mut context=(*user,*operation);
+        let (receipt,replay)=tx.with_connection_context(&mut context,|(user,operation),c|Box::pin(async move {
             crate::lock_on(c,&user.tenant_id,&user.instance_id).await?;
+            let installation=crate::tenancy::InstallationTenants::load(c).await?;
+            let desired=crate::store::administrator_rule((*user).clone(),installation.is_management(&user.tenant_id));
             let rules=crate::snapshot_on(c,&user.tenant_id,&user.instance_id).await?;
             if let Some(existing)=rules.rules.iter().find(|r|r.id==*operation) {
-                if existing.value.as_ref()!=Some(*desired) {return Err(Error::Conflict)}
+                if existing.value.as_ref()!=Some(&desired) {return Err(Error::Conflict)}
                 return Ok((Receipt{id:existing.id,revision:existing.revision,deleted:false},true));
             }
             let authorized=rules.rules.iter().filter_map(|r|r.value.as_ref()).any(|r|matches!(&r.subject,crate::Subject::User{user:subject} if subject==*user) && r.grants.iter().any(|g|g.covers(crate::Permission::AuthorizationWrite,None)));
             if !authorized {return Err(Error::Forbidden)}
-            let receipt=crate::store::grant_tenant_administrator_on(c,(*user).clone(),*operation).await?;
+            let receipt=crate::store::grant_verified_administrator_on(c,(*user).clone(),*operation).await?;
             Ok::<_,Error>((receipt,false))
         })).await?;
         store.append(tx,fact,replay).await?;

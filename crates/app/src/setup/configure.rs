@@ -304,6 +304,13 @@ fn recovery(journal: &Journal, runtime: &mut Value, source: &Recipient) -> Resul
 }
 
 fn channels(journal: &Journal, runtime: &mut Value, settings: &Channels) -> Result<()> {
+    // Channel identity outlives availability. Removing a configured channel would discard
+    // its fixed fingerprint/identity seed and make re-enabling silently create a new identity.
+    if (runtime["native_protocols"]["windows"].is_object() && settings.windows.is_none())
+        || (runtime["native_protocols"]["apple"].is_object() && settings.apple.is_none())
+    {
+        return Err(Error::Conflict);
+    }
     let mut native = json!({});
     if let Some(windows) = &settings.windows {
         let mut config = serde_json::to_value(windows).map_err(|_| Error::Input)?;
@@ -710,6 +717,28 @@ mod tests {
         let mut replay = json!({"product_origin":"https://mdm.example.test","identity":{"tenant_id":tenant,"oidc":null}});
         oidc(&journal, &mut replay, &settings).unwrap();
         assert_eq!(runtime, replay);
+    }
+    #[test]
+    fn removing_a_configured_channel_cannot_discard_its_fixed_identity() {
+        let directory = tempfile::tempdir().unwrap();
+        let journal =
+            Journal::open(&directory.path().canonicalize().unwrap().join("operation")).unwrap();
+        let settings = Channels {
+            windows: None,
+            apple: None,
+            agent: crate::agent_pki::Config::Disabled {},
+            providers: vec![],
+            apple_material_roots: vec![],
+        };
+        for name in ["windows", "apple"] {
+            let mut runtime = json!({"native_protocols":{name:{"identity":"retained"}}});
+            let original = runtime.clone();
+            assert!(matches!(
+                channels(&journal, &mut runtime, &settings),
+                Err(Error::Conflict)
+            ));
+            assert_eq!(runtime, original);
+        }
     }
     #[test]
     fn recovery_recipient_rotation_retains_original_decryption_material() {

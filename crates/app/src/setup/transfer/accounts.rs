@@ -79,7 +79,7 @@ async fn verify_with(
                     .audit_store(&config.audit)
                     .await
                     .map_err(|_| Error::Storage)?;
-                let result = initialization::complete_verified_business_administrator(
+                let result = initialization::complete_verified_administrator(
                     &store, verified, operation, &audit,
                 )
                 .await

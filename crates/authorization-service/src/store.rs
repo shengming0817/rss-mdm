@@ -517,31 +517,7 @@ async fn initialize_on(
     }
     let id = Uuid::new_v4();
     let installation = crate::tenancy::InstallationTenants::load(tx).await?;
-    let rule = if installation.is_management(&user.tenant_id) {
-        Rule {
-            subject: Subject::User { user: user.clone() },
-            grants: [
-                Permission::AuthorizationRead,
-                Permission::AuthorizationWrite,
-                Permission::TenantCreate,
-                Permission::TenantRead,
-                Permission::TenantUpdate,
-                Permission::TenantDelete,
-                Permission::TenantAdministratorCreate,
-                Permission::IdentityAccountsManage,
-            ]
-            .into_iter()
-            .map(|operation| Grant {
-                operation,
-                scope: Scope::Tenant,
-            })
-            .collect(),
-        }
-    } else {
-        // Installation and later provisioning grant the same complete business role.
-        // This never grants installation-wide permissions to a business administrator.
-        tenant_administrator_rule(user.clone())
-    };
+    let rule = administrator_rule(user.clone(), installation.is_management(&user.tenant_id));
     installation.validate_rule(&user.tenant_id, &rule)?;
     sqlx::query("INSERT INTO mdm_access.authorization_initializations(tenant_id,instance,operation_id,principal) VALUES($1::uuid,$2::uuid,$3::uuid,$4::uuid)").bind(&user.tenant_id).bind(&user.instance_id).bind(key.to_string()).bind(&user.principal_id).execute(&mut *tx).await.map_err(db)?;
     sqlx::query("INSERT INTO mdm_access.authorization_rules(tenant_id,instance,id,revision,document) VALUES($1::uuid,$2::uuid,$3::uuid,1,$4::jsonb)").bind(&user.tenant_id).bind(&user.instance_id).bind(id.to_string()).bind(serde_json::to_string(&rule).map_err(|_| Error::Malformed)?).execute(&mut *tx).await.map_err(db)?;
@@ -570,4 +546,58 @@ pub async fn initialize_fixture_audited(
     audit: &RequestAudit,
 ) -> Result<Receipt, Error> {
     initialize_verified_user(store, user, key, audit).await
+}
+
+pub(crate) fn administrator_rule(user: User, platform: bool) -> Rule {
+    if platform {
+        Rule {
+            subject: Subject::User { user: user.clone() },
+            grants: [
+                Permission::AuthorizationRead,
+                Permission::AuthorizationWrite,
+                Permission::TenantCreate,
+                Permission::TenantRead,
+                Permission::TenantUpdate,
+                Permission::TenantDelete,
+                Permission::TenantAdministratorCreate,
+                Permission::IdentityAccountsManage,
+            ]
+            .into_iter()
+            .map(|operation| Grant {
+                operation,
+                scope: Scope::Tenant,
+            })
+            .collect(),
+        }
+    } else {
+        // Installation and later provisioning grant the same complete business role.
+        // This never grants installation-wide permissions to a business administrator.
+        tenant_administrator_rule(user.clone())
+    }
+}
+/// Only called by the exact locally authenticated offline-transfer owner.
+pub(crate) async fn grant_verified_administrator_on(
+    tx: &mut sqlx::PgConnection,
+    user: User,
+    id: Uuid,
+) -> Result<Receipt, Error> {
+    let installation = crate::tenancy::InstallationTenants::load(tx).await?;
+    let platform = installation.is_management(&user.tenant_id);
+    if !platform {
+        return grant_tenant_administrator_on(tx, user, id).await;
+    }
+    let rule = administrator_rule(user.clone(), true);
+    rule.validate(&user.tenant_id, &user.instance_id)?;
+    installation.require_identity(&user.instance_id, &user.tenant_id, Permission::TenantCreate)?;
+    installation.validate_rule(&user.tenant_id, &rule)?;
+    require_insert_capacity(tx, Table::Rules, &user.tenant_id, &user.instance_id).await?;
+    sqlx::query("INSERT INTO mdm_access.authorization_rules(tenant_id,instance,id,revision,document) VALUES($1::uuid,$2::uuid,$3,1,$4)")
+        .bind(&user.tenant_id).bind(&user.instance_id).bind(id).bind(serde_json::to_value(rule).map_err(|_|Error::Malformed)?)
+        .execute(&mut *tx).await.map_err(db)?;
+    require_document_capacity(tx, &user.tenant_id, &user.instance_id).await?;
+    Ok(Receipt {
+        id,
+        revision: 1,
+        deleted: false,
+    })
 }

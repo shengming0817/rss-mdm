@@ -387,13 +387,17 @@ async fn resume(mut saved: Saved, journal: &Journal) -> Result<Receipt> {
         .execute(&mut c)
         .await
         .map_err(|_| Error::Storage)?;
+    let administrator = super::backup::administrator(&saved.operator)?;
+    super::backup::recovery_administrator(&administrator).await?;
     if saved.receipt.phase == Phase::Prepared {
         exact_source(&mut c).await?;
+        super::backup::connection_fence(&mut c, journal, true).await?;
         containers::stop(&saved.containers).await?;
         saved.receipt.phase = Phase::Stopped;
         journal.save("transfer.json", &saved)?;
     }
     if saved.receipt.phase == Phase::Stopped {
+        super::backup::connection_fence(&mut c, journal, true).await?;
         stopped(&mut c).await?;
         let mut heads = Vec::new();
         for host in &saved.hosts {
@@ -402,14 +406,16 @@ async fn resume(mut saved: Saved, journal: &Journal) -> Result<Receipt> {
                 .ok_or(Error::Corrupt)?
                 .to_owned();
             check_protection(&mut c, &host.source).await?;
-            heads.extend(ledger::verify(&host.source, &[tenant]).await?);
+            heads.extend(ledger::verify_operator(&host.source, &[tenant], &administrator).await?);
         }
         let management: String =
             sqlx::query_scalar("SELECT management_tenant_id::text FROM public.mdm_installation")
                 .fetch_one(&mut c)
                 .await
                 .map_err(|_| Error::Storage)?;
-        heads.extend(ledger::verify(&saved.hosts[0].source, &[management]).await?);
+        heads.extend(
+            ledger::verify_operator(&saved.hosts[0].source, &[management], &administrator).await?,
+        );
         journal.secret(
             "ledger-checkpoints.json",
             &serde_json::to_vec(&heads).map_err(|_| Error::Corrupt)?,
@@ -515,6 +521,9 @@ async fn resume(mut saved: Saved, journal: &Journal) -> Result<Receipt> {
         journal.save("transfer.json", &saved)?;
     }
     if saved.receipt.phase == Phase::Imported {
+        // Immutable backup, migration and material transfer finished; only now admit
+        // runtime connections for real authentication and new-authority activation.
+        super::backup::connection_fence(&mut c, journal, false).await?;
         activate(&mut c, &journal, &mut saved).await?;
         sqlx::query("UPDATE public.mdm_installation_transfer SET phase='transferred' WHERE singleton AND operation_id=$1").bind(saved.receipt.operation_id).execute(&mut c).await.map_err(|_|Error::Storage)?;
         saved.receipt.phase = Phase::Transferred;
@@ -617,7 +626,14 @@ async fn activate(c: &mut PgConnection, journal: &Journal, saved: &mut Saved) ->
     let first: crate::config::Config =
         serde_json::from_value(saved.hosts[0].runtime.clone().ok_or(Error::Corrupt)?)
             .map_err(|_| Error::Corrupt)?;
-    accounts::verify(&first, &management, epoch, &saved.platform, None).await?;
+    accounts::verify(
+        &first,
+        &management,
+        epoch,
+        &saved.platform,
+        Some(saved.receipt.operation_id),
+    )
+    .await?;
     for host in &saved.hosts {
         let config: crate::config::Config =
             serde_json::from_value(host.runtime.clone().ok_or(Error::Corrupt)?)
