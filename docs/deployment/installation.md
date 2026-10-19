@@ -28,6 +28,35 @@ Linux 单机安装由固定候选中的 `rss-mdm-installer install --config /abs
 
 安装器将部署二进制复制到 root 独占安装目录，注册 `rss-mdm-deployer-<instance>.service`。该进程消费已有开通回执和领域期望版本，使用固定 Docker Compose 模板部署宿主；管理 HTTP 不接受任意命令或维护凭据。实例目录、原凭据、角色密码和固定 Ledger 密钥必须联合备份。重试使用原输入和原目录；密码或密钥丢失时恢复原材料，不重新生成替代身份。
 
+### 单机部署设计与配置归属
+
+单台 Linux 主机可承载 MDM 后端、HTTPS 网关、PostgreSQL、RustFS 和 step-ca；Identity 嵌入后端，真实 Windows/Mac 和独立交付的 Agent 在设备侧。该拓扑是部署与验收设计，不表示共享 CA、真机效果或高可用已通过验证。正式安装以本节安装器为入口，Compose 由[部署器](../../crates/app/src/setup/deployment.rs)生成；不另维护手工建租户、复制运行 JSON 的安装流程。
+
+当前部署器为后端和网关使用 `network_mode: host`。管理 API 仅监听回环，`trusted_gateway` 与该监听 IP 相同；每个业务宿主拥有独立入口和不冲突的监听。新增业务租户使用完整开通 API 与预留的 `additional_hosts`，不能只改请求 tenant 或复制一份 JSON 冒充第二宿主。PostgreSQL、对象存储及 CA 的部署和持久目录由运维准备，不将它们的管理员凭据交给日常服务。
+
+| 入口 | 路由与信任边界 |
+|---|---|
+| 控制台/管理 API | 组织 HTTPS origin → 受信网关 → 后端回环；前端需独立固定 MDM UI 镜像并验证实际页面与会话，仅后端候选不提供控制台 |
+| Windows 注册与管理、Apple 管理、Agent 注册与运行 | 各自配置的 TLS 监听/origin，后端直接验证 TLS/mTLS；不能用代理头替代设备证书身份 |
+| Apple SCEP | CA 的受控 HTTPS SCEP 路径；产品 challenge/notify 回调、CA TLS 信任、设备 SCEP 服务信任分别核对，不开放 CA 管理/签发路径给普通客户端 |
+| PostgreSQL、RustFS、CA 管理 | 仅允许实际受控消费者访问；有独立服务证书、凭据与存储，不因同机部署关闭 TLS/主机名验证 |
+
+Windows、Apple、Agent 共用一个 step-ca/root/issuer 是需要单独验收的部署选择。路由按用途和 issuer 区分，即使共用签发者也须保留独立用途模板、JWK/SCEP 凭据和三份用途绑定 trust；Agent bootstrap 另有自己的用途与前置条件。共享 CA 会扩大密钥泄露、CRL、数据库和停机的影响范围，不能直接继承当前按 purpose/issuer 隔离的 CA 基线结论。未验证时记录 blocked/unknown，详见[设备 PKI 运维](operations.md#设备-pki-轮换与撤销)。
+
+| 输入或产物 | 当前 owner 与操作入口 |
+|---|---|
+| 镜像、网关 TLS、监听、数据库引导连接、可用宿主槽位 | 运维提供一份[安装输入](../../crates/app/src/setup/installation.rs)，冻结真实镜像 ID/digest；部署进程持有受限宿主执行权限，业务 API 不接收任意命令/路径 |
+| instance/tenant/principal/operation、target/lineage、角色密码及安装保护材料 | 安装器生成并持久保存；首租户、独立平台/业务身份及授权由同一安装流程准备，重放不手工换 ID 或重置密码 |
+| 运行快照、网关配置、公开宿主 JSON 与应用摘要 | 由安装/宿主应用 owner 派生；原操作冻结实际文件字节，不能编辑生成文件绕过期望版本及进程观察 |
+| 用户、授权、注册设置、Group/Scope/Policy、软件与 Apple 组织 | 真实租户会话调用原领域 API；平台会话不自动获得业务数据权限，目录查询不成为第二个写 owner |
+| APNs/Profile/Managed Apple Account、WNS、任务签名、SMTP、Webhook、S3 凭据 | 原领域 API 管理加密材料、版本与适用校验；部分变更直接生效，需运行应用的变更由部署 owner 执行，分别核对 requested/applied 与真实效果，见[运维指南](operations.md) |
+| 设备 CA、OIDC 宿主准入、通道和恢复材料的部署设置 | 使用 `prepare-ca`、`configure-host` 及各领域接口；密钥轮换使用对应流程，不把原始 CA 私钥或任意内网准入交给租户 |
+| 设备私钥、CSR、注册回执、Agent 本机 trust 与运行 journal | 由设备/注册 owner 生成持久保存；服务端只授权并分发所需公开材料，端侧部署由 [Agent 指南](https://dev.azure.com/shengming0923/rss/_git/rss-mdm-agent?path=/docs/guides/local-service-lab.md&version=GBdevelop)维护 |
+
+安装目录及数据库/材料秘密位于源码仓之外。私有目录、普通秘密文件和读取者权限按现有安装与 CA 规则设置，不使用符号链接或将整个部署根目录挂入运行容器。根私钥及离线根密码独立保管，在线 CA 只取得必要中间签发材料；`prepare-ca` 的管理凭据、SCEP 解密私钥不进入 MDM 运行宿主。服务 TLS 根、设备 issuer、Profile 签名身份和 APNs 身份分别校验，不能互相替代。
+
+先安装可登录的基础管理宿主，再由授权会话导入组织材料，经原领域校验和受控宿主应用启用通道。缺少 APNs 等外部材料时明确保持相应通道关闭；材料保存、CA 准备通过、当前进程已加载与设备实际生效分别记录。S3 通过受限 `storage_profiles` 和下节连接流程准备，工作负载凭据不使用 RustFS root 身份，必须验证真实版本化及跨租户前缀拒绝。
+
 ### 对象存储开通与凭据更新
 
 部署输入 `storage_profiles` 列出允许使用的 HTTPS S3 端点、region、bucket、基础 namespace 和 CA 文件。`rustfs_administrator` 只供部署进程执行固定 IAM 创建动作；导入其它 S3 凭据时提供 `boundary_verifier`，用于确认租户前缀之外的实际对象确实存在。管理 HTTP 只接受 profile 名称，不能提交任意端点或部署管理员材料。
@@ -271,3 +300,53 @@ Native 保护轮换重加密运行凭据及 Apple 的 ADE、账户开通、设�
 当前冷备/恢复操作要求部署侧 PostgreSQL 管理员为 superuser，并在停宿主或撤销 CONNECT 之前检查；该连接只交给离线部署操作员。它用于停写后重新连接、检查全部会话和原角色恢复，不能下发给业务服务。普通运行账户仍保持既有最小权限。
 
 `configure-host channels` 不允许删除已经建立身份的 Windows/Apple 配置，避免重新启用时更换固定 fingerprint 或 identity seed。未配置通道可保持关闭；已配置材料过期或撤销时由领域运行校验降为不可用，更新仍沿原身份进行。
+
+## 真机验收清单与证据
+
+本节提供部署后的执行清单，不是自动判定器或已通过记录。正式 T3 的需求及稳定编号以 [PRD 产品验收](../product/rss-mdm-prd.md)第 10 节为准，独立任务先冻结本轮发布能力、必要场景、真实设备矩阵及故障范围。安装资格、readiness、协议 smoke、浏览器合成数据和已有 T2 均不能替代真实终端效果；不要求每个文档 PR 执行完整真机矩阵。
+
+### 输入就绪与范围冻结
+
+- 保存候选 manifest 摘要、后端/UI/Agent 制品实际镜像或包摘要、依赖 lock 和实际镜像身份、目标 Linux/CPU、Docker/Compose 版本。含控制台的验收必须使用真实 MDM 前端；Agent 包按平台提供正式签名/公证及匹配 wire 和信任材料。
+- 从设备网络检查域名、公开端口、TLS 完整链、主机名及设备时间；从实际服务身份检查 PostgreSQL/RustFS/CA TLS、权限、持久目录与可恢复空间。容器内部可达不代表设备可达，不使用跳过证书验证的参数。
+- 按所选能力提供真实 APNs/Profile、ABM/ASM/Entra/IdP 等组织资格、CA 模板/CRL/webhook 和受控签名材料。冻结设备 OS edition/build、架构、注册方式、用户/系统执行身份、浏览器及 Agent 版本；不从一次注册推断所有平台或权限组合可用。
+- 准备平台管理员、独立业务管理员、只读/受限账户及合法第二租户宿主；通过领域 API 发布测试资源、软件版本、Group/Scope/Policy。安装器不制造业务成功数据，跨租户场景不能只修改请求中的 tenant。
+- Windows/macOS 的服务、桌面/helper 及 PowerShell、osquery、Node/worker 等运行依赖按实际 Agent 包和所选动作准备；它们属于端侧，不能误列为服务器常驻容器。
+- 每项能力在开测前明确 required 或 excluded，写明需求编号与理由；缺组织资格、设备或实现时对必选项记 blocked/unknown，不以临时改为 excluded 获得通过。输入变化开新轮次并重测受影响项。
+
+### 真实闭环与反例
+
+| 验收域 | 必须观察的结果与边界 |
+|---|---|
+| 入口与会话 | 设备网络上的真实页面、登录/刷新/退出、Cookie/CSRF；只读/无权限账户拒绝且无业务副作用 |
+| 安装与租户开通 | 独立平台/首业务身份和合法宿主；第二租户完整开通；失败或容量不足沿原操作恢复，跨租户数据、操作与对象前缀均被拒绝 |
+| Windows 原生 | 真实注册、设备证书及认证签入、原生采集进入产品资产；至少一项本轮支持的配置/命令有终端效果 |
+| Apple 原生 | Profile 签名、SCEP challenge/notify、mTLS Authenticate/TokenUpdate、APNs 唤醒以及 Mac 上的命令/采集效果 |
+| Agent Windows/macOS | 各平台真实签名包安装、登记与证书激活、采集报告、任务信任 ACK、签名任务领取/执行/结果与终端效果；重启后信任与身份持续有效 |
+| 软件与对象存储 | 上传/冻结版本、RustFS 确切对象版本及摘要、设备下载/安装/版本检测；重启后原版本仍可读，错误摘要和被撤销凭据明确失败 |
+| 内容边界 | 按本轮支持范围验证 Range、分块/多段上传、重放和内容完整性；失败不发布半成品，租户前缀之外访问被拒绝 |
+| 策略与资产闭环 | Group/Scope/Policy、三类采集和合规按需求产生分配、设备效果及投影；旧结果/空值/来源冲突不误覆盖或误删，不把服务端入队当作设备完成 |
+| 跨通道与结果未知 | MDM 与 Agent 的重复副作用保护；超时、断网、晚到结果和重启沿原身份恢复，未知操作不自动换 ID 或双发 |
+| CA 与撤销 | 各用途模板/期限/凭据正确，跨用途证书不能取得设备身份；撤销持久生效并在签名 CRL 实际发布，既有 TLS/恢复会话仍受当前凭据校验 |
+| 共享 CA 专项 | 选择共用 CA 时分别验证三用途签发、SCEP/JWK、共享 CRL 传播、单用途撤销与其它合法用途继续工作；保留隔离基线之外的独立结果 |
+| 故障与联合恢复 | 服务/宿主重启、PG/CA/RustFS 不可用、原操作续跑及同址冷恢复；原账户、设备凭据、密钥、对象版本和审计关联可核验，见[单机恢复边界](operations.md#单机部署的重启与恢复边界) |
+
+### 按发布能力补齐的外部条件
+
+| 能力 | 真实输入与追加验证 |
+|---|---|
+| OIDC / Windows Entra | 真实 issuer/组织、批准的回跳与网络；宿主准入由部署方配置，租户 provider/Entra policy 经领域 API；验证认证、权限映射和对端故障 |
+| WNS | 真实 PFN/SID/secret 经 WNS API 校验和宿主应用，验证设备实际唤醒；OAuth 成功或轮询成功不能代替推送效果 |
+| ADE / Managed Apple Account | 真实 ABM/ASM 组织、设备资格、token/映射和账户签名材料，经组织/材料 API；验证真实注册、到期及恢复，合成 fixture 不替代组织资格 |
+| MDM→Agent / Agent→MDM | 已签名 Agent 包、bootstrap 用途 trust/provider/webhook 与真实注册入口；验证原生安装/系统确认、引导交换、激活与清理，opened 不等于注册完成 |
+| WinGet / Brew 私有发布 | 受控来源、仓库/产物、访问身份及具备相应执行能力的实际 Agent 包；按声明验证原生源、架构/上下文和安装检测，直接下载不能冒充原生源已验证 |
+| 恢复凭据 / Ledger / 证书存档 | 对应密钥、接收证书及授权；真机分别证明 BitLocker/FileVault/Recovery Lock 等选定恢复动作；Ledger 使用原安装密钥核验历史；存档不能替代 APNs/Profile 运行材料 |
+| SMTP / Webhook | 经批准 profile/目标及真实对端凭据；核对 TLS、权限、实际投递/签名确认、失败和未知结果；不将资格消息接受视为收件箱或业务处理完成 |
+
+### 每轮记录与结论
+
+在源码仓外的受控验收目录保存 run-id、UTC 开始/结束时间、输入摘要、范围及设备矩阵。每项记录需求/场景、required/excluded 及理由、预期/实际、结果、操作者、tenant/device/registration、原 operation/request ID 和脱敏证据路径。初始结果为 not_run；执行后区分 passed、failed、blocked、unknown，未知或缺依赖不能填成 passed。
+
+保存产品审计关联、设备侧观测、必要截图和真实制品摘要；不收集密码、Cookie/token、私钥或恢复秘密。ACK、APNs 200、上传成功和健康探针只证明各自阶段。失败保留原操作与诊断，修复后开新轮次，不清库、换 CA 或重新注册来覆盖旧失败。
+
+只有本轮必选项均有实际证据且通过，才能声明确切候选、OS/架构、注册方式、能力和拓扑范围内的结论；共享 CA、同机全部组件和各设备组合分别限定。未选能力、未测组合、HA/容量/性能、异址恢复及未来跨版本升级均不能从该结果推导为支持；升级边界见[版本切换](operations.md#版本切换)。
