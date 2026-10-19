@@ -1,0 +1,25 @@
+{
+  "tables": [
+    {
+      "schema": "mdm_mail",
+      "table": "heads",
+      "read_write": true,
+      "updates": [
+        "revision"
+      ],
+      "delete_policy": null,
+      "insert_policy": "current_user::text='mdm_owner'::textorrevision=0andselected_revisionisnull"
+    },
+    {
+      "schema": "mdm_mail",
+      "table": "versions",
+      "read_write": true,
+      "updates": [],
+      "delete_policy": null,
+      "insert_policy": "current_user::text='mdm_owner'::textorstate='pending'::textandendpoint_digestisnullandhostnameisnullandaddressisnullandtls_modeisnullandtls_rootsisnullandattempted_atisnullandaccepted_atisnullandfailure_reasonisnull"
+    }
+  ],
+  "functions": [],
+  "external_relations": [],
+  "verified_schemas": []
+}

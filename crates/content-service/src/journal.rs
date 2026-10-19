@@ -71,42 +71,14 @@ impl Store {
         key: &str,
         value: &T,
     ) -> Result<serde_json::Value, Error> {
-        let value = encode(value)?;
-        let aad = ProtectionContext::new(self.tenant, key, "content.journal/v1", 1)
-            .map_err(|_| Error::Metadata)?
-            .derive();
-        let mac = self
-            .protection
-            .mac(
-                &serde_json::to_vec(&value).map_err(|_| Error::Metadata)?,
-                &aad,
-            )
-            .map_err(|_| Error::Metadata)?;
-        encode(&Signed {
-            value,
-            mac: mac.to_vec(),
-        })
+        sign_document(&self.protection, self.tenant, key, value)
     }
     pub(super) fn unsign<T: serde::de::DeserializeOwned>(
         &self,
         key: &str,
         v: serde_json::Value,
     ) -> Result<T, Error> {
-        let signed: Signed = decode(v)?;
-        let aad = ProtectionContext::new(self.tenant, key, "content.journal/v1", 1)
-            .map_err(|_| Error::Metadata)?
-            .derive();
-        let mac = self
-            .protection
-            .mac(
-                &serde_json::to_vec(&signed.value).map_err(|_| Error::Metadata)?,
-                &aad,
-            )
-            .map_err(|_| Error::Metadata)?;
-        if !bool::from(mac.as_slice().ct_eq(&signed.mac)) {
-            return Err(Error::Metadata);
-        }
-        decode(signed.value)
+        verify_document(&self.protection, self.tenant, key, v)
     }
     pub(super) fn manifest_key(&self, c: StorageClass, a: &Artifact) -> String {
         format!("{}:{}:{}", class(c), hex(a.digest().bytes()), a.length())
@@ -123,6 +95,9 @@ impl Store {
             .map_err(|e| journal::pg_error(concat!(file!(), ":", line!()), e))?;
         sqlx::query("SELECT set_config('rss.tenant_id',$1,true),set_config('statement_timeout','6000',true),set_config('lock_timeout','6000',true)")
    .bind(self.tenant.to_string()).execute(&mut *tx).await.map_err(|e|journal::pg_error(concat!(file!(), ":", line!()),e))?;
+        if let Storage::S3(s3) = &self.config.storage {
+            crate::connections::require_live(&mut tx, self.tenant, s3.revision).await?;
+        }
         Ok(tx)
     }
     pub(super) async fn quota(
@@ -150,7 +125,7 @@ impl Store {
     }
     pub(super) async fn journal_admit(&self) -> Result<(), Error> {
         let mut tx = self.tx().await?;
-        let identity = serde_json::json!({"protection":self.protection.id(),"backend":self.backend.identity()?});
+        let identity = serde_json::json!({"protection":self.protection.fingerprint_id(),"backend":self.backend.identity()?});
         sqlx::query("INSERT INTO mdm_content.settings(tenant_id,identity) VALUES($1::uuid,$2) ON CONFLICT DO NOTHING").bind(self.tenant.to_string()).bind(&identity).execute(&mut *tx).await.map_err(|e|journal::pg_error(concat!(file!(), ":", line!()),e))?;
         let old: serde_json::Value = sqlx::query_scalar(
             "SELECT identity FROM mdm_content.settings WHERE tenant_id=$1::uuid",
@@ -380,4 +355,48 @@ impl Store {
             .map_err(|e| journal::pg_error(concat!(file!(), ":", line!()), e))?;
         commit(tx).await
     }
+}
+
+pub(super) fn verify_document<T: serde::de::DeserializeOwned>(
+    protection: &rss_mdm_native_protection::Protector,
+    tenant: rss_request_context::TenantId,
+    key: &str,
+    v: serde_json::Value,
+) -> Result<T, Error> {
+    let signed: Signed = decode(v)?;
+    let aad = ProtectionContext::new(tenant, key, "content.journal/v1", 1)
+        .map_err(|_| Error::Metadata)?
+        .derive();
+    let mac = protection
+        .mac(
+            &serde_json::to_vec(&signed.value).map_err(|_| Error::Metadata)?,
+            &aad,
+        )
+        .map_err(|_| Error::Metadata)?;
+    if !bool::from(mac.as_slice().ct_eq(&signed.mac)) {
+        return Err(Error::Metadata);
+    }
+    decode(signed.value)
+}
+
+pub(super) fn sign_document<T: Serialize>(
+    protection: &rss_mdm_native_protection::Protector,
+    tenant: rss_request_context::TenantId,
+    key: &str,
+    value: &T,
+) -> Result<serde_json::Value, Error> {
+    let value = encode(value)?;
+    let aad = ProtectionContext::new(tenant, key, "content.journal/v1", 1)
+        .map_err(|_| Error::Metadata)?
+        .derive();
+    let mac = protection
+        .mac(
+            &serde_json::to_vec(&value).map_err(|_| Error::Metadata)?,
+            &aad,
+        )
+        .map_err(|_| Error::Metadata)?;
+    encode(&Signed {
+        value,
+        mac: mac.to_vec(),
+    })
 }

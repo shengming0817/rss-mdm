@@ -37,6 +37,7 @@ pub(super) fn read(proof: &AuthorizedPrincipal, event: &Event) -> Result<(), Htt
 pub(super) struct Host {
     pub tenant: Uuid,
     pub policies: config::Policies,
+    pub protection: Arc<rss_mdm_native_protection::Protector>,
     pub clock: Arc<dyn crate::clock::Clock>,
 }
 impl webhooks::fanout::Eligibility for Host {

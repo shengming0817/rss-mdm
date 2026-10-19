@@ -81,6 +81,10 @@ use units::units;
 pub fn manifest() -> serde_json::Value {
     serde_json::json!({"units":units().into_iter().map(|(name, sql)| serde_json::json!({"name":name,"sha256":format!("{:x}", Sha256::digest(sql))})).collect::<Vec<_>>()})
 }
+/// The immutable, supported V4 unit prefix, before the first setup transition unit.
+pub(crate) fn source_manifest() -> serde_json::Value {
+    serde_json::json!({"units":units().into_iter().take_while(|(name,_)|*name!="tenant-provisioning-v1").map(|(name,sql)|serde_json::json!({"name":name,"sha256":format!("{:x}",Sha256::digest(sql))})).collect::<Vec<_>>()})
+}
 pub(crate) async fn migrate_on(conn: &mut PgConnection, installation: &Installation) -> Result<()> {
     migrate_units(conn, installation, &units()).await
 }
@@ -111,16 +115,21 @@ async fn migrate_units(
             .fetch_all(&mut *conn)
             .await
             .map_err(|_| MigrationError::at("installation", "ledger read"))?;
-    if !accepted_ledger(&installed, current) {
+    if !resumable_ledger(&installed, current) {
         return Err(MigrationError::at(
             "installation",
             "existing ledger differs or is incomplete",
         ));
     }
     // Replay never changes an installation addressed by different coordinates.
-    if !installed.is_empty() {
+    if installed
+        .iter()
+        .any(|(name, _, _)| name == "identity-authority-v13")
+    {
         verify_installation(conn, installation, instance).await?;
     }
+    qualify_progress(conn, installation, current, &installed).await?;
+    bind_progress(conn, installation).await?;
     for &(name, sql) in current {
         apply_unit(conn, installation, instance, name, sql).await?;
     }
@@ -139,62 +148,131 @@ async fn apply_unit(
     if unit_installed(conn, name, &digest).await? {
         return Ok(());
     }
-    sqlx::query("INSERT INTO public.mdm_migrations(name,digest) VALUES($1,$2)")
-        .bind(name)
-        .bind(digest)
-        .execute(&mut *conn)
-        .await
-        .map_err(|_| MigrationError::at(name, "recording installation intent"))?;
-    if matches!(name, "audit-v1" | "audit-ledger-v1") {
-        install_audit_component(conn, name, sql).await?;
-    } else if name == "identity-authority-v13" {
-        install_identity(conn, installation, instance).await?;
-    } else if name != "identity-audit-runtime-v1" || installation.audit_mode == AuditMode::Ledger {
-        sqlx::raw_sql(sql).execute(&mut *conn).await.map_err(|_| {
-            MigrationError::at(
-                name,
-                "component SQL failed; inspect incomplete installation",
-            )
-        })?;
-    }
-    sqlx::query("UPDATE public.mdm_migrations SET complete=true WHERE name=$1")
-        .bind(name)
-        .execute(&mut *conn)
-        .await
-        .map_err(|_| MigrationError::at(name, "completion acknowledgement unknown"))?;
-    Ok(())
-}
-
-async fn install_audit_component(
-    conn: &mut PgConnection,
-    name: &'static str,
-    sql: &'static str,
-) -> Result<()> {
+    // The schema effect and its receipt commit together. A lost acknowledgement is recovered
+    // by reading the original receipt; there is no ambiguous incomplete marker to erase.
     let mut tx = conn
         .begin()
         .await
         .map_err(|_| MigrationError::at(name, "begin"))?;
-    let role = if name == "audit-v1" {
-        "mdm_audit_owner"
-    } else {
-        "mdm_ledger_owner"
-    };
-    sqlx::query("SELECT set_config('role',$1,true)")
-        .bind(role)
+    if matches!(name, "audit-v1" | "audit-ledger-v1") {
+        let role = if name == "audit-v1" {
+            "mdm_audit_owner"
+        } else {
+            "mdm_ledger_owner"
+        };
+        sqlx::query("SELECT set_config('role',$1,true)")
+            .bind(role)
+            .execute(&mut *tx)
+            .await
+            .map_err(|_| MigrationError::at(name, "owner role"))?;
+        execute_schema(&mut tx, name, sql, "component schema").await?;
+        sqlx::query("SET LOCAL ROLE mdm_owner")
+            .execute(&mut *tx)
+            .await
+            .map_err(|_| MigrationError::at(name, "restore installer role"))?;
+    } else if name == "identity-authority-v13" {
+        install_identity_in(&mut tx, installation, instance)
+            .await
+            .map_err(|_| MigrationError::at(name, "identity installation"))?;
+    } else if name != "identity-audit-runtime-v1" || installation.audit_mode == AuditMode::Ledger {
+        execute_schema(
+            &mut tx,
+            name,
+            sql,
+            "component SQL failed; original transaction rolled back",
+        )
+        .await?;
+    }
+    sqlx::query("INSERT INTO public.mdm_migrations(name,digest,complete) VALUES($1,$2,true)")
+        .bind(name)
+        .bind(digest)
         .execute(&mut *tx)
         .await
-        .map_err(|_| MigrationError::at(name, "owner role"))?;
-    sqlx::raw_sql(sql)
-        .execute(&mut *tx)
-        .await
-        .map_err(|_| MigrationError::at(name, "component schema"))?;
-    sqlx::query("SET LOCAL ROLE mdm_owner")
-        .execute(&mut *tx)
-        .await
-        .map_err(|_| MigrationError::at(name, "restore installer role"))?;
+        .map_err(|_| MigrationError::at(name, "recording completion"))?;
     tx.commit()
         .await
         .map_err(|_| MigrationError::at(name, "commit acknowledgement unknown"))
+}
+
+/// Adapt the fixed, pinned component scripts to the installer's transaction. Some components
+/// concatenate initial DDL and an explicitly wrapped upgrade. Preserve each static SQL slice and
+/// execute all slices in the same transaction as the receipt; never send their transaction controls.
+/// This is only for repository SQL, whose standalone control lines are checked in the unit test.
+fn transaction_body(sql: &'static str) -> Result<Vec<&'static str>> {
+    let mut offset = 0;
+    let mut start = 0;
+    let mut wrapped = false;
+    let mut bodies = Vec::new();
+    for line in sql.split_inclusive('\n') {
+        match line.trim() {
+            "BEGIN;" if !wrapped => {
+                bodies.push(&sql[start..offset]);
+                wrapped = true;
+                start = offset + line.len();
+            }
+            "COMMIT;" if wrapped => {
+                bodies.push(&sql[start..offset]);
+                wrapped = false;
+                start = offset + line.len();
+            }
+            "BEGIN;" | "COMMIT;" | "ROLLBACK;" | "START TRANSACTION;" => {
+                return Err(MigrationError::at(
+                    "installation",
+                    "unsupported component transaction envelope",
+                ));
+            }
+            _ => {}
+        }
+        offset += line.len();
+    }
+    if wrapped {
+        return Err(MigrationError::at(
+            "installation",
+            "unclosed component transaction envelope",
+        ));
+    }
+    bodies.push(&sql[start..]);
+    bodies.retain(|body| {
+        body.lines()
+            .any(|line| !line.trim().is_empty() && !line.trim().starts_with("--"))
+    });
+    Ok(bodies)
+}
+async fn bind_progress(conn: &mut PgConnection, installation: &Installation) -> Result<()> {
+    sqlx::raw_sql("CREATE TABLE IF NOT EXISTS public.mdm_installation_progress(singleton boolean PRIMARY KEY DEFAULT true CHECK(singleton),instance_id uuid NOT NULL,target bytea NOT NULL CHECK(octet_length(target)=16),lineage bytea NOT NULL CHECK(octet_length(lineage)=16),audit_mode text NOT NULL CHECK(audit_mode IN('plain','ledger'))); REVOKE ALL ON public.mdm_installation_progress FROM PUBLIC")
+        .execute(&mut *conn).await.map_err(|_|MigrationError::at("installation","progress storage"))?;
+    sqlx::query("INSERT INTO public.mdm_installation_progress(singleton,instance_id,target,lineage,audit_mode) VALUES(true,$1::uuid,$2,$3,$4) ON CONFLICT DO NOTHING")
+        .bind(&installation.instance_id).bind(installation.target.as_slice()).bind(installation.lineage.as_slice()).bind(installation.audit_mode.as_str())
+        .execute(&mut *conn).await.map_err(|_|MigrationError::at("installation","progress reservation"))?;
+    let matched:bool=sqlx::query_scalar("SELECT count(*)=1 AND coalesce(bool_and(instance_id=$1::uuid AND target=$2 AND lineage=$3 AND audit_mode=$4),false) FROM public.mdm_installation_progress")
+        .bind(&installation.instance_id).bind(installation.target.as_slice()).bind(installation.lineage.as_slice()).bind(installation.audit_mode.as_str())
+        .fetch_one(conn).await.map_err(|_|MigrationError::at("installation","progress read"))?;
+    if !matched {
+        return Err(MigrationError::at(
+            "installation",
+            "instance, storage binding or runtime profiles differ",
+        ));
+    }
+    Ok(())
+}
+fn resumable_ledger(
+    installed: &[(String, String, bool)],
+    current: &[(&'static str, &'static str)],
+) -> bool {
+    if installed.len() > current.len() || installed.iter().any(|row| !row.2) {
+        return false;
+    }
+    let prefix = &current[..installed.len()];
+    installed.iter().all(|(name, digest, _)| {
+        prefix
+            .iter()
+            .any(|(n, sql)| name == n && *digest == format!("{:x}", Sha256::digest(sql)))
+    }) && installed
+        .iter()
+        .map(|row| &row.0)
+        .collect::<std::collections::BTreeSet<_>>()
+        .len()
+        == installed.len()
 }
 async fn unit_installed(conn: &mut PgConnection, name: &'static str, digest: &str) -> Result<bool> {
     let old = sqlx::query("SELECT digest,complete FROM public.mdm_migrations WHERE name=$1")
@@ -301,77 +379,64 @@ pub(crate) async fn verify_identity(
     Ok(())
 }
 
-async fn install_identity(
-    conn: &mut PgConnection,
+async fn install_identity_in(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     installation: &Installation,
     instance: rss_identity_core::InstanceId,
-) -> Result<()> {
-    async fn install(
-        conn: &mut PgConnection,
-        installation: &Installation,
-        instance: rss_identity_core::InstanceId,
-    ) -> std::result::Result<(), sqlx::Error> {
-        let mut tx = conn.begin().await?;
-        rss_identity_postgres::install(&mut tx, instance).await?;
-        rss_identity_postgres::grant_profile(
-            &mut tx,
-            "mdm_identity_runtime",
-            rss_identity_postgres::AuthorityProfile::Runtime,
-        )
+) -> std::result::Result<(), sqlx::Error> {
+    rss_identity_postgres::install(tx, instance).await?;
+    rss_identity_postgres::grant_profile(
+        tx,
+        "mdm_identity_runtime",
+        rss_identity_postgres::AuthorityProfile::Runtime,
+    )
+    .await?;
+    rss_identity_postgres::grant_profile(
+        tx,
+        "mdm_identity_maintenance",
+        rss_identity_postgres::AuthorityProfile::Maintenance,
+    )
+    .await?;
+    rss_identity_postgres::grant_profile(
+        tx,
+        "mdm_identity_provisioning",
+        rss_identity_postgres::AuthorityProfile::Provisioning,
+    )
+    .await?;
+    rss_identity_postgres::audit::grant_worker(tx, crate::identity_audit::ROLE)
+        .await
+        .map_err(|_| sqlx::Error::Protocol("identity audit grant rejected".into()))?;
+    sqlx::query(
+        "INSERT INTO rss_transactional_messaging.storage_lineage(target,lineage) VALUES($1,$2)",
+    )
+    .bind(installation.target.as_slice())
+    .bind(installation.lineage.as_slice())
+    .execute(&mut **tx)
+    .await?;
+    // Installation allocates the reserved authentication/authorization tenant, never accounts.
+    let management = uuid::Uuid::new_v4();
+    sqlx::query("INSERT INTO public.mdm_tenants(tenant_id,initial_epoch,name,used) VALUES($1,1,'Installation management',true)")
+            .bind(management).execute(&mut **tx).await?;
+    sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
+        .bind(management.to_string())
+        .execute(&mut **tx)
         .await?;
-        rss_identity_postgres::grant_profile(
-            &mut tx,
-            "mdm_identity_maintenance",
-            rss_identity_postgres::AuthorityProfile::Maintenance,
-        )
-        .await?;
-        rss_identity_postgres::grant_profile(
-            &mut tx,
-            "mdm_identity_provisioning",
-            rss_identity_postgres::AuthorityProfile::Provisioning,
-        )
-        .await?;
-        rss_identity_postgres::audit::grant_worker(&mut tx, crate::identity_audit::ROLE)
-            .await
-            .map_err(|_| sqlx::Error::Protocol("identity audit grant rejected".into()))?;
-        sqlx::query(
-            "INSERT INTO rss_transactional_messaging.storage_lineage(target,lineage) VALUES($1,$2)",
-        )
-        .bind(installation.target.as_slice())
-        .bind(installation.lineage.as_slice())
-        .execute(&mut *tx)
-        .await?;
-        // Installation allocates the reserved authentication/authorization tenant, never accounts.
-        let management = uuid::Uuid::new_v4();
-        sqlx::query("INSERT INTO public.mdm_tenants(tenant_id,initial_epoch,name,used) VALUES($1,1,'Installation management',true)")
-            .bind(management).execute(&mut *tx).await?;
-        sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
-            .bind(management.to_string())
-            .execute(&mut *tx)
-            .await?;
-        sqlx::query(
-            "INSERT INTO rss_transactional_messaging.tenant_epoch(tenant_id,epoch) VALUES($1,1)",
-        )
-        .bind(management)
-        .execute(&mut *tx)
-        .await?;
-        sqlx::query("INSERT INTO public.mdm_installation(instance_id,target,lineage,audit_mode,management_tenant_id) VALUES($1::uuid,$2,$3,$4,$5)")
+    sqlx::query(
+        "INSERT INTO rss_transactional_messaging.tenant_epoch(tenant_id,epoch) VALUES($1,1)",
+    )
+    .bind(management)
+    .execute(&mut **tx)
+    .await?;
+    sqlx::query("INSERT INTO public.mdm_installation(instance_id,target,lineage,audit_mode,management_tenant_id) VALUES($1::uuid,$2,$3,$4,$5)")
             .bind(&installation.instance_id)
             .bind(installation.target.as_slice())
             .bind(installation.lineage.as_slice())
             .bind(installation.audit_mode.as_str())
             .bind(management)
-            .execute(&mut *tx)
+            .execute(&mut **tx)
             .await?;
-        verify_profiles(&mut tx, instance, installation.audit_mode).await?;
-        tx.commit().await
-    }
-    install(conn, installation, instance).await.map_err(|_| {
-        MigrationError::at(
-            "identity-authority-v13",
-            "installation not confirmed; inspect ledger",
-        )
-    })
+    verify_profiles(tx, instance, installation.audit_mode).await?;
+    Ok(())
 }
 async fn verify_profiles(
     conn: &mut PgConnection,
@@ -439,6 +504,77 @@ async fn verify_installation(
             "instance, storage binding or runtime profiles differ",
         )
     })
+}
+
+async fn qualify_progress(
+    conn: &mut PgConnection,
+    installation: &Installation,
+    current: &[(&'static str, &'static str)],
+    installed: &[(String, String, bool)],
+) -> Result<()> {
+    let progress_exists: bool =
+        sqlx::query_scalar("SELECT to_regclass('public.mdm_installation_progress') IS NOT NULL")
+            .fetch_one(&mut *conn)
+            .await
+            .map_err(|_| MigrationError::at("installation", "progress read"))?;
+    let source_length = current
+        .iter()
+        .position(|(name, _)| *name == "tenant-provisioning-v1");
+    if !installed.is_empty() && !progress_exists && source_length != Some(installed.len()) {
+        return Err(MigrationError::at(
+            "installation",
+            "unrecognized resumable installation source",
+        ));
+    }
+    if !installed.is_empty() && !progress_exists {
+        let transfer: bool = sqlx::query_scalar(
+            "SELECT to_regclass('public.mdm_installation_transfer') IS NOT NULL",
+        )
+        .fetch_one(&mut *conn)
+        .await
+        .map_err(|_| MigrationError::at("installation", "transfer qualification unavailable"))?;
+        if !transfer {
+            return Err(MigrationError::at(
+                "installation",
+                "qualified offline source transfer required",
+            ));
+        }
+        let evidence:Option<(String,String,String)>=sqlx::query_as("SELECT source_revision,inputs_sha256,instance_id::text FROM public.mdm_installation_transfer WHERE singleton AND phase IN('verified','transferred')").fetch_optional(&mut *conn).await.map_err(|_|MigrationError::at("installation","source transfer qualification rejected"))?;
+        let admitted = evidence.is_some_and(|(revision, inputs, instance)| {
+            #[cfg(unix)]
+            {
+                instance == installation.instance_id
+                    && crate::setup::source::admitted(&revision, &inputs)
+            }
+            #[cfg(not(unix))]
+            {
+                let _ = (revision, inputs, instance);
+                false
+            }
+        });
+        if !admitted {
+            return Err(MigrationError::at(
+                "installation",
+                "source transfer qualification rejected",
+            ));
+        }
+    }
+    Ok(())
+}
+
+async fn execute_schema(
+    c: &mut PgConnection,
+    name: &'static str,
+    sql: &'static str,
+    stage: &'static str,
+) -> Result<()> {
+    for statement in transaction_body(sql)? {
+        sqlx::raw_sql(statement)
+            .execute(&mut *c)
+            .await
+            .map_err(|_| MigrationError::at(name, stage))?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]

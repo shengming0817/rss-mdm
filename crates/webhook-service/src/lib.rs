@@ -3,6 +3,7 @@
 #![forbid(unsafe_code)]
 pub mod events;
 pub mod fanout;
+pub mod materials;
 pub mod model;
 pub mod storage;
 pub mod worker;

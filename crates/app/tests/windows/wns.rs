@@ -183,6 +183,16 @@ async fn native_push_routes_require_correlated_pfn_and_refresh_without_resetting
         &origin,
         crate::windows::test_support::monotonic(),
     )?);
+    channel.push.as_mut().unwrap().configuration = host
+        .app
+        .windows
+        .as_ref()
+        .unwrap()
+        .channel
+        .push
+        .as_ref()
+        .unwrap()
+        .configuration;
     let database = host.store.windows_store();
     let eligibility = crate::windows::WakeEligibility(host.app.execution.clone());
     ensure!(
@@ -394,4 +404,202 @@ async fn worker_transport(
         )?)?)
         .build()?;
     Ok((origin, client, server, stop))
+}
+
+#[tokio::test]
+#[ignore = "MODULE=windows.management: WNS credential rotation preserves application channel binding and rejects stale or cross-tenant replay"]
+async fn durable_wns_rotation_keeps_channel_identity_and_original_operation() -> Result<()> {
+    use crate::windows::test_support::case_tenant;
+    use rss_mdm_windows_channel::wns_materials as material;
+    use sqlx::Connection;
+    let mut c =
+        sqlx::PgConnection::connect_with(&crate::device::test_support::options("mdm_owner")?)
+            .await?;
+    let mut tx = c.begin().await?;
+    sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
+        .bind(case_tenant())
+        .execute(&mut *tx)
+        .await?;
+    let key = rss_mdm_native_protection::Protector::new(&[31; 32])?;
+    let next =
+        rss_mdm_native_protection::Protector::with_fingerprint(&[32; 32], &[&[31; 32]], &[31; 32])?;
+    let first_id = uuid::Uuid::new_v4();
+    let request = material::Request {
+        expected_revision: 0,
+        package_family_name: "fixture.pfn".into(),
+        sid: "fixture-sid".to_owned().into(),
+        client_secret: "original-secret".to_owned().into(),
+    };
+    let first = material::prepare(
+        &mut tx,
+        case_tenant(),
+        first_id,
+        "first-administrator",
+        &request,
+        &key,
+    )
+    .await?;
+    ensure!(first.revision == 1 && first.qualified_at.is_none() && !first.selected);
+    ensure!(
+        material::load(
+            &mut tx,
+            case_tenant(),
+            1,
+            &key,
+            crate::test_support::monotonic(),
+            true
+        )
+        .await
+        .is_err()
+    );
+    ensure!(
+        material::prepare(
+            &mut tx,
+            case_tenant(),
+            first_id,
+            "different-administrator",
+            &request,
+            &key
+        )
+        .await
+        .is_err()
+    );
+    material::qualify(
+        &mut tx,
+        case_tenant(),
+        1,
+        crate::windows::test_support::now(),
+    )
+    .await?;
+    let before = material::load(
+        &mut tx,
+        case_tenant(),
+        1,
+        &key,
+        crate::test_support::monotonic(),
+        true,
+    )
+    .await?;
+    let id = uuid::Uuid::new_v4();
+    let mut replacement = material::Request {
+        expected_revision: 1,
+        package_family_name: "fixture.pfn".into(),
+        sid: "fixture-sid".to_owned().into(),
+        client_secret: "replacement-secret".to_owned().into(),
+    };
+    let second = material::prepare(
+        &mut tx,
+        case_tenant(),
+        id,
+        "first-administrator",
+        &replacement,
+        &key,
+    )
+    .await?;
+    ensure!(second.revision == 2);
+    ensure!(
+        material::prepare(
+            &mut tx,
+            case_tenant(),
+            id,
+            "first-administrator",
+            &replacement,
+            &key
+        )
+        .await?
+        .revision
+            == 2
+    );
+    replacement.client_secret = "changed-replay".to_owned().into();
+    ensure!(
+        material::prepare(
+            &mut tx,
+            case_tenant(),
+            id,
+            "first-administrator",
+            &replacement,
+            &key
+        )
+        .await
+        .is_err()
+    );
+    ensure!(material::rewrap(&mut tx, case_tenant(), &next).await? == 2);
+    ensure!(material::rewrap(&mut tx, case_tenant(), &next).await? == 0);
+    material::qualify(
+        &mut tx,
+        case_tenant(),
+        2,
+        crate::windows::test_support::now(),
+    )
+    .await?;
+    let after = material::load(
+        &mut tx,
+        case_tenant(),
+        2,
+        &next,
+        crate::test_support::monotonic(),
+        true,
+    )
+    .await?;
+    ensure!(before.configuration == after.configuration && before.pfn == after.pfn);
+    let other = uuid::Uuid::new_v4().to_string();
+    ensure!(
+        material::load(
+            &mut tx,
+            &other,
+            2,
+            &next,
+            crate::test_support::monotonic(),
+            true
+        )
+        .await
+        .is_err()
+    );
+    let revoke_id = uuid::Uuid::new_v4();
+    let input = material::RevokeRequest {
+        expected_revision: 2,
+        material_revision: 2,
+    };
+    ensure!(
+        material::revoke(
+            &mut tx,
+            case_tenant(),
+            revoke_id,
+            "first-administrator",
+            &input,
+            &next
+        )
+        .await?
+        .revision
+            == 3
+    );
+    ensure!(
+        material::revoke(
+            &mut tx,
+            case_tenant(),
+            revoke_id,
+            "first-administrator",
+            &input,
+            &next
+        )
+        .await?
+        .revision
+            == 3
+    );
+    ensure!(material::directory(&mut tx, case_tenant()).await?.revision == 3);
+    ensure!(
+        material::load(
+            &mut tx,
+            case_tenant(),
+            2,
+            &next,
+            crate::test_support::monotonic(),
+            true
+        )
+        .await
+        .is_err()
+    );
+    tx.rollback().await?;
+    c.close().await?;
+    Ok(())
 }

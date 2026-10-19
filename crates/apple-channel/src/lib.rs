@@ -22,6 +22,8 @@ mod profiles;
 mod protection;
 pub mod push;
 pub mod renewal;
+pub mod rewrap;
+pub mod runtime_materials;
 mod trust_installation;
 pub use database::Store;
 pub use error::Error;
@@ -37,14 +39,16 @@ use std::sync::Arc;
 pub struct Config {
     pub management: Origin,
     pub apns_topic: String,
-    pub challenge_webhook: Webhook,
-    pub notify_webhook: Webhook,
+    pub identity_seed: IdentitySeed,
 }
 pub struct Origin {
     pub origin: String,
 }
-pub struct Webhook {
-    pub id: String,
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct IdentitySeed {
+    pub challenge_id: String,
+    pub notify_id: String,
 }
 pub struct Apple {
     #[cfg(feature = "integration")]
@@ -55,8 +59,9 @@ pub struct Apple {
     pub(crate) signer: certificate::ProfileSigner,
     pub(crate) push: push::Push,
     push_ready: std::sync::atomic::AtomicBool,
-    pub(crate) challenge_key: ring::hmac::Key,
-    pub(crate) notify_key: ring::hmac::Key,
+    materials: runtime_materials::runtime::Binding,
+    materials_ready: std::sync::atomic::AtomicBool,
+    pub(crate) webhooks: webhook::Verifier,
     configuration: [u8; 32],
     providers: Arc<rss_mdm_pki_service::providers::Providers>,
     pub(crate) account_keys:
@@ -83,8 +88,8 @@ pub fn protocol_identity(config: &Config) -> [u8; 32] {
             "mdm.apple.enrollment/v3",
             &config.management.origin,
             &config.apns_topic,
-            &config.challenge_webhook.id,
-            &config.notify_webhook.id,
+            &config.identity_seed.challenge_id,
+            &config.identity_seed.notify_id,
         ))
         .expect("closed configuration"),
     )
@@ -119,6 +124,20 @@ impl Apple {
             })
             .collect()
     }
+    pub(crate) async fn check_materials(
+        &self,
+        store: &Store,
+        tenant: &str,
+        now: i64,
+    ) -> Result<(), Error> {
+        let result = self.materials.check(store, tenant, now).await;
+        self.materials_ready
+            .store(result.is_ok(), std::sync::atomic::Ordering::Relaxed);
+        result
+    }
+    pub fn apns_topic(&self) -> &str {
+        &self.config.apns_topic
+    }
     pub fn device_trust(&self) -> &rss_mdm_device_trust::DeviceTrust {
         &self.authority.trust
     }
@@ -132,8 +151,8 @@ impl Apple {
         authority: rss_mdm_device_trust::apple::AppleDeviceTrust,
         signer: certificate::ProfileSigner,
         push: push::Push,
-        challenge_key: ring::hmac::Key,
-        notify_key: ring::hmac::Key,
+        materials: runtime_materials::runtime::Binding,
+        webhooks: webhook::Verifier,
         providers: Arc<rss_mdm_pki_service::providers::Providers>,
     ) -> Self {
         let configuration = protocol_identity(&config);
@@ -146,8 +165,9 @@ impl Apple {
             signer,
             push,
             push_ready: std::sync::atomic::AtomicBool::new(true),
-            challenge_key,
-            notify_key,
+            materials,
+            materials_ready: std::sync::atomic::AtomicBool::new(true),
+            webhooks,
             configuration,
             providers,
             account_keys: Default::default(),
@@ -209,6 +229,7 @@ impl Apple {
 pub fn management_routes(app: Arc<HttpState>) -> axum::Router {
     account_enrollment::management_routes()
         .merge(ade::management_routes())
+        .merge(runtime_materials::routes())
         .with_state(app)
 }
 pub fn browser_routes(app: Arc<HttpState>, envelope: boundary::Envelope) -> axum::Router {
@@ -223,6 +244,10 @@ pub fn browser_routes(app: Arc<HttpState>, envelope: boundary::Envelope) -> axum
             .route("/api/v1/apple/scep/notify", post(enrollment::notify))
             .merge(account_enrollment::routes())
             .merge(ade::routes())
+            .layer(axum::middleware::from_fn_with_state(
+                app.clone(),
+                runtime_materials::runtime::admit,
+            ))
             .with_state(app)
             .layer(axum::extract::DefaultBodyLimit::max(128 * 1024)),
         envelope,
@@ -238,6 +263,10 @@ pub fn router(app: Arc<HttpState>, envelope: boundary::Envelope) -> axum::Router
                 axum::routing::get(ddm::asset),
             )
             .route("/mdm", put(checkin::manage))
+            .layer(axum::middleware::from_fn_with_state(
+                app.clone(),
+                runtime_materials::runtime::admit,
+            ))
             .with_state(app)
             .layer(axum::extract::DefaultBodyLimit::max(1024 * 1024)),
         envelope,
@@ -286,7 +315,11 @@ impl Apple {
     }
     pub fn health(&self, now: i64) -> Health {
         Health {
-            push_available: self.push_ready.load(std::sync::atomic::Ordering::Relaxed),
+            push_available: self.push_ready.load(std::sync::atomic::Ordering::Relaxed)
+                && self
+                    .materials_ready
+                    .load(std::sync::atomic::Ordering::Relaxed)
+                && self.materials.valid_at(now),
             certificates: self.certificate_health(now),
         }
     }
@@ -320,6 +353,8 @@ impl Apple {
 }
 
 pub struct HttpState {
+    /// Deployment-approved signing roots; tenant requests cannot add trust anchors.
+    pub material_roots: Arc<Vec<Vec<u8>>>,
     pub authentication: account_enrollment::Authentication,
     pub account_authority:
         Arc<dyn rss_mdm_registration_service::enrollment::native::AccountAuthority>,
@@ -405,7 +440,19 @@ impl Apple {
         &self.push
     }
     pub fn challenge_signature_fixture(&self, body: &[u8]) -> ring::hmac::Tag {
-        ring::hmac::sign(&self.challenge_key, body)
+        self.webhooks
+            .signature_fixture(
+                &self
+                    .authority
+                    .trust
+                    .active()
+                    .expect("fixture issuer")
+                    .digest,
+                webhook::Stage::Challenge,
+                body,
+            )
+            .expect("fixture webhook")
+            .1
     }
 }
 
@@ -419,3 +466,33 @@ pub const ACCOUNT_ENROLLMENT_SQL: &str = include_str!("../schema/account-enrollm
 pub const ADE_SQL: &str = include_str!("../schema/ade.sql");
 
 mod recovery_credentials;
+
+#[cfg(test)]
+mod identity_seed_tests {
+    #[test]
+    fn original_webhook_ids_keep_v4_protocol_identity() {
+        let config = super::Config {
+            management: super::Origin {
+                origin: "https://mdm.example.test".into(),
+            },
+            apns_topic: "com.apple.mgmt.example".into(),
+            identity_seed: super::IdentitySeed {
+                challenge_id: "original-challenge".into(),
+                notify_id: "original-notify".into(),
+            },
+        };
+        use sha2::Digest;
+        let original: [u8; 32] = sha2::Sha256::digest(
+            serde_json::to_vec(&(
+                "mdm.apple.enrollment/v3",
+                "https://mdm.example.test",
+                "com.apple.mgmt.example",
+                "original-challenge",
+                "original-notify",
+            ))
+            .unwrap(),
+        )
+        .into();
+        assert_eq!(super::protocol_identity(&config), original);
+    }
+}

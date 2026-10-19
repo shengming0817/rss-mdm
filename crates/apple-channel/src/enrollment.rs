@@ -216,15 +216,16 @@ pub async fn challenge(
     bytes: Bytes,
 ) -> Result<Json<serde_json::Value>, Error> {
     let apple = app.apple()?;
-    let input = webhook::decode(
-        &apple.challenge_key,
-        &apple.config.challenge_webhook.id,
+    let verified = apple.webhooks.verify(
+        webhook::Stage::Challenge,
         &headers,
         &bytes,
         app.clock
             .unix_seconds()
             .ok_or(Error::Unavailable(Failure::Clock))?,
     )?;
+    let input = verified.request();
+    let issuer = verified.issuer();
     if input
         .provisioner_name
         .as_deref()
@@ -239,13 +240,14 @@ pub async fn challenge(
         .as_deref()
         .ok_or(Error::Unauthorized)?;
     let csr = certificate::csr(&input.x509_certificate_request.der()?)?;
-    let challenge = input.scep_challenge.ok_or(Error::Unauthorized)?;
+    let challenge = input.scep_challenge.as_ref().ok_or(Error::Unauthorized)?;
     if super::renewal::challenge(
         &app,
         &csr,
-        &challenge,
+        challenge,
         &input.transaction,
         provisioner,
+        issuer,
         &audit,
     )
     .await?
@@ -254,19 +256,19 @@ pub async fn challenge(
             serde_json::json!({"allow":true,"data":{"subject":certificate::subject(csr.enrollment(),csr.attempt())}}),
         ));
     }
-    let (auth, proof) = authorized(&app, csr.enrollment(), Some(&challenge), &audit).await?;
+    let (auth, proof) = authorized(&app, csr.enrollment(), Some(challenge), &audit).await?;
     let budget =
         rss_mdm_audit_integration::budget::AuditBudget::new(std::time::Duration::from_secs(2));
     let control = budget.control();
     let outcome = app.audit_store.write(app.identity.tenant(), &control,
-        (&app, apple, &auth, &proof, &csr, input.transaction.as_str(), provisioner, &audit),
-        |(app, apple, auth, proof, csr, transaction, provisioner, audit), tx| Box::pin(async move {
-            tx.with_connection_context(&mut (*app, *apple, *auth, *proof, *csr, *transaction, *provisioner),
-                |(_app, apple, auth, proof, csr, transaction, provisioner), c| Box::pin(async move {
-                    let apple = *apple; let auth = *auth; let proof = *proof; let csr = *csr; let transaction = *transaction; let provisioner=*provisioner;
+        (&app, apple, &auth, &proof, &csr, input.transaction.as_str(), provisioner, issuer, &audit),
+        |(app, apple, auth, proof, csr, transaction, provisioner, issuer, audit), tx| Box::pin(async move {
+            tx.with_connection_context(&mut (*app, *apple, *auth, *proof, *csr, *transaction, *provisioner, *issuer),
+                |(_app, apple, auth, proof, csr, transaction, provisioner, issuer), c| Box::pin(async move {
+                    let apple = *apple; let auth = *auth; let proof = *proof; let csr = *csr; let transaction = *transaction; let provisioner=*provisioner; let issuer=*issuer;
     admitted(c,proof).await?;
-    let consumed=sqlx::query("UPDATE mdm_apple.scep_attempts SET state='consumed',transaction_id=$4,csr_digest=$5,spki=$6 WHERE tenant_id=$1::uuid AND id=$2::uuid AND enrollment=$3::uuid AND state='prepared' AND configuration=$7 AND authorization_version=$8 AND scep_provisioner=$9 AND expires_at>clock_timestamp()")
-        .bind(proof.coordinates().tenant.as_str()).bind(csr.attempt().to_string()).bind(csr.enrollment().to_string()).bind(transaction).bind(csr.digest().as_slice()).bind(csr.spki().as_slice()).bind(apple.configuration.as_slice()).bind(auth.version).bind(provisioner).execute(&mut *c).await.map_err(db)?;
+    let consumed=sqlx::query("UPDATE mdm_apple.scep_attempts SET state='consumed',transaction_id=$4,csr_digest=$5,spki=$6 WHERE tenant_id=$1::uuid AND id=$2::uuid AND enrollment=$3::uuid AND state='prepared' AND configuration=$7 AND authorization_version=$8 AND scep_provisioner=$9 AND issuer=decode($10,'hex') AND expires_at>clock_timestamp()")
+        .bind(proof.coordinates().tenant.as_str()).bind(csr.attempt().to_string()).bind(csr.enrollment().to_string()).bind(transaction).bind(csr.digest().as_slice()).bind(csr.spki().as_slice()).bind(apple.configuration.as_slice()).bind(auth.version).bind(provisioner).bind(issuer).execute(&mut *c).await.map_err(db)?;
     if consumed.rows_affected() != 1 {
         return Err(Error::Unauthorized);
     }
@@ -294,27 +296,37 @@ pub async fn notify(
     bytes: Bytes,
 ) -> Result<Json<serde_json::Value>, Error> {
     let apple = app.apple()?;
-    let input = webhook::decode(
-        &apple.notify_key,
-        &apple.config.notify_webhook.id,
+    let verified = apple.webhooks.verify(
+        webhook::Stage::Notify,
         &headers,
         &bytes,
         app.clock
             .unix_seconds()
             .ok_or(Error::Unavailable(Failure::Clock))?,
     )?;
+    let input = verified.request();
     let csr = certificate::csr(&input.x509_certificate_request.der()?)?;
     if input.scep_error_code.is_some() {
         return Err(Error::CertificateRequest);
     }
-    let der = input.x509_certificate.ok_or(Error::Malformed)?.der()?;
+    let der = input
+        .x509_certificate
+        .as_ref()
+        .ok_or(Error::Malformed)?
+        .der()?;
     let leaf = apple.authority.verify(
         &[tokio_rustls::rustls::pki_types::CertificateDer::from(der)],
         app.clock
             .unix_seconds()
             .ok_or(Error::Unavailable(Failure::Clock))?,
     )?;
-    if leaf.enrollment() != csr.enrollment()
+    let issuer = leaf
+        .issuer()
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect::<String>();
+    if issuer != verified.issuer()
+        || leaf.enrollment() != csr.enrollment()
         || leaf.attempt() != csr.attempt()
         || leaf.spki() != csr.spki()
     {

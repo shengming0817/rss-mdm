@@ -1,8 +1,6 @@
-//! Apple file loading, TLS listener configuration and channel construction.
+//! Apple material consumption, TLS listener configuration and channel construction.
 pub(crate) mod config;
 use crate::{ConfigIssue, Error};
-#[cfg(not(test))]
-use rss_mdm_certificate::apple as certificate;
 use std::sync::Arc;
 #[cfg(test)]
 #[path = "../../../tests/apple/certificate_support.rs"]
@@ -16,6 +14,7 @@ impl Apple {
     pub(crate) fn load(
         protection: Arc<rss_mdm_native_protection::Protector>,
         config: config::Config,
+        materials: rss_mdm_apple_channel::runtime_materials::runtime::Loaded,
         now: i64,
         providers: Arc<rss_mdm_pki_service::providers::Providers>,
     ) -> Result<Self, Error> {
@@ -34,65 +33,33 @@ impl Apple {
         }
         let authority = rss_mdm_device_trust::apple::AppleDeviceTrust::from_trust(trust)
             .map_err(|_| Error::Configuration(ConfigIssue::AppleScep))?;
-        let signer = certificate::ProfileSigner::from_bytes(
-            &crate::config::read(&config.profile_certificate_file, 128 * 1024, false)
-                .map_err(|_| Error::Configuration(ConfigIssue::AppleProfileSigner))?,
-            &crate::config::read(&config.profile_private_key_file, 32768, true)
-                .map_err(|_| Error::Configuration(ConfigIssue::AppleProfileSigner))?,
-            now,
-        )
-        .map_err(|_| Error::Configuration(ConfigIssue::AppleProfileSigner))?;
-        let push = load_push(&config).map_err(|_| Error::Configuration(ConfigIssue::AppleApns))?;
-        let challenge_key = webhook_key(&config.challenge_webhook)
-            .map_err(|_| Error::Configuration(ConfigIssue::AppleChallengeWebhook))?;
-        let notify_key = webhook_key(&config.notify_webhook)
-            .map_err(|_| Error::Configuration(ConfigIssue::AppleNotifyWebhook))?;
+        let push = load_push(&config, &materials)
+            .map_err(|_| Error::Configuration(ConfigIssue::AppleApns))?;
+        let webhooks = crate::ca_webhooks::load(&config.webhooks, &authority.trust)?;
         let tls =
             crate::native::tls::configuration(&config.management, Some(authority.verifier()))?;
         let options = rss_mdm_apple_channel::Config {
             management: rss_mdm_apple_channel::Origin {
                 origin: config.management.origin.clone(),
             },
-            apns_topic: config.apns_topic.clone(),
-            challenge_webhook: rss_mdm_apple_channel::Webhook {
-                id: config.challenge_webhook.id.clone(),
-            },
-            notify_webhook: rss_mdm_apple_channel::Webhook {
-                id: config.notify_webhook.id.clone(),
+            apns_topic: materials.apns_topic.clone(),
+            identity_seed: rss_mdm_apple_channel::IdentitySeed {
+                challenge_id: config.identity_seed.challenge_id.clone(),
+                notify_id: config.identity_seed.notify_id.clone(),
             },
         };
-        let account_keys = config
-            .account_keys
-            .iter()
-            .map(|(id, input)| {
-                if id.is_empty()
-                    || id.len() > 128
-                    || !id
-                        .bytes()
-                        .all(|v| v.is_ascii_alphanumeric() || b"_-".contains(&v))
-                {
-                    return Err(Error::Configuration(ConfigIssue::AppleProfileSigner));
-                }
-                let signer = rss_mdm_certificate::apple::ManagedAccountTokenSigner::from_bytes(
-                    &crate::config::read(&input.certificate_file, 128 * 1024, false)?,
-                    &crate::config::read(&input.private_key_file, 32768, true)?,
-                    now,
-                )?;
-                Ok((id.clone(), signer))
-            })
-            .collect::<Result<_, Error>>()?;
         let channel = Arc::new(
             rss_mdm_apple_channel::Apple::new(
                 protection,
                 options,
                 authority,
-                signer,
+                materials.profile,
                 push,
-                challenge_key,
-                notify_key,
+                materials.binding,
+                webhooks,
                 providers,
             )
-            .with_account_keys(account_keys),
+            .with_account_keys(materials.accounts),
         );
         Ok(Self {
             config,
@@ -101,9 +68,13 @@ impl Apple {
         })
     }
 }
-fn load_push(config: &config::Config) -> Result<rss_mdm_apple_channel::push::Push, Error> {
-    let certificate = crate::config::read(&config.apns_certificate_file, 128 * 1024, false)?;
-    let key = crate::config::read(&config.apns_private_key_file, 32768, true)?;
+fn load_push(
+    config: &config::Config,
+    materials: &rss_mdm_apple_channel::runtime_materials::runtime::Loaded,
+) -> Result<rss_mdm_apple_channel::push::Push, Error> {
+    let certificate = &materials.apns_certificate;
+    let key = &materials.apns_private_key;
+    let _ = config;
     #[cfg(test)]
     if let Some((origin, root)) = &config.test_push_transport {
         let client = reqwest::Client::builder().no_proxy().add_root_certificate(
@@ -111,27 +82,21 @@ fn load_push(config: &config::Config) -> Result<rss_mdm_apple_channel::push::Pus
                 .map_err(|_| Error::Configuration(ConfigIssue::AppleApns))?,
         );
         return Ok(rss_mdm_apple_channel::push::Push::fixture(
-            config.apns_topic.clone(),
-            &certificate,
-            &key,
+            materials.apns_topic.clone(),
+            certificate,
+            key,
             Arc::new(crate::clock::SystemClock),
             client,
             origin.clone(),
         )?);
     }
     Ok(rss_mdm_apple_channel::push::Push::from_bytes(
-        config.apns_topic.clone(),
-        &certificate,
-        &key,
+        materials.apns_topic.clone(),
+        certificate,
+        key,
         Arc::new(crate::clock::SystemClock),
     )?)
 }
-fn webhook_key(config: &config::Webhook) -> Result<ring::hmac::Key, Error> {
-    let secret = crate::config::read(&config.secret_file, 1024, true)?;
-    rss_mdm_pki_service::scep::key(&secret)
-        .map_err(|_| Error::Configuration(ConfigIssue::SecretContents))
-}
-
 pub(crate) fn router(
     apple: Option<&Apple>,
     app: Arc<rss_mdm_apple_channel::HttpState>,

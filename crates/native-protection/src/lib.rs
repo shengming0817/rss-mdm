@@ -19,21 +19,154 @@ const TAG: usize = 16;
 #[error("native data protection failed")]
 pub struct Error;
 
-/// One configured key, with separate HKDF subkeys for encryption and content comparison.
-/// No key discovery, plaintext fallback, vault, or business credential storage.
-pub struct Protector {
+/// One exact key; its derived identity remains stable across protection-key rotation.
+struct Key {
     cipher: aead::LessSafeKey,
     mac_key: hmac::Key,
     identity: [u8; 32],
     id: String,
 }
+/// Bounded native protection key ring. Owners supply trusted keys and authenticated coordinates.
+/// Only the active key creates ciphertext. Historical keys are retained for exact-ID reads;
+/// this type does not discover keys, authorize retirement, or rewrite stored business records.
+pub struct Protector {
+    active: Key,
+    fingerprint: Key,
+    historical: std::collections::BTreeMap<[u8; 32], Key>,
+}
+impl Protector {
+    /// Construct protection for one explicitly supplied key.
+    pub fn new(key: &[u8]) -> Result<Self, Error> {
+        Self::with_history(key, &[])
+    }
+    /// Install an active key and at most fifteen distinct historical keys.
+    /// Duplicate identities are rejected, including a repeated active key.
+    pub fn with_history(active: &[u8], historical: &[&[u8]]) -> Result<Self, Error> {
+        Self::with_fingerprint(active, historical, active)
+    }
+    /// 比较身份独立于密文写钥。历史请求和设备材料的稳定标识不随重加密改变。
+    /// 指纹材料仍被历史记录使用时不能退出；它不隐式加入解密钥集合。
+    pub fn with_fingerprint(
+        active: &[u8],
+        historical: &[&[u8]],
+        fingerprint: &[u8],
+    ) -> Result<Self, Error> {
+        if historical.len() > 15 {
+            return Err(Error);
+        }
+        let active = Key::new(active)?;
+        let mut keys = std::collections::BTreeMap::new();
+        for bytes in historical {
+            let key = Key::new(bytes)?;
+            if key.identity == active.identity || keys.insert(key.identity, key).is_some() {
+                return Err(Error);
+            }
+        }
+        Ok(Self {
+            active,
+            fingerprint: Key::new(fingerprint)?,
+            historical: keys,
+        })
+    }
+    /// Exact identity used for new writes.
+    pub fn id(&self) -> &str {
+        self.active.id()
+    }
+    pub fn fingerprint_id(&self) -> &str {
+        self.fingerprint.id()
+    }
+    /// 仅用于有界重加密批次筛选；调用者仍须以领域 AAD 验证完整密文。
+    pub fn ciphertext_prefix(&self) -> Vec<u8> {
+        [MAGIC.as_slice(), self.active.identity.as_slice()].concat()
+    }
+    /// Seal under the active key without changing the existing authenticated envelope format.
+    pub fn seal_bytes(&self, plain: &[u8], aad: &DerivedAad) -> Result<Vec<u8>, Error> {
+        self.active.seal_bytes(plain, aad)
+    }
+    fn key_for_bytes(&self, sealed: &[u8]) -> Result<&Key, Error> {
+        if !(PREFIX + TAG..=PREFIX + MAX_BYTES + TAG).contains(&sealed.len())
+            || &sealed[..MAGIC.len()] != MAGIC
+        {
+            return Err(Error);
+        }
+        let identity: [u8; 32] = sealed[MAGIC.len()..MAGIC.len() + 32]
+            .try_into()
+            .map_err(|_| Error)?;
+        if identity == self.active.identity {
+            Ok(&self.active)
+        } else {
+            self.historical.get(&identity).ok_or(Error)
+        }
+    }
+    /// Select exactly the envelope's key identity, then authenticate trusted owner coordinates.
+    pub fn open_bytes(&self, sealed: &[u8], aad: &DerivedAad) -> Result<Plaintext, Error> {
+        self.key_for_bytes(sealed)?.open_bytes(sealed, aad)
+    }
+    /// Rewrap a verified envelope under the active key. Active ciphertext is returned unchanged,
+    /// making a resumed batch safe to repeat. The business owner commits the result atomically.
+    pub fn rewrap_bytes(&self, sealed: &[u8], aad: &DerivedAad) -> Result<Vec<u8>, Error> {
+        let key = self.key_for_bytes(sealed)?;
+        let plain = key.open_bytes(sealed, aad)?;
+        if key.identity == self.active.identity {
+            Ok(sealed.to_vec())
+        } else {
+            self.active.seal_bytes(plain.expose(), aad)
+        }
+    }
+    /// 指纹使用独立的稳定比较钥，持久摘要记录 fingerprint_id。
+    pub fn mac(&self, plain: &[u8], aad: &DerivedAad) -> Result<[u8; 32], Error> {
+        self.fingerprint.mac(plain, aad)
+    }
+    /// 校验稳定比较钥的指纹；已有带 key ID 的操作使用 verify_mac_with_key。
+    pub fn verify_mac(&self, plain: &[u8], aad: &DerivedAad, tag: &[u8]) -> Result<(), Error> {
+        self.fingerprint.verify_mac(plain, aad, tag)
+    }
+    /// Verify a durable request fingerprint against its exact recorded key, without trial decryption.
+    pub fn verify_mac_with_key(
+        &self,
+        id: &str,
+        plain: &[u8],
+        aad: &DerivedAad,
+        tag: &[u8],
+    ) -> Result<(), Error> {
+        if id == self.fingerprint.id() {
+            self.fingerprint.verify_mac(plain, aad, tag)
+        } else {
+            self.key_for_id(id)?.verify_mac(plain, aad, tag)
+        }
+    }
+    fn key_for_id(&self, id: &str) -> Result<&Key, Error> {
+        if id == self.active.id() {
+            return Ok(&self.active);
+        }
+        self.historical
+            .values()
+            .find(|key| key.id() == id)
+            .ok_or(Error)
+    }
+}
+impl Aead for Protector {
+    fn seal(&self, plain: &[u8], aad: &DerivedAad) -> Result<CiphertextEnvelope, AeadError> {
+        self.active.seal(plain, aad)
+    }
+    fn open(
+        &self,
+        envelope: &CiphertextEnvelope,
+        aad: &DerivedAad,
+    ) -> Result<Plaintext, AeadError> {
+        self.key_for_id(envelope.kid())
+            .map_err(|_| AeadError::Open)?
+            .open(envelope, aad)
+    }
+}
+
 struct KeyLength;
 impl hkdf::KeyType for KeyLength {
     fn len(&self) -> usize {
         32
     }
 }
-impl Protector {
+impl Key {
     pub fn new(key: &[u8]) -> Result<Self, Error> {
         if key.len() != 32 {
             return Err(Error);
@@ -123,7 +256,7 @@ impl Protector {
         context.sign().as_ref().try_into().map_err(|_| Error)
     }
 }
-impl Aead for Protector {
+impl Aead for Key {
     fn seal(&self, plaintext: &[u8], aad: &DerivedAad) -> Result<CiphertextEnvelope, AeadError> {
         if plaintext.len() > MAX_BYTES {
             return Err(AeadError::Seal);

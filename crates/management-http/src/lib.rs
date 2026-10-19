@@ -15,6 +15,7 @@ pub mod identity;
 pub mod planning;
 pub mod resource_catalog;
 mod response;
+pub mod settings;
 pub mod software_catalog;
 pub mod software_publication;
 pub mod tenant_administration;
@@ -54,3 +55,5 @@ pub mod recovery_credentials;
 
 mod software_content;
 pub mod webhooks;
+
+pub mod mail;

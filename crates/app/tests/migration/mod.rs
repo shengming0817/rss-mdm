@@ -342,3 +342,110 @@ async fn ledger_installation_rejects_audit_privilege_drift() -> Result<()> {
     migrate(&options, &installation).await?;
     audit_privilege_drift(&options, &installation, true).await
 }
+
+#[test]
+fn resumable_prefix_requires_exact_complete_ordered_source_units() {
+    let source = vec![("a", "SELECT 1;"), ("b", "SELECT 2;"), ("c", "SELECT 3;")];
+    let row = |i: usize| {
+        (
+            source[i].0.to_owned(),
+            format!("{:x}", Sha256::digest(source[i].1)),
+            true,
+        )
+    };
+    assert!(resumable_ledger(&[], &source));
+    assert!(resumable_ledger(&[row(0)], &source));
+    assert!(resumable_ledger(&[row(1), row(0)], &source)); // Database row order is irrelevant.
+    assert!(!resumable_ledger(&[row(0), row(2)], &source));
+    assert!(!resumable_ledger(&[row(0), row(0)], &source));
+    let mut incomplete = row(0);
+    incomplete.2 = false;
+    assert!(!resumable_ledger(&[incomplete], &source));
+    let mut changed = row(0);
+    changed.1 = "changed".into();
+    assert!(!resumable_ledger(&[changed], &source));
+    assert!(!accepted_ledger(&[row(0)], &source)); // Runtime never admits a partial installation.
+}
+#[test]
+fn every_component_keeps_transaction_control_with_the_installer() {
+    for (name, sql) in units() {
+        assert!(
+            transaction_body(sql).is_ok(),
+            "unsupported transaction envelope in {name}"
+        );
+    }
+    assert_eq!(
+        transaction_body("-- header\nBEGIN;\nSELECT 1;\nCOMMIT;\n-- end").unwrap(),
+        vec!["SELECT 1;\n"]
+    );
+    assert_eq!(
+        transaction_body("SELECT 1;\nBEGIN;\nSELECT 2;\nCOMMIT;\nBEGIN;\nSELECT 3;\nCOMMIT;")
+            .unwrap(),
+        vec!["SELECT 1;\n", "SELECT 2;\n", "SELECT 3;\n"]
+    );
+    assert!(transaction_body("BEGIN;\nBEGIN;\nSELECT 1;\nCOMMIT;\nCOMMIT;").is_err());
+    assert!(transaction_body("SELECT 1;\nCOMMIT;\nSELECT 2;").is_err());
+    assert!(transaction_body("BEGIN;\nSELECT 1;").is_err());
+}
+#[tokio::test]
+#[ignore = "MODULE=installation.migration: SQL effect and completion receipt recover atomically"]
+async fn failed_unit_rolls_back_schema_and_can_resume_original_name() -> Result<()> {
+    let options = PgConnectOptions::from_str(&std::env::var("MDM_OWNER_URL")?)?
+        .ssl_mode(sqlx::postgres::PgSslMode::VerifyFull)
+        .ssl_root_cert(std::env::var("PG_CA_FILE")?);
+    let installation = Installation {
+        audit_mode: AuditMode::Plain,
+        instance_id: crate::test_support::identity::INSTANCE.into(),
+        target: [1; 16],
+        lineage: [2; 16],
+    };
+    migrate(&options, &installation).await?;
+    let mut owner = PgConnection::connect_with(&options).await?;
+    let name = "test-resumable-unit";
+    let failed = apply_unit(
+        &mut owner,
+        &installation,
+        installation.validate()?,
+        name,
+        "BEGIN;\nCREATE TABLE public.resumable_unit_evidence(value integer);\nSELECT 1/0;\nCOMMIT;",
+    )
+    .await;
+    ensure!(failed.is_err());
+    // Force SQLx's queued rollback to finish before querying both effects.
+    ensure!(sqlx::query_scalar::<_,bool>("SELECT to_regclass('public.resumable_unit_evidence') IS NULL AND NOT EXISTS(SELECT 1 FROM public.mdm_migrations WHERE name='test-resumable-unit')").fetch_one(&mut owner).await?);
+    let sql = "BEGIN;\nCREATE TABLE public.resumable_unit_evidence(value integer);\nINSERT INTO public.resumable_unit_evidence VALUES(7);\nCOMMIT;";
+    apply_unit(
+        &mut owner,
+        &installation,
+        installation.validate()?,
+        name,
+        sql,
+    )
+    .await?;
+    apply_unit(
+        &mut owner,
+        &installation,
+        installation.validate()?,
+        name,
+        sql,
+    )
+    .await?;
+    ensure!(
+        sqlx::query_scalar::<_, i64>(
+            "SELECT count(*) FROM public.resumable_unit_evidence WHERE value=7"
+        )
+        .fetch_one(&mut owner)
+        .await?
+            == 1
+    );
+    ensure!(
+        sqlx::query_scalar::<_, bool>(
+            "SELECT complete FROM public.mdm_migrations WHERE name='test-resumable-unit'"
+        )
+        .fetch_one(&mut owner)
+        .await?
+    );
+    owner.execute("DROP TABLE public.resumable_unit_evidence; DELETE FROM public.mdm_migrations WHERE name='test-resumable-unit'").await?;
+    owner.close().await?;
+    Ok(())
+}

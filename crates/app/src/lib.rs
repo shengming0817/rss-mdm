@@ -92,6 +92,7 @@ mod lifecycle;
 pub mod maintenance;
 pub mod migration;
 mod native;
+pub mod setup;
 pub mod tenant_registry;
 #[cfg(test)]
 #[path = "../tests/support/mod.rs"]
@@ -197,6 +198,7 @@ mod certificate_archive;
 mod certificate_archive_tests;
 
 pub mod agent_pki;
+mod ca_webhooks;
 
 #[cfg(all(test, feature = "integration"))]
 #[path = "../tests/agent_pki/recovery.rs"]
@@ -220,3 +222,5 @@ pub mod webhooks;
 #[cfg(all(test, feature = "integration"))]
 #[path = "../tests/webhooks/mod.rs"]
 mod webhook_tests;
+
+mod settings;

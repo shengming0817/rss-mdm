@@ -1,0 +1,59 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Acknowledgement after durable installation and readback, sent over an authenticated channel.\nThe service compares registration and generation with authenticated identity, not request claims.",
+  "properties": {
+    "digest": {
+      "description": "Digest returned by `Trust::installation_digest`.",
+      "type": "string"
+    },
+    "generation": {
+      "description": "Existing registration generation.",
+      "format": "uint64",
+      "minimum": 0,
+      "type": "integer"
+    },
+    "operation": {
+      "description": "Stable operation ID reused after response loss.",
+      "format": "uuid",
+      "not": {
+        "const": "00000000-0000-0000-0000-000000000000"
+      },
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+      "type": "string"
+    },
+    "registration": {
+      "description": "Existing registration; this operation never creates a new device identity.",
+      "format": "uuid",
+      "not": {
+        "const": "00000000-0000-0000-0000-000000000000"
+      },
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+      "type": "string"
+    },
+    "revision": {
+      "description": "Installed complete-set revision.",
+      "format": "uint64",
+      "minimum": 0,
+      "type": "integer"
+    },
+    "version": {
+      "description": "Exact protocol version.",
+      "format": "uint8",
+      "maximum": 255,
+      "minimum": 0,
+      "type": "integer"
+    }
+  },
+  "required": [
+    "operation",
+    "version",
+    "registration",
+    "generation",
+    "revision",
+    "digest"
+  ],
+  "title": "Acknowledgement",
+  "type": "object",
+  "$id": "https://rss.example/agent/task-trust/v1/Acknowledgement"
+}

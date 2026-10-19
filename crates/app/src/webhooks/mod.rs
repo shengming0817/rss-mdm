@@ -16,7 +16,7 @@ mod authority;
 mod config;
 mod recovery;
 mod worker;
-pub use config::Config;
+pub use config::{Config, Network};
 use webhooks::fanout::Eligibility;
 
 #[derive(Clone)]
@@ -50,6 +50,7 @@ fn unavailable() -> HttpError {
 fn operation(c: &Command) -> Option<Uuid> {
     match c {
         Command::Change(_, v) => Some(v.operation_id),
+        Command::PrepareMaterial(id, _) | Command::TransitionMaterial(id, _) => Some(*id),
         Command::Test { operation, .. }
         | Command::Replay { operation, .. }
         | Command::Redrive { operation, .. } => Some(*operation),
@@ -58,7 +59,10 @@ fn operation(c: &Command) -> Option<Uuid> {
 }
 fn required(c: &Command) -> Permission {
     match c {
-        Command::Change(..) | Command::Test { .. } => Permission::WebhookWrite,
+        Command::Change(..)
+        | Command::Test { .. }
+        | Command::PrepareMaterial(..)
+        | Command::TransitionMaterial(..) => Permission::WebhookWrite,
         Command::Replay { .. } | Command::Redrive { .. } => Permission::WebhookReplay,
         _ => Permission::WebhookRead,
     }
@@ -86,10 +90,14 @@ impl Backend {
             PgPrivateCa::from_pem(crate::config::read(&db.ca_file, 1024 * 1024, false)?.to_vec())
                 .map_err(|_| crate::Error::Malformed)?,
         );
-        let recovery =
-            PgRecoveryStore::connect(pg, crate::lifecycle::RuntimeTimer, binding, protection)
-                .await
-                .map_err(|_| crate::Error::Unavailable(crate::Failure::Database))?;
+        let recovery = PgRecoveryStore::connect(
+            pg,
+            crate::lifecycle::RuntimeTimer,
+            binding,
+            protection.clone(),
+        )
+        .await
+        .map_err(|_| crate::Error::Unavailable(crate::Failure::Database))?;
         let policies = match config.compile() {
             Ok(v) => v,
             Err(_) => {
@@ -104,6 +112,7 @@ impl Backend {
                 tenant: Uuid::parse_str(&tenant.to_string())
                     .map_err(|_| crate::Error::Malformed)?,
                 policies,
+                protection,
                 clock,
             }),
             audit,
@@ -186,10 +195,20 @@ impl Backend {
                             .map_err(|_| PgError::from(webhooks::Error::Denied))?;
                         if let Some(id) = operation(command) {
                             use sha2::{Digest, Sha256};
-                            let digest = Sha256::digest(
-                                serde_json::to_vec(command)
-                                    .map_err(|_| PgError::from(webhooks::Error::Invalid))?,
-                            );
+                            let digest = if matches!(
+                                command,
+                                Command::PrepareMaterial(..) | Command::TransitionMaterial(..)
+                            ) {
+                                backend
+                                    .material_fingerprint(proof, command)
+                                    .map_err(|_| PgError::from(webhooks::Error::Invalid))?
+                            } else {
+                                Sha256::digest(
+                                    serde_json::to_vec(command)
+                                        .map_err(|_| PgError::from(webhooks::Error::Invalid))?,
+                                )
+                                .to_vec()
+                            };
                             let fact = rss_mdm_audit_integration::Fact::business(
                                 audit,
                                 &format!("webhook:{id}"),
@@ -238,6 +257,30 @@ impl Backend {
             |_| Err(HttpError::CommitUnknown),
             |_| Err(unavailable()),
         )
+    }
+    fn material_fingerprint(
+        &self,
+        p: &AuthorizedPrincipal,
+        command: &Command,
+    ) -> Result<Vec<u8>, HttpError> {
+        let operation = operation(command).ok_or(HttpError::Malformed)?;
+        let context = rss_mdm_native_protection::ProtectionContext::new(
+            self.tenant,
+            &operation.to_string(),
+            "webhook.material.operation",
+            1,
+        )
+        .map_err(|_| HttpError::Malformed)?
+        .derive();
+        let bytes = zeroize::Zeroizing::new(
+            serde_json::to_vec(&(p.instance_id(), p.principal_id(), command))
+                .map_err(|_| HttpError::Malformed)?,
+        );
+        self.host
+            .protection
+            .mac(&bytes, &context)
+            .map(|m| m.to_vec())
+            .map_err(|_| HttpError::Conflict)
     }
     async fn test_on(
         &self,
@@ -335,6 +378,15 @@ impl Backend {
                 let settings = storage::get(c, t, id).await.map_err(map_error)?.settings;
                 self.host.policies.check(t, &settings)?;
                 authority::settings(p, &settings)?;
+                webhooks::materials::load(
+                    c,
+                    t,
+                    &settings.key_reference,
+                    self.host.policies.digest(),
+                    &self.host.protection,
+                )
+                .await
+                .map_err(map_error)?;
             }
             // Stopping an integration must work even after its network/key config is removed.
             storage::Change::Enabled(false) | storage::Change::Delete => (),
@@ -365,6 +417,98 @@ impl Backend {
             false
         })
     }
+    async fn materials_on(
+        &self,
+        c: &mut PgConnection,
+        p: &AuthorizedPrincipal,
+        command: &Command,
+        replayed: bool,
+    ) -> Result<(Value, bool), HttpError> {
+        if matches!(
+            command,
+            Command::PrepareMaterial(..) | Command::TransitionMaterial(..)
+        ) {
+            rss_mdm_authorization_service::lock_on(c, p.tenant_id(), p.instance_id())
+                .await
+                .map_err(|_| unavailable())?;
+            rss_mdm_authorization_service::snapshot_on(c, p.tenant_id(), p.instance_id())
+                .await
+                .map_err(|_| unavailable())?
+                .require(p, Permission::WebhookWrite, None)?;
+            let session = p.session()?;
+            let now = self.host.clock.unix_seconds().map_err(|_| unavailable())?;
+            if session.view().auth_time > now || now - session.view().auth_time > 300 {
+                return Err(HttpError::Forbidden);
+            }
+        }
+        let t = self.host.tenant;
+        let value = match command {
+            Command::Materials => {
+                serde_json::json!({"configurationSha256":self.host.policies.digest(),"keys":webhooks::materials::directory(c,t).await.map_err(map_error)?})
+            }
+            Command::MaterialOperation(id) => sqlx::query_scalar::<_, Value>(
+                "SELECT response FROM mdm_webhook.operations WHERE tenant_id=$1 AND id=$2",
+            )
+            .bind(t)
+            .bind(id)
+            .fetch_optional(&mut *c)
+            .await
+            .map_err(|_| unavailable())?
+            .ok_or(HttpError::NotFound)?,
+            Command::PrepareMaterial(id, input) => {
+                let fingerprint = self.material_fingerprint(p, command)?;
+                let request = ("material", fingerprint);
+                if let Some(old) = storage::replay_operation(c, t, *id, &request)
+                    .await
+                    .map_err(map_error)?
+                {
+                    return Ok((old, true));
+                }
+                if input.configuration_sha256 != self.host.policies.digest() {
+                    return Err(HttpError::Conflict);
+                }
+                self.host
+                    .policies
+                    .check_material(t, &input.network_reference, &input.endpoint)?;
+                let material =
+                    webhooks::materials::prepare(c, t, *id, input, &self.host.protection)
+                        .await
+                        .map_err(map_error)?;
+                let response = serde_json::to_value(material).map_err(|_| HttpError::Malformed)?;
+                storage::record_operation(c, t, *id, &request, &response)
+                    .await
+                    .map_err(map_error)?;
+                response
+            }
+            Command::TransitionMaterial(id, input) => {
+                let fingerprint = self.material_fingerprint(p, command)?;
+                let request = ("material", fingerprint);
+                if let Some(old) = storage::replay_operation(c, t, *id, &request)
+                    .await
+                    .map_err(map_error)?
+                {
+                    return Ok((old, true));
+                }
+                let value = webhooks::materials::transition(
+                    c,
+                    t,
+                    *id,
+                    input,
+                    self.host.policies.digest(),
+                    &self.host.protection,
+                )
+                .await
+                .map_err(map_error)?;
+                let response = serde_json::to_value(value).map_err(|_| HttpError::Malformed)?;
+                storage::record_operation(c, t, *id, &request, &response)
+                    .await
+                    .map_err(map_error)?;
+                response
+            }
+            _ => return Err(HttpError::Malformed),
+        };
+        Ok((value, replayed))
+    }
     async fn execute_on(
         &self,
         c: &mut PgConnection,
@@ -375,6 +519,12 @@ impl Backend {
         let t = self.host.tenant;
         let replayed = self.lock_operation_on(c, command).await?;
         let value = match command {
+            Command::Materials
+            | Command::MaterialOperation(..)
+            | Command::PrepareMaterial(..)
+            | Command::TransitionMaterial(..) => {
+                return self.materials_on(c, p, command, replayed).await;
+            }
             Command::Health => {
                 let counts=sqlx::query_scalar::<_,Value>("SELECT coalesce(jsonb_agg(jsonb_build_object('domain',domain,'status',status,'count',n)),'[]'::jsonb) FROM (SELECT domain,status,count(*) AS n FROM rss_transactional_messaging.outbox WHERE tenant_id=$1 AND domain IN('mdm-webhook-source','mdm-webhook-delivery') GROUP BY domain,status) s").bind(t).fetch_one(&mut *c).await.map_err(|_|unavailable())?;
                 serde_json::json!({"outbox":counts})

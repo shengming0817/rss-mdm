@@ -264,6 +264,11 @@ async fn prepare(
 ) -> std::result::Result<(Request, vault::NativeAction), credentials::Error> {
     use credentials::Error as E;
     let recipient = protection.active_recipient();
+    let now: i64 =
+        sqlx::query_scalar("SELECT floor(extract(epoch FROM clock_timestamp()))::bigint")
+            .fetch_one(&mut *c)
+            .await?;
+    recipient.require_current(now)?;
     let mut link = vault::NativeAction {
         reconciles: None,
         action: String::new(),

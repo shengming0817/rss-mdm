@@ -16,19 +16,20 @@ def exercise(admin, normal, delegate, config, management, business, password, sq
         headers = {'Idempotency-Key': operation or str(uuid.uuid4())} if method != 'GET' else {}
         return browser.call(method, BASE + path, body, headers)
 
-    tenant = str(uuid.uuid4())
-    create = dict(tenantId=tenant, initialEpoch=1, name='HTTP tenant')
+    create = dict(name='HTTP tenant',administratorLogin='initial-admin',administratorPassword=password)
     key = str(uuid.uuid4())
-    require(admin.call('POST', BASE + '/tenants', create)[0] == 400, 'missing key accepted')
-    require(call('POST', '/tenants', dict(create, operationId=key))[0] == 400, 'JSON operation ID accepted')
-    require(call('POST', '/tenants', create, key, normal)[0] == 401, 'business session entered registry')
-    require(call('POST', '/tenants', create, key, delegate)[0] == 403, 'unprivileged manager created tenant')
-    status, receipt = call('POST', '/tenants', create, key)
-    require(status == 200 and receipt['operationId'] == key and receipt['result']['revision'] == 1, 'tenant HTTP create failed: ' + str((status, receipt)))
-    require(command('tenant-create', dict(**common,tenant_id=tenant,initial_epoch=1,name='HTTP tenant',operation_id=key)) == receipt,
-            'CLI/HTTP request fingerprint diverged')
-    require(call('POST', '/tenants', dict(create,name='different'), key)[0] == 409, 'key conflict accepted')
-    require(call('GET', '/tenants/' + tenant) == (200,receipt['result']), 'detail differs')
+    require(call('POST','/tenants',create)[0] == 405, 'bare creation route remains public')
+    require(admin.call('POST', BASE + '/provisionings', create)[0] == 400, 'missing key accepted')
+    require(call('POST', '/provisionings', dict(create, operationId=key))[0] == 400, 'JSON operation ID accepted')
+    require(call('POST', '/provisionings', create, key, normal)[0] == 401, 'business session entered registry')
+    require(call('POST', '/provisionings', create, key, delegate)[0] == 403, 'unprivileged manager created tenant')
+    status, receipt = call('POST', '/provisionings', create, key)
+    require(status == 202 and receipt['operationId'] == key and receipt['result']['phase'] == 'host_pending' and receipt['result']['administratorId'], 'complete provisioning did not reach host pending: ' + str((status,receipt)))
+    tenant = receipt['result']['tenantId']
+    require(call('POST','/provisionings',create,key)==(202,receipt),'provisioning replay changed identity')
+    require(call('GET','/provisionings/'+key)==(200,receipt),'provisioning operation lookup failed')
+    require(call('POST', '/provisionings', dict(create,name='different'), key)[0] == 409, 'key conflict accepted')
+    require(call('GET', '/tenants/' + tenant)[1]['tenantId']==tenant, 'detail differs')
     require(any(t['tenantId'] == tenant for t in call('GET','/tenants')[1]['items']), 'list omitted tenant')
     edit_key = str(uuid.uuid4())
     status, edited = call('PUT','/tenants/' + tenant,dict(expectedRevision=1,notes='updated'),edit_key)
@@ -36,10 +37,7 @@ def exercise(admin, normal, delegate, config, management, business, password, sq
     require(call('PUT','/tenants/' + tenant,dict(expectedRevision=1))[0] == 409, 'stale revision accepted')
     require(call('GET','/operations/' + key) == (200,receipt), 'original operation snapshot changed')
     require(call('DELETE','/tenants/' + management,dict(expectedRevision=1))[0] == 403, 'reserved tenant deleted')
-    removable = str(uuid.uuid4())
-    require(call('POST','/tenants',dict(tenantId=removable,initialEpoch=1))[0] == 200, 'second create failed')
-    require(call('DELETE','/tenants/' + removable,dict(expectedRevision=1))[0] == 200, 'delete failed')
-    require(call('GET','/tenants/' + removable)[0] == 404, 'tombstone visible')
+    require(call('DELETE','/tenants/' + tenant,dict(expectedRevision=2))[0] == 409, 'fully provisioned tenant was deletable')
     require(call('GET','/operations/not-a-uuid') == (400, {'code':'malformed_request'}), 'invalid operation did not use JSON error contract')
     request = dict(login='tenant-admin-one',password=password)
     admin_key = str(uuid.uuid4())
@@ -109,6 +107,7 @@ def exercise(admin, normal, delegate, config, management, business, password, sq
     require(Browser(absent_host,config['product_origin']).call('GET',BASE+'/tenants')[0] == 404, 'disabled registry routes were mounted')
     absent_host.close()
     lost_commit_ack(target_config,password,sql,builds,root,stack,admin,tenant)
+    provisioning_pages_and_active_directory(admin, sql)
 
 
 def administrator_rollback(call, path, tenant, password, sql):
@@ -172,12 +171,11 @@ def lost_commit_ack(config,password,sql,builds,root,stack,authenticated,tenant):
         finally:
             proxy.discard.clear()
         require(browser.call('GET',BASE+'/tenants')[0] == 200, 'cancelled connection poisoned registry pool')
-    for kind in ('create','administrator_create'):
+    for kind in ('provision','administrator_create'):
         operation = str(uuid.uuid4())
-        if kind == 'create':
-            target = str(uuid.uuid4())
-            route = '/tenants'
-            body = dict(tenantId=target,initialEpoch=1)
+        if kind == 'provision':
+            route = '/provisionings'
+            body = dict(name='Lost acknowledgement',administratorLogin='ack-provision-admin',administratorPassword=password)
             role = 'mdm_tenant_registry'
         else:
             target = tenant
@@ -201,7 +199,16 @@ def lost_commit_ack(config,password,sql,builds,root,stack,authenticated,tenant):
         require(sql(f"SELECT count(*) FROM public.mdm_tenant_operations WHERE operation_id='{operation}'") == '1', 'COMMIT did not durably reach PostgreSQL')
         status, receipt = browser.call('GET',BASE+'/operations/'+operation)
         require(status == 200, 'durable unknown operation not queryable')
-        require(browser.call('POST',BASE+route,body,{'Idempotency-Key':operation}) == (200,receipt), 'unknown operation did not replay')
+        if kind == 'provision':
+            original=receipt['result']
+            status,resumed=browser.call('POST',BASE+route,body,{'Idempotency-Key':operation})
+            require(status==202 and resumed['result']['administratorId'] is not None, 'unknown provisioning did not finish administrator phase')
+            require(all(resumed['result'][key]==original[key] for key in ('tenantId','hostId','operationId')), 'unknown provisioning replaced reserved identity')
+            require(browser.call('POST',BASE+route,body,{'Idempotency-Key':operation})==(202,resumed), 'provisioning replay changed completed administrator')
+            target=resumed['result']['tenantId']
+            require(sql(f"SELECT count(*) FROM identity_authority.local_credentials WHERE tenant_id='{target}' AND login_key='ack-provision-admin'")=='1', 'provisioning duplicated account')
+        else:
+            require(browser.call('POST',BASE+route,body,{'Idempotency-Key':operation}) == (200,receipt), 'unknown operation did not replay')
         if kind == 'administrator_create':
             require(sql(f"SELECT count(*) FROM identity_authority.local_credentials WHERE tenant_id='{target}' AND login_key='ack-admin'") == '1', 'unknown commit duplicated account')
             require(sql(f"SELECT count(*) FROM mdm_access.authorization_rules WHERE tenant_id='{target}' AND id='{receipt['result']['ruleId']}'") == '1', 'unknown commit duplicated rule')
@@ -247,3 +254,39 @@ class AckProxy:
         self.listener.close()
         for connection in self.sockets: connection.close()
         self.thread.join(timeout=2)
+
+
+def provisioning_pages_and_active_directory(admin, sql):
+    # Seed the minimal valid reserved receipts: listing does not require accounts or hosts to run.
+    seed = uuid.uuid4().hex
+    ids = f"SELECT md5('{seed}'||i::text)::uuid FROM generate_series(1,1101) i"
+    before = int(sql("SELECT count(*) FROM public.mdm_tenant_operations WHERE action='provision'"))
+    sql(f"INSERT INTO public.mdm_tenants(tenant_id,initial_epoch,deleted) SELECT md5('{seed}'||i::text)::uuid,1,i>1001 FROM generate_series(1,1101) i")
+    try:
+        sql(f"""INSERT INTO public.mdm_tenant_operations(operation_id,tenant_id,action,request,operator,receipt)
+        SELECT id,id,'provision','{{}}','{{}}',jsonb_build_object('operationId',id,'action','provision','result',
+        jsonb_build_object('operationId',id,'tenantId',id,'hostId',md5(id::text||'host')::uuid,
+        'administratorId',NULL,'revision',1,'phase','reserved','blocked',NULL,'origin',NULL,'application',NULL))
+        FROM ({ids}) q(id)""")
+        seen = set()
+        after = None
+        while True:
+            query = '/provisionings?limit=1000' + ('&after=' + after if after else '')
+            status, page = admin.call('GET', BASE + query)
+            require(status == 200 and 0 < len(page['items']) <= 1000, 'provisioning page failed at legal capacity')
+            current = [item['operationId'] for item in page['items']]
+            require(current == sorted(current) and not seen.intersection(current), 'provisioning pagination repeated or reordered rows')
+            seen.update(current)
+            after = page['nextAfter']
+            if after is None:
+                break
+            require(after == current[-1], 'page cursor did not bind last returned operation')
+        require(len(seen) == before + 1101, 'provisioning history lost rows')
+        status, catalog = admin.call('GET', BASE + '/settings/catalog')
+        host = next(item for item in catalog['items'] if item['id'] == 'host-config')
+        expected = int(sql("SELECT count(*) FROM public.mdm_tenant_operations o JOIN public.mdm_tenants t USING(tenant_id) WHERE o.action='provision' AND NOT t.deleted"))
+        require(status == 200 and host['configuredCount'] == expected and expected > 1000, 'active directory omitted legal tenants or included deleted history')
+        require(admin.call('GET', BASE + '/provisionings?limit=1001')[0] == 400, 'unbounded page accepted')
+    finally:
+        sql(f"DELETE FROM public.mdm_tenant_operations WHERE operation_id IN ({ids})")
+        sql(f"DELETE FROM public.mdm_tenants WHERE tenant_id IN ({ids})")

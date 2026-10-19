@@ -124,3 +124,22 @@ pub async fn certificate_issued(
     sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_access.enrollment_certificates WHERE tenant_id=$1::uuid AND request_id=$2)")
         .bind(&context.tenant).bind(context.enrollment).fetch_one(c).await.map_err(db)
 }
+
+/// 在原事务内重包注册秘密，保留 request、设备、凭据及配置身份。
+pub async fn rewrap_protocol(
+    c: &mut sqlx::PgConnection,
+    tenant: &str,
+    protector: &rss_mdm_native_protection::Protector,
+) -> Result<u64, Error> {
+    let prefix = protector.ciphertext_prefix();
+    let rows:Vec<(Uuid,Vec<u8>)>=sqlx::query_as("SELECT request_id,secrets FROM mdm_access.enrollment_intents WHERE tenant_id=$1::uuid AND substring(secrets FROM 1 FOR $2)<>$3 ORDER BY request_id LIMIT 128 FOR UPDATE")
+        .bind(tenant).bind(prefix.len() as i32).bind(&prefix).fetch_all(&mut *c).await.map_err(db)?;
+    for (request, bytes) in &rows {
+        let aad = crate::protection::Protection::aad(tenant, *request)?;
+        let wrapped = protector
+            .rewrap_bytes(bytes, &aad)
+            .map_err(|_| Error::Unavailable(crate::Failure::Protocol))?;
+        sqlx::query("UPDATE mdm_access.enrollment_intents SET secrets=$3 WHERE tenant_id=$1::uuid AND request_id=$2").bind(tenant).bind(request).bind(wrapped).execute(&mut *c).await.map_err(db)?;
+    }
+    Ok(rows.len() as u64)
+}

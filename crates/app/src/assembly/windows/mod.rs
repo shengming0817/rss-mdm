@@ -6,14 +6,14 @@ use rss_mdm_certificate::windows as certificate;
 use rss_mdm_windows_channel::boundary::Envelope;
 use serde::Deserialize;
 use std::{net::SocketAddr, path::PathBuf, sync::Arc};
-#[derive(Deserialize)]
+#[derive(serde::Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct WindowsConfig {
     pub entra: Option<rss_mdm_windows_channel::entra::Config>,
     pub enrollment: TlsEndpoint,
     pub management: TlsEndpoint,
     pub trust_file: PathBuf,
-    pub protocol_key_file: PathBuf,
+    pub protocol_protection: crate::config::NativeProtection,
     #[serde(default)]
     pub lifetime: certificate::Lifetime,
     pub provider_id: String,
@@ -21,15 +21,16 @@ pub struct WindowsConfig {
     pub push: Option<WindowsPushConfig>,
     pub additional_management: Vec<TlsEndpoint>,
 }
-#[derive(Deserialize)]
+#[derive(serde::Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct WindowsPushConfig {
-    pub package_family_name: String,
-    pub sid: String,
-    pub client_secret_file: PathBuf,
+    pub revision: i64,
 }
 impl WindowsConfig {
     pub(crate) fn validate(&self, browser: SocketAddr) -> Result<(), Error> {
+        if self.push.as_ref().is_some_and(|p| p.revision < 1) {
+            return Err(Error::Configuration(ConfigIssue::WindowsPush));
+        }
         self.poll
             .validate()
             .map_err(|_| Error::Configuration(ConfigIssue::WindowsPoll))?;
@@ -96,6 +97,7 @@ impl Windows {
         config: WindowsConfig,
         now: i64,
         providers: Arc<rss_mdm_pki_service::providers::Providers>,
+        push: Option<rss_mdm_windows_channel::push::Push>,
     ) -> Result<Self, Error> {
         let trust = crate::device_pki::load(
             &config.trust_file,
@@ -129,7 +131,10 @@ impl Windows {
             config.provider_id.clone(),
             ca,
             providers,
-            &protocol_key(&config.protocol_key_file)?,
+            config
+                .protocol_protection
+                .load()
+                .map_err(|_| Error::Configuration(ConfigIssue::ProtocolKey))?,
             config.poll.clone(),
         )
         .map_err(|_| Error::Configuration(ConfigIssue::ProtocolKey))?;
@@ -143,21 +148,7 @@ impl Windows {
             .iter()
             .map(|endpoint| tls::configuration(endpoint, Some(channel.ca.verifier())))
             .collect::<Result<Vec<_>, _>>()?;
-        if let Some(push) = &config.push {
-            let bytes = crate::config::read(&push.client_secret_file, 4096, true)
-                .map_err(|_| Error::Configuration(ConfigIssue::WindowsPush))?;
-            let secret = std::str::from_utf8(&bytes)
-                .map_err(|_| Error::Configuration(ConfigIssue::WindowsPush))?;
-            channel.push = Some(
-                rss_mdm_windows_channel::push::Push::new(
-                    push.package_family_name.clone(),
-                    push.sid.clone(),
-                    secret.trim_end_matches(['\r', '\n']).to_owned(),
-                    Arc::new(crate::Monotonic(std::time::Instant::now)),
-                )
-                .map_err(|_| Error::Configuration(ConfigIssue::WindowsPush))?,
-            );
-        }
+        channel.push = push;
         let channel = Arc::new(channel);
         Ok(Self {
             config,
@@ -265,14 +256,6 @@ impl rss_mdm_windows_channel::push::WakeEligibility for WakeEligibility {
     }
 }
 
-fn protocol_key(path: &std::path::Path) -> Result<zeroize::Zeroizing<Vec<u8>>, Error> {
-    let bytes = crate::config::read(path, 32, true)
-        .map_err(|_| Error::Configuration(ConfigIssue::ProtocolKey))?;
-    if bytes.len() != 32 {
-        return Err(Error::Configuration(ConfigIssue::ProtocolKey));
-    }
-    Ok(bytes)
-}
 #[cfg(test)]
 #[path = "../../../tests/windows/unit.rs"]
 mod unit;

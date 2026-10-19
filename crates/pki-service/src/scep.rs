@@ -84,3 +84,115 @@ pub fn key(encoded: &[u8]) -> Result<ring::hmac::Key, Error> {
     }
     Ok(ring::hmac::Key::new(ring::hmac::HMAC_SHA256, &decoded))
 }
+
+/// A CA's authenticated callback identity is bound to one retained issuer and stage.
+pub struct Credentials {
+    pub issuer: String,
+    pub challenge_id: String,
+    pub challenge_key: ring::hmac::Key,
+    pub notify_id: String,
+    pub notify_key: ring::hmac::Key,
+}
+#[derive(Clone, Copy)]
+pub enum Stage {
+    Challenge,
+    Notify,
+}
+pub struct Verifier {
+    credentials: Vec<Credentials>,
+}
+/// Only the signature verifier can construct this proof.
+pub struct VerifiedRequest {
+    issuer: String,
+    request: Request,
+}
+impl VerifiedRequest {
+    pub fn issuer(&self) -> &str {
+        &self.issuer
+    }
+    pub fn request(&self) -> &Request {
+        &self.request
+    }
+}
+impl Verifier {
+    pub fn new(credentials: Vec<Credentials>) -> Result<Self, Error> {
+        if credentials.is_empty() || credentials.len() > 32 {
+            return Err(Error::Configuration);
+        }
+        let mut ids = std::collections::HashSet::new();
+        let mut issuers = std::collections::HashSet::new();
+        for credential in &credentials {
+            if credential.issuer.len() != 64
+                || !credential
+                    .issuer
+                    .bytes()
+                    .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+                || !issuers.insert(&credential.issuer)
+            {
+                return Err(Error::Configuration);
+            }
+            for id in [&credential.challenge_id, &credential.notify_id] {
+                if id.is_empty()
+                    || id.len() > 128
+                    || !id
+                        .bytes()
+                        .all(|b| b.is_ascii_alphanumeric() || b"-_".contains(&b))
+                    || !ids.insert(id)
+                {
+                    return Err(Error::Configuration);
+                }
+            }
+        }
+        Ok(Self { credentials })
+    }
+    pub fn verify(
+        &self,
+        stage: Stage,
+        headers: &HeaderMap,
+        bytes: &[u8],
+        now: i64,
+    ) -> Result<VerifiedRequest, Error> {
+        if headers.get_all("x-smallstep-webhook-id").iter().count() != 1 {
+            return Err(Error::Forbidden);
+        }
+        let id = headers
+            .get("x-smallstep-webhook-id")
+            .and_then(|h| h.to_str().ok())
+            .ok_or(Error::Forbidden)?;
+        for credential in &self.credentials {
+            let (expected, key) = match stage {
+                Stage::Challenge => (&credential.challenge_id, &credential.challenge_key),
+                Stage::Notify => (&credential.notify_id, &credential.notify_key),
+            };
+            if id == expected {
+                return Ok(VerifiedRequest {
+                    issuer: credential.issuer.clone(),
+                    request: decode(key, expected, headers, bytes, now)?,
+                });
+            }
+        }
+        Err(Error::Forbidden)
+    }
+}
+
+#[cfg(feature = "integration")]
+impl Verifier {
+    /// Signing helper for authenticated in-process provider fixtures, never exposed over HTTP.
+    pub fn signature_fixture(
+        &self,
+        issuer: &str,
+        stage: Stage,
+        bytes: &[u8],
+    ) -> Result<(&str, ring::hmac::Tag), Error> {
+        let c = self
+            .credentials
+            .iter()
+            .find(|c| c.issuer == issuer)
+            .ok_or(Error::Configuration)?;
+        let (id, key) = match stage {
+            Stage::Challenge => (&c.challenge_id, &c.challenge_key),
+            Stage::Notify => (&c.notify_id, &c.notify_key),
+        };
+        Ok((id, ring::hmac::sign(key, bytes)))
+    }
+}

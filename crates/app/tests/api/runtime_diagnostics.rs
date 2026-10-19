@@ -670,7 +670,7 @@ async fn actual_worker_progress_and_readiness_share_the_same_projection() -> Res
             .route(
                 "/readyz",
                 axum::routing::get(crate::api::ready)
-                    .with_state((fixture.source.clone(), monotonic())),
+                    .with_state((fixture.source.clone(), monotonic(), crate::setup::host::Observation::new(&serde_json::from_value(fixture.authority.base["runtime_binding"].clone())?,case_tenant().into(),fixture.source.instance.clone()))),
             )
             .oneshot(Request::builder().uri("/readyz").body(Body::empty())?)
             .await?;

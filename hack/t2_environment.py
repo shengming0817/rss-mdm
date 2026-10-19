@@ -384,7 +384,7 @@ class Environment:
         if not native_key.exists():
             private(native_key,'').write_bytes(secrets.token_bytes(32))
         config=json.loads((ROOT/'fixtures/mdm-config.example.json').read_text())
-        config['native_protection_key_file']=path(runtime,'native-data.key')
+        config['native_protection']=dict(active_file=path(runtime,'native-data.key'),historical_files=[],fingerprint_file=path(runtime,'native-data.key'))
         config.update(listen=f'127.0.0.1:{backend_port}',product_origin=origin,trusted_gateway='127.0.0.1',native_protocols={},device_pki=[])
         config['access_database']=database(runtime,'mdm_access');config['runtime_database']=database(runtime,'mdm_runtime')
         config['identity']['database']=database(runtime,'mdm_identity_runtime');config['identity']['audit_worker']=database(runtime,'mdm_identity_audit')
@@ -396,8 +396,7 @@ class Environment:
         if not password.exists():private(password,secrets.token_urlsafe(32))
         private(operator/'account-password',password.read_text())
         private(operator/'migrate.json',dict(installation=installation(),database=database(operator,'mdm_owner')))
-        private(operator/'tenant-create.json',dict(installation=installation(),database=database(operator,'mdm_owner'),
-                tenant_id=TENANTS[0],initial_epoch=1,operation_id=str(uuid.uuid5(uuid.NAMESPACE_URL,self.project+'/'+TENANTS[0]))))
+
         private(operator/'initialize.json',dict(installation=installation(),database=database(operator,'mdm_identity_maintenance'),
                 tenant_id=TENANTS[0],expected_epoch=1,principal_id=ADMIN,login='admin',password_file=path(operator,'account-password')))
         auth=operator/'authorization.json'
@@ -431,7 +430,9 @@ class Environment:
             result=run(['cargo','build','--locked','-p','rss-mdm-app','--bin','rss-mdm','--message-format=json'],cwd=ROOT,capture_output=True)
             binaries=[x['executable'] for line in result.stdout.splitlines() if (x:=json.loads(line)).get('reason')=='compiler-artifact' and x.get('executable') and x['target']['name']=='rss-mdm']
             if len(binaries)!=1:raise RuntimeError('product binary unavailable')
-        for verb,file in [('migrate','migrate.json'),('tenant-create','tenant-create.json'),('initialize','initialize.json'),('initialize-authorization','authorization.json')]:
+        for verb,file in [('migrate','migrate.json'),('initialize','initialize.json'),('initialize-authorization','authorization.json')]:
+            if verb=='initialize' and self.sql(f"SELECT count(*) FROM public.mdm_tenants WHERE tenant_id='{TENANTS[0]}'",'mdm_dev')=='0':
+                self.sql(f"SELECT public.create_new_tenant('{TENANTS[0]}',1,NULL,NULL)",'mdm_dev')
             if verb=='initialize' and self.sql(f"SELECT count(*) FROM identity_authority.accounts WHERE tenant_id='{TENANTS[0]}' AND principal_id='{ADMIN}'",'mdm_dev')=='1':
                 with self.phase('initialize',reused=True):pass
                 continue

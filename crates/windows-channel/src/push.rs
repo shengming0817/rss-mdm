@@ -28,6 +28,7 @@ use std::time::{Duration, Instant, SystemTime};
 use zeroize::Zeroizing;
 
 pub struct Push {
+    pub(crate) material_revision: Option<i64>,
     clock: std::sync::Arc<dyn rss_observation::Clock>,
     client: reqwest::Client,
     token_url: String,
@@ -87,6 +88,21 @@ pub fn channel_uri(value: &str) -> Result<reqwest::Url, Error> {
     }
     Ok(uri)
 }
+pub(crate) fn validate(pfn: &str, sid: &str, secret: &str) -> Result<(), Error> {
+    if pfn.is_empty()
+        || pfn.len() > 256
+        || !pfn
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b"._-".contains(&b))
+        || sid.is_empty()
+        || sid.len() > 512
+        || secret.is_empty()
+        || secret.len() > 4096
+    {
+        return Err(Error::Malformed);
+    }
+    Ok(())
+}
 impl Push {
     pub fn new(
         pfn: String,
@@ -94,18 +110,7 @@ impl Push {
         secret: String,
         clock: std::sync::Arc<dyn rss_observation::Clock>,
     ) -> Result<Self, Error> {
-        if pfn.is_empty()
-            || pfn.len() > 256
-            || !pfn
-                .bytes()
-                .all(|b| b.is_ascii_alphanumeric() || b"._-".contains(&b))
-            || sid.is_empty()
-            || sid.len() > 512
-            || secret.is_empty()
-            || secret.len() > 4096
-        {
-            return Err(Error::Malformed);
-        }
+        validate(&pfn, &sid, &secret)?;
         use sha2::{Digest, Sha256};
         let configuration = Sha256::digest(&*Zeroizing::new(
             serde_json::to_vec(&("wns", &pfn, &sid, &secret)).map_err(unavailable)?,
@@ -113,12 +118,14 @@ impl Push {
         .into();
         let client = reqwest::Client::builder()
             .https_only(true)
+            .no_proxy()
             .redirect(reqwest::redirect::Policy::none())
             .connect_timeout(Duration::from_secs(3))
             .timeout(Duration::from_secs(6))
             .build()
             .map_err(unavailable)?;
         Ok(Self {
+            material_revision: None,
             clock,
             client,
             token_url: "https://login.live.com/accesstoken.srf".into(),
@@ -130,6 +137,9 @@ impl Push {
             configuration,
             token: tokio::sync::Mutex::new(None),
         })
+    }
+    pub async fn validate_credentials(&self) -> Result<(), Error> {
+        self.bearer().await.map(|_| ())
     }
     async fn bearer(&self) -> Result<Zeroizing<String>, Error> {
         let mut cached = self.token.lock().await;

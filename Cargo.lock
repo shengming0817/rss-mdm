@@ -3454,6 +3454,8 @@ name = "rss-mdm-app"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "aws-credential-types",
+ "aws-sigv4",
  "axum",
  "base64 0.22.1",
  "cms",
@@ -3504,6 +3506,7 @@ dependencies = [
  "rss-mdm-inventory",
  "rss-mdm-inventory-postgres",
  "rss-mdm-inventory-service",
+ "rss-mdm-mail-service",
  "rss-mdm-management-http",
  "rss-mdm-native-protection",
  "rss-mdm-pki-service",
@@ -3801,6 +3804,8 @@ dependencies = [
  "futures",
  "libc",
  "quick-xml 0.42.0",
+ "ring",
+ "rss-audit-postgres",
  "rss-contract",
  "rss-identity-core",
  "rss-mdm-audit-integration",
@@ -4103,6 +4108,30 @@ dependencies = [
 ]
 
 [[package]]
+name = "rss-mdm-mail-service"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "httpdate",
+ "rss-audit-postgres",
+ "rss-mdm-audit-integration",
+ "rss-mdm-authorization-service",
+ "rss-mdm-native-protection",
+ "rss-request-context",
+ "rss-transactional-messaging",
+ "schemars 1.2.2",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "sqlx",
+ "thiserror 2.0.20",
+ "tokio",
+ "tokio-rustls",
+ "uuid",
+ "zeroize",
+]
+
+[[package]]
 name = "rss-mdm-management-http"
 version = "0.1.0"
 dependencies = [
@@ -4126,6 +4155,7 @@ dependencies = [
  "rss-mdm-flow-service",
  "rss-mdm-inventory",
  "rss-mdm-inventory-service",
+ "rss-mdm-mail-service",
  "rss-mdm-pki-service",
  "rss-mdm-policy",
  "rss-mdm-recovery-credentials",
@@ -4181,6 +4211,7 @@ version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
  "http 1.5.0",
+ "openssl",
  "reqwest",
  "ring",
  "rss-audit-postgres",
@@ -4440,9 +4471,12 @@ dependencies = [
 name = "rss-mdm-webhook-service"
 version = "0.1.0"
 dependencies = [
+ "base64 0.22.1",
  "futures",
  "ipnet",
+ "ring",
  "rss-contract",
+ "rss-mdm-native-protection",
  "rss-redact",
  "rss-request-context",
  "rss-transactional-messaging",
@@ -4450,6 +4484,7 @@ dependencies = [
  "rss-transactional-messaging-recovery",
  "rss-transactional-messaging-runtime",
  "rss-transactional-messaging-webhook",
+ "schemars 1.2.2",
  "serde",
  "serde_json",
  "sha2 0.10.9",
@@ -4459,6 +4494,7 @@ dependencies = [
  "tokio-util",
  "url",
  "uuid",
+ "zeroize",
 ]
 
 [[package]]
@@ -4491,6 +4527,7 @@ dependencies = [
  "rss-request-context",
  "rss-runtime",
  "rss-transactional-messaging",
+ "schemars 1.2.2",
  "serde",
  "serde_json",
  "sha2 0.10.9",

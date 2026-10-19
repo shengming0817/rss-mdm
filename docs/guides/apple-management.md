@@ -43,7 +43,7 @@ T2 使用受控 Apple HTTPS 和制造商根证书，仅证明本地协议、持�
 
 macOS 14 及以上可在系统设置中用 Managed Apple Account 注册组织设备。浏览器控制台另行实施；服务端提供发现、最小认证桥和管理 API。只提供 `mdm-adde`，不提供个人 BYOD User Enrollment。组织域名须将 `/.well-known/com.apple.remotemanagement` 的请求转送到产品浏览器 HTTPS origin；发现请求包含 `user-identifier` 和 `model-family=Mac`。
 
-在 `native_protocols.apple.account_keys` 中按键名配置 `certificate_file` 与 `private_key_file`。私钥是 owner-only PKCS8 DER；这对 RSA 证书与私钥对应 Apple 组织登记的公钥，和 Profile/APNs 密钥分别管理。管理员从 Apple AccountDetail 取得真正的 `server_uuid` 后，用 `registration_configuration_write` 权限配置 `PUT /api/v1/apple/organizations/{id}/account-enrollment`：`expectedRevision`（首次 0）、`domain`、`serverUuid`、`signingKey`、`enabled`。再用同一权限配置 `PUT .../organizations/{id}/account-enrollment/accounts/{managed-account}`，提交 `expectedRevision`、`principalId`、`instanceId`、`enabled`。写入要求非零 UUID `Idempotency-Key`，更新采用预期版本；同一请求可重放。账户及域名规范为 ASCII、小写，账户本地部分支持字母数字与 `._+-`。映射必须属于当前 Identity 实例和组织域名。`registration_configuration_read` 可通过 `GET .../organizations` 查看映射与本地签名密钥可用性；`externalOrganizationVerification=not_observed` 表示外部组织配置尚未验收。
+在 `native_protocols.apple.materials.accounts` 中将组织使用的签名键名绑定到已选择的 `managed_account` 材料版本。RSA 私钥由 Apple 材料 owner 加密保存，对应 Apple 组织登记的公钥，与 Profile/APNs 材料分别管理。管理员从 Apple AccountDetail 取得真正的 `server_uuid` 后，用 `registration_configuration_write` 权限配置 `PUT /api/v1/apple/organizations/{id}/account-enrollment`：`expectedRevision`（首次 0）、`domain`、`serverUuid`、`signingKey`、`enabled`。再用同一权限配置 `PUT .../organizations/{id}/account-enrollment/accounts/{managed-account}`，提交 `expectedRevision`、`principalId`、`instanceId`、`enabled`。写入要求非零 UUID `Idempotency-Key`，更新采用预期版本；同一请求可重放。账户及域名规范为 ASCII、小写，账户本地部分支持字母数字与 `._+-`。映射必须属于当前 Identity 实例和组织域名。`registration_configuration_read` 可通过 `GET .../organizations` 查看映射与本地签名密钥可用性；`externalOrganizationVerification=not_observed` 表示外部组织配置尚未验收。
 
 Apple 的签名 CMS 请求只证明载荷完整性，不作为设备认证或组织授权。首次请求获得 `401` 与 `apple-as-web` 认证地址；认证桥复用 RSS Identity 登录、联合身份和 CSRF 验证。登录人必须与管理员设置的组织账户映射完全一致。认证成功通过 `308` 返回 Apple 原生登录回调和随机 bearer；同一授权可重放。随后同一签名请求携带 bearer 取得固定签名 Profile，使用 `EnrollmentMode=ADDE`、`AssignedManagedAppleID`、`com.apple.mdm.token` 和设备范围。该 Profile 的 SCEP、证书绑定、首次 Authenticate 和 TokenUpdate 沿用共同注册生命周期；注册归属真实 RSS 用户，占用其 macOS MDM 额度。
 
@@ -110,7 +110,7 @@ operation observation 分别返回 expected、synchronization、nativeStatus、e
 
 ## 产品配置
 
-完整配置仍由 [mdm-config.example.json](../../fixtures/mdm-config.example.json) 展示数据库与 Identity 装配。必填 `native_protocols` 是闭合对象：`{}` 为 Agent-only；只有 windows 为 Windows-only；只有 apple 为 Apple-only；两者同时存在则启动各自监听。成员缺席表示关闭，显式 null 和旧顶层 windows 均拒绝。Apple-only 不需要 Windows issuer 或 Windows 专用协议保护密钥，但仍必须提供顶层 `native_protection_key_file`（恰好 32 原始字节）。全局密钥保护 Apple 原生输入、回执与内容，多实例必须一致；生成、权限和配套恢复见 [安装](../deployment/installation.md) 与 [运维](../deployment/operations.md)。
+完整配置仍由 [mdm-config.example.json](../../fixtures/mdm-config.example.json) 展示数据库与 Identity 装配。必填 `native_protocols` 是闭合对象：`{}` 为 Agent-only；只有 windows 为 Windows-only；只有 apple 为 Apple-only；两者同时存在则启动各自监听。成员缺席表示关闭，显式 null 和旧顶层 windows 均拒绝。Apple-only 不需要 Windows issuer 或 Windows 专用协议保护密钥，但仍必须提供顶层 `native_protection`（显式加密写钥、历史读钥与稳定比较钥，每份恰好 32 原始字节）。全局密钥保护 Apple 原生输入、回执与内容，多实例必须一致；生成、权限和配套恢复见 [安装](../deployment/installation.md) 与 [运维](../deployment/operations.md)。
 
 将 native_protocols 替换为以下 Apple-only 配置，路径由部署环境提供：
 
@@ -118,15 +118,19 @@ operation observation 分别返回 expected、synchronization、nativeStatus、e
 {"apple":{
   "management":{"listen":"0.0.0.0:8445","origin":"https://apple.example.test:8445","certificate_file":"/run/mdm/apple-tls.pem","private_key_file":"/run/mdm/apple-tls.pk8"},
   "trust_file":"/run/mdm/apple-trust.json",
-  "profile_certificate_file":"/run/mdm/profile-signer-chain.pem","profile_private_key_file":"/run/mdm/profile-signer.pk8",
-  "apns_certificate_file":"/run/mdm/apns.pem","apns_private_key_file":"/run/mdm/apns.key",
-  "apns_topic":"com.apple.mgmt.External.REPLACE",
-  "challenge_webhook":{"id":"REPLACE-challenge-id","secret_file":"/run/mdm/challenge-secret"},
-  "notify_webhook":{"id":"REPLACE-notify-id","secret_file":"/run/mdm/notify-secret"}
+  "materials":{"apns":2,"profile":2,"accounts":{}},
+  "identity_seed":{"challengeId":"ORIGINAL-challenge-id","notifyId":"ORIGINAL-notify-id"},
+  "webhooks":[{"issuer":"REPLACE-issuer-sha256",
+    "challenge":{"id":"REPLACE-challenge-id","secret_file":"/run/mdm/challenge-secret"},
+    "notify":{"id":"REPLACE-notify-id","secret_file":"/run/mdm/notify-secret"}}]
 }}
 ```
 
-TLS 与 Profile RSA 私钥为无加密 PKCS8 DER；APNs 私钥为 PEM。秘密文件权限必须限制为 owner，webhook secret 文件保存 CA 发放的 base64 字符串，解码至少 32 字节。两个 webhook ID/secret 分开配置。APNs certificate UID 必须等于 topic，且证书在有效期内。产品管理监听直接完成 mTLS，不接受代理头作为设备身份。
+TLS 私钥为 owner-only PKCS8 DER；webhook secret 文件保存 CA 发放的 base64 字符串，解码至少 32 字节。两个 webhook ID/secret 分开配置。Profile、APNs 和 Managed Apple Account 的私钥不再从启动文件读取；旧字段被拒绝。顶层 `apple_material_roots` 指定部署认可的证书根，租户不能通过材料上传增加信任根。APNs topic 从验证后的证书 UID 派生，同一租户已选材料不能更换 topic。产品管理监听直接完成 mTLS，不接受代理头作为设备身份。
+
+使用 `/api/v1/apple/materials/{purpose}` 查询版本，purpose 为 `apns`、`profile` 或 `managed_account`。向其 `/keys` 提交生成或导入请求，取得 CSR；向 `/certificates` 提交证书链与确切 key revision；向 `/apply` 提交已验证的 material revision，再由部署侧受控重启加载。写操作都要求近期真实会话、`Idempotency-Key` 和 `expectedRevision`；响应丢失时查询 `/api/v1/apple/material-operations/{operation}`，重试沿用原操作与参数。保存、证书验证和选择版本均不代表宿主已应用，也不证明 Apple 供应方资格。
+
+`/revoke` 撤销确切材料版本的本地使用资格，不代表已向 Apple 撤销证书。设备入口与推送工作会重新核验已加载版本是否仍有效；过期、撤销或无法读取权威状态时停止使用。新候选应用失败可重启上一份仍有效且曾选择的版本，不能回退到过期/撤销材料或文件。历史版本保留用于调查与恢复。
 
 稳定注册配置身份只包含管理 origin、APNs topic 与两个 webhook ID。SCEP URL/provisioner 与 issuer 指纹由签发代次持有，轮换不会改变稳定注册配置。改变稳定配置会拒绝旧注册继续准入，须安排重新注册；仅更换同 ID 的 HMAC secret 不改变配置身份，但两端必须同步更新。不得把配置漂移当作证书恢复。
 ## 外部 CA 配置
@@ -177,3 +181,5 @@ CA 公共证书由单独的受管理 `com.rss-mdm.pki.<registration>` Profile �
 每项保留 operation、注册世代、通道、inputVersion、声明 ServerToken 和既有 nativeStatus；历史世代通过原操作详情读取。
 查询使用 OperationRead 和原生值权限，`nativeValuesRedacted` 明确标识脱敏。缺失、Unknown、原生错误与乱序冲突不会转成成功；
 publication 或 synchronized 不证明设置生效、合规或卸载。未注册设备返回 no_current_registration，不能解释为设备已清空配置。
+
+`identity_seed` 在第一次启用前固定。转交保留 V4 原始两个 ID，CA 轮换不能改变此种子；`webhooks` 列出 trust 中每个保留 issuer 的独立回调凭据。未知或重复 ID、跨阶段签名和签发者错配均拒绝。

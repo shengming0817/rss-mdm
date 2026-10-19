@@ -12,6 +12,9 @@ fn bad() -> Error {
     Error::Configuration(ConfigIssue::TaskSigning)
 }
 impl Signer {
+    pub fn key_id(&self) -> &str {
+        &self.key_id
+    }
     pub fn from_bytes(
         private: &[u8],
         key_id: &str,
@@ -69,3 +72,6 @@ impl Signer {
         })
     }
 }
+
+pub mod service;
+pub mod trust;

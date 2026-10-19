@@ -50,8 +50,8 @@ impl Participant {
         rotate: bool,
     ) -> Result<Self> {
         let root = PathBuf::from(std::env::var("MDM_APPLE_FIXTURES")?);
-        let mut config: crate::apple::config::Config =
-            serde_json::from_slice(&std::fs::read(root.join("apple.json"))?)?;
+        let mut config: crate::apple::tests::FixtureMaterials =
+            serde_json::from_slice(&std::fs::read(root.join("apple-materials.json"))?)?;
         let rotated = tempfile::tempdir()?;
         if rotate {
             config.apns_certificate_file = rotated.path().join("apns.pem");
@@ -176,8 +176,8 @@ impl Participant {
     }
     pub(in crate::apple) async fn unavailable_push() -> Result<Push> {
         let root = PathBuf::from(std::env::var("MDM_APPLE_FIXTURES")?);
-        let config: crate::apple::config::Config =
-            serde_json::from_slice(&std::fs::read(root.join("apple.json"))?)?;
+        let config: crate::apple::tests::FixtureMaterials =
+            serde_json::from_slice(&std::fs::read(root.join("apple-materials.json"))?)?;
         let _now = crate::clock::Clock::unix_seconds(&crate::clock::SystemClock)?;
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
         let push = fixture_push(
@@ -191,7 +191,7 @@ impl Participant {
 }
 
 fn fixture_push(
-    config: &crate::apple::config::Config,
+    config: &crate::apple::tests::FixtureMaterials,
     client: reqwest::ClientBuilder,
     origin: String,
 ) -> Result<Push> {

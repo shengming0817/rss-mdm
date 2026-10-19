@@ -6,6 +6,7 @@ rust-version.workspace = true
 publish.workspace = true
 
 [dependencies]
+openssl.workspace = true
 http.workspace = true
 rss-mdm-device-trust.workspace = true
 base64.workspace = true
@@ -28,6 +29,10 @@ rss-mdm-authorization-service.workspace = true
 rss-request-context.workspace = true
 rss-audit-postgres.workspace = true
 tokio = { workspace = true, features = ["time"] }
+
+[features]
+default = []
+integration = []
 
 [lints]
 workspace = true

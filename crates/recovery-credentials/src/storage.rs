@@ -341,7 +341,7 @@ pub async fn validate_keys_in(
 }
 /// Re-encryption changes no material identity or validity and is safe to resume after interruption.
 pub async fn rewrap_in(c: &mut PgConnection, tenant: Uuid, keys: &KeyRing) -> Result<u64, Error> {
-    let rows=sqlx::query(select_material!(" WHERE e.tenant_id=$1 AND v.sealed IS NOT NULL AND v.key_id<>$2 ORDER BY e.id,v.version LIMIT 100 FOR UPDATE OF v SKIP LOCKED"))
+    let rows=sqlx::query(select_material!(" WHERE e.tenant_id=$1 AND v.sealed IS NOT NULL AND v.key_id<>$2 ORDER BY e.id,v.version LIMIT 100 FOR UPDATE OF v"))
         .bind(tenant).bind(keys.active()).fetch_all(&mut *c).await?;
     let count = rows.len() as u64;
     for r in rows {

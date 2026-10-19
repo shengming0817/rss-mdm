@@ -7,8 +7,8 @@ use rss_transactional_messaging_postgres::{PgError, PgRuntime};
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub(super) struct AdministratorBody {
-    login: String,
-    password: String,
+    pub(super) login: String,
+    pub(super) password: String,
 }
 impl Drop for AdministratorBody {
     fn drop(&mut self) {
@@ -55,7 +55,7 @@ impl Service {
         };
         Ok((runtime, provisioner))
     }
-    async fn create_administrator(
+    pub(super) async fn create_administrator(
         &self,
         proof: &AuthorizedPrincipal,
         audit: &RequestAudit,

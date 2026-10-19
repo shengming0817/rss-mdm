@@ -320,13 +320,17 @@ async fn webhook_response(
     phase: &str,
     input: &Value,
 ) -> Result<(StatusCode, Value)> {
-    let (id, key) = if phase == "challenge" {
-        (&config.challenge_id, &config.challenge_key)
-    } else {
-        (&config.notify_id, &config.notify_key)
-    };
     let bytes = serde_json::to_vec(input)?;
-    let signature = ring::hmac::sign(key, &bytes)
+    let stage = if phase == "challenge" {
+        rss_mdm_pki_service::scep::Stage::Challenge
+    } else {
+        rss_mdm_pki_service::scep::Stage::Notify
+    };
+    let (id, signature) =
+        config
+            .webhooks
+            .signature_fixture(&config.trust.active()?.digest, stage, &bytes)?;
+    let signature = signature
         .as_ref()
         .iter()
         .map(|b| format!("{b:02x}"))

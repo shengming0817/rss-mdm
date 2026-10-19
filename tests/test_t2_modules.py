@@ -233,7 +233,7 @@ class ModuleImpactTests(unittest.TestCase):
                          'host.lifecycle', 'api.identity_context'} <= app)
         self.assertTrue(app.isdisjoint({'apple.cms', 'apple.apns', 'sources.winget'}))
         self.assertEqual(self.selected('crates/agent-channel/src/tasks.rs'), {
-            'planning.self_service', 'execution.agent.delivery', 'execution.agent.poll', 'execution.agent.content',
+            'execution.agent.task_trust','planning.self_service', 'execution.agent.delivery', 'execution.agent.poll', 'execution.agent.content',
             'execution.agent.recovery', 'execution.software.offer',
             'execution.software.content', 'execution.software.recovery'})
         self.assertEqual(self.selected('crates/windows-channel/src/lib.rs'), {
@@ -338,7 +338,7 @@ class ModuleImpactTests(unittest.TestCase):
 
     def test_shared_registration_fixture_selects_only_direct_consumers(self):
         self.assertEqual(self.selected('crates/app/tests/support/agent.rs'),
-                         {'agent.configurations','planning.self_service','agent.registration','agent.reports','execution.agent.poll','execution.agent.recovery','planning.onboarding','execution.commands.onboarding','execution.agent.delivery','execution.software.recovery','planning.agent_policy','execution.software.offer','execution.agent.history','assets.http','execution.agent.content','apple.onboarding','planning.software','planning.http','execution.software.content','planning.frequency','execution.commands.windows','software.http'})
+                         {'execution.agent.task_trust','agent.configurations','planning.self_service','agent.registration','agent.reports','execution.agent.poll','execution.agent.recovery','planning.onboarding','execution.commands.onboarding','execution.agent.delivery','execution.software.recovery','planning.agent_policy','execution.software.offer','execution.agent.history','assets.http','execution.agent.content','apple.onboarding','planning.software','planning.http','execution.software.content','planning.frequency','execution.commands.windows','software.http'})
 
     def test_case_only_windows_inputs_select_directory_consumers(self):
         for path in ('hack/windows_fixtures.py', 'deployment/windows-leaf.tpl'):

@@ -1,5 +1,38 @@
 {
-  "tables": [],
+  "tables": [
+    {
+      "schema": "mdm_task_signing",
+      "table": "heads",
+      "read_write": true,
+      "updates": [
+        "revision"
+      ],
+      "delete_policy": null
+    },
+    {
+      "schema": "mdm_task_signing",
+      "table": "keys",
+      "read_write": true,
+      "updates": [
+        "private_key"
+      ],
+      "delete_policy": null
+    },
+    {
+      "schema": "mdm_task_signing",
+      "table": "versions",
+      "read_write": true,
+      "updates": [],
+      "delete_policy": null
+    },
+    {
+      "schema": "mdm_task_signing",
+      "table": "acknowledgements",
+      "read_write": true,
+      "updates": [],
+      "delete_policy": null
+    }
+  ],
   "functions": [
     {
       "name": "mdm_commands.retirement_commands",

@@ -100,15 +100,46 @@ fn enabled<'de, D: serde::Deserializer<'de>, T: Deserialize<'de>>(
 ) -> Result<Option<T>, D::Error> {
     T::deserialize(d).map(Some)
 }
+#[derive(serde::Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NativeProtection {
+    pub active_file: PathBuf,
+    pub historical_files: Vec<PathBuf>,
+    pub fingerprint_file: PathBuf,
+}
+impl NativeProtection {
+    pub(crate) fn load(&self) -> Result<Arc<rss_mdm_native_protection::Protector>, Error> {
+        if self.historical_files.len() > 15 {
+            return Err(Error::Configuration(ConfigIssue::NativeProtection));
+        }
+        let key = read(&self.active_file, 32, true)?;
+        let fingerprint = read(&self.fingerprint_file, 32, true)?;
+        let historical = self
+            .historical_files
+            .iter()
+            .map(|p| read(p, 32, true))
+            .collect::<Result<Vec<_>, _>>()?;
+        let refs = historical
+            .iter()
+            .map(|key| key.as_slice())
+            .collect::<Vec<_>>();
+        rss_mdm_native_protection::Protector::with_fingerprint(&key, &refs, &fingerprint)
+            .map(Arc::new)
+            .map_err(|_| Error::Configuration(ConfigIssue::NativeProtection))
+    }
+}
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
+    pub runtime_binding: crate::setup::host::Binding,
+    #[serde(default)]
+    pub apple_material_roots: Vec<PathBuf>,
     pub webhooks: crate::webhooks::Config,
     #[serde(default)]
     pub software_distribution: rss_mdm_execution_service::SoftwareDistribution,
     pub agent_pki: crate::agent_pki::Config,
     pub device_pki: Vec<crate::device_pki::Provider>,
-    pub native_protection_key_file: PathBuf,
+    pub native_protection: NativeProtection,
     pub recovery_credentials: Option<crate::recovery_credentials::Config>,
     pub audit: AuditConfig,
     pub listen: SocketAddr,
@@ -144,12 +175,20 @@ impl Config {
     pub(crate) fn native_protector(
         &self,
     ) -> Result<Arc<rss_mdm_native_protection::Protector>, Error> {
-        let key = read(&self.native_protection_key_file, 32, true)?;
-        rss_mdm_native_protection::Protector::new(&key)
-            .map(Arc::new)
-            .map_err(|_| Error::Configuration(ConfigIssue::NativeProtection))
+        self.native_protection.load()
     }
     pub(crate) fn compile(self) -> Result<Compiled, Error> {
+        self.runtime_binding.validate()?;
+        if self
+            .task_signing
+            .as_ref()
+            .is_some_and(|s| s.revision == 0 || s.revision > i64::MAX as u64)
+        {
+            return Err(Error::Configuration(ConfigIssue::AgentPki));
+        }
+        if self.apple_material_roots.len() > 16 {
+            return Err(Error::Configuration(ConfigIssue::AppleProfileSigner));
+        }
         if !self.listen.ip().is_loopback() {
             return Err(Error::Configuration(ConfigIssue::Listen));
         }

@@ -1,15 +1,7 @@
 {
   "storage": {
     "kind": "s3",
-    "endpoint": "https://s3.example.test/",
-    "region": "us-east-1",
-    "bucket": "rss-mdm-content",
-    "namespace": "content",
-    "credentials_reference": "content-workload",
-    "access_key_file": "/run/mdm/content-access-key",
-    "secret_key_file": "/run/mdm/content-secret-key",
-    "session_token_file": null,
-    "private_ca_file": null,
+    "revision": 1,
     "max_concurrent": 8,
     "connect_seconds": 5
   },

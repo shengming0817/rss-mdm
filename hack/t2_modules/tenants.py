@@ -1,4 +1,4 @@
-"""Real CLI CRUD followed by two same-database, tenant-bound product hosts."""
+"""Tenant metadata CLI with explicit fixture rows and two isolated product hosts."""
 from contextlib import ExitStack
 import http.client
 from http.cookies import SimpleCookie
@@ -13,7 +13,7 @@ from t2_environment import private
 from t2_processes import subprocess
 from build_run import lease_fds
 from t2_hosts import Host
-from t2_database import DatabasePool
+from t2_database import DatabasePool, literal
 from t2_fixtures import RunFixtures
 from t2_model import ROOT
 from verification_result import require
@@ -98,14 +98,10 @@ def execute(fixture):
     command('migrate', dict(database=database, installation=installation()))
     management = sql('SELECT management_tenant_id FROM public.mdm_installation')
     require(sql('SELECT count(*) FROM public.mdm_tenants') == '1', 'installer did not reserve one management tenant')
-    def create(tenant):
-        request = dict(database=database, installation=installation(), tenant_id=tenant,
-                       initial_epoch=1, operation_id=str(uuid.uuid4()))
-        receipt = command('tenant-create', request)
-        query = dict(database=database, installation=installation(), operation_id=request['operation_id'])
-        require(command('tenant-operation-status', query) == {'status':'committed','receipt':receipt},
-                'registration query did not recover durable result')
-        return receipt
+    def create(tenant, name=None, notes=None):
+        # Fixture seeding is not a public tenant creation contract.
+        sql(f"SELECT public.create_new_tenant('{uuid.UUID(tenant)}',1,{literal(name) if name is not None else 'NULL'},{literal(notes) if notes is not None else 'NULL'})")
+        return command('tenant-get', dict(database=database,installation=installation(),tenant_id=tenant))
     create(a)
     require(sql('SELECT count(*) FROM public.mdm_tenants') == '2', 'first registration changed tenant count')
     def snapshot():
@@ -119,8 +115,8 @@ def execute(fixture):
     common = dict(database=database, installation=installation())
     c = str(uuid.uuid4())
     created = dict(**common, tenant_id=c, initial_epoch=1, operation_id=str(uuid.uuid4()), name='测试租户', notes='说明')
-    first = command('tenant-create', created)
-    require(first['action'] == 'create' and first['result']['revision'] == 1 and first['result']['deletable'], 'bad create receipt')
+    first = {'result':create(c, created['name'], created['notes'])}
+    require(first['result']['revision'] == 1 and first['result']['deletable'], 'bad unused tenant fixture')
     require(command('tenant-get', dict(**common, tenant_id=c)) == first['result'], 'get differs from create')
     changed = dict(**common, tenant_id=c, expected_revision=1, operation_id=str(uuid.uuid4()), name='新名称')
     second = command('tenant-update', changed)

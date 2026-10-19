@@ -16,6 +16,7 @@ FAMILIES = {
                 'https://rss.example/mdm/agent/runtime/v1/payload/v1/',
                 {'apiVersion': 1, 'wireVersion': 1}),
     'enroll': ('manifest.json', 'https://rss.example/agent/enroll/v1/', {'apiVersion': 1}),
+    'task_trust': ('manifest.json', 'https://rss.example/agent/task-trust/v1/', {'apiVersion': 1}),
     'pki': ('manifest.json', 'https://rss.example/agent/pki/v1/', {'apiVersion': 1}),
 }
 

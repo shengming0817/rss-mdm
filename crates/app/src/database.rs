@@ -164,6 +164,8 @@ async fn admission(pool: &PgPool) -> Result<(), Error> {
         .map_err(db)?;
     let contracts = [
         crate::tenant_registry::ACCESS_CONTRACT,
+        rss_mdm_mail_service::ACCESS_CONTRACT,
+        rss_mdm_content_service::connections::ACCESS_CONTRACT,
         rss_mdm_webhook_service::ACCESS_CONTRACT,
         rss_mdm_authorization_service::ACCESS_CONTRACT,
         rss_mdm_registration_service::ACCESS_CONTRACT,
@@ -200,6 +202,12 @@ async fn admission(pool: &PgPool) -> Result<(), Error> {
     rss_mdm_inventory_postgres::verify_watermark_fence(&mut tx)
         .await
         .map_err(db)?;
+    if !rss_mdm_content_service::connections::verify_reservation(&mut tx)
+        .await
+        .map_err(|_| Error::Unavailable(Failure::AccessAdmission))?
+    {
+        return Err(Error::Unavailable(Failure::AccessAdmission));
+    }
     let apple: bool = sqlx::query_scalar(rss_mdm_apple_channel::ACCESS_ADMISSION_SQL)
         .fetch_one(&mut *tx)
         .await

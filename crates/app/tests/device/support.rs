@@ -71,6 +71,7 @@ pub(crate) fn options(user: &str) -> anyhow::Result<PgConnectOptions> {
         "mdm_access" => "access-fixture",
         "mdm_runtime" => "runtime-fixture",
         "mdm_api" => "api-fixture",
+        "mdm_owner" => "owner-fixture",
         _ => "local-fixture",
     })
     .ssl_mode(PgSslMode::VerifyFull)

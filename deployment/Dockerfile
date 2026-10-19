@@ -1,5 +1,7 @@
 ARG RUST_IMAGE
 ARG RUNTIME_IMAGE
+ARG POSTGRES_IMAGE
+ARG DOCKER_CLI_IMAGE
 FROM ${RUST_IMAGE} AS build
 ARG TARGETPLATFORM
 ARG CACHE_NAMESPACE
@@ -30,3 +32,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends libxml2 && rm -
 COPY --from=build /out/rss-mdm /usr/local/bin/rss-mdm
 USER 10001:10001
 ENTRYPOINT ["/usr/local/bin/rss-mdm"]
+
+# Deployment tooling is a separate privileged boundary. The server image remains unprivileged.
+FROM ${DOCKER_CLI_IMAGE} AS docker-tools
+FROM ${POSTGRES_IMAGE} AS installer
+USER 0:0
+RUN apt-get update && apt-get install -y --no-install-recommends libxml2 python3 openssl && rm -rf /var/lib/apt/lists/*
+COPY --from=build /out/rss-mdm /usr/local/bin/rss-mdm-installer
+COPY --from=docker-tools /usr/local/bin/docker /usr/local/bin/docker
+COPY --from=docker-tools /usr/local/libexec/docker/cli-plugins/docker-compose /usr/local/libexec/docker/cli-plugins/docker-compose
+ENTRYPOINT ["/usr/local/bin/rss-mdm-installer"]

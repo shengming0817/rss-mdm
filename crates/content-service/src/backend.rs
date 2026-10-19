@@ -3,7 +3,7 @@ use super::*;
 use futures::StreamExt;
 use rss_mdm_content_s3 as s3;
 use uuid::Uuid;
-/// Product backend selection. Secrets are file references interpreted only by the host.
+/// 产品后端只引用领域持久化版本，不接受运行凭据文件。
 #[derive(Clone, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Storage {
@@ -13,15 +13,7 @@ pub enum Storage {
 #[derive(Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct S3Storage {
-    pub endpoint: String,
-    pub region: String,
-    pub bucket: String,
-    pub namespace: String,
-    pub credentials_reference: String,
-    pub access_key_file: PathBuf,
-    pub secret_key_file: PathBuf,
-    pub session_token_file: Option<PathBuf>,
-    pub private_ca_file: Option<PathBuf>,
+    pub revision: u64,
     pub max_concurrent: usize,
     pub connect_seconds: u64,
 }
@@ -129,7 +121,7 @@ impl Backend {
         tenant: rss_request_context::TenantId,
         timer: Arc<dyn Clock>,
         seconds: u64,
-        secrets: Option<Arc<dyn s3::Secrets>>,
+        connection: Option<Arc<crate::connections::Loaded>>,
     ) -> Result<Self, Error> {
         match config {
             Storage::Volume { directory } => {
@@ -159,52 +151,17 @@ impl Backend {
                 })
             }
             Storage::S3(config) => {
-                let S3Storage {
-                    endpoint,
-                    region,
-                    bucket,
-                    namespace,
-                    credentials_reference,
-                    private_ca_file,
-                    max_concurrent,
-                    connect_seconds,
-                    ..
-                } = config.as_ref();
-                let private_ca_pem = private_ca_file
-                    .as_ref()
-                    .map(|p| {
-                        let mut opts = OpenOptions::new();
-                        opts.read(true);
-                        #[cfg(unix)]
-                        {
-                            use std::os::unix::fs::OpenOptionsExt;
-                            opts.custom_flags(libc::O_NOFOLLOW);
-                        }
-                        let f = opts.open(p).map_err(|_| Error::Configuration)?;
-                        if !f.metadata().map_err(|_| Error::Configuration)?.is_file()
-                            || f.metadata().map_err(|_| Error::Configuration)?.len() > 1048576
-                        {
-                            return Err(Error::Configuration);
-                        }
-                        let mut bytes = Vec::new();
-                        f.take(1048577)
-                            .read_to_end(&mut bytes)
-                            .map_err(|_| Error::Configuration)?;
-                        if bytes.len() > 1048576 {
-                            return Err(Error::Configuration);
-                        }
-                        Ok(bytes)
-                    })
-                    .transpose()?;
+                let connection = connection.ok_or(Error::Configuration)?;
+                let metadata = &connection.metadata;
                 let config = s3::Config {
-                    endpoint: endpoint.clone(),
-                    region: region.clone(),
-                    bucket: bucket.clone(),
-                    namespace: format!("{namespace}/{tenant}"),
-                    credentials_reference: credentials_reference.clone(),
-                    private_ca_pem,
-                    max_concurrent: *max_concurrent,
-                    connect_timeout: std::time::Duration::from_secs(*connect_seconds),
+                    endpoint: metadata.endpoint.clone(),
+                    region: metadata.region.clone(),
+                    bucket: metadata.bucket.clone(),
+                    namespace: format!("{}/{}", metadata.namespace, tenant),
+                    credentials_reference: "content-connection".into(),
+                    private_ca_pem: Some(metadata.private_ca.clone()),
+                    max_concurrent: config.max_concurrent,
+                    connect_timeout: std::time::Duration::from_secs(config.connect_seconds),
                 };
                 let budget = s3::Budget::new(
                     timer.clone(),
@@ -216,14 +173,9 @@ impl Backend {
                 .map_err(error)?;
                 Ok(Self::S3 {
                     store: Arc::new(
-                        s3::Store::connect(
-                            config,
-                            secrets.ok_or(Error::Configuration)?,
-                            timer.clone(),
-                            budget,
-                        )
-                        .await
-                        .map_err(error)?,
+                        s3::Store::connect(config, connection, timer.clone(), budget)
+                            .await
+                            .map_err(error)?,
                     ),
                     timer,
                 })

@@ -287,5 +287,33 @@ pub(super) fn units() -> Vec<(&'static str, &'static str)> {
             "channel-maintenance-history-v1",
             rss_mdm_inventory_service::CHANNEL_MAINTENANCE_SQL,
         ),
+        (
+            "tenant-provisioning-v1",
+            include_str!("../../schema/provisioning.sql"),
+        ),
+        (
+            "apple-runtime-materials-v1",
+            rss_mdm_apple_channel::runtime_materials::INSTALL_SQL,
+        ),
+        (
+            "task-signing-trust-v1",
+            rss_mdm_execution_service::task_signing::trust::INSTALL_SQL,
+        ),
+        (
+            "windows-wns-materials-v1",
+            rss_mdm_windows_channel::wns_materials::INSTALL_SQL,
+        ),
+        (
+            "content-connections-v1",
+            rss_mdm_content_service::connections::INSTALL_SQL,
+        ),
+        (
+            "mail-materials-v1",
+            rss_mdm_mail_service::store::INSTALL_SQL,
+        ),
+        (
+            "webhook-materials-v1",
+            rss_mdm_webhook_service::materials::INSTALL_SQL,
+        ),
     ]
 }

@@ -1,5 +1,5 @@
 //! Registration-bound encryption; no protocol secret is stored as plaintext.
-use crate::{ConfigIssue, Error, Failure, enrollment};
+use crate::{Error, Failure, enrollment};
 use base64::{Engine, engine::general_purpose::STANDARD};
 use md5::{Digest, Md5};
 use ring::rand::{SecureRandom, SystemRandom};
@@ -29,19 +29,13 @@ impl Secrets {
     }
 }
 pub struct Protection {
-    protector: Protector,
-    pub id: String,
+    protector: std::sync::Arc<Protector>,
 }
 impl Protection {
-    pub fn from_bytes(key: &[u8]) -> Result<Self, Error> {
-        let protector =
-            Protector::new(key).map_err(|_| Error::Configuration(ConfigIssue::ProtocolKey))?;
-        Ok(Self {
-            id: protector.id().to_owned(),
-            protector,
-        })
+    pub fn new(protector: std::sync::Arc<Protector>) -> Self {
+        Self { protector }
     }
-    fn aad(tenant: &str, request: Uuid) -> Result<DerivedAad, Error> {
+    pub(crate) fn aad(tenant: &str, request: Uuid) -> Result<DerivedAad, Error> {
         let tenant = rss_request_context::TenantId::parse(tenant)
             .map_err(|_| Error::Unavailable(Failure::Protocol))?;
         ProtectionContext::new(
@@ -98,4 +92,70 @@ pub(crate) fn collection_aad(
     id: Uuid,
 ) -> Result<DerivedAad, Error> {
     rss_mdm_execution_service::native::collection_aad(scope, id).map_err(|_| Error::Malformed)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn rotating_encryption_preserves_original_registration_identity_and_secrets() {
+        let first = std::sync::Arc::new(Protector::new(&[1; 32]).unwrap());
+        let second = std::sync::Arc::new(
+            Protector::with_fingerprint(&[2; 32], &[&[1; 32]], &[1; 32]).unwrap(),
+        );
+        let poll = rss_mdm_windows_mdm::provisioning::Poll {
+            interval_for_first_set_of_retries: 15,
+            number_of_first_retries: 10,
+            interval_for_second_set_of_retries: 0,
+            number_of_second_retries: 0,
+            interval_for_remaining_scheduled_retries: 1440,
+            number_of_remaining_scheduled_retries: 0,
+            poll_on_login: false,
+            all_users_poll_on_first_login: false,
+        };
+        let identity = |p: &Protector| {
+            crate::protocol_identity(
+                "https://enroll.example",
+                "https://manage.example",
+                "RSS-MDM",
+                p,
+                &poll,
+            )
+            .unwrap()
+        };
+        assert_eq!(identity(&first), identity(&second));
+        assert_eq!(
+            identity(&first),
+            enrollment::digest(&(
+                "mdm.windows.profile.v3",
+                &poll,
+                "https://enroll.example",
+                "https://manage.example",
+                "RSS-MDM",
+                first.id()
+            ))
+        );
+        let tenant = Uuid::new_v4().to_string();
+        let request = Uuid::new_v4();
+        let secrets = Secrets::generate().unwrap();
+        let before = Protection::new(first.clone())
+            .seal(&tenant, request, &secrets)
+            .unwrap();
+        let after = second
+            .rewrap_bytes(&before, &Protection::aad(&tenant, request).unwrap())
+            .unwrap();
+        let reader = Protection::new(second);
+        for bytes in [&before, &after] {
+            let actual = reader.open(&tenant, request, bytes).unwrap();
+            assert_eq!(*actual.client_password, *secrets.client_password);
+            assert_eq!(*actual.server_password, *secrets.server_password);
+            assert_eq!(actual.server_nonce, secrets.server_nonce);
+            assert!(reader.open(&tenant, Uuid::new_v4(), bytes).is_err());
+        }
+        assert!(
+            Protection::new(first)
+                .open(&tenant, request, &after)
+                .is_err()
+        );
+    }
 }

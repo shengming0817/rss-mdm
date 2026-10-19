@@ -67,6 +67,7 @@ pub enum Action {
     Update,
     Delete,
     AdministratorCreate,
+    Provision,
 }
 #[derive(Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -94,6 +95,7 @@ pub struct Receipt {
 pub enum ReceiptResult {
     Tenant(Tenant),
     Administrator(Administrator),
+    Provisioning(crate::setup::model::Provisioning),
 }
 #[derive(Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -453,7 +455,7 @@ async fn apply_on(tx: &mut PgConnection, input: &Mutation<'_>) -> Result<Outcome
     }
     scope(&mut *tx, input.tenant_id).await?;
     match input.action {
-        Action::AdministratorCreate => return Err(Reason::Invalid),
+        Action::AdministratorCreate | Action::Provision => return Err(Reason::Invalid),
         Action::Create => insert_tenant_on(tx, input).await?,
         Action::Update | Action::Delete => {
             let tenant = tenant_on(&mut *tx, input.tenant_id, false).await?;

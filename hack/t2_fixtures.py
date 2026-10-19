@@ -146,7 +146,7 @@ class RunFixtures:
         config['identity']['tenant_id'] = tenant
         config['native_protocols'] = {}
         config['device_pki'] = []
-        config['native_protection_key_file'] = str(native_key)
+        config['native_protection'] = dict(active_file=str(native_key),historical_files=[],fingerprint_file=str(native_key))
         config['recovery_credentials'] = recovery_credentials
         return config
 
@@ -228,7 +228,8 @@ class RunFixtures:
         config = self.runtime_config(pool, root, database, context['tenant'],
             native_key=self.native_key, recovery_credentials=self.recovery_config())
         config['content'] = json.loads((shared / 'content.json').read_text())
-        config['task_signing'] = json.loads((shared / 'task-signing.json').read_text())
+        config['task_signing'] = {'revision':1}
+        private(root / 'task-signing-fixture.json', json.loads((shared / 'task-signing.json').read_text()))
         private(root / 'runtime.json', config)
         private(root / 'account-password', (shared / 'account-password').read_text())
         pool.database_config(root, database, 'mdm_identity_maintenance', 'identity-maintenance-fixture')
@@ -479,6 +480,10 @@ class RunFixtures:
                                  container=owner.container(), database=database))
                 env.update(BACKEND_PG_CONFIG=str(config), GROUP_PG_CONFIG=str(config))
                 migration_config = pool.installation_config(root, database)
+                if 'runtime_config' in module.fixtures:
+                    value = self.runtime_config(pool, root, database, self.case_contexts[job.key]['tenant'],
+                        native_key=self.native_key, recovery_credentials=self.recovery_config())
+                    env['MDM_TEST_CONFIG'] = str(private(root / 'runtime.json', value))
                 if 'identity' in module.fixtures:
                     self.configure_identity(pool, database, job, output / 'identity-setup')
                     value = json.loads((root / 'runtime.json').read_text())
@@ -517,6 +522,9 @@ class RunFixtures:
                     from bootstrap_fixtures import configure
                     configure(root, value, env)
                 private(Path(env['MDM_TEST_CONFIG']),value)
+            # Runtime authority revisions must exist before a real host consumes them.
+            if 'identity' in module.fixtures:
+                self.prepare_identity(pool, database, job, output / 'identity-setup')
             if 'shared_worker' in module.fixtures:
                 host = stack.enter_context(self.workers(job, database, env['MDM_TEST_CONFIG']))
                 receipt['environment']['hostLog'] = str(host.log_path.relative_to(self.output))
@@ -530,8 +538,6 @@ class RunFixtures:
             if 'idp' in module.fixtures:
                 from enterprise_idp import fixture
                 env.update(stack.enter_context(fixture(root, owner)))
-            if 'identity' in module.fixtures:
-                self.prepare_identity(pool, database, job, output / 'identity-setup')
             with self.lock:
                 for dependency in module.fixtures:
                     self.costs.increment('fixture:' + dependency, 1)

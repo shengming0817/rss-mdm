@@ -123,9 +123,36 @@ async fn subscription_versions_atomic_fanout_and_same_id_https_retry() -> Result
     let mut base: Value =
         serde_json::from_slice(&std::fs::read(std::env::var("MDM_TEST_CONFIG")?)?)?;
     base["identity"]["tenant_id"] = json!(case_tenant());
-    base["webhooks"]["keys"] = json!([{"tenant":case_tenant(),"reference":"receiver","version":1,"current_file":key,"retiring":null}]);
     base["webhooks"]["networks"] = json!([{"tenant":case_tenant(),"reference":"receiver","hostname":"source.invalid","port":port,"addresses":[format!("{address}:{port}")],"cidrs":[format!("{address}/32")],"ca_files":[root.join("ca.pem")]}]);
     let config: Config = serde_json::from_value(base.clone())?;
+    {
+        use sqlx::Connection;
+        let options = std::env::var("MDM_OWNER_URL")?
+            .parse::<sqlx::postgres::PgConnectOptions>()?
+            .ssl_mode(sqlx::postgres::PgSslMode::VerifyFull)
+            .ssl_root_cert(std::env::var("PG_CA_FILE")?);
+        let mut c = sqlx::PgConnection::connect_with(&options).await?;
+        let mut tx = c.begin().await?;
+        sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
+            .bind(case_tenant())
+            .execute(&mut *tx)
+            .await?;
+        let protection = config.native_protector()?;
+        rss_mdm_webhook_service::materials::import_legacy(
+            &mut tx,
+            Uuid::parse_str(case_tenant())?,
+            "receiver",
+            Uuid::new_v4(),
+            &config.webhooks.material_configuration()?,
+            (1, &std::fs::read_to_string(&key)?),
+            None,
+            &protection,
+        )
+        .await?;
+        tx.commit().await?;
+        c.close().await?;
+    }
+
     let hex = |bytes: &[u8]| bytes.iter().map(|b| format!("{b:02x}")).collect::<String>();
     let fence = format!(
         "SET LOCAL rss.storage_target='{}'; SET LOCAL rss.storage_lineage='{}'; SET LOCAL rss.execution_epoch='{}';",
@@ -190,7 +217,13 @@ async fn subscription_versions_atomic_fanout_and_same_id_https_retry() -> Result
         // The integration belongs to the tenant even after its creator loses all business grants.
         identity::set_grants(case_tenant(),case::admin(),vec![]).await?;
         worker=Some(tokio::spawn(backend.clone().work(stop.clone())));
-        let requests=tokio::time::timeout(Duration::from_secs(30),&mut server).await???;
+        let requests=match tokio::time::timeout(Duration::from_secs(30),&mut server).await {
+            Ok(result)=>result??,
+            Err(error)=>{
+                let diagnostic=pg(&format!("SELECT coalesce(jsonb_agg(row_to_json(s)),'[]') FROM (SELECT last_stage,last_reason,last_outcome,count(*) AS count FROM mdm_webhook.deliveries WHERE tenant_id='{tenant}' GROUP BY last_stage,last_reason,last_outcome) s"))?;
+                anyhow::bail!("webhook receiver deadline: {error}; delivery stages: {diagnostic}");
+            }
+        };
         let first:Vec<_>=requests.iter().filter(|r|r.0=="/first").collect();ensure!(first.len()==2 && first[0].1==first[1].1 && first[0].2==first[1].2);
         ensure!(requests.iter().all(|r|serde_json::from_slice::<Value>(&r.2).ok().is_some_and(|v|v["eventId"]==event.event_id.to_string())));
         tokio::time::timeout(Duration::from_secs(10),async {loop {if pg(&format!("SELECT count(*) FROM mdm_webhook.deliveries d JOIN rss_transactional_messaging.outbox o ON(o.tenant_id,o.message_id)=(d.tenant_id,d.id::text) WHERE d.event_id='{}' AND o.status='published'",event.event_id))?.trim()==(rss_mdm_webhook_service::PAGE+1).to_string(){return Ok::<_,anyhow::Error>(())}tokio::time::sleep(Duration::from_millis(100)).await;}}).await??;

@@ -16,7 +16,7 @@ use std::{sync::Arc, time::Duration};
 use uuid::Uuid;
 use zeroize::Zeroizing;
 
-#[derive(Clone, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
     pub provider_id: Uuid,

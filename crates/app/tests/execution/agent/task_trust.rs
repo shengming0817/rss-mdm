@@ -1,0 +1,116 @@
+use crate::test_support::agent_execution::{Fixture, case_credential};
+use crate::test_support::*;
+use rss_mdm_agent_wire::task_trust::{Acknowledgement, KeyState, Trust};
+
+#[tokio::test]
+#[ignore = "MODULE=execution.agent.task_trust: prepared trust requires an authenticated durable ACK before activation"]
+async fn rotation_requires_exact_generation_ack_and_keeps_original_operation() -> Result<()> {
+    let mut f = Fixture::new().await?;
+    let resources = std::mem::take(&mut f.resources);
+    resources.finish(async {
+        for operation in [crate::authorization::Permission::RegistrationConfigurationRead,crate::authorization::Permission::RegistrationConfigurationWrite] {
+            f.grants.push(crate::authorization::Grant {operation,scope:crate::authorization::Scope::Tenant});
+        }
+        let registration=f.register().await?;
+        let prepared_operation=Uuid::new_v4();
+        f.author.operation=Some(prepared_operation);
+        let prepare=json!({"action":"prepare","expectedRevision":1,"origin":"https://mdm.example.test:9445"});
+        let (status,body)=f.author.call(&f.router,Method::POST,"/api/v1/task-signing/trust",Some(prepare.clone())).await?;
+        ensure!(status==StatusCode::OK,"prepare: {status} {body}");
+        let prepared:Trust=serde_json::from_value(body.clone())?;
+        prepared.validate()?;
+        ensure!(prepared.revision==2);
+        let key=prepared.keys.iter().find(|k|k.state==KeyState::Prepared).unwrap().id.clone();
+        ensure!(f.author.call(&f.router,Method::POST,"/api/v1/task-signing/trust",Some(prepare)).await?==(StatusCode::OK,body.clone()));
+        let activation_operation=Uuid::new_v4();
+        f.author.operation=Some(activation_operation);
+        let activate=json!({"action":"activate","expectedRevision":2,"keyId":key});
+        ensure!(f.author.call(&f.router,Method::POST,"/api/v1/task-signing/trust",Some(activate.clone())).await?.0==StatusCode::CONFLICT);
+        let (status,distribution)=agent_call(&f.router,Method::GET,"/api/v1/agent/runtime/task-trust",Some(case_credential()),None).await?;
+        ensure!(status==StatusCode::OK && distribution==body);
+        let mut ack=Acknowledgement {operation:Uuid::new_v4(),version:1,registration:Uuid::parse_str(registration["registrationId"].as_str().unwrap())?,generation:registration["generation"].as_u64().unwrap(),revision:prepared.revision,digest:prepared.installation_digest()?};
+        ack.generation+=1;
+        ensure!(agent_call(&f.router,Method::POST,"/api/v1/agent/runtime/task-trust",Some(case_credential()),Some(serde_json::to_value(&ack)?)).await?.0==StatusCode::FORBIDDEN);
+        ack.generation-=1;
+        let payload=serde_json::to_value(&ack)?;
+        ensure!(agent_call(&f.router,Method::POST,"/api/v1/agent/runtime/task-trust",Some(case_credential()),Some(payload.clone())).await?==(StatusCode::OK,payload.clone()));
+        ensure!(agent_call(&f.router,Method::POST,"/api/v1/agent/runtime/task-trust",Some(case_credential()),Some(payload.clone())).await?==(StatusCode::OK,payload));
+        let (status,activated)=f.author.call(&f.router,Method::POST,"/api/v1/task-signing/trust",Some(activate.clone())).await?;
+        ensure!(status==StatusCode::OK,"activate: {status} {activated}");
+        let current:Trust=serde_json::from_value(activated.clone())?;
+        ensure!(current.revision==3 && current.keys.iter().any(|k|k.id==key && k.state==KeyState::Active) && current.keys.iter().any(|k|k.id=="t2" && k.state==KeyState::VerifyOnly));
+        ensure!(f.author.call(&f.router,Method::POST,"/api/v1/task-signing/trust",Some(activate)).await?==(StatusCode::OK,activated));
+        ensure!(f.author.call(&f.router,Method::GET,&format!("/api/v1/task-signing/operations/{prepared_operation}"),None).await?==(StatusCode::OK,body));
+        let config=identity::config(case_tenant())?;
+        ensure!(crate::task_signing::open(&crate::task_signing::Config {revision:1},&config.access_database,rss_request_context::TenantId::parse(case_tenant())?,config.native_protector()?.as_ref()).await.is_err());
+        let protection=config.native_protector()?;
+        let loaded=crate::task_signing::open(&crate::task_signing::Config {revision:3},&config.access_database,rss_request_context::TenantId::parse(case_tenant())?,&protection).await?;
+        ensure!(loaded.task.key_id()==key);
+        Ok(())
+    }).await
+}
+
+#[tokio::test]
+#[ignore = "MODULE=execution.agent.task_trust: settings directory reads the actual task authority and filters inaccessible owners"]
+async fn settings_catalog_projects_authority_without_cross_session_or_secret_exposure() -> Result<()>
+{
+    let mut f = Fixture::new().await?;
+    let resources = std::mem::take(&mut f.resources);
+    resources
+        .finish(async {
+            let (status, before) = f
+                .author
+                .call(&f.router, Method::GET, "/api/v1/settings/catalog", None)
+                .await?;
+            ensure!(status == StatusCode::OK, "catalog: {status} {before}");
+            ensure!(
+                !before["items"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|i| i["id"] == "task-key")
+            );
+            f.grants.push(crate::authorization::Grant {
+                operation: crate::authorization::Permission::RegistrationConfigurationRead,
+                scope: crate::authorization::Scope::Tenant,
+            });
+            crate::test_support::identity::set_grants(
+                case_tenant(),
+                &f.author_id,
+                f.grants.clone(),
+            )
+            .await?;
+            let (status, after) = f
+                .author
+                .call(&f.router, Method::GET, "/api/v1/settings/catalog", None)
+                .await?;
+            ensure!(status == StatusCode::OK, "catalog: {status} {after}");
+            let items = after["items"].as_array().unwrap();
+            let task = items.iter().find(|i| i["id"] == "task-key").unwrap();
+            ensure!(task["revision"] == 1 && task["status"] == "configured");
+            ensure!(task["actions"][0]["href"] == "/api/v1/task-signing/trust");
+            ensure!(
+                !items
+                    .iter()
+                    .any(|i| i["id"] == "storage" || i["id"] == "s3-key" || i["id"] == "instance")
+            );
+            let text = serde_json::to_string(&after)?;
+            ensure!(
+                !text.contains("private_key")
+                    && !text.contains("password")
+                    && !text.contains("active_file")
+            );
+            let (status, _) = f
+                .author
+                .call(
+                    &f.router,
+                    Method::GET,
+                    "/api/v1/tenant-administration/settings/catalog",
+                    None,
+                )
+                .await?;
+            ensure!(status == StatusCode::FORBIDDEN || status == StatusCode::UNAUTHORIZED);
+            Ok(())
+        })
+        .await
+}

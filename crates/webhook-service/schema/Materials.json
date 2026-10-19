@@ -1,0 +1,470 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Contract",
+  "oneOf": [
+    {
+      "type": "object",
+      "properties": {
+        "Prepare": {
+          "$ref": "#/$defs/Prepare"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "Prepare"
+      ]
+    },
+    {
+      "type": "object",
+      "properties": {
+        "Transition": {
+          "$ref": "#/$defs/Transition"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "Transition"
+      ]
+    },
+    {
+      "type": "object",
+      "properties": {
+        "Material": {
+          "$ref": "#/$defs/Material"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "Material"
+      ]
+    },
+    {
+      "type": "object",
+      "properties": {
+        "Receipt": {
+          "$ref": "#/$defs/Receipt"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "Receipt"
+      ]
+    },
+    {
+      "type": "object",
+      "properties": {
+        "Directory": {
+          "$ref": "#/$defs/PublicDirectory"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "Directory"
+      ]
+    },
+    {
+      "type": "object",
+      "properties": {
+        "ConfirmationRequest": {
+          "$ref": "#/$defs/ConfirmationRequest"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "ConfirmationRequest"
+      ]
+    },
+    {
+      "type": "object",
+      "properties": {
+        "ConfirmationResponse": {
+          "$ref": "#/$defs/ConfirmationResponse"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "ConfirmationResponse"
+      ]
+    }
+  ],
+  "$defs": {
+    "Action": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "activate"
+            },
+            "materialRevision": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "materialRevision"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "revoke"
+            },
+            "materialRevision": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "materialRevision"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "retire_previous"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind"
+          ]
+        }
+      ]
+    },
+    "ConfirmationKind": {
+      "type": "string",
+      "enum": [
+        "rss-mdm.webhook-key-confirmation/v1"
+      ]
+    },
+    "ConfirmationRequest": {
+      "type": "object",
+      "properties": {
+        "challenge": {
+          "type": "string"
+        },
+        "configurationSha256": {
+          "type": "string"
+        },
+        "operationId": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "reference": {
+          "type": "string"
+        },
+        "revision": {
+          "type": "integer",
+          "format": "int64"
+        },
+        "tenantId": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "type": {
+          "$ref": "#/$defs/ConfirmationKind"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "tenantId",
+        "operationId",
+        "reference",
+        "revision",
+        "configurationSha256",
+        "challenge"
+      ]
+    },
+    "ConfirmationResponse": {
+      "type": "object",
+      "properties": {
+        "confirmationProof": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "confirmationProof"
+      ]
+    },
+    "Directory": {
+      "type": "object",
+      "properties": {
+        "heads": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Head"
+          }
+        },
+        "materials": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Material"
+          }
+        }
+      },
+      "required": [
+        "heads",
+        "materials"
+      ]
+    },
+    "Head": {
+      "type": "object",
+      "properties": {
+        "activeRevision": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "int64"
+        },
+        "reference": {
+          "type": "string"
+        },
+        "retiringRevision": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "int64"
+        },
+        "revision": {
+          "type": "integer",
+          "format": "int64"
+        }
+      },
+      "required": [
+        "reference",
+        "revision"
+      ]
+    },
+    "Material": {
+      "type": "object",
+      "properties": {
+        "attemptedAt": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "int64"
+        },
+        "challenge": {
+          "type": "string"
+        },
+        "configurationSha256": {
+          "type": "string"
+        },
+        "confirmed": {
+          "type": "boolean"
+        },
+        "confirmedAt": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "int64"
+        },
+        "endpoint": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "failureReason": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "keyDigest": {
+          "type": "string"
+        },
+        "legacyImport": {
+          "type": "boolean"
+        },
+        "networkReference": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "operationId": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "reference": {
+          "type": "string"
+        },
+        "revision": {
+          "type": "integer",
+          "format": "int64"
+        },
+        "revoked": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "operationId",
+        "reference",
+        "revision",
+        "configurationSha256",
+        "keyDigest",
+        "challenge",
+        "confirmed",
+        "revoked",
+        "legacyImport"
+      ]
+    },
+    "Prepare": {
+      "type": "object",
+      "properties": {
+        "configurationSha256": {
+          "type": "string"
+        },
+        "endpoint": {
+          "type": "string"
+        },
+        "expectedRevision": {
+          "type": "integer",
+          "format": "int64"
+        },
+        "networkReference": {
+          "type": "string"
+        },
+        "reference": {
+          "type": "string"
+        },
+        "source": {
+          "$ref": "#/$defs/Source"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "reference",
+        "expectedRevision",
+        "configurationSha256",
+        "endpoint",
+        "networkReference",
+        "source"
+      ]
+    },
+    "PublicDirectory": {
+      "type": "object",
+      "properties": {
+        "configurationSha256": {
+          "type": "string"
+        },
+        "keys": {
+          "$ref": "#/$defs/Directory"
+        }
+      },
+      "required": [
+        "configurationSha256",
+        "keys"
+      ]
+    },
+    "Receipt": {
+      "type": "object",
+      "properties": {
+        "activeRevision": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "int64"
+        },
+        "operationId": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "reference": {
+          "type": "string"
+        },
+        "retiringRevision": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "int64"
+        },
+        "revision": {
+          "type": "integer",
+          "format": "int64"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "operationId",
+        "reference",
+        "revision"
+      ]
+    },
+    "Source": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "generate"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "import"
+            },
+            "secret": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "secret"
+          ]
+        }
+      ]
+    },
+    "Transition": {
+      "type": "object",
+      "properties": {
+        "action": {
+          "$ref": "#/$defs/Action"
+        },
+        "expectedRevision": {
+          "type": "integer",
+          "format": "int64"
+        },
+        "reference": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "reference",
+        "expectedRevision",
+        "action"
+      ]
+    }
+  }
+}

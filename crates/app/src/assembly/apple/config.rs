@@ -2,39 +2,17 @@ use crate::{ConfigIssue, Error, native::TlsEndpoint};
 use serde::Deserialize;
 use std::{net::SocketAddr, path::PathBuf};
 
-#[derive(Deserialize)]
+#[derive(serde::Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
     #[cfg(test)]
     #[serde(skip)]
     pub test_push_transport: Option<(String, PathBuf)>,
-    #[serde(default)]
-    pub account_keys: std::collections::BTreeMap<String, AccountSigningKey>,
     pub management: TlsEndpoint,
     pub trust_file: PathBuf,
-    pub profile_certificate_file: PathBuf,
-    pub profile_private_key_file: PathBuf,
-    pub apns_certificate_file: PathBuf,
-    pub apns_private_key_file: PathBuf,
-    pub apns_topic: String,
-    pub challenge_webhook: Webhook,
-    pub notify_webhook: Webhook,
-}
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct Webhook {
-    pub id: String,
-    pub secret_file: PathBuf,
-}
-impl Webhook {
-    fn valid(&self) -> bool {
-        !self.id.is_empty()
-            && self.id.len() <= 128
-            && self
-                .id
-                .bytes()
-                .all(|v| v.is_ascii_alphanumeric() || b"-_".contains(&v))
-    }
+    pub materials: rss_mdm_apple_channel::runtime_materials::runtime::Selection,
+    pub identity_seed: rss_mdm_apple_channel::IdentitySeed,
+    pub webhooks: Vec<crate::ca_webhooks::Credentials>,
 }
 impl Config {
     pub(crate) fn validate(&self, browser: SocketAddr) -> Result<(), Error> {
@@ -47,22 +25,25 @@ impl Config {
         {
             return Err(bad(ConfigIssue::AppleListeners));
         }
-        if !self.apns_topic.starts_with("com.apple.mgmt.") || self.apns_topic.len() > 255 {
+        if self.materials.apns < 1
+            || self.materials.profile < 1
+            || self.materials.accounts.len() > 16
+        {
             return Err(bad(ConfigIssue::AppleApns));
         }
-        if !self.challenge_webhook.valid() {
+        let valid = |id: &str| {
+            !id.is_empty()
+                && id.len() <= 128
+                && id
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b"-_".contains(&b))
+        };
+        if !valid(&self.identity_seed.challenge_id)
+            || !valid(&self.identity_seed.notify_id)
+            || self.identity_seed.challenge_id == self.identity_seed.notify_id
+        {
             return Err(bad(ConfigIssue::AppleChallengeWebhook));
-        }
-        if !self.notify_webhook.valid() || self.challenge_webhook.id == self.notify_webhook.id {
-            return Err(bad(ConfigIssue::AppleNotifyWebhook));
         }
         Ok(())
     }
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct AccountSigningKey {
-    pub certificate_file: PathBuf,
-    pub private_key_file: PathBuf,
 }

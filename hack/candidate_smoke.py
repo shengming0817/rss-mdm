@@ -25,11 +25,12 @@ PASSWORD = "Candidate-only-correct-horse-battery-2026!"
 from candidate_runtime import Candidate, Stage, docker, failure_evidence, require, wait
 
 class Browser:
-    def __init__(self, port, ca):
+    def __init__(self, port, ca, *, host="mdm.example.test"):
+        self.host=host
         self.port, self.context = port, ssl.create_default_context(cafile=ca)
         self.cookie, self.csrf = "", ""
     def call(self, method, path, data=None, operation=None):
-        headers = {"Host":"mdm.example.test", "Origin":"https://mdm.example.test", "X-Identity-Request":"1"}
+        headers = {"Host":self.host, "Origin":"https://"+self.host, "X-Identity-Request":"1"}
         if self.cookie: headers["Cookie"] = self.cookie
         if self.csrf: headers["X-CSRF-Token"] = self.csrf
         if operation: headers["Idempotency-Key"] = operation
@@ -135,13 +136,19 @@ def run_smoke(directory):
                 "candidate management login failed")
         status,grants=management.call("GET","/api/v1/tenant-administration/authorization")
         require(status==200 and {grant["operation"] for grant in grants["grants"]}==
-                {"tenant_create","tenant_read","tenant_update","tenant_delete","authorization_read","authorization_write"},
+                {"tenant_create","tenant_read","tenant_update","tenant_delete","authorization_read","authorization_write","tenant_administrator_create","identity_accounts_manage"},
                 "candidate management permissions mismatch")
         require(management.call("GET","/api/v1/resources")[0] in (401,403),"candidate management entered business")
         require(browser.call("GET","/api/v1/tenant-administration/authorization")[0]==401,
                 "candidate business entered management")
-        rule=dict(subject=dict(kind='user',user=dict(instanceId=INSTANCE,tenantId=TENANT,principalId=ADMIN)),grants=[dict(operation=operation,scope=dict(kind='device',id='device-1')) for operation in ['inventory_read','enrollment','credentials']])
-        require(browser.call('PUT','/api/v1/authorization/rules/'+str(uuid.uuid4()),dict(operationId=str(uuid.uuid4()),expectedRevision=0,value=rule))[0]==200,'candidate explicit authorization')
+        administrator=browser
+        status,account=administrator.call('POST',tenant+'/accounts',dict(login='scoped',password=PASSWORD))
+        require(status==201 and isinstance(account.get('principalId'),str),'candidate scoped account creation')
+        browser=Browser(deployed.port,deployed.root/'ca.crt')
+        require(browser.call('POST',tenant+'/login',dict(login='scoped',password=PASSWORD))[0]==200,
+                'candidate scoped account login')
+        rule=dict(subject=dict(kind='user',user=dict(instanceId=INSTANCE,tenantId=TENANT,principalId=account["principalId"])),grants=[dict(operation=operation,scope=dict(kind='device',id='device-1')) for operation in ['inventory_read','enrollment','credentials']])
+        require(administrator.call('PUT','/api/v1/authorization/rules/'+str(uuid.uuid4()),dict(operationId=str(uuid.uuid4()),expectedRevision=0,value=rule))[0]==200,'candidate explicit authorization')
         operation=str(uuid.uuid4())
         enrollment=dict(deviceId="device-1",password="A"*43,source="mdm.windows",windowsProfile="Device")
         status,receipt=browser.call("POST","/api/v1/enrollments",enrollment,operation)
@@ -156,10 +163,7 @@ def run_smoke(directory):
         require(sql("SELECT count(*) FROM rss_audit.records WHERE tenant_id='"+TENANT+"' AND source_id='mdm.request' AND event_id='"+event_id+"'")=="1","candidate denial audit missing")
         require(browser.call("POST","/api/v1/devices/device-1/actions",dict(action="wipe"),str(uuid.uuid4()))[0]==403,"wipe permission bypass")
         require(browser.call("GET","/api/v1/devices/outside/inventory")[0]==403,"inventory scope bypass")
-        rule=dict(subject=dict(kind='user',user=dict(instanceId=INSTANCE,tenantId=TENANT,principalId=ADMIN)),
-                  grants=[dict(operation=operation,scope=dict(kind='all_devices')) for operation in ['enrollment','credentials']])
-        require(browser.call('PUT','/api/v1/authorization/rules/'+str(uuid.uuid4()),dict(operationId=str(uuid.uuid4()),expectedRevision=0,value=rule))[0]==200,'candidate PKI authorization')
-        pki_checks=native_pki_journey(deployed,browser)
+        pki_checks=native_pki_journey(deployed,administrator)
         old_cookie=browser.cookie
         require(browser.call("POST",tenant+"/session/refresh")[0]==200 and browser.cookie!=old_cookie,"candidate refresh failed")
         stale=Browser(deployed.port,deployed.root/"ca.crt");stale.cookie=old_cookie

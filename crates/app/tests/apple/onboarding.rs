@@ -139,39 +139,39 @@ async fn absent_agent_group_installs_fixed_package_and_registers_independently()
     // The reference server receives the ACK; the product loses this transport message.
     // Both then continue on the same device, so the oracle still checks query syntax.
     peer.oracle
-        .compare(
-            "/mdm",
-            &protocol::xml(protocol::dictionary([
-                ("Status", "Acknowledged".into()),
-                (
-                    "UDID",
-                    crate::test_support::case::name("rss-t2-apple").into(),
-                ),
-                ("CommandUUID", install.to_string().into()),
-            ]))?,
-            &[],
-        )
+        .acknowledge_without_product(&protocol::xml(protocol::dictionary([
+            ("Status", "Acknowledged".into()),
+            (
+                "UDID",
+                crate::test_support::case::name("rss-t2-apple").into(),
+            ),
+            ("CommandUUID", install.to_string().into()),
+        ]))?)
         .await?;
     // An unacknowledged install is queried; it is never sent again as a new install.
     let (observe, _) = peer
         .next_managed("InstalledApplicationList", &mut early_bootstrap)
         .await?;
     // Error responses cannot claim installed even if an extraneous list is present.
-    peer.manage(
-        "Error",
-        Some(observe),
-        Some((
-            "InstalledApplicationList",
-            plist::Value::Array(vec![
-                protocol::dictionary([
-                    ("Identifier", "com.rss.agent".into()),
-                    ("Version", "1.2.3".into()),
-                ])
-                .into(),
-            ]),
-        )),
-    )
-    .await?;
+    let next = peer
+        .manage(
+            "Error",
+            Some(observe),
+            Some((
+                "InstalledApplicationList",
+                plist::Value::Array(vec![
+                    protocol::dictionary([
+                        ("Identifier", "com.rss.agent".into()),
+                        ("Version", "1.2.3".into()),
+                    ])
+                    .into(),
+                ]),
+            )),
+        )
+        .await?;
+    if !next.is_empty() {
+        peer.pending_replies.lock().await.push_back(next);
+    }
     let state = f.operation(operation).await?;
     ensure!(
         state["agentInstallation"]["installation"] == "unknown"
@@ -263,6 +263,7 @@ async fn agent_publication_preserves_bound_attempt_identity() -> Result<()> {
     let updated = Apple::load(
         f.app.protection.clone(),
         config,
+        fixture_materials(&f.root)?,
         f.app.clock.unix_seconds()?,
         super::fixture_providers(&f.root)?,
     )?;

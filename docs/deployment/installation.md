@@ -1,6 +1,6 @@
 # 候选构建与安装
 
-## 构建 V4 候选
+## 构建 V5 候选
 
 构建使用当前工作区源码，包含未提交修改、已加入 Git 索引的新文件及删除；源码路径由 workspace 成员与构建输入限定。范围内未跟踪文件默认拒绝，新增源码须先逐项检查并加入索引，不要求 commit 或 clean HEAD。复制前后核对文件内容与状态，变化则终止构建；candidate 记录实际复制输入的摘要，运行验收不依赖源码 checkout。构建机需要 Docker Buildx 和私有 Git 只读凭据。后端可独立发布；前后端一起交付时，额外提供不可变 rss-web MDM image ID/repository digest。
 
@@ -14,13 +14,31 @@ python3 hack/build_run.py -- python3 hack/candidate_smoke.py --candidate artifac
 
 授权头文件须为 owner 独占普通文件，只以 BuildKit secret 供依赖获取使用。构建从一次源码副本生成正式 OCI，复用正常缓存；失败不发布候选目录，已有输出不覆盖。
 
-V4 候选包含 server.oci.tar、candidate.json、示例配置、deployment 下的角色 SQL、nginx 配置与 Agent 叶证书模板，以及普通构建记录。传入 `--web-image` 时另包含 identity-ui.image.tar 和 manifest 的 `ui` 信息，并保留前端镜像身份、运行用户和归档完整性检查；省略时不检查或归档前端。V4 候选必须包含当前服务端登记命令及部署输入；缺少当前契约的旧二进制候选必须重新构建。manifest 固定实际镜像身份、归档摘要、平台、依赖提供者及全部部署输入摘要。恢复时先核验归档与部署输入，再 docker load；不从 tag 拉取替代品。V2 必须重新构建，没有兼容解析或转换器。
+V5 候选包含 server.oci.tar、installer.oci.tar、rss-mdm-installer、candidate.json、示例配置、deployment 下的角色 SQL、nginx 配置与 Agent 叶证书模板，以及普通构建记录。传入 `--web-image` 时另包含 identity-ui.image.tar 和 manifest 的 `ui` 信息，并保留前端镜像身份、运行用户和归档完整性检查；省略时不检查或归档前端。V5 候选包含与服务镜像一致的 Linux 安装二进制，摘要单独绑定到 manifest；缺少当前契约的旧二进制候选必须重新构建。manifest 固定实际镜像身份、归档摘要、平台、依赖提供者及全部部署输入摘要。恢复时先核验归档与部署输入，再 docker load；不从 tag 拉取替代品。V2 必须重新构建，没有兼容解析或转换器。
 
 安装、smoke 与认证验收不要求 matching checkout、Git 元数据或 clean HEAD。把运行工具与候选放到独立目录也可执行，工具从候选目录读取角色和网关文件。候选摘要保护所交付内容的一致性，不替代分发渠道信任。
 
 smoke 启动实际 OCI、自有 TLS PostgreSQL 与 HTTPS 网关，验证迁移、初始化、权限、重放、健康与关闭；不构建第二个消费者。仅后端候选使用固定 nginx 依赖提供 HTTPS API 代理，页面路径返回 404；包含前端的候选使用交付的前端镜像提供页面。浏览器认证验收要求包含前端，缺失时明确拒绝并提示使用 `--web-image` 重建。成功与资源清理完成后才发布 smoke.json/smoke.log，失败移除旧成功标记并保存脱敏诊断。真机 T3 另行提供。
 
 ## 全新实例安装
+
+Linux 单机安装由固定候选中的 `rss-mdm-installer install --config /absolute/private-input.json` 执行。宿主需要 systemd、Docker Engine/Compose、受信 TLS 入口及二进制运行依赖。安装器先保存稳定身份和秘密，再准备专用 PostgreSQL 数据库与受限角色、初始化独立平台/业务管理员、应用默认租户宿主。数据库引导连接只由部署操作员持有，服务容器不接收该凭据。
+
+部署输入结构由 [安装输入](../../crates/app/src/setup/installation.rs) 持有。`database` 包含目标 `name` 和引导 `administrator` 连接；角色密码由安装目录生成。`deployment` 固定服务/网关镜像摘要及 TLS 材料；`additional_hosts` 列出后续租户可用的独立入口、监听和部署参数；当前单机模板为每个租户运行独立网关，HTTPS 端口和后端监听不得重复。没有可用槽位时保留原开通操作并显示 capacity，不另建租户或账户。槽位预留不可改绑，新增容量需追加配置并重启部署进程。
+
+安装器将部署二进制复制到 root 独占安装目录，注册 `rss-mdm-deployer-<instance>.service`。该进程消费已有开通回执和领域期望版本，使用固定 Docker Compose 模板部署宿主；管理 HTTP 不接受任意命令或维护凭据。实例目录、原凭据、角色密码和固定 Ledger 密钥必须联合备份。重试使用原输入和原目录；密码或密钥丢失时恢复原材料，不重新生成替代身份。
+
+### 对象存储开通与凭据更新
+
+部署输入 `storage_profiles` 列出允许使用的 HTTPS S3 端点、region、bucket、基础 namespace 和 CA 文件。`rustfs_administrator` 只供部署进程执行固定 IAM 创建动作；导入其它 S3 凭据时提供 `boundary_verifier`，用于确认租户前缀之外的实际对象确实存在。管理 HTTP 只接受 profile 名称，不能提交任意端点或部署管理员材料。
+
+业务管理员调用 `POST /api/v1/storage/connections`，携带 UUID `Idempotency-Key`，请求包含 `expectedRevision`、`profile`、`source`。`source.kind=generate` 在领域保护侧生成 RustFS 工作负载身份；`source.kind=import` 导入 `access_key`、`secret_key`，可选 `session_token` 和 `expires_at`，临时 token 必须有有效期限。材料加密入库后返回 202，供应方准备异步执行。`GET /api/v1/storage/connections` 投影当前目录；`GET /api/v1/storage/connections/operations/{id}` 查询原操作，未知提交不得换操作 ID 重建凭据。
+
+部署进程在首次外部调用前固定端点、桶、命名空间与信任材料。自动创建验证 IAM 用户、策略和绑定；两条路径都验证 TLS、桶版本控制、真实版本化读写、精确版本删除以及对已确认存在的外部前缀对象的拒绝。失败保持原操作和凭据，可恢复重试；运行服务无权限自行标记供应方校验成功。桶须预先存在并启用版本控制。每个租户使用 `namespace/<tenant UUID>`；更新凭据不能改绑到其它桶或前缀。
+
+合格版本进入宿主期望配置，经固定部署进程重启和真实 HTTPS 观察后才算应用。运行配置 `content.storage` 只引用材料 `revision`，不再接受 S3 端点或凭据文件。旧有效版本可支撑失败回退；过期或撤销材料在实际内容操作时被拒绝。资格回执是当次验证证据，不代表供应方永久健康。
+
+
 
 MDM 宿主使用同一份运行配置生成两份公开 bootstrap 输入：`ui.json` 的
 `canonicalOrigin/oidcEnabled` 和 `mdm.json` 的 `canonicalOrigin/tenant`。
@@ -46,11 +64,12 @@ Audit 与 Ledger 的组件 SQL 分别由 `mdm_audit_owner`、`mdm_ledger_owner` 
 
 迁移输入含 database 和 installation；installation 只固定 instance_id、target、lineage 和 audit_mode（plain 或 ledger，与运行配置 audit.mode 一致）。安装创建唯一保留管理租户及 epoch=1，不创建账户、密码或权限；重放只核稳定安装身份、保留管理租户绑定、完整当前 schema 和运行权限，不比较租户全集，不改租户 epoch。安装按 audit mode 授予 Identity audit worker 权限，模式不能随重放改变。
 
-租户管理仅提供 CLI，由实际 `mdm_owner` 登录连接执行。六个命令均使用 `--config /absolute/private-config.json`，公共输入为 database 和稳定 installation：
+新增租户统一使用平台会话调用 `POST /api/v1/tenant-administration/provisionings`，包含 `name`、`administratorLogin`、`administratorPassword`，并提供 UUID `Idempotency-Key`。返回可查询开通回执；202 表示管理员或宿主阶段尚未完成，不能解释为租户已启用。旧裸创建 HTTP 入口与 `tenant-create` 命令已移除。元数据维护、查询和追加管理员保留独立用途。
+
+下列维护命令由实际 `mdm_owner` 登录连接执行，使用 `--config /absolute/private-config.json`，公共输入为 database 和稳定 installation：
 
 | 命令 | 其它输入 | 输出与约束 |
 |---|---|---|
-| `tenant-create` | tenant_id、initial_epoch、operation_id；可选 name、notes | 创建 revision=1，连同 RSS 初始 epoch、Agent 默认设置和操作回执原子提交 |
 | `tenant-get` | tenant_id | 当前租户详情，包括 initial_epoch、current_epoch、name、notes、revision、deletable、management |
 | `tenant-list` | 无 | 所有未删除租户详情，按 UUID 排序，最多 1024 个业务租户与 1 个管理租户 |
 | `tenant-update` | tenant_id、expected_revision、operation_id；可选 name、notes | 全量替换元数据；省略或 null 清空字段；成功时 revision 加一，即使值未改变 |
@@ -89,7 +108,9 @@ create/update/delete 的 operation_id 共用一个全局命名空间。同一操
 
 | 方法与路径（前缀 `/api/v1/tenant-administration`） | 请求 / 结果 |
 |---|---|
-| POST `/tenants` | `tenantId`、`initialEpoch`、可选 `name`/`notes` |
+| POST `/provisionings` | `name`、`administratorLogin`、`administratorPassword`；返回完整开通操作 |
+| GET `/provisionings` | 开通操作分页列表；`after` 为上一页游标，`limit` 为 1–1000（默认 100）；返回 `items` 和 `nextAfter` |
+| GET `/provisionings/{operationId}` | 查询原开通操作与当前恢复阶段 |
 | GET `/tenants` | 未删除租户列表，包含保留管理租户 |
 | GET `/tenants/{tenantId}` | 当前元数据 |
 | PUT `/tenants/{tenantId}` | `expectedRevision` 与替换元数据 |
@@ -97,22 +118,13 @@ create/update/delete 的 operation_id 共用一个全局命名空间。同一操
 | POST `/tenants/{tenantId}/administrators` | `login`、`password` |
 | GET `/operations/{operationId}` | 原始已提交回执；不存在为 404 |
 
-所有写入仅从 `Idempotency-Key` 读取规范 UUID；JSON 拒绝未知字段。成功与重放均为 200，回执统一为 `{operationId,action,result}`；CLI 的回执采用同一格式，字段使用 camelCase。相同操作号请求内容不同返回 409，重放保持最初结果与操作者，后续修改不改变回执。
+所有写入仅从 `Idempotency-Key` 读取规范 UUID；JSON 拒绝未知字段。开通操作尚未完成时返回 202，完成及完成后的重放返回 200；其它写入成功及重放返回 200。回执统一为 `{operationId,action,result}`；CLI 的回执采用同一格式，字段使用 camelCase。相同操作号请求内容不同返回 409，重放保持最初结果与操作者，后续修改不改变回执。
 
 创建管理员要求管理租户 `tenant_administrator_create` 及 300 秒内认证。服务生成新主体，原子写入账户、目标租户全部业务/设备 AllDevices 与账户/IdP 管理权限、审计和回执；不授予安装级租户管理权限，也不签发目标租户会话。可持续添加多个管理员；重复登录名返回 409，不重置或接管已有账户。重放会复核操作者当前会话与权限，但不重新赋权。开始账户初始化前永久登记首次使用，失败也不恢复可删除性。
 
 每个宿主通过 identity.tenant_id 和 flow.storage.epoch 绑定一个已登记业务租户，启动核验安装身份、audit mode、登记和期望 epoch。同库其它租户使用各自合法绑定宿主；新增登记不自动切换已有宿主。
 
-~~~sh
-docker load --input server.oci.tar
-docker run --rm --network host --mount type=bind,src=/private/mdm-operator,dst=/run/mdm,readonly IMAGE migrate --config /run/mdm/migrate.json
-docker run --rm --network host --mount type=bind,src=/private/mdm-operator,dst=/run/mdm,readonly IMAGE tenant-create --config /run/mdm/tenant-create.json
-docker run --rm --network host --mount type=bind,src=/private/mdm-operator,dst=/run/mdm,readonly IMAGE initialize --config /run/mdm/initialize.json
-docker run --rm --network host --mount type=bind,src=/private/mdm-operator,dst=/run/mdm,readonly IMAGE initialize-authorization --config /run/mdm/authorization.json
-docker run --name rss-mdm --network host --mount type=bind,src=/private/mdm-runtime,dst=/run/mdm,readonly IMAGE serve --config /run/mdm/config.json
-~~~
-
-IMAGE 替换为 candidate.json 固定镜像身份。秘密和配置文件由 UID 10001 持有且权限 0600。安装目录与运行目录分开准备；镜像不嵌入配置或私钥。
+新实例使用前述 `install` 单输入入口，后续租户使用完整 provisionings 资源。`migrate`、`initialize` 与 `initialize-authorization` 保留给各自维护用途，不能组合成另一条公共租户创建路径。安装器按固定镜像身份准备运行输入，秘密由 UID 10001 持有且权限 0600；镜像不嵌入配置或私钥。
 
 ## 客户端入口与服务器证书交付
 
@@ -142,7 +154,7 @@ docker run --rm --network host --mount type=bind,src=/private/mdm-operator,dst=/
 
 `identity.audit_worker` 必须配置独立 `mdm_identity_audit` 登录角色及秘密文件；host、port、name 必须与 `identity.database` 一致。安装器通过 Identity 公共 worker 授权接口赋予 consumer 与 Audit 权限，并通过 Ledger 的公开 SQL 接缝赋予追加能力；worker 不具有身份私表、producer、DDL 或直接审计表写权限。运行服务同时挂入 worker 密码，maintenance 密码仍仅归 operator。现有安装集合新增 `identity-audit-runtime-v1`，旧候选安装账本不会被静默升级。
 
-所有运行模式（含 Apple-only 与 Agent-only）必须配置顶层 `native_protection_key_file`，例如 `"native_protection_key_file":"/run/mdm/native-protection.key"`。文件必须恰好包含 **32 字节原始随机密钥**，不是 hex/Base64/PEM 文本。首次部署可用 `umask 077; openssl rand 32 > /run/mdm/native-protection.key` 生成，由服务账户读取，文件权限限制为 0600。它是保护原生输入、回执及内容的持久身份；与 Windows 协议 `protection_key_file`、CA/TLS 私钥和审计 Ledger 密钥分别生成、配置和保管。所有访问同一部署数据的实例必须使用同一原始密钥；启动会检查数据库中的 tenant key identity，错误长度或换 key 拒绝启动。
+所有运行模式（含 Apple-only 与 Agent-only）必须配置顶层 `native_protection`，包含 `active_file`、`historical_files` 与 `fingerprint_file`。每个文件恰好包含 32 字节原始随机密钥，权限 0600；不是 hex/Base64/PEM 文本。全新安装分别生成加密钥与比较钥。`active_file` 只用于新密文，最多保留 15 个历史解密钥，按密文中确切 key ID 读取。`fingerprint_file` 维持原有请求、材料与设备比较身份，不能随密文重加密替换。Ledger、Windows 协议保护材料和恢复凭据专用钥集合仍分别保管。旧 `native_protection_key_file` 运行字段已删除，存量只能由受支持的离线转交进入新合同。
 
 运行配置和 `initialize-authorization` 配置必须显式填写 `audit`：Plain 为 `{"mode":"plain"}`；Ledger 为 `{"mode":"ledger","key_id":"部署提供的标识","key_file":"/run/mdm/audit-key"}`。密钥文件保存至少 32 字节的原始密钥，必须受文件权限保护；服务不自动生成、轮换或在错误时降级。所有运行角色使用 READ COMMITTED，恢复入口拒绝其他隔离级别。
 
@@ -178,7 +190,7 @@ Linux host 网络使回环浏览器监听与同机 HTTPS 网关配合；Windows 
 }
 ```
 
-启用 Agent 同时配置既有 `task_signing` 私钥、key_id 与 trusted_keys，注册 owner 使用独立签名域签发配置文件；固定安装候选须预置相同公开验证密钥。授权期限和平台启用设置只由数据库后台接口持有，旧 `agent_pki.policy` 被拒绝，见 [Agent 接入](../guides/agent-integration.md)。
+启用 Agent 时，`task_signing` 只引用已持久化权威的 `revision`；私钥由任务签名 owner 加密保管，不再接受 private_key_file、key_id 或 trusted_keys 启动字段。注册 owner 使用同一受控签名权威及独立签名域签发配置文件；Agent 包仍须预置相应公开验证密钥。授权期限和平台启用设置只由数据库后台接口持有，旧 `agent_pki.policy` 被拒绝，见 [Agent 接入](../guides/agent-integration.md)。
 
 使用独立 purpose/issuer 数据库的 step-ca（固定验证版本 0.30.2），创建独立 `rss-agent` JWK provisioner。MDM 只加载其 RSA PKCS#8 DER 私钥、CA TLS 根证书和叶证书直接签发者的公开证书；CA 根/中间私钥及管理员凭据只归 CA 运维。私钥为服务账户独占读取的普通文件（0600/0400），禁止符号链接、公开权限、环境正文和源码提交。CA 网络只允许受控服务调用 `/sign`；MDM 固定 HTTPS origin、固定根、禁用代理和重定向。
 
@@ -233,15 +245,11 @@ step ca provisioner add rss-windows --type JWK --public-key windows-provisioner.
 
 ### Webhook 宿主输入
 
-顶层 `webhooks` 是必填闭合配置，示例中的空 keys/networks 表示没有获准的接收端。
+顶层 `webhooks` 是必填闭合配置，示例中的空 networks 表示没有获准的接收端。
 recovery_database 使用独立登录角色，具备 `mdm_webhook_operator` 的能力；按现有角色文件先部署
 `webhook-roles.sql`，密码由部署秘密提供，不与访问或投递角色混用。恢复能力不暴露原始 runtime。
 
-每条 keys 配置包含 tenant、reference、正整数 version、current_file 和可选 retiring
-（version、key_file、until，UTC Unix 秒）。文件存 Standard Webhooks 的 `whsec_<Base64>`，
-解码后为 24–64 随机字节，0600；不得复用入站 API 凭据。轮换时配置新 current 与有期限的旧 key，
-重启原宿主；过渡期同时签名，到期停止旧签名，再删除旧文件。相同引用保持接收方身份，
-更换引用通过订阅版本显式生效。
+Webhook 密钥由 `/api/v1/webhooks/materials` 的领域权威加密持久化，接收端持钥确认后才能激活。安全交付、确认与旧签名退出见[Webhook 材料运维](operations.md#出站-webhook-签名材料)。运行配置不接受 keys/current_file/retiring，修改旧文件不能覆盖数据库材料。
 
 每条 networks 配置包含 tenant、reference、hostname、port、addresses（IP:port）、cidrs 和 ca_files。
 所有地址端口须匹配，地址须全部在允许 CIDR 内；CA 为 PEM。首版 DNS 策略为宿主固定地址快照，
@@ -251,3 +259,19 @@ adapter 按批准 IP 连接并验证原 hostname；地址变更需更新配置�
 这些配置只描述允许范围；管理员仍须创建并明确启用订阅。访问池的 storage target、lineage 和
 execution epoch 来自原宿主配置，在连接建立时固定；源事件复用 RSS 正式 SQL Outbox append 与
 原 Audit 事务原子提交，失败不会触发事务后的直接 HTTP。新增组件迁移由既有 installer 执行。
+
+### 固定候选的完整安装资格
+
+`python3 hack/candidate_installation.py /absolute/candidate` 在独立 Linux 节点中消费候选的安装器镜像与服务镜像，使用真实 systemd 和 Docker daemon。节点以受限用途的 privileged 容器提供内核能力，不挂载宿主 Docker socket 或产品源码；测试 PostgreSQL、TLS 私钥和所有租户宿主均在节点内生成并随节点清除。宿主内核必须支持嵌套 Docker 与 systemd/cgroup；不满足时结果是资格缺失，不能将模拟 systemctl 或仅运行应用容器算作安装通过。
+
+安装资格检查单输入安装、原凭据及 Ledger 密钥不变的重复安装、平台与业务的独立主体及真实登录、第二租户宿主、原开通操作重放及宿主租户隔离。成功记录 `installation-result.json` 绑定服务 OCI 摘要和平台，只有清理成功后才发布。协议/浏览器的 `candidate_smoke.py` 使用合法业务预置数据，独立证明原生协议与会话消费；它不承担完整开通证明。发布验收必须同时保留两种结果，真实设备资格仍由独立 T3 提供。
+
+V4 转交可以保管已经过期、但其原始链、用途和密钥匹配仍可在历史有效期验证的 Apple 材料，保留真实到期时间，不将历史校验作为当前可用证明。此时基础管理宿主可启动，Apple 通道保持关闭；原通道设置保存在安装目录的 `deferred-apple-<host>.json`，操作员更新领域证书后通过 `configure-host` 恢复原通道。原设备身份、组织绑定及私钥不替换，旧文件不重新成为运行权威。错误私钥、用途、主题或不受信链仍拒绝迁移。
+
+Native 保护轮换重加密运行凭据及 Apple 的 ADE、账户开通、设备令牌、命令和 DDM 证据行，不修改逻辑版本或重放 MAC。不可变内容对象、已有执行快照、证书归档以及历史备份仍可能依赖旧读取钥；因此本入口保留旧钥，未提供可绕过这些保留条件的删除动作。历史读取钥最多 15 份，达到上限会明确拒绝继续轮换，须完成对应历史数据和备份退出后再处理，不能删除旧钥冒充完成。
+
+当前冷备/恢复操作要求部署侧 PostgreSQL 管理员为 superuser，并在停宿主或撤销 CONNECT 之前检查；该连接只交给离线部署操作员。它用于停写后重新连接、检查全部会话和原角色恢复，不能下发给业务服务。普通运行账户仍保持既有最小权限。
+
+`configure-host channels` 不允许删除已经建立身份的 Windows/Apple 配置，避免重新启用时更换固定 fingerprint 或 identity seed。未配置通道可保持关闭；已配置材料过期或撤销时由领域运行校验降为不可用，更新仍沿原身份进行。
+
+`python3 hack/candidate_installation.py /absolute/v5-candidate --legacy-candidate /absolute/v4-candidate` 在另一独立 Linux 节点中验证固定 V4 管理宿主来源：真实旧版启动、原账户认证、Ledger 和任务签名身份保留、转交原操作重放，以及 `restore-v4` 在真实 systemd 故障后的续跑。来源必须匹配受支持的精确 V4 清单，不能用修改 manifest 冒充旧候选。该管理宿主场景不宣称已证明有存量设备或供应方数据的完整迁移；相应场景须保留独立资格记录。

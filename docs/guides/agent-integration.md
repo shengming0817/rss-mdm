@@ -99,10 +99,9 @@ MDM→Agent 的前置条件是有效的原生注册、当前设备管理权限�
 {
   "bootstrap": {
     "trust_file": "/etc/rss-mdm/agent-bootstrap-trust.json",
-    "challenge_id": "bootstrap-challenge",
-    "challenge_key_file": "/run/secrets/bootstrap-challenge.key",
-    "notify_id": "bootstrap-notify",
-    "notify_key_file": "/run/secrets/bootstrap-notify.key"
+    "webhooks": [{"issuer":"REPLACE-issuer-sha256",
+      "challenge":{"id":"bootstrap-challenge","secret_file":"/run/secrets/bootstrap-challenge.key"},
+      "notify":{"id":"bootstrap-notify","secret_file":"/run/secrets/bootstrap-notify.key"}}]
   }
 }
 ```
@@ -130,3 +129,12 @@ SCEP provisioner 的挑战和签发通知 webhook 分别指向 Agent origin 的 
 Agent→MDM 复用 `request_mdm_enrollment` 的签名任务和 Start permit。只有已启动任务的当前 Agent 可以 `POST /api/v1/agent/runtime/tasks/{task}/enrollment`，提交稳定 operationId、attemptId 和客户端生成的 password；服务端仅存口令摘要。返回短期 enrollmentId、期限及平台入口，Windows 还提供用户名、macOS 提供 profileUrl。客户端保留用户系统确认；入口 opened 或客户端报告不建立原生注册事实，必须经 Windows 认证签入，或 Apple Authenticate、TokenUpdate 与当前准入。两端 Device/Registration 独立，仅按服务端请求关联。
 
 诊断从既有 Policy assignment 与 operation API 读取：先核对 taskAdmission 的包选择和当前授权，再查看 agentInstallation 中的 delivery、installation、bootstrap（state / delivery / cleanup / deadline）和 agentRegistration。EXE 沿用 Software 定义的系统 Uninstall registry / DisplayVersion 检测信息，通过现有 Win32 清单遍历核对；文件检测或其它无法映射为可靠原生证据的发布保持 unknown。目录变化使旧缺失证据失效。未知安装或其它格式已存在时继续核实原状态，不换包重装。撤回发布会阻止新下载和交换。#2636 的服务端验证与交接不依赖实际 Agent 包制作、代码签名配置或真机验收；这些由后续任务承担。
+
+
+## 任务签名信任与安装确认
+
+任务签名信任独立于设备 PKI 的证书信任版本，复用已认证 Agent mTLS 通道。`GET /api/v1/agent/runtime/task-trust` 返回租户和规范 origin 绑定的完整 Ed25519 公钥集合；Agent 先验证版本单调性、既有 key ID 的公钥不变、唯一 active key，再持久保存并读回。只有完成这些步骤后，才向同一路径 POST 安装 ACK。ACK 固定原 operation、registration、generation、revision 和完整集合摘要；响应未知时重放同一 ACK，不能将收到响应正文等同于本地持久化成功。正式 DTO 与 schema 见 [任务信任](../../crates/agent-wire/src/task_trust.rs) 和 [manifest](../../crates/agent-wire/schema/task_trust/manifest.json)。
+
+租户管理通过 `GET/POST /api/v1/task-signing/trust` 读取、准备或激活密钥，写入使用 `Idempotency-Key`、`expectedRevision` 和近期真实管理员会话。准备新密钥只发布 prepared 公钥；所有当前 Agent 注册世代确认包含该键的准备版本后才能激活。任务发放再次核对当前 active key 和目标设备 ACK，覆盖分发期间新注册的设备。原键转为 verify_only，保留历史验证材料。新激活键由受控重启消费，旧进程不能继续用已退出 active 状态的键签发任务。准备阶段仍有效的旧签名权威可以重启加载。
+
+`GET /api/v1/task-signing/operations/{id}` 查询原管理操作，后续轮换不会改写其结果。该服务端合同不代表 Agent 已实现持久安装；Agent 消费实现与真实设备资格由对应后续任务验收。

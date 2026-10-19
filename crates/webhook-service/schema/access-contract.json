@@ -67,6 +67,27 @@
         "complete"
       ],
       "delete_policy": null
+    },
+    {
+      "schema": "mdm_webhook",
+      "table": "key_heads",
+      "read_write": true,
+      "updates": [
+        "revision",
+        "active_revision",
+        "retiring_revision"
+      ],
+      "delete_policy": null
+    },
+    {
+      "schema": "mdm_webhook",
+      "table": "key_materials",
+      "read_write": true,
+      "updates": [
+        "revoked"
+      ],
+      "delete_policy": null,
+      "insert_policy": "current_user::text='mdm_owner'::textornotconfirmedandnotrevokedandnotlegacy_importandattempted_atisnullandconfirmed_atisnullandfailure_reasonisnull"
     }
   ],
   "functions": [

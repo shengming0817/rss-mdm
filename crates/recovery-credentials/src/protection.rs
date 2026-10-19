@@ -167,6 +167,16 @@ impl Recipient {
     pub fn id(&self) -> &str {
         &self.id
     }
+    /// New deliveries need a currently valid recipient; historical decrypts retain the original key.
+    pub fn require_current(&self, now: i64) -> Result<(), Error> {
+        let at = openssl::asn1::Asn1Time::from_unix(now).map_err(|_| Error::Configuration)?;
+        if self.certificate.not_before() > at.as_ref()
+            || self.certificate.not_after() <= at.as_ref()
+        {
+            return Err(Error::Conflict);
+        }
+        Ok(())
+    }
     pub fn public_key_der(&self) -> Result<Vec<u8>, Error> {
         self.key.public_key_to_der().map_err(|_| Error::Integrity)
     }

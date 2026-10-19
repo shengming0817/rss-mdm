@@ -24,7 +24,7 @@ use x509_cert::der::Decode;
 pub(crate) fn case_tenant() -> &'static str {
     crate::test_support::case::tenant()
 }
-pub(super) fn root() -> anyhow::Result<PathBuf> {
+pub(crate) fn root() -> anyhow::Result<PathBuf> {
     Ok(std::env::var("MDM_WINDOWS_FIXTURES")?.into())
 }
 pub(crate) fn now() -> i64 {
@@ -32,7 +32,7 @@ pub(crate) fn now() -> i64 {
 }
 pub(super) fn windows() -> anyhow::Result<Windows> {
     let config = serde_json::from_slice(&std::fs::read(root()?.join("windows.json"))?)?;
-    Ok(Windows::load(config, now(), fixture_providers()?)?)
+    Ok(Windows::load(config, now(), fixture_providers()?, None)?)
 }
 pub(super) async fn complete(
     store: &rss_mdm_audit_integration::AuditStore,
@@ -284,18 +284,14 @@ impl Host {
         value["software_distribution"]=serde_json::json!({"mdm_enabled":mdm_software});
         let original: serde_json::Value =
             serde_json::from_slice(&std::fs::read(std::env::var("MDM_TEST_CONFIG")?)?)?;
+        value["access_database"] = original["access_database"].clone();
         value["content"] = original["content"].clone();
         value["webhooks"] = original["webhooks"].clone();
         value["agent_pki"] = original["agent_pki"].clone();
         if mdm_software { value["task_signing"] = original["task_signing"].clone(); }
         value["device_pki"] = original["device_pki"].clone();
-        value["native_protection_key_file"] = original["native_protection_key_file"].clone();
-        if push {
-            let secret = root.join(format!("wns-{}-secret", Uuid::new_v4()));
-            std::fs::write(&secret, "fixture-secret")?;
-            std::fs::set_permissions(&secret, std::fs::Permissions::from_mode(0o600))?;
-            value["native_protocols"]["windows"]["push"] = serde_json::json!({"package_family_name":"fixture.pfn","sid":"fixture-sid","client_secret_file":secret});
-        }
+        value["native_protection"] = original["native_protection"].clone();
+        if push {value["native_protocols"]["windows"]["push"] = serde_json::json!({"revision":1});}
         if let Some(listener) = &additional_manage {
             let mut endpoint = value["native_protocols"]["windows"]["management"].clone();
             endpoint["listen"] = serde_json::json!(listener.local_addr()?.to_string());
@@ -391,6 +387,21 @@ impl Host {
                 )
             })
             .transpose()?;
+        let wns=if push {
+            // 预置受控 WNS 资格用于协议测试，不作为真实 Microsoft 资格证据。
+            use sqlx::Connection;
+            let mut owner=sqlx::PgConnection::connect_with(&std::env::var("MDM_OWNER_URL")?.parse::<sqlx::postgres::PgConnectOptions>()?.ssl_mode(sqlx::postgres::PgSslMode::VerifyFull).ssl_root_cert(std::env::var("PG_CA_FILE")?)).await?;
+            let mut tx=owner.begin().await?;
+            sqlx::query("SELECT set_config('rss.tenant_id',$1,true)").bind(case_tenant()).execute(&mut *tx).await?;
+            let material_key=config.native_protector()?;
+            let existing:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_wns.versions WHERE tenant_id=$1::uuid AND revision=1)").bind(case_tenant()).fetch_one(&mut *tx).await?;
+            if !existing {
+                rss_mdm_windows_channel::wns_materials::prepare(&mut tx,case_tenant(),Uuid::new_v4(),"controlled-protocol-fixture",&rss_mdm_windows_channel::wns_materials::Request{expected_revision:0,package_family_name:"fixture.pfn".into(),sid:"fixture-sid".to_owned().into(),client_secret:"fixture-secret".to_owned().into()},&material_key).await?;
+                rss_mdm_windows_channel::wns_materials::qualify(&mut tx,case_tenant(),1,now()).await?;
+            }
+            let value=rss_mdm_windows_channel::wns_materials::load(&mut tx,case_tenant(),1,&material_key,crate::test_support::monotonic(),true).await?;
+            tx.commit().await?;owner.close().await?;Some(value)
+        }else{None};
         let mut windows = Windows::load(
             config
                 .native_protocols
@@ -398,6 +409,7 @@ impl Host {
                 .expect("Windows test configuration"),
             now(),
             crate::device_pki::providers(&config.device_pki)?,
+            wns,
         )?;
         if let Some((mut binding, verifier, jit)) = entra {
             let view = provider(&identity, &secret, &binding.token, jit).await?;
@@ -419,6 +431,9 @@ impl Host {
         let mut trusts = vec![windows.channel.ca.trust.clone()];
         if let Some(a) = &agent_pki {
             trusts.push(a.issuer.trust().trust.clone());
+            if let Some(bootstrap) = &a.bootstrap {
+                trusts.push(bootstrap.trust.clone());
+            }
         }
         let pki = Arc::new(rss_mdm_pki_service::registry::Registry::new(
             store.archive_pool(),
@@ -434,13 +449,19 @@ impl Host {
             rss_request_context::TenantId::parse(case_tenant())?,
             &[7; 32],
         )?);
-        let binding=rss_transactional_messaging::fence::ExecutionBinding::new(
-            rss_transactional_messaging::fence::StorageIdentity::new(config.flow.storage.target,config.flow.storage.lineage)?,
-            vec![(identity.tenant,rss_transactional_messaging::fence::Epoch::new(config.flow.storage.epoch)?)])?;
-        let webhooks=crate::webhooks::Backend::open(config.webhooks.clone(),execution.runtime.clone(),identity.tenant,agent_audit.clone(),clock.clone(),execution.protection.clone(),binding).await?;
-        execution.webhooks.set(webhooks.clone()).map_err(|_|anyhow::anyhow!("duplicate fixture webhook owner"))?;
+        let binding = rss_transactional_messaging::fence::ExecutionBinding::new(
+            rss_transactional_messaging::fence::StorageIdentity::new(config.flow.storage.target, config.flow.storage.lineage)?,
+            vec![(identity.tenant, rss_transactional_messaging::fence::Epoch::new(config.flow.storage.epoch)?)],
+        )?;
+        let webhooks = crate::webhooks::Backend::open(
+            config.webhooks, execution.runtime.clone(), identity.tenant,
+            agent_audit.clone(), clock.clone(), execution.protection.clone(), binding,
+        ).await?;
+        execution.webhooks.set(webhooks.clone()).map_err(|_| anyhow::anyhow!("webhook fixture already assembled"))?;
         resources.resource(crate::webhooks::Resource(webhooks.clone()));
         let app = Arc::new(Assembly {
+            runtime_observation: crate::setup::host::Observation::new(&config.runtime_binding, identity.tenant.to_string(), identity.instance.to_string()),
+            apple_material_roots: Arc::new(Vec::new()),
             webhooks,
             associations,
             pki,

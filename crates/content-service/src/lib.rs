@@ -1,5 +1,7 @@
 //! Tenant-scoped immutable content; PostgreSQL owns progress and exact material identities.
 //! ref: sqlx sqlx-core/src/transaction.rs; aws-sdk-rust sdk/s3/src/operation/complete_multipart_upload/builders.rs (manifest freezing avoids assembly)
+pub mod backup;
+pub mod connections;
 mod range;
 pub use range::range;
 mod backend;
@@ -112,7 +114,6 @@ impl Store {
         tenant: &str,
         timer: Arc<dyn Clock>,
         pool: sqlx::PgPool,
-        secrets: Option<Arc<dyn rss_mdm_content_s3::Secrets>>,
     ) -> Result<Arc<Self>, Error> {
         let tenant =
             rss_request_context::TenantId::parse(tenant).map_err(|_| Error::Configuration)?;
@@ -140,12 +141,25 @@ impl Store {
             )
             .map_err(|_| Error::Configuration)?;
         }
+        let connection = if let Storage::S3(s3) = &config.storage {
+            let mut tx = pool.begin().await.map_err(|_| storage())?;
+            sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
+                .execute(&mut *tx)
+                .await
+                .map_err(|_| storage())?;
+            sqlx::query("SELECT set_config('rss.tenant_id',$1,true),set_config('statement_timeout','3000',true)").bind(tenant.to_string()).execute(&mut *tx).await.map_err(|_|storage())?;
+            let value = connections::load(&mut tx, tenant, s3.revision, &protection).await?;
+            tx.rollback().await.map_err(|_| storage())?;
+            Some(Arc::new(value))
+        } else {
+            None
+        };
         let backend = backend::Backend::open(
             &config.storage,
             tenant,
             timer.clone(),
             config.transfer_seconds,
-            secrets,
+            connection,
         )
         .await?;
         let store = Arc::new(Self {

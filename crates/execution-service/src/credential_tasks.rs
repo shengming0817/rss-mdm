@@ -122,6 +122,9 @@ pub async fn task(
         .as_ref()
         .ok_or(Error::Unsupported)?;
     let recipient = protection.active_recipient();
+    recipient
+        .require_current(crate::storage::now(tx).await?)
+        .map_err(recovery_credentials::error)?;
     let recipient = wire::CredentialRecipient {
         key_id: recipient.id().into(),
         public_key: STANDARD.encode(

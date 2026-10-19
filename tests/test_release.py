@@ -62,14 +62,17 @@ class CandidatePublication(unittest.TestCase):
                     return "source-digest"
                 def docker_command(command, **kwargs):
                     if command[:3] == ["docker", "buildx", "build"]:
-                        (output / "server.oci.tar").write_bytes(b"synthetic-oci")
+                        destination=next(value.removeprefix('type=oci,dest=') for value in command if value.startswith('type=oci,dest='))
+                        Path(destination).write_bytes(b"synthetic-oci")
+                    if command[:2]==["docker","cp"]:
+                        Path(command[-1]).write_bytes(b"fixed-binary")
                 def snapshot(reference, archive):
                     archive.write_bytes(b"synthetic-ui")
                     return {"id": reference, "archive": {"file": archive.name, "sha256": release.sha(archive)}}
                 with mock.patch.object(release, "copy_source", side_effect=copy_inputs), \
                      mock.patch.object(release.subprocess, "run", side_effect=docker_command), \
                      mock.patch.object(release, "oci_identity", return_value=("sha256:fixture", {"os":"linux", "architecture":"arm64"})), \
-                     mock.patch.object(release, "run", side_effect=['{}', 'version']), \
+                     mock.patch.object(release, "run", side_effect=['{}', 'version', 'container-id']), \
                      mock.patch.object(release, "snapshot_ui", side_effect=snapshot) as ui:
                     release.build_staged(output, header, web_image)
                 manifest = json.loads((output / "candidate.json").read_text())

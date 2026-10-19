@@ -20,7 +20,7 @@ MODULES: dict[str, Module] = {}
 
 
 def add(name, *, build=APP, selectors=(), profile='product', fixtures=(),
-        sources=(), tests=(), support=(), python=None, children=()):
+        sources=(), tests=(), support=(), python=None, children=(), actors=()):
     if name in MODULES:
         raise ValueError('duplicate module: ' + name)
     if build is not None and not selectors:
@@ -28,7 +28,7 @@ def add(name, *, build=APP, selectors=(), profile='product', fixtures=(),
     MODULES[name] = Module(name, build, tuple(selectors), profile, tuple(fixtures),
                           tuple(sources), tuple(tests), tuple(support),
                           db_mode=None if profile == 'none' else 'reuse',
-                          scope=None if profile == 'none' else 'objects', python=python, children=tuple(children))
+                          scope=None if profile == 'none' else 'objects', python=python, children=tuple(children), actors=tuple(actors))
 
 
 CAPABILITY_INPUTS = {'identity.local': ('crates/app/src/identity.rs',),
@@ -104,6 +104,7 @@ CAPABILITY_INPUTS = {'identity.local': ('crates/app/src/identity.rs',),
                          'crates/inventory-service/src/compliance/freshness.rs'),
  'compliance.group_input': ('crates/inventory-service/src/compliance/evaluation.rs',
                             'crates/inventory-service/src/compliance/freshness.rs'),
+ 'execution.agent.task_trust': ('crates/execution-service/src/task_signing/*','crates/agent-channel/src/tasks.rs','crates/management-http/src/execution/http.rs','crates/agent-wire/src/task_trust.rs'),
  'execution.agent.delivery': ('crates/execution-service/src/actions/agent.rs',
                               'crates/execution-service/src/actions/production.rs',
                               'crates/execution-service/src/actions/collection.rs'),
@@ -209,7 +210,7 @@ MODULES['agent.pki'] = replace(MODULES['agent.pki'], scope='tenant', policies=(
     CasePolicy('agent_pki_tests::unknown_original_ca_result_blocks_retirement_after_rotation', 'reuse', 'tenant',('identity','agent_pki','pki_rotation')),
 ))
 
-add('installation.migration', selectors=('migration::tests::ledger_installation_rejects_audit_privilege_drift','migration::tests::fresh_installation_replay_and_mismatch_rejection','migration::tests::field_scope_migration_rejects_hidden_state_and_restores_rls','tenant_registry::tests::rollback_failure_preserves_primary_reason_and_cleanup_evidence'), profile='empty',
+add('installation.migration', selectors=('migration::tests::failed_unit_rolls_back_schema_and_can_resume_original_name','migration::tests::ledger_installation_rejects_audit_privilege_drift','migration::tests::fresh_installation_replay_and_mismatch_rejection','migration::tests::field_scope_migration_rejects_hidden_state_and_restores_rls','tenant_registry::tests::rollback_failure_preserves_primary_reason_and_cleanup_evidence'), profile='empty',
     sources=('crates/app/src/migration.rs','crates/app/src/tenant_registry.rs','crates/app/src/tenant_use.rs','crates/app/schema/installation.sql'), tests=('crates/app/tests/migration/mod.rs','crates/app/tests/tenant_registry/mod.rs',),
     python='installation', support=('hack/t2_modules/installation.py',))
 add('installation.registry', selectors=('tenant_registry::tests::business::',), profile='product',
@@ -363,7 +364,7 @@ app_family('execution.software',
 for name in ('execution.software.offer', 'execution.software.content', 'execution.software.recovery', 'planning.software'):
     MODULES[name] = replace(MODULES[name], support_inputs=MODULES[name].support_inputs +
         ('crates/app/tests/support/software_execution.rs',))
-for name in ('execution.agent.delivery', 'execution.agent.content', 'execution.agent.history', 'execution.agent.poll', 'execution.agent.recovery', 'planning.agent_policy', 'planning.frequency', 'planning.onboarding'):
+for name in ('execution.agent.task_trust', 'execution.agent.delivery', 'execution.agent.content', 'execution.agent.history', 'execution.agent.poll', 'execution.agent.recovery', 'planning.agent_policy', 'planning.frequency', 'planning.onboarding'):
     MODULES[name] = replace(MODULES[name], support_inputs=MODULES[name].support_inputs +
         ('crates/app/tests/support/agent_execution.rs',))
 add('software.catalog', build=Build('rss-mdm-software-service', 'test', 'catalog_t2'), selectors=('',),
@@ -914,7 +915,7 @@ for name, path in (('apple.push','push_cycle'), ('apple.host','production')):
     MODULES[name] = replace(MODULES[name], test_inputs=(f'crates/app/tests/apple/{path}.rs',))
 
 # Runtime fixture consumers sign durable candidates and use completed TLS peers.
-AGENT_FIXTURE_CONSUMERS = tuple(('planning.self_service agent.registration agent.reports execution.agent.delivery execution.agent.poll execution.agent.content execution.agent.recovery execution.agent.history execution.software.offer execution.software.content execution.software.recovery planning.onboarding execution.commands.onboarding apple.onboarding planning.agent_policy planning.frequency planning.http assets.http planning.software').split())
+AGENT_FIXTURE_CONSUMERS = tuple(('execution.agent.task_trust planning.self_service agent.registration agent.reports execution.agent.delivery execution.agent.poll execution.agent.content execution.agent.recovery execution.agent.history execution.software.offer execution.software.content execution.software.recovery planning.onboarding execution.commands.onboarding apple.onboarding planning.agent_policy planning.frequency planning.http assets.http planning.software').split())
 AGENT_FIXTURES = ('identity','agent_pki')
 AGENT_FIXTURE_INPUTS = ('crates/app/tests/support/agent.rs','crates/app/tests/support/agent_tls.rs','hack/agent_pki_fixtures.py','hack/pki_fixtures.py','hack/pki_ca.py')
 for name in AGENT_FIXTURE_CONSUMERS:
@@ -1081,6 +1082,8 @@ TOOL_INPUTS = {
     'hack/auth_t3_browser.mjs': ('test_auth_t3',),
     'hack/release.py': ('test_release',),
     'hack/candidate_runtime.py': ('test_candidate_smoke',),
+    'hack/candidate_installation.py': ('test_candidate_smoke',),
+    'hack/candidate_installation_driver.py': ('test_candidate_smoke',),
     'hack/candidate_fixture.py': ('test_candidate_smoke', 'test_t2_context'),
     'hack/candidate_smoke.py': ('test_candidate_smoke',),
 }
@@ -1742,7 +1745,7 @@ consume(('crates/registration-service/src/admission.rs','crates/registration-ser
 
 # Account requirements belong to the existing module description. Cases with no
 # identity dependency resolve to no actors, even when overriding module fixtures.
-_OTHER_ACTORS = frozenset('authorization.programmatic recovery-credentials.http certificate-archive.http timeline.http identity.local authorization.rules authorization.membership authorization.capacity authorization.initialization authorization.admission enrollment.http enrollment.quotas enrollment.recovery device.binding device.revocation device.recovery agent.configurations agent.registration agent.reports api.identity_context diagnostics.http assets.http assets.queries planning.onboarding planning.group_scope planning.policy planning.http planning.agent_policy planning.frequency planning.software planning.self_service compliance.http execution.agent.delivery execution.agent.content execution.agent.history execution.agent.poll execution.agent.recovery execution.software.offer execution.software.content execution.software.recovery software.http execution.commands.admission execution.commands.windows'.split())
+_OTHER_ACTORS = frozenset('execution.agent.task_trust authorization.programmatic recovery-credentials.http certificate-archive.http timeline.http identity.local authorization.rules authorization.membership authorization.capacity authorization.initialization authorization.admission enrollment.http enrollment.quotas enrollment.recovery device.binding device.revocation device.recovery agent.configurations agent.registration agent.reports api.identity_context diagnostics.http assets.http assets.queries planning.onboarding planning.group_scope planning.policy planning.http planning.agent_policy planning.frequency planning.software planning.self_service compliance.http execution.agent.delivery execution.agent.content execution.agent.history execution.agent.poll execution.agent.recovery execution.software.offer execution.software.content execution.software.recovery software.http execution.commands.admission execution.commands.windows'.split())
 for name, module in tuple(MODULES.items()):
     if 'identity' not in module.fixtures:
         continue
@@ -2069,3 +2072,72 @@ consume(('crates/app/schema/webhook-roles.sql',), 'webhooks.product installation
 consume(('crates/registration-service/src/agent/activation.rs','crates/registration-service/src/device/store.rs','crates/registration-service/src/device/linked.rs','crates/execution-service/src/actions/storage.rs','crates/inventory-service/src/compliance/evaluation.rs','crates/authorization-service/src/model.rs'), 'webhooks.product')
 
 consume_dependencies("webhooks.product", normal="ipnet rss-mdm-webhook-service rss-transactional-messaging-recovery")
+
+consume(('crates/apple-channel/src/runtime_materials/*','crates/apple-channel/schema/runtime-materials.sql'), 'apple.host')
+consume(('crates/app/src/setup/host.rs',), 'api.diagnostics apple.host')
+consume(('crates/app/src/tenant_provisioning.rs','crates/app/schema/provisioning.sql'), 'deployment.management-tenant')
+
+consume(('crates/app/tests/support/task_signing.rs',), 'execution.agent.task_trust execution.agent.delivery')
+
+add('installation.providers', selectors=('setup::providers::storage::tests::real_storage_creation_replay_and_broad_import_rejection',), profile='none', fixtures=('s3',),
+    sources=('crates/app/src/setup/providers/*',), tests=('crates/app/tests/setup/providers.rs',), support=('hack/s3_fixtures.py','fixtures/s3-provider.lock.json'))
+consume(('crates/content-service/src/connections*','crates/content-service/schema/connections.sql','crates/management-http/src/content/connections.rs','crates/app/tests/support/storage.rs'), 'content.storage')
+consume(('crates/app/src/setup/application.rs',), 'deployment.management-tenant content.storage execution.agent.task_trust apple.host')
+
+consume(('crates/app/src/setup/protection.rs',), 'content.storage execution.agent.task_trust apple.host')
+
+consume(('crates/content-service/src/backup.rs','crates/app/src/setup/transfer/*'), 'content.storage installation.migration audit.integrity apple.host')
+
+consume(('crates/app/src/settings.rs','crates/management-http/src/settings.rs','crates/management-http/schema/SettingsCatalog.json'), 'execution.agent.task_trust')
+consume(('crates/windows-channel/src/wns_materials.rs','crates/windows-channel/schema/wns-materials.sql'), 'windows.management')
+add('installation.smtp_transport', selectors=('setup::providers::mail::tests::real_tls_authentication_and_unknown_submission_are_distinct',), profile='none', fixtures=('windows',), sources=('crates/mail-service/src/transport.rs',), tests=('crates/app/tests/setup/mail.rs',))
+add('installation.smtp', selectors=('setup::providers::mail::tests::unknown_submission_is_not_requeued_and_materials_rewrap',), fixtures=('windows','runtime_config'), sources=('crates/mail-service/src/*','crates/mail-service/schema/*','crates/app/src/setup/providers/mail.rs','crates/management-http/src/mail.rs'), tests=('crates/app/tests/setup/mail.rs',))
+add('installation.ca_admin', selectors=('setup::providers::step_ca::tests::authenticated_readback_recovers_original_provider',), profile='none', fixtures=('windows',), sources=('crates/app/src/setup/providers/step_ca/*',), tests=('crates/app/tests/setup/ca_admin.rs',))
+MODULES['agent.pki'] = replace(MODULES['agent.pki'], policies=(*MODULES['agent.pki'].policies, CasePolicy('agent_pki_tests::bootstrap_sources_select_current_issuer_and_reject_missing_application', 'reuse', 'tenant', ('identity','agent_pki','pki_rotation'))))
+add('installation.backup', selectors=('setup::backup::tests::database_connection_fence_replays_and_restores_original_grants',), profile='empty', sources=('crates/app/src/setup/backup.rs','crates/app/src/setup/snapshot_tree.rs','crates/app/src/setup/transfer/backup.rs','crates/app/src/setup/transfer/ledger.rs'), tests=('crates/app/tests/setup/backup.rs',))
+MODULES['installation.backup'] = replace(MODULES['installation.backup'], db_mode='instance', scope='objects')
+add('installation.ca', selectors=('setup::providers::step_ca::tests::actual_ca_creates_and_imports_exact_purpose_resources',), profile='none', fixtures=('agent_pki','ca_agent'), sources=('crates/app/src/setup/providers/step_ca/*',), tests=('crates/app/tests/setup/ca_admin.rs',))
+add('installation.webhook', selectors=('setup::providers::webhook::tests::receiver_possession_gates_activation_and_old_ciphertexts_remain_readable',), fixtures=('windows','runtime_config'), sources=('crates/app/src/setup/providers/webhook.rs','crates/app/src/webhooks/*','crates/webhook-service/src/materials.rs','crates/webhook-service/schema/materials.sql'), tests=('crates/app/tests/setup/webhook.rs',))
+add('installation.native_rewrap', selectors=('setup::protection::tests::ade_original_material_survives_rotation_and_corrupt_rows_roll_back',), sources=('crates/apple-channel/src/rewrap.rs','crates/app/src/setup/protection.rs'), tests=('crates/app/tests/setup/native_rewrap.rs',))
+
+# These cases mutate singleton material heads or observe all records in a tenant.
+for name in ('execution.agent.task_trust', 'installation.smtp', 'installation.webhook', 'installation.native_rewrap'):
+    MODULES[name] = replace(MODULES[name], scope='tenant')
+module = MODULES['content.storage']
+MODULES['content.storage'] = replace(module, policies=(*module.policies, CasePolicy(
+    'content::t2::storage::restored_provider_version_rebinds_atomically_without_reissuing_content',
+    'reuse', 'tenant', actors=module.actors)))
+
+consume(('crates/agent-wire/schema/task_trust/*',), 'execution.agent.task_trust')
+
+# Installation orchestration is additionally qualified against fixed Linux candidates.
+# Its shared SQL/authentication and restore seams retain their existing T2 owners.
+consume(('crates/app/src/setup/configure.rs','crates/app/src/setup/deployment.rs','crates/app/src/setup/installation.rs',
+         'crates/app/src/setup/postgres.rs','crates/app/src/setup/tenant_hosts.rs','crates/app/src/setup/supervisor.rs'),
+        'deployment.management-tenant installation.backup')
+consume(('crates/app/src/ca_webhooks.rs',), 'apple.scep agent.pki')
+consume(('crates/app/src/task_signing.rs',), 'execution.agent.task_trust')
+consume(('crates/apple-channel/src/database.rs',), 'apple.host')
+consume(('crates/management-http/src/content/mod.rs',), 'content.storage')
+consume(('crates/windows-channel/schema/Wns.json',), 'windows.management')
+T1_INPUTS += ('crates/app/src/setup/local.rs','crates/app/src/setup/mod.rs','crates/app/src/setup/model.rs','crates/app/src/setup/source.rs',
+              'fixtures/installation-source-v4.json','crates/app/tests/setup/deployment.rs','crates/app/tests/setup/installation.rs',
+              'crates/app/tests/setup/postgres.rs','crates/app/tests/setup/source.rs','crates/app/tests/setup/supervisor.rs',
+              'crates/mail-service/examples/mail_schema.rs','crates/webhook-service/examples/materials_schema.rs','crates/windows-channel/examples/wns_schema.rs')
+TOOL_INPUTS['deployment/Dockerfile'] = ('test_release',)
+consume_dependencies('installation.providers', normal='aws-credential-types aws-sigv4')
+consume_dependencies('installation.ca installation.native_rewrap', normal='openssl')
+consume_dependencies('installation.backup installation.migration', normal='libc')
+
+TOOL_INPUTS['hack/candidate_transfer_driver.py'] = ('test_candidate_smoke',)
+
+# This no-write assertion observes all tenant facts, not just one operation.
+module = MODULES['planning.agent_policy']
+MODULES['planning.agent_policy'] = replace(module, policies=(*module.policies, CasePolicy(
+    'planning::t2::agent_policy::registered_script_eligibility_gates_preview_and_automatic',
+    'reuse', 'tenant', actors=module.actors)))
+
+add('installation.restart', selectors=('setup::backup::tests::original_restart_policy_is_restored_after_quiescence',), profile='none', sources=('crates/app/src/setup/backup.rs',), tests=('crates/app/tests/setup/backup.rs',))
+
+add('installation.storage_reconcile', selectors=('setup::providers::reconcile::tests::failed_candidates_and_expired_evidence_do_not_block_later_work',), fixtures=('runtime_config','s3'), sources=('crates/app/src/setup/providers/reconcile.rs','crates/content-service/src/connections.rs','crates/content-service/schema/connections.sql'), tests=('crates/app/tests/setup/reconcile.rs',))
+MODULES['installation.storage_reconcile'] = replace(MODULES['installation.storage_reconcile'], db_mode='fresh', scope='pair')

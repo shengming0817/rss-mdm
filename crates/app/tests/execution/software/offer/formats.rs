@@ -188,7 +188,8 @@ async fn chain(format: &str, bundle: bool, user: bool) -> Result<()> {
     let spec: rss_mdm_agent_wire::runtime::SoftwareTaskSpec =
         serde_json::from_value(task["payload"]["task"].clone())?;
     use ring::signature::KeyPair;
-    let key_file = f.base["task_signing"]["private_key_file"].as_str().unwrap();
+    let signing=crate::test_support::agent::fixture_signing_input()?;
+    let key_file = signing["private_key_file"].as_str().unwrap();
     let key = ring::signature::Ed25519KeyPair::from_pkcs8(&std::fs::read(key_file)?).unwrap();
     let signed: rss_mdm_agent_wire::runtime::SignedTask = serde_json::from_value(task.clone())?;
     let verification = crate::test_support::task_signature::TaskVerification {

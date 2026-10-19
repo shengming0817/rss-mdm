@@ -163,7 +163,7 @@ class RunningTests(unittest.TestCase):
         stack = ExitStack();self.addCleanup(stack.close)
         temporary = stack.enter_context(tempfile.TemporaryDirectory())
         root = Path(temporary)
-        (root/'apple.json').write_text(json.dumps({'management': {'origin': 'https://mdm.example.test'}}))
+        (root/'apple.json').write_text(json.dumps({'management': {'origin': 'https://mdm.example.test'},'webhooks':[{}],'identity_seed':{}}))
         (root/'case.json').write_text(json.dumps({'tenant': '00000000-0000-0000-0000-000000000001'}))
         for name in ('ca.crt', 'apple-issuer.pem', 'apple-issuer.key'):
             (root/name).write_text('fixture')

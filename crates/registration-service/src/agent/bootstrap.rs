@@ -10,10 +10,7 @@ use x509_cert::{
 /// Prepared by application composition from the purpose-specific PKI trust and webhook keys.
 pub struct Configuration {
     pub trust: DeviceTrust,
-    pub challenge_id: String,
-    pub challenge_key: ring::hmac::Key,
-    pub notify_id: String,
-    pub notify_key: ring::hmac::Key,
+    pub webhooks: scep::Verifier,
 }
 /// Public native certificate enrollment inputs. Secrets are generated per installation.
 #[derive(Clone, Serialize, Deserialize)]
@@ -25,6 +22,35 @@ pub struct Deployment {
     pub root: Vec<u8>,
     pub root_thumbprint: String,
 }
+impl Deployment {
+    /// Select the exact issuer frozen by the caller's registry transaction fence.
+    pub fn select(
+        trust: rss_mdm_agent_wire::pki::Trust,
+        endpoints: &std::collections::BTreeMap<String, String>,
+        now: i64,
+    ) -> Result<Self, Error> {
+        let trust = DeviceTrust::new(trust, rss_mdm_agent_wire::pki::Purpose::AgentBootstrap, now)
+            .map_err(|_| Error::Configuration)?;
+        let issuer = trust.active().map_err(|_| Error::Configuration)?;
+        let root =
+            rss_mdm_device_trust::decode(&issuer.root, 32768).map_err(|_| Error::Configuration)?;
+        let root_thumbprint = ring::digest::digest(&ring::digest::SHA1_FOR_LEGACY_USE_ONLY, &root)
+            .as_ref()
+            .iter()
+            .map(|b| format!("{b:02X}"))
+            .collect();
+        Ok(Self {
+            scep_url: endpoints
+                .get(&issuer.digest)
+                .ok_or(Error::Configuration)?
+                .clone(),
+            issuer: issuer.digest,
+            provisioner: issuer.provisioner,
+            root,
+            root_thumbprint,
+        })
+    }
+}
 impl Service {
     pub fn bootstrap_configuration(&self) -> Result<&Configuration, Failure> {
         self.bootstrap
@@ -33,10 +59,11 @@ impl Service {
     }
     pub async fn bootstrap_challenge(
         &self,
-        input: scep::Request,
+        verified: scep::VerifiedRequest,
         audit: &RequestAudit,
     ) -> Result<serde_json::Value, Failure> {
         let config = self.bootstrap_configuration()?;
+        let input = verified.request();
         if input.x509_certificate.is_some() || input.scep_error_code.is_some() {
             return Err(Error::Unauthorized.into());
         }
@@ -47,18 +74,30 @@ impl Service {
                 .map_err(|_| Error::Malformed)?,
         )
         .map_err(|_| Error::Unauthorized)?;
-        let active = config.trust.active().map_err(|_| Error::Configuration)?;
+        let active = config
+            .trust
+            .public()
+            .map_err(|_| Error::Configuration)?
+            .issuers
+            .into_iter()
+            .find(|issuer| issuer.digest == verified.issuer())
+            .ok_or(Error::Unauthorized)?;
         let challenge = input.scep_challenge.as_ref().ok_or(Error::Unauthorized)?;
         let now = self.clock.unix_seconds()?;
         audit.operation(csr.attempt(), "agent_bootstrap_sign");
         self.write(audit, (self, &csr, &input, challenge, &active, now), |ctx,c| Box::pin(async move {
             let (s,csr,input,challenge,active,now)=*ctx;
+            sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,2639))").bind(s.tenant.to_string()).execute(&mut *c).await.map_err(db)?;
+            let retained:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_pki.issuers WHERE tenant_id=$1::uuid AND purpose='agent_bootstrap' AND digest=$2 AND state IN ('active','verify_only'))")
+                .bind(s.tenant.to_string()).bind(&active.digest).fetch_one(&mut *c).await.map_err(db)?;
+            if !retained {return Err(Error::Forbidden);}
             let row = row(c,s.tenant,csr.attempt()).await?;
             if !row.try_get::<bool,_>("active").map_err(db)?
                 || row.try_get::<Uuid,_>("installation").map_err(db)? != csr.installation()
                 || row.try_get::<i64,_>("deadline").map_err(db)? <= now
                 || input.provisioner_name.as_deref() != Some(active.provisioner.as_str())
                 || row.try_get::<String,_>("issuer").map_err(db)? != active.digest
+                || row.try_get::<String,_>("provisioner").map_err(db)? != active.provisioner
                 || row.try_get::<Vec<u8>,_>("challenge").map_err(db)?.as_slice() != Sha256::digest(challenge.as_bytes()).as_slice() { return Err(Error::Forbidden); }
             let state: String = row.try_get("state").map_err(db)?;
             let replay = state == "signing"
@@ -77,10 +116,11 @@ impl Service {
     }
     pub async fn bootstrap_notify(
         &self,
-        input: scep::Request,
+        verified: scep::VerifiedRequest,
         audit: &RequestAudit,
     ) -> Result<(), Failure> {
         let config = self.bootstrap_configuration()?;
+        let input = verified.request();
         if input.scep_error_code.is_some() {
             return Err(Error::Unauthorized.into());
         }
@@ -96,6 +136,9 @@ impl Service {
             .trust
             .verify(&chain, now)
             .map_err(|_| Error::Unauthorized)?;
+        if issuer.digest != verified.issuer() {
+            return Err(Error::Unauthorized.into());
+        }
         let leaf = Certificate::from_der(&der).map_err(|_| Error::Malformed)?;
         let (installation, id) = certificate::parse_subject(&leaf.tbs_certificate.subject)
             .map_err(|_| Error::Unauthorized)?;

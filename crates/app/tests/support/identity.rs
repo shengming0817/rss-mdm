@@ -263,6 +263,7 @@ async fn prepare_accounts(
             crate::identity::deadline()).await?;
         let mut costs = vec![serde_json::json!({"phase":"case-reads","count":paths.len()})];
         for (tenant, coordinates) in members {
+            super::task_signing::seed(&tenant,&config).await?;
             let timer = super::monotonic();
             let started = timer.now();
             let mut prepared = Vec::new();

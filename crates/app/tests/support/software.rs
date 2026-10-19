@@ -105,6 +105,7 @@ impl Fixture {
                 }
             }
         }
+        crate::test_support::storage::seed(&serde_json::from_value(base.clone())?).await?;
         let access = database(&base).await?;
         let audit = access
             .audit_store(&crate::config::AuditConfig::Plain)

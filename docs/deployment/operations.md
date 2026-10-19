@@ -6,7 +6,7 @@
 
 部署使用配套数据库、服务、Agent 协议及可信签名配置。管理客户端使用 Enrollment `/api/v1`、状态型设备命令 `/api/v1`、企业脚本计划及运行 `/api/v1/script-plans`。安装前显式配置审计 Plain 或 Ledger；Ledger 的 key ID 与受保护密钥文件必须由部署方提供，缺失或错误时拒绝启动。
 
-恢复前停止全部写入实例，按同一备份时间点恢复数据库、内容卷和原 `native_protection_key_file`，确认服务账户可读且所有实例使用同一份 32 原始字节密钥后再启动。密钥备份应存入受控秘密存储并验证可取回；不要打印密钥或提交到代码/日志。当前不支持原地轮转或自行替换密钥；丢失原密钥后重新生成文件不能解密已有 native 数据，也不能解除 key identity 校验。原生输入认证或身份完整性损坏归为永久恢复失败，记录 `mdm_command_recovery_integrity_failure` / `native_input_integrity`，不持续退避；保留证据并从一致备份恢复，不能删除 guards 后重发变更。
+恢复前停止全部写入实例，按同一备份时间点恢复数据库、内容卷和原 `native_protection` 引用的全部材料，确认服务账户可读且所有实例使用同一份 32 原始字节密钥后再启动。密钥备份应存入受控秘密存储并验证可取回；不要打印密钥或提交到代码/日志。加密写钥通过 `rotate-protection` 切换，不能直接覆盖原文件；丢失原密钥后重新生成文件不能解密已有 native 数据，也不能解除比较身份校验。原生输入认证或身份完整性损坏归为永久恢复失败，记录 `mdm_command_recovery_integrity_failure` / `native_input_integrity`，不持续退避；保留证据并从一致备份恢复，不能删除 guards 后重发变更。
 
 内容上传和清理由 PostgreSQL 控制状态协调；恢复须使用配套数据库、完整物理内容和密钥，不能仅降级二进制。卷目录中的 `.<id>.lock` 是跨实例物理发布锁，删除后保留的标记阻止迟到写者重新发布，必须随完整租户目录一起备份，不得手工删除。暂存文件由对应持久对象意图回收。
 
@@ -125,20 +125,19 @@ Compose 中 PostgreSQL 启动期每秒检查，稳定运行后每十秒检查。
 
 ## 迁移失败
 
-首次空库安装在任一单元中断后，当前安装器不会接续不完整基线。保留失败日志与数据库快照后，
-由部署 owner 丢弃并重建这个尚无业务数据的安装库，重新按安装指南配置受限角色后运行 migrate；
-若需保留先前状态，则恢复迁移前的一致数据库备份再安装。不得手工把 `mdm_migrations.complete`
-改为 true，也不得删除 intent 或改写摘要来绕过准入。
+首次安装先持久绑定 instance、存储 target/lineage 与审计模式。每个组件的 SQL 变更和完成回执在同一数据库事务提交；进程中断或提交响应丢失后，使用原输入重试，安装器核对当前清单的精确已完成前缀并从下一单元继续。运行宿主仍只接受完整清单，不接纳部分安装。
 
-迁移单元与 ledger intent 保留中断证据。SQL 或完成确认不确定时，先检查数据库与不可变 SQL，不把 complete=false 当作盲目重跑 DDL 的授权。拒绝基线或摘要不匹配时保留数据；不删除账本、自动清库或改写历史摘要。运行角色无 DDL，启动检查 schema、权限和 RLS；修复漂移不能从生产库覆盖固定 catalog。
+摘要变化、缺失中间单元、重复回执、旧的不完整 intent 或安装身份不符均拒绝接续。保留数据库与原安装 journal，调查或恢复一致备份；不得改写 `mdm_migrations.complete`、删除回执、重签摘要或清空已有业务数据。兼容来源之外的旧安装不能靠重试升级。运行角色无 DDL，启动检查 schema、权限和 RLS；修复漂移不能从生产库覆盖固定 catalog。
+
+安装 journal 中的 Ledger 密钥是固定安装密钥。重放校验同时绑定原保护材料，缺失、损坏或替换时失败；恢复必须提供原密钥和一致备份，不切换新链、不重签历史，也不自动降级 Plain。该约束不提供同链 HMAC 换钥能力。
 
 当前准确迁移集合由二进制 --describe 与 [迁移源码](../../crates/app/src/migration.rs) 持有。升级须停旧写入口；回退恢复匹配数据库、制品、密钥与旧服务，不能仅降级二进制。数据库角色与首次安装见 [安装指南](installation.md)。Apple 证书、APNs 与 CA 排障见 [Apple 管理](../guides/apple-management.md)。
 
 内容仓的 PostgreSQL journal 持有上传进度、对象版本、清单、额度和读 pin；服务端卷与 S3 都不能通过扫描目录或 bucket 重建业务状态。旧目录配置、上传 Saved JSON 和 checkpoint 不接受，也不自动迁移。全新安装须使用匹配 schema 和空内容 namespace；恢复旧部署时恢复匹配数据库、内容、密钥与二进制。
 
-备份须保存数据库、`native_protection_key_file` 及清单引用的全部物理对象：卷模式保存完整租户目录，S3 模式保存确切对象版本及版本控制状态。停写后制作一致备份并联合恢复；只恢复当前 S3 key 的内容不足以恢复清单。后端身份和保护密钥标识在租户首次启用时固定，更改 endpoint/bucket/namespace/卷目录不能作为数据迁移方式。
+备份须保存数据库、`native_protection` 及清单引用的全部物理对象：卷模式保存完整租户目录，S3 模式保存确切对象版本及版本控制状态。停写后制作一致备份并联合恢复；只恢复当前 S3 key 的内容不足以恢复清单。后端身份和保护密钥标识在租户首次启用时固定，更改 endpoint/bucket/namespace/卷目录不能作为数据迁移方式。
 
-S3 使用只读挂载的 access/secret/session token 文件；宿主在启动时安全读取并保存在内存，SDK 查询凭据时不执行磁盘 I/O。轮换后重启同一配置实例，静态 session token 的有效期由部署 owner 管理。私有 CA 文件有界读取且不接受符号链接；不提供关闭 TLS 校验的选项。Compose 现有 `runtime:/run/mdm:ro` 可容纳这些秘密，S3 模式不使用 content 卷；卷模式继续挂载持久 content 卷。
+S3 凭据由内容连接领域加密持久化；按[安装指南](installation.md)提交新材料版本，部署侧验证真实供应方身份、权限、TLS、版本化和租户前缀后，通过受控宿主重启应用确切 revision。旧版本在新候选失败时继续使用，但过期或撤销后不可用。保留历史操作与备份所需的旧材料；不能通过替换挂载文件轮换运行凭据。私有 CA 文件有界读取且不接受符号链接；不提供关闭 TLS 校验的选项。Compose 的只读 runtime 挂载用于部署输入、信任根和保护材料；S3 access/secret/session token 从持久化连接版本加载。S3 模式不使用 content 卷；卷模式继续挂载持久 content 卷。
 
 清理先在短事务内核对业务引用与读 pin，提交“删除中”屏障后，再逐个删除确切物理版本；已删除部分持久登记，下轮继续。结果未知保留原对象意图和额度，不把未知当作不存在。不能用外部 lifecycle 规则、删除 bucket 版本或直接删除卷文件代替产品清理。原生配置保护域仍为 `content.native-configuration`，诊断使用独立保护域。
 
@@ -178,8 +177,103 @@ Apple 的 challenge/notify webhook ID 和 HMAC 秘密属于稳定协议配置。
 
 ## 恢复凭据轮换、保留与恢复
 
-凭据专用密钥环与 `native_protection_key_file` 分开管理。更换写入密钥时，将新旧密钥同时加入 `key_files` 并切换 `active_key`，重启后后台分批重加密，材料版本和有效性不变。移除旧密钥前确认没有剩余密文引用它；启动时校验持久密钥身份，缺失或错误密钥拒绝启用。接收证书更新独立于存储重加密：保留尚有执行或 FileVault escrow 需要的旧接收私钥，先更新端上的 escrow profile，再退出旧证书。
+凭据专用密钥环与 `native_protection` 分开管理。更换写入密钥时，将新旧密钥同时加入 `key_files` 并切换 `active_key`，重启后后台分批重加密，材料版本和有效性不变。移除旧密钥前确认没有剩余密文引用它；启动时校验持久密钥身份，缺失或错误密钥拒绝启用。接收证书更新独立于存储重加密：保留尚有执行或 FileVault escrow 需要的旧接收私钥，先更新端上的 escrow profile，再退出旧证书。
 
 失效密文满 90 天后分批清除，元数据和审计保留。当前材料及未核实操作需要的材料不清除；后台同时清理已结算原生命令的秘密输入副本。失败以 `recovery_credential_maintenance_failed` 闭合诊断报告，不打印材料或密钥。数据库删除不代表历史备份已删除，备份沿用部署自己的保留策略。
 
 停写后联合备份数据库、凭据密钥环、接收私钥及原有 native protection/内容材料。恢复使用对应密钥，重新检查当前登录授权、注册世代、撤销状态和保留期限。数据库与密钥重启/备份验证只证明服务端能按授权读取正确材料；PRK 解锁、Recovery Lock、Windows 密码登录及 BitLocker 实际恢复另由真机验收证明。
+
+
+### 原生加密写钥切换
+
+`rss-mdm-installer rotate-protection --config /absolute/private-rotation.json` 接受 `installation`（原部署输入）、`purpose`（`native` 或 `windows`）和稳定 UUID `operation_id`。专用部署进程与该操作互斥。操作先在最终保管目录生成新钥并保存每个宿主的两个不可变输入：第一阶段让全部实际进程读取新旧钥，第二阶段才切换新密文写钥。每个阶段都要求 HTTPS 返回确切宿主、操作、版本、摘要与新进程观察；失败使用原 operation ID 重试，不能手工跳过剩余宿主。
+
+写钥切换完成后，每次调用以有界领域事务重加密 APNs/Profile/Managed Apple Account、任务签名私钥和 S3 凭据；`rewrapping` 表示还需继续用原输入调用，`complete` 表示该轮切换和上述运行材料批次已完成。私钥身份、材料版本、签名信任、ACK、原请求指纹和证书均不改变。中断可重放，单批失败回滚。
+
+完成回执始终标记 `historicalKeysRetained=true`。历史原生输入、协议回执、物理内容块和备份仍可能引用旧加密钥，不能仅凭运行材料批次为零就删除旧钥。稳定比较钥另有持久身份用途，密文轮换不表示比较 HMAC 轮换。恢复须联合取回全部仍被记录或备份引用的材料；此流程不会自动退出旧钥，也不会修改固定安装 Ledger HMAC。
+
+
+### 固定 V4 转交及灾难恢复
+
+`rss-mdm-installer transfer-v4 --config /absolute/private-transfer.json` 只接受源提交 `5dbcc81469b9524e86e72a0ef141df8f8cd4d9e2` 对应的正式 V4 清单、独立取得的清单摘要，以及正在使用该候选的确切 Docker 容器 ID。输入包含原平台管理员和每个业务管理员的主体 ID、登录名及原密码文件。导入器真实登录并核对主体，不重置密码或把初始化拒绝视为成功。
+
+部署目录必须独立且仅 owner 可读。首次副作用前保存稳定宿主、授权与操作身份，将原运行文件及网关 TLS、供应方管理材料复制到该目录；随后关闭旧容器自动重启、停写、核验原 Ledger 全历史并联合归档 PostgreSQL、内容卷及确切 S3 版本。`backupManifestSha256` 是返回的公开备份回执，应独立保存。备份目录本身包含秘密，按部署保管材料保护；不可只保留数据库 dump。
+
+`rss-mdm-installer restore-v4 --config /absolute/private-restore.json` 的输入为 `directory`、新的稳定 `operation_id`、独立保存的 `backup_manifest_sha256` 和目标 `administrator` 数据库配置。当前入口是同址恢复：部署目录、数据库地址/名称和卷的容器路径保持原值；目标数据库必须为空，受限角色及原密码须已恢复。它拒绝覆盖已有业务库及内容冲突，使用单事务 `pg_restore`，以数据库内恢复身份解决未知提交。S3 原版本确实缺失时，用原写入身份恢复归档物理字节，再在领域事务内更新确切版本引用和内容 MAC；逻辑 SHA、设备身份、上传进度和 Ledger 历史不变。原本未确认且无引用的对象仍保留未知状态。
+
+原链、材料、内容校验通过后，恢复沿同一个转交用例继续迁入新权威、核对真实认证、启动并观察实际宿主。任一步失败保留原操作与归档；重复运行同一输入。该入口不接受替换 Ledger 密钥、不重签审计历史、不自动切换 Plain。此入口仅消费转交前的 V4 联合快照，不代表日常 V5 在线备份或跨地址恢复已经实现。
+
+Windows 保护配置现在使用 `protocol_protection`，包含 `active_file`、`historical_files`、`fingerprint_file`。仅离线 V4 导入器识别旧 `protocol_key_file`。Windows 轮换先向所有启用 Windows 的宿主分发读钥，再切换写钥并分批重包注册秘密；固定 fingerprint 维持原注册/续期配置身份。旧钥继续保留供历史与备份恢复，完成写钥切换不表示旧钥可以删除。
+
+### WNS 凭据与宿主应用
+
+`POST /api/v1/windows/wns` 使用真实业务管理员会话、`RegistrationConfigurationWrite`、最近认证和 `Idempotency-Key`；正文是 `expectedRevision`、`packageFamilyName`、`sid`、`clientSecret`。Windows owner 加密保存候选，普通服务没有更新资格状态的数据库权限。`GET /api/v1/windows/wns` 返回当前 revision、期望版本和公开版本列表；`/api/v1/windows/wns/operations/{id}` 返回带 kind 的原操作回执。两者都不返回 SID 或秘密。`POST /api/v1/windows/wns/revoke` 接受 `expectedRevision`、`materialRevision` 和独立 `Idempotency-Key`，撤销后运行消费者拒绝该版本，旧操作可重复查询。正式 DTO 见 [WNS schema](../../crates/windows-channel/schema/Wns.json)。
+
+部署进程调用固定 Microsoft OAuth 入口验证候选，保存资格时间及失败类别；失败至少一分钟后才重试原候选。成功后申请受控宿主重启，运行配置为 `push: {"revision": N}`，删除旧秘密文件 loader。相同 PFN/SID 的秘密轮换沿用原设备通道绑定，不要求设备因服务器秘密变化而重新注册；改变应用身份产生不同绑定，等待设备的真实 PFN/ChannelURI 查询结果。资格通过仅证明 OAuth 凭据在核验时可用，不证明离线设备收到唤醒。推送租约复核原版本仍被选择且未撤销。
+
+设置目录 `/api/v1/settings/catalog` 和平台目录 `/api/v1/tenant-administration/settings/catalog` 使用 [SettingsCatalog schema](../../crates/management-http/schema/SettingsCatalog.json)。`configured` 只描述领域已有配置，`loaded` 只描述当前进程装载，`pending` 要求宿主应用或其他领域动作，`unknown` 明确要求 owner 观察；这些状态均不等同于真实设备验收。权限过滤先于领域读取，平台会话不会转换为业务会话。
+
+### SMTP 固定资格投递
+
+部署输入 `mail_profiles` 给出受限 profile ID、`hostname`、确切 `address`、`tls`（`implicit` 或 `starttls`）和 `ca_file`。普通服务只提交 profile ID，不接收任意服务器地址或 CA 管理材料。`POST /api/v1/smtp` 接受 `expectedRevision`、`profile`、`sender`、`recipient`、`username`、`password`，要求最近认证的业务管理会话、注册配置写权限与 `Idempotency-Key`。这一动作授权发送一封固定资格消息，不接收主题、正文、附件或额外收件人。
+
+邮件 owner 加密保存凭据；部署进程对精确地址验证 TLS 名字、认证并实际投递。STARTTLS 失败不会降级，TLS 后重新 EHLO，再执行 AUTH PLAIN。DATA 发送前提交持久检查点；服务器明确拒绝与连接中断/响应丢失分别记录，未知结果不自动重投。`GET /api/v1/smtp/operations/{id}` 查询原操作，`GET /api/v1/smtp` 返回版本及选择状态。`accepted` 仅表示 SMTP DATA 取得 250 回应，不证明收件箱送达。正式 DTO 见 [Mail schema](../../crates/mail-service/schema/Mail.json)。未知操作应按原 Message-ID 从邮件系统核对，不能用新操作掩盖原结果。
+
+实现依据 [RFC 3207](https://www.rfc-editor.org/rfc/rfc3207)、[RFC 4954](https://www.rfc-editor.org/rfc/rfc4954) 和 [RFC 5321](https://www.rfc-editor.org/rfc/rfc5321)。不新增通知订阅产品。
+
+### CA 准备及回调身份
+
+`prepare-ca` 是部署操作，不是业务 HTTP 任意 CA 管理入口。输入绑定安装、租户、用途、operation_id、expected_revision、确切 CA 地址/TLS 根及管理 X509 身份。`create` 只创建固定名字和固定模板；`import` 仅接受原 kid、原私钥及完全匹配的远端用途、有效链、签名 CRL 和权限配置。原操作目录保存请求、材料及外部副作用检查点；重新执行相同输入恢复未知创建结果。已有同名但不同配置的资源拒绝覆盖。
+
+SCEP 使用独立 RSA 解密叶证书，核对用途、签名、有效期、撤销和私钥匹配；MDM 运行宿主不读取其私钥。管理返回的两个 webhook ID/secret 分开绑定到确切 issuer 与 challenge/notify 阶段。`runtime-callbacks.json` 是受保护部署输入，不能作为公开 API 返回。`verified` 只说明 CA 身份与准备结果通过核对，`pending_channel_observation` 仍需真实 SCEP 双向回调，不表示设备注册通过。实现依据 [固定 step-ca admin client](https://github.com/smallstep/certificates/blob/v0.30.2/ca/adminClient.go) 和 [linkedca 合同](https://github.com/smallstep/linkedca/blob/v0.25.0/spec/linkedca/provisioners.proto)。
+
+Apple 的 `identity_seed` 永久保留原 challenge/notify ID，实际凭据放在 issuer 绑定的 `webhooks` 集合。Agent bootstrap 冻结签发者，切换活跃 CA 后原请求仍沿原 CA 完成；新请求在事务内复核当前活跃 CA。未知签发不因超时或设备清理完成而解除退役门禁。
+
+`rotate-protection` 另支持 `oidc_credentials` 和 `recovery`：复用先分发读钥、再切换写钥的宿主阶段；OIDC provider 密文由固定 Identity 依赖的原领域方法在租户事务内重加密，恢复凭据由原 recovery owner 分批重包。OIDC state 签名、恢复 RSA recipient、原凭据身份及操作摘要保持不变。旧读钥继续保留用于历史、未决操作和备份；`complete` 不能解释为可以删除历史密钥。行锁超时保留原操作重试，不把暂时锁住的密文算作迁移完成。
+
+### OIDC 与恢复凭据宿主配置
+
+`configure-host` 使用安装输入、稳定 `operation_id`、`host_id`、`expected_revision` 和封闭的 `change`。`{"kind":"oidc","settings":...}` 的 settings 包含 `group_facts_max_age_seconds`、`return_targets`、`assurance_profiles`、`private_providers`。首次启用在受保护的操作目录生成独立 state 签名和 provider 凭据保护材料；后续设置变更保留原密钥。提供方客户端配置仍由原 Identity 管理 API 写入。宿主入口的 `oidcEnabled` 根据实际加载配置生成，平台会话不转成业务会话。
+
+`{"kind":"recovery","recipient":{"kind":"generate"}}` 生成独立 RSA escrow recipient 和专用保护材料；也可用 `{"kind":"import","certificate_file":"...","private_key_file":"..."}` 导入原 recipient。该证书只用于恢复材料加密，不是设备 CA。新导入检查证书、用途、有效期及私钥匹配；替换保留原 recipient 私钥，历史密文与未决设备响应继续按原身份读取。过期 active recipient 拒绝生成新恢复任务，不阻断旧密文解密。
+
+两种变更均先持久保存候选和原操作，再重启真实宿主并核对 HTTPS 观察。开通回执记录 requested/applied revision、当前观察和失败原因；失败保留原有效宿主并沿原配置操作恢复，不能把写入配置文件当成启用成功。
+
+`configure-host` 的 `{"kind":"ca","preparation":"<prepare-ca operation UUID>"}` 将已核验的用途 provider 和回调凭据装入现有通道，保持原 trust、原协议种子和旧凭据。之后由真实业务管理会话通过原 PKI API 发布 prepared trust、等待安装确认并激活。该部署动作不替代信任授权，不自动启用尚缺其他材料的设备通道。Agent bootstrap 在创建事务内选择数据库当前 active issuer，并从已装入的精确 issuer→SCEP 地址集合选路；重启不会把旧配置文件里的 active 标记重新当作权威。
+
+### 当前安装联合冷备
+
+`backup-installation` 接受安装输入、稳定操作 ID、位于安装目录之外的私有备份目录，以及每个保留 CA 的确切容器 ID、issuer、purpose、在线与离线目录、离线 root 私钥和密码文件。准备阶段核对已启用宿主、实际 provider issuer、CA 容器挂载、在线 issuer 与原离线 root 私钥对应关系；不接受用另一份目录冒充原 CA。备份中包含秘密，公开回执只返回操作、阶段和需独立保存的 manifest SHA-256。
+
+操作先持久保存原身份，关闭容器自动重启并停写，保存和暂时收回普通运行角色的数据库 CONNECT 授权。数据库 owner 和受控管理员用于原样 dump 及切换到原只读角色后的 Ledger 验证。联合归档保留部署文件的原 UID/GID/权限、原保护材料、内容卷、S3 确切物理版本和 CA 在线/离线目录。未决对象继续保持未知；原 Ledger 历史逐页验证，不更换 HMAC 密钥。归档封存后按原权限恢复连接并重新观察宿主。
+
+`restore-installation` 使用备份目录、独立保存的 manifest 摘要、新恢复操作 ID、目标管理员数据库连接，以及平台和每个已启用业务租户的 `accounts`（tenant_id、原 principal_id/login/password_file）。这是同址恢复：数据库名称/地址、安装路径、材料路径和内容路径保持原值；目标库必须为空，受限角色及原凭据须已恢复，外置材料父目录须存在。拒绝覆盖不同文件内容或已有业务库。恢复数据库使用单事务和持久操作标记，原角色授权在验证完成后恢复；原账户执行真实认证及授权核对，不以密码重置代替验证。
+
+CA 原容器仍存在时核对原 image/command/mount 后启动；容器缺失时从封存元数据生成固定、受限的 step-ca Compose 服务，复用原不可变 image、挂载和数据库，不重新初始化 CA。自定义 Docker 网络及固定 image 属于需预先恢复的部署基础设施。任何材料、旧密钥、权限、网络或外部 S3 资格缺失均停在原检查点，不能宣称恢复成功。
+
+`configure-host` 的 `channels` 变更接受严格的 Windows/Apple/Agent 配置、完整 provider 集合及 Apple 导入信任根。通道尚未就绪时保持关闭；可以先仅安装材料校验根，再由原材料 API 导入证书，最后启用通道。Windows 部署输入省略 `protocol_protection` 时，首次启用生成独立材料，已有通道沿用原材料；更换写钥必须走 `rotate-protection`。Apple 已建立的 `identity_seed` 不可被通道更新替换。所有文件输入在副作用前复制到按内容摘要命名的私有文件，应用摘要绑定实际材料字节；原输入文件随后变化不能改变已冻结的候选。
+
+目录增加 `domains` 导航字段，指向经权限过滤的既有账户、Group、Scope、Policy、软件资源、Apple 组织及注册 owner；不复制这些领域的写状态。`GET /api/v1/agent-packages` 提供与匿名包目录一致的公开发布元数据，仍要求业务目录权限。`GET /api/v1/tenant-administration/provisionings` 提供平台可读的原开通回执；其中历史观察不能当作当前进程健康保证。
+
+### 出站 Webhook 签名材料
+
+运行配置只保留受限 `networks` 和原恢复数据库配置，删除 `keys/current_file/retiring` loader。签名材料由 webhook owner 加密持久化，投递授权在事务中读取当前 active/retiring 选择；这是直接生效的领域设置，失败候选不会替换仍有效的 active 密钥。网络配置仍由部署边界限定，可通过 `configure-host` 的 `webhook_networks` 变更受控应用。
+
+`GET /api/v1/webhooks/materials` 返回网络配置摘要及公开版本状态。`POST` 同一路径接受 `reference`、`expectedRevision`、`configurationSha256`、`endpoint`、`networkReference` 和 `source`（`generate` 或 `import` 的 Standard Webhooks `whsec_` secret），要求近期真实会话、WebhookWrite 和 `Idempotency-Key`。响应和操作查询不返回秘密。`export-webhook-key` 由部署 operator 将指定版本交付到私有 `webhook-delivery-<operation>/delivery.json`；标准输出仅含公开回执。
+
+接收方安全安装该 secret 后，部署进程向已批准的精确 HTTPS endpoint 发出 `rss-mdm.webhook-key-confirmation/v1` 请求，使用该候选的 Standard Webhooks 签名。接收方验证签名，再以相同密钥对下面的 UTF-8 字节计算 HMAC-SHA256，返回 `{"confirmationProof":"<standard-base64>"}`。行间为单个 LF，结尾没有 LF：
+
+```text
+rss-mdm.webhook-key/v1
+<tenant UUID>
+<reference>
+<material revision>
+<configuration SHA-256>
+<challenge standard-base64>
+```
+
+该响应与请求签名使用不同消息，不能通过回显请求签名伪造确认。TLS 地址固定、无代理、无重定向，证书名字/根和网络边界均校验；失败保留原候选并至少一分钟后重试。普通运行角色无权写入 `confirmed`，也不能在 INSERT 时伪造确认。确认仅证明指定接收端在核验时持有确切候选，不代表业务事件已投递。
+
+`POST /api/v1/webhooks/materials/transitions` 接受 reference、expectedRevision 和 action（`activate`/`revoke` 的 materialRevision，或 `retire_previous`），同样要求 Idempotency-Key。激活须有真实 receiver confirmation；当前被撤销时失败关闭，不退回旧钥。旧双签仍有未决投递或恢复时拒绝退出，已退出材料继续加密保留供历史及联合备份。一次性 V4 转交保留原 whsec 字节、版本及尚有效的双签，显式标记 `legacyImport`，不能把旧来源验证当作新的接收端确认。公开 DTO 和接收合同见 [Webhook Materials schema](../../crates/webhook-service/schema/Materials.json)。
+
+V4 任务签名导入保留原 key ID 和密钥，并将信任绑定到原 Agent endpoint 的 origin。若旧实例仅预置任务签名钥、尚未配置 Agent endpoint，转交输入的对应 host 必须明确提供 `task_runtime_origin`；不得将浏览器 product origin 静默当成 Agent 的运行 origin。已配置 endpoint 时，额外提供的值必须与其完全一致。

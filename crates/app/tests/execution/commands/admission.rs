@@ -343,6 +343,14 @@ impl Client {
         }
         for (damage, restore) in [
             (
+                "GRANT UPDATE(confirmed) ON mdm_webhook.key_materials TO mdm_command_runtime",
+                "REVOKE UPDATE(confirmed) ON mdm_webhook.key_materials FROM mdm_command_runtime",
+            ),
+            (
+                "REVOKE UPDATE(revoked) ON mdm_webhook.key_materials FROM mdm_command_runtime",
+                "GRANT UPDATE(revoked) ON mdm_webhook.key_materials TO mdm_command_runtime",
+            ),
+            (
                 "GRANT SELECT ON public.mdm_installation TO mdm_command_runtime",
                 "REVOKE SELECT ON public.mdm_installation FROM mdm_command_runtime; GRANT SELECT(instance_id,management_tenant_id) ON public.mdm_installation TO mdm_command_runtime",
             ),

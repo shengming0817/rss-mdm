@@ -827,7 +827,6 @@ pub async fn stored_content() -> Arc<rss_mdm_content_service::Store> {
         &tenant().to_string(),
         Arc::new(ContentClock),
         pool,
-        None,
     )
     .await
     .unwrap()

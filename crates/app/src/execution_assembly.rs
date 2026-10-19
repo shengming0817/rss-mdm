@@ -10,28 +10,6 @@ use rss_transactional_messaging_postgres::{
     PgConfig, PgError, PgOutboxStore, PgPassword, PgPrivateCa, PgRuntime,
 };
 use std::{sync::Arc, time::Duration};
-struct ContentSecrets {
-    reference: String,
-    access: zeroize::Zeroizing<String>,
-    secret: zeroize::Zeroizing<String>,
-    token: Option<zeroize::Zeroizing<String>>,
-}
-impl rss_mdm_content_s3::Secrets for ContentSecrets {
-    fn resolve(
-        &self,
-        reference: &str,
-    ) -> rss_mdm_content_s3::Result<rss_mdm_content_s3::Credentials> {
-        if reference != self.reference {
-            return Err(rss_mdm_content_s3::Error::Configuration);
-        }
-        rss_mdm_content_s3::Credentials::new(
-            self.access.to_string(),
-            self.secret.to_string(),
-            self.token.as_ref().map(|v| v.to_string()),
-            None,
-        )
-    }
-}
 pub(crate) struct ContentResource(pub Arc<rss_mdm_content_service::Store>);
 impl rss_runtime::ManagedResource for ContentResource {
     fn name(&self) -> &str {
@@ -53,19 +31,6 @@ pub(crate) async fn open_content(
         return Ok(None);
     };
     let bad = || Error::Configuration(crate::ConfigIssue::Execution);
-    let secrets: Option<Arc<dyn rss_mdm_content_s3::Secrets>> = match &c.storage {
-        rss_mdm_content_service::Storage::Volume { .. } => None,
-        rss_mdm_content_service::Storage::S3(s3) => Some(Arc::new(ContentSecrets {
-            reference: s3.credentials_reference.clone(),
-            access: crate::config::secret(&s3.access_key_file)?,
-            secret: crate::config::secret(&s3.secret_key_file)?,
-            token: s3
-                .session_token_file
-                .as_ref()
-                .map(|p| crate::config::secret(p))
-                .transpose()?,
-        })),
-    };
     let pool = sqlx::postgres::PgPoolOptions::new()
         .max_connections(4)
         .acquire_timeout(Duration::from_secs(6))
@@ -78,7 +43,6 @@ pub(crate) async fn open_content(
         &config.identity.tenant_id,
         Arc::new(crate::lifecycle::RuntimeTimer),
         pool.clone(),
-        secrets,
     )
     .await
     {
@@ -129,7 +93,7 @@ pub(crate) async fn open(
     );
     let result = async {
         crate::database::admit_audit_runtime(&runtime, &audit_store, tenant).await?;
-        storage::bind_native_key(&runtime, tenant, protection.id()).await?;
+        storage::bind_native_key(&runtime, tenant, protection.fingerprint_id()).await?;
         let outbox = Arc::new(
             PgOutboxStore::new(
                 runtime.clone(),
@@ -208,12 +172,15 @@ pub(crate) async fn open(
         let apple_store = Arc::new(rss_mdm_apple_channel::flow_store::Store {
             protection: protection.clone(),
         });
-        let signer = config
-            .task_signing
-            .as_ref()
-            .map(crate::task_signing::open)
-            .transpose()?
-            .map(Arc::new);
+        let signer = if let Some(signing) = &config.task_signing {
+            Some(Arc::new(
+                crate::task_signing::open(signing, &config.access_database, tenant, &protection)
+                    .await?
+                    .task,
+            ))
+        } else {
+            None
+        };
         let software = Arc::new(rss_mdm_software_service::preparation::Preparation::new(
             rss_mdm_software_service::catalog::Reader::new(tenant),
             exports
@@ -238,7 +205,20 @@ pub(crate) async fn open(
                         crate::device_pki::providers(&config.device_pki)?.as_ref(),
                         time::OffsetDateTime::now_utc().unix_timestamp(),
                     )?
-                    .map(|(_, deployment)| deployment),
+                    .map(|_| {
+                        config
+                            .device_pki
+                            .iter()
+                            .filter(|p| {
+                                p.purpose == rss_mdm_agent_wire::pki::Purpose::AgentBootstrap
+                            })
+                            .filter_map(|p| {
+                                p.scep_url
+                                    .as_ref()
+                                    .map(|url| (p.issuer.clone(), url.clone()))
+                            })
+                            .collect()
+                    }),
                 enrollment_entries: config.enrollment_entries.clone(),
                 runtime: runtime.clone(),
                 tenant,

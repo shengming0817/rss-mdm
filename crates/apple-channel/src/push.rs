@@ -359,6 +359,7 @@ pub async fn cycle(
         .clock
         .unix_seconds()
         .ok_or(Error::Unavailable(Failure::Clock))?;
+    apple.check_materials(access, tenant, now).await?;
     let progress = super::renewal::maintain(apple, access, audit_store, tenant, now).await?;
     let wake = wake(&apple.push, execution).await?;
     let nearest = if progress == 0 && matches!(wake, WakeHealth::Idle) {

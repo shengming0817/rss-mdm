@@ -25,7 +25,7 @@ def sha(path):
             digest.update(data)
     return digest.hexdigest()
 
-def oci_identity(path):
+def oci_identity(path, expected_user="10001:10001"):
     with tarfile.open(path) as archive:
         def blob(digest):
             value = archive.extractfile("blobs/sha256/" + digest.removeprefix("sha256:")).read()
@@ -38,7 +38,7 @@ def oci_identity(path):
         descriptor = descriptors[0]
         manifest = blob(descriptor["digest"])
         config = blob(manifest["config"]["digest"])
-        if config.get("os") != "linux" or not config.get("architecture") or config["config"].get("User") != "10001:10001":
+        if config.get("os") != "linux" or not config.get("architecture") or config["config"].get("User") != expected_user:
             raise ValueError("candidate platform or user mismatch")
         return descriptor["digest"], config
 
@@ -159,12 +159,35 @@ def build_staged(out, header, web_image=None):
                         "--secret", "id=azure_header,src=" + str(header),
                         "--build-arg", "RUST_IMAGE=" + providers["rust"],
                         "--build-arg", "RUNTIME_IMAGE=" + providers["runtime"],
+                        "--build-arg", "POSTGRES_IMAGE=" + providers["postgres"],
+                        "--build-arg", "DOCKER_CLI_IMAGE=" + providers["docker-cli"],
                         "--target", "server", "--tag", image, "--output",
                         "type=oci,dest=" + str(output), str(context)], check=True)
         digest, config = oci_identity(output)
         subprocess.run(["docker", "load", "--input", str(output)], check=True)
+        operator_image="rss-mdm/installer:build-"+uuid.uuid4().hex
+        operator_archive=out/"installer.oci.tar"
+        subprocess.run(["docker","buildx","build","--build-arg","CACHE_NAMESPACE="+project_name(ROOT),
+                        "--build-arg","CARGO_BUILD_JOBS="+jobs,"--provenance=false",
+                        "--secret","id=azure_header,src="+str(header),
+                        "--build-arg","RUST_IMAGE="+providers["rust"],
+                        "--build-arg","RUNTIME_IMAGE="+providers["runtime"],
+                        "--build-arg","POSTGRES_IMAGE="+providers["postgres"],
+                        "--build-arg","DOCKER_CLI_IMAGE="+providers["docker-cli"],
+                        "--target","installer","--tag",operator_image,"--output","type=oci,dest="+str(operator_archive),str(context)],check=True)
+        operator_digest,operator_config=oci_identity(operator_archive, expected_user="0:0")
+        if platform(operator_config)!=platform(config):raise ValueError("installer platform mismatch")
+        subprocess.run(["docker","load","--input",str(operator_archive)],check=True)
         migrations = json.loads(run(["docker", "run", "--rm", "--network", "none", image, "--describe"]))
         version = run(["docker", "run", "--rm", "--network", "none", image, "--version"])
+        # The same fixed image supplies the Linux operator binary; no host checkout is required.
+        installer = out / "rss-mdm-installer"
+        container = run(["docker", "create", "--network", "none", image, "--version"])
+        try:
+            subprocess.run(["docker", "cp", container + ":/usr/local/bin/rss-mdm", str(installer)], check=True)
+        finally:
+            subprocess.run(["docker", "rm", container], check=True, stdout=subprocess.DEVNULL)
+        installer.chmod(0o700)
         deployment = {}
         for name in DEPLOYMENT_FILES:
             original = (source / "fixtures/mdm-config.example.json" if name == "mdm-config.example.json"
@@ -179,7 +202,9 @@ def build_staged(out, header, web_image=None):
         for name in ("Cargo.lock", "rust-toolchain.toml"):
             shutil.copy(source / name, build / name)
         manifest = {
-            "format_version": 4,
+            "format_version": 5,
+            "installer": {"file": installer.name, "sha256": sha(installer),"image":operator_image+"@"+operator_digest,
+                          "archive":{"file":operator_archive.name,"sha256":sha(operator_archive),"manifest_digest":operator_digest}},
             "source": {"inputs_sha256": inputs_sha256},
             "version": version, "platform": platform(config), "migrations": migrations,
             "image": image + "@" + digest,

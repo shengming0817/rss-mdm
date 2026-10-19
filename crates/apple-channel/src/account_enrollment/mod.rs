@@ -5,6 +5,7 @@ mod authority;
 pub use authority::authority;
 mod bridge;
 pub(crate) mod management;
+pub use management::directory;
 mod protocol;
 mod store;
 use crate::{Error, Failure, HttpState};
@@ -143,7 +144,7 @@ struct Material {
     token: zeroize::Zeroizing<String>,
     challenge: zeroize::Zeroizing<String>,
 }
-fn aad(
+pub(crate) fn aad(
     tenant: &str,
     flow: Uuid,
     part: &str,
