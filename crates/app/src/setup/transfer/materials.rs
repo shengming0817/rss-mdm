@@ -238,3 +238,74 @@ pub(super) fn bootstrap(runtime: &mut Value) -> Result<()> {
     input.insert("webhooks".into(), json!([callbacks]));
     Ok(())
 }
+
+pub(super) async fn webhooks(
+    c: &mut PgConnection,
+    runtime: &mut Value,
+    operation: Uuid,
+    key: &rss_mdm_native_protection::Protector,
+    now: i64,
+) -> Result<()> {
+    #[derive(Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct Retiring {
+        version: i64,
+        key_file: PathBuf,
+        until: i64,
+    }
+    #[derive(Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct Legacy {
+        tenant: Uuid,
+        reference: String,
+        version: i64,
+        current_file: PathBuf,
+        retiring: Option<Retiring>,
+    }
+    let keys = runtime["webhooks"]
+        .as_object_mut()
+        .ok_or(Error::Input)?
+        .remove("keys")
+        .ok_or(Error::Input)?;
+    let keys: Vec<Legacy> = serde_json::from_value(keys).map_err(|_| Error::Input)?;
+    let config: crate::webhooks::Config =
+        serde_json::from_value(runtime["webhooks"].clone()).map_err(|_| Error::Input)?;
+    let digest = config.material_configuration().map_err(|_| Error::Input)?;
+    let tenant = Uuid::parse_str(
+        runtime["identity"]["tenant_id"]
+            .as_str()
+            .ok_or(Error::Input)?,
+    )
+    .map_err(|_| Error::Input)?;
+    for source in keys {
+        if source.tenant != tenant {
+            continue;
+        }
+        let current = crate::config::secret(&source.current_file).map_err(|_| Error::Corrupt)?;
+        let retiring = source
+            .retiring
+            .as_ref()
+            .map(|r| crate::config::secret(&r.key_file).map_err(|_| Error::Corrupt))
+            .transpose()?;
+        // Preserve even expired old custody in the protected offline bundle; do not revive expired dual signing.
+        let old = source
+            .retiring
+            .as_ref()
+            .zip(retiring.as_ref())
+            .filter(|(r, _)| r.until > now)
+            .map(|(r, k)| (r.version, k.as_str()));
+        rss_mdm_webhook_service::materials::import_legacy(
+            c,
+            tenant,
+            &source.reference,
+            operation,
+            &digest,
+            (source.version, &current),
+            old,
+            key,
+        )
+        .await
+        .map_err(|_| Error::Conflict)?;
+    }
+    Ok(())
+}

@@ -454,7 +454,16 @@ pub async fn run(input: Request) -> Result<Receipt> {
         .map_err(|_| Error::Conflict)?;
     let scep = names(input.purpose)
         .1
-        .map(|name| scep_provisioner(&input, &journal, name, &issuer, &crl))
+        .map(|name| {
+            scep_provisioner(
+                input.purpose,
+                input.scep.as_ref().ok_or(Error::Input)?,
+                &journal,
+                name,
+                &issuer,
+                &crl,
+            )
+        })
         .transpose()?;
     let client = client::Client::new(&input.profile, clock()?)?;
     ensure_provider(
@@ -468,7 +477,15 @@ pub async fn run(input: Request) -> Result<Receipt> {
     }
     journal.save("receipt.json", &receipt)?;
     if let Some(expected) = &scep {
-        prepare_scep(&input, &journal, &client, expected).await?;
+        prepare_scep(
+            input.purpose,
+            input.callback_origin.as_deref().ok_or(Error::Input)?,
+            input.preparation,
+            &journal,
+            &client,
+            expected,
+        )
+        .await?;
     } else if input.scep.is_some() {
         return Err(Error::Input);
     }
@@ -512,7 +529,8 @@ pub async fn run(input: Request) -> Result<Receipt> {
 }
 
 fn scep_provisioner(
-    input: &Request,
+    purpose: Purpose,
+    source: &ScepInput,
     journal: &Journal,
     name: &str,
     issuer_der: &[u8],
@@ -520,7 +538,6 @@ fn scep_provisioner(
 ) -> Result<wire::Provisioner> {
     use x509_cert::der::Decode;
     use x509_cert::ext::pkix::{BasicConstraints, KeyUsage};
-    let source = input.scep.as_ref().ok_or(Error::Input)?;
     let certificate_file = copy(
         journal,
         "scep-decrypter.pem",
@@ -581,7 +598,7 @@ fn scep_provisioner(
     )) {
         return Err(Error::Input);
     }
-    let template = if input.purpose == Purpose::AgentBootstrap {
+    let template = if purpose == Purpose::AgentBootstrap {
         r#"{"subject":{{ toJson .Webhooks.rss.subject }},"notAfter":{{ toJson .Webhooks.rss.notAfter }},"keyUsage":["digitalSignature"],"extKeyUsage":["clientAuth"],"basicConstraints":{"isCA":false}}"#
     } else {
         r#"{"subject":{"commonName":{{ toJson .Webhooks.rss.subject }}},"keyUsage":["digitalSignature"],"extKeyUsage":["clientAuth"],"basicConstraints":{"isCA":false}}"#
@@ -609,7 +626,7 @@ fn scep_provisioner(
                 exclude_intermediate: false,
             }),
         },
-        claims: claims(input.purpose),
+        claims: claims(purpose),
         x509_template: wire::Template {
             template: STANDARD.encode(template),
             data: String::new(),
@@ -618,13 +635,15 @@ fn scep_provisioner(
     })
 }
 async fn prepare_scep(
-    input: &Request,
+    purpose: Purpose,
+    callback_origin: &str,
+    preparation: Preparation,
     journal: &Journal,
     client: &client::Client,
     expected: &wire::Provisioner,
 ) -> Result<()> {
-    let existing = ensure_provider(client, expected, input.preparation).await?;
-    let prefix = if input.purpose == Purpose::Apple {
+    let existing = ensure_provider(client, expected, preparation).await?;
+    let prefix = if purpose == Purpose::Apple {
         "/api/v1/apple/scep"
     } else {
         "/api/v1/agent/enroll/bootstrap/scep"
@@ -637,10 +656,7 @@ async fn prepare_scep(
         };
         hook.matches(
             &hook.name,
-            &format!(
-                "{}{prefix}/{phase}",
-                input.callback_origin.as_deref().ok_or(Error::Input)?
-            ),
+            &format!("{}{prefix}/{phase}", callback_origin),
             kind,
         )?;
     }
@@ -648,10 +664,7 @@ async fn prepare_scep(
         ("challenge", "rss", "SCEPCHALLENGE"),
         ("notify", "rss_notify", "NOTIFYING"),
     ] {
-        let url = format!(
-            "{}{prefix}/{phase}",
-            input.callback_origin.as_deref().ok_or(Error::Input)?
-        );
+        let url = format!("{}{prefix}/{phase}", callback_origin);
         let mut remote = client
             .get::<wire::Provisioner>(&expected.name, clock()?)
             .await?
@@ -663,7 +676,7 @@ async fn prepare_scep(
         let webhook = if let Some(index) = remote.webhooks.iter().position(|h| h.name == name) {
             remote.webhooks.remove(index)
         } else {
-            if input.preparation == Preparation::Import {
+            if preparation == Preparation::Import {
                 return Err(Error::Conflict);
             }
             client

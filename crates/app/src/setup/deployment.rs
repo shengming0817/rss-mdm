@@ -95,31 +95,32 @@ fn project(
     value: &mut Value,
     journal: &Journal,
     mounts: &mut BTreeMap<String, PathBuf>,
+    local: bool,
 ) -> Result<()> {
     match value {
         Value::Object(values) => {
             for (name, value) in values {
                 if name.ends_with("_file") && value.is_string() {
-                    project_file(value, journal, mounts, !public_file(name))?;
+                    project_file(value, journal, mounts, !public_file(name), local)?;
                 } else if matches!(name.as_str(), "key_files" | "credential_keys") {
                     for key in value.as_object_mut().ok_or(Error::Input)?.values_mut() {
-                        project_file(key, journal, mounts, true)?;
+                        project_file(key, journal, mounts, true, local)?;
                     }
                 } else if matches!(
                     name.as_str(),
                     "apple_material_roots" | "historical_files" | "ca_files"
                 ) {
                     for root in value.as_array_mut().ok_or(Error::Input)? {
-                        project_file(root, journal, mounts, name == "historical_files")?;
+                        project_file(root, journal, mounts, name == "historical_files", local)?;
                     }
                 } else {
-                    project(value, journal, mounts)?;
+                    project(value, journal, mounts, local)?;
                 }
             }
         }
         Value::Array(values) => {
             for value in values {
-                project(value, journal, mounts)?;
+                project(value, journal, mounts, local)?;
             }
         }
         _ => (),
@@ -131,6 +132,7 @@ fn project_file(
     journal: &Journal,
     mounts: &mut BTreeMap<String, PathBuf>,
     private: bool,
+    local: bool,
 ) -> Result<()> {
     let source = Path::new(value.as_str().ok_or(Error::Input)?);
     if !source.is_absolute() {
@@ -139,12 +141,24 @@ fn project_file(
     let bytes = crate::config::read(source, 64 * 1024 * 1024, private).map_err(|_| Error::Input)?;
     let filename = format!(
         "input-{:x}",
-        Sha256::digest(source.as_os_str().as_encoded_bytes())
+        if local {
+            Sha256::digest(bytes.as_slice())
+        } else {
+            Sha256::digest(source.as_os_str().as_encoded_bytes())
+        }
     );
     let path = journal.secret(&filename, &bytes)?;
-    mounts.insert(filename.clone(), path);
-    *value = Value::String(format!("/run/mdm/{filename}"));
+    mounts.insert(filename.clone(), path.clone());
+    *value = if local {
+        json!(path)
+    } else {
+        Value::String(format!("/run/mdm/{filename}"))
+    };
     Ok(())
+}
+/// Freeze deployment file inputs under content-addressed private names before computing an application digest.
+pub(super) fn freeze(runtime: &mut Value, journal: &Journal) -> Result<()> {
+    project(runtime, journal, &mut BTreeMap::new(), true)
 }
 async fn runtime_owner(paths: impl Iterator<Item = PathBuf>) -> Result<()> {
     // The dedicated deployment operator owns this action. The server never receives chown or Docker authority.
@@ -182,6 +196,29 @@ pub async fn apply(directory: &Path, config: &Config, runtime: &Value) -> Result
         || !origin.username().is_empty()
         || origin.password().is_some()
     {
+        return Err(Error::Input);
+    }
+    let gateway_port = origin.port_or_known_default().ok_or(Error::Input)?;
+    let mut ports = vec![decoded.listen.port()];
+    if let Some(windows) = &decoded.native_protocols.windows {
+        ports.extend([
+            windows.enrollment.listen.port(),
+            windows.management.listen.port(),
+        ]);
+        ports.extend(
+            windows
+                .additional_management
+                .iter()
+                .map(|e| e.listen.port()),
+        );
+    }
+    if let Some(apple) = &decoded.native_protocols.apple {
+        ports.push(apple.management.listen.port());
+    }
+    if let crate::agent_pki::Config::StepCa { endpoint, .. } = &decoded.agent_pki {
+        ports.push(endpoint.listen.port());
+    }
+    if ports.iter().any(|port| *port == 0 || *port == gateway_port) {
         return Err(Error::Input);
     }
     image_present(&config.server_image).await?;
@@ -222,7 +259,7 @@ pub async fn apply(directory: &Path, config: &Config, runtime: &Value) -> Result
     owner.save("requested-runtime.json", runtime)?;
     let mut projected = runtime.clone();
     let mut mounts = BTreeMap::new();
-    project(&mut projected, &journal, &mut mounts)?;
+    project(&mut projected, &journal, &mut mounts, false)?;
     let bytes = serde_json::to_vec(&projected).map_err(|_| Error::Input)?;
     let runtime_path = journal.secret("runtime.json", &bytes)?;
     runtime_owner(

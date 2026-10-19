@@ -88,3 +88,26 @@ fn deployment_requires_an_immutable_image() {
         assert!(image(value).is_err());
     }
 }
+
+#[test]
+fn candidate_freezes_material_bytes_before_application_digest() {
+    use std::os::unix::fs::PermissionsExt;
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().canonicalize().unwrap();
+    let original = root.join("external.key");
+    std::fs::write(&original, [1u8; 32]).unwrap();
+    std::fs::set_permissions(&original, std::fs::Permissions::from_mode(0o600)).unwrap();
+    let journal = Journal::open(&root.join("candidate")).unwrap();
+    let mut value = json!({"native_protection":{"active_file":original,"historical_files":[],"fingerprint_file":original}});
+    freeze(&mut value, &journal).unwrap();
+    let digest = super::super::application::fingerprint(&value).unwrap();
+    std::fs::write(&original, [2u8; 32]).unwrap();
+    let frozen = Path::new(value["native_protection"]["active_file"].as_str().unwrap());
+    assert_eq!(std::fs::read(frozen).unwrap(), [1u8; 32]);
+    let mut changed = json!({"native_protection":{"active_file":original,"historical_files":[],"fingerprint_file":original}});
+    freeze(&mut changed, &journal).unwrap();
+    assert_ne!(
+        digest,
+        super::super::application::fingerprint(&changed).unwrap()
+    );
+}

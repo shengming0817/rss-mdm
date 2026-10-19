@@ -20,8 +20,10 @@ fn route(id: &str) -> Option<&'static str> {
         "smtp" => "/api/v1/smtp",
         "wns" => "/api/v1/windows/wns",
         "task-key" => "/api/v1/task-signing/trust",
-        "webhook-own" => "/api/v1/webhooks/subscriptions",
-        "organization" | "host-config" => "/api/v1/tenant-administration/provisionings",
+        "agent-package" => "/api/v1/agent-packages",
+        "webhook-own" => "/api/v1/webhooks/materials",
+        "organization" => "/api/v1/tenant-administration/tenants",
+        "host-config" => "/api/v1/tenant-administration/provisionings",
         _ => return None,
     })
 }
@@ -59,6 +61,7 @@ impl Source for Directory {
             audit.set_action("settings_catalog_read");
             let mut cache = BTreeMap::<&str, Projection>::new();
             let mut result = Vec::new();
+            let mut organizations: Option<serde_json::Value> = None;
             for item in items {
                 proof.check_live()?;
                 let href = route(item.id);
@@ -75,6 +78,80 @@ impl Source for Directory {
                         projection.status = Status::Loaded;
                         projection.reason =
                             Some("current_process_loaded_not_external_qualification");
+                    }
+                    "organization" | "host-config" if !business => {
+                        if let Some(service) = &self.state.identity.tenant_administration {
+                            match service.directory(&proof, item.id == "host-config").await {
+                                Ok(value) => {
+                                    let values =
+                                        value["items"].as_array().ok_or(Error::Malformed)?;
+                                    configured(&mut projection, values.len());
+                                    if item.id == "host-config" {
+                                        if values.iter().any(|v| !v["result"]["blocked"].is_null())
+                                        {
+                                            projection.status = Status::Unavailable;
+                                        } else if values
+                                            .iter()
+                                            .any(|v| v["result"]["phase"] != "enabled")
+                                        {
+                                            projection.status = Status::Pending;
+                                        }
+                                        projection.reason = Some(
+                                            "operation_observations_not_current_process_health",
+                                        );
+                                    }
+                                }
+                                Err(crate::Error::Forbidden | crate::Error::Unauthorized) => {
+                                    return Err(Error::Forbidden);
+                                }
+                                Err(_) => {
+                                    projection.status = Status::Unavailable;
+                                    projection.reason = Some("tenant_registry_read_unavailable");
+                                }
+                            }
+                        } else {
+                            configured(&mut projection, 0);
+                        }
+                    }
+                    "audit" | "ledger" => {
+                        projection.status =
+                            if item.id == "audit" || self.state.audit_store.uses_ledger() {
+                                Status::Loaded
+                            } else {
+                                Status::Unconfigured
+                            };
+                        projection.reason = Some(if self.state.audit_store.uses_ledger() {
+                            "fixed_installation_key_no_same_chain_rotation"
+                        } else {
+                            "explicit_plain_installation_integrity_mode"
+                        });
+                    }
+                    "dbpassword" => {
+                        projection.status = Status::Loaded;
+                        projection.reason =
+                            Some("current_database_sessions_not_future_credential_validity");
+                    }
+                    "ca-root" | "ca-pass" | "provisioner" | "scep-decrypter" | "ca-webhook" => {
+                        projection.reason =
+                            Some("external_ca_custody_requires_deployment_operator_observation");
+                        let mut count = 0;
+                        for binding in self.state.pki.bindings() {
+                            let trust = binding.public().map_err(|_| Error::Conflict)?;
+                            if matches!(item.id, "scep-decrypter" | "ca-webhook")
+                                && !matches!(
+                                    trust.purpose,
+                                    rss_mdm_agent_wire::pki::Purpose::Apple
+                                        | rss_mdm_agent_wire::pki::Purpose::AgentBootstrap
+                                )
+                            {
+                                continue;
+                            }
+                            count += trust.issuers.len();
+                        }
+                        projection.configured_count = Some(count);
+                        if count == 0 {
+                            projection.status = Status::Unconfigured;
+                        }
                     }
                     "windows-key" => {
                         projection.status = if self.state.windows.is_some() {
@@ -162,13 +239,96 @@ impl Source for Directory {
                             configured(&mut projection, 0);
                         }
                     }
-                    "oidc-state" if business => {
+                    "oidc-state" => {
                         projection.status = if self.state.identity.federation.is_some() {
                             Status::Loaded
                         } else {
                             Status::Unconfigured
                         };
                         projection.reason = Some("current_process_loaded_not_provider_login");
+                    }
+                    "ade-key" | "ade-token" | "apple-account" if business => {
+                        if organizations.is_none() {
+                            organizations = Some(
+                                match rss_mdm_apple_channel::account_enrollment::directory(
+                                    &self.apple,
+                                    &proof,
+                                )
+                                .await
+                                {
+                                    Ok(value) => value,
+                                    Err(
+                                        rss_mdm_apple_channel::Error::Forbidden
+                                        | rss_mdm_apple_channel::Error::Unauthorized,
+                                    ) => return Err(Error::Forbidden),
+                                    Err(_) => serde_json::json!({"unavailable":true,"items":[]}),
+                                },
+                            );
+                        }
+                        if organizations
+                            .as_ref()
+                            .is_some_and(|v| v["unavailable"] == true)
+                        {
+                            projection.status = Status::Unavailable;
+                            projection.reason = Some("apple_owner_read_unavailable");
+                            result.push(Entry { item, projection });
+                            continue;
+                        }
+                        let values = organizations
+                            .as_ref()
+                            .and_then(|v| v["items"].as_array())
+                            .ok_or(Error::Malformed)?;
+                        let mut count = 0;
+                        let mut unavailable = 0;
+                        let mut pending = 0;
+                        for value in values {
+                            let value = if item.id == "apple-account" {
+                                &value["accountEnrollment"]
+                            } else {
+                                &value["ade"]
+                            };
+                            if value.is_null() {
+                                continue;
+                            }
+                            count += 1;
+                            if item.id == "ade-token" {
+                                match value["tokenState"].as_str() {
+                                    Some("expired" | "invalid") => unavailable += 1,
+                                    Some("verified") => (),
+                                    _ => pending += 1,
+                                }
+                            } else if item.id == "apple-account"
+                                && value["enabled"] == true
+                                && value["signingKeyConfigured"] != true
+                            {
+                                unavailable += 1;
+                            }
+                        }
+                        configured(&mut projection, count);
+                        if unavailable > 0 {
+                            projection.status = Status::Unavailable;
+                        } else if pending > 0 {
+                            projection.status = Status::Pending;
+                        }
+                        projection.reason =
+                            Some("external_organization_and_device_confirmation_separate");
+                        projection
+                            .actions
+                            .push(rss_mdm_management_http::settings::Action {
+                                name: "inspect",
+                                href: "/api/v1/apple/organizations".into(),
+                            });
+                    }
+                    "agent-package" if business => {
+                        let access = crate::api::software_access(&self.state);
+                        match rss_mdm_software_service::agent_packages::list(&access).await {
+                            Ok(packages) => {
+                                configured(&mut projection, packages.len());
+                                projection.reason =
+                                    Some("published_packages_not_device_installation_confirmation");
+                            }
+                            Err(error) => unavailable(&mut projection, error.into())?,
+                        }
                     }
                     "s3-key" | "storage" if business => {
                         let authority =
@@ -424,16 +584,37 @@ impl Source for Directory {
                         match self
                             .state
                             .webhooks
-                            .execute(proof.clone(), audit.clone(), Command::Subscriptions(None))
+                            .execute(proof.clone(), audit.clone(), Command::Materials)
                             .await
                         {
                             Ok(value) => {
-                                // 订阅存在不等于对端已经信任当前签名版本。
-                                configured(
-                                    &mut projection,
-                                    value["items"].as_array().ok_or(Error::Malformed)?.len(),
+                                let heads =
+                                    value["keys"]["heads"].as_array().ok_or(Error::Malformed)?;
+                                let materials = value["keys"]["materials"]
+                                    .as_array()
+                                    .ok_or(Error::Malformed)?;
+                                configured(&mut projection, heads.len());
+                                if heads.iter().any(|head| head["activeRevision"].is_null()) {
+                                    projection.status = Status::Pending;
+                                }
+                                if heads.iter().any(|head| {
+                                    materials.iter().any(|material| {
+                                        material["reference"] == head["reference"]
+                                            && material["revision"] == head["activeRevision"]
+                                            && material["revoked"] == true
+                                    })
+                                }) {
+                                    projection.status = Status::Unavailable;
+                                }
+                                projection.reason = Some(
+                                    "receiver_key_possession_is_not_business_delivery_confirmation",
                                 );
-                                projection.reason = Some("remote_signing_confirmation_required");
+                                projection.actions.push(
+                                    rss_mdm_management_http::settings::Action {
+                                        name: "subscriptions",
+                                        href: "/api/v1/webhooks/subscriptions".into(),
+                                    },
+                                );
                             }
                             Err(error) => unavailable(&mut projection, error)?,
                         }
@@ -448,6 +629,10 @@ impl Source for Directory {
                         Some(Permission::RegistrationConfigurationWrite)
                     }
                     "registration" => Some(Permission::AgentEnrollmentWrite),
+                    "ade-key" | "ade-token" | "apple-account" => {
+                        Some(Permission::RegistrationConfigurationWrite)
+                    }
+                    "agent-package" => Some(Permission::SoftwareWrite),
                     "webhook-own" => Some(Permission::WebhookWrite),
                     "oidc" => Some(Permission::IdentityProvidersManage),
                     _ => None,

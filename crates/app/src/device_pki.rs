@@ -13,7 +13,7 @@ pub(crate) fn load(
     DeviceTrust::restore(trust, purpose, now).map_err(|_| invalid())
 }
 
-#[derive(serde::Deserialize)]
+#[derive(serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Provider {
     #[serde(default)]

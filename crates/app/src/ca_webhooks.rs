@@ -2,13 +2,13 @@
 use crate::{ConfigIssue, Error};
 use serde::Deserialize;
 use std::path::PathBuf;
-#[derive(Deserialize)]
+#[derive(serde::Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Webhook {
     pub id: String,
     pub secret_file: PathBuf,
 }
-#[derive(Deserialize)]
+#[derive(serde::Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Credentials {
     pub issuer: String,

@@ -14,7 +14,7 @@ use serde_json::Value;
 use std::sync::Arc;
 pub fn routes() -> Router<Arc<HttpState>> {
     Router::new()
-        .route("/agent-packages", post(publish_agent))
+        .route("/agent-packages", get(managed_packages).post(publish_agent))
         .route("/agent-packages/{id}/withdraw", post(withdraw_agent))
         .route("/software/imports", post(import))
         .route(
@@ -31,6 +31,21 @@ pub fn routes() -> Router<Arc<HttpState>> {
         )
 }
 
+async fn managed_packages(
+    State(app): State<Arc<HttpState>>,
+    Extension(auth): Extension<RequestAuth>,
+) -> Result<Json<Vec<rss_mdm_agent_wire::enroll::configuration::Package>>, Error> {
+    auth.proof.require(
+        rss_mdm_authorization_service::Permission::AgentEnrollmentRead,
+        None,
+    )?;
+    if auth.proof.tenant_id() != app.tenant.to_string() {
+        return Err(Error::Forbidden);
+    }
+    let result = rss_mdm_software_service::agent_packages::list(&app).await?;
+    auth.proof.check_live()?;
+    Ok(Json(result))
+}
 async fn read_source(
     State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,

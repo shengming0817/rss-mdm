@@ -381,7 +381,7 @@ pub const CATALOG: &[Item] = &[
     item!(
         "agent-package",
         Tenant,
-        "registration-service",
+        "software-service",
         DomainService,
         SignedPackage,
         AgentEnrollmentRead
@@ -487,6 +487,66 @@ pub struct Entry {
 #[serde(rename_all = "camelCase")]
 pub struct Catalog {
     pub items: Vec<Entry>,
+    pub domains: Vec<Domain>,
+}
+/// Navigation to existing domain owners; no shadow configuration or lifecycle state.
+#[derive(Serialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct Domain {
+    pub id: &'static str,
+    pub href: String,
+}
+fn domains(proof: &AuthorizedPrincipal, platform: bool) -> Vec<Domain> {
+    let mut result = Vec::new();
+    let entries = if platform {
+        vec![
+            (
+                "tenants",
+                "/api/v1/tenant-administration/tenants",
+                Permission::TenantRead,
+            ),
+            (
+                "provisionings",
+                "/api/v1/tenant-administration/provisionings",
+                Permission::TenantRead,
+            ),
+        ]
+    } else {
+        vec![
+            ("groups", "/api/v1/groups", Permission::GroupRead),
+            ("scopes", "/api/v1/scopes", Permission::ScopeRead),
+            ("policies", "/api/v1/policies", Permission::PolicyRead),
+            ("software", "/api/v1/resources", Permission::ResourceRead),
+            (
+                "apple-organizations",
+                "/api/v1/apple/organizations",
+                Permission::RegistrationConfigurationRead,
+            ),
+            (
+                "registration",
+                "/api/v1/agent-enrollment-settings",
+                Permission::AgentEnrollmentRead,
+            ),
+        ]
+    };
+    for (id, href, permission) in entries {
+        if proof.require(permission, None).is_ok() {
+            result.push(Domain {
+                id,
+                href: href.into(),
+            });
+        }
+    }
+    if proof
+        .require(Permission::IdentityAccountsManage, None)
+        .is_ok()
+    {
+        result.push(Domain {
+            id: "accounts",
+            href: format!("/api/v1/identity/tenants/{}/accounts", proof.tenant_id()),
+        });
+    }
+    result
 }
 pub trait Source: Send + Sync {
     fn project<'a>(
@@ -513,7 +573,10 @@ async fn directory(
         return Err(Error::Conflict);
     }
     auth.proof.check_live()?;
-    Ok(Json(Catalog { items: entries }))
+    Ok(Json(Catalog {
+        items: entries,
+        domains: domains(&auth.proof, platform),
+    }))
 }
 pub(crate) async fn tenant(
     Extension(source): Extension<Arc<dyn Source>>,

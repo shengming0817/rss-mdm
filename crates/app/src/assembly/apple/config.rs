@@ -2,7 +2,7 @@ use crate::{ConfigIssue, Error, native::TlsEndpoint};
 use serde::Deserialize;
 use std::{net::SocketAddr, path::PathBuf};
 
-#[derive(Deserialize)]
+#[derive(serde::Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
     #[cfg(test)]

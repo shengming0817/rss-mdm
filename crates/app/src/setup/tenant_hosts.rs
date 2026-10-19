@@ -106,6 +106,7 @@ pub async fn reconcile(input: &Input) -> Result<usize> {
     super::providers::reconcile::storage(input, &compiled.config, &mut c).await?;
     super::providers::reconcile::wns(input, &mut c).await?;
     super::providers::mail::reconcile(input, &mut c).await?;
+    super::providers::webhook::reconcile(input, &mut c).await?;
     let mut reservations: BTreeMap<Uuid, usize> =
         journal.load("host-reservations.json")?.unwrap_or_default();
     let pending: Vec<Value> = sqlx::query_scalar("SELECT receipt FROM public.mdm_tenant_operations WHERE action='provision' AND receipt->'result'->>'phase'='host_pending' ORDER BY operation_id LIMIT 32")
@@ -140,7 +141,6 @@ pub async fn reconcile(input: &Input) -> Result<usize> {
                 candidate[field] = Value::Null;
             }
             candidate["identity"]["oidc"] = Value::Null;
-            candidate["webhooks"]["keys"] = serde_json::json!([]);
             candidate["webhooks"]["networks"] = serde_json::json!([]);
             candidate["identity"]["tenant_id"] = serde_json::json!(progress.tenant_id);
             candidate["product_origin"] = serde_json::json!(slot.origin);

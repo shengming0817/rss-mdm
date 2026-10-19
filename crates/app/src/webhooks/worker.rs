@@ -36,7 +36,9 @@ impl TargetAuthorizer for Authorizer {
                                     .clock
                                     .unix_seconds()
                                     .map_err(|_| webhooks::Error::Storage)?;
-                                host.policies.target(host.tenant, &b.subscription, now)
+                                host.policies
+                                    .target(c, &host.protection, host.tenant, &b.subscription, now)
+                                    .await
                             }
                             .await)
                         })

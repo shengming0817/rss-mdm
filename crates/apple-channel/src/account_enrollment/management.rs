@@ -46,7 +46,12 @@ pub(super) async fn list(
     State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
 ) -> Result<Json<serde_json::Value>, Error> {
-    let proof = &auth.proof;
+    directory(&app, &auth.proof).await.map(Json)
+}
+pub async fn directory(
+    app: &HttpState,
+    proof: &AuthorizedPrincipal,
+) -> Result<serde_json::Value, Error> {
     proof.manage(Permission::RegistrationConfigurationRead)?;
     let mut tx = app.access.begin_read(proof.tenant_id()).await?;
     let rows = sqlx::query(
@@ -92,15 +97,19 @@ pub(super) async fn list(
             return Err(Error::Unavailable(Failure::Capacity));
         }
         let accounts=accounts.into_iter().map(|r|Ok(serde_json::json!({"account":r.try_get::<String,_>("account").map_err(db)?,"principalId":r.try_get::<Uuid,_>("principal").map_err(db)?,"instanceId":r.try_get::<Uuid,_>("instance").map_err(db)?,"revision":r.try_get::<i64,_>("revision").map_err(db)?,"enabled":r.try_get::<bool,_>("enabled").map_err(db)?}))).collect::<Result<Vec<_>,Error>>()?;
-        let configured = app.apple()?.account_keys.get(&key).is_some_and(|s| {
-            app.clock
-                .unix_seconds()
-                .is_some_and(|now| s.expires() > now as u64)
-        });
+        let configured = app
+            .apple()
+            .ok()
+            .and_then(|apple| apple.account_keys.get(&key))
+            .is_some_and(|s| {
+                app.clock
+                    .unix_seconds()
+                    .is_some_and(|now| s.expires() > now as u64)
+            });
         organizations.push(serde_json::json!({"id":id,"ade":ade,"accountEnrollment":{"domain":row.try_get::<String,_>("domain").map_err(db)?,"serverUuid":row.try_get::<Uuid,_>("server_uuid").map_err(db)?,"signingKey":key,"enabled":row.try_get::<bool,_>("enabled").map_err(db)?,"revision":row.try_get::<i64,_>("revision").map_err(db)?,"signingKeyConfigured":configured,"accounts":accounts,"externalOrganizationVerification":"not_observed"}}));
     }
     proof.check_live()?;
-    Ok(Json(serde_json::json!({"items":organizations})))
+    Ok(serde_json::json!({"items":organizations}))
 }
 pub(super) async fn organization(
     State(app): State<Arc<HttpState>>,

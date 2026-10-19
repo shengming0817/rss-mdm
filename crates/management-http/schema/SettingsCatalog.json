@@ -3,6 +3,12 @@
   "title": "Catalog",
   "type": "object",
   "properties": {
+    "domains": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/Domain"
+      }
+    },
     "items": {
       "type": "array",
       "items": {
@@ -11,7 +17,8 @@
     }
   },
   "required": [
-    "items"
+    "items",
+    "domains"
   ],
   "$defs": {
     "Action": {
@@ -38,6 +45,22 @@
         "certificate_authority",
         "storage_provider",
         "device"
+      ]
+    },
+    "Domain": {
+      "description": "Navigation to existing domain owners; no shadow configuration or lifecycle state.",
+      "type": "object",
+      "properties": {
+        "href": {
+          "type": "string"
+        },
+        "id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "href"
       ]
     },
     "Entry": {

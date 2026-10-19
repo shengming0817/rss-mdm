@@ -570,7 +570,7 @@ fn runtime(input: &Input, journal: &Journal, saved: &Saved) -> Result<serde_json
         "access_database":input.database("mdm_access")?,"runtime_database":input.database("mdm_runtime")?,"execution":{"database":input.database("mdm_command_runtime")?},
         "flow":{"storage":{"database":input.database("mdm_flow_runtime")?,"target":saved.target,"lineage":saved.lineage,"epoch":1},"publication":{"database":input.database("mdm_software_driver")?,"sources":[]}},
         "tenant_administration":{"registry_database":input.database("mdm_tenant_registry")?,"provisioning_database":input.database("mdm_identity_provisioning")?,"fingerprint_key_file":journal.path("operation.key")?},
-        "webhooks":{"keys":[],"networks":[],"recovery_database":input.database("mdm_webhook_operator")?},"content":null,"task_signing":null,"recovery_credentials":null
+        "webhooks":{"networks":[],"recovery_database":input.database("mdm_webhook_operator")?},"content":null,"task_signing":null,"recovery_credentials":null
     }))
 }
 

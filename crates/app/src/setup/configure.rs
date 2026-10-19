@@ -23,11 +23,48 @@ pub enum Recipient {
     },
 }
 #[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Windows {
+    pub entra: Option<rss_mdm_windows_channel::entra::Config>,
+    pub enrollment: crate::native::TlsEndpoint,
+    pub management: crate::native::TlsEndpoint,
+    pub trust_file: PathBuf,
+    /// Omitted only in deployment input: preserve an existing identity or generate on first enablement.
+    pub protocol_protection: Option<crate::config::NativeProtection>,
+    #[serde(default)]
+    pub lifetime: rss_mdm_certificate::windows::Lifetime,
+    pub provider_id: String,
+    pub poll: rss_mdm_windows_mdm::provisioning::Poll,
+    pub push: Option<crate::windows::WindowsPushConfig>,
+    pub additional_management: Vec<crate::native::TlsEndpoint>,
+}
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Channels {
+    pub windows: Option<Windows>,
+    pub apple: Option<crate::apple::config::Config>,
+    pub agent: crate::agent_pki::Config,
+    pub providers: Vec<crate::device_pki::Provider>,
+    pub apple_material_roots: Vec<PathBuf>,
+}
+#[derive(Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Change {
-    Oidc { settings: Oidc },
-    Recovery { recipient: Recipient },
-    Ca { preparation: Uuid },
+    WebhookNetworks {
+        networks: Vec<crate::webhooks::Network>,
+    },
+    Channels {
+        settings: Channels,
+    },
+    Oidc {
+        settings: Oidc,
+    },
+    Recovery {
+        recipient: Recipient,
+    },
+    Ca {
+        preparation: Uuid,
+    },
 }
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -266,6 +303,49 @@ fn recovery(journal: &Journal, runtime: &mut Value, source: &Recipient) -> Resul
     Ok(())
 }
 
+fn channels(journal: &Journal, runtime: &mut Value, settings: &Channels) -> Result<()> {
+    let mut native = json!({});
+    if let Some(windows) = &settings.windows {
+        let mut config = serde_json::to_value(windows).map_err(|_| Error::Input)?;
+        let original = &runtime["native_protocols"]["windows"]["protocol_protection"];
+        if original.is_object() {
+            if config["protocol_protection"].is_object()
+                && config["protocol_protection"] != *original
+            {
+                return Err(Error::Conflict);
+            }
+            config["protocol_protection"] = original.clone();
+        } else if config["protocol_protection"].is_null() {
+            let key = secret(journal, "windows-protection.key")?;
+            config["protocol_protection"] =
+                json!({"active_file":key,"historical_files":[],"fingerprint_file":key});
+        }
+        serde_json::from_value::<crate::windows::WindowsConfig>(config.clone())
+            .map_err(|_| Error::Input)?
+            .validate(
+                runtime["listen"]
+                    .as_str()
+                    .ok_or(Error::Corrupt)?
+                    .parse()
+                    .map_err(|_| Error::Corrupt)?,
+            )
+            .map_err(|_| Error::Input)?;
+        native["windows"] = config;
+    }
+    if let Some(apple) = &settings.apple {
+        let config = serde_json::to_value(apple).map_err(|_| Error::Input)?;
+        let original = &runtime["native_protocols"]["apple"]["identity_seed"];
+        if original.is_object() && original != &config["identity_seed"] {
+            return Err(Error::Conflict);
+        }
+        native["apple"] = config;
+    }
+    runtime["native_protocols"] = native;
+    runtime["agent_pki"] = serde_json::to_value(&settings.agent).map_err(|_| Error::Input)?;
+    runtime["device_pki"] = serde_json::to_value(&settings.providers).map_err(|_| Error::Input)?;
+    runtime["apple_material_roots"] = json!(settings.apple_material_roots);
+    Ok(())
+}
 fn ca(input: &Input, runtime: &mut Value, operation: Uuid) -> Result<()> {
     use rss_mdm_agent_wire::pki::Purpose;
     if operation.is_nil() {
@@ -462,9 +542,25 @@ pub async fn run(request: Request) -> Result<Receipt> {
         }
         match &request.change {
             Change::Oidc { settings } => oidc(&journal, &mut runtime, settings)?,
+            Change::WebhookNetworks { networks } => {
+                let tenant = runtime["identity"]["tenant_id"]
+                    .as_str()
+                    .ok_or(Error::Corrupt)?;
+                if networks.iter().any(|n| n.tenant.to_string() != tenant) {
+                    return Err(Error::Input);
+                }
+                runtime["webhooks"]["networks"] =
+                    serde_json::to_value(networks).map_err(|_| Error::Input)?;
+                serde_json::from_value::<crate::webhooks::Config>(runtime["webhooks"].clone())
+                    .map_err(|_| Error::Input)?
+                    .material_configuration()
+                    .map_err(|_| Error::Input)?;
+            }
+            Change::Channels { settings } => channels(&journal, &mut runtime, settings)?,
             Change::Recovery { recipient } => recovery(&journal, &mut runtime, recipient)?,
             Change::Ca { preparation } => ca(input, &mut runtime, *preparation)?,
         }
+        super::deployment::freeze(&mut runtime, &journal)?;
         let revision = request
             .expected_revision
             .checked_add(1)

@@ -123,9 +123,36 @@ async fn subscription_versions_atomic_fanout_and_same_id_https_retry() -> Result
     let mut base: Value =
         serde_json::from_slice(&std::fs::read(std::env::var("MDM_TEST_CONFIG")?)?)?;
     base["identity"]["tenant_id"] = json!(case_tenant());
-    base["webhooks"]["keys"] = json!([{"tenant":case_tenant(),"reference":"receiver","version":1,"current_file":key,"retiring":null}]);
     base["webhooks"]["networks"] = json!([{"tenant":case_tenant(),"reference":"receiver","hostname":"source.invalid","port":port,"addresses":[format!("{address}:{port}")],"cidrs":[format!("{address}/32")],"ca_files":[root.join("ca.pem")]}]);
     let config: Config = serde_json::from_value(base.clone())?;
+    {
+        use sqlx::Connection;
+        let options = std::env::var("MDM_OWNER_URL")?
+            .parse::<sqlx::postgres::PgConnectOptions>()?
+            .ssl_mode(sqlx::postgres::PgSslMode::VerifyFull)
+            .ssl_root_cert(std::env::var("PG_CA_FILE")?);
+        let mut c = sqlx::PgConnection::connect_with(&options).await?;
+        let mut tx = c.begin().await?;
+        sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
+            .bind(case_tenant())
+            .execute(&mut *tx)
+            .await?;
+        let protection = config.native_protector()?;
+        rss_mdm_webhook_service::materials::import_legacy(
+            &mut tx,
+            Uuid::parse_str(case_tenant())?,
+            "receiver",
+            Uuid::new_v4(),
+            &config.webhooks.material_configuration()?,
+            (1, &std::fs::read_to_string(&key)?),
+            None,
+            &protection,
+        )
+        .await?;
+        tx.commit().await?;
+        c.close().await?;
+    }
+
     let hex = |bytes: &[u8]| bytes.iter().map(|b| format!("{b:02x}")).collect::<String>();
     let fence = format!(
         "SET LOCAL rss.storage_target='{}'; SET LOCAL rss.storage_lineage='{}'; SET LOCAL rss.execution_epoch='{}';",

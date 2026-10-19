@@ -931,7 +931,7 @@ mod tests;
 #[path = "../tests/api/mod.rs"]
 pub(crate) mod t2;
 
-fn software_access(
+pub(crate) fn software_access(
     state: &Assembly,
 ) -> Arc<
     rss_mdm_software_service::management::catalog::Access<

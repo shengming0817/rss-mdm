@@ -50,7 +50,11 @@
         "certificate_file": "/run/mdm/enrollment-tls.pem",
         "private_key_file": "/run/mdm/enrollment-tls.pk8"
       },
-      "protocol_protection": {"active_file":"/run/mdm/protocol.key","historical_files":[],"fingerprint_file":"/run/mdm/protocol-fingerprint.key"},
+      "protocol_protection": {
+        "active_file": "/run/mdm/protocol.key",
+        "historical_files": [],
+        "fingerprint_file": "/run/mdm/protocol-fingerprint.key"
+      },
       "provider_id": "RSS-MDM",
       "management": {
         "listen": "0.0.0.0:8444",
@@ -160,7 +164,6 @@
     }
   ],
   "webhooks": {
-    "keys": [],
     "networks": [],
     "recovery_database": {
       "host": "postgres.example.test",

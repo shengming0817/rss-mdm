@@ -4471,9 +4471,12 @@ dependencies = [
 name = "rss-mdm-webhook-service"
 version = "0.1.0"
 dependencies = [
+ "base64 0.22.1",
  "futures",
  "ipnet",
+ "ring",
  "rss-contract",
+ "rss-mdm-native-protection",
  "rss-redact",
  "rss-request-context",
  "rss-transactional-messaging",
@@ -4481,6 +4484,7 @@ dependencies = [
  "rss-transactional-messaging-recovery",
  "rss-transactional-messaging-runtime",
  "rss-transactional-messaging-webhook",
+ "schemars 1.2.2",
  "serde",
  "serde_json",
  "sha2 0.10.9",
@@ -4490,6 +4494,7 @@ dependencies = [
  "tokio-util",
  "url",
  "uuid",
+ "zeroize",
 ]
 
 [[package]]

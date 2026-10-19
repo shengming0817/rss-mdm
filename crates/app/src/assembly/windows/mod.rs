@@ -6,7 +6,7 @@ use rss_mdm_certificate::windows as certificate;
 use rss_mdm_windows_channel::boundary::Envelope;
 use serde::Deserialize;
 use std::{net::SocketAddr, path::PathBuf, sync::Arc};
-#[derive(Deserialize)]
+#[derive(serde::Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct WindowsConfig {
     pub entra: Option<rss_mdm_windows_channel::entra::Config>,
@@ -21,7 +21,7 @@ pub struct WindowsConfig {
     pub push: Option<WindowsPushConfig>,
     pub additional_management: Vec<TlsEndpoint>,
 }
-#[derive(Deserialize)]
+#[derive(serde::Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct WindowsPushConfig {
     pub revision: i64,

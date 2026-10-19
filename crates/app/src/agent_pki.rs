@@ -3,7 +3,7 @@ use crate::{ConfigIssue, Error};
 use rss_mdm_registration_service::agent_pki::AgentIssuer;
 use serde::Deserialize;
 use std::{path::PathBuf, sync::Arc, time::Duration};
-#[derive(Deserialize)]
+#[derive(serde::Serialize, Deserialize)]
 #[serde(tag = "mode", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Config {
     Disabled {},
@@ -16,7 +16,7 @@ pub enum Config {
         lifetime: Lifetime,
     },
 }
-#[derive(Deserialize)]
+#[derive(serde::Serialize, Deserialize)]
 #[serde(tag = "mode", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Lifetime {
     Standard {},
@@ -36,7 +36,7 @@ impl Lifetime {
         }
     }
 }
-#[derive(Deserialize)]
+#[derive(serde::Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct BootstrapConfig {
     pub trust_file: PathBuf,

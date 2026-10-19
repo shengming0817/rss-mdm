@@ -100,7 +100,7 @@ fn enabled<'de, D: serde::Deserializer<'de>, T: Deserialize<'de>>(
 ) -> Result<Option<T>, D::Error> {
     T::deserialize(d).map(Some)
 }
-#[derive(Deserialize)]
+#[derive(serde::Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct NativeProtection {
     pub active_file: PathBuf,

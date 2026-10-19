@@ -77,7 +77,7 @@ impl Csr {
         })
     }
 }
-#[derive(Clone, Copy, Default, serde::Deserialize)]
+#[derive(Clone, Copy, Default, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "mode", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Lifetime {
     #[default]

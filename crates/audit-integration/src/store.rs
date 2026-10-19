@@ -59,6 +59,11 @@ pub struct AuditStore {
     ledger: bool,
 }
 impl AuditStore {
+    /// Public installation mode; never exposes the integrity key.
+    pub fn uses_ledger(&self) -> bool {
+        self.ledger
+    }
+
     /// 停写转交/恢复时逐页验证至已捕获的链头；同库链头本身不是外部防截断证明。
     pub async fn verify_history_to(
         &self,

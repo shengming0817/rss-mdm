@@ -466,6 +466,7 @@ async fn resume(mut saved: Saved, journal: &Journal) -> Result<Receipt> {
                     .fetch_one(&mut *tx)
                     .await
                     .map_err(|_| Error::Storage)?;
+            materials::webhooks(&mut tx, &mut runtime, host.operation, &protection, now).await?;
             materials::signing(&mut tx, &mut runtime, host.operation, &protection).await?;
             materials::apple(
                 &mut tx,

@@ -250,3 +250,28 @@ Apple 的 `identity_seed` 永久保留原 challenge/notify ID，实际凭据放�
 `restore-installation` 使用备份目录、独立保存的 manifest 摘要、新恢复操作 ID、目标管理员数据库连接，以及平台和每个已启用业务租户的 `accounts`（tenant_id、原 principal_id/login/password_file）。这是同址恢复：数据库名称/地址、安装路径、材料路径和内容路径保持原值；目标库必须为空，受限角色及原凭据须已恢复，外置材料父目录须存在。拒绝覆盖不同文件内容或已有业务库。恢复数据库使用单事务和持久操作标记，原角色授权在验证完成后恢复；原账户执行真实认证及授权核对，不以密码重置代替验证。
 
 CA 原容器仍存在时核对原 image/command/mount 后启动；容器缺失时从封存元数据生成固定、受限的 step-ca Compose 服务，复用原不可变 image、挂载和数据库，不重新初始化 CA。自定义 Docker 网络及固定 image 属于需预先恢复的部署基础设施。任何材料、旧密钥、权限、网络或外部 S3 资格缺失均停在原检查点，不能宣称恢复成功。
+
+`configure-host` 的 `channels` 变更接受严格的 Windows/Apple/Agent 配置、完整 provider 集合及 Apple 导入信任根。通道尚未就绪时保持关闭；可以先仅安装材料校验根，再由原材料 API 导入证书，最后启用通道。Windows 部署输入省略 `protocol_protection` 时，首次启用生成独立材料，已有通道沿用原材料；更换写钥必须走 `rotate-protection`。Apple 已建立的 `identity_seed` 不可被通道更新替换。所有文件输入在副作用前复制到按内容摘要命名的私有文件，应用摘要绑定实际材料字节；原输入文件随后变化不能改变已冻结的候选。
+
+目录增加 `domains` 导航字段，指向经权限过滤的既有账户、Group、Scope、Policy、软件资源、Apple 组织及注册 owner；不复制这些领域的写状态。`GET /api/v1/agent-packages` 提供与匿名包目录一致的公开发布元数据，仍要求业务目录权限。`GET /api/v1/tenant-administration/provisionings` 提供平台可读的原开通回执；其中历史观察不能当作当前进程健康保证。
+
+### 出站 Webhook 签名材料
+
+运行配置只保留受限 `networks` 和原恢复数据库配置，删除 `keys/current_file/retiring` loader。签名材料由 webhook owner 加密持久化，投递授权在事务中读取当前 active/retiring 选择；这是直接生效的领域设置，失败候选不会替换仍有效的 active 密钥。网络配置仍由部署边界限定，可通过 `configure-host` 的 `webhook_networks` 变更受控应用。
+
+`GET /api/v1/webhooks/materials` 返回网络配置摘要及公开版本状态。`POST` 同一路径接受 `reference`、`expectedRevision`、`configurationSha256`、`endpoint`、`networkReference` 和 `source`（`generate` 或 `import` 的 Standard Webhooks `whsec_` secret），要求近期真实会话、WebhookWrite 和 `Idempotency-Key`。响应和操作查询不返回秘密。`export-webhook-key` 由部署 operator 将指定版本交付到私有 `webhook-delivery-<operation>/delivery.json`；标准输出仅含公开回执。
+
+接收方安全安装该 secret 后，部署进程向已批准的精确 HTTPS endpoint 发出 `rss-mdm.webhook-key-confirmation/v1` 请求，使用该候选的 Standard Webhooks 签名。接收方验证签名，再以相同密钥对下面的 UTF-8 字节计算 HMAC-SHA256，返回 `{"confirmationProof":"<standard-base64>"}`。行间为单个 LF，结尾没有 LF：
+
+```text
+rss-mdm.webhook-key/v1
+<tenant UUID>
+<reference>
+<material revision>
+<configuration SHA-256>
+<challenge standard-base64>
+```
+
+该响应与请求签名使用不同消息，不能通过回显请求签名伪造确认。TLS 地址固定、无代理、无重定向，证书名字/根和网络边界均校验；失败保留原候选并至少一分钟后重试。普通运行角色无权写入 `confirmed`，也不能在 INSERT 时伪造确认。确认仅证明指定接收端在核验时持有确切候选，不代表业务事件已投递。
+
+`POST /api/v1/webhooks/materials/transitions` 接受 reference、expectedRevision 和 action（`activate`/`revoke` 的 materialRevision，或 `retire_previous`），同样要求 Idempotency-Key。激活须有真实 receiver confirmation；当前被撤销时失败关闭，不退回旧钥。旧双签仍有未决投递或恢复时拒绝退出，已退出材料继续加密保留供历史及联合备份。一次性 V4 转交保留原 whsec 字节、版本及尚有效的双签，显式标记 `legacyImport`，不能把旧来源验证当作新的接收端确认。公开 DTO 和接收合同见 [Webhook Materials schema](../../crates/webhook-service/schema/Materials.json)。

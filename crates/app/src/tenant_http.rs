@@ -139,6 +139,11 @@ impl Service {
                     let receipt = receipt_on(c, *operation).await?.ok_or(Reason::NotFound)?.0;
                     serde_json::to_value(receipt).map_err(|_| Reason::Storage)
                 }
+                Read::Provisionings=>{
+                    let items:Vec<serde_json::Value>=sqlx::query_scalar("SELECT receipt FROM public.mdm_tenant_operations WHERE action='provision' ORDER BY operation_id LIMIT 1001").fetch_all(&mut *c).await.map_err(|_|Reason::Storage)?;
+                    if items.len()>1000{return Err(Reason::Conflict);}
+                    Ok(serde_json::json!({"items":items}))
+                }
                 Read::List => {
                     let ids: Vec<String> = sqlx::query_scalar("SELECT tenant_id::text FROM public.mdm_tenants WHERE NOT deleted ORDER BY tenant_id")
                         .fetch_all(&mut *c).await.map_err(|_| Reason::Storage)?;
@@ -148,6 +153,21 @@ impl Service {
                 }
             }
         })).await
+    }
+    pub(crate) async fn directory(
+        &self,
+        proof: &AuthorizedPrincipal,
+        hosts: bool,
+    ) -> std::result::Result<serde_json::Value, Error> {
+        self.read(
+            proof,
+            if hosts {
+                Read::Provisionings
+            } else {
+                Read::List
+            },
+        )
+        .await
     }
     async fn registry_read<C: Send, T: Send>(
         &self,
@@ -303,6 +323,7 @@ impl rss_runtime::ManagedResource for Resource {
 }
 enum Read {
     List,
+    Provisionings,
     Tenant(String),
     Operation(Uuid),
 }
@@ -337,7 +358,10 @@ pub(crate) fn routes(service: Option<Arc<Service>>) -> Router {
     };
     Router::new()
         .route("/tenants", get(list))
-        .route("/provisionings", post(provisioning::create))
+        .route(
+            "/provisionings",
+            get(provisionings).post(provisioning::create),
+        )
         .route("/provisionings/{operation}", get(receipt))
         .route("/tenants/{tenant}", get(detail).put(update).delete(delete))
         .route("/tenants/{tenant}/administrators", post(administrator))
@@ -350,6 +374,16 @@ async fn list(
 ) -> std::result::Result<Json<serde_json::Value>, HttpFailure> {
     service
         .read(&auth.proof, Read::List)
+        .await
+        .map(Json)
+        .map_err(HttpFailure)
+}
+async fn provisionings(
+    State(service): State<Arc<Service>>,
+    Extension(auth): Extension<RequestAuth>,
+) -> std::result::Result<Json<serde_json::Value>, HttpFailure> {
+    service
+        .directory(&auth.proof, true)
         .await
         .map(Json)
         .map_err(HttpFailure)

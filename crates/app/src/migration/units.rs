@@ -311,5 +311,9 @@ pub(super) fn units() -> Vec<(&'static str, &'static str)> {
             "mail-materials-v1",
             rss_mdm_mail_service::store::INSTALL_SQL,
         ),
+        (
+            "webhook-materials-v1",
+            rss_mdm_webhook_service::materials::INSTALL_SQL,
+        ),
     ]
 }

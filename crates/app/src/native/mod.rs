@@ -4,7 +4,7 @@ pub(crate) mod tls;
 use axum::Router;
 use serde::Deserialize;
 use std::{net::SocketAddr, path::PathBuf, sync::Arc};
-#[derive(Deserialize)]
+#[derive(serde::Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TlsEndpoint {
     pub listen: SocketAddr,

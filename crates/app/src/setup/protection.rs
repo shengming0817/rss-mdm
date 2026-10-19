@@ -405,6 +405,10 @@ pub async fn rotate(request: Request) -> Result<Receipt> {
                 .map_err(|_| Error::Corrupt)?;
             } else {
                 let protector = request.purpose.protector(&config)?;
+                rewritten +=
+                    rss_mdm_webhook_service::materials::rewrap(&mut tx, host.tenant, &protector)
+                        .await
+                        .map_err(|_| Error::Corrupt)?;
                 rewritten += rss_mdm_mail_service::store::rewrap(
                     &mut tx,
                     &host.tenant.to_string(),
