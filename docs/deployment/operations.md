@@ -267,3 +267,17 @@ rss-mdm.webhook-key/v1
 该响应与请求签名使用不同消息，不能通过回显请求签名伪造确认。TLS 地址固定、无代理、无重定向，证书名字/根和网络边界均校验；失败保留原候选并至少一分钟后重试。普通运行角色无权写入 `confirmed`，也不能在 INSERT 时伪造确认。确认仅证明指定接收端在核验时持有确切候选，不代表业务事件已投递。
 
 `POST /api/v1/webhooks/materials/transitions` 接受 reference、expectedRevision 和 action（`activate`/`revoke` 的 materialRevision，或 `retire_previous`），同样要求 Idempotency-Key。激活须有真实 receiver confirmation；当前被撤销时失败关闭，不退回旧钥。旧双签仍有未决投递或恢复时拒绝退出，已退出材料继续加密保留供历史及联合备份。公开 DTO 和接收合同见 [Webhook Materials schema](../../crates/webhook-service/schema/Materials.json)。
+
+## 单机部署的重启与恢复边界
+
+同机拓扑与配置归属见[安装指南](installation.md#单机部署设计与配置归属)。当前安装器生成的 server/gateway 使用 host 网络，不采用共享容器网络命名空间的手工模板；不套用“重建 server 后必须因旧 namespace 重建 gateway”的旧操作。宿主配置变更沿原 `configure-host`/部署进程执行，核对 requested/applied revision、材料摘要、宿主/租户/operation 以及新的进程观察；直接改生成文件或仅重启进程不构成应用成功。
+
+服务 TLS 变更后分别检查网关与原生设备入口的证书链、主机名及实际连接；设备证书仍由后端验证，不借助代理头。CA、SCEP/webhook 和根/issuer CRL 变化按各自原 owner 验证，单机上的 DNS/容器健康不替代外部设备网络检查。APNs/Profile/WNS 等材料使用领域版本与受控应用流程，不恢复启动秘密文件 loader。
+
+备份使用上节 `backup-installation` 的停写与联合归档流程，恢复使用 `restore-installation`，不把正在运行的数据库/对象目录简单打包当作一致备份。CA 原数据库同时只能有一个写入者；停机、备份和接管均须证明旧写入者已隔离。归档、独立 manifest 摘要及秘密保存在异机受控介质，单机本地副本不能覆盖整机丢失风险。
+
+当前恢复只支持上节明确的同址条件；同机放置全部组件不提供 HA，也不承诺异址/异机自动灾备、RPO/RTO 或容量。当前联合冷备适用于隔离 CA 基线：输入须覆盖每个 `(purpose, issuer)`，而 CA 容器 ID 又不能重复，见[备份输入核验](../../crates/app/src/setup/backup.rs)。因此三用途共用同一 CA 容器会被拒绝，相关备份/恢复项必须记为 blocked；须另行实施支持并独立验收，不能通过省略用途、重复启动同一数据库写入者或手工打包绕过。不从隔离 CA 的恢复结果推导共享 CA 支持。
+
+恢复测试保留原账户、设备、issuer/kid、内容版本及 Ledger/保护材料，不能用换钥、重新注册、清库或重置密码代替核验。
+
+真机与故障记录使用[验收清单](installation.md#真机验收清单与证据)，区分服务恢复、历史身份可验证和终端实际恢复；缺材料或结果未知时保留原检查点与 blocked/unknown，不发布成功结论。
