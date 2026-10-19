@@ -214,53 +214,6 @@ pub(super) fn certificate(
     })
 }
 
-/// Offline custody may preserve an expired certificate, but never extends its expiry.
-/// Verify the exact chain/key/purpose at the last instant all supplied certificates were valid.
-pub(super) fn historical_certificate(
-    purpose: Purpose,
-    pem: &str,
-    private: &[u8],
-    roots: &[Vec<u8>],
-    now: i64,
-) -> Result<Certificate, Error> {
-    use x509_cert::der::Decode;
-    if let Ok(current) = certificate(purpose, pem, private, roots, now) {
-        return Ok(current);
-    }
-    if pem.len() > 128 * 1024 || roots.is_empty() || roots.len() > 16 || now <= 0 {
-        return Err(Error::CertificateRequest);
-    }
-    let chain = X509::stack_from_pem(pem.as_bytes()).map_err(|_| Error::CertificateRequest)?;
-    if chain.is_empty() || chain.len() > 8 {
-        return Err(Error::CertificateRequest);
-    }
-    for root in roots {
-        let anchor = X509::from_pem(root).map_err(|_| Error::CertificateRequest)?;
-        let mut latest = now;
-        let mut earliest = 1;
-        for cert in chain.iter().chain(std::iter::once(&anchor)) {
-            let parsed = x509_cert::Certificate::from_der(
-                &cert.to_der().map_err(|_| Error::CertificateRequest)?,
-            )
-            .map_err(|_| Error::CertificateRequest)?;
-            let validity = parsed.tbs_certificate.validity;
-            let start = i64::try_from(validity.not_before.to_unix_duration().as_secs())
-                .map_err(|_| Error::CertificateRequest)?;
-            let end = i64::try_from(validity.not_after.to_unix_duration().as_secs())
-                .map_err(|_| Error::CertificateRequest)?;
-            earliest = earliest.max(start);
-            latest = latest.min(end.saturating_sub(1));
-        }
-        if earliest <= latest
-            && let Ok(original) =
-                certificate(purpose, pem, private, std::slice::from_ref(root), latest)
-        {
-            return Ok(original);
-        }
-    }
-    Err(Error::CertificateRequest)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -361,31 +314,6 @@ mod tests {
         assert!(certificate(Purpose::Profile, &cert, &key.private, &[], NOW).is_err());
         assert!(certificate(Purpose::Profile, &cert, &key.private, &roots, NOW + 3600).is_err());
         assert!(certificate(Purpose::Apns, &cert, &key.private, &roots, NOW).is_err());
-    }
-    #[test]
-    fn offline_expired_custody_keeps_expiry_and_rejects_wrong_key_or_purpose() {
-        let key = prepare("tenant", Purpose::Profile, None).unwrap();
-        let (signer, root) = root();
-        let roots = vec![root.to_pem().unwrap()];
-        let cert = leaf(&root, &signer, &key, None, NOW + 3600);
-        let old =
-            historical_certificate(Purpose::Profile, &cert, &key.private, &roots, NOW + 90000)
-                .unwrap();
-        assert_eq!(old.expires, NOW + 3600);
-        assert!(certificate(Purpose::Profile, &cert, &key.private, &roots, NOW + 90000).is_err());
-        let other = prepare("other", Purpose::Profile, None).unwrap();
-        assert!(
-            historical_certificate(Purpose::Profile, &cert, &other.private, &roots, NOW + 90000)
-                .is_err()
-        );
-        assert!(
-            historical_certificate(Purpose::Apns, &cert, &key.private, &roots, NOW + 90000)
-                .is_err()
-        );
-        assert!(
-            historical_certificate(Purpose::Profile, &cert, &key.private, &roots, NOW - 120)
-                .is_err()
-        );
     }
     #[test]
     fn candidate_expiry_includes_the_verified_root_and_digest_binds_the_supplied_chain() {

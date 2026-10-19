@@ -7,7 +7,7 @@ CREATE TABLE mdm_webhook.key_heads (
 CREATE TABLE mdm_webhook.key_materials (
  tenant_id uuid NOT NULL,reference text NOT NULL,revision bigint NOT NULL CHECK(revision>0),
  operation_id uuid NOT NULL,configuration text NOT NULL CHECK(configuration ~ '^[0-9a-f]{64}$'),
- confirmation_endpoint text CHECK(confirmation_endpoint IS NULL OR length(confirmation_endpoint)<=2048),network_reference text CHECK(network_reference IS NULL OR length(network_reference) BETWEEN 1 AND 128),attempted_at bigint,confirmed_at bigint,failure_reason text,legacy_import boolean NOT NULL DEFAULT false,
+ confirmation_endpoint text CHECK(confirmation_endpoint IS NULL OR length(confirmation_endpoint)<=2048),network_reference text CHECK(network_reference IS NULL OR length(network_reference) BETWEEN 1 AND 128),attempted_at bigint,confirmed_at bigint,failure_reason text,
  key_digest bytea NOT NULL CHECK(octet_length(key_digest)=32),material bytea NOT NULL CHECK(octet_length(material) BETWEEN 1 AND 4096),
  nonce bytea NOT NULL CHECK(octet_length(nonce)=32),confirmed boolean NOT NULL DEFAULT false,
  revoked boolean NOT NULL DEFAULT false,
@@ -24,5 +24,5 @@ END $keys$;
 GRANT SELECT,INSERT ON mdm_webhook.key_heads,mdm_webhook.key_materials TO mdm_access,mdm_command_runtime;
 GRANT UPDATE(revision,active_revision,retiring_revision) ON mdm_webhook.key_heads TO mdm_access,mdm_command_runtime;
 GRANT UPDATE(revoked) ON mdm_webhook.key_materials TO mdm_access,mdm_command_runtime;
-CREATE POLICY insert_only ON mdm_webhook.key_materials AS RESTRICTIVE FOR INSERT WITH CHECK(current_user::text='mdm_owner'::text OR (NOT confirmed AND NOT revoked AND NOT legacy_import AND attempted_at IS NULL AND confirmed_at IS NULL AND failure_reason IS NULL));
+CREATE POLICY insert_only ON mdm_webhook.key_materials AS RESTRICTIVE FOR INSERT WITH CHECK(NOT confirmed AND NOT revoked AND attempted_at IS NULL AND confirmed_at IS NULL AND failure_reason IS NULL);
 COMMIT;

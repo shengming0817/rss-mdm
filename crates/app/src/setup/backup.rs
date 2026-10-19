@@ -1,16 +1,21 @@
 //! Quiesced current-installation backup. Original CA, database, content and protection identities travel together.
-use super::{
-    Error, Result,
-    installation::Input,
-    local::Journal,
-    snapshot_tree,
-    transfer::{backup as archive, ledger, storage},
-};
+mod accounts;
+pub(super) mod archive;
+mod ledger;
+pub(super) mod storage;
+use super::{Error, Result, installation::Input, local::Journal, snapshot_tree};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sqlx::Connection;
 use std::{collections::BTreeMap, path::PathBuf};
 use uuid::Uuid;
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OriginalAccount {
+    pub principal_id: Uuid,
+    pub login: String,
+    pub password_file: PathBuf,
+}
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Authority {
@@ -291,17 +296,6 @@ pub async fn capture(input: Request) -> Result<Receipt> {
         return Err(Error::Input);
     }
     let root = Journal::open(&input.installation.directory)?;
-    for (file, pointer, complete) in [
-        ("recovery.json", "/stage", "complete"),
-        ("transfer.json", "/receipt/phase", "transferred"),
-    ] {
-        if root
-            .load::<Value>(file)?
-            .is_some_and(|v| v.pointer(pointer).and_then(Value::as_str) != Some(complete))
-        {
-            return Err(Error::Busy);
-        }
-    }
 
     for marker in ["protection-operation.json", "configuration-operation.json"] {
         if root.load::<Option<Uuid>>(marker)?.flatten().is_some() {
@@ -379,7 +373,7 @@ pub struct Restore {
 #[serde(deny_unknown_fields)]
 pub struct RestoreAccount {
     pub tenant_id: Uuid,
-    pub account: super::transfer::OriginalAccount,
+    pub account: OriginalAccount,
 }
 #[derive(Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -801,7 +795,7 @@ async fn capture_stopped(frozen: &Frozen, journal: &Journal, progress: &mut Rece
         if let Some(volume) = &deployment.content_volume {
             snapshot_tree::capture(journal, &format!("volume-{}", host.id.simple()), volume)?;
         }
-        storage::backup_current(&mut c, journal, host.id, &host.runtime).await?;
+        storage::capture(&mut c, journal, host.id, &host.runtime).await?;
     }
     no_writers(&mut c).await?;
     // Forced RLS must not filter a whole-installation archive. The deployment
@@ -967,7 +961,7 @@ async fn restore_contents(
         if deployment.content_volume.is_some() {
             snapshot_tree::restore(journal, &format!("volume-{}", host.id.simple()))?;
         }
-        storage::restore_current(&mut c, journal, host.id, &host.runtime).await?;
+        storage::restore(&mut c, journal, host.id, &host.runtime).await?;
     }
     let expected: Vec<ledger::Head> = journal
         .load("ledger-checkpoints.json")?
@@ -1064,7 +1058,7 @@ async fn activate_restored(
         .fetch_one(&mut c)
         .await
         .map_err(|_| Error::Storage)?;
-        super::transfer::accounts::verify_restored(
+        accounts::verify_restored(
             &config,
             &account.tenant_id.to_string(),
             epoch,

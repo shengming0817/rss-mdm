@@ -81,10 +81,6 @@ use units::units;
 pub fn manifest() -> serde_json::Value {
     serde_json::json!({"units":units().into_iter().map(|(name, sql)| serde_json::json!({"name":name,"sha256":format!("{:x}", Sha256::digest(sql))})).collect::<Vec<_>>()})
 }
-/// The immutable, supported V4 unit prefix, before the first setup transition unit.
-pub(crate) fn source_manifest() -> serde_json::Value {
-    serde_json::json!({"units":units().into_iter().take_while(|(name,_)|*name!="tenant-provisioning-v1").map(|(name,sql)|serde_json::json!({"name":name,"sha256":format!("{:x}",Sha256::digest(sql))})).collect::<Vec<_>>()})
-}
 pub(crate) async fn migrate_on(conn: &mut PgConnection, installation: &Installation) -> Result<()> {
     migrate_units(conn, installation, &units()).await
 }
@@ -128,7 +124,7 @@ async fn migrate_units(
     {
         verify_installation(conn, installation, instance).await?;
     }
-    qualify_progress(conn, installation, current, &installed).await?;
+    qualify_progress(conn, &installed).await?;
     bind_progress(conn, installation).await?;
     for &(name, sql) in current {
         apply_unit(conn, installation, instance, name, sql).await?;
@@ -508,8 +504,6 @@ async fn verify_installation(
 
 async fn qualify_progress(
     conn: &mut PgConnection,
-    installation: &Installation,
-    current: &[(&'static str, &'static str)],
     installed: &[(String, String, bool)],
 ) -> Result<()> {
     let progress_exists: bool =
@@ -517,47 +511,11 @@ async fn qualify_progress(
             .fetch_one(&mut *conn)
             .await
             .map_err(|_| MigrationError::at("installation", "progress read"))?;
-    let source_length = current
-        .iter()
-        .position(|(name, _)| *name == "tenant-provisioning-v1");
-    if !installed.is_empty() && !progress_exists && source_length != Some(installed.len()) {
+    if !installed.is_empty() && !progress_exists {
         return Err(MigrationError::at(
             "installation",
             "unrecognized resumable installation source",
         ));
-    }
-    if !installed.is_empty() && !progress_exists {
-        let transfer: bool = sqlx::query_scalar(
-            "SELECT to_regclass('public.mdm_installation_transfer') IS NOT NULL",
-        )
-        .fetch_one(&mut *conn)
-        .await
-        .map_err(|_| MigrationError::at("installation", "transfer qualification unavailable"))?;
-        if !transfer {
-            return Err(MigrationError::at(
-                "installation",
-                "qualified offline source transfer required",
-            ));
-        }
-        let evidence:Option<(String,String,String)>=sqlx::query_as("SELECT source_revision,inputs_sha256,instance_id::text FROM public.mdm_installation_transfer WHERE singleton AND phase IN('verified','transferred')").fetch_optional(&mut *conn).await.map_err(|_|MigrationError::at("installation","source transfer qualification rejected"))?;
-        let admitted = evidence.is_some_and(|(revision, inputs, instance)| {
-            #[cfg(unix)]
-            {
-                instance == installation.instance_id
-                    && crate::setup::source::admitted(&revision, &inputs)
-            }
-            #[cfg(not(unix))]
-            {
-                let _ = (revision, inputs, instance);
-                false
-            }
-        });
-        if !admitted {
-            return Err(MigrationError::at(
-                "installation",
-                "source transfer qualification rejected",
-            ));
-        }
     }
     Ok(())
 }

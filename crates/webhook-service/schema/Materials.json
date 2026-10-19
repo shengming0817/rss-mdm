@@ -290,9 +290,6 @@
         "keyDigest": {
           "type": "string"
         },
-        "legacyImport": {
-          "type": "boolean"
-        },
         "networkReference": {
           "type": [
             "string",
@@ -323,8 +320,7 @@
         "keyDigest",
         "challenge",
         "confirmed",
-        "revoked",
-        "legacyImport"
+        "revoked"
       ]
     },
     "Prepare": {

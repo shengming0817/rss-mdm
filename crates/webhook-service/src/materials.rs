@@ -62,7 +62,6 @@ pub struct Material {
     pub attempted_at: Option<i64>,
     pub confirmed_at: Option<i64>,
     pub failure_reason: Option<String>,
-    pub legacy_import: bool,
 }
 #[derive(Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -141,7 +140,6 @@ fn material(row: &sqlx::postgres::PgRow) -> Result<Material, Error> {
         attempted_at: row.try_get("attempted_at")?,
         confirmed_at: row.try_get("confirmed_at")?,
         failure_reason: row.try_get("failure_reason")?,
-        legacy_import: row.try_get("legacy_import")?,
     })
 }
 async fn head(
@@ -468,66 +466,6 @@ pub async fn confirm(
     ring::hmac::verify(&key, &confirmation_message(tenant, &value), &supplied)
         .map_err(|_| Error::Denied)?;
     sqlx::query("UPDATE mdm_webhook.key_materials SET confirmed=true,confirmed_at=floor(extract(epoch FROM clock_timestamp()))::bigint,failure_reason=NULL WHERE tenant_id=$1 AND reference=$2 AND revision=$3 AND NOT revoked").bind(tenant).bind(reference).bind(revision).execute(c).await?;
-    Ok(())
-}
-
-/// Exact-source offline transfer only. Retained legacy keys keep their bytes and version identities.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "exact offline source coordinates and both retained key identities remain explicit"
-)]
-pub async fn import_legacy(
-    c: &mut PgConnection,
-    tenant: Uuid,
-    reference: &str,
-    operation: Uuid,
-    configuration: &str,
-    current: (i64, &str),
-    retiring: Option<(i64, &str)>,
-    key: &Protector,
-) -> Result<(), Error> {
-    let owner: bool = sqlx::query_scalar("SELECT current_user='mdm_owner'")
-        .fetch_one(&mut *c)
-        .await?;
-    if !owner {
-        return Err(Error::Denied);
-    }
-    self::reference(reference)?;
-    if operation.is_nil()
-        || current.0 < 1
-        || retiring.is_some_and(|old| old.0 < 1 || old.0 >= current.0)
-    {
-        return Err(Error::Invalid);
-    }
-    sqlx::query("INSERT INTO mdm_webhook.key_heads VALUES($1,$2,$3,$3,$4) ON CONFLICT DO NOTHING")
-        .bind(tenant)
-        .bind(reference)
-        .bind(current.0)
-        .bind(retiring.map(|v| v.0))
-        .execute(&mut *c)
-        .await?;
-    let active = head(c, tenant, reference, operation).await?;
-    if active.revision != current.0
-        || active.active_revision != Some(current.0)
-        || active.retiring_revision != retiring.map(|v| v.0)
-    {
-        return Err(Error::Conflict);
-    }
-    for (revision, secret) in std::iter::once(current).chain(retiring) {
-        let raw = decode(secret)?;
-        let digest = Sha256::digest(raw.as_slice()).to_vec();
-        let id = Uuid::new_v5(
-            &operation,
-            format!("webhook:{reference}:{revision}").as_bytes(),
-        );
-        if let Some(old)=sqlx::query("SELECT operation_id,key_digest,configuration,legacy_import FROM mdm_webhook.key_materials WHERE tenant_id=$1 AND reference=$2 AND revision=$3").bind(tenant).bind(reference).bind(revision).fetch_optional(&mut *c).await? {
-            if old.try_get::<Uuid,_>("operation_id")?!=id || old.try_get::<Vec<u8>,_>("key_digest")?!=digest || old.try_get::<String,_>("configuration")?!=configuration || !old.try_get::<bool,_>("legacy_import")?{return Err(Error::Conflict);}continue;
-        }
-        let sealed = key
-            .seal_bytes(secret.as_bytes(), &context(tenant, reference, revision)?)
-            .map_err(|_| Error::Storage)?;
-        sqlx::query("INSERT INTO mdm_webhook.key_materials(tenant_id,reference,revision,operation_id,configuration,key_digest,material,nonce,confirmed,legacy_import) VALUES($1,$2,$3,$4,$5,$6,$7,$8,true,true)").bind(tenant).bind(reference).bind(revision).bind(id).bind(configuration).bind(digest).bind(sealed).bind(random()?.as_slice()).execute(&mut *c).await?;
-    }
     Ok(())
 }
 

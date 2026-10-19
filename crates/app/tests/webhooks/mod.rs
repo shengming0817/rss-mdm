@@ -138,17 +138,29 @@ async fn subscription_versions_atomic_fanout_and_same_id_https_retry() -> Result
             .execute(&mut *tx)
             .await?;
         let protection = config.native_protector()?;
-        rss_mdm_webhook_service::materials::import_legacy(
+        let tenant = Uuid::parse_str(case_tenant())?;
+        rss_mdm_webhook_service::materials::prepare(
             &mut tx,
-            Uuid::parse_str(case_tenant())?,
-            "receiver",
+            tenant,
             Uuid::new_v4(),
-            &config.webhooks.material_configuration()?,
-            (1, &std::fs::read_to_string(&key)?),
-            None,
+            &rss_mdm_webhook_service::materials::Prepare {
+                reference: "receiver".into(),
+                expected_revision: 0,
+                configuration_sha256: config.webhooks.material_configuration()?,
+                endpoint: format!("https://source.invalid:{port}/"),
+                network_reference: "receiver".into(),
+                source: rss_mdm_webhook_service::materials::Source::Import {
+                    secret: std::fs::read_to_string(&key)?.into(),
+                },
+            },
             &protection,
         )
         .await?;
+        // This case observes delivery, not material confirmation. Seed the legal confirmed state.
+        sqlx::query("UPDATE mdm_webhook.key_materials SET confirmed=true,attempted_at=1,confirmed_at=1 WHERE tenant_id=$1 AND reference='receiver' AND revision=1")
+            .bind(tenant).execute(&mut *tx).await?;
+        sqlx::query("UPDATE mdm_webhook.key_heads SET active_revision=1 WHERE tenant_id=$1 AND reference='receiver'")
+            .bind(tenant).execute(&mut *tx).await?;
         tx.commit().await?;
         c.close().await?;
     }

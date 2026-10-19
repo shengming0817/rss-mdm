@@ -23,13 +23,9 @@ pub mod providers;
 #[cfg(unix)]
 mod snapshot_tree;
 #[cfg(unix)]
-pub mod source;
-#[cfg(unix)]
 mod supervisor;
 #[cfg(unix)]
 pub mod tenant_hosts;
-#[cfg(unix)]
-pub mod transfer;
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     #[error("installation input rejected")]
@@ -55,8 +51,8 @@ pub(crate) async fn content_snapshot_fixture(
 ) -> Result<()> {
     let journal = local::Journal::open(directory)?;
     if restore {
-        transfer::storage::restore_current(connection, &journal, host, runtime).await
+        backup::storage::restore(connection, &journal, host, runtime).await
     } else {
-        transfer::storage::backup_current(connection, &journal, host, runtime).await
+        backup::storage::capture(connection, &journal, host, runtime).await
     }
 }

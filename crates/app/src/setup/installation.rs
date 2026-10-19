@@ -236,12 +236,6 @@ pub async fn install(input: Input) -> Result<Receipt> {
     {
         return Err(Error::Busy);
     }
-    if journal
-        .load::<serde_json::Value>("transfer.json")?
-        .is_some()
-    {
-        return Err(Error::Conflict);
-    }
     let previous = journal.load::<Saved>("installation.json")?;
     let first = previous.is_none();
     let fingerprint_key = protected(&journal, "operation.key", 32, first)?;
