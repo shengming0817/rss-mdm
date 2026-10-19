@@ -44,3 +44,19 @@ pub enum Error {
     Storage,
 }
 pub type Result<T> = std::result::Result<T, Error>;
+
+#[cfg(all(test, unix))]
+pub(crate) async fn content_snapshot_fixture(
+    connection: &mut sqlx::PgConnection,
+    directory: &std::path::Path,
+    host: uuid::Uuid,
+    runtime: &serde_json::Value,
+    restore: bool,
+) -> Result<()> {
+    let journal = local::Journal::open(directory)?;
+    if restore {
+        transfer::storage::restore_current(connection, &journal, host, runtime).await
+    } else {
+        transfer::storage::backup_current(connection, &journal, host, runtime).await
+    }
+}

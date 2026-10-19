@@ -107,6 +107,7 @@ def exercise(admin, normal, delegate, config, management, business, password, sq
     require(Browser(absent_host,config['product_origin']).call('GET',BASE+'/tenants')[0] == 404, 'disabled registry routes were mounted')
     absent_host.close()
     lost_commit_ack(target_config,password,sql,builds,root,stack,admin,tenant)
+    provisioning_pages_and_active_directory(admin, sql)
 
 
 def administrator_rollback(call, path, tenant, password, sql):
@@ -253,3 +254,39 @@ class AckProxy:
         self.listener.close()
         for connection in self.sockets: connection.close()
         self.thread.join(timeout=2)
+
+
+def provisioning_pages_and_active_directory(admin, sql):
+    # Seed the minimal valid reserved receipts: listing does not require accounts or hosts to run.
+    seed = uuid.uuid4().hex
+    ids = f"SELECT md5('{seed}'||i::text)::uuid FROM generate_series(1,1101) i"
+    before = int(sql("SELECT count(*) FROM public.mdm_tenant_operations WHERE action='provision'"))
+    sql(f"INSERT INTO public.mdm_tenants(tenant_id,initial_epoch,deleted) SELECT md5('{seed}'||i::text)::uuid,1,i>1001 FROM generate_series(1,1101) i")
+    try:
+        sql(f"""INSERT INTO public.mdm_tenant_operations(operation_id,tenant_id,action,request,operator,receipt)
+        SELECT id,id,'provision','{{}}','{{}}',jsonb_build_object('operationId',id,'action','provision','result',
+        jsonb_build_object('operationId',id,'tenantId',id,'hostId',md5(id::text||'host')::uuid,
+        'administratorId',NULL,'revision',1,'phase','reserved','blocked',NULL,'origin',NULL,'application',NULL))
+        FROM ({ids}) q(id)""")
+        seen = set()
+        after = None
+        while True:
+            query = '/provisionings?limit=1000' + ('&after=' + after if after else '')
+            status, page = admin.call('GET', BASE + query)
+            require(status == 200 and 0 < len(page['items']) <= 1000, 'provisioning page failed at legal capacity')
+            current = [item['operationId'] for item in page['items']]
+            require(current == sorted(current) and not seen.intersection(current), 'provisioning pagination repeated or reordered rows')
+            seen.update(current)
+            after = page['nextAfter']
+            if after is None:
+                break
+            require(after == current[-1], 'page cursor did not bind last returned operation')
+        require(len(seen) == before + 1101, 'provisioning history lost rows')
+        status, catalog = admin.call('GET', BASE + '/settings/catalog')
+        host = next(item for item in catalog['items'] if item['id'] == 'host-config')
+        expected = int(sql("SELECT count(*) FROM public.mdm_tenant_operations o JOIN public.mdm_tenants t USING(tenant_id) WHERE o.action='provision' AND NOT t.deleted"))
+        require(status == 200 and host['configuredCount'] == expected and expected > 1000, 'active directory omitted legal tenants or included deleted history')
+        require(admin.call('GET', BASE + '/provisionings?limit=1001')[0] == 400, 'unbounded page accepted')
+    finally:
+        sql(f"DELETE FROM public.mdm_tenant_operations WHERE operation_id IN ({ids})")
+        sql(f"DELETE FROM public.mdm_tenants WHERE tenant_id IN ({ids})")

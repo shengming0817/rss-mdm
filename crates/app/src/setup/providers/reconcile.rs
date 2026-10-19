@@ -52,7 +52,7 @@ async fn storage_tenant(
 ) -> Result<()> {
     let mut tx = c.begin().await.map_err(|_| Error::Storage)?;
     scope(&mut tx, tenant).await?;
-    let operations: Vec<Uuid> = sqlx::query_scalar("SELECT operation_id FROM mdm_content_connections.versions WHERE tenant_id=$1 AND state='pending' AND NOT revoked ORDER BY revision LIMIT 8").bind(tenant).fetch_all(&mut *tx).await.map_err(|_| Error::Storage)?;
+    let operations: Vec<Uuid> = sqlx::query_scalar("SELECT operation_id FROM mdm_content_connections.versions WHERE tenant_id=$1 AND state='pending' AND NOT revoked ORDER BY attempted_at NULLS FIRST,revision LIMIT 8").bind(tenant).fetch_all(&mut *tx).await.map_err(|_| Error::Storage)?;
     tx.commit().await.map_err(|_| Error::Storage)?;
     if operations.is_empty() {
         return Ok(());
@@ -71,7 +71,14 @@ async fn storage_tenant(
         config.native_protector().map_err(|_| Error::Corrupt)?
     };
     for operation in operations {
-        storage_operation(input, c, tenant, operation, protection.as_ref()).await?;
+        if !storage_attempt(c, tenant, operation).await? {
+            continue;
+        }
+        if let Err(error) =
+            storage_operation(input, c, tenant, operation, protection.as_ref()).await
+        {
+            storage_failure(c, tenant, operation, error).await?;
+        }
     }
 
     Ok(())
@@ -143,7 +150,7 @@ async fn storage_operation(
     scope(&mut tx, tenant).await?;
     let pending = connections::pending(&mut tx, id, operation, protection)
         .await
-        .map_err(|_| Error::Corrupt)?;
+        .map_err(connection_error)?;
     let Some(profile) = input
         .storage_profiles
         .iter()
@@ -164,7 +171,7 @@ async fn storage_operation(
     };
     connections::bind_metadata(&mut tx, id, operation, &metadata)
         .await
-        .map_err(|_| Error::Conflict)?;
+        .map_err(connection_error)?;
     tx.commit().await.map_err(|_| Error::Storage)?;
     let material = Workload {
         create_identity: pending.generated,
@@ -179,7 +186,7 @@ async fn storage_operation(
         Ok(evidence) => {
             connections::qualify(&mut tx, id, operation, &metadata, evidence.qualified_at)
                 .await
-                .map_err(|_| Error::Conflict)?;
+                .map_err(connection_error)?;
         }
         Err(_) => {
             // 保留原操作和原凭据，下一次从已记录的外部结果恢复。
@@ -190,3 +197,46 @@ async fn storage_operation(
 
     Ok(())
 }
+
+fn connection_error(error: rss_mdm_content_service::Error) -> Error {
+    match error {
+        rss_mdm_content_service::Error::Conflict => Error::Conflict,
+        rss_mdm_content_service::Error::Configuration
+        | rss_mdm_content_service::Error::Malformed => Error::Input,
+        rss_mdm_content_service::Error::Metadata | rss_mdm_content_service::Error::Invariant => {
+            Error::Corrupt
+        }
+        _ => Error::Storage,
+    }
+}
+async fn storage_attempt(c: &mut PgConnection, tenant: Uuid, operation: Uuid) -> Result<bool> {
+    let mut tx = c.begin().await.map_err(|_| Error::Storage)?;
+    scope(&mut tx, tenant).await?;
+    let state: Option<String> = sqlx::query_scalar("UPDATE mdm_content_connections.versions SET attempted_at=clock_timestamp(),state=CASE WHEN expires_at<=extract(epoch FROM statement_timestamp()) THEN 'rejected' ELSE state END,failure_reason=CASE WHEN expires_at<=extract(epoch FROM statement_timestamp()) THEN 'credentials_expired' ELSE failure_reason END WHERE tenant_id=$1 AND operation_id=$2 AND state='pending' AND NOT revoked RETURNING state")
+        .bind(tenant).bind(operation).fetch_optional(&mut *tx).await.map_err(|_| Error::Storage)?;
+    tx.commit().await.map_err(|_| Error::Storage)?;
+    Ok(state.as_deref() == Some("pending"))
+}
+async fn storage_failure(
+    c: &mut PgConnection,
+    tenant: Uuid,
+    operation: Uuid,
+    error: Error,
+) -> Result<()> {
+    let (rejected, reason) = match error {
+        Error::Storage => return Err(Error::Storage),
+        Error::Conflict => (true, "qualification_rejected"),
+        Error::Corrupt => (true, "invalid_candidate_material"),
+        Error::Input => (false, "provider_configuration_unavailable"),
+        Error::Busy => (false, "operation_busy"),
+    };
+    let mut tx = c.begin().await.map_err(|_| Error::Storage)?;
+    scope(&mut tx, tenant).await?;
+    sqlx::query("UPDATE mdm_content_connections.versions SET failure_reason=$3,state=CASE WHEN $4 THEN 'rejected' ELSE state END WHERE tenant_id=$1 AND operation_id=$2 AND state='pending'")
+        .bind(tenant).bind(operation).bind(reason).bind(rejected).execute(&mut *tx).await.map_err(|_| Error::Storage)?;
+    tx.commit().await.map_err(|_| Error::Storage)
+}
+
+#[cfg(test)]
+#[path = "../../../tests/setup/reconcile.rs"]
+mod tests;

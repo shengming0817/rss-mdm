@@ -108,7 +108,9 @@ create/update/delete 的 operation_id 共用一个全局命名空间。同一操
 
 | 方法与路径（前缀 `/api/v1/tenant-administration`） | 请求 / 结果 |
 |---|---|
-| POST `/tenants` | `tenantId`、`initialEpoch`、可选 `name`/`notes` |
+| POST `/provisionings` | `name`、`administratorLogin`、`administratorPassword`；返回完整开通操作 |
+| GET `/provisionings` | 开通操作分页列表；`after` 为上一页游标，`limit` 为 1–1000（默认 100）；返回 `items` 和 `nextAfter` |
+| GET `/provisionings/{operationId}` | 查询原开通操作与当前恢复阶段 |
 | GET `/tenants` | 未删除租户列表，包含保留管理租户 |
 | GET `/tenants/{tenantId}` | 当前元数据 |
 | PUT `/tenants/{tenantId}` | `expectedRevision` 与替换元数据 |
@@ -116,7 +118,7 @@ create/update/delete 的 operation_id 共用一个全局命名空间。同一操
 | POST `/tenants/{tenantId}/administrators` | `login`、`password` |
 | GET `/operations/{operationId}` | 原始已提交回执；不存在为 404 |
 
-所有写入仅从 `Idempotency-Key` 读取规范 UUID；JSON 拒绝未知字段。成功与重放均为 200，回执统一为 `{operationId,action,result}`；CLI 的回执采用同一格式，字段使用 camelCase。相同操作号请求内容不同返回 409，重放保持最初结果与操作者，后续修改不改变回执。
+所有写入仅从 `Idempotency-Key` 读取规范 UUID；JSON 拒绝未知字段。开通操作尚未完成时返回 202，完成及完成后的重放返回 200；其它写入成功及重放返回 200。回执统一为 `{operationId,action,result}`；CLI 的回执采用同一格式，字段使用 camelCase。相同操作号请求内容不同返回 409，重放保持最初结果与操作者，后续修改不改变回执。
 
 创建管理员要求管理租户 `tenant_administrator_create` 及 300 秒内认证。服务生成新主体，原子写入账户、目标租户全部业务/设备 AllDevices 与账户/IdP 管理权限、审计和回执；不授予安装级租户管理权限，也不签发目标租户会话。可持续添加多个管理员；重复登录名返回 409，不重置或接管已有账户。重放会复核操作者当前会话与权限，但不重新赋权。开始账户初始化前永久登记首次使用，失败也不恢复可删除性。
 

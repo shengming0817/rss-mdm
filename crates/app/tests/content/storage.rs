@@ -861,6 +861,33 @@ async fn restored_provider_version_rebinds_atomically_without_reissuing_content(
                 .await
                 .context("catalog after version rebind")?;
             tx.commit().await?;
+            // Exercise the shared installation/transfer archive owner after the domain rebind proof.
+            let archive_root = tempfile::tempdir()?;
+            let archive = archive_root.path().canonicalize()?.join("snapshot");
+            let host = Uuid::new_v4();
+            let mut runtime: Value =
+                serde_json::from_slice(&std::fs::read(std::env::var("MDM_TEST_CONFIG")?)?)?;
+            runtime["identity"]["tenant_id"] = json!(case_tenant());
+            runtime["content"]["storage"] = s3_storage()?.1;
+            crate::setup::content_snapshot_fixture(&mut c, &archive, host, &runtime, false).await?;
+            ensure!(matches!(
+                provider.delete(restored.object(), budget()?).await?,
+                rss_mdm_content_s3::Mutation::Confirmed(())
+            ));
+            crate::setup::content_snapshot_fixture(&mut c, &archive, host, &runtime, true).await?;
+            crate::setup::content_snapshot_fixture(&mut c, &archive, host, &runtime, true).await?;
+            let mut tx = c.begin().await?;
+            sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
+                .bind(case_tenant())
+                .execute(&mut *tx)
+                .await?;
+            let final_records =
+                rss_mdm_content_service::backup::s3_page(&mut tx, tenant, None).await?;
+            ensure!(final_records.len() == 1 && final_records[0].content == record.content);
+            ensure!(
+                final_records[0].object.as_ref().unwrap().version() != restored.object().version()
+            );
+            tx.rollback().await?;
             let mut output = store
                 .verify_class(
                     &artifact,

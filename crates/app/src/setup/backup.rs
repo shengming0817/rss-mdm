@@ -176,6 +176,26 @@ fn ca_identity(authority: &Authority, actual: &Value) -> Result<()> {
     }
     Ok(())
 }
+fn restart_policy(saved: &Value) -> Result<String> {
+    let policy = &saved["HostConfig"]["RestartPolicy"];
+    let name = policy["Name"].as_str().ok_or(Error::Corrupt)?;
+    let retries = policy["MaximumRetryCount"].as_u64().ok_or(Error::Corrupt)?;
+    match name {
+        "no" | "always" | "unless-stopped" if retries == 0 => Ok(name.into()),
+        "on-failure" if retries <= i32::MAX as u64 => Ok(if retries == 0 {
+            name.into()
+        } else {
+            format!("on-failure:{retries}")
+        }),
+        _ => Err(Error::Corrupt),
+    }
+}
+async fn start_with_policy(id: &str, saved: &Value) -> Result<()> {
+    let policy = format!("--restart={}", restart_policy(saved)?);
+    super::deployment::docker(&["update", &policy, id]).await?;
+    super::deployment::docker(&["start", id]).await?;
+    Ok(())
+}
 async fn stop(ids: &[String]) -> Result<()> {
     for id in ids {
         super::deployment::docker(&["update", "--restart=no", id]).await?;
@@ -489,7 +509,7 @@ async fn resume_ca(
         {
             return Err(Error::Conflict);
         }
-        super::deployment::docker(&["start", &authority.container_id]).await?;
+        start_with_policy(&authority.container_id, &saved).await?;
         return Ok(());
     }
     let image = saved["Image"].as_str().ok_or(Error::Corrupt)?;
@@ -514,6 +534,7 @@ async fn resume_ca(
         Ok(json!({"type":"bind","source":source,"target":m["Destination"],"read_only":!m["RW"].as_bool().ok_or(Error::Corrupt)?}))
     }).collect::<Result<Vec<_>>>()?;
     let mut service = json!({"image":image,"user":user,"read_only":true,"cap_drop":["ALL"],"security_opt":["no-new-privileges:true"],"tmpfs":["/tmp:rw,noexec,nosuid,size=64m"],"entrypoint":[saved["Path"]],"command":saved["Args"],"volumes":mounts,"labels":{"rss.mdm.ca.restore":operation,"rss.mdm.ca.issuer":authority.issuer}});
+    service["restart"] = json!(restart_policy(&saved)?);
     let mode = saved["HostConfig"]["NetworkMode"]
         .as_str()
         .ok_or(Error::Corrupt)?;
@@ -653,6 +674,7 @@ async fn freeze_backup(input: Request, root: &Journal, journal: &Journal) -> Res
             return Err(Error::Conflict);
         }
         ca_identity(authority, &actual)?;
+        restart_policy(&actual)?;
         journal.secret(
             &format!("ca-container-{index}.json"),
             &serde_json::to_vec(&actual).map_err(|_| Error::Corrupt)?,
@@ -829,8 +851,8 @@ async fn resume_capture(
     connection_fence(&mut c, journal, false).await?;
     c.close().await.map_err(|_| Error::Storage)?;
 
-    for authority in &frozen.request.authorities {
-        super::deployment::docker(&["start", &authority.container_id]).await?;
+    for (index, authority) in frozen.request.authorities.iter().enumerate() {
+        resume_ca(root, journal, index, authority, frozen.request.operation_id).await?;
     }
     for host in &frozen.hosts {
         let deployment = match host.slot {

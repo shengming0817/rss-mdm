@@ -175,6 +175,7 @@ impl Verifier {
     }
 }
 
+#[cfg(feature = "integration")]
 impl Verifier {
     /// Signing helper for authenticated in-process provider fixtures, never exposed over HTTP.
     pub fn signature_fixture(

@@ -51,3 +51,54 @@ async fn database_connection_fence_replays_and_restores_original_grants() -> Res
     owner.close().await?;
     Ok(())
 }
+
+#[tokio::test]
+#[ignore = "MODULE=installation.restart: original container policy survives quiescence and actually restarts after failure"]
+async fn original_restart_policy_is_restored_after_quiescence() -> Result<()> {
+    let providers: Value =
+        serde_json::from_str(include_str!("../../../../deployment/providers.lock.json"))?;
+    let image = providers["nginx"].as_str().unwrap();
+    let name = format!("mdm-restart-{}", Uuid::new_v4().simple());
+    let id = super::super::deployment::docker(&[
+        "run",
+        "--detach",
+        "--name",
+        &name,
+        "--restart=on-failure:3",
+        "--entrypoint",
+        "/bin/sh",
+        image,
+        "-c",
+        "exec sleep 600",
+    ])
+    .await?;
+    let name = String::from_utf8(id)?.trim().to_owned();
+    let result = async {
+        let saved = inspect(&name).await?;
+        stop(std::slice::from_ref(&name)).await?;
+        ensure!(inspect(&name).await?["HostConfig"]["RestartPolicy"]["Name"] == "no");
+        start_with_policy(&name, &saved).await?;
+        ensure!(
+            inspect(&name).await?["HostConfig"]["RestartPolicy"]
+                == saved["HostConfig"]["RestartPolicy"]
+        );
+        tokio::time::sleep(std::time::Duration::from_secs(11)).await;
+        // Terminate the process from inside: docker kill marks a manual stop and suppresses restart.
+        let _ = super::super::deployment::docker(&["exec", &name, "sh", "-c", "kill -9 1"]).await;
+        for _ in 0..30 {
+            let actual = inspect(&name).await?;
+            if actual["RestartCount"].as_u64().unwrap_or(0) > 0
+                && actual["State"]["Running"] == true
+            {
+                return Ok(());
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        }
+        anyhow::bail!("restored restart policy did not restart the failed process")
+    }
+    .await;
+    let cleanup = super::super::deployment::docker(&["rm", "--force", &name]).await;
+    result?;
+    cleanup?;
+    Ok(())
+}

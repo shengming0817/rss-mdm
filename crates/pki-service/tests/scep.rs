@@ -48,9 +48,8 @@ fn issuer_bound_callbacks_reject_cross_stage_and_ambiguous_ids() {
     .unwrap()
     .unix_timestamp();
     let mut headers = HeaderMap::new();
-    let (id, signature) = verifier
-        .signature_fixture(&"a".repeat(64), Stage::Challenge, bytes)
-        .unwrap();
+    let id = "a-challenge";
+    let signature = ring::hmac::sign(&ring::hmac::Key::new(ring::hmac::HMAC_SHA256, b"a"), bytes);
     headers.insert("x-smallstep-webhook-id", id.parse().unwrap());
     headers.insert(
         "x-smallstep-signature",

@@ -8,7 +8,7 @@ CREATE TABLE mdm_content_connections.versions (
  profile text NOT NULL, generated boolean NOT NULL, credentials bytea NOT NULL,
  fingerprint_key text NOT NULL, fingerprint bytea NOT NULL CHECK(octet_length(fingerprint)=32),
  state text NOT NULL DEFAULT 'pending' CHECK(state IN('pending','qualified','rejected')),
- failure_reason text,
+ failure_reason text, attempted_at timestamptz,
  endpoint text, region text, bucket text, namespace text, private_ca bytea,
  qualified_at bigint, expires_at bigint, selected boolean NOT NULL DEFAULT false, revoked boolean NOT NULL DEFAULT false,
  PRIMARY KEY(tenant_id,revision), UNIQUE(tenant_id,operation_id),

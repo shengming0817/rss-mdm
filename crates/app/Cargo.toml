@@ -134,7 +134,7 @@ tower.workspace = true
 
 [features]
 default = []
-integration = ["rss-mdm-software-service/integration", "rss-mdm-apple-channel/integration", "rss-mdm-registration-service/integration", "rss-mdm-resource-postgres/integration", "rss-mdm-execution-service/integration", "rss-mdm-flow-service/integration", "rss-mdm-inventory-service/integration", "rss-transactional-messaging-postgres/integration", "rss-observation-postgres/integration", "rss-projection-postgres/integration", "rss-identity-oidc/test-support", "rss-identity-postgres/test-support"]
+integration = ["rss-mdm-pki-service/integration","rss-mdm-software-service/integration", "rss-mdm-apple-channel/integration", "rss-mdm-registration-service/integration", "rss-mdm-resource-postgres/integration", "rss-mdm-execution-service/integration", "rss-mdm-flow-service/integration", "rss-mdm-inventory-service/integration", "rss-transactional-messaging-postgres/integration", "rss-observation-postgres/integration", "rss-projection-postgres/integration", "rss-identity-oidc/test-support", "rss-identity-postgres/test-support"]
 
 [lints]
 workspace = true

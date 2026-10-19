@@ -2136,3 +2136,8 @@ module = MODULES['planning.agent_policy']
 MODULES['planning.agent_policy'] = replace(module, policies=(*module.policies, CasePolicy(
     'planning::t2::agent_policy::registered_script_eligibility_gates_preview_and_automatic',
     'reuse', 'tenant', actors=module.actors)))
+
+add('installation.restart', selectors=('setup::backup::tests::original_restart_policy_is_restored_after_quiescence',), profile='none', sources=('crates/app/src/setup/backup.rs',), tests=('crates/app/tests/setup/backup.rs',))
+
+add('installation.storage_reconcile', selectors=('setup::providers::reconcile::tests::failed_candidates_and_expired_evidence_do_not_block_later_work',), fixtures=('runtime_config','s3'), sources=('crates/app/src/setup/providers/reconcile.rs','crates/content-service/src/connections.rs','crates/content-service/schema/connections.sql'), tests=('crates/app/tests/setup/reconcile.rs',))
+MODULES['installation.storage_reconcile'] = replace(MODULES['installation.storage_reconcile'], db_mode='fresh', scope='pair')
