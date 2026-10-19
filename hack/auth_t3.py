@@ -147,7 +147,8 @@ def run(candidate, tools_image, output):
                 for stack in [primary,other]:
                     conf=(stack.root/'nginx.conf').read_text().replace('listen 8445 ssl;','listen 443 ssl;\n        listen 8445 ssl;')
                     (stack.root/'nginx.conf').write_text(conf)
-                    stack.copy_secret_volume(stack.gateway_inputs,['server.crt','server.key','nginx.conf','ui.json'],10001)
+                    (stack.root/'container/gateway/nginx.conf').write_text(conf)
+                    stack.copy_runtime()
                     docker('exec',stack.gateway,'nginx','-c','/certs/nginx.conf','-s','reload',stage=Stage.GATEWAY)
                 private=primary.private_values+other.private_values
                 params=dict(mode='faults',origin='https://mdm.example.test',otherOrigin='https://mdm-other.example.test',tenant=TENANT,member=primary.member,ssoMember=primary.sso_member,adminPassword=primary.password,memberPassword=primary.member_password,
@@ -175,7 +176,7 @@ def run(candidate, tools_image, output):
                 result=json.loads(raw);result['checks']['installation_mismatch']=mismatch;validate_checks(result['checks'])
                 logs={name:docker('logs',name,stage=Stage.LOGS) for name in [primary.server,primary.gateway,other.server,other.gateway]}
                 safe_evidence(logs,private+result.pop('privateValues',[]))
-                result['instances']=[dict(instance=s.instance,tenant=s.tenant,origin='https://'+s.host,server=s.server,gateway=s.gateway,config_sha256=sha(s.runtime/'config.json'),gateway_sha256=sha(s.root/'nginx.conf'),ui_config=json.loads((s.root/'ui.json').read_text())) for s in [primary,other]]
+                result['instances']=[dict(instance=s.instance,tenant=s.tenant,origin='https://'+s.host,server=s.server,gateway=s.gateway,config_sha256=sha(s.runtime/'config.json'),gateway_sha256=sha(s.root/'nginx.conf'),ui_config=json.loads((s.root/'container/gateway/ui.json').read_text())) for s in [primary,other]]
                 result.update(mdm=primary.manifest,web=primary.web,tools=tool,
                               origins=['https://mdm.example.test','https://mdm-other.example.test'],
                               ca_sha256=[sha(primary.root/'ca.crt'),sha(other.root/'ca.crt')],

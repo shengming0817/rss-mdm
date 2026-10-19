@@ -21,7 +21,7 @@ async fn execute() -> Result<(), ProcessError> {
     let args: Vec<_> = std::env::args().skip(1).collect();
     if args == ["--help"] {
         println!(
-            "rss-mdm install|provision-hosts|rotate-protection|prepare-ca|configure-host|export-webhook-key|backup-installation|restore-installation|serve|migrate|tenant-get|tenant-list|tenant-update|tenant-delete|tenant-operation-status|initialize|initialize-authorization|recover-password --config /absolute/private-config.json\nrss-mdm --version|--describe"
+            "rss-mdm install|provision-hosts|rotate-protection|prepare-ca|configure-host|public-host-config|export-webhook-key|backup-installation|restore-installation|serve|migrate|tenant-get|tenant-list|tenant-update|tenant-delete|tenant-operation-status|initialize|initialize-authorization|recover-password --config /absolute/private-config.json\nrss-mdm --version|--describe"
         );
         return Ok(());
     }
@@ -41,6 +41,20 @@ async fn execute() -> Result<(), ProcessError> {
     }
     let path = std::path::Path::new(&args[2]);
     match args[0].as_str() {
+        "public-host-config" => {
+            let config = config::load(path)?;
+            let public = rss_mdm_app::setup::public_configuration::read(&config)
+                .await
+                .map_err(|error| setup_failure("host.configuration", error))?;
+            println!(
+                "{}",
+                serde_json::to_string(&public).map_err(|_| setup_failure(
+                    "host.configuration",
+                    rss_mdm_app::setup::Error::Input
+                ))?
+            );
+            Ok(())
+        }
         #[cfg(unix)]
         "install" => {
             let input = config::load(path)?;
@@ -225,7 +239,6 @@ fn monotonic() -> std::sync::Arc<dyn rss_observation::Clock> {
     std::sync::Arc::new(rss_mdm_app::Monotonic(std::time::Instant::now))
 }
 
-#[cfg(unix)]
 fn setup_failure(stage: &'static str, error: rss_mdm_app::setup::Error) -> ProcessError {
     use rss_mdm_app::setup::Error;
     let kind = match error {

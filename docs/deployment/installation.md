@@ -157,6 +157,10 @@ create/update/delete 的 operation_id 共用一个全局命名空间。同一操
 
 ## 客户端入口与服务器证书交付
 
+浏览器网关的 `/api/v1/mdm-host/config.json` 使用同一份静态配置交付 `canonicalOrigin`、业务 `tenant` 和平台 `managementTenant`。两类租户坐标由实际安装登记生成，只用于选择正式登录入口，不授予业务或平台权限。#2825 替换原来的两字段配置；部署必须同时更新生成配置和消费它的 Web 制品，不提供旧格式解析或第二个发现端点。
+
+安装与宿主部署直接使用产品的公开配置生成器。需要为既有受控网关重新生成文件时，运行 `rss-mdm public-host-config --config /absolute/runtime.json`，标准输出仅含 `ui.json`、`mdm.json` 的公开 JSON；该命令使用运行配置中的数据库角色读取原安装的管理租户，不创建账户、会话或新身份。将两份 JSON 分别放入网关既有的只读配置位置。数据库不可用、租户坐标无效或业务与管理租户相同均失败，不能手填替代身份绕过。
+
 网关加载部署方配置的服务器证书链与私钥。使用私有 CA 时，把签发该服务器证书的 CA 公共证书通过可信部署渠道分发到设备；CA 私钥留在部署端，不放入 Agent 配置、客户端安装包或前端静态资源。数据库连接的 `ca_file` 属于 PostgreSQL 信任，不复用为组织网关 CA。
 
 服务端向桌面客户端部署方提供 HTTPS `product_origin`、绑定的 `identity.tenant_id` 和签发网关证书的 CA 公共证书。桌面构建与组织信任配置由 [rss-mdm-agent 桌面开发指南](https://dev.azure.com/shengming0923/rss/_git/rss-mdm-agent?path=/docs/guides/desktop-development.md&version=GBdevelop) 维护。

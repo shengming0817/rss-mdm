@@ -20,6 +20,7 @@ mod postgres;
 pub mod protection;
 #[cfg(unix)]
 pub mod providers;
+pub mod public_configuration;
 #[cfg(unix)]
 mod snapshot_tree;
 #[cfg(unix)]
