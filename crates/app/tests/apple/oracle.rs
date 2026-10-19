@@ -48,7 +48,7 @@ impl Oracle {
         } else {
             Some(protocol::decode(response)?)
         };
-        {
+        if command.is_some() || request_dictionary.contains_key("CommandUUID") {
             let mut history = self.history.lock().await;
             if history.len() == 20 {
                 history.pop_front();

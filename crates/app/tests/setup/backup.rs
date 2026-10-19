@@ -69,7 +69,7 @@ async fn original_restart_policy_is_restored_after_quiescence() -> Result<()> {
         "/bin/sh",
         image,
         "-c",
-        "exec sleep 600",
+        "trap 'exit 0' TERM; while [ ! -e /tmp/fail ]; do sleep 1; done; rm /tmp/fail; exit 42",
     ])
     .await?;
     let name = String::from_utf8(id)?.trim().to_owned();
@@ -83,8 +83,8 @@ async fn original_restart_policy_is_restored_after_quiescence() -> Result<()> {
                 == saved["HostConfig"]["RestartPolicy"]
         );
         tokio::time::sleep(std::time::Duration::from_secs(11)).await;
-        // Terminate the process from inside: docker kill marks a manual stop and suppresses restart.
-        let _ = super::super::deployment::docker(&["exec", &name, "sh", "-c", "kill -9 1"]).await;
+        // PID 1 exits itself: namespace peers cannot SIGKILL it, and docker kill is a manual stop.
+        super::super::deployment::docker(&["exec", &name, "touch", "/tmp/fail"]).await?;
         for _ in 0..30 {
             let actual = inspect(&name).await?;
             if actual["RestartCount"].as_u64().unwrap_or(0) > 0

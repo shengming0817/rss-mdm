@@ -153,21 +153,25 @@ async fn absent_agent_group_installs_fixed_package_and_registers_independently()
         .next_managed("InstalledApplicationList", &mut early_bootstrap)
         .await?;
     // Error responses cannot claim installed even if an extraneous list is present.
-    peer.manage(
-        "Error",
-        Some(observe),
-        Some((
-            "InstalledApplicationList",
-            plist::Value::Array(vec![
-                protocol::dictionary([
-                    ("Identifier", "com.rss.agent".into()),
-                    ("Version", "1.2.3".into()),
-                ])
-                .into(),
-            ]),
-        )),
-    )
-    .await?;
+    let next = peer
+        .manage(
+            "Error",
+            Some(observe),
+            Some((
+                "InstalledApplicationList",
+                plist::Value::Array(vec![
+                    protocol::dictionary([
+                        ("Identifier", "com.rss.agent".into()),
+                        ("Version", "1.2.3".into()),
+                    ])
+                    .into(),
+                ]),
+            )),
+        )
+        .await?;
+    if !next.is_empty() {
+        peer.pending_replies.lock().await.push_back(next);
+    }
     let state = f.operation(operation).await?;
     ensure!(
         state["agentInstallation"]["installation"] == "unknown"
