@@ -118,7 +118,7 @@ async fn verify_with(
                         .filter_map(|r| r.value.as_ref())
                         .any(|r| {
                             matches!(&r.subject,Subject::User{user} if user==verified.user())
-                                && r.grants.iter().any(|g| g.covers(permission, None))
+                                && r.grants.iter().any(|g| administrator_grant(g, permission))
                         })
                 });
                 tx.rollback().await.map_err(|_| Error::Storage)?;
@@ -184,4 +184,53 @@ pub(in crate::setup) async fn verify_restored(
         ]
     };
     verify_with(config, tenant, epoch, account, None, &required).await
+}
+
+fn administrator_grant(
+    grant: &rss_mdm_authorization_service::Grant,
+    permission: rss_mdm_authorization_service::Permission,
+) -> bool {
+    use rss_mdm_authorization_service::Scope;
+    grant.operation == permission
+        && grant.scope
+            == if permission.device() {
+                Scope::AllDevices
+            } else {
+                Scope::Tenant
+            }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::administrator_grant;
+    use rss_mdm_authorization_service::{Grant, Permission, Scope};
+    #[test]
+    fn restored_administrator_requires_the_complete_permission_scope() {
+        let grant = |operation, scope| Grant { operation, scope };
+        assert!(administrator_grant(
+            &grant(Permission::Credentials, Scope::AllDevices),
+            Permission::Credentials
+        ));
+        assert!(!administrator_grant(
+            &grant(
+                Permission::Credentials,
+                Scope::Device {
+                    id: uuid::Uuid::new_v4().to_string()
+                }
+            ),
+            Permission::Credentials
+        ));
+        assert!(!administrator_grant(
+            &grant(Permission::Credentials, Scope::Tenant),
+            Permission::Credentials
+        ));
+        assert!(administrator_grant(
+            &grant(Permission::AuthorizationWrite, Scope::Tenant),
+            Permission::AuthorizationWrite
+        ));
+        assert!(!administrator_grant(
+            &grant(Permission::DeviceWipe, Scope::AllDevices),
+            Permission::Credentials
+        ));
+    }
 }
