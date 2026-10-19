@@ -522,6 +522,9 @@ class RunFixtures:
                     from bootstrap_fixtures import configure
                     configure(root, value, env)
                 private(Path(env['MDM_TEST_CONFIG']),value)
+            # Runtime authority revisions must exist before a real host consumes them.
+            if 'identity' in module.fixtures:
+                self.prepare_identity(pool, database, job, output / 'identity-setup')
             if 'shared_worker' in module.fixtures:
                 host = stack.enter_context(self.workers(job, database, env['MDM_TEST_CONFIG']))
                 receipt['environment']['hostLog'] = str(host.log_path.relative_to(self.output))
@@ -535,8 +538,6 @@ class RunFixtures:
             if 'idp' in module.fixtures:
                 from enterprise_idp import fixture
                 env.update(stack.enter_context(fixture(root, owner)))
-            if 'identity' in module.fixtures:
-                self.prepare_identity(pool, database, job, output / 'identity-setup')
             with self.lock:
                 for dependency in module.fixtures:
                     self.costs.increment('fixture:' + dependency, 1)

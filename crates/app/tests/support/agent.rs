@@ -221,6 +221,7 @@ pub(crate) async fn seed_service(
         .await?;
     let peer = crate::test_support::agent_tls::peer(service.trust(), &issued.chain, &root).await?;
     service.authenticate(&peer).await?;
+    super::task_signing::acknowledge(service, &peer).await?;
     remember(label, peer, runtime.device_id.clone());
     Ok(serde_json::to_value(runtime)?)
 }

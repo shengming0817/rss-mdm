@@ -284,6 +284,7 @@ impl Host {
         value["software_distribution"]=serde_json::json!({"mdm_enabled":mdm_software});
         let original: serde_json::Value =
             serde_json::from_slice(&std::fs::read(std::env::var("MDM_TEST_CONFIG")?)?)?;
+        value["access_database"] = original["access_database"].clone();
         value["content"] = original["content"].clone();
         value["webhooks"] = original["webhooks"].clone();
         value["agent_pki"] = original["agent_pki"].clone();
@@ -430,6 +431,9 @@ impl Host {
         let mut trusts = vec![windows.channel.ca.trust.clone()];
         if let Some(a) = &agent_pki {
             trusts.push(a.issuer.trust().trust.clone());
+            if let Some(bootstrap) = &a.bootstrap {
+                trusts.push(bootstrap.trust.clone());
+            }
         }
         let pki = Arc::new(rss_mdm_pki_service::registry::Registry::new(
             store.archive_pool(),

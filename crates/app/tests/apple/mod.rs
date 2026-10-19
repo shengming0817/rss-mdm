@@ -235,6 +235,9 @@ impl Fixture {
         let mut trusts = vec![apple.channel.device_trust().clone()];
         if let Some(a) = &agent_pki {
             trusts.push(a.issuer.trust().trust.clone());
+            if let Some(bootstrap) = &a.bootstrap {
+                trusts.push(bootstrap.trust.clone());
+            }
         }
         let pki = Arc::new(rss_mdm_pki_service::registry::Registry::new(
             access.archive_pool(),
