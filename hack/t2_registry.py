@@ -2145,3 +2145,9 @@ MODULES['installation.storage_reconcile'] = replace(MODULES['installation.storag
 
 consume(('crates/execution-service/src/task_signing/observations.sql',), 'execution.agent.task_trust installation.migration catalog.contract')
 consume(('crates/pki-service/src/observations.rs','crates/pki-service/schema/observations.sql'), 'agent.pki installation.migration catalog.contract')
+
+module = MODULES['agent.pki']
+MODULES['agent.pki'] = replace(module, policies=tuple(
+    replace(policy, actors=(*module.actors, ('tenant', 'other')))
+    if policy.selector == 'agent_pki_tests::production_agent_listener_bootstraps_activates_and_rechecks_revocation'
+    else policy for policy in module.policies))
