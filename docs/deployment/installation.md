@@ -41,7 +41,7 @@ Linux 单机安装由固定候选中的 `rss-mdm-installer install --config /abs
 | Apple SCEP | CA 的受控 HTTPS SCEP 路径；产品 challenge/notify 回调、CA TLS 信任、设备 SCEP 服务信任分别核对，不开放 CA 管理/签发路径给普通客户端 |
 | PostgreSQL、RustFS、CA 管理 | 仅允许实际受控消费者访问；有独立服务证书、凭据与存储，不因同机部署关闭 TLS/主机名验证 |
 
-Windows、Apple、Agent 共用一个 step-ca/root/issuer 是需要单独验收的部署选择。路由按用途和 issuer 区分，即使共用签发者也须保留独立用途模板、JWK/SCEP 凭据和三份用途绑定 trust；Agent bootstrap 另有自己的用途与前置条件。共享 CA 会扩大密钥泄露、CRL、数据库和停机的影响范围，不能直接继承当前按 purpose/issuer 隔离的 CA 基线结论。未验证时记录 blocked/unknown，详见[设备 PKI 运维](operations.md#设备-pki-轮换与撤销)。
+Windows、Apple、Agent 共用一个 step-ca/root/issuer 是需要单独实施与验收的部署设计选项。路由按用途和 issuer 区分，即使共用签发者也须保留独立用途模板、JWK/SCEP 凭据和三份用途绑定 trust；Agent bootstrap 另有自己的用途与前置条件。共享 CA 会扩大密钥泄露、CRL、数据库和停机的影响范围，不能直接继承当前按 purpose/issuer 隔离的 CA 基线结论。当前联合冷备工具不接受多个用途共用同一 CA 容器，相关恢复验收明确为 blocked，不能只靠补一次测试宣布支持；限制见[单机恢复边界](operations.md#单机部署的重启与恢复边界)，用途授权见[设备 PKI 运维](operations.md#设备-pki-轮换与撤销)。
 
 | 输入或产物 | 当前 owner 与操作入口 |
 |---|---|
