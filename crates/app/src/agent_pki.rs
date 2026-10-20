@@ -9,6 +9,7 @@ pub enum Config {
     Disabled {},
     StepCa {
         endpoint: Box<crate::native::TlsEndpoint>,
+        #[serde(default)]
         trust_file: PathBuf,
         #[serde(default)]
         bootstrap: Option<BootstrapConfig>,
@@ -39,7 +40,9 @@ impl Lifetime {
 #[derive(serde::Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct BootstrapConfig {
+    #[serde(default)]
     pub trust_file: PathBuf,
+    #[serde(default)]
     pub webhooks: Vec<crate::ca_webhooks::Credentials>,
 }
 pub(crate) struct AgentPki {

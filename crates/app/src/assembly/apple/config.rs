@@ -9,9 +9,12 @@ pub struct Config {
     #[serde(skip)]
     pub test_push_transport: Option<(String, PathBuf)>,
     pub management: TlsEndpoint,
+    #[serde(default)]
     pub trust_file: PathBuf,
     pub materials: rss_mdm_apple_channel::runtime_materials::runtime::Selection,
+    #[serde(default = "unconfigured_seed")]
     pub identity_seed: rss_mdm_apple_channel::IdentitySeed,
+    #[serde(default)]
     pub webhooks: Vec<crate::ca_webhooks::Credentials>,
 }
 impl Config {
@@ -45,5 +48,12 @@ impl Config {
             return Err(bad(ConfigIssue::AppleChallengeWebhook));
         }
         Ok(())
+    }
+}
+
+fn unconfigured_seed() -> rss_mdm_apple_channel::IdentitySeed {
+    rss_mdm_apple_channel::IdentitySeed {
+        challenge_id: String::new(),
+        notify_id: String::new(),
     }
 }
