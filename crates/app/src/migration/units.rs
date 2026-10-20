@@ -323,5 +323,6 @@ pub(super) fn units() -> Vec<(&'static str, &'static str)> {
             "webhook-materials-v1",
             rss_mdm_webhook_service::materials::INSTALL_SQL,
         ),
+        ("first-use-v1", include_str!("../../schema/first-use.sql")),
     ]
 }

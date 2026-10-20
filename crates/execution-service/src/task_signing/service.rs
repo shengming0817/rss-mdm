@@ -71,6 +71,11 @@ fn settle<T>(
     )
 }
 impl ExecutionService {
+    /// Current process signer identity; active authority must still be checked separately.
+    pub fn loaded_task_signing_key(&self) -> Option<&str> {
+        self.signer.as_ref().map(|s| s.key_id())
+    }
+
     pub async fn task_trust(
         &self,
         p: &AuthorizedPrincipal,
