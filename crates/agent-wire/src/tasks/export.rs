@@ -1,6 +1,62 @@
 //! Frozen native package-manager read authority, derived by the publication owner.
 use super::*;
 use serde::{Deserialize, Serialize};
+
+/// Hash the native WinGet manifest object (the REST response's `Data`, not its envelope).
+/// Object keys are sorted recursively; compact JSON is limited to 8 MiB. This authenticates
+/// document bytes only, not the source, package-manager schema or permission to execute.
+pub fn winget_document_digest(manifest: &serde_json::Value) -> Result<[u8; 32], WireError> {
+    if !manifest.is_object() {
+        return Err(WireError::InvalidValue);
+    }
+    let mut manifest = manifest.clone();
+    manifest.sort_all_objects();
+    document_digest(&manifest)
+}
+
+/// Hash a frozen Tap's complete path/byte inventory, before evaluating any Ruby.
+/// One to 256 distinct paths are sorted lexically and encoded as compact JSON pairs;
+/// byte slices use JSON integer arrays. The encoded inventory is limited to 8 MiB.
+/// Callers separately verify the Git commit, entry modes, paths and source authority.
+pub fn brew_documents_digest<'a>(
+    documents: impl IntoIterator<Item = (&'a str, &'a [u8])>,
+) -> Result<[u8; 32], WireError> {
+    let mut sorted = BTreeMap::new();
+    for (path, bytes) in documents {
+        if sorted.len() >= 256 || path.is_empty() || sorted.insert(path, bytes).is_some() {
+            return Err(WireError::InvalidValue);
+        }
+    }
+    if sorted.is_empty() {
+        return Err(WireError::InvalidValue);
+    }
+    document_digest(&sorted.into_iter().collect::<Vec<_>>())
+}
+
+fn document_digest(value: &impl Serialize) -> Result<[u8; 32], WireError> {
+    struct Writer {
+        hash: sha2::Sha256,
+        remaining: usize,
+    }
+    impl std::io::Write for Writer {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.remaining = self.remaining.checked_sub(bytes.len()).ok_or_else(|| {
+                std::io::Error::new(std::io::ErrorKind::InvalidData, "document budget exceeded")
+            })?;
+            self.hash.update(bytes);
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    let mut writer = Writer {
+        hash: sha2::Sha256::new(),
+        remaining: 8 * 1024 * 1024,
+    };
+    serde_json::to_writer(&mut writer, value).map_err(|_| WireError::InvalidValue)?;
+    Ok(writer.hash.finalize().into())
+}
 /// One exact definition included in the frozen native source.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
