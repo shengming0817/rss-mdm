@@ -223,16 +223,19 @@ async fn commit_unknown_recovers_original_receipt_and_audit_failure_rolls_back()
             ensure!(serde_json::to_value(replay)? == serde_json::to_value(receipt)?);
             ensure!(store::read(&fixture.audit, &proof, &audit).await?.revision == 1);
             // Tenant/actor/id are independent operation coordinates, including the same UUID.
-        let peer_tenant=rss_request_context::TenantId::parse(case::peer())?;
-        let peer_secret=identity::credential_for(case::peer(),"admin")?;
-        let peer_session=fixture.identity.authority.inspect_session(peer_tenant,peer_secret,crate::identity::deadline()).await?;
-        let peer_proof=AuthorizedPrincipal::new(peer_session)?.load_authorization(&fixture.access.authorization_store()).await?;
-        let peer_audit=RequestAudit::new(case::peer().into(),"first_use_update");
-        peer_proof.bind_audit(&peer_audit)?;peer_audit.operation(id,"first_use_update");
-        ensure!(store::read(&fixture.audit,&peer_proof,&peer_audit).await?.revision==0);
-        let peer_digest=store::fingerprint(&peer_proof,&update)?;
-        ensure!(store::update(&fixture.audit,&peer_proof,&peer_audit,id,&update,&peer_digest,None).await?.saved.revision==1);
-        peer_audit.finalize(None);
+        let (peer_identity,peer_resources)=identity::identity(case::peer()).await?;
+        peer_resources.finish(async {
+            let peer_secret=identity::credential_for(case::peer(),"admin")?;
+            let peer_session=peer_identity.authority.inspect_session(peer_identity.tenant,peer_secret,crate::identity::deadline()).await?;
+            let peer_proof=AuthorizedPrincipal::new(peer_session)?.load_authorization(&fixture.access.authorization_store()).await?;
+            let peer_audit=RequestAudit::new(case::peer().into(),"first_use_update");
+            peer_proof.bind_audit(&peer_audit)?;peer_audit.operation(id,"first_use_update");
+            ensure!(store::read(&fixture.audit,&peer_proof,&peer_audit).await?.revision==0);
+            let peer_digest=store::fingerprint(&peer_proof,&update)?;
+            ensure!(store::update(&fixture.audit,&peer_proof,&peer_audit,id,&update,&peer_digest,None).await?.saved.revision==1);
+            peer_audit.finalize(None);
+            Ok(())
+        }).await?;
         // Enforce RLS independently of the HTTP host's credential rejection.
         use sqlx::Connection;
         let config:Config=serde_json::from_value(fixture.base.clone())?;
