@@ -189,6 +189,85 @@ pub(super) fn freeze(runtime: &mut Value, journal: &Journal) -> Result<()> {
     project(runtime, journal, &mut BTreeMap::new(), true)
 }
 
+// ref: smallstep/certificates scep/api/api.go@v0.30.2; nginx ngx_http_proxy_module.
+// Only exact device SCEP paths are published. Upstream CA APIs stay on their private origin.
+fn scep_locations(config: &crate::config::Config, gateway: &Journal) -> Result<String> {
+    let origin = url::Url::parse(&config.product_origin).map_err(|_| Error::Input)?;
+    let mut routes = BTreeMap::new();
+    for provider in &config.device_pki {
+        let Some(endpoint) = &provider.scep_url else {
+            continue;
+        };
+        let endpoint =
+            rss_mdm_pki_service::providers::scep_endpoint(endpoint).map_err(|_| Error::Input)?;
+        if endpoint.origin() != origin.origin() {
+            continue;
+        }
+        if !matches!(
+            provider.purpose,
+            rss_mdm_agent_wire::pki::Purpose::Apple
+                | rss_mdm_agent_wire::pki::Purpose::AgentBootstrap
+        ) {
+            return Err(Error::Input);
+        }
+        let provisioner = endpoint.path().strip_prefix("/scep/").ok_or(Error::Input)?;
+        let ca = url::Url::parse(&provider.origin).map_err(|_| Error::Input)?;
+        if ca.scheme() != "https" || ca.origin().ascii_serialization() != provider.origin {
+            return Err(Error::Input);
+        }
+        let root = crate::config::read(&provider.tls_root_file, 131072, false)
+            .map_err(|_| Error::Input)?;
+        let name = format!("scep-root-{:x}.crt", Sha256::digest(&root));
+        let route = (
+            provider.origin.clone(),
+            provisioner.to_owned(),
+            name.clone(),
+        );
+        if let Some(previous) = routes.insert(endpoint.path().to_owned(), route.clone())
+            && previous != route
+        {
+            return Err(Error::Input);
+        }
+        gateway.replace(&name, &root)?;
+    }
+    let mut output = String::new();
+    for (path, (ca, provisioner, root)) in routes {
+        let url = url::Url::parse(&ca).map_err(|_| Error::Input)?;
+        let host = url.host_str().ok_or(Error::Input)?;
+        if !host
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b".-:[]".contains(&b))
+        {
+            return Err(Error::Input);
+        }
+        let authority = &url[url::Position::BeforeHost..url::Position::AfterPort];
+        for suffix in ["", "/pkiclient.exe"] {
+            output.push_str(&format!(
+                r#"
+        location = {path}{suffix} {{
+            if ($request_method !~ ^(GET|POST)$) {{ return 405; }}
+            if ($arg_operation !~ ^(GetCACert|GetCACaps|PKIOperation)$) {{ return 400; }}
+            limit_req zone=mdm_api burst=20 nodelay;
+            client_max_body_size 2m;
+            proxy_pass_request_headers off;
+            proxy_set_header Host {authority};
+            proxy_set_header Content-Type $content_type;
+            proxy_ssl_server_name on;
+            proxy_ssl_name {host};
+            proxy_ssl_verify on;
+            proxy_ssl_verify_depth 3;
+            proxy_ssl_trusted_certificate /run/gateway/{root};
+            proxy_connect_timeout 5s;
+            proxy_read_timeout 30s;
+            proxy_pass {ca}/scep/{provisioner};
+        }}
+"#
+            ));
+        }
+    }
+    Ok(output)
+}
+
 /// Export runtime inputs only. This function never starts, stops or inspects containers.
 pub async fn prepare(directory: &Path, config: &Config, runtime: &Value) -> Result<()> {
     let decoded: crate::config::Config =
@@ -243,6 +322,7 @@ pub async fn prepare(directory: &Path, config: &Config, runtime: &Value) -> Resu
         .replace("/private/mdm-tls.key", "/run/gateway/tls.key")
         .replace("/run/config/ui.json", "/run/gateway/ui.json")
         .replace("/run/config/mdm.json", "/run/gateway/mdm.json");
+    let nginx = nginx.replace("# MDM_SCEP_LOCATIONS", &scep_locations(decoded, &gateway)?);
     gateway.replace("nginx.conf", nginx.as_bytes())?;
     let public = super::public_configuration::read(decoded).await?;
     gateway.save("ui.json", &public.identity)?;

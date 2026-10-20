@@ -2108,7 +2108,8 @@ add('installation.ca_admin', selectors=('setup::providers::step_ca::tests::authe
 MODULES['agent.pki'] = replace(MODULES['agent.pki'], policies=(*MODULES['agent.pki'].policies, CasePolicy('agent_pki_tests::bootstrap_sources_select_current_issuer_and_reject_missing_application', 'reuse', 'tenant', ('identity','agent_pki','pki_rotation'))))
 add('installation.backup', selectors=('setup::backup::tests::database_connection_fence_replays_and_restores_original_grants',), profile='empty', sources=('crates/app/src/setup/backup.rs','crates/app/src/setup/snapshot_tree.rs','crates/app/src/setup/backup/archive.rs','crates/app/src/setup/backup/ledger.rs','crates/app/src/setup/backup/accounts.rs'), tests=('crates/app/tests/setup/backup.rs',))
 MODULES['installation.backup'] = replace(MODULES['installation.backup'], db_mode='instance', scope='objects')
-add('installation.ca', selectors=('setup::providers::step_ca::tests::actual_ca_creates_and_imports_exact_purpose_resources',), profile='none', fixtures=('agent_pki','ca_agent'), sources=('crates/app/src/setup/providers/step_ca/*',), tests=('crates/app/tests/setup/ca_admin.rs',))
+add('installation.ca', selectors=('setup::providers::step_ca::tests::actual_ca_creates_and_imports_exact_purpose_resources','setup::providers::step_ca::tests::unified_ca_initialization_replays_and_isolates_tenants'), profile='product', fixtures=('agent_pki','ca_agent'), sources=('crates/app/src/setup/providers/step_ca/*',), tests=('crates/app/tests/setup/ca_admin.rs',))
+MODULES['installation.ca'] = replace(MODULES['installation.ca'], policies=(CasePolicy('setup::providers::step_ca::tests::unified_ca_initialization_replays_and_isolates_tenants','reuse','tenant',('windows','ca_windows')),))
 add('installation.webhook', selectors=('setup::providers::webhook::tests::receiver_possession_gates_activation_and_old_ciphertexts_remain_readable',), fixtures=('windows','runtime_config'), sources=('crates/app/src/setup/providers/webhook.rs','crates/app/src/webhooks/*','crates/webhook-service/src/materials.rs','crates/webhook-service/schema/materials.sql'), tests=('crates/app/tests/setup/webhook.rs',))
 add('installation.native_rewrap', selectors=('setup::protection::tests::ade_original_material_survives_rotation_and_corrupt_rows_roll_back',), sources=('crates/apple-channel/src/rewrap.rs','crates/app/src/setup/protection.rs'), tests=('crates/app/tests/setup/native_rewrap.rs',))
 
@@ -2164,6 +2165,7 @@ MODULES['agent.pki'] = replace(module, policies=tuple(
     else policy for policy in module.policies))
 
 TOOL_INPUTS['deployment/production.compose.yaml'] = ('test_release',)
+TOOL_INPUTS['deployment/sit.compose.yaml'] = ('test_release',)
 TOOL_INPUTS['deployment/initialize.py'] = ('test_release',)
 TOOL_INPUTS['deployment/tenant.compose.yaml'] = ('test_release',)
 

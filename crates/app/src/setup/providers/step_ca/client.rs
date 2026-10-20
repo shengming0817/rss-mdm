@@ -157,6 +157,38 @@ impl Client {
             URL_SAFE_NO_PAD.encode(signature)
         )))
     }
+    /// Public CA chain discovery over the same pinned, verified internal TLS connection.
+    pub async fn intermediates(&self) -> Result<Vec<String>> {
+        #[derive(serde::Deserialize)]
+        struct Chain {
+            crts: Vec<String>,
+        }
+        let mut response = self
+            .http
+            .get(
+                self.origin
+                    .join("/intermediates")
+                    .map_err(|_| Error::Input)?,
+            )
+            .send()
+            .await
+            .map_err(|_| Error::Storage)?;
+        if !response.status().is_success() {
+            return Err(Error::Storage);
+        }
+        let mut bytes = Vec::new();
+        while let Some(chunk) = response.chunk().await.map_err(|_| Error::Storage)? {
+            if bytes.len() + chunk.len() > 131072 {
+                return Err(Error::Input);
+            }
+            bytes.extend_from_slice(&chunk);
+        }
+        let chain: Chain = serde_json::from_slice(&bytes).map_err(|_| Error::Input)?;
+        if chain.crts.len() != 1 {
+            return Err(Error::Input);
+        }
+        Ok(chain.crts)
+    }
     pub async fn get<T: DeserializeOwned>(&self, name: &str, now: i64) -> Result<Option<T>> {
         self.request(
             reqwest::Method::GET,
@@ -175,6 +207,41 @@ impl Client {
         )
         .await?
         .ok_or(Error::Storage)
+    }
+    pub async fn update(&self, name: &str, input: &impl Serialize, now: i64) -> Result<()> {
+        self.request::<serde_json::Value, _>(
+            reqwest::Method::PUT,
+            &format!("/admin/provisioners/{name}"),
+            Some(input),
+            now,
+        )
+        .await?;
+        Ok(())
+    }
+    pub async fn update_webhook(
+        &self,
+        provisioner: &str,
+        webhook: &super::wire::Webhook,
+        now: i64,
+    ) -> Result<super::wire::Webhook> {
+        // step-ca deliberately omits the signing secret in PUT responses; authenticate readback.
+        self.request::<serde_json::Value, _>(
+            reqwest::Method::PUT,
+            &format!(
+                "/admin/provisioners/{provisioner}/webhooks/{}",
+                webhook.name
+            ),
+            Some(webhook),
+            now,
+        )
+        .await?;
+        self.get::<super::wire::Provisioner>(provisioner, now)
+            .await?
+            .ok_or(Error::Storage)?
+            .webhooks
+            .into_iter()
+            .find(|h| h.name == webhook.name)
+            .ok_or(Error::Storage)
     }
     pub async fn webhook<T: DeserializeOwned>(
         &self,
@@ -211,6 +278,7 @@ impl Client {
             reqwest::header::HeaderValue::from_str(&token).map_err(|_| Error::Input)?;
         authorization.set_sensitive(true);
         let missing = method == reqwest::Method::GET;
+        let empty_allowed = method == reqwest::Method::PUT;
         let mut request = self
             .http
             .request(method, self.origin.join(path).map_err(|_| Error::Input)?)
@@ -235,6 +303,9 @@ impl Client {
                 return Err(Error::Storage);
             }
             bytes.extend_from_slice(&chunk);
+        }
+        if empty_allowed && bytes.is_empty() {
+            return Ok(None);
         }
         serde_json::from_slice(&bytes)
             .map(Some)

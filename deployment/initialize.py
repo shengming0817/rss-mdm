@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path
 import shutil
+import subprocess
 
 root = Path('/var/lib/rss-mdm')
 inputs = root / 'inputs'
@@ -35,6 +36,32 @@ config = dict(directory=str(root/'installation'),
     platform_login='platform',administrator_login='administrator',
     platform_password_file=str(inputs/'platform-password'),administrator_password_file=str(inputs/'administrator-password'),
     origin=os.environ['MDM_PRODUCT_ORIGIN'],listen='127.0.0.1:8081',trusted_gateway='127.0.0.1')
+ca_request = None
+ca_source = os.environ.get('MDM_STEP_CA_CONFIG')
+if ca_source:
+    source = Path(ca_source)
+    if source.is_symlink() or not source.is_file():
+        raise ValueError('step-ca configuration file required')
+    ca = json.loads(source.read_text())
+    for field in ('root_certificate_file', 'root_crl_file', 'administrator_certificate_file', 'administrator_key_file'):
+        source_file = Path(ca[field])
+        if not source_file.is_absolute():
+            source_file = source.parent / source_file
+        if source_file.is_symlink() or not source_file.is_file():
+            raise ValueError('regular CA material required')
+        target = inputs / ('step-ca-' + field)
+        if field == "root_certificate_file" and target.exists() and target.read_bytes() != source_file.read_bytes():
+            raise ValueError('retain original CA inputs; use explicit CA rotation for replacement')
+        staged = target.with_suffix('.new')
+        shutil.copyfile(source_file, staged)
+        staged.chmod(0o600)
+        os.chown(staged, 10001, 10001)
+        staged.replace(target)
+        ca[field] = str(target)
+    ca_request = root/'step-ca-input.json'
+    ca_request.write_text(json.dumps(dict(installation=config, settings=ca)))
+    ca_request.chmod(0o600)
+    os.chown(ca_request, 10001, 10001)
 path = root/'installation-input.json'
 if path.exists() and json.loads(path.read_text()) != config:
     raise ValueError('initialization input changed')
@@ -44,4 +71,8 @@ os.chown(path,10001,10001)
 os.setgroups([])
 os.setgid(10001)
 os.setuid(10001)
-os.execv('/usr/local/bin/rss-mdm-installer',['rss-mdm-installer','install','--config',str(path)])
+binary = '/usr/local/bin/rss-mdm-installer'
+receipt = subprocess.check_output([binary, 'install', '--config', str(path)])
+if ca_request:
+    subprocess.run([binary, 'initialize-ca', '--config', str(ca_request)], check=True, stdout=subprocess.DEVNULL)
+print(receipt.decode().strip())
