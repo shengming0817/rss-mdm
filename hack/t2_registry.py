@@ -2159,7 +2159,8 @@ consume(('crates/pki-service/src/observations.rs','crates/pki-service/schema/obs
 module = MODULES['agent.pki']
 MODULES['agent.pki'] = replace(module, policies=tuple(
     replace(policy, actors=(*module.actors, ('tenant', 'other')))
-    if policy.selector == 'agent_pki_tests::production_agent_listener_bootstraps_activates_and_rechecks_revocation'
+    if policy.selector in ('agent_pki_tests::production_agent_listener_bootstraps_activates_and_rechecks_revocation',
+                           'agent_pki_tests::management_rotation_accepts_direct_activation_and_rejects_retired_action')
     else policy for policy in module.policies))
 
 TOOL_INPUTS['deployment/production.compose.yaml'] = ('test_release',)
