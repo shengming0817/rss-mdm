@@ -135,18 +135,8 @@ pub struct SelfService {
     pub access: Option<SelfServiceAccess>,
     /// Whether new self-service calls are accepted.
     pub published: bool,
-    /// Display name in the authorized directory.
-    pub display_name: String,
-    /// Intended purpose.
-    pub description: String,
-    /// Preconditions shown before invocation.
-    pub prerequisites: String,
-    /// Expected side effects shown before invocation.
-    pub side_effects: String,
-    /// Presentation category, independent of Scope.
-    pub category: String,
-    /// Bounded search terms.
-    pub keywords: Vec<String>,
+    /// Open, bounded directory text. Unknown properties are retained without authority.
+    pub presentation: Map<String, Value>,
     /// Defaults only at first configuration; normalized stored values are always present.
     #[serde(default)]
     pub allow_ai: Option<bool>,
@@ -176,27 +166,38 @@ impl SelfService {
         if let Some(access) = &self.access {
             access.validate()?;
         }
-        if self.display_name.trim().is_empty()
-            || self.category.trim().is_empty()
-            || self.keywords.len() > 32
-        {
+        if !crate::presentation::valid(&self.presentation, 65536) {
             return Err(Error::Malformed);
         }
-        for (s, bound) in [
-            (&self.display_name, 256),
-            (&self.description, 4096),
-            (&self.prerequisites, 4096),
-            (&self.side_effects, 4096),
-            (&self.category, 128),
+        let text = |key| {
+            self.presentation
+                .get(key)
+                .and_then(Value::as_str)
+                .ok_or(Error::Malformed)
+        };
+        for (key, bound, required) in [
+            ("displayName", 256, true),
+            ("description", 4096, false),
+            ("prerequisites", 4096, false),
+            ("sideEffects", 4096, false),
+            ("category", 128, true),
         ] {
-            if s.len() > bound || s.contains('\0') {
+            let value = text(key)?;
+            if value.len() > bound || (required && value.trim().is_empty()) {
                 return Err(Error::Malformed);
             }
         }
-        if self
-            .keywords
-            .iter()
-            .any(|s| s.trim().is_empty() || s.len() > 128 || s.chars().any(char::is_control))
+        let keywords = self
+            .presentation
+            .get("keywords")
+            .and_then(Value::as_array)
+            .ok_or(Error::Malformed)?;
+        if keywords.len() > 32
+            || keywords.iter().any(|v| {
+                v.as_str().is_none_or(|s| {
+                    s.trim().is_empty() || s.len() > 128 || s.chars().any(char::is_control)
+                })
+            })
         {
             return Err(Error::Malformed);
         }

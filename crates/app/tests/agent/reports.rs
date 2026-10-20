@@ -94,7 +94,8 @@ async fn durable_reports_and_projection() -> Result<()> {
         "sequence":0,
         "observedAt":1,
         "body":{"kind":"snapshot","values":[
-            {"field":"channel.mdm.enrollment","value":{"kind":"value","value":{"kind":"string","value":"unenrolled"}}}
+            {"field":"channel.mdm.enrollment","value":{"kind":"value","value":{"kind":"string","value":"unenrolled"}}},
+            {"field":"custom.vendor_detail","value":{"kind":"value","value":{"kind":"string","value":"unregistered evidence"}}}
         ]}
     });
     for version in [255] {
@@ -183,6 +184,10 @@ async fn durable_reports_and_projection() -> Result<()> {
         "UPDATE mdm_access.collection_runs SET delivery_pending=false WHERE tenant_id='{TENANT}' AND id='{concurrent_id}'",
         TENANT = case_tenant()
     ))?;
+    let mut extra_changed = report.clone();
+    extra_changed["body"]["values"][1]["value"]["value"]["value"] = json!("different evidence");
+    ensure!(agent_call(router, Method::POST, "/api/v1/agent/runtime/reports", Some(credential), Some(extra_changed)).await?.0 == StatusCode::CONFLICT, "unknown evidence was omitted from replay identity");
+    ensure!(pg(&format!("SELECT evidence->'agentReport'->'body'->'values'->1->'value'->'value'->>'value' FROM mdm_access.collection_runs WHERE tenant_id='{}' AND id='{report_id}'",case_tenant()))?.trim() == "unregistered evidence", "raw evidence was lost");
     let mut changed = report;
     changed["sequence"] = json!(1);
     ensure!(

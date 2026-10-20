@@ -97,8 +97,11 @@ async fn associated_context_maps_before_exclusions_and_missing_channels_recover(
                 0,
                 GroupChange::Create {
                     asset_context: AssetContext::AssociatedDevice,
-                    name: "one physical object".into(),
-                    description: String::new(),
+                    presentation:
+                        serde_json::json!({"name":"one physical object","description":""})
+                            .as_object()
+                            .unwrap()
+                            .clone(),
                     criteria: Some(assets::InventoryCondition {
                         selector: assets::ScopeSelector::Device,
                         quantifier: assets::ScopeQuantifier::One,
@@ -508,7 +511,7 @@ async fn agent_health_drives_mdm_configuration_assignment() -> anyhow::Result<()
     let scope = Uuid::new_v4();
     let policy = Uuid::new_v4();
     let resource = Uuid::new_v4();
-    let receipt=call(&mut browser,&router,&format!("/api/v1/groups/{group}"),0,json!({"action":"create","assetContext":"associated_device","name":"unhealthy Agent","description":"","criteria":{"selector":{"kind":"device"},"quantifier":"one","criteria":{"kind":"predicate","field":"custom.corporate_agent.healthy","op":"eq","value":{"kind":"boolean","value":false}}}})).await?;
+    let receipt=call(&mut browser,&router,&format!("/api/v1/groups/{group}"),0,json!({"action":"create","assetContext":"associated_device","presentation":{"name":"unhealthy Agent","description":""},"criteria":{"selector":{"kind":"device"},"quantifier":"one","criteria":{"kind":"predicate","field":"custom.corporate_agent.healthy","op":"eq","value":{"kind":"boolean","value":false}}}})).await?;
     let (_, decisions) = browser
         .call(
             &router,

@@ -9,14 +9,12 @@ use serde::{Deserialize, Serialize};
 )]
 pub enum GroupChange {
     Create {
-        name: String,
-        description: String,
+        presentation: serde_json::Map<String, serde_json::Value>,
         criteria: Option<assets::InventoryCondition>,
         asset_context: rss_mdm_group_postgres::AssetContext,
     },
     Edit {
-        name: String,
-        description: String,
+        presentation: serde_json::Map<String, serde_json::Value>,
     },
     Rule {
         criteria: assets::InventoryCondition,

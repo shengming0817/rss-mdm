@@ -18,7 +18,7 @@ async fn fixture() -> Result<Fixture> {
         .await?;
     let setup = start_automation(&f.base).await?;
     let group = Uuid::new_v4();
-    planning_http::call(&mut f.author,&f.router,&format!("/api/v1/groups/{group}"),0,json!({"action":"create","assetContext":"endpoint","name":"MDM missing","description":"","criteria":{"selector":{"kind":"device"},"quantifier":"one","criteria":{"kind":"predicate","field":"channel.mdm.enrollment","op":"eq","value":{"kind":"string","value":"unenrolled"}}}})).await?;
+    planning_http::call(&mut f.author,&f.router,&format!("/api/v1/groups/{group}"),0,json!({"action":"create","assetContext":"endpoint","presentation":{"name":"MDM missing","description":""},"criteria":{"selector":{"kind":"device"},"quantifier":"one","criteria":{"kind":"predicate","field":"channel.mdm.enrollment","op":"eq","value":{"kind":"string","value":"unenrolled"}}}})).await?;
     stop_worker(setup).await?;
     f.scope(case_task_scope(), json!([{"kind":"group","id":group}]))
         .await?;
@@ -285,8 +285,8 @@ async fn employee_enrollment_is_opt_in_idempotent_and_rechecks_publication() -> 
             "kind":"request_mdm_enrollment","organization":case_tenant(),"runLifetimeSeconds":300,
             "schedule":{"trigger":{"kind":"manual"},"misfire":{"kind":"coalesce_one"},"notBefore":0,"until":null,"jitterSeconds":0,"window":null}},
             "selfService":{"access":{"kind":"device"},"published":false,"allowAi":false,
-            "displayName":"Register MDM","description":"Join the organization","prerequisites":"OS confirmation",
-            "sideEffects":"Device management","category":"Device","keywords":[]}});
+            "presentation":{"displayName":"Register MDM","description":"Join the organization","prerequisites":"OS confirmation",
+            "sideEffects":"Device management","category":"Device","keywords":[]}}});
         let path = format!("/api/v1/policies/{id}");
         post(&mut f.author, &f.router, &path, json!({"operationId":Uuid::new_v4(),"expectedRevision":0,
             "input":{"action":"put","enabled":true,"definition":definition}})).await?;
@@ -393,7 +393,7 @@ async fn native_continuation_rejects_independent_source_read_revocation_after_op
         let id = Uuid::new_v4();
         let policy = post(&mut f.author, &f.router, &format!("/api/v1/policies/{id}"), json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"put","enabled":true,"definition":{
             "scope":case_task_scope(),"action":{"kind":"request_mdm_enrollment","organization":case_tenant(),"runLifetimeSeconds":300,"schedule":{"trigger":{"kind":"manual"},"misfire":{"kind":"coalesce_one"},"notBefore":0,"until":null,"jitterSeconds":0,"window":null}},
-            "selfService":{"access":{"kind":"device"},"published":true,"allowAi":false,"displayName":"Register MDM","description":"Join","prerequisites":"OS confirmation","sideEffects":"Device management","category":"Device","keywords":[]}}}})).await?;
+            "selfService":{"access":{"kind":"device"},"published":true,"allowAi":false,"presentation":{"displayName":"Register MDM","description":"Join","prerequisites":"OS confirmation","sideEffects":"Device management","category":"Device","keywords":[]}}}}})).await?;
         let invoke = json!({"operationId":Uuid::new_v4(),"policyId":id,"policyRevision":policy["revision"],"policyVersion":policy["versionId"],"source":"human","confirmed":true,"parameters":{}});
         let accepted = agent_call(&f.router, Method::POST, "/api/v1/agent/runtime/self-service/invocations", Some(case_credential()), Some(invoke)).await?;
         ensure!(accepted.0 == StatusCode::ACCEPTED, "{accepted:?}");

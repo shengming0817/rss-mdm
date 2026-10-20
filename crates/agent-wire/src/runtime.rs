@@ -36,7 +36,7 @@ pub const MAX_REQUEST_BYTES: usize = 1024 * 1024;
 pub const SCHEMA_MANIFEST: &str = include_str!("../schema/runtime/agent-v1.schema-manifest.json");
 /// SHA-256 of the ordered schema payloads named by [`SCHEMA_MANIFEST`].
 pub const SCHEMA_FINGERPRINT: &str =
-    "19e3609141847b54de4f4b13fd23aa3e7327e1021f30b69b98d72feffa776263";
+    "f853e02fc5b8ab5b02c89c552268a5e161ef6eed03367f9a2d1e0cb264379868";
 
 /// Closed validation failure without retaining input values.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -434,11 +434,14 @@ impl ReportRequest {
             }
         };
         if values.len() > 128
-            || values.iter().any(|value| {
-                !collection
-                    .field(value.field)
-                    .is_ok_and(|f| value.value.validate(f).is_ok())
-            })
+            || values
+                .iter()
+                .any(|value| match collection.field(value.field) {
+                    Ok(field) => value.value.project(field).is_err(),
+                    Err(_) => {
+                        matches!(&value.value, CollectedValue::Value(v) if v.validate().is_err())
+                    }
+                })
         {
             return Err(WireError::InvalidValue);
         }

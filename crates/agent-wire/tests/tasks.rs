@@ -644,8 +644,8 @@ fn self_service_directory_requires_a_closed_subject() {
     ] {
         let value = json!({"items":[{
             "policyId":id,"policyRevision":1,"policyVersion":id,"subject":subject,
-            "selfService":{"published":true,"displayName":"Repair","description":"",
-                "prerequisites":"","sideEffects":"","category":"Support","keywords":[],
+            "selfService":{"published":true,"presentation":{"displayName":"Repair","description":"",
+                "prerequisites":"","sideEffects":"","category":"Support","keywords":[]},
                 "allowAi":true,"riskLevel":2},
             "task":{"kind":"script","resource":{"id":"repair","version":"1","variant":"macos"},
                 "runAs":"system","parameterSources":{},"parameterSchema":{"type":"object"}}
@@ -705,7 +705,7 @@ fn self_service_schemas_follow_owned_dtos_and_reject_model_authority() {
         "../schema/runtime/self-service-status-v1.schema.json"
     ));
     for risk in [0, 3, 255] {
-        let metadata = json!({"published":true,"displayName":"Repair","description":"","prerequisites":"","sideEffects":"","category":"Support","keywords":[],"allowAi":true,"riskLevel":risk});
+        let metadata = json!({"published":true,"presentation":{"displayName":"Repair","description":"","prerequisites":"","sideEffects":"","category":"Support","keywords":[]},"allowAi":true,"riskLevel":risk});
         assert!(serde_json::from_value::<SelfServiceMetadata>(metadata).is_err());
     }
     // Generated types must also be the definitions signed inside TaskSpec.

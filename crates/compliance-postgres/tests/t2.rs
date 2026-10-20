@@ -59,7 +59,7 @@ async fn immutable_versions_results_and_tenant_transactions() -> Result<()> {
     storage::admit(&mut connection, tenant).await?;
     let id = Uuid::new_v4();
     let definition: Definition<Value> = serde_json::from_value(json!({
-        "name":"adapter policy","severity":"high","enabled":true,"platform":"all",
+        "presentation":{"name":"adapter policy"},"severity":"high","enabled":true,"platform":"all",
         "target":{"kind":"all"},"criteria":{"kind":"predicate","field":"custom.is_loaner","op":"eq","value":{"kind":"boolean","value":false}}
     }))?;
     let rule = storage::Rule {

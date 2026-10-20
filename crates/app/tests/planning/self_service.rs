@@ -40,7 +40,7 @@ fn definition(resource: Uuid, inputs: bool) -> Value {
         value["action"]["parameters"] =
             json!({"name":{"kind":"input"},"path":{"kind":"fixed","value":"/Applications"}});
     }
-    value["selfService"] = json!({"access":{"kind":"authenticated_user"},"published":true,"displayName":"Repair","description":"Repair the application","prerequisites":"Signed-in employee","sideEffects":"May restart the application","category":"Support","keywords":["repair"]});
+    value["selfService"] = json!({"access":{"kind":"authenticated_user"},"published":true,"presentation":{"displayName":"Repair","description":"Repair the application","prerequisites":"Signed-in employee","sideEffects":"May restart the application","category":"Support","keywords":["repair"]}});
     value
 }
 async fn publish_definition(f: &mut Fixture, value: Value) -> Result<(Uuid, Value)> {
@@ -1368,7 +1368,7 @@ async fn available_software_requires_request_and_deduplicates_users_policies_and
     for _ in 0..2 {
         let id = Uuid::new_v4();
         let mut definition = software::authored(f.resource, f.scope, "available_install");
-        definition["selfService"] = json!({"access":{"kind":"authenticated_user"},"published":true,"displayName":"Install app","description":"Approved installer","prerequisites":"","sideEffects":"Install","category":"Applications","keywords":[]});
+        definition["selfService"] = json!({"access":{"kind":"authenticated_user"},"published":true,"presentation":{"displayName":"Install app","description":"Approved installer","prerequisites":"","sideEffects":"Install","category":"Applications","keywords":[]}});
         let published = crate::test_support::software::write(
             &mut other,
             &f.router,
@@ -1618,7 +1618,7 @@ fn explicit_unpublished_access_null_follows_the_write_contract() {
     ))
     .unwrap();
     let validator = jsonschema::validator_for(&schema).unwrap();
-    let body = serde_json::json!({"operationId":uuid::Uuid::new_v4(),"expectedRevision":0,"input":{"action":"put","enabled":true,"definition":{"scope":uuid::Uuid::new_v4(),"action":{"kind":"execution","resource":{"id":"repair","version":"v1","platform":"macos","architecture":"aarch64","variant":"default"},"parameters":{},"runLifetimeSeconds":300},"selfService":{"access":null,"published":false,"displayName":"Repair","description":"","prerequisites":"","sideEffects":"","category":"Support","keywords":[]}}}});
+    let body = serde_json::json!({"operationId":uuid::Uuid::new_v4(),"expectedRevision":0,"input":{"action":"put","enabled":true,"definition":{"scope":uuid::Uuid::new_v4(),"action":{"kind":"execution","resource":{"id":"repair","version":"v1","platform":"macos","architecture":"aarch64","variant":"default"},"parameters":{},"runLifetimeSeconds":300},"selfService":{"access":null,"published":false,"presentation":{"displayName":"Repair","description":"","prerequisites":"","sideEffects":"","category":"Support","keywords":[]}}}}});
     assert!(validator.is_valid(&body));
     let mut missing = body;
     missing["input"]["definition"]["selfService"]
@@ -1686,7 +1686,7 @@ async fn software_unknown_survives_same_account_relogin_and_keeps_other_accounts
     .await?;
     let mut definition = software::authored(resource_id, f.scope, "available_install");
     definition["action"]["resource"]["variants"] = json!({"windows_x86_64":"default"});
-    definition["selfService"] = json!({"access":{"kind":"device"},"published":true,"displayName":"User installation","description":"","prerequisites":"","sideEffects":"Install for current OS account","category":"Apps","keywords":[]});
+    definition["selfService"] = json!({"access":{"kind":"device"},"published":true,"presentation":{"displayName":"User installation","description":"","prerequisites":"","sideEffects":"Install for current OS account","category":"Apps","keywords":[]}});
     let policy = Uuid::new_v4();
     let published = crate::test_support::software::write(
         &mut f.author,

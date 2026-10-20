@@ -60,7 +60,7 @@ async fn assignment_pagination_uses_published_scope_without_eager_execution() ->
         router,
         &group_path,
         0,
-        json!({"action":"create","assetContext":"endpoint","name":"scale","description":"","criteria":null}),
+        json!({"action":"create","assetContext":"endpoint","presentation":{"name":"scale","description":""},"criteria":null}),
     )
     .await?;
     let devices = (1..=65)

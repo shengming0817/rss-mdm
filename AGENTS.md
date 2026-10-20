@@ -49,3 +49,9 @@ PR 中如实记录实际验证结果与未覆盖项；生产行为由独立产�
 ## 文档命名
 
 遵循 [文档维护规则](docs/rules/documentation.md)。PRD 唯一入口为 `docs/product/rss-mdm-prd.md`。
+
+## 当前开发基线
+
+字段按核心契约、模块业务数据、普通扩展区分，具体要求见
+[依赖规则](docs/rules/rust-rss-dependencies.md#当前产品字段基线)。自有产品当前结构直接替换，
+不保留旧 DTO/别名/双读写；模型、存储、生成物、测试与实际消费者一体收尾。

@@ -120,7 +120,7 @@ impl Fixture {
     }
 }
 fn metadata(name: &str) -> Value {
-    json!({"name":name,"category":"custom","labels":["fixture"],"usages":["manual"],"owner":"operator","notes":""})
+    json!({"name":name,"category":"custom","labels":["fixture"],"usages":["manual"],"owner":"operator","notes":"","vendor":{"help":"retained"}})
 }
 fn import(entry: Uuid, revision: i64, contents: &str) -> Value {
     use base64::Engine;
@@ -189,6 +189,7 @@ async fn real_http_preserves_history_rewraps_and_restarts_locked() -> Result<()>
         .await?;
     ensure!(history.as_array().unwrap().len() == 3);
     ensure!(history[2]["metadata"]["name"] == "historic");
+    ensure!(history[2]["metadata"]["vendor"]["help"] == "retained");
     let opaque = pg(&format!(
         "SELECT position(convert_to('first original material','UTF8') in sealed)=0 FROM mdm_certificate_archive.versions WHERE tenant_id='{}' AND entry_id='{entry}' AND version=1",
         case_tenant()

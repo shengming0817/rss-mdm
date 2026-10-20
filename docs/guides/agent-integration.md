@@ -153,3 +153,25 @@ Agent→MDM 复用 `request_mdm_enrollment` 的签名任务和 Start permit。�
 失联时只能展示最后观察及时间，不能据此宣称当前在线或仍然已应用。
 这些接口不创建成功 ACK，也不满足密钥激活门槛；PKI 安装摘要不包含 CRL 刷新内容，不能作为 CRL 新鲜度证明。
 离线设备可让轮换继续待完成，但无需等待其 ACK 才能部署、启动或开通租户。
+
+## 当前扩展对象与一次性字段切换
+
+当前开发基线直接使用新结构，不保留旧 DTO、字段别名或历史格式读取。
+
+| 消费位置 | 当前路径与约束 |
+|---|---|
+| SelfService 目录与管理定义 | 六类文案移到 `selfService.presentation`；授权、风险和版本仍在原核心结构。 |
+| Resource/软件目录与 Blueprint | 对象展示与 blueprint category 位于 `presentation`；资源版本标签、执行摘要、制品身份保持明确。 |
+| Group/Compliance | name/description（Group）和 name（Compliance）位于 `presentation`。 |
+| 证书档案 | `metadata` 保留原描述键并允许有界未知 key；owner/usages 是说明，不是可信主体或证书用途证明。 |
+| Webhook 设置 | name 位于 `presentation`；目标、密钥与投递状态保持明确。 |
+
+完整对象编辑须将未知 key 原样带回，省略即删除；不支持旧平铺路径或隐式合并。
+普通扩展对象默认 64 KiB、深度 16、4096 节点，证书及现有请求/存储的更严格预算优先。
+原生采集 rows 和 FieldValue 保留批准查询返回的额外普通属性，新增结果属性不扩大 recipe/scope。
+已声明属性、实例键、完整性证据及敏感材料禁入规则仍校验；只有字典和冻结 mapping 接纳的
+内容进入可信资产。原始未知属性按敏感证据保存，不能自动进入 Group/Compliance 或普通读取。
+普通报告保留完整规范内容用于幂等，投影摘要只绑定可信输出；Native 继续使用原有内联/chunk
+和完整内容摘要。扩展 key 不改变全局协议版本，schema 指纹只标识实际生成制品。
+
+Agent/Web 从最终固定公开 rev 一次切换；此处不要求读取服务端私有 checkout。

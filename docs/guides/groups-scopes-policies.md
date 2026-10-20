@@ -6,7 +6,7 @@ Group 持有成员求值；Scope 组合目标并集、限制并集和排除并�
 Group、Scope、Resource 保持 `limit/after/descending` 的 ID 分页；Policy 使用 `limit/cursor/descending`，
 将 `nextCursor` 原样传入 `cursor`，不接受 `after`。Policy 游标绑定筛选、租户、主体和当前权限；筛选或权限变化后从首页重新查询。
 Group 可筛选 `kind/deleted/name`，Scope 可筛选 `deleted/ready`，Resource 可筛选 `kind/active`；
-Policy 可筛选 `state/action/scope/resource/category`，category 来自已有 `definition.selfService.category`。
+Policy 可筛选 `state/action/scope/resource/category`，category 来自已有 `definition.selfService.presentation.category`。
 Policy 默认不列出 archived；指定 `state=archived` 查询历史对象。目录每页读取当前一致视图，不冻结跨页业务状态。
 
 Policy 响应使用 `state: enabled | disabled | archived`，不返回 enabled 布尔字段。
@@ -77,3 +77,17 @@ Scope 在发布固定结果前按目标通道完成集合运算，并持久化�
 再通过 `POST /api/v1/agent-requests/{id}/reenroll/{device}` 和 `{operationId}`
 将其授权给原资产。两种方式都检查 Enrollment 权限并作废旧注册授权。
 新注册具有独立身份；普通责任人或策略调整无需重注册。
+
+## 展示字段与执行身份
+
+管理写入提交完整对象并校验 revision；编辑者必须保留读取到的未知展示 key，省略表示删除。
+SelfService 的 displayName、description、category、keywords、prerequisites、sideEffects 位于
+`presentation`，access、published、allowAi、riskLevel 仍为控制字段。Group 的 name/description、
+Compliance 的 name 同样位于各自 presentation。展示修订可审计，但不生成 Policy 执行版本、
+Group 成员版本或新的资源制品。SelfService 仍绑定当前 policyRevision 与精确调用输入，
+文案更新后须重新读取并确认；没有独立的确认文案存证服务。
+
+Resource 通过现有写入口的 `action: "present"` 和完整 `presentation` 修改对象展示，沿用
+operationId/expectedRevision；详情和目录返回 presentation。软件版本详情同时返回
+presentation/resourceRevision，展示只从 Resource 读取。原生软件发布文案是冻结发布材料，
+由完整材料摘要绑定，修改目录展示不会改写已发布 Winget/Brew 制品。

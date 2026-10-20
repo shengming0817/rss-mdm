@@ -8,7 +8,7 @@ macro_rules! view {
         pub struct $name { $(pub $field: $ty),* }
     };
 }
-view!(Group { id: Uuid, kind: rss_mdm_group_postgres::GroupKind, asset_context: rss_mdm_group_postgres::AssetContext, name: String, description: String, revision: i64, calculation_revision: i64, member_version: i64, member_count: usize, rule_version: Option<String>, deleted: bool });
+view!(Group { id: Uuid, kind: rss_mdm_group_postgres::GroupKind, asset_context: rss_mdm_group_postgres::AssetContext, presentation: serde_json::Map<String, serde_json::Value>, revision: i64, calculation_revision: i64, member_version: i64, member_count: usize, rule_version: Option<String>, deleted: bool });
 view!(GroupRead { group: Group, criteria: Option<assets::InventoryCondition>, member_set: Option<Uuid> });
 view!(GroupReceipt {
     operation: Uuid,

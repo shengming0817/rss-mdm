@@ -326,3 +326,7 @@ docker compose -p rss-mdm -f /absolute/candidate/deployment/production.compose.y
 PostgreSQL 和网关服务器证书由部署方签发、保管与续期。替换 PostgreSQL 输入后用 Compose 重建 postgres，保留原 CA 信任及数据库秘密。网关使用 `configure-host` 的 `change.kind=gateway_tls`，提交新证书、匹配私钥和信任文件；运维重建 server/gateway，再用原操作核验实际 HTTPS。没有内置证书签发器或续期后台任务。
 
 CA 联合备份的每个 authority 提供 purpose、issuer、configuration_file、online_directory、offline_directory、root_private_key_file、root_password_file；所有路径是维护容器中明确挂载的文件。运维先停止相应 CA，再运行备份/恢复；产品校验实际 issuer 与根钥关系并归档文件，不持有容器 ID、镜像、网络或 Docker 卷元数据。离线根材料只交给受控维护，不进入在线 CA 或业务服务。
+
+当前开发基线的自有布局直接替换；不提供历史库迁移或兼容 reader。已有开发数据库、凭据和
+journal 必须保留：新布局使用新建实例，不能修改旧安装账本的版本或摘要来绕过检查。
+同一当前制品的重复安装、失败恢复及权限检查仍须成立。

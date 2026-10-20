@@ -54,8 +54,7 @@ impl Groups {
         }
         let command = match &op.input {
             GroupChange::Create {
-                name,
-                description,
+                presentation,
                 criteria,
                 asset_context,
             } => {
@@ -64,8 +63,7 @@ impl Groups {
                 }
                 pg::Command::Create {
                     group,
-                    name: name.clone(),
-                    description: description.clone(),
+                    presentation: presentation.clone(),
                     asset_context: *asset_context,
                     definition: match criteria {
                         None => pg::Definition::Static,
@@ -78,11 +76,10 @@ impl Groups {
                     },
                 }
             }
-            GroupChange::Edit { name, description } => pg::Command::Edit {
+            GroupChange::Edit { presentation } => pg::Command::Edit {
                 group,
                 expected: expected()?,
-                name: name.clone(),
-                description: description.clone(),
+                presentation: presentation.clone(),
             },
             GroupChange::Rule { criteria } => pg::Command::SetRule {
                 group,

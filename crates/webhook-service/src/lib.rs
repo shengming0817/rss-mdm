@@ -5,6 +5,7 @@ pub mod events;
 pub mod fanout;
 pub mod materials;
 pub mod model;
+mod presentation;
 pub mod storage;
 pub mod worker;
 pub use rss_transactional_messaging_postgres::{PgError, PgRuntime, PgTransaction};

@@ -585,7 +585,7 @@ impl NativeQueryDefinition {
         match self {
             Self::System { query } => query.accepts_row(row),
             Self::WindowsWmi { properties, .. } => row.iter().all(|(k, v)| {
-                properties.get(k).is_some_and(|p| {
+                properties.get(k).is_none_or(|p| {
                     if p.array {
                         v.as_array()
                             .is_some_and(|a| a.iter().all(|v| p.cim_type.accepts(v)))
@@ -596,7 +596,7 @@ impl NativeQueryDefinition {
             }),
             Self::WindowsRegistry { values, .. } => row.iter().all(|(k, v)| {
                 k == "key"
-                    || values.get(k).is_some_and(|p| {
+                    || values.get(k).is_none_or(|p| {
                         p.value_type != RegistryType::Dword
                             || v.as_u64().is_some_and(|v| v <= u64::from(u32::MAX))
                     })
@@ -1236,8 +1236,12 @@ impl NativeQueryResult {
             if !q.definition.accepts_row(row) {
                 return false;
             }
-            if row.keys().any(|k| !schema.contains_key(k))
-                || row.iter().any(|(k, v)| !schema[k].accepts(v))
+            if !bounded_row(
+                row,
+                matches!(q.definition, NativeQueryDefinition::System { .. }),
+            ) || row
+                .iter()
+                .any(|(k, v)| schema.get(k).is_some_and(|t| !t.accepts(v)))
             {
                 return false;
             }
@@ -1288,6 +1292,15 @@ impl NativeCollectionResult {
                     p.spec().queries[k].definition,
                     NativeQueryDefinition::System { .. }
                 ) && r.users.is_some())
+                    || r.rows.iter().any(|row| {
+                        !bounded_row(
+                            row,
+                            matches!(
+                                p.spec().queries[k].definition,
+                                NativeQueryDefinition::System { .. }
+                            ),
+                        )
+                    })
                     || !r.evidence_matches(&p.spec().queries[k])
                     || (matches!(
                         p.spec().queries[k].definition,
@@ -1309,4 +1322,37 @@ impl NativeCollectionResult {
         }
         Ok(())
     }
+}
+
+// Raw observation budgets are independent of the dictionary used for asset projection.
+fn bounded_row(row: &BTreeMap<String, serde_json::Value>, sensitive: bool) -> bool {
+    fn visit(value: &serde_json::Value, depth: usize, nodes: &mut usize, sensitive: bool) -> bool {
+        *nodes += 1;
+        if depth > 16 || *nodes > 200_000 {
+            return false;
+        }
+        match value {
+            serde_json::Value::Object(values) => values.iter().all(|(key, value)| {
+                key_valid(key, sensitive) && visit(value, depth + 1, nodes, sensitive)
+            }),
+            serde_json::Value::Array(values) => {
+                values.iter().all(|v| visit(v, depth + 1, nodes, sensitive))
+            }
+            serde_json::Value::String(value) => !value.contains('\0'),
+            _ => true,
+        }
+    }
+    fn key_valid(key: &str, sensitive: bool) -> bool {
+        !key.is_empty()
+            && key.len() <= 256
+            && !key.chars().any(char::is_control)
+            && (!sensitive
+                || !matches!(
+                    key.to_ascii_lowercase().as_str(),
+                    "private_key" | "password" | "hash" | "der" | "pfx" | "recovery_key"
+                ))
+    }
+    let mut nodes = 0;
+    row.iter()
+        .all(|(key, value)| key_valid(key, sensitive) && visit(value, 1, &mut nodes, sensitive))
 }

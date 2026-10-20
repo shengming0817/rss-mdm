@@ -205,7 +205,7 @@ async fn subscription_versions_atomic_fanout_and_same_id_https_retry() -> Result
         for index in 0..rss_mdm_webhook_service::PAGE + 1 {
             let name = match index { 0 => "first".to_owned(), 1 => "second".to_owned(), _ => format!("receiver-{index}") };
             let id=Uuid::new_v4();let path=format!("/api/v1/webhooks/subscriptions/{id}");
-            let settings=json!({"name":name,"endpoint":format!("https://source.invalid:{port}/{name}"),"eventTypes":["device.registered"],"selection":{"kind":"allDevices"},"keyReference":"receiver","networkReference":"receiver"});
+            let settings=json!({"presentation":{"name":name},"endpoint":format!("https://source.invalid:{port}/{name}"),"eventTypes":["device.registered"],"selection":{"kind":"allDevices"},"keyReference":"receiver","networkReference":"receiver"});
             if index == 0 {
                 let request=json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"change":{"kind":"put","value":settings}});
                 identity::set_grants(case_tenant(),case::admin(),vec![Grant {operation:Permission::WebhookWrite,scope:Scope::Tenant}]).await?;
@@ -217,7 +217,7 @@ async fn subscription_versions_atomic_fanout_and_same_id_https_retry() -> Result
             }
             let created=call(&mut browser,&router,&path,0,json!({"kind":"put","value":settings})).await?;ensure!(created["enabled"]==false);
             let enabled=call(&mut browser,&router,&path,1,json!({"kind":"enabled","value":true})).await?;
-            let mut rename=settings;rename["name"]=json!(format!("renamed-{name}"));
+            let mut rename=settings;rename["presentation"]["name"]=json!(format!("renamed-{name}"));
             let renamed=call(&mut browser,&router,&path,2,json!({"kind":"put","value":rename})).await?;ensure!(renamed["targetVersion"]==enabled["targetVersion"]);
             subscriptions.push((path,renamed));
         }
