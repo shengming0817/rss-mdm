@@ -2,12 +2,12 @@
 use super::read::current_published;
 use super::storage::Subject;
 use super::{self as publication, spec, storage as db, *};
+use rss_mdm_agent_wire::runtime::{brew_documents_digest, winget_document_digest};
 use rss_mdm_resource as r;
 use rss_mdm_resource as resource;
 use rss_mdm_software_release as rel;
 use rss_request_context::TenantId;
 use rss_transactional_messaging_postgres::PgTransaction;
-use sha2::{Digest, Sha256};
 /// Exact native readonly protocol of a frozen publication.
 pub enum NativeExportProtocol {
     /// Public frozen WinGet REST source.
@@ -102,45 +102,44 @@ impl ExportReader {
         if record.snapshot().content.digest() != prepared.content.digest() {
             return Ok(Err(Error::Content));
         }
-        let (protocol, document) = match (&self.sources.binding().protocol, &prepared.document) {
-            (
-                super::config::ExportProtocol::Winget { base, .. },
-                ExportDocument::Winget { manifest },
-            ) => (
-                NativeExportProtocol::Winget {
-                    uri: format!("{base}exports/{}/", publication::hex(&id)),
-                    identifier: self.native_identifier(Some(id)),
-                },
-                db::encode(manifest)?,
-            ),
-            (
-                super::config::ExportProtocol::Brew {
-                    base,
-                    credential_reference,
-                    ..
-                },
-                ExportDocument::Brew { recipe },
-            ) => {
-                let tap = format!("rss/{}", publication::hex(&version.digest().bytes()));
-                let docs = input!(recipe.documents(self.tenant(), &tap));
-                let bytes = db::encode(
-                    &docs
-                        .iter()
-                        .map(|d| (d.path(), d.bytes()))
-                        .collect::<Vec<_>>(),
-                )?;
+        let (protocol, document_sha256) =
+            match (&self.sources.binding().protocol, &prepared.document) {
                 (
-                    NativeExportProtocol::Brew {
-                        uri: format!("{base}exports/{}.git", publication::hex(&id)),
-                        commit: target.snapshot.ok_or_else(db::fault)?,
-                        tap,
-                        credential_reference: credential_reference.clone(),
+                    super::config::ExportProtocol::Winget { base, .. },
+                    ExportDocument::Winget { manifest },
+                ) => (
+                    NativeExportProtocol::Winget {
+                        uri: format!("{base}exports/{}/", publication::hex(&id)),
+                        identifier: self.native_identifier(Some(id)),
                     },
-                    bytes,
-                )
-            }
-            _ => return Ok(Err(Error::Unsupported)),
-        };
+                    input!(winget_document_digest(manifest).map_err(|_| Error::Content)),
+                ),
+                (
+                    super::config::ExportProtocol::Brew {
+                        base,
+                        credential_reference,
+                        ..
+                    },
+                    ExportDocument::Brew { recipe },
+                ) => {
+                    let tap = format!("rss/{}", publication::hex(&version.digest().bytes()));
+                    let docs = input!(recipe.documents(self.tenant(), &tap));
+                    let digest = input!(
+                        brew_documents_digest(docs.iter().map(|d| (d.path(), d.bytes())))
+                            .map_err(|_| Error::Content)
+                    );
+                    (
+                        NativeExportProtocol::Brew {
+                            uri: format!("{base}exports/{}.git", publication::hex(&id)),
+                            commit: target.snapshot.ok_or_else(db::fault)?,
+                            tap,
+                            credential_reference: credential_reference.clone(),
+                        },
+                        digest,
+                    )
+                }
+                _ => return Ok(Err(Error::Unsupported)),
+            };
         let base = &self.sources.artifacts_base;
         Ok(Ok(Some(NativeExport {
             target: self.sources.logical.clone(),
@@ -151,7 +150,7 @@ impl ExportReader {
             resource_version: subject.version,
             resource_digest: subject.resource_digest,
             definition_digest: prepared.content.digest().bytes(),
-            document_sha256: Sha256::digest(document).into(),
+            document_sha256,
             dependencies: dependencies
                 .iter()
                 .map(|v| {
