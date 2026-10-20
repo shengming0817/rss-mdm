@@ -669,3 +669,53 @@ pub async fn current_certificate_in(
         .map_err(|_| Error::Forbidden)?;
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rotation_wire_accepts_only_current_actions_and_receipt_states() {
+        let id = Uuid::new_v4();
+        for action in ["activate", "retire"] {
+            let value = serde_json::json!({"id": id, "expected_revision": 2, "action": action});
+            let input: Transition = serde_json::from_value(value.clone()).unwrap();
+            assert_eq!(serde_json::to_value(input).unwrap(), value);
+        }
+        for action in ["approve", "", "activated"] {
+            assert!(
+                serde_json::from_value::<Transition>(serde_json::json!({
+                    "id": id, "expected_revision": 2, "action": action,
+                }))
+                .is_err()
+            );
+        }
+        for state in [
+            RotationState::Distributing,
+            RotationState::Activated,
+            RotationState::Retired,
+        ] {
+            let receipt = Receipt {
+                operation: id,
+                revision: 2,
+                state,
+            };
+            let value = serde_json::to_value(receipt).unwrap();
+            assert_eq!(value["state"], state.as_str());
+            assert_eq!(
+                serde_json::from_value::<Receipt>(value).unwrap().state,
+                state
+            );
+            assert_eq!(RotationState::parse(state.as_str()).unwrap(), state);
+        }
+        for state in ["approved", "prepared", ""] {
+            assert!(
+                serde_json::from_value::<Receipt>(serde_json::json!({
+                    "operation": id, "revision": 2, "state": state,
+                }))
+                .is_err()
+            );
+            assert!(matches!(RotationState::parse(state), Err(Error::Storage)));
+        }
+    }
+}
