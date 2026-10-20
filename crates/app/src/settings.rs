@@ -318,6 +318,9 @@ impl Source for Directory {
                         projection.reason =
                             Some("external_organization_and_device_confirmation_separate");
                         projection.ready = count > 0 && unavailable == 0 && pending == 0;
+                        if item.id == "ade-token" {
+                            projection.ready &= values.iter().any(ade_enabled_and_verified);
+                        }
                         if item.id == "apple-account" {
                             projection.ready = values.iter().any(|v| {
                                 v["accountEnrollment"]["enabled"] == true
@@ -729,6 +732,10 @@ impl Source for Directory {
     }
 }
 
+fn ade_enabled_and_verified(organization: &serde_json::Value) -> bool {
+    organization["ade"]["enabled"] == true && organization["ade"]["tokenState"] == "verified"
+}
+
 fn account_material_status(
     value: &serde_json::Value,
     desired: &BTreeMap<String, i64>,
@@ -765,6 +772,16 @@ fn account_material_status(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn disabling_ade_preserves_token_but_revokes_readiness() {
+        let mut organization = serde_json::json!({"ade":{"enabled":true,"tokenState":"verified"}});
+        assert!(ade_enabled_and_verified(&organization));
+        organization["ade"]["enabled"] = serde_json::json!(false);
+        assert!(!ade_enabled_and_verified(&organization));
+        organization["ade"]["enabled"] = serde_json::json!(true);
+        organization["ade"]["tokenState"] = serde_json::json!("unknown");
+        assert!(!ade_enabled_and_verified(&organization));
+    }
     #[test]
     fn account_bindings_require_exact_loaded_set_and_current_materials() {
         let mut value = serde_json::json!({"versions":[{"revision":1,"expiresAt":100,"revoked":false},{"revision":2,"expiresAt":200,"revoked":false}]});

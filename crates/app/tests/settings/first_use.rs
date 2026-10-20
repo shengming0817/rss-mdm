@@ -144,6 +144,18 @@ async fn progress_recovers_and_completes_only_selected_ready_requirements() -> R
                         after["saved"]["revision"] == 3
                             && after["saved"]["intent"]["capabilities"]["smtp"]["kind"] == "skip"
                     );
+                    let mut observe = input(3, false);
+                    observe["intent"]["capabilities"]["smtp"] = json!({"kind":"configure"});
+                    put(&mut admin, &restarted, PATH, observe).await?;
+                    let before = audit_count(|r| r.action() == "first_use_read")?;
+                    let progress = ok(&mut admin, &restarted, Method::GET, PATH, None).await?;
+                    ensure!(progress["steps"].as_array().unwrap().iter().any(|s| s["id"]
+                        == "smtp"
+                        && !s["evidence"].as_array().unwrap().is_empty()));
+                    ensure!(
+                        audit_count(|r| r.action() == "first_use_read")? == before + 1,
+                        "owner observations changed the enclosing Audit action"
+                    );
                     // A valid peer-tenant credential cannot be used against this host.
                     let peer = identity::credential_for(case::peer(), "admin")?;
                     let mut cross = Browser {

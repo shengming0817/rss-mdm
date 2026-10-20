@@ -16,6 +16,17 @@ use std::sync::Arc;
 mod store;
 pub(crate) const ACCESS_CONTRACT: &str = include_str!("first_use/access-contract.json");
 
+/// Observation calls may label their own operation. Restore the outer request even on cancellation.
+struct ObservationAction<'a> {
+    audit: &'a RequestAudit,
+    original: &'static str,
+}
+impl Drop for ObservationAction<'_> {
+    fn drop(&mut self) {
+        self.audit.set_action(self.original);
+    }
+}
+
 pub(crate) struct FirstUse {
     pub directory: crate::settings::Directory,
     pub channels: Arc<dyn rss_mdm_management_http::enrollment::channels::Source>,
@@ -163,10 +174,15 @@ impl FirstUse {
                 evidence: vec![],
             });
         }
+        let action = ObservationAction {
+            audit,
+            original: audit.snapshot().action,
+        };
         let entries = self
             .directory
             .project(auth.proof.clone(), audit.clone(), continuation, items)
             .await;
+        drop(action);
         projected_step(id, ids, entries)
     }
 }

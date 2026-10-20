@@ -291,7 +291,7 @@ mod tests {
             let saved = Saved {
                 revision: 1,
                 intent: Intent {
-                    channels: vec![Channel::Agent],
+                    channels: vec![Channel::WindowsMdm],
                     completion_requested: true,
                     ..Default::default()
                 },
@@ -300,7 +300,7 @@ mod tests {
                 "tenant".into(),
                 saved,
                 vec![Step {
-                    id: "agent".into(),
+                    id: "windows_mdm".into(),
                     status,
                     reason: None,
                     evidence: vec![],
@@ -308,6 +308,24 @@ mod tests {
             );
             assert!(!p.complete && !p.can_complete);
         }
+        let ready = Progress::new(
+            "tenant".into(),
+            Saved {
+                revision: 1,
+                intent: Intent {
+                    channels: vec![Channel::WindowsMdm],
+                    completion_requested: true,
+                    ..Default::default()
+                },
+            },
+            vec![Step {
+                id: "windows_mdm".into(),
+                status: Status::Ready,
+                reason: None,
+                evidence: vec![],
+            }],
+        );
+        assert!(ready.can_complete && ready.complete);
         let p = Progress::new(
             "tenant".into(),
             Saved {
