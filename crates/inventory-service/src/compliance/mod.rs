@@ -281,10 +281,14 @@ impl Compliance {
             definition: request.input.clone(),
         };
         let row = rule.clone();
-        tx.with_connection(move |c| {
-            Box::pin(async move { pg::put(c, t, &row, &fields, &groups).await })
-        })
-        .await?;
+        let stored = tx
+            .with_connection(move |c| {
+                Box::pin(async move { pg::put(c, t, &row, &fields, &groups).await })
+            })
+            .await?;
+        if !stored {
+            return Err(Error::Malformed.into());
+        }
         let task = if rule.enabled {
             Some(self.enqueue(tx, &rule).await?)
         } else {

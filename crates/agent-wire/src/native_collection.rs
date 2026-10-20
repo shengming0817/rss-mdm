@@ -1343,14 +1343,39 @@ fn bounded_row(row: &BTreeMap<String, serde_json::Value>, sensitive: bool) -> bo
         }
     }
     fn key_valid(key: &str, sensitive: bool) -> bool {
-        !key.is_empty()
-            && key.len() <= 256
-            && !key.chars().any(char::is_control)
-            && (!sensitive
-                || !matches!(
-                    key.to_ascii_lowercase().as_str(),
-                    "private_key" | "password" | "hash" | "der" | "pfx" | "recovery_key"
-                ))
+        if key.is_empty() || key.len() > 256 || key.chars().any(char::is_control) {
+            return false;
+        }
+        if !sensitive {
+            return true;
+        }
+        let name: String = key
+            .chars()
+            .filter(|c| c.is_ascii_alphanumeric())
+            .map(|c| c.to_ascii_lowercase())
+            .collect();
+        !matches!(
+            name.as_str(),
+            "privatekey"
+                | "privatekeypem"
+                | "privatekeyder"
+                | "password"
+                | "passwordhash"
+                | "hash"
+                | "ntlmhash"
+                | "lmhash"
+                | "nthash"
+                | "der"
+                | "certificateder"
+                | "pfx"
+                | "pkcs12"
+                | "recoverykey"
+                | "recoverypassword"
+                | "numericalpassword"
+                | "bitlockerrecoverykey"
+                | "bitlockerrecoverypassword"
+                | "lapspassword"
+        )
     }
     let mut nodes = 0;
     row.iter()

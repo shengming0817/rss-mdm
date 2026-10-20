@@ -373,7 +373,7 @@ async fn admission_rejects_catalog_and_security_drift() {
         "CREATE POLICY extra ON mdm_group.groups USING (true)",
         "ALTER ROLE mdm_group_runtime BYPASSRLS",
         "ALTER TABLE mdm_group.operations DROP COLUMN receipt_digest CASCADE",
-        "ALTER TABLE mdm_group.groups ALTER COLUMN presentation TYPE json USING presentation::json",
+        "ALTER TABLE mdm_group.groups ADD COLUMN unexpected text",
         "ALTER TABLE mdm_group.operations ALTER COLUMN request DROP NOT NULL",
         "ALTER TABLE mdm_group.groups ALTER COLUMN deleted SET DEFAULT true",
         "ALTER TABLE mdm_group.operations DROP CONSTRAINT operations_as_of_check",

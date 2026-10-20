@@ -62,6 +62,8 @@ fn certificate_evidence_allows_descriptions_but_rejects_secret_material_in_every
         };
         assert!(envelope(r.clone()).validate_for(&p, 100).is_ok());
         r.rows[0].insert("vendor_note".into(), json!({"label":"device certificate"}));
+        r.rows[0].insert("health".into(), json!("valid"));
+        r.rows[0].insert("running".into(), json!("ordinary description"));
         let extended = envelope(r.clone());
         assert!(extended.validate_for(&p, 100).is_ok());
         let restored: NativeCollectionResult =
@@ -69,7 +71,7 @@ fn certificate_evidence_allows_descriptions_but_rejects_secret_material_in_every
         assert_eq!(restored, extended);
         let mut nested_secret = extended.clone();
         nested_secret.queries.get_mut("facts").unwrap().rows[0]
-            .insert("vendor_note".into(), json!({"password":"forbidden"}));
+            .insert("vendor_note".into(), json!({"privateKey":"forbidden"}));
         assert!(nested_secret.validate_for(&p, 100).is_err());
 
         for key in [
@@ -79,6 +81,12 @@ fn certificate_evidence_allows_descriptions_but_rejects_secret_material_in_every
             "der",
             "pfx",
             "recovery_key",
+            "privateKey",
+            "recoveryKey",
+            "passwordHash",
+            "certificateDer",
+            "pkcs12",
+            "recovery-password",
         ] {
             let mut bad = r.clone();
             bad.rows[0].insert(key.into(), json!("forbidden"));

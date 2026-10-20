@@ -59,7 +59,7 @@ async fn immutable_versions_results_and_tenant_transactions() -> Result<()> {
     storage::admit(&mut connection, tenant).await?;
     let id = Uuid::new_v4();
     let definition: Definition<Value> = serde_json::from_value(json!({
-        "presentation":{"name":"adapter policy"},"severity":"high","enabled":true,"platform":"all",
+        "presentation":{"name":"adapter policy","vendor":{"padding":"x".repeat(53000),"values":vec![0;3500]}},"severity":"high","enabled":true,"platform":"all",
         "target":{"kind":"all"},"criteria":{"kind":"predicate","field":"custom.is_loaner","op":"eq","value":{"kind":"boolean","value":false}}
     }))?;
     let rule = storage::Rule {
@@ -70,14 +70,31 @@ async fn immutable_versions_results_and_tenant_transactions() -> Result<()> {
         current_run: None,
         definition,
     };
-    storage::put(
-        &mut connection,
-        tenant,
-        &rule,
-        &["custom.is_loaner".into()],
-        &[],
-    )
-    .await?;
+    ensure!(
+        storage::put(
+            &mut connection,
+            tenant,
+            &rule,
+            &["custom.is_loaner".into()],
+            &[],
+        )
+        .await?
+    );
+    let restored = storage::rule::<Value>(&mut connection, tenant, id)
+        .await?
+        .unwrap();
+    ensure!(restored.definition.presentation == rule.definition.presentation);
+    let mut oversized = rule.clone();
+    oversized.id = Uuid::new_v4();
+    oversized.definition.presentation.get_mut("vendor").unwrap()["padding"] =
+        json!("x".repeat(57000));
+    ensure!(serde_json::to_vec(&oversized.definition)?.len() < 65536);
+    ensure!(!storage::put(&mut connection, tenant, &oversized, &[], &[]).await?);
+    ensure!(
+        storage::rule::<Value>(&mut connection, tenant, oversized.id)
+            .await?
+            .is_none()
+    );
     let assessment = Assessment {
         rule_id: id,
         rule_version: 1,

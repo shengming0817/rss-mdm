@@ -577,7 +577,9 @@ impl NativeSystemQuery {
         {
             return false;
         }
-        let vocab = |key: &str, values: &[&str]| text(row, key).is_none_or(|v| values.contains(&v));
+        let vocab = |key: &str, values: &[&str]| {
+            !schema.contains_key(key) || text(row, key).is_none_or(|v| values.contains(&v))
+        };
         if !vocab("presence", &["present", "absent", "unknown"])
             || !vocab("configured", &["enabled", "disabled", "unknown"])
             || !vocab("running", &["enabled", "disabled", "unknown"])
