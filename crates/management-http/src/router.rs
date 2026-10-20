@@ -147,6 +147,8 @@ pub fn router(state: Services, envelope: crate::boundary::Envelope) -> Router {
             content: state.content.clone(),
         },
     ));
+    let public_packages =
+        crate::software_catalog::agent_packages_public(state.software_catalog.clone());
     let operations = Router::new()
         .merge(crate::agent_enrollment::routes(state.agent_enrollment))
         .merge(crate::windows_entra::routes(state.windows_entra))
@@ -183,6 +185,7 @@ pub fn router(state: Services, envelope: crate::boundary::Envelope) -> Router {
         Router::new()
             .merge(software_content)
             .merge(host_context)
+            .nest("/api/v1/public-agent", public_packages)
             .nest("/api/v1", protected),
         envelope,
     )

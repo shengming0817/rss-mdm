@@ -1003,6 +1003,33 @@ async fn configuration_scope_follows_current_candidate_admission() -> Result<()>
     ensure!(original.0 == StatusCode::OK);
     let (current, publication_input) = publish_version(&f, &mut user, true, "2+enterprise").await?;
     ensure!(current.version != old.version && current.candidate_sha256 != old.candidate_sha256);
+    let mut anonymous = Browser::default();
+    let catalogue = anonymous
+        .call(
+            &f.router,
+            Method::GET,
+            "/api/v1/public-agent/packages",
+            None,
+        )
+        .await?;
+    ensure!(
+        catalogue.0 == StatusCode::OK
+            && catalogue.1.as_array().is_some_and(|items| items
+                .iter()
+                .any(|item| item["releaseId"] == current.release_id.to_string()))
+    );
+    ensure!(
+        anonymous
+            .call(
+                &f.router,
+                Method::POST,
+                "/api/v1/public-agent/packages",
+                Some(json!({}))
+            )
+            .await?
+            .0
+            == StatusCode::METHOD_NOT_ALLOWED
+    );
     // These are the representative creation-replay checks; ordinary preparation
     // only creates the material required by each scenario.
     let count_sql = format!(

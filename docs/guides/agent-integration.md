@@ -82,7 +82,7 @@ macOS SIT 可将构建器明确标记为 ad-hoc、未公证的开发 PKG 发布�
 
 Agent HTTPS 监听器公开 `GET /api/v1/agent/enroll/packages`、`GET .../packages/{id}` 与 `GET .../packages/{id}/content`，复用内容校验和 Range / ETag 下载。路径仅含公开 releaseId。配置不绑定一个固定软件版本；每次新交换检查当前发布、原生 target、允许 channel、可信 origin / key 和精确候选摘要。文件自身不能添加新的信任根。配置文件、共享 secret、设备 secret 和 CSR 不进入 URL、文件名或命令行。
 
-随附网关在网页同源地址仅代理上述安装包路径的 GET / HEAD，使用现有 HTTPS 信任校验内部 Agent 监听器，保留 Range / ETag，不转发浏览器会话；网页可直接使用 `/downloads/agent`。注册、签发、激活和运行接口仍通过独立 Agent TLS 监听器，网页网关不代理这些接口。
+随附网关在网页同源地址仅代理上述安装包路径的 GET / HEAD，复用软件目录 owner 的内部管理只读路由，保留 Range / ETag，不转发浏览器会话，不要求网页和 Agent TLS 使用同一 CA；网页可直接使用 `/downloads/agent`。注册、签发、激活和运行接口仍通过独立 Agent TLS 监听器，网页网关不代理这些接口。
 
 本次移除旧 agent-grants 创建、管理状态、preview / approve 路由和普通请求 lifetimeSeconds / 可选 CSR，不提供别名或兼容解码；保留的是既有设备身份、不可变回执和 Unknown 恢复事实。
 

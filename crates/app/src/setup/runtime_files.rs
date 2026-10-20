@@ -268,60 +268,6 @@ fn scep_locations(config: &crate::config::Config, gateway: &Journal) -> Result<S
     Ok(output)
 }
 
-// ref: nginx ngx_http_proxy_module (proxy_ssl_verify / proxy_pass_request_headers).
-// Browser downloads expose only the existing anonymous catalogue, never Agent registration APIs.
-fn agent_package_locations(
-    config: &crate::config::Config,
-    gateway: &Journal,
-    trust_file: &Path,
-) -> Result<String> {
-    let crate::agent_pki::Config::StepCa { endpoint, .. } = &config.agent_pki else {
-        return Ok(String::new());
-    };
-    let origin = url::Url::parse(&endpoint.origin).map_err(|_| Error::Input)?;
-    let host = origin.host_str().ok_or(Error::Input)?;
-    if origin.scheme() != "https"
-        || origin.origin().ascii_serialization() != endpoint.origin
-        || !host
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || b".-".contains(&b))
-    {
-        return Err(Error::Input);
-    }
-    let authority = &origin[url::Position::BeforeHost..url::Position::AfterPort];
-    let mut listen = endpoint.listen;
-    if listen.ip().is_unspecified() {
-        listen.set_ip(if listen.is_ipv4() {
-            std::net::Ipv4Addr::LOCALHOST.into()
-        } else {
-            std::net::Ipv6Addr::LOCALHOST.into()
-        });
-    }
-    let trust = crate::config::read(trust_file, 128 * 1024, false).map_err(|_| Error::Input)?;
-    gateway.replace("agent-https-ca.crt", &trust)?;
-    Ok(format!(
-        r#"
-        location ~ ^/api/v1/agent/enroll/packages(/[0-9a-fA-F-]+(/content)?)?$ {{
-            if ($request_method !~ ^(GET|HEAD)$) {{ return 405; }}
-            limit_req zone=mdm_api burst=20 nodelay;
-            proxy_pass_request_headers off;
-            proxy_set_header Host {authority};
-            proxy_set_header Range $http_range;
-            proxy_set_header If-Range $http_if_range;
-            proxy_set_header If-None-Match $http_if_none_match;
-            proxy_ssl_server_name on;
-            proxy_ssl_name {host};
-            proxy_ssl_verify on;
-            proxy_ssl_verify_depth 3;
-            proxy_ssl_trusted_certificate /run/gateway/agent-https-ca.crt;
-            proxy_buffering off;
-            proxy_read_timeout 3600s;
-            proxy_pass https://{listen};
-        }}
-"#
-    ))
-}
-
 /// Export runtime inputs only. This function never starts, stops or inspects containers.
 pub async fn prepare(directory: &Path, config: &Config, runtime: &Value) -> Result<()> {
     let decoded: crate::config::Config =
@@ -377,10 +323,6 @@ pub async fn prepare(directory: &Path, config: &Config, runtime: &Value) -> Resu
         .replace("/run/config/ui.json", "/run/gateway/ui.json")
         .replace("/run/config/mdm.json", "/run/gateway/mdm.json");
     let nginx = nginx.replace("# MDM_SCEP_LOCATIONS", &scep_locations(decoded, &gateway)?);
-    let nginx = nginx.replace(
-        "# MDM_AGENT_PACKAGE_LOCATIONS",
-        &agent_package_locations(decoded, &gateway, &effective.trust_file)?,
-    );
     gateway.replace("nginx.conf", nginx.as_bytes())?;
     let public = super::public_configuration::read(decoded).await?;
     gateway.save("ui.json", &public.identity)?;
