@@ -188,7 +188,7 @@ Apple 的 challenge/notify webhook ID 和 HMAC 秘密属于稳定协议配置。
 
 ### 原生加密写钥切换
 
-`docker compose -p rss-mdm-my-install -f /absolute/deployment/compose.yaml run --rm --no-deps --user 10001:10001 --entrypoint /usr/local/bin/rss-mdm-installer init rotate-protection --config /var/lib/rss-mdm/private-rotation.json` 接受 `installation`（原部署输入）、`purpose`（`native` 或 `windows`）和稳定 UUID `operation_id`。该一次性维护命令与其它维护操作互斥。操作先在最终保管目录生成新钥并保存每个宿主的两个不可变输入：第一阶段让全部实际进程读取新旧钥，第二阶段才切换新密文写钥。每个阶段都要求 HTTPS 返回确切宿主、操作、版本、摘要与新进程观察；失败使用原 operation ID 重试，不能手工跳过剩余宿主。
+`docker compose -p rss-mdm -f /absolute/candidate/deployment/production.compose.yaml run --rm --no-deps --user 10001:10001 --entrypoint /usr/local/bin/rss-mdm-installer init rotate-protection --config /var/lib/rss-mdm/private-rotation.json` 接受 `installation`（原部署输入）、`purpose`（`native` 或 `windows`）和稳定 UUID `operation_id`。该一次性维护命令与其它维护操作互斥。操作先在最终保管目录生成新钥并保存每个宿主的两个不可变输入：第一阶段让全部实际进程读取新旧钥，第二阶段才切换新密文写钥。每个阶段都要求 HTTPS 返回确切宿主、操作、版本、摘要与新进程观察；失败使用原 operation ID 重试，不能手工跳过剩余宿主。
 
 写钥切换完成后，每次调用以有界领域事务重加密 APNs/Profile/Managed Apple Account、任务签名私钥和 S3 凭据；`rewrapping` 表示还需继续用原输入调用，`complete` 表示该轮切换和上述运行材料批次已完成。私钥身份、材料版本、签名信任、ACK、原请求指纹和证书均不改变。中断可重放，单批失败回滚。
 

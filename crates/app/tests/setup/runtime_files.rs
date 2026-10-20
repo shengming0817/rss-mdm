@@ -1,5 +1,22 @@
 use super::*;
 
+#[test]
+fn runtime_listeners_cannot_take_the_shared_gateway_port() {
+    let mut config: crate::config::Config =
+        serde_json::from_str(include_str!("../../../../fixtures/mdm-config.example.json")).unwrap();
+    assert!(validate_listeners(&config).is_ok());
+    config.listen.set_port(GATEWAY_PORT);
+    assert!(validate_listeners(&config).is_err());
+    config.listen.set_port(8081);
+    let windows = config.native_protocols.windows.as_mut().unwrap();
+    let mut endpoint = serde_json::to_value(&windows.management).unwrap();
+    endpoint["listen"] = json!("0.0.0.0:8445");
+    windows
+        .additional_management
+        .push(serde_json::from_value(endpoint).unwrap());
+    assert!(validate_listeners(&config).is_err());
+}
+
 fn previous() -> Applied {
     Applied {
         host_id: uuid::Uuid::new_v4(),

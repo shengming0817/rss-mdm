@@ -90,11 +90,14 @@ def qualify(owner,origin,other_origin):
     business.login(first['tenantId'],'administrator',(owner.root/'inputs/administrator-password').read_text().strip())
     status,grants=business.call('GET','/api/v1/authorization')
     check(status==200,'real business authorization')
+    owner.product('prepare-hosts')
     platform=Browser(origin,ca)
     # The public host config supplies the actual reserved management tenant.
     status,public=business.call('GET','/api/v1/mdm-host/config.json')
     check(status==200,'public management locator')
     platform.login(public['managementTenant'],'platform',(owner.root/'inputs/platform-password').read_text().strip())
+    status,observed=platform.call('GET','/api/v1/tenant-administration/provisionings/'+first['operationId'])
+    check(status==200 and observed['result']['phase']=='enabled','actual first host observation')
     owner.compose('run','--rm','init')
     repeated=json.loads(owner.read('/var/lib/rss-mdm/installation/installation.json'))['receipt']
     check(first==repeated,'stable seed replay')
@@ -125,4 +128,4 @@ def qualify(owner,origin,other_origin):
     ids=owner.compose('ps','--all','--quiet').split()
     actual=json.loads(subprocess.check_output(['docker','inspect',*ids],text=True))
     check(all(not any(m['Destination'].endswith('docker.sock') for m in c['Mounts']) for c in actual),'no Docker socket')
-    return dict(status='passed',checks=['seed_and_replay','real_administrators_and_authorization','second_tenant_login_and_isolation','compose_owned_services'])
+    return dict(status='passed',checks=['seed_and_replay','first_host_observation','real_administrators_and_authorization','second_tenant_login_and_isolation','compose_owned_services'])

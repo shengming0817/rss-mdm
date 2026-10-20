@@ -579,6 +579,7 @@ pub async fn run(request: Request) -> Result<Receipt> {
         runtime["runtime_binding"] = json!({"host_id":request.host_id,"operation_id":request.operation_id,"revision":revision,"material_digest":digest});
         let config: crate::config::Config =
             serde_json::from_value(runtime.clone()).map_err(|_| Error::Input)?;
+        super::runtime_files::validate_listeners(&config)?;
         config.compile().map_err(|_| Error::Input)?;
         journal.secret(
             "candidate.json",

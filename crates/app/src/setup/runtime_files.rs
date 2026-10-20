@@ -8,6 +8,35 @@ use std::{
     path::{Path, PathBuf},
     time::Duration,
 };
+const GATEWAY_PORT: u16 = 8445;
+
+/// All runtime listeners share the gateway's container network namespace.
+pub(super) fn validate_listeners(config: &crate::config::Config) -> Result<()> {
+    let mut ports = vec![config.listen.port()];
+    if let Some(windows) = &config.native_protocols.windows {
+        ports.extend([
+            windows.enrollment.listen.port(),
+            windows.management.listen.port(),
+        ]);
+        ports.extend(
+            windows
+                .additional_management
+                .iter()
+                .map(|endpoint| endpoint.listen.port()),
+        );
+    }
+    if let Some(apple) = &config.native_protocols.apple {
+        ports.push(apple.management.listen.port());
+    }
+    if let crate::agent_pki::Config::StepCa { endpoint, .. } = &config.agent_pki {
+        ports.push(endpoint.listen.port());
+    }
+    if ports.contains(&GATEWAY_PORT) {
+        return Err(Error::Input);
+    }
+    Ok(())
+}
+
 #[derive(Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
@@ -164,6 +193,7 @@ pub(super) fn freeze(runtime: &mut Value, journal: &Journal) -> Result<()> {
 pub async fn prepare(directory: &Path, config: &Config, runtime: &Value) -> Result<()> {
     let decoded: crate::config::Config =
         serde_json::from_value(runtime.clone()).map_err(|_| Error::Input)?;
+    validate_listeners(&decoded)?;
     let compiled = decoded.compile().map_err(|_| Error::Input)?;
     let decoded = &compiled.config;
     if !decoded.listen.ip().is_loopback() || decoded.trusted_gateway != decoded.listen.ip() {
@@ -200,7 +230,7 @@ pub async fn prepare(directory: &Path, config: &Config, runtime: &Value) -> Resu
     let authority = &origin[url::Position::BeforeHost..url::Position::AfterPort];
     let nginx = include_str!("../../../../deployment/nginx.conf")
         .replace("127.0.0.1:8081", &decoded.listen.to_string())
-        .replace("listen 443 ssl;", "listen 8445 ssl;")
+        .replace("listen 443 ssl;", &format!("listen {GATEWAY_PORT} ssl;"))
         .replace(
             "server_name mdm.example.test;",
             &format!("server_name {hostname};"),

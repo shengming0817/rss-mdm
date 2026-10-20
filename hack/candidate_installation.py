@@ -2,6 +2,7 @@
 """Run the ordinary Compose deployment against a real candidate; no synthetic product seed."""
 import argparse
 import json
+import platform
 from pathlib import Path
 import shutil
 import socket
@@ -31,6 +32,12 @@ def tls(directory):
 def qualify_candidate(candidate):
     marker=candidate/'installation-result.json';marker.unlink(missing_ok=True)
     manifest=verify_candidate(candidate)
+    daemon=json.loads(subprocess.check_output(['docker','info','--format','{{json .}}'],text=True,timeout=15))
+    architecture={'aarch64':'arm64','x86_64':'amd64'}.get(daemon['Architecture'],daemon['Architecture'])
+    environment=dict(client=dict(os=platform.system(),architecture=platform.machine()),
+        docker=dict(os=daemon['OSType'],architecture=daemon['Architecture'],operating_system=daemon['OperatingSystem']),
+        container_platform=manifest['platform'],
+        architecture_relation='same' if manifest['platform']==daemon['OSType']+'/'+architecture else 'different')
     ui=load_ui(candidate,manifest['ui'])
     project='mdm-seed-'+uuid.uuid4().hex[:12]
     with tempfile.TemporaryDirectory(prefix='mdm-compose-seed-') as temporary:
@@ -53,6 +60,7 @@ def qualify_candidate(candidate):
         try:
             result=qualify(owner,origin,other)
             result['candidate_sha256']=sha(candidate/'candidate.json')
+            result['environment']=environment
         finally:owner.cleanup()
     marker.write_text(json.dumps(result,indent=2)+'\n')
 

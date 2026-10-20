@@ -62,7 +62,13 @@ docker compose -p rss-mdm -f /absolute/candidate/deployment/production.compose.y
 
 `init` 等待数据库健康后运行并退出；`server` 仅在 init 成功后启动。init 的短暂容器内 root 只将部署 secrets 复制为卷内 0600 文件，然后降为 UID10001 执行 Rust 初始化；没有宿主 root 操作或基础设施管理权限。运行后端、网关均为 UID10001，分别只读挂载自己的运行子目录；PostgreSQL 由官方镜像管理数据属主。
 
-`installation.json` 的 `stage=initialized` 表示种子初始化完成，不宣称网络或设备效果；检查 HTTPS `/readyz`、实际登录和授权后开始 T3。平台登录名为 `platform`，业务登录名为 `administrator`，密码分别取自部署 secrets。将 `gateway-ca.crt` 的公共证书加入专用浏览器/设备信任；CA 私钥不交付客户端。
+`installation.json` 的 `stage=initialized` 表示种子初始化完成，不宣称网络或设备效果。检查 HTTPS `/readyz`、实际登录和授权后，用原安装输入执行一次真实宿主观察：
+
+```sh
+docker compose -p rss-mdm -f /absolute/candidate/deployment/production.compose.yaml run --rm --no-deps --user 10001:10001 --entrypoint /usr/local/bin/rss-mdm-installer init prepare-hosts --config /var/lib/rss-mdm/installation-input.json
+```
+
+平台开通回执中的首租户必须从 `host_pending` 变为 `enabled`，再配置通道、轮换材料、备份和开始 T3；此命令只观察已启动服务，不管理容器。平台登录名为 `platform`，业务登录名为 `administrator`，密码分别取自部署 secrets。将 `gateway-ca.crt` 的公共证书加入专用浏览器/设备信任；CA 私钥不交付客户端。
 
 用相同 secrets、相同卷重复 `docker compose ... run --rm init` 保持原 tenant/principal/instance/operation、密码和密钥。安装已完成时不覆盖后续配置。停止、重建、重启与升级都使用普通 Compose 命令；`down` 保留卷，`down -v` 删除数据，不能用来恢复故障。没有常驻 operator 或自动创建子 Compose 的进程。
 
@@ -87,7 +93,7 @@ docker compose -p rss-mdm-second -f /absolute/candidate/deployment/tenant.compos
 
 Docker Desktop/Engine 可承载 MDM 后端、HTTPS 网关、PostgreSQL，以及按所选设备能力准备的对象存储和设备 CA。Identity 嵌入后端，Windows/Mac 与 Agent 在设备侧。本次正式交付为 Compose；Kubernetes/HA 未提供交付或验收承诺。
 
-每个租户的 server 使用 Compose 声明的 bridge 网络，gateway 共享该 server 的容器网络命名空间。管理 API 继续只监听内部回环，`trusted_gateway` 对应该回环地址。网关内部监听 8445，Compose 将公开 origin 的端口映射到它；不同租户可以复用相同内部管理端口。原生协议各自发布实际启用的 TLS/mTLS 监听，不能用代理头替代设备证书身份。所有运行材料通过命名卷子目录交付，不使用宿主 bind 路径、host 网络或宿主 chown。
+每个租户的 server 使用 Compose 声明的 bridge 网络，gateway 共享该 server 的容器网络命名空间。管理 API 继续只监听内部回环，`trusted_gateway` 对应该回环地址。网关内部监听 8445，管理与原生监听不得占用此保留端口；Compose 将公开 origin 的端口映射到它；不同租户可以复用相同内部管理端口。原生协议各自发布实际启用的 TLS/mTLS 监听，不能用代理头替代设备证书身份。所有运行材料通过命名卷子目录交付，不使用宿主 bind 路径、host 网络或宿主 chown。
 | 入口 | 路由与信任边界 |
 |---|---|
 | 控制台/管理 API | 组织 HTTPS origin → 受信网关 → 后端回环；前端需独立固定 MDM UI 镜像并验证实际页面与会话，仅后端候选不提供控制台 |
@@ -230,7 +236,7 @@ create/update/delete 的 operation_id 共用一个全局命名空间。同一操
 按[Compose 材料导入](operations.md#compose-维护材料与数据库-tls-续期)准备并导入独立 recover.json，沿用初始化配置的 installation、tenant_id 与既有 principal_id；`login` 必须为 null，`password_file` 指向新密码文件，database 使用 mdm_identity_maintenance。该操作轮换密码并撤销旧会话，不创建主体，也不恢复 MDM 业务授权。
 
 ```sh
-docker compose --env-file /absolute/deployment/compose.env -f /absolute/deployment/compose.yaml run --rm --no-deps --user 10001:10001 --entrypoint /usr/local/bin/rss-mdm-installer init recover-password --config /var/lib/rss-mdm/recover.json
+docker compose -p rss-mdm -f /absolute/candidate/deployment/production.compose.yaml run --rm --no-deps --user 10001:10001 --entrypoint /usr/local/bin/rss-mdm-installer init recover-password --config /var/lib/rss-mdm/recover.json
 ```
 
 配置与秘密为 owner 独占的普通 0600 文件，末级路径不得为符号链接；CA 为可读 PEM。maintenance 密码与恢复文件仅挂入 一次性维护容器，不挂入运行服务。恢复后验证新登录并按受控秘密管理流程处置临时密码文件。
@@ -351,7 +357,7 @@ execution epoch 来自原宿主配置，在连接建立时固定；源事件复�
 
 `python3 hack/candidate_installation.py /absolute/candidate` 使用普通 Compose 和空库运行正式初始化，只覆盖必要链路：幂等种子、独立管理员真实认证与授权、第二租户及隔离、Compose 直接持有服务。删除部署控制器的重启、动态编排及 Docker 策略测试。数据库/密钥/内容恢复仍由对应 T2 和受控运维演练分别验证；不使用开发 fixture 冒充正式初始化。
 
-只有验证与清理都完成才发布 `installation-result.json`，绑定候选/Compose 摘要、宿主 OS/架构和容器平台。arm64 与 amd64 候选分别运行；仿真、原生及不同宿主的结果分别记录，不能由一台 Mac 推导所有宿主均通过。协议 `candidate_smoke.py` 的合法预置仅证明相应协议接缝，不是本入口的完整初始化证据。浏览器与真机 T3 按各自输入继续，不能用安装、readiness 或 smoke 代替终端效果。
+只有验证与清理都完成才发布 `installation-result.json`，绑定候选/Compose 摘要，并分别记录执行客户端 OS/架构、Docker daemon OS/架构和系统说明、容器目标平台及 daemon 与容器架构是否相同。客户端可能连接远程 Docker，架构相同也不能独立证明物理宿主原生运行；验收人员补充实际宿主和仿真方式。arm64 与 amd64 候选分别运行；仿真、原生及不同宿主的结果分别记录，不能由一台 Mac 推导所有宿主均通过。协议 `candidate_smoke.py` 的合法预置仅证明相应协议接缝，不是本入口的完整初始化证据。浏览器与真机 T3 按各自输入继续，不能用安装、readiness 或 smoke 代替终端效果。
 
 Native 保护轮换重加密运行凭据及 Apple 的 ADE、账户开通、设备令牌、命令和 DDM 证据行，不修改逻辑版本或重放 MAC。不可变内容对象、已有执行快照、证书归档以及历史备份仍可能依赖旧读取钥；因此本入口保留旧钥，未提供可绕过这些保留条件的删除动作。历史读取钥最多 15 份，达到上限会明确拒绝继续轮换，须完成对应历史数据和备份退出后再处理，不能删除旧钥冒充完成。
 
