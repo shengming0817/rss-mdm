@@ -117,7 +117,7 @@ fn runtime(input: &Input, host: Uuid) -> Result<Value> {
     let runtime: Value = journal
         .load("requested-runtime.json")?
         .ok_or(Error::Corrupt)?;
-    let applied: crate::setup::deployment::Applied =
+    let applied: crate::setup::runtime_files::Applied =
         journal.load("applied.json")?.ok_or(Error::Corrupt)?;
     if runtime["runtime_binding"]["host_id"] != json!(host)
         || runtime["runtime_binding"]["operation_id"] != json!(applied.operation_id)

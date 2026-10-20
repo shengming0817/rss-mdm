@@ -1,0 +1,76 @@
+# Infrastructure is declared here. No service receives a Docker socket.
+services:
+  postgres:
+    image: ${MDM_POSTGRES_IMAGE:?PostgreSQL image required}
+    environment:
+      POSTGRES_PASSWORD_FILE: /inputs/database-password
+    volumes:
+      - pg:/var/lib/postgresql/data
+      - ${MDM_INPUT_DIRECTORY:?deployment secrets directory required}:/inputs:ro
+    # PostgreSQL requires a private key with its own UID; prepare it inside its data volume.
+    entrypoint: [/bin/sh, -ec]
+    command:
+      - |
+        install -d -o postgres -g postgres -m 700 /var/lib/postgresql/tls
+        install -o postgres -g postgres -m 600 /inputs/postgres.key /var/lib/postgresql/tls/server.key
+        install -o postgres -g postgres -m 644 /inputs/postgres.crt /var/lib/postgresql/tls/server.crt
+        exec docker-entrypoint.sh postgres -c ssl=on -c ssl_cert_file=/var/lib/postgresql/tls/server.crt -c ssl_key_file=/var/lib/postgresql/tls/server.key
+    healthcheck:
+      test: [CMD, pg_isready, -U, postgres]
+      interval: 2s
+      timeout: 3s
+      retries: 45
+    restart: unless-stopped
+  init:
+    image: ${MDM_INSTALLER_IMAGE:?initializer image required}
+    user: "0:0"
+    depends_on:
+      postgres: {condition: service_healthy}
+    entrypoint: [python3, /usr/local/lib/rss-mdm/initialize.py]
+    environment:
+      MDM_PRODUCT_ORIGIN: ${MDM_PRODUCT_ORIGIN:-https://localhost:8445}
+      MDM_ORGANIZATION: ${MDM_ORGANIZATION:-My organization}
+    volumes:
+      - state:/var/lib/rss-mdm
+      - ${MDM_INPUT_DIRECTORY:?}:/inputs:ro
+  server:
+    image: ${MDM_SERVER_IMAGE:?server image required}
+    user: "10001:10001"
+    depends_on:
+      init: {condition: service_completed_successfully}
+    command: [serve, --config, /run/mdm/runtime.json]
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    tmpfs: ["/tmp:rw,noexec,nosuid,size=64m"]
+    volumes:
+      - type: volume
+        source: state
+        target: /run/mdm
+        read_only: true
+        volume: {subpath: runtime/primary/server, nocopy: true}
+    networks:
+      default: {aliases: [primary-server]}
+    ports:
+      - "${MDM_PUBLISH_IP:-127.0.0.1}:${MDM_HTTPS_PORT:-8445}:8445"
+    restart: unless-stopped
+  gateway:
+    image: ${MDM_WEB_IMAGE:?MDM console image required}
+    user: "10001:10001"
+    depends_on: [server]
+    network_mode: service:server
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    tmpfs: ["/tmp:rw,noexec,nosuid,size=64m"]
+    entrypoint: [nginx, -e, stderr, -c, /run/gateway/nginx.conf, -g, "daemon off;"]
+    volumes:
+      - type: volume
+        source: state
+        target: /run/gateway
+        read_only: true
+        volume: {subpath: runtime/primary/gateway, nocopy: true}
+    restart: unless-stopped
+volumes:
+  state:
+  pg:

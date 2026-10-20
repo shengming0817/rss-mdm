@@ -1,5 +1,5 @@
 //! 原生密文写钥的受控切换：先分发读取能力，再切换写入，最后按领域事务重加密。
-use super::{Error, Result, deployment, installation::Input, local::Journal};
+use super::{Error, Result, installation::Input, local::Journal, runtime_files};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sqlx::Connection;
@@ -195,7 +195,7 @@ pub async fn rotate(request: Request) -> Result<Receipt> {
     c.close().await.map_err(|_| Error::Storage)?;
     Ok(saved.receipt)
 }
-async fn apply(input: &Input, host: &Host, runtime: &Value) -> Result<()> {
+async fn apply(input: &Input, host: &Host, runtime: &Value) -> Result<bool> {
     let config = match host.slot {
         Some(index) => {
             &input
@@ -206,11 +206,15 @@ async fn apply(input: &Input, host: &Host, runtime: &Value) -> Result<()> {
         }
         None => &input.deployment,
     };
-    let observed = deployment::apply(&input.directory, config, runtime).await?;
+    let observed = match runtime_files::apply(&input.directory, config, runtime).await {
+        Ok(observed) => observed,
+        Err(Error::Storage | Error::Conflict) => return Ok(false),
+        Err(error) => return Err(error),
+    };
     if observed.host_id != host.id || observed.tenant_id != host.tenant.to_string() {
         return Err(Error::Conflict);
     }
-    Ok(())
+    Ok(true)
 }
 
 fn key_stages(original: &Value, next: &std::path::Path) -> Result<(Value, Value)> {
@@ -456,8 +460,12 @@ async fn admit_rotation(journal: &Journal) -> Result<()> {
 }
 
 async fn distribute(input: &Input, operation: &Journal, saved: &mut Saved) -> Result<()> {
+    let mut observed = true;
     for host in &saved.hosts {
-        apply(input, host, &host.read).await?;
+        observed &= apply(input, host, &host.read).await?;
+    }
+    if !observed {
+        return Ok(());
     }
     saved.receipt.phase = Phase::Activating;
     operation.save("rotation.json", saved)?;
@@ -471,8 +479,12 @@ async fn activate_writers(
     operation: &Journal,
     saved: &mut Saved,
 ) -> Result<()> {
+    let mut observed = true;
     for host in &saved.hosts {
-        apply(input, host, &host.write).await?;
+        observed &= apply(input, host, &host.write).await?;
+    }
+    if !observed {
+        return Ok(());
     }
     // 只有全部实际进程均加载新写钥和旧读钥后，才改变后续宿主的基础输入。
     journal.save("runtime.json", &saved.base)?;

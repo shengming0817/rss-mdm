@@ -2112,10 +2112,10 @@ MODULES['content.storage'] = replace(module, policies=(*module.policies, CasePol
 
 consume(('crates/agent-wire/schema/task_trust/*',), 'execution.agent.task_trust')
 
-# Installation orchestration is additionally qualified against fixed Linux candidates.
+# Installation orchestration is additionally qualified against fixed Compose candidates.
 # Its shared SQL/authentication and restore seams retain their existing T2 owners.
-consume(('crates/app/src/setup/configure.rs','crates/app/src/setup/deployment.rs','crates/app/src/setup/installation.rs',
-         'crates/app/src/setup/postgres.rs','crates/app/src/setup/tenant_hosts.rs','crates/app/src/setup/supervisor.rs'),
+consume(('crates/app/src/setup/configure.rs','crates/app/src/setup/runtime_files.rs','crates/app/src/setup/installation.rs',
+         'crates/app/src/setup/postgres.rs','crates/app/src/setup/tenant_hosts.rs'),
         'deployment.management-tenant installation.backup')
 consume(('crates/app/src/setup/public_configuration.rs',), 'deployment.management-tenant')
 consume(('crates/app/src/ca_webhooks.rs',), 'apple.scep agent.pki')
@@ -2124,8 +2124,8 @@ consume(('crates/apple-channel/src/database.rs',), 'apple.host')
 consume(('crates/management-http/src/content/mod.rs',), 'content.storage')
 consume(('crates/windows-channel/schema/Wns.json',), 'windows.management')
 T1_INPUTS += ('crates/app/src/setup/local.rs','crates/app/src/setup/mod.rs','crates/app/src/setup/model.rs',
-              'crates/app/tests/setup/deployment.rs','crates/app/tests/setup/installation.rs',
-              'crates/app/tests/setup/postgres.rs','crates/app/tests/setup/supervisor.rs','crates/app/tests/setup/public_configuration.rs',
+              'crates/app/tests/setup/runtime_files.rs','crates/app/tests/setup/installation.rs',
+              'crates/app/tests/setup/postgres.rs','crates/app/tests/setup/public_configuration.rs',
               'crates/mail-service/examples/mail_schema.rs','crates/webhook-service/examples/materials_schema.rs','crates/windows-channel/examples/wns_schema.rs')
 TOOL_INPUTS['deployment/Dockerfile'] = ('test_release',)
 consume_dependencies('installation.providers', normal='aws-credential-types aws-sigv4')
@@ -2139,7 +2139,6 @@ MODULES['planning.agent_policy'] = replace(module, policies=(*module.policies, C
     'planning::t2::agent_policy::registered_script_eligibility_gates_preview_and_automatic',
     'reuse', 'tenant', actors=module.actors)))
 
-add('installation.restart', selectors=('setup::backup::tests::original_restart_policy_is_restored_after_quiescence',), profile='none', sources=('crates/app/src/setup/backup.rs',), tests=('crates/app/tests/setup/backup.rs',))
 
 add('installation.storage_reconcile', selectors=('setup::providers::reconcile::tests::failed_candidates_and_expired_evidence_do_not_block_later_work',), fixtures=('runtime_config','s3'), sources=('crates/app/src/setup/providers/reconcile.rs','crates/content-service/src/connections.rs','crates/content-service/schema/connections.sql'), tests=('crates/app/tests/setup/reconcile.rs',))
 MODULES['installation.storage_reconcile'] = replace(MODULES['installation.storage_reconcile'], db_mode='fresh', scope='pair')
@@ -2152,3 +2151,7 @@ MODULES['agent.pki'] = replace(module, policies=tuple(
     replace(policy, actors=(*module.actors, ('tenant', 'other')))
     if policy.selector == 'agent_pki_tests::production_agent_listener_bootstraps_activates_and_rechecks_revocation'
     else policy for policy in module.policies))
+
+TOOL_INPUTS['deployment/production.compose.yaml'] = ('test_release',)
+TOOL_INPUTS['deployment/initialize.py'] = ('test_release',)
+TOOL_INPUTS['deployment/tenant.compose.yaml'] = ('test_release',)

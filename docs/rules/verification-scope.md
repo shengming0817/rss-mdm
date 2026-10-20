@@ -29,7 +29,7 @@ Make 的正式构建、测试与 CI 由统一启动器持有 worktree/target 独
 
 artifacts/local-ci 中 selection/result 记录选中 gate、命令及 passed/failed/skipped；推荐 T2 与实际执行分开记录，快速检查通过不代表集成验证通过。独立 T2 结果位于 artifacts/local-t2，空选择明确为 skipped/no-modules-selected；缺依赖、零测试和 ignored 伪绿必须失败。skipped 不表示通过，affected 不称为全量。计划不覆盖正式结果，正式执行清理本入口自有旧记录。源码版本、lock 与工具链可作普通运行记录，不作“干净提交”准入。
 
-真实候选用一次正式 OCI 构建及随附部署输入验证安装、启动和认证，不依赖 matching checkout。候选 smoke/浏览器不替代真机；发布声明绑定实际 OS/架构、注册方式、权限、依赖、故障范围及结果。未测组合如实保留，性能、RPO/RTO 不继承历史数字。
+真实候选用正式 OCI 构建及随附 Compose 输入在空库验证完整安装、启动、独立管理员和租户开通，不依赖 matching checkout、systemd 或开发 fixture。分别记录宿主 OS/架构及容器平台，仿真不代替相应原生宿主证据。候选 smoke/浏览器不替代真机；发布声明绑定实际 OS/架构、注册方式、权限、依赖、故障范围及结果。未测组合如实保留，性能、RPO/RTO 不继承历史数字。
 
 开发/T2 环境按 worktree 隔离，独立于共享 target 槽位。`JOBS` 限制独立 case 的完整生命周期，默认 2；模块内也允许并发。普通兼容业务按对象/主体或合法专用租户隔离观察范围，共用可写库；DDL、库内权限和损坏材料使用一次性库，安装始终使用空库；共享角色和停库故障使用独立 PG 实例。故障实例恢复检查成功后可复用，失败或不确定则隔离，仅为后续 case 建立替代环境，不重跑掩盖原失败。数据库数量不由 case、模块或 worker 数决定。稳定身份、内容与签名按兼容环境准备；公共 worker 属于运行环境，精确消费者故障属专用观察域。复用需验证同库重复、换序与实际并发重叠，同对象竞争用同步点。平台工具、Identity、SCEP、Keycloak 和 HTTPS/Git 按实际需要准备。详见[测试模块](../guides/test-modules.md)。
 

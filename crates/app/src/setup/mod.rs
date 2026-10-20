@@ -6,8 +6,6 @@ mod application;
 pub mod backup;
 #[cfg(unix)]
 pub mod configure;
-#[cfg(unix)]
-pub mod deployment;
 pub mod host;
 #[cfg(unix)]
 pub mod installation;
@@ -22,9 +20,9 @@ pub mod protection;
 pub mod providers;
 pub mod public_configuration;
 #[cfg(unix)]
-mod snapshot_tree;
+pub mod runtime_files;
 #[cfg(unix)]
-mod supervisor;
+mod snapshot_tree;
 #[cfg(unix)]
 pub mod tenant_hosts;
 #[derive(Debug, thiserror::Error)]

@@ -188,7 +188,7 @@ Apple 的 challenge/notify webhook ID 和 HMAC 秘密属于稳定协议配置。
 
 ### 原生加密写钥切换
 
-`rss-mdm-installer rotate-protection --config /absolute/private-rotation.json` 接受 `installation`（原部署输入）、`purpose`（`native` 或 `windows`）和稳定 UUID `operation_id`。专用部署进程与该操作互斥。操作先在最终保管目录生成新钥并保存每个宿主的两个不可变输入：第一阶段让全部实际进程读取新旧钥，第二阶段才切换新密文写钥。每个阶段都要求 HTTPS 返回确切宿主、操作、版本、摘要与新进程观察；失败使用原 operation ID 重试，不能手工跳过剩余宿主。
+`docker compose -p rss-mdm -f /absolute/candidate/deployment/production.compose.yaml run --rm --no-deps --user 10001:10001 --entrypoint /usr/local/bin/rss-mdm-installer init rotate-protection --config /var/lib/rss-mdm/private-rotation.json` 接受 `installation`（原部署输入）、`purpose`（`native` 或 `windows`）和稳定 UUID `operation_id`。该一次性维护命令与其它维护操作互斥。操作先在最终保管目录生成新钥并保存每个宿主的两个不可变输入：第一阶段让全部实际进程读取新旧钥，第二阶段才切换新密文写钥。每个阶段都要求 HTTPS 返回确切宿主、操作、版本、摘要与新进程观察；失败使用原 operation ID 重试，不能手工跳过剩余宿主。
 
 写钥切换完成后，每次调用以有界领域事务重加密 APNs/Profile/Managed Apple Account、任务签名私钥和 S3 凭据；`rewrapping` 表示还需继续用原输入调用，`complete` 表示该轮切换和上述运行材料批次已完成。私钥身份、材料版本、签名信任、ACK、原请求指纹和证书均不改变。中断可重放，单批失败回滚。
 
@@ -201,7 +201,7 @@ Windows 保护配置现在使用 `protocol_protection`，包含 `active_file`、
 
 `POST /api/v1/windows/wns` 使用真实业务管理员会话、`RegistrationConfigurationWrite`、最近认证和 `Idempotency-Key`；正文是 `expectedRevision`、`packageFamilyName`、`sid`、`clientSecret`。Windows owner 加密保存候选，普通服务没有更新资格状态的数据库权限。`GET /api/v1/windows/wns` 返回当前 revision、期望版本和公开版本列表；`/api/v1/windows/wns/operations/{id}` 返回带 kind 的原操作回执。两者都不返回 SID 或秘密。`POST /api/v1/windows/wns/revoke` 接受 `expectedRevision`、`materialRevision` 和独立 `Idempotency-Key`，撤销后运行消费者拒绝该版本，旧操作可重复查询。正式 DTO 见 [WNS schema](../../crates/windows-channel/schema/Wns.json)。
 
-部署进程调用固定 Microsoft OAuth 入口验证候选，保存资格时间及失败类别；失败至少一分钟后才重试原候选。成功后申请受控宿主重启，运行配置为 `push: {"revision": N}`，删除旧秘密文件 loader。相同 PFN/SID 的秘密轮换沿用原设备通道绑定，不要求设备因服务器秘密变化而重新注册；改变应用身份产生不同绑定，等待设备的真实 PFN/ChannelURI 查询结果。资格通过仅证明 OAuth 凭据在核验时可用，不证明离线设备收到唤醒。推送租约复核原版本仍被选择且未撤销。
+一次性维护命令调用固定 Microsoft OAuth 入口验证候选，保存资格时间及失败类别；失败至少一分钟后才重试原候选。成功后导出运行配置，由运维重建对应服务，运行配置为 `push: {"revision": N}`，删除旧秘密文件 loader。相同 PFN/SID 的秘密轮换沿用原设备通道绑定，不要求设备因服务器秘密变化而重新注册；改变应用身份产生不同绑定，等待设备的真实 PFN/ChannelURI 查询结果。资格通过仅证明 OAuth 凭据在核验时可用，不证明离线设备收到唤醒。推送租约复核原版本仍被选择且未撤销。
 
 设置目录 `/api/v1/settings/catalog` 和平台目录 `/api/v1/tenant-administration/settings/catalog` 使用 [SettingsCatalog schema](../../crates/management-http/schema/SettingsCatalog.json)。`configured` 只描述领域已有配置，`loaded` 只描述当前进程装载，`pending` 要求宿主应用或其他领域动作，`unknown` 明确要求 owner 观察；这些状态均不等同于真实设备验收。权限过滤先于领域读取，平台会话不会转换为业务会话。
 
@@ -209,7 +209,7 @@ Windows 保护配置现在使用 `protocol_protection`，包含 `active_file`、
 
 部署输入 `mail_profiles` 给出受限 profile ID、`hostname`、确切 `address`、`tls`（`implicit` 或 `starttls`）和 `ca_file`。普通服务只提交 profile ID，不接收任意服务器地址或 CA 管理材料。`POST /api/v1/smtp` 接受 `expectedRevision`、`profile`、`sender`、`recipient`、`username`、`password`，要求最近认证的业务管理会话、注册配置写权限与 `Idempotency-Key`。这一动作授权发送一封固定资格消息，不接收主题、正文、附件或额外收件人。
 
-邮件 owner 加密保存凭据；部署进程对精确地址验证 TLS 名字、认证并实际投递。STARTTLS 失败不会降级，TLS 后重新 EHLO，再执行 AUTH PLAIN。DATA 发送前提交持久检查点；服务器明确拒绝与连接中断/响应丢失分别记录，未知结果不自动重投。`GET /api/v1/smtp/operations/{id}` 查询原操作，`GET /api/v1/smtp` 返回版本及选择状态。`accepted` 仅表示 SMTP DATA 取得 250 回应，不证明收件箱送达。正式 DTO 见 [Mail schema](../../crates/mail-service/schema/Mail.json)。未知操作应按原 Message-ID 从邮件系统核对，不能用新操作掩盖原结果。
+邮件 owner 加密保存凭据；一次性维护命令对精确地址验证 TLS 名字、认证并实际投递。STARTTLS 失败不会降级，TLS 后重新 EHLO，再执行 AUTH PLAIN。DATA 发送前提交持久检查点；服务器明确拒绝与连接中断/响应丢失分别记录，未知结果不自动重投。`GET /api/v1/smtp/operations/{id}` 查询原操作，`GET /api/v1/smtp` 返回版本及选择状态。`accepted` 仅表示 SMTP DATA 取得 250 回应，不证明收件箱送达。正式 DTO 见 [Mail schema](../../crates/mail-service/schema/Mail.json)。未知操作应按原 Message-ID 从邮件系统核对，不能用新操作掩盖原结果。
 
 实现依据 [RFC 3207](https://www.rfc-editor.org/rfc/rfc3207)、[RFC 4954](https://www.rfc-editor.org/rfc/rfc4954) 和 [RFC 5321](https://www.rfc-editor.org/rfc/rfc5321)。不新增通知订阅产品。
 
@@ -235,13 +235,13 @@ Apple 的 `identity_seed` 永久保留原 challenge/notify ID，实际凭据放�
 
 ### 当前安装联合冷备
 
-`backup-installation` 接受安装输入、稳定操作 ID、位于安装目录之外的私有备份目录，以及每个保留 CA 的确切容器 ID、issuer、purpose、在线与离线目录、离线 root 私钥和密码文件。准备阶段核对已启用宿主、实际 provider issuer、CA 容器挂载、在线 issuer 与原离线 root 私钥对应关系；不接受用另一份目录冒充原 CA。备份中包含秘密，公开回执只返回操作、阶段和需独立保存的 manifest SHA-256。
+`backup-installation` 接受安装输入、稳定操作 ID、安装目录之外的私有备份目录，以及每个保留 CA 的 issuer、purpose、configuration_file、在线/离线目录、离线根钥及密码文件。运维先停止全部写服务；准备阶段校验原安装、宿主记录及 CA 在线证书与离线根钥关系，数据库连接屏障拒绝仍有写连接的备份。产品不读取或控制 CA 容器。备份含秘密，公开回执仅返回操作、阶段及 manifest SHA-256。
 
-操作先持久保存原身份，关闭容器自动重启并停写，保存和暂时收回普通运行角色的数据库 CONNECT 授权。数据库 owner 和受控管理员用于原样 dump 及切换到原只读角色后的 Ledger 验证。联合归档保留部署文件的原 UID/GID/权限、原保护材料、内容卷、S3 确切物理版本和 CA 在线/离线目录。未决对象继续保持未知；原 Ledger 历史逐页验证，不更换 HMAC 密钥。归档封存后按原权限恢复连接并重新观察宿主。
+运维先用 Compose 停止全部相关后端、网关和 CA 写入服务；产品备份命令不控制容器。命令持久保存原身份，验证无业务写连接，保存和暂时收回普通运行角色的数据库 CONNECT 授权。数据库 owner 和受控管理员用于原样 dump 及切换到原只读角色后的 Ledger 验证。联合归档保留 Docker 卷内固定服务 UID/GID/权限、原保护材料、内容卷、S3 确切物理版本和 CA 在线/离线目录。未决对象继续保持未知；原 Ledger 历史逐页验证，不更换 HMAC 密钥。归档封存后按原权限恢复连接并重新观察宿主。
 
 `restore-installation` 使用备份目录、独立保存的 manifest 摘要、新恢复操作 ID、目标管理员数据库连接，以及平台和每个已启用业务租户的 `accounts`（tenant_id、原 principal_id/login/password_file）。这是同址恢复：数据库名称/地址、安装路径、材料路径和内容路径保持原值；目标库必须为空，受限角色及原凭据须已恢复，外置材料父目录须存在。拒绝覆盖不同文件内容或已有业务库。恢复数据库使用单事务和持久操作标记，原角色授权在验证完成后恢复；原账户执行真实认证及授权核对，不以密码重置代替验证。
 
-CA 原容器仍存在时核对原 image/command/mount 后启动；容器缺失时从封存元数据生成固定、受限的 step-ca Compose 服务，复用原不可变 image、挂载和数据库，不重新初始化 CA。自定义 Docker 网络及固定 image 属于需预先恢复的部署基础设施。任何材料、旧密钥、权限、网络或外部 S3 资格缺失均停在原检查点，不能宣称恢复成功。
+CA 的镜像、网络、卷、启停与恢复由原运维 Compose/Kubernetes 声明负责。产品命令只校验所提供的在线/离线材料、恢复数据和身份，不读取 Docker inspect，不重建容器。恢复数据和原材料后，由运维启动服务并检查实际认证、readyz 和用途 CA。
 
 `configure-host` 的 `channels` 变更接受严格的 Windows/Apple/Agent 配置、完整 provider 集合及 Apple 导入信任根。通道尚未就绪时保持关闭；可以先仅安装材料校验根，再由原材料 API 导入证书，最后启用通道。Windows 部署输入省略 `protocol_protection` 时，首次启用生成独立材料，已有通道沿用原材料；更换写钥必须走 `rotate-protection`。Apple 已建立的 `identity_seed` 不可被通道更新替换。所有文件输入在副作用前复制到按内容摘要命名的私有文件，应用摘要绑定实际材料字节；原输入文件随后变化不能改变已冻结的候选。
 
@@ -251,9 +251,9 @@ CA 原容器仍存在时核对原 image/command/mount 后启动；容器缺失�
 
 运行配置只保留受限 `networks` 和原恢复数据库配置，删除 `keys/current_file/retiring` loader。签名材料由 webhook owner 加密持久化，投递授权在事务中读取当前 active/retiring 选择；这是直接生效的领域设置，失败候选不会替换仍有效的 active 密钥。网络配置仍由部署边界限定，可通过 `configure-host` 的 `webhook_networks` 变更受控应用。
 
-`GET /api/v1/webhooks/materials` 返回网络配置摘要及公开版本状态。`POST` 同一路径接受 `reference`、`expectedRevision`、`configurationSha256`、`endpoint`、`networkReference` 和 `source`（`generate` 或 `import` 的 Standard Webhooks `whsec_` secret），要求近期真实会话、WebhookWrite 和 `Idempotency-Key`。响应和操作查询不返回秘密。`export-webhook-key` 由部署 operator 将指定版本交付到私有 `webhook-delivery-<operation>/delivery.json`；标准输出仅含公开回执。
+`GET /api/v1/webhooks/materials` 返回网络配置摘要及公开版本状态。`POST` 同一路径接受 `reference`、`expectedRevision`、`configurationSha256`、`endpoint`、`networkReference` 和 `source`（`generate` 或 `import` 的 Standard Webhooks `whsec_` secret），要求近期真实会话、WebhookWrite 和 `Idempotency-Key`。响应和操作查询不返回秘密。`export-webhook-key` 由一次性维护命令 将指定版本交付到私有 `webhook-delivery-<operation>/delivery.json`；标准输出仅含公开回执。
 
-接收方安全安装该 secret 后，部署进程向已批准的精确 HTTPS endpoint 发出 `rss-mdm.webhook-key-confirmation/v1` 请求，使用该候选的 Standard Webhooks 签名。接收方验证签名，再以相同密钥对下面的 UTF-8 字节计算 HMAC-SHA256，返回 `{"confirmationProof":"<standard-base64>"}`。行间为单个 LF，结尾没有 LF：
+接收方安全安装该 secret 后，一次性维护命令向已批准的精确 HTTPS endpoint 发出 `rss-mdm.webhook-key-confirmation/v1` 请求，使用该候选的 Standard Webhooks 签名。接收方验证签名，再以相同密钥对下面的 UTF-8 字节计算 HMAC-SHA256，返回 `{"confirmationProof":"<standard-base64>"}`。行间为单个 LF，结尾没有 LF：
 
 ```text
 rss-mdm.webhook-key/v1
@@ -270,14 +270,32 @@ rss-mdm.webhook-key/v1
 
 ## 单机部署的重启与恢复边界
 
-同机拓扑与配置归属见[安装指南](installation.md#单机部署设计与配置归属)。当前安装器生成的 server/gateway 使用 host 网络，不采用共享容器网络命名空间的手工模板；不套用“重建 server 后必须因旧 namespace 重建 gateway”的旧操作。宿主配置变更沿原 `configure-host`/部署进程执行，核对 requested/applied revision、材料摘要、宿主/租户/operation 以及新的进程观察；直接改生成文件或仅重启进程不构成应用成功。
+Compose 拓扑与配置归属见[安装指南](installation.md#单机部署设计与配置归属)。正式 server 使用 bridge，gateway 共享该租户 server 的网络命名空间；运维重建 server 时同时重建 gateway，保留内部回环管理边界。进程生命周期由 Compose 管理，宿主不安装 systemd unit 或部署二进制。宿主配置变更沿原 `configure-host` 导出配置、运维重建服务、原操作复验执行，核对 requested/applied revision、材料摘要、宿主/租户/operation 以及新的进程观察；直接改生成文件或仅重启进程不构成应用成功。
 
 服务 TLS 变更后分别检查网关与原生设备入口的证书链、主机名及实际连接；设备证书仍由后端验证，不借助代理头。CA、SCEP/webhook 和根/issuer CRL 变化按各自原 owner 验证，单机上的 DNS/容器健康不替代外部设备网络检查。APNs/Profile/WNS 等材料使用领域版本与受控应用流程，不恢复启动秘密文件 loader。
 
 备份使用上节 `backup-installation` 的停写与联合归档流程，恢复使用 `restore-installation`，不把正在运行的数据库/对象目录简单打包当作一致备份。CA 原数据库同时只能有一个写入者；停机、备份和接管均须证明旧写入者已隔离。归档、独立 manifest 摘要及秘密保存在异机受控介质，单机本地副本不能覆盖整机丢失风险。
 
-当前恢复只支持上节明确的同址条件；同机放置全部组件不提供 HA，也不承诺异址/异机自动灾备、RPO/RTO 或容量。当前联合冷备适用于隔离 CA 基线：输入须覆盖每个 `(purpose, issuer)`，而 CA 容器 ID 又不能重复，见[备份输入核验](../../crates/app/src/setup/backup.rs)。因此三用途共用同一 CA 容器会被拒绝，相关备份/恢复项必须记为 blocked；须另行实施支持并独立验收，不能通过省略用途、重复启动同一数据库写入者或手工打包绕过。不从隔离 CA 的恢复结果推导共享 CA 支持。
+当前恢复只支持上节明确的同址条件，不提供 HA、异址自动灾备或未经实测的 RPO/RTO。CA 镜像和数据库由原运维声明恢复，产品输入覆盖每个 `(purpose, issuer)` 并验证材料；共享 CA、跨机和外部供应方恢复需要各自独立演练，不能从基础种子安装结果推导通过。
 
 恢复测试保留原账户、设备、issuer/kid、内容版本及 Ledger/保护材料，不能用换钥、重新注册、清库或重置密码代替核验。
 
 真机与故障记录使用[验收清单](installation.md#真机验收清单与证据)，区分服务恢复、历史身份可验证和终端实际恢复；缺材料或结果未知时保留原检查点与 blocked/unknown，不发布成功结论。
+
+## Compose 维护材料与数据库 TLS 续期
+
+维护命令复用初始化镜像，显式覆盖入口并使用 UID10001，不启动常驻进程。配置、材料和数据库权限仍属于各领域；产品命令不管理容器。秘密通过 stdin 导入卷内指定的 0600 文件：
+
+```sh
+docker compose -p rss-mdm -f /absolute/candidate/deployment/production.compose.yaml run --rm --no-deps --user 10001:10001 -T --entrypoint python3 init -c 'import pathlib,sys;p=pathlib.Path("/var/lib/rss-mdm/maintenance.json");p.write_bytes(sys.stdin.buffer.read());p.chmod(0o600)' < /absolute/private/maintenance.json
+# 任一现有维护命令均使用相同入口；这里执行一次配置准备与实际进程观察。
+docker compose -p rss-mdm -f /absolute/candidate/deployment/production.compose.yaml run --rm --no-deps --user 10001:10001 --entrypoint /usr/local/bin/rss-mdm-installer init prepare-hosts --config /var/lib/rss-mdm/maintenance.json
+```
+
+`prepare-hosts` 只执行一次供应方核验、材料版本投影与真实 HTTPS 观察；不会启动或重启服务。`configure-host` 保存确切配置版本并导出文件后，运维执行 `docker compose ... up -d --force-recreate server gateway`；随后重放原配置操作或运行一次 prepare-hosts，核对当前进程加载版本。未加载时保持未应用，不能把文件保存当成成功。Windows/Apple/Agent 的原生监听仍由配置决定，对外端口在运维 Compose override 中显式发布。
+
+`rotate-protection` 的 distributing/activating 阶段同样先导出文件，保持原 operation；运维分阶段重建服务，再重复原命令取得真实观察，全部宿主确认后才切换写钥及重加密。不会自动恢复旧容器；需要回退时由运维恢复先前已确认的配置和 Compose 版本，保留原密钥。
+
+PostgreSQL 和网关服务器证书由部署方签发、保管与续期。替换 PostgreSQL 输入后用 Compose 重建 postgres，保留原 CA 信任及数据库秘密。网关使用 `configure-host` 的 `change.kind=gateway_tls`，提交新证书、匹配私钥和信任文件；运维重建 server/gateway，再用原操作核验实际 HTTPS。没有内置证书签发器或续期后台任务。
+
+CA 联合备份的每个 authority 提供 purpose、issuer、configuration_file、online_directory、offline_directory、root_private_key_file、root_password_file；所有路径是维护容器中明确挂载的文件。运维先停止相应 CA，再运行备份/恢复；产品校验实际 issuer 与根钥关系并归档文件，不持有容器 ID、镜像、网络或 Docker 卷元数据。离线根材料只交给受控维护，不进入在线 CA 或业务服务。

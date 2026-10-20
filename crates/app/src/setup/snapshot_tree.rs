@@ -237,7 +237,10 @@ pub(super) fn restore(journal: &Journal, name: &str) -> Result<()> {
     Ok(())
 }
 fn attributes(path: &Path, node: &Node) -> Result<()> {
-    std::os::unix::fs::chown(path, Some(node.uid), Some(node.gid)).map_err(|_| Error::Storage)?;
+    let metadata = std::fs::symlink_metadata(path).map_err(|_| Error::Storage)?;
+    if metadata.uid() != node.uid || metadata.gid() != node.gid {
+        return Err(Error::Conflict);
+    }
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(node.mode))
         .map_err(|_| Error::Storage)
 }

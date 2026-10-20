@@ -21,7 +21,7 @@ async fn execute() -> Result<(), ProcessError> {
     let args: Vec<_> = std::env::args().skip(1).collect();
     if args == ["--help"] {
         println!(
-            "rss-mdm install|provision-hosts|rotate-protection|prepare-ca|configure-host|public-host-config|export-webhook-key|backup-installation|restore-installation|serve|migrate|tenant-get|tenant-list|tenant-update|tenant-delete|tenant-operation-status|initialize|initialize-authorization|recover-password --config /absolute/private-config.json\nrss-mdm --version|--describe"
+            "rss-mdm install|prepare-hosts|rotate-protection|prepare-ca|configure-host|public-host-config|export-webhook-key|backup-installation|restore-installation|serve|migrate|tenant-get|tenant-list|tenant-update|tenant-delete|tenant-operation-status|initialize|initialize-authorization|recover-password --config /absolute/private-config.json\nrss-mdm --version|--describe"
         );
         return Ok(());
     }
@@ -134,29 +134,12 @@ async fn execute() -> Result<(), ProcessError> {
             Ok(())
         }
         #[cfg(unix)]
-        "provision-hosts" => {
-            let input = config::load(path)?;
-            let shutdown = rss_mdm_app::signal();
-            tokio::pin!(shutdown);
-            let mut failed = false;
-            loop {
-                let result = tokio::select! {
-                    biased;
-                    result=&mut shutdown=>return result.map_err(|_| ProcessError::Stage {stage:"deployment.signal",kind:"shutdown signal unavailable"}),
-                    result=rss_mdm_app::setup::tenant_hosts::reconcile(&input)=>result,
-                };
-                if result.is_err() != failed {
-                    failed = result.is_err();
-                    eprintln!(
-                        "{}",
-                        serde_json::json!({"event":"tenant_deployment_health","available":!failed})
-                    );
-                }
-                tokio::select! {
-                    result=&mut shutdown=>return result.map_err(|_| ProcessError::Stage {stage:"deployment.signal",kind:"shutdown signal unavailable"}),
-                    ()=tokio::time::sleep(std::time::Duration::from_secs(5))=>{},
-                }
-            }
+        "prepare-hosts" => {
+            let completed = rss_mdm_app::setup::tenant_hosts::reconcile(&config::load(path)?)
+                .await
+                .map_err(|error| setup_failure("host.inputs", error))?;
+            println!("{}", serde_json::json!({"observedHosts":completed}));
+            Ok(())
         }
 
         "serve" => {

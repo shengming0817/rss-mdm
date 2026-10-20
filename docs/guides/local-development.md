@@ -90,6 +90,8 @@ cargo run --locked -p rss-mdm-examples -- inspect snapshot-1
 
 产品运行和初始化使用 [安装指南](../deployment/installation.md)，不以示例 CLI 代替生产入口。
 
+正式部署、完整初始化和开始产品 T3 使用[正式 Compose 入口](../deployment/installation.md#全新实例安装)。以下 worktree 环境含开发 fixture，仅用于开发/T2，不替代真实安装和租户开通。
+
 ## Worktree 开发环境
 
 默认四槽共享 target 池及其独占租约保持不变。环境归属由 worktree 绝对路径决定，和槽位分配、复用、换属无关；四个 worktree 可并行开发，槽满时构建明确失败。

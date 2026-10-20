@@ -65,18 +65,19 @@ def snapshot_ui(reference, output):
     metadata['archive']={'file':output.name,'sha256':sha(output)}
     return metadata
 
-def build(out, header, web_image=None):
+def build(out, header, web_image=None, target_platform=None):
     if out.exists():
         raise ValueError("candidate output must be new")
     out.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix=".mdm-candidate-", dir=out.parent) as temporary:
         staged = Path(temporary) / "candidate"
-        build_staged(staged, header, web_image)
+        build_staged(staged, header, web_image, target_platform)
         staged.rename(out)
     print("candidate: " + str(out / "candidate.json"))
 
+RUNTIME_TOOLS = ("release.py", "candidate_runtime.py", "candidate_fixture.py",  "candidate_installation.py", "candidate_installation_driver.py")
 ROLE_NAMES = ("software-publication", "flow", "identity", "commands", "audit", "webhook")
-DEPLOYMENT_FILES = ('deployment/compose.yaml', 'deployment/providers.lock.json', 'fixtures/pki-tools.lock.json', 'deployment/agent-leaf.tpl', 'deployment/windows-leaf.tpl', "mdm-config.example.json", "deployment/nginx.conf", *(
+DEPLOYMENT_FILES = ('deployment/production.compose.yaml', 'deployment/initialize.py', 'deployment/tenant.compose.yaml', 'deployment/compose.yaml', 'deployment/providers.lock.json', 'fixtures/pki-tools.lock.json', 'deployment/agent-leaf.tpl', 'deployment/windows-leaf.tpl', "mdm-config.example.json", "deployment/nginx.conf", *(
     f"deployment/{name}-roles.sql" for name in ROLE_NAMES))
 
 
@@ -133,7 +134,10 @@ def copy_source(root, destination, header=None):
     return hashlib.sha256(json.dumps(content, sort_keys=True).encode()).hexdigest()
 
 
-def build_staged(out, header, web_image=None):
+def build_staged(out, header, web_image=None, target_platform=None):
+    if target_platform is not None and target_platform not in ("linux/arm64", "linux/amd64"):
+        raise ValueError("supported container platform required")
+    platform_args = ["--platform", target_platform] if target_platform else []
     if out.exists():
         raise ValueError("candidate output must be new")
     if header.is_symlink() or not header.is_file() or header.stat().st_mode & 0o077:
@@ -153,41 +157,35 @@ def build_staged(out, header, web_image=None):
         from t2_environment import project_name
         jobs = os.environ.get('CARGO_BUILD_JOBS','4')
         if not jobs.isdecimal() or int(jobs)<1:raise ValueError('CARGO_BUILD_JOBS must be positive')
-        subprocess.run(["docker", "buildx", "build",
+        subprocess.run(["docker", "buildx", "build", *platform_args,
                         "--build-arg", "CACHE_NAMESPACE="+project_name(ROOT),
                         "--build-arg", "CARGO_BUILD_JOBS="+jobs, "--provenance=false",
                         "--secret", "id=azure_header,src=" + str(header),
                         "--build-arg", "RUST_IMAGE=" + providers["rust"],
                         "--build-arg", "RUNTIME_IMAGE=" + providers["runtime"],
                         "--build-arg", "POSTGRES_IMAGE=" + providers["postgres"],
-                        "--build-arg", "DOCKER_CLI_IMAGE=" + providers["docker-cli"],
                         "--target", "server", "--tag", image, "--output",
                         "type=oci,dest=" + str(output), str(context)], check=True)
         digest, config = oci_identity(output)
+        if platform(config) not in ("linux/arm64", "linux/amd64") or (target_platform and platform(config) != target_platform):
+            raise ValueError("requested container platform mismatch")
+        if ui is not None and platform(ui) != platform(config):
+            raise ValueError("UI container platform mismatch")
         subprocess.run(["docker", "load", "--input", str(output)], check=True)
         operator_image="rss-mdm/installer:build-"+uuid.uuid4().hex
         operator_archive=out/"installer.oci.tar"
-        subprocess.run(["docker","buildx","build","--build-arg","CACHE_NAMESPACE="+project_name(ROOT),
+        subprocess.run(["docker","buildx","build",*platform_args,"--build-arg","CACHE_NAMESPACE="+project_name(ROOT),
                         "--build-arg","CARGO_BUILD_JOBS="+jobs,"--provenance=false",
                         "--secret","id=azure_header,src="+str(header),
                         "--build-arg","RUST_IMAGE="+providers["rust"],
                         "--build-arg","RUNTIME_IMAGE="+providers["runtime"],
                         "--build-arg","POSTGRES_IMAGE="+providers["postgres"],
-                        "--build-arg","DOCKER_CLI_IMAGE="+providers["docker-cli"],
                         "--target","installer","--tag",operator_image,"--output","type=oci,dest="+str(operator_archive),str(context)],check=True)
-        operator_digest,operator_config=oci_identity(operator_archive, expected_user="0:0")
+        operator_digest,operator_config=oci_identity(operator_archive, expected_user="10001:10001")
         if platform(operator_config)!=platform(config):raise ValueError("installer platform mismatch")
         subprocess.run(["docker","load","--input",str(operator_archive)],check=True)
         migrations = json.loads(run(["docker", "run", "--rm", "--network", "none", image, "--describe"]))
         version = run(["docker", "run", "--rm", "--network", "none", image, "--version"])
-        # The same fixed image supplies the Linux operator binary; no host checkout is required.
-        installer = out / "rss-mdm-installer"
-        container = run(["docker", "create", "--network", "none", image, "--version"])
-        try:
-            subprocess.run(["docker", "cp", container + ":/usr/local/bin/rss-mdm", str(installer)], check=True)
-        finally:
-            subprocess.run(["docker", "rm", container], check=True, stdout=subprocess.DEVNULL)
-        installer.chmod(0o700)
         deployment = {}
         for name in DEPLOYMENT_FILES:
             original = (source / "fixtures/mdm-config.example.json" if name == "mdm-config.example.json"
@@ -201,15 +199,21 @@ def build_staged(out, header, web_image=None):
         build.mkdir()
         for name in ("Cargo.lock", "rust-toolchain.toml"):
             shutil.copy(source / name, build / name)
+        tools = {}
+        for tool in RUNTIME_TOOLS:
+            target = out / "tools" / tool
+            target.parent.mkdir(exist_ok=True)
+            shutil.copy(ROOT / "hack" / tool, target)
+            tools[tool] = sha(target)
         manifest = {
-            "format_version": 5,
-            "installer": {"file": installer.name, "sha256": sha(installer),"image":operator_image+"@"+operator_digest,
+            "format_version": 6,
+            "installer": {"image":operator_image+"@"+operator_digest,
                           "archive":{"file":operator_archive.name,"sha256":sha(operator_archive),"manifest_digest":operator_digest}},
             "source": {"inputs_sha256": inputs_sha256},
             "version": version, "platform": platform(config), "migrations": migrations,
             "image": image + "@" + digest,
             "archive": {"file": output.name, "sha256": sha(output), "manifest_digest": digest},
-            "providers": providers, "deployment": deployment,
+            "providers": providers, "deployment": deployment, "tools": tools,
         }
         if ui is not None:
             manifest["ui"] = ui
@@ -220,5 +224,6 @@ if __name__ == "__main__":
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--git-auth-header-file", type=Path, required=True)
     parser.add_argument("--web-image", help="optional immutable UI image ID or repository digest for combined delivery")
+    parser.add_argument("--platform", choices=["linux/arm64", "linux/amd64"])
     args = parser.parse_args()
-    build(args.output.resolve(), args.git_auth_header_file.absolute(), args.web_image)
+    build(args.output.resolve(), args.git_auth_header_file.absolute(), args.web_image, args.platform)

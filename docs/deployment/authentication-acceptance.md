@@ -5,7 +5,9 @@
 
 ## 执行
 
-按 [安装指南](installation.md) 构建 V3 候选。使用与验收工具匹配的固定浏览器镜像，版本由 auth_t3.py 校验；运行不依赖源码 checkout。使用当前 Docker 默认平台。镜像须已存在，UI 由产品候选归档持有；工具输入仅接受不可变 image ID 或 repository digest，启动前导出 browser-tools.image.tar 并记录摘要，不接受 tag。
+先通过[正式 Compose 初始化](installation.md#全新实例安装)建立真实账户和租户。`candidate_installation.py` 提供完整初始化证明；下列故障浏览器入口使用隔离协议前置，不替代该证明。已安装环境的正常浏览器入口见[本地开发指南](../guides/local-development.md#浏览器正常与故障验证)，真实设备/数据前置不得由合成 Inventory 冒充。
+
+按 [安装指南](installation.md) 构建 V6 候选。使用与验收工具匹配的固定浏览器镜像，版本由 auth_t3.py 校验；运行不依赖源码 checkout。显式选择并记录容器平台。镜像须已存在，UI 由产品候选归档持有；工具输入仅接受不可变 image ID 或 repository digest，启动前导出 browser-tools.image.tar 并记录摘要，不接受 tag。
 
 ```sh
 python3 hack/auth_t3.py --mode faults --candidate /absolute/candidate --tools-image "$MDM_BROWSER_IMAGE_ID" --output /absolute/new-result

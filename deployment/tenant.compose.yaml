@@ -1,0 +1,26 @@
+# Run after preparing this tenant's runtime inputs. Capacity is managed by operations.
+services:
+  server:
+    extends: {file: production.compose.yaml, service: server}
+    depends_on: !reset {}
+    networks:
+      default:
+        aliases: !override ["${MDM_SERVER_ALIAS:?}"]
+    volumes: !override
+      - type: volume
+        source: state
+        target: /run/mdm
+        read_only: true
+        volume: {subpath: "${MDM_RUNTIME_SUBPATH:?}/server", nocopy: true}
+  gateway:
+    extends: {file: production.compose.yaml, service: gateway}
+    volumes: !override
+      - type: volume
+        source: state
+        target: /run/gateway
+        read_only: true
+        volume: {subpath: "${MDM_RUNTIME_SUBPATH:?}/gateway", nocopy: true}
+volumes:
+  state: {external: true, name: "${MDM_STATE_VOLUME:?}"}
+networks:
+  default: {external: true, name: "${MDM_NETWORK:?}"}
