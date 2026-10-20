@@ -8,7 +8,7 @@ use std::sync::Arc;
 pub mod management;
 pub mod responsibility;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum Channel {
     Agent,

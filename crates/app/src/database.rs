@@ -163,6 +163,7 @@ async fn admission(pool: &PgPool) -> Result<(), Error> {
         .await
         .map_err(db)?;
     let contracts = [
+        crate::first_use::ACCESS_CONTRACT,
         crate::tenant_registry::ACCESS_CONTRACT,
         rss_mdm_mail_service::ACCESS_CONTRACT,
         rss_mdm_content_service::connections::ACCESS_CONTRACT,

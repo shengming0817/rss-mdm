@@ -7,6 +7,10 @@ use axum::{
 impl IntoResponse for Error {
     fn into_response(self) -> Response {
         let (status, code) = match &self {
+            Error::FirstUseNotReady => (StatusCode::CONFLICT, "first_use_not_ready"),
+            Error::FirstUseOperationMissing => {
+                (StatusCode::NOT_FOUND, "first_use_operation_not_found")
+            }
             Error::Archive(e) => archive_error(e),
             Error::RecoveryCredentials(e) => recovery_error(e),
             Error::MdmSoftwareDisabled => (StatusCode::CONFLICT, "mdm_software_disabled"),

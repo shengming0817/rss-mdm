@@ -1,0 +1,9 @@
+{
+  "tables": [
+    {"schema":"mdm_first_use","table":"intents","read_write":true,"updates":["revision","intent"],"delete_policy":null},
+    {"schema":"mdm_first_use","table":"operations","read_write":true,"updates":[],"delete_policy":null}
+  ],
+  "functions": [],
+  "external_relations": [],
+  "verified_schemas": []
+}

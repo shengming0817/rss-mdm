@@ -50,7 +50,7 @@ pub struct Item {
     pub lifecycle: Lifecycle,
     #[serde(skip)]
     #[schemars(skip)]
-    permission: Permission,
+    pub permission: Permission,
 }
 macro_rules! item {
     ($id:literal,$scope:ident,$owner:literal,$custody:ident,$lifecycle:ident,$permission:ident) => {
@@ -411,7 +411,7 @@ pub const CATALOG: &[Item] = &[
         AgentEnrollmentRead
     ),
 ];
-fn catalog(proof: &AuthorizedPrincipal, platform: bool) -> Result<Vec<Item>, Error> {
+pub fn catalog(proof: &AuthorizedPrincipal, platform: bool) -> Result<Vec<Item>, Error> {
     proof.check_live()?;
     let items = CATALOG
         .iter()
@@ -442,6 +442,10 @@ pub enum Status {
 #[derive(Clone, Serialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct Projection {
+    /// Owner-qualified configuration; never inferred from the display status.
+    #[serde(skip)]
+    #[schemars(skip)]
+    pub ready: bool,
     pub status: Status,
     pub revision: Option<i64>,
     pub desired_revision: Option<i64>,
@@ -459,6 +463,7 @@ pub struct Action {
 impl Projection {
     pub fn unknown(href: Option<&'static str>) -> Self {
         Self {
+            ready: false,
             status: Status::Unknown,
             revision: None,
             desired_revision: None,

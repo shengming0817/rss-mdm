@@ -6,6 +6,7 @@ use rss_mdm_management_http::{
     settings::{Entry, Item, Projection, Source, Status},
 };
 use std::{collections::BTreeMap, sync::Arc};
+#[derive(Clone)]
 pub(crate) struct Directory {
     pub state: Arc<crate::api::Assembly>,
     pub apple: Arc<rss_mdm_apple_channel::HttpState>,
@@ -174,6 +175,7 @@ impl Source for Directory {
                             };
                             projection.reason =
                                 Some("deployment_application_not_device_escrow_confirmation");
+                            projection.ready = matches!(projection.status, Status::Loaded);
                         } else {
                             configured(&mut projection, 0);
                         }
@@ -226,7 +228,10 @@ impl Source for Directory {
                                 .list_providers(session, crate::identity::deadline())
                                 .await
                             {
-                                Ok(providers) => configured(&mut projection, providers.len()),
+                                Ok(providers) => {
+                                    configured(&mut projection, providers.len());
+                                    projection.ready = providers.iter().any(|p| p.enabled);
+                                }
                                 Err(rss_identity_postgres::AuthorityError::Rejected) => {
                                     return Err(Error::Forbidden);
                                 }
@@ -312,6 +317,16 @@ impl Source for Directory {
                         }
                         projection.reason =
                             Some("external_organization_and_device_confirmation_separate");
+                        projection.ready = count > 0 && unavailable == 0 && pending == 0;
+                        if item.id == "ade-token" {
+                            projection.ready &= values.iter().any(ade_enabled_and_verified);
+                        }
+                        if item.id == "apple-account" {
+                            projection.ready = values.iter().any(|v| {
+                                v["accountEnrollment"]["enabled"] == true
+                                    && v["accountEnrollment"]["signingKeyConfigured"] == true
+                            });
+                        }
                         projection
                             .actions
                             .push(rss_mdm_management_http::settings::Action {
@@ -324,6 +339,7 @@ impl Source for Directory {
                         match rss_mdm_software_service::agent_packages::list(&access).await {
                             Ok(packages) => {
                                 configured(&mut projection, packages.len());
+                                projection.ready = !packages.is_empty();
                                 projection.reason =
                                     Some("published_packages_not_device_installation_confirmation");
                             }
@@ -362,6 +378,8 @@ impl Source for Directory {
                                                 now.is_some_and(|t| t < expires)
                                             })
                                     });
+                                    projection.ready =
+                                        valid && Some(loaded) == directory.desired_revision;
                                     projection.status = if !valid {
                                         Status::Unavailable
                                     } else if Some(loaded) == directory.desired_revision {
@@ -425,6 +443,7 @@ impl Source for Directory {
                                         loaded,
                                         self.state.clock.unix_seconds().ok(),
                                     )?;
+                                    projection.ready = matches!(projection.status, Status::Loaded);
                                     projection.reason = Some(match projection.status {
                                         Status::Unavailable => "bound_account_material_unusable",
                                         Status::Pending => "host_application_observation_required",
@@ -454,6 +473,8 @@ impl Source for Directory {
                                                     now.is_some_and(|t| t < expires)
                                                 })
                                         });
+                                        projection.ready =
+                                            usable && Some(revision) == projection.desired_revision;
                                         projection.status = if !usable {
                                             Status::Unavailable
                                         } else if Some(revision) == projection.desired_revision {
@@ -488,6 +509,7 @@ impl Source for Directory {
                                 Ok(settings) => {
                                     configured(&mut projection, settings.values.platforms.len());
                                     projection.revision = i64::try_from(settings.revision).ok();
+                                    projection.ready = !settings.values.platforms.is_empty();
                                 }
                                 Err(error) => {
                                     use rss_mdm_agent_wire::enroll::ErrorCode;
@@ -525,6 +547,14 @@ impl Source for Directory {
                                         Status::Unavailable
                                     };
                                 }
+                                projection.ready =
+                                    value.selected_revision.is_some_and(|selected| {
+                                        value.versions.iter().any(|v| {
+                                            v.revision == selected
+                                                && v.state
+                                                    == rss_mdm_mail_service::store::State::Accepted
+                                        })
+                                    });
                                 projection.reason =
                                     Some("smtp_acceptance_is_not_recipient_delivery");
                             }
@@ -554,6 +584,8 @@ impl Source for Directory {
                                             && !v.revoked
                                             && v.qualified_at.is_some()
                                     });
+                                    projection.ready =
+                                        valid && Some(applied) == values.desired_revision;
                                     projection.status = if valid {
                                         Status::Loaded
                                     } else {
@@ -579,6 +611,7 @@ impl Source for Directory {
                             Ok(trust) => {
                                 configured(&mut projection, trust.keys.len());
                                 projection.revision = i64::try_from(trust.revision).ok();
+                                projection.ready = self.state.execution.loaded_task_signing_key().is_some_and(|id| trust.keys.iter().any(|k| k.id == id && k.state == rss_mdm_agent_wire::task_trust::KeyState::Active));
                                 projection.reason = Some("device_acknowledgements_gate_activation");
                             }
                             Err(error) => unavailable(&mut projection, error.into())?,
@@ -632,6 +665,15 @@ impl Source for Directory {
                                 }) {
                                     projection.status = Status::Unavailable;
                                 }
+                                projection.ready = !heads.is_empty()
+                                    && heads.iter().all(|head| {
+                                        materials.iter().any(|m| {
+                                            m["reference"] == head["reference"]
+                                                && m["revision"] == head["activeRevision"]
+                                                && m["revoked"] == false
+                                                && m["confirmed"] == true
+                                        })
+                                    });
                                 projection.reason = Some(
                                     "receiver_key_possession_is_not_business_delivery_confirmation",
                                 );
@@ -690,6 +732,10 @@ impl Source for Directory {
     }
 }
 
+fn ade_enabled_and_verified(organization: &serde_json::Value) -> bool {
+    organization["ade"]["enabled"] == true && organization["ade"]["tokenState"] == "verified"
+}
+
 fn account_material_status(
     value: &serde_json::Value,
     desired: &BTreeMap<String, i64>,
@@ -726,6 +772,16 @@ fn account_material_status(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn disabling_ade_preserves_token_but_revokes_readiness() {
+        let mut organization = serde_json::json!({"ade":{"enabled":true,"tokenState":"verified"}});
+        assert!(ade_enabled_and_verified(&organization));
+        organization["ade"]["enabled"] = serde_json::json!(false);
+        assert!(!ade_enabled_and_verified(&organization));
+        organization["ade"]["enabled"] = serde_json::json!(true);
+        organization["ade"]["tokenState"] = serde_json::json!("unknown");
+        assert!(!ade_enabled_and_verified(&organization));
+    }
     #[test]
     fn account_bindings_require_exact_loaded_set_and_current_materials() {
         let mut value = serde_json::json!({"versions":[{"revision":1,"expiresAt":100,"revoked":false},{"revision":2,"expiresAt":200,"revoked":false}]});

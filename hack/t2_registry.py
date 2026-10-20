@@ -916,6 +916,14 @@ for name in ('apple.apns', 'apple.push', 'apple.host'):
 for name, path in (('apple.push','push_cycle'), ('apple.host','production')):
     MODULES[name] = replace(MODULES[name], test_inputs=(f'crates/app/tests/apple/{path}.rs',))
 
+add('settings.first_use', selectors=('first_use::tests::',), fixtures=('identity','windows'),
+    sources=('crates/app/src/first_use.rs','crates/app/src/first_use/*',
+             'crates/app/src/settings.rs','crates/management-http/src/first_use.rs',
+             'crates/app/src/registration_channels.rs'),
+    tests=('crates/app/tests/settings/first_use.rs',),
+    support=('crates/app/tests/support/authority.rs','crates/app/tests/support/identity.rs',))
+MODULES['settings.first_use'] = replace(MODULES['settings.first_use'], scope='pair')
+
 # Runtime fixture consumers sign durable candidates and use completed TLS peers.
 AGENT_FIXTURE_CONSUMERS = tuple(('execution.agent.task_trust planning.self_service agent.registration agent.reports execution.agent.delivery execution.agent.poll execution.agent.content execution.agent.recovery execution.agent.history execution.software.offer execution.software.content execution.software.recovery planning.onboarding execution.commands.onboarding apple.onboarding planning.agent_policy planning.frequency planning.http assets.http planning.software').split())
 AGENT_FIXTURES = ('identity','agent_pki')
@@ -1747,7 +1755,7 @@ consume(('crates/registration-service/src/admission.rs','crates/registration-ser
 
 # Account requirements belong to the existing module description. Cases with no
 # identity dependency resolve to no actors, even when overriding module fixtures.
-_OTHER_ACTORS = frozenset('execution.agent.task_trust authorization.programmatic recovery-credentials.http certificate-archive.http timeline.http identity.local authorization.rules authorization.membership authorization.capacity authorization.initialization authorization.admission enrollment.http enrollment.quotas enrollment.recovery device.binding device.revocation device.recovery agent.configurations agent.registration agent.reports api.identity_context diagnostics.http assets.http assets.queries planning.onboarding planning.group_scope planning.policy planning.http planning.agent_policy planning.frequency planning.software planning.self_service compliance.http execution.agent.delivery execution.agent.content execution.agent.history execution.agent.poll execution.agent.recovery execution.software.offer execution.software.content execution.software.recovery software.http execution.commands.admission execution.commands.windows'.split())
+_OTHER_ACTORS = frozenset('settings.first_use execution.agent.task_trust authorization.programmatic recovery-credentials.http certificate-archive.http timeline.http identity.local authorization.rules authorization.membership authorization.capacity authorization.initialization authorization.admission enrollment.http enrollment.quotas enrollment.recovery device.binding device.revocation device.recovery agent.configurations agent.registration agent.reports api.identity_context diagnostics.http assets.http assets.queries planning.onboarding planning.group_scope planning.policy planning.http planning.agent_policy planning.frequency planning.software planning.self_service compliance.http execution.agent.delivery execution.agent.content execution.agent.history execution.agent.poll execution.agent.recovery execution.software.offer execution.software.content execution.software.recovery software.http execution.commands.admission execution.commands.windows'.split())
 for name, module in tuple(MODULES.items()):
     if 'identity' not in module.fixtures:
         continue
@@ -2155,3 +2163,8 @@ MODULES['agent.pki'] = replace(module, policies=tuple(
 TOOL_INPUTS['deployment/production.compose.yaml'] = ('test_release',)
 TOOL_INPUTS['deployment/initialize.py'] = ('test_release',)
 TOOL_INPUTS['deployment/tenant.compose.yaml'] = ('test_release',)
+
+consume(('crates/app/schema/first-use.sql',), 'settings.first_use installation.migration catalog.contract')
+consume(('crates/management-http/schema/FirstUse.json','crates/management-http/examples/first_use_schema.rs'), 'settings.first_use')
+consume(('crates/management-http/src/first_use.rs','crates/app/src/first_use.rs','crates/app/src/first_use/*'), 'deployment.management-tenant')
+consume(('crates/audit-integration/src/*','crates/authorization-service/src/context.rs','crates/authorization-service/src/store.rs','crates/authorization-service/src/evaluate.rs','crates/management-http/src/settings.rs','crates/management-http/src/boundary.rs','crates/management-http/src/router.rs','crates/management-http/src/authorization/http.rs'), 'settings.first_use')

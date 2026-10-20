@@ -3,6 +3,10 @@ use crate::{ConfigIssue, Failure, planning, resource_catalog};
 #[derive(Clone, Debug, thiserror::Error, serde::Serialize)]
 #[serde(tag = "kind", content = "reason", rename_all = "snake_case")]
 pub enum Error {
+    #[error("selected first-use requirements are not ready")]
+    FirstUseNotReady,
+    #[error("first-use operation not observed")]
+    FirstUseOperationMissing,
     #[error("MDM software distribution is disabled")]
     MdmSoftwareDisabled,
     #[error(transparent)]
@@ -57,6 +61,7 @@ impl Error {
         matches!(
             self,
             Self::NotFound
+                | Self::FirstUseOperationMissing
                 | Self::Group(_)
                 | Self::Planning(planning::error::PlanningError::Missing(_))
                 | Self::Resource(resource_catalog::error::ResourceError::Missing)

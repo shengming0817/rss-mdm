@@ -578,11 +578,23 @@ pub(crate) fn from_state(
     };
     let authentication =
         rss_mdm_management_http::authentication_routes(authentication, management_boundary.clone());
-    let settings: Arc<dyn rss_mdm_management_http::settings::Source> =
-        Arc::new(crate::settings::Directory {
-            state: state.clone(),
-            apple: apple_state.clone(),
+    let directory = crate::settings::Directory {
+        state: state.clone(),
+        apple: apple_state.clone(),
+    };
+    let settings: Arc<dyn rss_mdm_management_http::settings::Source> = Arc::new(directory.clone());
+    let channels: Arc<dyn rss_mdm_management_http::enrollment::channels::Source> =
+        Arc::new(crate::registration_channels::Channels {
+            windows: state.windows.clone(),
+            agent: state.agent_pki.clone(),
+            apple: state.apple.clone(),
+            pki: state.pki.clone(),
+            clock: state.clock.clone(),
         });
+    let first_use = Arc::new(crate::first_use::FirstUse {
+        directory,
+        channels: channels.clone(),
+    });
     let tenant_administration = rss_mdm_management_http::tenant_administration::router(
         Arc::new(
             rss_mdm_management_http::authorization::http::AuthenticationState {
@@ -631,6 +643,7 @@ pub(crate) fn from_state(
     );
     let management = rss_mdm_management_http::router(
         rss_mdm_management_http::Services {
+            first_use,
             mail: Arc::new(rss_mdm_mail_service::authority::Authority {
                 tenant: state.identity.tenant,
                 protection: state.protection.clone(),
@@ -638,13 +651,7 @@ pub(crate) fn from_state(
             }),
             settings,
             webhooks: state.webhooks.clone(),
-            registration_channels: Arc::new(crate::registration_channels::Channels {
-                windows: state.windows.clone(),
-                agent: state.agent_pki.clone(),
-                apple: state.apple.clone(),
-                pki: state.pki.clone(),
-                clock: state.clock.clone(),
-            }),
+            registration_channels: channels,
             windows_entra: state
                 .windows
                 .as_ref()

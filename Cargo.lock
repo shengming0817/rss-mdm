@@ -4314,6 +4314,7 @@ dependencies = [
  "rss-request-context",
  "rss-transactional-messaging",
  "rss-transactional-messaging-postgres",
+ "schemars 1.2.2",
  "serde",
  "serde_json",
  "sha2 0.10.9",

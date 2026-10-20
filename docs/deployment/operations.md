@@ -205,6 +205,16 @@ Windows 保护配置现在使用 `protocol_protection`，包含 `active_file`、
 
 设置目录 `/api/v1/settings/catalog` 和平台目录 `/api/v1/tenant-administration/settings/catalog` 使用 [SettingsCatalog schema](../../crates/management-http/schema/SettingsCatalog.json)。`configured` 只描述领域已有配置，`loaded` 只描述当前进程装载，`pending` 要求宿主应用或其他领域动作，`unknown` 明确要求 owner 观察；这些状态均不等同于真实设备验收。权限过滤先于领域读取，平台会话不会转换为业务会话。
 
+### 租户首次配置
+
+正式业务会话通过 `GET /api/v1/settings/first-use` 恢复本租户选择与当前进度；读写分别要求注册配置读写权限，原领域权限继续控制事实可见性和配置动作。平台会话与 API key 不能进入。公开合同见 [FirstUse schema](../../crates/management-http/schema/FirstUse.json)，全部设置入口仍由原设置目录提供。
+
+`PUT` 沿用 `Idempotency-Key`，提交 `expectedRevision` 和完整 `intent`。通道可选 Agent、Windows MDM、macOS MDM；能力决定为 `configure` 或带非空理由的 `skip`，未纳入本轮的可选能力不阻塞。保存草稿使用 `completionRequested=false`；确认完成必须明确提交 `true`，后端核对本次选择的必要条件。所选通道及其必选材料不可跳过。安装包与任务签名单独选择，选择本身不会修改通道准入或配置。
+
+已保存、当前进程加载和能力就绪分别表达；未知、无权限、故障或等待宿主应用不会通过。完成意图持久保存，`canComplete` 和 `complete` 每次按领域事实重算；后续过期或暂停可能使当前完成判定变为 false，原意图和审计历史保留。观察不承诺全局原子健康快照或真实设备效果。
+
+冲突后读取当前 revision 再由管理员决定；提交未知时查询 `GET /api/v1/settings/first-use/operations/{operationId}` 或使用原 ID 和原正文精确重放。回执表达原意图版本，查询未发现不证明回滚；已提交回执不会因后来材料失效而被重新判失败。不得换 ID 盲重试、清库或重做初始化。
+
 ### SMTP 固定资格投递
 
 部署输入 `mail_profiles` 给出受限 profile ID、`hostname`、确切 `address`、`tls`（`implicit` 或 `starttls`）和 `ca_file`。普通服务只提交 profile ID，不接收任意服务器地址或 CA 管理材料。`POST /api/v1/smtp` 接受 `expectedRevision`、`profile`、`sender`、`recipient`、`username`、`password`，要求最近认证的业务管理会话、注册配置写权限与 `Idempotency-Key`。这一动作授权发送一封固定资格消息，不接收主题、正文、附件或额外收件人。

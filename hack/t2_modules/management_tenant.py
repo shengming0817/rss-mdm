@@ -129,6 +129,10 @@ def execute(fixture):
         admin = Browser(host, config['product_origin'])
         normal = Browser(host, config['product_origin'])
         login(normal, business)
+        status, first_use = normal.call('GET', '/api/v1/settings/first-use')
+        require(status == 200 and first_use['tenantId'] == business
+                and first_use['saved']['revision'] == 0 and not first_use['complete']
+                and not first_use['canComplete'], 'fresh initialized tenant has no authoritative incomplete setup')
         require(normal.call('GET', EFFECTIVE)[0] == 401, 'business session gained installation admission')
         login(admin, management)
         status, host_context = admin.call('GET', '/api/v1/identity-host/tenants/' + management + '/context')
@@ -139,7 +143,7 @@ def execute(fixture):
                 'business session obtained management identity host context')
         require(operations(admin) == CRUD | {'authorization_read', 'authorization_write', 'identity_accounts_manage', 'tenant_administrator_create'}, 'bootstrap granted unexpected powers')
         for route in ['/api/v1/authorization', '/api/v1/authorization/user-groups', '/api/v1/resources',
-                      '/api/v1/devices/device-1/inventory', '/api/v1/runtime/diagnostics']:
+                      '/api/v1/devices/device-1/inventory', '/api/v1/runtime/diagnostics', '/api/v1/settings/first-use']:
             require(admin.call('GET', route)[0] in (401, 403), 'management session entered business route: ' + route)
         require(admin.call('GET', business_api + '/accounts')[0] in (401, 403), 'management session managed business accounts')
         require(normal.call('GET', business_api + '/providers')[0] == 200, 'business provider route is not installed')

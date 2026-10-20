@@ -7,6 +7,7 @@ rust-version.workspace = true
 publish.workspace = true
 
 [dependencies]
+schemars.workspace = true
 rss-mdm-webhook-service.workspace = true
 rss-mdm-device-trust.workspace = true
 rss-mdm-pki-service.workspace = true
