@@ -38,7 +38,7 @@ pub struct DatabaseInput {
 #[serde(deny_unknown_fields)]
 pub struct Input {
     pub directory: PathBuf,
-    pub deployment: super::deployment::Config,
+    pub deployment: super::runtime_files::Config,
     #[serde(default)]
     pub additional_hosts: Vec<super::tenant_hosts::Slot>,
     #[serde(default)]
@@ -64,7 +64,7 @@ pub enum Stage {
     Platform,
     Business,
     HostPending,
-    Enabled,
+    Initialized,
 }
 /// An installation receipt is deliberately not a deployment-success declaration.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -351,31 +351,15 @@ async fn resume(input: &Input, journal: &Journal, mut saved: Saved) -> Result<Re
         saved.receipt.stage = Stage::Business;
         journal.save("installation.json", &saved)?;
     }
-    if saved.receipt.stage == Stage::Enabled {
-        // 完成后的安装重放不能覆盖后续材料轮换或宿主应用。
-        let root = input
-            .directory
-            .join(format!("rss-mdm-{}", saved.receipt.host_id.simple()));
-        let host = Journal::open(&root)?;
-        let current: serde_json::Value =
-            host.load("requested-runtime.json")?.ok_or(Error::Corrupt)?;
-        drop(host);
-        super::deployment::apply(&input.directory, &input.deployment, &current).await?;
+    if saved.receipt.stage == Stage::Initialized {
         return Ok(saved.receipt);
     }
     let runtime = runtime(input, journal, &saved)?;
-    // Reuse the actual runtime decoder, not a second interpretation of configuration.
     let _: crate::config::Config = serde_json::from_value(runtime.clone()).map_err(invalid)?;
     journal.save("runtime.json", &runtime)?;
-    saved.receipt.stage = Stage::HostPending;
-    journal.save("installation.json", &saved)?;
-    let mut progress = initial_progress(&saved, true);
-    let applied =
-        super::tenant_hosts::activate(&input.directory, &input.deployment, &runtime, &mut progress)
-            .await;
-    publish_progress(input, &saved, true, Some(progress)).await?;
-    applied?;
-    saved.receipt.stage = Stage::Enabled;
+    super::runtime_files::prepare(&input.directory, &input.deployment, &runtime).await?;
+    publish_progress(input, &saved, true, None).await?;
+    saved.receipt.stage = Stage::Initialized;
     journal.save("installation.json", &saved)?;
     Ok(saved.receipt)
 }

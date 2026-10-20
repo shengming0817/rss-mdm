@@ -20,35 +20,6 @@ fn binding(value: &Applied) -> Binding {
     }
 }
 #[test]
-fn replay_and_successor_preserve_host_identity_and_operation() {
-    let previous = previous();
-    let mut next = binding(&previous);
-    let admit = |next: &Binding| {
-        admit_successor(&previous, next, &previous.tenant_id, &previous.instance_id)
-    };
-    assert!(admit(&next).is_ok());
-    next.material_digest = "b".repeat(64);
-    assert!(admit(&next).is_err());
-    next.revision += 1;
-    assert!(admit(&next).is_err());
-    next.operation_id = uuid::Uuid::new_v4();
-    assert!(admit(&next).is_ok());
-    next.revision = previous.revision - 1;
-    assert!(admit(&next).is_err());
-    next = binding(&previous);
-    next.host_id = uuid::Uuid::new_v4();
-    assert!(admit(&next).is_err());
-    assert!(
-        admit_successor(
-            &previous,
-            &binding(&previous),
-            "other",
-            &previous.instance_id
-        )
-        .is_err()
-    );
-}
-#[test]
 fn health_requires_the_exact_input_and_a_real_process_generation() {
     let mut value = previous();
     let expected = binding(&value);
@@ -75,21 +46,6 @@ fn health_requires_the_exact_input_and_a_real_process_generation() {
     ));
 }
 #[test]
-fn deployment_requires_an_immutable_image() {
-    assert!(image(&format!("sha256:{}", "a".repeat(64))).is_ok());
-    assert!(image(&format!("registry.example/mdm@sha256:{}", "b".repeat(64))).is_ok());
-    for value in [
-        "mdm:latest",
-        "mdm:v1",
-        "sha256:abc",
-        "--help",
-        "mdm@sha256:",
-    ] {
-        assert!(image(value).is_err());
-    }
-}
-
-#[test]
 fn candidate_freezes_material_bytes_before_application_digest() {
     use std::os::unix::fs::PermissionsExt;
     let temp = tempfile::tempdir().unwrap();
@@ -110,37 +66,6 @@ fn candidate_freezes_material_bytes_before_application_digest() {
         digest,
         super::super::application::fingerprint(&changed).unwrap()
     );
-}
-
-#[test]
-fn runtime_mounts_are_scoped_to_named_volume_subdirectories() {
-    let config = Config {
-        server_image: format!("sha256:{}", "a".repeat(64)),
-        gateway_image: format!("sha256:{}", "b".repeat(64)),
-        certificate_file: "/unused/certificate".into(),
-        private_key_file: "/unused/key".into(),
-        trust_file: "/unused/ca".into(),
-        content_volume: None,
-        state_volume: "installation_state".into(),
-        network: "installation_default".into(),
-        publish_ip: "127.0.0.1".parse().unwrap(),
-    };
-    let mount = volume_mount(
-        &config,
-        Path::new("/var/lib/rss-mdm/installation/host/operation/server"),
-        "/run/mdm",
-        true,
-    )
-    .unwrap();
-    assert_eq!(mount["type"], "volume");
-    assert_eq!(
-        mount["volume"]["subpath"],
-        "installation/host/operation/server"
-    );
-    assert_eq!(mount["read_only"], true);
-    for path in ["/etc", "/var/lib/rss-mdm", "/var/lib/rss-mdm/../secret"] {
-        assert!(volume_mount(&config, Path::new(path), "/run/mdm", true).is_err());
-    }
 }
 
 #[test]

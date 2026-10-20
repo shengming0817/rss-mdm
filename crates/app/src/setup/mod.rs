@@ -6,8 +6,6 @@ mod application;
 pub mod backup;
 #[cfg(unix)]
 pub mod configure;
-#[cfg(unix)]
-pub mod deployment;
 pub mod host;
 #[cfg(unix)]
 pub mod installation;
@@ -21,6 +19,8 @@ pub mod protection;
 #[cfg(unix)]
 pub mod providers;
 pub mod public_configuration;
+#[cfg(unix)]
+pub mod runtime_files;
 #[cfg(unix)]
 mod snapshot_tree;
 #[cfg(unix)]

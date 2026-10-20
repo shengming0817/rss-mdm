@@ -24,34 +24,70 @@ smoke 启动实际 OCI、自有 TLS PostgreSQL 与 HTTPS 网关，验证迁移�
 
 ## 全新实例安装
 
-正式入口为候选内的 `deployment/production.compose.yaml`。从所选 Docker context 取得 socket；宿主用户仅需已有 Docker/Compose 使用权限。准备工具由候选 tools 目录随附；它核验候选并冻结实际 Compose 模型及项目名，避免 shell 的同名环境变量重绑资源。它生成只含公开坐标、固定镜像及路径的 Compose 环境文件，不写业务表、不生成租户或账户：
+Compose 直接声明 PostgreSQL、一次性 `init`、`server` 和 `gateway`，不挂 Docker socket、不使用宿主 systemd/root/host 网络。产品初始化只建立真实 schema、稳定安装身份、独立平台/业务管理员、首业务租户和基础授权，并导出运行配置；不创建或管理容器，不写模拟设备或业务成功记录。
+
+部署方准备私有目录，提供：`database-password`、`platform-password`、`administrator-password`、`postgres-ca.crt`、`postgres.crt`、`postgres.key`、`gateway-ca.crt`、`gateway.crt`、`gateway.key`。PostgreSQL 证书覆盖 DNS `postgres`；网关证书覆盖公开 HTTPS 域名。密码由组织秘密管理提供，不使用公共默认密码。目录与秘密文件分别设为 0700/0600。
+
+本机 T3 可使用 OpenSSL 创建专用测试 CA 与真实 TLS 证书，仍走同一正式初始化入口：
 
 ```sh
-python3 /absolute/combined-candidate/tools/deploy.py --candidate /absolute/combined-candidate --output /absolute/new-deployment --project rss-mdm-my-install
-# 使用上一步输出的文件路径；后续全部生命周期由 Compose 驱动。
-docker compose -p rss-mdm-my-install -f /absolute/new-deployment/compose.yaml up -d
-docker compose -p rss-mdm-my-install -f /absolute/new-deployment/compose.yaml ps --all
+mkdir -m 700 /absolute/mdm-secrets
+# 在这个私有目录内执行；生产使用组织提供的证书与秘密。
+umask 077
+openssl req -x509 -newkey rsa:3072 -nodes -days 365 -subj '/CN=MDM local TLS CA' -addext 'basicConstraints=critical,CA:TRUE' -addext 'keyUsage=critical,keyCertSign,cRLSign' -addext 'subjectKeyIdentifier=hash' -keyout ca.key -out ca.crt
+for pair in postgres:postgres gateway:localhost; do
+  name=${pair%%:*}; dns=${pair#*:}
+  printf 'subjectKeyIdentifier=hash\nauthorityKeyIdentifier=keyid,issuer\nbasicConstraints=critical,CA:FALSE\nkeyUsage=critical,digitalSignature,keyEncipherment\nextendedKeyUsage=serverAuth\nsubjectAltName=DNS:%s\n' "$dns" > leaf.ext
+  openssl req -new -newkey rsa:2048 -nodes -subj "/CN=$dns" -keyout "$name.key" -out "$name.csr"
+  openssl x509 -req -in "$name.csr" -CA ca.crt -CAkey ca.key -CAcreateserial -days 90 -extfile leaf.ext -out "$name.crt"
+  cp ca.crt "$name-ca.crt"
+done
+for name in database-password platform-password administrator-password; do openssl rand -hex 24 > "$name"; done
 ```
 
-Compose 按顺序运行 `bootstrap → postgres → install → operator`。bootstrap 只在 Docker 命名卷中准备 TLS、数据库引导密码和安装输入，不连接数据库；install 调用正式 Rust `install`，准备真实受限角色和迁移、独立平台/业务管理员、首业务租户与宿主；成功后才启动持续消费开通回执和领域期望版本的 operator。不能以预制数据库、合成 tenant 或 `make dev` fixture 代替此过程。`install` 成功且保存的安装回执 `stage=enabled` 后，才可登录和开始相应 T3。
+候选归档通过 `docker load -i server.oci.tar`、`docker load -i installer.oci.tar` 和 `docker load -i identity-ui.image.tar` 导入。按 candidate.json 的固定镜像选择设置环境；Compose 使用当前 Docker context，无宿主 socket 路径准备：
 
-首次准备默认使用 localhost 的本地 TLS CA、两个不同端口的入口和随机密码。它们是当前真实安装的材料，不包含演示账户或业务成功数据。用 `docker compose ... cp bootstrap:/var/lib/rss-mdm/inputs/ca.crt /absolute/ca.crt` 导出公共 CA 并配置专用浏览器信任；密码通过 `docker compose ... run --rm --no-deps --entrypoint cat operator /var/lib/rss-mdm/installation/administrator-password` 从私有终端读取，平台密码对应 `platform-password`，不要保存到日志。默认登录名分别为 `administrator` 和 `platform`。
+```sh
+export MDM_SERVER_IMAGE='实际后端镜像ID或摘要'
+export MDM_INSTALLER_IMAGE='实际初始化镜像ID或摘要'
+export MDM_WEB_IMAGE='实际MDM前端镜像ID或摘要'
+export MDM_POSTGRES_IMAGE='候选providers.postgres的固定镜像'
+export MDM_INPUT_DIRECTORY=/absolute/mdm-secrets
+export MDM_PRODUCT_ORIGIN=https://localhost:8445
+export MDM_HTTPS_PORT=8445
+# 文件来自固定候选的 deployment 目录。
+docker compose -p rss-mdm -f /absolute/candidate/deployment/production.compose.yaml up -d
+docker compose -p rss-mdm -f /absolute/candidate/deployment/production.compose.yaml ps --all
+```
 
-入口使用 DNS 名称（包括 localhost），当前正式模板明确拒绝 IP 字面量。额外入口显式设为空时不预留任何额外租户槽位。
+`init` 等待数据库健康后运行并退出；`server` 仅在 init 成功后启动。init 的短暂容器内 root 只将部署 secrets 复制为卷内 0600 文件，然后降为 UID10001 执行 Rust 初始化；没有宿主 root 操作或基础设施管理权限。运行后端、网关均为 UID10001，分别只读挂载自己的运行子目录；PostgreSQL 由官方镜像管理数据属主。
 
-设备访问前，在准备阶段用 `--origin`、`--additional-origins`、`--publish-ip`、`--tls-mode supplied` 和 `--input-directory` 指定实际输入，冻结后不直接改生成的 Compose 文件。私有输入目录提供 `gateway.crt`、`gateway.key`、`gateway-ca.crt`，证书须覆盖所有选用的域名。可选 `platform-password` 和 `administrator-password` 文件固定首次密码。每个租户槽位使用独立外部 HTTPS 端口；管理 API 不对宿主发布。真实设备须能解析域名、访问对应发布端口并信任 TLS。本地 CA 不能替代 APNs/Profile 或设备 purpose trust。
+`installation.json` 的 `stage=initialized` 表示种子初始化完成，不宣称网络或设备效果；检查 HTTPS `/readyz`、实际登录和授权后开始 T3。平台登录名为 `platform`，业务登录名为 `administrator`，密码分别取自部署 secrets。将 `gateway-ca.crt` 的公共证书加入专用浏览器/设备信任；CA 私钥不交付客户端。
 
-安装输入结构仍由 [安装输入](../../crates/app/src/setup/installation.rs) 持有。`database.administrator` 只归安装/部署容器，运行 HTTP 服务不接收该凭据；`deployment` 指定固定镜像、Docker 命名卷、bridge 网络、发布 IP 和卷内 TLS 路径。Compose 准备程序生成同一契约，不是第二套初始化引擎。后续租户通过完整 provisionings API 开通并占用 `additional_hosts` 中的固定槽位；容量不足保留原操作，不能换 ID 或复制运行 JSON 冒充新租户。
+用相同 secrets、相同卷重复 `docker compose ... run --rm init` 保持原 tenant/principal/instance/operation、密码和密钥。安装已完成时不覆盖后续配置。停止、重建、重启与升级都使用普通 Compose 命令；`down` 保留卷，`down -v` 删除数据，不能用来恢复故障。没有常驻 operator 或自动创建子 Compose 的进程。
 
-operator、install 和运行服务使用非 root UID 10001。短暂的 bootstrap 容器以容器内 root 初始化 Docker 卷权限；它没有 Docker socket、网络或 privileged 权限，也不更改宿主文件属主。只有 install/operator 持有 Docker socket，仍属于部署管理权限；socket 路径和附加组来自所选 Docker context，支持 Docker Desktop 与本地/rootless Engine，不硬编码宿主 `/var/run/docker.sock`。HTTP 服务和网关只取得自己所需的卷子目录。
+### 后续租户与运行容量
 
-重放使用原候选、原 Compose 项目和原卷，执行 `docker compose ... run --rm --no-deps install`。密码、身份和密钥缺失时恢复原材料，不通过重新 bootstrap 或清卷换身份。停止使用 `docker compose ... stop operator postgres`，operator 收到信号后停止本安装登记的租户服务；重启使用 `docker compose ... start postgres operator`。`down` 保留命名卷；`down -v` 会删除安装材料，不能作为故障恢复方法。
+正式平台会话调用 provisionings API 创建真实租户、管理员和授权。保留每业务进程绑定一个租户的拓扑。账户就绪不意味着运维已部署对应服务；宿主未启动时回执保持 `host_pending`，不会伪报 enabled。
+
+在独立维护输入中沿用原安装配置，追加 `additional_hosts`，每项提供 `origin`、内部 `listen` 和 `deployment`：后者只含运行输出 `directory`、可选 `probe_address`、TLS 文件及可选内容目录，不含镜像、网络或容器参数。例如输出目录 `/var/lib/rss-mdm/runtime/second`，probe 为 `second-server:8445`。将维护 JSON 导入安装卷后执行一次 `prepare-hosts`，生成运行文件；无需改首次安装输入，也不重做种子初始化。命令及秘密导入方式见[维护材料](operations.md#compose-维护材料与数据库-tls-续期)。
+
+运维使用候选中的 `tenant.compose.yaml` 直接声明新租户实例，沿用主安装的 state 卷和数据库网络，设置：
+
+```sh
+export MDM_STATE_VOLUME=rss-mdm_state MDM_NETWORK=rss-mdm_default
+export MDM_RUNTIME_SUBPATH=runtime/second MDM_SERVER_ALIAS=second-server
+export MDM_HTTPS_PORT=8446
+docker compose -p rss-mdm-second -f /absolute/candidate/deployment/tenant.compose.yaml up -d
+```
+
+先前配置的 origin 必须匹配该端口，证书覆盖其域名；不同主机可使用各自正式证书。再次显式运行 `prepare-hosts`，它只通过 HTTPS 读取实际 readyz 并核对租户、安装、配置版本及进程代次，然后记录 enabled；不启动、重启或停止服务。容量由运维的 Compose/Kubernetes 声明持有，租户授权和业务数据隔离仍由产品持有。配置应用和供应方核验同样通过一次性维护命令执行，无后台部署轮询。
 
 ### 单机部署设计与配置归属
 
 Docker Desktop/Engine 可承载 MDM 后端、HTTPS 网关、PostgreSQL，以及按所选设备能力准备的对象存储和设备 CA。Identity 嵌入后端，Windows/Mac 与 Agent 在设备侧。本次正式交付为 Compose；Kubernetes/HA 未提供交付或验收承诺。
 
-每个租户的 server 使用 bridge 网络，gateway 共享该 server 的容器网络命名空间。管理 API 继续只监听内部回环，`trusted_gateway` 对应该回环地址。网关内部监听 8445，Compose 将公开 origin 的端口映射到它；不同租户可以复用相同内部管理端口。原生协议各自发布实际启用的 TLS/mTLS 监听，不能用代理头替代设备证书身份。所有运行材料通过命名卷子目录交付，不使用宿主 bind 路径、host 网络或宿主 chown。
+每个租户的 server 使用 Compose 声明的 bridge 网络，gateway 共享该 server 的容器网络命名空间。管理 API 继续只监听内部回环，`trusted_gateway` 对应该回环地址。网关内部监听 8445，Compose 将公开 origin 的端口映射到它；不同租户可以复用相同内部管理端口。原生协议各自发布实际启用的 TLS/mTLS 监听，不能用代理头替代设备证书身份。所有运行材料通过命名卷子目录交付，不使用宿主 bind 路径、host 网络或宿主 chown。
 | 入口 | 路由与信任边界 |
 |---|---|
 | 控制台/管理 API | 组织 HTTPS origin → 受信网关 → 后端回环；前端需独立固定 MDM UI 镜像并验证实际页面与会话，仅后端候选不提供控制台 |
@@ -59,11 +95,11 @@ Docker Desktop/Engine 可承载 MDM 后端、HTTPS 网关、PostgreSQL，以及�
 | Apple SCEP | CA 的受控 HTTPS SCEP 路径；产品 challenge/notify 回调、CA TLS 信任、设备 SCEP 服务信任分别核对，不开放 CA 管理/签发路径给普通客户端 |
 | PostgreSQL、RustFS、CA 管理 | 仅允许实际受控消费者访问；有独立服务证书、凭据与存储，不因同机部署关闭 TLS/主机名验证 |
 
-Windows、Apple、Agent 共用一个 step-ca/root/issuer 是需要单独实施与验收的部署设计选项。路由按用途和 issuer 区分，即使共用签发者也须保留独立用途模板、JWK/SCEP 凭据和三份用途绑定 trust；Agent bootstrap 另有自己的用途与前置条件。共享 CA 会扩大密钥泄露、CRL、数据库和停机的影响范围，不能直接继承当前按 purpose/issuer 隔离的 CA 基线结论。当前联合冷备工具不接受多个用途共用同一 CA 容器，相关恢复验收明确为 blocked，不能只靠补一次测试宣布支持；限制见[单机恢复边界](operations.md#单机部署的重启与恢复边界)，用途授权见[设备 PKI 运维](operations.md#设备-pki-轮换与撤销)。
+Windows、Apple、Agent 共用一个 step-ca/root/issuer 是需要单独实施与验收的部署设计选项。路由按用途和 issuer 区分，即使共用签发者也须保留独立用途模板、JWK/SCEP 凭据和三份用途绑定 trust；Agent bootstrap 另有自己的用途与前置条件。共享 CA 会扩大密钥泄露、CRL、数据库和停机的影响范围，不能直接继承当前按 purpose/issuer 隔离的 CA 基线结论。CA 基础设施由运维声明，产品备份校验明确提供的用途、issuer 和材料目录；共享 CA 的实际恢复仍需独立验收，见[单机恢复边界](operations.md#单机部署的重启与恢复边界)，用途授权见[设备 PKI 运维](operations.md#设备-pki-轮换与撤销)。
 
 | 输入或产物 | 当前 owner 与操作入口 |
 |---|---|
-| 镜像、网关 TLS、监听、数据库引导连接、可用宿主槽位 | 运维提供一份[安装输入](../../crates/app/src/setup/installation.rs)，冻结真实镜像 ID/digest；部署进程持有受限宿主执行权限，业务 API 不接收任意命令/路径 |
+| 镜像、网关 TLS、监听、数据库引导连接、可用宿主槽位 | 运维提供一份[安装输入](../../crates/app/src/setup/installation.rs)，冻结真实镜像 ID/digest；运维持有部署权限，产品命令只导出运行输入，业务 API 不接收任意命令/路径 |
 | instance/tenant/principal/operation、target/lineage、角色密码及安装保护材料 | 安装器生成并持久保存；首租户、独立平台/业务身份及授权由同一安装流程准备，重放不手工换 ID 或重置密码 |
 | 运行快照、网关配置、公开宿主 JSON 与应用摘要 | 由安装/宿主应用 owner 派生；原操作冻结实际文件字节，不能编辑生成文件绕过期望版本及进程观察 |
 | 用户、授权、注册设置、Group/Scope/Policy、软件与 Apple 组织 | 真实租户会话调用原领域 API；平台会话不自动获得业务数据权限，目录查询不成为第二个写 owner |
@@ -194,16 +230,16 @@ create/update/delete 的 operation_id 共用一个全局命名空间。同一操
 按[Compose 材料导入](operations.md#compose-维护材料与数据库-tls-续期)准备并导入独立 recover.json，沿用初始化配置的 installation、tenant_id 与既有 principal_id；`login` 必须为 null，`password_file` 指向新密码文件，database 使用 mdm_identity_maintenance。该操作轮换密码并撤销旧会话，不创建主体，也不恢复 MDM 业务授权。
 
 ```sh
-docker compose --env-file /absolute/deployment/compose.env -f /absolute/deployment/compose.yaml run --rm --no-deps operator recover-password --config /var/lib/rss-mdm/recover.json
+docker compose --env-file /absolute/deployment/compose.env -f /absolute/deployment/compose.yaml run --rm --no-deps --user 10001:10001 --entrypoint /usr/local/bin/rss-mdm-installer init recover-password --config /var/lib/rss-mdm/recover.json
 ```
 
-配置与秘密为 owner 独占的普通 0600 文件，末级路径不得为符号链接；CA 为可读 PEM。maintenance 密码与恢复文件仅挂入 operator 容器，不挂入运行服务。恢复后验证新登录并按受控秘密管理流程处置临时密码文件。
+配置与秘密为 owner 独占的普通 0600 文件，末级路径不得为符号链接；CA 为可读 PEM。maintenance 密码与恢复文件仅挂入 一次性维护容器，不挂入运行服务。恢复后验证新登录并按受控秘密管理流程处置临时密码文件。
 
 ## 运行配置与网络
 
 运行配置从交付的 mdm-config.example.json 填写：实例、租户、产品域名、数据库地址、独立秘密、Windows 公开设备 trust、协议密钥和独立 TLS 输入。各数据库角色连接同一 MDM 数据库。OIDC 可不配置，本地认证无需参考应用或企业 IdP；企业接入使用产品自己的 `/api/v1/identity/oidc/callback`。账户坐标及旧、新主体不自动对应的边界见认证指南。
 
-`identity.audit_worker` 必须配置独立 `mdm_identity_audit` 登录角色及秘密文件；host、port、name 必须与 `identity.database` 一致。安装器通过 Identity 公共 worker 授权接口赋予 consumer 与 Audit 权限，并通过 Ledger 的公开 SQL 接缝赋予追加能力；worker 不具有身份私表、producer、DDL 或直接审计表写权限。运行服务同时挂入 worker 密码，maintenance 密码仍仅归 operator。现有安装集合新增 `identity-audit-runtime-v1`，旧候选安装账本不会被静默升级。
+`identity.audit_worker` 必须配置独立 `mdm_identity_audit` 登录角色及秘密文件；host、port、name 必须与 `identity.database` 一致。安装器通过 Identity 公共 worker 授权接口赋予 consumer 与 Audit 权限，并通过 Ledger 的公开 SQL 接缝赋予追加能力；worker 不具有身份私表、producer、DDL 或直接审计表写权限。运行服务同时挂入 worker 密码，maintenance 密码仍仅归一次性维护命令。现有安装集合新增 `identity-audit-runtime-v1`，旧候选安装账本不会被静默升级。
 
 所有运行模式（含 Apple-only 与 Agent-only）必须配置顶层 `native_protection`，包含 `active_file`、`historical_files` 与 `fingerprint_file`。每个文件恰好包含 32 字节原始随机密钥，权限 0600；不是 hex/Base64/PEM 文本。全新安装分别生成加密钥与比较钥。`active_file` 只用于新密文，最多保留 15 个历史解密钥，按密文中确切 key ID 读取。`fingerprint_file` 维持原有请求、材料与设备比较身份，不能随密文重加密替换。Ledger、Windows 协议保护材料和恢复凭据专用钥集合仍分别保管。旧 `native_protection_key_file` 配置不再接受，也不提供转换入口。
 
@@ -313,7 +349,7 @@ execution epoch 来自原宿主配置，在连接建立时固定；源事件复�
 
 ### 固定候选的完整安装资格
 
-`python3 hack/candidate_installation.py /absolute/candidate` 在当前选定 Docker context 上消费正式候选 Compose。它创建独立项目和空库，调用同一个真实 install/开通/配置/备份恢复入口；不创建 privileged DinD 节点，不使用 systemd，不挂载源码，不使用开发/T2 fixture 预置。覆盖独立管理员登录、重复安装保持密码及 Ledger、第二租户真实开通与隔离、operator 重启续跑、配置应用失败后修复及联合冷恢复。
+`python3 hack/candidate_installation.py /absolute/candidate` 使用普通 Compose 和空库运行正式初始化，只覆盖必要链路：幂等种子、独立管理员真实认证与授权、第二租户及隔离、Compose 直接持有服务。删除部署控制器的重启、动态编排及 Docker 策略测试。数据库/密钥/内容恢复仍由对应 T2 和受控运维演练分别验证；不使用开发 fixture 冒充正式初始化。
 
 只有验证与清理都完成才发布 `installation-result.json`，绑定候选/Compose 摘要、宿主 OS/架构和容器平台。arm64 与 amd64 候选分别运行；仿真、原生及不同宿主的结果分别记录，不能由一台 Mac 推导所有宿主均通过。协议 `candidate_smoke.py` 的合法预置仅证明相应协议接缝，不是本入口的完整初始化证据。浏览器与真机 T3 按各自输入继续，不能用安装、readiness 或 smoke 代替终端效果。
 

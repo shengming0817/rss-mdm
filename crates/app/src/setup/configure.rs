@@ -86,7 +86,7 @@ pub struct Receipt {
     pub operation_id: Uuid,
     pub host_id: Uuid,
     pub requested_revision: u64,
-    pub applied: Option<super::deployment::Applied>,
+    pub applied: Option<super::runtime_files::Applied>,
 }
 fn secret(journal: &Journal, name: &str) -> Result<PathBuf> {
     let path = journal.path(name)?;
@@ -537,7 +537,7 @@ pub async fn run(request: Request) -> Result<Receipt> {
                 private_key_file,
                 trust_file,
             } => {
-                let tls = super::deployment::GatewayTls::prepare(
+                let tls = super::runtime_files::GatewayTls::prepare(
                     &journal,
                     certificate_file,
                     private_key_file,
@@ -567,14 +567,14 @@ pub async fn run(request: Request) -> Result<Receipt> {
             Change::Recovery { recipient } => recovery(&journal, &mut runtime, recipient)?,
             Change::Ca { preparation } => ca(input, &mut runtime, *preparation)?,
         }
-        super::deployment::freeze(&mut runtime, &journal)?;
+        super::runtime_files::freeze(&mut runtime, &journal)?;
         let revision = request
             .expected_revision
             .checked_add(1)
             .filter(|r| *r <= i64::MAX as u64)
             .ok_or(Error::Input)?;
         let digest = super::application::fingerprint(
-            &serde_json::json!({"runtime":runtime,"gateway":journal.load::<super::deployment::GatewayTls>("gateway.json")?}),
+            &serde_json::json!({"runtime":runtime,"gateway":journal.load::<super::runtime_files::GatewayTls>("gateway.json")?}),
         )?;
         runtime["runtime_binding"] = json!({"host_id":request.host_id,"operation_id":request.operation_id,"revision":revision,"material_digest":digest});
         let config: crate::config::Config =
@@ -621,7 +621,7 @@ pub async fn run(request: Request) -> Result<Receipt> {
         }
         None => &input.deployment,
     };
-    let outcome = super::deployment::apply(&input.directory, deployment, &candidate).await;
+    let outcome = super::runtime_files::apply(&input.directory, deployment, &candidate).await;
     let crate::tenant_registry::ReceiptResult::Provisioning(progress) = &mut receipt.result else {
         return Err(Error::Corrupt);
     };
@@ -639,7 +639,7 @@ pub async fn run(request: Request) -> Result<Receipt> {
 }
 
 fn publish_gateway(journal: &Journal, host: &Journal) -> Result<()> {
-    if let Some(tls) = journal.load::<super::deployment::GatewayTls>("gateway.json")? {
+    if let Some(tls) = journal.load::<super::runtime_files::GatewayTls>("gateway.json")? {
         host.save("gateway-tls.json", &tls)?;
     }
     Ok(())
@@ -673,7 +673,7 @@ async fn admit_configuration(root: &Journal, operation: Uuid) -> Result<()> {
 fn record_application(
     progress: &mut super::model::Provisioning,
     result: &mut Receipt,
-    outcome: Result<super::deployment::Applied>,
+    outcome: Result<super::runtime_files::Applied>,
     now: i64,
 ) -> Result<()> {
     match outcome {

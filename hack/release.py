@@ -75,9 +75,9 @@ def build(out, header, web_image=None, target_platform=None):
         staged.rename(out)
     print("candidate: " + str(out / "candidate.json"))
 
-RUNTIME_TOOLS = ("release.py", "candidate_runtime.py", "candidate_fixture.py", "deploy.py", "candidate_installation.py", "candidate_installation_driver.py")
+RUNTIME_TOOLS = ("release.py", "candidate_runtime.py", "candidate_fixture.py",  "candidate_installation.py", "candidate_installation_driver.py")
 ROLE_NAMES = ("software-publication", "flow", "identity", "commands", "audit", "webhook")
-DEPLOYMENT_FILES = ('deployment/production.compose.yaml', 'deployment/compose_bootstrap.py', 'deployment/compose.yaml', 'deployment/providers.lock.json', 'fixtures/pki-tools.lock.json', 'deployment/agent-leaf.tpl', 'deployment/windows-leaf.tpl', "mdm-config.example.json", "deployment/nginx.conf", *(
+DEPLOYMENT_FILES = ('deployment/production.compose.yaml', 'deployment/initialize.py', 'deployment/tenant.compose.yaml', 'deployment/compose.yaml', 'deployment/providers.lock.json', 'fixtures/pki-tools.lock.json', 'deployment/agent-leaf.tpl', 'deployment/windows-leaf.tpl', "mdm-config.example.json", "deployment/nginx.conf", *(
     f"deployment/{name}-roles.sql" for name in ROLE_NAMES))
 
 
@@ -164,7 +164,6 @@ def build_staged(out, header, web_image=None, target_platform=None):
                         "--build-arg", "RUST_IMAGE=" + providers["rust"],
                         "--build-arg", "RUNTIME_IMAGE=" + providers["runtime"],
                         "--build-arg", "POSTGRES_IMAGE=" + providers["postgres"],
-                        "--build-arg", "DOCKER_CLI_IMAGE=" + providers["docker-cli"],
                         "--target", "server", "--tag", image, "--output",
                         "type=oci,dest=" + str(output), str(context)], check=True)
         digest, config = oci_identity(output)
@@ -181,7 +180,6 @@ def build_staged(out, header, web_image=None, target_platform=None):
                         "--build-arg","RUST_IMAGE="+providers["rust"],
                         "--build-arg","RUNTIME_IMAGE="+providers["runtime"],
                         "--build-arg","POSTGRES_IMAGE="+providers["postgres"],
-                        "--build-arg","DOCKER_CLI_IMAGE="+providers["docker-cli"],
                         "--target","installer","--tag",operator_image,"--output","type=oci,dest="+str(operator_archive),str(context)],check=True)
         operator_digest,operator_config=oci_identity(operator_archive, expected_user="10001:10001")
         if platform(operator_config)!=platform(config):raise ValueError("installer platform mismatch")

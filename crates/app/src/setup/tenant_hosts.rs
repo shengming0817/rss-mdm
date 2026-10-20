@@ -1,10 +1,11 @@
-//! Dedicated deployment-operator consumer of complete provisioning receipts.
-//! Runtime HTTP never receives the Docker socket or the installation-owner database login.
+//! One-shot runtime input preparation and observation for provisioned tenants.
+//! Compose/Kubernetes owns all infrastructure and process lifecycle.
 use super::{
-    Error, Result, deployment,
+    Error, Result,
     installation::Input,
     local::Journal,
     model::{Application, BlockedReason, Observation, Phase},
+    runtime_files,
 };
 use crate::tenant_registry::{Receipt, ReceiptResult};
 use serde::{Deserialize, Serialize};
@@ -18,9 +19,9 @@ use uuid::Uuid;
 pub struct Slot {
     pub origin: String,
     pub listen: SocketAddr,
-    pub deployment: deployment::Config,
+    pub deployment: runtime_files::Config,
 }
-/// One pass is replayable; the operator supervisor repeatedly invokes it with the same private input.
+/// Explicit one-shot maintenance; there is no resident deployment process.
 pub async fn reconcile(input: &Input) -> Result<usize> {
     validate_slots(input)?;
     let journal = Journal::open(&input.directory)?;
@@ -93,7 +94,7 @@ pub(super) fn validate_slots(input: &Input) -> Result<()> {
 /// The same host completion transition is used by installation and later provisioning.
 pub(super) async fn activate(
     directory: &std::path::Path,
-    deployment: &deployment::Config,
+    deployment: &runtime_files::Config,
     runtime: &Value,
     progress: &mut super::model::Provisioning,
 ) -> Result<()> {
@@ -113,7 +114,7 @@ pub(super) async fn activate(
         operation_id: progress.operation_id,
         observation: None,
     });
-    match deployment::apply(directory, deployment, runtime).await {
+    match runtime_files::apply(directory, deployment, runtime).await {
         Ok(observed) => {
             let now = crate::clock::Clock::unix_seconds(&crate::clock::SystemClock)
                 .map_err(|_| Error::Storage)?;
@@ -185,56 +186,74 @@ async fn provision_pending(
     if progress.administrator_id.is_none() || progress.phase != Phase::HostPending {
         return Err(Error::Corrupt);
     }
-    let slot = if let Some(index) = reservations.get(&progress.host_id) {
-        Some(*index)
-    } else {
-        (0..input.additional_hosts.len())
-            .find(|index| !reservations.values().any(|used| used == index))
+    let primary: super::installation::Receipt = {
+        let saved: Value = journal.load("installation.json")?.ok_or(Error::Corrupt)?;
+        serde_json::from_value(saved["receipt"].clone()).map_err(|_| Error::Corrupt)?
     };
-    if let Some(index) = slot {
-        let slot = input.additional_hosts.get(index).ok_or(Error::Conflict)?;
-        // Immutable reservation precedes the first Docker side effect; retries never choose another slot.
-        reservations.insert(progress.host_id, index);
-        journal.save("host-reservations.json", reservations)?;
-        let mut candidate = runtime.clone();
-        candidate["native_protocols"] = serde_json::json!({});
-        candidate["agent_pki"] = serde_json::json!({"mode":"disabled"});
-        candidate["device_pki"] = serde_json::json!([]);
-        for field in ["task_signing", "recovery_credentials", "content"] {
-            candidate[field] = Value::Null;
+    if progress.host_id == primary.host_id {
+        let mut value = runtime.clone();
+        let owner = Journal::open(
+            &input
+                .directory
+                .join(format!("rss-mdm-{}", progress.host_id.simple())),
+        )?;
+        if let Some(requested) = owner.load::<Value>("requested-runtime.json")? {
+            value = requested;
         }
-        candidate["identity"]["oidc"] = Value::Null;
-        candidate["webhooks"]["networks"] = serde_json::json!([]);
-        candidate["identity"]["tenant_id"] = serde_json::json!(progress.tenant_id);
-        candidate["product_origin"] = serde_json::json!(slot.origin);
-        candidate["listen"] = serde_json::json!(slot.listen);
-        candidate["trusted_gateway"] = serde_json::json!(slot.listen.ip());
-        let digest = {
-            use sha2::{Digest, Sha256};
-            format!(
-                "{:x}",
-                Sha256::digest(
-                    serde_json::to_vec(&(
-                        progress.operation_id,
-                        progress.host_id,
-                        progress.tenant_id,
-                        &slot.origin,
-                        slot.listen,
-                        &candidate
-                    ))
-                    .map_err(|_| Error::Input)?
-                )
-            )
-        };
-        candidate["runtime_binding"] = serde_json::json!({"host_id":progress.host_id,"operation_id":progress.operation_id,"revision":1,"material_digest":digest});
-        if activate(&input.directory, &slot.deployment, &candidate, progress)
-            .await
-            .is_ok()
-        {
-            completed += 1;
-        }
+        drop(owner);
+        let _ = activate(&input.directory, &input.deployment, &value, progress).await;
     } else {
-        progress.blocked = Some(BlockedReason::Capacity);
+        let slot = if let Some(index) = reservations.get(&progress.host_id) {
+            Some(*index)
+        } else {
+            (0..input.additional_hosts.len())
+                .find(|index| !reservations.values().any(|used| used == index))
+        };
+        if let Some(index) = slot {
+            let slot = input.additional_hosts.get(index).ok_or(Error::Conflict)?;
+            // Reserve the runtime output position before writing files; retries retain the binding.
+            reservations.insert(progress.host_id, index);
+            journal.save("host-reservations.json", reservations)?;
+            let mut candidate = runtime.clone();
+            candidate["native_protocols"] = serde_json::json!({});
+            candidate["agent_pki"] = serde_json::json!({"mode":"disabled"});
+            candidate["device_pki"] = serde_json::json!([]);
+            for field in ["task_signing", "recovery_credentials", "content"] {
+                candidate[field] = Value::Null;
+            }
+            candidate["identity"]["oidc"] = Value::Null;
+            candidate["webhooks"]["networks"] = serde_json::json!([]);
+            candidate["identity"]["tenant_id"] = serde_json::json!(progress.tenant_id);
+            candidate["product_origin"] = serde_json::json!(slot.origin);
+            candidate["listen"] = serde_json::json!(slot.listen);
+            candidate["trusted_gateway"] = serde_json::json!(slot.listen.ip());
+            let digest = {
+                use sha2::{Digest, Sha256};
+                format!(
+                    "{:x}",
+                    Sha256::digest(
+                        serde_json::to_vec(&(
+                            progress.operation_id,
+                            progress.host_id,
+                            progress.tenant_id,
+                            &slot.origin,
+                            slot.listen,
+                            &candidate
+                        ))
+                        .map_err(|_| Error::Input)?
+                    )
+                )
+            };
+            candidate["runtime_binding"] = serde_json::json!({"host_id":progress.host_id,"operation_id":progress.operation_id,"revision":1,"material_digest":digest});
+            if activate(&input.directory, &slot.deployment, &candidate, progress)
+                .await
+                .is_ok()
+            {
+                completed += 1;
+            }
+        } else {
+            progress.blocked = Some(BlockedReason::Capacity);
+        }
     }
     if *progress == before {
         return Ok(false);

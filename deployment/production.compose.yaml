@@ -1,79 +1,76 @@
-# Formal installation. No development fixture, host networking, systemd or privileged node.
+# Infrastructure is declared here. No service receives a Docker socket.
 services:
-  bootstrap:
-    image: ${MDM_INSTALLER_IMAGE:?fixed installer image required}
-    user: "0:0"
-    network_mode: none
-    entrypoint: [python3, /usr/local/lib/rss-mdm/compose_bootstrap.py]
-    environment:
-      MDM_SERVER_IMAGE: ${MDM_SERVER_IMAGE:?fixed server image required}
-      MDM_WEB_IMAGE: ${MDM_WEB_IMAGE:?fixed MDM UI image required}
-      MDM_STATE_VOLUME: ${COMPOSE_PROJECT_NAME}_state
-      MDM_NETWORK: ${COMPOSE_PROJECT_NAME}_default
-      MDM_PRODUCT_ORIGIN: ${MDM_PRODUCT_ORIGIN:-https://localhost:8445}
-      MDM_ADDITIONAL_ORIGINS: ${MDM_ADDITIONAL_ORIGINS-https://localhost:8446}
-      MDM_PUBLISH_IP: ${MDM_PUBLISH_IP:-127.0.0.1}
-      MDM_ORGANIZATION: ${MDM_ORGANIZATION:-My organization}
-      MDM_PLATFORM_LOGIN: ${MDM_PLATFORM_LOGIN:-platform}
-      MDM_ADMINISTRATOR_LOGIN: ${MDM_ADMINISTRATOR_LOGIN:-administrator}
-      MDM_TLS_MODE: ${MDM_TLS_MODE:-local}
-    volumes:
-      - state:/var/lib/rss-mdm
-      - pg-input:/pg-input
-      - type: bind
-        source: ${MDM_INPUT_DIRECTORY:?private input directory required (may be empty for local TLS)}
-        target: /inputs
-        read_only: true
-        bind: {create_host_path: false}
   postgres:
-    image: ${MDM_POSTGRES_IMAGE:?fixed PostgreSQL image required}
-    depends_on:
-      bootstrap: {condition: service_completed_successfully}
+    image: ${MDM_POSTGRES_IMAGE:?PostgreSQL image required}
     environment:
-      POSTGRES_PASSWORD_FILE: /pg-input/database-password
+      POSTGRES_PASSWORD_FILE: /inputs/database-password
     volumes:
       - pg:/var/lib/postgresql/data
-      - pg-input:/pg-input:ro
-    command: [postgres, -c, ssl=on, -c, ssl_cert_file=/pg-input/server.crt, -c, ssl_key_file=/pg-input/server.key]
+      - ${MDM_INPUT_DIRECTORY:?deployment secrets directory required}:/inputs:ro
+    # PostgreSQL requires a private key with its own UID; prepare it inside its data volume.
+    entrypoint: [/bin/sh, -ec]
+    command:
+      - |
+        install -d -o postgres -g postgres -m 700 /var/lib/postgresql/tls
+        install -o postgres -g postgres -m 600 /inputs/postgres.key /var/lib/postgresql/tls/server.key
+        install -o postgres -g postgres -m 644 /inputs/postgres.crt /var/lib/postgresql/tls/server.crt
+        exec docker-entrypoint.sh postgres -c ssl=on -c ssl_cert_file=/var/lib/postgresql/tls/server.crt -c ssl_key_file=/var/lib/postgresql/tls/server.key
     healthcheck:
       test: [CMD, pg_isready, -U, postgres]
       interval: 2s
       timeout: 3s
       retries: 45
     restart: unless-stopped
-  install:
-    image: ${MDM_INSTALLER_IMAGE:?}
-    user: "10001:10001"
-    group_add: ["${MDM_DOCKER_GID:-0}"]
+  init:
+    image: ${MDM_INSTALLER_IMAGE:?initializer image required}
+    user: "0:0"
     depends_on:
       postgres: {condition: service_healthy}
+    entrypoint: [python3, /usr/local/lib/rss-mdm/initialize.py]
     environment:
-      DOCKER_HOST: unix:///run/docker.sock
+      MDM_PRODUCT_ORIGIN: ${MDM_PRODUCT_ORIGIN:-https://localhost:8445}
+      MDM_ORGANIZATION: ${MDM_ORGANIZATION:-My organization}
     volumes:
       - state:/var/lib/rss-mdm
-      - type: bind
-        source: ${MDM_DOCKER_SOCKET:?socket from the selected Docker context required}
-        target: /run/docker.sock
-        bind: {create_host_path: false}
-    command: [install, --config, /var/lib/rss-mdm/installation-input.json]
-  operator:
-    image: ${MDM_INSTALLER_IMAGE:?}
+      - ${MDM_INPUT_DIRECTORY:?}:/inputs:ro
+  server:
+    image: ${MDM_SERVER_IMAGE:?server image required}
     user: "10001:10001"
-    group_add: ["${MDM_DOCKER_GID:-0}"]
     depends_on:
-      install: {condition: service_completed_successfully}
-    environment:
-      DOCKER_HOST: unix:///run/docker.sock
+      init: {condition: service_completed_successfully}
+    command: [serve, --config, /run/mdm/runtime.json]
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    tmpfs: ["/tmp:rw,noexec,nosuid,size=64m"]
     volumes:
-      - state:/var/lib/rss-mdm
-      - type: bind
-        source: ${MDM_DOCKER_SOCKET:?}
-        target: /run/docker.sock
-        bind: {create_host_path: false}
-    command: [provision-hosts, --config, /var/lib/rss-mdm/installation-input.json]
+      - type: volume
+        source: state
+        target: /run/mdm
+        read_only: true
+        volume: {subpath: runtime/primary/server, nocopy: true}
+    networks:
+      default: {aliases: [primary-server]}
+    ports:
+      - "${MDM_PUBLISH_IP:-127.0.0.1}:${MDM_HTTPS_PORT:-8445}:8445"
     restart: unless-stopped
-    stop_grace_period: 2m
+  gateway:
+    image: ${MDM_WEB_IMAGE:?MDM console image required}
+    user: "10001:10001"
+    depends_on: [server]
+    network_mode: service:server
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    tmpfs: ["/tmp:rw,noexec,nosuid,size=64m"]
+    entrypoint: [nginx, -e, stderr, -c, /run/gateway/nginx.conf, -g, "daemon off;"]
+    volumes:
+      - type: volume
+        source: state
+        target: /run/gateway
+        read_only: true
+        volume: {subpath: runtime/primary/gateway, nocopy: true}
+    restart: unless-stopped
 volumes:
   state:
   pg:
-  pg-input:

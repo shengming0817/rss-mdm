@@ -1,9 +1,10 @@
 //! 已启用宿主的领域版本应用。仅保存跨进程副作用检查点，不复制领域材料状态。
 use super::{
-    Error, Result, deployment,
+    Error, Result,
     installation::Input,
     local::Journal,
     model::{Application, BlockedReason, Observation},
+    runtime_files,
 };
 use crate::tenant_registry::{Receipt, ReceiptResult};
 use serde_json::{Value, json};
@@ -127,7 +128,7 @@ pub(super) async fn reconcile(
         progress.revision = progress.revision.checked_add(1).ok_or(Error::Corrupt)?;
         original = save(c, &receipt, &original).await?;
         drop(journal);
-        let applied = deployment::apply(&input.directory, deployment, &runtime).await;
+        let applied = runtime_files::apply(&input.directory, deployment, &runtime).await;
         let ReceiptResult::Provisioning(progress) = &mut receipt.result else {
             return Err(Error::Corrupt);
         };
