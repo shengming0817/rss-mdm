@@ -1064,14 +1064,14 @@ async fn rotation_requires_installed_trust_and_published_revocation_before_retir
         candidate: proposal,
     };
     registry.prepare(&p, &rotation, &audit(), now()).await?;
-    let mut approve = Transition {
+    let activate = Transition {
         id: rotation.id,
         expected_revision: registry.trust(Purpose::Agent)?.revision,
-        action: Action::Approve,
+        action: Action::Activate,
     };
     assert!(matches!(
         registry
-            .transition(&p, Purpose::Agent, &approve, &audit(), now())
+            .transition(&p, Purpose::Agent, &activate, &audit(), now())
             .await,
         Err(rss_mdm_pki_service::Error::Conflict)
     ));
@@ -1098,24 +1098,7 @@ async fn rotation_requires_installed_trust_and_published_revocation_before_retir
     )
     .await?;
     registry
-        .transition(&p, Purpose::Agent, &approve, &audit(), now())
-        .await?;
-    let trust = registry.trust(Purpose::Agent)?;
-    s.acknowledge_trust(
-        &evidence,
-        &Acknowledgement {
-            operation: Uuid::new_v4(),
-            version: 1,
-            revision: trust.revision,
-            digest: trust.installation_digest(),
-        },
-        &audit(),
-    )
-    .await?;
-    approve.expected_revision = trust.revision;
-    approve.action = Action::Activate;
-    registry
-        .transition(&p, Purpose::Agent, &approve, &audit(), now())
+        .transition(&p, Purpose::Agent, &activate, &audit(), now())
         .await?;
     assert_eq!(binding.active()?.digest, new_digest);
     // An actual CA request follows the newly active generation.
@@ -1537,21 +1520,19 @@ async fn unknown_original_ca_result_blocks_retirement_after_rotation() -> anyhow
             now(),
         )
         .await?;
-    for action in [Action::Approve, Action::Activate] {
-        registry
-            .transition(
-                &p,
-                Purpose::Agent,
-                &Transition {
-                    id,
-                    expected_revision: registry.trust(Purpose::Agent)?.revision,
-                    action,
-                },
-                &audit(),
-                now(),
-            )
-            .await?;
-    }
+    registry
+        .transition(
+            &p,
+            Purpose::Agent,
+            &Transition {
+                id,
+                expected_revision: registry.trust(Purpose::Agent)?.revision,
+                action: Action::Activate,
+            },
+            &audit(),
+            now(),
+        )
+        .await?;
     let active = registry.trust(Purpose::Agent)?;
     assert_eq!(s.trust().trust.active()?.digest, second.issuers[0].digest);
     let durable_before = crate::test_support::pg(&format!(
