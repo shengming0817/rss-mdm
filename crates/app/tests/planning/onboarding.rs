@@ -497,9 +497,20 @@ async fn unmanage_policy_requires_authority_and_preserves_accepted_exit() -> Res
         ensure!(post(&mut f.author,&f.router,&force_path,forced).await?==receipt);
         let access=database(&f.base).await?;
         let owner=rss_mdm_device_service::Associations::new(access.audit_store(&crate::config::AuditConfig::Plain).await?,rss_request_context::TenantId::parse(case_tenant())?,&[7;32])?;
-        ensure!(owner.finalize_retirements(&crate::registration_lifecycle::Bridge).await?==1);
-        let (status,record)=f.author.call(&f.router,Method::GET,&format!("/api/v1/device-retirements/{retirement}"),None).await?;
-        ensure!(status==StatusCode::OK && record["channels"][0]["stage"]=="complete" && record["channels"][0]["effect"]=="unknown","{record}");
+        // The live worker may have finalized this operation before the explicit sweep.
+        // Prove the persisted outcome, not which concurrent caller did the work.
+        owner.finalize_retirements(&crate::registration_lifecycle::Bridge).await?;
+        tokio::time::timeout(Duration::from_secs(30), async {
+            loop {
+                let (status,record)=f.author.call(&f.router,Method::GET,&format!("/api/v1/device-retirements/{retirement}"),None).await?;
+                ensure!(status==StatusCode::OK,"{record}");
+                if record["channels"][0]["stage"]=="complete" {
+                    ensure!(record["channels"][0]["effect"]=="unknown","{record}");
+                    break Ok::<_,anyhow::Error>(());
+                }
+                tokio::time::sleep(Duration::from_millis(30)).await;
+            }
+        }).await??;
         let asset_path=format!("/api/v1/device-views/endpoint/{}/asset-state",case_device_id());
         for state in ["archived","deleted","active"] {
             post(&mut f.author,&f.router,&asset_path,json!({"operationId":Uuid::new_v4(),"state":state})).await?;
