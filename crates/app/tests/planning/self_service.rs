@@ -40,7 +40,7 @@ fn definition(resource: Uuid, inputs: bool) -> Value {
         value["action"]["parameters"] =
             json!({"name":{"kind":"input"},"path":{"kind":"fixed","value":"/Applications"}});
     }
-    value["selfService"] = json!({"access":{"kind":"authenticated_user"},"published":true,"presentation":{"displayName":"Repair","description":"Repair the application","prerequisites":"Signed-in employee","sideEffects":"May restart the application","category":"Support","keywords":["repair"]}});
+    value["selfService"] = json!({"access":{"kind":"authenticated_user"},"published":true,"presentation":{"displayName":"Repair","description":"Repair the application","prerequisites":"Signed-in employee","sideEffects":"May restart the application","category":"Support","keywords":["repair"],"vendorHelp":{"text":"retained directory text"}}});
     value
 }
 async fn publish_definition(f: &mut Fixture, value: Value) -> Result<(Uuid, Value)> {
@@ -101,6 +101,8 @@ async fn targeted_invocation_binds_parameters_identity_frequency_and_result() ->
             ensure!(
                 directory.1["items"][0]["selfService"]["allowAi"] == true
                     && directory.1["items"][0]["selfService"]["riskLevel"] == 2
+                    && directory.1["items"][0]["selfService"]["presentation"]["vendorHelp"]["text"]
+                        == "retained directory text"
             );
             let reads = audit_count(|record| record.action() == "command_read")?;
             ensure!(

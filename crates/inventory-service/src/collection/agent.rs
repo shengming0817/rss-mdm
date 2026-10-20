@@ -14,7 +14,9 @@ pub async fn accept_in(
     use sha2::{Digest, Sha256};
     let canonical = report.canonical().map_err(|_| Error::Malformed)?;
     let digest = format!("{:x}", Sha256::digest(&canonical));
-    let evidence = serde_json::json!({"agentReport": serde_json::from_slice::<serde_json::Value>(&canonical).map_err(|_| Error::Malformed)?});
+    // Preserve the canonical representation as text: JSONB expands exponent-form
+    // numbers and can otherwise inflate a legal 1 MiB report beyond the evidence budget.
+    let evidence = serde_json::json!({"agentReport": String::from_utf8(canonical).map_err(|_| Error::Malformed)?});
     let live_scope =
         crate::device::store::revalidate_source(tx, principal, InventorySource::AgentBuiltin)
             .await?;

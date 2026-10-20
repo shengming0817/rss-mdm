@@ -95,7 +95,8 @@ async fn durable_reports_and_projection() -> Result<()> {
         "observedAt":1,
         "body":{"kind":"snapshot","values":[
             {"field":"channel.mdm.enrollment","value":{"kind":"value","value":{"kind":"string","value":"unenrolled"}}},
-            {"field":"custom.vendor_detail","value":{"kind":"value","value":{"kind":"string","value":"unregistered evidence"}}}
+            {"field":"custom.vendor_detail","value":{"kind":"value","value":{"kind":"string","value":"unregistered evidence"}}},
+            {"field":"custom.numeric_detail","value":{"kind":"value","value":{"kind":"array","value":vec![json!({"kind":"number","value":1e308});9000]}}}
         ]}
     });
     for version in [255] {
@@ -187,7 +188,8 @@ async fn durable_reports_and_projection() -> Result<()> {
     let mut extra_changed = report.clone();
     extra_changed["body"]["values"][1]["value"]["value"]["value"] = json!("different evidence");
     ensure!(agent_call(router, Method::POST, "/api/v1/agent/runtime/reports", Some(credential), Some(extra_changed)).await?.0 == StatusCode::CONFLICT, "unknown evidence was omitted from replay identity");
-    ensure!(pg(&format!("SELECT evidence->'agentReport'->'body'->'values'->1->'value'->'value'->>'value' FROM mdm_access.collection_runs WHERE tenant_id='{}' AND id='{report_id}'",case_tenant()))?.trim() == "unregistered evidence", "raw evidence was lost");
+    ensure!(pg(&format!("SELECT (SELECT item->'value'->'value'->>'value' FROM jsonb_array_elements((evidence->>'agentReport')::jsonb->'body'->'values') item WHERE item->>'field'='custom.vendor_detail') FROM mdm_access.collection_runs WHERE tenant_id='{}' AND id='{report_id}'",case_tenant()))?.trim() == "unregistered evidence", "raw evidence was lost");
+    ensure!(pg(&format!("SELECT octet_length(evidence::text)<=2097152 AND octet_length((evidence->>'agentReport')::jsonb::text)>2097152 FROM mdm_access.collection_runs WHERE tenant_id='{}' AND id='{report_id}'",case_tenant()))?.trim() == "t", "canonical evidence encoding inflated exponent-form values");
     let mut changed = report;
     changed["sequence"] = json!(1);
     ensure!(

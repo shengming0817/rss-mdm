@@ -137,7 +137,9 @@ fn hardware_quality_rejects_false_complete_and_invalid_values() {
     assert!(answer(&q, vec![extended]).complete_for(&q, 10));
 
     assert!(!answer(&q, vec![row.clone(), row.clone()]).complete_for(&q, 10));
-    assert!(!answer(&q, vec![json!({"id":"en0","location":"private"})]).complete_for(&q, 10));
+    assert!(answer(&q, vec![json!({"id":"en0","location":"private"})]).complete_for(&q, 10));
+    assert!(!answer(&q, vec![json!({"location":"private"})]).complete_for(&q, 10));
+    assert!(!answer(&q, vec![json!({"id":"en0","name":false})]).complete_for(&q, 10));
     let mut r = answer(&q, vec![row]);
     r.enumeration_complete = false;
     assert!(!r.complete_for(&q, 10));
