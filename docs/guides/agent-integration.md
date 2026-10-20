@@ -82,6 +82,8 @@ macOS SIT 可将构建器明确标记为 ad-hoc、未公证的开发 PKG 发布�
 
 Agent HTTPS 监听器公开 `GET /api/v1/agent/enroll/packages`、`GET .../packages/{id}` 与 `GET .../packages/{id}/content`，复用内容校验和 Range / ETag 下载。路径仅含公开 releaseId。配置不绑定一个固定软件版本；每次新交换检查当前发布、原生 target、允许 channel、可信 origin / key 和精确候选摘要。文件自身不能添加新的信任根。配置文件、共享 secret、设备 secret 和 CSR 不进入 URL、文件名或命令行。
 
+随附网关在网页同源地址仅代理上述安装包路径的 GET / HEAD，使用现有 HTTPS 信任校验内部 Agent 监听器，保留 Range / ETag，不转发浏览器会话；网页可直接使用 `/downloads/agent`。注册、签发、激活和运行接口仍通过独立 Agent TLS 监听器，网页网关不代理这些接口。
+
 本次移除旧 agent-grants 创建、管理状态、preview / approve 路由和普通请求 lifetimeSeconds / 可选 CSR，不提供别名或兼容解码；保留的是既有设备身份、不可变回执和 Unknown 恢复事实。
 
 原生声明式采集使用 `agent_collection` 资源及 Collection 任务，协议形态、引擎要求和固定签名向量见 [wire 契约](../../crates/agent-wire/README.md#原生采集契约2739)，配置及质量语义见[资产指南](assets.md#windows-agent-声明式采集)。当前 task payload 显式携带 kind/task，claim environment 必须包含 nativeEngines；不兼容旧包络，不使用脚本兜底。
