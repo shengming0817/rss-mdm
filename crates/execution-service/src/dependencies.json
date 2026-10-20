@@ -61,7 +61,7 @@
   "mdm_pki.certificates": "fdb2606d31897ac3e09b508d76dcb3931366c966fe7caec1964ae323df479e3a",
   "mdm_pki.installations": "a25c700cdd3b93463422d14c46de7d62a2e9e3b72e0aa1a6a9e43a98172ea0b2",
   "mdm_pki.revocations": "4c67cd832d2529a93925d3c71cb34649e27f49c88157b4105f4a93cf9c4afccd",
-  "mdm_pki.rotations": "5dc755b3cdc74152fc064a23cbf566e9e93d3d6d3d8cca38e2c71fbabf529576",
+  "mdm_pki.rotations": "d1300556bf89f5db16be472ec1bca21081328b56d5f316ab9d814a6f247e7c11",
   "mdm_pki.trust": "391abdbf59d5d316d7eb35dc121833c546fd085d947edc181ea68d39a45d30c1",
   "mdm_planning.asset_dispatch": "912fcf84ae1c50d6f78c932011ca3cd4cb34739c0c6daabbe0b6cb5e1cab2b04",
   "mdm_planning.configuration_claims": "a1b3fe8d74c22126cc381f8c087bda829275a9b130582d252aed695548f970c7",

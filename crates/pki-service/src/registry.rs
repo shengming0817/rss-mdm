@@ -36,16 +36,40 @@ pub struct Transition {
 #[derive(Clone, Copy, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Action {
-    Approve,
     Activate,
     Retire,
+}
+/// Durable rotation progress; issuer trust modes remain a separate lifecycle.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RotationState {
+    Distributing,
+    Activated,
+    Retired,
+}
+impl RotationState {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Distributing => "distributing",
+            Self::Activated => "activated",
+            Self::Retired => "retired",
+        }
+    }
+    fn parse(value: &str) -> Result<Self, Error> {
+        match value {
+            "distributing" => Ok(Self::Distributing),
+            "activated" => Ok(Self::Activated),
+            "retired" => Ok(Self::Retired),
+            _ => Err(Error::Storage),
+        }
+    }
 }
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Receipt {
     pub operation: Uuid,
     pub revision: u64,
-    pub state: String,
+    pub state: RotationState,
 }
 pub struct Registry {
     pub(crate) pool: PgPool,
@@ -261,7 +285,7 @@ impl Registry {
         let request =
             sha2::Sha256::digest(serde_json::to_vec(input).map_err(|_| Error::Request)?).to_vec();
         if let Some(old) = self
-            .rotation_replay(p, a, input.id, "distributing", &request)
+            .rotation_replay(p, a, input.id, RotationState::Distributing, &request)
             .await?
         {
             return Ok(old);
@@ -318,7 +342,7 @@ impl Registry {
             .digest
             .clone();
         let candidate = added[0].digest.clone();
-        let state = "distributing";
+        let state = RotationState::Distributing;
         let receipt = self
             .write(
                 p,
@@ -345,17 +369,16 @@ impl Registry {
         p.require_all_devices(Permission::Credentials)
             .map_err(|_| Error::Forbidden)?;
         self.synchronize(now).await?;
-        let phase = match input.action {
-            Action::Approve => "approved",
-            Action::Activate => "activated",
-            Action::Retire => "retired",
+        let state = match input.action {
+            Action::Activate => RotationState::Activated,
+            Action::Retire => RotationState::Retired,
         };
         let request = sha2::Sha256::digest(
             serde_json::to_vec(&(purpose_value, input)).map_err(|_| Error::Request)?,
         )
         .to_vec();
         if let Some(old) = self
-            .rotation_replay(p, a, input.id, phase, &request)
+            .rotation_replay(p, a, input.id, state, &request)
             .await?
         {
             return Ok(old);
@@ -369,13 +392,14 @@ impl Registry {
             .bind(p.tenant_id()).bind(input.id).bind(purpose(purpose_value)).fetch_one(&mut *tx).await.map_err(|_|Error::Storage)?;
         let previous: String = row.try_get("previous").map_err(|_| Error::Storage)?;
         let candidate: String = row.try_get("candidate").map_err(|_| Error::Storage)?;
-        let old_state: String = row.try_get("state").map_err(|_| Error::Storage)?;
-        let state = match input.action {
-            Action::Approve if old_state == "distributing" => "approved",
-            Action::Activate if old_state == "approved" => "activated",
-            Action::Retire if old_state == "activated" => "retired",
-            _ => return Err(Error::Conflict),
-        };
+        let old_state = RotationState::parse(row.try_get("state").map_err(|_| Error::Storage)?)?;
+        if !matches!(
+            (input.action, old_state),
+            (Action::Activate, RotationState::Distributing)
+                | (Action::Retire, RotationState::Activated)
+        ) {
+            return Err(Error::Conflict);
+        }
         tx.rollback().await.map_err(|_| Error::Storage)?;
         if matches!(input.action, Action::Activate) {
             self.providers
@@ -434,7 +458,7 @@ impl Registry {
         sqlx::query("INSERT INTO mdm_pki.installations(tenant_id,purpose,registration,revision,digest,body) VALUES($1::uuid,$2,$3,$4,$5,$6) ON CONFLICT(tenant_id,purpose,registration) DO UPDATE SET revision=excluded.revision,digest=excluded.digest,body=excluded.body,confirmed_at=clock_timestamp()")
             .bind(tenant).bind(purpose(trust.purpose)).bind(registration).bind(input.revision as i64).bind(&input.digest).bind(serde_json::to_vec(trust).map_err(|_|Error::Storage)?)
             .execute(&mut *c).await.map_err(|_|Error::Storage)?;
-        sqlx::query("INSERT INTO mdm_pki.acknowledgements(tenant_id,rotation,registration,revision,digest) SELECT $1::uuid,id,$2,$3,$4 FROM mdm_pki.rotations WHERE tenant_id=$1::uuid AND purpose=$5 AND state IN ('distributing','approved') ON CONFLICT(tenant_id,rotation,registration) DO UPDATE SET revision=excluded.revision,digest=excluded.digest,confirmed_at=clock_timestamp()")
+        sqlx::query("INSERT INTO mdm_pki.acknowledgements(tenant_id,rotation,registration,revision,digest) SELECT $1::uuid,id,$2,$3,$4 FROM mdm_pki.rotations WHERE tenant_id=$1::uuid AND purpose=$5 AND state='distributing' ON CONFLICT(tenant_id,rotation,registration) DO UPDATE SET revision=excluded.revision,digest=excluded.digest,confirmed_at=clock_timestamp()")
             .bind(tenant).bind(registration).bind(input.revision as i64).bind(input.digest.as_bytes()).bind(purpose(trust.purpose))
             .execute(c).await.map_err(|_|Error::Storage)?;
         Ok(())
@@ -444,10 +468,11 @@ impl Registry {
         p: &AuthorizedPrincipal,
         a: &RequestAudit,
         id: Uuid,
-        phase: &str,
+        state: RotationState,
         hash: &[u8],
     ) -> Result<Option<Receipt>, Error> {
         p.bind_audit(a).map_err(|_| Error::Forbidden)?;
+        let phase = state.as_str();
         let mut tx = self.begin(p.tenant_id()).await?;
         let found=sqlx::query_scalar::<_,bool>("SELECT EXISTS(SELECT 1 FROM mdm_pki.operations WHERE tenant_id=$1::uuid AND actor=$2 AND operation=$3 AND phase=$4)")
             .bind(p.tenant_id()).bind(p.principal_id()).bind(id).bind(phase).fetch_one(&mut *tx).await.map_err(|_|Error::Storage)?;
@@ -492,7 +517,7 @@ impl Registry {
         p: &AuthorizedPrincipal,
         a: &RequestAudit,
         request: (Uuid, u64),
-        change: (&Trust, &str, Option<(&str, &str)>),
+        change: (&Trust, RotationState, Option<(&str, &str)>),
         now: i64,
         hash: &[u8],
     ) -> Result<Receipt, Error> {
@@ -503,22 +528,23 @@ impl Registry {
         self.mutation(TenantId::parse(p.tenant_id()).map_err(|_|Error::Request)?,a,
             (p,id,expected,trust,state,added,now,hash),|ctx,c|Box::pin(async move {
                 let (p,id,expected,trust,state,added,now,hash)=ctx;
+                let phase=state.as_str();
                 live(c,p).await?;
                 sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,2639))").bind(p.tenant_id()).execute(&mut *c).await.map_err(|_|Error::Storage)?;
-                if let Some(bytes)=crate::mutation::replay(c,p.tenant_id(),p.principal_id(),p.instance_id(),*id,state,hash).await? {
+                if let Some(bytes)=crate::mutation::replay(c,p.tenant_id(),p.principal_id(),p.instance_id(),*id,phase,hash).await? {
                     return Ok(crate::mutation::Change{value:serde_json::from_slice(&bytes).map_err(|_|Error::Storage)?,replay:true,
-                        key:format!("pki:{id}:{state}"),fingerprint:hash.to_vec()});
+                        key:format!("pki:{id}:{phase}"),fingerprint:hash.to_vec()});
                 }
                     let revision:i64=sqlx::query_scalar("SELECT revision FROM mdm_pki.trust WHERE tenant_id=$1::uuid AND purpose=$2 FOR UPDATE")
                         .bind(p.tenant_id()).bind(purpose(trust.purpose)).fetch_one(&mut *c).await.map_err(|_|Error::Storage)?;
                     if revision!=*expected as i64 {return Err(Error::Conflict);}
-                    if *state=="approved" || *state=="activated" {
+                    if *state==RotationState::Activated {
                         let missing:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_access.registrations r WHERE r.tenant_id=$1::uuid AND r.state='active' AND ((r.channel='agent' AND $3='agent') OR (r.channel='mdm' AND EXISTS(SELECT 1 FROM mdm_access.requests q WHERE q.tenant_id=r.tenant_id AND q.id=r.request_id AND q.source=$3))) AND NOT EXISTS(SELECT 1 FROM mdm_pki.acknowledgements a WHERE a.tenant_id=r.tenant_id AND a.registration=r.id AND a.rotation=$2 AND a.revision>=(SELECT revision FROM mdm_pki.rotations WHERE tenant_id=r.tenant_id AND id=$2)))")
                             .bind(p.tenant_id()).bind(*id).bind(match trust.purpose {Purpose::Windows=>"mdm.windows",Purpose::Apple=>"mdm.apple",Purpose::Agent=>"agent",Purpose::AgentBootstrap=>"agent_bootstrap"})
                             .fetch_one(&mut *c).await.map_err(|_|Error::Storage)?;
                         if missing {return Err(Error::Conflict);}
                     }
-                    if *state=="retired" {
+                    if *state==RotationState::Retired {
                         let unknown:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_pki.signing s JOIN mdm_pki.rotations r ON r.tenant_id=s.tenant_id AND r.purpose=s.purpose AND r.previous=s.issuer WHERE r.tenant_id=$1::uuid AND r.id=$2 AND (s.state IN ('signing','unknown') OR (s.state='prepared' AND s.deadline>$3)))")
                             .bind(p.tenant_id()).bind(*id).bind(*now).fetch_one(&mut *c).await.map_err(|_|Error::Storage)?;
                         if unknown {return Err(Error::Conflict);}
@@ -544,14 +570,14 @@ impl Registry {
                             .bind(p.tenant_id()).bind(*id).bind(purpose(trust.purpose)).bind(*previous).bind(*candidate).bind(trust.revision as i64).execute(&mut *c).await.map_err(|_|Error::Storage)?;
                     } else {
                         sqlx::query("UPDATE mdm_pki.rotations SET state=$3 WHERE tenant_id=$1::uuid AND id=$2")
-                            .bind(p.tenant_id()).bind(*id).bind(*state).execute(&mut *c).await.map_err(|_|Error::Storage)?;
+                            .bind(p.tenant_id()).bind(*id).bind(phase).execute(&mut *c).await.map_err(|_|Error::Storage)?;
                     }
                     persist(c,trust).await?;
-                    let receipt=Receipt{operation:*id,revision:trust.revision,state:state.to_string()};
-                    crate::mutation::save(c,(p.tenant_id(),p.principal_id(),p.instance_id()),*id,state,hash,
+                    let receipt=Receipt{operation:*id,revision:trust.revision,state:*state};
+                    crate::mutation::save(c,(p.tenant_id(),p.principal_id(),p.instance_id()),*id,phase,hash,
                         &serde_json::to_vec(&receipt).map_err(|_|Error::Storage)?).await?;
 
-                Ok(crate::mutation::Change{value:receipt,replay:false,key:format!("pki:{id}:{state}"),fingerprint:hash.to_vec()})
+                Ok(crate::mutation::Change{value:receipt,replay:false,key:format!("pki:{id}:{phase}"),fingerprint:hash.to_vec()})
             })).await
     }
 }
@@ -642,4 +668,54 @@ pub async fn current_certificate_in(
         .verify(&[certificate.into()], now)
         .map_err(|_| Error::Forbidden)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rotation_wire_accepts_only_current_actions_and_receipt_states() {
+        let id = Uuid::new_v4();
+        for action in ["activate", "retire"] {
+            let value = serde_json::json!({"id": id, "expected_revision": 2, "action": action});
+            let input: Transition = serde_json::from_value(value.clone()).unwrap();
+            assert_eq!(serde_json::to_value(input).unwrap(), value);
+        }
+        for action in ["approve", "", "activated"] {
+            assert!(
+                serde_json::from_value::<Transition>(serde_json::json!({
+                    "id": id, "expected_revision": 2, "action": action,
+                }))
+                .is_err()
+            );
+        }
+        for state in [
+            RotationState::Distributing,
+            RotationState::Activated,
+            RotationState::Retired,
+        ] {
+            let receipt = Receipt {
+                operation: id,
+                revision: 2,
+                state,
+            };
+            let value = serde_json::to_value(receipt).unwrap();
+            assert_eq!(value["state"], state.as_str());
+            assert_eq!(
+                serde_json::from_value::<Receipt>(value).unwrap().state,
+                state
+            );
+            assert_eq!(RotationState::parse(state.as_str()).unwrap(), state);
+        }
+        for state in ["approved", "prepared", ""] {
+            assert!(
+                serde_json::from_value::<Receipt>(serde_json::json!({
+                    "operation": id, "revision": 2, "state": state,
+                }))
+                .is_err()
+            );
+            assert!(matches!(RotationState::parse(state), Err(Error::Storage)));
+        }
+    }
 }

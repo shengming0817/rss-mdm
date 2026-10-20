@@ -20,7 +20,7 @@ ALTER TABLE mdm_pki.certificates FORCE ROW LEVEL SECURITY;
 CREATE POLICY tenant ON mdm_pki.certificates USING(tenant_id=NULLIF(current_setting('rss.tenant_id',true),'')::uuid) WITH CHECK(tenant_id=NULLIF(current_setting('rss.tenant_id',true),'')::uuid);
 GRANT SELECT,INSERT ON mdm_pki.certificates TO mdm_access;
 GRANT UPDATE(registration) ON mdm_pki.certificates TO mdm_access;
-CREATE TABLE mdm_pki.rotations (tenant_id uuid NOT NULL, id uuid NOT NULL, purpose text NOT NULL CHECK(purpose IN ('windows','apple','agent','agent_bootstrap')), previous text NOT NULL, candidate text NOT NULL, revision bigint NOT NULL CHECK(revision>0), state text NOT NULL CHECK(state IN ('distributing','approved','activated','retired')), PRIMARY KEY(tenant_id,id));
+CREATE TABLE mdm_pki.rotations (tenant_id uuid NOT NULL, id uuid NOT NULL, purpose text NOT NULL CHECK(purpose IN ('windows','apple','agent','agent_bootstrap')), previous text NOT NULL, candidate text NOT NULL, revision bigint NOT NULL CHECK(revision>0), state text NOT NULL CHECK(state IN ('distributing','activated','retired')), PRIMARY KEY(tenant_id,id));
 ALTER TABLE mdm_pki.rotations ENABLE ROW LEVEL SECURITY;
 ALTER TABLE mdm_pki.rotations FORCE ROW LEVEL SECURITY;
 CREATE POLICY tenant ON mdm_pki.rotations USING(tenant_id=NULLIF(current_setting('rss.tenant_id',true),'')::uuid) WITH CHECK(tenant_id=NULLIF(current_setting('rss.tenant_id',true),'')::uuid);
