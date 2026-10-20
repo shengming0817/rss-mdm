@@ -8,7 +8,7 @@ use rss_mdm_pki_service::{
     registry::Registry,
 };
 use sqlx::Connection;
-use std::sync::atomic::{AtomicI64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 
 #[tokio::test]
 #[ignore = "make t2 MODULE=agent.pki: slow publication and revoke queue with controlled clock"]
@@ -34,6 +34,8 @@ async fn sweep_uses_response_and_dispatch_times_without_changing_attempts() -> a
     let publication = STANDARD
         .decode(publication_fixture(&root(), &issuer.crl, false, refreshed, None).await?)?;
     let expected_crl = STANDARD.encode(&publication);
+    let initial_publication = STANDARD.decode(&issuer.crl)?;
+    let publishing = Arc::new(AtomicBool::new(false));
     let clock = Arc::new(AtomicI64::new(start));
     let observed = Arc::new(std::sync::Mutex::new(Vec::<(String, String, i64)>::new()));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
@@ -50,6 +52,7 @@ async fn sweep_uses_response_and_dispatch_times_without_changing_attempts() -> a
     let stop = tokio_util::sync::CancellationToken::new();
     let stopped = stop.clone();
     let server_clock = clock.clone();
+    let server_publishing = publishing.clone();
     let server_observed = observed.clone();
     let key = ring::signature::RsaKeyPair::from_pkcs8(&std::fs::read(
         root().join("agent-provisioner.pk8"),
@@ -71,6 +74,8 @@ async fn sweep_uses_response_and_dispatch_times_without_changing_attempts() -> a
                     let clock = server_clock.clone();
                     let observed = server_observed.clone();
                     let publication = publication.clone();
+                    let initial_publication = initial_publication.clone();
+                    let publishing = server_publishing.clone();
                     let public_key = public_key.clone();
                     handlers.spawn(async move {
                         let path = request.uri().path().to_owned();
@@ -83,8 +88,12 @@ async fn sweep_uses_response_and_dispatch_times_without_changing_attempts() -> a
                         }
                         let body = if path == "/crl" {
                             // The signed list was generated after this sweep began.
-                            clock.store(refreshed, Ordering::SeqCst);
-                            publication
+                            if publishing.load(Ordering::SeqCst) {
+                                clock.store(refreshed, Ordering::SeqCst);
+                                publication
+                            } else {
+                                initial_publication
+                            }
                         } else {
                             ensure!(path == "/revoke");
                             let body: serde_json::Value = serde_json::from_slice(&bytes)?;
@@ -157,6 +166,7 @@ async fn sweep_uses_response_and_dispatch_times_without_changing_attempts() -> a
         sqlx::query("INSERT INTO mdm_pki.revocations(tenant_id,purpose,issuer,serial,attempt,state) VALUES($1::uuid,'agent',$2,$3,$4,'pending')")
             .bind(case_a()).bind(&issuer.digest).bind(serial).bind(attempt).execute(&mut pg).await?;
     }
+    publishing.store(true, Ordering::SeqCst);
     let result = registry.sweep(|| Ok(clock.load(Ordering::SeqCst))).await;
     stop.cancel();
     tokio::time::timeout(Duration::from_secs(5), server).await???;
