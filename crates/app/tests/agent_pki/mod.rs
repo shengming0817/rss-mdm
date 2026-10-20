@@ -1164,27 +1164,43 @@ async fn rotation_requires_installed_trust_and_published_revocation_before_retir
         revision: trust.revision,
         digest: trust.installation_digest(),
     };
-    let gate = tokio::sync::Barrier::new(2);
-    let ack_audit = audit();
-    let activation_audit = audit();
-    let (acknowledged, raced) = tokio::join!(
-        async {
-            gate.wait().await;
-            s.acknowledge_trust(&evidence, &ack, &ack_audit).await
-        },
-        async {
-            gate.wait().await;
-            registry
-                .transition(&p, Purpose::Agent, &activate, &activation_audit, now())
-                .await
-        },
-    );
-    acknowledged?;
+    // Keep the production ACK write uncommitted while activation reads from a different transaction.
+    s.authenticate(&evidence).await?;
+    let mut pending_ack = db.archive_pool().begin().await?;
+    sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
+        .bind(case_a())
+        .execute(&mut *pending_ack)
+        .await?;
+    Registry::acknowledge_in(
+        &mut pending_ack,
+        case_a(),
+        receipt.runtime.registration_id,
+        &trust,
+        &ack,
+    )
+    .await?;
     assert!(
-        matches!(raced, Ok(_) | Err(rss_mdm_pki_service::Error::Conflict)),
-        "activation may conservatively reject an ACK that has not committed yet"
+        matches!(
+            registry
+                .transition(&p, Purpose::Agent, &activate, &audit(), now())
+                .await,
+            Err(rss_mdm_pki_service::Error::Conflict)
+        ),
+        "an uncommitted installation ACK must not permit activation"
     );
-    // Exact concurrent activation/replay callers must recover even when a commit ACK is lost.
+    pending_ack.rollback().await?;
+    s.acknowledge_trust(&evidence, &ack, &audit()).await?;
+    let before = crate::test_support::pg(&format!(
+        "SELECT state FROM mdm_pki.rotations WHERE tenant_id='{}' AND id='{}'",
+        case_a(),
+        rotation.id
+    ))?;
+    assert_eq!(
+        before.trim(),
+        "distributing",
+        "the fault must target the first activation mutation"
+    );
+    // The first mutation commits but loses its ACK; exact competing callers can recover it.
     audit_store.inject_next_fault(rss_audit_postgres::PgFault::CommitUnknownAfterAck);
     let gate = tokio::sync::Barrier::new(2);
     let first_audit = audit();
