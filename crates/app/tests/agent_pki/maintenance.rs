@@ -33,6 +33,7 @@ async fn sweep_uses_response_and_dispatch_times_without_changing_attempts() -> a
     let refreshed = start + 130;
     let publication = STANDARD
         .decode(publication_fixture(&root(), &issuer.crl, false, refreshed, None).await?)?;
+    let expected_crl = STANDARD.encode(&publication);
     let clock = Arc::new(AtomicI64::new(start));
     let observed = Arc::new(std::sync::Mutex::new(Vec::<(String, String, i64)>::new()));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
@@ -125,19 +126,31 @@ async fn sweep_uses_response_and_dispatch_times_without_changing_attempts() -> a
         &std::fs::read(root().join("ca.crt"))?,
         &std::fs::read(root().join("agent-provisioner.pk8"))?,
     )?;
-    let providers = Arc::new(Providers::new(vec![Provider {
-        purpose: Purpose::Agent,
-        issuer: issuer.digest.clone(),
-        client: Arc::new(client),
-        scep_url: None,
-    }])?);
+    let client = Arc::new(client);
+    let mut windows = trust.clone();
+    windows.purpose = Purpose::Windows;
+    let windows = rss_mdm_device_trust::DeviceTrust::new(windows, Purpose::Windows, start)?;
+    let providers = Arc::new(Providers::new(
+        [Purpose::Windows, Purpose::Agent]
+            .into_iter()
+            .map(|purpose| Provider {
+                purpose,
+                issuer: issuer.digest.clone(),
+                client: client.clone(),
+                scep_url: None,
+            })
+            .collect(),
+    )?);
     let db = Database::connect(options("mdm_access")?).await?;
     let registry = Registry::new(
         db.archive_pool(),
         db.audit_store(&crate::config::AuditConfig::Plain).await?,
-        vec![binding],
+        vec![windows, binding],
         providers,
     );
+    registry
+        .admit(rss_request_context::TenantId::parse(case_a())?, start)
+        .await?;
     let mut pg =
         <sqlx::PgConnection as sqlx::Connection>::connect_with(&options("postgres")?).await?;
     for (serial, attempt) in &serials {
@@ -148,6 +161,19 @@ async fn sweep_uses_response_and_dispatch_times_without_changing_attempts() -> a
     stop.cancel();
     tokio::time::timeout(Duration::from_secs(5), server).await???;
     result?;
+    for purpose in [Purpose::Windows, Purpose::Agent] {
+        let actual = registry.trust(purpose)?;
+        ensure!(actual.issuers[0].crl == expected_crl);
+        let stored: Vec<u8> = sqlx::query_scalar(
+            "SELECT body FROM mdm_pki.trust WHERE tenant_id=$1::uuid AND purpose=$2",
+        )
+        .bind(case_a())
+        .bind(rss_mdm_pki_service::registry::purpose(purpose))
+        .fetch_one(&mut pg)
+        .await?;
+        let stored: rss_mdm_agent_wire::pki::Trust = serde_json::from_slice(&stored)?;
+        ensure!(stored == actual);
+    }
     let observations = observed.lock().unwrap().clone();
     ensure!(observations.len() == 2);
     ensure!(observations[0].2 == refreshed && observations[1].2 == refreshed + 130);

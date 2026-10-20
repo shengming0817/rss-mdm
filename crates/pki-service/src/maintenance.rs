@@ -257,7 +257,10 @@ impl Registry {
                 failed |= unavailable;
                 continue;
             }
-            let canonical = serde_json::to_vec(&inputs).map_err(|_| Error::Storage)?;
+            // A physical issuer can serve several purposes with identical CRL bytes.
+            // Keep each purpose in its own durable operation scope.
+            let canonical = serde_json::to_vec(&("device-pki-sweep/v1", trust.purpose, &inputs))
+                .map_err(|_| Error::Storage)?;
             let operation = Uuid::from_bytes(
                 Sha256::digest(canonical)[..16]
                     .try_into()

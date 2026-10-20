@@ -86,6 +86,19 @@ docker compose -p rss-mdm -f /absolute/candidate/deployment/production.compose.y
 
 这些是外部卷，模板不会创建空目录冒充材料、覆盖原数据或生成新的 CA 身份。新建 SIT 时先由基础设施运维使用固定 step-ca 官方 CLI 初始化 CA 卷、配置 remote management 和签名 CRL，并将根私钥及独立解密密码转移到未挂载的离线目录；普通重放直接复用原卷。CA 目录与秘密须由容器 UID10001 读取，文件 0600、目录 0700；属主准备在一次性维护容器内完成，不在 macOS/Linux 宿主执行 chown 或 systemd 操作。在线 CA 不挂载离线根钥，MDM 运行容器不挂载 CA 管理凭据或 RustFS 管理员凭据。
 
+SIT 的原 CA 配置 `/home/step/config/ca.json` 使用以下 CRL 策略；只修改该节，保留原证书、密钥、数据库、provisioner 和其余配置：
+
+```json
+"crl": {
+  "enabled": true,
+  "generateOnRevoke": true,
+  "cacheDuration": "168h",
+  "renewPeriod": "1h"
+}
+```
+
+这是 step-ca 的基础设施配置，由原 CA 卷持有；MDM 的 `step-ca.json` 接入输入保持不变。有效期为 7 天，每小时生成新 CRL，吊销时立即生成；产品每 60 秒获取并验证。已有 CA 修改后用普通 Compose 重启 `step-ca`，核对实际 CRL 的 `thisUpdate` / `nextUpdate` 及各已启用用途的接收结果；重启本身不能证明新策略已发布。停机维护和恢复见[设备 PKI 运维](operations.md#设备-pki-轮换与撤销)。
+
 `sit.compose.yaml` 的 CA 仅开放容器网络，RustFS 禁用控制台且不发布宿主端口。CA 官方二进制携带绑定端口的文件 capability，服务只保留 `NET_BIND_SERVICE`，仍以 UID10001 运行。RustFS 使用独立受信 TLS，不能关闭校验。数据和 TLS 卷名默认见模板；不同部署设置各自的 `MDM_*_VOLUME`，不能共享可写 CA 数据库或 RustFS 数据目录。
 
 从固定候选 `deployment/providers.lock.json` 设置 `MDM_STEP_CA_IMAGE` 和 `MDM_RUSTFS_IMAGE`，沿用基础安装的环境文件与项目名：
