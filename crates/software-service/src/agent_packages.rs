@@ -189,12 +189,21 @@ fn metadata(
             team,
             notarization_evidence,
         } => {
+            let signing = if team == "development-ad-hoc" {
+                i.channel == w::Channel::Test
+                    && notarization_evidence
+                        .strip_prefix("not-notarized:package-manifest:")
+                        .is_some_and(bounded)
+            } else {
+                team.len() == 10
+                    && team
+                        .bytes()
+                        .all(|b| b.is_ascii_uppercase() || b.is_ascii_digit())
+                    && !notarization_evidence.starts_with("not-notarized:")
+            };
             i.target.platform == TaskPlatform::Macos
                 && bounded(bundle)
-                && team.len() == 10
-                && team
-                    .bytes()
-                    .all(|b| b.is_ascii_uppercase() || b.is_ascii_digit())
+                && signing
                 && bounded(notarization_evidence)
         }
     };
@@ -705,4 +714,64 @@ pub async fn known_in(
             })
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn development_macos_package_requires_test_channel_and_honest_evidence() {
+        let tenant = Uuid::new_v4();
+        let target = w::Target {
+            platform: TaskPlatform::Macos,
+            architecture: TaskArchitecture::Aarch64,
+        };
+        let mut manifest = Manifest {
+            wire_version: 1,
+            tenant_id: tenant,
+            target,
+            version: "0.1.0".into(),
+            origin: "https://mdm.example.test:9445".into(),
+            signing_keys: [("test-key".into(), "A".repeat(43))].into(),
+            packaging: Packaging::MacosPkg {
+                bundle: "com.rss.mdmagent".into(),
+                team: "development-ad-hoc".into(),
+                notarization_evidence: "not-notarized:package-manifest:build-1".into(),
+            },
+        };
+        let mut input = Publish {
+            operation_id: Uuid::new_v4(),
+            resource: "resource".into(),
+            version: "v1".into(),
+            variant: "default".into(),
+            target,
+            channel: w::Channel::Test,
+            manifest_artifact: "candidate".into(),
+        };
+        let artifact =
+            r::Artifact::new(r::Id::new("installer").unwrap(), 1, r::Digest::of(b"x")).unwrap();
+        let check = |manifest: &Manifest, input: &Publish| {
+            metadata(
+                manifest,
+                input,
+                TenantId::parse(&tenant.to_string()).unwrap(),
+                &artifact,
+                &serde_json::to_vec(manifest).unwrap(),
+                Uuid::new_v4(),
+            )
+            .is_ok()
+        };
+        assert!(check(&manifest, &input));
+        for channel in [w::Channel::Pilot, w::Channel::Production] {
+            input.channel = channel;
+            assert!(!check(&manifest, &input));
+        }
+        input.channel = w::Channel::Test;
+        let Packaging::MacosPkg { team, .. } = &mut manifest.packaging else {
+            unreachable!()
+        };
+        *team = "ABCDEFGHIJ".into();
+        assert!(!check(&manifest, &input));
+    }
 }
