@@ -8,7 +8,7 @@ use rss_mdm_pki_service::{
     registry::Registry,
 };
 use sqlx::Connection;
-use std::sync::atomic::{AtomicI64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 
 #[tokio::test]
 #[ignore = "make t2 MODULE=agent.pki: slow publication and revoke queue with controlled clock"]
@@ -33,6 +33,9 @@ async fn sweep_uses_response_and_dispatch_times_without_changing_attempts() -> a
     let refreshed = start + 130;
     let publication = STANDARD
         .decode(publication_fixture(&root(), &issuer.crl, false, refreshed, None).await?)?;
+    let expected_crl = STANDARD.encode(&publication);
+    let initial_publication = STANDARD.decode(&issuer.crl)?;
+    let publishing = Arc::new(AtomicBool::new(false));
     let clock = Arc::new(AtomicI64::new(start));
     let observed = Arc::new(std::sync::Mutex::new(Vec::<(String, String, i64)>::new()));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
@@ -49,6 +52,7 @@ async fn sweep_uses_response_and_dispatch_times_without_changing_attempts() -> a
     let stop = tokio_util::sync::CancellationToken::new();
     let stopped = stop.clone();
     let server_clock = clock.clone();
+    let server_publishing = publishing.clone();
     let server_observed = observed.clone();
     let key = ring::signature::RsaKeyPair::from_pkcs8(&std::fs::read(
         root().join("agent-provisioner.pk8"),
@@ -70,6 +74,8 @@ async fn sweep_uses_response_and_dispatch_times_without_changing_attempts() -> a
                     let clock = server_clock.clone();
                     let observed = server_observed.clone();
                     let publication = publication.clone();
+                    let initial_publication = initial_publication.clone();
+                    let publishing = server_publishing.clone();
                     let public_key = public_key.clone();
                     handlers.spawn(async move {
                         let path = request.uri().path().to_owned();
@@ -82,8 +88,12 @@ async fn sweep_uses_response_and_dispatch_times_without_changing_attempts() -> a
                         }
                         let body = if path == "/crl" {
                             // The signed list was generated after this sweep began.
-                            clock.store(refreshed, Ordering::SeqCst);
-                            publication
+                            if publishing.load(Ordering::SeqCst) {
+                                clock.store(refreshed, Ordering::SeqCst);
+                                publication
+                            } else {
+                                initial_publication
+                            }
                         } else {
                             ensure!(path == "/revoke");
                             let body: serde_json::Value = serde_json::from_slice(&bytes)?;
@@ -125,29 +135,55 @@ async fn sweep_uses_response_and_dispatch_times_without_changing_attempts() -> a
         &std::fs::read(root().join("ca.crt"))?,
         &std::fs::read(root().join("agent-provisioner.pk8"))?,
     )?;
-    let providers = Arc::new(Providers::new(vec![Provider {
-        purpose: Purpose::Agent,
-        issuer: issuer.digest.clone(),
-        client: Arc::new(client),
-        scep_url: None,
-    }])?);
+    let client = Arc::new(client);
+    let mut windows = trust.clone();
+    windows.purpose = Purpose::Windows;
+    let windows = rss_mdm_device_trust::DeviceTrust::new(windows, Purpose::Windows, start)?;
+    let providers = Arc::new(Providers::new(
+        [Purpose::Windows, Purpose::Agent]
+            .into_iter()
+            .map(|purpose| Provider {
+                purpose,
+                issuer: issuer.digest.clone(),
+                client: client.clone(),
+                scep_url: None,
+            })
+            .collect(),
+    )?);
     let db = Database::connect(options("mdm_access")?).await?;
     let registry = Registry::new(
         db.archive_pool(),
         db.audit_store(&crate::config::AuditConfig::Plain).await?,
-        vec![binding],
+        vec![windows, binding],
         providers,
     );
+    registry
+        .admit(rss_request_context::TenantId::parse(case_a())?, start)
+        .await?;
     let mut pg =
         <sqlx::PgConnection as sqlx::Connection>::connect_with(&options("postgres")?).await?;
     for (serial, attempt) in &serials {
         sqlx::query("INSERT INTO mdm_pki.revocations(tenant_id,purpose,issuer,serial,attempt,state) VALUES($1::uuid,'agent',$2,$3,$4,'pending')")
             .bind(case_a()).bind(&issuer.digest).bind(serial).bind(attempt).execute(&mut pg).await?;
     }
+    publishing.store(true, Ordering::SeqCst);
     let result = registry.sweep(|| Ok(clock.load(Ordering::SeqCst))).await;
     stop.cancel();
     tokio::time::timeout(Duration::from_secs(5), server).await???;
     result?;
+    for purpose in [Purpose::Windows, Purpose::Agent] {
+        let actual = registry.trust(purpose)?;
+        ensure!(actual.issuers[0].crl == expected_crl);
+        let stored: Vec<u8> = sqlx::query_scalar(
+            "SELECT body FROM mdm_pki.trust WHERE tenant_id=$1::uuid AND purpose=$2",
+        )
+        .bind(case_a())
+        .bind(rss_mdm_pki_service::registry::purpose(purpose))
+        .fetch_one(&mut pg)
+        .await?;
+        let stored: rss_mdm_agent_wire::pki::Trust = serde_json::from_slice(&stored)?;
+        ensure!(stored == actual);
+    }
     let observations = observed.lock().unwrap().clone();
     ensure!(observations.len() == 2);
     ensure!(observations[0].2 == refreshed && observations[1].2 == refreshed + 130);

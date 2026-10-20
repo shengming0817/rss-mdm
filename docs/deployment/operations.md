@@ -162,7 +162,12 @@ S3 凭据由内容连接领域加密持久化；按[安装指南](installation.m
 
 Windows 未知签发通过 `POST /api/v1/pki/signing/recover` 提交原 attempt 与原 certificate chain；Agent 仅通过原 `agent-issuances/{id}/recover` 在原 owner 事务中一并恢复候选和公共签发记录。SCEP 沿原 attempt/notify 路径处理，不重新授权 consumed challenge。任何恢复均核对原 CSR/SPKI、CN/SAN、purpose、issuer、签发窗口和链，不换 CA、不换 jti、不创建替代证书。
 
-在线撤销先在原登记/凭据 Audit 事务中立即生效，并写入实际 serial 的持久撤销队列。维护任务每 60 秒从各代次 CA 拉取 signed CRL，离开业务锁后调用 `/revoke`，失败保留 bounded backoff 任务。CA 接受 passive revoke 只表示 submitted；只有 serial 出现在经批准 issuer 签名的新鲜 CRL 中才记为 published。issuer CRL 的 nextUpdate 默认为 10 分钟，根 CRL 30 天并在到期前 7 天由离线 owner 更新；缺失、过期、号码/时间回滚或同号异内容均拒绝认证。保留连接及 TLS 恢复仍逐次检查当前凭据映射。
+在线撤销先在原登记/凭据 Audit 事务中立即生效，并写入实际 serial 的持久撤销队列。维护任务每 60 秒从各代次 CA 拉取 signed CRL，离开业务锁后调用 `/revoke`，失败保留 bounded backoff 任务。CA 接受 passive revoke 只表示 submitted；只有 serial 出现在经批准 issuer 签名的新鲜 CRL 中才记为 published。正式 SIT 的 issuer CRL 有效期为 168 小时、step-ca 每小时重新生成，吊销时立即生成，配置见[服务端 SIT 部署](installation.md#服务端-sit-部署)。根 CRL 30 天并在到期前 7 天由离线 owner 更新；缺失、过期、号码/时间回滚或同号异内容均拒绝认证。保留连接及 TLS 恢复仍逐次检查当前凭据映射。
+
+
+共享 CA 的同一份 CRL 分别更新各用途记录；自动维护操作按用途区分，重放只更新公开吊销材料，不改变设备身份、信任 revision 或原签发回执。短周期 CRL 可用于专项测试，不作为正式 SIT 默认值。
+
+维护前核对所有已启用用途已接收到 CA 最新 CRL，剩余有效期须覆盖预计停机及恢复余量；168 小时不是任意时刻都剩余 7 天。只停止 CA 时，已有有效证书可在原 CRL 有效窗口内继续通过产品校验，签发、续期及吊销发布暂停；产品内已撤销登记仍立即拒绝。整个环境停机时设备管理通信暂停。恢复先启动原 CA 和数据库，再启动产品服务；原维护任务从签名历史恢复并自动获取新 CRL，核对所有已启用用途就绪及原身份、撤销记录。即使旧 CRL 已过期，也不清库、重新注册或放宽过期/回滚检查。预计超过有效窗口时提前制定更长窗口或可用性方案，不能把过期清单当作宽限授权。
 
 离线根或 legacy issuer 的 CRL 使用 `POST /api/v1/pki/crls` 发布单一 operation、purpose 和 publications 数组（1–16 项，每项 issuer、crl、root_crl，base64 DER）。同 root 的所有代次共同采用同一 root CRL，集合内冲突拒绝；不把根私钥带入在线宿主。刷新按同 purpose 完整集合校验、原子发布；停机造成多个 issuer CRL 过期后可整组恢复。备份/恢复必须保留 CA 数据库、原密钥身份、serial/token 使用记录、MDM 数据库和 Audit/Ledger；成功签发与撤销发布的未知结果仍沿原记录恢复。
 
