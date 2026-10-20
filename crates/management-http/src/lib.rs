@@ -57,3 +57,5 @@ mod software_content;
 pub mod webhooks;
 
 pub mod mail;
+
+pub mod first_use;

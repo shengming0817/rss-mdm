@@ -1,0 +1,586 @@
+{
+  "Progress": {
+    "$defs": {
+      "Action": {
+        "properties": {
+          "href": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "href"
+        ],
+        "type": "object"
+      },
+      "Channel": {
+        "enum": [
+          "agent",
+          "windows_mdm",
+          "macos_mdm"
+        ],
+        "type": "string"
+      },
+      "Custody": {
+        "enum": [
+          "deployment_operator",
+          "identity",
+          "domain_service",
+          "certificate_authority",
+          "storage_provider",
+          "device"
+        ],
+        "type": "string"
+      },
+      "Decision": {
+        "oneOf": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "kind": {
+                "const": "configure",
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "kind": {
+                "const": "skip",
+                "type": "string"
+              },
+              "reason": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind",
+              "reason"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "Entry": {
+        "properties": {
+          "actions": {
+            "items": {
+              "$ref": "#/$defs/Action"
+            },
+            "type": "array"
+          },
+          "appliedRevision": {
+            "format": "int64",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "configuredCount": {
+            "format": "uint",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "custody": {
+            "$ref": "#/$defs/Custody"
+          },
+          "desiredRevision": {
+            "format": "int64",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "id": {
+            "type": "string"
+          },
+          "lifecycle": {
+            "$ref": "#/$defs/Lifecycle"
+          },
+          "owner": {
+            "type": "string"
+          },
+          "reason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "revision": {
+            "format": "int64",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "scope": {
+            "$ref": "#/$defs/Scope"
+          },
+          "status": {
+            "$ref": "#/$defs/Status2"
+          }
+        },
+        "required": [
+          "id",
+          "scope",
+          "owner",
+          "custody",
+          "lifecycle",
+          "status",
+          "actions"
+        ],
+        "type": "object"
+      },
+      "Intent": {
+        "additionalProperties": false,
+        "properties": {
+          "capabilities": {
+            "additionalProperties": false,
+            "properties": {
+              "agent_package": {
+                "$ref": "#/$defs/Decision"
+              },
+              "apple_account": {
+                "$ref": "#/$defs/Decision"
+              },
+              "apple_ade": {
+                "$ref": "#/$defs/Decision"
+              },
+              "oidc": {
+                "$ref": "#/$defs/Decision"
+              },
+              "recovery_credentials": {
+                "$ref": "#/$defs/Decision"
+              },
+              "s3": {
+                "$ref": "#/$defs/Decision"
+              },
+              "smtp": {
+                "$ref": "#/$defs/Decision"
+              },
+              "task_signing": {
+                "$ref": "#/$defs/Decision"
+              },
+              "webhook": {
+                "$ref": "#/$defs/Decision"
+              },
+              "windows_push": {
+                "$ref": "#/$defs/Decision"
+              }
+            },
+            "type": "object"
+          },
+          "channels": {
+            "items": {
+              "$ref": "#/$defs/Channel"
+            },
+            "type": "array"
+          },
+          "completionRequested": {
+            "description": "Explicit confirmation of this exact selection. It does not freeze health.",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "channels",
+          "capabilities",
+          "completionRequested"
+        ],
+        "type": "object"
+      },
+      "Lifecycle": {
+        "description": "Applicable lifecycle, not a claim that any external qualification has been observed.",
+        "enum": [
+          "deployment_maintenance",
+          "fixed_installation_identity",
+          "fixed_ledger_key",
+          "account_credential",
+          "protection_key",
+          "signing_trust",
+          "external_certificate",
+          "provider_credential",
+          "business_configuration",
+          "signed_package",
+          "device_generated"
+        ],
+        "type": "string"
+      },
+      "Saved": {
+        "additionalProperties": false,
+        "properties": {
+          "intent": {
+            "$ref": "#/$defs/Intent"
+          },
+          "revision": {
+            "format": "int64",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "revision",
+          "intent"
+        ],
+        "type": "object"
+      },
+      "Scope": {
+        "enum": [
+          "deployment",
+          "platform",
+          "tenant",
+          "device"
+        ],
+        "type": "string"
+      },
+      "Status": {
+        "enum": [
+          "ready",
+          "unconfigured",
+          "pending",
+          "unknown",
+          "unavailable",
+          "forbidden",
+          "skipped"
+        ],
+        "type": "string"
+      },
+      "Status2": {
+        "enum": [
+          "unknown",
+          "unconfigured",
+          "configured",
+          "loaded",
+          "pending",
+          "unavailable"
+        ],
+        "type": "string"
+      },
+      "Step": {
+        "properties": {
+          "evidence": {
+            "description": "Only permission-filtered original owner projections may appear here.",
+            "items": {
+              "$ref": "#/$defs/Entry"
+            },
+            "type": "array"
+          },
+          "id": {
+            "type": "string"
+          },
+          "reason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "status": {
+            "$ref": "#/$defs/Status"
+          }
+        },
+        "required": [
+          "id",
+          "status",
+          "evidence"
+        ],
+        "type": "object"
+      }
+    },
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "properties": {
+      "canComplete": {
+        "type": "boolean"
+      },
+      "complete": {
+        "type": "boolean"
+      },
+      "saved": {
+        "$ref": "#/$defs/Saved"
+      },
+      "steps": {
+        "items": {
+          "$ref": "#/$defs/Step"
+        },
+        "type": "array"
+      },
+      "tenantId": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "tenantId",
+      "saved",
+      "steps",
+      "canComplete",
+      "complete"
+    ],
+    "title": "Progress",
+    "type": "object"
+  },
+  "Receipt": {
+    "$defs": {
+      "Channel": {
+        "enum": [
+          "agent",
+          "windows_mdm",
+          "macos_mdm"
+        ],
+        "type": "string"
+      },
+      "Decision": {
+        "oneOf": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "kind": {
+                "const": "configure",
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "kind": {
+                "const": "skip",
+                "type": "string"
+              },
+              "reason": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind",
+              "reason"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "Intent": {
+        "additionalProperties": false,
+        "properties": {
+          "capabilities": {
+            "additionalProperties": false,
+            "properties": {
+              "agent_package": {
+                "$ref": "#/$defs/Decision"
+              },
+              "apple_account": {
+                "$ref": "#/$defs/Decision"
+              },
+              "apple_ade": {
+                "$ref": "#/$defs/Decision"
+              },
+              "oidc": {
+                "$ref": "#/$defs/Decision"
+              },
+              "recovery_credentials": {
+                "$ref": "#/$defs/Decision"
+              },
+              "s3": {
+                "$ref": "#/$defs/Decision"
+              },
+              "smtp": {
+                "$ref": "#/$defs/Decision"
+              },
+              "task_signing": {
+                "$ref": "#/$defs/Decision"
+              },
+              "webhook": {
+                "$ref": "#/$defs/Decision"
+              },
+              "windows_push": {
+                "$ref": "#/$defs/Decision"
+              }
+            },
+            "type": "object"
+          },
+          "channels": {
+            "items": {
+              "$ref": "#/$defs/Channel"
+            },
+            "type": "array"
+          },
+          "completionRequested": {
+            "description": "Explicit confirmation of this exact selection. It does not freeze health.",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "channels",
+          "capabilities",
+          "completionRequested"
+        ],
+        "type": "object"
+      },
+      "Saved": {
+        "additionalProperties": false,
+        "properties": {
+          "intent": {
+            "$ref": "#/$defs/Intent"
+          },
+          "revision": {
+            "format": "int64",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "revision",
+          "intent"
+        ],
+        "type": "object"
+      }
+    },
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "additionalProperties": false,
+    "properties": {
+      "operationId": {
+        "format": "uuid",
+        "type": "string"
+      },
+      "saved": {
+        "$ref": "#/$defs/Saved"
+      }
+    },
+    "required": [
+      "operationId",
+      "saved"
+    ],
+    "title": "Receipt",
+    "type": "object"
+  },
+  "Update": {
+    "$defs": {
+      "Channel": {
+        "enum": [
+          "agent",
+          "windows_mdm",
+          "macos_mdm"
+        ],
+        "type": "string"
+      },
+      "Decision": {
+        "oneOf": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "kind": {
+                "const": "configure",
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "kind": {
+                "const": "skip",
+                "type": "string"
+              },
+              "reason": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind",
+              "reason"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "Intent": {
+        "additionalProperties": false,
+        "properties": {
+          "capabilities": {
+            "additionalProperties": false,
+            "properties": {
+              "agent_package": {
+                "$ref": "#/$defs/Decision"
+              },
+              "apple_account": {
+                "$ref": "#/$defs/Decision"
+              },
+              "apple_ade": {
+                "$ref": "#/$defs/Decision"
+              },
+              "oidc": {
+                "$ref": "#/$defs/Decision"
+              },
+              "recovery_credentials": {
+                "$ref": "#/$defs/Decision"
+              },
+              "s3": {
+                "$ref": "#/$defs/Decision"
+              },
+              "smtp": {
+                "$ref": "#/$defs/Decision"
+              },
+              "task_signing": {
+                "$ref": "#/$defs/Decision"
+              },
+              "webhook": {
+                "$ref": "#/$defs/Decision"
+              },
+              "windows_push": {
+                "$ref": "#/$defs/Decision"
+              }
+            },
+            "type": "object"
+          },
+          "channels": {
+            "items": {
+              "$ref": "#/$defs/Channel"
+            },
+            "type": "array"
+          },
+          "completionRequested": {
+            "description": "Explicit confirmation of this exact selection. It does not freeze health.",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "channels",
+          "capabilities",
+          "completionRequested"
+        ],
+        "type": "object"
+      }
+    },
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "additionalProperties": false,
+    "properties": {
+      "expectedRevision": {
+        "format": "int64",
+        "type": "integer"
+      },
+      "intent": {
+        "$ref": "#/$defs/Intent"
+      }
+    },
+    "required": [
+      "expectedRevision",
+      "intent"
+    ],
+    "title": "Update",
+    "type": "object"
+  }
+}
