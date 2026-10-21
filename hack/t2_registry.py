@@ -2197,3 +2197,4 @@ consume(('crates/inventory-service/src/groups/criteria.rs',
 
 case_fixtures('planning.group_scope', 'planning::t2::group_scope::nested_checkpoint_supersedes_changed_source_after_restart', None)
 case_fixtures('planning.group_scope', 'planning::t2::group_scope::nested_large_source_evidence_retries_with_smaller_pages', None)
+case_fixtures('planning.scope', 'planning::t2::scope::pending_group_source_keeps_scope_identity_and_recovers_after_restart', None)

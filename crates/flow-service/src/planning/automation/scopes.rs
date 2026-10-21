@@ -196,7 +196,27 @@ impl Planning {
             return Err(Error::Unavailable(Failure::PlanningStorage).into());
         }
         let watermark: i64 = row.try_get("asset_watermark")?;
-        match row.try_get::<&str, _>("phase")? {
+        let phase = row.try_get::<&str, _>("phase")?;
+        if !matches!(phase, "published" | "superseded") {
+            // A definition update must not remain behind an unavailable old source.
+            if self.scope_definition(tx, scope).await?.0 != revision {
+                return Err(Error::Conflict.into());
+            }
+            for source in &frozen.sources {
+                if let Reference::Group(id) = source.reference {
+                    let source = rss_mdm_group_postgres::GroupSource {
+                        group: checked_input(rss_mdm_group_postgres::GroupId::parse(
+                            &id.to_string(),
+                        ))?,
+                        coordinates: source.coordinates.clone(),
+                    };
+                    if !self.source_ready_in(tx, &source).await? {
+                        return Ok(());
+                    }
+                }
+            }
+        }
+        match phase {
             "sources" => {
                 let tenant = self.tenant;
                 let current = tx

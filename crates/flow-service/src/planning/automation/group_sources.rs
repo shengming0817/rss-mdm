@@ -94,6 +94,27 @@ impl Planning {
             })
             .await?)
     }
+    // Waiting is progress on the same durable task. Only a ready replacement
+    // source invalidates the frozen input and requires a new calculation.
+    pub(super) async fn source_ready_in(
+        &self,
+        tx: &mut PgTransaction<'_>,
+        source: &g::GroupSource,
+    ) -> Result<bool> {
+        if self.source_current_in(tx, source).await? {
+            return Ok(true);
+        }
+        let current = self
+            .capture_group_source_in(
+                tx,
+                checked_input(Uuid::parse_str(&source.group.to_string()))?,
+            )
+            .await?;
+        if self.source_current_in(tx, &current).await? {
+            return Err(Error::Conflict.into());
+        }
+        Ok(false)
+    }
     pub(super) async fn fill_group_sources_in(
         &self,
         tx: &mut PgTransaction<'_>,

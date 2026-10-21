@@ -617,16 +617,7 @@ impl Planning {
             return self.propagate_group_in(tx, task, id, cursor).await;
         }
         for source in &build.request.sources {
-            if !self.source_current_in(tx, source).await? {
-                let current = self
-                    .capture_group_source_in(
-                        tx,
-                        checked_input(Uuid::parse_str(&source.group.to_string()))?,
-                    )
-                    .await?;
-                if self.source_current_in(tx, &current).await? {
-                    return Err(Error::Conflict.into());
-                }
+            if !self.source_ready_in(tx, source).await? {
                 return Ok(());
             }
         }
