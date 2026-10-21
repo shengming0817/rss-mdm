@@ -2,6 +2,7 @@ mod binding;
 pub use binding::{admitted_on, binding_on};
 // Borrowed-transaction software lifecycle; external publication is a separate capability.
 mod imports;
+mod installers;
 mod model;
 pub use model::*;
 mod event;
@@ -395,6 +396,18 @@ impl Catalog {
         r::Id::new(revision).map_err(|_| Error::Input)?;
         let key = format!("source/{id}/{revision}");
         self.begin(tx, &key).await?;
+        self.source_prepared_in(tx, audit, id, revision, op).await
+    }
+    /// The composing catalog operation has declared all partitions and acquired catalog locks.
+    async fn source_prepared_in(
+        &self,
+        tx: &mut PgTransaction<'_>,
+        audit: &RequestAudit,
+        id: &str,
+        revision: &str,
+        op: &Operation<SourceChange>,
+    ) -> Result<Value> {
+        let key = format!("source/{id}/{revision}");
         let actor = actor(audit)?;
         let hash = fingerprint(&(self.tenant.to_string(), &actor, id, revision, op))?;
         if let Some(value) = storage::replay(tx, op.operation_id, &hash).await? {
@@ -520,7 +533,7 @@ fn actor(audit: &RequestAudit) -> Result<String> {
     Ok(format!("{instance}:{actor}"))
 }
 
-fn fingerprint(v: &impl serde::Serialize) -> Result<Vec<u8>> {
+pub(crate) fn fingerprint(v: &impl serde::Serialize) -> Result<Vec<u8>> {
     Ok(Sha256::digest(serde_json::to_vec(v).map_err(|_| Error::Input)?).to_vec())
 }
 fn check_operation(id: uuid::Uuid, revision: u64) -> Result<()> {

@@ -105,8 +105,8 @@ async fn management_admission_rejects_schema_and_privilege_drift() {
             "ALTER TABLE mdm_agent_packages.releases ENABLE ROW LEVEL SECURITY",
         ),
         (
-            "ALTER TABLE mdm_agent_packages.releases DROP CONSTRAINT releases_request_digest_check; ALTER TABLE mdm_agent_packages.releases ADD CONSTRAINT releases_request_digest_check CHECK(true)",
-            "ALTER TABLE mdm_agent_packages.releases DROP CONSTRAINT releases_request_digest_check; ALTER TABLE mdm_agent_packages.releases ADD CONSTRAINT releases_request_digest_check CHECK(octet_length(request_digest)=32)",
+            "ALTER TABLE mdm_agent_packages.releases DROP CONSTRAINT releases_binding_check; ALTER TABLE mdm_agent_packages.releases ADD CONSTRAINT releases_binding_check CHECK(true)",
+            "ALTER TABLE mdm_agent_packages.releases DROP CONSTRAINT releases_binding_check; ALTER TABLE mdm_agent_packages.releases ADD CONSTRAINT releases_binding_check CHECK(octet_length(binding::text)<=32768)",
         ),
     ] {
         sql(change);

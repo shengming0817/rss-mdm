@@ -140,7 +140,7 @@ impl Value {
     }
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-/// Closed V1 operator surface. Regex, legacy expressions and group references are absent.
+/// Closed V1 field operators. Group membership is a separate typed rule leaf.
 pub enum Op {
     /// Scalar equality with an operand of the same type.
     Eq,
@@ -249,6 +249,8 @@ pub enum Quantifier {
 pub struct ObjectSnapshot {
     /// Complete tenant/object identity.
     pub key: ObjectKey,
+    /// Authorized decisions from the immutable source groups named by the rule.
+    pub memberships: BTreeMap<String, crate::Outcome>,
     /// Explicit context quantifier.
     pub quantifier: Quantifier,
     /// Whether the selected context universe was fully enumerated.
@@ -261,6 +263,7 @@ impl ObjectSnapshot {
     pub fn single(key: ObjectKey, facts: BTreeMap<String, Fact>) -> Self {
         Self {
             key,
+            memberships: BTreeMap::new(),
             quantifier: Quantifier::One,
             complete: true,
             contexts: [("default".into(), facts)].into(),

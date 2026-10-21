@@ -96,6 +96,14 @@
     {
       "type": "SignedTelemetryConfiguration",
       "file": "signed-telemetry-configuration-v1.schema.json"
+    },
+    {
+      "type": "TelemetryGapReport",
+      "file": "telemetry-gap-report-v1.schema.json"
+    },
+    {
+      "type": "TelemetryGapReceipt",
+      "file": "telemetry-gap-receipt-v1.schema.json"
     }
   ],
   "apiVersion": 1

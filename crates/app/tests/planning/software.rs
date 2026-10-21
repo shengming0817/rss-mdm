@@ -42,6 +42,9 @@ async fn rollout_time_success_gates_and_stage_evidence() -> Result<()> {
     )
     .await?;
     let frozen_version = future_policy["versionId"].clone();
+    let deletion=author.call(&router,Method::POST,&format!("/api/v1/scopes/{first_scope}"),Some(json!({"operationId":Uuid::new_v4(),"expectedRevision":1,"input":{"action":"delete"}}))).await?;
+    ensure!(deletion.0==StatusCode::CONFLICT,"rollout-only Scope reference allowed deletion: {deletion:?}");
+
     let device_page = author
         .call(
             &router,

@@ -114,6 +114,8 @@ rss-reconcile.workspace = true
 rss-reconcile-postgres.workspace = true
 
 [dev-dependencies]
+msi = "=0.10.0"
+flate2.workspace = true
 openssl.workspace = true
 rss-mdm-device-service = { workspace = true, features = ["integration"] }
 rss-mdm-resource-postgres = { workspace = true, features = ["integration"] }

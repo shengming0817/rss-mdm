@@ -105,12 +105,13 @@ async fn associated_context_maps_before_exclusions_and_missing_channels_recover(
                     criteria: Some(assets::InventoryCondition {
                         selector: assets::ScopeSelector::Device,
                         quantifier: assets::ScopeQuantifier::One,
-                        criteria: assets::Criteria::Predicate {
-                            field: rss_mdm_inventory::FieldKey::parse("device.model").unwrap(),
-                            op: assets::Operator::Eq,
-                            value: Some(assets::Scalar::String("model".into())),
-                            values: None,
-                        },
+                        criteria:
+                            rss_mdm_inventory_service::groups::criteria::Criteria::Predicate {
+                                field: rss_mdm_inventory::FieldKey::parse("device.model").unwrap(),
+                                op: assets::Operator::Eq,
+                                value: Some(assets::Scalar::String("model".into())),
+                                values: None,
+                            },
                     }),
                 },
             )),

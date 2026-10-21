@@ -1976,12 +1976,41 @@ for backend in ('postgres','timescale_shared','timescale_dedicated','click_house
     base=MODULES['planning.agent_policy']
     add(name,selectors=(('telemetry::ingress::postgres','telemetry::ingress::postgres_current','telemetry::ingress::postgres_history') if backend=='postgres' else ('telemetry::ingress::'+backend,)),fixtures=tuple(dict.fromkeys((*(f for f in base.fixtures if f!='shared_worker'),'telemetry'))),actors=base.actors,
         sources=('crates/app/src/telemetry.rs','crates/app/src/setup/providers/telemetry.rs','crates/app/src/setup/providers/telemetry/*','crates/app/src/setup/backup.rs','crates/app/src/setup/backup/archive.rs','crates/app/src/setup/backup/telemetry.rs','crates/telemetry-service/src/*','crates/agent-channel/src/telemetry.rs','crates/management-http/src/telemetry.rs','crates/flow-service/src/planning/policies/telemetry.rs','crates/flow-service/src/resource_catalog/telemetry.rs'),
-        tests=('crates/app/tests/telemetry/ingress.rs','crates/app/tests/telemetry/counter.rs','crates/app/tests/telemetry/recovery.rs'),support=(*base.support_inputs,'hack/telemetry_fixtures.py','hack/telemetry_pg_client.py','crates/app/tests/setup/telemetry_backup.rs','crates/app/tests/support/agent_execution.rs','crates/app/tests/support/agent.rs'))
+        tests=('crates/app/tests/telemetry/ingress.rs','crates/app/tests/telemetry/counter.rs','crates/app/tests/telemetry/recovery.rs',*(('crates/app/tests/telemetry/gaps.rs','crates/app/tests/telemetry/performance.rs') if backend=='postgres' else ())),support=(*base.support_inputs,'hack/telemetry_fixtures.py','hack/telemetry_pg_client.py','crates/app/tests/setup/telemetry_backup.rs','crates/app/tests/support/agent_execution.rs','crates/app/tests/support/agent.rs'))
     MODULES[name]=replace(MODULES[name],scope='pair' if backend=='postgres' else 'tenant',db_mode='fresh',materials=base.materials,actors=tuple(dict.fromkeys((*base.actors,*( (('peer','admin'),) if backend=='postgres' else () )))))
 
-consume(('crates/agent-wire/src/telemetry.rs','crates/agent-wire/schema/runtime/telemetry-*.schema.json','crates/agent-wire/schema/runtime/signed-telemetry-configuration-v1.schema.json'),
+consume(('crates/agent-wire/src/telemetry.rs','crates/agent-wire/src/telemetry_gap.rs','crates/agent-wire/schema/runtime/telemetry-*.schema.json','crates/agent-wire/schema/runtime/signed-telemetry-configuration-v1.schema.json'),
         'telemetry.ingress.postgres telemetry.ingress.timescale_shared telemetry.ingress.timescale_dedicated telemetry.ingress.click_house')
 
 # The shared entry point contains declarations only; Rust checks its composition.
 TOOL_INPUTS['crates/app/tests/support/mod.rs'] = ('test_t2_modules',)
 TOOL_INPUTS['crates/app/tests/support/pki.rs'] = ('test_t2_modules',)
+consume(('crates/agent-wire/src/native_collection.rs','crates/agent-wire/src/native_collection/*.rs'),
+        'telemetry.ingress.postgres')
+
+consume(('crates/telemetry-service/src/schema.sql',), 'installation.migration catalog.contract')
+consume(('crates/telemetry-service/src/catalog.json','crates/telemetry-service/src/admission.sql'), 'catalog.contract')
+
+# Nested group inputs and dependency reads reuse the existing product owners.
+consume(('crates/inventory-service/src/groups/criteria.rs',
+         'crates/inventory-service/src/groups/dependencies.rs',
+         'crates/inventory-service/src/groups/references.rs',
+         'crates/flow-service/src/planning/group_references.rs',
+         'crates/flow-service/src/planning/automation/group_sources.rs',
+         'crates/inventory-service/schema/group-selections.sql'),
+        'planning.group_scope planning.http planning.scope compliance.group_input group.generations')
+
+case_fixtures('planning.group_scope', 'planning::t2::group_scope::nested_checkpoint_supersedes_changed_source_after_restart', None)
+case_fixtures('planning.group_scope', 'planning::t2::group_scope::nested_large_source_evidence_retries_with_smaller_pages', None)
+case_fixtures('planning.scope', 'planning::t2::scope::pending_group_source_keeps_scope_identity_and_recovers_after_restart', None)
+
+# Installer preparation consumes the same content journal and catalog transaction.
+consume(('crates/software-service/src/management/installers.rs', 'crates/software-service/src/catalog/installers.rs',
+         'crates/content-service/src/installer.rs','crates/content-service/src/installer/cfb_budget.rs', 'crates/content-service/src/native.rs'), 'agent.configurations')
+for name in ('agent.configurations', 'execution.commands.onboarding', 'apple.onboarding'):
+    module = MODULES[name]
+    MODULES[name] = replace(module, support_inputs=tuple(dict.fromkeys((*module.support_inputs,
+        'crates/content-service/tests/fixtures/installers.rs'))))
+
+consume(('crates/software-service/src/imports.rs',), 'software.catalog software.http')
+T1_INPUTS += ('crates/software-service/tests/export.rs',)

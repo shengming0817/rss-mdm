@@ -46,6 +46,17 @@ impl Compliance {
                     ready &= !dirty;
                 }
             }
+            let source = id;
+            ready &= tx
+                .with_connection(move |c| {
+                    Box::pin(async move {
+                        sqlx::query_scalar::<_, bool>("SELECT mdm_planning.group_current($1)")
+                            .bind(source)
+                            .fetch_one(c)
+                            .await
+                    })
+                })
+                .await?;
             groups.push(GroupInput {
                 id,
                 revision: g.revision.get(),

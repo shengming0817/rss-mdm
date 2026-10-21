@@ -104,3 +104,22 @@ ALTER TABLE mdm_telemetry.storage_binding FORCE ROW LEVEL SECURITY;
 CREATE POLICY tenant ON mdm_telemetry.storage_binding USING(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid) WITH CHECK(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid);
 REVOKE ALL ON mdm_telemetry.storage_binding FROM PUBLIC;
 GRANT SELECT,INSERT ON mdm_telemetry.storage_binding TO mdm_flow_runtime;
+
+-- Device-reported bounded diagnostics, not field coverage or sampled values.
+CREATE TABLE mdm_telemetry.gap_reports (
+ tenant_id uuid NOT NULL,id uuid NOT NULL,device text NOT NULL,
+ registration uuid NOT NULL,generation bigint NOT NULL CHECK(generation>0),
+ input_digest bytea NOT NULL CHECK(octet_length(input_digest)=32),
+ report jsonb NOT NULL CHECK(jsonb_typeof(report)='object'),
+ received_at bigint NOT NULL CHECK(received_at>=0),
+ expires_at bigint NOT NULL CHECK(expires_at>received_at),
+ PRIMARY KEY(tenant_id,id)
+);
+CREATE INDEX gap_expiry ON mdm_telemetry.gap_reports(tenant_id,expires_at,id);
+CREATE INDEX gap_registration ON mdm_telemetry.gap_reports(tenant_id,registration);
+CREATE INDEX gap_device_receipt ON mdm_telemetry.gap_reports(tenant_id,device,received_at,id);
+ALTER TABLE mdm_telemetry.gap_reports ENABLE ROW LEVEL SECURITY;
+ALTER TABLE mdm_telemetry.gap_reports FORCE ROW LEVEL SECURITY;
+CREATE POLICY tenant ON mdm_telemetry.gap_reports USING(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid) WITH CHECK(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid);
+REVOKE ALL ON mdm_telemetry.gap_reports FROM PUBLIC;
+GRANT SELECT,INSERT,DELETE ON mdm_telemetry.gap_reports TO mdm_flow_runtime;

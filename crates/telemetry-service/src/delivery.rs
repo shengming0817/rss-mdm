@@ -309,6 +309,9 @@ impl Service {
                 interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
                 loop {
                     tokio::select! {biased;()=maintenance_cancel.cancelled()=>break, _=interval.tick()=>{}}
+                    if self.prune_gaps().await.is_err() {
+                        eprintln!("telemetry gap maintenance unconfirmed");
+                    }
                     if self.retain().await.is_err() {
                         eprintln!("telemetry retention maintenance unconfirmed");
                     }

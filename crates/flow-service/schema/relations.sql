@@ -570,3 +570,6 @@ GRANT UPDATE(agent_resolution_revision,mdm_resolution_revision) ON mdm_planning.
 -- Native continuation reuses the same live Scope and self-service policy checks.
 GRANT EXECUTE ON FUNCTION mdm_planning.policy_lock(uuid) TO mdm_access;
 GRANT SELECT ON mdm_planning.scopes,mdm_planning.scope_runs,mdm_planning.scope_source_members,mdm_planning.scope_channel_results TO mdm_access;
+
+REVOKE ALL ON FUNCTION mdm_planning.group_current(uuid) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION mdm_planning.group_current(uuid) TO mdm_access,mdm_flow_runtime;

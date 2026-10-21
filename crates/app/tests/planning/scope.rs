@@ -267,3 +267,297 @@ async fn published_scope_job_does_not_swallow_new_definition() {
     worker.stop().await;
     service.runtime.close().await;
 }
+
+#[tokio::test]
+#[ignore = "MODULE=planning.scope: persistent pending sources and restart"]
+async fn pending_group_source_keeps_scope_identity_and_recovers_after_restart() {
+    use rss_reconcile::{DurableStore, Reconciler};
+    let first = Arc::new(planning(tenant()).await);
+    let device = format!("pending-source-{}", Uuid::new_v4());
+    seed_device(&device);
+    execute_asset(
+        &first,
+        &assets::Command::Manual {
+            device: device.clone(),
+            field: rss_mdm_inventory::builtin::IS_LOANER,
+            owner: assets::Owner {
+                instance: Uuid::new_v4().to_string(),
+                principal: Uuid::new_v4().to_string(),
+            },
+            change: inventory_operation(
+                0,
+                assets::ManualChange::Set {
+                    value: assets::Scalar::Boolean(true),
+                },
+            ),
+        },
+    )
+    .await
+    .unwrap();
+    let group = Uuid::new_v4();
+    let source = execute(
+        &first,
+        &GroupCommand::Group {
+            id: group,
+            sensitive: true,
+            change: Box::new(group_operation(
+                0,
+                GroupChange::Create {
+                    asset_context: rss_mdm_group_postgres::AssetContext::Endpoint,
+                    presentation: json!({"name":"pending-source","description":""})
+                        .as_object()
+                        .unwrap()
+                        .clone(),
+                    criteria: Some(assets::InventoryCondition {
+                        selector: assets::ScopeSelector::Device,
+                        quantifier: assets::ScopeQuantifier::One,
+                        criteria:
+                            rss_mdm_inventory_service::groups::criteria::Criteria::Predicate {
+                                field: rss_mdm_inventory::builtin::IS_LOANER,
+                                op: assets::Operator::Eq,
+                                value: Some(assets::Scalar::Boolean(true)),
+                                values: None,
+                            },
+                    }),
+                },
+            )),
+        },
+    )
+    .await
+    .unwrap();
+    let source_task = Uuid::parse_str(source["task"].as_str().unwrap()).unwrap();
+    let scope = Uuid::new_v4();
+    let saved = execute(
+        &first,
+        &Command::Scope {
+            id: scope,
+            change: operation(
+                0,
+                ScopeChange::Put {
+                    definition: ScopeDefinition {
+                        targets: [Reference::Group(group)].into(),
+                        limitations: None,
+                        exclusions: Default::default(),
+                    },
+                },
+            ),
+        },
+    )
+    .await
+    .unwrap();
+    let task = Uuid::parse_str(saved["task"].as_str().unwrap()).unwrap();
+    let worker = crate::automation::Automation::connect(
+        first.clone(),
+        assets(&first).await,
+        compliance(&first).await,
+        options(),
+    )
+    .await
+    .unwrap();
+    crate::automation::jobs::forward_jobs(&first.runtime, first.tenant, &first.audit_store)
+        .await
+        .unwrap();
+    // Hold the upstream computation pending. This exercises the downstream wait
+    // contract independently of the upstream capacity/retry policy.
+    let claim = claim_job(&worker, task, Duration::from_secs(300)).await;
+    let timer = automation::Timer::new();
+    let cancel = tokio_util::sync::CancellationToken::new();
+    let control = rss_reconcile::Control::new(&timer, Duration::from_secs(120), &cancel);
+    let diff = worker.observe(&claim, &control).await.unwrap();
+    worker.apply(&claim, diff, &control).await.unwrap();
+    let state = || {
+        sql(&format!(
+            "SELECT jsonb_build_array(phase,input,source_index,source_cursor,(SELECT count(*) FROM mdm_automation.automation_jobs WHERE tenant_id='{t}' AND target='{scope}'),(SELECT count(*) FROM mdm_planning.scope_runs WHERE tenant_id='{t}' AND scope='{scope}'),(SELECT count(*) FROM rss_audit.records WHERE tenant_id='{t}')) FROM mdm_planning.scope_runs WHERE tenant_id='{t}' AND id='{task}'",
+            t = tenant()
+        ))
+    };
+    let before = state();
+    for _ in 0..16 {
+        let diff = worker.observe(&claim, &control).await.unwrap();
+        assert_ne!(diff.drift(), rss_reconcile::DriftKind::Converged);
+        worker.apply(&claim, diff, &control).await.unwrap();
+    }
+    assert_eq!(
+        state(),
+        before,
+        "pending source created work or audit facts"
+    );
+    worker.release(&claim, &control).await.unwrap();
+    rss_runtime::ManagedResource::shutdown(&crate::automation::Resource(worker))
+        .await
+        .unwrap();
+
+    let second = Arc::new(planning(tenant()).await);
+    let worker = crate::automation::Automation::connect(
+        second.clone(),
+        assets(&second).await,
+        compliance(&second).await,
+        options(),
+    )
+    .await
+    .unwrap();
+    let claim = claim_job(&worker, task, Duration::from_secs(300)).await;
+    for _ in 0..16 {
+        let diff = worker.observe(&claim, &control).await.unwrap();
+        assert_ne!(diff.drift(), rss_reconcile::DriftKind::Converged);
+        worker.apply(&claim, diff, &control).await.unwrap();
+    }
+    assert_eq!(state(), before, "restart expanded the replacement chain");
+
+    // Removing the unavailable reference must also escape the wait. Scope jobs
+    // deduplicate by scope identity, so definition validation precedes waiting.
+    let changed_scope = Uuid::new_v4();
+    let put = |revision, reference| Command::Scope {
+        id: changed_scope,
+        change: operation(
+            revision,
+            ScopeChange::Put {
+                definition: ScopeDefinition {
+                    targets: [reference].into(),
+                    limitations: None,
+                    exclusions: Default::default(),
+                },
+            },
+        ),
+    };
+    let old = execute(&second, &put(0, Reference::Group(group)))
+        .await
+        .unwrap();
+    let old = Uuid::parse_str(old["task"].as_str().unwrap()).unwrap();
+    crate::automation::jobs::forward_jobs(&second.runtime, second.tenant, &second.audit_store)
+        .await
+        .unwrap();
+    let old_claim = claim_job(&worker, old, Duration::from_secs(300)).await;
+    let diff = worker.observe(&old_claim, &control).await.unwrap();
+    worker.apply(&old_claim, diff, &control).await.unwrap();
+    let changed = execute(&second, &put(1, Reference::Device(device.clone())))
+        .await
+        .unwrap();
+    assert_eq!(changed["task"], old.to_string());
+    let diff = worker.observe(&old_claim, &control).await.unwrap();
+    worker.apply(&old_claim, diff, &control).await.unwrap();
+    worker
+        .finish(&old_claim, rss_reconcile::Completion::Converged, &control)
+        .await
+        .unwrap();
+    let replacement = sql(&format!(
+        "SELECT replacement_task FROM mdm_automation.automation_jobs WHERE tenant_id='{}' AND id='{old}' AND failure='superseded'",
+        tenant()
+    ));
+    let replacement = Uuid::parse_str(&replacement).unwrap();
+    crate::automation::jobs::forward_jobs(&second.runtime, second.tenant, &second.audit_store)
+        .await
+        .unwrap();
+    let changed_claim = claim_job(&worker, replacement, Duration::from_secs(300)).await;
+    for _ in 0..20 {
+        let diff = worker.observe(&changed_claim, &control).await.unwrap();
+        if diff.drift() == rss_reconcile::DriftKind::Converged {
+            break;
+        }
+        worker.apply(&changed_claim, diff, &control).await.unwrap();
+    }
+    assert_eq!(
+        worker
+            .observe(&changed_claim, &control)
+            .await
+            .unwrap()
+            .drift(),
+        rss_reconcile::DriftKind::Converged
+    );
+    worker
+        .finish(
+            &changed_claim,
+            rss_reconcile::Completion::Converged,
+            &control,
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        sql(&format!(
+            "SELECT count(*) FROM mdm_planning.scope_results WHERE tenant_id='{}' AND run='{replacement}' AND matched",
+            tenant()
+        )),
+        "1"
+    );
+    assert_eq!(
+        sql(&format!(
+            "SELECT member_set IS NULL FROM mdm_group.groups WHERE tenant_id='{}' AND id='{group}'",
+            tenant()
+        )),
+        "t"
+    );
+
+    let source_claim = claim_job(&worker, source_task, Duration::from_secs(300)).await;
+    for _ in 0..20 {
+        let diff = worker.observe(&source_claim, &control).await.unwrap();
+        if diff.drift() == rss_reconcile::DriftKind::Converged {
+            break;
+        }
+        worker.apply(&source_claim, diff, &control).await.unwrap();
+    }
+    assert_eq!(
+        worker
+            .observe(&source_claim, &control)
+            .await
+            .unwrap()
+            .drift(),
+        rss_reconcile::DriftKind::Converged
+    );
+    worker
+        .finish(
+            &source_claim,
+            rss_reconcile::Completion::Converged,
+            &control,
+        )
+        .await
+        .unwrap();
+    let diff = worker.observe(&claim, &control).await.unwrap();
+    worker.apply(&claim, diff, &control).await.unwrap();
+    worker
+        .finish(&claim, rss_reconcile::Completion::Converged, &control)
+        .await
+        .unwrap();
+    let replacement = sql(&format!(
+        "SELECT replacement_task FROM mdm_automation.automation_jobs WHERE tenant_id='{}' AND id='{task}' AND failure='superseded'",
+        tenant()
+    ));
+    let replacement = Uuid::parse_str(&replacement).unwrap();
+    crate::automation::jobs::forward_jobs(&second.runtime, second.tenant, &second.audit_store)
+        .await
+        .unwrap();
+    let ready = claim_job(&worker, replacement, Duration::from_secs(300)).await;
+    for _ in 0..20 {
+        let diff = worker.observe(&ready, &control).await.unwrap();
+        if diff.drift() == rss_reconcile::DriftKind::Converged {
+            break;
+        }
+        worker.apply(&ready, diff, &control).await.unwrap();
+    }
+    assert_eq!(
+        worker.observe(&ready, &control).await.unwrap().drift(),
+        rss_reconcile::DriftKind::Converged
+    );
+    worker
+        .finish(&ready, rss_reconcile::Completion::Converged, &control)
+        .await
+        .unwrap();
+    assert_eq!(
+        sql(&format!(
+            "SELECT count(*)=2 AND count(*) FILTER(WHERE replacement_task IS NOT NULL)=1 FROM mdm_automation.automation_jobs WHERE tenant_id='{}' AND target='{scope}'",
+            tenant()
+        )),
+        "t"
+    );
+    assert_eq!(
+        sql(&format!(
+            "SELECT s.resolution='{replacement}'::uuid AND r.phase='published' AND r.member_count=1 FROM mdm_planning.scopes s JOIN mdm_planning.scope_runs r ON(r.tenant_id,r.id)=(s.tenant_id,s.resolution) WHERE s.tenant_id='{}' AND s.id='{scope}'",
+            tenant()
+        )),
+        "t"
+    );
+    rss_runtime::ManagedResource::shutdown(&crate::automation::Resource(worker))
+        .await
+        .unwrap();
+    first.runtime.close().await;
+    second.runtime.close().await;
+}

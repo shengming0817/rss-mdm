@@ -13,8 +13,33 @@ use sqlx::Row;
 
 /// Product capacity, independent of per-page evaluator budgets.
 pub const MAX_MEMBERS: usize = 1_000_000;
+/// Frozen group input, shared by Group and its product consumers.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct GroupSource {
+    /// Source identity in this transaction's tenant.
+    pub group: GroupId,
+    /// Shared source coordinates, also consumed by Scope.
+    pub coordinates: SourceCoordinates,
+}
+/// Semantic and immutable coordinates of one product group source.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SourceCoordinates {
+    /// Immutable result used for every page.
+    pub member_set: Option<OperationId>,
+    /// Definition coordinate, independent of calculation progress.
+    pub definition_version: u64,
+    /// Three-valued membership coordinate, including Unknown transitions.
+    pub member_version: u64,
+    /// Source authorization coordinate.
+    pub authority_version: u64,
+    /// Object universe; cross-context conversion is not implicit.
+    pub asset_context: AssetContext,
+}
 /// Immutable identity of a caller-frozen input. Contains no full asset collection.
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct BuildRequest {
     /// Idempotency and result identity.
     pub id: OperationId,
@@ -32,6 +57,8 @@ pub struct BuildRequest {
     pub patch: Option<MemberPatch>,
     /// Frozen host input identity, unchanged across all pages and retries.
     pub input_version: String,
+    /// Frozen source groups, in unique identity order; never filled from latest during recovery.
+    pub sources: Vec<GroupSource>,
     /// Explicit evaluation time, not a validity deadline.
     #[serde(with = "time")]
     pub as_of: Timepoint,
@@ -57,6 +84,60 @@ fn check_build(group: &Group, request: &BuildRequest) -> CommandOutcome<()> {
     }
     Ok(())
 }
+fn check_sources(
+    group: &Group,
+    request: &BuildRequest,
+    rule: &rss_mdm_group::Rule,
+) -> CommandOutcome<()> {
+    if request.sources.len() > rss_mdm_group::limits::NODES
+        || request.sources.windows(2).any(|s| s[0].group >= s[1].group)
+        || request
+            .sources
+            .iter()
+            .any(|s| s.group == group.id || s.coordinates.asset_context != group.asset_context)
+        || rule.groups()
+            != request
+                .sources
+                .iter()
+                .map(|s| s.group.to_string())
+                .collect()
+    {
+        return Err(Rejection::InvalidInput);
+    }
+    Ok(())
+}
+
+fn check_page_selection(
+    tenant: rss_request_context::TenantId,
+    request: &BuildRequest,
+) -> CommandOutcome<()> {
+    if let Some(patch) = &request.patch {
+        if patch.add.len() + patch.remove.len() > 1000
+            || patch.add.iter().any(|id| patch.remove.contains(id))
+        {
+            return Err(Rejection::InvalidInput);
+        }
+        for id in patch.add.iter().chain(&patch.remove) {
+            if id.len() > 256 {
+                return Err(Rejection::InvalidInput);
+            }
+            rss_mdm_group::ObjectKey::new(tenant, id).map_err(crate::store::core_rejection)?;
+        }
+    }
+    if let Some(devices) = &request.changed_devices {
+        if request.patch.is_some()
+            || devices.len() > 1000
+            || devices.windows(2).any(|v| v[0] >= v[1])
+        {
+            return Err(Rejection::InvalidInput);
+        }
+        for device in devices {
+            rss_mdm_group::ObjectKey::new(tenant, device).map_err(crate::store::core_rejection)?;
+        }
+    }
+    Ok(())
+}
+
 mod time {
     use super::*;
     pub fn serialize<S: serde::Serializer>(value: &Timepoint, s: S) -> Result<S::Ok, S::Error> {
@@ -220,36 +301,14 @@ impl GroupStore {
             return Ok(Err(Rejection::VersionConflict));
         }
         input!(check_build(&group, request));
-        if let Some(patch) = &request.patch {
-            if patch.add.len() + patch.remove.len() > 1000
-                || patch.add.iter().any(|id| patch.remove.contains(id))
-            {
-                return Ok(Err(Rejection::InvalidInput));
-            }
-            for id in patch.add.iter().chain(&patch.remove) {
-                if id.len() > 256 {
-                    return Ok(Err(Rejection::InvalidInput));
-                }
-                input!(
-                    rss_mdm_group::ObjectKey::new(self.tenant, id)
-                        .map_err(crate::store::core_rejection)
-                );
-            }
+        if let Some(version) = &request.rule_version {
+            let rule = db::rule(tx, group.id, version.clone()).await?;
+            input!(check_sources(&group, request, &rule));
+        } else if !request.sources.is_empty() {
+            return Ok(Err(Rejection::InvalidInput));
         }
-        if let Some(devices) = &request.changed_devices {
-            if request.patch.is_some()
-                || devices.len() > 1000
-                || devices.windows(2).any(|v| v[0] >= v[1])
-            {
-                return Ok(Err(Rejection::InvalidInput));
-            }
-            for device in devices {
-                input!(
-                    rss_mdm_group::ObjectKey::new(self.tenant, device)
-                        .map_err(crate::store::core_rejection)
-                );
-            }
-        }
+
+        input!(check_page_selection(self.tenant, request));
         let tenant = self.tenant.to_string();
         let r = request.clone();
         let base_members = if request.changed_devices.is_some() {

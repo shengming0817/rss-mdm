@@ -5,6 +5,7 @@ fn failure(error: rss_mdm_telemetry_service::Error) -> AgentError {
     use rss_mdm_telemetry_service::Error as T;
     match error {
         T::Unsupported => Error::Unsupported,
+        T::NotFound => Error::NotFound,
         T::Invalid => Error::Malformed,
         T::Conflict => Error::Conflict,
         T::Denied => Error::Forbidden,
@@ -33,6 +34,8 @@ pub(super) fn routes() -> Router<Arc<HttpState>> {
             "/telemetry/configurations/{policy}/{version}",
             get(configuration),
         )
+        .route("/telemetry/gaps", post(gap_upload))
+        .route("/telemetry/gaps/{id}", get(gap_receipt))
         .route("/telemetry/batches", post(upload))
         .route("/telemetry/batches/{id}", get(receipt))
 }
@@ -63,6 +66,59 @@ async fn upload(
     .await?;
     Ok((StatusCode::ACCEPTED, Json(result)))
 }
+async fn gap_upload(
+    State(app): State<Arc<HttpState>>,
+    Extension(audit): Extension<RequestAudit>,
+    peer: Option<Extension<rss_mdm_certificate::HandshakePeer>>,
+    headers: HeaderMap,
+    body: Result<Bytes, BytesRejection>,
+) -> Result<(StatusCode, Json<wire::TelemetryGapReceipt>), AgentError> {
+    json_content_type(&headers)?;
+    let service = service(&app)?;
+    let principal = authenticate(&app.enrollment, &headers, peer.as_ref().map(|p| &p.0)).await?;
+    audit.set_action("agent_telemetry_gap_upload");
+    audit.identify_device(principal.registration());
+    audit.registration(principal.registration());
+    audit.target_device(principal.device());
+    let bytes = body.map_err(|_| AgentError::Wire(wire::ErrorCode::MalformedRequest))?;
+    let decoded = decode(
+        &headers,
+        &bytes,
+        service.request_bytes().min(wire::TELEMETRY_GAP_MAX_BYTES),
+    )?;
+    let input: wire::TelemetryGapReport =
+        serde_json::from_slice(&decoded).map_err(|_| Error::Malformed)?;
+    let result = bounded(async {
+        service
+            .receive_gap(&principal, &input, bytes.len().max(decoded.len()))
+            .await
+            .map_err(failure)
+    })
+    .await?;
+    Ok((StatusCode::ACCEPTED, Json(result)))
+}
+async fn gap_receipt(
+    State(app): State<Arc<HttpState>>,
+    Extension(audit): Extension<RequestAudit>,
+    peer: Option<Extension<rss_mdm_certificate::HandshakePeer>>,
+    headers: HeaderMap,
+    Path(id): Path<Uuid>,
+) -> Result<Json<wire::TelemetryGapReceipt>, AgentError> {
+    let principal = authenticate(&app.enrollment, &headers, peer.as_ref().map(|p| &p.0)).await?;
+    audit.set_action("agent_telemetry_gap_status");
+    audit.identify_device(principal.registration());
+    audit.registration(principal.registration());
+    audit.target_device(principal.device());
+    bounded(async {
+        service(&app)?
+            .gap_status(&principal, id)
+            .await
+            .map(Json)
+            .map_err(failure)
+    })
+    .await
+}
+
 async fn receipt(
     State(app): State<Arc<HttpState>>,
     Extension(audit): Extension<RequestAudit>,

@@ -78,10 +78,15 @@ impl ContentPort for Store {
                         }
                     }
                 }
-                if definition.spec().behavior.bundle().is_some()
+                if definition
+                    .spec()
+                    .behavior
+                    .as_ref()
+                    .and_then(rss_mdm_resource::SoftwareBehavior::bundle)
+                    .is_some()
                     || matches!(
                         definition.spec().behavior,
-                        rss_mdm_resource::SoftwareBehavior::Msix(_)
+                        Some(rss_mdm_resource::SoftwareBehavior::Msix(_))
                     )
                 {
                     let file = files
@@ -89,14 +94,16 @@ impl ContentPort for Store {
                         .find(|v| v.artifact() == definition.primary())
                         .ok_or(catalog::Error::Content)?;
                     let extra = match &definition.spec().behavior {
-                        rss_mdm_resource::SoftwareBehavior::Msix(msix) => match &msix.container {
-                            rss_mdm_resource::MsixContainer::Bundle { members, .. } => members
-                                .iter()
-                                .map(|m| m.length)
-                                .max()
-                                .ok_or(catalog::Error::Content)?,
-                            _ => 0,
-                        },
+                        Some(rss_mdm_resource::SoftwareBehavior::Msix(msix)) => {
+                            match &msix.container {
+                                rss_mdm_resource::MsixContainer::Bundle { members, .. } => members
+                                    .iter()
+                                    .map(|m| m.length)
+                                    .max()
+                                    .ok_or(catalog::Error::Content)?,
+                                _ => 0,
+                            }
+                        }
                         _ => 0,
                     };
                     let mut tmp = file
@@ -108,7 +115,13 @@ impl ContentPort for Store {
                     let timer = self.timer.clone();
                     let deadline = file.deadline;
                     tokio::task::spawn_blocking(move || {
-                        if definition.spec().behavior.bundle().is_some() {
+                        if definition
+                            .spec()
+                            .behavior
+                            .as_ref()
+                            .and_then(rss_mdm_resource::SoftwareBehavior::bundle)
+                            .is_some()
+                        {
                             validate(
                                 tmp.file.as_file_mut(),
                                 &definition,
@@ -117,7 +130,7 @@ impl ContentPort for Store {
                                 deadline,
                             )?;
                         }
-                        if let rss_mdm_resource::SoftwareBehavior::Msix(msix) =
+                        if let Some(rss_mdm_resource::SoftwareBehavior::Msix(msix)) =
                             &definition.spec().behavior
                         {
                             super::native::msix(
@@ -253,7 +266,12 @@ pub(super) fn validate(
     timer: &dyn Clock,
     deadline: Deadline,
 ) -> Result<(), Error> {
-    let expected = definition.spec().behavior.bundle().ok_or_else(invalid)?;
+    let expected = definition
+        .spec()
+        .behavior
+        .as_ref()
+        .and_then(rss_mdm_resource::SoftwareBehavior::bundle)
+        .ok_or_else(invalid)?;
     let (count, central) = directory(file, config)?;
     let mut local = file.try_clone().map_err(|_| invalid())?;
     let mut archive = zip::ZipArchive::with_config(

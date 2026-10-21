@@ -232,3 +232,31 @@ impl FixturePage {
         }
     }
 }
+
+#[test]
+fn membership_codec_preserves_polarity_and_freezes_page_decisions() {
+    let (base, mut page, at) = inputs();
+    let rule = Rule::new(
+        base.view().tenant,
+        "nested",
+        "d1",
+        vec![],
+        Criteria::membership("source", true).unwrap(),
+    )
+    .unwrap();
+    page.coverage.clear();
+    page.objects[0].contexts.get_mut("default").unwrap().clear();
+    page.objects[0]
+        .memberships
+        .insert("source".into(), Outcome::Unknown(UnknownReason::Conflict));
+    let restored = codec::decode_rule(&codec::encode_rule(&rule).unwrap()).unwrap();
+    assert_eq!(
+        restored.evaluate_page(&page.input(), at),
+        rule.evaluate_page(&page.input(), at)
+    );
+    let first = codec::encode_page(&page.input()).unwrap();
+    page.objects[0]
+        .memberships
+        .insert("source".into(), Outcome::NoMatch);
+    assert_ne!(first, codec::encode_page(&page.input()).unwrap());
+}

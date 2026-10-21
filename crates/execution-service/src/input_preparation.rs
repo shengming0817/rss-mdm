@@ -297,6 +297,15 @@ fn agent_collection<'a>(
     if !verified.is_some_and(|v| v.matches(artifact)) {
         return Err(Error::Conflict.into());
     }
+    if definition
+        .spec()
+        .mappings
+        .values()
+        .any(|m| m.counter_normalization.is_some())
+    {
+        // Durable counter baselines are owned only by the periodic telemetry runtime.
+        return Err(Error::Unsupported.into());
+    }
     Ok(definition)
 }
 
@@ -323,13 +332,7 @@ impl Inputs {
                         })
                     })
                     .await??;
-                bindings.push((
-                    *target,
-                    id,
-                    package.metadata.candidate_sha256,
-                    package.digest,
-                    package.lifecycle,
-                ));
+                bindings.push((*target, id, package.digest, package.lifecycle));
             }
             return Ok(Some(
                 crate::transaction::fingerprint(&bindings)?

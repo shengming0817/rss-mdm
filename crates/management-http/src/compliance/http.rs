@@ -20,6 +20,11 @@ fn authorize(
         _ => (Permission::ComplianceRuleRead, None),
     };
     auth.proof.require(permission, device)?;
+    if let Command::Put { request, .. } = c
+        && !request.input.groups().is_empty()
+    {
+        auth.proof.manage(Permission::GroupRead)?;
+    }
     if matches!(c, Command::Task { .. }) {
         auth.proof.require_all_devices(Permission::ComplianceRead)?;
     }

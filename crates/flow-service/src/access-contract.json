@@ -12,6 +12,10 @@
     {
       "name": "mdm_planning.policy_lock",
       "search_path": "search_path=pg_catalog"
+    },
+    {
+      "name": "mdm_planning.group_current",
+      "search_path": "search_path=pg_catalog"
     }
   ],
   "external_relations": [

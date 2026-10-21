@@ -24,6 +24,9 @@ pub use recovery_credentials::*;
 #[path = "telemetry.rs"]
 mod telemetry;
 pub use telemetry::*;
+#[path = "telemetry_gap.rs"]
+mod telemetry_gap;
+pub use telemetry_gap::*;
 
 use base64::Engine;
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de::Error as _};
@@ -40,7 +43,7 @@ pub const MAX_REQUEST_BYTES: usize = 1024 * 1024;
 pub const SCHEMA_MANIFEST: &str = include_str!("../schema/runtime/agent-v1.schema-manifest.json");
 /// SHA-256 of the ordered schema payloads named by [`SCHEMA_MANIFEST`].
 pub const SCHEMA_FINGERPRINT: &str =
-    "cd72cf4e9eb837db3232f57dcfee5d71dee5e510195909427008a5ba3730f70a";
+    "86e537fe984321d15df068b86364d97c311a09fcf32a04969abe6b2b5e5dbf8f";
 
 /// Closed validation failure without retaining input values.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -193,6 +196,9 @@ pub enum Capability {
     /// Periodic typed observations using published telemetry profiles.
     #[serde(rename = "telemetry.collect.v1")]
     TelemetryCollectV1,
+    /// Durable local baselines for explicitly signed native cumulative counters.
+    #[serde(rename = "telemetry.counter.local.v1")]
+    TelemetryCounterLocalV1,
 }
 impl Capability {
     /// Software support always refers to one concrete native/script scope profile.
@@ -206,6 +212,7 @@ impl Capability {
                 | Self::InventoryNativeV1
                 | Self::CredentialsWindowsV1
                 | Self::TelemetryCollectV1
+                | Self::TelemetryCounterLocalV1
         )
     }
     /// Canonical persisted and queryable capability identity.
@@ -235,13 +242,14 @@ impl Capability {
             Self::InventoryNativeV1 => "inventory.native.v1",
             Self::CredentialsWindowsV1 => "credentials.windows.v1",
             Self::TelemetryCollectV1 => "telemetry.collect.v1",
+            Self::TelemetryCounterLocalV1 => "telemetry.counter.local.v1",
         }
     }
 }
 /// The only supported ordered capability sets for Agent V1.
 pub fn supported_capabilities(value: &[Capability]) -> bool {
     value.first() == Some(&Capability::InventoryCollectionV1)
-        && value.len() <= 24
+        && value.len() <= 25
         && value.windows(2).all(|pair| pair[0] < pair[1])
 }
 

@@ -1659,7 +1659,7 @@ async fn software_unknown_survives_same_account_relogin_and_keeps_other_accounts
     let bytes = b"controlled user MSI";
     let digest = rss_mdm_resource::Digest::of(bytes).bytes();
     let invocation = json!({"runAs":"logged_in_user","arguments":[],"environment":{},"timeoutSeconds":60,"outputBytes":4096,"exitCodes":{"success":[0],"reboot":[]}});
-    let definition = json!({"source":f.source_snapshot,"package":"Private.UserInstall","version":"1","artifacts":{"package":{"reference":"user-msi","length":bytes.len(),"sha256":digest}},"reboot":"report","downgrade":"deny","dependencies":[],"behavior":{"kind":"msi","installer":"package","scope":"user","install":invocation,"upgrade":"in_place","uninstall":null,"detect":{"kind":"msi_product","productCode":"{CCCCCCCC-DDDD-EEEE-FFFF-AAAAAAAAAAAA}","version":"1"},"upgradeInvocation":invocation},"signatures":[],"provenance":{"kind":"private"},"export":{"kind":"disabled"}});
+    let definition = json!({"material":{"format":"msi","installer":"package"},"source":f.source_snapshot,"package":"Private.UserInstall","version":"1","artifacts":{"package":{"reference":"user-msi","length":bytes.len(),"sha256":digest}},"reboot":"report","downgrade":"deny","dependencies":[],"behavior":{"kind":"msi","installer":"package","scope":"user","install":invocation,"upgrade":"in_place","uninstall":null,"detect":{"kind":"msi_product","productCode":"{CCCCCCCC-DDDD-EEEE-FFFF-AAAAAAAAAAAA}","version":"1"},"upgradeInvocation":invocation},"signatures":[],"provenance":{"kind":"private"},"export":{"kind":"disabled"}});
     let path = format!("/api/v1/resources/{resource_id}");
     crate::test_support::software::write(
         &mut f.author,

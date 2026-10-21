@@ -421,10 +421,101 @@ pub enum TelemetryCollector {
 #[derive(Clone, Debug, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct TelemetryNativeMapping {
+    /// Explicit durable per-instance normalization, absent for raw native values.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub counter_normalization: Option<NativeCounterNormalization>,
     /// Stable query identifier from the supplied plan.
     pub query: String,
     /// Explicit projection of that query's result.
     pub mapping: TelemetryValueMapping,
+}
+/// Closed Agent-owned normalization of native cumulative observations.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum NativeCounterNormalization {
+    /// Persist an exact baseline and UTC start for each signed field and native instance.
+    LocalCumulativeV1,
+}
+impl TelemetryNativeMapping {
+    /// Validate the signed source and destination of generated per-instance counter starts.
+    pub fn validate_counter_normalization(
+        &self,
+        query: &super::NativeQueryDefinition,
+        field: &super::FieldDefinition,
+    ) -> Result<(), WireError> {
+        use super::{NativeQueryDefinition as Q, PerformanceSection as S, ValueType as T};
+        let fail = || WireError::InvalidValue;
+        let network = matches!(
+            query,
+            Q::WindowsPerformance {
+                section: S::Network
+            } | Q::MacosPerformance {
+                section: S::Network
+            }
+        );
+        if self.counter_normalization.is_none() {
+            if network
+                && field
+                    .time_series
+                    .as_ref()
+                    .is_some_and(|b| b.kind == TelemetryKind::CumulativeCounter)
+            {
+                return Err(fail());
+            }
+            return Ok(());
+        }
+        if !network {
+            return Err(fail());
+        }
+        let binding = field.time_series.as_ref().ok_or_else(fail)?;
+        let start = binding.interval_start_path.as_ref().ok_or_else(fail)?;
+        let key = field.item_key.as_ref().ok_or_else(fail)?;
+        if binding.kind != TelemetryKind::CumulativeCounter
+            || binding.value_path.len() != 1
+            || start.len() != 1
+            || start == &binding.value_path
+            || &start[0] == key
+        {
+            return Err(fail());
+        }
+        let T::Array { items, .. } = &field.value_type else {
+            return Err(fail());
+        };
+        let T::Object { properties } = items.as_ref() else {
+            return Err(fail());
+        };
+        if !matches!(properties.get(&start[0]), Some(T::Integer))
+            || !matches!(properties.get(&binding.value_path[0]), Some(T::Integer))
+        {
+            return Err(fail());
+        }
+        let m = &self.mapping;
+        if !m.pointer.is_empty()
+            || m.conversion != TelemetryConversion::Identity
+            || m.columns.contains_key(&start[0])
+            || m.columns.len() + 1 != properties.len()
+            || !m.columns.keys().all(|k| properties.contains_key(k))
+        {
+            return Err(fail());
+        }
+        let identity = |name: &str, pointers: &[&str]| {
+            m.columns.get(name).is_some_and(|c| {
+                c.columns.is_empty()
+                    && c.conversion == TelemetryConversion::Identity
+                    && pointers.contains(&c.pointer.as_str())
+            })
+        };
+        if !identity(key, &["/id"])
+            || !m.columns.get(&binding.value_path[0]).is_some_and(|c| {
+                c.columns.is_empty()
+                    && c.conversion == TelemetryConversion::Integer
+                    && ["/received_bytes", "/sent_bytes"].contains(&c.pointer.as_str())
+            })
+        {
+            return Err(fail());
+        }
+        Ok(())
+    }
 }
 /// Closed conversions; unknown native codes never become a successful default value.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
@@ -575,6 +666,21 @@ impl TelemetryConfiguration {
             field.validate()?;
             if !keys.insert(field.key) || !field.sources.contains_key(&self.source) {
                 return Err(WireError::InvalidValue);
+            }
+        }
+        if let TelemetryCollector::Native { plan, mappings } = &self.collector {
+            for (key, mapping) in mappings {
+                let field = self
+                    .fields
+                    .iter()
+                    .find(|f| f.key.as_str() == key)
+                    .ok_or(WireError::InvalidValue)?;
+                let query = plan
+                    .spec()
+                    .queries
+                    .get(&mapping.query)
+                    .ok_or(WireError::InvalidValue)?;
+                mapping.validate_counter_normalization(&query.definition, field)?;
             }
         }
         let mut bytes = b"rss-mdm-agent-telemetry-configuration-v1-ed25519\0".to_vec();

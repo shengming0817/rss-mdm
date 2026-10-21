@@ -1,5 +1,6 @@
 WITH tables AS (SELECT c.oid,c.relname FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='mdm_planning' AND c.relkind='r')
 SELECT jsonb_build_object(
+ 'groupCurrent',(SELECT pg_get_functiondef('mdm_planning.group_current(uuid)'::regprocedure)),
  'policyLock',(SELECT pg_get_functiondef('mdm_planning.policy_lock(uuid)'::regprocedure)),
  'scopeAdmission',(SELECT pg_get_functiondef('mdm_planning.scope_admission(uuid,text)'::regprocedure)),
  'channelGuard',(SELECT pg_get_functiondef('mdm_planning.guard_scope_channel_result()'::regprocedure)),
