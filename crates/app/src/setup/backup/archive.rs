@@ -16,7 +16,7 @@ fn database_digest(path: &Path) -> Result<DatabaseBackup> {
     Ok(value)
 }
 
-/// The archive and restore client major must match the server, including PG16 telemetry.
+/// The archive and restore client major must match the server, including telemetry (all use PostgreSQL 17).
 async fn client(database: &crate::config::Database, restore: bool) -> Result<&'static str> {
     use sqlx::Connection;
     let mut connection =
@@ -30,8 +30,6 @@ async fn client(database: &crate::config::Database, restore: bool) -> Result<&'s
             .map_err(|_| Error::Storage)?;
     connection.close().await.map_err(|_| Error::Storage)?;
     let tool = match (major, restore) {
-        (16, false) => "pg_dump16",
-        (16, true) => "pg_restore16",
         (17, false) => "pg_dump",
         (17, true) => "pg_restore",
         _ => return Err(Error::Input),

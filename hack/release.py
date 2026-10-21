@@ -164,7 +164,6 @@ def build_staged(out, header, web_image=None, target_platform=None):
                         "--build-arg", "RUST_IMAGE=" + providers["rust"],
                         "--build-arg", "RUNTIME_IMAGE=" + providers["runtime"],
                         "--build-arg", "POSTGRES_IMAGE=" + providers["postgres"],
-                        "--build-arg", "TELEMETRY_POSTGRES_IMAGE=" + providers["telemetry-postgres"],
                         "--target", "server", "--tag", image, "--output",
                         "type=oci,dest=" + str(output), str(context)], check=True)
         digest, config = oci_identity(output)
@@ -181,7 +180,6 @@ def build_staged(out, header, web_image=None, target_platform=None):
                         "--build-arg","RUST_IMAGE="+providers["rust"],
                         "--build-arg","RUNTIME_IMAGE="+providers["runtime"],
                         "--build-arg","POSTGRES_IMAGE="+providers["postgres"],
-                        "--build-arg","TELEMETRY_POSTGRES_IMAGE="+providers["telemetry-postgres"],
                         "--target","installer","--tag",operator_image,"--output","type=oci,dest="+str(operator_archive),str(context)],check=True)
         operator_digest,operator_config=oci_identity(operator_archive, expected_user="10001:10001")
         if platform(operator_config)!=platform(config):raise ValueError("installer platform mismatch")

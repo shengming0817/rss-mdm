@@ -4,7 +4,7 @@ use anyhow::{Result, ensure};
 use sqlx::Connection;
 
 #[tokio::test]
-#[ignore = "MODULE=telemetry.storage: empty PG16 and Timescale databases, real roles and restart admission"]
+#[ignore = "MODULE=telemetry.storage: empty PG17 and Timescale databases, real roles and restart admission"]
 async fn explicit_installations_replay_and_reopen_without_runtime_ddl() -> Result<()> {
     let requests: Vec<crate::setup::providers::telemetry::Request> =
         serde_json::from_slice(&std::fs::read(std::env::var("MDM_TELEMETRY_PROVIDERS")?)?)?;

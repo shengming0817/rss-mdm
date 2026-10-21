@@ -1,5 +1,5 @@
 //! Explicit current-format storage installation; runtime never performs DDL or repairs.
-//! ref: RSS c0de5fc crates/timeseries-postgres/src/profile.rs; PostgreSQL 16 CREATE ROLE.
+//! ref: RSS c0de5fc crates/timeseries-postgres/src/profile.rs; PostgreSQL 17 CREATE ROLE.
 use crate::setup::{Error, Result, local::Journal};
 use crate::{
     config::Database,
@@ -309,11 +309,7 @@ async fn admit_postgres_server(c: &mut PgConnection, input: &Request) -> Result<
             .fetch_one(&mut *c)
             .await
             .map_err(|_| Error::Storage)?;
-    let supported = match input.configuration.backend {
-        Storage::Postgres { .. } => matches!(version, 16 | 17),
-        _ => version == 16,
-    };
-    if !supported || !admin {
+    if version != 17 || !admin {
         return Err(Error::Input);
     }
     if matches!(
