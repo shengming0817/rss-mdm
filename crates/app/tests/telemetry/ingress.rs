@@ -56,7 +56,7 @@ async fn run(expected: &str, projection: r::TelemetryProjection) -> Result<()> {
         let scope=Uuid::new_v4();
         let secondary=if expected=="postgres" && projection==r::TelemetryProjection::Both {Some(secondary_peer(&f.base).await?)} else {None};
         let mut targets=vec![json!({"kind":"device","id":case_device_id()})];
-        if let Some((_,device))=&secondary {targets.push(json!({"kind":"device","id":device}));}
+        if let Some((_,device,_))=&secondary {targets.push(json!({"kind":"device","id":device}));}
         f.scope(scope,json!(targets)).await?;
         if secondary.is_some() {f.scope(Uuid::from_u128(case::id("telemetry-counter-scope")),json!([{"kind":"device","id":case_device_id()}])).await?;}
 
@@ -74,7 +74,7 @@ async fn run(expected: &str, projection: r::TelemetryProjection) -> Result<()> {
         ring::signature::UnparsedPublicKey::new(&ring::signature::ED25519,f.key.public_key().as_ref()).verify(&signed.configuration.signing_bytes(&signed.key_id)?,&base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(&signed.signature)?).map_err(|_|anyhow::anyhow!("configuration signature"))?;
         let configuration=signed.configuration;
         if expected=="postgres" && projection==r::TelemetryProjection::Both {performance::published_cpu(&mut f).await?;}
-        let gap_evidence=if expected=="postgres" && projection==r::TelemetryProjection::Both {Some(gaps::receive(&mut f,&configuration,&secondary.as_ref().unwrap().0).await?)} else {None};
+        let gap_evidence=if expected=="postgres" && projection==r::TelemetryProjection::Both {Some(gaps::receive(&mut f,&configuration,secondary.as_ref().unwrap()).await?)} else {None};
         if expected=="postgres" && projection==r::TelemetryProjection::Both {
             let resource_path=format!("/api/v1/resources/{profile_id}");
             let (status,before)=f.author.call(&f.router,Method::GET,&resource_path,None).await?;
@@ -504,7 +504,7 @@ async fn signing_gate(
     f: &mut Fixture,
     configuration: &str,
     original: &Value,
-    secondary: &(String, String),
+    secondary: &(String, String, wire::BindingProfile),
 ) -> Result<String> {
     let mut authority = authority::Authority::from_config(f.base.clone()).await?;
     let resources = std::mem::take(&mut authority.resources);
@@ -582,14 +582,15 @@ mod counter;
 #[path = "recovery.rs"]
 mod recovery;
 
-async fn secondary_peer(base: &Value) -> Result<(String, String)> {
+async fn secondary_peer(base: &Value) -> Result<(String, String, wire::BindingProfile)> {
     let mut authority = authority::Authority::from_config(base.clone()).await?;
     let resources = std::mem::take(&mut authority.resources);
     resources.finish(async {
         let service=agent::service(&authority).await?;
         let label=case::name("telemetry-unacknowledged");
         let registration=agent::seed_unacknowledged(&service,label,case::name("telemetry-new-device"),json!({"capabilities":["inventory.collect.v1","task.execute.v1","telemetry.collect.v1"],"platform":"macos","architecture":"aarch64","executionContext":software_execution::context(software_execution::Platform::MacOs)})).await?;
-        Ok((label.into(),registration["deviceId"].as_str().unwrap().into()))
+        let profile: wire::BindingProfile=serde_json::from_value(registration)?;
+        Ok((label.into(),profile.device_id.clone(),profile))
     }).await
 }
 
