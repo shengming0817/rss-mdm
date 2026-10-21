@@ -255,7 +255,12 @@ async fn template_flow(
     }
     let policy = Uuid::new_v4();
     let now = crate::clock::Clock::unix_seconds(&crate::clock::SystemClock)?;
-    post(&mut f.browser,&f.router,&format!("/api/v1/policies/{policy}"),json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"put","enabled":true,"definition":{"scope":scope,"action":{"kind":"native_collection","frequency":"every_trigger","schedule":{"trigger":{"kind":"interval","anchor":now-7200,"seconds":3600},"notBefore":0,"jitterSeconds":0,"misfire":{"kind":"coalesce_one"}},"resource":{"id":id,"version":"v1","platform":"windows","architecture":"x86_64","variant":"default"},"runLifetimeSeconds":300}}}})).await?;
+    let period = if completion == Completion::Snapshot && revoke_after_first.is_none() {
+        60
+    } else {
+        3600
+    };
+    post(&mut f.browser,&f.router,&format!("/api/v1/policies/{policy}"),json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"put","enabled":true,"definition":{"scope":scope,"action":{"kind":"native_collection","frequency":"every_trigger","schedule":{"trigger":{"kind":"interval","anchor":now,"seconds":period},"notBefore":0,"jitterSeconds":0,"misfire":{"kind":"coalesce_one"}},"resource":{"id":id,"version":"v1","platform":"windows","architecture":"x86_64","variant":"default"},"runLifetimeSeconds":300}}}})).await?;
     ensure!(
         native::post(&peer.mutual, &peer.url, &peer.message)
             .await?
@@ -527,10 +532,9 @@ async fn template_flow(
     );
     launch.finish();
     owner = Some(resumed);
-    // Shift the completed occurrence to the previous interval; the current one is due.
-    sqlx::query("UPDATE mdm_commands.action_runs SET occurrence='timer:'||($3::bigint)::text||':'||registration::text,created_at=$3 WHERE tenant_id=$1::uuid AND id=$2")
-        .bind(case_tenant()).bind(runs[0]).bind(now-3600).execute(&mut pg).await?;
-    tokio::time::timeout(std::time::Duration::from_secs(30), async {
+    // Wait for the second real period of the SAME immutable Policy version.
+    // No rerun, version edit, synthetic occurrence or precreated next run is involved.
+    tokio::time::timeout(std::time::Duration::from_secs(95), async {
         loop {
             let count: i64 = sqlx::query_scalar("SELECT count(*) FROM mdm_commands.action_runs r JOIN mdm_policy.versions v ON(v.tenant_id,v.id)=(r.tenant_id,r.policy_version) WHERE r.tenant_id=$1::uuid AND v.policy=$2")
                 .bind(case_tenant()).bind(policy).fetch_one(&mut pg).await?;

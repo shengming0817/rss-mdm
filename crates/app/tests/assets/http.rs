@@ -866,3 +866,4 @@ async fn typed_list_pages_remain_frozen_across_field_updates() -> Result<()> {
 }
 
 mod field_layout;
+mod scopes;

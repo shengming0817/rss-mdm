@@ -21,6 +21,7 @@ mod fields;
 pub use field_layout::{FieldDisplayGroup, FieldLayout, FieldLayoutAccess};
 mod lists;
 mod runs;
+mod scopes;
 pub use fields::{FieldChange, FieldImpact};
 mod model;
 pub mod planning;
@@ -46,6 +47,15 @@ impl AssetService {
         at: Timepoint,
     ) -> Result<Value> {
         let response = match command {
+            Command::InventoryScopes {
+                device,
+                scope,
+                limit,
+                cursor,
+            } => {
+                self.inventory_scopes(tx, device, scope, *limit, cursor.as_deref())
+                    .await?
+            }
             Command::FieldLayoutRead { access } => self.field_layout_read(tx, access).await?,
             Command::FieldLayoutWrite { change } => self.field_layout_write(tx, change).await?,
             Command::RetentionWrite { change } => {

@@ -185,6 +185,11 @@ pub struct DeviceView {
 }
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct InventoryScope {
+    pub scope: rss_mdm_inventory::CollectionScope,
+}
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SavedView {
     pub id: Uuid,
     pub revision: i64,
@@ -205,6 +210,12 @@ pub struct Summary {
     deny_unknown_fields
 )]
 pub enum Response {
+    InventoryScopes {
+        device: String,
+        watermark: i64,
+        items: Vec<InventoryScope>,
+        next_cursor: Option<String>,
+    },
     FieldLayout {
         revision: u64,
         editable: bool,
@@ -288,6 +299,12 @@ pub enum Response {
 #[derive(Clone, Debug, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Command {
+    InventoryScopes {
+        device: String,
+        scope: ReadScope,
+        limit: usize,
+        cursor: Option<String>,
+    },
     FieldLayoutRead {
         access: super::FieldLayoutAccess,
     },

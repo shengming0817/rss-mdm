@@ -39,7 +39,7 @@
   {
     "definition": {
       "action": {
-        "frequency": "once_per_version",
+        "frequency": "every_trigger",
         "kind": "native_collection",
         "resource": {
           "architecture": "x86_64",
@@ -56,8 +56,9 @@
           },
           "notBefore": 0,
           "trigger": {
-            "kind": "check_in",
-            "minimumSeconds": 60
+            "kind": "interval",
+            "anchor": 0,
+            "seconds": 3600
           },
           "until": null,
           "window": null
@@ -65,7 +66,7 @@
       },
       "scope": "11111111-1111-4111-8111-111111111111"
     },
-    "digest": "63cc57a1c7a1894e0c9e4dd5347a5bd1f6488b61746b26eac2b60996157f8f8a"
+    "digest": "3a94aa7ae48e32498a9a88885935b9cc71004716641a31e3957e043fbb65fc02"
   },
   {
     "definition": {
