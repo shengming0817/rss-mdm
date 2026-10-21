@@ -72,7 +72,7 @@ class CandidatePublication(unittest.TestCase):
                 with mock.patch.object(release, "copy_source", side_effect=copy_inputs), \
                      mock.patch.object(release.subprocess, "run", side_effect=docker_command), \
                      mock.patch.object(release, "oci_identity", return_value=("sha256:fixture", {"os":"linux", "architecture":"arm64"})), \
-                     mock.patch.object(release, "run", side_effect=['{}', 'version', 'container-id']), \
+                     mock.patch.object(release, "run", side_effect=['{}', '{}', 'version']), \
                      mock.patch.object(release, "snapshot_ui", side_effect=snapshot) as ui:
                     release.build_staged(output, header, web_image)
                 manifest = json.loads((output / "candidate.json").read_text())

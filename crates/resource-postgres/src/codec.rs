@@ -412,21 +412,21 @@ mod directory_tests {
     #[test]
     fn native_storage_accepts_only_current_revision() {
         let tenant = TenantId::parse("11111111-1111-4111-8111-111111111111").unwrap();
-        let v = rss_mdm_resource::blueprints::get("windows.identity", "2")
+        let v = rss_mdm_resource::blueprints::get("windows.identity", "1")
             .unwrap()
             .instantiate(tenant, Id::new("native").unwrap())
             .unwrap();
         let bytes = version(&v).unwrap();
         assert!(read_version(&bytes).is_ok());
-        let mut old: Value = serde_json::from_slice(&bytes).unwrap();
-        old[0] = json!(4);
-        assert!(read_version(&serde_json::to_vec(&old).unwrap()).is_err());
+        let mut invalid: Value = serde_json::from_slice(&bytes).unwrap();
+        invalid[0] = json!(0);
+        assert!(read_version(&serde_json::to_vec(&invalid).unwrap()).is_err());
     }
     #[test]
     fn selector_uses_validated_header_without_version_material() {
         let tenant = TenantId::parse("11111111-1111-4111-8111-111111111111").unwrap();
         let header = serde_json::to_vec(&json!([
-            2,
+            1,
             tenant.to_string(),
             "script",
             1,
@@ -442,7 +442,7 @@ mod directory_tests {
         );
         assert!(directory_header(&header, tenant, "other", 3).is_err());
         let conflicting = serde_json::to_vec(&json!([
-            2,
+            1,
             tenant.to_string(),
             "script",
             1,

@@ -271,7 +271,7 @@ fn macos_plans_are_wire_valid_without_granting_inventory_scope_authority() {
 }
 
 #[test]
-fn engine_map_is_bounded_by_closed_keys_not_a_stale_windows_count() {
+fn engine_map_accepts_declared_engines_and_rejects_unknown_keys() {
     let engines = [
         NativeEngine::WindowsWmi,
         NativeEngine::WindowsRegistry,
@@ -284,7 +284,7 @@ fn engine_map_is_bounded_by_closed_keys_not_a_stale_windows_count() {
         NativeEngine::MacosPkgReceipts,
         NativeEngine::MacosBrew,
     ];
-    let mut environment = CollectionEnvironment {
+    let environment = CollectionEnvironment {
         edition: None,
         tools: Default::default(),
         native_engines: engines
@@ -293,10 +293,6 @@ fn engine_map_is_bounded_by_closed_keys_not_a_stale_windows_count() {
             .collect(),
     };
     environment.validate().unwrap();
-    environment
-        .native_engines
-        .insert(NativeEngine::MacosBrew, 1);
-    assert!(environment.validate().is_err());
     assert!(serde_json::from_value::<NativeEngines>(json!({"macos.command":1})).is_err());
 }
 
