@@ -124,11 +124,12 @@ def execute(fixture):
         return change, receipt
 
     with ExitStack() as stack:
-        host = Host(builds, path, root / 'host')
+        host = Host(builds, path, root / 'host',require_ready=False)
         stack.callback(host.close)
         admin = Browser(host, config['product_origin'])
         normal = Browser(host, config['product_origin'])
         login(normal, business)
+        require(normal.call('GET','/readyz')[0]==503,'missing baseline dependencies must remain unready')
         status, first_use = normal.call('GET', '/api/v1/settings/first-use')
         require(status == 200 and first_use['tenantId'] == business
                 and first_use['saved']['revision'] == 0 and not first_use['complete']
@@ -207,7 +208,7 @@ def execute(fixture):
         require(operations(admin) == CRUD | {'authorization_read', 'authorization_write', 'identity_accounts_manage', 'tenant_administrator_create'}, 'password recovery changed grants')
         # Restart preserves persisted identity, grants and active management session.
         host.close()
-        host = Host(builds, path, root / 'restarted')
+        host = Host(builds, path, root / 'restarted',require_ready=False)
         stack.callback(host.close)
         admin.host = host
         require(operations(admin) == CRUD | {'authorization_read', 'authorization_write', 'identity_accounts_manage', 'tenant_administrator_create'}, 'restart lost management admission')

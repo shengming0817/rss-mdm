@@ -9,10 +9,10 @@ import sys
 
 def main():
     tool = Path(sys.argv[0]).name
-    if tool not in {'pg_dump', 'pg_restore', 'pg_dump16', 'pg_restore16'}:
+    if tool not in {'pg_dump', 'pg_restore'}:
         raise ValueError('unknown archive client')
-    major = 16 if tool.endswith('16') else 17
-    executable = tool.removesuffix('16')
+    major = 17
+    executable = tool
     providers = json.loads(Path(os.environ['MDM_TELEMETRY_PG_CLIENTS']).read_text())
     args = sys.argv[1:]
     if args == ['--version']:

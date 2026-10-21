@@ -49,6 +49,31 @@ pub struct Config {
     pub trust_file: PathBuf,
     pub content_volume: Option<PathBuf>,
 }
+impl Config {
+    pub(super) fn content_directory(&self) -> PathBuf {
+        self.content_volume
+            .clone()
+            .unwrap_or_else(|| self.directory.join("content"))
+    }
+    pub(super) fn prepare_content_storage(&self) -> Result<Value> {
+        let directory = self.content_directory();
+        if !directory.is_absolute() {
+            return Err(Error::Input);
+        }
+        std::fs::create_dir_all(&directory).map_err(|_| Error::Storage)?;
+        Ok(json!({"kind":"volume","directory":directory}))
+    }
+    /// Keep the deployed volume in cold backups even when Content is disabled or uses S3.
+    pub(super) fn content_snapshot(&self, runtime: &Value) -> Result<PathBuf> {
+        let directory = self.content_directory();
+        if runtime["content"]["storage"]["kind"] == "volume"
+            && runtime["content"]["storage"]["directory"] != json!(directory)
+        {
+            return Err(Error::Conflict);
+        }
+        Ok(directory)
+    }
+}
 #[derive(Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct GatewayTls {
@@ -270,6 +295,7 @@ fn scep_locations(config: &crate::config::Config, gateway: &Journal) -> Result<S
 
 /// Export runtime inputs only. This function never starts, stops or inspects containers.
 pub async fn prepare(directory: &Path, config: &Config, runtime: &Value) -> Result<()> {
+    config.content_snapshot(runtime)?;
     let decoded: crate::config::Config =
         serde_json::from_value(runtime.clone()).map_err(|_| Error::Input)?;
     validate_listeners(&decoded)?;

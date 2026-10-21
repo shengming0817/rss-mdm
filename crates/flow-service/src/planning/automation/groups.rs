@@ -261,6 +261,86 @@ impl Planning {
         build: &g::MemberBuild,
         watermark: i64,
     ) -> Result<()> {
+        let current = group_checked(
+            self.groups
+                .lock_reference_target_in(tx, build.request.group)
+                .await?,
+        )?;
+        if let Some(selector) = current.system_selector {
+            let tenant = self.tenant.to_string();
+            let after = build.cursor.clone();
+            let selected = build.request.changed_devices.clone();
+            let rows = tx
+                .with_connection(move |c| {
+                    Box::pin(async move {
+                        Ok(
+                            rss_mdm_registration_service::device::endpoints::lifecycle_page_at(
+                                c, &tenant, watermark, after, selected, 1000,
+                            )
+                            .await,
+                        )
+                    })
+                })
+                .await?
+                .map_err(|_| Error::Unavailable(Failure::PlanningStorage))?;
+            let total = build.processed + rows.len();
+            let decisions = rows
+                .iter()
+                .map(|row| {
+                    let decision = if !row.managed {
+                        g::DecisionValue::NoMatch
+                    } else if selector == g::SystemSelector::AllActive {
+                        g::DecisionValue::Match
+                    } else if row.platform_conflict {
+                        g::DecisionValue::Conflict
+                    } else if row.platform.is_none() {
+                        g::DecisionValue::Missing
+                    } else if matches!(
+                        (selector, row.platform),
+                        (
+                            g::SystemSelector::Windows,
+                            Some(rss_mdm_agent_wire::runtime::TaskPlatform::Windows)
+                        ) | (
+                            g::SystemSelector::Macos,
+                            Some(rss_mdm_agent_wire::runtime::TaskPlatform::Macos)
+                        )
+                    ) {
+                        g::DecisionValue::Match
+                    } else {
+                        g::DecisionValue::NoMatch
+                    };
+                    g::DecisionRecord {
+                        device: row.device.clone(),
+                        origin: g::DecisionOrigin::System,
+                        decision: if matches!(
+                            decision,
+                            g::DecisionValue::Conflict | g::DecisionValue::Missing
+                        ) {
+                            g::DecisionValue::Unknown
+                        } else {
+                            decision
+                        },
+                        explanations: vec![g::PredicateDecision {
+                            context: "lifecycle".into(),
+                            path: vec![],
+                            outcome: decision,
+                        }],
+                        provenance: vec![],
+                    }
+                })
+                .collect::<Vec<_>>();
+            if !decisions.is_empty() {
+                group_checked(
+                    self.groups
+                        .append_system_page_in(tx, operation, build.cursor.as_deref(), &decisions)
+                        .await?,
+                )?;
+            }
+            if rows.len() < 1000 {
+                group_checked(self.groups.seal_build_in(tx, operation, total).await?)?;
+            }
+            return Ok(());
+        }
         if build.request.patch.is_some() {
             group_checked(self.groups.advance_static_in(tx, operation).await?)?;
         } else if let Some(snapshot) = object_snapshot(&build.request.input_version)? {

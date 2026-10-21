@@ -600,3 +600,201 @@ mod gaps;
 
 #[path = "performance.rs"]
 mod performance;
+
+#[tokio::test]
+#[ignore = "MODULE=telemetry.ingress.postgres: tenant baseline uses real publication, content and authorization owners"]
+async fn postgres_baseline_recovers_original_receipts_without_overwriting_edits() -> Result<()> {
+    use sqlx::Connection;
+    let requests: Vec<crate::setup::providers::telemetry::Request> =
+        serde_json::from_slice(&std::fs::read(std::env::var("MDM_TELEMETRY_PROVIDERS")?)?)?;
+    ensure!(requests.len() == 1);
+    let installation = &requests[0];
+    crate::setup::providers::telemetry::prepare(installation.clone()).await?;
+    let mut base: Value =
+        serde_json::from_slice(&std::fs::read(std::env::var("MDM_TEST_CONFIG")?)?)?;
+    base["telemetry"] = serde_json::to_value(&installation.configuration)?;
+    let mut initial = Fixture::from_config(base.clone()).await?;
+    let resources = std::mem::take(&mut initial.resources);
+    resources
+        .finish(partial_initialization_content(&mut initial))
+        .await?;
+    let manifest = crate::baseline::manifest::build(Uuid::parse_str(case_tenant())?)?;
+    // This tenant's real provisioned administrator creates the grant and App intent
+    // in the same transaction, exactly as target account provisioning does.
+    let database: crate::config::Database =
+        serde_json::from_value(base["access_database"].clone())?;
+    let mut c = sqlx::PgConnection::connect_with(&database.options()?).await?;
+    let mut tx = c.begin().await?;
+    sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
+        .bind(case_tenant())
+        .execute(&mut *tx)
+        .await?;
+    let (_, authority) = crate::authorization::baseline::grant_administrator_on(
+        &mut tx,
+        identity::user(case_tenant(), case_admin()),
+        Uuid::new_v4(),
+        manifest.targets(),
+    )
+    .await?;
+    crate::baseline::reserve_on(&mut tx, &authority).await?;
+    tx.commit().await?;
+    c.close().await?;
+    let mut f = Fixture::from_config(base.clone()).await?;
+    let resources = std::mem::take(&mut f.resources);
+    let (policy,completed)=resources.finish(async {
+        let phase=pg(&format!("SELECT phase||':'||coalesce(blocked,'') FROM mdm_initialization.baselines WHERE tenant_id='{}'",case_tenant()))?;
+        ensure!(phase.trim()=="configured:","baseline incomplete: {phase}");
+        ensure!(pg(&format!("SELECT count(*) FROM mdm_group.groups WHERE tenant_id='{}' AND kind='system'",case_tenant()))?.trim()=="3");
+        let completed=pg(&format!("SELECT (SELECT count(*) FROM jsonb_object_keys(completed)) FROM mdm_initialization.baselines WHERE tenant_id='{}'",case_tenant()))?;
+        ensure!(completed.trim().parse::<usize>()?==manifest.steps.len());
+        // A normal client cannot create system selectors.
+        let (status,_)=f.author.call(&f.router,Method::POST,&format!("/api/v1/groups/{}",Uuid::new_v4()),Some(json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"create_system","selector":"all_active","presentation":{"name":"client","description":""}}}))).await?;
+        ensure!(status.is_client_error());
+        let last=manifest.steps.last().unwrap();
+        let policy=Uuid::parse_str(&last.target)?;
+        let crate::baseline::manifest::Action::Policy {definition}=&last.action else {anyhow::bail!("last policy");};
+        let mut administrator=Browser::default();
+        ensure!(administrator.login(&f.router,"admin").await?==StatusCode::OK);
+        let changed=post(&mut administrator,&f.router,&format!("/api/v1/policies/{policy}"),json!({"operationId":Uuid::new_v4(),"expectedRevision":1,"input":{"action":"put","enabled":false,"definition":definition}})).await?;
+        ensure!(changed["revision"]==2);
+        // Lost App checkpoint after owner COMMIT; recovery must use the original
+        // operation's receipt even when the user has since disabled this Policy.
+        pg(&format!("UPDATE mdm_initialization.baselines SET phase='pending',completed=completed-'{key}' WHERE tenant_id='{tenant}'",key=last.key,tenant=case_tenant()))?;
+        Ok((policy,completed))
+    }).await?;
+    let mut restarted = Fixture::from_config(base).await?;
+    let resources = std::mem::take(&mut restarted.resources);
+    resources.finish(async {
+        ensure!(pg(&format!("SELECT phase FROM mdm_initialization.baselines WHERE tenant_id='{}'",case_tenant()))?.trim()=="configured");
+        ensure!(pg(&format!("SELECT (SELECT count(*) FROM jsonb_object_keys(completed)) FROM mdm_initialization.baselines WHERE tenant_id='{}'",case_tenant()))?==completed);
+        ensure!(pg(&format!("SELECT state||':'||revision FROM mdm_policy.policies WHERE tenant_id='{}' AND id='{policy}'",case_tenant()))?.trim()=="disabled:2");
+        ensure!(pg(&format!("SELECT count(*) FROM mdm_group.groups WHERE tenant_id='{}' AND kind='system'",case_tenant()))?.trim()=="3");
+        Ok(())
+    }).await
+}
+
+async fn partial_initialization_content(f: &mut Fixture) -> Result<()> {
+    use rss_mdm_content_service::service as content;
+    use sqlx::Connection;
+    let target = Uuid::new_v4();
+    let blueprint = r::blueprints::catalog()
+        .into_iter()
+        .find(|b| {
+            matches!(
+                b.definition,
+                r::blueprints::Definition::NativeCollection { .. }
+            )
+        })
+        .unwrap();
+    resource(
+        &mut f.author,
+        &f.router,
+        target,
+        0,
+        json!({"action":"instantiate","blueprint":blueprint.id,"version":blueprint.version}),
+    )
+    .await?;
+    let mut identity =
+        crate::test_support::authority::Authority::from_config(f.base.clone()).await?;
+    let resources = std::mem::take(&mut identity.resources);
+    resources
+        .finish(async {
+            let mut c = sqlx::PgConnection::connect_with(
+                &serde_json::from_value::<Config>(f.base.clone())?.access_options()?,
+            )
+            .await?;
+            let mut tx = c.begin().await?;
+            sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
+                .bind(case_tenant())
+                .execute(&mut *tx)
+                .await?;
+            let (_, authority) = crate::authorization::baseline::grant_administrator_on(
+                &mut tx,
+                identity::user(case_tenant(), case_admin()),
+                Uuid::new_v4(),
+                [target.to_string()].into(),
+            )
+            .await?;
+            tx.commit().await?;
+            c.close().await?;
+            let proof = authority
+                .principal(&identity.access.authorization_store())
+                .await?;
+            let audit = rss_mdm_audit_integration::RequestAudit::new(
+                case_tenant().into(),
+                "baseline_initialize",
+            );
+            proof.bind_audit(&audit)?;
+            let store = f.content.as_ref().unwrap();
+            let app = content::Access {
+                sessions: crate::authorization::session::SessionAuthority::new(
+                    identity.identity.authority.clone(),
+                    identity.identity.tenant,
+                ),
+                authorization: identity.access.authorization_store(),
+                runtime: f.plan_runtime.clone(),
+                audit_store: identity.audit.clone(),
+                tenant: identity.identity.tenant,
+                content: f.content.clone(),
+                clock: Arc::new(crate::clock::ContentClock(Arc::new(
+                    crate::clock::SystemClock,
+                ))),
+                catalog: Arc::new(rss_mdm_software_service::catalog::Reader::new(
+                    identity.identity.tenant,
+                )),
+            };
+            let operation = Uuid::new_v4();
+            let selection = content::Selection {
+                version: blueprint.label(),
+                variant: "x86_64".into(),
+                platform: blueprint.platform,
+                architecture: r::Architecture::X86_64,
+                artifact: Some(blueprint.definition.reference().into()),
+                operation: Some(operation),
+            };
+            let bytes = blueprint.definition.canonical();
+            let staged = content::begin_upload(
+                &app,
+                &proof,
+                &audit,
+                &target.to_string(),
+                operation,
+                &selection,
+                store.upload_budget()?,
+            )
+            .await?;
+            let now = crate::clock::Clock::unix_seconds(&crate::clock::SystemClock)?;
+            ensure!(
+                store
+                    .append(
+                        &staged.binding.actor,
+                        operation,
+                        0,
+                        now,
+                        &bytes[..3],
+                        store.upload_budget()?
+                    )
+                    .await?
+                    .offset
+                    == 3
+            );
+            content::upload(
+                &app,
+                content::UploadAuthority::initialization(&proof)?,
+                &audit,
+                &target.to_string(),
+                &selection,
+                bytes.as_slice(),
+            )
+            .await?;
+            let done = store.status(&staged.binding.actor, operation, now).await?;
+            ensure!(
+                done.complete
+                    && done.offset == bytes.len() as u64
+                    && done.binding.sha256 == staged.binding.sha256
+            );
+            audit.finalize(None);
+            Ok(())
+        })
+        .await
+}

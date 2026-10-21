@@ -59,7 +59,7 @@ def exercise(admin, normal, delegate, config, management, business, password, sq
     target_config = deepcopy(config)
     target_config['identity']['tenant_id'] = tenant
     target_config['identity']['oidc'] = None
-    target_host = Host(builds,private(root/'target-runtime.json',target_config),root/'target-host')
+    target_host = Host(builds,private(root/'target-runtime.json',target_config),root/'target-host',require_ready=False)
     stack.callback(target_host.close)
     target_admin = Browser(target_host,config['product_origin'])
     login(target_admin,tenant,'tenant-admin-one')
@@ -102,7 +102,7 @@ def exercise(admin, normal, delegate, config, management, business, password, sq
     target_host.close()
     absent = deepcopy(target_config)
     del absent['tenant_administration']
-    absent_host = Host(builds,private(root/'without-registry.json',absent),root/'without-registry-host')
+    absent_host = Host(builds,private(root/'without-registry.json',absent),root/'without-registry-host',require_ready=False)
     stack.callback(absent_host.close)
     require(Browser(absent_host,config['product_origin']).call('GET',BASE+'/tenants')[0] == 404, 'disabled registry routes were mounted')
     absent_host.close()
@@ -153,7 +153,7 @@ def lost_commit_ack(config,password,sql,builds,root,stack,authenticated,tenant):
     candidate = deepcopy(config)
     for role in ('registry_database','provisioning_database'):
         candidate['tenant_administration'][role]['port'] = proxy.port
-    host = Host(builds,private(root/'ack-runtime.json',candidate),root/'ack-host')
+    host = Host(builds,private(root/'ack-runtime.json',candidate),root/'ack-host',require_ready=False)
     stack.callback(host.close)
     browser = Browser(host,config['product_origin'])
     # The same-origin management session is valid on either product host.

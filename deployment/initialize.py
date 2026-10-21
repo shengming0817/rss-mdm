@@ -23,13 +23,19 @@ for name in ('database-password','platform-password','administrator-password','p
         shutil.copyfile(source, target)
     target.chmod(0o600)
     os.chown(target, 10001, 10001)
-for directory in (root, inputs):
+content = Path('/var/lib/rss-mdm-content')
+if content.is_symlink():
+    raise ValueError('content volume must be a real directory')
+content.mkdir(parents=True, exist_ok=True, mode=0o700)
+if not content.is_dir():
+    raise ValueError('content volume must be a directory')
+for directory in (root, inputs, content):
     directory.chmod(0o700)
     os.chown(directory, 10001, 10001)
 config = dict(directory=str(root/'installation'),
     deployment=dict(directory=str(root/'runtime/primary'), probe_address='primary-server:8445',
         certificate_file=str(inputs/'gateway.crt'), private_key_file=str(inputs/'gateway.key'),
-        trust_file=str(inputs/'gateway-ca.crt'), content_volume=None),
+        trust_file=str(inputs/'gateway-ca.crt'), content_volume='/var/lib/rss-mdm-content'),
     database=dict(name='mdm',administrator=dict(host='postgres',port=5432,name='postgres',user='postgres',
         password_file=str(inputs/'database-password'),ca_file=str(inputs/'postgres-ca.crt'))),
     audit_mode='ledger',organization_name=os.environ.get('MDM_ORGANIZATION','My organization'),

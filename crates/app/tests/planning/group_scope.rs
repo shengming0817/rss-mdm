@@ -1544,3 +1544,251 @@ async fn nested_large_source_evidence_retries_with_smaller_pages() {
         .unwrap();
     service.runtime.close().await;
 }
+
+#[tokio::test]
+#[ignore = "MODULE=planning.group_scope: authenticated lifecycle snapshots without Inventory"]
+async fn system_lifecycle_snapshot_pages_before_collection_and_preserves_old_authority() {
+    use sqlx::Connection;
+    let prefix = format!("zzz-system-{}-", Uuid::new_v4());
+    let t = tenant();
+    let rows = format!(
+        "SELECT '{prefix}'||lpad(i::text,4,'0') AS device,md5('{prefix}grant'||i)::uuid AS grant_id,md5('{prefix}request'||i)::uuid AS request,md5('{prefix}registration'||i)::uuid AS registration  ,i AS ordinal FROM generate_series(0,1001)i"
+    );
+    sql(&format!("SET rss.tenant_id='{t}';
+        WITH x AS ({rows}) INSERT INTO mdm_access.grants(tenant_id,id,actor,instance,device,purpose,state,expires_at) SELECT '{t}',grant_id,'operator','mdm',device,'enrollment','consumed',clock_timestamp()+interval '60s' FROM x;
+        WITH x AS ({rows}) INSERT INTO mdm_access.requests(tenant_id,id,grant_id,source,windows_profile) SELECT '{t}',request,grant_id,CASE WHEN ordinal=1001 THEN 'mdm.apple' ELSE 'mdm.windows' END,CASE WHEN ordinal=1001 THEN NULL ELSE 'Device' END FROM x;
+        WITH x AS ({rows}) INSERT INTO mdm_access.devices(tenant_id,id) SELECT '{t}',device FROM x;
+        WITH x AS ({rows}) INSERT INTO mdm_access.registrations(tenant_id,id,device,channel,generation,request_id,state,purpose,epoch) SELECT '{t}',registration,device,'mdm',1,request,'active','primary',gen_random_uuid() FROM x;
+        WITH x AS ({rows}) INSERT INTO mdm_access.credentials(tenant_id,id,registration,channel,locator,state) SELECT '{t}',gen_random_uuid(),registration,'mdm',encode(sha256(convert_to(device,'UTF8')),'hex'),'active' FROM x;
+        WITH x AS ({rows}) INSERT INTO mdm_access.report_sources(tenant_id,registration,source,epoch,enabled) SELECT '{t}',registration,CASE WHEN ordinal=1001 THEN 'mdm.apple' ELSE 'mdm.windows' END,gen_random_uuid(),true FROM x;"));
+    let config = fixture();
+    let options = sqlx::postgres::PgConnectOptions::new()
+        .host("localhost")
+        .port(config["port"].as_u64().unwrap() as u16)
+        .database(config["database"].as_str().unwrap())
+        .username("mdm_flow_runtime")
+        .password("runtime-fixture")
+        .ssl_mode(sqlx::postgres::PgSslMode::VerifyFull)
+        .ssl_root_cert(config["ca"].as_str().unwrap());
+    let mut c = sqlx::PgConnection::connect_with(&options).await.unwrap();
+    sqlx::query("SELECT set_config('rss.tenant_id',$1,false)")
+        .bind(t.to_string())
+        .execute(&mut c)
+        .await
+        .unwrap();
+    let watermark = rss_mdm_inventory_postgres::watermark_in(&mut c, t)
+        .await
+        .unwrap();
+    let first = rss_mdm_registration_service::device::endpoints::lifecycle_page_at(
+        &mut c,
+        &t.to_string(),
+        watermark,
+        Some(prefix.clone()),
+        None,
+        1000,
+    )
+    .await
+    .unwrap();
+    assert_eq!(first.len(), 1000);
+    assert!(first.iter().all(|d| d.device.starts_with(&prefix)
+        && d.managed
+        && !d.platform_conflict
+        && d.platform == Some(rss_mdm_agent_wire::runtime::TaskPlatform::Windows)));
+    let last = rss_mdm_registration_service::device::endpoints::lifecycle_page_at(
+        &mut c,
+        &t.to_string(),
+        watermark,
+        Some(first.last().unwrap().device.clone()),
+        None,
+        1000,
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        last.iter()
+            .filter(|d| d.device.starts_with(&prefix))
+            .count(),
+        2
+    );
+    let service = Arc::new(planning(t).await);
+    let automation = crate::automation::Automation::connect(
+        service.clone(),
+        assets(&service).await,
+        compliance(&service).await,
+        options.clone(),
+    )
+    .await
+    .unwrap();
+    let notifications = crate::worker_wake::Listener::new(
+        options
+            .clone()
+            .username("mdm_access")
+            .password("access-fixture"),
+        t,
+    );
+    let mut stack = rss_runtime::ShutdownStack::try_new(
+        rss_runtime::TotalDrainBudget::new(Duration::from_secs(10)).unwrap(),
+        Arc::new(crate::lifecycle::RuntimeTimer),
+    )
+    .unwrap();
+    let mut startup = stack.startup().unwrap();
+    startup.stage_resource(rss_runtime::DynManagedResource::new_box(
+        notifications.clone(),
+    ));
+    let mut launch = startup.commit();
+    launch.stage_task_with_token(notifications.clone().registration().critical());
+    launch.stage_deferred_task_with_token(
+        automation
+            .clone()
+            .registration(notifications.signals.flow())
+            .critical(),
+    );
+    launch.finish();
+    let access_config = crate::test_support::identity::config(&t.to_string()).unwrap();
+    let access = crate::Database::connect(access_config.access_options().unwrap())
+        .await
+        .unwrap();
+    let mut windows_group = None;
+    for (selector, count) in [
+        (rss_mdm_group_postgres::SystemSelector::Windows, 1001),
+        (rss_mdm_group_postgres::SystemSelector::Macos, 1),
+    ] {
+        let group = Uuid::new_v4();
+        let mut conn = access.archive_pool().acquire().await.unwrap();
+        let mut tx = (*conn).begin().await.unwrap();
+        sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
+            .bind(t.to_string())
+            .execute(&mut *tx)
+            .await
+            .unwrap();
+        let (_, capability) = crate::authorization::baseline::grant_administrator_on(
+            &mut tx,
+            crate::test_support::identity::user(&t.to_string(), crate::test_support::case::admin()),
+            Uuid::new_v4(),
+            [group.to_string()].into(),
+        )
+        .await
+        .unwrap();
+        tx.commit().await.unwrap();
+        drop(conn);
+        let proof = capability
+            .principal(&access.authorization_store())
+            .await
+            .unwrap();
+        let audit = RequestAudit::new(t.to_string(), "baseline_initialize");
+        proof.bind_audit(&audit).unwrap();
+        let command = GroupCommand::Group {
+            id: group,
+            sensitive: false,
+            change: Box::new(group_operation(
+                0,
+                GroupChange::CreateSystem {
+                    selector,
+                    presentation: json!({"name":"system","description":""})
+                        .as_object()
+                        .unwrap()
+                        .clone(),
+                },
+            )),
+        };
+        let receipt = groups(&service)
+            .await
+            .execute_initialization(&command, &audit, &proof, service.as_ref())
+            .await
+            .unwrap();
+        audit.finalize(None);
+        let task = Uuid::parse_str(receipt["task"].as_str().unwrap()).unwrap();
+        assert_eq!(
+            wait_task(
+                &service,
+                task,
+                crate::automation::TaskKind::Group,
+                &group.to_string()
+            )
+            .await["members"],
+            count
+        );
+        let scope_id = Uuid::new_v4();
+        let scope_receipt = execute(
+            &service,
+            &Command::Scope {
+                id: scope_id,
+                change: operation(
+                    0,
+                    ScopeChange::Put {
+                        definition: scope(group),
+                    },
+                ),
+            },
+        )
+        .await
+        .unwrap();
+        let scope_task = Uuid::parse_str(scope_receipt["task"].as_str().unwrap()).unwrap();
+        assert_eq!(
+            wait_task(
+                &service,
+                scope_task,
+                crate::automation::TaskKind::Scope,
+                &scope_id.to_string()
+            )
+            .await["members"],
+            count
+        );
+        if selector == rss_mdm_group_postgres::SystemSelector::Windows {
+            windows_group = Some(group);
+        }
+    }
+    let device = first[0].device.clone();
+    sql(&format!(
+        "SET rss.tenant_id='{t}';UPDATE mdm_access.credentials SET state='revoked' WHERE tenant_id='{t}' AND registration IN(SELECT id FROM mdm_access.registrations WHERE tenant_id='{t}' AND device='{device}')"
+    ));
+    let old = rss_mdm_registration_service::device::endpoints::lifecycle_page_at(
+        &mut c,
+        &t.to_string(),
+        watermark,
+        None,
+        Some(vec![device.clone()]),
+        1,
+    )
+    .await
+    .unwrap();
+    assert!(old[0].managed);
+    let current = rss_mdm_inventory_postgres::watermark_in(&mut c, t)
+        .await
+        .unwrap();
+    let revoked = rss_mdm_registration_service::device::endpoints::lifecycle_page_at(
+        &mut c,
+        &t.to_string(),
+        current,
+        None,
+        Some(vec![device]),
+        1,
+    )
+    .await
+    .unwrap();
+    assert!(!revoked[0].managed);
+    tokio::time::timeout(Duration::from_secs(45), async {
+        loop {
+            let group = service
+                .groups
+                .get(
+                    rss_mdm_group_postgres::GroupId::parse(&windows_group.unwrap().to_string())
+                        .unwrap(),
+                    deadline(),
+                )
+                .await
+                .unwrap()
+                .unwrap();
+            if group.member_count == 1000 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    })
+    .await
+    .expect("credential lifecycle delta removes system membership");
+    c.close().await.unwrap();
+    assert!(stack.shutdown().join().await.unwrap().is_clean());
+    access.close().await;
+    service.runtime.close().await;
+}

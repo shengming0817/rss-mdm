@@ -7,6 +7,11 @@ CREATE TABLE mdm_agent_packages.releases (
  document jsonb NOT NULL CHECK(octet_length(document::text)<=32768),
  binding jsonb NOT NULL CHECK(octet_length(binding::text)<=32768),
  state text NOT NULL CHECK(state IN('published','withdrawn')),
+ platform text GENERATED ALWAYS AS (document#>>'{target,platform}') STORED NOT NULL,
+ architecture text GENERATED ALWAYS AS (document#>>'{target,architecture}') STORED NOT NULL,
+ format text GENERATED ALWAYS AS (document->>'format') STORED NOT NULL,
+ product_version text GENERATED ALWAYS AS (document->>'version') STORED NOT NULL,
+ CONSTRAINT releases_business_key UNIQUE(tenant_id,platform,architecture,format,product_version),
  PRIMARY KEY(tenant_id,id)
 );
 ALTER TABLE mdm_agent_packages.releases ENABLE ROW LEVEL SECURITY;

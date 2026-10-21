@@ -58,6 +58,7 @@ impl Policies {
         op: &crate::operation::Operation<Change>,
         audit: &RequestAudit,
     ) -> std::result::Result<Value, Error> {
+        proof.require_initialization_target(&id.to_string())?;
         audit.resource_target(
             rss_mdm_audit_integration::TargetKind::Policy,
             &id.to_string(),
@@ -93,6 +94,9 @@ impl Policies {
             |ctx, tx| {
                 Box::pin(async move {
                     let (s, p, id, op, audit, verified) = *ctx;
+                    if p.initialization_authority().is_some() {
+                        crate::authorization::baseline::check_in(tx,p,Permission::PolicyWrite,&id.to_string()).await?;
+                    }
                     super::admit_in(tx).await?;
                     let authorization = crate::action_admission::current(tx, p).await?;
                     authorization.require(p, Permission::PolicyWrite, None)?;

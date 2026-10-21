@@ -6,6 +6,8 @@ mod application;
 pub mod backup;
 #[cfg(unix)]
 pub mod configure;
+#[cfg(unix)]
+pub mod default_telemetry;
 pub mod host;
 #[cfg(unix)]
 pub mod installation;

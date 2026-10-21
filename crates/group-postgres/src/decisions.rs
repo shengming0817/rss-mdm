@@ -14,6 +14,8 @@ pub enum DecisionOrigin {
     Rule,
     /// An authorized explicit membership edit selected the device.
     Manual,
+    /// An immutable product lifecycle selector produced the decision.
+    System,
 }
 /// Closed serialized counterpart of the pure rule outcome.
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, Eq, PartialEq)]

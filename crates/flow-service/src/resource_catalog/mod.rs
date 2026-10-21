@@ -549,6 +549,34 @@ impl ResourceCatalog {
         audit: &RequestAudit,
         authorize: &(dyn Fn() -> std::result::Result<(), Error> + Sync),
     ) -> std::result::Result<Value, Error> {
+        Box::pin(self.execute_with_initialization(command, audit, authorize, None)).await
+    }
+    /// Initialization is fenced by the original tenant rule in the mutation transaction.
+    pub async fn execute_initialization(
+        &self,
+        command: &Command,
+        audit: &RequestAudit,
+        proof: &crate::authorization::context::AuthorizedPrincipal,
+    ) -> std::result::Result<Value, Error> {
+        Box::pin(self.execute_with_initialization(
+            command,
+            audit,
+            &|| {
+                proof
+                    .manage(crate::authorization::Permission::ResourceWrite)
+                    .map_err(Error::from)
+            },
+            Some(proof),
+        ))
+        .await
+    }
+    async fn execute_with_initialization(
+        &self,
+        command: &Command,
+        audit: &RequestAudit,
+        authorize: &(dyn Fn() -> std::result::Result<(), Error> + Sync),
+        initialization: Option<&crate::authorization::context::AuthorizedPrincipal>,
+    ) -> std::result::Result<Value, Error> {
         let (Command::Resource { id, .. } | Command::ResourceRead { id }) = command;
         audit.resource_target(rss_mdm_audit_integration::TargetKind::Resource, id);
         authorize()?;
@@ -557,10 +585,20 @@ impl ResourceCatalog {
             &self.runtime,
             self.tenant,
             audit,
-            &(self, command, audit, authorize),
+            &(self, command, audit, authorize, initialization),
             |ctx, tx| {
                 Box::pin(async move {
-                    let (s, command, audit, authorize) = *ctx;
+                    let (s, command, audit, authorize, initialization) = *ctx;
+                    if let Some(proof) = initialization {
+                        let (Command::Resource { id, .. } | Command::ResourceRead { id }) = command;
+                        crate::authorization::baseline::check_in(
+                            tx,
+                            proof,
+                            crate::authorization::Permission::ResourceWrite,
+                            id,
+                        )
+                        .await?;
+                    }
                     admit_in(tx).await?;
                     if let Command::Resource { id, .. } = command {
                         tx.prepare_outbox_partitions(&[s.resources.partition(id)?])

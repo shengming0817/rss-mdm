@@ -93,6 +93,10 @@ pub(super) fn units() -> Vec<(&'static str, &'static str)> {
         ),
         ("flow-service-schema-v1", rss_mdm_flow_service::INSTALL_SQL),
         (
+            "tenant-baseline-v1",
+            include_str!("../../schema/baseline.sql"),
+        ),
+        (
             "telemetry-service-schema-v1",
             rss_mdm_telemetry_service::SCHEMA_SQL,
         ),

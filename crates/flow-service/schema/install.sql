@@ -34,7 +34,7 @@ WITH RECURSIVE reach(id,depth) AS (
 SELECT count(*)<=4096 AND coalesce(bool_and(coalesce(
  g.id IS NOT NULL AND NOT g.deleted
  AND NOT (r.depth=16 AND cardinality(coalesce(selection.group_ids,ARRAY[]::uuid[]))>0)
- AND (g.kind='static' OR (b.phase='published' AND b.rule_version=g.rule_version))
+ AND (g.kind='static' OR (b.phase='published' AND b.rule_version IS NOT DISTINCT FROM g.rule_version))
  AND (b.id IS NULL OR jsonb_typeof(convert_from(b.input,'UTF8')::jsonb->'sources')='array')
  AND NOT EXISTS(
   SELECT 1 FROM jsonb_array_elements(convert_from(b.input,'UTF8')::jsonb->'sources') src
@@ -49,7 +49,7 @@ SELECT count(*)<=4096 AND coalesce(bool_and(coalesce(
  AND (g.kind='static' AND b.id IS NULL OR (
   head.id IS NOT NULL AND head.observed_input>=head.required_input
   AND NOT EXISTS(SELECT 1 FROM mdm.asset_changes c WHERE c.tenant_id=g.tenant_id AND c.revision>head.observed_input
-   AND ((c.kind IN('device','registration','source','credential') AND (g.kind='dynamic' OR coalesce((
+   AND ((c.kind IN('device','registration','source','credential') AND (g.kind IN('dynamic','system') OR coalesce((
     SELECT m.added FROM mdm_group.member_changes m JOIN mdm_group.member_runs history ON(history.tenant_id,history.id)=(m.tenant_id,m.run_id)
     WHERE m.tenant_id=g.tenant_id AND m.group_id=g.id AND history.phase='published'
       AND m.object_id=coalesce(c.identity->>'device',(SELECT h.device FROM mdm_access.asset_authority_history h WHERE h.tenant_id=c.tenant_id AND h.kind='registration' AND h.identity=c.identity->>'registration' ORDER BY h.revision DESC LIMIT 1))

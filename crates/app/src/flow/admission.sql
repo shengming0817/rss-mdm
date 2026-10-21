@@ -117,13 +117,21 @@ SELECT
  AND NOT EXISTS(SELECT 1 FROM package_reachable r WHERE has_schema_privilege(r.oid,c.relnamespace,'CREATE')
  OR has_table_privilege(r.oid,c.oid,'UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER'))
  AND (SELECT jsonb_agg(jsonb_build_array(attname,format_type(atttypid,atttypmod),attnotnull) ORDER BY attnum)
- FROM pg_attribute WHERE attrelid=c.oid AND attnum>0 AND NOT attisdropped)='[["tenant_id","uuid",true],["id","uuid",true],["document","jsonb",true],["binding","jsonb",true],["state","text",true]]'::jsonb
- AND (SELECT count(*)=4 AND bool_and(convalidated AND pg_get_constraintdef(oid)=CASE conname
+ FROM pg_attribute WHERE attrelid=c.oid AND attnum>0 AND NOT attisdropped)='[["tenant_id","uuid",true],["id","uuid",true],["document","jsonb",true],["binding","jsonb",true],["state","text",true],["platform","text",true],["architecture","text",true],["format","text",true],["product_version","text",true]]'::jsonb
+ AND (SELECT count(*)=5 AND bool_and(convalidated AND pg_get_constraintdef(oid)=CASE conname
+ WHEN 'releases_business_key' THEN 'UNIQUE (tenant_id, platform, architecture, format, product_version)'
  WHEN 'releases_binding_check' THEN 'CHECK ((octet_length((binding)::text) <= 32768))'
  WHEN 'releases_document_check' THEN 'CHECK ((octet_length((document)::text) <= 32768))'
  WHEN 'releases_state_check' THEN 'CHECK ((state = ANY (ARRAY[''published''::text, ''withdrawn''::text])))'
  WHEN 'releases_pkey' THEN 'PRIMARY KEY (tenant_id, id)' ELSE '' END)
  FROM pg_constraint WHERE conrelid=c.oid)
+ AND (SELECT count(*)=4 AND bool_and(a.attgenerated='s' AND regexp_replace(pg_get_expr(d.adbin,d.adrelid),'[[:space:]()]','','g')=CASE a.attname
+ WHEN 'platform' THEN 'document#>>''{target,platform}''::text[]'
+ WHEN 'architecture' THEN 'document#>>''{target,architecture}''::text[]'
+ WHEN 'format' THEN 'document->>''format''::text'
+ WHEN 'product_version' THEN 'document->>''version''::text' ELSE '' END)
+ FROM pg_attribute a JOIN pg_attrdef d ON(d.adrelid,d.adnum)=(a.attrelid,a.attnum)
+ WHERE a.attrelid=c.oid AND a.attname IN('platform','architecture','format','product_version'))
  AND NOT EXISTS(SELECT 1 FROM pg_index WHERE indrelid=c.oid AND (NOT indisvalid OR NOT indisready OR NOT indislive))
  AND NOT EXISTS(SELECT 1 FROM pg_attribute a WHERE a.attrelid=c.oid AND a.attnum>0 AND NOT a.attisdropped
  AND (has_column_privilege(current_user,c.oid,a.attnum,'UPDATE')<>(a.attname='state')

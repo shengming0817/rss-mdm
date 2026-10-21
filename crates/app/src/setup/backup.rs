@@ -493,12 +493,25 @@ async fn freeze_host(
             return Err(Error::Conflict);
         }
     }
+    host_deployment(&input.installation, slots.get(&p.host_id).copied())?
+        .content_snapshot(&runtime)?;
     Ok(Host {
         id: p.host_id,
         tenant: p.tenant_id,
         slot: slots.get(&p.host_id).copied(),
         runtime,
     })
+}
+
+fn host_deployment(input: &Input, slot: Option<usize>) -> Result<&super::runtime_files::Config> {
+    match slot {
+        Some(index) => input
+            .additional_hosts
+            .get(index)
+            .map(|s| &s.deployment)
+            .ok_or(Error::Corrupt),
+        None => Ok(&input.deployment),
+    }
 }
 
 async fn capture_stopped(frozen: &Frozen, journal: &Journal, progress: &mut Receipt) -> Result<()> {
@@ -511,21 +524,9 @@ async fn capture_stopped(frozen: &Frozen, journal: &Journal, progress: &mut Rece
     telemetry::capture(frozen, journal).await?;
     capture_ledger_heads(&mut c, frozen, journal).await?;
     for host in &frozen.hosts {
-        let deployment = match host.slot {
-            Some(index) => {
-                &frozen
-                    .request
-                    .installation
-                    .additional_hosts
-                    .get(index)
-                    .ok_or(Error::Corrupt)?
-                    .deployment
-            }
-            None => &frozen.request.installation.deployment,
-        };
-        if let Some(volume) = &deployment.content_volume {
-            snapshot_tree::capture(journal, &format!("volume-{}", host.id.simple()), volume)?;
-        }
+        let deployment = host_deployment(&frozen.request.installation, host.slot)?;
+        let volume = deployment.content_snapshot(&host.runtime)?;
+        snapshot_tree::capture(journal, &format!("volume-{}", host.id.simple()), &volume)?;
         storage::capture(&mut c, journal, host.id, &host.runtime).await?;
     }
     no_writers(&mut c).await?;
@@ -659,21 +660,9 @@ async fn restore_contents(
     connection_fence(&mut c, journal, true).await?;
     no_writers(&mut c).await?;
     for host in &frozen.hosts {
-        let deployment = match host.slot {
-            Some(index) => {
-                &frozen
-                    .request
-                    .installation
-                    .additional_hosts
-                    .get(index)
-                    .ok_or(Error::Corrupt)?
-                    .deployment
-            }
-            None => &frozen.request.installation.deployment,
-        };
-        if deployment.content_volume.is_some() {
-            snapshot_tree::restore(journal, &format!("volume-{}", host.id.simple()))?;
-        }
+        let deployment = host_deployment(&frozen.request.installation, host.slot)?;
+        deployment.content_snapshot(&host.runtime)?;
+        snapshot_tree::restore(journal, &format!("volume-{}", host.id.simple()))?;
         storage::restore(&mut c, journal, host.id, &host.runtime).await?;
     }
     let expected: Vec<ledger::Head> = journal
@@ -711,18 +700,7 @@ async fn activate_restored(
     _root: &Journal,
 ) -> Result<()> {
     for host in &frozen.hosts {
-        let deployment = match host.slot {
-            Some(index) => {
-                &frozen
-                    .request
-                    .installation
-                    .additional_hosts
-                    .get(index)
-                    .ok_or(Error::Corrupt)?
-                    .deployment
-            }
-            None => &frozen.request.installation.deployment,
-        };
+        let deployment = host_deployment(&frozen.request.installation, host.slot)?;
         super::runtime_files::prepare(
             &frozen.request.installation.directory,
             deployment,

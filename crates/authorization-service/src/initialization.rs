@@ -154,3 +154,20 @@ impl VerifiedLocal {
         &self.0
     }
 }
+
+/// Authenticate the exact installer subject, initialize its real rule, and freeze baseline evidence.
+pub async fn initialize_baseline(
+    authority: &Authority,
+    store: &AuditStore,
+    input: Initialization,
+    audit: &RequestAudit,
+    targets: std::collections::BTreeSet<String>,
+) -> Result<(Receipt, crate::baseline::Authority), Error> {
+    let verified = verify_local(authority, input.expected, input.login, input.password).await?;
+    let user = verified.user().clone();
+    let receipt =
+        crate::store::initialize_verified_user(store, user.clone(), input.operation_id, audit)
+            .await?;
+    let frozen = crate::baseline::Authority::new(user, receipt.clone(), targets)?;
+    Ok((receipt, frozen))
+}

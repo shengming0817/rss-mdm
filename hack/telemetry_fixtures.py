@@ -28,12 +28,12 @@ def _profiles(root, tenant, selected, primary):
     ch_base = None
     ch_owner = None
     try:
-        for image, names in [('telemetry-postgres', ('postgres','click_house')),
+        for image, names in [('postgres', ('postgres','click_house')),
                              ('telemetry-timescale', ('timescale_shared', 'timescale_dedicated'))]:
             names = tuple(kind for kind in names if selected is None or kind == selected)
             if not names:
                 continue
-            owner = Environment(group='t2-' + image, providers={**PROVIDERS, 'postgres': PROVIDERS[image]})
+            owner = Environment(group='t2-telemetry-' + image, providers={**PROVIDERS, 'postgres': PROVIDERS[image]})
             owners.append(owner)
             owner.reset()
             owner.up()
@@ -85,14 +85,14 @@ def _profiles(root, tenant, selected, primary):
                 from pathlib import Path
                 from t2_environment import run
                 clients = []
-                for owner, major in [(primary, 17), *((owner, 16) for owner in owners)]:
+                for owner, major in [(primary, 17), *((owner, 17) for owner in owners)]:
                     destination = '/tmp/telemetry-backup-ca.crt'
                     run(['docker', 'cp', str(owner.root / 'ca.crt'), owner.container() + ':' + destination], capture_output=True, timeout=30)
                     clients.append(dict(container=owner.container(), port=owner.port(), major=major, ca=destination))
                 descriptor = private(root / 'telemetry-pg-clients.json', clients)
                 binaries = root / 'pg-clients'
                 binaries.mkdir(mode=0o700)
-                for name in ('pg_dump', 'pg_restore', 'pg_dump16', 'pg_restore16'):
+                for name in ('pg_dump', 'pg_restore'):
                     target = binaries / name
                     shutil.copyfile(Path(__file__).with_name('telemetry_pg_client.py'), target)
                     target.chmod(0o700)

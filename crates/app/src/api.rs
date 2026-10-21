@@ -483,6 +483,21 @@ pub(crate) async fn from_compiled(
         devices,
         requests: Arc::new(tokio::sync::Semaphore::new(4)),
     });
+    // Existing durable intent only: normal fixtures and non-initialized tenants are never seeded.
+    // A failed attempt remains visible and resumes under the same identities after restart.
+    #[cfg(test)]
+    match tokio::time::timeout(
+        std::time::Duration::from_secs(120),
+        crate::baseline::resume(&state),
+    )
+    .await
+    {
+        Ok(Ok(())) => {}
+        Ok(Err(error)) => eprintln!("baseline initialization blocked: {error}"),
+        Err(_) => eprintln!(
+            "baseline initialization outcome unknown; resume original intent after restart"
+        ),
+    }
     Ok(from_state(state, host, monotonic))
 }
 
@@ -543,6 +558,7 @@ pub(crate) fn from_state(
         windows: state.windows.as_ref().map(|w| w.channel.clone()),
     });
     let diagnostics = Arc::new(crate::runtime_diagnostics::RuntimeDiagnostics {
+        access: state.access.archive_pool(),
         telemetry: state.telemetry.clone(),
         execution: state.execution.clone(),
         inventory: state.inventory.clone(),
@@ -885,6 +901,7 @@ pub(crate) fn from_state(
         )
         .layer(DefaultBodyLimit::max(16384));
     crate::native::Routers {
+        baseline: crate::baseline::registration(state.clone()),
         telemetry: state.telemetry.clone(),
         webhooks: state.webhooks.clone(),
         apple_control: apple_state,

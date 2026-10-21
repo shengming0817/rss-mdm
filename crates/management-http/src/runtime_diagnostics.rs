@@ -52,6 +52,7 @@ pub struct Component {
 #[derive(Clone, Copy, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ComponentName {
+    Initialization,
     Telemetry,
     Inventory,
     IdentityAudit,
@@ -87,6 +88,10 @@ pub enum Task {
 #[derive(Clone, Copy, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Reason {
+    InitializationAuthorization,
+    InitializationContent,
+    InitializationConflict,
+    InitializationTelemetryBackend,
     Initializing,
     Stopping,
     WorkerNotRunning,
@@ -135,6 +140,8 @@ pub struct Queue {
 #[derive(Clone, Copy, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum QueueName {
+    InitializationAssetsPending,
+    InitializationTelemetryPending,
     DeliveryUnknown,
     DeliveryBlocked,
     MaintenancePending,

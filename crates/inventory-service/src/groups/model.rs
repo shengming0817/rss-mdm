@@ -8,6 +8,12 @@ use serde::{Deserialize, Serialize};
     deny_unknown_fields
 )]
 pub enum GroupChange {
+    /// Product initialization only; the HTTP input never admits this variant.
+    #[serde(skip_deserializing)]
+    CreateSystem {
+        presentation: serde_json::Map<String, serde_json::Value>,
+        selector: rss_mdm_group_postgres::SystemSelector,
+    },
     Create {
         presentation: serde_json::Map<String, serde_json::Value>,
         criteria: Option<criteria::Condition>,

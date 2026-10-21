@@ -30,7 +30,7 @@ impl Compliance {
                     return Err(Error::Unavailable(Failure::ComplianceStorage).into());
                 }
                 ready = build.request.rule_version == g.rule_version;
-                if g.kind == group::GroupKind::Dynamic {
+                if g.kind != group::GroupKind::Static {
                     let at = build
                         .request
                         .input_version

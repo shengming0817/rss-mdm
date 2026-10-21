@@ -81,6 +81,34 @@ impl Planning {
         audit: &RequestAudit,
         authorize: &(dyn Fn() -> std::result::Result<(), Error> + Sync),
     ) -> std::result::Result<Value, Error> {
+        self.execute_with_initialization(command, audit, authorize, None)
+            .await
+    }
+    pub async fn execute_initialization(
+        &self,
+        command: &Command,
+        audit: &RequestAudit,
+        proof: &crate::authorization::context::AuthorizedPrincipal,
+    ) -> std::result::Result<Value, Error> {
+        self.execute_with_initialization(
+            command,
+            audit,
+            &|| {
+                proof
+                    .manage(crate::authorization::Permission::ScopeWrite)
+                    .map_err(Error::from)
+            },
+            Some(proof),
+        )
+        .await
+    }
+    async fn execute_with_initialization(
+        &self,
+        command: &Command,
+        audit: &RequestAudit,
+        authorize: &(dyn Fn() -> std::result::Result<(), Error> + Sync),
+        initialization: Option<&crate::authorization::context::AuthorizedPrincipal>,
+    ) -> std::result::Result<Value, Error> {
         match command {
             Command::Scope { id, .. } | Command::ScopeRead { id } => audit.resource_target(
                 rss_mdm_audit_integration::TargetKind::Scope,
@@ -103,10 +131,22 @@ impl Planning {
             &self.runtime,
             self.tenant,
             audit,
-            &(self, command, audit, authorize),
+            &(self, command, audit, authorize, initialization),
             |ctx, tx| {
                 Box::pin(async move {
-                    let (s, command, audit, authorize) = *ctx;
+                    let (s, command, audit, authorize, initialization) = *ctx;
+                    if let Some(proof) = initialization {
+                        let Command::Scope { id, .. } = command else {
+                            return Err(Error::Forbidden.into());
+                        };
+                        crate::authorization::baseline::check_in(
+                            tx,
+                            proof,
+                            crate::authorization::Permission::ScopeWrite,
+                            &id.to_string(),
+                        )
+                        .await?;
+                    }
                     s.execute_in(tx, command, audit, authorize).await
                 })
             },

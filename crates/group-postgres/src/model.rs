@@ -107,6 +107,29 @@ pub enum GroupKind {
     Static,
     /// Members are derived from a frozen typed rule and supplied snapshot.
     Dynamic,
+    /// Members follow authenticated endpoint lifecycle facts.
+    System,
+}
+/// Immutable product lifecycle selection; never supplied by editable presentation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SystemSelector {
+    /// Every currently managed endpoint, including devices without Inventory.
+    AllActive,
+    /// Managed endpoints whose authenticated sources agree on Windows.
+    Windows,
+    /// Managed endpoints whose authenticated sources agree on macOS.
+    Macos,
+}
+impl SystemSelector {
+    /// Canonical storage value.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::AllActive => "all_active",
+            Self::Windows => "windows",
+            Self::Macos => "macos",
+        }
+    }
 }
 #[derive(Clone, Debug)]
 /// Initial membership authority; dynamic definitions include a validated core rule.
@@ -115,6 +138,8 @@ pub enum Definition {
     Static,
     /// Create an empty dynamic group with this immutable rule version.
     Dynamic(Box<Rule>),
+    /// Create a product-owned lifecycle group.
+    System(SystemSelector),
 }
 /// Commands own business invariants. No raw member-write API is exposed.
 #[derive(Clone, Debug)]
@@ -184,6 +209,8 @@ pub struct Group {
     pub id: GroupId,
     /// Immutable membership authority.
     pub kind: GroupKind,
+    /// Immutable lifecycle selector, present exactly for system groups.
+    pub system_selector: Option<SystemSelector>,
     /// Immutable input object universe.
     pub asset_context: AssetContext,
     /// Open descriptive properties; never membership or rule authority.

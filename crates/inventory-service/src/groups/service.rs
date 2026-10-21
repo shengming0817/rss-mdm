@@ -35,6 +35,43 @@ impl Groups {
         authorize: &(dyn Fn() -> std::result::Result<(), Error> + Sync),
         flow: &dyn Flow,
     ) -> std::result::Result<Value, Error> {
+        self.execute_with_initialization(command, audit, authorize, flow, None)
+            .await
+    }
+    /// Only the product initializer can create a lifecycle-owned system group.
+    pub async fn execute_initialization(
+        &self,
+        command: &Command,
+        audit: &RequestAudit,
+        proof: &rss_mdm_authorization_service::context::AuthorizedPrincipal,
+        flow: &dyn Flow,
+    ) -> std::result::Result<Value, Error> {
+        self.execute_with_initialization(
+            command,
+            audit,
+            &|| {
+                proof
+                    .manage(rss_mdm_authorization_service::Permission::GroupWrite)
+                    .map_err(Error::from)
+            },
+            flow,
+            Some(proof),
+        )
+        .await
+    }
+    async fn execute_with_initialization(
+        &self,
+        command: &Command,
+        audit: &RequestAudit,
+        authorize: &(dyn Fn() -> std::result::Result<(), Error> + Sync),
+        flow: &dyn Flow,
+        initialization: Option<&rss_mdm_authorization_service::context::AuthorizedPrincipal>,
+    ) -> std::result::Result<Value, Error> {
+        if matches!(command,Command::Group {change,..} if matches!(change.input,GroupChange::CreateSystem {..}))
+            && initialization.is_none()
+        {
+            return Err(Error::Forbidden);
+        }
         match command {
             Command::Group { id, .. }
             | Command::GroupRead { id }
@@ -56,10 +93,22 @@ impl Groups {
             &self.runtime,
             self.tenant,
             audit,
-            (self, command, audit, authorize, flow),
+            (self, command, audit, authorize, flow, initialization),
             |ctx, tx| {
                 Box::pin(async move {
-                    let (s, command, audit, authorize, flow) = *ctx;
+                    let (s, command, audit, authorize, flow, initialization) = *ctx;
+                    if let Some(proof) = initialization {
+                        let Command::Group { id, .. } = command else {
+                            return Err(Error::Forbidden.into());
+                        };
+                        rss_mdm_authorization_service::baseline::check_in(
+                            tx,
+                            proof,
+                            rss_mdm_authorization_service::Permission::GroupWrite,
+                            &id.to_string(),
+                        )
+                        .await?;
+                    }
                     let partitions = match command {
                         Command::Group { id, .. } => vec![s.groups.partition(&id.to_string())?],
                         _ => vec![],

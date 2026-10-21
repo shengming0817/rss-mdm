@@ -4,7 +4,7 @@ use anyhow::{Result, ensure};
 use sqlx::Connection;
 
 #[tokio::test]
-#[ignore = "MODULE=telemetry.storage: empty PG16 and Timescale databases, real roles and restart admission"]
+#[ignore = "MODULE=telemetry.storage: empty PG17 and Timescale databases, real roles and restart admission"]
 async fn explicit_installations_replay_and_reopen_without_runtime_ddl() -> Result<()> {
     let requests: Vec<crate::setup::providers::telemetry::Request> =
         serde_json::from_slice(&std::fs::read(std::env::var("MDM_TELEMETRY_PROVIDERS")?)?)?;
@@ -32,6 +32,56 @@ async fn explicit_installations_replay_and_reopen_without_runtime_ddl() -> Resul
         let restricted:bool=sqlx::query_scalar("SELECT NOT rolsuper AND NOT rolbypassrls AND NOT rolcreaterole AND NOT rolcreatedb FROM pg_roles WHERE rolname=$1")
             .bind(&request.configuration.database().user).fetch_one(&mut owner).await?;
         ensure!(restricted);
+        if matches!(
+            request.configuration.backend,
+            crate::telemetry::Storage::Postgres { .. }
+        ) {
+            use crate::setup::providers::telemetry::{
+                Partition, PhysicalAction, PhysicalRequest, maintain,
+            };
+            let live = request.configuration.open_backend(tenant).await?;
+            let last = request
+                .partitions
+                .iter()
+                .map(|p| p.end_micros)
+                .max()
+                .unwrap();
+            let physical = PhysicalRequest {
+                installation: request.clone(),
+                operation_id: uuid::Uuid::new_v4(),
+                action: PhysicalAction::PreparePartitions {
+                    partitions: vec![Partition {
+                        start_micros: last,
+                        end_micros: last + 86400000000,
+                    }],
+                },
+            };
+            // Idle runtime pools and active operator connections are allowed.
+            let first = maintain(physical.clone()).await?;
+            ensure!(maintain(physical.clone()).await? == first);
+            let mut blocked = physical.clone();
+            blocked.operation_id = uuid::Uuid::new_v4();
+            blocked.action = PhysicalAction::PreparePartitions {
+                partitions: vec![Partition {
+                    start_micros: last + 86400000000,
+                    end_micros: last + 172800000000,
+                }],
+            };
+            let mut lock = owner.begin().await?;
+            sqlx::raw_sql("LOCK TABLE rss_timeseries.samples IN ACCESS SHARE MODE")
+                .execute(&mut *lock)
+                .await?;
+            ensure!(
+                maintain(blocked.clone()).await.is_err(),
+                "bounded parent lock timeout"
+            );
+            lock.rollback().await?;
+            ensure!(
+                maintain(blocked).await?["state"] == "complete",
+                "same operation recovers after rollback"
+            );
+            live.close(cutoff()).await?;
+        }
         let mut changed = request.clone();
         changed.owner.push_str("_changed");
         ensure!(

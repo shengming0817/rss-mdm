@@ -1986,7 +1986,7 @@ add('telemetry.storage', selectors=('telemetry::tests::explicit_installations_re
 for backend in ('postgres','timescale_shared','timescale_dedicated','click_house'):
     name='telemetry.ingress.'+backend
     base=MODULES['planning.agent_policy']
-    add(name,selectors=(('telemetry::ingress::postgres','telemetry::ingress::postgres_current','telemetry::ingress::postgres_history') if backend=='postgres' else ('telemetry::ingress::'+backend,)),fixtures=tuple(dict.fromkeys((*(f for f in base.fixtures if f!='shared_worker'),'telemetry'))),actors=base.actors,
+    add(name,selectors=(('telemetry::ingress::postgres','telemetry::ingress::postgres_current','telemetry::ingress::postgres_history','telemetry::ingress::postgres_baseline_recovers_original_receipts_without_overwriting_edits') if backend=='postgres' else ('telemetry::ingress::'+backend,)),fixtures=tuple(dict.fromkeys((*(f for f in base.fixtures if f!='shared_worker'),'telemetry'))),actors=base.actors,
         sources=('crates/app/src/telemetry.rs','crates/app/src/setup/providers/telemetry.rs','crates/app/src/setup/providers/telemetry/*','crates/app/src/setup/backup.rs','crates/app/src/setup/backup/archive.rs','crates/app/src/setup/backup/telemetry.rs','crates/telemetry-service/src/*','crates/agent-channel/src/telemetry.rs','crates/management-http/src/telemetry.rs','crates/flow-service/src/planning/policies/telemetry.rs','crates/flow-service/src/resource_catalog/telemetry.rs'),
         tests=('crates/app/tests/telemetry/ingress.rs','crates/app/tests/telemetry/counter.rs','crates/app/tests/telemetry/recovery.rs',*(('crates/app/tests/telemetry/gaps.rs','crates/app/tests/telemetry/performance.rs') if backend=='postgres' else ())),support=(*base.support_inputs,'hack/telemetry_fixtures.py','hack/telemetry_pg_client.py','crates/app/tests/setup/telemetry_backup.rs','crates/app/tests/support/agent_execution.rs','crates/app/tests/support/agent.rs'))
     MODULES[name]=replace(MODULES[name],scope='pair' if backend=='postgres' else 'tenant',db_mode='fresh',materials=base.materials,actors=tuple(dict.fromkeys((*base.actors,*( (('peer','admin'),) if backend=='postgres' else () )))))
@@ -2044,3 +2044,9 @@ add('agent.current_user', selectors=('agent::t2::current_user::',), fixtures=('i
 MODULES['agent.current_user'] = replace(MODULES['agent.current_user'], scope='tenant')
 consume(('crates/registration-service/src/device/registration_user.rs','crates/management-http/src/enrollment/registration_user.rs'), 'enrollment.quotas device.views')
 consume(('crates/registration-service/src/agent/current_user.rs',), 'device.views')
+
+# Tenant defaults remain App orchestration over the existing owners.
+consume(('crates/app/src/baseline/*.rs','crates/app/schema/baseline.sql','crates/authorization-service/src/baseline.rs'), 'telemetry.ingress.postgres authorization.initialization catalog.contract')
+consume(('crates/app/src/setup/default_telemetry.rs',), 'telemetry.storage deployment.management-tenant')
+
+MODULES['planning.group_scope']=replace(MODULES['planning.group_scope'],policies=(*MODULES['planning.group_scope'].policies,CasePolicy('planning::t2::group_scope::system_lifecycle_snapshot_pages_before_collection_and_preserves_old_authority','fresh','tenant')))
