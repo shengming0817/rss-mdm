@@ -9,6 +9,7 @@ publish.workspace = true
 [dependencies]
 msi = "=0.10.0"
 cfb = "=0.14.0"
+flate2.workspace = true
 pelite = { version = "=0.10.0", default-features = false, features = ["std"] }
 xara = { version = "=0.4.2", default-features = false }
 ring.workspace = true
@@ -45,7 +46,6 @@ tokio-util = { workspace = true, features = ["io", "rt"] }
 zip = { version = "=9.0.0", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 
 [dev-dependencies]
-flate2.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "test-util"] }
 
 [lints]

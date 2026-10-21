@@ -239,6 +239,17 @@ fn pkg(
     {
         return Err(invalid());
     }
+    file.seek(SeekFrom::Start(u64::from(header.header_size)))
+        .map_err(|_| invalid())?;
+    let mut toc = Vec::new();
+    flate2::read::ZlibDecoder::new((&mut *file).take(header.toc_compressed_len))
+        .take(METADATA + 1)
+        .read_to_end(&mut toc)
+        .map_err(|_| invalid())?;
+    if toc.len() as u64 != header.toc_uncompressed_len {
+        return Err(invalid());
+    }
+    toc_budget(&toc, config.max_bundle_entries)?;
     file.rewind().map_err(|_| invalid())?;
     let mut archive = xara::XarArchive::open(file).map_err(|_| invalid())?;
     if archive.files().len() > config.max_bundle_entries {
@@ -378,4 +389,104 @@ fn pkg(
             None
         },
     })
+}
+
+// xara resolves every file's complete parent path before returning entries. Bound that work
+// before its parser, including ancestors repeated in descendants' paths (not just TOC bytes).
+fn toc_budget(xml: &[u8], max_entries: usize) -> Result<(), Error> {
+    #[derive(PartialEq)]
+    enum Tag {
+        File,
+        Name,
+        Other,
+    }
+    let mut reader = Reader::from_reader(xml);
+    let mut elements = Vec::new();
+    let mut files = Vec::<(u64, u64)>::new(); // name bytes, descendant count
+    let mut entries = 0usize;
+    let mut expanded = 0u64;
+    loop {
+        match reader.read_event().map_err(|_| invalid())? {
+            Event::Start(element) => {
+                if elements.len() >= 32 {
+                    return Err(invalid());
+                }
+                let tag = match element.name().as_ref() {
+                    b"file" => {
+                        entries += 1;
+                        if entries > max_entries {
+                            return Err(invalid());
+                        }
+                        files.push((0, 0));
+                        Tag::File
+                    }
+                    b"name" if elements.last() == Some(&Tag::File) => Tag::Name,
+                    _ => Tag::Other,
+                };
+                elements.push(tag);
+            }
+            Event::Empty(element) if element.name().as_ref() == b"file" => {
+                entries += 1;
+                if entries > max_entries {
+                    return Err(invalid());
+                }
+            }
+            Event::Text(text) if elements.last() == Some(&Tag::Name) => {
+                files.last_mut().ok_or_else(invalid)?.0 += text.len() as u64;
+            }
+            Event::CData(text) if elements.last() == Some(&Tag::Name) => {
+                files.last_mut().ok_or_else(invalid)?.0 += text.len() as u64;
+            }
+            Event::GeneralRef(text) if elements.last() == Some(&Tag::Name) => {
+                files.last_mut().ok_or_else(invalid)?.0 += text.len() as u64 + 2;
+            }
+            Event::End(_) => {
+                if elements.pop().ok_or_else(invalid)? == Tag::File {
+                    let (name, descendants) = files.pop().ok_or_else(invalid)?;
+                    let count = descendants.checked_add(1).ok_or_else(invalid)?;
+                    expanded = expanded
+                        .checked_add((name + 1).checked_mul(count).ok_or_else(invalid)?)
+                        .ok_or_else(invalid)?;
+                    if expanded > METADATA {
+                        return Err(invalid());
+                    }
+                    if let Some(parent) = files.last_mut() {
+                        parent.1 += count;
+                    }
+                }
+            }
+            Event::DocType(_) => return Err(invalid()),
+            Event::Eof => {
+                return if elements.is_empty() && files.is_empty() {
+                    Ok(())
+                } else {
+                    Err(invalid())
+                };
+            }
+            _ => {}
+        }
+    }
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn xar_budget_bounds_entries_depth_and_expanded_parent_paths() {
+        let small = b"<xar><toc><file><name>PackageInfo</name></file></toc></xar>";
+        assert!(toc_budget(small, 1).is_ok());
+        assert!(toc_budget(small, 0).is_err());
+        let deep = format!(
+            "{}{}",
+            "<file><name>x</name>".repeat(40),
+            "</file>".repeat(40)
+        );
+        assert!(toc_budget(deep.as_bytes(), 100).is_err());
+        let wide = format!(
+            "<file><name>{}</name>{}</file>",
+            "x".repeat(8192),
+            "<file><name>x</name></file>".repeat(200)
+        );
+        assert!(wide.len() < METADATA as usize);
+        assert!(toc_budget(wide.as_bytes(), 1000).is_err());
+    }
 }

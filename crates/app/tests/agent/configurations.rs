@@ -8,7 +8,6 @@ use anyhow::Context;
 use base64::{Engine, engine::general_purpose::STANDARD};
 use rss_mdm_agent_wire::{enroll as w, runtime as r};
 use software::Fixture;
-use sqlx::Connection;
 use uuid::Uuid;
 fn root() -> std::path::PathBuf {
     std::env::var("MDM_AGENT_PKI_FIXTURES").unwrap().into()
@@ -494,9 +493,6 @@ async fn fixed_packages_and_configurations_activate_beyond_self_quota() -> Resul
     let (file, _) = configuration(&f, &mut user, json!({"kind":"finite","count":2}), None).await?;
     let (unlimited, _) = configuration(&f, &mut user, json!({"kind":"unlimited"}), None).await?;
     let tls = Tls::start(&authority).await?;
-    let mut legacy_owner = sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?).await?;
-    sqlx::query("UPDATE mdm_agent_packages.releases SET document=jsonb_set(document,'{channel}','\"production\"') WHERE tenant_id=$1::uuid AND id=ANY($2)")
-        .bind(case_tenant()).bind(&[windows.release_id, macos.release_id][..]).execute(&mut legacy_owner).await?;
     let mut devices = std::collections::BTreeSet::new();
     for (index, config) in [&file, &unlimited].into_iter().enumerate() {
         for (offset, package) in [&windows, &macos].into_iter().enumerate() {
@@ -507,18 +503,6 @@ async fn fixed_packages_and_configurations_activate_beyond_self_quota() -> Resul
     }
     ensure!(devices.len() == 4);
     ensure!(machine(&f, "/api/v1/agent/enroll/configurations/exchange", &exchange(&file, &macos, 2)?).await?.0 == StatusCode::TOO_MANY_REQUESTS);
-    // Historical authority stays byte-for-byte intact; management projects current metadata only.
-    let mut legacy = legacy_owner.begin().await?;
-    sqlx::query("UPDATE mdm_access.agent_configurations SET document=jsonb_set(document,'{channels}','[\"production\"]') WHERE tenant_id=$1::uuid AND id=$2")
-        .bind(case_tenant()).bind(file.configuration.configuration_id).execute(&mut *legacy).await?;
-    legacy.commit().await?;
-    let historical = read(&f, &mut user, file.configuration.configuration_id).await?;
-    ensure!(historical["configuration"].get("channels").is_none() && historical["consumed"] == 2);
-    let mut legacy = legacy_owner.begin().await?;
-    let retained: bool = sqlx::query_scalar("SELECT document ? 'channels' FROM mdm_access.agent_configurations WHERE tenant_id=$1::uuid AND id=$2")
-        .bind(case_tenant()).bind(file.configuration.configuration_id).fetch_one(&mut *legacy).await?;
-    ensure!(retained);
-    legacy.commit().await?;
     let me = user
         .call(
             &f.router,
@@ -554,7 +538,6 @@ async fn fixed_packages_and_configurations_activate_beyond_self_quota() -> Resul
         live == 4,
         "configuration revoke deactivated existing devices"
     );
-    legacy_owner.close().await?;
     ensure!(tls.owner.shutdown().join().await?.is_clean());
     Ok(())
 

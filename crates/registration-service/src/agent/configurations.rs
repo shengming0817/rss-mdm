@@ -125,14 +125,7 @@ pub struct Read {
     pub remaining: Option<u64>,
 }
 async fn read_on(c: &mut PgConnection, tenant: &str, row: &PgRow) -> Result<Read, Error> {
-    // Historical signed documents remain unchanged; this read-only view is not a signed file.
-    let mut metadata: serde_json::Value = row.try_get("document").map_err(db)?;
-    metadata
-        .as_object_mut()
-        .ok_or(Error::Corrupt)?
-        .remove("channels");
-    let configuration: wire_config::Configuration =
-        serde_json::from_value(metadata).map_err(|_| Error::Corrupt)?;
+    let configuration = document(row)?;
     let (reserved, consumed) = usage(c, tenant, configuration.configuration_id).await?;
     let state = if row.try_get::<String, _>("state").map_err(db)? == "revoked" {
         "revoked"
