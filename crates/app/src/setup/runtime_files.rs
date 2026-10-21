@@ -63,22 +63,15 @@ impl Config {
         std::fs::create_dir_all(&directory).map_err(|_| Error::Storage)?;
         Ok(json!({"kind":"volume","directory":directory}))
     }
-    /// Runtime and cold backup must refer to this host's same declared backing store.
-    pub(super) fn content_snapshot(&self, runtime: &Value) -> Result<Option<PathBuf>> {
-        let Some(content) = runtime.get("content").filter(|v| !v.is_null()) else {
-            return Ok(None);
-        };
-        match content["storage"]["kind"].as_str() {
-            Some("volume") => {
-                let directory = self.content_directory();
-                if content["storage"]["directory"] != json!(directory) {
-                    return Err(Error::Conflict);
-                }
-                Ok(Some(directory))
-            }
-            Some("s3") => Ok(None),
-            _ => Err(Error::Input),
+    /// Keep the deployed volume in cold backups even when Content is disabled or uses S3.
+    pub(super) fn content_snapshot(&self, runtime: &Value) -> Result<PathBuf> {
+        let directory = self.content_directory();
+        if runtime["content"]["storage"]["kind"] == "volume"
+            && runtime["content"]["storage"]["directory"] != json!(directory)
+        {
+            return Err(Error::Conflict);
         }
+        Ok(directory)
     }
 }
 #[derive(Clone, Deserialize, Serialize)]

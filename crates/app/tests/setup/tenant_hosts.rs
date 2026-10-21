@@ -17,6 +17,13 @@ fn additional_host_content_and_cold_snapshot_follow_its_own_deployment() {
     runtime["content"] =
         serde_json::json!({"storage":primary.prepare_content_storage().unwrap(),"max_uploads":8});
     std::fs::write(primary.content_directory().join("artifact"), b"primary").unwrap();
+    let mut disabled = runtime.clone();
+    disabled["content"] = Value::Null;
+    assert_eq!(
+        primary.content_snapshot(&disabled).unwrap(),
+        primary.content_directory()
+    );
+
     let progress = super::super::model::Provisioning {
         operation_id: Uuid::new_v4(),
         tenant_id: Uuid::new_v4(),
@@ -43,11 +50,7 @@ fn additional_host_content_and_cold_snapshot_follow_its_own_deployment() {
             },
         };
         let candidate = additional_runtime(&runtime, &slot, &progress).unwrap();
-        let volume = slot
-            .deployment
-            .content_snapshot(&candidate)
-            .unwrap()
-            .unwrap();
+        let volume = slot.deployment.content_snapshot(&candidate).unwrap();
         assert_ne!(volume, primary.content_directory());
         assert_eq!(candidate["content"]["max_uploads"], 8);
         assert!(matches!(

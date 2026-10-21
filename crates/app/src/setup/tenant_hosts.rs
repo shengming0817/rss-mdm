@@ -214,12 +214,16 @@ async fn provision_pending(
             // Reserve the runtime output position before writing files; retries retain the binding.
             reservations.insert(progress.host_id, index);
             journal.save("host-reservations.json", reservations)?;
-            let candidate = additional_runtime(runtime, slot, progress)?;
-            if activate(&input.directory, &slot.deployment, &candidate, progress)
-                .await
-                .is_ok()
-            {
-                completed += 1;
+            match additional_runtime(runtime, slot, progress) {
+                Ok(candidate) => {
+                    if activate(&input.directory, &slot.deployment, &candidate, progress)
+                        .await
+                        .is_ok()
+                    {
+                        completed += 1;
+                    }
+                }
+                Err(_) => progress.blocked = Some(BlockedReason::HostUnavailable),
             }
         } else {
             progress.blocked = Some(BlockedReason::Capacity);

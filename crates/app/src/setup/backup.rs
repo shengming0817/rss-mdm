@@ -525,9 +525,8 @@ async fn capture_stopped(frozen: &Frozen, journal: &Journal, progress: &mut Rece
     capture_ledger_heads(&mut c, frozen, journal).await?;
     for host in &frozen.hosts {
         let deployment = host_deployment(&frozen.request.installation, host.slot)?;
-        if let Some(volume) = deployment.content_snapshot(&host.runtime)? {
-            snapshot_tree::capture(journal, &format!("volume-{}", host.id.simple()), &volume)?;
-        }
+        let volume = deployment.content_snapshot(&host.runtime)?;
+        snapshot_tree::capture(journal, &format!("volume-{}", host.id.simple()), &volume)?;
         storage::capture(&mut c, journal, host.id, &host.runtime).await?;
     }
     no_writers(&mut c).await?;
@@ -662,9 +661,8 @@ async fn restore_contents(
     no_writers(&mut c).await?;
     for host in &frozen.hosts {
         let deployment = host_deployment(&frozen.request.installation, host.slot)?;
-        if deployment.content_snapshot(&host.runtime)?.is_some() {
-            snapshot_tree::restore(journal, &format!("volume-{}", host.id.simple()))?;
-        }
+        deployment.content_snapshot(&host.runtime)?;
+        snapshot_tree::restore(journal, &format!("volume-{}", host.id.simple()))?;
         storage::restore(&mut c, journal, host.id, &host.runtime).await?;
     }
     let expected: Vec<ledger::Head> = journal
