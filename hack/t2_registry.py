@@ -2174,13 +2174,12 @@ add('telemetry.storage', selectors=('telemetry::tests::explicit_installations_re
     tests=('crates/app/tests/telemetry/storage.rs',), support=('hack/telemetry_fixtures.py','deployment/providers.lock.json'))
 
 consume_dependencies('telemetry.storage', normal='rss-mdm-telemetry-service rss-timeseries rss-timeseries-postgres rss-timeseries-clickhouse sqlx tokio')
-consume(('crates/app/src/setup/backup/archive.rs',), 'telemetry.storage')
 
 for backend in ('postgres','timescale_shared','timescale_dedicated','click_house'):
     name='telemetry.ingress.'+backend
     base=MODULES['planning.agent_policy']
     add(name,selectors=('telemetry::ingress::'+backend,),fixtures=tuple(dict.fromkeys((*(f for f in base.fixtures if f!='shared_worker'),'telemetry'))),actors=base.actors,
-        sources=('crates/telemetry-service/src/*','crates/agent-channel/src/telemetry.rs','crates/management-http/src/telemetry.rs','crates/flow-service/src/planning/policies/telemetry.rs','crates/flow-service/src/resource_catalog/telemetry.rs'),
+        sources=('crates/app/src/telemetry.rs','crates/app/src/setup/providers/telemetry.rs','crates/app/src/setup/providers/telemetry/*','crates/app/src/setup/backup.rs','crates/app/src/setup/backup/archive.rs','crates/app/src/setup/backup/telemetry.rs','crates/telemetry-service/src/*','crates/agent-channel/src/telemetry.rs','crates/management-http/src/telemetry.rs','crates/flow-service/src/planning/policies/telemetry.rs','crates/flow-service/src/resource_catalog/telemetry.rs'),
         tests=('crates/app/tests/telemetry/ingress.rs',),support=(*base.support_inputs,'hack/telemetry_fixtures.py','hack/telemetry_pg_client.py','crates/app/tests/setup/telemetry_backup.rs','crates/app/tests/support/agent_execution.rs','crates/app/tests/support/agent.rs'))
     MODULES[name]=replace(MODULES[name],scope='tenant',db_mode='fresh',materials=base.materials)
     consume_dependencies(name,normal='rss-mdm-telemetry-service rss-timeseries rss-timeseries-postgres rss-timeseries-clickhouse rss-mdm-agent-channel rss-mdm-flow-service rss-mdm-inventory-service rss-mdm-registration-service rss-mdm-resource rss-mdm-agent-wire sqlx tokio')

@@ -20,7 +20,7 @@ async fn run(expected: &str) -> Result<()> {
     base["telemetry"] = serde_json::to_value(&installation.configuration)?;
     let mut f = Fixture::from_config(base.clone()).await?;
     let resources = std::mem::take(&mut f.resources);
-    let (body,query,receipt_path)=resources.finish(async {
+    let (body,query,receipt_path,other_device)=resources.finish(async {
         f.grants.push(crate::authorization::Grant {operation:crate::authorization::Permission::InventoryFieldsWrite,scope:crate::authorization::Scope::Tenant});
         for operation in [crate::authorization::Permission::InventoryCollect,crate::authorization::Permission::TelemetryMaintain,crate::authorization::Permission::TelemetryDelete] {
             f.grants.push(crate::authorization::Grant {operation,scope:crate::authorization::Scope::AllDevices});
@@ -64,7 +64,7 @@ async fn run(expected: &str) -> Result<()> {
         let now=std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?.as_micros() as i64;
         let id=Uuid::new_v4();let observation=Uuid::new_v4();
         let body=json!({"batchId":id,"policy":policy["id"],"policyVersion":policy["versionId"],"binding":configuration.binding,"observations":[{"id":observation,"sequence":1,"observedAt":now-1_000_000,"values":{"custom.corporate_agent.healthy":{"quality":"valid","value":{"kind":"boolean","value":true},"intervalStart":null}}}]});
-        if expected=="postgres" {signing_gate(&mut f,scope,&config_path,&body).await?;}
+        let other_device=if expected=="postgres" {Some(signing_gate(&mut f,scope,&config_path,&body).await?)} else {None};
         let path="/api/v1/agent/runtime/telemetry/batches";
         let (status,accepted)=agent_call(&f.router,Method::POST,path,Some(case_credential()),Some(body.clone())).await?;
         ensure!(status==StatusCode::ACCEPTED,"upload: {status} {accepted}");
@@ -89,16 +89,20 @@ async fn run(expected: &str) -> Result<()> {
         ensure!(agent_call(&f.router,Method::POST,path,Some(case_credential()),Some(regrouped)).await?.0==StatusCode::ACCEPTED);
         published(&f.router,&format!("{path}/{regrouped_id}")).await?;
         observed(&f.router,&receipt_path,observation,"snapshot","applied").await?;
+        let before_late=current_field(&mut f.author,&f.router).await?;
+        ensure!(before_late.state==rss_mdm_inventory::State::Known(rss_mdm_inventory::Scalar::Boolean(true)));
+        ensure!(before_late.sources.iter().any(|s|s.evidence.source==rss_mdm_inventory::Source::AgentScript && s.evidence.snapshot_id==observation.to_string()));
         let mut late=body.clone();let late_batch=Uuid::new_v4();let late_observation=Uuid::new_v4();
         late["batchId"]=json!(late_batch);late["observations"][0]["id"]=json!(late_observation);
         late["observations"][0]["sequence"]=json!(0);late["observations"][0]["observedAt"]=json!(now-1_500_000);
         late["observations"][0]["values"]["custom.corporate_agent.healthy"]["value"]["value"]=json!(false);
         ensure!(agent_call(&f.router,Method::POST,path,Some(case_credential()),Some(late)).await?.0==StatusCode::ACCEPTED);
         observed(&f.router,&format!("{path}/{late_batch}"),late_observation,"stale","notApplicable").await?;
+        ensure!(current_field(&mut f.author,&f.router).await?==before_late,"backfill changed current value or provenance");
         let query=json!({"device":case_device_id(),"field":"custom.corporate_agent.healthy","resource":"device","startMicros":now-2_000_000,"endMicros":now+1_000_000,"maxPoints":64,"mode":"history","after":null});
         let history=post(&mut f.author,&f.router,"/api/v1/telemetry/history",query.clone()).await?;
         ensure!(history["rows"].as_array().is_some_and(|v|v.len()==2),"history: {history}");
-        Ok((body,query,receipt_path))
+        Ok((body,query,receipt_path,other_device))
     }).await?;
     if matches!(
         installation.configuration.backend,
@@ -211,22 +215,77 @@ async fn run(expected: &str) -> Result<()> {
             )
             .await?;
             ensure!(restored["rows"].as_array().is_some_and(|v| v.len() == 2));
-            let mut denied = query.clone();
-            denied["device"] = json!("unassigned-device");
-            let grants = identity::device_grants(Some(case_device_id()), &["inventory_read"])?;
-            identity::set_grants(case_tenant(), &f.author_id, grants).await?;
+            let mut page_query = query.clone();
+            page_query["maxPoints"] = json!(1);
+            let first = post(
+                &mut f.author,
+                &router,
+                "/api/v1/telemetry/history",
+                page_query.clone(),
+            )
+            .await?;
+            ensure!(
+                first["rows"].as_array().is_some_and(|v| v.len() == 1) && first["next"].is_string(),
+                "real continuation: {first}"
+            );
+            page_query["after"] = first["next"].clone();
+            let second = post(
+                &mut f.author,
+                &router,
+                "/api/v1/telemetry/history",
+                page_query.clone(),
+            )
+            .await?;
+            ensure!(second["rows"].as_array().is_some_and(|v| v.len() == 1));
+            identity::set_grants(case_tenant(), &f.author_id, vec![]).await?;
             ensure!(
                 f.author
                     .call(
                         &router,
                         Method::POST,
                         "/api/v1/telemetry/history",
-                        Some(denied)
+                        Some(page_query)
                     )
                     .await?
                     .0
-                    == StatusCode::FORBIDDEN
+                    == StatusCode::FORBIDDEN,
+                "continuation must recheck revoked read permission"
             );
+            identity::set_grants(case_tenant(), &f.author_id, f.grants.clone()).await?;
+            // Query a genuine second device with durable samples, not a missing identifier.
+            if let Some(other_device) = other_device {
+                let mut denied = query.clone();
+                denied["device"] = json!(other_device);
+                let permitted = post(
+                    &mut f.author,
+                    &router,
+                    "/api/v1/telemetry/history",
+                    denied.clone(),
+                )
+                .await?;
+                ensure!(permitted["rows"].as_array().is_some_and(|v| v.len() == 1));
+                let grants = identity::device_grants(Some(case_device_id()), &["inventory_read"])?;
+                identity::set_grants(case_tenant(), &f.author_id, grants).await?;
+                ensure!(
+                    f.author
+                        .call(
+                            &router,
+                            Method::POST,
+                            "/api/v1/telemetry/history",
+                            Some(denied)
+                        )
+                        .await?
+                        .0
+                        == StatusCode::FORBIDDEN
+                );
+            } else {
+                identity::set_grants(
+                    case_tenant(),
+                    &f.author_id,
+                    identity::device_grants(Some(case_device_id()), &["inventory_read"])?,
+                )
+                .await?;
+            }
             // A durable old receipt survives publisher revocation, but replay still needs current admission.
             ensure!(
                 agent_call(
@@ -348,7 +407,7 @@ async fn signing_gate(
     scope: Uuid,
     configuration: &str,
     original: &Value,
-) -> Result<()> {
+) -> Result<String> {
     let mut authority = authority::Authority::from_config(f.base.clone()).await?;
     let resources = std::mem::take(&mut authority.resources);
     resources.finish(async {
@@ -362,8 +421,45 @@ async fn signing_gate(
         ensure!(agent_call(&f.router,Method::GET,configuration,Some(label),None).await?.0==StatusCode::FORBIDDEN);
         let peer=agent::evidence(label).unwrap();
         crate::test_support::task_signing::acknowledge(&service,&peer).await?;
-        ensure!(agent_call(&f.router,Method::GET,configuration,Some(label),None).await?.0==StatusCode::OK);
+        let (status, signed)=agent_call(&f.router,Method::GET,configuration,Some(label),None).await?;
+        ensure!(status==StatusCode::OK);
         ensure!(agent_call(&f.router,Method::POST,"/api/v1/agent/runtime/telemetry/batches",Some(label),Some(original.clone())).await?.0==StatusCode::FORBIDDEN);
-        Ok(())
+        let mut own=original.clone();
+        let batch=Uuid::new_v4();
+        own["binding"]=signed["configuration"]["binding"].clone();
+        own["batchId"]=json!(batch);own["observations"][0]["id"]=json!(Uuid::new_v4());
+        let (status,result)=agent_call(&f.router,Method::POST,"/api/v1/agent/runtime/telemetry/batches",Some(label),Some(own)).await?;
+        ensure!(status==StatusCode::ACCEPTED,"second device: {status} {result}");
+        tokio::time::timeout(Duration::from_secs(30),async {
+            loop {
+                let (status,receipt)=agent_call(&f.router,Method::GET,&format!("/api/v1/agent/runtime/telemetry/batches/{batch}"),Some(label),None).await?;
+                ensure!(status==StatusCode::OK);
+                if receipt["delivery"]=="published" {break;}
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+            Ok::<_,anyhow::Error>(())
+        }).await??;
+        Ok(registration["deviceId"].as_str().unwrap().to_owned())
     }).await
+}
+
+async fn current_field(
+    browser: &mut Browser,
+    router: &Router,
+) -> Result<rss_mdm_inventory::ResolvedField> {
+    let (status, value) = browser
+        .call(
+            router,
+            Method::GET,
+            &format!("/api/v1/devices/{}/inventory", case_device_id()),
+            None,
+        )
+        .await?;
+    ensure!(
+        status == StatusCode::OK,
+        "current inventory: {status} {value}"
+    );
+    Ok(serde_json::from_value(
+        value["asset"]["device"]["fields"]["custom.corporate_agent.healthy"].clone(),
+    )?)
 }

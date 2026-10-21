@@ -34,12 +34,19 @@ pub enum Error {
 impl From<rss_timeseries::Error> for Error {
     fn from(e: rss_timeseries::Error) -> Self {
         match e {
-            rss_timeseries::Error::Conflict => Self::Conflict,
+            rss_timeseries::Error::Conflict
+            | rss_timeseries::Error::IncompatibleDefinition
+            | rss_timeseries::Error::Retired
+            | rss_timeseries::Error::HistoryExpired => Self::Conflict,
             rss_timeseries::Error::BudgetExceeded => Self::Capacity,
-            rss_timeseries::Error::InvalidInput | rss_timeseries::Error::NumericRange => {
-                Self::Invalid
-            }
-            _ => Self::Storage,
+            rss_timeseries::Error::InvalidInput
+            | rss_timeseries::Error::NumericRange
+            | rss_timeseries::Error::InvalidCursor => Self::Invalid,
+            rss_timeseries::Error::Unsupported => Self::Unsupported,
+            rss_timeseries::Error::Unauthorized => Self::Denied,
+            rss_timeseries::Error::Deadline
+            | rss_timeseries::Error::Unavailable
+            | rss_timeseries::Error::Invariant => Self::Storage,
         }
     }
 }

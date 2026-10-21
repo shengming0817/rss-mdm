@@ -113,7 +113,12 @@ impl Publisher<Vec<u8>> for PublisherService {
             for field in &input.profile.spec().fields {
                 match self.0.synchronize(field.clone(), cutoff).await {
                     Ok(true) => {}
-                    _ => return uncertain(),
+                    result => {
+                        self.0
+                            .observe_delivery_failure(input.input.batch_id, result.err())
+                            .await;
+                        return uncertain();
+                    }
                 }
             }
         }
@@ -153,19 +158,8 @@ impl Publisher<Vec<u8>> for PublisherService {
         if confirmed {
             return PublishOutcome::Confirmed(Published(()));
         }
-        let state = match *failure.lock().expect("delivery rejection") {
-            Some(Error::Denied | Error::Conflict | Error::Invalid) => "blocked",
-            _ => "unknown",
-        };
-        // A derived observation, not a second delivery state machine: RSS still owns retry.
-        let tenant = self.0.tenant;
-        let _=self.0.runtime.local_tx(tenant,crate::deadline(),move|tx|Box::pin(async move {
-            tx.with_connection(move|c|Box::pin(async move {
-                sqlx::query("UPDATE mdm_telemetry.batches SET delivery=$3 WHERE tenant_id=$1::uuid AND id=$2 AND delivery<>'published'")
-                    .bind(tenant.to_string()).bind(batch_id).bind(state).execute(c).await?;
-                Ok(())
-            })).await
-        })).await;
+        let error = *failure.lock().expect("delivery rejection");
+        self.0.observe_delivery_failure(batch_id, error).await;
         uncertain()
     }
 }
@@ -222,12 +216,42 @@ impl rss_transactional_messaging::observability::TransactionalMessagingEmitter f
         &self,
         event: rss_transactional_messaging::observability::TransactionalMessagingObservation,
     ) {
-        if let rss_transactional_messaging::observability::TransactionalMessagingObservation::RuntimeFailure { phase,kind } = event {
-            eprintln!("{}",serde_json::json!({"event":"telemetry_delivery_failure","phase":phase.as_label(),"kind":kind.as_label()}));
+        use rss_transactional_messaging::observability::TransactionalMessagingObservation as Event;
+        match event {
+            Event::RuntimeFailure { phase, kind } => eprintln!(
+                "{}",
+                serde_json::json!({"event":"telemetry_delivery_failure","phase":phase.as_label(),"kind":kind.as_label()})
+            ),
+            Event::OutboxPublishFailure {
+                stage,
+                reason,
+                ambiguous,
+            } => eprintln!(
+                "{}",
+                serde_json::json!({"event":"telemetry_publish_failure","stage":stage.as_label(),"reason":reason.as_label(),"ambiguous":ambiguous})
+            ),
+            _ => {}
         }
     }
 }
 impl Service {
+    async fn observe_delivery_failure(&self, batch_id: uuid::Uuid, error: Option<Error>) {
+        let state = match error {
+            Some(Error::Denied | Error::Conflict | Error::Invalid | Error::Unsupported) => {
+                "blocked"
+            }
+            _ => "unknown",
+        };
+        // Derived observation only: RSS owns retry and settlement.
+        let tenant = self.tenant;
+        let _ = self.runtime.local_tx(tenant,crate::deadline(),move|tx|Box::pin(async move {
+            tx.with_connection(move|c|Box::pin(async move {
+                sqlx::query("UPDATE mdm_telemetry.batches SET delivery=$3 WHERE tenant_id=$1::uuid AND id=$2 AND delivery<>'published'")
+                    .bind(tenant.to_string()).bind(batch_id).bind(state).execute(c).await?;
+                Ok(())
+            })).await
+        })).await;
+    }
     /// Use the existing RSS relay, its ownership fences, retry deadlines and dead-letter state.
     pub async fn run(
         self: Arc<Self>,

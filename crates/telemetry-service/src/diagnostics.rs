@@ -2,7 +2,7 @@
 use crate::{Error, Service};
 use rss_request_context::Deadline;
 use rss_timeseries::*;
-use std::{num::NonZeroU64, sync::Arc};
+use std::{num::NonZeroU32, sync::Arc};
 pub struct Diagnostics {
     pub running: bool,
     pub pending: u64,
@@ -10,17 +10,11 @@ pub struct Diagnostics {
     pub blocked: u64,
     pub maintenance: u64,
 }
-struct ProbeAuthority(DefinitionId);
+struct ProbeAuthority(Query);
 impl Authority for ProbeAuthority {
     fn authorize(&self, access: Access<'_>) -> Result<(), rss_timeseries::Error> {
         match access {
-            Access::DefinitionRead(id)
-                if id.scope == self.0.scope
-                    && id.key == self.0.key
-                    && id.version == self.0.version =>
-            {
-                Ok(())
-            }
+            Access::Query(query) if query.binding()? == self.0.binding()? => Ok(()),
             _ => Err(rss_timeseries::Error::Unauthorized),
         }
     }
@@ -36,14 +30,26 @@ impl Service {
             .ok_or(Error::Storage)?;
         let deadline = Deadline::from_timeout(&crate::backend::SystemClock, remaining)
             .map_err(|_| Error::Storage)?;
-        let probe = DefinitionId {
-            scope: Scope::new(self.tenant, Id::new("mdm.telemetry")?),
-            key: Id::new("health.probe")?,
-            version: NonZeroU64::new(1).expect("positive version"),
-        };
+        // A real bounded read exercises both the control and data plane. The
+        // reserved namespace has no product samples and grants no user data access.
+        let probe = Query::new(
+            Selection::Resource {
+                scope: Scope::new(self.tenant, Id::new("mdm.telemetry.probe")?),
+                subject: Id::new("readiness")?,
+                resource: Id::new("readiness")?,
+                keys: [Id::new("readiness")?].into(),
+            },
+            Interval::new(Timestamp::new(0)?, Timestamp::new(1)?)?,
+            QueryBudget {
+                max_points: NonZeroU32::new(1).unwrap(),
+                max_series: NonZeroU32::new(1).unwrap(),
+            },
+            QueryMode::History,
+        )?;
         self.backend
-            .definition(
-                &Authorized::<DefinitionId>::verify(&ProbeAuthority(probe.clone()), probe)?,
+            .query(
+                &Authorized::<Query>::verify(&ProbeAuthority(probe.clone()), probe)?,
+                None,
                 deadline,
             )
             .await?;

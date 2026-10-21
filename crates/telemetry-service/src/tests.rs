@@ -362,3 +362,23 @@ fn current_destination_encoding_is_bounded_even_when_the_wire_body_fits() {
     accepted.profile = TelemetryProfile::new(smaller).unwrap();
     assert_eq!(crate::current::prepare(&accepted).unwrap().1.len(), 1);
 }
+
+#[test]
+fn query_recovery_errors_remain_client_actionable() {
+    use crate::Error;
+    use rss_timeseries::Error as Backend;
+    assert!(matches!(
+        Error::from(Backend::InvalidCursor),
+        Error::Invalid
+    ));
+    assert!(matches!(
+        Error::from(Backend::HistoryExpired),
+        Error::Conflict
+    ));
+    assert!(matches!(
+        Error::from(Backend::Unsupported),
+        Error::Unsupported
+    ));
+    assert!(matches!(Error::from(Backend::Unauthorized), Error::Denied));
+    assert!(matches!(Error::from(Backend::Unavailable), Error::Storage));
+}
