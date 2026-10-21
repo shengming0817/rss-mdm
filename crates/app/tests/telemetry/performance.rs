@@ -362,44 +362,32 @@ async fn published_network(f: &mut Fixture) -> Result<()> {
         )]
         .into(),
     })?;
-    // The owner check must reject a marker on another metric kind or a generated path
-    // that collides with the source key, before any executable configuration is issued.
-    let mapping = &definition.spec().mappings[field.key.as_str()];
-    rss_mdm_inventory_service::collection::native::validate_agent_mapping(
-        &field,
-        &definition,
-        mapping,
-    )?;
-    let mut unmarked = mapping.clone();
-    unmarked.counter_normalization = None;
-    ensure!(
-        rss_mdm_inventory_service::collection::native::validate_agent_mapping(
-            &field,
-            &definition,
-            &unmarked
-        )
-        .is_err()
+    // One published template intentionally carries both fields, while profiles select one.
+    let mut mixed = definition.spec().clone();
+    let mut plan = mixed.plan.spec().clone();
+    plan.queries.insert(
+        "cpu".into(),
+        wire::NativeQuery {
+            version: 1,
+            definition: wire::NativeQueryDefinition::MacosPerformance {
+                section: wire::PerformanceSection::Cpu,
+            },
+            cardinality: wire::NativeCardinality::ExactlyOne,
+            instance_keys: vec![],
+            budget,
+        },
     );
-    let mut invalid = field.clone();
-    invalid.time_series.as_mut().unwrap().kind = d::TelemetryKind::Gauge;
-    ensure!(
-        rss_mdm_inventory_service::collection::native::validate_agent_mapping(
-            &invalid,
-            &definition,
-            mapping
-        )
-        .is_err()
+    mixed.plan = wire::NativeCollectionPlan::new(plan)?;
+    mixed.mappings.insert(
+        "custom.performance.cpu".into(),
+        r::AgentCollectionMapping {
+            query: "cpu".into(),
+            mapping: column("/busy_percent", r::Conversion::Identity),
+            missing: r::NativeMissing::Missing,
+            counter_normalization: None,
+        },
     );
-    invalid = field.clone();
-    invalid.time_series.as_mut().unwrap().interval_start_path = Some(vec!["received".into()]);
-    ensure!(
-        rss_mdm_inventory_service::collection::native::validate_agent_mapping(
-            &invalid,
-            &definition,
-            mapping
-        )
-        .is_err()
-    );
+    let definition = r::AgentCollectionDefinition::new(mixed)?;
     let template = Uuid::new_v4();
     publish(
         f,
@@ -452,6 +440,49 @@ async fn published_network(f: &mut Fixture) -> Result<()> {
         "/api/v1/agent/runtime/telemetry/configurations/{}/{}",
         policy["id"].as_str().unwrap(),
         policy["versionId"].as_str().unwrap()
+    );
+    let mut cpu_profile = profile.spec().clone();
+    cpu_profile.fields = vec![r::TelemetryFieldReference {
+        key: "custom.performance.cpu".into(),
+        version: 1,
+    }];
+    let cpu_profile = r::TelemetryProfile::new(cpu_profile)?;
+    let cpu_profile_id = Uuid::new_v4();
+    publish(
+        f,
+        cpu_profile_id,
+        "telemetry_profile",
+        serde_json::to_value(&cpu_profile)?,
+        &cpu_profile.canonical(),
+    )
+    .await?;
+    let cpu_policy = post(&mut f.author, &f.router, &format!("/api/v1/policies/{}", Uuid::new_v4()), json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"put","enabled":true,"definition":{"scope":scope,"action":{"kind":"telemetry_profile","resource":{"id":cpu_profile_id,"version":"v1","platform":"macos","architecture":"aarch64","variant":"default"}}}}})).await?;
+    directory(f, &cpu_policy, true).await?;
+    let cpu_path = format!(
+        "/api/v1/agent/runtime/telemetry/configurations/{}/{}",
+        cpu_policy["id"].as_str().unwrap(),
+        cpu_policy["versionId"].as_str().unwrap()
+    );
+    let (status, cpu_config) = agent_call(
+        &f.router,
+        Method::GET,
+        &cpu_path,
+        Some(case_credential()),
+        None,
+    )
+    .await?;
+    ensure!(
+        status == StatusCode::OK,
+        "mixed template CPU-only config requires unrelated counter capability: {status} {cpu_config}"
+    );
+    let cpu_config: wire::SignedTelemetryConfiguration = serde_json::from_value(cpu_config)?;
+    let wire::TelemetryCollector::Native { mappings, .. } = &cpu_config.configuration.collector
+    else {
+        anyhow::bail!("CPU-only collector missing")
+    };
+    ensure!(
+        mappings.len() == 1 && mappings.contains_key("custom.performance.cpu"),
+        "unselected counter leaked into CPU config"
     );
     // The CPU case already announced macos.performance:1. This refusal therefore
     // isolates the new capability, rather than a missing native engine.

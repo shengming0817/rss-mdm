@@ -312,14 +312,15 @@ pub(crate) async fn capable_on(
     };
     let supported = match &frozen.collector {
         F::Native { definition } => {
-            if definition
-                .spec()
-                .mappings
-                .values()
-                .any(|m| m.counter_normalization.is_some())
-                && !binding
-                    .capabilities
-                    .contains(&w::Capability::TelemetryCounterLocalV1)
+            if frozen.fields.iter().any(|field| {
+                definition
+                    .spec()
+                    .mappings
+                    .get(field.key.as_str())
+                    .is_some_and(|mapping| mapping.counter_normalization.is_some())
+            }) && !binding
+                .capabilities
+                .contains(&w::Capability::TelemetryCounterLocalV1)
             {
                 return Err(Error::Unsupported);
             }
