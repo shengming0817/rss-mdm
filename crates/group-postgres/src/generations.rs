@@ -492,7 +492,7 @@ impl GroupStore {
             || decisions.windows(2).any(|v| v[0].device >= v[1].device)
             || decisions.iter().any(|d| {
                 d.origin != crate::DecisionOrigin::System
-                    || d.device.len() > 256
+                    || rss_mdm_group::ObjectKey::new(self.tenant, &d.device).is_err()
                     || after.is_some_and(|a| d.device.as_str() <= a)
                     || build
                         .request

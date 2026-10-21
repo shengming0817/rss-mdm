@@ -1544,3 +1544,100 @@ async fn nested_large_source_evidence_retries_with_smaller_pages() {
         .unwrap();
     service.runtime.close().await;
 }
+
+#[tokio::test]
+#[ignore = "MODULE=planning.group_scope: authenticated lifecycle snapshots without Inventory"]
+async fn system_lifecycle_snapshot_pages_before_collection_and_preserves_old_authority() {
+    use sqlx::Connection;
+    let prefix = format!("zzz-system-{}-", Uuid::new_v4());
+    let t = tenant();
+    let rows = format!(
+        "SELECT '{prefix}'||lpad(i::text,4,'0') AS device,md5('{prefix}grant'||i)::uuid AS grant,md5('{prefix}request'||i)::uuid AS request,md5('{prefix}registration'||i)::uuid AS registration FROM generate_series(0,1000)i"
+    );
+    sql(&format!("SET rss.tenant_id='{t}';
+        WITH x AS ({rows}) INSERT INTO mdm_access.grants(tenant_id,id,actor,instance,device,purpose,state,expires_at) SELECT '{t}',grant,'operator','mdm',device,'enrollment','consumed',clock_timestamp()+interval '60s' FROM x;
+        WITH x AS ({rows}) INSERT INTO mdm_access.requests(tenant_id,id,grant_id,source,windows_profile) SELECT '{t}',request,grant,'mdm.windows','Device' FROM x;
+        WITH x AS ({rows}) INSERT INTO mdm_access.devices(tenant_id,id) SELECT '{t}',device FROM x;
+        WITH x AS ({rows}) INSERT INTO mdm_access.registrations(tenant_id,id,device,channel,generation,request_id,state,purpose,epoch) SELECT '{t}',registration,device,'mdm',1,request,'active','primary',gen_random_uuid() FROM x;
+        WITH x AS ({rows}) INSERT INTO mdm_access.credentials(tenant_id,id,registration,channel,locator,state) SELECT '{t}',gen_random_uuid(),registration,'mdm',encode(sha256(convert_to(device,'UTF8')),'hex'),'active' FROM x;
+        WITH x AS ({rows}) INSERT INTO mdm_access.report_sources(tenant_id,registration,source,epoch,enabled) SELECT '{t}',registration,'mdm.windows',gen_random_uuid(),true FROM x;"));
+    let config = fixture();
+    let options = sqlx::postgres::PgConnectOptions::new()
+        .host("localhost")
+        .port(config["port"].as_u64().unwrap() as u16)
+        .database(config["database"].as_str().unwrap())
+        .username("mdm_flow_runtime")
+        .password("runtime-fixture")
+        .ssl_mode(sqlx::postgres::PgSslMode::VerifyFull)
+        .ssl_root_cert(config["ca"].as_str().unwrap());
+    let mut c = sqlx::PgConnection::connect_with(&options).await.unwrap();
+    sqlx::query("SELECT set_config('rss.tenant_id',$1,false)")
+        .bind(t.to_string())
+        .execute(&mut c)
+        .await
+        .unwrap();
+    let watermark = rss_mdm_inventory_postgres::watermark_in(&mut c, t)
+        .await
+        .unwrap();
+    let first = rss_mdm_registration_service::device::endpoints::lifecycle_page_at(
+        &mut c,
+        &t.to_string(),
+        watermark,
+        Some(prefix.clone()),
+        None,
+        1000,
+    )
+    .await
+    .unwrap();
+    assert_eq!(first.len(), 1000);
+    assert!(first.iter().all(|d| d.device.starts_with(&prefix)
+        && d.managed
+        && !d.platform_conflict
+        && d.platform == Some(rss_mdm_agent_wire::runtime::TaskPlatform::Windows)));
+    let last = rss_mdm_registration_service::device::endpoints::lifecycle_page_at(
+        &mut c,
+        &t.to_string(),
+        watermark,
+        Some(first.last().unwrap().device.clone()),
+        None,
+        1000,
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        last.iter()
+            .filter(|d| d.device.starts_with(&prefix))
+            .count(),
+        1
+    );
+    let device = first[0].device.clone();
+    sql(&format!(
+        "SET rss.tenant_id='{t}';UPDATE mdm_access.credentials SET state='revoked' WHERE tenant_id='{t}' AND registration IN(SELECT id FROM mdm_access.registrations WHERE tenant_id='{t}' AND device='{device}')"
+    ));
+    let old = rss_mdm_registration_service::device::endpoints::lifecycle_page_at(
+        &mut c,
+        &t.to_string(),
+        watermark,
+        None,
+        Some(vec![device.clone()]),
+        1,
+    )
+    .await
+    .unwrap();
+    assert!(old[0].managed);
+    let current = rss_mdm_inventory_postgres::watermark_in(&mut c, t)
+        .await
+        .unwrap();
+    let revoked = rss_mdm_registration_service::device::endpoints::lifecycle_page_at(
+        &mut c,
+        &t.to_string(),
+        current,
+        None,
+        Some(vec![device]),
+        1,
+    )
+    .await
+    .unwrap();
+    assert!(!revoked[0].managed);
+    c.close().await.unwrap();
+}

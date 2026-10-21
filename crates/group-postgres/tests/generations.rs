@@ -718,3 +718,101 @@ async fn frozen_group_decisions_survive_page_restart_without_negating_unknown() 
     );
     runtime.close().await;
 }
+
+#[tokio::test]
+#[ignore = "MODULE=group.generations: system selectors reuse durable paged member generations"]
+async fn system_members_publish_two_pages_and_keep_selector_immutable() {
+    let runtime = connect_runtime().await;
+    let s = store(runtime.clone(), tenant()).await;
+    let group = group_id();
+    let created = s
+        .execute(
+            op(),
+            at(),
+            &Command::Create {
+                asset_context: AssetContext::Endpoint,
+                group,
+                presentation: serde_json::json!({"name":"system","description":""})
+                    .as_object()
+                    .unwrap()
+                    .clone(),
+                definition: Definition::System(SystemSelector::AllActive),
+            },
+            deadline(),
+        )
+        .await
+        .unwrap();
+    let request = builds::request(&created, None);
+    builds::begin(&runtime, &s, &request).await.unwrap();
+    for (start, count) in [(0, 1000), (1000, 1)] {
+        let decisions: Vec<_> = (start..start + count)
+            .map(|i| DecisionRecord {
+                device: format!("system-{i:07}"),
+                origin: DecisionOrigin::System,
+                decision: DecisionValue::Match,
+                explanations: vec![],
+                provenance: vec![],
+            })
+            .collect();
+        let after = (start > 0).then(|| format!("system-{:07}", start - 1));
+        for _ in 0..2 {
+            committed(
+                runtime
+                    .local_tx_with_context(
+                        tenant(),
+                        deadline(),
+                        (&s, &decisions, &after),
+                        |ctx, tx| {
+                            Box::pin(async move {
+                                ctx.0
+                                    .append_system_page_in(tx, request.id, ctx.2.as_deref(), ctx.1)
+                                    .await
+                            })
+                        },
+                    )
+                    .await,
+            );
+        }
+    }
+    committed(
+        runtime
+            .local_tx_with_context(tenant(), deadline(), &s, |s, tx| {
+                Box::pin(async move { s.seal_build_in(tx, request.id, 1001).await })
+            })
+            .await,
+    );
+    for _ in 0..2 {
+        committed(
+            runtime
+                .local_tx_with_context(tenant(), deadline(), &s, |s, tx| {
+                    Box::pin(async move { s.advance_difference_in(tx, request.id).await })
+                })
+                .await,
+        );
+    }
+    let published = builds::publish(&runtime, &s, &request).await.unwrap();
+    assert_eq!(published.added, 1001);
+    assert_eq!(
+        published.group.system_selector,
+        Some(SystemSelector::AllActive)
+    );
+    assert_eq!(
+        builds::publish(&runtime, &s, &request).await.unwrap(),
+        published
+    );
+    let (rule, _) = inputs();
+    let altered = s
+        .execute(
+            op(),
+            at(),
+            &Command::SetRule {
+                group,
+                expected: published.group.revision,
+                rule,
+            },
+            deadline(),
+        )
+        .await;
+    assert!(altered.is_err());
+    runtime.close().await;
+}
