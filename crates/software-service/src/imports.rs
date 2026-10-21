@@ -129,7 +129,8 @@ pub fn prepare(
         artifacts,
         material: r::SoftwareMaterial {
             bundle_id: None,
-            format: serde_json::from_value(serde_json::json!(input.behavior.kind())).map_err(|_| Error::Input)?,
+            format: serde_json::from_value(serde_json::json!(input.behavior.kind()))
+                .map_err(|_| Error::Input)?,
             installer: input.behavior.installer().into(),
         },
         behavior: Some(input.behavior.clone()),

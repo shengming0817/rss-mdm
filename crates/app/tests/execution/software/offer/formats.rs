@@ -117,7 +117,7 @@ async fn chain(format: &str, bundle: bool, user: bool) -> Result<()> {
     } else {
         json!([{"resource":f.dependency,"version":"v1","sha256":f.dependency_digest}])
     };
-    let definition = json!({"source":f.source_snapshot,"package":"Acme.App","version":version,"provenance":{"kind":"private"},"artifacts":{"package":{"reference":"installer","length":bytes.len(),"sha256":<[u8;32]>::from(Sha256::digest(&bytes))}},"behavior":behavior,"signatures":[],"reboot":"report","downgrade":"deny","dependencies":deps,"export":{"kind":"disabled"}});
+    let definition = json!({"material":{"format":behavior["kind"],"installer": if behavior["kind"] == "bundle" {behavior["archive"].clone()} else if behavior["kind"] == "dmg" {behavior["image"].clone()} else if behavior["kind"] == "msix" {behavior["container"]["installer"].clone()} else {behavior["installer"].clone()}},"source":f.source_snapshot,"package":"Acme.App","version":version,"provenance":{"kind":"private"},"artifacts":{"package":{"reference":"installer","length":bytes.len(),"sha256":<[u8;32]>::from(Sha256::digest(&bytes))}},"behavior":behavior,"signatures":[],"reboot":"report","downgrade":"deny","dependencies":deps,"export":{"kind":"disabled"}});
     write(
         &mut f.author,
         &f.router,

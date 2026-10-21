@@ -38,7 +38,9 @@ pub(super) fn validate(spec: &mut SoftwareSpec) -> Result<(), Error> {
     Id::new(&spec.source.revision).map_err(|_| invalid(Validation::Source))?;
     checked(&spec.package, 1024, Validation::Identity)?;
     checked(&spec.version, 1024, Validation::Identity)?;
-    if let Some(bundle) = &spec.material.bundle_id { checked(bundle, 255, Validation::Identity)?; }
+    if let Some(bundle) = &spec.material.bundle_id {
+        checked(bundle, 255, Validation::Identity)?;
+    }
     materials(spec)?;
     dependencies(spec)?;
     behavior(spec)?;
@@ -386,8 +388,12 @@ fn msix_members(value: &MsixSoftware) -> Result<(), Error> {
     Ok(())
 }
 fn behavior(spec: &SoftwareSpec) -> Result<(), Error> {
-    let Some(behavior) = spec.behavior.as_ref() else { return Ok(()); };
-    if behavior.kind() != spec.material.format.as_str() || behavior.installer() != spec.material.installer {
+    let Some(behavior) = spec.behavior.as_ref() else {
+        return Ok(());
+    };
+    if behavior.kind() != spec.material.format.as_str()
+        || behavior.installer() != spec.material.installer
+    {
         return Err(invalid(Validation::Artifact));
     }
     match behavior {
@@ -460,7 +466,11 @@ fn detection(spec: &SoftwareSpec, value: &SoftwareDetection) -> Result<(), Error
             }
             checked(version, 1024, Validation::Detection)
         }
-        SoftwareDetection::Script { command } => script(spec, command, spec.behavior.as_ref().and_then(SoftwareBehavior::bundle)),
+        SoftwareDetection::Script { command } => script(
+            spec,
+            command,
+            spec.behavior.as_ref().and_then(SoftwareBehavior::bundle),
+        ),
     }
 }
 fn signatures(spec: &SoftwareSpec) -> Result<(), Error> {
@@ -498,7 +508,11 @@ fn export(spec: &SoftwareSpec) -> Result<(), Error> {
             }
             if !matches!(
                 spec.behavior.as_ref(),
-                Some(SoftwareBehavior::Msi(_) | SoftwareBehavior::Winget(_) | SoftwareBehavior::Exe(_))
+                Some(
+                    SoftwareBehavior::Msi(_)
+                        | SoftwareBehavior::Winget(_)
+                        | SoftwareBehavior::Exe(_)
+                )
             ) {
                 return Err(invalid(Validation::Target));
             }
@@ -516,7 +530,11 @@ fn export(spec: &SoftwareSpec) -> Result<(), Error> {
             if !homepage.starts_with("https://")
                 || !matches!(
                     spec.behavior.as_ref(),
-                    Some(SoftwareBehavior::Brew(_) | SoftwareBehavior::Dmg(_) | SoftwareBehavior::Pkg(_))
+                    Some(
+                        SoftwareBehavior::Brew(_)
+                            | SoftwareBehavior::Dmg(_)
+                            | SoftwareBehavior::Pkg(_)
+                    )
                 )
             {
                 return Err(invalid(Validation::Target));
@@ -553,13 +571,18 @@ pub(super) fn target(
     architecture: Architecture,
 ) -> Result<(), Error> {
     let expected = match spec.material.format {
-        SoftwareFormat::Msi | SoftwareFormat::Winget | SoftwareFormat::Exe | SoftwareFormat::Msix => Platform::Windows,
+        SoftwareFormat::Msi
+        | SoftwareFormat::Winget
+        | SoftwareFormat::Exe
+        | SoftwareFormat::Msix => Platform::Windows,
         SoftwareFormat::Pkg | SoftwareFormat::Brew | SoftwareFormat::Dmg => Platform::MacOS,
         SoftwareFormat::Bundle => {
             let Some(SoftwareBehavior::Bundle(b)) = spec.behavior.as_ref() else {
                 return Err(invalid(Validation::Target));
             };
-            if b.manifest.architecture != architecture { return Err(invalid(Validation::Target)); }
+            if b.manifest.architecture != architecture {
+                return Err(invalid(Validation::Target));
+            }
             b.manifest.platform
         }
     };
@@ -595,7 +618,12 @@ pub(super) fn target(
         return Err(invalid(Validation::Target));
     }
     let detector = match spec.behavior.as_ref() {
-        Some(SoftwareBehavior::Msi(n) | SoftwareBehavior::Pkg(n) | SoftwareBehavior::Winget(n) | SoftwareBehavior::Brew(n)) => Some(&n.detect),
+        Some(
+            SoftwareBehavior::Msi(n)
+            | SoftwareBehavior::Pkg(n)
+            | SoftwareBehavior::Winget(n)
+            | SoftwareBehavior::Brew(n),
+        ) => Some(&n.detect),
         Some(SoftwareBehavior::Exe(n)) => Some(&n.detect),
         Some(SoftwareBehavior::Bundle(b)) => Some(&b.detect),
         _ => None,

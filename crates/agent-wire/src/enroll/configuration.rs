@@ -226,5 +226,4 @@ pub struct Package {
     pub length: u64,
     /// Installer digest; never used as the installation candidate identity.
     pub installer_sha256: [u8; 32],
-
 }

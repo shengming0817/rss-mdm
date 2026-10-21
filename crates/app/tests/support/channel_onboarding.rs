@@ -85,7 +85,12 @@ async fn publish_format(
     let source = Uuid::new_v4();
     let source_path = format!("/api/v1/software/sources/{source}/revisions/1");
     let registered=write(user,router,&source_path,0,json!({"action":"register","definition":{"id":source,"revision":"1","protocol":{"kind":"private"}}})).await?;
-    let package_bytes = if msix { msix_bytes(version)? } else { bytes() };
+    let package_bytes = match format {
+        "msix" => installer_fixtures::msix(version, false),
+        "exe" => installer_fixtures::exe(version),
+        _ if windows => installer_fixtures::msi(Some(version), false),
+        _ => installer_fixtures::pkg(version),
+    };
     let resource = Uuid::new_v4();
     let platform = if windows { "windows" } else { "macos" };
     let arch = if windows { "x86_64" } else { "aarch64" };
@@ -94,21 +99,17 @@ async fn publish_format(
     } else {
         json!({"kind":"pkg_receipt","receipt":"com.rss.agent.pkg","version":"1.2.3"})
     };
-    let mut definition = json!({"source":registered["snapshot"],"package":"RSS.Agent","version":"1.2.3","artifacts":{"package":{"reference":"agent-installer","length":package_bytes.len(),"sha256":Sha256::digest(&package_bytes).to_vec()}},"reboot":"report","downgrade":"deny","dependencies":[],"behavior":{"kind":if windows{"msi"}else{"pkg"},"installer":"package","scope":"system","install":{"runAs":"system","arguments":[],"environment":{},"timeoutSeconds":60,"outputBytes":4096,"exitCodes":{"success":[0],"reboot":[]}},"upgrade":"in_place","uninstall":null,"detect":detect,"upgradeInvocation":{"runAs":"system","arguments":[],"environment":{},"timeoutSeconds":60,"outputBytes":4096,"exitCodes":{"success":[0],"reboot":[]}}},"signatures":[],"provenance":{"kind":"private"},"export":{"kind":"disabled"}});
+    let mut definition = json!({"material":{"format":if windows{"msi"}else{"pkg"},"installer":"package"},"source":registered["snapshot"],"package":"RSS.Agent","version":"1.2.3","artifacts":{"package":{"reference":"agent-installer","length":package_bytes.len(),"sha256":Sha256::digest(&package_bytes).to_vec()}},"reboot":"report","downgrade":"deny","dependencies":[],"behavior":{"kind":if windows{"msi"}else{"pkg"},"installer":"package","scope":"system","install":{"runAs":"system","arguments":[],"environment":{},"timeoutSeconds":60,"outputBytes":4096,"exitCodes":{"success":[0],"reboot":[]}},"upgrade":"in_place","uninstall":null,"detect":detect,"upgradeInvocation":{"runAs":"system","arguments":[],"environment":{},"timeoutSeconds":60,"outputBytes":4096,"exitCodes":{"success":[0],"reboot":[]}}},"signatures":[],"provenance":{"kind":"private"},"export":{"kind":"disabled"}});
     if msix {
         definition["version"] = json!(version);
         definition["behavior"] = json!({"kind":"msix","container":{"kind":"package","installer":"package"},"identity":{"name":"RSS.Agent","publisher":"CN=RSS","version":version.split('.').map(str::parse::<u16>).collect::<std::result::Result<Vec<_>,_>>()?,"architecture":"x86_64","resourceId":""},"dependencies":[],"deployment":{"kind":"device_provisioning"},"minimumOs":[10,0,19041,0],"requireSideload":true,"allowUnsigned":false,"uninstall":false,"invocation":{"runAs":"system","arguments":[],"environment":{},"timeoutSeconds":60,"outputBytes":4096,"exitCodes":{"success":[0],"reboot":[]}},"upgrade":"in_place"});
     }
     if format == "exe" {
         definition["behavior"]["kind"] = json!("exe");
-        definition["behavior"]["layout"] =
-            json!({"rss-agent.exe":"package","rss-agent.candidate.json":"candidate"});
+        definition["behavior"]["layout"] = json!({"rss-agent.exe":"package"});
         definition["behavior"]["detect"] = json!({"kind":"registry","scope":"system","key":"Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\rss-agent","value":"DisplayVersion","version":"1.2.3"});
     }
-    let manifest = serde_json::to_vec(
-        &json!({"wireVersion":1,"tenantId":case_tenant(),"target":{"platform":platform,"architecture":arch},"version":definition["version"],"origin":"https://mdm.example.test:9445","signingKeys":crate::test_support::agent::fixture_signing_input()?["trusted_keys"],"packaging":if format=="exe" {json!({"kind":"nsis_exe","publisher":"RSS controlled publisher","signature_evidence":"controlled-protocol-fixture"})}else if msix {json!({"kind":"windows_msix","publisher":"CN=RSS","signature_evidence":"controlled-protocol-fixture; OS trust not asserted"})}else if windows {json!({"kind":"windows_msi","publisher":"RSS controlled publisher","signature_evidence":"controlled-protocol-fixture"})}else{json!({"kind":"macos_pkg","bundle":"com.rss.agent","team":"RSS1234567","notarization_evidence":"controlled-protocol-fixture"})}}),
-    )?;
-    definition["artifacts"]["candidate"] = json!({"reference":"agent-candidate","length":manifest.len(),"sha256":Sha256::digest(&manifest).to_vec()});
+    definition["material"] = json!({"format":if windows {format}else{"pkg"},"installer":"package","bundle_id":if windows{Value::Null}else{json!("com.rss.agent")}});
     let version =
         software_execution::seed_resource(planning, resource, platform, arch, definition).await?;
     let request=Request::builder().method(Method::POST).uri(format!("/api/v1/resources/{resource}/content?version=v1&variant=default&platform={platform}&architecture={arch}&operation={}",Uuid::new_v4()))
@@ -123,20 +124,15 @@ async fn publish_format(
             response.status()
         );
     }
-    let request=Request::builder().method(Method::POST).uri(format!("/api/v1/resources/{resource}/content?version=v1&variant=default&platform={platform}&architecture={arch}&artifact=agent-candidate&operation={}",Uuid::new_v4()))
-        .header("host","mdm.example.test").header("origin","https://mdm.example.test").header("x-identity-request","1").header("x-csrf-token",user.csrf.as_ref().unwrap())
-        .header("cookie",user.cookies.iter().map(|(k,v)|format!("{k}={v}")).collect::<Vec<_>>().join("; ")).header("content-type","application/octet-stream").body(Body::from(manifest))?;
-    {
-        let _guard = software::content_setup_guard().await?;
-        let response = router.clone().oneshot(request).await?;
-        ensure!(
-            response.status() == StatusCode::CREATED,
-            "candidate upload: {:?}",
-            response.status()
-        );
-    }
     software_execution::seed_enabled(planning, content, &version).await?;
-    let (status,published)=user.call(router,Method::POST,"/api/v1/agent-packages",Some(json!({"operationId":Uuid::new_v4(),"resource":resource,"version":"v1","variant":"default","target":{"platform":platform,"architecture":arch},"manifestArtifact":"candidate"}))).await?;
+    let (status, published) = user
+        .call(
+            router,
+            Method::POST,
+            "/api/v1/agent-packages",
+            Some(json!({"operationId":Uuid::new_v4(),"packageId":resource})),
+        )
+        .await?;
     ensure!(
         status == StatusCode::OK,
         "Agent publication: {status} {published}"
@@ -204,15 +200,6 @@ pub(crate) async fn diagnosis(
         })
         .cloned()
         .ok_or_else(|| anyhow::anyhow!("missing device diagnosis: {:?}", reply.1))
-}
-
-fn msix_bytes(version: &str) -> Result<Vec<u8>> {
-    let mut archive = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
-    archive.start_file("AppxManifest.xml", zip::write::SimpleFileOptions::default())?;
-    archive.write_all(format!(r#"<Package xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10"><Identity Name="RSS.Agent" Publisher="CN=RSS" Version="{version}" ProcessorArchitecture="x64"/><Dependencies><TargetDeviceFamily Name="Windows.Desktop" MinVersion="10.0.19041.0"/></Dependencies></Package>"#).as_bytes())?;
-    archive.start_file("payload.bin", zip::write::SimpleFileOptions::default())?;
-    archive.write_all(b"controlled MSIX protocol material; not an OS-signed release")?;
-    Ok(archive.finish()?.into_inner())
 }
 
 pub(crate) async fn publish_exe(

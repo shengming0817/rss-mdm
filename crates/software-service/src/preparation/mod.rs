@@ -89,7 +89,11 @@ impl Preparation {
                 uninstall,
             };
             let selected = self.resolve_in(tx, &binding, *target).await?;
-            if uninstall && !definition(&selected)?.behavior.as_ref().is_some_and(r::SoftwareBehavior::supports_removal) {
+            let execution = definition(&selected)?
+                .behavior
+                .as_ref()
+                .ok_or(Error::Unsupported)?;
+            if uninstall && !execution.supports_removal() {
                 return Err(Error::Unsupported);
             }
             let steps = self

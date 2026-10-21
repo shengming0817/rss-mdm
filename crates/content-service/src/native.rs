@@ -468,19 +468,37 @@ mod tests {
 }
 
 /// Discover the same namespace-checked MSIX identity used by publication verification.
-pub(super) fn inspect_msix(file: &mut File, config: &Config, timer: &dyn Clock, deadline: Deadline)
-    -> Result<rss_mdm_software_service::management::content::InstallerFacts, Error> {
+pub(super) fn inspect_msix(
+    file: &mut File,
+    config: &Config,
+    timer: &dyn Clock,
+    deadline: Deadline,
+) -> Result<rss_mdm_software_service::management::content::InstallerFacts, Error> {
     let mut archive = archive(file, config)?;
     let facts = read_xml(&mut archive, "AppxManifest.xml", timer, deadline)?;
     let identity = &facts.identities[0];
     let version = field(identity, "Version")?;
     self::version(version)?;
-    let architectures = match identity.get("ProcessorArchitecture").map(String::as_str).unwrap_or("neutral") {
+    let architectures = match identity
+        .get("ProcessorArchitecture")
+        .map(String::as_str)
+        .unwrap_or("neutral")
+    {
         "x64" => vec![rss_mdm_resource::Architecture::X86_64],
-        "arm64" => vec![rss_mdm_resource::Architecture::Aarch64], "neutral" => vec![], _ => return Err(invalid()),
+        "arm64" => vec![rss_mdm_resource::Architecture::Aarch64],
+        "neutral" => vec![],
+        _ => return Err(invalid()),
     };
     // Publisher is package identity; its presence is not signature verification.
-    if field(identity, "Name")?.is_empty() || field(identity, "Publisher")?.is_empty() { return Err(invalid()); }
-    Ok(rss_mdm_software_service::management::content::InstallerFacts { format: rss_mdm_resource::SoftwareFormat::Msix,
-        version: Some(version.into()), architectures, bundle_id: None })
+    if field(identity, "Name")?.is_empty() || field(identity, "Publisher")?.is_empty() {
+        return Err(invalid());
+    }
+    Ok(
+        rss_mdm_software_service::management::content::InstallerFacts {
+            format: rss_mdm_resource::SoftwareFormat::Msix,
+            version: Some(version.into()),
+            architectures,
+            bundle_id: None,
+        },
+    )
 }

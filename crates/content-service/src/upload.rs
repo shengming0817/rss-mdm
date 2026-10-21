@@ -22,7 +22,10 @@ pub struct Binding {
 pub enum Purpose {
     Resource(ResourceBinding),
     /// File pending its final software definition; bytes use the same upload journal.
-    Software { resource: String, filename: String },
+    Software {
+        resource: String,
+        filename: String,
+    },
 }
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

@@ -2,7 +2,9 @@
 use rss_mdm_agent_wire::runtime as w;
 use rss_mdm_resource as r;
 
-pub(crate) fn software_action(spec: &r::SoftwareSpec) -> Result<w::SoftwareTaskAction, w::WireError> {
+pub(crate) fn software_action(
+    spec: &r::SoftwareSpec,
+) -> Result<w::SoftwareTaskAction, w::WireError> {
     Ok(w::SoftwareTaskAction {
         package: spec.package.clone(),
         version: spec.version.clone(),

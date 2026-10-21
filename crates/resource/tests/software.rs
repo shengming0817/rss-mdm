@@ -68,7 +68,7 @@ fn complete_software_definition_is_frozen_without_external_manifest() {
 }
 #[test]
 fn incomplete_or_unbounded_software_is_rejected() {
-    for pointer in ["behavior", "artifacts", "source"] {
+    for pointer in ["material", "artifacts", "source"] {
         let mut v = spec();
         v.as_object_mut().unwrap().remove(pointer);
         assert!(version(v).is_err(), "{pointer}");
@@ -147,11 +147,20 @@ fn software_rejects_retired_ownership_including_null() {
 fn installer_material_does_not_require_an_execution_plan() {
     let mut material = spec();
     material["behavior"] = serde_json::Value::Null;
-    let definition = SoftwareDefinition::new(serde_json::from_value(material.clone()).unwrap()).unwrap();
+    let definition =
+        SoftwareDefinition::new(serde_json::from_value(material.clone()).unwrap()).unwrap();
     assert!(definition.spec().behavior.is_none());
     assert_eq!(definition.primary().length(), 3);
-    assert!(definition.validate_target(Platform::Windows, Architecture::X86_64).is_ok());
-    assert!(definition.validate_target(Platform::MacOS, Architecture::X86_64).is_err());
+    assert!(
+        definition
+            .validate_target(Platform::Windows, Architecture::X86_64)
+            .is_ok()
+    );
+    assert!(
+        definition
+            .validate_target(Platform::MacOS, Architecture::X86_64)
+            .is_err()
+    );
     material["material"]["installer"] = json!("missing");
     assert!(serde_json::from_value::<SoftwareDefinition>(material).is_err());
 }

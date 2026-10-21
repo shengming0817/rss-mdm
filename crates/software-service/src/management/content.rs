@@ -44,13 +44,25 @@ pub trait ManagementContentPort: ContentPort {
     type Download: Send;
     type StagedImport: Send;
     type ImportEvidence: ImportedContent;
-    fn prepare_upload(&self, input: &PrepareUpload, resource: &str, upload: Uuid, actor: &str)
-        -> impl Future<Output = Result<serde_json::Value, Error>> + Send;
-    fn inspect_upload(&self, upload: Uuid, actor: &str, resource: &str)
-        -> impl Future<Output = Result<InspectedUpload<Self::Download>, Error>> + Send;
+    fn prepare_upload(
+        &self,
+        input: &PrepareUpload,
+        resource: &str,
+        upload: Uuid,
+        actor: &str,
+    ) -> impl Future<Output = Result<serde_json::Value, Error>> + Send;
+    fn inspect_upload(
+        &self,
+        upload: Uuid,
+        actor: &str,
+        resource: &str,
+    ) -> impl Future<Output = Result<InspectedUpload<Self::Download>, Error>> + Send;
 
-    fn inspect_installer(&self, artifact: &r::Artifact, filename: &str)
-        -> impl Future<Output = Result<InstallerFacts, Error>> + Send;
+    fn inspect_installer(
+        &self,
+        artifact: &r::Artifact,
+        filename: &str,
+    ) -> impl Future<Output = Result<InstallerFacts, Error>> + Send;
     fn verify_artifact(
         &self,
         artifact: &r::Artifact,

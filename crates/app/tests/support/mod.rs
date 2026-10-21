@@ -818,3 +818,6 @@ async fn fixture_resources_preserve_failures_and_close_during_initialization() {
 pub(crate) mod task_signing;
 
 pub(crate) mod storage;
+
+#[path = "../../../content-service/tests/fixtures/installers.rs"]
+pub(crate) mod installer_fixtures;

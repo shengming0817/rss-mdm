@@ -68,10 +68,19 @@ fn target(t: w::Target) -> (r::Platform, r::Architecture) {
 }
 fn definition<'a>(v: &'a r::Version, i: &Selection) -> Result<&'a r::SoftwareDefinition, Error> {
     let (p, a) = target(i.target);
-    let selected = v.variants().iter().find(|x| x.platform() == p && x.architecture() == a && x.key().as_str() == i.variant).ok_or_else(invalid)?;
-    let r::Declaration::Software { definition } = selected.declaration() else { return Err(invalid()); };
+    let selected = v
+        .variants()
+        .iter()
+        .find(|x| x.platform() == p && x.architecture() == a && x.key().as_str() == i.variant)
+        .ok_or_else(invalid)?;
+    let r::Declaration::Software { definition } = selected.declaration() else {
+        return Err(invalid());
+    };
     match (definition.spec().material.format, i.target.platform) {
-        (r::SoftwareFormat::Exe | r::SoftwareFormat::Msi | r::SoftwareFormat::Msix, TaskPlatform::Windows)
+        (
+            r::SoftwareFormat::Exe | r::SoftwareFormat::Msi | r::SoftwareFormat::Msix,
+            TaskPlatform::Windows,
+        )
         | (r::SoftwareFormat::Pkg, TaskPlatform::Macos) => Ok(definition),
         _ => Err(invalid()),
     }
@@ -107,17 +116,11 @@ async fn replay_in(
     operation: Uuid,
     hash: &[u8],
 ) -> transaction::Result<Option<w::Package>> {
-    let tenant = tx.tenant_id().to_string();
-    let old=tx.with_connection(move|c|Box::pin(async move {
-  sqlx::query("SELECT request_digest,document - 'channel' AS document FROM mdm_agent_packages.releases WHERE tenant_id=$1::uuid AND operation_id=$2").bind(tenant).bind(operation).fetch_optional(c).await
- })).await?;
-    old.map(|row| {
-        if row.try_get::<Vec<u8>, _>("request_digest")? != hash {
-            return Err(Error::Conflict.into());
-        }
-        serde_json::from_value(row.try_get("document")?).map_err(|_| storage().into())
-    })
-    .transpose()
+    crate::catalog::Reader::new(tx.tenant_id())
+        .operation_receipt_in(tx, operation, hash)
+        .await?
+        .map(|value| serde_json::from_value(value).map_err(|_| storage().into()))
+        .transpose()
 }
 async fn prepare<C: ManagementContentPort>(
     app: &management::catalog::Access<C>,
@@ -154,11 +157,19 @@ async fn prepare<C: ManagementContentPort>(
     let def = definition(&version, i)?;
     let content = app.content.as_ref().ok_or(Error::Unsupported)?;
     let native_format = format(def.spec().material.format)?;
-    let facts = content.inspect_installer(def.primary(), &filename(i.target, native_format)).await?;
+    let facts = content
+        .inspect_installer(def.primary(), &filename(i.target, native_format))
+        .await?;
     let (_, architecture) = target(i.target);
     if facts.format != def.spec().material.format
-        || facts.version.as_ref().is_some_and(|v| v != &def.spec().version)
-        || (!facts.architectures.is_empty() && !facts.architectures.contains(&architecture)) { return Err(invalid()); }
+        || facts
+            .version
+            .as_ref()
+            .is_some_and(|v| v != &def.spec().version)
+        || (!facts.architectures.is_empty() && !facts.architectures.contains(&architecture))
+    {
+        return Err(invalid());
+    }
     let package = w::Package {
         release_id: Uuid::new_v4(),
         tenant_id: Uuid::parse_str(&app.tenant.to_string()).map_err(|_| invalid())?,
@@ -192,21 +203,47 @@ async fn prepare<C: ManagementContentPort>(
 }
 async fn insert_in(
     tx: &mut rss_transactional_messaging_postgres::PgTransaction<'_>,
-    i: &Publish,
-    hash: &[u8],
     package: &w::Package,
     binding: &Binding,
 ) -> transaction::Result<()> {
     let tenant = tx.tenant_id();
-    let op = i.operation_id;
-    let hash = hash.to_vec();
     let package = package.clone();
     let mut binding = binding.clone();
-    let admitted=tx.with_connection(move|c|Box::pin(async move {
-  binding.lifecycle=match crate::catalog::binding_on(c,tenant,&binding.resource,&binding.version,binding.digest).await { Ok(Some(value))=>value,Ok(None)=>return Ok(Ok(false)),Err(e)=>return Ok(Err(e)) };
-  sqlx::query("INSERT INTO mdm_agent_packages.releases VALUES($1::uuid,$2,$3,$4,$5,$6,'published')").bind(tenant.to_string()).bind(package.release_id).bind(op).bind(hash).bind(serde_json::to_value(&package).map_err(|_|sqlx::Error::Protocol("package metadata".into()))?).bind(serde_json::to_value(&binding).map_err(|_|sqlx::Error::Protocol("package binding".into()))?).execute(c).await?;
-  Ok(Ok(true))
- })).await??;
+    let admitted = tx
+        .with_connection(move |c| {
+            Box::pin(async move {
+                binding.lifecycle = match crate::catalog::binding_on(
+                    c,
+                    tenant,
+                    &binding.resource,
+                    &binding.version,
+                    binding.digest,
+                )
+                .await
+                {
+                    Ok(Some(value)) => value,
+                    Ok(None) => return Ok(Ok(false)),
+                    Err(e) => return Ok(Err(e)),
+                };
+                sqlx::query(
+                    "INSERT INTO mdm_agent_packages.releases VALUES($1::uuid,$2,$3,$4,'published')",
+                )
+                .bind(tenant.to_string())
+                .bind(package.release_id)
+                .bind(
+                    serde_json::to_value(&package)
+                        .map_err(|_| sqlx::Error::Protocol("package metadata".into()))?,
+                )
+                .bind(
+                    serde_json::to_value(&binding)
+                        .map_err(|_| sqlx::Error::Protocol("package binding".into()))?,
+                )
+                .execute(c)
+                .await?;
+                Ok(Ok(true))
+            })
+        })
+        .await??;
     if !admitted {
         return Err(Error::Forbidden.into());
     }
@@ -244,19 +281,49 @@ pub async fn publish<C: ManagementContentPort>(
     .await?;
     let prepared = if replay.is_none() {
         let resource = i.package_id.to_string();
-        let version = transaction::inspect(&app.runtime, app.tenant, (app, p, &resource), |ctx, tx| Box::pin(async move {
-            let (app, p, resource) = *ctx; let snapshot = transaction::current(tx, p).await?;
-            snapshot.require(p, Permission::ReleasePublish, None)?;
-            app.catalog.reader().lock_in(tx).await?;
-            Ok(app.catalog.reader().version_in(tx, resource, "v1").await?)
-        }), TransactionOwner::SoftwareCatalog).await?;
-        if version.variants().len() != 1 { return Err(invalid()); }
+        let version = transaction::inspect(
+            &app.runtime,
+            app.tenant,
+            (app, p, &resource),
+            |ctx, tx| {
+                Box::pin(async move {
+                    let (app, p, resource) = *ctx;
+                    let snapshot = transaction::current(tx, p).await?;
+                    snapshot.require(p, Permission::ReleasePublish, None)?;
+                    app.catalog.reader().lock_in(tx).await?;
+                    Ok(app.catalog.reader().version_in(tx, resource, "v1").await?)
+                })
+            },
+            TransactionOwner::SoftwareCatalog,
+        )
+        .await?;
+        if version.variants().len() != 1 {
+            return Err(invalid());
+        }
         let selected = &version.variants()[0];
         let target = w::Target {
-            platform: match selected.platform() { r::Platform::Windows => TaskPlatform::Windows, r::Platform::MacOS => TaskPlatform::Macos },
-            architecture: match selected.architecture() { r::Architecture::X86_64 => TaskArchitecture::X86_64, r::Architecture::Aarch64 => TaskArchitecture::Aarch64 },
+            platform: match selected.platform() {
+                r::Platform::Windows => TaskPlatform::Windows,
+                r::Platform::MacOS => TaskPlatform::Macos,
+            },
+            architecture: match selected.architecture() {
+                r::Architecture::X86_64 => TaskArchitecture::X86_64,
+                r::Architecture::Aarch64 => TaskArchitecture::Aarch64,
+            },
         };
-        Some(prepare(app, p, &Selection { resource, version: "v1".into(), variant: selected.key().as_str().into(), target }).await?)
+        Some(
+            prepare(
+                app,
+                p,
+                &Selection {
+                    resource,
+                    version: "v1".into(),
+                    variant: selected.key().as_str().into(),
+                    target,
+                },
+            )
+            .await?,
+        )
     } else {
         None
     };
@@ -306,7 +373,16 @@ pub async fn publish<C: ManagementContentPort>(
                             i.operation_id,
                         )
                         .await?;
-                    insert_in(tx, i, hash, &prepared.package, &prepared.binding).await?;
+                    insert_in(tx, &prepared.package, &prepared.binding).await?;
+                    app.catalog
+                        .reader()
+                        .save_operation_in(
+                            tx,
+                            i.operation_id,
+                            hash,
+                            &serde_json::to_value(&prepared.package).map_err(|_| storage())?,
+                        )
+                        .await?;
                     prepared.package.clone()
                 };
                 let fact = Fact::business(
@@ -338,7 +414,7 @@ pub async fn admitted_on(
         .execute(&mut *c)
         .await
         .map_err(|_| storage())?;
-    let row=sqlx::query("SELECT document - 'channel' AS document,binding,state FROM mdm_agent_packages.releases WHERE tenant_id=$1::uuid AND id=$2").bind(tenant.to_string()).bind(i.release_id).fetch_optional(&mut *c).await.map_err(|_|storage())?.ok_or(Error::ResourceMissing)?;
+    let row=sqlx::query("SELECT document,binding,state FROM mdm_agent_packages.releases WHERE tenant_id=$1::uuid AND id=$2").bind(tenant.to_string()).bind(i.release_id).fetch_optional(&mut *c).await.map_err(|_|storage())?.ok_or(Error::ResourceMissing)?;
     let package: w::Package =
         serde_json::from_value(row.try_get("document").map_err(|_| storage())?)
             .map_err(|_| storage())?;
@@ -365,20 +441,13 @@ async fn current_on(
     tenant: TenantId,
     id: Uuid,
 ) -> Result<(w::Package, Binding), Error> {
-    let row=sqlx::query("SELECT document - 'channel' AS document,binding FROM mdm_agent_packages.releases WHERE tenant_id=$1::uuid AND id=$2 AND state='published'").bind(tenant.to_string()).bind(id).fetch_optional(&mut *c).await.map_err(|_|storage())?.ok_or(Error::ResourceMissing)?;
+    let row=sqlx::query("SELECT document,binding FROM mdm_agent_packages.releases WHERE tenant_id=$1::uuid AND id=$2 AND state='published'").bind(tenant.to_string()).bind(id).fetch_optional(&mut *c).await.map_err(|_|storage())?.ok_or(Error::ResourceMissing)?;
     let package: w::Package =
         serde_json::from_value(row.try_get("document").map_err(|_| storage())?)
             .map_err(|_| storage())?;
     let binding: Binding = serde_json::from_value(row.try_get("binding").map_err(|_| storage())?)
         .map_err(|_| storage())?;
-    admitted_on(
-        c,
-        tenant,
-        &w::Installation {
-            release_id: id,
-        },
-    )
-    .await?;
+    admitted_on(c, tenant, &w::Installation { release_id: id }).await?;
     Ok((package, binding))
 }
 pub async fn list<C: ManagementContentPort>(
@@ -434,6 +503,13 @@ pub async fn download<C: ManagementContentPort>(
         .ok_or(Error::Unsupported)?
         .verify_artifact(&artifact)
         .await?;
+    // File verification performs I/O outside the lifecycle transaction; recheck before exposing it.
+    let (current, current_binding) = inspect_package(app, id).await?;
+    if current.installer_sha256 != package.installer_sha256
+        || current_binding.digest != binding.digest
+    {
+        return Err(Error::Conflict);
+    }
     Ok((package, file))
 }
 pub async fn withdraw<C: ManagementContentPort>(
@@ -508,7 +584,7 @@ pub async fn known_in(
     c: &mut sqlx::PgConnection,
     tenant: TenantId,
 ) -> Result<Vec<AdmittedPackage>, Error> {
-    let rows = sqlx::query("SELECT document - 'channel' AS document,binding FROM mdm_agent_packages.releases WHERE tenant_id=$1::uuid ORDER BY id")
+    let rows = sqlx::query("SELECT document,binding FROM mdm_agent_packages.releases WHERE tenant_id=$1::uuid ORDER BY id")
         .bind(tenant.to_string()).fetch_all(c).await.map_err(|_| storage())?;
     rows.into_iter()
         .map(|row| {
@@ -525,8 +601,7 @@ pub async fn known_in(
                 digest: binding.digest,
                 lifecycle: binding.lifecycle,
                 software: binding.software,
-                    })
+            })
         })
         .collect()
 }
-

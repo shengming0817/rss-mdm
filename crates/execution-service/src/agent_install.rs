@@ -39,7 +39,9 @@ impl Identity {
     pub fn validate(&self) -> std::result::Result<(), Error> {
         let bounded = |s: &str| !s.is_empty() && s.len() <= 256 && !s.chars().any(char::is_control);
         let valid = match self {
-            Self::WindowsMsi { product, publisher } => !product.is_nil() && publisher.as_ref().is_none_or(|p| bounded(p)),
+            Self::WindowsMsi { product, publisher } => {
+                !product.is_nil() && publisher.as_ref().is_none_or(|p| bounded(p))
+            }
             Self::WindowsMsix {
                 family, identity, ..
             } => bounded(family) && bounded(&identity.name) && bounded(&identity.publisher),
@@ -291,8 +293,10 @@ impl Package {
     ) -> std::result::Result<bool, Error> {
         match rss_mdm_software_service::agent_packages::admitted_on(c, tenant, &self.release).await
         {
-            Ok(current) => Ok(current.installer_sha256 == self.artifact.sha256
-                && current.version == self.version),
+            Ok(current) => {
+                Ok(current.installer_sha256 == self.artifact.sha256
+                    && current.version == self.version)
+            }
             Err(
                 rss_mdm_software_service::management::Error::Forbidden
                 | rss_mdm_software_service::management::Error::ResourceMissing,
@@ -500,8 +504,8 @@ pub async fn detection_on(
         .into_iter()
         .filter(|r| r.metadata.target.platform == platform)
     {
-        if let Some(resource::SoftwareBehavior::Exe(exe)) = &release.software.behavior
-        {            let resource::SoftwareDetection::Registry {
+        if let Some(resource::SoftwareBehavior::Exe(exe)) = &release.software.behavior {
+            let resource::SoftwareDetection::Registry {
                 scope: resource::SoftwareScope::System,
                 key,
                 value,

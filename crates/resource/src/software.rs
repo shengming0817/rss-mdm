@@ -172,8 +172,14 @@ impl SoftwareFormat {
     /// Canonical format identity.
     pub const fn as_str(self) -> &'static str {
         match self {
-            Self::Exe => "exe", Self::Msi => "msi", Self::Msix => "msix", Self::Pkg => "pkg",
-            Self::Bundle => "bundle", Self::Winget => "winget", Self::Brew => "brew", Self::Dmg => "dmg",
+            Self::Exe => "exe",
+            Self::Msi => "msi",
+            Self::Msix => "msix",
+            Self::Pkg => "pkg",
+            Self::Bundle => "bundle",
+            Self::Winget => "winget",
+            Self::Brew => "brew",
+            Self::Dmg => "dmg",
         }
     }
 }

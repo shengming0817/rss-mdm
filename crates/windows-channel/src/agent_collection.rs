@@ -231,7 +231,9 @@ pub async fn receive(
                         product.to_string(),
                         query.statuses[i..i + 3] == [Some(200); 3]
                             && query.values[i].as_deref() == Some("70")
-                            && publisher.as_ref().is_none_or(|p| query.values[i + 1].as_ref() == Some(p))
+                            && publisher
+                                .as_ref()
+                                .is_none_or(|p| query.values[i + 1].as_ref() == Some(p))
                             && query.values[i + 2].as_ref().is_some_and(|v| !v.is_empty()),
                         query.statuses[i..i + 3] == [Some(404); 3],
                         false,

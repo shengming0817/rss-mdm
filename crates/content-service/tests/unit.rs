@@ -23,9 +23,9 @@ fn msix_content_identity_must_match_the_approved_definition() {
     use std::io::Write;
     let directory = tempfile::tempdir().unwrap();
     let cfg = config(directory.path().to_owned());
-    let declaration = serde_json::json!({"source":{"id":"private","revision":"1","sha256":vec![1;32]},"package":"Acme.App","version":"1.0.0.0","provenance":{"kind":"private"},"artifacts":{"installer":{"reference":"installer","length":3,"sha256":vec![1;32]}},"behavior":{"kind":"msix","container":{"kind":"package","installer":"installer"},"identity":{"name":"Acme.App","publisher":"CN=Acme","version":[1,0,0,0],"architecture":"x86_64","resourceId":""},"dependencies":[],"deployment":{"kind":"device_provisioning"},"minimumOs":[10,0,19041,0],"requireSideload":true,"allowUnsigned":false,"uninstall":true,"invocation":{"runAs":"system","arguments":[],"environment":{},"timeoutSeconds":60,"outputBytes":4096,"exitCodes":{"success":[0],"reboot":[]}},"upgrade":"in_place"},"signatures":[],"reboot":"report","downgrade":"deny","dependencies":[],"export":{"kind":"disabled"}});
+    let declaration = serde_json::json!({"material":{"format":"msix","installer":"installer"},"source":{"id":"private","revision":"1","sha256":vec![1;32]},"package":"Acme.App","version":"1.0.0.0","provenance":{"kind":"private"},"artifacts":{"installer":{"reference":"installer","length":3,"sha256":vec![1;32]}},"behavior":{"kind":"msix","container":{"kind":"package","installer":"installer"},"identity":{"name":"Acme.App","publisher":"CN=Acme","version":[1,0,0,0],"architecture":"x86_64","resourceId":""},"dependencies":[],"deployment":{"kind":"device_provisioning"},"minimumOs":[10,0,19041,0],"requireSideload":true,"allowUnsigned":false,"uninstall":true,"invocation":{"runAs":"system","arguments":[],"environment":{},"timeoutSeconds":60,"outputBytes":4096,"exitCodes":{"success":[0],"reboot":[]}},"upgrade":"in_place"},"signatures":[],"reboot":"report","downgrade":"deny","dependencies":[],"export":{"kind":"disabled"}});
     let definition: SoftwareDefinition = serde_json::from_value(declaration).unwrap();
-    let SoftwareBehavior::Msix(msix) = &definition.spec().behavior else {
+    let Some(SoftwareBehavior::Msix(msix)) = &definition.spec().behavior else {
         panic!("msix fixture");
     };
     for publisher in ["CN=Acme", "CN=Other"] {
@@ -130,7 +130,7 @@ fn bundle_checks_closed_manifest_paths_and_member_bytes() {
             writer.write_all(b"bad").unwrap();
         }
         writer.finish().unwrap();
-        let definition:SoftwareDefinition=serde_json::from_value(serde_json::json!({"source":{"id":"private","revision":"1","sha256":vec![1;32]},"package":"App","version":"1","artifacts":{"zip":{"reference":"zip","length":std::fs::metadata(&path).unwrap().len(),"sha256":vec![2;32]}},"reboot":"report","downgrade":"deny","dependencies":[],"behavior":{"kind":"bundle","archive":"zip","manifest":manifest,"install":{"interpreter":"power_shell7","entry":"install.ps1","invocation":{"runAs":"system","arguments":[],"environment":{},"timeoutSeconds":60,"outputBytes":4096,"exitCodes":{"success":[0],"reboot":[]}}},"uninstall":null,"detect":{"kind":"msi_product","productCode":"{AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE}","version":"1"}},"signatures":[],"provenance":{"kind":"private"},"export":{"kind":"disabled"}})).unwrap();
+        let definition:SoftwareDefinition=serde_json::from_value(serde_json::json!({"material":{"format":"bundle","installer":"zip"},"source":{"id":"private","revision":"1","sha256":vec![1;32]},"package":"App","version":"1","artifacts":{"zip":{"reference":"zip","length":std::fs::metadata(&path).unwrap().len(),"sha256":vec![2;32]}},"reboot":"report","downgrade":"deny","dependencies":[],"behavior":{"kind":"bundle","archive":"zip","manifest":manifest,"install":{"interpreter":"power_shell7","entry":"install.ps1","invocation":{"runAs":"system","arguments":[],"environment":{},"timeoutSeconds":60,"outputBytes":4096,"exitCodes":{"success":[0],"reboot":[]}}},"uninstall":null,"detect":{"kind":"msi_product","productCode":"{AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE}","version":"1"}},"signatures":[],"provenance":{"kind":"private"},"export":{"kind":"disabled"}})).unwrap();
         let result = super::bundle::validate(
             &mut File::open(path).unwrap(),
             &definition,
@@ -191,7 +191,7 @@ fn bundle_rejects_unsafe_zip_structure_and_small_budget_overruns() {
     let valid = |bytes: &[u8], cfg: &Config| {
         let path = directory.path().join("boundary.zip");
         fs::write(&path, bytes).unwrap();
-        let definition: SoftwareDefinition=serde_json::from_value(serde_json::json!({"source":{"id":"private","revision":"1","sha256":vec![1;32]},"package":"App","version":"1","artifacts":{"zip":{"reference":"zip","length":bytes.len(),"sha256":vec![2;32]}},"reboot":"report","downgrade":"deny","dependencies":[],"behavior":{"kind":"bundle","archive":"zip","manifest":manifest,"install":{"interpreter":"power_shell7","entry":"install.ps1","invocation":{"runAs":"system","arguments":[],"environment":{},"timeoutSeconds":60,"outputBytes":4096,"exitCodes":{"success":[0],"reboot":[]}}},"uninstall":null,"detect":{"kind":"msi_product","productCode":"{AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE}","version":"1"}},"signatures":[],"provenance":{"kind":"private"},"export":{"kind":"disabled"}})).unwrap();
+        let definition: SoftwareDefinition=serde_json::from_value(serde_json::json!({"material":{"format":"bundle","installer":"zip"},"source":{"id":"private","revision":"1","sha256":vec![1;32]},"package":"App","version":"1","artifacts":{"zip":{"reference":"zip","length":bytes.len(),"sha256":vec![2;32]}},"reboot":"report","downgrade":"deny","dependencies":[],"behavior":{"kind":"bundle","archive":"zip","manifest":manifest,"install":{"interpreter":"power_shell7","entry":"install.ps1","invocation":{"runAs":"system","arguments":[],"environment":{},"timeoutSeconds":60,"outputBytes":4096,"exitCodes":{"success":[0],"reboot":[]}}},"uninstall":null,"detect":{"kind":"msi_product","productCode":"{AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE}","version":"1"}},"signatures":[],"provenance":{"kind":"private"},"export":{"kind":"disabled"}})).unwrap();
         super::bundle::validate(
             &mut File::open(path).unwrap(),
             &definition,
@@ -427,6 +427,7 @@ fn piece_and_native_limits_are_arithmetic_boundaries() {
     assert_eq!(1_099_511_627_776u64.div_ceil(journal::CHUNK), 8192);
     let mut b = binding(b"abc");
     b.purpose = match b.purpose {
+        Purpose::Software { .. } => panic!("resource fixture"),
         Purpose::Resource(mut r) => {
             r.storage_class = StorageClass::NativeConfiguration;
             Purpose::Resource(r)
@@ -559,8 +560,8 @@ fn msix_bundle_rejects_undeclared_application_and_resource_members() {
         ("Acme.msix", package.clone()),
     ]);
     let identity = serde_json::json!({"name":"Acme.App","publisher":"CN=Acme","version":[1,0,0,0],"architecture":"x86_64","resourceId":""});
-    let definition:r::SoftwareDefinition=serde_json::from_value(serde_json::json!({"source":{"id":"private","revision":"1","sha256":vec![1;32]},"package":"Acme.App","version":"1.0.0.0","provenance":{"kind":"private"},"artifacts":{"installer":{"reference":"installer","length":bytes.len(),"sha256":r::Digest::of(&bytes).bytes()}},"behavior":{"kind":"msix","container":{"kind":"bundle","installer":"installer","members":[{"path":"Acme.msix","identity":identity,"length":package.len(),"sha256":r::Digest::of(&package).bytes()}]},"identity":identity,"dependencies":[],"deployment":{"kind":"device_provisioning"},"minimumOs":[10,0,19041,0],"requireSideload":true,"allowUnsigned":false,"uninstall":true,"invocation":{"runAs":"system","arguments":[],"environment":{},"timeoutSeconds":60,"outputBytes":4096,"exitCodes":{"success":[0],"reboot":[]}},"upgrade":"in_place"},"signatures":[],"reboot":"report","downgrade":"deny","dependencies":[],"export":{"kind":"disabled"}})).unwrap();
-    let r::SoftwareBehavior::Msix(expected) = &definition.spec().behavior else {
+    let definition:r::SoftwareDefinition=serde_json::from_value(serde_json::json!({"material":{"format":"msix","installer":"installer"},"source":{"id":"private","revision":"1","sha256":vec![1;32]},"package":"Acme.App","version":"1.0.0.0","provenance":{"kind":"private"},"artifacts":{"installer":{"reference":"installer","length":bytes.len(),"sha256":r::Digest::of(&bytes).bytes()}},"behavior":{"kind":"msix","container":{"kind":"bundle","installer":"installer","members":[{"path":"Acme.msix","identity":identity,"length":package.len(),"sha256":r::Digest::of(&package).bytes()}]},"identity":identity,"dependencies":[],"deployment":{"kind":"device_provisioning"},"minimumOs":[10,0,19041,0],"requireSideload":true,"allowUnsigned":false,"uninstall":true,"invocation":{"runAs":"system","arguments":[],"environment":{},"timeoutSeconds":60,"outputBytes":4096,"exitCodes":{"success":[0],"reboot":[]}},"upgrade":"in_place"},"signatures":[],"reboot":"report","downgrade":"deny","dependencies":[],"export":{"kind":"disabled"}})).unwrap();
+    let Some(r::SoftwareBehavior::Msix(expected)) = &definition.spec().behavior else {
         panic!("msix");
     };
     let mut file = tempfile::tempfile().unwrap();
@@ -602,6 +603,45 @@ fn msix_bundle_rejects_undeclared_application_and_resource_members() {
             )
             .is_err(),
             "accepted undeclared {kind}"
+        );
+    }
+}
+
+#[path = "fixtures/installers.rs"]
+mod installer_fixtures;
+#[test]
+fn unsigned_native_installers_are_observed_without_signature_evidence() {
+    use std::io::Write;
+    let dir = tempfile::tempdir().unwrap();
+    let config = config(dir.path().to_owned());
+    let samples = [
+        ("agent.exe", installer_fixtures::exe("1"), None),
+        (
+            "agent.msi",
+            installer_fixtures::msi(Some("1.2.3"), true),
+            Some("1.2.3"),
+        ),
+        (
+            "agent.msix",
+            installer_fixtures::msix("1.2.3.0", false),
+            Some("1.2.3.0"),
+        ),
+        ("agent.pkg", installer_fixtures::pkg("1.2.3"), Some("1.2.3")),
+    ];
+    for (name, bytes, version) in samples {
+        let mut file = tempfile::tempfile().unwrap();
+        file.write_all(&bytes).unwrap();
+        let deadline = rss_request_context::Deadline::from_timeout(
+            &RuntimeTimer,
+            std::time::Duration::from_secs(60),
+        )
+        .unwrap();
+        let facts =
+            super::installer::inspect(&mut file, name, &config, &RuntimeTimer, deadline).unwrap();
+        assert_eq!(facts.version.as_deref(), version);
+        file.set_len(2).unwrap();
+        assert!(
+            super::installer::inspect(&mut file, name, &config, &RuntimeTimer, deadline).is_err()
         );
     }
 }
