@@ -20,55 +20,7 @@ use sqlx::Row;
 use uuid::Uuid;
 pub const INSTALL_SQL: &str = include_str!("agent_packages.sql");
 pub const ACCESS_CONTRACT: &str = include_str!("agent_packages_access.json");
-/// Candidate metadata is itself an immutable, digest-verified Resource artifact.
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct Manifest {
-    pub wire_version: u8,
-    pub tenant_id: Uuid,
-    pub target: w::Target,
-    pub version: String,
-    pub origin: String,
-    pub signing_keys: std::collections::BTreeMap<String, String>,
-    pub packaging: Packaging,
-}
-/// Optional builder signing metadata is recorded without imposing platform signing policy.
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
-pub enum Packaging {
-    NsisExe {
-        publisher: String,
-        #[serde(default, skip_serializing_if = "String::is_empty")]
-        signature_evidence: String,
-    },
-    WindowsMsi {
-        publisher: String,
-        #[serde(default, skip_serializing_if = "String::is_empty")]
-        signature_evidence: String,
-    },
-    WindowsMsix {
-        publisher: String,
-        #[serde(default, skip_serializing_if = "String::is_empty")]
-        signature_evidence: String,
-    },
-    MacosPkg {
-        bundle: String,
-        #[serde(default, skip_serializing_if = "String::is_empty")]
-        team: String,
-        #[serde(default, skip_serializing_if = "String::is_empty")]
-        notarization_evidence: String,
-    },
-}
-impl Packaging {
-    fn format(&self) -> w::InstallerFormat {
-        match self {
-            Self::NsisExe { .. } => w::InstallerFormat::NsisExe,
-            Self::WindowsMsi { .. } => w::InstallerFormat::WindowsMsi,
-            Self::WindowsMsix { .. } => w::InstallerFormat::WindowsMsix,
-            Self::MacosPkg { .. } => w::InstallerFormat::MacosPkg,
-        }
-    }
-}
+/// Publish a previously saved software version. Internal coordinates are returned by preparation.
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Publish {
@@ -77,31 +29,17 @@ pub struct Publish {
     pub version: String,
     pub variant: String,
     pub target: w::Target,
-    pub manifest_artifact: String,
 }
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct Binding {
     variant: String,
     software: r::SoftwareSpec,
-    packaging: Packaging,
     resource: String,
     version: String,
     digest: [u8; 32],
     lifecycle: [u8; 32],
     installer: r::SoftwareArtifact,
-}
-pub struct PublicationMaterials<D> {
-    pub installer: D,
-    pub manifest: Vec<u8>,
-}
-/// Content adapter pins both originals while this owner publishes their exact binding.
-pub trait Materials: ManagementContentPort {
-    fn publication_materials(
-        &self,
-        installer: &r::Artifact,
-        manifest: &r::Artifact,
-    ) -> impl std::future::Future<Output = Result<PublicationMaterials<Self::Download>, Error>> + Send;
 }
 fn invalid() -> Error {
     Error::Malformed
@@ -126,126 +64,28 @@ fn target(t: w::Target) -> (r::Platform, r::Architecture) {
 }
 fn definition<'a>(v: &'a r::Version, i: &Publish) -> Result<&'a r::SoftwareDefinition, Error> {
     let (p, a) = target(i.target);
-    let selected = v
-        .variants()
-        .iter()
-        .find(|x| x.platform() == p && x.architecture() == a && x.key().as_str() == i.variant)
-        .ok_or_else(invalid)?;
-    let r::Declaration::Software { definition } = selected.declaration() else {
-        return Err(invalid());
-    };
-    let system = match &definition.spec().behavior {
-        r::SoftwareBehavior::Exe(x) => {
-            i.target.platform == TaskPlatform::Windows
-                && x.scope == r::SoftwareScope::System
-                && x.layout.len() == 2
-                && x.layout.values().any(|key| key == &i.manifest_artifact)
-        }
-        r::SoftwareBehavior::Msi(x) => {
-            i.target.platform == TaskPlatform::Windows && x.scope == r::SoftwareScope::System
-        }
-        r::SoftwareBehavior::Msix(x) => {
-            i.target.platform == TaskPlatform::Windows
-                && matches!(x.container, r::MsixContainer::Package { .. })
-                && matches!(x.deployment, r::MsixDeployment::DeviceProvisioning)
-                && x.dependencies.is_empty()
-                && definition.spec().dependencies.is_empty()
-        }
-        r::SoftwareBehavior::Pkg(x) => {
-            i.target.platform == TaskPlatform::Macos && x.scope == r::SoftwareScope::System
-        }
-        _ => false,
-    };
-    if !system {
-        return Err(invalid());
+    let selected = v.variants().iter().find(|x| x.platform() == p && x.architecture() == a && x.key().as_str() == i.variant).ok_or_else(invalid)?;
+    let r::Declaration::Software { definition } = selected.declaration() else { return Err(invalid()); };
+    match (definition.spec().material.format, i.target.platform) {
+        (r::SoftwareFormat::Exe | r::SoftwareFormat::Msi | r::SoftwareFormat::Msix, TaskPlatform::Windows)
+        | (r::SoftwareFormat::Pkg, TaskPlatform::Macos) => Ok(definition),
+        _ => Err(invalid()),
     }
-    Ok(definition)
 }
-fn metadata(
-    manifest: &Manifest,
-    i: &Publish,
-    tenant: TenantId,
-    installer: &r::Artifact,
-    bytes: &[u8],
-    id: Uuid,
-) -> Result<w::Package, Error> {
-    let bounded = |s: &str| !s.is_empty() && s.len() <= 1024 && !s.chars().any(char::is_control);
-    let optional = |s: &str| s.len() <= 1024 && !s.chars().any(char::is_control);
-    let packaging = match &manifest.packaging {
-        Packaging::NsisExe {
-            publisher,
-            signature_evidence,
-        }
-        | Packaging::WindowsMsi {
-            publisher,
-            signature_evidence,
-        }
-        | Packaging::WindowsMsix {
-            publisher,
-            signature_evidence,
-        } => {
-            i.target.platform == TaskPlatform::Windows
-                && bounded(publisher)
-                && optional(signature_evidence)
-        }
-        Packaging::MacosPkg {
-            bundle,
-            team,
-            notarization_evidence,
-        } => {
-            i.target.platform == TaskPlatform::Macos
-                && bounded(bundle)
-                && team.len() <= 256
-                && optional(team)
-                && optional(notarization_evidence)
-        }
-    };
-    let origin = url::Url::parse(&manifest.origin).map_err(|_| invalid())?;
-    if manifest.wire_version != 1
-        || manifest.tenant_id.to_string() != tenant.to_string()
-        || manifest.target != i.target
-        || !bounded(&manifest.version)
-        || manifest.signing_keys.is_empty()
-        || manifest.signing_keys.len() > 16
-        || manifest.signing_keys.iter().any(|(id, key)| {
-            id.is_empty()
-                || id.len() > 128
-                || !id
-                    .bytes()
-                    .all(|b| b.is_ascii_alphanumeric() || b"._-".contains(&b))
-                || key.len() != 43
-                || !key
-                    .bytes()
-                    .all(|b| b.is_ascii_alphanumeric() || b"_-".contains(&b))
-        })
-        || manifest.origin.len() > 2048
-        || !packaging
-        || origin.scheme() != "https"
-        || origin.origin().ascii_serialization() != manifest.origin
-        || !origin.username().is_empty()
-        || origin.password().is_some()
-    {
-        return Err(invalid());
+fn format(format: r::SoftwareFormat) -> Result<w::InstallerFormat, Error> {
+    match format {
+        r::SoftwareFormat::Exe => Ok(w::InstallerFormat::WindowsExe),
+        r::SoftwareFormat::Msi => Ok(w::InstallerFormat::WindowsMsi),
+        r::SoftwareFormat::Msix => Ok(w::InstallerFormat::WindowsMsix),
+        r::SoftwareFormat::Pkg => Ok(w::InstallerFormat::MacosPkg),
+        _ => Err(invalid()),
     }
-    Ok(w::Package {
-        release_id: id,
-        tenant_id: manifest.tenant_id,
-        target: i.target,
-        version: manifest.version.clone(),
-        format: manifest.packaging.format(),
-        filename: filename(i.target, manifest.packaging.format()),
-        length: installer.length(),
-        installer_sha256: installer.digest().bytes(),
-        candidate_sha256: Sha256::digest(bytes).into(),
-        origin: manifest.origin.clone(),
-        signing_keys: manifest.signing_keys.clone(),
-    })
 }
 struct Prepared<D> {
     version: r::Version,
     package: w::Package,
     binding: Binding,
-    _materials: PublicationMaterials<D>,
+    _installer: D,
     verified: Box<dyn crate::catalog::VerifiedContent>,
 }
 fn filename(target: w::Target, format: w::InstallerFormat) -> String {
@@ -276,7 +116,7 @@ async fn replay_in(
     })
     .transpose()
 }
-async fn prepare<C: Materials>(
+async fn prepare<C: ManagementContentPort>(
     app: &management::catalog::Access<C>,
     p: &AuthorizedPrincipal,
     i: &Publish,
@@ -309,54 +149,22 @@ async fn prepare<C: Materials>(
         .await
         .map_err(|_| invalid())?;
     let def = definition(&version, i)?;
-    let candidate = def
-        .spec()
-        .artifacts
-        .get(&i.manifest_artifact)
-        .ok_or_else(invalid)?
-        .artifact()
-        .map_err(|_| invalid())?;
-    if candidate == *def.primary() || candidate.length() > 32768 {
-        return Err(invalid());
-    }
-    let materials = app
-        .content
-        .as_ref()
-        .ok_or(Error::Unsupported)?
-        .publication_materials(def.primary(), &candidate)
-        .await?;
-    candidate
-        .verify(&materials.manifest)
-        .map_err(|_| invalid())?;
-    let manifest: Manifest = serde_json::from_slice(&materials.manifest).map_err(|_| invalid())?;
-    let format_matches = matches!(
-        (&manifest.packaging, &def.spec().behavior),
-        (Packaging::NsisExe { .. }, r::SoftwareBehavior::Exe(_))
-            | (Packaging::WindowsMsi { .. }, r::SoftwareBehavior::Msi(_))
-            | (Packaging::WindowsMsix { .. }, r::SoftwareBehavior::Msix(_))
-            | (Packaging::MacosPkg { .. }, r::SoftwareBehavior::Pkg(_))
-    );
-    if let (Packaging::WindowsMsix { publisher, .. }, r::SoftwareBehavior::Msix(native)) =
-        (&manifest.packaging, &def.spec().behavior)
-        && publisher != &native.identity.publisher
-    {
-        return Err(invalid());
-    }
-    if !format_matches || manifest.version != def.spec().version {
-        return Err(invalid());
-    }
-    let package = metadata(
-        &manifest,
-        i,
-        app.tenant,
-        def.primary(),
-        &materials.manifest,
-        Uuid::new_v4(),
-    )?;
+    let content = app.content.as_ref().ok_or(Error::Unsupported)?;
+    let installer = content.verify_artifact(def.primary()).await?;
+    let native_format = format(def.spec().material.format)?;
+    let package = w::Package {
+        release_id: Uuid::new_v4(),
+        tenant_id: Uuid::parse_str(&app.tenant.to_string()).map_err(|_| invalid())?,
+        target: i.target,
+        version: def.spec().version.clone(),
+        format: native_format,
+        filename: filename(i.target, native_format),
+        length: def.primary().length(),
+        installer_sha256: def.primary().digest().bytes(),
+    };
     let binding = Binding {
         variant: i.variant.clone(),
         software: def.spec().clone(),
-        packaging: manifest.packaging.clone(),
         resource: i.resource.clone(),
         version: i.version.clone(),
         digest: version.digest().bytes(),
@@ -372,7 +180,7 @@ async fn prepare<C: Materials>(
         version,
         package,
         binding,
-        _materials: materials,
+        _installer: installer,
         verified,
     })
 }
@@ -398,7 +206,7 @@ async fn insert_in(
     }
     Ok(())
 }
-pub async fn publish<C: Materials>(
+pub async fn publish<C: ManagementContentPort>(
     app: &management::catalog::Access<C>,
     p: &AuthorizedPrincipal,
     i: &Publish,
@@ -518,7 +326,6 @@ pub async fn admitted_on(
     let binding: Binding = serde_json::from_value(row.try_get("binding").map_err(|_| storage())?)
         .map_err(|_| storage())?;
     if row.try_get::<String, _>("state").map_err(|_| storage())? != "published"
-        || i.candidate_sha256 != package.candidate_sha256
         || !crate::catalog::admitted_on(
             c,
             tenant,
@@ -550,7 +357,6 @@ async fn current_on(
         tenant,
         &w::Installation {
             release_id: id,
-            candidate_sha256: package.candidate_sha256,
         },
     )
     .await?;
@@ -658,7 +464,6 @@ pub struct AdmittedPackage {
     pub digest: [u8; 32],
     pub lifecycle: [u8; 32],
     pub software: r::SoftwareSpec,
-    pub packaging: Packaging,
 }
 /// Resolve an explicit release; ordinary Software resources cannot authorize Agent bootstrap.
 pub async fn resolve_in(
@@ -675,7 +480,6 @@ pub async fn resolve_in(
         digest: binding.digest,
         lifecycle: binding.lifecycle,
         software: binding.software,
-        packaging: binding.packaging,
     })
 }
 
@@ -702,78 +506,8 @@ pub async fn known_in(
                 digest: binding.digest,
                 lifecycle: binding.lifecycle,
                 software: binding.software,
-                packaging: binding.packaging,
-            })
+                    })
         })
         .collect()
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn macos_publication_accepts_unsigned_metadata_and_still_binds_the_native_target() {
-        let tenant = Uuid::new_v4();
-        let target = w::Target {
-            platform: TaskPlatform::Macos,
-            architecture: TaskArchitecture::Aarch64,
-        };
-        let mut manifest = Manifest {
-            wire_version: 1,
-            tenant_id: tenant,
-            target,
-            version: "0.1.0".into(),
-            origin: "https://mdm.example.test:9445".into(),
-            signing_keys: [("test-key".into(), "A".repeat(43))].into(),
-            packaging: Packaging::MacosPkg {
-                bundle: "com.rss.mdmagent".into(),
-                team: "development-ad-hoc".into(),
-                notarization_evidence: "not-notarized:package-manifest:build-1".into(),
-            },
-        };
-        let input = Publish {
-            operation_id: Uuid::new_v4(),
-            resource: "resource".into(),
-            version: "v1".into(),
-            variant: "default".into(),
-            target,
-            manifest_artifact: "candidate".into(),
-        };
-        let artifact =
-            r::Artifact::new(r::Id::new("installer").unwrap(), 1, r::Digest::of(b"x")).unwrap();
-        let check = |manifest: &Manifest, input: &Publish| {
-            metadata(
-                manifest,
-                input,
-                TenantId::parse(&tenant.to_string()).unwrap(),
-                &artifact,
-                &serde_json::to_vec(manifest).unwrap(),
-                Uuid::new_v4(),
-            )
-            .is_ok()
-        };
-        assert!(check(&manifest, &input));
-        let Packaging::MacosPkg {
-            team,
-            notarization_evidence,
-            ..
-        } = &mut manifest.packaging
-        else {
-            unreachable!()
-        };
-        team.clear();
-        notarization_evidence.clear();
-        assert!(check(&manifest, &input));
-        if let Packaging::MacosPkg { team, .. } = &mut manifest.packaging {
-            *team = "x".repeat(257);
-        }
-        assert!(!check(&manifest, &input));
-        if let Packaging::MacosPkg { team, .. } = &mut manifest.packaging {
-            *team = "x".repeat(256);
-        }
-        assert!(check(&manifest, &input));
-        manifest.target.platform = TaskPlatform::Windows;
-        assert!(!check(&manifest, &input));
-    }
-}

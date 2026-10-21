@@ -136,6 +136,47 @@ mod behavior;
 mod validation;
 pub use behavior::*;
 
+/// Installation material independent of any executable plan.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SoftwareMaterial {
+    /// Observed application bundle identity for native PKG deployment, when available.
+    pub bundle_id: Option<String>,
+    /// Native/source format; does not assert that installation is permitted by the OS.
+    pub format: SoftwareFormat,
+    /// Primary artifact key.
+    pub installer: String,
+}
+/// Supported material families, including existing source-based definitions.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SoftwareFormat {
+    /// Windows executable.
+    Exe,
+    /// Windows Installer.
+    Msi,
+    /// Windows application package.
+    Msix,
+    /// macOS installer.
+    Pkg,
+    /// Approved script bundle.
+    Bundle,
+    /// Fixed WinGet source material.
+    Winget,
+    /// Fixed Homebrew source material.
+    Brew,
+    /// macOS disk image.
+    Dmg,
+}
+impl SoftwareFormat {
+    /// Canonical format identity.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Exe => "exe", Self::Msi => "msi", Self::Msix => "msix", Self::Pkg => "pkg",
+            Self::Bundle => "bundle", Self::Winget => "winget", Self::Brew => "brew", Self::Dmg => "dmg",
+        }
+    }
+}
 /// Single current definition; behavior owns format-specific installer semantics.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -150,8 +191,10 @@ pub struct SoftwareSpec {
     pub provenance: SoftwareProvenance,
     /// Complete immutable runtime artifact closure.
     pub artifacts: BTreeMap<String, SoftwareArtifact>,
-    /// Only source of format, installer and payload semantics.
-    pub behavior: SoftwareBehavior,
+    /// Required installation material.
+    pub material: SoftwareMaterial,
+    /// Optional complete execution plan; publication does not require one.
+    pub behavior: Option<SoftwareBehavior>,
     /// Explicit requirements; an empty list permits unsigned content.
     pub signatures: Vec<SoftwareSignature>,
     /// Independently authorized reboot handling.
@@ -213,7 +256,7 @@ impl SoftwareDefinition {
         validation::validate(&mut spec)?;
         let primary = spec
             .artifacts
-            .get(spec.behavior.installer())
+            .get(&spec.material.installer)
             .ok_or(invalid(Validation::Artifact))?
             .artifact()?;
         Ok(Self {

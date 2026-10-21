@@ -2,15 +2,15 @@
 use rss_mdm_agent_wire::runtime as w;
 use rss_mdm_resource as r;
 
-pub(crate) fn software_action(spec: &r::SoftwareSpec) -> w::SoftwareTaskAction {
-    w::SoftwareTaskAction {
+pub(crate) fn software_action(spec: &r::SoftwareSpec) -> Result<w::SoftwareTaskAction, w::WireError> {
+    Ok(w::SoftwareTaskAction {
         package: spec.package.clone(),
         version: spec.version.clone(),
-        behavior: map_software_behavior(&spec.behavior),
+        behavior: map_software_behavior(spec.behavior.as_ref().ok_or(w::WireError::InvalidValue)?),
         signatures: spec.signatures.iter().map(map_software_signature).collect(),
         reboot: map_software_reboot(&spec.reboot),
         downgrade: map_software_downgrade(&spec.downgrade),
-    }
+    })
 }
 fn map_run_as(v: &r::RunAs) -> w::ExecutionIdentity {
     match v {
@@ -331,7 +331,7 @@ pub(crate) fn software_step(
     context: &w::SoftwareExecutionContext,
     export: w::SoftwareTaskExport,
 ) -> std::result::Result<w::SoftwareTaskStep, w::WireError> {
-    let mut action = software_action(input);
+    let mut action = software_action(input)?;
     let target = super::execution::bind_target(&mut action, platform, context)?;
     let artifacts = input
         .artifacts

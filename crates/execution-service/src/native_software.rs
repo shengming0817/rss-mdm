@@ -43,7 +43,7 @@ impl Package {
         {
             return Err(Error::Unsupported);
         }
-        let (key, identity, invocation, mechanism) = match &spec.behavior {
+        let (key, identity, invocation, mechanism) = match spec.behavior.as_ref().ok_or(Error::Unsupported)? {
             r::SoftwareBehavior::Msi(native) | r::SoftwareBehavior::Pkg(native) => {
                 if native.scope != r::SoftwareScope::System
                     || native.upgrade != r::SoftwareUpgrade::InPlace
@@ -51,7 +51,7 @@ impl Package {
                 {
                     return Err(Error::Unsupported);
                 }
-                let (identity, mechanism) = match (&spec.behavior, &native.detect) {
+                let (identity, mechanism) = match (spec.behavior.as_ref().ok_or(Error::Unsupported)?, &native.detect) {
                     (
                         r::SoftwareBehavior::Msi(_),
                         r::SoftwareDetection::MsiProduct {
@@ -134,7 +134,7 @@ impl Package {
             artifact: spec.artifacts.get(key).ok_or(Error::Malformed)?.clone(),
             origin,
             timeout_seconds: invocation.timeout_seconds,
-            minimum_os: match &spec.behavior {
+            minimum_os: match spec.behavior.as_ref().ok_or(Error::Unsupported)? {
                 r::SoftwareBehavior::Msix(m) => Some(m.minimum_os),
                 _ => None,
             },

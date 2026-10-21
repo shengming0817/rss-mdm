@@ -1,7 +1,6 @@
 //! Complete signed configuration files and fixed installer publication identities.
 use crate::runtime::{Secret, TaskArchitecture, TaskPlatform, WireError, strict_uuid};
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
 use uuid::Uuid;
 /// One native target; emulation does not select a different installer.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
@@ -33,8 +32,6 @@ pub struct Installation {
     #[serde(with = "strict_uuid")]
     #[schemars(schema_with = "crate::runtime::uuid_schema")]
     pub release_id: Uuid,
-    /// SHA-256 of the candidate's exact manifest bytes, not the EXE/PKG.
-    pub candidate_sha256: [u8; 32],
 }
 /// Server-frozen metadata; read responses never contain the configuration secret.
 #[derive(Clone, Debug, Serialize, Deserialize, schemars::JsonSchema)]
@@ -185,8 +182,8 @@ pub struct Cancel {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum InstallerFormat {
-    /// Independently installed Windows NSIS executable.
-    NsisExe,
+    /// Windows executable; execution parameters are independently defined.
+    WindowsExe,
     /// Windows Installer package for native desktop management.
     WindowsMsi,
     /// Windows packaged application for native modern management.
@@ -198,7 +195,7 @@ impl InstallerFormat {
     /// Fixed public suffix; no caller-controlled filename.
     pub const fn extension(self) -> &'static str {
         match self {
-            Self::NsisExe => "exe",
+            Self::WindowsExe => "exe",
             Self::WindowsMsi => "msi",
             Self::WindowsMsix => "msix",
             Self::MacosPkg => "pkg",
@@ -229,10 +226,5 @@ pub struct Package {
     pub length: u64,
     /// Installer digest; never used as the installation candidate identity.
     pub installer_sha256: [u8; 32],
-    /// Exact manifest/candidate digest admitted at publication.
-    pub candidate_sha256: [u8; 32],
-    /// HTTPS enrollment authority in the reviewed candidate.
-    pub origin: String,
-    /// Candidate-owned verification keys, not a new trust root supplied by a config file.
-    pub signing_keys: BTreeMap<String, String>,
+
 }

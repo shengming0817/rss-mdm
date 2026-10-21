@@ -371,9 +371,7 @@ impl Service {
             let values=settings::admit_on(c,&tenant,input.runtime.platform).await?;
             let package=service.installations.verify(c,&tenant,&input.installation).await?;
             let target=wire_config::Target{platform:input.runtime.platform,architecture:input.runtime.architecture};
-            let trusted=service.configuration_signer.trusted_keys.get(&cfg.key_id).ok_or(Error::Forbidden)?;
-            if package.tenant_id!=cfg.tenant_id || package.origin!=cfg.origin || package.target!=target || !cfg.targets.contains(&target)
-                || package.signing_keys.get(&cfg.key_id)!=Some(trusted){return Err(Error::Forbidden);}
+            if package.tenant_id!=cfg.tenant_id || package.target!=target || !cfg.targets.contains(&target){return Err(Error::Forbidden);}
             let reused:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_access.agent_grants WHERE tenant_id=$1::uuid AND configuration_id=$2 AND spki=$3)").bind(&tenant).bind(cfg.configuration_id).bind(&*spki).fetch_one(&mut *c).await.map_err(db)?;
             if reused{return Err(Error::Conflict);}
             if let wire_config::Quantity::Finite{count}=cfg.quantity {

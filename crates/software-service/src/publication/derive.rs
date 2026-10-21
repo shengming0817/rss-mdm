@@ -66,10 +66,10 @@ fn filename(variant: &r::Variant, d: &r::SoftwareDefinition, key: &str) -> Resul
             ));
         }
     }
-    if key != d.spec().behavior.installer() {
+    if key != &d.spec().material.installer {
         return Err(Error::Unsupported);
     }
-    match &d.spec().behavior {
+    match d.spec().behavior.as_ref().ok_or(Error::Unsupported)? {
         r::SoftwareBehavior::Msi(_) | r::SoftwareBehavior::Winget(_) => Ok(format!("{digest}.msi")),
         r::SoftwareBehavior::Exe(_) => Ok(format!("{digest}.exe")),
         r::SoftwareBehavior::Dmg(_) => Ok(format!("{digest}.dmg")),
@@ -243,7 +243,7 @@ fn winget(
             return Err(unsupported());
         }
         let (kind, scope, install, upgrade, upgrade_policy, uninstall, detect) =
-            match &d.spec().behavior {
+            match d.spec().behavior.as_ref().ok_or(Error::Unsupported)? {
                 r::SoftwareBehavior::Msi(n) | r::SoftwareBehavior::Winget(n) => (
                     "msi",
                     n.scope,
@@ -292,7 +292,7 @@ fn winget(
         if !coordinates.insert((arch, kind, scope)) {
             return Err(unsupported());
         }
-        let a = artifact(ctx, variant, d, d.spec().behavior.installer())?;
+        let a = artifact(ctx, variant, d, &d.spec().material.installer)?;
         let native_dependencies=d.spec().dependencies.iter().map(|selected| {
             let child=dependency(selected,dependencies)?;
             let selected=child.variants().iter().find(|v|v.platform()==variant.platform()&&v.architecture()==variant.architecture()).ok_or(Error::Content)?;
@@ -394,7 +394,7 @@ fn brew(
                 {
                     return Err(unsupported());
                 }
-                let selected = match &d.spec().behavior {
+                let selected = match d.spec().behavior.as_ref().ok_or(Error::Unsupported)? {
                     r::SoftwareBehavior::Dmg(dmg)
                         if dmg.scope == r::SoftwareScope::System
                             && dmg.upgrade == r::SoftwareUpgrade::InPlace
@@ -452,7 +452,7 @@ fn brew(
                         r::Architecture::Aarch64 => "aarch64",
                     }
                     .into(),
-                    artifact: artifact(ctx, variant, d, d.spec().behavior.installer())?,
+                    artifact: artifact(ctx, variant, d, &d.spec().material.installer)?,
                 });
             }
             r::BrewExport::Bottle {
@@ -464,7 +464,7 @@ fn brew(
                 rebuild,
                 executable,
             } => {
-                let r::SoftwareBehavior::Brew(n) = &d.spec().behavior else {
+                let Some(r::SoftwareBehavior::Brew(n)) = &d.spec().behavior else {
                     return Err(unsupported());
                 };
                 if !ordinary_native(n, r::SoftwareScope::User, r::RunAs::LoggedInUser)

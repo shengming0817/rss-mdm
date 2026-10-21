@@ -89,7 +89,7 @@ impl Preparation {
                 uninstall,
             };
             let selected = self.resolve_in(tx, &binding, *target).await?;
-            if uninstall && !definition(&selected)?.behavior.supports_removal() {
+            if uninstall && !definition(&selected)?.behavior.as_ref().is_some_and(r::SoftwareBehavior::supports_removal) {
                 return Err(Error::Unsupported);
             }
             let steps = self
@@ -160,7 +160,7 @@ impl Preparation {
         let mut steps = Vec::new();
         for (index, selected) in selected.iter().enumerate() {
             let spec = definition(selected)?;
-            let action = wire::software_action(spec);
+            let action = wire::software_action(spec).map_err(|_| Error::Unsupported)?;
             let export = self.export_in(tx, delivery, selected, &action).await?;
             let step = wire::software_step(spec, index, platform, context, export)
                 .map_err(|_| Error::Unsupported)?;

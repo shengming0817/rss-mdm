@@ -326,7 +326,6 @@ impl Inputs {
                 bindings.push((
                     *target,
                     id,
-                    package.metadata.candidate_sha256,
                     package.digest,
                     package.lifecycle,
                 ));

@@ -15,7 +15,7 @@ use uuid::Uuid;
 pub enum Identity {
     WindowsMsi {
         product: Uuid,
-        publisher: String,
+        publisher: Option<String>,
     },
     WindowsMsix {
         family: String,
@@ -39,7 +39,7 @@ impl Identity {
     pub fn validate(&self) -> std::result::Result<(), Error> {
         let bounded = |s: &str| !s.is_empty() && s.len() <= 256 && !s.chars().any(char::is_control);
         let valid = match self {
-            Self::WindowsMsi { product, publisher } => !product.is_nil() && bounded(publisher),
+            Self::WindowsMsi { product, publisher } => !product.is_nil() && publisher.as_ref().is_none_or(|p| bounded(p)),
             Self::WindowsMsix {
                 family, identity, ..
             } => bounded(family) && bounded(&identity.name) && bounded(&identity.publisher),
@@ -292,8 +292,7 @@ impl Package {
         match rss_mdm_software_service::agent_packages::admitted_on(c, tenant, &self.release).await
         {
             Ok(current) => Ok(current.installer_sha256 == self.artifact.sha256
-                && current.version == self.version
-                && current.origin == self.content_origin),
+                && current.version == self.version),
             Err(
                 rss_mdm_software_service::management::Error::Forbidden
                 | rss_mdm_software_service::management::Error::ResourceMissing,
@@ -467,7 +466,7 @@ pub struct DetectionCatalog {
 #[derive(Clone, Serialize, Deserialize)]
 pub struct Win32Identity {
     pub key: String,
-    pub publisher: String,
+    pub publisher: Option<String>,
 }
 impl DetectionCatalog {
     pub fn digest(&self) -> std::result::Result<[u8; 32], Error> {
@@ -501,12 +500,8 @@ pub async fn detection_on(
         .into_iter()
         .filter(|r| r.metadata.target.platform == platform)
     {
-        if let (
-            resource::SoftwareBehavior::Exe(exe),
-            rss_mdm_software_service::agent_packages::Packaging::NsisExe { publisher, .. },
-        ) = (&release.software.behavior, &release.packaging)
-        {
-            let resource::SoftwareDetection::Registry {
+        if let Some(resource::SoftwareBehavior::Exe(exe)) = &release.software.behavior
+        {            let resource::SoftwareDetection::Registry {
                 scope: resource::SoftwareScope::System,
                 key,
                 value,
@@ -528,7 +523,7 @@ pub async fn detection_on(
             {
                 catalog.win32.push(Win32Identity {
                     key: key.to_owned(),
-                    publisher: publisher.clone(),
+                    publisher: None,
                 });
             } else {
                 catalog.complete = false;
