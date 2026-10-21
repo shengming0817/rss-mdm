@@ -133,7 +133,8 @@ async fn directory_people_are_verified_and_authorized_before_search() -> Result<
         let registration=registered["registrationId"].as_str().context("registration")?;
         crate::test_support::process::pg(&format!("INSERT INTO mdm_access.devices(tenant_id,id) VALUES('{}','{}')",case_tenant(),dummy))?;
         let manager=f.author.clone();
-        let mut agent_user=Browser::default();ensure!(agent_user.login(&f.router,"other").await?==StatusCode::OK);
+        let mut agent_user=Browser::default();ensure!(agent_user.login_password(&f.router,"other",crate::test_support::identity::PASSWORD).await?==StatusCode::OK);
+        ensure!(agent_user.cookies["__Host-identity-session"]!=manager.cookies["__Host-identity-session"],"Agent and management must use distinct real sessions");
         f.author=agent_user.clone();
         let login=call(&f,Method::PUT,Some(json!({"operationId":Uuid::new_v4(),"expectedRevision":0})),true,true).await?;
         ensure!(login.0==StatusCode::OK,"login {login:?}");
@@ -224,14 +225,16 @@ async fn directory_releases_product_locks_before_identity_recheck() -> Result<()
             let proof=sessions.authenticate(authority.access.authorization(),rss_mdm_authorization_service::credential::RequestCredential::Cookie(rss_identity_core::session::SessionSecret::parse(f.author.cookies["__Host-identity-session"].clone())?)).await?;
             let service=rss_mdm_device_service::Associations::new(authority.audit.clone(),authority.identity.tenant,&[7;32])?;
             let mut root=PgConnection::connect_with(&crate::device::test_support::options("postgres")?).await?;
+            let mut observer=PgConnection::connect_with(&crate::device::test_support::options("postgres")?).await?;
             let mut hold=root.begin().await?;
+            let blocker:i32=sqlx::query_scalar("SELECT pg_backend_pid()").fetch_one(&mut *hold).await?;
             sqlx::query("SELECT tenant_id FROM identity_authority.guard WHERE tenant_id=$1::uuid FOR UPDATE").bind(case_tenant()).fetch_one(&mut *hold).await?;
             let query=rss_mdm_device_service::ViewQuery{search:None,platform:None,cursor:None,limit:64,descending:false,status:None,channel:None,source:None,asset_state:None};
             let task=tokio::spawn(async move {service.views(&proof,&query,&sessions).await});
             let acquired=async {
                 tokio::time::timeout(Duration::from_secs(5),async {
                     loop {
-                        let blocked:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE datname=current_database() AND query LIKE '%FROM identity_authority.guard%FOR UPDATE%' AND pg_backend_pid()=ANY(pg_blocking_pids(pid)))").fetch_one(&mut *hold).await?;
+                        let blocked:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE datname=current_database() AND query LIKE '%FROM identity_authority.guard%FOR UPDATE%' AND $1=ANY(pg_blocking_pids(pid)))").bind(blocker).fetch_one(&mut observer).await?;
                         if blocked {return Ok::<_,anyhow::Error>(());}
                         tokio::time::sleep(Duration::from_millis(10)).await;
                     }
@@ -243,10 +246,11 @@ async fn directory_releases_product_locks_before_identity_recheck() -> Result<()
             }.await;
             hold.rollback().await?;
             let page=task.await?;
+            let page=page.context("directory failed while exercising the Identity guard")?;
             acquired.context("directory retained product locks while waiting for Identity")?;
-            let page=page?;
             ensure!(page["items"][0]["endpoints"][0]["currentUser"]["state"]=="active");
             root.close().await?;
+            observer.close().await?;
             Ok(())
         }).await
     }).await
