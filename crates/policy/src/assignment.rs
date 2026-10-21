@@ -152,28 +152,28 @@ pub enum Action {
         /// Maximum lifetime of each admitted run, from 60 seconds through seven days.
         run_lifetime_seconds: u32,
     },
-    /// A native Agent read template using the same schedule and membership frequency.
+    /// A native Agent read template collected at a fixed interval.
     AgentCollection {
         /// Exact immutable native template.
         resource: ExactResourceBinding,
-        #[serde(default = "default_schedule")]
-        /// Calendar and check-in trigger.
+        #[serde(default = "default_collection_schedule")]
+        /// Fixed interval; missed offline periods coalesce into the latest occurrence.
         schedule: Schedule,
-        #[serde(default)]
-        /// Existing Policy execution frequency.
+        #[serde(default = "collection_frequency")]
+        /// Every distinct interval, independently of the immutable resource version.
         frequency: Frequency,
         /// Lifetime of the accepted collection.
         run_lifetime_seconds: u32,
     },
-    /// A native MDM read template using the same schedule and membership frequency.
+    /// A native MDM read template collected at a fixed interval.
     NativeCollection {
         /// Exact immutable native template.
         resource: ExactResourceBinding,
-        #[serde(default = "default_schedule")]
-        /// Calendar and check-in trigger.
+        #[serde(default = "default_collection_schedule")]
+        /// Fixed interval; missed offline periods coalesce into the latest occurrence.
         schedule: Schedule,
-        #[serde(default)]
-        /// Existing Policy execution frequency.
+        #[serde(default = "collection_frequency")]
+        /// Every distinct interval, independently of the immutable resource version.
         frequency: Frequency,
         /// Lifetime of the accepted collection.
         run_lifetime_seconds: u32,
@@ -274,6 +274,18 @@ impl SoftwareRolloutStage {
                     >= u128::from(previous_total) * u128::from(minimum)
         })
     }
+}
+fn default_collection_schedule() -> Schedule {
+    Schedule {
+        trigger: Trigger::Interval {
+            anchor: 0,
+            seconds: 3600,
+        },
+        ..default_schedule()
+    }
+}
+fn collection_frequency() -> Frequency {
+    Frequency::EveryTrigger
 }
 fn default_schedule() -> Schedule {
     Schedule {
@@ -459,6 +471,24 @@ impl Action {
     }
     /// Validate calendar and lifetime semantics without owning any targets.
     pub fn validate(&self) -> Result<(), Error> {
+        if let Action::AgentCollection {
+            schedule,
+            frequency,
+            ..
+        }
+        | Action::NativeCollection {
+            schedule,
+            frequency,
+            ..
+        } = self
+            && (!matches!(schedule.trigger, Trigger::Interval { .. })
+                || !matches!(frequency, Frequency::EveryTrigger)
+                || !matches!(schedule.misfire, crate::schedule::Misfire::CoalesceOne)
+                || schedule.until.is_some()
+                || schedule.window.is_some())
+        {
+            return Err(Error::Malformed);
+        }
         match self {
             Self::TelemetryProfile { resource }
             | Self::Execution { resource, .. }
@@ -638,6 +668,37 @@ mod tests {
         };
         assert!(schedule.until.is_none());
         assert!(matches!(frequency, Frequency::OncePerVersion));
+    }
+    #[test]
+    fn collection_defaults_to_hourly_repetition_and_rejects_nonperiodic_modes() {
+        for kind in ["native_collection", "agent_collection"] {
+            let mut value = configuration();
+            value["action"] = json!({"kind":kind,"resource":value["action"]["resource"],"runLifetimeSeconds":300});
+            let definition: Definition = serde_json::from_value(value.clone()).unwrap();
+            definition.validate().unwrap();
+            let encoded = serde_json::to_value(definition).unwrap();
+            assert_eq!(encoded["action"]["frequency"], "every_trigger");
+            assert_eq!(encoded["action"]["schedule"]["trigger"]["seconds"], 3600);
+            for trigger in [
+                json!({"kind":"manual"}),
+                json!({"kind":"check_in","minimumSeconds":60}),
+                json!({"kind":"registration"}),
+            ] {
+                let mut invalid = encoded.clone();
+                invalid["action"]["schedule"]["trigger"] = trigger;
+                let invalid: Definition = serde_json::from_value(invalid).unwrap();
+                assert!(invalid.validate().is_err());
+            }
+            for frequency in ["once_per_version", "once_per_entry"] {
+                let mut invalid = encoded.clone();
+                invalid["action"]["frequency"] = json!(frequency);
+                let invalid: Definition = serde_json::from_value(invalid).unwrap();
+                assert!(invalid.validate().is_err());
+            }
+        }
+        assert!(!crate::ActionKind::AgentCollection.supports_rerun());
+        assert!(!crate::ActionKind::NativeCollection.supports_rerun());
+        assert!(crate::ActionKind::Execution.supports_rerun());
     }
     #[test]
     fn policy_cannot_embed_a_device_membership_list() {
