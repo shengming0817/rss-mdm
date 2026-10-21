@@ -303,7 +303,8 @@ class ModuleImpactTests(unittest.TestCase):
     def test_app_helpers_select_all_actual_consumers(self):
         self.assertEqual(self.selected('crates/app/tests/support/software.rs'), {
             'agent.configurations','planning.agent_policy','planning.self_service','software.http','content.http','content.mirror','content.gc','content.storage',
-            'planning.software','execution.commands.onboarding','execution.software.offer','execution.software.content','execution.software.recovery'})
+            'planning.software','execution.commands.onboarding','execution.software.offer','execution.software.content','execution.software.recovery',
+            'enrollment.quotas','windows.enrollment'})
         process = self.selected('crates/app/tests/support/process.rs')
         self.assertTrue({'inventory.runtime', 'execution.commands.recovery', 'execution.commands.onboarding'} <= process)
         self.assertTrue(process.isdisjoint({'sources.brew_git', 'apple.apns'}))
@@ -314,6 +315,8 @@ class ModuleImpactTests(unittest.TestCase):
         self.assertIn('agent.registration', self.selected('crates/app/tests/support/runtime.rs'))
         # Late declarations and inherited imports/method calls are direct users too.
         for helper, consumers in {
+            'software_execution': {'telemetry.ingress.' + backend for backend in
+                                   ('postgres', 'timescale_shared', 'timescale_dedicated', 'click_house')},
             'authority': {'telemetry.ingress.' + backend for backend in
                           ('postgres', 'timescale_shared', 'timescale_dedicated', 'click_house')},
             'runtime': {'installation.smtp', 'installation.smtp_transport', 'installation.storage_reconcile',

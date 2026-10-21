@@ -1005,12 +1005,14 @@ APP_HELPER_CONSUMERS = {
         'apple.onboarding', 'execution.agent.delivery', 'execution.agent.poll', 'execution.commands.onboarding',
         'execution.software.content', 'execution.software.offer', 'execution.software.recovery', 'planning.agent_policy',
         'planning.self_service', 'planning.software', 'software.http',
+        'telemetry.ingress.click_house', 'telemetry.ingress.postgres',
+        'telemetry.ingress.timescale_dedicated', 'telemetry.ingress.timescale_shared',
     ),
     'support/software.rs': (
         'agent.configurations', 'content.gc', 'content.http', 'content.mirror',
         'content.storage', 'execution.commands.onboarding', 'execution.software.content', 'execution.software.offer',
         'execution.software.recovery', 'planning.agent_policy', 'planning.self_service', 'planning.software',
-        'software.http',
+        'software.http', 'enrollment.quotas', 'windows.enrollment',
     ),
     'support/process.rs': (
         'agent.configurations', 'agent.pki', 'agent.registration', 'agent.reports',
