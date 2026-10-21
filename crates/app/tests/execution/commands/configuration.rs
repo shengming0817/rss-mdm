@@ -612,7 +612,7 @@ async fn associated_agent_health_executes_only_original_mdm_and_missing_channel_
     let group = Uuid::new_v4();
     let scope = Uuid::new_v4();
     let policy = Uuid::new_v4();
-    planning_http::call(&mut client.browser,&client.router,&format!("/api/v1/groups/{group}"),0,json!({"action":"create","assetContext":"associated_device","name":"Agent health remediation","description":"","criteria":{"selector":{"kind":"device"},"quantifier":"one","criteria":{"kind":"predicate","field":"custom.corporate_agent.healthy","op":"eq","value":{"kind":"boolean","value":false}}}})).await?;
+    planning_http::call(&mut client.browser,&client.router,&format!("/api/v1/groups/{group}"),0,json!({"action":"create","assetContext":"associated_device","presentation":{"name":"Agent health remediation","description":""},"criteria":{"selector":{"kind":"device"},"quantifier":"one","criteria":{"kind":"predicate","field":"custom.corporate_agent.healthy","op":"eq","value":{"kind":"boolean","value":false}}}})).await?;
     planning_http::call(&mut client.browser,&client.router,&format!("/api/v1/scopes/{scope}"),0,json!({"action":"put","definition":{"targets":[{"kind":"group","id":group}],"limitations":null,"exclusions":[]}})).await?;
     let resource = resource(&mut client, &[CORTANA]).await?;
     change(&mut client,&format!("/api/v1/policies/{policy}"),0,json!({"action":"put","enabled":true,"definition":{"scope":scope,"action":{"kind":"configuration","resource":{"id":resource,"version":"1","platform":"windows","architecture":"x86_64","variant":"native"},"exit":"retain"}}})).await?;

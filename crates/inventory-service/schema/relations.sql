@@ -186,9 +186,8 @@ GRANT SELECT,INSERT ON TABLE mdm_compliance.versions TO mdm_flow_runtime;
 
 GRANT SELECT,INSERT ON TABLE mdm_group.groups TO mdm_group_runtime;
 
-GRANT UPDATE(name) ON TABLE mdm_group.groups TO mdm_group_runtime;
+GRANT UPDATE(presentation) ON TABLE mdm_group.groups TO mdm_group_runtime;
 
-GRANT UPDATE(description) ON TABLE mdm_group.groups TO mdm_group_runtime;
 
 GRANT UPDATE(revision) ON TABLE mdm_group.groups TO mdm_group_runtime;
 

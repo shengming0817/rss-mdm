@@ -122,7 +122,7 @@ async fn once_per_entry_tracks_membership_epochs() -> Result<()> {
     let automation = start_automation(base).await?;
     let group = Uuid::new_v4();
     let scope = Uuid::new_v4();
-    post(author,router,&format!("/api/v1/groups/{group}"),json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"create","assetContext":"endpoint","name":"entry-frequency","description":"","criteria":null}})).await?;
+    post(author,router,&format!("/api/v1/groups/{group}"),json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"create","assetContext":"endpoint","presentation":{"name":"entry-frequency","description":""},"criteria":null}})).await?;
     let added=post(author,router,&format!("/api/v1/groups/{group}"),json!({"operationId":Uuid::new_v4(),"expectedRevision":1,"input":{"action":"members","add":[{"kind":"endpoint","id":case_device_id()}],"remove":[]}})).await?;
     await_task(
         author,

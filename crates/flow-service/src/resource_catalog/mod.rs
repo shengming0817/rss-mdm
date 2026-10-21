@@ -100,6 +100,9 @@ pub enum Change {
     Create {
         kind: Kind,
     },
+    Present {
+        presentation: serde_json::Map<String, Value>,
+    },
     Instantiate {
         blueprint: String,
         version: String,
@@ -296,6 +299,7 @@ impl ResourceCatalog {
                             command: pg::Command::CreateFromBlueprint {
                                 kind: initial.kind(),
                                 origin,
+                                presentation: blueprint.presentation.clone(),
                             },
                         },
                     )
@@ -326,6 +330,7 @@ impl ResourceCatalog {
         let command = match &op.input {
             Change::Instantiate { .. } => unreachable!("handled above"),
             Change::Create { kind } => pg::Command::Create(kind.core()),
+            Change::Present { presentation } => pg::Command::Present(presentation.clone()),
             Change::Version {
                 version,
                 kind,
@@ -380,7 +385,7 @@ impl ResourceCatalog {
         let snapshot = stored.resource.snapshot();
         let origin = &snapshot.origin;
         Ok(
-            json!({"id":resource,"origin":origin,"revision":stored.storage_revision,"kind":resource_kind(snapshot.kind),"versions":snapshot.versions.iter().map(|v|json!({"id":v.version.label().as_str(),"digest":v.version.digest().bytes(),"state":resource_state(v.state),"variants":v.version.variants().iter().map(variant_view).collect::<Vec<_>>()})).collect::<Vec<_>>() }),
+            json!({"id":resource,"origin":origin,"presentation":snapshot.presentation,"revision":stored.storage_revision,"kind":resource_kind(snapshot.kind),"versions":snapshot.versions.iter().map(|v|json!({"id":v.version.label().as_str(),"digest":v.version.digest().bytes(),"state":resource_state(v.state),"variants":v.version.variants().iter().map(variant_view).collect::<Vec<_>>()})).collect::<Vec<_>>() }),
         )
     }
 }

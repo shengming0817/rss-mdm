@@ -12,7 +12,7 @@ view!(ResourceReceipt {
     request: String,
     storage_revision: u64
 });
-view!(ResourceRead { origin: Option<BlueprintOrigin>, id: String, revision: u64, kind: String, versions: Vec<ResourceVersion> });
+view!(ResourceRead { presentation: serde_json::Map<String, Value>, origin: Option<BlueprintOrigin>, id: String, revision: u64, kind: String, versions: Vec<ResourceVersion> });
 view!(BlueprintOrigin {
     blueprint: String,
     version: String,

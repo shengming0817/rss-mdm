@@ -4,7 +4,10 @@ fn pack(id: &str, category: &str, adapter: NativeAdapter, fields: &[(&str, &str)
     Blueprint {
         id: format!("macos.{id}"),
         version: "2".into(),
-        category: category.into(),
+        presentation: serde_json::json!({"category":category})
+            .as_object()
+            .unwrap()
+            .clone(),
         platform: Platform::MacOS,
         definition: NativeCollectionDefinition::new(NativeCollectionSpec {
             scope: TemplateScope::Device,
@@ -192,7 +195,10 @@ fn status_pack(id: &str, category: &str, items: &[&str]) -> Blueprint {
     Blueprint {
         id: format!("macos.ddm.{id}"),
         version: "2".into(),
-        category: category.into(),
+        presentation: serde_json::json!({"category":category})
+            .as_object()
+            .unwrap()
+            .clone(),
         platform: Platform::MacOS,
         definition: Definition::Configuration {
             content: json!({

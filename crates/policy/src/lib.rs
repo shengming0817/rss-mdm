@@ -3,6 +3,7 @@
 //! enumeration, authorization, execution fact, database, HTTP or device protocol.
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
+mod presentation;
 mod self_service;
 pub use self_service::*;
 mod assignment;

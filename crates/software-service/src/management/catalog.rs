@@ -128,11 +128,21 @@ pub async fn read_version<C: ManagementContentPort>(
             Box::pin(async move {
                 let (app, proof, id, version, audit) = *ctx;
                 authorize(tx, proof, Permission::SoftwareRead).await?;
-                let value = app
+                let mut value = app
                     .catalog
                     .reader()
                     .version_read_in(tx, id, version)
                     .await?;
+                let key = rss_mdm_resource::Id::new(id).map_err(|_| Error::Malformed)?;
+                let resource = app
+                    .resources
+                    .get_in(tx, &key)
+                    .await?
+                    .map_err(|_| Error::Unavailable(super::Failure::SoftwareCatalogInvariant))?
+                    .ok_or(Error::ResourceMissing)?;
+                value["presentation"] =
+                    serde_json::Value::Object(resource.resource.snapshot().presentation);
+                value["resourceRevision"] = serde_json::json!(resource.storage_revision);
                 app.audit
                     .append_request_in(tx, audit, 200, "success")
                     .await?;

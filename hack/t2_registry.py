@@ -746,6 +746,7 @@ consume(('crates/execution-service/src/input_preparation.rs',
         'execution.commands.configuration')
 consume(('crates/execution-service/src/freeze_inputs.rs', 'crates/flow-service/src/resource_catalog/mod.rs'),
         'planning.agent_policy planning.onboarding')
+consume(('crates/policy/src/presentation.rs',), 'planning.self_service')
 TASK_CONSUMERS = 'planning.self_service planning.onboarding planning.policy planning.agent_policy planning.frequency planning.software execution.agent.delivery execution.agent.poll execution.agent.content execution.agent.history execution.agent.recovery execution.software.offer execution.software.content execution.software.recovery'
 consume(('crates/agent-wire/src/collection.rs', 'crates/agent-wire/src/collection_scope.rs', 'crates/agent-channel/src/inventory_wire.rs'),
         TASK_CONSUMERS + ' agent.registration agent.reports')

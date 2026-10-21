@@ -1,4 +1,5 @@
 //! Deterministic product compliance decisions; time and device execution are not inputs.
+mod presentation;
 use serde::{Deserialize, Serialize};
 mod model;
 pub use model::*;

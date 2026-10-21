@@ -28,8 +28,10 @@ async fn staged_pages_publish_atomically_and_replay_without_duplicate_members() 
             &Command::Create {
                 asset_context: rss_mdm_group_postgres::AssetContext::Endpoint,
                 group,
-                name: "paged".into(),
-                description: String::new(),
+                presentation: serde_json::json!({"name":"paged","description":""})
+                    .as_object()
+                    .unwrap()
+                    .clone(),
                 definition: Definition::Dynamic(Box::new(rule)),
             },
             deadline(),
@@ -200,8 +202,10 @@ async fn static_patches_use_the_same_sealed_publication_and_preserve_old_sets() 
     let create = Command::Create {
         asset_context: rss_mdm_group_postgres::AssetContext::Endpoint,
         group,
-        name: "static-paged".into(),
-        description: String::new(),
+        presentation: serde_json::json!({"name":"static-paged","description":""})
+            .as_object()
+            .unwrap()
+            .clone(),
         definition: Definition::Static,
     };
     let mut current = s
@@ -428,8 +432,10 @@ async fn durable_recalculation_no_change_fences_stale_run() {
             &Command::Create {
                 asset_context: rss_mdm_group_postgres::AssetContext::Endpoint,
                 group: id,
-                name: "dynamic".into(),
-                description: String::new(),
+                presentation: serde_json::json!({"name":"dynamic","description":""})
+                    .as_object()
+                    .unwrap()
+                    .clone(),
                 definition: Definition::Dynamic(Box::new(rule)),
             },
             deadline(),
@@ -492,8 +498,10 @@ async fn delta_evaluates_only_changed_devices_and_preserves_old_results() {
             &Command::Create {
                 asset_context: rss_mdm_group_postgres::AssetContext::Endpoint,
                 group: id,
-                name: "delta".into(),
-                description: String::new(),
+                presentation: serde_json::json!({"name":"delta","description":""})
+                    .as_object()
+                    .unwrap()
+                    .clone(),
                 definition: Definition::Dynamic(Box::new(rule)),
             },
             deadline(),

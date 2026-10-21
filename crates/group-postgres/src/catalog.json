@@ -29,17 +29,8 @@
     ],
     [
       "groups",
-      "name",
-      "text",
-      true,
-      null,
-      "",
-      ""
-    ],
-    [
-      "groups",
-      "description",
-      "text",
+      "presentation",
+      "jsonb",
       true,
       null,
       "",
@@ -606,13 +597,6 @@
     ],
     [
       "groups",
-      "groups_description_check",
-      "c",
-      "CHECK ((octet_length(description) <= 4096))",
-      true
-    ],
-    [
-      "groups",
       "groups_id_check",
       "c",
       "CHECK ((id <> '00000000-0000-0000-0000-000000000000'::uuid))",
@@ -634,16 +618,16 @@
     ],
     [
       "groups",
-      "groups_name_check",
-      "c",
-      "CHECK (((octet_length(name) >= 1) AND (octet_length(name) <= 4096)))",
+      "groups_pkey",
+      "p",
+      "PRIMARY KEY (tenant_id, id)",
       true
     ],
     [
       "groups",
-      "groups_pkey",
-      "p",
-      "PRIMARY KEY (tenant_id, id)",
+      "groups_presentation_check",
+      "c",
+      "CHECK (((jsonb_typeof(presentation) = 'object'::text) AND (presentation ?& ARRAY['name'::text, 'description'::text]) AND (octet_length((presentation)::text) <= 131072) AND (jsonb_typeof((presentation -> 'name'::text)) = 'string'::text) AND ((octet_length((presentation ->> 'name'::text)) >= 1) AND (octet_length((presentation ->> 'name'::text)) <= 4096)) AND (jsonb_typeof((presentation -> 'description'::text)) = 'string'::text) AND (octet_length((presentation ->> 'description'::text)) <= 4096)))",
       true
     ],
     [

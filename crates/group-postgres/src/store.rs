@@ -334,22 +334,49 @@ fn rule_doc(t: TenantId, r: &Rule) -> CommandOutcome<serde_json::Value> {
 fn command_document(t: TenantId, c: &Command) -> CommandOutcome<Vec<u8>> {
     let body = match c {
         Command::Create {
-            name,
-            description,
+            presentation,
             definition,
             asset_context,
             ..
         } => {
-            text(name, false)?;
-            text(description, true)?;
-            json!({"kind":"create","asset_context":asset_context,"name":name,"description":description,"rule":match definition {Definition::Static=>None,Definition::Dynamic(r)=>Some(rule_doc(t,r)?)}})
+            if !crate::presentation::valid(presentation, 65536) {
+                return Err(Rejection::InvalidInput);
+            }
+            text(
+                presentation
+                    .get("name")
+                    .and_then(serde_json::Value::as_str)
+                    .ok_or(Rejection::InvalidInput)?,
+                false,
+            )?;
+            text(
+                presentation
+                    .get("description")
+                    .and_then(serde_json::Value::as_str)
+                    .ok_or(Rejection::InvalidInput)?,
+                true,
+            )?;
+            json!({"kind":"create","asset_context":asset_context,"presentation":presentation,"rule":match definition {Definition::Static=>None,Definition::Dynamic(r)=>Some(rule_doc(t,r)?)}})
         }
-        Command::Edit {
-            name, description, ..
-        } => {
-            text(name, false)?;
-            text(description, true)?;
-            json!({"kind":"edit","name":name,"description":description})
+        Command::Edit { presentation, .. } => {
+            if !crate::presentation::valid(presentation, 65536) {
+                return Err(Rejection::InvalidInput);
+            }
+            text(
+                presentation
+                    .get("name")
+                    .and_then(serde_json::Value::as_str)
+                    .ok_or(Rejection::InvalidInput)?,
+                false,
+            )?;
+            text(
+                presentation
+                    .get("description")
+                    .and_then(serde_json::Value::as_str)
+                    .ok_or(Rejection::InvalidInput)?,
+                true,
+            )?;
+            json!({"kind":"edit","presentation":presentation})
         }
         Command::SetRule { rule, .. } => json!({"kind":"rule","rule":rule_doc(t,rule)?}),
         Command::Delete { .. } => json!({"kind":"delete"}),
@@ -369,8 +396,7 @@ fn command_group(command: &Command, existing: Option<Group>) -> CommandOutcome<(
         (
             Command::Create {
                 group,
-                name,
-                description,
+                presentation,
                 definition,
                 asset_context,
             },
@@ -390,8 +416,7 @@ fn command_group(command: &Command, existing: Option<Group>) -> CommandOutcome<(
                     id: *group,
                     kind,
                     asset_context: *asset_context,
-                    name: name.clone(),
-                    description: description.clone(),
+                    presentation: presentation.clone(),
                     revision: Revision::new(1)?,
                     calculation_revision: 0,
                     member_version: 0,
@@ -428,12 +453,9 @@ fn apply_command<'a>(
                 rule_to_write = Some(r);
             }
         }
-        Command::Edit {
-            name, description, ..
-        } => {
-            if group.name != *name || group.description != *description {
-                group.name = name.clone();
-                group.description = description.clone();
+        Command::Edit { presentation, .. } => {
+            if group.presentation != *presentation {
+                group.presentation = presentation.clone();
                 kind = Some(ChangeKind::Edited);
             }
         }

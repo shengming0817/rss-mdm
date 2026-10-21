@@ -12,7 +12,7 @@ pub struct Blueprint {
     /// Exact official revision; published revisions are never overwritten.
     pub version: String,
     /// User-facing inventory category.
-    pub category: String,
+    pub presentation: serde_json::Map<String, serde_json::Value>,
     /// Native platform.
     pub platform: Platform,
     /// Actual executable template, not an empty coverage placeholder.

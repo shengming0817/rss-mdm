@@ -19,7 +19,7 @@ async fn waiting_group_does_not_spin(b: &mut Browser, router: &Router, base: &Va
     crate::test_support::stop_worker(setup).await?;
     let group = Uuid::new_v4();
     let gp = format!("/api/v1/groups/{group}");
-    let created=ok(b,router,Method::POST,&gp,Some(request(0,json!({"action":"create","assetContext":"endpoint","name":"held group","description":"","criteria":{"selector":{"kind":"device"},"quantifier":"one","criteria":{"kind":"predicate","field":"custom.office_floor","op":"ge","value":{"kind":"integer","value":0}}}})))).await?;
+    let created=ok(b,router,Method::POST,&gp,Some(request(0,json!({"action":"create","assetContext":"endpoint","presentation":{"name":"held group","description":""},"criteria":{"selector":{"kind":"device"},"quantifier":"one","criteria":{"kind":"predicate","field":"custom.office_floor","op":"ge","value":{"kind":"integer","value":0}}}})))).await?;
     let group_task = created["task"].as_str().unwrap();
     // Hold only the external group input. No claim was created while the worker was stopped.
     pg(&format!(
@@ -114,7 +114,7 @@ async fn group_applicability_membership_versions_and_stale_input() -> Result<()>
     let group = Uuid::new_v4();
     let gp = format!("/api/v1/groups/{group}");
     let group_rule = json!({"selector":{"kind":"device"},"quantifier":"one","criteria":{"kind":"predicate","field":"custom.office_floor","op":"ge","value":{"kind":"integer","value":3}}});
-    crate::test_support::http::ok(&mut browser,router,Method::POST,&gp,Some(request(0,json!({"action":"create","assetContext":"endpoint","name":"compliance target","description":"","criteria":group_rule})))).await?;
+    crate::test_support::http::ok(&mut browser,router,Method::POST,&gp,Some(request(0,json!({"action":"create","assetContext":"endpoint","presentation":{"name":"compliance target","description":""},"criteria":group_rule})))).await?;
     let def = definition(json!({"kind":"groups","ids":[group]}));
     ok(
         &mut browser,

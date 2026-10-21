@@ -271,6 +271,14 @@ async fn apply(
             request_version,
             source,
         } => {
+            let metadata_json = serde_json::to_string(metadata).map_err(|_| Error::Malformed)?;
+            let fits: bool = sqlx::query_scalar("SELECT octet_length(($1::jsonb)::text)<=16384")
+                .bind(&metadata_json)
+                .fetch_one(&mut *c)
+                .await?;
+            if !fits {
+                return Err(Error::Malformed);
+            }
             generation(c, tenant, *expected_gen).await?;
             let actual:Option<i64>=sqlx::query_scalar("SELECT revision FROM mdm_certificate_archive.entries WHERE tenant_id=$1::uuid AND id=$2::uuid").bind(tenant).bind(entry.to_string()).fetch_optional(&mut *c).await?;
             if actual.unwrap_or(0) != *expected {
@@ -282,7 +290,7 @@ async fn apply(
             } else {
                 sqlx::query("UPDATE mdm_certificate_archive.entries SET revision=$3 WHERE tenant_id=$1::uuid AND id=$2::uuid").bind(tenant).bind(entry.to_string()).bind(next).execute(&mut *c).await?;
             }
-            sqlx::query("INSERT INTO mdm_certificate_archive.versions(tenant_id,entry_id,version,actor,instance,operation_id,created_at,metadata,facts,sealed,source,request_entry_id,request_version) VALUES($1::uuid,$2::uuid,$3,$4,$5::uuid,$6::uuid,floor(extract(epoch FROM clock_timestamp()))::bigint,$7::jsonb,$8::jsonb,$9,$10,$11::uuid,$12)").bind(tenant).bind(entry.to_string()).bind(next).bind(p.principal_id()).bind(p.instance_id()).bind(id.to_string()).bind(serde_json::to_string(metadata).map_err(|_|Error::Malformed)?).bind(serde_json::to_string(facts).map_err(|_|Error::Integrity)?).bind(sealed).bind(*source).bind(request_version.map(|r|r.entry_id.to_string())).bind(request_version.map(|r|r.version)).execute(c).await?;
+            sqlx::query("INSERT INTO mdm_certificate_archive.versions(tenant_id,entry_id,version,actor,instance,operation_id,created_at,metadata,facts,sealed,source,request_entry_id,request_version) VALUES($1::uuid,$2::uuid,$3,$4,$5::uuid,$6::uuid,floor(extract(epoch FROM clock_timestamp()))::bigint,$7::jsonb,$8::jsonb,$9,$10,$11::uuid,$12)").bind(tenant).bind(entry.to_string()).bind(next).bind(p.principal_id()).bind(p.instance_id()).bind(id.to_string()).bind(&metadata_json).bind(serde_json::to_string(facts).map_err(|_|Error::Integrity)?).bind(sealed).bind(*source).bind(request_version.map(|r|r.entry_id.to_string())).bind(request_version.map(|r|r.version)).execute(c).await?;
             result.entry_id = Some(*entry);
             result.version = Some(next);
             result.revision = next;

@@ -40,7 +40,7 @@ fn answer(q: &NativeQuery, rows: serde_json::Value) -> NativeQueryResult {
     }
 }
 #[test]
-fn certificate_metadata_is_closed_even_for_failed_partial_results() {
+fn certificate_evidence_allows_descriptions_but_rejects_secret_material_in_every_status() {
     let q = query(NativeSystemQuery::WindowsCertificates {
         store: WindowsCertificateStore::My,
         user: false,
@@ -61,6 +61,19 @@ fn certificate_metadata_is_closed_even_for_failed_partial_results() {
             queries: [("facts".into(), r)].into(),
         };
         assert!(envelope(r.clone()).validate_for(&p, 100).is_ok());
+        r.rows[0].insert("vendor_note".into(), json!({"label":"device certificate"}));
+        r.rows[0].insert("health".into(), json!("valid"));
+        r.rows[0].insert("running".into(), json!("ordinary description"));
+        let extended = envelope(r.clone());
+        assert!(extended.validate_for(&p, 100).is_ok());
+        let restored: NativeCollectionResult =
+            serde_json::from_slice(&serde_json::to_vec(&extended).unwrap()).unwrap();
+        assert_eq!(restored, extended);
+        let mut nested_secret = extended.clone();
+        nested_secret.queries.get_mut("facts").unwrap().rows[0]
+            .insert("vendor_note".into(), json!({"privateKey":"forbidden"}));
+        assert!(nested_secret.validate_for(&p, 100).is_err());
+
         for key in [
             "private_key",
             "password",
@@ -68,6 +81,12 @@ fn certificate_metadata_is_closed_even_for_failed_partial_results() {
             "der",
             "pfx",
             "recovery_key",
+            "privateKey",
+            "recoveryKey",
+            "passwordHash",
+            "certificateDer",
+            "pkcs12",
+            "recovery-password",
         ] {
             let mut bad = r.clone();
             bad.rows[0].insert(key.into(), json!("forbidden"));

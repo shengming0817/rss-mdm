@@ -8,6 +8,7 @@
 //! returned decision does not prove a database commit or execution on a device.
 mod agent_collection;
 mod native_collection;
+mod presentation;
 pub use agent_collection::*;
 mod script;
 pub use native_collection::*;
@@ -566,6 +567,8 @@ pub struct BlueprintOrigin {
 /// Trusted storage input. Only Resource::restore validates aggregate consistency.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ResourceSnapshot {
+    /// Open descriptive data, independent of immutable execution versions.
+    pub presentation: serde_json::Map<String, serde_json::Value>,
     /// Original blueprint provenance, independent of the live catalog.
     pub origin: Option<BlueprintOrigin>,
     /// Tenant to which every stored version must belong.
@@ -574,7 +577,7 @@ pub struct ResourceSnapshot {
     pub key: Id,
     /// Declaration kind shared by all versions.
     pub kind: Kind,
-    /// Last accepted aggregate change time; absent exactly when there are no versions.
+    /// Last accepted version lifecycle change time; absent exactly when there are no versions.
     pub changed_at: Option<Timepoint>,
     /// Uniquely labelled versions with at most one active entry.
     pub versions: Vec<StoredVersion>,
@@ -590,6 +593,7 @@ pub struct StoredVersion {
 /// In-memory decision aggregate. Persistence/locking remains the adapter's responsibility.
 #[derive(Clone, Debug)]
 pub struct Resource {
+    presentation: serde_json::Map<String, serde_json::Value>,
     origin: Option<BlueprintOrigin>,
     tenant: TenantId,
     key: Id,
@@ -605,9 +609,21 @@ impl Resource {
             key,
             kind,
             origin: None,
+            presentation: Default::default(),
             versions: BTreeMap::new(),
             changed_at: None,
         }
+    }
+    /// Replace the full descriptive object; persistence and CAS belong to the adapter.
+    pub fn set_presentation(
+        &mut self,
+        value: serde_json::Map<String, serde_json::Value>,
+    ) -> Result<(), Error> {
+        if !presentation::valid(&value, 65536) {
+            return Err(Error::InvalidInput);
+        }
+        self.presentation = value;
+        Ok(())
     }
     /// Set provenance only on an empty resource before its first version is inserted.
     pub fn set_origin(&mut self, origin: BlueprintOrigin) -> Result<(), Error> {
@@ -626,6 +642,7 @@ impl Resource {
     /// Copy current state in version-label order for caller-owned persistence.
     pub fn snapshot(&self) -> ResourceSnapshot {
         ResourceSnapshot {
+            presentation: self.presentation.clone(),
             origin: self.origin.clone(),
             tenant: self.tenant,
             key: self.key.clone(),
@@ -692,6 +709,7 @@ impl Resource {
             }
             resource.origin = Some(origin);
         }
+        resource.set_presentation(snapshot.presentation)?;
         resource.changed_at = snapshot.changed_at;
         Ok(resource)
     }

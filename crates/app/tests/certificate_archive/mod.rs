@@ -120,7 +120,7 @@ impl Fixture {
     }
 }
 fn metadata(name: &str) -> Value {
-    json!({"name":name,"category":"custom","labels":["fixture"],"usages":["manual"],"owner":"operator","notes":""})
+    json!({"name":name,"category":"custom","labels":["fixture"],"usages":["manual"],"owner":"operator","notes":"","vendor":{"help":"retained"}})
 }
 fn import(entry: Uuid, revision: i64, contents: &str) -> Value {
     use base64::Engine;
@@ -177,18 +177,26 @@ async fn real_http_preserves_history_rewraps_and_restarts_locked() -> Result<()>
     );
     f.write("/import", import(entry, 1, "second original material"))
         .await?;
+    let mut dense = metadata("new metadata");
+    dense["vendor"] = json!({"padding":"x".repeat(5000),"values":vec![0;3500]});
     f.admin.operation = Some(Uuid::new_v4());
     f.ok(
         Method::PUT,
         &format!("/entries/{entry}/metadata"),
-        Some(json!({"expectedRevision":2,"metadata":metadata("new metadata")})),
+        Some(json!({"expectedRevision":2,"metadata":dense})),
     )
     .await?;
+    dense["vendor"]["padding"] = json!("x".repeat(8000));
+    ensure!(serde_json::to_vec(&dense)?.len() < 16384);
+    f.admin.operation = Some(Uuid::new_v4());
+    ensure!(f.call(Method::PUT, &format!("/entries/{entry}/metadata"), Some(json!({"expectedRevision":3,"metadata":dense}))).await?.0 == StatusCode::BAD_REQUEST);
     let history = f
         .ok(Method::GET, &format!("/entries/{entry}/versions"), None)
         .await?;
     ensure!(history.as_array().unwrap().len() == 3);
+    ensure!(history[0]["metadata"]["vendor"]["padding"] == "x".repeat(5000));
     ensure!(history[2]["metadata"]["name"] == "historic");
+    ensure!(history[2]["metadata"]["vendor"]["help"] == "retained");
     let opaque = pg(&format!(
         "SELECT position(convert_to('first original material','UTF8') in sealed)=0 FROM mdm_certificate_archive.versions WHERE tenant_id='{}' AND entry_id='{entry}' AND version=1",
         case_tenant()

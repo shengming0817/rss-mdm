@@ -9,6 +9,19 @@ from ci_impact import select_inputs, SelectionError
 
 
 class ModuleImpactTests(unittest.TestCase):
+    def test_descriptive_objects_select_their_storage_and_http_consumers(self):
+        cases = {
+            'crates/policy/src/presentation.rs': {'policy.persistence', 'planning.self_service'},
+            'crates/group-postgres/src/presentation.rs': {'group.persistence'},
+            'crates/resource/src/presentation.rs': {'resource.persistence', 'software.http'},
+            'crates/compliance/src/presentation.rs': {'compliance.storage', 'compliance.http'},
+            'crates/certificate-archive-service/src/presentation.rs': {'certificate-archive.http'},
+            'crates/webhook-service/src/presentation.rs': {'webhooks.product'},
+        }
+        for path, expected in cases.items():
+            with self.subTest(path=path):
+                self.assertTrue(expected <= set(select_inputs([path]).modules))
+
     def test_recovery_schema_selects_installation_catalog_and_business_consumers(self):
         selected=set(select_inputs(['crates/recovery-credentials/schema/install.sql']).modules)
         self.assertTrue({'installation.migration','catalog.contract','recovery-credentials.http','apple.commands','execution.agent.delivery'} <= selected,selected)

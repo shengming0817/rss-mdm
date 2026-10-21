@@ -172,18 +172,8 @@ fn risk_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
 pub struct SelfServiceMetadata {
     /// Whether this script is published for self service.
     pub published: bool,
-    /// Directory display name.
-    pub display_name: String,
-    /// Intended purpose.
-    pub description: String,
-    /// Preconditions shown before invocation.
-    pub prerequisites: String,
-    /// Expected effects shown before invocation.
-    pub side_effects: String,
-    /// Presentation category.
-    pub category: String,
-    /// Search terms.
-    pub keywords: Vec<String>,
+    /// Open directory presentation; never used as authorization or executable input.
+    pub presentation: serde_json::Map<String, serde_json::Value>,
     /// Effective administrator AI switch.
     pub allow_ai: bool,
     #[serde(deserialize_with = "deserialize_risk")]

@@ -162,7 +162,7 @@ fn native_delivery_target_is_execution_semantics() {
 #[test]
 fn parameter_sources_and_self_service_have_independent_versions() {
     let id = Uuid::new_v4();
-    let mut value = json!({"scope":id,"action":{"kind":"execution","resource":{"id":"r","version":"v1","platform":"macos","architecture":"aarch64","variant":"default"},"parameters":{"path":{"kind":"fixed","value":"/Applications"},"name":{"kind":"input"}},"schedule":{"trigger":{"kind":"manual"},"misfire":{"kind":"coalesce_one"},"notBefore":0,"until":null,"jitterSeconds":0,"window":null},"runLifetimeSeconds":300},"selfService":{"access":{"kind":"authenticated_user"},"published":true,"displayName":"Repair","description":"Repair application","prerequisites":"","sideEffects":"Restart","category":"Support","keywords":[]}});
+    let mut value = json!({"scope":id,"action":{"kind":"execution","resource":{"id":"r","version":"v1","platform":"macos","architecture":"aarch64","variant":"default"},"parameters":{"path":{"kind":"fixed","value":"/Applications"},"name":{"kind":"input"}},"schedule":{"trigger":{"kind":"manual"},"misfire":{"kind":"coalesce_one"},"notBefore":0,"until":null,"jitterSeconds":0,"window":null},"runLifetimeSeconds":300},"selfService":{"access":{"kind":"authenticated_user"},"published":true,"presentation":{"displayName":"Repair","description":"Repair application","prerequisites":"","sideEffects":"Restart","category":"Support","keywords":[]}}});
     let apply = |old: Option<&Policy>, v: serde_json::Value| {
         Policy::apply(
             id,
@@ -178,6 +178,16 @@ fn parameter_sources_and_self_service_have_independent_versions() {
         .unwrap()
     };
     let first = apply(None, value.clone());
+    value["selfService"]["presentation"]["vendorHelp"] = json!({"text":"contact support"});
+    let descriptive = apply(Some(&first.policy), value.clone());
+    assert!(!descriptive.semantic_changed);
+    assert_eq!(descriptive.policy.version, first.policy.version);
+    assert!(descriptive.policy.revision > first.policy.revision);
+    let encoded = serde_json::to_value(&descriptive.policy.definition).unwrap();
+    assert_eq!(
+        encoded["selfService"]["presentation"]["vendorHelp"],
+        value["selfService"]["presentation"]["vendorHelp"]
+    );
     let config = first.policy.definition.self_service.as_ref().unwrap();
     assert_eq!(config.allow_ai, Some(true));
     assert_eq!(config.risk_level, Some(ScriptRisk::CONFIRM));
@@ -258,7 +268,7 @@ fn input_is_exact_and_cannot_override_fixed_values() {
 #[test]
 fn self_service_requires_explicit_bounded_access_and_supports_only_available_software() {
     let id = Uuid::new_v4();
-    let base = json!({"scope":id,"action":{"kind":"execution","resource":{"id":"r","version":"v1","platform":"macos","architecture":"aarch64","variant":"default"},"parameters":{},"runLifetimeSeconds":300},"selfService":{"access":{"kind":"device"},"published":true,"displayName":"Repair","description":"","prerequisites":"","sideEffects":"","category":"Support","keywords":[]}});
+    let base = json!({"scope":id,"action":{"kind":"execution","resource":{"id":"r","version":"v1","platform":"macos","architecture":"aarch64","variant":"default"},"parameters":{},"runLifetimeSeconds":300},"selfService":{"access":{"kind":"device"},"published":true,"presentation":{"displayName":"Repair","description":"","prerequisites":"","sideEffects":"","category":"Support","keywords":[]}}});
     let mut missing = base.clone();
     missing["selfService"]
         .as_object_mut()

@@ -123,10 +123,8 @@ pub enum Command {
     Create {
         /// Target group identity within this store’s tenant.
         group: GroupId,
-        /// Nonempty, control-free display name, at most 4 KiB UTF-8.
-        name: String,
-        /// Description, at most 4 KiB UTF-8; empty allowed, NUL forbidden.
-        description: String,
+        /// Open descriptive properties; never membership or rule authority.
+        presentation: serde_json::Map<String, serde_json::Value>,
         /// Immutable asset universe.
         asset_context: AssetContext,
         /// Initial authority and optional dynamic rule.
@@ -138,10 +136,8 @@ pub enum Command {
         group: GroupId,
         /// The caller-observed sole group CAS revision.
         expected: Revision,
-        /// Nonempty, control-free display name, at most 4 KiB UTF-8.
-        name: String,
-        /// Description, at most 4 KiB UTF-8; empty allowed, NUL forbidden.
-        description: String,
+        /// Open descriptive properties; never membership or rule authority.
+        presentation: serde_json::Map<String, serde_json::Value>,
     },
     /// Select an immutable rule version for a dynamic group; reusing its version with different content is rejected.
     SetRule {
@@ -190,10 +186,8 @@ pub struct Group {
     pub kind: GroupKind,
     /// Immutable input object universe.
     pub asset_context: AssetContext,
-    /// Nonempty, control-free display name, at most 4 KiB UTF-8.
-    pub name: String,
-    /// Description, at most 4 KiB UTF-8; empty allowed, NUL forbidden.
-    pub description: String,
+    /// Open descriptive properties; never membership or rule authority.
+    pub presentation: serde_json::Map<String, serde_json::Value>,
     /// Configuration edit CAS, independent of background membership publication.
     pub revision: Revision,
     /// Successful publication sequence; fences competing fixed-input calculations.

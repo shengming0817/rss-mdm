@@ -828,28 +828,10 @@
             "null"
           ]
         },
-        "category": {
-          "description": "Presentation category, independent of Scope.",
-          "type": "string"
-        },
-        "description": {
-          "description": "Intended purpose.",
-          "type": "string"
-        },
-        "displayName": {
-          "description": "Display name in the authorized directory.",
-          "type": "string"
-        },
-        "keywords": {
-          "description": "Bounded search terms.",
-          "items": {
-            "type": "string"
-          },
-          "type": "array"
-        },
-        "prerequisites": {
-          "description": "Preconditions shown before invocation.",
-          "type": "string"
+        "presentation": {
+          "additionalProperties": true,
+          "description": "Open, bounded directory text. Unknown properties are retained without authority.",
+          "type": "object"
         },
         "published": {
           "description": "Whether new self-service calls are accepted.",
@@ -866,21 +848,12 @@
           ],
           "default": null,
           "description": "Defaults to confirmation at first configuration; only levels one and two are legal."
-        },
-        "sideEffects": {
-          "description": "Expected side effects shown before invocation.",
-          "type": "string"
         }
       },
       "required": [
         "access",
         "published",
-        "displayName",
-        "description",
-        "prerequisites",
-        "sideEffects",
-        "category",
-        "keywords"
+        "presentation"
       ],
       "type": "object"
     },
