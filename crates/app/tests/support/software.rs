@@ -99,6 +99,9 @@ impl Fixture {
 
         if let Some(peer) = &peer {
             base["content"]["imports"][&peer.logical] = json!([{"base":format!("{}artifacts/",peer.base),"addresses":[peer.address],"private_ca":peer.ca}]);
+            if peer.state.lock().unwrap().import_manifest.is_some() {
+                base["content"]["imports"][format!("{}-import", peer.logical)] = json!([{"base":format!("{}import/",peer.base),"addresses":[peer.address],"private_ca":peer.ca}]);
+            }
         }
         crate::test_support::storage::seed(&serde_json::from_value(base.clone())?).await?;
         let access = database(&base).await?;

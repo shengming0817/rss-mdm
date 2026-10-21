@@ -614,6 +614,7 @@ MODULES['software.catalog'] = replace(MODULES['software.catalog'], db_mode='inst
     CasePolicy('transactions::source_receipts_follow_the_borrowed_transaction', 'reuse', 'tenant'),
 ))
 MODULES['software.http'] = replace(MODULES['software.http'], db_mode='reuse', scope='objects', policies=(
+    CasePolicy('software_catalog::t2::http::imports::rest_import_binds_original_material_and_replays_without_source', 'reuse', 'objects', ('identity','tls')),
     CasePolicy('software_catalog::t2::http::publication::brew::immutable_native_tap_is_consumed_by_git_and_homebrew_and_withdrawn', 'fresh', 'objects', ('identity','tls','git','homebrew')),
     CasePolicy('software_catalog::t2::http::publication::publication_http_authority_receipts_and_public_native_binding', 'reuse', 'tenant', ('identity','tls','local_worker')),
 ))

@@ -22,6 +22,7 @@ use tokio::{
 };
 #[derive(Default)]
 pub struct State {
+    pub import_manifest: Option<Vec<u8>>,
     pub manifests: BTreeMap<String, serde_json::Value>,
     pub posts: usize,
     pub deletes: usize,
@@ -167,6 +168,16 @@ fn respond(
 ) -> Option<(u16, Vec<u8>)> {
     let mut s = state.lock().unwrap();
     let lower = header.to_ascii_lowercase();
+    if path.starts_with("/import/") {
+        let Some(manifest) = &s.import_manifest else {
+            return Some((404, vec![]));
+        };
+        return Some(match path {
+            "/import/information" => (200, serde_json::to_vec(&serde_json::json!({"Data":{"SourceIdentifier":format!("{logical}-import"),"ServerSupportedVersions":["1.0.0"]}})).unwrap()),
+            "/import/packageManifests/Acme.App?Version=1.2" => (200, manifest.clone()),
+            _ => (404, vec![]),
+        });
+    }
 
     if path.starts_with("/artifacts/") {
         s.artifact_auth_leaked |= lower.contains("authorization:")
