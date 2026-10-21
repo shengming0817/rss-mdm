@@ -77,8 +77,6 @@ pub struct TelemetryProfileSpec {
     pub boost: Option<TelemetryBoost>,
     /// Maximum historical upload age, measured against product receipt time.
     pub backfill_seconds: u32,
-    /// Bounded display/vendor metadata with no execution or authorization meaning.
-    pub metadata: BTreeMap<String, String>,
 }
 /// Exact Inventory identity. The composition owner resolves and freezes its definition.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
@@ -105,7 +103,7 @@ impl TryFrom<TelemetryProfileSpec> for TelemetryProfile {
     }
 }
 impl TelemetryProfile {
-    /// Validate closed execution controls and bounded extensible metadata.
+    /// Validate execution controls. Descriptive data belongs to Resource presentation.
     pub fn new(spec: TelemetryProfileSpec) -> Result<Self, Error> {
         let bad = || Error::InvalidInput;
         for v in [
@@ -129,7 +127,6 @@ impl TelemetryProfile {
             || spec.budget.execution_millis > spec.sample_millis
             || spec.budget.output_bytes == 0
             || spec.budget.output_bytes > spec.budget.bytes
-            || spec.metadata.len() > 32
         {
             return Err(bad());
         }
@@ -147,11 +144,6 @@ impl TelemetryProfile {
             if field.version == 0 || field.version > i64::MAX as u64 || !keys.insert(&field.key) {
                 return Err(bad());
             }
-        }
-        if spec.metadata.iter().any(|(k, v)| {
-            k.is_empty() || k.len() > 128 || v.len() > 1024 || k.chars().any(char::is_control)
-        }) {
-            return Err(bad());
         }
         let profile = Self(spec);
         if profile.canonical().len() > 256 * 1024 {

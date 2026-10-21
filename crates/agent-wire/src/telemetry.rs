@@ -160,7 +160,7 @@ pub struct TelemetryObservation {
     pub sequence: u64,
     /// UTC Unix microseconds when sampled, independent of receipt time.
     pub observed_at: i64,
-    /// Exact configured field keys and typed source output.
+    /// Typed source output. Only configured fields and declared attributes become trusted facts.
     pub values: BTreeMap<super::FieldKey, TelemetryReading>,
 }
 /// Sampling failures do not invent values or tombstones.

@@ -42,13 +42,13 @@ async fn run(expected: &str, projection: r::TelemetryProjection) -> Result<()> {
         let profile=r::TelemetryProfile::new(r::TelemetryProfileSpec {
             template:r::TelemetryTemplate {resource:template.to_string(),version:"v1".into(),variant:"default".into(),platform:r::Platform::MacOS,architecture:r::Architecture::Aarch64},
             parameters:Default::default(),fields:vec![r::TelemetryFieldReference {key:field.key.as_str().into(),version:field.version}],projection,
-            sample_millis:5000,upload_millis:10000,budget:r::TelemetryBudget {points:64,bytes:65536,resources:1,execution_millis:1000,output_bytes:4096},boost:None,backfill_seconds:3600,metadata:Default::default(),
+            sample_millis:5000,upload_millis:10000,budget:r::TelemetryBudget {points:64,bytes:65536,resources:1,execution_millis:1000,output_bytes:4096},boost:None,backfill_seconds:3600,
         })?;
         let profile_id=Uuid::new_v4();let bytes=profile.canonical();let digest:[u8;32]=Sha256::digest(&bytes).into();
         resource(&mut f.author,&f.router,profile_id,0,json!({"action":"create","kind":"telemetry_profile"})).await?;
         resource(&mut f.author,&f.router,profile_id,1,json!({"action":"version","version":"v1","kind":"telemetry_profile","variants":[{"platform":"macos","architecture":"aarch64","key":"default","declaration":{"kind":"telemetry_profile","artifact":{"reference":"profile","length":bytes.len(),"sha256":digest},"definition":profile}}]})).await?;
         ensure!(upload(&f.author,&f.router,profile_id,&bytes).await?==StatusCode::CREATED);
-        resource(&mut f.author,&f.router,profile_id,2,json!({"action":"activate","version":"v1"})).await?;
+        let published_profile=resource(&mut f.author,&f.router,profile_id,2,json!({"action":"activate","version":"v1"})).await?;
         // The immutable Profile must remain publishable after a compatible catalog upgrade.
         let mut upgraded=field.clone();upgraded.version+=1;upgraded.sources.insert(rss_mdm_inventory::Source::AgentOsquery,1);
         put(&mut f.author,&f.router,"/api/v1/asset-fields/custom.corporate_agent.healthy",json!({"operationId":Uuid::new_v4(),"expectedRevision":field.version,"input":{"action":"put","definition":upgraded}})).await?;
@@ -72,12 +72,23 @@ async fn run(expected: &str, projection: r::TelemetryProjection) -> Result<()> {
         use ring::signature::KeyPair;
         ring::signature::UnparsedPublicKey::new(&ring::signature::ED25519,f.key.public_key().as_ref()).verify(&signed.configuration.signing_bytes(&signed.key_id)?,&base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(&signed.signature)?).map_err(|_|anyhow::anyhow!("configuration signature"))?;
         let configuration=signed.configuration;
+        if expected=="postgres" && projection==r::TelemetryProjection::Both {
+            let presentation=json!({"name":"Telemetry display", "vendor":{"labels":["preserved", "nested"]}});
+            let edited=resource(&mut f.author,&f.router,profile_id,3,json!({"action":"present","presentation":presentation})).await?;
+            ensure!(edited["revision"]==4 && edited["presentation"]==presentation);
+            ensure!(edited["versions"]==published_profile["versions"],"display edit changed executable version");
+            let (status,after)=agent_call(&f.router,Method::GET,&config_path,Some(case_credential()),None).await?;
+            ensure!(status==StatusCode::OK && after["configuration"]["binding"]==configuration.binding,"display edit changed upload binding");
+        }
         ensure!(configuration.device_id==case_device_id() && configuration.expires_at>configuration.issued_at);
 
         ensure!(matches!(configuration.collector,wire::TelemetryCollector::Script {..}));
         let now=f.planning.clock.unix_seconds()? * 1_000_000;
         let id=Uuid::new_v4();let observation=Uuid::new_v4();
-        let body=json!({"batchId":id,"policy":policy["id"],"policyVersion":policy["versionId"],"binding":configuration.binding,"observations":[{"id":observation,"sequence":10,"observedAt":now-1_000_000,"values":{"custom.corporate_agent.healthy":{"quality":"valid","value":{"kind":"boolean","value":true},"intervalStart":null}}}]});
+        let mut body=json!({"batchId":id,"policy":policy["id"],"policyVersion":policy["versionId"],"binding":configuration.binding,"observations":[{"id":observation,"sequence":10,"observedAt":now-1_000_000,"values":{"custom.corporate_agent.healthy":{"quality":"valid","value":{"kind":"boolean","value":true},"intervalStart":null}}}]});
+        if expected=="postgres" && projection==r::TelemetryProjection::Both {
+            body["observations"][0]["values"]["custom.vendor_extra"]=json!({"quality":"valid","value":{"kind":"string","value":"raw-vendor-evidence"},"intervalStart":null});
+        }
         let other_device=if expected=="postgres" && projection==r::TelemetryProjection::Both {Some(signing_gate(&mut f,&config_path,&body,secondary.as_ref().unwrap()).await?)} else {None};
         if expected=="postgres" && projection==r::TelemetryProjection::Both { recovery::receive_commit_unknown(&mut f,&body).await?; }
         let path="/api/v1/agent/runtime/telemetry/batches";
@@ -89,6 +100,15 @@ async fn run(expected: &str, projection: r::TelemetryProjection) -> Result<()> {
         ensure!(status==StatusCode::ACCEPTED,"upload: {status} {accepted}");
         let (status,replayed)=agent_call(&f.router,Method::POST,path,Some(case_credential()),Some(body.clone())).await?;
         ensure!(status==StatusCode::ACCEPTED && replayed["replayed"]==true);
+        if expected=="postgres" && projection==r::TelemetryProjection::Both {
+            let mut extension_conflict=body.clone();
+            extension_conflict["observations"][0]["values"]["custom.vendor_extra"]["value"]["value"]=json!("changed-evidence");
+            ensure!(agent_call(&f.router,Method::POST,path,Some(case_credential()),Some(extension_conflict.clone())).await?.0==StatusCode::CONFLICT);
+            extension_conflict["batchId"]=json!(Uuid::new_v4());
+            ensure!(agent_call(&f.router,Method::POST,path,Some(case_credential()),Some(extension_conflict)).await?.0==StatusCode::CONFLICT);
+            let quality=pg(&format!("SELECT quality::text FROM mdm_telemetry.batches WHERE tenant_id='{}' AND id='{id}'",case_tenant()))?;
+            ensure!(!quality.contains("vendor_extra"),"unknown field entered quality: {quality}");
+        }
         let mut conflict=body.clone();conflict["observations"][0]["values"]["custom.corporate_agent.healthy"]["value"]["value"]=json!(false);
         ensure!(agent_call(&f.router,Method::POST,path,Some(case_credential()),Some(conflict)).await?.0==StatusCode::CONFLICT);
         let mut observation_conflict=body.clone();observation_conflict["batchId"]=json!(Uuid::new_v4());
@@ -110,6 +130,10 @@ async fn run(expected: &str, projection: r::TelemetryProjection) -> Result<()> {
         let before_late = if projection!=r::TelemetryProjection::History {
             observed(&f.router,&receipt_path,observation,"snapshot","applied").await?;
             let current=current_field(&mut f.author,&f.router).await?;
+            if expected=="postgres" && projection==r::TelemetryProjection::Both {
+                let (_,inventory)=f.author.call(&f.router,Method::GET,&format!("/api/v1/devices/{}/inventory",case_device_id()),None).await?;
+                ensure!(inventory["asset"]["device"]["fields"]["custom.vendor_extra"].is_null());
+            }
             ensure!(current.state==rss_mdm_inventory::State::Known(rss_mdm_inventory::Scalar::Boolean(true)));
             ensure!(current.sources.iter().any(|s|s.evidence.source==rss_mdm_inventory::Source::AgentScript && s.evidence.snapshot_id==observation.to_string()));
             Some(current)
