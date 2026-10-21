@@ -201,6 +201,19 @@
       "read_only": true,
       "updates": [],
       "delete_policy": null
+    },
+    {
+      "schema": "mdm_access",
+      "table": "current_users",
+      "read_write": true,
+      "updates": [
+        "revision",
+        "registration",
+        "generation",
+        "session_reference",
+        "confirmed_at"
+      ],
+      "delete_policy": null
     }
   ],
   "functions": [],

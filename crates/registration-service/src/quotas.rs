@@ -1,4 +1,4 @@
-//! Self-service quotas. Organization enrollment and mutable responsibility are separate.
+//! Self-service quotas. Enrollment origin alone determines quota usage.
 //! ref: PostgreSQL src/backend/utils/adt/lockfuncs.c@REL_17_6.
 use crate::{Error, Store, database::db};
 use rss_mdm_authorization_service::{Permission, User, context::AuthorizedPrincipal};
@@ -6,7 +6,6 @@ use serde::{Deserialize, Serialize};
 use sqlx::{PgConnection, Row};
 use std::sync::Arc;
 pub mod management;
-pub mod responsibility;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]

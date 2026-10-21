@@ -7,6 +7,7 @@ pub mod endpoints;
 pub mod linked;
 mod management;
 pub mod read;
+pub mod registration_user;
 pub mod store;
 use crate::{Error, Store, device::coordinates::Coordinates};
 #[cfg(any(test, feature = "integration"))]

@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "One explicit login/switch or logout operation. Identity is never caller-selected.",
+  "properties": {
+    "expectedRevision": {
+      "description": "Revision read from this device before making the change.",
+      "format": "uint64",
+      "minimum": 0,
+      "type": "integer"
+    },
+    "operationId": {
+      "description": "Stable identity retained through an unknown response.",
+      "format": "uuid",
+      "type": "string"
+    }
+  },
+  "required": [
+    "operationId",
+    "expectedRevision"
+  ],
+  "title": "CurrentUserChange",
+  "type": "object",
+  "$id": "https://rss.example/mdm/agent/runtime/v1/payload/v1/current-user-change.schema.json"
+}

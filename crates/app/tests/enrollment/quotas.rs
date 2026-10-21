@@ -240,7 +240,7 @@ async fn concurrent_self_enrollment_replays_and_preserves_live_reservations() ->
 }
 #[tokio::test]
 #[ignore = "MODULE=enrollment.quotas: overrides, expiry, organization exemption and responsibility"]
-async fn overrides_inherit_and_organization_responsibility_is_optional_and_exempt() -> Result<()> {
+async fn overrides_inherit_and_asset_owner_is_independent_of_enrollment_quota() -> Result<()> {
     let mut f = authority::Authority::open().await?;
     let f_resources = std::mem::take(&mut f.resources);
     f_resources.finish(async {
@@ -317,18 +317,11 @@ async fn overrides_inherit_and_organization_responsibility_is_optional_and_exemp
             .0
             == StatusCode::FORBIDDEN
     );
-    ensure!(
-        admin
-            .call(
-                &router,
-                Method::GET,
-                &format!("/api/v1/devices/{self_device}/registration-user"),
-                None
-            )
-            .await?
-            .0
-            == StatusCode::NOT_FOUND
-    );
+    let self_owner=call(&mut admin,&router,Method::GET,&format!("/api/v1/devices/{self_device}/registration-user"),None).await?;
+    ensure!(self_owner["user"]==target);
+    let changed=write(&mut admin,&router,Method::PUT,&format!("/api/v1/devices/{self_device}/registration-user"),json!({"expectedRevision":self_owner["revision"],"user":null})).await?;
+    ensure!(changed["user"].is_null());
+    ensure!(windows(&call(&mut other,&router,Method::GET,ME,None).await?)["used"]==1);
     write(
         &mut admin,
         &router,

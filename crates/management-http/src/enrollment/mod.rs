@@ -5,3 +5,5 @@ pub mod http;
 pub mod quotas;
 
 pub mod channels;
+
+mod registration_user;

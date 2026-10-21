@@ -1,4 +1,4 @@
-//! Quota configuration and responsibility use the existing authenticated browser owner.
+//! Quota configuration and self-enrollment use the existing authenticated browser owner.
 use super::http::HttpState;
 use crate::{Error, api::write_key, authorization::context::RequestAuth};
 use axum::{
@@ -9,10 +9,7 @@ use axum::{
 };
 use rss_mdm_audit_integration::RequestAudit;
 use rss_mdm_authorization_service::User;
-use rss_mdm_registration_service::quotas::{
-    Change, Configuration, Usage,
-    responsibility::{Responsibility, ResponsibilityChange},
-};
+use rss_mdm_registration_service::quotas::{Change, Configuration, Usage};
 use std::sync::Arc;
 use uuid::Uuid;
 type App = Arc<HttpState>;
@@ -37,10 +34,6 @@ pub fn routes() -> Router<App> {
         .route(
             "/registration-quotas/users/{instance}/{principal}/usage",
             get(usage),
-        )
-        .route(
-            "/devices/{device}/registration-user",
-            get(responsibility).put(assign),
         )
         .route("/self-enrollments", get(options).post(create_self))
 }
@@ -140,35 +133,6 @@ async fn overrides_write(
             key,
             &audit,
         )
-        .await
-        .map(Json)
-        .map_err(Into::into)
-}
-async fn responsibility(
-    State(app): State<App>,
-    Extension(auth): Extension<RequestAuth>,
-    Path(device): Path<String>,
-) -> Result<Json<Responsibility>, Error> {
-    app.service
-        .quotas()
-        .responsibility(&auth.proof, &device)
-        .await
-        .map(Json)
-        .map_err(Into::into)
-}
-async fn assign(
-    State(app): State<App>,
-    Extension(auth): Extension<RequestAuth>,
-    Extension(audit): Extension<RequestAudit>,
-    headers: HeaderMap,
-    Path(device): Path<String>,
-    input: Result<Json<ResponsibilityChange>, axum::extract::rejection::JsonRejection>,
-) -> Result<Json<Responsibility>, Error> {
-    let key = write_key(&headers, &audit, "registration_user_change")?;
-    let input = input.map_err(Error::from)?.0;
-    app.service
-        .quotas()
-        .assign(&auth.proof, &device, &input, key, &audit)
         .await
         .map(Json)
         .map_err(Into::into)

@@ -3972,6 +3972,7 @@ dependencies = [
  "ring",
  "rss-audit-core",
  "rss-audit-postgres",
+ "rss-mdm-agent-wire",
  "rss-mdm-audit-integration",
  "rss-mdm-authorization-service",
  "rss-mdm-inventory",

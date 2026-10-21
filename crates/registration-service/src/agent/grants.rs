@@ -140,7 +140,11 @@ tenant_id=$1::uuid AND id=$2
                     .await
                     .map_err(db)?;
                 }
-                let value = receipt(&grant_row(c, &tenant, *id).await?)?;
+                let current = grant_row(c, &tenant, *id).await?;
+                if !replay {
+                    crate::device::registration_user::initialize_on(c, &current.try_get::<String,_>("device").map_err(db)?, &p.user()?).await?;
+                }
+                let value = receipt(&current)?;
                 crate::operations::save(
                     c,
                     &op,

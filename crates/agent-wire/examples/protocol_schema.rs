@@ -15,6 +15,8 @@ fn main() {
             "Acknowledgement": schemars::schema_for!(pki::Acknowledgement),
         },
         "runtime": {
+            "CurrentUserChange": schemars::schema_for!(runtime::CurrentUserChange),
+            "CurrentUser": schemars::schema_for!(runtime::CurrentUser),
             "TelemetryCurrentStatus": schemars::schema_for!(runtime::TelemetryCurrentStatus),
             "TelemetryDirectory": schemars::schema_for!(runtime::TelemetryDirectory),
             "SignedTelemetryConfiguration": schemars::schema_for!(runtime::SignedTelemetryConfiguration),
