@@ -165,6 +165,18 @@ pub(super) async fn published_cpu(f: &mut Fixture) -> Result<()> {
             && mapping.mapping.conversion == wire::TelemetryConversion::Identity
             && mapping.mapping.columns.is_empty()
     );
+    cpu_reading(f, &policy, &config, &field).await?;
+    published_network(f, config.registration_id).await?;
+    announce(f, json!({})).await?;
+    Ok(())
+}
+
+async fn cpu_reading(
+    f: &mut Fixture,
+    policy: &Value,
+    config: &wire::TelemetryConfiguration,
+    field: &rss_mdm_inventory::FieldDefinition,
+) -> Result<()> {
     let now = f.planning.clock.unix_seconds()? * 1_000_000;
     let batch = Uuid::new_v4();
     let body = json!({"batchId":batch,"policy":policy["id"],"policyVersion":policy["versionId"],"binding":config.binding,"observations":[{"id":Uuid::new_v4(),"sequence":1,"observedAt":now-1_000_000,"values":{"custom.performance.cpu":{"quality":"valid","value":{"kind":"number","value":25.5},"intervalStart":null}}}]});
@@ -199,8 +211,6 @@ pub(super) async fn published_cpu(f: &mut Fixture) -> Result<()> {
             )),
         "native reading changed"
     );
-    published_network(f).await?;
-    announce(f, json!({})).await?;
     Ok(())
 }
 
@@ -265,7 +275,7 @@ async fn directory(f: &Fixture, policy: &Value, supported: bool) -> Result<()> {
     Ok(())
 }
 
-async fn published_network(f: &mut Fixture) -> Result<()> {
+async fn published_network(f: &mut Fixture, registration: Uuid) -> Result<()> {
     use rss_mdm_inventory as d;
     let field = d::FieldDefinition {
         key: d::FieldKey::parse("custom.performance.network_received")?,
@@ -493,17 +503,7 @@ async fn published_network(f: &mut Fixture) -> Result<()> {
             .0
             == StatusCode::SERVICE_UNAVAILABLE
     );
-    let tenant = case_tenant();
-    let credential = case_credential();
-    let original = pg(&format!(
-        "SELECT b.capabilities FROM mdm_agent.bindings b JOIN mdm_access.credentials c ON c.tenant_id=b.tenant_id AND c.registration=b.registration WHERE c.tenant_id='{tenant}' AND c.locator='{credential}'"
-    ))?;
-    let mut capabilities: Vec<String> = serde_json::from_str(original.trim())?;
-    capabilities.push("telemetry.counter.local.v1".into());
-    let encoded = serde_json::to_string(&capabilities)?;
-    pg(&format!(
-        "UPDATE mdm_agent.bindings b SET capabilities='{encoded}' FROM mdm_access.credentials c WHERE c.tenant_id=b.tenant_id AND c.registration=b.registration AND c.tenant_id='{tenant}' AND c.locator='{credential}'"
-    ))?;
+    let original = enable_counter_capability(registration)?;
     directory(f, &policy, true).await?;
     let (status, signed) =
         agent_call(&f.router, Method::GET, &path, Some(case_credential()), None).await?;
@@ -539,18 +539,45 @@ async fn published_network(f: &mut Fixture) -> Result<()> {
             .unwrap()
             .counter_normalization = None;
     }
-    match altered.signing_bytes(&signed.key_id) {
-        Ok(bytes) => ensure!(
+    if let Ok(bytes) = altered.signing_bytes(&signed.key_id) {
+        ensure!(
             public.verify(&bytes, &signature).is_err(),
             "normalization marker was not signed"
-        ),
-        Err(_) => {}
+        );
     }
     network_readings(f, &policy, &signed.configuration, &field).await?;
-    pg(&format!(
-        "UPDATE mdm_agent.bindings b SET capabilities='{}' FROM mdm_access.credentials c WHERE c.tenant_id=b.tenant_id AND c.registration=b.registration AND c.tenant_id='{tenant}' AND c.locator='{credential}'",
-        original.trim()
+    set_capabilities(registration, &original)?;
+    Ok(())
+}
+
+// Capability changes are fixture prerequisites, scoped to the registration learned
+// from an authenticated, verified configuration; credential strings are not locators.
+fn enable_counter_capability(registration: Uuid) -> Result<String> {
+    let tenant = case_tenant();
+    let original = pg(&format!(
+        "SELECT capabilities FROM mdm_agent.bindings WHERE tenant_id='{tenant}' AND registration='{registration}'"
     ))?;
+    let original = original.trim();
+    ensure!(
+        !original.is_empty(),
+        "missing capability fixture for {registration}"
+    );
+    let mut capabilities: Vec<String> = serde_json::from_str(original)?;
+    capabilities.push("telemetry.counter.local.v1".into());
+    set_capabilities(registration, &serde_json::to_string(&capabilities)?)?;
+    Ok(original.to_owned())
+}
+
+fn set_capabilities(registration: Uuid, capabilities: &str) -> Result<()> {
+    let tenant = case_tenant();
+    let capabilities = capabilities.replace('\'', "''");
+    let updated = pg(&format!(
+        "WITH updated AS (UPDATE mdm_agent.bindings SET capabilities='{capabilities}' WHERE tenant_id='{tenant}' AND registration='{registration}' RETURNING registration) SELECT count(*) FROM updated"
+    ))?;
+    ensure!(
+        updated.trim() == "1",
+        "capability fixture must update one binding: {updated}"
+    );
     Ok(())
 }
 

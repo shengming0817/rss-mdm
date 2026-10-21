@@ -588,8 +588,9 @@ async fn secondary_peer(base: &Value) -> Result<(String, String, wire::BindingPr
     resources.finish(async {
         let service=agent::service(&authority).await?;
         let label=case::name("telemetry-unacknowledged");
-        let registration=agent::seed_unacknowledged(&service,label,case::name("telemetry-new-device"),json!({"capabilities":["inventory.collect.v1","task.execute.v1","telemetry.collect.v1"],"platform":"macos","architecture":"aarch64","executionContext":software_execution::context(software_execution::Platform::MacOs)})).await?;
+        let registration=agent::seed_unacknowledged(&service,label,case::name("telemetry-new-device"),json!({"capabilities":["inventory.collect.v1","task.execute.v1","telemetry.collect.v1","telemetry.counter.local.v1"],"platform":"macos","architecture":"aarch64","executionContext":software_execution::context(software_execution::Platform::MacOs)})).await?;
         let profile: wire::BindingProfile=serde_json::from_value(registration)?;
+        ensure!(profile.capabilities.contains(&wire::Capability::TelemetryCounterLocalV1), "new counter capability must survive registration and activation");
         Ok((label.into(),profile.device_id.clone(),profile))
     }).await
 }
