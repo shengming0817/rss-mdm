@@ -62,7 +62,6 @@ pub(super) fn profile(projection: TelemetryProjection) -> TelemetryProfile {
         },
         boost: None,
         backfill_seconds: 3600,
-        metadata: Default::default(),
     })
     .unwrap()
 }
@@ -182,7 +181,7 @@ fn three_destinations_validate_input_and_do_not_turn_failure_into_zero() {
     }
 }
 #[test]
-fn unknown_fields_and_expired_backfill_fail_before_durable_admission() {
+fn missing_configured_fields_and_expired_backfill_fail_before_durable_admission() {
     let definitions = fields();
     let profile = profile(TelemetryProjection::Both);
     let mut point = input();
@@ -197,6 +196,7 @@ fn unknown_fields_and_expired_backfill_fail_before_durable_admission() {
         )
         .is_err()
     );
+    point.observations[0].values.clear();
     point.observations[0].values.insert(
         w::FieldKey::parse("custom.unknown").unwrap(),
         w::TelemetryReading::Missing {
@@ -603,5 +603,126 @@ fn failed_current_needs_no_historical_context(
         } else {
             assert!(accepted.history().is_err());
         }
+    }
+}
+
+#[test]
+fn raw_extensions_are_preserved_but_only_declared_values_become_facts() {
+    let mut definitions = fields();
+    definitions[0].value_type = d::ValueType::Record {
+        properties: [
+            (
+                "value".into(),
+                d::Property {
+                    required: true,
+                    value_type: d::ValueType::Integer,
+                },
+            ),
+            (
+                "optional".into(),
+                d::Property {
+                    required: false,
+                    value_type: d::ValueType::Boolean,
+                },
+            ),
+        ]
+        .into(),
+    };
+    definitions[0].time_series.as_mut().unwrap().value_path = vec!["value".into()];
+    for mode in [
+        TelemetryProjection::Current,
+        TelemetryProjection::History,
+        TelemetryProjection::Both,
+    ] {
+        let mut point = input();
+        let key = w::FieldKey::parse("custom.load").unwrap();
+        let trusted = w::Scalar::Object([("value".into(), w::Scalar::Integer(42))].into());
+        let mut raw = trusted.clone();
+        let w::Scalar::Object(ref mut values) = raw else {
+            unreachable!()
+        };
+        values.insert(
+            "vendor_note".into(),
+            w::Scalar::String("sensitive raw evidence".into()),
+        );
+        point.observations[0].values.insert(
+            key,
+            w::TelemetryReading::Valid {
+                value: raw,
+                interval_start: None,
+            },
+        );
+        point.observations[0].values.insert(
+            w::FieldKey::parse("custom.vendor_extra").unwrap(),
+            w::TelemetryReading::Valid {
+                value: w::Scalar::Integer(99),
+                interval_start: None,
+            },
+        );
+        let raw_bytes = serde_json::to_vec(&point).unwrap();
+        let accepted = crate::admission::Accepted {
+            tenant: "11111111-1111-4111-8111-111111111111".into(),
+            device: "device".into(),
+            registration: uuid::Uuid::new_v4(),
+            credential: uuid::Uuid::new_v4(),
+            generation: 1,
+            source: d::Source::AgentNative,
+            epoch: uuid::Uuid::new_v4(),
+            received_at: 3_000_000,
+            profile: profile(mode),
+            fields: definitions.clone(),
+            input: point,
+        };
+        let history = accepted.history().unwrap();
+        if mode == TelemetryProjection::Current {
+            assert!(history.is_none());
+        } else {
+            let history = history.unwrap();
+            assert_eq!(history.samples().len(), 1);
+            assert_eq!(
+                history.samples()[0].input().reading,
+                rss_timeseries::Reading::Valid(rss_timeseries::Value::Number(
+                    rss_timeseries::Number::I64(42)
+                ))
+            );
+        }
+        let (collection, batches) = crate::current::prepare(&accepted).unwrap();
+        let rss_observation::Body::Snapshot(changes) = batches[0].body() else {
+            panic!("extensions must not turn a complete configured snapshot into partial")
+        };
+        assert_eq!(changes.len(), 1);
+        assert_eq!(changes[0].key().as_str(), key.as_str());
+        let definition = collection.fields().next().unwrap();
+        let expected = d::CollectedValue::Value(
+            rss_mdm_inventory_service::collection::wire::scalar(&trusted),
+        )
+        .encode(definition)
+        .unwrap();
+        assert_eq!(changes[0].value().unwrap(), expected);
+        assert_eq!(serde_json::to_vec(&accepted.input).unwrap(), raw_bytes);
+        let restored: crate::admission::Accepted =
+            serde_json::from_slice(&serde_json::to_vec(&accepted).unwrap()).unwrap();
+        assert_eq!(serde_json::to_vec(&restored.input).unwrap(), raw_bytes);
+        let mut invalid = accepted;
+        invalid.input.observations[0].values.insert(
+            key,
+            w::TelemetryReading::Valid {
+                value: w::Scalar::Object(Default::default()),
+                interval_start: None,
+            },
+        );
+        assert!(invalid.history().is_err());
+        assert!(crate::current::prepare(&invalid).is_err());
+        invalid.input.observations[0].values.insert(
+            key,
+            w::TelemetryReading::Valid {
+                value: trusted,
+                interval_start: None,
+            },
+        );
+        let mut budget = invalid.profile.spec().clone();
+        budget.budget.points = 1;
+        invalid.profile = TelemetryProfile::new(budget).unwrap();
+        assert!(matches!(invalid.history(), Err(crate::Error::Capacity)));
     }
 }

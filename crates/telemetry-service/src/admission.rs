@@ -218,6 +218,13 @@ pub(crate) async fn receive_on(
     let mut quality = std::collections::BTreeMap::<String, [u32; 3]>::new();
     for observation in &input.observations {
         for (field, reading) in &observation.values {
+            if !accepted
+                .fields
+                .iter()
+                .any(|definition| definition.key.as_str() == field.as_str())
+            {
+                continue;
+            }
             let index = match reading {
                 rss_mdm_agent_wire::runtime::TelemetryReading::Valid { .. } => 0,
                 rss_mdm_agent_wire::runtime::TelemetryReading::Missing { .. } => 1,

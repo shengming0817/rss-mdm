@@ -553,6 +553,19 @@ impl CollectedValue {
     pub fn project(&self, definition: &FieldDefinition) -> Result<Self> {
         fn declared(value: &Scalar, schema: &ValueType) -> Result<Scalar> {
             Ok(match (value, schema) {
+                (Scalar::Object(values), ValueType::Record { properties }) => Scalar::Object(
+                    properties
+                        .iter()
+                        .filter_map(|(key, property)| match values.get(key) {
+                            Some(value) => Some(
+                                declared(value, &property.value_type)
+                                    .map(|value| (key.clone(), value)),
+                            ),
+                            None if property.required => Some(Err(WireError::InvalidValue)),
+                            None => None,
+                        })
+                        .collect::<Result<_>>()?,
+                ),
                 (Scalar::Object(values), ValueType::Object { properties }) => Scalar::Object(
                     properties
                         .iter()

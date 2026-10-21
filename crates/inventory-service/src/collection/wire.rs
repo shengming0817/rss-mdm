@@ -239,6 +239,22 @@ pub fn scalar(value: &w::Scalar) -> d::Scalar {
         }
     }
 }
+/// Select declared attributes without modifying the raw input, then validate Inventory semantics.
+pub fn project_scalar(
+    value: &w::Scalar,
+    definition: &d::FieldDefinition,
+) -> Result<w::Scalar, Error> {
+    let w::CollectedValue::Value(projected) = w::CollectedValue::Value(value.clone())
+        .project(&to_wire_field(definition)?)
+        .map_err(|_| Error::Malformed)?
+    else {
+        return Err(Error::Malformed);
+    };
+    definition
+        .validate_scalar(&scalar(&projected))
+        .map_err(|_| Error::Malformed)?;
+    Ok(projected)
+}
 /// Preserve explicit outcome distinctions at the Inventory boundary.
 pub fn value(value: &w::CollectedValue) -> d::CollectedValue {
     match value {

@@ -26,14 +26,17 @@ pub(crate) fn prepare(input: &Accepted) -> Result<(CollectionDefinition, Vec<Bat
     let mut batches = Vec::new();
     for point in &input.input.observations {
         let mut changes = Vec::new();
-        for (key, value) in &point.values {
+        for field in definition.fields() {
+            let key = field.key;
+            let wire_key = rss_mdm_agent_wire::runtime::FieldKey::parse(key.as_str())
+                .map_err(|_| Error::Invalid)?;
+            let value = point.values.get(&wire_key).ok_or(Error::Invalid)?;
             if let TelemetryReading::Valid { value, .. } = value {
-                let field = definition
-                    .fields()
-                    .find(|f| f.key.as_str() == key.as_str())
-                    .ok_or(Error::Invalid)?;
+                let projected =
+                    rss_mdm_inventory_service::collection::wire::project_scalar(value, field)
+                        .map_err(|_| Error::Invalid)?;
                 let value = CollectedValue::Value(
-                    rss_mdm_inventory_service::collection::wire::scalar(value),
+                    rss_mdm_inventory_service::collection::wire::scalar(&projected),
                 );
                 changes.push(Change::upsert(
                     Id::new(key.as_str()).map_err(|_| Error::Invalid)?,
@@ -41,7 +44,7 @@ pub(crate) fn prepare(input: &Accepted) -> Result<(CollectionDefinition, Vec<Bat
                 ));
             }
         }
-        let body = if changes.len() == point.values.len() {
+        let body = if changes.len() == input.fields.len() {
             Body::Snapshot(changes)
         } else if changes.is_empty() {
             Body::Failed {

@@ -225,6 +225,10 @@ Resource 的 `telemetry_profile` 版本绑定一个精确的原生、脚本或 o
 定义、采样/上传周期、执行与输出预算，并选择 current/history/both 投影。字段绑定持有
 保留策略，Profile 不能覆盖。数组必须声明稳定 item key；标量值和维度使用显式属性路径，
 维度值域必须有限。提频使用绝对 UTC 到期时间，读取配置不会续期。
+展示与厂商说明使用 Resource 的 `presentation`，编辑展示不改变已发布执行版本或上传绑定。
+遥测中的额外普通字段和对象属性受原始输入预算约束，并参与完整输入幂等；只有配置字段及
+其声明属性进入当前资产、历史样本和字段质量统计。原始输入由现有 Outbox 持有，不通过
+资产或历史查询返回，也不因时序保留策略到期而自动清理。
 
 Policy 的 `telemetry_profile` action 使用精确 Resource 版本和现有设备 Scope。
 Agent 在现有 mTLS runtime 边界读取

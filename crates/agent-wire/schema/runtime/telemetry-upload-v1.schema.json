@@ -172,7 +172,7 @@
         },
         "values": {
           "additionalProperties": false,
-          "description": "Exact configured field keys and typed source output.",
+          "description": "Typed source output. Only configured fields and declared attributes become trusted facts.",
           "patternProperties": {
             "^(device|custom|channel)\\.[a-z][a-z0-9_]*(\\.[a-z][a-z0-9_]*)*$": {
               "$ref": "#/$defs/TelemetryReading"

@@ -11,7 +11,16 @@ async fn published_counter(f: &mut Fixture) -> Result<(Uuid, rss_mdm_inventory::
     let field = d::FieldDefinition {
         key: d::FieldKey::parse("custom.telemetry_counter")?,
         version: 1,
-        value_type: d::ValueType::Integer,
+        value_type: d::ValueType::Record {
+            properties: [(
+                "count".into(),
+                d::Property {
+                    required: true,
+                    value_type: d::ValueType::Integer,
+                },
+            )]
+            .into(),
+        },
         nullable: false,
         manual: false,
         sources: [(d::Source::AgentScript, 0)].into(),
@@ -22,7 +31,7 @@ async fn published_counter(f: &mut Fixture) -> Result<(Uuid, rss_mdm_inventory::
         item_key: None,
         time_series: Some(d::TimeSeriesBinding {
             kind: d::TelemetryKind::CumulativeCounter,
-            value_path: vec![],
+            value_path: vec!["count".into()],
             interval_start_path: None,
             dimensions: Default::default(),
             aggregations: [d::TelemetryAggregation::Rate].into(),
@@ -36,7 +45,7 @@ async fn published_counter(f: &mut Fixture) -> Result<(Uuid, rss_mdm_inventory::
     let field_path = "/api/v1/asset-fields/custom.telemetry_counter";
     put(&mut f.author,&f.router,field_path,json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"put","definition":field}})).await?;
     let script = Uuid::new_v4();
-    let bytes = b"#!/bin/sh\nprintf '{\"counter\":10}\\n'\n";
+    let bytes = b"#!/bin/sh\nprintf '{\"counter\":{\"count\":10}}\\n'\n";
     let digest: [u8; 32] = Sha256::digest(bytes).into();
     resource(
         &mut f.author,
@@ -46,7 +55,7 @@ async fn published_counter(f: &mut Fixture) -> Result<(Uuid, rss_mdm_inventory::
         json!({"action":"create","kind":"script"}),
     )
     .await?;
-    let definition = json!({"profile":"posix_sh","runAs":"system","encoding":"utf8","parameters":{"type":"object","properties":{},"required":[],"additionalProperties":false},"bindings":{},"output":{"type":"object","properties":{"counter":{"type":"integer"}},"required":["counter"],"additionalProperties":false},"purpose":{"kind":"collection","scope":{"kind":"device"},"applicability":{"minimumOsVersion":null,"minimumBuild":null,"editions":[],"enrollments":[],"tools":{},"capabilities":[]},"mappings":{"custom.telemetry_counter":{"pointer":"/counter","conversion":{"kind":"identity"},"columns":{}}}},"timeoutSeconds":1,"outputBytes":4096,"maxRows":1});
+    let definition = json!({"profile":"posix_sh","runAs":"system","encoding":"utf8","parameters":{"type":"object","properties":{},"required":[],"additionalProperties":false},"bindings":{},"output":{"type":"object","properties":{"counter":{"type":"object","properties":{"count":{"type":"integer"}},"required":["count"],"additionalProperties":false}},"required":["counter"],"additionalProperties":false},"purpose":{"kind":"collection","scope":{"kind":"device"},"applicability":{"minimumOsVersion":null,"minimumBuild":null,"editions":[],"enrollments":[],"tools":{},"capabilities":[]},"mappings":{"custom.telemetry_counter":{"pointer":"/counter","conversion":{"kind":"identity"},"columns":{}}}},"timeoutSeconds":1,"outputBytes":4096,"maxRows":1});
     resource(&mut f.author,&f.router,script,1,json!({"action":"version","version":"v1","kind":"script","variants":[{"platform":"macos","architecture":"aarch64","key":"default","declaration":{"kind":"script","artifact":{"reference":"counter","length":bytes.len(),"sha256":digest},"definition":definition}}]})).await?;
     ensure!(upload(&f.author, &f.router, script, bytes).await? == StatusCode::CREATED);
     resource(
@@ -82,7 +91,6 @@ async fn published_counter(f: &mut Fixture) -> Result<(Uuid, rss_mdm_inventory::
         },
         boost: None,
         backfill_seconds: 3600,
-        metadata: Default::default(),
     })?;
     let id = Uuid::new_v4();
     let bytes = profile.canonical();
@@ -196,48 +204,7 @@ pub(super) async fn quality_and_sensitive_reads(f: &mut Fixture) -> Result<()> {
     let config: wire::SignedTelemetryConfiguration = serde_json::from_value(signed)?;
     let now = f.planning.clock.unix_seconds()? * 1_000_000;
     let start = (now / 10_000_000 - 1) * 10_000_000;
-    let make = |reading: Value, offset: i64| json!({"batchId":Uuid::new_v4(),"policy":policy["id"],"policyVersion":policy["versionId"],"binding":config.configuration.binding,"observations":[{"id":Uuid::new_v4(),"sequence":offset,"observedAt":start+offset*1_000_000,"values":{"custom.telemetry_counter":reading}}]});
-    for (offset, reading) in [
-        (
-            1,
-            json!({"quality":"valid","value":{"kind":"integer","value":10},"intervalStart":start}),
-        ),
-        (
-            2,
-            json!({"quality":"failed","intervalStart":start,"context":null}),
-        ),
-        (
-            3,
-            json!({"quality":"valid","value":{"kind":"integer","value":20},"intervalStart":start}),
-        ),
-    ] {
-        let body = make(reading, offset);
-        let receipt = format!(
-            "/api/v1/agent/runtime/telemetry/batches/{}",
-            body["batchId"].as_str().unwrap()
-        );
-        ensure!(
-            agent_call(
-                &f.router,
-                Method::POST,
-                "/api/v1/agent/runtime/telemetry/batches",
-                Some(case_credential()),
-                Some(body)
-            )
-            .await?
-            .0 == StatusCode::ACCEPTED
-        );
-        published(&f.router, &receipt).await?;
-        if offset == 2 {
-            let latest=post(&mut f.author,&f.router,"/api/v1/telemetry/history",json!({"device":case_device_id(),"field":field.key,"resource":"device","startMicros":start,"endMicros":start+10_000_000,"maxPoints":64,"mode":"latest","after":null})).await?;
-            let sample: rss_timeseries::Sample =
-                serde_json::from_value(latest["rows"][0]["sample"].clone())?;
-            ensure!(
-                sample.input().reading == rss_timeseries::Reading::Failed,
-                "latest hid failure: {latest}"
-            );
-        }
-    }
+    upload_counter_readings(f, &policy, &config, &field, start).await?;
     let query = json!({"device":case_device_id(),"field":field.key,"resource":"device","startMicros":start,"endMicros":start+10_000_000,"maxPoints":64,"mode":"history","after":null});
     let history = post(
         &mut f.author,
@@ -301,6 +268,101 @@ pub(super) async fn quality_and_sensitive_reads(f: &mut Fixture) -> Result<()> {
                 == StatusCode::FORBIDDEN,
             "sensitive read permitted: {path}"
         );
+    }
+    Ok(())
+}
+
+async fn extension_replay(f: &Fixture, body: &Value) -> Result<()> {
+    let path = "/api/v1/agent/runtime/telemetry/batches";
+    let replay = agent_call(
+        &f.router,
+        Method::POST,
+        path,
+        Some(case_credential()),
+        Some(body.clone()),
+    )
+    .await?;
+    ensure!(replay.0 == StatusCode::ACCEPTED && replay.1["replayed"] == true);
+    let mut changed = body.clone();
+    changed["observations"][0]["values"]["custom.telemetry_counter"]["value"]["value"]["vendor_note"]
+        ["value"] = json!("changed note");
+    ensure!(
+        agent_call(
+            &f.router,
+            Method::POST,
+            path,
+            Some(case_credential()),
+            Some(changed.clone())
+        )
+        .await?
+        .0 == StatusCode::CONFLICT
+    );
+    changed["batchId"] = json!(Uuid::new_v4());
+    ensure!(
+        agent_call(
+            &f.router,
+            Method::POST,
+            path,
+            Some(case_credential()),
+            Some(changed)
+        )
+        .await?
+        .0 == StatusCode::CONFLICT
+    );
+    Ok(())
+}
+
+async fn upload_counter_readings(
+    f: &mut Fixture,
+    policy: &Value,
+    config: &wire::SignedTelemetryConfiguration,
+    field: &rss_mdm_inventory::FieldDefinition,
+    start: i64,
+) -> Result<()> {
+    let make = |reading: Value, offset: i64| json!({"batchId":Uuid::new_v4(),"policy":policy["id"],"policyVersion":policy["versionId"],"binding":config.configuration.binding,"observations":[{"id":Uuid::new_v4(),"sequence":offset,"observedAt":start+offset*1_000_000,"values":{"custom.telemetry_counter":reading}}]});
+    for (offset, reading) in [
+        (
+            1,
+            json!({"quality":"valid","value":{"kind":"object","value":{"count":{"kind":"integer","value":10},"vendor_note":{"kind":"string","value":"first raw note"}}},"intervalStart":start}),
+        ),
+        (
+            2,
+            json!({"quality":"failed","intervalStart":start,"context":null}),
+        ),
+        (
+            3,
+            json!({"quality":"valid","value":{"kind":"object","value":{"count":{"kind":"integer","value":20},"vendor_note":{"kind":"string","value":"second raw note"}}},"intervalStart":start}),
+        ),
+    ] {
+        let body = make(reading, offset);
+        let receipt = format!(
+            "/api/v1/agent/runtime/telemetry/batches/{}",
+            body["batchId"].as_str().unwrap()
+        );
+        ensure!(
+            agent_call(
+                &f.router,
+                Method::POST,
+                "/api/v1/agent/runtime/telemetry/batches",
+                Some(case_credential()),
+                Some(body.clone())
+            )
+            .await?
+            .0 == StatusCode::ACCEPTED
+        );
+        published(&f.router, &receipt).await?;
+        if offset == 1 {
+            extension_replay(f, &body).await?;
+        }
+        if offset == 2 {
+            let latest=post(&mut f.author,&f.router,"/api/v1/telemetry/history",json!({"device":case_device_id(),"field":field.key,"resource":"device","startMicros":start,"endMicros":start+10_000_000,"maxPoints":64,"mode":"latest","after":null})).await?;
+            let sample: rss_timeseries::Sample =
+                serde_json::from_value(latest["rows"][0]["sample"].clone())?;
+            ensure!(
+                sample.input().reading == rss_timeseries::Reading::Failed,
+                "latest hid failure: {latest}"
+            );
+        }
     }
     Ok(())
 }

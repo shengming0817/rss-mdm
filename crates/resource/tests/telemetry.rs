@@ -28,17 +28,15 @@ fn spec() -> TelemetryProfileSpec {
             expires_at: 1000,
         }),
         backfill_seconds: 3600,
-        metadata: [("vendor.note".into(), "preserve me".into())].into(),
     }
 }
 #[test]
-fn boost_expires_without_renewing_and_metadata_roundtrips() {
+fn boost_expires_without_renewing_and_profile_roundtrips() {
     let value = TelemetryProfile::new(spec()).unwrap();
     assert_eq!(value.sample_millis(999), 1000);
     assert_eq!(value.sample_millis(1000), 10000);
     let restored: TelemetryProfile = serde_json::from_slice(&value.canonical()).unwrap();
     assert_eq!(restored, value);
-    assert_eq!(restored.spec().metadata["vendor.note"], "preserve me");
     assert!(
         restored
             .validate_target(Platform::MacOS, Architecture::X86_64)

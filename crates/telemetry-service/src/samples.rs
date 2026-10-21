@@ -81,7 +81,11 @@ pub(crate) fn prepare(
         .iter()
         .map(|f| {
             f.validate().map_err(|_| Error::Invalid)?;
-            Ok((f.key.as_str(), f))
+            Ok((
+                rss_mdm_agent_wire::runtime::FieldKey::parse(f.key.as_str())
+                    .map_err(|_| Error::Invalid)?,
+                f,
+            ))
         })
         .collect::<Result<BTreeMap<_, _>, Error>>()?;
     let mut samples = Vec::new();
@@ -90,18 +94,18 @@ pub(crate) fn prepare(
         if observation.observed_at > received_at
             || received_at.saturating_sub(observation.observed_at)
                 > i64::from(spec.backfill_seconds) * 1_000_000
-            || observation.values.len() != fields.len()
         {
             return Err(Error::Invalid);
         }
-        for (key, value) in &observation.values {
-            let field = fields.get(key.as_str()).ok_or(Error::Invalid)?;
-            if let TelemetryReading::Valid { value: v, .. } = value {
-                let domain_value = rss_mdm_inventory_service::collection::wire::scalar(v);
-                field
-                    .validate_scalar(&domain_value)
-                    .map_err(|_| Error::Invalid)?;
-            }
+        for (key, field) in &fields {
+            let value = observation.values.get(key).ok_or(Error::Invalid)?;
+            let projected = match value {
+                TelemetryReading::Valid { value, .. } => Some(
+                    rss_mdm_inventory_service::collection::wire::project_scalar(value, field)
+                        .map_err(|_| Error::Invalid)?,
+                ),
+                _ => None,
+            };
             // Current projection has no historical resource or interval contract.
             if spec.projection == TelemetryProjection::Current {
                 continue;
@@ -123,7 +127,7 @@ pub(crate) fn prepare(
                 .time_series_definition(stream.scope().clone())
                 .map_err(|_| Error::Invalid)?;
             let context = match value {
-                TelemetryReading::Valid { value, .. } => Some(value),
+                TelemetryReading::Valid { .. } => projected.as_ref(),
                 TelemetryReading::Missing { context, .. }
                 | TelemetryReading::Failed { context, .. } => context.as_ref(),
             };
