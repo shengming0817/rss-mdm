@@ -454,20 +454,6 @@ async fn template_flow(
     let browser = f.browser.clone();
     drop(f);
     host = host.restart().await?;
-    let mut resumed = rss_runtime::ShutdownStack::try_new(
-        rss_runtime::TotalDrainBudget::new(Duration::from_secs(15))?,
-        Arc::new(crate::lifecycle::RuntimeTimer),
-    )?;
-    let mut launch = resumed.startup()?.commit();
-    launch.stage_deferred_task_with_token(
-        host.app
-            .execution
-            .clone()
-            .registration(host.notifications.signals.execution())
-            .critical(),
-    );
-    launch.finish();
-    owner = Some(resumed);
     f = Client::with_browser(host.browser.clone(), host.app.clone(), browser);
     let mut end = packet.clone();
     end.header.message_id += 1;
@@ -525,6 +511,22 @@ async fn template_flow(
         state == "succeeded",
         "sealed success was lost after downtime: {state}"
     );
+    // The restored downtime state has one recovery executor. Resume the background
+    // driver only after the explicit recovery assertion, before checking recurrence.
+    let mut resumed = rss_runtime::ShutdownStack::try_new(
+        rss_runtime::TotalDrainBudget::new(Duration::from_secs(15))?,
+        Arc::new(crate::lifecycle::RuntimeTimer),
+    )?;
+    let mut launch = resumed.startup()?.commit();
+    launch.stage_deferred_task_with_token(
+        host.app
+            .execution
+            .clone()
+            .registration(host.notifications.signals.execution())
+            .critical(),
+    );
+    launch.finish();
+    owner = Some(resumed);
     // Shift the completed occurrence to the previous interval; the current one is due.
     sqlx::query("UPDATE mdm_commands.action_runs SET occurrence='timer:'||($3::bigint)::text||':'||registration::text,created_at=$3 WHERE tenant_id=$1::uuid AND id=$2")
         .bind(case_tenant()).bind(runs[0]).bind(now-3600).execute(&mut pg).await?;
