@@ -58,7 +58,7 @@ CAPABILITY_INPUTS = {'identity.local': ('crates/app/src/identity.rs',),
  'agent.configurations': ('crates/registration-service/src/agent/configurations.rs','crates/registration-service/src/agent/settings.rs','crates/registration-service/schema/agent-configurations.sql','crates/software-service/src/agent_packages*','crates/management-http/src/agent_enrollment.rs','crates/management-http/src/software_catalog.rs','crates/app/src/agent_configurations.rs','crates/agent-wire/src/enroll/configuration.rs'),
  'agent.registration': ('crates/agent-channel/src/lib.rs',),
  'agent.reports': ('crates/agent-channel/src/lib.rs',),
- 'assets.http': ('crates/management-http/src/assets/http.rs', 'crates/inventory-service/src/assets/store.rs', 'crates/inventory-service/src/assets/fields.rs', 'crates/inventory-service/src/assets/lists.rs'),
+ 'assets.http': ('crates/inventory-service/src/assets/field_layout.rs', 'crates/management-http/src/assets/http.rs', 'crates/inventory-service/src/assets/store.rs', 'crates/inventory-service/src/assets/fields.rs', 'crates/inventory-service/src/assets/lists.rs'),
  'assets.queries': ('crates/inventory-service/src/assets/query*.rs',
                     'crates/inventory-service/src/assets/filter.rs'),
  'assets.sources': ('crates/inventory-service/src/assets/store.rs',
@@ -530,6 +530,7 @@ MODULES['examples.cli'] = replace(MODULES['examples.cli'], db_mode='fresh', scop
 MODULES['api.identity_context'] = replace(MODULES['api.identity_context'], db_mode='reuse', scope='tenant')
 MODULES['host.lifecycle'] = replace(MODULES['host.lifecycle'], db_mode='fresh', scope='objects')
 MODULES['assets.http'] = replace(MODULES['assets.http'], db_mode='fresh', scope='objects', policies=(
+    CasePolicy('assets::t2::http::field_layout::shared_layout_round_trip_permissions_and_retired_fields', 'fresh', 'pair'),
     CasePolicy('assets::t2::http::storage::asset_capability_owns_execution_and_receipt_recovery', 'reuse', 'pair'),
     CasePolicy('assets::t2::http::storage::asset_commit_unknown_recovers_original_receipts', 'reuse', 'objects'),
 ))
@@ -675,6 +676,7 @@ case_fixtures('windows.issuance', 'windows::t2::issuance::native_renewal_preserv
 case_fixtures('windows.management', 'windows::t2::management::collection::', 'local_worker')
 case_fixtures('diagnostics.http', 'api::t2::runtime_diagnostics::execution_first_scan_failure_recovers_only_after_real_success', None)
 case_fixtures('assets.http', 'assets::t2::http::manual::manual_types_replay_cas_and_rollback', 'shared_worker')
+case_fixtures('execution.agent.poll', 'execution::t2::agent::poll::cancellation_backlog_does_not_starve_live_offer', 'local_worker')
 case_fixtures('planning.http', 'planning::t2::http::console_scope_ready_tracks_current_admission', 'local_worker')
 case_fixtures('planning.frequency', 'planning::t2::frequency::once_per_entry_tracks_membership_epochs', 'local_worker')
 case_fixtures('planning.software', 'planning::t2::software::rollout_time_success_gates_and_stage_evidence', 'local_worker')

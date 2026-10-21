@@ -149,6 +149,20 @@ CREATE TABLE mdm_assets.asset_query_runs (
 
 ALTER TABLE ONLY mdm_assets.asset_query_runs FORCE ROW LEVEL SECURITY;
 
+CREATE TABLE mdm_assets.field_layouts (
+    tenant_id uuid NOT NULL,
+    revision bigint NOT NULL,
+    document jsonb NOT NULL,
+    CONSTRAINT field_layouts_pkey PRIMARY KEY (tenant_id),
+    CONSTRAINT field_layouts_revision_check CHECK (revision > 0),
+    CONSTRAINT field_layouts_document_check CHECK (octet_length(document::text) <= 16384)
+);
+ALTER TABLE mdm_assets.field_layouts ENABLE ROW LEVEL SECURITY;
+ALTER TABLE mdm_assets.field_layouts FORCE ROW LEVEL SECURITY;
+CREATE POLICY tenant ON mdm_assets.field_layouts
+    USING (tenant_id = nullif(current_setting('rss.tenant_id',true),'')::uuid)
+    WITH CHECK (tenant_id = nullif(current_setting('rss.tenant_id',true),'')::uuid);
+
 CREATE TABLE mdm_assets.group_fields (
     tenant_id uuid NOT NULL,
     group_id uuid NOT NULL,

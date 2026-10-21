@@ -205,6 +205,14 @@ pub struct Summary {
     deny_unknown_fields
 )]
 pub enum Response {
+    FieldLayout {
+        revision: u64,
+        editable: bool,
+        groups: Vec<super::FieldDisplayGroup>,
+    },
+    FieldLayoutWritten {
+        revision: u64,
+    },
     RetentionPolicy {
         policy: Option<rss_mdm_inventory::RetentionPolicy>,
     },
@@ -280,6 +288,12 @@ pub enum Response {
 #[derive(Clone, Debug, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Command {
+    FieldLayoutRead {
+        access: super::FieldLayoutAccess,
+    },
+    FieldLayoutWrite {
+        change: Operation<super::FieldLayout>,
+    },
     RetentionWrite {
         change: Operation<rss_mdm_inventory::RetentionPolicy>,
     },
@@ -370,6 +384,7 @@ pub enum Command {
 impl Command {
     pub fn operation(&self) -> Option<Uuid> {
         match self {
+            Self::FieldLayoutWrite { change } => Some(change.operation_id),
             Self::FieldWrite { change, .. } => Some(change.operation_id),
             Self::RetentionWrite { change } => Some(change.operation_id),
             Self::Search { request, .. } => Some(request.operation_id),

@@ -154,6 +154,9 @@ GRANT SELECT,INSERT ON TABLE mdm_assets.group_operations TO mdm_flow_runtime;
 
 GRANT SELECT,INSERT ON TABLE mdm_assets.operations TO mdm_flow_runtime;
 
+GRANT SELECT,INSERT ON TABLE mdm_assets.field_layouts TO mdm_flow_runtime;
+GRANT UPDATE(revision,document) ON TABLE mdm_assets.field_layouts TO mdm_flow_runtime;
+
 GRANT SELECT,INSERT ON TABLE mdm_assets.saved_queries TO mdm_flow_runtime;
 
 GRANT UPDATE(revision) ON TABLE mdm_assets.saved_queries TO mdm_flow_runtime;
