@@ -676,6 +676,7 @@ case_fixtures('windows.issuance', 'windows::t2::issuance::native_renewal_preserv
 case_fixtures('windows.management', 'windows::t2::management::collection::', 'local_worker')
 case_fixtures('diagnostics.http', 'api::t2::runtime_diagnostics::execution_first_scan_failure_recovers_only_after_real_success', None)
 case_fixtures('assets.http', 'assets::t2::http::manual::manual_types_replay_cas_and_rollback', 'shared_worker')
+case_fixtures('execution.agent.poll', 'execution::t2::agent::poll::cancellation_backlog_does_not_starve_live_offer', 'local_worker')
 case_fixtures('planning.http', 'planning::t2::http::console_scope_ready_tracks_current_admission', 'local_worker')
 case_fixtures('planning.frequency', 'planning::t2::frequency::once_per_entry_tracks_membership_epochs', 'local_worker')
 case_fixtures('planning.software', 'planning::t2::software::rollout_time_success_gates_and_stage_evidence', 'local_worker')
