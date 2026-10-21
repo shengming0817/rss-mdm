@@ -5,7 +5,7 @@ fn invocation() -> Value {
     json!({"runAs":"system","arguments":["/quiet"],"environment":{},"timeoutSeconds":600,"outputBytes":4096,"exitCodes":{"success":[0],"reboot":[3010]}})
 }
 fn definition(behavior: Value, version: &str) -> Value {
-    json!({"source":{"id":"private","revision":"1","sha256":vec![1;32]},"package":"Acme.App","version":version,"provenance":{"kind":"private"},"artifacts":{"installer":{"reference":"installer","origin":null,"length":3,"sha256":vec![2;32]}},"behavior":behavior,"signatures":[],"reboot":"report","downgrade":"deny","dependencies":[],"export":{"kind":"disabled"}})
+    json!({"material":{"format":behavior["kind"],"installer": if behavior["kind"] == "bundle" {behavior["archive"].clone()} else if behavior["kind"] == "dmg" {behavior["image"].clone()} else if behavior["kind"] == "msix" {behavior["container"]["installer"].clone()} else {behavior["installer"].clone()}},"source":{"id":"private","revision":"1","sha256":vec![1;32]},"package":"Acme.App","version":version,"provenance":{"kind":"private"},"artifacts":{"installer":{"reference":"installer","origin":null,"length":3,"sha256":vec![2;32]}},"behavior":behavior,"signatures":[],"reboot":"report","downgrade":"deny","dependencies":[],"export":{"kind":"disabled"}})
 }
 fn exe() -> Value {
     definition(

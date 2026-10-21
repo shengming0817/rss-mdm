@@ -4,8 +4,8 @@
       "description": "Package format is part of the immutable release identity, never inferred from a URL.",
       "oneOf": [
         {
-          "const": "nsis_exe",
-          "description": "Independently installed Windows NSIS executable.",
+          "const": "windows_exe",
+          "description": "Windows executable; execution parameters are independently defined.",
           "type": "string"
         },
         {
@@ -79,18 +79,6 @@
   "additionalProperties": false,
   "description": "Public metadata for one explicitly published fixed installer.",
   "properties": {
-    "candidateSha256": {
-      "description": "Exact manifest/candidate digest admitted at publication.",
-      "items": {
-        "format": "uint8",
-        "maximum": 255,
-        "minimum": 0,
-        "type": "integer"
-      },
-      "maxItems": 32,
-      "minItems": 32,
-      "type": "array"
-    },
     "filename": {
       "description": "Secret-free installer filename.",
       "type": "string"
@@ -117,10 +105,6 @@
       "minimum": 0,
       "type": "integer"
     },
-    "origin": {
-      "description": "HTTPS enrollment authority in the reviewed candidate.",
-      "type": "string"
-    },
     "releaseId": {
       "description": "Release binding identity.",
       "format": "uuid",
@@ -129,13 +113,6 @@
       },
       "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
       "type": "string"
-    },
-    "signingKeys": {
-      "additionalProperties": {
-        "type": "string"
-      },
-      "description": "Candidate-owned verification keys, not a new trust root supplied by a config file.",
-      "type": "object"
     },
     "target": {
       "$ref": "#/$defs/Target",
@@ -163,10 +140,7 @@
     "format",
     "filename",
     "length",
-    "installerSha256",
-    "candidateSha256",
-    "origin",
-    "signingKeys"
+    "installerSha256"
   ],
   "title": "Package",
   "type": "object",

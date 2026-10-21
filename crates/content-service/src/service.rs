@@ -279,10 +279,29 @@ pub async fn current(
             app.clock.unix_seconds().ok_or(Error::Clock)?,
         ))
         .await?;
-    if value.binding.resource()?.resource != id
+    if value.binding.owner()? != id
         || value.binding.actor != format!("{}:{}", proof.instance_id(), proof.principal_id())
     {
         return Err(Error::Forbidden);
+    }
+    if matches!(value.binding.purpose, crate::Purpose::Software { .. }) {
+        transaction::inspect(
+            &app.runtime,
+            app.tenant,
+            Some(budget),
+            proof,
+            |proof, tx| {
+                Box::pin(async move {
+                    let snapshot = transaction::authorize(tx, proof).await?;
+                    snapshot.require(proof, Permission::ResourceWrite, None)?;
+                    snapshot.require(proof, Permission::SoftwareWrite, None)?;
+                    proof.check_live()?;
+                    Ok(())
+                })
+            },
+        )
+        .await?;
+        return Ok(value);
     }
     let binding = resolve(
         app,
@@ -316,6 +335,33 @@ pub async fn record(
         .await?;
     let fresh = session.refresh(app, budget).await?;
     let proof = &fresh;
+    if matches!(upload.binding.purpose, crate::Purpose::Software { .. }) {
+        return transaction::run(
+            &app.audit_store,
+            &app.runtime,
+            app.tenant,
+            audit,
+            Some(budget),
+            (app, proof, upload, audit, verified),
+            |ctx, tx| {
+                Box::pin(async move {
+                    let (app, proof, upload, audit, verified) = ctx;
+                    let snapshot = transaction::authorize(tx, proof).await?;
+                    snapshot.require(proof, Permission::ResourceWrite, None)?;
+                    snapshot.require(proof, Permission::SoftwareWrite, None)?;
+                    if !upload.complete || !verified.matches(&upload.binding.artifact()?) {
+                        return Err(Error::Conflict.into());
+                    }
+                    app.audit_store
+                        .append_request_in(tx, audit, 201, "success")
+                        .await?;
+                    proof.check_live()?;
+                    Ok(())
+                })
+            },
+        )
+        .await;
+    }
     transaction::run(
         &app.audit_store,
         &app.runtime,

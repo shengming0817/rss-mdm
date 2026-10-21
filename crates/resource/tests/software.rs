@@ -3,7 +3,7 @@ use rss_request_context::TenantId;
 use serde_json::{Value, json};
 
 fn spec() -> Value {
-    json!({"source":{"id":"private","revision":"1","sha256":vec![1;32]},"package":"Acme.App","version":"1.0+enterprise","artifacts":{"package":{"reference":"app-msi","length":3,"sha256":vec![2;32]}},"reboot":"report","downgrade":"deny","dependencies":[],"behavior":{"kind":"msi","installer":"package","scope":"system","install":{"runAs":"system","arguments":["/qn"],"environment":{},"timeoutSeconds":600,"outputBytes":4096,"exitCodes":{"success":[0],"reboot":[]}},"upgrade":"in_place","uninstall":null,"detect":{"kind":"msi_product","productCode":"{AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE}","version":"1.0+enterprise"},"upgradeInvocation":{"runAs":"system","arguments":["/qn"],"environment":{},"timeoutSeconds":600,"outputBytes":4096,"exitCodes":{"success":[0],"reboot":[]}}},"signatures":[],"provenance":{"kind":"private"},"export":{"kind":"disabled"}})
+    json!({"material":{"format":"msi","installer":"package"},"source":{"id":"private","revision":"1","sha256":vec![1;32]},"package":"Acme.App","version":"1.0+enterprise","artifacts":{"package":{"reference":"app-msi","length":3,"sha256":vec![2;32]}},"reboot":"report","downgrade":"deny","dependencies":[],"behavior":{"kind":"msi","installer":"package","scope":"system","install":{"runAs":"system","arguments":["/qn"],"environment":{},"timeoutSeconds":600,"outputBytes":4096,"exitCodes":{"success":[0],"reboot":[]}},"upgrade":"in_place","uninstall":null,"detect":{"kind":"msi_product","productCode":"{AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE}","version":"1.0+enterprise"},"upgradeInvocation":{"runAs":"system","arguments":["/qn"],"environment":{},"timeoutSeconds":600,"outputBytes":4096,"exitCodes":{"success":[0],"reboot":[]}}},"signatures":[],"provenance":{"kind":"private"},"export":{"kind":"disabled"}})
 }
 fn version(value: Value) -> Result<Version, String> {
     let definition: SoftwareDefinition =
@@ -68,7 +68,7 @@ fn complete_software_definition_is_frozen_without_external_manifest() {
 }
 #[test]
 fn incomplete_or_unbounded_software_is_rejected() {
-    for pointer in ["behavior", "artifacts", "source"] {
+    for pointer in ["material", "artifacts", "source"] {
         let mut v = spec();
         v.as_object_mut().unwrap().remove(pointer);
         assert!(version(v).is_err(), "{pointer}");
@@ -141,4 +141,26 @@ fn software_rejects_retired_ownership_including_null() {
         value["ownership"] = ownership;
         assert!(version(value).is_err());
     }
+}
+
+#[test]
+fn installer_material_does_not_require_an_execution_plan() {
+    let mut material = spec();
+    material["behavior"] = serde_json::Value::Null;
+    let definition =
+        SoftwareDefinition::new(serde_json::from_value(material.clone()).unwrap()).unwrap();
+    assert!(definition.spec().behavior.is_none());
+    assert_eq!(definition.primary().length(), 3);
+    assert!(
+        definition
+            .validate_target(Platform::Windows, Architecture::X86_64)
+            .is_ok()
+    );
+    assert!(
+        definition
+            .validate_target(Platform::MacOS, Architecture::X86_64)
+            .is_err()
+    );
+    material["material"]["installer"] = json!("missing");
+    assert!(serde_json::from_value::<SoftwareDefinition>(material).is_err());
 }

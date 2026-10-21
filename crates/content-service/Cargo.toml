@@ -7,6 +7,11 @@ rust-version.workspace = true
 publish.workspace = true
 
 [dependencies]
+msi = "=0.10.0"
+cfb = "=0.14.0"
+flate2.workspace = true
+pelite = { version = "=0.10.0", default-features = false, features = ["std"] }
+xara = { version = "=0.4.2", default-features = false }
 ring.workspace = true
 rss-identity-core.workspace = true
 rss-mdm-content-s3.workspace = true

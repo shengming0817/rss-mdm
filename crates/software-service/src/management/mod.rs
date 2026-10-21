@@ -1,6 +1,7 @@
 //! Software management use cases; HTTP projection and process assembly remain outside.
 pub mod catalog;
 pub mod content;
+pub mod installers;
 pub mod publication;
 pub(crate) mod transaction;
 pub use transaction::Fault;

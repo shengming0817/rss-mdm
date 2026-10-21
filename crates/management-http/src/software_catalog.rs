@@ -15,6 +15,10 @@ use std::sync::Arc;
 pub fn routes() -> Router<Arc<HttpState>> {
     Router::new()
         .route("/agent-packages", get(managed_packages).post(publish_agent))
+        .route("/agent-packages/uploads", post(begin_agent_upload))
+        .route("/agent-packages/uploads/{id}", get(inspect_agent_upload))
+        .route("/agent-packages/save", post(save_agent_upload))
+        .route("/agent-packages/operations/{id}", get(agent_operation))
         .route("/agent-packages/{id}/withdraw", post(withdraw_agent))
         .route("/software/imports", post(import))
         .route("/software/sources", get(sources))
@@ -159,6 +163,55 @@ async fn import(
         .map_err(Into::into)
 }
 
+async fn begin_agent_upload(
+    State(app): State<Arc<HttpState>>,
+    Extension(auth): Extension<RequestAuth>,
+    body: Result<
+        Json<rss_mdm_software_service::management::content::PrepareUpload>,
+        axum::extract::rejection::JsonRejection,
+    >,
+) -> Result<Json<Value>, Error> {
+    let Json(input) = body.map_err(Error::from)?;
+    rss_mdm_software_service::management::installers::begin(&app, &auth.proof, &input)
+        .await
+        .map(Json)
+        .map_err(Into::into)
+}
+async fn inspect_agent_upload(
+    State(app): State<Arc<HttpState>>,
+    Extension(auth): Extension<RequestAuth>,
+    Path(id): Path<uuid::Uuid>,
+) -> Result<Json<Value>, Error> {
+    rss_mdm_software_service::management::installers::inspect(&app, &auth.proof, id)
+        .await
+        .map(Json)
+        .map_err(Into::into)
+}
+async fn save_agent_upload(
+    State(app): State<Arc<HttpState>>,
+    Extension(auth): Extension<RequestAuth>,
+    Extension(audit): Extension<RequestAudit>,
+    body: Result<
+        Json<rss_mdm_software_service::management::installers::Save>,
+        axum::extract::rejection::JsonRejection,
+    >,
+) -> Result<Json<Value>, Error> {
+    let Json(input) = body.map_err(Error::from)?;
+    rss_mdm_software_service::management::installers::save(&app, &auth.proof, &audit, &input)
+        .await
+        .map(Json)
+        .map_err(Into::into)
+}
+async fn agent_operation(
+    State(app): State<Arc<HttpState>>,
+    Extension(auth): Extension<RequestAuth>,
+    Path(id): Path<uuid::Uuid>,
+) -> Result<Json<Value>, Error> {
+    rss_mdm_software_service::management::installers::operation(&app, &auth.proof, id)
+        .await
+        .map(Json)
+        .map_err(Into::into)
+}
 async fn publish_agent(
     State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
