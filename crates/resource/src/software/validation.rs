@@ -38,6 +38,7 @@ pub(super) fn validate(spec: &mut SoftwareSpec) -> Result<(), Error> {
     Id::new(&spec.source.revision).map_err(|_| invalid(Validation::Source))?;
     checked(&spec.package, 1024, Validation::Identity)?;
     checked(&spec.version, 1024, Validation::Identity)?;
+    if let Some(bundle) = &spec.material.bundle_id { checked(bundle, 255, Validation::Identity)?; }
     materials(spec)?;
     dependencies(spec)?;
     behavior(spec)?;

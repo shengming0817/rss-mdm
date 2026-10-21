@@ -21,6 +21,8 @@ pub struct Binding {
 )]
 pub enum Purpose {
     Resource(ResourceBinding),
+    /// File pending its final software definition; bytes use the same upload journal.
+    Software { resource: String, filename: String },
 }
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -39,11 +41,20 @@ impl Binding {
     pub fn resource(&self) -> Result<&ResourceBinding, Error> {
         match &self.purpose {
             Purpose::Resource(v) => Ok(v),
+            Purpose::Software { .. } => Err(Error::Malformed),
+        }
+    }
+    /// Resource whose owner authorized this immutable upload.
+    pub fn owner(&self) -> Result<&str, Error> {
+        match &self.purpose {
+            Purpose::Resource(v) => Ok(&v.resource),
+            Purpose::Software { resource, .. } => Ok(resource),
         }
     }
     pub fn class(&self) -> StorageClass {
         match &self.purpose {
             Purpose::Resource(v) => v.storage_class,
+            Purpose::Software { .. } => StorageClass::Artifact,
         }
     }
     pub fn artifact(&self) -> Result<Artifact, Error> {
@@ -102,7 +113,7 @@ impl Store {
         budget.work(self.clean_orphans(now)).await?;
         binding.artifact()?;
         let expires = match &binding.purpose {
-            Purpose::Resource(_) => now
+            Purpose::Resource(_) | Purpose::Software { .. } => now
                 .checked_add(self.config.retention_seconds as i64)
                 .ok_or(Error::Malformed)?,
         };

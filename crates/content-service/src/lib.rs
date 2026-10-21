@@ -9,6 +9,7 @@ mod bundle;
 mod cleanup;
 mod journal;
 mod native;
+mod installer;
 pub use cleanup::Garbage;
 mod budget;
 mod protected;
