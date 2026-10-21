@@ -239,6 +239,20 @@ class ModuleImpactTests(unittest.TestCase):
     def selected(self, path):
         return set(select_inputs([path]).modules)
 
+    def test_current_user_owns_projection_session_and_device_authority_inputs(self):
+        for path in (
+            'crates/device-service/src/presentation.rs',
+            'crates/device-service/src/views.rs',
+            'crates/management-http/src/device_views.rs',
+            'crates/registration-service/src/device/directory.rs',
+            'crates/authorization-service/src/session.rs',
+            'crates/registration-service/src/device/management.rs',
+            'crates/registration-service/src/device/store.rs',
+        ):
+            self.assertIn('agent.current_user', self.selected(path), path)
+        self.assertEqual(self.selected('crates/app/tests/device/views.rs'), {'device.views'})
+        self.assertNotIn('agent.current_user', self.selected('crates/brew-source/src/lib.rs'))
+
     def test_channel_registrars_select_their_live_consumers(self):
         app = self.selected('crates/app/src/api.rs')
         self.assertTrue({'agent.registration', 'agent.reports', 'windows.management',

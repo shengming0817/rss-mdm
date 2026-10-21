@@ -255,3 +255,52 @@ async fn directory_releases_product_locks_before_identity_recheck() -> Result<()
         }).await
     }).await
 }
+
+#[tokio::test]
+#[ignore = "MODULE=agent.current_user: GET releases device locks for logout while Identity waits, then rejects its stale binding"]
+async fn agent_read_releases_device_lock_and_rejects_concurrent_logout() -> Result<()> {
+    use sqlx::{Connection, PgConnection};
+    let mut f = Fixture::new().await?;
+    let resources = std::mem::take(&mut f.resources);
+    resources.finish(async {
+        f.register_profile(json!(["inventory.collect.v1"])).await?;
+        let login=call(&f,Method::PUT,Some(json!({"operationId":Uuid::new_v4(),"expectedRevision":0})),true,true).await?;
+        ensure!(login.0==StatusCode::OK);
+        let options=crate::device::test_support::options("postgres")?;
+        let mut root=PgConnection::connect_with(&options).await?;
+        let mut observer=PgConnection::connect_with(&options).await?;
+        let mut hold=root.begin().await?;
+        let blocker:i32=sqlx::query_scalar("SELECT pg_backend_pid()").fetch_one(&mut *hold).await?;
+        sqlx::query("SELECT tenant_id FROM identity_authority.guard WHERE tenant_id=$1::uuid FOR UPDATE").bind(case_tenant()).fetch_one(&mut *hold).await?;
+        let router=f.router.clone();
+        let pending=tokio::spawn(async move {
+            let request=Request::builder().method(Method::GET).uri(CURRENT).header("host","mdm.example.test:9445").extension(evidence(crate::test_support::agent_execution::case_credential()).unwrap()).body(Body::empty())?;
+            let response=router.oneshot(request).await?;
+            let status=response.status();
+            let bytes=response.into_body().collect().await?.to_bytes();
+            Ok::<_,anyhow::Error>((status,serde_json::from_slice::<Value>(&bytes)?))
+        });
+        let changed=async {
+            tokio::time::timeout(Duration::from_secs(5),async {
+                loop {
+                    let waiting:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE datname=current_database() AND query LIKE '%FROM identity_authority.guard%FOR UPDATE%' AND $1=ANY(pg_blocking_pids(pid)))").bind(blocker).fetch_one(&mut observer).await?;
+                    if waiting {return Ok::<_,anyhow::Error>(());}
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            }).await.context("Agent GET must reach the real Identity guard")??;
+            // Identity management can own auth while device lifecycle waits for the same device.
+            rss_mdm_authorization_service::lock_on(&mut hold,case_tenant(),crate::test_support::identity::INSTANCE).await?;
+            let logout=tokio::time::timeout(Duration::from_secs(3),call(&f,Method::DELETE,Some(json!({"operationId":Uuid::new_v4(),"expectedRevision":login.1["revision"]})),true,false)).await.context("logout blocked behind the GET's device lock")??;
+            ensure!(logout.0==StatusCode::OK,"logout must settle while GET awaits Identity: {logout:?}");
+            Ok::<_,anyhow::Error>(())
+        }.await;
+        hold.rollback().await?;
+        let read=pending.await??;
+        changed?;
+        ensure!(read.0==StatusCode::CONFLICT,"GET returned a superseded binding: {read:?}");
+        let current=call(&f,Method::GET,None,true,false).await?;
+        ensure!(current.0==StatusCode::OK&&current.1["state"]=="unbound"&&current.1["revision"]==2);
+        observer.close().await?;root.close().await?;
+        Ok(())
+    }).await
+}

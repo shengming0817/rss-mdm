@@ -136,8 +136,19 @@ impl Service {
         let mut tx = self.store.begin(&self.tenant.to_string()).await?;
         crate::device::store::revalidate_management(&mut tx, device).await?;
         let binding = binding_on(&mut tx, &self.tenant.to_string(), device.device()).await?;
+        // Await settlement: Drop only queues rollback and cannot fence the next authority call.
+        tx.rollback().await.map_err(db)?;
         let value = resolve(&binding, sessions).await?;
+        let mut tx = self.store.begin(&self.tenant.to_string()).await?;
         crate::device::store::revalidate_management(&mut tx, device).await?;
+        let current = binding_on(&mut tx, &self.tenant.to_string(), device.device()).await?;
+        tx.rollback().await.map_err(db)?;
+        if current.revision != binding.revision
+            || current.reference != binding.reference
+            || current.registration_valid != binding.registration_valid
+        {
+            return Err(Error::Conflict);
+        }
         Ok(value)
     }
     /// Login/switch receives a real enterprise proof; logout needs only the device and CAS.
