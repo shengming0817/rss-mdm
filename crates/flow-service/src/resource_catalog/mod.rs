@@ -262,9 +262,8 @@ impl ResourceCatalog {
                             .map_err(|_| Error::Malformed)?;
                         }
                         let mapping = match &variant.declaration {
-                            Declaration::AgentCollection { definition, .. } => {
-                                Some(&definition.spec().mappings[key].mapping)
-                            }
+                            // Agent mappings were checked above, including explicit generated columns.
+                            Declaration::AgentCollection { .. } => None,
                             Declaration::NativeCollection { definition, .. } => {
                                 Some(&definition.spec().mappings[key].mapping)
                             }

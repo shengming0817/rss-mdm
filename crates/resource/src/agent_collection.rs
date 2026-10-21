@@ -18,6 +18,9 @@ pub enum NativeMissing {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AgentCollectionMapping {
+    /// Explicit telemetry-only durable counter normalization.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub counter_normalization: Option<rss_mdm_agent_wire::runtime::NativeCounterNormalization>,
     /// Stable query identity.
     pub query: String,
     /// Existing pointer and conversion semantics.
@@ -73,6 +76,22 @@ impl AgentCollectionDefinition {
                 .queries
                 .get(&binding.query)
                 .ok_or(Error::InvalidInput)?;
+            if binding.counter_normalization.is_some() {
+                use rss_mdm_agent_wire::runtime::{
+                    NativeQueryDefinition as Q, PerformanceSection as S,
+                };
+                if !matches!(
+                    query.definition,
+                    Q::WindowsPerformance {
+                        section: S::Network
+                    } | Q::MacosPerformance {
+                        section: S::Network
+                    }
+                ) || binding.missing != NativeMissing::Missing
+                {
+                    return Err(Error::InvalidInput);
+                }
+            }
             let props = query.definition.properties();
             validate_mapping(
                 &binding.mapping,

@@ -312,6 +312,17 @@ pub(crate) async fn capable_on(
     };
     let supported = match &frozen.collector {
         F::Native { definition } => {
+            if definition
+                .spec()
+                .mappings
+                .values()
+                .any(|m| m.counter_normalization.is_some())
+                && !binding
+                    .capabilities
+                    .contains(&w::Capability::TelemetryCounterLocalV1)
+            {
+                return Err(Error::Unsupported);
+            }
             let environment = rss_mdm_agent_wire::CollectionEnvironment {
                 edition: serde_json::from_value(poll["environment"]["edition"].clone())?,
                 tools: serde_json::from_value(poll["environment"]["tools"].clone())?,

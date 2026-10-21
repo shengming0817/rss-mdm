@@ -264,8 +264,37 @@ pub fn validate_agent_mapping(
 ) -> Result<(), Error> {
     use rss_mdm_agent_wire::runtime::{NativeCardinality, NativeType as N};
     use rss_mdm_resource::{Conversion as C, NativeMissing};
-    validate_mapping(field, &binding.mapping)?;
     let query = &definition.spec().plan.spec().queries[&binding.query];
+    let mapping = rss_mdm_agent_wire::runtime::TelemetryNativeMapping {
+        query: binding.query.clone(),
+        counter_normalization: binding.counter_normalization,
+        mapping: serde_json::from_value(
+            serde_json::to_value(&binding.mapping).map_err(|_| Error::Malformed)?,
+        )
+        .map_err(|_| Error::Malformed)?,
+    };
+    mapping
+        .validate_counter_normalization(&query.definition, &super::wire::to_wire_field(field)?)
+        .map_err(|_| Error::Malformed)?;
+    let mut projected_field = field.clone();
+    if binding.counter_normalization.is_some() {
+        let start = &field
+            .time_series
+            .as_ref()
+            .ok_or(Error::Malformed)?
+            .interval_start_path
+            .as_ref()
+            .ok_or(Error::Malformed)?[0];
+        let ValueType::Array { items, .. } = &mut projected_field.value_type else {
+            return Err(Error::Malformed);
+        };
+        let ValueType::Object { properties } = items.as_mut() else {
+            return Err(Error::Malformed);
+        };
+        properties.remove(start);
+    }
+    let field = &projected_field;
+    validate_mapping(field, &binding.mapping)?;
     if !system_field_matches(field.key.as_str(), &query.definition) {
         return Err(Error::Malformed);
     }

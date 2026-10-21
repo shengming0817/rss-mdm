@@ -40,6 +40,7 @@ fn spec(ty: w::CimType) -> AgentCollectionSpec {
         mappings: [(
             "custom.temperature".into(),
             AgentCollectionMapping {
+                counter_normalization: None,
                 query: "sample".into(),
                 mapping: ValueMapping {
                     pointer: "/Value".into(),

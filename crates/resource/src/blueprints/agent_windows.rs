@@ -81,6 +81,7 @@ fn codes(values: &[(&str, &str)]) -> Conversion {
 }
 fn mapping(query: &str, pointer: &str, conversion: Conversion) -> AgentCollectionMapping {
     AgentCollectionMapping {
+        counter_normalization: None,
         query: query.into(),
         mapping: ValueMapping {
             pointer: pointer.into(),
@@ -122,6 +123,7 @@ fn pack(
 }
 fn list(query: &str, columns: &[(&str, &str, Conversion)]) -> AgentCollectionMapping {
     AgentCollectionMapping {
+        counter_normalization: None,
         query: query.into(),
         missing: NativeMissing::Missing,
         mapping: ValueMapping {

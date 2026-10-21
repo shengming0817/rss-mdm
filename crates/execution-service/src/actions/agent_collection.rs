@@ -51,6 +51,13 @@ pub async fn finish(
         Ok((progress.definition().clone(), spec.execution))
     })).await?;
     let spec = frozen.definition.spec();
+    if spec
+        .mappings
+        .values()
+        .any(|m| m.counter_normalization.is_some())
+    {
+        return Err(Error::Unsupported.into());
+    }
     checked_input(result.validate_for(&spec.plan, now))?;
     if result.queries.iter().any(|(id, answer)| {
         let query = &spec.plan.spec().queries[id].definition;

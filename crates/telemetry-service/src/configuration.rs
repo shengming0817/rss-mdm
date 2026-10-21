@@ -254,6 +254,7 @@ fn collector(
                     Ok((
                         key.clone(),
                         w::TelemetryNativeMapping {
+                            counter_normalization: value.counter_normalization,
                             query: value.query.clone(),
                             mapping: mapping(&value.mapping)?,
                         },

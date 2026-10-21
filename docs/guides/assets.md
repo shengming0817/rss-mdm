@@ -269,6 +269,10 @@ Profile 参数经精确模板校验，不做文本插值；当前设备遥测仅
 CPU `busy_percent` 是至少 250ms 双读窗口的百分比；内存与文件系统容量、网络累计字节均使用精确 UInt64 十进制字符串，
 数值字段通过显式受检 Integer 转换，超范围不截断。文件系统/网络以 `id` 为实例键；网络值是可重置累计计数，不是速率。
 沿已有 `agent_collection` Resource → `telemetry_profile` → Policy 发布，字段与保留策略仍由租户显式选择；不自动修改静态资产字段。
+按接口的历史累计 Counter 使用显式 `counterNormalization: "local_cumulative_v1"` 映射，要求 Agent 声明
+`telemetry.counter.local.v1`。字段声明稳定 `item_key`、计数 `value_path` 和整数 `interval_start_path`；
+起点由 Agent 的持久基线生成，来源映射不得同时提供该属性。首次采集、计数回退或来源生命周期变化先报告缺失预热，
+后续上传相对基线的累计增量及逐接口起点，由历史查询计算 increase/rate。该标记仅用于周期网络性能采集，不能用于普通资产采集。
 
 Agent 可向 runtime 的 `POST /telemetry/gaps` 提交固定 `TelemetryGapReport`，未知结果用
 `GET /telemetry/gaps/{reportId}` 恢复。原 reportId、registrationId、generation、createdAt 与内容在重试期间保持不变，

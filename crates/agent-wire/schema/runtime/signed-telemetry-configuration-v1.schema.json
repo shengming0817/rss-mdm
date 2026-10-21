@@ -703,6 +703,16 @@
         }
       ]
     },
+    "NativeCounterNormalization": {
+      "description": "Closed Agent-owned normalization of native cumulative observations.",
+      "oneOf": [
+        {
+          "const": "local_cumulative_v1",
+          "description": "Persist an exact baseline and UTC start for each signed field and native instance.",
+          "type": "string"
+        }
+      ]
+    },
     "NativeQuery": {
       "additionalProperties": false,
       "description": "One frozen query, reusable by several server-side field mappings.",
@@ -2148,6 +2158,17 @@
       "additionalProperties": false,
       "description": "A native query's output path. Missing/failed queries remain explicit telemetry quality.",
       "properties": {
+        "counterNormalization": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/NativeCounterNormalization"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Explicit durable per-instance normalization, absent for raw native values."
+        },
         "mapping": {
           "$ref": "#/$defs/TelemetryValueMapping",
           "description": "Explicit projection of that query's result."
