@@ -14,6 +14,8 @@ const FIELDS: [&str; 4] = [
     "device.network.apple.local_host_name",
     "device.serial_number",
 ];
+pub(crate) type Bindings = BTreeMap<String, current_user::Binding>;
+
 /// Load only directory scalar fields, in provider-sized batches; hidden fields never enter search.
 pub(crate) async fn endpoints(
     c: &mut PgConnection,
@@ -22,8 +24,7 @@ pub(crate) async fn endpoints(
     snapshot: &Snapshot,
     proof: &AuthorizedPrincipal,
     rows: &mut [Value],
-    sessions: &SessionAuthority,
-) -> Result<()> {
+) -> Result<Bindings> {
     let catalog = rss_mdm_inventory_postgres::catalog_at_in(c, tenant, watermark)
         .await
         .map_err(|_| Error::Storage)?;
@@ -33,7 +34,7 @@ pub(crate) async fn endpoints(
         .cloned()
         .collect();
     let catalog = Catalog::new(definitions).map_err(|_| Error::Storage)?;
-    let mut sessions_cache = BTreeMap::<String, rss_mdm_agent_wire::runtime::CurrentUser>::new();
+    let mut pending = Bindings::new();
     for chunk in rows.chunks_mut(250) {
         let ids = chunk
             .iter()
@@ -127,21 +128,32 @@ pub(crate) async fn endpoints(
                     serde_json::to_value(owners.get(&id).ok_or(Error::Storage)?)
                         .map_err(|_| Error::Storage)?;
             }
-            if sensitive {
-                let binding = bindings.get(&id).ok_or(Error::Storage)?;
-                let key = crate::cursor::digest(&(&binding.reference, binding.registration_valid))?;
-                let mut value = if let Some(value) = sessions_cache.get(&key) {
-                    value.clone()
-                } else {
-                    let value = current_user::resolve(binding, sessions).await?;
-                    sessions_cache.insert(key, value.clone());
-                    value
-                };
-                value.revision = binding.revision;
-                value.confirmed_at = binding.confirmed_at;
-                endpoint["currentUser"] =
-                    serde_json::to_value(value).map_err(|_| Error::Storage)?;
-            }
+        }
+        pending.extend(bindings);
+    }
+    Ok(pending)
+}
+/// Resolve Identity only after releasing product authorization and asset locks.
+pub(crate) async fn current_users(
+    rows: &mut [Value],
+    bindings: &Bindings,
+    sessions: &SessionAuthority,
+    cache: &mut BTreeMap<String, rss_mdm_agent_wire::runtime::CurrentUser>,
+) -> Result<()> {
+    for endpoint in rows {
+        let id = endpoint["id"].as_str().ok_or(Error::Storage)?;
+        if let Some(binding) = bindings.get(id) {
+            let key = crate::cursor::digest(&(&binding.reference, binding.registration_valid))?;
+            let mut value = if let Some(value) = cache.get(&key) {
+                value.clone()
+            } else {
+                let value = current_user::resolve(binding, sessions).await?;
+                cache.insert(key, value.clone());
+                value
+            };
+            value.revision = binding.revision;
+            value.confirmed_at = binding.confirmed_at;
+            endpoint["currentUser"] = serde_json::to_value(value).map_err(|_| Error::Storage)?;
         }
     }
     Ok(())
@@ -193,7 +205,7 @@ fn permits(
     permission: Permission,
     device: &str,
 ) -> Result<bool> {
-    match snapshot.require(proof, permission, Some(device)) {
+    match snapshot.require(proof, permission, permission.device().then_some(device)) {
         Ok(()) => Ok(true),
         Err(rss_mdm_authorization_service::error::AuthorizationError::Forbidden) => Ok(false),
         Err(error) => Err(error.into()),

@@ -74,7 +74,7 @@ Policy 引用精确资源版本/variant；它消费完整操作权限和多对�
 
 目录和详情的 endpoints 共用 displayName、serialNumber、platform、registrationUser 和 currentUser 投影。名称按 Windows device.name、Apple HostName/LocalHostName 的现有字段来源选择，序列号复用 Inventory 解析；未采集和来源冲突保留实际状态。platform 使用注册来源及 Agent 注册平台，未知或冲突不猜测。search 对可读取的名称、序列号及两类后端人员 principalId 执行去首尾空白、忽略大小写的字面子串匹配，最多 256 UTF-8 字节，空白查询和控制字符拒绝；姓名/login 搜索尚无正式补全合同。多个过滤条件在同一可见端点命中，关联设备只计一次视图，端点数量单独计数。
 
-registrationUser 沿用 enrollment 读取权限，currentUser 要求目标设备 inventory_sensitive_read；Inventory 标量遵循字段敏感性与相同设备范围。无权字段不返回，也不参与搜索、计数或目录游标绑定。目录游标只携带认证的上下文摘要和位置，绑定当前主体、查询、权限和可见投影；隐藏设备和不可读字段变化不导致游标失效。详情仍保留逐端点所有人，关联不会创建或批量覆盖第二份人员关系。
+registrationUser 沿用 enrollment 读取权限，currentUser 要求租户级 inventory_sensitive_read，且目标端点已通过 inventory_read 授权；Inventory 标量遵循字段敏感性与相同设备范围。无权字段不返回，也不参与搜索、计数或目录游标绑定。目录游标只携带认证的上下文摘要和位置，绑定当前主体、查询、权限和可见投影；隐藏设备和不可读字段变化不导致游标失效。详情仍保留逐端点所有人，关联不会创建或批量覆盖第二份人员关系。
 
 字段沿用原有字段优先级策略，各端点的 Manual 值独立保留，同优先级不同值为 Conflict。列表显示每个端点来源的状态、证据及 cursor；以详情返回的来源 cursor 调用 `GET /device-views/{kind}/{id}/inventory-lists/{field}?cursor=...&limit=...`。分页不对不同来源的列表做集合拼接，采集完整性和失败信息保留在 inventorySources。游标签名绑定用户、权限和查询快照；响应 `device_view_cursor_invalidated` 时从第一页重新查询。
 

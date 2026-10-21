@@ -149,7 +149,7 @@ async fn directory_people_are_verified_and_authorized_before_search() -> Result<
         let list=f.author.call(&f.router,Method::GET,"/api/v1/device-views",None).await?;
         let endpoint=list.1["items"].as_array().unwrap().iter().flat_map(|g|g["endpoints"].as_array().unwrap()).find(|e|e["id"]==device).context("endpoint")?;
         ensure!(endpoint.get("currentUser").is_none()&&endpoint.get("registrationUser").is_none());
-        grants.extend(crate::test_support::identity::device_grants(Some(device),&["inventory_sensitive_read"])?);
+        grants.push(crate::authorization::Grant{operation:crate::authorization::Permission::InventorySensitiveRead,scope:crate::authorization::Scope::Tenant});
         crate::test_support::identity::set_grants(case_tenant(),&f.author_id,grants.clone()).await?;
         let visible=f.author.call(&f.router,Method::GET,&search,None).await?;
         ensure!(visible.0==StatusCode::OK && visible.1["statistics"]["deviceViewCount"]==1,"visible {visible:?}");
@@ -204,4 +204,50 @@ async fn manager_session(router: &Router) -> Result<Browser> {
     let mut browser = Browser::default();
     ensure!(browser.login(router, "other").await? == StatusCode::OK);
     Ok(browser)
+}
+#[tokio::test]
+#[ignore = "MODULE=agent.current_user: Identity management can take product authorization while directory rechecks a session"]
+async fn directory_releases_product_locks_before_identity_recheck() -> Result<()> {
+    use sqlx::{Connection, Executor, PgConnection};
+    let mut f = Fixture::new().await?;
+    let resources = std::mem::take(&mut f.resources);
+    resources.finish(async {
+        f.register_profile(json!(["inventory.collect.v1"])).await?;
+        ensure!(call(&f,Method::PUT,Some(json!({"operationId":Uuid::new_v4(),"expectedRevision":0})),true,true).await?.0==StatusCode::OK);
+        let mut grants=f.grants.clone();
+        grants.push(crate::authorization::Grant{operation:crate::authorization::Permission::InventorySensitiveRead,scope:crate::authorization::Scope::Tenant});
+        crate::test_support::identity::set_grants(case_tenant(),&f.author_id,grants).await?;
+        let mut authority=crate::test_support::authority::Authority::open().await?;
+        let authority_resources=std::mem::take(&mut authority.resources);
+        authority_resources.finish(async {
+            let sessions=rss_mdm_authorization_service::session::SessionAuthority::new(authority.identity.authority.clone(),authority.identity.tenant);
+            let proof=sessions.authenticate(authority.access.authorization(),rss_mdm_authorization_service::credential::RequestCredential::Cookie(rss_identity_core::session::SessionSecret::parse(f.author.cookies["__Host-identity-session"].clone())?)).await?;
+            let service=rss_mdm_device_service::Associations::new(authority.audit.clone(),authority.identity.tenant,&[7;32])?;
+            let mut root=PgConnection::connect_with(&crate::device::test_support::options("postgres")?).await?;
+            let mut hold=root.begin().await?;
+            sqlx::query("SELECT tenant_id FROM identity_authority.guard WHERE tenant_id=$1::uuid FOR UPDATE").bind(case_tenant()).fetch_one(&mut *hold).await?;
+            let query=rss_mdm_device_service::ViewQuery{search:None,platform:None,cursor:None,limit:64,descending:false,status:None,channel:None,source:None,asset_state:None};
+            let task=tokio::spawn(async move {service.views(&proof,&query,&sessions).await});
+            let acquired=async {
+                tokio::time::timeout(Duration::from_secs(5),async {
+                    loop {
+                        let blocked:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE datname=current_database() AND query LIKE '%FROM identity_authority.guard%FOR UPDATE%' AND pg_backend_pid()=ANY(pg_blocking_pids(pid)))").fetch_one(&mut *hold).await?;
+                        if blocked {return Ok::<_,anyhow::Error>(());}
+                        tokio::time::sleep(Duration::from_millis(10)).await;
+                    }
+                }).await.context("directory must reach the real Identity guard")??;
+                hold.execute("SET LOCAL lock_timeout='1s'").await?;
+                // This is the same lock acquired by IdentityManagementPolicy after its guard.
+                rss_mdm_authorization_service::lock_on(&mut hold,case_tenant(),crate::test_support::identity::INSTANCE).await?;
+                Ok::<_,anyhow::Error>(())
+            }.await;
+            hold.rollback().await?;
+            let page=task.await?;
+            acquired.context("directory retained product locks while waiting for Identity")?;
+            let page=page?;
+            ensure!(page["items"][0]["endpoints"][0]["currentUser"]["state"]=="active");
+            root.close().await?;
+            Ok(())
+        }).await
+    }).await
 }

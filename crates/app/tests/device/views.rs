@@ -369,7 +369,7 @@ async fn directory_search_and_cursor_ignore_hidden_facts() -> anyhow::Result<()>
         crate::test_support::inventory::register_definition(&definition)?;
         let source_epoch:Uuid=sqlx::query_scalar("SELECT epoch FROM mdm_access.report_sources WHERE tenant_id=$1::uuid AND registration=$2 AND source='mdm.windows'").bind(case_a()).bind(first).fetch_one(&mut c).await?;
         let name_scope=rss_mdm_registration_service::device::scope_dataset(TenantId::parse(case_a())?,first,"mdm.windows",source_epoch,"directory_name")?.encode()?;
-        sqlx::query("INSERT INTO mdm.inventory(field_scope,tenant_id,journal,generation,scope,coverage,field,value,batch_id,observed_at,received_at,state,last_known,last_known_batch,last_known_observed,last_known_received,registration,source,epoch,collection_sequence) SELECT field_scope,tenant_id,journal,generation,$3,$4,'device.name',$5,'name-fixture',observed_at,received_at,state,$5,'name-fixture',last_known_observed,last_known_received,registration,source,epoch,collection_sequence FROM mdm.inventory WHERE tenant_id=$1::uuid AND registration=$2 AND field='device.serial_number'").bind(case_a()).bind(first).bind(name_scope).bind(serde_json::to_value(definition.coverage()?)?).bind(json!({"kind":"string","value":"Directory Workstation"})).execute(&mut c).await?;
+        sqlx::query("INSERT INTO mdm.inventory(field_scope,tenant_id,journal,generation,scope,coverage,field,value,batch_id,observed_at,received_at,state,last_known,last_known_batch,last_known_observed,last_known_received,registration,source,epoch,collection_sequence) SELECT field_scope,tenant_id,journal,generation,$3,$4,'device.name',$5,'name-fixture',observed_at,received_at,state,$5,'name-fixture',last_known_observed,last_known_received,registration,source,epoch,collection_sequence FROM mdm.inventory WHERE tenant_id=$1::uuid AND registration=$2 AND field='device.serial_number'").bind(case_a()).bind(first.to_string()).bind(name_scope).bind(serde_json::to_string(&definition.coverage()?)?).bind(serde_json::to_string(&json!({"kind":"string","value":"Directory Workstation"}))?).execute(&mut c).await?;
 
         let second=seed(peer,"mdm","Peer-Serial")?;
         let secret=seed(hidden,"mdm","Hidden-Serial")?;
@@ -405,14 +405,14 @@ async fn directory_search_and_cursor_ignore_hidden_facts() -> anyhow::Result<()>
         let text=String::from_utf8_lossy(&payload[..payload.len()-32]);
         assert!(!text.contains(needle)&&!text.contains(hidden)&&!text.contains(admin.principal_id()));
         let mut next=query(1);next.cursor=Some(token.into());
-        sqlx::query("UPDATE mdm.inventory SET value=$3,last_known=$3 WHERE tenant_id=$1::uuid AND registration=$2 AND field='device.serial_number'").bind(case_a()).bind(secret).bind(json!({"kind":"string","value":"hidden-changed"})).execute(&mut c).await?;
+        sqlx::query("UPDATE mdm.inventory SET value=$3,last_known=$3 WHERE tenant_id=$1::uuid AND registration=$2 AND field='device.serial_number'").bind(case_a()).bind(secret.to_string()).bind(serde_json::to_string(&json!({"kind":"string","value":"hidden-changed"}))?).execute(&mut c).await?;
         let tail=s.views(&admin,&next,&sessions).await?;
         assert_eq!(tail["items"].as_array().unwrap().len(),1);assert!(tail["nextCursor"].is_null());
         // Even a real manual assignment is unobservable without its read permission.
         registration.assign_registration_user(&admin,needle,&rss_mdm_registration_service::device::registration_user::RegistrationUserChange{expected_revision:owned.revision,user:None},Uuid::new_v4(),&RequestAudit::new(case_a().into(),"registration_user_change")).await.err().context("stale authority must not write after grant removal")?;
         sqlx::query("UPDATE mdm_access.registration_users SET revision=revision+1,instance=NULL,principal=NULL WHERE tenant_id=$1::uuid AND device=$2").bind(case_a()).bind(needle).execute(&mut c).await?;
         assert!(s.views(&admin,&next,&sessions).await.is_ok());
-        sqlx::query("UPDATE mdm.inventory SET value=$3,last_known=$3 WHERE tenant_id=$1::uuid AND registration=$2 AND field='device.serial_number'").bind(case_a()).bind(second).bind(json!({"kind":"string","value":"visible-changed"})).execute(&mut c).await?;
+        sqlx::query("UPDATE mdm.inventory SET value=$3,last_known=$3 WHERE tenant_id=$1::uuid AND registration=$2 AND field='device.serial_number'").bind(case_a()).bind(second.to_string()).bind(serde_json::to_string(&json!({"kind":"string","value":"visible-changed"}))?).execute(&mut c).await?;
         assert!(matches!(s.views(&admin,&next,&sessions).await,Err(rss_mdm_device_service::Error::CursorInvalidated)));
         let mut malformed=query(1);malformed.search=Some(" ".into());
         assert!(matches!(s.views(&admin,&malformed,&sessions).await,Err(rss_mdm_device_service::Error::Malformed)));

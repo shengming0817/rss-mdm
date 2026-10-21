@@ -20,10 +20,10 @@ pub async fn binding_on(
     tenant: &str,
     device: &str,
 ) -> Result<Binding, Error> {
-    Ok(bindings_on(c, tenant, &[device.to_owned()])
+    bindings_on(c, tenant, &[device.to_owned()])
         .await?
         .remove(device)
-        .ok_or(Error::Corrupt)?)
+        .ok_or(Error::Corrupt)
 }
 /// Read only devices supplied by an already-authorized consumer, at most one provider batch.
 pub async fn bindings_on(
@@ -194,7 +194,7 @@ impl Service {
             let revision=current.revision+1;
             let now=now(c).await?;
             sqlx::query("INSERT INTO mdm_access.current_users(tenant_id,device,revision,registration,generation,session_reference,confirmed_at) VALUES($1::uuid,$2,$3,$4,$5,$6,$7) ON CONFLICT(tenant_id,device) DO UPDATE SET revision=EXCLUDED.revision,registration=EXCLUDED.registration,generation=EXCLUDED.generation,session_reference=EXCLUDED.session_reference,confirmed_at=EXCLUDED.confirmed_at")
-                .bind(device.tenant().to_string()).bind(device.device()).bind(revision as i64).bind(device.registration()).bind(device.generation() as i64).bind(reference.as_ref().map(serde_json::to_value).transpose().map_err(|_|Error::Corrupt)?).bind(now).execute(&mut *c).await.map_err(db)?;
+                .bind(device.tenant().to_string()).bind(device.device()).bind(revision as i64).bind(device.registration()).bind(device.generation()).bind(reference.as_ref().map(serde_json::to_value).transpose().map_err(|_|Error::Corrupt)?).bind(now).execute(&mut *c).await.map_err(db)?;
             let value=CurrentUser{revision,state:if user.is_some(){CurrentUserState::Active}else{CurrentUserState::Unbound},user:user.as_ref().map(|u|Ok::<_,Error>(SelfServiceUser{tenant_id:Uuid::parse_str(&u.tenant_id).map_err(|_|Error::Corrupt)?,instance_id:Uuid::parse_str(&u.instance_id).map_err(|_|Error::Corrupt)?,principal_id:Uuid::parse_str(&u.principal_id).map_err(|_|Error::Corrupt)?})).transpose()?,confirmed_at:Some(now)};
             sqlx::query("INSERT INTO mdm_access.registration_operations(tenant_id,actor,instance,operation_id,digest,result) VALUES($1::uuid,$2,$3,$4,$5,$6)")
                 .bind(device.tenant().to_string()).bind(actor).bind(device.registration().to_string()).bind(input.operation_id).bind(&*digest).bind(serde_json::to_string(&value).map_err(|_|Error::Corrupt)?).execute(&mut *c).await.map_err(db)?;
