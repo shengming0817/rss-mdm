@@ -264,9 +264,9 @@ pub fn authorize_policy_snapshot(
     let permission = match definition.action {
         Action::Credential { ref operation, .. } => crate::credential_tasks::permission(operation),
         Action::Execution { .. } => Permission::ScriptExecute,
-        Action::NativeCollection { .. } | Action::AgentCollection { .. } => {
-            Permission::InventoryCollect
-        }
+        Action::NativeCollection { .. }
+        | Action::AgentCollection { .. }
+        | Action::TelemetryProfile { .. } => Permission::InventoryCollect,
         Action::Configuration { .. } => Permission::ConfigurationWrite,
         Action::Software { .. } | Action::EnsureAgentInstalled { .. } => Permission::SoftwareDeploy,
         Action::RequestMdmEnrollment { .. } => Permission::Enrollment,

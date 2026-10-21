@@ -10,6 +10,7 @@ use rss_mdm_audit_integration::RequestAudit;
 use serde::Deserialize;
 use std::sync::Arc;
 pub struct Services {
+    pub telemetry: Option<Arc<rss_mdm_telemetry_service::Service>>,
     pub first_use: Arc<dyn crate::first_use::Source>,
     pub mail: Arc<rss_mdm_mail_service::authority::Authority>,
     pub settings: Arc<dyn crate::settings::Source>,
@@ -109,6 +110,7 @@ pub fn router(state: Services, envelope: crate::boundary::Envelope) -> Router {
             get(crate::settings::tenant).layer(Extension(state.settings)),
         )
         .merge(crate::webhooks::routes(state.webhooks))
+        .merge(crate::telemetry::routes(state.telemetry.clone()))
         .merge(crate::api_access::key_routes(Arc::new(
             crate::api_access::Management {
                 access: state.authorization.clone(),
@@ -154,7 +156,7 @@ pub fn router(state: Services, envelope: crate::boundary::Envelope) -> Router {
         .merge(crate::windows_entra::routes(state.windows_entra))
         .merge(crate::execution::routes(state.queries.clone()).with_state(execution))
         .merge(
-            crate::planning::policies::http::routes(state.queries.clone())
+            crate::planning::policies::http::routes(state.queries.clone(), state.telemetry.clone())
                 .with_state(policies.clone()),
         )
         .merge(crate::software_catalog::routes().with_state(state.software_catalog))

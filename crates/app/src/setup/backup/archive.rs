@@ -15,6 +15,47 @@ fn database_digest(path: &Path) -> Result<DatabaseBackup> {
     }
     Ok(value)
 }
+
+/// The archive and restore client major must match the server, including PG16 telemetry.
+async fn client(database: &crate::config::Database, restore: bool) -> Result<&'static str> {
+    use sqlx::Connection;
+    let mut connection =
+        sqlx::PgConnection::connect_with(&database.options().map_err(|_| Error::Input)?)
+            .await
+            .map_err(|_| Error::Storage)?;
+    let major: i32 =
+        sqlx::query_scalar("SELECT current_setting('server_version_num')::integer/10000")
+            .fetch_one(&mut connection)
+            .await
+            .map_err(|_| Error::Storage)?;
+    connection.close().await.map_err(|_| Error::Storage)?;
+    let tool = match (major, restore) {
+        (16, false) => "pg_dump16",
+        (16, true) => "pg_restore16",
+        (17, false) => "pg_dump",
+        (17, true) => "pg_restore",
+        _ => return Err(Error::Input),
+    };
+    let version = tokio::time::timeout(
+        std::time::Duration::from_secs(6),
+        tokio::process::Command::new(tool)
+            .arg("--version")
+            .stdin(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .kill_on_drop(true)
+            .output(),
+    )
+    .await
+    .map_err(|_| Error::Storage)?
+    .map_err(|_| Error::Storage)?;
+    if !version.status.success()
+        || !String::from_utf8_lossy(&version.stdout).contains(&format!("(PostgreSQL) {major}."))
+    {
+        return Err(Error::Input);
+    }
+    Ok(tool)
+}
+
 pub(in crate::setup) async fn capture(
     journal: &Journal,
     database: &crate::config::Database,
@@ -37,7 +78,7 @@ pub(in crate::setup) async fn capture(
     let password = crate::config::secret(&database.password_file).map_err(|_| Error::Input)?;
     let result = tokio::time::timeout(
         std::time::Duration::from_secs(3600),
-        tokio::process::Command::new("pg_dump")
+        tokio::process::Command::new(client(database, false).await?)
             .args([
                 "--format=custom",
                 "--exclude-table=public.mdm_restore_operation",
@@ -272,7 +313,7 @@ pub(in crate::setup) async fn restore_database(
     let password = crate::config::secret(&database.password_file).map_err(|_| Error::Input)?;
     let result = tokio::time::timeout(
         std::time::Duration::from_secs(3600),
-        tokio::process::Command::new("pg_restore")
+        tokio::process::Command::new(client(database, true).await?)
             .args([
                 "--single-transaction",
                 "--exit-on-error",

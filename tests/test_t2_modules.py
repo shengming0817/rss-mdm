@@ -327,6 +327,7 @@ class ModuleImpactTests(unittest.TestCase):
                     'enrollment.http','content.http','compliance.http','compliance.recovery','compliance.group_input',
                     'authorization.capacity','authorization.rules','execution.agent.history','execution.agent.content','software.http'}
         required |= {'audit.'+part for part in ('receipts','integrity','recovery','budget')}
+        required |= {'telemetry.ingress.'+kind for kind in ('postgres','timescale_shared','timescale_dedicated','click_house')}
         self.assertEqual(audit,required)
 
     def test_test_changes_do_not_select_production_consumers(self):
@@ -351,7 +352,7 @@ class ModuleImpactTests(unittest.TestCase):
 
     def test_shared_registration_fixture_selects_only_direct_consumers(self):
         self.assertEqual(self.selected('crates/app/tests/support/agent.rs'),
-                         {'execution.agent.task_trust','agent.configurations','planning.self_service','agent.registration','agent.reports','execution.agent.poll','execution.agent.recovery','planning.onboarding','execution.commands.onboarding','execution.agent.delivery','execution.software.recovery','planning.agent_policy','execution.software.offer','execution.agent.history','assets.http','execution.agent.content','apple.onboarding','planning.software','planning.http','execution.software.content','planning.frequency','execution.commands.windows','software.http'})
+                         {'execution.agent.task_trust','agent.configurations','planning.self_service','agent.registration','agent.reports','execution.agent.poll','execution.agent.recovery','planning.onboarding','execution.commands.onboarding','execution.agent.delivery','execution.software.recovery','planning.agent_policy','execution.software.offer','execution.agent.history','assets.http','execution.agent.content','apple.onboarding','planning.software','planning.http','execution.software.content','planning.frequency','execution.commands.windows','software.http'} | {'telemetry.ingress.'+kind for kind in ('postgres','timescale_shared','timescale_dedicated','click_house')})
 
     def test_case_only_windows_inputs_select_directory_consumers(self):
         for path in ('hack/windows_fixtures.py', 'deployment/windows-leaf.tpl'):

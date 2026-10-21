@@ -1,0 +1,138 @@
+{
+  "$defs": {
+    "ObservationStatus": {
+      "description": "Observation processing status.",
+      "oneOf": [
+        {
+          "const": "pending",
+          "description": "Awaiting the Observation worker.",
+          "type": "string"
+        },
+        {
+          "const": "snapshot",
+          "description": "A complete snapshot established the current baseline.",
+          "type": "string"
+        },
+        {
+          "const": "needSnapshotPartial",
+          "description": "A partial report requires another complete snapshot.",
+          "type": "string"
+        },
+        {
+          "const": "needSnapshotCollectionFailed",
+          "description": "A collection failure requires another complete snapshot.",
+          "type": "string"
+        },
+        {
+          "const": "stale",
+          "description": "The sequence did not exceed the stream high-water mark.",
+          "type": "string"
+        }
+      ]
+    },
+    "ProjectionStatus": {
+      "description": "Projection processing status.",
+      "oneOf": [
+        {
+          "const": "pending",
+          "description": "Awaiting an applicable Observation decision or projection commit.",
+          "type": "string"
+        },
+        {
+          "const": "applied",
+          "description": "Applicable facts committed to the asset projection.",
+          "type": "string"
+        },
+        {
+          "const": "notApplicable",
+          "description": "The Observation decision deliberately carries no projectable facts.",
+          "type": "string"
+        }
+      ]
+    },
+    "TelemetryCurrentState": {
+      "description": "An inbox receipt does not assert that current assets were changed.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "description": "The profile requested historical storage only.",
+          "properties": {
+            "state": {
+              "const": "not_requested",
+              "type": "string"
+            }
+          },
+          "required": [
+            "state"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "The shared delivery path has not confirmed current-asset admission.",
+          "properties": {
+            "state": {
+              "const": "pending",
+              "type": "string"
+            }
+          },
+          "required": [
+            "state"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Independently observed decisions from the existing Inventory owner.",
+          "properties": {
+            "observation": {
+              "$ref": "#/$defs/ObservationStatus",
+              "description": "Observation ordering and completeness decision."
+            },
+            "projection": {
+              "$ref": "#/$defs/ProjectionStatus",
+              "description": "Independently confirmed Inventory projection state."
+            },
+            "state": {
+              "const": "observed",
+              "type": "string"
+            }
+          },
+          "required": [
+            "state",
+            "observation",
+            "projection"
+          ],
+          "type": "object"
+        }
+      ]
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Independent current-asset processing status for one observation in a durable batch.",
+  "properties": {
+    "batchId": {
+      "description": "Original batch identity.",
+      "format": "uuid",
+      "type": "string"
+    },
+    "observationId": {
+      "description": "Original sampling identity, never generated again during retry.",
+      "format": "uuid",
+      "type": "string"
+    },
+    "state": {
+      "$ref": "#/$defs/TelemetryCurrentState",
+      "description": "Current-asset destination and its observed progress."
+    }
+  },
+  "required": [
+    "batchId",
+    "observationId",
+    "state"
+  ],
+  "title": "TelemetryCurrentStatus",
+  "type": "object",
+  "$id": "https://rss.example/mdm/agent/runtime/v1/payload/v1/telemetry-current-status.schema.json"
+}

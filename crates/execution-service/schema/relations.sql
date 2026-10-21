@@ -221,3 +221,5 @@ GRANT SELECT ON mdm_commands.software_result_changes,mdm_commands.software_bindi
 ALTER TABLE mdm_commands.native_checkins ADD FOREIGN KEY (tenant_id,registration) REFERENCES mdm_access.registrations(tenant_id,id);
 GRANT SELECT,INSERT ON mdm_commands.native_checkins TO mdm_command_runtime;
 GRANT UPDATE(active_event,active_at,policy_after,pending_event,pending_at) ON mdm_commands.native_checkins TO mdm_command_runtime;
+
+GRANT SELECT(tenant_id,registration,profiles) ON mdm_commands.action_polls TO mdm_flow_runtime;

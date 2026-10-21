@@ -5,6 +5,7 @@ use rss_mdm_management_http::runtime_diagnostics::*;
 use std::{sync::Arc, time::Instant};
 
 pub(crate) struct RuntimeDiagnostics {
+    pub telemetry: Option<Arc<rss_mdm_telemetry_service::Service>>,
     pub inventory: Arc<crate::inventory_runtime::InventoryRuntime>,
     pub identity_audit: Arc<crate::identity_audit::Readiness>,
     pub apple: Option<Arc<crate::apple::Apple>>,
@@ -76,7 +77,48 @@ impl RuntimeDiagnostics {
             self.enrich(cutoff, &mut inventory, &mut automation).await;
         }
         let execution = execution_component(self.execution.health());
-        let components = vec![inventory, audit, apple, automation, execution];
+        let mut components = vec![inventory, audit, apple, automation, execution];
+        if let Some(service) = &self.telemetry {
+            let mut telemetry = component(ComponentName::Telemetry, false);
+            match service.diagnostics(cutoff).await {
+                Ok(state) => {
+                    telemetry = component(ComponentName::Telemetry, state.running);
+                    if !state.running {
+                        telemetry.reasons.push(Reason::WorkerNotRunning);
+                    }
+                    if state.unknown > 0 || state.blocked > 0 {
+                        telemetry.health = Health::Degraded;
+                        telemetry.reasons.push(Reason::DeliveryRetrying);
+                    }
+                    telemetry
+                        .dependencies
+                        .push(dependency(DependencyName::TelemetryStorage, None));
+                    if detailed {
+                        telemetry.queues = [
+                            (QueueName::DeliveryPending, state.pending),
+                            (QueueName::DeliveryUnknown, state.unknown),
+                            (QueueName::DeliveryBlocked, state.blocked),
+                            (QueueName::MaintenancePending, state.maintenance),
+                        ]
+                        .into_iter()
+                        .map(|(name, count)| Queue {
+                            name,
+                            count: Some(count.min(4096)),
+                            truncated: Some(count > 4096),
+                        })
+                        .collect();
+                    }
+                }
+                Err(_) => {
+                    telemetry.health = Health::Degraded;
+                    telemetry.dependencies.push(dependency(
+                        DependencyName::TelemetryStorage,
+                        Some(Reason::DependencyUnavailable),
+                    ));
+                }
+            }
+            components.push(telemetry);
+        }
         Snapshot {
             alive: true,
             ready: components

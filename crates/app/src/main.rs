@@ -21,7 +21,7 @@ async fn execute() -> Result<(), ProcessError> {
     let args: Vec<_> = std::env::args().skip(1).collect();
     if args == ["--help"] {
         println!(
-            "rss-mdm install|prepare-hosts|rotate-protection|initialize-ca|configure-host|public-host-config|export-webhook-key|backup-installation|restore-installation|serve|migrate|tenant-get|tenant-list|tenant-update|tenant-delete|tenant-operation-status|initialize|initialize-authorization|recover-password --config /absolute/private-config.json\nrss-mdm --version|--describe"
+            "rss-mdm install|prepare-telemetry|prepare-telemetry-tenant|maintain-telemetry-storage|prepare-hosts|rotate-protection|initialize-ca|configure-host|public-host-config|export-webhook-key|backup-installation|restore-installation|serve|migrate|tenant-get|tenant-list|tenant-update|tenant-delete|tenant-operation-status|initialize|initialize-authorization|recover-password --config /absolute/private-config.json\nrss-mdm --version|--describe"
         );
         return Ok(());
     }
@@ -41,6 +41,40 @@ async fn execute() -> Result<(), ProcessError> {
     }
     let path = std::path::Path::new(&args[2]);
     match args[0].as_str() {
+        #[cfg(unix)]
+        "maintain-telemetry-storage" => {
+            let receipt = rss_mdm_app::setup::providers::telemetry::maintain(config::load(path)?)
+                .await
+                .map_err(|e| setup_failure("telemetry.storage", e))?;
+            println!(
+                "{}",
+                serde_json::to_string(&receipt).expect("public telemetry receipt")
+            );
+            Ok(())
+        }
+        #[cfg(unix)]
+        "prepare-telemetry" => {
+            let receipt = rss_mdm_app::setup::providers::telemetry::prepare(config::load(path)?)
+                .await
+                .map_err(|e| setup_failure("telemetry.installation", e))?;
+            println!(
+                "{}",
+                serde_json::to_string(&receipt).expect("public telemetry receipt")
+            );
+            Ok(())
+        }
+        #[cfg(unix)]
+        "prepare-telemetry-tenant" => {
+            let receipt =
+                rss_mdm_app::setup::providers::telemetry::prepare_tenant(config::load(path)?)
+                    .await
+                    .map_err(|e| setup_failure("telemetry.tenant", e))?;
+            println!(
+                "{}",
+                serde_json::to_string(&receipt).expect("tenant telemetry receipt")
+            );
+            Ok(())
+        }
         "public-host-config" => {
             let config = config::load(path)?;
             let public = rss_mdm_app::setup::public_configuration::read(&config)

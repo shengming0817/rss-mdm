@@ -19,6 +19,13 @@ pub use collected::{CollectedValue, UnknownReason};
 /// Immutable seed definitions for the one product catalog.
 pub mod builtin;
 mod catalog;
+mod retention;
+mod telemetry;
+mod time_series;
+pub use retention::RetentionPolicy;
+pub use time_series::{
+    RetentionReference, TelemetryAggregation, TelemetryDimension, TelemetryKind, TimeSeriesBinding,
+};
 mod collection;
 pub use collection::{CollectionDefinition, CollectionField, CollectionReference};
 mod source;

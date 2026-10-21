@@ -266,7 +266,10 @@ pub(super) fn capture_inputs(journal: &Journal, values: &[serde_json::Value]) ->
                         }
                     } else if matches!(
                         name.as_str(),
-                        "historical_files" | "apple_material_roots" | "ca_files"
+                        "historical_files"
+                            | "apple_material_roots"
+                            | "ca_files"
+                            | "server_configuration_files"
                     ) {
                         for value in value.as_array().ok_or(Error::Input)? {
                             paths.insert(PathBuf::from(value.as_str().ok_or(Error::Input)?));

@@ -194,7 +194,7 @@ async fn apply_unit(
 /// concatenate initial DDL and an explicitly wrapped upgrade. Preserve each static SQL slice and
 /// execute all slices in the same transaction as the receipt; never send their transaction controls.
 /// This is only for repository SQL, whose standalone control lines are checked in the unit test.
-fn transaction_body(sql: &'static str) -> Result<Vec<&'static str>> {
+pub(crate) fn transaction_body(sql: &str) -> Result<Vec<&str>> {
     let mut offset = 0;
     let mut start = 0;
     let mut wrapped = false;

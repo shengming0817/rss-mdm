@@ -301,3 +301,20 @@ fn fixed_parameter_validation_keeps_resource_constraints() {
     );
     assert!(definition.validate_parameters(&json!({})).is_err());
 }
+
+#[test]
+fn literal_parameters_share_one_preparation_without_shell_interpolation() {
+    let script: ScriptDefinition = serde_json::from_value(definition()).unwrap();
+    let literal = "a; $(touch ignored)";
+    let (arguments, environment) = script
+        .prepare_parameters(&[("name".into(), json!(literal))].into())
+        .unwrap();
+    assert_eq!(arguments, [literal]);
+    assert!(environment.is_empty());
+    assert!(script.prepare_parameters(&Default::default()).is_err());
+    assert!(
+        script
+            .prepare_parameters(&[("name".into(), json!(["not", "literal"]))].into())
+            .is_err()
+    );
+}

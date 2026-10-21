@@ -9,6 +9,7 @@ use rss_transactional_messaging_postgres::{PgRuntime, PgTransaction};
 use serde_json::Value;
 use std::sync::Arc;
 pub mod directory;
+pub(crate) mod telemetry;
 pub mod wire;
 
 use rss_mdm_resource as r;
@@ -23,6 +24,7 @@ pub enum Kind {
     Configuration,
     NativeCollection,
     AgentCollection,
+    TelemetryProfile,
 }
 impl Kind {
     fn core(&self) -> r::Kind {
@@ -32,6 +34,7 @@ impl Kind {
             Self::Configuration => r::Kind::Configuration,
             Self::NativeCollection => r::Kind::NativeCollection,
             Self::AgentCollection => r::Kind::AgentCollection,
+            Self::TelemetryProfile => r::Kind::TelemetryProfile,
         }
     }
 }
@@ -72,6 +75,10 @@ enum Declaration {
     AgentCollection {
         artifact: Artifact,
         definition: r::AgentCollectionDefinition,
+    },
+    TelemetryProfile {
+        artifact: Artifact,
+        definition: r::TelemetryProfile,
     },
     NativeCollection {
         artifact: Artifact,
@@ -134,6 +141,13 @@ fn artifact(a: &Artifact) -> Result<r::Artifact> {
 }
 fn variant(v: &Variant) -> Result<r::Variant> {
     let declaration = match &v.declaration {
+        Declaration::TelemetryProfile {
+            artifact: a,
+            definition,
+        } => r::Declaration::TelemetryProfile {
+            artifact: artifact(a)?,
+            definition: definition.clone(),
+        },
         Declaration::Software { definition } => r::Declaration::Software {
             definition: definition.clone(),
         },
@@ -187,6 +201,9 @@ impl ResourceCatalog {
         if let Change::Version { variants, .. } = &op.input {
             let catalog = crate::assets::catalog_in(tx, self.tenant, i64::MAX).await?;
             for variant in variants {
+                if let Declaration::TelemetryProfile { definition, .. } = &variant.declaration {
+                    telemetry::validate(tx, self.tenant, &catalog, definition).await?;
+                }
                 let binding = match &variant.declaration {
                     Declaration::Script { definition, .. } => match &definition.spec().purpose {
                         r::ScriptPurpose::Collection { mappings, .. } => Some((
@@ -400,6 +417,13 @@ fn artifact_view(a: &r::Artifact) -> Artifact {
 fn variant_view(v: &r::Variant) -> Variant {
     let text = |id: &r::Id| id.as_str().to_owned();
     let declaration = match v.declaration() {
+        r::Declaration::TelemetryProfile {
+            artifact,
+            definition,
+        } => Declaration::TelemetryProfile {
+            artifact: artifact_view(artifact),
+            definition: definition.clone(),
+        },
         r::Declaration::Software { definition } => Declaration::Software {
             definition: definition.clone(),
         },
@@ -448,6 +472,7 @@ fn resource_kind(k: r::Kind) -> &'static str {
         r::Kind::Script => "script",
         r::Kind::NativeCollection => "native_collection",
         r::Kind::AgentCollection => "agent_collection",
+        r::Kind::TelemetryProfile => "telemetry_profile",
         r::Kind::Configuration => "configuration",
     }
 }
@@ -643,8 +668,11 @@ impl References for StoredReferences {
             let approvals =
                 rss_mdm_software_service::catalog::reference_count_in(tx, resource, version)
                     .await?;
+            let profiles =
+                rss_mdm_resource_postgres::profile_references_in(tx, resource, version).await?;
             assignments
-                .checked_add(publications)
+                .checked_add(profiles)
+                .and_then(|n| n.checked_add(publications))
                 .and_then(|n| n.checked_add(approvals))
                 .ok_or_else(|| crate::Error::Unavailable(crate::Failure::FlowStorage).into())
         })

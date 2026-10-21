@@ -7,11 +7,21 @@ use axum::{
 };
 use std::sync::Arc;
 type Page = rss_mdm_flow_service::planning::policies::read::DirectoryQuery;
-pub fn routes(queries: Arc<rss_mdm_execution_service::queries::Queries>) -> Router<Arc<Policies>> {
+pub fn routes(
+    queries: Arc<rss_mdm_execution_service::queries::Queries>,
+    telemetry: Option<Arc<rss_mdm_telemetry_service::Service>>,
+) -> Router<Arc<Policies>> {
     Router::new()
         .merge(
             Router::new()
                 .route("/policies/previews", post(super::http_preview::preview))
+                .with_state(Arc::new(super::http_preview::StateServices {
+                    queries: queries.clone(),
+                    telemetry,
+                })),
+        )
+        .merge(
+            Router::new()
                 .route("/policies/{id}/assignments", get(assignments))
                 .with_state(queries),
         )

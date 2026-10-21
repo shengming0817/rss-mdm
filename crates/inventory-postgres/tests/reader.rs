@@ -321,3 +321,73 @@ async fn normal_reader() -> anyhow::Result<()> {
     );
     Ok(())
 }
+
+#[tokio::test]
+#[ignore = "make t2 MODULE=inventory.reader: authoritative frozen field versions"]
+async fn frozen_collection_requires_authoritative_active_source_definition() -> anyhow::Result<()> {
+    use rss_mdm_inventory::{CollectionDefinition, CollectionField, CollectionScope, Source};
+    use rss_mdm_inventory_postgres as pg;
+    let mut c = PgConnection::connect_with(&options("mdm_flow_runtime")?).await?;
+    let tenant = rss_request_context::TenantId::parse(case::tenant())?;
+    let mut tx = c.begin().await?;
+    sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
+        .bind(tenant.to_string())
+        .execute(&mut *tx)
+        .await?;
+    let mut original = rss_mdm_inventory::builtin::fields()
+        .into_iter()
+        .find(|f| f.key == rss_mdm_inventory::builtin::MODEL)
+        .unwrap();
+    original.key = rss_mdm_inventory::FieldKey::parse("custom.frozen_model")?;
+    original.sources = [(Source::AgentNative, 0)].into();
+    assert!(pg::publish_field_in(&mut tx, tenant, 0, &original).await?);
+    let definition = |name: &str, field| {
+        CollectionDefinition::new(
+            name,
+            "one",
+            Source::AgentNative,
+            vec![CollectionField {
+                definition: field,
+                scope: CollectionScope::Device,
+            }],
+        )
+    };
+    let frozen = definition("frozen", original.clone())?;
+    let mut upgraded = original.clone();
+    upgraded.version += 1;
+    upgraded.searchable = !upgraded.searchable;
+    assert!(pg::publish_field_in(&mut tx, tenant, 1, &upgraded).await?);
+    pg::register_collection_in(&mut tx, tenant, &frozen).await?;
+    pg::register_collection_in(&mut tx, tenant, &frozen).await?;
+    let mut forged = original.clone();
+    forged.searchable = !forged.searchable;
+    assert!(
+        pg::register_collection_in(&mut tx, tenant, &definition("forged", forged)?)
+            .await
+            .is_err()
+    );
+    let mut absent = original.clone();
+    absent.version = 99;
+    assert!(
+        pg::register_collection_in(&mut tx, tenant, &definition("absent", absent)?)
+            .await
+            .is_err()
+    );
+    upgraded.version += 1;
+    upgraded.sources = [(Source::MdmWindows, 0)].into();
+    assert!(pg::publish_field_in(&mut tx, tenant, 2, &upgraded).await?);
+    assert!(
+        pg::register_collection_in(&mut tx, tenant, &definition("revoked", original.clone())?)
+            .await
+            .is_err()
+    );
+    assert!(pg::retire_field_in(&mut tx, tenant, original.key, 3).await?);
+    assert!(
+        pg::register_collection_in(&mut tx, tenant, &definition("retired", original)?)
+            .await
+            .is_err()
+    );
+    tx.rollback().await?;
+    c.close().await?;
+    Ok(())
+}

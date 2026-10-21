@@ -159,6 +159,15 @@ Agent→MDM 复用 `request_mdm_enrollment` 的签名任务和 Start permit。�
 离线设备可让轮换继续待完成，但无需等待其 ACK 才能部署、启动或开通租户。
 
 升级保留现有注册、设备证书、发布包与配置的原始历史记录。新下载的注册文件不含发布环；已用完或旧格式文件不转换、不重签，后续设备由管理员生成当前格式文件。Agent 的 trust Applied/ACK 表示其私有信任集合已持久应用并读回，不要求将设备 CA 安装为宿主的全局根信任。
+
+## 周期遥测配置
+
+遥测沿用 runtime family 和已认证 mTLS 通道，通过 `telemetry.collect.v1` 显式声明能力；不会退回普通报告或一次性任务。目录与接口见[资产指南](assets.md)。配置响应为 `SignedTelemetryConfiguration`，复用现有任务签名信任、active key 与当前注册代际的持久安装 ACK。协议包的 `TelemetryConfiguration::signing_bytes` 定义独立签名域；Agent 按既有任务信任验证签名，并核对本地 tenant/device/registration/generation/source epoch 与可信 UTC 时钟。
+
+配置是最长五分钟的执行租约。到期后停止开始采集并重新获取配置，不能用旧签名、旧注册或 mTLS 本身代替新授权。提频有单独的固定 UTC 到期时间；在有效租约内到期时恢复正常周期。有效租约仍需执行外层运行时间、输出和上传预算，脚本参数只作为字面量传递。材料由精确配置的受保护内容入口读取并核对长度与 SHA-256；配置、采集输出或设备日志均不能自行授予来源权限。
+
+采样 ID 在租户内固定原配置及内容，重组批次不重发同一事实；Counter 的标量区间起点属于每个字段读数，结构化 Counter 从已声明的元素路径读取各资源起点。上传未知时保留原 batch ID、采样 ID、绑定和内容，按原身份查询或重放。服务端签名与协议测试不代表 Agent 周期采样、离线缓存或真实设备 T3 已实现。
+
 ## 当前扩展对象与一次性字段切换
 
 当前开发基线直接使用新结构，不保留旧 DTO、字段别名或历史格式读取。
@@ -180,3 +189,5 @@ Agent→MDM 复用 `request_mdm_enrollment` 的签名任务和 Start permit。�
 和完整内容摘要。扩展 key 不改变全局协议版本，schema 指纹只标识实际生成制品。
 
 Agent/Web 从最终固定公开 rev 一次切换；此处不要求读取服务端私有 checkout。
+
+遥测 Profile 只引用 Inventory 的精确字段键和版本；发布组合层解析并冻结该版本，后续配置与已接收批次继续使用原定义。历史 Counter 的 `missing`/`failed` 同样携带真实 `intervalStart`，结构化读数通过 `context` 提供稳定资源键、有限维度和声明路径上的区间起点。`context` 不产生有效数值；必要上下文未知时拒绝该历史输入，不按接收时间伪造起点，也不静默删除质量事实。

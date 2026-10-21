@@ -145,6 +145,15 @@
       ""
     ],
     [
+      "field_refs",
+      "telemetry",
+      "boolean",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
       "immutable",
       "tenant_id",
       "uuid",
@@ -193,6 +202,60 @@
       "immutable",
       "digest",
       "bytea",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "profile_refs",
+      "tenant_id",
+      "uuid",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "profile_refs",
+      "owner",
+      "text",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "profile_refs",
+      "version",
+      "text",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "profile_refs",
+      "target",
+      "text",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "profile_refs",
+      "target_version",
+      "text",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "profile_refs",
+      "archived",
+      "boolean",
       true,
       null,
       "",
@@ -397,6 +460,34 @@
       true
     ],
     [
+      "profile_refs",
+      "profile_refs_pkey",
+      "p",
+      "PRIMARY KEY (tenant_id, owner, version, target, target_version)",
+      true
+    ],
+    [
+      "profile_refs",
+      "profile_refs_target_check",
+      "c",
+      "CHECK (((octet_length(target) >= 1) AND (octet_length(target) <= 128)))",
+      true
+    ],
+    [
+      "profile_refs",
+      "profile_refs_target_version_check",
+      "c",
+      "CHECK (((octet_length(target_version) >= 1) AND (octet_length(target_version) <= 128)))",
+      true
+    ],
+    [
+      "profile_refs",
+      "profile_refs_tenant_id_owner_fkey",
+      "f",
+      "FOREIGN KEY (tenant_id, owner) REFERENCES mdm_resource.aggregates(tenant_id, id)",
+      true
+    ],
+    [
       "requests",
       "requests_digest_check",
       "c",
@@ -491,6 +582,22 @@
       "immutable",
       "immutable_pkey",
       "CREATE UNIQUE INDEX immutable_pkey ON mdm_resource.immutable USING btree (tenant_id, owner, kind, key)",
+      true,
+      true,
+      true
+    ],
+    [
+      "profile_refs",
+      "profile_refs_live",
+      "CREATE INDEX profile_refs_live ON mdm_resource.profile_refs USING btree (tenant_id, target, target_version) WHERE (NOT archived)",
+      true,
+      true,
+      true
+    ],
+    [
+      "profile_refs",
+      "profile_refs_pkey",
+      "CREATE UNIQUE INDEX profile_refs_pkey ON mdm_resource.profile_refs USING btree (tenant_id, owner, version, target, target_version)",
       true,
       true,
       true

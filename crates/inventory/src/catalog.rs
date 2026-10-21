@@ -171,6 +171,49 @@ impl ValueType {
                     .map(|(k, v)| (k.as_str(), &v.value_type, v.required))
             }))
     }
+    /// A new business version may widen bounds or finite vocabularies without reinterpreting old values.
+    pub fn extends(&self, previous: &Self) -> bool {
+        match (self, previous) {
+            (Self::Enum { values: new }, Self::Enum { values: old }) => new.is_superset(old),
+            (
+                Self::String {
+                    max_length: new,
+                    allow_empty: empty,
+                },
+                Self::String {
+                    max_length: old,
+                    allow_empty: old_empty,
+                },
+            ) => new >= old && (!old_empty || *empty),
+            (
+                Self::Array {
+                    items: new,
+                    max_items: count,
+                },
+                Self::Array {
+                    items: old,
+                    max_items: old_count,
+                },
+            ) => count >= old_count && new.extends(old),
+            (Self::Object { properties: new }, Self::Object { properties: old }) => {
+                new.len() == old.len()
+                    && old
+                        .iter()
+                        .all(|(key, ty)| new.get(key).is_some_and(|v| v.extends(ty)))
+            }
+            (Self::Record { properties: new }, Self::Record { properties: old }) => {
+                old.iter().all(|(key, property)| {
+                    new.get(key).is_some_and(|v| {
+                        (!v.required || property.required)
+                            && v.value_type.extends(&property.value_type)
+                    })
+                }) && new
+                    .iter()
+                    .all(|(key, p)| old.contains_key(key) || !p.required)
+            }
+            _ => self == previous,
+        }
+    }
     /// Primitive/collection discriminant.
     pub fn kind(&self) -> Kind {
         match self {
@@ -334,6 +377,8 @@ pub enum Sensitivity {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct FieldDefinition {
+    /// Optional history binding; absence means this field has no time-series capability.
+    pub time_series: Option<crate::TimeSeriesBinding>,
     /// Stable field identity.
     pub key: FieldKey,
     /// Monotonic published version.
@@ -361,6 +406,7 @@ impl FieldDefinition {
     /// Validate definitions before publication or reconstruction.
     pub fn validate(&self) -> Result<()> {
         self.value_type.validate()?;
+        self.validate_time_series()?;
         if self.version == 0
             || self.version > i64::MAX as u64
             || self.sources.is_empty()

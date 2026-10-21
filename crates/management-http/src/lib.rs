@@ -59,3 +59,5 @@ pub mod webhooks;
 pub mod mail;
 
 pub mod first_use;
+
+pub mod telemetry;

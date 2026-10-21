@@ -9,12 +9,12 @@ use rss_mdm_registration_service::{device, enrollment};
 mod bindings;
 mod database;
 pub mod enroll;
-mod inventory_wire;
 pub use bindings::Bindings;
 pub use database::Store;
 mod content;
 mod operations;
 mod tasks;
+mod telemetry;
 pub fn router(state: Arc<HttpState>, envelope: boundary::Envelope) -> Router {
     boundary::wrap(routes().with_state(state), envelope)
 }
@@ -51,6 +51,7 @@ fn routes() -> Router<Arc<HttpState>> {
     Router::new()
         .route("/reports", post(report))
         .route("/reports/{id}", get(status))
+        .merge(telemetry::routes())
 }
 
 #[derive(Clone)]
@@ -269,6 +270,17 @@ async fn status_inner(
         .inventory
         .inspect_report(report.scope(), report.batch())
         .await?;
+    let (observation, projection) = projection_status(delivery)?;
+    Ok(Json(wire::ReportStatus {
+        ack: ack(id, received_at),
+        observation,
+        projection,
+    }))
+}
+
+fn projection_status(
+    delivery: rss_mdm_inventory_service::inventory_runtime::DeliveryStatus,
+) -> Result<(wire::ObservationStatus, wire::ProjectionStatus), AgentError> {
     let observation = match delivery.receipt.as_ref().map(|r| r.decision.outcome()) {
         None => wire::ObservationStatus::Pending,
         Some(rss_observation::SyncOutcome::Snapshot) => wire::ObservationStatus::Snapshot,
@@ -295,11 +307,7 @@ async fn status_inner(
             wire::ProjectionStatus::Pending
         }
     };
-    Ok(Json(wire::ReportStatus {
-        ack: ack(id, received_at),
-        observation,
-        projection,
-    }))
+    Ok((observation, projection))
 }
 
 fn json_content_type(headers: &HeaderMap) -> Result<(), AgentError> {
@@ -339,7 +347,7 @@ pub(crate) async fn authenticate(
         .map_err(|e| AgentError::Enrollment(e.code))
 }
 fn batch(input: &wire::ReportRequest) -> Result<Batch, AgentError> {
-    let definition = inventory_wire::to_domain(input.collection())?;
+    let definition = collection::wire::to_domain(input.collection())?;
     let changes = input
         .values()
         .iter()
@@ -359,7 +367,7 @@ fn batch(input: &wire::ReportRequest) -> Result<Batch, AgentError> {
             let field = definition.field(key).map_err(|_| Error::Malformed)?;
             Ok(Change::upsert(
                 Id::new(item.field.as_str()).map_err(|_| Error::Malformed)?,
-                inventory_wire::value(&projected)
+                collection::wire::value(&projected)
                     .encode(field)
                     .map_err(|_| Error::Malformed)?,
             ))
@@ -397,6 +405,8 @@ fn ack(report_id: Uuid, received_at: i64) -> wire::ReportAck {
 }
 
 pub struct HttpState {
+    pub content: Option<Arc<rss_mdm_content_service::Store>>,
+    pub telemetry: Option<Arc<rss_mdm_telemetry_service::Service>>,
     pub enrollment: Arc<rss_mdm_registration_service::agent::Service>,
     pub audit_store: Arc<rss_mdm_audit_integration::AuditStore>,
     pub access: Arc<crate::database::Store>,
@@ -455,7 +465,7 @@ async fn builtin_collections(
         epoch,
         key.as_str(),
     )?;
-    Ok(vec![inventory_wire::to_wire(
+    Ok(vec![collection::wire::to_wire(
         &collection::store::freeze_in(c, &scope, 1, &[key]).await?,
     )?])
 }

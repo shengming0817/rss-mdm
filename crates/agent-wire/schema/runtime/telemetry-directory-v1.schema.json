@@ -1,0 +1,48 @@
+{
+  "$defs": {
+    "TelemetryAssignment": {
+      "additionalProperties": false,
+      "description": "One exact authorized assignment and its endpoint capability result.",
+      "properties": {
+        "policy": {
+          "description": "Assigned policy identity.",
+          "format": "uuid",
+          "type": "string"
+        },
+        "supported": {
+          "description": "False means this endpoint must not execute or downgrade this assignment.",
+          "type": "boolean"
+        },
+        "version": {
+          "description": "Exact current immutable version.",
+          "format": "uuid",
+          "type": "string"
+        }
+      },
+      "required": [
+        "policy",
+        "version",
+        "supported"
+      ],
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Complete bounded assignment directory. A capacity failure never returns a partial list.",
+  "properties": {
+    "assignments": {
+      "description": "Only currently authorized assignments; an empty list withdraws earlier assignments.",
+      "items": {
+        "$ref": "#/$defs/TelemetryAssignment"
+      },
+      "type": "array"
+    }
+  },
+  "required": [
+    "assignments"
+  ],
+  "title": "TelemetryDirectory",
+  "type": "object",
+  "$id": "https://rss.example/mdm/agent/runtime/v1/payload/v1/telemetry-directory.schema.json"
+}

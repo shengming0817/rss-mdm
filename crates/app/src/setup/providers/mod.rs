@@ -9,3 +9,5 @@ pub mod mail;
 pub mod step_ca;
 
 pub mod webhook;
+
+pub mod telemetry;

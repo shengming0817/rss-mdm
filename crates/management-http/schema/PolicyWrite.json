@@ -5,6 +5,25 @@
       "oneOf": [
         {
           "additionalProperties": false,
+          "description": "Periodic telemetry configuration resolved at authenticated Agent check-in.",
+          "properties": {
+            "kind": {
+              "const": "telemetry_profile",
+              "type": "string"
+            },
+            "resource": {
+              "$ref": "#/$defs/ExactResourceBinding",
+              "description": "Immutable Resource profile coordinates."
+            }
+          },
+          "required": [
+            "kind",
+            "resource"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
           "description": "Native Windows credential management on the existing Agent schedule.",
           "properties": {
             "architecture": {
@@ -443,6 +462,25 @@
                 "action": {
                   "description": "Each action owns its inputs; registration never requires a fictitious resource.",
                   "oneOf": [
+                    {
+                      "additionalProperties": false,
+                      "description": "Periodic telemetry configuration resolved at authenticated Agent check-in.",
+                      "properties": {
+                        "kind": {
+                          "const": "telemetry_profile",
+                          "type": "string"
+                        },
+                        "resource": {
+                          "$ref": "#/$defs/ExactResourceBinding",
+                          "description": "Immutable Resource profile coordinates."
+                        }
+                      },
+                      "required": [
+                        "kind",
+                        "resource"
+                      ],
+                      "type": "object"
+                    },
                     {
                       "additionalProperties": false,
                       "description": "Native Windows credential management on the existing Agent schedule.",
