@@ -34,7 +34,7 @@ async fn run(expected: &str, projection: r::TelemetryProjection) -> Result<()> {
         f.register_profile(json!(["inventory.collect.v1","task.execute.v1","telemetry.collect.v1"])).await?;
         ensure!(claim_request(&f.router,Uuid::new_v4()).await?.0==StatusCode::OK);
         let (template,_,_)=f.resource().await?;
-        post(&mut f.author,&f.router,"/api/v1/asset-retention-policies",json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"key":"telemetry_test","revision":1,"rawSeconds":if expected=="postgres" {5} else {86400},"summarySeconds":if expected=="postgres" {10} else {172800},"restoreSeconds":if expected=="postgres" {5} else {3600}}})).await?;
+        post(&mut f.author,&f.router,"/api/v1/asset-retention-policies",json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"key":"telemetry_test","revision":1,"rawSeconds":if expected=="postgres" {30} else {86400},"summarySeconds":if expected=="postgres" {60} else {172800},"restoreSeconds":if expected=="postgres" {30} else {3600}}})).await?;
         let mut field=rss_mdm_inventory::builtin::fields().into_iter().find(|f|f.key.as_str()=="custom.corporate_agent.healthy").unwrap();
         field.version+=1;
         field.time_series=Some(rss_mdm_inventory::TimeSeriesBinding {kind:rss_mdm_inventory::TelemetryKind::State,value_path:vec![],interval_start_path:None,dimensions:Default::default(),aggregations:[rss_mdm_inventory::TelemetryAggregation::Timeline,rss_mdm_inventory::TelemetryAggregation::Coverage].into(),retention:rss_mdm_inventory::RetentionReference {key:"telemetry_test".into(),revision:1},max_resources:1});
@@ -50,7 +50,7 @@ async fn run(expected: &str, projection: r::TelemetryProjection) -> Result<()> {
         ensure!(upload(&f.author,&f.router,profile_id,&bytes).await?==StatusCode::CREATED);
         resource(&mut f.author,&f.router,profile_id,2,json!({"action":"activate","version":"v1"})).await?;
         // The immutable Profile must remain publishable after a compatible catalog upgrade.
-        let mut upgraded=field.clone();upgraded.version+=1;upgraded.searchable=!upgraded.searchable;
+        let mut upgraded=field.clone();upgraded.version+=1;upgraded.sources.insert(rss_mdm_inventory::Source::AgentOsquery,1);
         put(&mut f.author,&f.router,"/api/v1/asset-fields/custom.corporate_agent.healthy",json!({"operationId":Uuid::new_v4(),"expectedRevision":field.version,"input":{"action":"put","definition":upgraded}})).await?;
         let scope=Uuid::new_v4();
         let secondary=if expected=="postgres" && projection==r::TelemetryProjection::Both {Some(secondary_peer(&f.base).await?)} else {None};

@@ -93,7 +93,17 @@ pub(super) async fn interrupt_after_backend_write(
     history_is_unique(&mut f.author, &f.router, &body).await?;
     ensure!(pg(&format!("SELECT count(*) FROM mdm_access.collection_runs WHERE tenant_id='{}' AND id='{observation}'",case_tenant()))?.trim()=="0","current effect committed despite local interruption");
     // Make this series genuinely due while its accepted batch is still unsettled.
-    let due = original["observations"][0]["observedAt"].as_i64().unwrap() + 1_000_000;
+    let due = original["observations"][0]["observedAt"].as_i64().unwrap() + 26_000_000;
+    // Intake must occur inside the raw window. Only then does elapsed wall time
+    // make the older sample expire, while the two recent samples remain inside
+    // the cutoff fixed by this due time.
+    tokio::time::timeout(Duration::from_secs(40), async {
+        while f.planning.clock.unix_seconds()? * 1_000_000 < due {
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+        Ok::<_, anyhow::Error>(())
+    })
+    .await??;
     let target = retention_target();
     ensure!(
         pg(&format!(
