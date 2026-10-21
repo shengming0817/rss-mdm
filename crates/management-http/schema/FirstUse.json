@@ -211,7 +211,6 @@
           "external_certificate",
           "provider_credential",
           "business_configuration",
-          "signed_package",
           "device_generated"
         ],
         "type": "string"

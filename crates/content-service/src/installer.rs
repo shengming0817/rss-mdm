@@ -412,7 +412,7 @@ fn toc_budget(xml: &[u8], max_entries: usize) -> Result<(), Error> {
                     return Err(invalid());
                 }
                 let tag = match element.name().as_ref() {
-                    b"file" => {
+                    "file" => {
                         entries += 1;
                         if entries > max_entries {
                             return Err(invalid());
@@ -420,12 +420,12 @@ fn toc_budget(xml: &[u8], max_entries: usize) -> Result<(), Error> {
                         files.push((0, 0));
                         Tag::File
                     }
-                    b"name" if elements.last() == Some(&Tag::File) => Tag::Name,
+                    "name" if elements.last() == Some(&Tag::File) => Tag::Name,
                     _ => Tag::Other,
                 };
                 elements.push(tag);
             }
-            Event::Empty(element) if element.name().as_ref() == b"file" => {
+            Event::Empty(element) if element.name().as_ref() == "file" => {
                 entries += 1;
                 if entries > max_entries {
                     return Err(invalid());

@@ -479,6 +479,22 @@ async fn fixed_packages_and_configurations_activate_beyond_self_quota() -> Resul
     let f = fixture().await?;
     let mut user = f.user.clone();
     let windows = publish(&f, &mut user, true).await?;
+    let settings = user
+        .call(&f.router, Method::GET, "/api/v1/settings/catalog", None)
+        .await?;
+    ensure!(settings.0 == StatusCode::OK);
+    let capability = settings.1["items"]
+        .as_array()
+        .context("settings items")?
+        .iter()
+        .find(|item| item["id"] == "agent-package")
+        .context("package capability")?;
+    ensure!(
+        capability["ready"] == true
+            && capability["configuredCount"] == 1
+            && capability["lifecycle"] == "business_configuration"
+    );
+
     let macos = publish(&f, &mut user, false).await?;
     let mut authority = authority::Authority::open().await?;
     let authority_resources = std::mem::take(&mut authority.resources);
