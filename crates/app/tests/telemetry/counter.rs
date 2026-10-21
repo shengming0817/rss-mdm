@@ -237,42 +237,7 @@ pub(super) async fn quality_and_sensitive_reads(f: &mut Fixture) -> Result<()> {
         );
         published(&f.router, &receipt).await?;
         if offset == 1 {
-            let path = "/api/v1/agent/runtime/telemetry/batches";
-            let replay = agent_call(
-                &f.router,
-                Method::POST,
-                path,
-                Some(case_credential()),
-                Some(body.clone()),
-            )
-            .await?;
-            ensure!(replay.0 == StatusCode::ACCEPTED && replay.1["replayed"] == true);
-            let mut changed = body.clone();
-            changed["observations"][0]["values"]["custom.telemetry_counter"]["value"]["value"]["vendor_note"]
-                ["value"] = json!("changed note");
-            ensure!(
-                agent_call(
-                    &f.router,
-                    Method::POST,
-                    path,
-                    Some(case_credential()),
-                    Some(changed.clone())
-                )
-                .await?
-                .0 == StatusCode::CONFLICT
-            );
-            changed["batchId"] = json!(Uuid::new_v4());
-            ensure!(
-                agent_call(
-                    &f.router,
-                    Method::POST,
-                    path,
-                    Some(case_credential()),
-                    Some(changed)
-                )
-                .await?
-                .0 == StatusCode::CONFLICT
-            );
+            extension_replay(f, &body).await?;
         }
         if offset == 2 {
             let latest=post(&mut f.author,&f.router,"/api/v1/telemetry/history",json!({"device":case_device_id(),"field":field.key,"resource":"device","startMicros":start,"endMicros":start+10_000_000,"maxPoints":64,"mode":"latest","after":null})).await?;
@@ -348,5 +313,45 @@ pub(super) async fn quality_and_sensitive_reads(f: &mut Fixture) -> Result<()> {
             "sensitive read permitted: {path}"
         );
     }
+    Ok(())
+}
+
+async fn extension_replay(f: &Fixture, body: &Value) -> Result<()> {
+    let path = "/api/v1/agent/runtime/telemetry/batches";
+    let replay = agent_call(
+        &f.router,
+        Method::POST,
+        path,
+        Some(case_credential()),
+        Some(body.clone()),
+    )
+    .await?;
+    ensure!(replay.0 == StatusCode::ACCEPTED && replay.1["replayed"] == true);
+    let mut changed = body.clone();
+    changed["observations"][0]["values"]["custom.telemetry_counter"]["value"]["value"]["vendor_note"]
+        ["value"] = json!("changed note");
+    ensure!(
+        agent_call(
+            &f.router,
+            Method::POST,
+            path,
+            Some(case_credential()),
+            Some(changed.clone())
+        )
+        .await?
+        .0 == StatusCode::CONFLICT
+    );
+    changed["batchId"] = json!(Uuid::new_v4());
+    ensure!(
+        agent_call(
+            &f.router,
+            Method::POST,
+            path,
+            Some(case_credential()),
+            Some(changed)
+        )
+        .await?
+        .0 == StatusCode::CONFLICT
+    );
     Ok(())
 }
