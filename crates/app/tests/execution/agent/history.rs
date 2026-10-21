@@ -1,5 +1,6 @@
+use crate::audit_test_support::audit_records;
 use crate::test_support::agent_execution::*;
-use crate::test_support::*;
+use crate::test_support::{process::*, runtime::*, *};
 use anyhow::Context;
 use std::collections::BTreeSet;
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
@@ -165,7 +166,7 @@ async fn policy_run_history_cursor_summary_and_detail() -> Result<()> {
     ));
     result?;
     cleanup?;
-    crate::test_support::stop_worker(stack).await?;
+    crate::test_support::runtime::stop_worker(stack).await?;
     Ok(())
     }).await
 }
@@ -261,7 +262,7 @@ async fn sensitive_collection_run_details_reauthorize_both_read_paths() -> Resul
             "stale sensitive grant survived withdrawal"
         );
     }
-    crate::test_support::stop_worker(stack).await?;
+    crate::test_support::runtime::stop_worker(stack).await?;
     Ok(())
     }).await
 }

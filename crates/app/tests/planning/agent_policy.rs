@@ -1,5 +1,6 @@
+use crate::audit_test_support::audit_records;
 use crate::test_support::agent_execution::*;
-use crate::test_support::*;
+use crate::test_support::{agent::*, http::*, process::*, runtime::*, *};
 fn business_event(operation: Uuid) -> Result<String> {
     let operation = operation.to_string();
     let records = audit_records()?;
@@ -243,7 +244,7 @@ async fn explicit_rerun_deduplicates() -> Result<()> {
     task_event(&router, &again, json!({"kind":"received"})).await?;
     task_event(&router, &again, json!({"kind":"start"})).await?;
     task_event(&router,&again,json!({"kind":"result","exitCode":0,"quality":"complete","output":{"version":"1.2","healthy":true}})).await?;
-    crate::test_support::stop_worker(stack).await?;
+    crate::test_support::runtime::stop_worker(stack).await?;
     Ok(())
     }).await
 }
@@ -309,7 +310,7 @@ async fn policy_scan_reaches_late_match() -> Result<()> {
     task_event(router, &task, json!({"kind":"received"})).await?;
     task_event(router, &task, json!({"kind":"start"})).await?;
     task_event(router,&task,json!({"kind":"result","exitCode":0,"quality":"complete","output":{"version":"1.2","healthy":true}})).await?;
-    crate::test_support::stop_worker(stack).await?;
+    crate::test_support::runtime::stop_worker(stack).await?;
     Ok(())
     }).await
 }
@@ -538,7 +539,7 @@ async fn script_preparation_is_shared_without_preview_effects() -> Result<()> {
     let hex: String = digest.iter().map(|b| format!("{b:02x}")).collect();
     let path = std::path::Path::new(fixture.base["content"]["storage"]["directory"].as_str().unwrap())
         .join(case_tenant())
-        .join(crate::test_support::pg(&format!("SELECT document->'value'->'pieces'->0->'coordinate'->>'id' FROM mdm_content.manifests WHERE tenant_id='{}' AND class='artifact' AND encode(sha256,'hex')='{}'",case_tenant(),hex))?.trim());
+        .join(crate::test_support::process::pg(&format!("SELECT document->'value'->'pieces'->0->'coordinate'->>'id' FROM mdm_content.manifests WHERE tenant_id='{}' AND class='artifact' AND encode(sha256,'hex')='{}'",case_tenant(),hex))?.trim());
     std::fs::write(&path, "x".repeat(bytes.len()))?;
     let rejected = reject_script_at_all_entrances(
         &mut fixture,
@@ -667,7 +668,7 @@ async fn registered_script_eligibility_gates_preview_and_automatic() -> Result<(
     .await?;
     ensure!(preview["items"][0]["taskAdmission"]["state"] == "eligible");
     ensure!(script_effects()? == before);
-    crate::test_support::stop_worker(stack).await?;
+    crate::test_support::runtime::stop_worker(stack).await?;
     Ok(())
     }).await
 }

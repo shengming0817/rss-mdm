@@ -454,7 +454,7 @@ async fn associated_context_maps_before_exclusions_and_missing_channels_recover(
 #[ignore = "MODULE=planning.group_scope: Agent health selects the associated original MDM configuration target"]
 async fn agent_health_drives_mdm_configuration_assignment() -> anyhow::Result<()> {
     use crate::test_support::planning_http::*;
-    use crate::test_support::*;
+    use crate::test_support::{http::*, process::*, runtime::*, *};
     let mut fixture = authority::Authority::open().await?;
     let fixture_resources = std::mem::take(&mut fixture.resources);
     fixture_resources.finish(async {

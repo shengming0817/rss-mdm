@@ -92,7 +92,7 @@ async fn expired_queue_does_not_starve_current_collection() -> Result<()> {
     let (peer, device) = f.ready_local_peer().await?;
     let owner = f.policy_worker().await?;
     let result = f.queue_fairness(&peer).await;
-    crate::test_support::stop_worker(Some(owner)).await?;
+    crate::test_support::runtime::stop_worker(Some(owner)).await?;
     result?;
     drop(device);
     f.close().await
@@ -207,7 +207,7 @@ async fn checkin_sweep_coalesces_and_resumes_after_interrupted_item() -> Result<
     }).await??;
     blocker.close().await?;
     pg.close().await?;
-    crate::test_support::stop_worker(Some(owner)).await?;
+    crate::test_support::runtime::stop_worker(Some(owner)).await?;
     drop(device);
     f.close().await
 }

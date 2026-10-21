@@ -3,7 +3,7 @@
     reason = "test scenarios retain distinct authorization, failure and recovery assertions"
 )]
 use crate::test_support::software::{Fixture, create_software_version, write};
-use crate::test_support::*;
+use crate::test_support::{http::*, *};
 async fn private_formats(
     user: &mut Browser,
     router: &Router,

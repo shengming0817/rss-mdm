@@ -1,5 +1,6 @@
+use crate::audit_test_support::audit_count;
 use crate::test_support::planning_http::*;
-use crate::test_support::*;
+use crate::test_support::{http::*, process::*, runtime::*, *};
 #[tokio::test]
 #[ignore = "make t2 MODULE=authorization.rules"]
 async fn each_route_requires_its_exact_capability() -> Result<()> {

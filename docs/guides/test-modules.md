@@ -1,6 +1,6 @@
 # 测试模块
 
-T1 留在能力 crate，验证模型、codec、纯文件逻辑和预算边界。T2 按被验证的能力与消费接缝组织，目录、执行和 affected 使用同一个模块 ID。唯一可执行描述是 [`hack/t2_registry.py`](../../hack/t2_registry.py)：每项声明 Cargo target/Rust 命名空间或 Python 场景、生产输入、测试文件、实际共用的 helper、依赖、数据库生命周期和数据范围。测试函数由预构建 target 的 nextest listing 发现，不另存函数名名册。
+T1 留在能力 crate，验证模型、codec、纯文件逻辑和预算边界。T2 按被验证的能力与消费接缝组织，目录、执行和 affected 使用同一个模块 ID。唯一可执行描述是 [`hack/t2_registry.py`](../../hack/t2_registry.py)：每项声明 Cargo target/Rust 命名空间或 Python 场景、生产输入、测试文件、实际共用的 helper、运行所需材料、数据库生命周期和数据范围。测试函数由预构建 target 的 nextest listing 发现，不另存函数名名册。
 
 ```sh
 make ci-plan CI_BASE=origin/develop
@@ -65,21 +65,21 @@ make ci-full
 
 App 的测试实现统一放在 `crates/app/tests/`，按业务 owner 分目录；`src/` 只保留 `cfg(test)` 接入和必要测试钩子。现有 Rust 命名空间与 MODULE ID 保持独立，不要求物理路径包含 `t2`。目录按当前 owner 维护，不由历史拆分方式决定测试保留数量。
 
-App 的 `tests/support` 仅在测试编译中可见，复用 Browser、真实身份与授权、合法设备与事实、已发布成员前置、只读审计查询和协议客户端。准备函数不运行另一模块的业务矩阵。Planning、InventoryRuntime 和 Assets 的专用准备代码归各自测试目录；仅实际跨 owner 消费的素材放公共 support。软件 artifact peer、definition 和 Git 素材单源位于 `tests/support/software`；组件测试不依赖 App，不为测试扩大生产公开 API。
+App 的 `tests/support` 仅在测试编译中可见，复用 Browser、真实身份与授权、合法设备与事实、已发布成员前置、只读审计查询和协议客户端。准备函数不运行另一模块的业务矩阵。公共 helper 入口只持有模块声明与导入，由现有编译及测试发现检查装配。实现文件只登记直接测试调用；准备 helper 的间接调用不展开为其业务调用方，新增 fixture 导出不触发全部身份业务。日常选择只匹配改动输入，不沿测试、helper 或业务依赖递归展开。定期完整 T2 沿用既有安排。Planning、InventoryRuntime 和 Assets 的专用准备代码归各自测试目录；仅实际跨 owner 消费的素材放公共 support。软件 artifact peer、definition 和 Git 素材单源位于 `tests/support/software`；组件测试不依赖 App，不为测试扩大生产公开 API。
 
 Identity 用户组与设备 Group 各自归属。Assets 验证资产输入，Planning 验证成员发布如何进入 Scope/Policy，Compliance 验证适用性/版本失效，frequency 验证入离组触发。不同消费接缝各自保留授权、事务和恢复断言。
 
 ## affected 与执行证据
 
-选择器对 merge-base、已提交差异、工作区修改、未跟踪和删除输入取并集。独立 T1 文件只贡献 Cargo 检查；独立 T2 文件只选择自身；helper 变化只选择实际消费者；生产变化按登记的输入与消费接缝选择。模块被选中不会继续递归扩大。登记描述与选择机制分离，基线完整版本树仅导出描述，不运行历史 selector；执行描述和业务输入变化选模块，依赖归属注释等机制变化由工具行为测试证明，实际依赖变化合并旧新消费者。混合职责的生产文件按整个文件选择，不做 Rust 语义 diff。发现、调度、日志和汇总由工具测试持有；真实执行、隔离或故障变化在同一 registry 的 `REPRESENTATIVE_INPUTS` 声明最小现有模块集合，共享 fixture/profile 输入按真实消费者选择。可识别 rename/copy 合并两端输入。未知输入、不可用基线、异常或非法选择结果必须失败，由实现者修复归属或分析问题；不通过隐式全量、静默跳过或手工 MODULE 掩盖。
+选择器对 merge-base、已提交差异、工作区修改、未跟踪和删除输入取并集。独立 T1 文件只贡献 Cargo 检查；独立 T2 文件只选择自身；helper 变化只选择实际消费者；生产变化按登记的输入与消费接缝选择。模块被选中不会继续递归扩大。登记描述与选择机制分离，基线完整版本树仅导出描述，不运行历史 selector；执行描述和业务输入变化选模块，选择机制变化由现有工具行为测试证明。manifest/lock 仅选择 Cargo 检查，不推导业务 T2。混合职责的生产文件按整个文件选择，不做 Rust 语义 diff。发现、调度、日志和汇总由工具测试持有；真实执行、隔离或故障变化在同一 registry 的 `REPRESENTATIVE_INPUTS` 声明最小现有模块集合，共享 fixture/profile 输入按真实消费者选择。可识别 rename/copy 合并两端输入。未知输入、不可用基线、异常或非法选择结果必须失败，由实现者修复归属或分析问题；不通过隐式全量、静默跳过或手工 MODULE 掩盖。
 
 模块职责变化使用两版 registry 和实际文件/target 事实。`removedModules` 记录消失的模块、载体删除或当前 T1/T2 归属；不维护 `replaces`、旧名称或永久退出名册。仍存在或移动后的测试文件必须有当前测试 owner，仅 support/production 通配不能承接。Python scenario 删除后，其执行文件也须删除或由当前模块直接承接。需求退出依据在 issue/PR，机器检查不替代业务判断。
 
-`ownershipChecks` 是从本次删除或 build/selector/child 变化派生的临时发现计划。Cargo metadata 确认 target 是否仍存在；现存 target 按当前 features 用 nextest 编译/发现，检查每个 ignored 测试的唯一当前 owner，零 ignored 允许退出。目标已删除无需构建，构建或发现失败不能冒充删除成功。`make ci` 与 affected T2 入口执行检查，即使业务模块空选也不跳过；不启动数据库、Identity 或业务测试函数。`ci-plan` 仅展示要求，未执行发现不表示校验通过。
+`ownershipChecks` 是从本次删除、build/selector/child 变化或纯测试装配入口变化派生的临时发现计划。Cargo metadata 确认 target 是否仍存在；现存 target 按当前 features 用 nextest 编译/发现，检查每个 ignored 测试的唯一当前 owner，零 ignored 允许退出。目标已删除无需构建，构建或发现失败不能冒充删除成功。`make ci` 与 affected T2 入口执行检查，即使业务模块空选也不跳过；不启动数据库、Identity 或业务测试函数。`ci-plan` 仅展示要求，未执行发现不表示校验通过。
 
 迁移列表与执行机制分离。局部 schema 选择必要安装/catalog 和真实数据、事务、权限消费者，角色 SQL 按角色使用方选择；只有确有广泛行为影响的机制才扩大。仅登记说明或输入归属元数据变化执行工具验证；真实输入变化合并旧新消费者，执行策略变化选择所属模块。日常 affected 不叠加定期完整 T2，周期回归沿用既有安排。
 
-Cargo 反向依赖决定编译/Clippy/T1/rustdoc 范围，T2 不继承整个 Cargo 闭包。成功输出包含 `status=selected`、`cargo.mode/packages`、`t2.mode/modules`、`toolTests`、`reasons`、`removedModules` 和 `ownershipChecks`；失败输出为 `status=failed` 与 `error`，进程非零退出。Resource `behavior.rs` 只选 `resource.persistence`；Content T1 和 Scope 模型测试不推荐 T2；Content Range 生产输入选择 HTTP 和两类 Agent task-content 消费接缝。相应 must-select/must-not-select 由工具行为测试固定。
+Cargo 反向依赖决定编译/Clippy/T1/rustdoc 范围，T2 不继承 Cargo 闭包，manifest/lock 变化不自动推荐业务 T2；依赖升级按任务通过 `MODULE` 显式运行必要专项。成功输出包含 `status=selected`、`cargo.mode/packages`、`t2.mode/modules`、`toolTests`、`reasons`、`removedModules` 和 `ownershipChecks`；失败输出为 `status=failed` 与 `error`，进程非零退出。Resource `behavior.rs` 只选 `resource.persistence`；Content T1 和 Scope 模型测试不推荐 T2；Content Range 生产输入选择 HTTP 和两类 Agent task-content 消费接缝。相应 must-select/must-not-select 由工具行为测试固定。
 
 `JOBS` 默认 2，只控制同时运行的独立 case 数量，预算覆盖准备、执行和清理；模块归属不构成互斥。数据库数量由状态影响范围决定，不按模块或 worker 分库：
 

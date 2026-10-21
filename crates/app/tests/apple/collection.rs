@@ -279,7 +279,7 @@ async fn published_native_template_uses_policy_and_direct_collection_progress() 
     .await??;
         Ok::<_, anyhow::Error>(())
     }.await;
-    let automation_shutdown = crate::test_support::stop_worker(Some(owner)).await;
+    let automation_shutdown = crate::test_support::runtime::stop_worker(Some(owner)).await;
     drop(device);
     let fixture_shutdown = f.close().await;
     result?;
@@ -315,7 +315,7 @@ async fn withdrawn_template(dispatched: bool, withdrawal: &str) -> Result<()> {
     let definition = f.collection_template().await?;
     let owner = f.policy_worker().await?;
     let queued = f.queue_collection(&definition, &peer).await;
-    crate::test_support::stop_worker(Some(owner)).await?;
+    crate::test_support::runtime::stop_worker(Some(owner)).await?;
     let (policy, run) = queued?;
     if dispatched {
         ensure!(peer.next_collection().await?.0 == run);
@@ -514,7 +514,7 @@ async fn user_collection_cannot_cross_device_or_other_user_namespace() -> Result
         result.1["asset"]["run"]["fields"][0]["scope"]
             == json!({"kind":"apple_user","identity":user})
     );
-    crate::test_support::stop_worker(Some(worker)).await?;
+    crate::test_support::runtime::stop_worker(Some(worker)).await?;
     drop(device);
     f.close().await
 }

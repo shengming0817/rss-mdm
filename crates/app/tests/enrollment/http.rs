@@ -2,7 +2,9 @@
     clippy::cognitive_complexity,
     reason = "test scenarios preserve distinct recovery assertions"
 )]
+use crate::audit_test_support::audit_count;
 use crate::test_support::*;
+use crate::test_support::{http::Browser, http::set_device_grants};
 pub(crate) async fn enrollment_matrix(router: &Router, browser: &mut Browser) -> Result<()> {
     let issue = "/api/v1/enrollments";
     set_device_grants(

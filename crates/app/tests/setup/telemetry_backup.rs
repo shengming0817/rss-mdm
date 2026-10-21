@@ -31,7 +31,7 @@ pub(crate) async fn roundtrip(
         lineage: [2; 16],
     };
     crate::migration::verify_identity(&mut c, &installation).await?;
-    let tenant = crate::test_support::case_tenant().parse()?;
+    let tenant = crate::test_support::runtime::case_tenant().parse()?;
     let directory = root.join("installation");
     std::fs::create_dir(&directory)?;
     std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o700))?;

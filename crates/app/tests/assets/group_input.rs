@@ -6,7 +6,7 @@ use super::*;
 async fn collection_matrix(browser: &mut Browser, router: &Router, base: &Value) -> Result<()> {
     use crate::inventory_runtime::test_support::{report, start, wait_ready_projection};
     let (registration, _) = seed_source("tie-a", "mdm", "mdm.windows", "seed")?;
-    let locator = crate::test_support::secret("channel-proof-121")
+    let locator = crate::test_support::runtime::secret("channel-proof-121")
         .iter()
         .map(|b| format!("{b:02x}"))
         .collect::<String>();
@@ -141,7 +141,7 @@ async fn collection_matrix(browser: &mut Browser, router: &Router, base: &Value)
             .any(|d| d["explanations"][0]["outcome"] == "unsupported")
     );
     ensure!(ok(browser, router, Method::GET, &group, None).await?["group"]["memberCount"] == 0);
-    crate::test_support::stop_worker(owner).await?;
+    crate::test_support::runtime::stop_worker(owner).await?;
     runtime.close_fixture().await?;
     access.close().await;
     Ok(())

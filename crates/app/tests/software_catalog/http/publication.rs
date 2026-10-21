@@ -1,7 +1,7 @@
 mod brew;
 use crate::test_support::software::write;
 use crate::test_support::software_execution::{self as execution, Platform};
-use crate::test_support::*;
+use crate::test_support::{agent::*, http::*, runtime::*, *};
 use sha2::{Digest, Sha256};
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
@@ -571,7 +571,7 @@ async fn publication_http_authority_receipts_and_public_native_binding() -> Resu
         server.state.lock().unwrap().posts == 0 && server.state.lock().unwrap().deletes == 0,
         "owned source used external writes"
     );
-    crate::test_support::stop_worker(stack).await?;
+    crate::test_support::runtime::stop_worker(stack).await?;
     Ok(())
 }
 

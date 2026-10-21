@@ -3,7 +3,7 @@
     reason = "test scenarios retain distinct authorization, failure and recovery assertions"
 )]
 //! Real enterprise software Policy through Agent Offer, content, Start and detection.
-use crate::test_support::*;
+use crate::test_support::{agent::*, http::*, runtime::*, *};
 use sha2::{Digest, Sha256};
 
 pub(crate) fn context(platform: Platform) -> Value {
@@ -21,13 +21,13 @@ pub(crate) fn case_device() -> &'static str {
 }
 pub(crate) fn case_windows_device() -> &'static str {
     crate::test_support::agent::device(
-        &crate::test_support::credential("windows-software"),
+        &crate::test_support::runtime::credential("windows-software"),
         crate::test_support::case::name("windows-software-deployment-device"),
     )
 }
 pub(crate) fn case_credential() -> &'static str {
     static VALUE: std::sync::OnceLock<String> = std::sync::OnceLock::new();
-    VALUE.get_or_init(|| crate::test_support::credential("software_execution-CREDENTIAL"))
+    VALUE.get_or_init(|| crate::test_support::runtime::credential("software_execution-CREDENTIAL"))
 }
 
 pub(crate) async fn agent(
@@ -172,7 +172,7 @@ pub(crate) enum Platform {
 /// A real authorized session, one Agent/Scope, and an authorized dependency/root pair.
 /// Action assertions belong to callers; only the requested platform is prepared.
 pub(crate) struct Fixture {
-    pub(crate) resources: super::Resources,
+    pub(crate) resources: super::runtime::Resources,
     pub(crate) source_snapshot: Value,
     pub(crate) dependency: Uuid,
     pub(crate) dependency_digest: Value,
@@ -227,7 +227,7 @@ impl Fixture {
         prepare_dependency: bool,
         prepare_root: bool,
     ) -> Result<Self> {
-        let (resources, mut fixture) = crate::test_support::Resources::build(move |resources| Box::pin(async move {
+        let (resources, mut fixture) = crate::test_support::runtime::Resources::build(move |resources| Box::pin(async move {
         let setup_guard = super::software::content_setup_guard().await?;
         let access = database(&base).await?;
         let audit = access
@@ -288,7 +288,7 @@ impl Fixture {
                 case_windows_device(),
                 "windows",
                 "x86_64",
-                crate::test_support::credential("windows-software"),
+                crate::test_support::runtime::credential("windows-software"),
             ),
         };
         let registration=crate::test_support::agent::seed_profile(&base,execution.service.clone(),&credential,_device,json!({"capabilities":capabilities,"platform":platform_name,"architecture":architecture,"executionContext":execution_context})).await?;
@@ -469,7 +469,7 @@ pub(crate) async fn worker(
     }
 
     let base = base.clone();
-    let (resources, (config, worker)) = super::Resources::build(move |resources| {
+    let (resources, (config, worker)) = super::runtime::Resources::build(move |resources| {
         Box::pin(async move {
             let config: Config = serde_json::from_value(base.clone())?;
             let mut authority = authority::Authority::from_config(base.clone()).await?;
@@ -514,7 +514,7 @@ pub(crate) async fn worker(
 pub(crate) async fn worker_for(
     config: &Config,
     worker: Arc<rss_mdm_execution_service::ExecutionService>,
-    mut resources: super::Resources,
+    mut resources: super::runtime::Resources,
 ) -> Result<Option<rss_runtime::ShutdownStack>> {
     if !crate::test_support::case::owns_worker() {
         return Ok(None);

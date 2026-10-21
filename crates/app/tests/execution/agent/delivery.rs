@@ -2,7 +2,7 @@ use anyhow::Context;
 #[path = "windows_assets.rs"]
 mod windows_assets;
 use crate::test_support::agent_execution::*;
-use crate::test_support::*;
+use crate::test_support::{agent::*, process::*, runtime::*, *};
 use ring::signature::KeyPair;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
@@ -324,9 +324,9 @@ async fn offer_start_result_replay_and_inventory_projection() -> Result<()> {
             == true,
         "detail: {detail}"
     );
-    crate::test_support::stop_worker(inventory).await?;
+    crate::test_support::runtime::stop_worker(inventory).await?;
     runtime.close_fixture().await?;
-    crate::test_support::stop_worker(stack).await?;
+    crate::test_support::runtime::stop_worker(stack).await?;
     Ok(())
     }).await
 }
@@ -399,7 +399,7 @@ async fn chunked_results_require_complete_output_and_preserve_attempt_identity()
     let detail = fixture.author.call(&fixture.router, Method::GET, &format!("/api/v1/policies/{policy}/runs/{task_id}"), None).await?;
     ensure!(detail.0 == StatusCode::OK && detail.1["taskId"] == task_id);
     ensure!(detail.1["result"]["output"]["version"] == "1.2" && detail.1["result"]["output"]["healthy"] == true);
-    crate::test_support::stop_worker(stack).await?;
+    crate::test_support::runtime::stop_worker(stack).await?;
     Ok(())
     }).await
 }
@@ -482,7 +482,7 @@ async fn collection_structure_budget_precedes_partial_field_acceptance() -> Resu
             ensure!(pg(&format!("SELECT result->>'trusted' FROM mdm_commands.action_runs WHERE tenant_id='{}' AND id='{id}'",case_tenant()))?.trim()=="false");
         }
     }
-    crate::test_support::stop_worker(stack).await?;
+    crate::test_support::runtime::stop_worker(stack).await?;
     Ok(())
     }).await
 }
@@ -1159,9 +1159,9 @@ async fn native_inventory_case(
         }
         ensure!(pg(&format!("SELECT count(*) FROM mdm_commands.action_runs r JOIN mdm_policy.versions v ON(v.tenant_id,v.id)=(r.tenant_id,r.policy_version) WHERE r.tenant_id='{}' AND v.action_kind='execution'",case_tenant()))?.trim()=="0");
     }
-    crate::test_support::stop_worker(inventory).await?;
+    crate::test_support::runtime::stop_worker(inventory).await?;
     runtime.close_fixture().await?;
-    crate::test_support::stop_worker(worker).await?;
+    crate::test_support::runtime::stop_worker(worker).await?;
     Ok(())
     }).await
 }
@@ -1424,9 +1424,9 @@ async fn macos_user_applications_and_brew_keep_other_users_after_complete_empty(
             }
         }
     }
-    crate::test_support::stop_worker(inventory).await?;
+    crate::test_support::runtime::stop_worker(inventory).await?;
     runtime.close_fixture().await?;
-    crate::test_support::stop_worker(worker).await?;
+    crate::test_support::runtime::stop_worker(worker).await?;
     Ok(())
     }).await
 }
@@ -1545,7 +1545,7 @@ async fn certificate_scope_case(macos: bool) -> Result<()> {
             let fact=facts.iter().find(|f|f["scope"]==*scope).context("missing store")?;
             ensure!(fact["value"]["value"].as_array().unwrap().len()==if i==1 {0}else{1},"unrelated certificate scope replaced");
         }
-        crate::test_support::stop_worker(inventory).await?;runtime.close_fixture().await?;crate::test_support::stop_worker(worker).await?;
+        crate::test_support::runtime::stop_worker(inventory).await?;runtime.close_fixture().await?;crate::test_support::runtime::stop_worker(worker).await?;
         Ok(())
     }).await
 }

@@ -2,7 +2,7 @@
     clippy::cognitive_complexity,
     reason = "test scenarios preserve distinct recovery assertions"
 )]
-use crate::test_support::*;
+use crate::test_support::{agent::*, http::*, process::*, runtime::*, *};
 #[tokio::test]
 #[ignore = "MODULE=agent.reports: durable intake, projection, capacity, retention and ACK recovery"]
 async fn durable_reports_and_projection() -> Result<()> {
@@ -224,7 +224,7 @@ async fn durable_reports_and_projection() -> Result<()> {
     wait_agent_status(router, credential, report_id, "snapshot", "applied").await?;
     ensure!(pg(&format!("SELECT count(*) FROM mdm_access.collection_runs WHERE tenant_id='{TENANT}' AND source='agent.builtin' AND id='{report_id}' AND NOT delivery_pending", TENANT = case_tenant()))?.trim() == "1");
     ensure!(pg(&format!("SELECT string_agg(field||'='||coalesce(value::jsonb->>'value',''),',' ORDER BY field) FROM mdm.inventory WHERE tenant_id='{TENANT}' AND batch_id='{report_id}'", TENANT = case_tenant()))?.trim() == "channel.mdm.enrollment=unenrolled");
-    crate::test_support::stop_worker(owner).await?;
+    crate::test_support::runtime::stop_worker(owner).await?;
     runtime.close_fixture().await?;
 
     pg(&format!(
@@ -300,7 +300,7 @@ async fn durable_reports_and_projection() -> Result<()> {
     wait_agent_status(router, credential, partial_id, "snapshot", "applied").await?;
     wait_agent_status(router, credential, failed_id, "snapshot", "applied").await?;
     ensure!(pg(&format!("SELECT count(*) FROM mdm.inventory WHERE tenant_id='{TENANT}' AND batch_id IN ('{partial_id}','{failed_id}')", TENANT = case_tenant()))?.trim() == "1");
-    crate::test_support::stop_worker(owner).await?;
+    crate::test_support::runtime::stop_worker(owner).await?;
     runtime.close_fixture().await?;
     for (number, fault, committed) in [
         (1, rss_audit_postgres::PgFault::BeforeCommitPending, false),

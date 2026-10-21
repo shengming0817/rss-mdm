@@ -1,4 +1,4 @@
-use super::*;
+use super::{process::*, runtime::*, *};
 use uuid::Uuid;
 pub(crate) fn seed_source(
     device: &str,
@@ -62,7 +62,7 @@ pub(crate) async fn completed_windows_run(base: &Value, device: &str) -> Result<
     let (registration, _) = seed_source(device, "mdm", "mdm.windows", "fixture")?;
     let proof =
         crate::device::test_support::proof(case_tenant(), rss_mdm_inventory::Channel::Mdm, 124);
-    let locator = crate::test_support::secret("channel-proof-124")
+    let locator = crate::test_support::runtime::secret("channel-proof-124")
         .iter()
         .map(|b| format!("{b:02x}"))
         .collect::<String>();

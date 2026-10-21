@@ -1,5 +1,6 @@
+use crate::audit_test_support::{audit_count, audit_records};
 use crate::test_support::agent_execution::*;
-use crate::test_support::*;
+use crate::test_support::{agent::*, http::*, process::*, runtime::*, *};
 async fn call(
     f: &Fixture,
     method: Method,
@@ -237,7 +238,7 @@ async fn targeted_invocation_binds_parameters_identity_frequency_and_result() ->
                 "consumed once-per-version remained in directory"
             );
             ensure!(run_count(id)?.trim() == "1");
-            crate::test_support::stop_worker(stack).await?;
+            crate::test_support::runtime::stop_worker(stack).await?;
             Ok(())
         })
         .await
@@ -325,7 +326,7 @@ async fn self_service_rechecks_config_and_capability_before_start() -> Result<()
             == StatusCode::FORBIDDEN
     );
     ensure!(pg(&format!("SELECT count(*) FROM mdm_commands.action_attempts WHERE run='{}' AND permit IS NOT NULL",task["payload"]["task"]["taskId"].as_str().unwrap()))?.trim()=="0");
-    crate::test_support::stop_worker(stack).await?;
+    crate::test_support::runtime::stop_worker(stack).await?;
     Ok(())
     }).await
 }
@@ -431,7 +432,7 @@ async fn grants_and_scope_are_rechecked_and_ai_switch_does_not_change_automation
         ),
     )
     .await?;
-    crate::test_support::stop_worker(automation).await?;
+    crate::test_support::runtime::stop_worker(automation).await?;
     value["selfService"]["allowAi"] = json!(false);
     value["selfService"]["access"] = json!({"kind":"users","selectors":[{"kind":"user","instanceId":crate::test_support::identity::INSTANCE,"tenantId":case_tenant(),"principalId":Uuid::new_v4()}]});
     value["action"]["schedule"]=policy_definition(resource,case_task_scope())["action"].get("schedule").cloned().unwrap_or_else(||json!({"trigger":{"kind":"check_in","minimumSeconds":60},"misfire":{"kind":"coalesce_one"},"notBefore":0,"until":null,"jitterSeconds":0,"window":null}));
@@ -474,7 +475,7 @@ async fn grants_and_scope_are_rechecked_and_ai_switch_does_not_change_automation
     );
     complete(&f.router, &normal).await?;
     ensure!(pg(&format!("SELECT state->>'execution' FROM mdm_commands.action_runs WHERE tenant_id='{}' AND id='{}'", case_tenant(), normal["payload"]["task"]["taskId"].as_str().unwrap()))?.trim() == "succeeded", "self-service withdrawal, management grant removal and enterprise logout must not withdraw ordinary Policy execution");
-    crate::test_support::stop_worker(stack).await?;
+    crate::test_support::runtime::stop_worker(stack).await?;
     Ok(())
     }).await
     }).await
@@ -671,7 +672,7 @@ async fn device_access_logged_in_user_requires_exact_os_session_and_helper_witho
         local["revision"] = json!(local["revision"].as_u64().unwrap() + 2);
         ensure!(claim_with_context(&f.router, &local).await?.0 == StatusCode::OK);
     }
-    crate::test_support::stop_worker(stack).await?;
+    crate::test_support::runtime::stop_worker(stack).await?;
     Ok(())
     }).await
 }
@@ -761,7 +762,7 @@ async fn check_in_interval_is_shared_by_automatic_and_targeted_calls() -> Result
                 "targeted run must also suppress automatic check-in: {empty:?}"
             );
             ensure!(run_count(id)?.trim() == "2");
-            crate::test_support::stop_worker(stack).await?;
+            crate::test_support::runtime::stop_worker(stack).await?;
             Ok(())
         })
         .await
@@ -865,7 +866,7 @@ async fn sensitive_status_rechecks_read_permissions_without_leaking_diagnostics(
             && !denied.1.to_string().contains(canary),
         "withdrawal must suppress the full result"
     );
-    crate::test_support::stop_worker(stack).await?;
+    crate::test_support::runtime::stop_worker(stack).await?;
     Ok(())
     }).await
 }
@@ -1002,7 +1003,7 @@ async fn employee_request_ids_are_independent_and_unknown_is_hidden() -> Result<
         call(&f, Method::GET, DIRECTORY, None, true, true).await?.1["items"] == json!([]),
         "Unknown or pending script remained in directory"
     );
-    crate::test_support::stop_worker(stack).await?;
+    crate::test_support::runtime::stop_worker(stack).await?;
     Ok(())
     }).await
 }
@@ -1277,7 +1278,7 @@ async fn explicit_access_uses_live_identity_membership_and_device_subjects_witho
             && reread.1["result"].is_null(),
         "same principal may read accepted state through a new enterprise session: {reread:?}"
     );
-    crate::test_support::stop_worker(stack).await?;
+    crate::test_support::runtime::stop_worker(stack).await?;
     Ok(())
     }).await
     }).await
@@ -1608,7 +1609,7 @@ async fn available_software_requires_request_and_deduplicates_users_policies_and
         .1["items"]
             == json!([])
     );
-    crate::test_support::stop_worker(stack).await?;
+    crate::test_support::runtime::stop_worker(stack).await?;
     Ok(())
     }).await
 }
@@ -1805,7 +1806,7 @@ async fn software_unknown_survives_same_account_relogin_and_keeps_other_accounts
         .0 == StatusCode::ACCEPTED,
         "another OS account is a different installation effect"
     );
-    crate::test_support::stop_worker(stack).await?;
+    crate::test_support::runtime::stop_worker(stack).await?;
     Ok(())
     }).await
 }

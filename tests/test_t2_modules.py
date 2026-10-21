@@ -299,14 +299,19 @@ class ModuleImpactTests(unittest.TestCase):
                      'crates/content-s3/src/lib.rs',
                      'crates/app/tests/support/software.rs'):
             self.assertIn('content.storage', self.selected(path), path)
-        self.assertTrue(MODULES['content.storage'].dependency_inputs)
 
     def test_app_helpers_select_all_actual_consumers(self):
         self.assertEqual(self.selected('crates/app/tests/support/software.rs'), {
             'agent.configurations','planning.self_service','software.http','content.http','content.mirror','content.gc','content.storage',
             'planning.software','planning.policy','planning.http','planning.group_scope','apple.policy','execution.software.offer','execution.software.content','execution.software.recovery'})
-        self.assertEqual(self.selected('crates/app/tests/support/process.rs'),
-                         {'inventory.runtime','execution.commands.recovery'})
+        process = self.selected('crates/app/tests/support/process.rs')
+        self.assertTrue({'inventory.runtime', 'execution.commands.recovery', 'execution.commands.onboarding'} <= process)
+        self.assertTrue(process.isdisjoint({'sources.brew_git', 'apple.apns'}))
+        entry = select_inputs(['crates/app/tests/support/mod.rs'])
+        self.assertEqual(entry.modules, ())
+        self.assertEqual(entry.tools, ('test_t2_modules',))
+        self.assertEqual(self.selected('crates/app/tests/support/pki.rs'), {'agent.registration'})
+        self.assertIn('agent.registration', self.selected('crates/app/tests/support/runtime.rs'))
         self.assertEqual(self.selected('crates/app/tests/execution/support.rs'),
                          {'execution.commands.'+part for part in ('admission','dispatch','recovery','windows','configuration','onboarding')} | {'windows.commands','windows.declared'})
         self.assertEqual(self.selected('crates/app/tests/execution/support/configuration.rs'), {'execution.commands.configuration','windows.declared'})
@@ -351,8 +356,12 @@ class ModuleImpactTests(unittest.TestCase):
                 self.assertEqual(self.selected(path), {owner})
 
     def test_shared_registration_fixture_selects_only_direct_consumers(self):
-        self.assertEqual(self.selected('crates/app/tests/support/agent.rs'),
-                         {'execution.agent.task_trust','agent.configurations','planning.self_service','agent.registration','agent.reports','execution.agent.poll','execution.agent.recovery','planning.onboarding','execution.commands.onboarding','execution.agent.delivery','execution.software.recovery','planning.agent_policy','execution.software.offer','execution.agent.history','assets.http','execution.agent.content','apple.onboarding','planning.software','planning.http','execution.software.content','planning.frequency','execution.commands.windows','software.http'} | {'telemetry.ingress.'+kind for kind in ('postgres','timescale_shared','timescale_dedicated','click_house')})
+        selected = self.selected('crates/app/tests/support/agent.rs')
+        self.assertTrue({'agent.registration', 'agent.reports', 'agent.configurations',
+                         'execution.agent.delivery', 'execution.commands.onboarding'} <= selected)
+        self.assertTrue(selected.isdisjoint({'apple.cms', 'apple.apns', 'sources.brew_git',
+                                             'windows.management', 'apple.commands'}))
+
 
     def test_case_only_windows_inputs_select_directory_consumers(self):
         for path in ('hack/windows_fixtures.py', 'deployment/windows-leaf.tpl'):

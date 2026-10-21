@@ -12,7 +12,7 @@ async fn collected_facts(b: &mut Browser, router: &Router, base: &Value) -> Resu
     ))?;
     let (registration, _) =
         crate::test_support::inventory::seed_source(device, "mdm", "mdm.windows", "seed")?;
-    let locator = crate::test_support::secret("channel-proof-121")
+    let locator = crate::test_support::runtime::secret("channel-proof-121")
         .iter()
         .map(|b| format!("{b:02x}"))
         .collect::<String>();
@@ -120,7 +120,7 @@ async fn collected_facts(b: &mut Browser, router: &Router, base: &Value) -> Resu
     }
     def["enabled"] = json!(false);
     ok(b, router, Method::PUT, &path, Some(request(1, def))).await?;
-    crate::test_support::stop_worker(owner).await?;
+    crate::test_support::runtime::stop_worker(owner).await?;
     Ok(())
 }
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -154,7 +154,7 @@ async fn manual_and_collected_facts_evaluate_with_provenance() -> Result<()> {
     )
     .await?;
     collected_facts(&mut browser, router, base).await?;
-    crate::test_support::stop_worker(automation).await?;
+    crate::test_support::runtime::stop_worker(automation).await?;
     fixture.close().await;
     Ok(())
 }

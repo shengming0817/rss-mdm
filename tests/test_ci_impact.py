@@ -108,7 +108,6 @@ CONTROL_INPUTS = {'Makefile': {'format':'make', 'tools':['test_registry']},
                                          'fields': {'build.jobs':'tools', 'build.rustflags':'runtime'}},
                   'rust-toolchain.toml': {'format':'toml', 'tools':['test_registry'],
                                           'fields': {'toolchain.channel':'runtime', 'toolchain.components':'tools'}}}
-DEPENDENCY_POLICIES = {}
 """,
         )
         self._write('tests/test_registry.py', '')
@@ -426,13 +425,6 @@ class CiImpactContract(unittest.TestCase):
         self.assert_selected(decision, [], ['leaf'])
         self.assertEqual([b['package'] for b in decision['ownershipChecks']], ['leaf'])
 
-    def test_description_only_dependency_mapping_is_tool_validation(self):
-        p = self.repo.root / 'hack/t2_registry.py'
-        p.write_text(p.read_text() + "\nfrom dataclasses import replace\nfrom t2_model import DependencyInput\nMODULES['leaf'] = replace(MODULES['leaf'], dependency_inputs=(DependencyInput('crates/leaf/Cargo.toml','core'),))\n")
-        decision = self.repo.select()[1]
-        self.assert_selected(decision, [], [])
-        self.assertEqual(decision['toolTests'], ['test_registry'])
-        self.assertEqual(decision['ownershipChecks'], [])
 
     def test_test_input_selects_owner_and_assertion_changes(self):
         self.repo.change('crates/leaf/tests/behavior.rs', 'assert!(false);')
@@ -461,7 +453,8 @@ class CiImpactContract(unittest.TestCase):
         )
         decision = self.repo.select()[1]
         self.assertEqual(decision['status'], 'selected', decision)
-        self.assertIn('leaf', decision['t2']['modules'])
+        self.assertEqual(decision['t2']['modules'], [])
+        self.assertEqual(set(decision['cargo']['packages']), {'leaf', 'leaf-integration'})
         self.assertNotIn('other-integration', decision['t2']['modules'])
 
     def test_lock_comment_does_not_select_business(self):
@@ -500,7 +493,7 @@ class CiImpactContract(unittest.TestCase):
         )
         for path, content, detail in (
             ('Cargo.toml', (self.repo.root / 'Cargo.toml').read_text() + '\n[profile.dev]\nopt-level=1\n',
-             'shared-compiler-environment'),
+             'cargo-only'),
             (
                 'Makefile',
                 'export RUSTFLAGS := -C debuginfo=1\n',
@@ -524,13 +517,12 @@ class CiImpactContract(unittest.TestCase):
                 decision = self.repo.select()[1]
                 self.assertEqual(decision['status'], 'selected', decision)
                 self.assertEqual(
-                    decision['t2'], {'mode': 'affected', 'modules': expected}
+                    decision['t2'], {'mode': 'affected', 'modules': [] if path == 'Cargo.toml' else expected}
                 )
                 self.assertEqual(len(decision['cargo']['packages']), 8)
                 self.assertEqual(decision['toolTests'], [] if path == 'Cargo.toml' else ['test_registry'])
-                self.assertTrue(
-                    any(r.get('detail') == detail for r in decision['reasons'])
-                )
+                if path != 'Cargo.toml':
+                    self.assertTrue(any(r.get('detail') == detail for r in decision['reasons']))
 
     def test_control_tool_fields_and_unknown_fields(self):
         for path, content in (
@@ -605,6 +597,15 @@ class CiImpactContract(unittest.TestCase):
         self.repo.change('tests/support/helper.rs')
         self.assert_selected(self.repo.select()[1], [], ['leaf'])
         self.repo.git('reset', '--hard', self.repo.base)
+        # A declaration-only entry compiles/discovers its target, including when
+        # the baseline used to map that entry to all of its business tests.
+        registry = self.repo.root / 'hack/t2_registry.py'
+        registry.write_text(registry.read_text() + "\nTOOL_INPUTS['crates/leaf/tests/mod.rs'] = ('test_registry',)\nTOOL_ONLY_INPUTS = ('crates/leaf/tests/mod.rs',)\n")
+        self.repo.change('crates/leaf/tests/mod.rs', 'mod helper;\n')
+        decision = self.repo.select()[1]
+        self.assert_selected(decision, ['leaf', 'leaf-integration'], [])
+        self.assertEqual([b['package'] for b in decision['ownershipChecks']], ['leaf'])
+        self.repo.git('reset', '--hard', self.repo.base)
         # Remove T2 ownership for the T1 file, as declared by the real source owner.
         p = self.repo.root / 'hack/t2_registry.py'
         p.write_text(
@@ -658,7 +659,7 @@ class CiImpactContract(unittest.TestCase):
         self.assertIn('exit=1', decision['error']['inputs'])
         self.assertIn('diagnostic=TypeError', decision['error']['inputs'])
 
-    def test_optional_dependency_not_enabled_by_build_selects_no_t2(self):
+    def test_optional_dependency_change_selects_only_cargo(self):
         p = self.repo.root / 'crates/optional-consumer/Cargo.toml'
         p.write_text(
             p.read_text().replace(
@@ -675,140 +676,7 @@ class CiImpactContract(unittest.TestCase):
         self.assert_selected(decision, ['optional-consumer'], [])
 
 
-class DependencyOwnership(unittest.TestCase):
-    def test_app_external_and_dev_edges_use_explicit_seams(self):
-        from dataclasses import asdict
-        from ci_impact import Graph, Registry, dependency_consumers, SelectionError
-        from t2_registry import APP
-        from t2_model import Module, DependencyInput
-
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            (root / 'crates/app').mkdir(parents=True)
-            (root / 'Cargo.toml').write_text('[workspace]\nmembers=["crates/app"]\n')
-            (root / 'crates/app/Cargo.toml').write_text(
-                '[package]\nname="rss-mdm-app"\nversion="1.0.0"\n[dependencies]\ndb_driver={package="db-package",version="1"}\n[dev-dependencies]\ndb_driver={package="db-package",version="1"}\n'
-            )
-            dependency = {
-                'name': 'db_driver',
-                'pkg': 'db',
-                'dep_kinds': [{'kind': None, 'target': None}],
-            }
-            graph = Graph(
-                root,
-                dict(
-                    workspace_root=str(root),
-                    workspace_members=['app'],
-                    packages=[
-                        dict(
-                            id='app',
-                            name='rss-mdm-app',
-                            version='1.0.0',
-                            source=None,
-                            manifest_path=str(root / 'crates/app/Cargo.toml'),
-                            dependencies=[dict(name='db-package', rename='db_driver', kind=kind) for kind in (None, 'dev')],
-                        ),
-                        dict(
-                            id='db',
-                            name='db-package',
-                            version='1.2.0',
-                            source='registry+test',
-                        ),
-                    ],
-                    resolve=dict(
-                        nodes=[
-                            dict(id='app', deps=[dependency], features=[]),
-                            dict(id='db', deps=[], features=[]),
-                        ]
-                    ),
-                ),
-            )
-
-            def module(name, kind):
-                return json.loads(
-                    json.dumps(
-                        asdict(
-                            Module(
-                                name,
-                                APP,
-                                ('test::',),
-                                dependency_inputs=(
-                                    DependencyInput(
-                                        'crates/app/Cargo.toml', 'db_driver', kind
-                                    ),
-                                ),
-                            )
-                        )
-                    )
-                )
-
-            registry = Registry(
-                {'normal': module('normal', 'normal'), 'dev': module('dev', 'dev')},
-                (),
-                {},
-                {},
-                {},
-                (),
-                {},
-            )
-            self.assertEqual(
-                dependency_consumers(graph, registry, 'app', dependency, 'normal'),
-                ({'normal'}, set()),
-            )
-            self.assertEqual(
-                dependency_consumers(graph, registry, 'app', dependency, 'dev'),
-                ({'dev'}, set()),
-            )
-            registered = registry
-            baseline_modules = {name: {**module, 'dependency_inputs': []}
-                                for name, module in registry.modules.items()}
-            baseline = Registry(baseline_modules, (), {}, {}, {}, (), {})
-            with self.assertRaisesRegex(SelectionError, 'unowned-dependency'):
-                dependency_consumers(graph, baseline, 'app', dependency, 'normal')
-            self.assertEqual(
-                dependency_consumers(graph, baseline, 'app', dependency, 'normal', (registered,)),
-                ({'normal'}, set()),
-            )
-            # New registration does not admit a removed or unrelated module.
-            unrelated = Registry({'dev': baseline_modules['dev']}, (), {}, {}, {}, (), {})
-            with self.assertRaisesRegex(SelectionError, 'unowned-dependency'):
-                dependency_consumers(graph, unrelated, 'app', dependency, 'normal', (registered,))
-            cargo = Registry({}, (), {}, {'crates/app/Cargo.toml': {'dev:db_driver': {'cargoOnly': True}}}, {}, (), {})
-            empty = Registry({}, (), {}, {}, {}, (), {})
-            self.assertEqual(dependency_consumers(graph, empty, 'app', dependency, 'dev', (cargo,)), (set(), set()))
-            with self.assertRaisesRegex(SelectionError, 'unowned-dependency'):
-                dependency_consumers(graph, empty, 'app', dependency, 'normal', (cargo,))
-            t1 = Registry({}, ('crates/app/tests/unit.rs',), {}, {}, {}, (), {})
-            self.assertEqual(dependency_consumers(graph, t1, 'app', dependency, 'dev'), (set(), set()))
-            with self.assertRaisesRegex(SelectionError, 'unowned-dependency'):
-                dependency_consumers(graph, t1, 'app', dependency, 'normal')
-            registry = Registry({}, (), {}, {}, {}, (), {})
-            with self.assertRaisesRegex(SelectionError, 'unowned-dependency'):
-                dependency_consumers(graph, registry, 'app', dependency, 'normal')
-            for invalid in ({}, False, {'cargoOnly': False}, {'tools': []}):
-                with self.subTest(policy=invalid):
-                    registry = Registry({}, (), {},
-                                        {'crates/app/Cargo.toml': {'normal:db_driver': invalid}},
-                                        {}, (), {})
-                    with self.assertRaisesRegex(SelectionError, 'unowned-dependency'):
-                        dependency_consumers(graph, registry, 'app', dependency, 'normal')
-            registry = Registry(
-                {},
-                (),
-                {},
-                {
-                    'crates/app/Cargo.toml': {
-                        'normal:db_driver': {'tools': ['test_registry']}
-                    }
-                },
-                {},
-                (),
-                {},
-            )
-            self.assertEqual(
-                dependency_consumers(graph, registry, 'app', dependency, 'normal'),
-                (set(), {'test_registry'}),
-            )
+class CargoDependencies(unittest.TestCase):
 
     def test_lock_qualification_preserves_identity_and_rejects_ambiguity(self):
         from ci_impact import lock_entries, SelectionError
@@ -838,15 +706,12 @@ class DependencyOwnership(unittest.TestCase):
             with self.assertRaisesRegex(SelectionError, 'lock-invalid'):
                 lock_dependency(reference, packages)
 
-    def test_lock_identity_and_checksum_changes_use_old_and_new_consumers(self):
-        from ci_impact import Graph, Registry, Change, analyze_dependencies
-        from t2_model import Module, Build
-        from dataclasses import asdict
+    def test_lock_identity_and_checksum_changes_select_only_cargo(self):
+        from ci_impact import Graph, Change, analyze_dependencies
 
         with tempfile.TemporaryDirectory() as directory:
             parent = Path(directory)
             graphs = []
-            registries = []
             for label, version, checksum in [
                 ('old', '1.0.0', 'a'),
                 ('new', '1.1.0', 'b'),
@@ -904,32 +769,14 @@ class DependencyOwnership(unittest.TestCase):
                         ),
                     )
                 )
-                module = Module(
-                    label,
-                    Build('service'),
-                    ('test::',),
-                    production_inputs=('crates/service/src/*',),
-                )
-                registries.append(
-                    Registry(
-                        {label: json.loads(json.dumps(asdict(module)))},
-                        (),
-                        {},
-                        {},
-                        {},
-                        (),
-                        {},
-                    )
-                )
-            packages, modules, tools, reasons = analyze_dependencies(
+            packages, reasons = analyze_dependencies(
                 parent / 'old',
                 parent / 'new',
                 [Change('M', 'Cargo.lock', 'Cargo.lock')],
                 graphs,
-                registries,
             )
             self.assertEqual(packages, {'service'})
-            self.assertEqual(modules, {'old', 'new'})
+            self.assertTrue(all(not reason['modules'] for reason in reasons))
             # Same version/source but changed checksum is still an input change.
             (parent / 'new/Cargo.lock').write_text(
                 (parent / 'old/Cargo.lock')
@@ -944,9 +791,8 @@ class DependencyOwnership(unittest.TestCase):
                     parent / 'new',
                     [Change('M', 'Cargo.lock', 'Cargo.lock')],
                     graphs,
-                    registries,
-                )[1],
-                {'old', 'new'},
+                    )[0],
+                {'service'},
             )
 
 

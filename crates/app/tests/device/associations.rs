@@ -76,7 +76,7 @@ pub(crate) fn hardware(
     .encode()?;
     let coverage = serde_json::to_string(&definition.coverage()?)?;
     let value = serde_json::to_string(&rss_mdm_inventory::Scalar::String(serial.into()))?;
-    crate::test_support::pg(&format!(
+    crate::test_support::process::pg(&format!(
         "INSERT INTO mdm.inventory(field_scope,tenant_id,journal,generation,scope,coverage,field,value,batch_id,observed_at,received_at,state,last_known,last_known_batch,last_known_observed,last_known_received,registration,source,epoch,collection_sequence) VALUES(replace(jsonb_build_object('kind','device')::text,' ',''),'{}','mdm.observation.v1','inventory-projection-v1','{}','{}','device.serial_number','{}','hardware-fixture',1,2,'known','{}','hardware-fixture',1,2,'{}','{}','{}',0)",
         case_a(),
         scope.replace('\'', "''"),
@@ -439,7 +439,7 @@ async fn change_checkpoints_resume_after_empty_pages_and_restart() -> anyhow::Re
         agent: member(&mut c, agent, Channel::Agent).await?,
         evidence: "verified by operator".into(),
     };
-    let clock = crate::test_support::monotonic();
+    let clock = crate::test_support::runtime::monotonic();
     let started = clock.now();
     let relation = service
         .seed_confirmation_history(&admin, request.clone(), 66)

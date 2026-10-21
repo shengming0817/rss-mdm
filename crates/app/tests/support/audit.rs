@@ -104,3 +104,16 @@ pub(crate) async fn request_store() -> anyhow::Result<(
     let store = AuditStore::new(pool.clone(), Integrity::Plain, &control).await?;
     Ok((pool, std::sync::Arc::new(store)))
 }
+
+pub(crate) fn audit_records() -> anyhow::Result<Vec<crate::audit_test_support::Record>> {
+    crate::audit_test_support::decode_hex(&crate::test_support::process::pg(&format!(
+        "SELECT encode(canonical,'hex') FROM rss_audit.records WHERE tenant_id='{TENANT}' ORDER BY position",
+        TENANT = crate::test_support::runtime::case_tenant()
+    ))?)
+}
+
+pub(crate) fn audit_count(
+    predicate: impl Fn(&crate::audit_test_support::Record) -> bool,
+) -> anyhow::Result<usize> {
+    Ok(audit_records()?.iter().filter(|r| predicate(r)).count())
+}

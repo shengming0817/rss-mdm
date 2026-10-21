@@ -1,5 +1,5 @@
 //! Successful command preparation; behavioral assertions live in their owning module.
-use crate::test_support::Browser;
+use crate::test_support::http::Browser;
 use anyhow::ensure;
 use axum::{
     Router,

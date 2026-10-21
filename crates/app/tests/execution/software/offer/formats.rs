@@ -1,7 +1,7 @@
 //! Actual management HTTP, PG, content and signed task seams for every new native form.
 use crate::test_support::software::write;
 use crate::test_support::software_execution::*;
-use crate::test_support::*;
+use crate::test_support::{agent::*, process::*, runtime::*, *};
 use sha2::{Digest, Sha256};
 use std::io::{Cursor, Write};
 
@@ -259,7 +259,7 @@ async fn chain(format: &str, bundle: bool, user: bool) -> Result<()> {
         let frozen = serde_json::to_value(&root.action.behavior)?;
         if format == "dmg_pkg" { ensure!(frozen["payload"] == behavior["payload"]); }
         if bundle { ensure!(frozen["container"] == behavior["container"] && frozen["identity"] == behavior["identity"]); }
-        crate::test_support::stop_worker(stack).await?;
+        crate::test_support::runtime::stop_worker(stack).await?;
         return Ok(());
     }
     for kind in ["received", "start"] {
@@ -337,7 +337,7 @@ async fn chain(format: &str, bundle: bool, user: bool) -> Result<()> {
         rollout.1["stages"][0]["verifiedSuccess"] == 1,
         "rollout: {rollout:?}"
     );
-    crate::test_support::stop_worker(stack).await?;
+    crate::test_support::runtime::stop_worker(stack).await?;
     Ok(())
     }).await
 }

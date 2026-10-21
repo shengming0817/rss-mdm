@@ -3,6 +3,7 @@
     reason = "test scenarios retain distinct authorization, failure and recovery assertions"
 )]
 use super::*;
+use crate::audit_test_support::audit_count;
 async fn history_boundaries(
     b: &mut Browser,
     router: &Router,
@@ -323,7 +324,7 @@ async fn http_history_cursors_authorization_and_disable() -> Result<()> {
             .all(|v| tasks.contains(v["task"].as_str().unwrap()))
     );
     ensure!(audit_count(|r| r.action() == "compliance_read")? > 0);
-    crate::test_support::stop_worker(automation).await?;
+    crate::test_support::runtime::stop_worker(automation).await?;
     fixture.close().await;
     Ok(())
 }

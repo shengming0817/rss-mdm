@@ -3,6 +3,7 @@
     reason = "test scenarios retain distinct authorization, failure and recovery assertions"
 )]
 use super::*;
+use crate::audit_test_support::audit_count;
 
 fn members(count: u128) -> Vec<Value> {
     (1..=count)

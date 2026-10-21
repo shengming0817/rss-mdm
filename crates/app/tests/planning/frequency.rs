@@ -1,6 +1,6 @@
 //! Persisted admission, entry coordinates and trigger deduplication through real claim requests.
 use crate::test_support::agent_execution::*;
-use crate::test_support::*;
+use crate::test_support::{http::*, process::*, runtime::*, *};
 
 async fn publish(
     author: &mut Browser,
@@ -152,7 +152,7 @@ async fn once_per_entry_tracks_membership_epochs() -> Result<()> {
         while pg(&format!("SELECT count(*) FROM mdm_planning.policy_assignments WHERE policy='{entry}' AND entry_revision>0"))?.trim()=="0" {tokio::time::sleep(Duration::from_millis(50)).await;}
         Ok::<_,anyhow::Error>(())
     }).await??;
-    crate::test_support::stop_worker(automation).await?;
+    crate::test_support::runtime::stop_worker(automation).await?;
     let service = crate::planning::test_support::planning(rss_request_context::TenantId::parse(
         case_tenant(),
     )?)
@@ -187,7 +187,7 @@ async fn once_per_entry_tracks_membership_epochs() -> Result<()> {
     ensure!(pg(&format!("SELECT count(DISTINCT occurrence) FROM mdm_commands.action_runs WHERE policy_version IN(SELECT id FROM mdm_policy.versions WHERE policy='{entry}')"))?.trim()=="2");
     disable(author, router, entry).await?;
     service.runtime.close().await;
-    crate::test_support::stop_worker(stack).await?;
+    crate::test_support::runtime::stop_worker(stack).await?;
     Ok(())
     }).await
 }
@@ -246,7 +246,7 @@ async fn registration_and_checkin_survive_router_restart() -> Result<()> {
     complete(&restarted, &task).await?;
     ensure!(count(checkin)? == 2);
     disable(author, router, checkin).await?;
-    crate::test_support::stop_worker(stack).await?;
+    crate::test_support::runtime::stop_worker(stack).await?;
     Ok(())
     }).await
     }).await
@@ -280,7 +280,7 @@ async fn interval_misfire_skip_and_coalesce() -> Result<()> {
     no_repeat(router, coalesce, 1).await?;
     ensure!(pg(&format!("SELECT occurrence LIKE 'timer:{}:%' FROM mdm_commands.action_runs WHERE policy_version IN(SELECT id FROM mdm_policy.versions WHERE policy='{coalesce}')",now-120))?.trim()=="t");
     disable(author, router, coalesce).await?;
-    crate::test_support::stop_worker(stack).await?;
+    crate::test_support::runtime::stop_worker(stack).await?;
     Ok(())
     }).await
 }

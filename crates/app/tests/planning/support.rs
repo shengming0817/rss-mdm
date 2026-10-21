@@ -556,7 +556,7 @@ pub(crate) async fn inventory_runtime(
         options("mdm_runtime").unwrap(),
         access.inventory(),
         tenant,
-        crate::test_support::monotonic(),
+        crate::test_support::runtime::monotonic(),
         audit_store_with_integrity(rss_audit_postgres::Integrity::Plain).await,
     )
     .await

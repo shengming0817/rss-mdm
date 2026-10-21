@@ -72,11 +72,11 @@ pub(crate) async fn application_fixture(
         crate::execution_assembly::Assembly,
         Arc<rss_transactional_messaging_postgres::PgRuntime>,
         Arc<rss_mdm_flow_service::planning::Planning>,
-        crate::test_support::Resources,
+        crate::test_support::runtime::Resources,
     ),
     Error,
 > {
-    let mut resources = crate::test_support::Resources::default();
+    let mut resources = crate::test_support::runtime::Resources::default();
     resources.resource(crate::lifecycle::AccessResource(access.clone()));
     let result = async {
         access.claim_tenant_use(&config).await?;
@@ -91,7 +91,7 @@ pub(crate) async fn application_fixture(
                 .await?,
         )
         .await?;
-        resources.resource(crate::test_support::InventoryFixtureResource(
+        resources.resource(crate::test_support::runtime::InventoryFixtureResource(
             runtime.clone(),
         ));
         let protection = config.native_protector()?;

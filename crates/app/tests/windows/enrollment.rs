@@ -61,7 +61,7 @@ async fn discovery_wstep_replay_and_tls_identity() -> anyhow::Result<()> {
         anyhow::bail!("missing issuance replay");
     };
     ensure!(replay.provisioning.0 == peer.provisioning);
-    let mut admin = crate::test_support::Browser {
+    let mut admin = crate::test_support::http::Browser {
         cookies: std::collections::BTreeMap::from([(
             "__Host-identity-session".into(),
             host.secret.expose().into(),
@@ -361,7 +361,7 @@ async fn self_enrollment_preserves_server_identity_and_terminal_protocol_id() ->
     let origin = format!("http://{}", listener.local_addr()?);
     let _server = crate::test_support::software::HttpServer::start(listener, host.browser.clone());
     let secret = crate::test_support::identity::credential(&host.app.identity, "other")?;
-    let mut browser = crate::test_support::Browser {
+    let mut browser = crate::test_support::http::Browser {
         network: Some((
             reqwest::Client::builder()
                 .no_proxy()

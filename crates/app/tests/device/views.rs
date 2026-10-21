@@ -114,7 +114,7 @@ async fn permission_projection_deduplication_and_cursor_invalidation() -> anyhow
 #[tokio::test]
 #[ignore = "MODULE=device.views: authenticated HTTP preserves Manual and list sources"]
 async fn http_lists_manual_conflicts_and_signed_source_pagination() -> anyhow::Result<()> {
-    use crate::test_support::{Browser, authority::Authority};
+    use crate::test_support::{authority::Authority, http::Browser};
     use axum::{
         Router,
         http::{Method, StatusCode},

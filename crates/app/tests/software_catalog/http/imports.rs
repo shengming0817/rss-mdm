@@ -1,5 +1,5 @@
 use crate::test_support::software::{Fixture, write};
-use crate::test_support::*;
+use crate::test_support::{process::*, runtime::*, *};
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 #[ignore = "MODULE=software.http: import API, original material binding and receipt replay"]

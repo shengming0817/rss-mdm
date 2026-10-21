@@ -1,6 +1,6 @@
 //! Real PostgreSQL plus the shared TLS S3 provider; product admission and HTTP are exercised.
 use crate::test_support::software::Fixture;
-use crate::test_support::*;
+use crate::test_support::{process::*, runtime::*, *};
 use rss_mdm_content_service::{Binding, Purpose, ResourceBinding, StorageClass};
 
 #[tokio::test]

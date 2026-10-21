@@ -71,36 +71,40 @@ impl Client {
         let audit = self.app.audit_store.clone();
         let identity = self.app.identity.clone();
         let restart_clock = clock.clone();
-        let (resources, restarted) = crate::test_support::Resources::build(move |resources| {
-            Box::pin(async move {
-                let content =
-                    crate::execution_assembly::open_content(&config, config.native_protector()?)
-                        .await?;
-                if let Some(content) = &content {
-                    resources.resource(crate::execution_assembly::ContentResource(content.clone()));
-                }
-                let restarted = crate::execution_assembly::open(
-                    &config,
-                    config.native_protector()?,
-                    audit,
-                    content,
-                    std::collections::BTreeMap::new(),
-                    rss_device_command_postgres::CommandClock::Controlled(restart_clock),
-                    Arc::new(
-                        rss_mdm_authorization_service::session::SessionAuthority::new(
-                            identity.authority.clone(),
-                            identity.tenant,
+        let (resources, restarted) =
+            crate::test_support::runtime::Resources::build(move |resources| {
+                Box::pin(async move {
+                    let content = crate::execution_assembly::open_content(
+                        &config,
+                        config.native_protector()?,
+                    )
+                    .await?;
+                    if let Some(content) = &content {
+                        resources
+                            .resource(crate::execution_assembly::ContentResource(content.clone()));
+                    }
+                    let restarted = crate::execution_assembly::open(
+                        &config,
+                        config.native_protector()?,
+                        audit,
+                        content,
+                        std::collections::BTreeMap::new(),
+                        rss_device_command_postgres::CommandClock::Controlled(restart_clock),
+                        Arc::new(
+                            rss_mdm_authorization_service::session::SessionAuthority::new(
+                                identity.authority.clone(),
+                                identity.tenant,
+                            ),
                         ),
-                    ),
-                )
-                .await?;
-                resources.resource(rss_mdm_execution_service::Resource(
-                    restarted.service.clone(),
-                ));
-                Ok(restarted)
+                    )
+                    .await?;
+                    resources.resource(rss_mdm_execution_service::Resource(
+                        restarted.service.clone(),
+                    ));
+                    Ok(restarted)
+                })
             })
-        })
-        .await?;
+            .await?;
         resources.finish(async {
         eprintln!("command T2: restarted runtime admitted");
         let persisted: (String, String) = sqlx::query_as(

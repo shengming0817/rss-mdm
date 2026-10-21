@@ -1,4 +1,5 @@
-use crate::test_support::*;
+use crate::audit_test_support::audit_count;
+use crate::test_support::{agent::*, http::*, process::*, runtime::*, *};
 use anyhow::Context;
 const PATH: &str = "/api/v1/runtime/diagnostics";
 

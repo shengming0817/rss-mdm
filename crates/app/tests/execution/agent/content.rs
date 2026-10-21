@@ -1,3 +1,4 @@
+use crate::audit_test_support::audit_count;
 use crate::test_support::agent_execution::*;
 use crate::test_support::*;
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
@@ -118,7 +119,7 @@ async fn task_content_range_and_attempt_authorization() -> Result<()> {
                 )
                 .await?;
             ensure!(response.status() == StatusCode::FORBIDDEN);
-            crate::test_support::stop_worker(stack).await?;
+            crate::test_support::runtime::stop_worker(stack).await?;
             Ok(())
         })
         .await

@@ -445,7 +445,7 @@ impl Fixture {
         self.policy_grants().await?;
         let owner = self.policy_worker().await?;
         let queued = self.pending_collections(&definition, 1, peer).await;
-        crate::test_support::stop_worker(Some(owner)).await?;
+        crate::test_support::runtime::stop_worker(Some(owner)).await?;
         let run = queued?[0];
         ensure!(peer.next_collection().await?.0 == run);
         let changed = sqlx::query("UPDATE mdm_access.collection_runs SET deadline=clock_timestamp()-interval '1 second' WHERE tenant_id=$1::uuid AND id=$2 AND sealed_at IS NULL").bind(case_tenant()).bind(run).execute(&mut pg).await?.rows_affected();

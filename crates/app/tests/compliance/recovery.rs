@@ -1,4 +1,5 @@
 use super::*;
+use crate::audit_test_support::audit_count;
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "MODULE=compliance.recovery: real HTTP and durable worker contract"]
 async fn mutation_unknown_commit_recovers_original_response() -> Result<()> {
@@ -154,7 +155,7 @@ async fn publication_terminal_page_and_audit_are_atomic() -> Result<()> {
         audit_count(|r| r.operation() == Some(task) && r.action() == "automation_completed")? == 1
     );
     ensure!(pg(&format!("SELECT count(*) FROM mdm_webhook.compliance_sources s JOIN rss_transactional_messaging.outbox o ON(o.tenant_id,o.message_id)=(s.tenant_id,s.id::text) WHERE s.document->>'run'='{task}' AND o.domain='mdm-webhook-source'"))?.trim()=="1", "published run must atomically append one webhook source");
-    crate::test_support::stop_worker(automation).await?;
+    crate::test_support::runtime::stop_worker(automation).await?;
     // Consume actual publication sources with command-runtime ACLs. The first run
     // changes PAGE+1 devices; recomputing identical assessments must emit none.
     let cancellation = tokio_util::sync::CancellationToken::new();
@@ -246,7 +247,7 @@ async fn rule_and_fact_revisions_fence_stale_publication() -> Result<()> {
         old["completed"] == true && old["failure"] == "superseded",
         "stale run was published: {old}"
     );
-    crate::test_support::stop_worker(restarted).await?;
+    crate::test_support::runtime::stop_worker(restarted).await?;
     // Fact-only race: the rule revision remains unchanged across restart.
     let stale_fact = ok(
         &mut browser,
@@ -283,7 +284,7 @@ async fn rule_and_fact_revisions_fence_stale_publication() -> Result<()> {
     )
     .await?;
     ensure!(progress["phase"] == "published" && progress["processed"].as_i64().unwrap() > 32);
-    crate::test_support::stop_worker(restarted).await?;
+    crate::test_support::runtime::stop_worker(restarted).await?;
     // A late transaction failure must roll back definition, receipt, enqueue and staged audit.
     pg(
         "CREATE FUNCTION public.reject_compliance() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'fixture'; END $$; CREATE CONSTRAINT TRIGGER reject_compliance AFTER UPDATE ON mdm_compliance.rules DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION public.reject_compliance()",

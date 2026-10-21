@@ -1,5 +1,5 @@
 //! Approved controlled samples: these bytes prove server admission, not OS signing or installation.
-use super::*;
+use super::{http::*, process::*, runtime::*, *};
 use sha2::{Digest, Sha256};
 pub(crate) fn bytes() -> Vec<u8> {
     case::name("controlled-rss-agent-installer")

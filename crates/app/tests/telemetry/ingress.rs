@@ -2,7 +2,7 @@
 use crate::test_support::agent_execution::{
     Fixture, case_credential, case_device_id, claim_request, post, resource, upload,
 };
-use crate::test_support::*;
+use crate::test_support::{agent::*, http::*, process::*, runtime::*, *};
 use rss_mdm_agent_wire::runtime as wire;
 use rss_mdm_resource as r;
 use sha2::{Digest, Sha256};

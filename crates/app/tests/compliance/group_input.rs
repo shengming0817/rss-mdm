@@ -1,4 +1,5 @@
 use super::*;
+use crate::audit_test_support::audit_count;
 async fn waiting_group_does_not_spin(b: &mut Browser, router: &Router, base: &Value) -> Result<()> {
     // Drain setup writes before creating the held input: their legitimate dispatch must
     // not race with the task-count assertion that detects work without new input.
@@ -16,7 +17,7 @@ async fn waiting_group_does_not_spin(b: &mut Browser, router: &Router, base: &Va
         }
     })
     .await??;
-    crate::test_support::stop_worker(setup).await?;
+    crate::test_support::runtime::stop_worker(setup).await?;
     let group = Uuid::new_v4();
     let gp = format!("/api/v1/groups/{group}");
     let created=ok(b,router,Method::POST,&gp,Some(request(0,json!({"action":"create","assetContext":"endpoint","presentation":{"name":"held group","description":""},"criteria":{"selector":{"kind":"device"},"quantifier":"one","criteria":{"kind":"predicate","field":"custom.office_floor","op":"ge","value":{"kind":"integer","value":0}}}})))).await?;
@@ -97,7 +98,7 @@ async fn waiting_group_does_not_spin(b: &mut Browser, router: &Router, base: &Va
         .trim()
             == next.trim()
     );
-    crate::test_support::stop_worker(worker).await?;
+    crate::test_support::runtime::stop_worker(worker).await?;
     Ok(())
 }
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -170,7 +171,7 @@ async fn group_applicability_membership_versions_and_stale_input() -> Result<()>
         )
         .await?;
     ensure!(s == StatusCode::CONFLICT, "referenced group was deleted");
-    crate::test_support::stop_worker(automation).await?;
+    crate::test_support::runtime::stop_worker(automation).await?;
     assign(&mut browser, router, "compliance-a", 1, false).await?;
     // Group-only race: frozen membership must not survive a later group definition.
     let grouped = definition(json!({"kind":"groups","ids":[group]}));
@@ -212,7 +213,7 @@ async fn group_applicability_membership_versions_and_stale_input() -> Result<()>
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
     }).await??;
-    crate::test_support::stop_worker(restarted).await?;
+    crate::test_support::runtime::stop_worker(restarted).await?;
     fixture.close().await;
     Ok(())
 }

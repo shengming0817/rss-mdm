@@ -1,5 +1,5 @@
 use crate::test_support::agent_execution::*;
-use crate::test_support::*;
+use crate::test_support::{process::*, runtime::*, *};
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 #[ignore = "make t2 MODULE=execution.agent.recovery"]
 async fn started_execution_becomes_unknown_and_disabled_policy_cancels() -> Result<()> {
@@ -69,7 +69,7 @@ async fn started_execution_becomes_unknown_and_disabled_policy_cancels() -> Resu
         .trim()
             == "requested"
     );
-    crate::test_support::stop_worker(stack).await?;
+    crate::test_support::runtime::stop_worker(stack).await?;
     Ok(())
     }).await
 }

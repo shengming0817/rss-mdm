@@ -1,4 +1,5 @@
-use crate::test_support::*;
+use crate::test_support::{http::Browser, http::browser_subject};
+use crate::test_support::{process::*, runtime::*, *};
 struct AssetRuntime(Arc<rss_transactional_messaging_postgres::PgRuntime>);
 impl rss_runtime::ManagedResource for AssetRuntime {
     fn name(&self) -> &str {
@@ -64,7 +65,8 @@ impl AssetHttp {
     }
 }
 mod identity_read {
-    use crate::test_support::*;
+    use crate::test_support::http::{Browser, set_device_grants};
+    use crate::test_support::{process::*, runtime::*, *};
     #[tokio::test]
     #[ignore = "MODULE=assets.http: real read authorization and PostgreSQL projection"]
     async fn persisted_inventory_read_respects_device_scope() -> Result<()> {
@@ -146,14 +148,14 @@ mod storage {
     pub(super) async fn independent_assets(
         runtime: Arc<PgRuntime>,
         tenant: TenantId,
-        resources: &mut crate::test_support::Resources,
+        resources: &mut crate::test_support::runtime::Resources,
     ) -> Arc<assets::AssetService> {
         let key = rss_mdm_flow_service::storage::cursor_key(&runtime, tenant)
             .await
             .unwrap();
         resources.resource(super::AssetRuntime(runtime.clone()));
         let inventory = inventory_runtime(tenant).await;
-        resources.resource(crate::test_support::InventoryFixtureResource(
+        resources.resource(crate::test_support::runtime::InventoryFixtureResource(
             inventory.clone(),
         ));
         Arc::new(assets::AssetService::new(
@@ -183,7 +185,7 @@ mod storage {
     async fn asset_commit_unknown_recovers_original_receipts() {
         use assets::{Command as AssetCommand, Owner, Query, SavedChange, SavedDefinition};
         let runtime = runtime(tenant()).await;
-        let mut resources = crate::test_support::Resources::default();
+        let mut resources = crate::test_support::runtime::Resources::default();
         let service = independent_assets(runtime.clone(), tenant(), &mut resources).await;
         let id = Uuid::new_v4();
         let command = AssetCommand::SavedWrite {
@@ -225,7 +227,7 @@ mod storage {
     #[ignore = "MODULE=assets.http: real capability storage and transactions"]
     async fn asset_storage_failures_are_not_malformed() {
         let runtime = runtime(tenant()).await;
-        let mut resources = crate::test_support::Resources::default();
+        let mut resources = crate::test_support::runtime::Resources::default();
         let service = independent_assets(runtime.clone(), tenant(), &mut resources).await;
         let device = format!("storage-stages-{}", Uuid::new_v4());
         seed_device(&device);

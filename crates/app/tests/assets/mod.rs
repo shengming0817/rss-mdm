@@ -2,7 +2,7 @@
 mod group_support;
 use crate::test_support::http::ok;
 use crate::test_support::inventory::seed_source;
-use crate::test_support::*;
+use crate::test_support::{http::*, process::*, runtime::*, *};
 use group_support::preview;
 use uuid::Uuid;
 fn request(revision: u64, input: Value) -> Value {
@@ -34,7 +34,7 @@ async fn permissions(subject: &str, device: Option<&str>, write: bool) -> Result
 }
 
 struct Fixture {
-    resources: crate::test_support::Resources,
+    resources: crate::test_support::runtime::Resources,
     base: Value,
     automation: Option<rss_runtime::ShutdownStack>,
     router: Router,
@@ -72,7 +72,7 @@ impl Fixture {
         })
     }
     async fn close(self) -> Result<()> {
-        crate::test_support::stop_worker(self.automation).await?;
+        crate::test_support::runtime::stop_worker(self.automation).await?;
         self.resources.finish(async { Ok(()) }).await?;
         Ok(())
     }
