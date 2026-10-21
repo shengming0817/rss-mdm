@@ -1,0 +1,92 @@
+{
+  "$defs": {
+    "CurrentUserState": {
+      "description": "Server-verified enterprise session state, independent of network presence.",
+      "oneOf": [
+        {
+          "const": "unbound",
+          "description": "No enterprise user is bound.",
+          "type": "string"
+        },
+        {
+          "const": "active",
+          "description": "The exact enterprise session and device registration remain valid.",
+          "type": "string"
+        },
+        {
+          "const": "invalidated",
+          "description": "The retained session or device registration is no longer valid.",
+          "type": "string"
+        }
+      ]
+    },
+    "SelfServiceUser": {
+      "additionalProperties": false,
+      "description": "Authenticated product user; contains no session credential.",
+      "properties": {
+        "instanceId": {
+          "description": "Identity instance.",
+          "format": "uuid",
+          "type": "string"
+        },
+        "principalId": {
+          "description": "Authenticated principal.",
+          "format": "uuid",
+          "type": "string"
+        },
+        "tenantId": {
+          "description": "Product tenant.",
+          "format": "uuid",
+          "type": "string"
+        }
+      },
+      "required": [
+        "tenantId",
+        "instanceId",
+        "principalId"
+      ],
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Public current-user projection. Session locators and secrets are never exposed.",
+  "properties": {
+    "confirmedAt": {
+      "description": "Server UTC Unix seconds of the last explicit binding change.",
+      "format": "int64",
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "revision": {
+      "description": "Device-scoped CAS revision, retained after logout.",
+      "format": "uint64",
+      "minimum": 0,
+      "type": "integer"
+    },
+    "state": {
+      "$ref": "#/$defs/CurrentUserState",
+      "description": "Current verified state; active does not mean the device is online."
+    },
+    "user": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/SelfServiceUser"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Same backend user identity used for asset ownership, when verified."
+    }
+  },
+  "required": [
+    "revision",
+    "state"
+  ],
+  "title": "CurrentUser",
+  "type": "object",
+  "$id": "https://rss.example/mdm/agent/runtime/v1/payload/v1/current-user.schema.json"
+}

@@ -209,6 +209,9 @@ async fn create_enrollment_on(
             .bind(proof.tenant_id()).bind(grant.to_string()).bind(proof.principal_id()).bind(proof.instance_id()).bind(device).execute(&mut *tx).await.map_err(db)?;
     let expires: i64 = sqlx::query_scalar("INSERT INTO mdm_access.requests(tenant_id,id,grant_id,state,source,expected_generation,password_digest,password_version,credential_ref,expires_at,issuance_operation,windows_profile,self_service) VALUES($1::uuid,$2::uuid,$3::uuid,'pending',$4,$5,$6,1,$7::uuid,clock_timestamp()+interval '300 seconds',$8::uuid,$9,$10) RETURNING floor(extract(epoch FROM expires_at))::bigint")
             .bind(proof.tenant_id()).bind(id.to_string()).bind(grant.to_string()).bind(source.as_str()).bind(generation).bind(password_digest).bind(session.to_string()).bind(Uuid::new_v4().to_string()).bind(windows_profile.map(WindowsProfile::as_str)).bind(permission.self_service()).fetch_one(&mut *tx).await.map_err(db)?;
+    if permission.self_service() {
+        crate::device::registration_user::initialize_on(tx, device, &proof.user()?).await?;
+    }
     let receipt = Receipt {
         operation_id: key,
         enrollment_id: id,

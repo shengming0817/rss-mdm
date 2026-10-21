@@ -458,6 +458,7 @@ pub async fn issue_in(
             .bind(proof.tenant_id()).bind(grant).bind(proof.principal_id()).bind(proof.instance_id()).bind(&device).execute(&mut *c).await.map_err(db)?;
         sqlx::query("INSERT INTO mdm_access.requests(tenant_id,id,authority_kind,grant_id,state,source,expected_generation,issuance_operation,expires_at,self_service,account_version,account_reference,account_challenge) VALUES($1::uuid,$2,'apple_account',$3,'pending','mdm.apple',0,$4,clock_timestamp()+interval '300 seconds',true,1,$5,$6)")
             .bind(proof.tenant_id()).bind(id).bind(grant).bind(operation).bind(serde_json::to_value(&reference).map_err(|_|Error::Corrupt)?).bind(&hash).execute(&mut *c).await.map_err(db)?;
+        crate::device::registration_user::initialize_on(c, &device, &proof.user()?).await?;
         registration = None;
     }
     let expiry:i64=sqlx::query_scalar("SELECT floor(extract(epoch FROM expires_at))::bigint FROM mdm_access.requests WHERE tenant_id=$1::uuid AND id=$2").bind(proof.tenant_id()).bind(id).fetch_one(&mut *c).await.map_err(db)?;
@@ -624,6 +625,16 @@ pub async fn entra_in(
             .bind(&tenant).bind(grant).bind(&actor).bind(&instance).bind(&device).execute(&mut *c).await.map_err(db)?;
         sqlx::query("INSERT INTO mdm_access.requests(tenant_id,id,authority_kind,grant_id,state,source,expected_generation,issuance_operation,expires_at,self_service,organization_version,windows_profile) VALUES($1::uuid,$2,'windows_entra',$3,'pending','mdm.windows',$4,$2,clock_timestamp()+interval '300 seconds',false,$5,$6)")
             .bind(&tenant).bind(id).bind(grant).bind(generation).bind(policy_version).bind(profile.as_str()).execute(&mut *c).await.map_err(db)?;
+        crate::device::registration_user::initialize_on(
+            c,
+            &device,
+            &rss_mdm_authorization_service::User {
+                tenant_id: tenant.clone(),
+                instance_id: instance.clone(),
+                principal_id: actor.clone(),
+            },
+        )
+        .await?;
         (id, generation)
     };
     let admission = Admission {

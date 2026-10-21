@@ -148,6 +148,7 @@ pub fn routes() -> axum::Router<Arc<HttpState>> {
     use axum::routing::{get, post};
     axum::Router::new()
         .merge(super::quotas::routes())
+        .merge(super::registration_user::routes())
         .merge(super::channels::routes())
         .route("/enrollments", post(create_enrollment))
         .route("/enrollments/{id}", get(enrollment_status))

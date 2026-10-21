@@ -104,6 +104,14 @@
     {
       "type": "TelemetryGapReceipt",
       "file": "telemetry-gap-receipt-v1.schema.json"
+    },
+    {
+      "type": "CurrentUserChange",
+      "file": "current-user-change-v1.schema.json"
+    },
+    {
+      "type": "CurrentUser",
+      "file": "current-user-v1.schema.json"
     }
   ],
   "apiVersion": 1

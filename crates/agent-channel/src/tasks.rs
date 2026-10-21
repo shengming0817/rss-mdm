@@ -21,6 +21,10 @@ pub(crate) fn routes() -> Router<Arc<TaskState>> {
         .route("/task-trust", get(task_trust).post(acknowledge_task_trust))
         .route("/tasks/claim", post(claim))
         .route("/tasks/{id}/enrollment", post(native_enrollment))
+        .route(
+            "/current-user",
+            get(current_user).put(login_user).delete(logout_user),
+        )
         .route("/self-service", get(directory))
         .route(
             "/self-service/invocations",
@@ -346,6 +350,65 @@ async fn observe_task_trust(
             .await
             .map_err(task_error)?;
         Ok(Json(input))
+    })
+    .await
+}
+
+async fn current_user(
+    State(app): State<Arc<TaskState>>,
+    Extension(audit): Extension<RequestAudit>,
+    peer: Option<Extension<rss_mdm_certificate::HandshakePeer>>,
+    headers: HeaderMap,
+) -> Result<Json<wire::CurrentUser>, crate::AgentError> {
+    crate::bounded(async {
+        let p =
+            authenticate_for(&app, &headers, peer.as_ref().map(|p| &p.0), &audit, false).await?;
+        app.enrollment
+            .current_user(&p, &app.identity)
+            .await
+            .map(Json)
+            .map_err(|e| Error::from(e).into())
+    })
+    .await
+}
+async fn login_user(
+    State(app): State<Arc<TaskState>>,
+    Extension(audit): Extension<RequestAudit>,
+    peer: Option<Extension<rss_mdm_certificate::HandshakePeer>>,
+    headers: HeaderMap,
+    input: Body<wire::CurrentUserChange>,
+) -> Result<Json<wire::CurrentUser>, crate::AgentError> {
+    crate::bounded(async {
+        let input = body(input)?;
+        let p =
+            authenticate_for(&app, &headers, peer.as_ref().map(|p| &p.0), &audit, false).await?;
+        let user = employee(&app, &headers, &audit)
+            .await?
+            .ok_or(Error::Unauthorized)?;
+        app.enrollment
+            .change_current_user(&p, Some(&user), &input, &app.identity, &audit)
+            .await
+            .map(Json)
+            .map_err(|e| Error::from(e).into())
+    })
+    .await
+}
+async fn logout_user(
+    State(app): State<Arc<TaskState>>,
+    Extension(audit): Extension<RequestAudit>,
+    peer: Option<Extension<rss_mdm_certificate::HandshakePeer>>,
+    headers: HeaderMap,
+    input: Body<wire::CurrentUserChange>,
+) -> Result<Json<wire::CurrentUser>, crate::AgentError> {
+    crate::bounded(async {
+        let input = body(input)?;
+        let p =
+            authenticate_for(&app, &headers, peer.as_ref().map(|p| &p.0), &audit, false).await?;
+        app.enrollment
+            .change_current_user(&p, None, &input, &app.identity, &audit)
+            .await
+            .map(Json)
+            .map_err(|e| Error::from(e).into())
     })
     .await
 }

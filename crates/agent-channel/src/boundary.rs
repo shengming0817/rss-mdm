@@ -206,6 +206,7 @@ fn route_action(route: &str) -> &'static str {
         }
         "/api/v1/agent/enroll/certificates" | "/certificates" => "agent_certificate_authorize",
         "/api/v1/agent/enroll/activate" | "/activate" => "agent_certificate_activate",
+        "/api/v1/agent/runtime/current-user" | "/current-user" => "agent_current_user_change",
         "/api/v1/agent/runtime/reports" | "/reports" => "agent_report",
         "/api/v1/agent/runtime/reports/{id}" | "/reports/{id}" => "agent_report_read",
         "/api/v1/agent/runtime/self-service" | "/self-service" => "command_read",

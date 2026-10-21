@@ -3,6 +3,7 @@
 mod activation;
 pub mod bootstrap;
 pub mod configurations;
+pub mod current_user;
 mod grants;
 pub(crate) mod issuance;
 pub mod native;
