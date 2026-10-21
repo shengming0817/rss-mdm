@@ -709,7 +709,7 @@ macOS 是正式产品目标。现有归档仅有 PlatformMacOS 预留值与 mock
 | WMD-MAC08<br>FileVault 管理与 PRK 托管 | 提供 FileVault 期望、启用/延期进度、个人恢复密钥托管、授权查询与轮换验证；已加密与密钥已安全托管分别显示。 | 新增目标<br>二级 |
 | WMD-MAC09<br>Bootstrap Token 与恢复访问保护 | 独立维护 Bootstrap Token 托管状态及支持设备的 Recovery Lock；Secure Token、volume ownership 只采集/解释可获信号，不承诺任意远程生成或转移。 | 新增目标<br>二级 |
 | WMD-MAC10<br>原生软件与 Apple 应用分配 | MDM 包部署先完成受支持签名 PKG；按独立能力接入 Apps and Books/VPP 许可、分配/回收和托管应用状态。DMG/任意脚本不假定属于原生安装命令。 | 新增目标<br>二级 |
-| WMD-MAC11<br>macOS Agent 交付 | 提供签名/公证的安装产物、受控 launchd 服务、设备独立注册、共享任务协议、osquery/脚本/Brew 执行器、更新和卸载；按架构独立验证。 | 新增目标<br>一级 |
+| WMD-MAC11<br>macOS Agent 交付 | 提供安装产物及可选签名/公证信息、受控 launchd 服务、设备独立注册、共享任务协议、osquery/脚本/Brew 执行器、更新和卸载；按架构独立验证。 | 新增目标<br>一级 |
 | WMD-MAC12<br>远程动作与危险操作 | 按硬件/OS/注册前提开放重启、锁定、擦除等动作；单独危险权限和确认，记录不可逆性。不得照搬 iOS 丢失模式或 Windows 专有动作。 | 新增目标<br>二级 |
 | WMD-MAC13<br>macOS 更新编排 | 更新环共享目标/窗口/截止日期/暂停视图；macOS 使用实际支持的 DDM/原生命令及状态，呈现下载、用户延期、权限、重启和完成。 | 新增目标<br>二级 |
 | WMD-MAC14<br>退役、重注册与生态迁移 | 按管理所有权移除 profile、应用分配、Agent 及凭据；保留审计并处理残留任务。跨 MDM 迁移只承诺已验证路径，必要时明确重新注册。 | 新增目标<br>二级 |
@@ -988,7 +988,7 @@ AC-06-22-03　两个策略管理同一软件、一项配置从 Profile 转 DDM�
 
 时效 SLO 分为服务端排队、通知、设备在线响应、用户批准、安装执行、状态核实和投影刷新；受 Apple 服务、终端离线或用户交互影响的阶段不混成一个保证“几秒完成”的指标。所有统计分母分开显示 eligible、unsupported、blocked、waiting 与 confirmed。[E17](../reference/external-sources.md#e17)
 
-Mac Agent 安装/升级要验证签名、公证、权限与服务恢复；软件源验证断点续传、摘要、凭据轮换和备份。服务器、Agent、osquery、Brew/WinGet 与 schema 的兼容窗口在发布前冻结并保留跨版本证据；支持上限以压测结果为准。
+Mac Agent 安装/升级要按实际签名与公证状态验证目标系统的安装许可、权限与服务恢复；后台上传发布不强制正式签名或公证。软件源验证断点续传、摘要、凭据轮换和备份。服务器、Agent、osquery、Brew/WinGet 与 schema 的兼容窗口在发布前冻结并保留跨版本证据；支持上限以压测结果为准。
 
 ---
 
