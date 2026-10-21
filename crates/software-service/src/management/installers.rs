@@ -18,6 +18,8 @@ pub struct Save {
     pub package_id: Uuid,
     pub version: Option<String>,
     pub target: rss_mdm_agent_wire::enroll::configuration::Target,
+    /// Complete existing execution definition; the uploaded artifact key is `package`.
+    pub behavior: Option<r::SoftwareBehavior>,
 }
 fn actor(p: &AuthorizedPrincipal) -> String {
     format!("{}:{}", p.instance_id(), p.principal_id())
@@ -234,6 +236,7 @@ pub async fn save<C: ManagementContentPort>(
                         &file.artifact,
                         &file.filename,
                         &file.facts,
+                        input.behavior.as_ref(),
                         version,
                         *platform,
                         *arch,

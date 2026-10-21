@@ -2188,7 +2188,7 @@ consume(('crates/agent-wire/src/telemetry.rs','crates/agent-wire/schema/runtime/
 
 # Installer preparation consumes the same content journal and catalog transaction.
 consume(('crates/software-service/src/management/installers.rs', 'crates/software-service/src/catalog/installers.rs',
-         'crates/content-service/src/installer.rs', 'crates/content-service/src/native.rs'), 'agent.configurations')
+         'crates/content-service/src/installer.rs','crates/content-service/src/installer/cfb_budget.rs', 'crates/content-service/src/native.rs'), 'agent.configurations')
 for name in ('agent.configurations', 'execution.commands.onboarding', 'apple.onboarding'):
     module = MODULES[name]
     MODULES[name] = replace(module, support_inputs=tuple(dict.fromkeys((*module.support_inputs,

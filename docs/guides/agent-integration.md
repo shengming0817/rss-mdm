@@ -74,13 +74,13 @@ snapshot、partial、failed 分别表达完整快照、部分结果和失败。�
 
 ## 固定安装包发布与匿名下载
 
-服务器接收外部构建的 Windows EXE/MSI/MSIX 与 macOS PKG，不在 Linux 构建、签名或执行安装包。管理员选择文件并确认识别出的版本/目标；无法唯一识别的值允许补填，明确的格式或目标冲突不能覆盖。未签名、ad-hoc 或未公证均可上传、保存和发布，不要求证明材料、manifest、豁免或二次确认。
+服务器接收外部构建的 Windows EXE/MSI/MSIX 与 macOS PKG，不在 Linux 构建、签名或执行安装包。管理员选择文件并确认识别出的版本/目标；无法唯一识别的值允许补填，明确的格式或目标冲突不能覆盖。解析沿用 Content 限额；MSI 还在打开容器前限制 FAT 为 16 MiB、目录为 4096 槽、MiniFAT 为 1 MiB、mini-stream 为 16 MiB，并拒绝重复元数据扇区和循环链。未签名、ad-hoc 或未公证均可上传、保存和发布，不要求证明材料、manifest、豁免或二次确认。
 
 管理客户端自动生成并保留稳定 operationId：
 
 1. `POST /api/v1/agent-packages/uploads` 提交 filename、length、sha256，取得系统生成的 package/resource/upload 坐标和上传 href。摘要只保证文件完整性，不证明作者可信。
 2. 沿现有 Content href 使用 GET 查询、PATCH `?offset=N` 续传和 POST `/complete` 完成；响应丢失先读取原上传状态，不换操作。`GET /api/v1/agent-packages/uploads/{packageId}` 读取真实格式、可识别版本和架构。
-3. `POST /api/v1/agent-packages/save` 提交 operationId、packageId、可选 version 与 target。系统保存既有 Software Resource、私有来源和版本，返回可回读的软件 href；文件原名归 Resource 展示，文件事实与软件生命周期仍由原 owner 持有。未提供安装执行定义不阻塞保存或发布；实际生成安装任务时才要求完整执行定义，不能猜测 EXE 静默参数。
+3. `POST /api/v1/agent-packages/save` 提交 operationId、packageId、可选 version、target 与可选完整 behavior（既有 SoftwareBehavior 合同，主安装材料键固定为 package）。behavior 与材料一次保存为不可变版本，由 Resource 校验格式、目标、引用、参数和检测规则；省略或 null 表示没有执行定义。系统保存既有 Software Resource、私有来源和版本，返回可回读的软件 href；文件原名归 Resource 展示，文件事实与软件生命周期仍由原 owner 持有。未提供安装执行定义不阻塞保存或发布；实际生成安装任务时才要求完整执行定义，不能猜测 EXE 静默参数。
 4. `POST /api/v1/agent-packages` 只提交 operationId、packageId，要求 release_publish；自动启用软件仍检查 software_write。发布绑定真实安装文件与当前软件生命周期，首用采用 production。四个原生目标及同目标多个版本可共存，一个已发布包即可满足首用包条件。
 5. `GET /api/v1/agent-packages/operations/{operationId}` 查询原保存、发布或撤回结果；null 表示仍未知，不证明未提交。`POST /api/v1/agent-packages/{releaseId}/withdraw` 要求 software_withdraw，禁止该 release 的新交换与下载。
 

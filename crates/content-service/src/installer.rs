@@ -7,6 +7,7 @@ use rss_mdm_resource::{Architecture, SoftwareFormat};
 use rss_mdm_software_service::management::content::InstallerFacts;
 use std::collections::BTreeSet;
 const METADATA: u64 = 1_048_576;
+mod cfb_budget;
 fn invalid() -> Error {
     Error::Malformed
 }
@@ -29,7 +30,7 @@ pub(super) fn inspect(
     let suffix = name.rsplit('.').next().unwrap_or("").to_ascii_lowercase();
     let facts = match suffix.as_str() {
         "exe" => exe(file)?,
-        "msi" => msi(file)?,
+        "msi" => msi(file, clock, deadline)?,
         "msix" => super::native::inspect_msix(file, config, clock, deadline)?,
         "pkg" => pkg(file, config, clock, deadline)?,
         _ => return Err(invalid()),
@@ -85,8 +86,9 @@ fn exe(file: &mut File) -> Result<InstallerFacts, Error> {
 // MSI table stream names use the encoding defined by rust-msi's internal/streamname.rs.
 const STRING_POOL: &str = "\u{4840}\u{3f3f}\u{4577}\u{446c}\u{3e6a}\u{44b2}\u{482f}";
 const STRING_DATA: &str = "\u{4840}\u{3f3f}\u{4577}\u{446c}\u{3b6a}\u{45e4}\u{4824}";
-fn msi_budget(file: &mut File) -> Result<(), Error> {
-    let mut compound = cfb::CompoundFile::open(&mut *file).map_err(|_| invalid())?;
+fn msi_budget(file: &mut File, clock: &dyn Clock, deadline: Deadline) -> Result<(), Error> {
+    cfb_budget::validate(file, clock, deadline)?;
+    let mut compound = cfb::CompoundFile::open_strict(&mut *file).map_err(|_| invalid())?;
     let mut total = 0u64;
     let mut count = 0usize;
     for entry in compound.walk().filter(|entry| entry.is_stream()) {
@@ -177,8 +179,8 @@ fn summary_budget(bytes: &[u8]) -> Result<(), Error> {
     }
     Ok(())
 }
-fn msi(file: &mut File) -> Result<InstallerFacts, Error> {
-    msi_budget(file)?;
+fn msi(file: &mut File, clock: &dyn Clock, deadline: Deadline) -> Result<InstallerFacts, Error> {
+    msi_budget(file, clock, deadline)?;
     let mut package = msi::Package::open(file).map_err(|_| invalid())?;
     if package.package_type() != msi::PackageType::Installer {
         return Err(invalid());

@@ -40,7 +40,7 @@ async fn fixture_with(extra: &[&str]) -> Result<Fixture> {
             })
         })
         .collect::<Result<Vec<_>>>()?;
-    for name in ["enrollment", "credentials"] {
+    for name in ["enrollment", "credentials", "software_deploy"] {
         grants.push(crate::authorization::Grant {
             operation: serde_json::from_value(json!(name))?,
             scope: crate::authorization::Scope::AllDevices,
@@ -483,10 +483,22 @@ async fn fixed_packages_and_configurations_activate_beyond_self_quota() -> Resul
     let f = fixture_with(&[
         "registration_configuration_read",
         "registration_configuration_write",
+        "policy_read",
+        "policy_write",
+        "scope_read",
+        "scope_write",
     ])
     .await?;
     let mut user = f.user.clone();
     let windows = publish(&f, &mut user, true).await?;
+    // A published material-only release cannot freeze an installation operation.
+    let scope = Uuid::new_v4();
+    software::write(&mut user, &f.router, &format!("/api/v1/scopes/{scope}"), 0, json!({"action":"put","definition":{"targets":[{"kind":"device","id":Uuid::new_v4()}],"limitations":null,"exclusions":[]}})).await?;
+    let policy = user.call(&f.router, Method::POST, &format!("/api/v1/policies/{}",Uuid::new_v4()), Some(json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"put","enabled":true,"definition":{"scope":scope,"action":{"kind":"ensure_agent_installed","packages":{"windows_x86_64":windows.release_id},"runLifetimeSeconds":3600}}}}))).await?;
+    ensure!(
+        policy.0 == StatusCode::NOT_IMPLEMENTED && policy.1["code"] == "action_not_supported",
+        "material-only task: {policy:?}"
+    );
     let settings = user
         .call(&f.router, Method::GET, "/api/v1/settings/catalog", None)
         .await?;

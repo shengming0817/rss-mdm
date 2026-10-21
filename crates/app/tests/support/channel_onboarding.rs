@@ -1,6 +1,5 @@
 //! Approved controlled samples: these bytes prove server admission, not OS signing or installation.
 use super::*;
-use sha2::{Digest, Sha256};
 pub(crate) async fn grants(user: &Browser, router: &Router) -> Result<()> {
     let subject = browser_subject(user, router).await?;
     let mut grants = identity::device_grants(
@@ -75,18 +74,13 @@ async fn publish_format(
     let msix = format == "msix";
     use software::write;
     let planning = &app.flow.planning;
-    let content = app.content_writer.as_ref().expect("installation content");
     grants(user, router).await?;
-    let source = Uuid::new_v4();
-    let source_path = format!("/api/v1/software/sources/{source}/revisions/1");
-    let registered=write(user,router,&source_path,0,json!({"action":"register","definition":{"id":source,"revision":"1","protocol":{"kind":"private"}}})).await?;
     let package_bytes = match format {
         "msix" => installer_fixtures::msix(version, false),
         "exe" => installer_fixtures::exe(version),
         _ if windows => installer_fixtures::msi(Some(version), false),
         _ => installer_fixtures::pkg(version),
     };
-    let resource = Uuid::new_v4();
     let platform = if windows { "windows" } else { "macos" };
     let arch = if windows { "x86_64" } else { "aarch64" };
     let detect = if windows {
@@ -94,32 +88,103 @@ async fn publish_format(
     } else {
         json!({"kind":"pkg_receipt","receipt":"com.rss.agent.pkg","version":"1.2.3"})
     };
-    let mut definition = json!({"material":{"format":if windows{"msi"}else{"pkg"},"installer":"package"},"source":registered["snapshot"],"package":"RSS.Agent","version":"1.2.3","artifacts":{"package":{"reference":"agent-installer","length":package_bytes.len(),"sha256":Sha256::digest(&package_bytes).to_vec()}},"reboot":"report","downgrade":"deny","dependencies":[],"behavior":{"kind":if windows{"msi"}else{"pkg"},"installer":"package","scope":"system","install":{"runAs":"system","arguments":[],"environment":{},"timeoutSeconds":60,"outputBytes":4096,"exitCodes":{"success":[0],"reboot":[]}},"upgrade":"in_place","uninstall":null,"detect":detect,"upgradeInvocation":{"runAs":"system","arguments":[],"environment":{},"timeoutSeconds":60,"outputBytes":4096,"exitCodes":{"success":[0],"reboot":[]}}},"signatures":[],"provenance":{"kind":"private"},"export":{"kind":"disabled"}});
+    let invocation = json!({"runAs":"system","arguments":[],"environment":{},"timeoutSeconds":60,"outputBytes":4096,"exitCodes":{"success":[0],"reboot":[]}});
+    let mut behavior = json!({"kind":if windows{"msi"}else{"pkg"},"installer":"package","scope":"system","install":invocation,"upgradeInvocation":invocation,"upgrade":"in_place","uninstall":null,"detect":detect});
     if msix {
-        definition["version"] = json!(version);
-        definition["behavior"] = json!({"kind":"msix","container":{"kind":"package","installer":"package"},"identity":{"name":"RSS.Agent","publisher":"CN=RSS","version":version.split('.').map(str::parse::<u16>).collect::<std::result::Result<Vec<_>,_>>()?,"architecture":"x86_64","resourceId":""},"dependencies":[],"deployment":{"kind":"device_provisioning"},"minimumOs":[10,0,19041,0],"requireSideload":true,"allowUnsigned":false,"uninstall":false,"invocation":{"runAs":"system","arguments":[],"environment":{},"timeoutSeconds":60,"outputBytes":4096,"exitCodes":{"success":[0],"reboot":[]}},"upgrade":"in_place"});
+        behavior = json!({"kind":"msix","container":{"kind":"package","installer":"package"},"identity":{"name":"RSS.Agent","publisher":"CN=RSS","version":version.split('.').map(str::parse::<u16>).collect::<std::result::Result<Vec<_>,_>>()?,"architecture":"x86_64","resourceId":""},"dependencies":[],"deployment":{"kind":"device_provisioning"},"minimumOs":[10,0,19041,0],"requireSideload":true,"allowUnsigned":false,"uninstall":false,"invocation":{"runAs":"system","arguments":[],"environment":{},"timeoutSeconds":60,"outputBytes":4096,"exitCodes":{"success":[0],"reboot":[]}},"upgrade":"in_place"});
     }
     if format == "exe" {
-        definition["behavior"]["kind"] = json!("exe");
-        definition["behavior"]["layout"] = json!({"rss-agent.exe":"package"});
-        definition["behavior"]["detect"] = json!({"kind":"registry","scope":"system","key":"Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\rss-agent","value":"DisplayVersion","version":"1.2.3"});
+        behavior["kind"] = json!("exe");
+        behavior["layout"] = json!({"rss-agent.exe":"package"});
+        behavior["detect"] = json!({"kind":"registry","scope":"system","key":"Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\rss-agent","value":"DisplayVersion","version":"1.2.3"});
     }
-    definition["material"] = json!({"format":if windows {format}else{"pkg"},"installer":"package","bundle_id":if windows{Value::Null}else{json!("com.rss.agent")}});
-    let version =
-        software_execution::seed_resource(planning, resource, platform, arch, definition).await?;
-    let request=Request::builder().method(Method::POST).uri(format!("/api/v1/resources/{resource}/content?version=v1&variant=default&platform={platform}&architecture={arch}&operation={}",Uuid::new_v4()))
-        .header("host","mdm.example.test").header("origin","https://mdm.example.test").header("x-identity-request","1").header("x-csrf-token",user.csrf.as_ref().unwrap())
-        .header("cookie",user.cookies.iter().map(|(k,v)|format!("{k}={v}")).collect::<Vec<_>>().join("; ")).header("content-type","application/octet-stream").body(Body::from(package_bytes))?;
+    // Exercise the public upload/save bridge with a complete optional execution definition.
+    let (status, prepared) = user.call(router, Method::POST, "/api/v1/agent-packages/uploads", Some(json!({"operationId":Uuid::new_v4(),"filename":format!("agent.{}",if windows {format} else {"pkg"}),"length":package_bytes.len(),"sha256":rss_mdm_resource::Digest::of(&package_bytes).bytes()}))).await?;
+    ensure!(status == StatusCode::OK, "prepare: {status} {prepared}");
+    let resource = prepared["packageId"].as_str().unwrap();
+    let href = prepared["href"].as_str().unwrap();
+    let request = Request::builder()
+        .method(Method::PATCH)
+        .uri(format!("{href}?offset=0"))
+        .header("host", "mdm.example.test")
+        .header("origin", "https://mdm.example.test")
+        .header("x-identity-request", "1")
+        .header("x-csrf-token", user.csrf.as_ref().unwrap())
+        .header(
+            "cookie",
+            user.cookies
+                .iter()
+                .map(|(k, v)| format!("{k}={v}"))
+                .collect::<Vec<_>>()
+                .join("; "),
+        )
+        .header("content-type", "application/octet-stream")
+        .body(Body::from(package_bytes))?;
     {
         let _guard = software::content_setup_guard().await?;
         let response = router.clone().oneshot(request).await?;
         ensure!(
-            response.status() == StatusCode::CREATED,
+            response.status() == StatusCode::OK,
             "upload: {:?}",
             response.status()
         );
     }
-    software_execution::seed_enabled(planning, content, &version).await?;
+    let completed = user
+        .call(router, Method::POST, &format!("{href}/complete"), None)
+        .await?;
+    ensure!(
+        completed.0 == StatusCode::CREATED,
+        "complete: {completed:?}"
+    );
+    let save = json!({"operationId":Uuid::new_v4(),"packageId":resource,"version":version,"target":{"platform":platform,"architecture":arch},"behavior":behavior});
+    // Validate with the Resource owner before freezing: neither missing material references nor
+    // a mismatched installer format can become a publishable execution definition.
+    let mut wrong = save.clone();
+    wrong["operationId"] = json!(Uuid::new_v4());
+    wrong["behavior"] = json!({"kind":"msi","installer":"missing","scope":"system","install":invocation,"upgradeInvocation":invocation,"upgrade":"in_place","uninstall":null,"detect":{"kind":"msi_product","productCode":"{12345678-1234-4234-8234-123456789abc}","version":"1.2.3"}});
+    let rejected = user
+        .call(
+            router,
+            Method::POST,
+            "/api/v1/agent-packages/save",
+            Some(wrong),
+        )
+        .await?;
+    ensure!(
+        rejected.0 == StatusCode::BAD_REQUEST,
+        "invalid behavior: {rejected:?}"
+    );
+    let saved = user
+        .call(
+            router,
+            Method::POST,
+            "/api/v1/agent-packages/save",
+            Some(save.clone()),
+        )
+        .await?;
+    ensure!(saved.0 == StatusCode::OK, "save: {saved:?}");
+    ensure!(
+        user.call(
+            router,
+            Method::POST,
+            "/api/v1/agent-packages/save",
+            Some(save.clone())
+        )
+        .await?
+            == saved
+    );
+    let mut conflict = save;
+    conflict["behavior"] = Value::Null;
+    ensure!(
+        user.call(
+            router,
+            Method::POST,
+            "/api/v1/agent-packages/save",
+            Some(conflict)
+        )
+        .await?
+        .0 == StatusCode::CONFLICT
+    );
     let (status, published) = user
         .call(
             router,
