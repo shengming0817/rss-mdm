@@ -344,7 +344,7 @@ impl Associations {
                 proof.check_live()?;Ok((value,bindings,grants))
             })).await
         })).await.fold(|v|Ok(v.into_value()),|e|Err(model::transaction_error(e)),|e|Err(model::transaction_error(e)),|_|Err(Error::RollbackFailed),|_|Err(Error::CommitUnknown),|e|Err(model::transaction_error(e)))?;
-        if let Some(rows) = value["endpoints"].as_array_mut() {
+        if let Some(rows) = value.get_mut("endpoints").and_then(Value::as_array_mut) {
             crate::presentation::current_users(rows, &bindings, sessions, &mut BTreeMap::new())
                 .await?;
         }

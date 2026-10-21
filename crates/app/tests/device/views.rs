@@ -222,6 +222,7 @@ async fn http_lists_manual_conflicts_and_signed_source_pagination() -> anyhow::R
     let list_path = format!("{path}/inventory-lists/{key}?limit=2&cursor={cursor}");
     let (status, first) = browser.call(&router, Method::GET, &list_path, None).await?;
     assert_eq!(status, StatusCode::OK, "{first}");
+    assert!(first.get("endpoints").is_none(), "list pages must not gain detail projection fields");
     assert_eq!(first["total"], 3);
     assert_eq!(first["items"], json!([{"kind":"integer","value":1},{"kind":"integer","value":2}]));
     let second_path = format!(
@@ -234,6 +235,7 @@ async fn http_lists_manual_conflicts_and_signed_source_pagination() -> anyhow::R
     assert_eq!(status, StatusCode::OK, "{second}");
     assert_eq!(second["items"], json!([{"kind":"integer","value":3}]));
     assert!(second["nextCursor"].is_null());
+    assert!(second.get("endpoints").is_none());
     let mut anonymous = Browser::default();
     assert_eq!(
         anonymous.call(&router, Method::GET, &path, None).await?.0,
