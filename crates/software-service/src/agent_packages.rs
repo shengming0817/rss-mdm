@@ -201,6 +201,76 @@ async fn prepare<C: ManagementContentPort>(
         verified,
     })
 }
+// Catalog/upload identities and content locations do not change executable material.
+// Preserve every execution field, including secondary artifacts and signature evidence.
+fn material(spec: &r::SoftwareSpec) -> Result<serde_json::Value, Error> {
+    let mut value = serde_json::to_value(spec).map_err(|_| invalid())?;
+    let object = value.as_object_mut().ok_or_else(invalid)?;
+    for key in ["package", "source", "provenance", "export"] {
+        object.remove(key);
+    }
+    let artifacts = object
+        .get_mut("artifacts")
+        .and_then(serde_json::Value::as_object_mut)
+        .ok_or_else(invalid)?;
+    for artifact in artifacts.values_mut() {
+        artifact
+            .as_object_mut()
+            .ok_or_else(invalid)?
+            .remove("reference");
+        artifact
+            .as_object_mut()
+            .ok_or_else(invalid)?
+            .remove("origin");
+    }
+    if let Some(signatures) = object
+        .get_mut("signatures")
+        .and_then(serde_json::Value::as_array_mut)
+    {
+        for signature in signatures {
+            if let Some(evidence) = signature
+                .get_mut("evidence")
+                .and_then(serde_json::Value::as_object_mut)
+            {
+                evidence.remove("reference");
+                evidence.remove("origin");
+            }
+        }
+    }
+    Ok(value)
+}
+
+async fn existing_in(
+    tx: &mut rss_transactional_messaging_postgres::PgTransaction<'_>,
+    prepared: &Prepared,
+) -> transaction::Result<Option<w::Package>> {
+    let tenant = tx.tenant_id();
+    let package = prepared.package.clone();
+    let row = tx.with_connection(move |c| Box::pin(async move {
+        sqlx::query("SELECT id,binding,state FROM mdm_agent_packages.releases WHERE tenant_id=$1::uuid AND platform=$2 AND architecture=$3 AND format=$4 AND product_version=$5")
+            .bind(tenant.to_string())
+            .bind(serde_json::to_value(package.target.platform).map_err(|_| sqlx::Error::Protocol("platform".into()))?.as_str().ok_or_else(|| sqlx::Error::Protocol("platform".into()))?)
+            .bind(serde_json::to_value(package.target.architecture).map_err(|_| sqlx::Error::Protocol("architecture".into()))?.as_str().ok_or_else(|| sqlx::Error::Protocol("architecture".into()))?)
+            .bind(serde_json::to_value(package.format).map_err(|_| sqlx::Error::Protocol("format".into()))?.as_str().ok_or_else(|| sqlx::Error::Protocol("format".into()))?)
+            .bind(package.version).fetch_optional(c).await
+    })).await?;
+    let Some(row) = row else { return Ok(None) };
+    let binding: Binding = serde_json::from_value(row.try_get("binding").map_err(|_| storage())?)
+        .map_err(|_| storage())?;
+    if material(&binding.software)? != material(&prepared.binding.software)? {
+        return Err(Error::Conflict.into());
+    }
+    if row.try_get::<String, _>("state").map_err(|_| storage())? != "published" {
+        return Err(Error::Conflict.into());
+    }
+    let id: Uuid = row.try_get("id").map_err(|_| storage())?;
+    // Reusing an old identity must not re-enable its Software/Resource lifecycle.
+    let admitted = tx
+        .with_connection(move |c| Box::pin(async move { Ok(current_on(c, tenant, id).await) }))
+        .await??;
+    Ok(Some(admitted.0))
+}
+
 async fn insert_in(
     tx: &mut rss_transactional_messaging_postgres::PgTransaction<'_>,
     package: &w::Package,
@@ -226,7 +296,7 @@ async fn insert_in(
                     Err(e) => return Ok(Err(e)),
                 };
                 sqlx::query(
-                    "INSERT INTO mdm_agent_packages.releases VALUES($1::uuid,$2,$3,$4,'published')",
+                    "INSERT INTO mdm_agent_packages.releases(tenant_id,id,document,binding,state) VALUES($1::uuid,$2,$3,$4,'published')",
                 )
                 .bind(tenant.to_string())
                 .bind(package.release_id)
@@ -351,39 +421,45 @@ pub async fn publish<C: ManagementContentPort>(
                     old
                 } else {
                     let prepared = prepared.as_mut().ok_or(Error::Conflict)?;
-                    let enabled = match app
-                        .catalog
-                        .reader()
-                        .publication_binding_in(tx, &prepared.version, false)
-                        .await
-                    {
-                        Ok(_) => true,
-                        Err(crate::catalog::Error::NotAdmitted) => false,
-                        Err(e) => return Err(e.into()),
+                    let existing = existing_in(tx, prepared).await?;
+                    let package = if let Some(existing) = existing {
+                        existing
+                    } else {
+                        let enabled = match app
+                            .catalog
+                            .reader()
+                            .publication_binding_in(tx, &prepared.version, false)
+                            .await
+                        {
+                            Ok(_) => true,
+                            Err(crate::catalog::Error::NotAdmitted) => false,
+                            Err(e) => return Err(e.into()),
+                        };
+                        if !enabled {
+                            current.require(p, Permission::SoftwareWrite, None)?;
+                        }
+                        app.catalog
+                            .enable_for_publication_in(
+                                tx,
+                                &prepared.version,
+                                prepared.verified.as_ref(),
+                                p.principal_id(),
+                                i.operation_id,
+                            )
+                            .await?;
+                        insert_in(tx, &prepared.package, &prepared.binding).await?;
+                        prepared.package.clone()
                     };
-                    if !enabled {
-                        current.require(p, Permission::SoftwareWrite, None)?;
-                    }
-                    app.catalog
-                        .enable_for_publication_in(
-                            tx,
-                            &prepared.version,
-                            prepared.verified.as_ref(),
-                            p.principal_id(),
-                            i.operation_id,
-                        )
-                        .await?;
-                    insert_in(tx, &prepared.package, &prepared.binding).await?;
                     app.catalog
                         .reader()
                         .save_operation_in(
                             tx,
                             i.operation_id,
                             hash,
-                            &serde_json::to_value(&prepared.package).map_err(|_| storage())?,
+                            &serde_json::to_value(&package).map_err(|_| storage())?,
                         )
                         .await?;
-                    prepared.package.clone()
+                    package
                 };
                 let fact = Fact::business(
                     a,

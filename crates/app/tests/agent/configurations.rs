@@ -85,7 +85,7 @@ async fn publish_version(
     )
     .await
 }
-async fn publish_bytes(
+async fn save_bytes(
     f: &Fixture,
     user: &mut Browser,
     platform: &str,
@@ -93,7 +93,7 @@ async fn publish_bytes(
     suffix: &str,
     version: Option<&str>,
     bytes: &[u8],
-) -> Result<(w::configuration::Package, Value)> {
+) -> Result<Uuid> {
     let id = stage_upload(f, user, suffix, bytes).await?;
     let inspected = user
         .call(
@@ -174,6 +174,18 @@ async fn publish_bytes(
             .0 == StatusCode::CONFLICT
         );
     }
+    Ok(id)
+}
+async fn publish_bytes(
+    f: &Fixture,
+    user: &mut Browser,
+    platform: &str,
+    architecture: &str,
+    suffix: &str,
+    version: Option<&str>,
+    bytes: &[u8],
+) -> Result<(w::configuration::Package, Value)> {
+    let id = save_bytes(f, user, platform, architecture, suffix, version, bytes).await?;
     let publication = json!({"operationId":Uuid::new_v4(),"packageId":id});
     let response = user
         .call(
@@ -1379,5 +1391,143 @@ async fn configuration_scope_follows_current_candidate_admission() -> Result<()>
         ensure!(download.status() == StatusCode::OK);
         ensure!(download.bytes().await?.as_ref() == bytes.as_slice());
     }
+    Ok(())
+}
+
+#[tokio::test]
+#[ignore = "MODULE=agent.configurations: publication business identity survives concurrency, reupload and withdrawal"]
+async fn agent_publication_business_identity_is_unique() -> Result<()> {
+    let f = fixture().await?;
+    let mut author = f.user.clone();
+    let bytes = installer_fixtures::exe("7+enterprise");
+    let first = save_bytes(
+        &f,
+        &mut author,
+        "windows",
+        "x86_64",
+        "exe",
+        Some("7+enterprise"),
+        &bytes,
+    )
+    .await?;
+    let second = save_bytes(
+        &f,
+        &mut author,
+        "windows",
+        "x86_64",
+        "exe",
+        Some("7+enterprise"),
+        &bytes,
+    )
+    .await?;
+    let left = json!({"operationId":Uuid::new_v4(),"packageId":first});
+    let right = json!({"operationId":Uuid::new_v4(),"packageId":second});
+    let mut a = author.clone();
+    let mut b = author.clone();
+    let (a, b) = tokio::join!(
+        a.call(
+            &f.router,
+            Method::POST,
+            "/api/v1/agent-packages",
+            Some(left.clone())
+        ),
+        b.call(
+            &f.router,
+            Method::POST,
+            "/api/v1/agent-packages",
+            Some(right.clone())
+        )
+    );
+    let a = a?;
+    let b = b?;
+    ensure!(
+        a.0 == StatusCode::OK && a == b,
+        "competing publications: {a:?}, {b:?}"
+    );
+    let package: w::configuration::Package = serde_json::from_value(a.1.clone())?;
+    ensure!(
+        pg(&format!(
+            "SELECT count(*) FROM mdm_agent_packages.releases WHERE tenant_id='{}'",
+            case_tenant()
+        ))?
+        .trim()
+            == "1"
+    );
+    let mut different = bytes.clone();
+    different.push(1);
+    let changed = save_bytes(
+        &f,
+        &mut author,
+        "windows",
+        "x86_64",
+        "exe",
+        Some("7+enterprise"),
+        &different,
+    )
+    .await?;
+    ensure!(
+        author
+            .call(
+                &f.router,
+                Method::POST,
+                "/api/v1/agent-packages",
+                Some(json!({"operationId":Uuid::new_v4(),"packageId":changed}))
+            )
+            .await?
+            .0
+            == StatusCode::CONFLICT
+    );
+    let withdrawn = author
+        .call(
+            &f.router,
+            Method::POST,
+            &format!("/api/v1/agent-packages/{}/withdraw", package.release_id),
+            Some(json!({"operationId":Uuid::new_v4()})),
+        )
+        .await?;
+    ensure!(withdrawn.0 == StatusCode::NO_CONTENT);
+    ensure!(
+        author
+            .call(
+                &f.router,
+                Method::POST,
+                "/api/v1/agent-packages",
+                Some(left)
+            )
+            .await?
+            == a
+    );
+    ensure!(
+        author
+            .call(
+                &f.router,
+                Method::POST,
+                "/api/v1/agent-packages",
+                Some(right)
+            )
+            .await?
+            == a
+    );
+    ensure!(
+        author
+            .call(
+                &f.router,
+                Method::POST,
+                "/api/v1/agent-packages",
+                Some(json!({"operationId":Uuid::new_v4(),"packageId":second}))
+            )
+            .await?
+            .0
+            == StatusCode::CONFLICT
+    );
+    ensure!(
+        pg(&format!(
+            "SELECT state FROM mdm_agent_packages.releases WHERE tenant_id='{}' AND id='{}'",
+            case_tenant(),
+            package.release_id
+        ))?
+        .trim()
+            == "withdrawn"
+    );
     Ok(())
 }
