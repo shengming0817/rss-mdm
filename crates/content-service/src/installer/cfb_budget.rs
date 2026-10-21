@@ -143,6 +143,7 @@ mod tests {
     use std::io::Write;
     struct RuntimeTimer;
     impl Clock for RuntimeTimer {
+        #[allow(clippy::disallowed_methods, reason = "test clock provider")]
         fn now(&self) -> std::time::Instant {
             std::time::Instant::now()
         }

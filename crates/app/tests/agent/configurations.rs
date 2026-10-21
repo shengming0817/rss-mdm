@@ -491,14 +491,6 @@ async fn fixed_packages_and_configurations_activate_beyond_self_quota() -> Resul
     .await?;
     let mut user = f.user.clone();
     let windows = publish(&f, &mut user, true).await?;
-    // A published material-only release cannot freeze an installation operation.
-    let scope = Uuid::new_v4();
-    software::write(&mut user, &f.router, &format!("/api/v1/scopes/{scope}"), 0, json!({"action":"put","definition":{"targets":[{"kind":"device","id":Uuid::new_v4()}],"limitations":null,"exclusions":[]}})).await?;
-    let policy = user.call(&f.router, Method::POST, &format!("/api/v1/policies/{}",Uuid::new_v4()), Some(json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"put","enabled":true,"definition":{"scope":scope,"action":{"kind":"ensure_agent_installed","packages":{"windows_x86_64":windows.release_id},"runLifetimeSeconds":3600}}}}))).await?;
-    ensure!(
-        policy.0 == StatusCode::NOT_IMPLEMENTED && policy.1["code"] == "action_not_supported",
-        "material-only task: {policy:?}"
-    );
     let settings = user
         .call(&f.router, Method::GET, "/api/v1/settings/catalog", None)
         .await?;
@@ -561,6 +553,15 @@ async fn fixed_packages_and_configurations_activate_beyond_self_quota() -> Resul
         ensure!(state["reserved"] == 0 && state["consumed"] == 2);
     }
     ensure!(devices.len() == 4);
+    // A published material-only release cannot freeze an installation operation.
+    let scope = Uuid::new_v4();
+    software::write(&mut user, &f.router, &format!("/api/v1/scopes/{scope}"), 0, json!({"action":"put","definition":{"targets":[{"kind":"device","id":devices.first().unwrap()}],"limitations":null,"exclusions":[]}})).await?;
+    let policy = user.call(&f.router, Method::POST, &format!("/api/v1/policies/{}",Uuid::new_v4()), Some(json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"put","enabled":true,"definition":{"scope":scope,"action":{"kind":"ensure_agent_installed","packages":{"windows_x86_64":windows.release_id},"runLifetimeSeconds":3600}}}}))).await?;
+    ensure!(
+        policy.0 == StatusCode::NOT_IMPLEMENTED && policy.1["code"] == "action_not_supported",
+        "material-only task: {policy:?}"
+    );
+
     ensure!(machine(&f, "/api/v1/agent/enroll/configurations/exchange", &exchange(&file, &macos, 2)?).await?.0 == StatusCode::TOO_MANY_REQUESTS);
     let me = user
         .call(
