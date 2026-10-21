@@ -5,6 +5,7 @@ use rss_mdm_management_http::runtime_diagnostics::*;
 use std::{sync::Arc, time::Instant};
 
 pub(crate) struct RuntimeDiagnostics {
+    pub access: sqlx::PgPool,
     pub telemetry: Option<Arc<rss_mdm_telemetry_service::Service>>,
     pub inventory: Arc<crate::inventory_runtime::InventoryRuntime>,
     pub identity_audit: Arc<crate::identity_audit::Readiness>,
@@ -118,6 +119,51 @@ impl RuntimeDiagnostics {
                 }
             }
             components.push(telemetry);
+        }
+        {
+            match tokio::time::timeout_at(
+                cutoff.into(),
+                crate::baseline::status(&self.access, &self.tenant.to_string()),
+            )
+            .await
+            {
+                Ok(Ok(Some((phase, blocked, assets, telemetry)))) => {
+                    let mut initialization =
+                        component(ComponentName::Initialization, phase == "configured");
+                    initialization.queues = vec![
+                        Queue {
+                            name: QueueName::InitializationAssetsPending,
+                            count: Some(assets),
+                            truncated: Some(false),
+                        },
+                        Queue {
+                            name: QueueName::InitializationTelemetryPending,
+                            count: Some(telemetry),
+                            truncated: Some(false),
+                        },
+                    ];
+                    if phase != "configured" {
+                        initialization.health = Health::Degraded;
+                        initialization.reasons.push(match blocked.as_deref() {
+                            Some("authorization") => Reason::InitializationAuthorization,
+                            Some("content") => Reason::InitializationContent,
+                            Some("conflict") => Reason::InitializationConflict,
+                            Some("telemetry_backend") => Reason::InitializationTelemetryBackend,
+                            Some("outcome_unknown") => Reason::SettlementUnknown,
+                            Some(_) => Reason::DependencyUnavailable,
+                            None => Reason::Initializing,
+                        });
+                    }
+                    components.push(initialization);
+                }
+                Ok(Ok(None)) => {}
+                _ => {
+                    let mut initialization = component(ComponentName::Initialization, false);
+                    initialization.health = Health::Unknown;
+                    initialization.reasons.push(Reason::DependencyUnavailable);
+                    components.push(initialization);
+                }
+            }
         }
         Snapshot {
             alive: true,

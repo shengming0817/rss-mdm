@@ -18,6 +18,7 @@ mod authorization;
 use rss_mdm_flow_service::automation;
 #[cfg(not(test))]
 use rss_mdm_inventory_service::collection;
+mod baseline;
 #[cfg(test)]
 #[path = "../tests/fixtures/collection.rs"]
 mod collection;

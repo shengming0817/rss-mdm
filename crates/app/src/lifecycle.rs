@@ -407,6 +407,7 @@ pub async fn serve(
                     })??;
                     let signals = notifications.signals.clone();
                     let mut launch = startup.commit();
+                    launch.stage_deferred_task_with_token(app.baseline);
                     if let Some(service) = app.telemetry.clone() {
                         launch.stage_deferred_task_with_token(
                             crate::telemetry::registration(service, execution.runtime.clone())

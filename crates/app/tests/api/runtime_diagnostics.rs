@@ -105,6 +105,7 @@ impl Fixture {
         )
         .await?;
         let source = Arc::new(crate::runtime_diagnostics::RuntimeDiagnostics {
+            access: authority.access.archive_pool(),
             telemetry: None,
             execution: execution.service,
             inventory,

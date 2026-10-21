@@ -153,9 +153,13 @@ impl Service {
                     let user = rss_mdm_authorization_service::User {
                         instance_id: service.installation.instance_id.clone(), tenant_id: tenant.clone(), principal_id: principal.clone(),
                     };
+                    let targets=crate::baseline::manifest::build(uuid::Uuid::parse_str(&user.tenant_id).map_err(|_|Error::Malformed)?)?.targets();
                     tx.with_connection(move |c| Box::pin(async move {
-                        Ok(rss_mdm_authorization_service::store::grant_tenant_administrator_on(c, user, rule_id).await)
-                    })).await.map_err(pg_error)?.map_err(Error::from)?;
+                        Ok(async {
+                            let (_,authority)=rss_mdm_authorization_service::baseline::grant_administrator_on(c,user,rule_id,targets).await?;
+                            crate::baseline::reserve_on(c,&authority).await
+                        }.await)
+                    })).await.map_err(pg_error)??;
                     let receipt = Receipt { operation_id: operation,action:Action::AdministratorCreate,result:ReceiptResult::Administrator(Administrator {
                         tenant_id:tenant.clone(),principal_id:principal,login:request["login"].as_str().ok_or(Error::Malformed)?.into(),rule_id,rule_revision:1,
                     })};

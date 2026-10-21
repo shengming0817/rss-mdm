@@ -159,25 +159,38 @@ async fn initialize_owned(
     }
     .await?;
     owned.access = Some(Database::connect(config.database.options()?).await?);
-    rss_mdm_authorization_service::initialization::initialize(
-        &authority,
-        owned
-            .access
-            .as_ref()
-            .ok_or(Error::Unavailable(Failure::Database))?
-            .audit_store(&config.audit)
-            .await?
-            .as_ref(),
-        rss_mdm_authorization_service::initialization::Initialization {
-            expected: config.user,
-            login,
-            password,
-            operation_id: config.operation_id,
-        },
-        audit,
+    let database = owned
+        .access
+        .as_ref()
+        .ok_or(Error::Unavailable(Failure::Database))?;
+    let store = database.audit_store(&config.audit).await?;
+    let pool = database.archive_pool();
+    let management: String =
+        sqlx::query_scalar("SELECT management_tenant_id::text FROM public.mdm_installation")
+            .fetch_one(&pool)
+            .await
+            .map_err(|_| Error::Unavailable(Failure::Database))?;
+    let input = rss_mdm_authorization_service::initialization::Initialization {
+        expected: config.user,
+        login,
+        password,
+        operation_id: config.operation_id,
+    };
+    if input.expected.tenant_id == management {
+        return rss_mdm_authorization_service::initialization::initialize(
+            &authority, &store, input, audit,
+        )
+        .await
+        .map_err(Error::from);
+    }
+    let tenant = uuid::Uuid::parse_str(&input.expected.tenant_id).map_err(|_| Error::Malformed)?;
+    let targets = crate::baseline::manifest::build(tenant)?.targets();
+    let (receipt, frozen) = rss_mdm_authorization_service::initialization::initialize_baseline(
+        &authority, &store, input, audit, targets,
     )
-    .await
-    .map_err(Error::from)
+    .await?;
+    crate::baseline::reserve(&store, frozen).await?;
+    Ok(receipt)
 }
 
 use rss_mdm_audit_integration::{FailureReason, RequestAudit};

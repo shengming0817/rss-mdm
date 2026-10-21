@@ -600,3 +600,68 @@ mod gaps;
 
 #[path = "performance.rs"]
 mod performance;
+
+#[tokio::test]
+#[ignore = "MODULE=telemetry.ingress.postgres: tenant baseline uses real publication, content and authorization owners"]
+async fn postgres_baseline_recovers_original_receipts_without_overwriting_edits() -> Result<()> {
+    use sqlx::Connection;
+    let requests: Vec<crate::setup::providers::telemetry::Request> =
+        serde_json::from_slice(&std::fs::read(std::env::var("MDM_TELEMETRY_PROVIDERS")?)?)?;
+    ensure!(requests.len() == 1);
+    let installation = &requests[0];
+    crate::setup::providers::telemetry::prepare(installation.clone()).await?;
+    let mut base: Value =
+        serde_json::from_slice(&std::fs::read(std::env::var("MDM_TEST_CONFIG")?)?)?;
+    base["telemetry"] = serde_json::to_value(&installation.configuration)?;
+    let manifest = crate::baseline::manifest::build(Uuid::parse_str(case_tenant())?)?;
+    // This tenant's real provisioned administrator creates the grant and App intent
+    // in the same transaction, exactly as target account provisioning does.
+    let database: crate::config::Database =
+        serde_json::from_value(base["access_database"].clone())?;
+    let mut c = sqlx::PgConnection::connect_with(&database.options()?).await?;
+    let mut tx = c.begin().await?;
+    sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
+        .bind(case_tenant())
+        .execute(&mut *tx)
+        .await?;
+    let (_, authority) = crate::authorization::baseline::grant_administrator_on(
+        &mut tx,
+        identity::user(case_tenant(), case_admin()),
+        Uuid::new_v4(),
+        manifest.targets(),
+    )
+    .await?;
+    crate::baseline::reserve_on(&mut tx, &authority).await?;
+    tx.commit().await?;
+    c.close().await?;
+    let mut f = Fixture::from_config(base.clone()).await?;
+    let resources = std::mem::take(&mut f.resources);
+    let (policy,completed)=resources.finish(async {
+        let phase=pg(&format!("SELECT phase||':'||coalesce(blocked,'') FROM mdm_initialization.baselines WHERE tenant_id='{}'",case_tenant()))?;
+        ensure!(phase.trim()=="configured:","baseline incomplete: {phase}");
+        ensure!(pg(&format!("SELECT count(*) FROM mdm_group.groups WHERE tenant_id='{}' AND kind='system'",case_tenant()))?.trim()=="3");
+        let completed=pg(&format!("SELECT (SELECT count(*) FROM jsonb_object_keys(completed)) FROM mdm_initialization.baselines WHERE tenant_id='{}'",case_tenant()))?;
+        ensure!(completed.trim().parse::<usize>()?==manifest.steps.len());
+        // A normal client cannot create system selectors.
+        let (status,_)=f.author.call(&f.router,Method::POST,&format!("/api/v1/groups/{}",Uuid::new_v4()),Some(json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"create_system","selector":"all_active","presentation":{"name":"client","description":""}}}))).await?;
+        ensure!(status.is_client_error());
+        let last=manifest.steps.last().unwrap();
+        let policy=Uuid::parse_str(&last.target)?;
+        let crate::baseline::manifest::Action::Policy {definition}=&last.action else {anyhow::bail!("last policy");};
+        let changed=post(&mut f.author,&f.router,&format!("/api/v1/policies/{policy}"),json!({"operationId":Uuid::new_v4(),"expectedRevision":1,"input":{"action":"put","enabled":false,"definition":definition}})).await?;
+        ensure!(changed["revision"]==2);
+        // Lost App checkpoint after owner COMMIT; recovery must use the original
+        // operation's receipt even when the user has since disabled this Policy.
+        pg(&format!("UPDATE mdm_initialization.baselines SET phase='pending',completed=completed-'{key}' WHERE tenant_id='{tenant}'",key=last.key,tenant=case_tenant()))?;
+        Ok((policy,completed))
+    }).await?;
+    let mut restarted = Fixture::from_config(base).await?;
+    let resources = std::mem::take(&mut restarted.resources);
+    resources.finish(async {
+        ensure!(pg(&format!("SELECT phase FROM mdm_initialization.baselines WHERE tenant_id='{}'",case_tenant()))?.trim()=="configured");
+        ensure!(pg(&format!("SELECT (SELECT count(*) FROM jsonb_object_keys(completed)) FROM mdm_initialization.baselines WHERE tenant_id='{}'",case_tenant()))?==completed);
+        ensure!(pg(&format!("SELECT state||':'||revision FROM mdm_policy.policies WHERE tenant_id='{}' AND id='{policy}'",case_tenant()))?.trim()=="disabled:2");
+        ensure!(pg(&format!("SELECT count(*) FROM mdm_group.groups WHERE tenant_id='{}' AND kind='system'",case_tenant()))?.trim()=="3");
+        Ok(())
+    }).await
+}
