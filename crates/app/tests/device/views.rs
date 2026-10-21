@@ -364,10 +364,17 @@ async fn directory_search_and_cursor_ignore_hidden_facts() -> anyhow::Result<()>
         let peer=crate::test_support::case::name("zzz-directory-peer");
         let hidden=crate::test_support::case::name("zzz-directory-hidden");
         let first=seed(needle,"mdm","Search-Needle-Serial")?;
+        let name_key=rss_mdm_inventory::FieldKey::parse("device.name")?;
+        let definition=crate::test_support::inventory::definition("directory_name","mdm.windows",&[name_key]);
+        crate::test_support::inventory::register_definition(&definition)?;
+        let source_epoch:Uuid=sqlx::query_scalar("SELECT epoch FROM mdm_access.report_sources WHERE tenant_id=$1::uuid AND registration=$2 AND source='mdm.windows'").bind(case_a()).bind(first).fetch_one(&mut c).await?;
+        let name_scope=rss_mdm_registration_service::device::scope_dataset(TenantId::parse(case_a())?,first,"mdm.windows",source_epoch,"directory_name")?.encode()?;
+        sqlx::query("INSERT INTO mdm.inventory(field_scope,tenant_id,journal,generation,scope,coverage,field,value,batch_id,observed_at,received_at,state,last_known,last_known_batch,last_known_observed,last_known_received,registration,source,epoch,collection_sequence) SELECT field_scope,tenant_id,journal,generation,$3,$4,'device.name',$5,'name-fixture',observed_at,received_at,state,$5,'name-fixture',last_known_observed,last_known_received,registration,source,epoch,collection_sequence FROM mdm.inventory WHERE tenant_id=$1::uuid AND registration=$2 AND field='device.serial_number'").bind(case_a()).bind(first).bind(name_scope).bind(serde_json::to_value(definition.coverage()?)?).bind(json!({"kind":"string","value":"Directory Workstation"})).execute(&mut c).await?;
+
         let second=seed(peer,"mdm","Peer-Serial")?;
         let secret=seed(hidden,"mdm","Hidden-Serial")?;
         let prefix=crate::test_support::case::name("aaa-directory-filler");
-        sqlx::query("INSERT INTO mdm_access.devices(tenant_id,id) SELECT $1::uuid,$2||'-'||lpad(n::text,4,'0') FROM generate_series(1,251) n").bind(case_a()).bind(prefix).execute(&mut c).await?;
+        sqlx::query("INSERT INTO mdm_access.devices(tenant_id,id) SELECT $1::uuid,$2||'-'||lpad(n::text,4,'0') FROM generate_series(1,1000) n").bind(case_a()).bind(prefix).execute(&mut c).await?;
         let registration=DeviceService::new(access.registration(),case_a().into(),authority.audit.clone());
         let owned=registration.assign_registration_user(&admin,needle,&rss_mdm_registration_service::device::registration_user::RegistrationUserChange{expected_revision:0,user:Some(admin.user()?)},Uuid::new_v4(),&RequestAudit::new(case_a().into(),"registration_user_change")).await?;
         let mut filter=query(1);filter.search=Some("search-NEEDLE".into());filter.platform=Some(rss_mdm_inventory::Platform::Windows);
@@ -376,6 +383,10 @@ async fn directory_search_and_cursor_ignore_hidden_facts() -> anyhow::Result<()>
         assert_eq!(found["items"][0]["endpoints"][0]["id"],needle);
         assert_eq!(found["items"][0]["endpoints"][0]["registrationUser"]["user"]["principalId"],admin.principal_id());
         assert!(found["nextCursor"].is_null());
+        assert_eq!(found["items"][0]["endpoints"][0]["displayName"]["state"]["value"]["value"],"Directory Workstation");
+        filter.search=Some("workSTATION".into());
+        assert_eq!(s.views(&admin,&filter,&sessions).await?["statistics"]["deviceViewCount"],1);
+
         let detail=s.view(&admin,&ViewRef::Endpoint(needle.into()),&sessions).await?;
         assert_eq!(detail["endpoints"],found["items"][0]["endpoints"]);
         filter.platform=Some(rss_mdm_inventory::Platform::Macos);

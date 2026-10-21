@@ -34,8 +34,8 @@ pub async fn bindings_on(
     if devices.len() > 1000 {
         return Err(Error::Malformed);
     }
-    let rows=sqlx::query("SELECT u.device,u.revision,u.session_reference,u.confirmed_at,EXISTS(SELECT 1 FROM mdm_access.registrations r JOIN mdm_access.credentials k ON(k.tenant_id,k.registration)=(r.tenant_id,r.id) WHERE r.tenant_id=u.tenant_id AND r.id=u.registration AND r.device=u.device AND r.generation=u.generation AND r.channel='agent' AND r.purpose='primary' AND r.state='active' AND k.state='active') AS live FROM mdm_access.current_users u WHERE u.tenant_id=$1::uuid AND u.device=ANY($2)")
-        .bind(tenant).bind(devices).fetch_all(c).await.map_err(db)?;
+    let rows=sqlx::query("SELECT u.device,u.revision,u.session_reference,u.confirmed_at,(SELECT decode(k.locator,'hex') FROM mdm_access.registrations r JOIN mdm_access.credentials k ON(k.tenant_id,k.registration)=(r.tenant_id,r.id) JOIN mdm_access.agent_issuances i ON(i.tenant_id,i.credential)=(k.tenant_id,k.id) WHERE r.tenant_id=u.tenant_id AND r.id=u.registration AND r.device=u.device AND r.generation=u.generation AND r.channel='agent' AND r.purpose='primary' AND r.state='active' AND k.state='active' AND i.not_before<=extract(epoch FROM statement_timestamp()) AND i.not_after>extract(epoch FROM statement_timestamp())) AS fingerprint FROM mdm_access.current_users u WHERE u.tenant_id=$1::uuid AND u.device=ANY($2)")
+        .bind(tenant).bind(devices).fetch_all(&mut *c).await.map_err(db)?;
     let mut result = devices
         .iter()
         .map(|id| {
@@ -51,6 +51,30 @@ pub async fn bindings_on(
         })
         .collect::<std::collections::BTreeMap<_, _>>();
     for row in rows {
+        let reference: Option<SessionReference> = row
+            .try_get::<Option<serde_json::Value>, _>("session_reference")
+            .map_err(db)?
+            .map(serde_json::from_value)
+            .transpose()
+            .map_err(|_| Error::Corrupt)?;
+        let fingerprint: Option<Vec<u8>> = row.try_get("fingerprint").map_err(db)?;
+        let mut registration_valid = fingerprint.is_some();
+        if reference.is_some()
+            && let Some(fingerprint) = fingerprint
+        {
+            match rss_mdm_pki_service::registry::current_certificate_in(
+                c,
+                rss_request_context::TenantId::parse(tenant).map_err(|_| Error::Corrupt)?,
+                rss_mdm_agent_wire::pki::Purpose::Agent,
+                &fingerprint,
+            )
+            .await
+            {
+                Ok(()) => {}
+                Err(rss_mdm_pki_service::Error::Forbidden) => registration_valid = false,
+                Err(_) => return Err(Error::Storage),
+            }
+        }
         result.insert(
             row.try_get("device").map_err(db)?,
             Binding {
@@ -59,13 +83,8 @@ pub async fn bindings_on(
                     .map_err(db)?
                     .try_into()
                     .map_err(|_| Error::Corrupt)?,
-                reference: row
-                    .try_get::<Option<serde_json::Value>, _>("session_reference")
-                    .map_err(db)?
-                    .map(serde_json::from_value)
-                    .transpose()
-                    .map_err(|_| Error::Corrupt)?,
-                registration_valid: row.try_get("live").map_err(db)?,
+                reference,
+                registration_valid,
                 confirmed_at: Some(row.try_get("confirmed_at").map_err(db)?),
             },
         );

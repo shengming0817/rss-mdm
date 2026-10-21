@@ -1,5 +1,6 @@
 //! Device mTLS and the existing enterprise session jointly bind the current user.
-use crate::test_support::{agent::*, agent_execution::Fixture, runtime::*, *};
+use crate::test_support::{agent::*, agent_execution::Fixture, http::Browser, runtime::*, *};
+use anyhow::Context;
 const CURRENT: &str = "/api/v1/agent/runtime/current-user";
 async fn call(
     f: &Fixture,
@@ -118,4 +119,89 @@ async fn login_switch_logout_replay_and_concurrent_first_login() -> Result<()> {
             Ok(())
         }).await
     }).await
+}
+
+#[tokio::test]
+#[ignore = "MODULE=agent.current_user: directory people authorization, session revocation and device generation/credential fences"]
+async fn directory_people_are_verified_and_authorized_before_search() -> Result<()> {
+    let mut f = Fixture::new().await?;
+    let resources = std::mem::take(&mut f.resources);
+    resources.finish(async {
+        let registered=f.register_profile(json!(["inventory.collect.v1"])).await?;
+        let device=crate::test_support::agent_execution::case_device_id();
+        let dummy=crate::test_support::case::name("current-user-directory-peer");
+        let registration=registered["registrationId"].as_str().context("registration")?;
+        crate::test_support::process::pg(&format!("INSERT INTO mdm_access.devices(tenant_id,id) VALUES('{}','{}')",case_tenant(),dummy))?;
+        let manager=f.author.clone();
+        let mut agent_user=Browser::default();ensure!(agent_user.login(&f.router,"other").await?==StatusCode::OK);
+        f.author=agent_user.clone();
+        let login=call(&f,Method::PUT,Some(json!({"operationId":Uuid::new_v4(),"expectedRevision":0})),true,true).await?;
+        ensure!(login.0==StatusCode::OK,"login {login:?}");
+        f.author=manager;
+        let search=format!("/api/v1/device-views?search={}",f.author_id);
+        let owner_before=owner(&mut f,None).await?;
+        // Hide ownership so a current-user search cannot pass by matching the same owner.
+        let mut grants=crate::test_support::identity::device_grants(Some(device),&["inventory_read"])?;
+        grants.extend(crate::test_support::identity::device_grants(Some(dummy),&["inventory_read"])?);
+        crate::test_support::identity::set_grants(case_tenant(),&f.author_id,grants.clone()).await?;
+        let hidden=f.author.call(&f.router,Method::GET,&search,None).await?;
+        ensure!(hidden.0==StatusCode::OK && hidden.1["statistics"]["deviceViewCount"]==0);
+        let list=f.author.call(&f.router,Method::GET,"/api/v1/device-views",None).await?;
+        let endpoint=list.1["items"].as_array().unwrap().iter().flat_map(|g|g["endpoints"].as_array().unwrap()).find(|e|e["id"]==device).context("endpoint")?;
+        ensure!(endpoint.get("currentUser").is_none()&&endpoint.get("registrationUser").is_none());
+        grants.extend(crate::test_support::identity::device_grants(Some(device),&["inventory_sensitive_read"])?);
+        crate::test_support::identity::set_grants(case_tenant(),&f.author_id,grants.clone()).await?;
+        let visible=f.author.call(&f.router,Method::GET,&search,None).await?;
+        ensure!(visible.0==StatusCode::OK && visible.1["statistics"]["deviceViewCount"]==1,"visible {visible:?}");
+        let projected=visible.1["items"][0]["endpoints"][0]["currentUser"].clone();
+        ensure!(projected["state"]=="active" && projected["user"]["principalId"]==f.author_id);
+        let detail=f.author.call(&f.router,Method::GET,&format!("/api/v1/device-views/endpoint/{device}"),None).await?;
+        ensure!(detail.0==StatusCode::OK && detail.1["endpoints"][0]["currentUser"]==projected);
+        let initial=call(&f,Method::GET,None,true,false).await?;
+        ensure!(initial.1==projected);
+        // A stale binding cannot borrow the validity of the current registration generation.
+        crate::test_support::process::pg(&format!("UPDATE mdm_access.current_users SET generation=generation+1 WHERE tenant_id='{}' AND device='{}'",case_tenant(),device))?;
+        let invalid=f.author.call(&f.router,Method::GET,&search,None).await?;
+        ensure!(invalid.0==StatusCode::OK && invalid.1["statistics"]["deviceViewCount"]==0);
+        let state=call(&f,Method::GET,None,true,false).await?;
+        ensure!(state.0==StatusCode::OK && state.1["state"]=="invalidated");
+        f.author=agent_user.clone();
+        let refreshed=call(&f,Method::PUT,Some(json!({"operationId":Uuid::new_v4(),"expectedRevision":initial.1["revision"]})),true,true).await?;
+        ensure!(refreshed.0==StatusCode::OK && refreshed.1["state"]=="active");
+        // Observe device revocation independently while the enterprise session remains valid.
+        crate::test_support::process::pg(&format!("UPDATE mdm_access.credentials SET state='revoked' WHERE tenant_id='{}' AND registration='{}'",case_tenant(),registration))?;
+        ensure!(call(&f,Method::PUT,Some(json!({"operationId":Uuid::new_v4(),"expectedRevision":refreshed.1["revision"]})),true,true).await?.0==StatusCode::UNAUTHORIZED);
+        let invalid=f.author.call(&f.router,Method::GET,&format!("/api/v1/device-views/endpoint/{device}"),None).await?;
+        ensure!(invalid.0==StatusCode::OK && invalid.1["endpoints"][0]["currentUser"]["state"]=="invalidated");
+        // Restore fault-injected fixture state; then prove expiry is separate from active flags.
+        crate::test_support::process::pg(&format!("UPDATE mdm_access.credentials SET state='active' WHERE tenant_id='{}' AND registration='{}'",case_tenant(),registration))?;
+        let expiry=crate::test_support::process::pg(&format!("SELECT i.not_after FROM mdm_access.agent_issuances i JOIN mdm_access.credentials k ON(k.tenant_id,k.id)=(i.tenant_id,i.credential) WHERE k.tenant_id='{}' AND k.registration='{}'",case_tenant(),registration))?;
+        crate::test_support::process::pg(&format!("UPDATE mdm_access.agent_issuances i SET not_after=extract(epoch FROM clock_timestamp())::bigint-1 FROM mdm_access.credentials k WHERE (k.tenant_id,k.id)=(i.tenant_id,i.credential) AND k.tenant_id='{}' AND k.registration='{}'",case_tenant(),registration))?;
+        let expired=f.author.call(&f.router,Method::GET,&format!("/api/v1/device-views/endpoint/{device}"),None).await?;
+        ensure!(expired.0==StatusCode::OK && expired.1["endpoints"][0]["currentUser"]["state"]=="invalidated");
+        crate::test_support::process::pg(&format!("UPDATE mdm_access.agent_issuances i SET not_after={} FROM mdm_access.credentials k WHERE (k.tenant_id,k.id)=(i.tenant_id,i.credential) AND k.tenant_id='{}' AND k.registration='{}'",expiry.trim(),case_tenant(),registration))?;
+        // A separate live management session can observe revocation of the exact Agent session.
+        f.author=manager_session(&f.router).await?;
+        let page=f.author.call(&f.router,Method::GET,"/api/v1/device-views?limit=1",None).await?;
+        ensure!(page.0==StatusCode::OK,"page {page:?}");
+        let cursor=page.1["nextCursor"].as_str().context("two authorized endpoints")?.to_owned();
+        let (identity,identity_resources)=crate::test_support::identity::identity(case_tenant()).await?;
+        identity_resources.finish(async {
+            let session=identity.authority.inspect_session(identity.tenant,rss_identity_core::session::SessionSecret::parse(agent_user.cookies["__Host-identity-session"].clone())?,crate::identity::deadline()).await?;
+            identity.authority.revoke_current_session(session,crate::identity::deadline()).await?;
+            let invalid=f.author.call(&f.router,Method::GET,&format!("/api/v1/device-views/endpoint/{device}"),None).await?;
+            ensure!(invalid.0==StatusCode::OK && invalid.1["endpoints"][0]["currentUser"]["state"]=="invalidated" && invalid.1["endpoints"][0]["currentUser"]["user"].is_null());
+            let next=f.author.call(&f.router,Method::GET,&format!("/api/v1/device-views?limit=1&cursor={cursor}"),None).await?;
+            ensure!(next.1["code"]=="device_view_cursor_invalidated","revoked cursor: {next:?}");
+            let mut grant=f.grants.clone();grant.extend(crate::test_support::identity::device_grants(Some(device),&["enrollment"])?);
+            crate::test_support::identity::set_grants(case_tenant(),&f.author_id,grant).await?;
+            ensure!(owner(&mut f,None).await?["user"]==owner_before["user"]);
+            Ok(())
+        }).await
+    }).await
+}
+async fn manager_session(router: &Router) -> Result<Browser> {
+    let mut browser = Browser::default();
+    ensure!(browser.login(router, "other").await? == StatusCode::OK);
+    Ok(browser)
 }
