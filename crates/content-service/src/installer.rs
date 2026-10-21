@@ -47,10 +47,19 @@ pub(super) fn inspect(
 fn exe(file: &mut File) -> Result<InstallerFacts, Error> {
     // PE resources are observations. A bootstrap executable's CPU does not prove its payload CPU.
     let mut bytes = Vec::new();
-    file.take(16 * METADATA)
+    (&mut *file)
+        .take(16 * METADATA)
         .read_to_end(&mut bytes)
         .map_err(|_| invalid())?;
     let pe = pelite::PeFile::from_bytes(&bytes).map_err(|_| invalid())?;
+    let length = file.metadata().map_err(|_| invalid())?.len();
+    if pe.file_header().NumberOfSections == 0
+        || pe.section_headers().iter().any(|section| {
+            u64::from(section.PointerToRawData) + u64::from(section.SizeOfRawData) > length
+        })
+    {
+        return Err(invalid());
+    }
     if pe.file_header().Characteristics & 0x2002 != 2 {
         return Err(invalid());
     }
@@ -181,7 +190,10 @@ fn msi(file: &mut File) -> Result<InstallerFacts, Error> {
         _ => return Err(invalid()),
     };
     let mut version = None;
-    if package.get_table("Property").is_some() {
+    if let Some(table) = package.get_table("Property") {
+        if !table.has_column("Property") || !table.has_column("Value") {
+            return Err(invalid());
+        }
         let rows = package
             .select_rows(msi::Select::table("Property"))
             .map_err(|_| invalid())?;
@@ -193,7 +205,7 @@ fn msi(file: &mut File) -> Result<InstallerFacts, Error> {
                 if version.is_some() {
                     return Err(invalid());
                 }
-                version = row["Value"].as_str().map(str::to_owned);
+                version = Some(row["Value"].as_str().ok_or_else(invalid)?.to_owned());
             }
         }
     }

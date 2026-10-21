@@ -639,6 +639,13 @@ fn unsigned_native_installers_are_observed_without_signature_evidence() {
         let facts =
             super::installer::inspect(&mut file, name, &config, &RuntimeTimer, deadline).unwrap();
         assert_eq!(facts.version.as_deref(), version);
+        if name.ends_with(".exe") {
+            file.set_len(513).unwrap();
+            assert!(
+                super::installer::inspect(&mut file, name, &config, &RuntimeTimer, deadline)
+                    .is_err()
+            );
+        }
         file.set_len(2).unwrap();
         assert!(
             super::installer::inspect(&mut file, name, &config, &RuntimeTimer, deadline).is_err()
@@ -687,4 +694,37 @@ fn msi_rejects_oversized_string_claims_before_parser_allocation() {
             .is_err()
         );
     }
+}
+
+#[test]
+fn malformed_msi_property_schema_is_rejected_without_panicking() {
+    use std::io::{Cursor, Write};
+    let mut package =
+        msi::Package::create(msi::PackageType::Installer, Cursor::new(Vec::new())).unwrap();
+    package
+        .create_table(
+            "Property",
+            vec![
+                msi::Column::build("MissingProperty")
+                    .primary_key()
+                    .string(72),
+            ],
+        )
+        .unwrap();
+    let bytes = package.into_inner().unwrap().into_inner();
+    let dir = tempfile::tempdir().unwrap();
+    let mut file = tempfile::tempfile().unwrap();
+    file.write_all(&bytes).unwrap();
+    let deadline =
+        Deadline::from_timeout(&RuntimeTimer, std::time::Duration::from_secs(60)).unwrap();
+    assert!(
+        super::installer::inspect(
+            &mut file,
+            "bad.msi",
+            &config(dir.path().to_owned()),
+            &RuntimeTimer,
+            deadline
+        )
+        .is_err()
+    );
 }
