@@ -110,6 +110,20 @@ pub(super) async fn receive(
             "registration fence: {status}"
         );
     }
+    invalid_reports(&f.router, &evidence, now).await?;
+    ensure!(
+        pg(&format!(
+            "SELECT count(*) FROM mdm_telemetry.batches WHERE tenant_id='{}'",
+            case_tenant()
+        ))? == batches,
+        "gap diagnostics created sample batches"
+    );
+    let report = post(&mut f.author, &f.router, QUERY, evidence.query.clone()).await?;
+    assert_report(&report, &evidence)?;
+    Ok(evidence)
+}
+
+async fn invalid_reports(router: &Router, evidence: &Evidence, now: i64) -> Result<()> {
     for (key, value) in [
         ("tenantId", json!(case::peer())),
         ("source", json!("agent.native")),
@@ -119,7 +133,7 @@ pub(super) async fn receive(
         forged[key] = value;
         ensure!(
             agent_call(
-                &f.router,
+                router,
                 Method::POST,
                 UPLOAD,
                 Some(case_credential()),
@@ -137,7 +151,7 @@ pub(super) async fn receive(
         invalid["gaps"][0]["last"] = json!(created - 1_000_000);
         ensure!(
             agent_call(
-                &f.router,
+                router,
                 Method::POST,
                 UPLOAD,
                 Some(case_credential()),
@@ -157,7 +171,7 @@ pub(super) async fn receive(
         invalid["gaps"][0][key] = value;
         ensure!(
             agent_call(
-                &f.router,
+                router,
                 Method::POST,
                 UPLOAD,
                 Some(case_credential()),
@@ -172,7 +186,7 @@ pub(super) async fn receive(
     oversized["gaps"] = Value::Array(vec![evidence.body["gaps"][0].clone(); 128]);
     ensure!(serde_json::to_vec(&oversized)?.len() > 4096);
     let (status, _) = agent_call(
-        &f.router,
+        router,
         Method::POST,
         UPLOAD,
         Some(case_credential()),
@@ -186,16 +200,7 @@ pub(super) async fn receive(
         ),
         "oversized gap report: {status}"
     );
-    ensure!(
-        pg(&format!(
-            "SELECT count(*) FROM mdm_telemetry.batches WHERE tenant_id='{}'",
-            case_tenant()
-        ))? == batches,
-        "gap diagnostics created sample batches"
-    );
-    let report = post(&mut f.author, &f.router, QUERY, evidence.query.clone()).await?;
-    assert_report(&report, &evidence)?;
-    Ok(evidence)
+    Ok(())
 }
 
 fn receipt_path(evidence: &Evidence) -> String {
@@ -306,7 +311,6 @@ pub(super) async fn reopened(f: &mut Fixture, router: &Router, evidence: &Eviden
                 == StatusCode::BAD_REQUEST
         );
     }
-    bounded_store(f, router, evidence).await?;
     Ok(())
 }
 
@@ -339,6 +343,7 @@ pub(super) async fn withdrawn(
         status == StatusCode::ACCEPTED && result["replayed"] == false,
         "withdrawal blocked device diagnostics: {status} {result}"
     );
+    bounded_store(f, router, evidence).await?;
     Ok(())
 }
 

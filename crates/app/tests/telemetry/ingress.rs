@@ -9,6 +9,7 @@ use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 async fn run(expected: &str, projection: r::TelemetryProjection) -> Result<()> {
+    let restore_seconds: i64 = if expected == "postgres" { 30 } else { 3600 };
     let expected_rows = if projection == r::TelemetryProjection::Current {
         0
     } else {
@@ -31,10 +32,10 @@ async fn run(expected: &str, projection: r::TelemetryProjection) -> Result<()> {
             f.grants.push(crate::authorization::Grant {operation,scope:crate::authorization::Scope::AllDevices});
         }
         identity::set_grants(case_tenant(),&f.author_id,f.grants.clone()).await?;
-        f.register_profile(if expected=="postgres" && projection==r::TelemetryProjection::Both {json!(["inventory.collect.v1","inventory.native.v1","task.execute.v1","telemetry.collect.v1"])} else {json!(["inventory.collect.v1","task.execute.v1","telemetry.collect.v1"])}).await?;
+        f.register_profile(if expected=="postgres" && projection==r::TelemetryProjection::Both {json!(["inventory.collect.v1","task.execute.v1","inventory.native.v1","telemetry.collect.v1"])} else {json!(["inventory.collect.v1","task.execute.v1","telemetry.collect.v1"])}).await?;
         ensure!(claim_request(&f.router,Uuid::new_v4()).await?.0==StatusCode::OK);
         let (template,_,_)=f.resource().await?;
-        post(&mut f.author,&f.router,"/api/v1/asset-retention-policies",json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"key":"telemetry_test","revision":1,"rawSeconds":if expected=="postgres" {30} else {86400},"summarySeconds":if expected=="postgres" {60} else {172800},"restoreSeconds":if expected=="postgres" {30} else {3600}}})).await?;
+        post(&mut f.author,&f.router,"/api/v1/asset-retention-policies",json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"key":"telemetry_test","revision":1,"rawSeconds":if expected=="postgres" {30} else {86400},"summarySeconds":if expected=="postgres" {60} else {172800},"restoreSeconds":restore_seconds}})).await?;
         let mut field=rss_mdm_inventory::builtin::fields().into_iter().find(|f|f.key.as_str()=="custom.corporate_agent.healthy").unwrap();
         field.version+=1;
         field.time_series=Some(rss_mdm_inventory::TimeSeriesBinding {kind:rss_mdm_inventory::TelemetryKind::State,value_path:vec![],interval_start_path:None,dimensions:Default::default(),aggregations:[rss_mdm_inventory::TelemetryAggregation::Timeline,rss_mdm_inventory::TelemetryAggregation::Coverage].into(),retention:rss_mdm_inventory::RetentionReference {key:"telemetry_test".into(),revision:1},max_resources:1});
@@ -204,7 +205,6 @@ async fn run(expected: &str, projection: r::TelemetryProjection) -> Result<()> {
     let (router, resources) = app(&base).await?;
     resources
         .finish(async {
-            if let Some(evidence)=&gap_evidence { gaps::reopened(&mut f,&router,evidence).await?; }
             if let Some(interrupted)=&interrupted {
                 let receipt=format!("/api/v1/agent/runtime/telemetry/batches/{}",interrupted["batchId"].as_str().unwrap());
                 published(&router,&receipt).await?;
@@ -251,11 +251,13 @@ async fn run(expected: &str, projection: r::TelemetryProjection) -> Result<()> {
                 end_micros: end,
                 action,
             };
+            // Restoration lifetime starts at deletion, independently of sample age and restart time.
+            let delete_now: i64 = pg("SELECT floor(extract(epoch FROM clock_timestamp())*1000000)::bigint")?.trim().parse()?;
             let result = settle(
                 &mut f.author,
                 &router,
                 &maintenance(Action::Delete {
-                    restore_until_micros: end + 60_000_000,
+                    restore_until_micros: delete_now + restore_seconds.min(60) * 1_000_000,
                 }),
             )
             .await?;
@@ -387,6 +389,7 @@ async fn run(expected: &str, projection: r::TelemetryProjection) -> Result<()> {
             )
             .await?;
             ensure!(receipt.0 == StatusCode::OK && receipt.1["delivery"] == "published");
+            if let Some(evidence)=&gap_evidence { gaps::reopened(&mut f,&router,evidence).await?; }
             if let Some(evidence)=&gap_evidence { gaps::withdrawn(&mut f,&router,evidence,&body["policy"]).await?; }
             let registration=pg(&format!("SELECT registration::text FROM mdm_telemetry.batches WHERE tenant_id='{}' AND id='{}'",case_tenant(),body["batchId"].as_str().unwrap()))?;
             let registration:Uuid=registration.trim().parse()?;
@@ -468,7 +471,7 @@ async fn settle(
             let (status,result) = author.call(router,Method::POST,"/api/v1/telemetry/maintenance",Some(serde_json::to_value(input)?)).await?;
             if !status.is_success() {
                 let receipt=pg(&format!("SELECT count(*)::text||':'||coalesce(max(result::text),'null') FROM mdm_telemetry.maintenance WHERE tenant_id='{}' AND id='{}'",case_tenant(),input.id))?;
-                anyhow::bail!("maintenance {status} {result}; durable product receipt: {receipt}");
+                anyhow::bail!("maintenance action={} {status} {result}; durable product receipt: {receipt}",serde_json::to_value(&input.action)?);
             }
             if result["state"] == "complete" {
                 return Ok(result);

@@ -160,11 +160,12 @@ impl Service {
     }
 
     /// Prune at most 256 expired receipts independently of timeseries backend maintenance.
+    /// DELETE owns row locking; a locking SELECT would require an UPDATE grant.
     pub(crate) async fn prune_gaps(self: &Arc<Self>) -> Result<(), Error> {
         let tenant = self.tenant;
         self.runtime.local_tx(tenant,crate::deadline(),move|tx|Box::pin(async move {
             tx.with_connection(move|c|Box::pin(async move {
-                sqlx::query("WITH expired AS (SELECT tenant_id,id FROM mdm_telemetry.gap_reports WHERE tenant_id=$1::uuid AND expires_at<=floor(extract(epoch FROM clock_timestamp())*1000000)::bigint ORDER BY expires_at,id LIMIT 256 FOR UPDATE SKIP LOCKED) DELETE FROM mdm_telemetry.gap_reports g USING expired e WHERE g.tenant_id=e.tenant_id AND g.id=e.id")
+                sqlx::query("WITH expired AS (SELECT tenant_id,id FROM mdm_telemetry.gap_reports WHERE tenant_id=$1::uuid AND expires_at<=floor(extract(epoch FROM clock_timestamp())*1000000)::bigint ORDER BY expires_at,id LIMIT 256) DELETE FROM mdm_telemetry.gap_reports g USING expired e WHERE g.tenant_id=e.tenant_id AND g.id=e.id")
                     .bind(tenant.to_string()).execute(c).await?;
                 Ok(())
             })).await
