@@ -36,6 +36,21 @@ pub enum DecisionValue {
     /// Conflicting predicate inputs.
     Conflict,
 }
+impl From<core::Outcome> for DecisionValue {
+    fn from(value: core::Outcome) -> Self {
+        match value {
+            core::Outcome::Match => Self::Match,
+            core::Outcome::NoMatch => Self::NoMatch,
+            core::Outcome::Unknown(reason) => match reason {
+                core::UnknownReason::Null => Self::Null,
+                core::UnknownReason::Missing => Self::Missing,
+                core::UnknownReason::Deleted => Self::Deleted,
+                core::UnknownReason::Unsupported => Self::Unsupported,
+                core::UnknownReason::Conflict => Self::Conflict,
+            },
+        }
+    }
+}
 /// One leaf decision in the immutable rule's AST.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -102,17 +117,7 @@ pub(crate) fn evaluated(object: core::ObjectEvaluation) -> DecisionRecord {
             .map(|(context, e)| PredicateDecision {
                 context: context.clone(),
                 path: e.path.clone(),
-                outcome: match e.outcome {
-                    core::Outcome::Match => DecisionValue::Match,
-                    core::Outcome::NoMatch => DecisionValue::NoMatch,
-                    core::Outcome::Unknown(r) => match r {
-                        core::UnknownReason::Null => DecisionValue::Null,
-                        core::UnknownReason::Missing => DecisionValue::Missing,
-                        core::UnknownReason::Deleted => DecisionValue::Deleted,
-                        core::UnknownReason::Unsupported => DecisionValue::Unsupported,
-                        core::UnknownReason::Conflict => DecisionValue::Conflict,
-                    },
-                },
+                outcome: e.outcome.into(),
             })
             .collect(),
         provenance: object
@@ -169,6 +174,86 @@ impl GroupStore {
                 return Err(stored_shape());
             }
             result.push(record);
+        }
+        Ok(Ok(result))
+    }
+    /// Look up complete frozen dynamic decisions for at most one evaluator page.
+    /// Absence is Unknown, never a negative membership proof.
+    pub async fn source_decisions_in(
+        &self,
+        tx: &mut PgTransaction<'_>,
+        id: OperationId,
+        objects: &[String],
+    ) -> InTransaction<std::collections::BTreeMap<String, core::Outcome>> {
+        crate::store::input!(self.check_transaction(tx)?);
+        if objects.len() > core::limits::OBJECTS {
+            return Ok(Err(Rejection::InvalidInput));
+        }
+        let build = crate::store::input!(self.build_in(tx, id).await?);
+        if build.receipt.is_none() {
+            return Ok(Err(Rejection::IncompleteSnapshot));
+        }
+        if build.request.patch.is_some() {
+            let tenant = self.tenant.to_string();
+            let group = build.request.group.to_string();
+            let base = build.request.base_calculation;
+            let wanted = objects.to_vec();
+            let matched:Vec<String>=tx.with_connection(move|c|Box::pin(async move {
+                sqlx::query_scalar("SELECT object_id FROM (SELECT DISTINCT ON(m.object_id) m.object_id,m.added FROM mdm_group.member_changes m JOIN mdm_group.member_runs r ON(r.tenant_id,r.id)=(m.tenant_id,m.run_id) WHERE m.tenant_id=$1::uuid AND m.group_id=$2::uuid AND m.object_id=ANY($3) AND ((r.phase='published' AND r.base_calculation<=$4) OR r.id=$5::uuid) ORDER BY m.object_id,m.revision DESC) latest WHERE added")
+                    .bind(tenant).bind(group).bind(wanted).bind(base).bind(id.to_string()).fetch_all(c).await
+            })).await?;
+            return Ok(Ok(objects
+                .iter()
+                .map(|o| {
+                    (
+                        o.clone(),
+                        if matched.contains(o) {
+                            core::Outcome::Match
+                        } else {
+                            core::Outcome::NoMatch
+                        },
+                    )
+                })
+                .collect()));
+        }
+        let metadata =
+            crate::history::metadata(tx, id, None, Some(objects.to_vec()), objects.len(), false)
+                .await?;
+        let mut bytes = 0usize;
+        for row in &metadata {
+            bytes = bytes.saturating_add(row.try_get::<i32, _>("bytes")? as usize + 1024);
+        }
+        if bytes > core::limits::BATCH_BYTES {
+            return Ok(Err(Rejection::PageBudgetExceeded));
+        }
+        let rows =
+            crate::history::selected_rows(tx, id, None, Some(objects.to_vec()), objects.len())
+                .await?;
+        let mut result = std::collections::BTreeMap::new();
+        for row in rows {
+            let object: String = row.try_get("object_id")?;
+            let evidence: Vec<u8> = row.try_get("evidence")?;
+            crate::storage::document(&evidence, row.try_get("evidence_digest")?)?;
+            let record: DecisionRecord = data(serde_json::from_slice(&evidence))?;
+            if record.device != object {
+                return Err(stored_shape());
+            }
+            let outcome = match record.decision {
+                DecisionValue::Match => core::Outcome::Match,
+                DecisionValue::NoMatch => core::Outcome::NoMatch,
+                _ => core::Outcome::Unknown(
+                    if record
+                        .explanations
+                        .iter()
+                        .any(|e| e.outcome == DecisionValue::Conflict)
+                    {
+                        core::UnknownReason::Conflict
+                    } else {
+                        core::UnknownReason::Missing
+                    },
+                ),
+            };
+            result.insert(object, outcome);
         }
         Ok(Ok(result))
     }

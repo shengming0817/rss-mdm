@@ -23,7 +23,16 @@ pub(crate) async fn rows(
     after: Option<String>,
     limit: usize,
 ) -> Result<Vec<sqlx::postgres::PgRow>, PgError> {
-    let metadata = metadata(tx, id, after, None, limit, false).await?;
+    selected_rows(tx, id, after, None, limit).await
+}
+pub(crate) async fn selected_rows(
+    tx: &mut PgTransaction<'_>,
+    id: OperationId,
+    after: Option<String>,
+    selected: Option<Vec<String>>,
+    limit: usize,
+) -> Result<Vec<sqlx::postgres::PgRow>, PgError> {
+    let metadata = metadata(tx, id, after, selected, limit, false).await?;
     let mut devices = Vec::new();
     let mut runs = Vec::new();
     let mut bytes = 0usize;

@@ -172,6 +172,12 @@ impl Rule {
                 return Err(Error::TenantMismatch);
             }
             budget.text(object.key.id())?;
+            if object.memberships.keys().cloned().collect::<BTreeSet<_>>() != self.groups() {
+                return Err(Error::IncompleteSnapshot);
+            }
+            for group in object.memberships.keys() {
+                budget.identity(group)?;
+            }
             if object.quantifier == crate::Quantifier::One
                 && (object.contexts.len() != 1 || !object.complete)
             {
@@ -213,6 +219,7 @@ impl Rule {
                 let decision = evaluate_node(
                     &self.criteria,
                     facts,
+                    &object.memberships,
                     as_of,
                     &mut Vec::new(),
                     &mut explanations,
@@ -282,11 +289,24 @@ impl Rule {
 fn evaluate_node(
     c: &Criteria,
     facts: &BTreeMap<String, Fact>,
+    memberships: &BTreeMap<String, Outcome>,
     now: Timepoint,
     path: &mut Vec<usize>,
     out: &mut Vec<Explanation>,
 ) -> Decision {
     match &c.node {
+        Node::Membership { group, negated } => {
+            let outcome = match (memberships[group], negated) {
+                (Outcome::Match, true) => Outcome::NoMatch,
+                (Outcome::NoMatch, true) => Outcome::Match,
+                (value, _) => value,
+            };
+            out.push(Explanation {
+                path: path.clone(),
+                outcome,
+            });
+            outcome.decision()
+        }
         Node::Predicate(p) => {
             let outcome = predicate(
                 facts.get(&p.field),
@@ -314,7 +334,7 @@ fn evaluate_node(
             };
             for (i, child) in children.iter().enumerate() {
                 path.push(i);
-                let value = evaluate_node(child, facts, now, path, out);
+                let value = evaluate_node(child, facts, memberships, now, path, out);
                 path.pop();
                 if value == decisive || (value == Decision::Unknown && result != decisive) {
                     result = value;
@@ -376,7 +396,7 @@ fn predicate(fact: Option<&Fact>, op: Op, operand: Option<&Value>, _now: Timepoi
 
 fn leaf_count(c: &Criteria) -> usize {
     match &c.node {
-        Node::Predicate(_) => 1,
+        Node::Predicate(_) | Node::Membership { .. } => 1,
         Node::And(children) | Node::Or(children) => children.iter().map(leaf_count).sum(),
     }
 }

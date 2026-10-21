@@ -2188,6 +2188,19 @@ for backend in ('postgres','timescale_shared','timescale_dedicated','click_house
 consume(('crates/agent-wire/src/telemetry.rs','crates/agent-wire/schema/runtime/telemetry-*.schema.json','crates/agent-wire/schema/runtime/signed-telemetry-configuration-v1.schema.json'),
         'telemetry.ingress.postgres telemetry.ingress.timescale_shared telemetry.ingress.timescale_dedicated telemetry.ingress.click_house')
 
+# Nested group inputs and dependency reads reuse the existing product owners.
+consume(('crates/inventory-service/src/groups/criteria.rs',
+         'crates/inventory-service/src/groups/dependencies.rs',
+         'crates/inventory-service/src/groups/references.rs',
+         'crates/flow-service/src/planning/group_references.rs',
+         'crates/flow-service/src/planning/automation/group_sources.rs',
+         'crates/inventory-service/schema/group-selections.sql'),
+        'planning.group_scope planning.http planning.scope compliance.group_input group.generations')
+
+case_fixtures('planning.group_scope', 'planning::t2::group_scope::nested_checkpoint_supersedes_changed_source_after_restart', None)
+case_fixtures('planning.group_scope', 'planning::t2::group_scope::nested_large_source_evidence_retries_with_smaller_pages', None)
+case_fixtures('planning.scope', 'planning::t2::scope::pending_group_source_keeps_scope_identity_and_recovers_after_restart', None)
+
 # Installer preparation consumes the same content journal and catalog transaction.
 consume(('crates/software-service/src/management/installers.rs', 'crates/software-service/src/catalog/installers.rs',
          'crates/content-service/src/installer.rs','crates/content-service/src/installer/cfb_budget.rs', 'crates/content-service/src/native.rs'), 'agent.configurations')

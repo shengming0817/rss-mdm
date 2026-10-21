@@ -3,6 +3,7 @@
 use super::*;
 use tokio_util::sync::CancellationToken;
 mod dispatch;
+mod group_sources;
 mod groups;
 pub mod jobs;
 mod model;
