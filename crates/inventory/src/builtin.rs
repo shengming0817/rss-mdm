@@ -37,6 +37,7 @@ fn vocabulary(values: &[&str]) -> ValueType {
 fn field(key: FieldKey, value_type: ValueType, sources: &[Source]) -> FieldDefinition {
     let manual = sources.contains(&Source::Manual);
     FieldDefinition {
+        time_series: None,
         key,
         version: 1,
         value_type,

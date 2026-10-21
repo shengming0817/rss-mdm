@@ -104,6 +104,7 @@ impl Fixture {
         )
         .await?;
         let source = Arc::new(crate::runtime_diagnostics::RuntimeDiagnostics {
+            telemetry: None,
             execution: execution.service,
             inventory,
             planning: flow.planning.clone(),

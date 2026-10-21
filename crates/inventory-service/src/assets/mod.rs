@@ -44,6 +44,53 @@ impl AssetService {
         at: Timepoint,
     ) -> Result<Value> {
         let response = match command {
+            Command::RetentionWrite { change } => {
+                checked_input(change.input.validate())?;
+                if change.expected_revision.checked_add(1) != Some(change.input.revision) {
+                    return Err(Error::Conflict.into());
+                }
+                let tenant = self.tenant;
+                let policy = change.input.clone();
+                let changed = tx
+                    .with_connection(move |c| {
+                        Box::pin(async move {
+                            rss_mdm_inventory_postgres::publish_retention_policy_in(
+                                c, tenant, &policy,
+                            )
+                            .await
+                            .map_err(|_| {
+                                sqlx::Error::Protocol("retention publication rejected".into())
+                            })
+                        })
+                    })
+                    .await?;
+                if !changed {
+                    return Err(Error::Conflict.into());
+                }
+                Response::RetentionPolicy {
+                    policy: Some(change.input.clone()),
+                }
+            }
+            Command::RetentionRead { key, revision } => {
+                if *revision == 0 || *revision > i64::MAX as u64 {
+                    return Err(Error::Malformed.into());
+                }
+                let tenant = self.tenant;
+                let key = key.clone();
+                let revision = *revision;
+                let policy = tx
+                    .with_connection(move |c| {
+                        Box::pin(async move {
+                            rss_mdm_inventory_postgres::retention_policy_in(
+                                c, tenant, &key, revision,
+                            )
+                            .await
+                            .map_err(|_| sqlx::Error::Protocol("retention unavailable".into()))
+                        })
+                    })
+                    .await?;
+                Response::RetentionPolicy { policy }
+            }
             Command::CollectionItems {
                 device,
                 run,

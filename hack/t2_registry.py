@@ -745,7 +745,7 @@ consume(('crates/execution-service/src/input_preparation.rs',
 consume(('crates/execution-service/src/freeze_inputs.rs', 'crates/flow-service/src/resource_catalog/mod.rs'),
         'planning.agent_policy planning.onboarding')
 TASK_CONSUMERS = 'planning.self_service planning.onboarding planning.policy planning.agent_policy planning.frequency planning.software execution.agent.delivery execution.agent.poll execution.agent.content execution.agent.history execution.agent.recovery execution.software.offer execution.software.content execution.software.recovery'
-consume(('crates/agent-wire/src/collection.rs', 'crates/agent-wire/src/collection_scope.rs', 'crates/agent-channel/src/inventory_wire.rs'),
+consume(('crates/agent-wire/src/collection.rs', 'crates/agent-wire/src/collection_scope.rs', 'crates/inventory-service/src/collection/wire.rs'),
         TASK_CONSUMERS + ' agent.registration agent.reports')
 for name in ('execution.agent.delivery', 'execution.software.offer'):
     MODULES[name] = replace(MODULES[name], support_inputs=(*MODULES[name].support_inputs,
@@ -2168,3 +2168,19 @@ consume(('crates/app/schema/first-use.sql',), 'settings.first_use installation.m
 consume(('crates/management-http/schema/FirstUse.json','crates/management-http/examples/first_use_schema.rs'), 'settings.first_use')
 consume(('crates/management-http/src/first_use.rs','crates/app/src/first_use.rs','crates/app/src/first_use/*'), 'deployment.management-tenant')
 consume(('crates/audit-integration/src/*','crates/authorization-service/src/context.rs','crates/authorization-service/src/store.rs','crates/authorization-service/src/evaluate.rs','crates/management-http/src/settings.rs','crates/management-http/src/boundary.rs','crates/management-http/src/router.rs','crates/management-http/src/authorization/http.rs'), 'settings.first_use')
+
+add('telemetry.storage', selectors=('telemetry::tests::explicit_installations_replay_and_reopen_without_runtime_ddl',), profile='none', fixtures=('telemetry',),
+    sources=('crates/app/src/telemetry.rs','crates/app/src/setup/providers/telemetry.rs','crates/app/src/setup/providers/telemetry/*'),
+    tests=('crates/app/tests/telemetry/storage.rs',), support=('hack/telemetry_fixtures.py','deployment/providers.lock.json'))
+
+consume_dependencies('telemetry.storage', normal='rss-mdm-telemetry-service rss-timeseries rss-timeseries-postgres rss-timeseries-clickhouse sqlx tokio')
+consume(('crates/app/src/setup/backup/archive.rs',), 'telemetry.storage')
+
+for backend in ('postgres','timescale_shared','timescale_dedicated','click_house'):
+    name='telemetry.ingress.'+backend
+    base=MODULES['planning.agent_policy']
+    add(name,selectors=('telemetry::ingress::'+backend,),fixtures=tuple(dict.fromkeys((*(f for f in base.fixtures if f!='shared_worker'),'telemetry'))),actors=base.actors,
+        sources=('crates/telemetry-service/src/*','crates/agent-channel/src/telemetry.rs','crates/management-http/src/telemetry.rs','crates/flow-service/src/planning/policies/telemetry.rs','crates/flow-service/src/resource_catalog/telemetry.rs'),
+        tests=('crates/app/tests/telemetry/ingress.rs',),support=(*base.support_inputs,'hack/telemetry_fixtures.py','hack/telemetry_pg_client.py','crates/app/tests/setup/telemetry_backup.rs','crates/app/tests/support/agent_execution.rs','crates/app/tests/support/agent.rs'))
+    MODULES[name]=replace(MODULES[name],scope='tenant',db_mode='fresh',materials=base.materials)
+    consume_dependencies(name,normal='rss-mdm-telemetry-service rss-timeseries rss-timeseries-postgres rss-timeseries-clickhouse rss-mdm-agent-channel rss-mdm-flow-service rss-mdm-inventory-service rss-mdm-registration-service rss-mdm-resource rss-mdm-agent-wire sqlx tokio')

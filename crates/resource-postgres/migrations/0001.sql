@@ -29,7 +29,7 @@ CREATE TABLE mdm_resource.artifact_refs (
  PRIMARY KEY(tenant_id,owner,version,sha256,length), FOREIGN KEY(tenant_id,owner) REFERENCES mdm_resource.aggregates(tenant_id,id)
 );
 CREATE TABLE mdm_resource.field_refs (
- tenant_id uuid NOT NULL,owner text NOT NULL,version text NOT NULL,field text NOT NULL CHECK(length(field)<=128),archived boolean NOT NULL,
+ tenant_id uuid NOT NULL,owner text NOT NULL,version text NOT NULL,field text NOT NULL CHECK(length(field)<=128),archived boolean NOT NULL,telemetry boolean NOT NULL,
  PRIMARY KEY(tenant_id,owner,version,field),FOREIGN KEY(tenant_id,owner) REFERENCES mdm_resource.aggregates(tenant_id,id)
 );
 CREATE INDEX field_refs_live ON mdm_resource.field_refs(tenant_id,field) WHERE NOT archived;
@@ -54,9 +54,20 @@ ALTER TABLE mdm_resource.requests ENABLE ROW LEVEL SECURITY;
 ALTER TABLE mdm_resource.requests FORCE ROW LEVEL SECURITY;
 CREATE POLICY tenant ON mdm_resource.requests USING(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid) WITH CHECK(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid);
 REVOKE ALL ON mdm_resource.requests FROM PUBLIC;
+-- Exact template dependencies of immutable telemetry profiles.
+CREATE TABLE mdm_resource.profile_refs (
+ tenant_id uuid NOT NULL, owner text NOT NULL, version text NOT NULL,
+ target text NOT NULL CHECK(octet_length(target) BETWEEN 1 AND 128), target_version text NOT NULL CHECK(octet_length(target_version) BETWEEN 1 AND 128), archived boolean NOT NULL,
+ PRIMARY KEY(tenant_id,owner,version,target,target_version), FOREIGN KEY(tenant_id,owner) REFERENCES mdm_resource.aggregates(tenant_id,id)
+);
+CREATE INDEX profile_refs_live ON mdm_resource.profile_refs(tenant_id,target,target_version) WHERE NOT archived;
+ALTER TABLE mdm_resource.profile_refs ENABLE ROW LEVEL SECURITY;
+ALTER TABLE mdm_resource.profile_refs FORCE ROW LEVEL SECURITY;
+CREATE POLICY tenant ON mdm_resource.profile_refs USING(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid) WITH CHECK(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid);
+REVOKE ALL ON mdm_resource.profile_refs FROM PUBLIC;
 GRANT USAGE ON SCHEMA mdm_resource TO mdm_resource_runtime;
 GRANT SELECT,INSERT ON ALL TABLES IN SCHEMA mdm_resource TO mdm_resource_runtime;
-GRANT UPDATE(archived) ON mdm_resource.artifact_refs,mdm_resource.field_refs TO mdm_resource_runtime;
+GRANT UPDATE(archived) ON mdm_resource.artifact_refs,mdm_resource.field_refs,mdm_resource.profile_refs TO mdm_resource_runtime;
 GRANT UPDATE(revision,document,digest) ON mdm_resource.aggregates TO mdm_resource_runtime;
 GRANT USAGE ON SCHEMA rss_transactional_messaging TO mdm_resource_runtime;
 GRANT SELECT ON rss_transactional_messaging.policy TO mdm_resource_runtime;

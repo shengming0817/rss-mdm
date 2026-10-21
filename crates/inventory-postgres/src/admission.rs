@@ -84,6 +84,16 @@ pub async fn verify_collections(c: &mut sqlx::PgConnection) -> Result<()> {
     );
     for (table, identity, columns) in [
         (
+            "retention_policies",
+            "PRIMARY KEY (tenant_id, key, revision)",
+            serde_json::json!([
+                ["tenant_id", "uuid", true],
+                ["key", "text", true],
+                ["revision", "bigint", true],
+                ["definition", "jsonb", true]
+            ]),
+        ),
+        (
             "field_versions",
             "PRIMARY KEY (tenant_id, field, version)",
             serde_json::json!([
@@ -122,18 +132,25 @@ pub async fn verify_collections(c: &mut sqlx::PgConnection) -> Result<()> {
             ]),
         ),
     ] {
-        let select = table != "collection_results"
-            || matches!(
-                role.as_str(),
-                "mdm_runtime" | "mdm_access" | "mdm_command_runtime"
-            );
+        let select = if table == "retention_policies" {
+            role == "mdm_flow_runtime"
+        } else {
+            table != "collection_results"
+                || matches!(
+                    role.as_str(),
+                    "mdm_runtime" | "mdm_access" | "mdm_command_runtime" | "mdm_flow_runtime"
+                )
+        };
         let insert = match table {
-            "field_versions" => role == "mdm_flow_runtime",
+            "field_versions" | "retention_policies" => role == "mdm_flow_runtime",
             "collection_definitions" => matches!(
                 role.as_str(),
                 "mdm_access" | "mdm_command_runtime" | "mdm_flow_runtime"
             ),
-            _ => matches!(role.as_str(), "mdm_access" | "mdm_command_runtime"),
+            _ => matches!(
+                role.as_str(),
+                "mdm_access" | "mdm_command_runtime" | "mdm_flow_runtime"
+            ),
         };
         let valid:bool=sqlx::query_scalar(r#"
         SELECT c.relrowsecurity AND c.relforcerowsecurity AND c.relkind='r'

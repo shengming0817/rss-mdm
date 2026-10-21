@@ -50,6 +50,9 @@ pub struct Channels {
 #[derive(Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Change {
+    Telemetry {
+        settings: Box<crate::telemetry::Config>,
+    },
     GatewayTls {
         certificate_file: PathBuf,
         private_key_file: PathBuf,
@@ -532,6 +535,18 @@ pub async fn run(request: Request) -> Result<Receipt> {
             return Err(Error::Conflict);
         }
         match &request.change {
+            Change::Telemetry { settings } => {
+                let value = serde_json::to_value(settings).map_err(|_| Error::Input)?;
+                if runtime["telemetry"].is_object()
+                    && (runtime["telemetry"]["backend"] != value["backend"]
+                        || runtime["telemetry"]["cursor_key_file"] != value["cursor_key_file"]
+                        || runtime["telemetry"]["ingress"] != value["ingress"]
+                        || runtime["telemetry"]["limits"] != value["limits"])
+                {
+                    return Err(Error::Conflict);
+                }
+                runtime["telemetry"] = value;
+            }
             Change::GatewayTls {
                 certificate_file,
                 private_key_file,

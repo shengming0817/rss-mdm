@@ -65,4 +65,16 @@ BEGIN
 END;
 $append$;
 REVOKE ALL ON FUNCTION mdm.append_field_version(uuid,text,bigint,jsonb) FROM PUBLIC;
+
+CREATE TABLE mdm.retention_policies (
+ tenant_id uuid NOT NULL,key text NOT NULL CHECK(length(key) BETWEEN 1 AND 64),
+ revision bigint NOT NULL CHECK(revision>0),definition jsonb NOT NULL CHECK(jsonb_typeof(definition)='object'),
+ PRIMARY KEY(tenant_id,key,revision)
+);
+ALTER TABLE mdm.retention_policies ENABLE ROW LEVEL SECURITY;
+ALTER TABLE mdm.retention_policies FORCE ROW LEVEL SECURITY;
+CREATE POLICY tenant ON mdm.retention_policies USING(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid) WITH CHECK(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid);
+REVOKE ALL ON mdm.retention_policies FROM PUBLIC;
+GRANT SELECT,INSERT ON mdm.retention_policies TO mdm_flow_runtime;
+
 COMMIT;

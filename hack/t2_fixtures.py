@@ -532,6 +532,10 @@ class RunFixtures:
             if 'oracle' in module.fixtures:
                 from apple_oracle import running as oracle
                 stack.enter_context(oracle(root, env))
+            if 'telemetry' in module.fixtures:
+                from telemetry_fixtures import telemetry_profiles
+                selected=module.id.rsplit('.',1)[-1] if module.id.startswith('telemetry.ingress.') else None
+                env.update(stack.enter_context(telemetry_profiles(root, self.case_contexts[job.key]['tenant'], selected, owner if database else None)))
             if 's3' in module.fixtures:
                 with self.lock:
                     env.update(self.s3.environment())

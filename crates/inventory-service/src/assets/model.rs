@@ -205,6 +205,9 @@ pub struct Summary {
     deny_unknown_fields
 )]
 pub enum Response {
+    RetentionPolicy {
+        policy: Option<rss_mdm_inventory::RetentionPolicy>,
+    },
     CollectionItems {
         run: Uuid,
         field: FieldKey,
@@ -277,6 +280,13 @@ pub enum Response {
 #[derive(Clone, Debug, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Command {
+    RetentionWrite {
+        change: Operation<rss_mdm_inventory::RetentionPolicy>,
+    },
+    RetentionRead {
+        key: String,
+        revision: u64,
+    },
     CollectionItems {
         device: String,
         run: Uuid,
@@ -361,6 +371,7 @@ impl Command {
     pub fn operation(&self) -> Option<Uuid> {
         match self {
             Self::FieldWrite { change, .. } => Some(change.operation_id),
+            Self::RetentionWrite { change } => Some(change.operation_id),
             Self::Search { request, .. } => Some(request.operation_id),
             Self::SavedExecute { operation, .. } => Some(*operation),
             Self::Manual { change, .. } => Some(change.operation_id),

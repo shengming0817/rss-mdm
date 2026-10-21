@@ -121,6 +121,10 @@ pub(super) fn units() -> Vec<(&'static str, &'static str)> {
         ),
         ("flow-service-schema-v1", rss_mdm_flow_service::INSTALL_SQL),
         (
+            "telemetry-service-schema-v1",
+            rss_mdm_telemetry_service::SCHEMA_SQL,
+        ),
+        (
             "execution-service-schema-v5",
             rss_mdm_execution_service::INSTALL_SQL,
         ),

@@ -119,6 +119,11 @@ pub enum SoftwareDelivery {
 )]
 /// Each action owns its inputs; registration never requires a fictitious resource.
 pub enum Action {
+    /// Periodic telemetry configuration resolved at authenticated Agent check-in.
+    TelemetryProfile {
+        /// Immutable Resource profile coordinates.
+        resource: ExactResourceBinding,
+    },
     /// Native Windows credential management on the existing Agent schedule.
     Credential {
         /// Exact native operation and stable target identity.
@@ -429,6 +434,7 @@ impl Action {
             Self::Execution { .. } => crate::ActionKind::Execution,
             Self::NativeCollection { .. } => crate::ActionKind::NativeCollection,
             Self::AgentCollection { .. } => crate::ActionKind::AgentCollection,
+            Self::TelemetryProfile { .. } => crate::ActionKind::TelemetryProfile,
             Self::Configuration { .. } => crate::ActionKind::Configuration,
             Self::Software { .. } => crate::ActionKind::Software,
             Self::EnsureAgentInstalled { .. } => crate::ActionKind::EnsureAgentInstalled,
@@ -439,7 +445,8 @@ impl Action {
     /// Borrow resource coordinates only for actions that actually consume a resource.
     pub fn resource(&self) -> Option<ResourceIdentity<'_>> {
         match self {
-            Self::AgentCollection { resource, .. }
+            Self::TelemetryProfile { resource }
+            | Self::AgentCollection { resource, .. }
             | Self::NativeCollection { resource, .. }
             | Self::Execution { resource, .. }
             | Self::Configuration { resource, .. } => Some(resource.identity()),
@@ -453,7 +460,8 @@ impl Action {
     /// Validate calendar and lifetime semantics without owning any targets.
     pub fn validate(&self) -> Result<(), Error> {
         match self {
-            Self::Execution { resource, .. }
+            Self::TelemetryProfile { resource }
+            | Self::Execution { resource, .. }
             | Self::AgentCollection { resource, .. }
             | Self::NativeCollection { resource, .. }
             | Self::Configuration { resource, .. } => resource.validate()?,
@@ -554,7 +562,7 @@ impl Action {
                     previous = Some(stage.opens_at);
                 }
             }
-            Action::Configuration { .. } => {}
+            Action::Configuration { .. } | Action::TelemetryProfile { .. } => {}
             Action::UnmanageDevice {
                 schedule,
                 run_lifetime_seconds,

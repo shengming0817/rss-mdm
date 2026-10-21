@@ -815,3 +815,63 @@ pub async fn bind_native_in(
     )
     .await
 }
+
+/// Bind an already authorized collection template to the current Agent source incarnation.
+/// This validates registration/credential liveness; the caller still owns template authority.
+pub async fn revalidate_collection_source(
+    c: &mut sqlx::PgConnection,
+    principal: &DevicePrincipal,
+    source: rss_mdm_inventory::Source,
+) -> Result<Scope, Error> {
+    use rss_mdm_inventory::Source;
+    if principal.purpose() != Purpose::Primary
+        || principal.channel() != Channel::Agent
+        || !matches!(
+            source,
+            Source::AgentNative | Source::AgentScript | Source::AgentOsquery
+        )
+    {
+        return Err(Error::Forbidden);
+    }
+    revalidate_management(c, principal).await?;
+    let epoch: Option<Uuid> = sqlx::query_scalar("SELECT epoch FROM mdm_access.report_sources WHERE tenant_id=$1::uuid AND registration=$2 AND source=$3 AND enabled")
+        .bind(principal.tenant().to_string()).bind(principal.registration()).bind(source.as_str())
+        .fetch_optional(c).await.map_err(db)?;
+    crate::device::scope(
+        principal.tenant(),
+        principal.registration(),
+        source.as_str(),
+        epoch.ok_or(Error::Forbidden)?,
+    )
+    .map_err(Into::into)
+}
+
+/// Effective Agent collection streams for a device; old registration incarnations stay historical.
+pub async fn live_collection_streams_on(
+    c: &mut sqlx::PgConnection,
+    tenant: rss_request_context::TenantId,
+    device: &str,
+) -> Result<Vec<(Uuid, String, Uuid)>, Error> {
+    lock_channel(c, &tenant.to_string(), device, Channel::Agent).await?;
+    let rows = sqlx::query_as("SELECT r.id,s.source,s.epoch FROM mdm_access.registrations r JOIN mdm_access.report_sources s ON(s.tenant_id,s.registration)=(r.tenant_id,r.id) WHERE r.tenant_id=$1::uuid AND r.device=$2 AND r.channel='agent' AND r.purpose='primary' AND r.state='active' AND s.enabled AND s.source IN('agent.native','agent.script','agent.osquery') AND EXISTS(SELECT 1 FROM mdm_access.credentials k JOIN mdm_access.agent_issuances i ON(i.tenant_id,i.credential)=(k.tenant_id,k.id) WHERE k.tenant_id=r.tenant_id AND k.registration=r.id AND k.state='active' AND i.not_after>floor(extract(epoch FROM clock_timestamp()))::bigint) ORDER BY r.id,s.source LIMIT 65")
+        .bind(tenant.to_string()).bind(device).fetch_all(c).await.map_err(db)?;
+    if rows.len() > 64 {
+        return Err(Error::Storage);
+    }
+    Ok(rows)
+}
+
+/// A closed old source must never be reactivated merely because a credential expired.
+/// The caller proves the historical stream's device membership from accepted product facts.
+pub async fn collection_stream_retired_on(
+    c: &mut sqlx::PgConnection,
+    tenant: rss_request_context::TenantId,
+    device: &str,
+    registration: Uuid,
+    source: rss_mdm_inventory::Source,
+    epoch: Uuid,
+) -> Result<bool, Error> {
+    lock_channel(c, &tenant.to_string(), device, Channel::Agent).await?;
+    sqlx::query_scalar("SELECT NOT EXISTS(SELECT 1 FROM mdm_access.registrations r JOIN mdm_access.report_sources s ON(s.tenant_id,s.registration)=(r.tenant_id,r.id) WHERE r.tenant_id=$1::uuid AND r.device=$2 AND r.id=$3 AND r.channel='agent' AND r.purpose='primary' AND r.state='active' AND s.source=$4 AND s.epoch=$5 AND s.enabled)")
+        .bind(tenant.to_string()).bind(device).bind(registration).bind(source.as_str()).bind(epoch).fetch_one(c).await.map_err(db)
+}

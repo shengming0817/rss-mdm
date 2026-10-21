@@ -264,6 +264,7 @@ impl Fixture {
         execution.webhooks.set(webhooks.clone()).map_err(|_| anyhow::anyhow!("webhook fixture already assembled"))?;
         resources.resource(crate::webhooks::Resource(webhooks.clone()));
         let app = Arc::new(Assembly {
+            telemetry: None,
             runtime_observation: crate::setup::host::Observation::new(&config.runtime_binding, identity.tenant.to_string(), identity.instance.to_string()),
             apple_material_roots: Arc::new(Vec::new()),
             webhooks,

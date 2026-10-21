@@ -202,6 +202,24 @@ pub(crate) async fn seed_service(
     device: &str,
     profile: Value,
 ) -> Result<Value> {
+    seed_service_with_ack(service, label, device, profile, true).await
+}
+/// A real active mTLS registration that has not yet installed task signing trust.
+pub(crate) async fn seed_unacknowledged(
+    service: &Service,
+    label: &str,
+    device: &str,
+    profile: Value,
+) -> Result<Value> {
+    seed_service_with_ack(service, label, device, profile, false).await
+}
+async fn seed_service_with_ack(
+    service: &Service,
+    label: &str,
+    device: &str,
+    profile: Value,
+    acknowledge: bool,
+) -> Result<Value> {
     let root = std::path::PathBuf::from(std::env::var("MDM_AGENT_PKI_FIXTURES")?);
     use crate::clock::Clock;
     let now = crate::clock::SystemClock.unix_seconds()?;
@@ -221,7 +239,9 @@ pub(crate) async fn seed_service(
         .await?;
     let peer = crate::test_support::agent_tls::peer(service.trust(), &issued.chain, &root).await?;
     service.authenticate(&peer).await?;
-    super::task_signing::acknowledge(service, &peer).await?;
+    if acknowledge {
+        super::task_signing::acknowledge(service, &peer).await?;
+    }
     remember(label, peer, runtime.device_id.clone());
     Ok(serde_json::to_value(runtime)?)
 }
@@ -332,6 +352,8 @@ pub(crate) async fn router(fixture: &authority::Authority) -> Result<Router> {
             "/api/v1/agent/runtime",
             crate::agent::router(
                 Arc::new(crate::agent::HttpState {
+                    content: None,
+                    telemetry: None,
                     enrollment: service.clone(),
                     audit_store: fixture.audit.clone(),
                     access: Arc::new(fixture.access.agent_store()),

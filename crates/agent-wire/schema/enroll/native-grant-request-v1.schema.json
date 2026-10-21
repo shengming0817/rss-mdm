@@ -117,6 +117,11 @@
           "const": "credentials.windows.v1",
           "description": "Native Windows recovery material execution and encrypted escrow.",
           "type": "string"
+        },
+        {
+          "const": "telemetry.collect.v1",
+          "description": "Periodic typed observations using published telemetry profiles.",
+          "type": "string"
         }
       ]
     },

@@ -12,12 +12,18 @@ pub enum FieldChange {
 pub struct FieldImpact {
     pub groups: i64,
     pub templates: i64,
+    pub telemetry_profiles: i64,
+    pub archived_resource_versions: i64,
     pub compliance: i64,
     pub saved_queries: i64,
 }
 impl FieldImpact {
     fn used(&self) -> bool {
-        self.groups > 0 || self.templates > 0 || self.compliance > 0 || self.saved_queries > 0
+        self.groups > 0
+            || self.templates > 0
+            || self.telemetry_profiles > 0
+            || self.compliance > 0
+            || self.saved_queries > 0
     }
 }
 impl AssetService {
@@ -34,10 +40,13 @@ impl AssetService {
             let saved_queries=sqlx::query_scalar("SELECT count(*) FROM mdm_assets.saved_queries WHERE tenant_id=$1::uuid AND document IS NOT NULL AND (jsonb_path_exists(document,'$.query.**.field ? (@ == $field || @ starts with $prefix)',jsonb_build_object('field',$2::text,'prefix',$2::text||'.')) OR jsonb_path_exists(document,'$.query.select[*] ? (@ == $field)',jsonb_build_object('field',$2::text)))").bind(tenant.to_string()).bind(key).fetch_one(c).await?;
             Ok((groups,compliance,saved_queries))
         })).await?;
-        let templates = rss_mdm_resource_postgres::field_references_in(tx, field.as_str()).await?;
+        let (templates, telemetry_profiles, archived_resource_versions) =
+            rss_mdm_resource_postgres::field_reference_details_in(tx, field.as_str()).await?;
         Ok(FieldImpact {
             groups,
             templates,
+            telemetry_profiles,
+            archived_resource_versions,
             compliance,
             saved_queries,
         })
@@ -79,7 +88,8 @@ impl AssetService {
                 if let Some(old) = old {
                     // Changing a field's meaning would reinterpret historical values. A new key
                     // is required; reference impact remains visible before any retirement.
-                    if old.value_type != definition.value_type
+                    if !definition.time_series_extends(old)
+                        || !definition.value_type.extends(&old.value_type)
                         || old.unit != definition.unit
                         || old.item_key != definition.item_key
                         || old.sensitivity != definition.sensitivity
@@ -87,7 +97,11 @@ impl AssetService {
                         return Err(Error::Conflict.into());
                     }
                     if impact.used()
-                        && (old.nullable != definition.nullable
+                        && (!old
+                            .sources
+                            .keys()
+                            .all(|s| definition.sources.contains_key(s))
+                            || old.nullable != definition.nullable
                             || old.manual != definition.manual
                             || old.platforms != definition.platforms
                             || old.searchable != definition.searchable)

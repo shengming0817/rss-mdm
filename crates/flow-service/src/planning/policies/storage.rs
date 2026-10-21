@@ -28,7 +28,7 @@ pub async fn write_in(
     tx: &mut PgTransaction<'_>,
     p: &Policy,
     change: &Change,
-    frozen: Option<&Frozen>,
+    frozen: Option<&Value>,
     proof: &AuthorizedPrincipal,
     now: i64,
 ) -> Result<()> {

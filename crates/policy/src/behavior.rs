@@ -15,6 +15,8 @@ pub enum ActionKind {
     NativeCollection,
     /// Declarative native reads over the Agent channel.
     AgentCollection,
+    /// Periodic telemetry without execution tasks.
+    TelemetryProfile,
     /// Persistent native configuration.
     Configuration,
     /// Software assignment.
@@ -35,15 +37,18 @@ pub enum AssignmentBehavior {
     NativeCollectionRecovery,
     /// Persistent native effects driven by Scope and assignment changes.
     NativeDesired,
+    /// Authenticated telemetry configuration retrieval.
+    TelemetrySampling,
 }
 impl ActionKind {
     /// Complete closed set for deriving database predicates.
-    pub const ALL: [Self; 9] = [
+    pub const ALL: [Self; 10] = [
         Self::UnmanageDevice,
         Self::Credential,
         Self::Execution,
         Self::NativeCollection,
         Self::AgentCollection,
+        Self::TelemetryProfile,
         Self::Configuration,
         Self::Software,
         Self::EnsureAgentInstalled,
@@ -57,6 +62,7 @@ impl ActionKind {
             Self::Execution => "execution",
             Self::NativeCollection => "native_collection",
             Self::AgentCollection => "agent_collection",
+            Self::TelemetryProfile => "telemetry_profile",
             Self::Configuration => "configuration",
             Self::Software => "software",
             Self::EnsureAgentInstalled => "ensure_agent_installed",
@@ -92,6 +98,7 @@ impl crate::Action {
     pub const fn assignment_behavior(&self) -> AssignmentBehavior {
         match self {
             crate::Action::UnmanageDevice { .. } => AssignmentBehavior::DeviceLifecycle,
+            crate::Action::TelemetryProfile { .. } => AssignmentBehavior::TelemetrySampling,
             crate::Action::NativeCollection { .. } => AssignmentBehavior::NativeCollectionRecovery,
             _ if matches!(self.target_channel(), Some(SoftwareChannel::Mdm)) => {
                 AssignmentBehavior::NativeDesired
@@ -123,6 +130,7 @@ impl AssignmentBehavior {
     pub fn kinds(self) -> Vec<&'static str> {
         match self {
             Self::DeviceLifecycle => vec!["unmanage_device"],
+            Self::TelemetrySampling => vec!["telemetry_profile"],
             Self::AgentCheckIn => vec![
                 "credential",
                 "agent_collection",

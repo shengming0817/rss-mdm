@@ -28,6 +28,11 @@ pub fn routes() -> Router<Arc<HttpState>> {
             get(collection_items),
         )
         .route("/asset-fields/{field}", put(field_write))
+        .route("/asset-retention-policies", post(retention_write))
+        .route(
+            "/asset-retention-policies/{key}/{revision}",
+            get(retention_read),
+        )
         .route("/asset-fields/{field}/references", get(field_references))
         .route("/device-queries", post(search))
         .route("/device-queries/{id}", get(query_status))
@@ -52,7 +57,10 @@ fn authorize(
     command: &Command,
 ) -> std::result::Result<(), rss_mdm_inventory_service::Error> {
     match command {
-        Command::FieldWrite { .. } | Command::FieldReferences { .. } => auth
+        Command::FieldWrite { .. }
+        | Command::FieldReferences { .. }
+        | Command::RetentionWrite { .. }
+        | Command::RetentionRead { .. } => auth
             .proof
             .manage(Permission::InventoryFieldsWrite)
             .map_err(rss_mdm_inventory_service::Error::from),
@@ -93,6 +101,8 @@ async fn run(
         "inventory_read"
     });
     match &command {
+        Command::RetentionWrite { change } => audit.target(&change.input.key),
+        Command::RetentionRead { key, .. } => audit.target(key),
         Command::Manual { device, .. } => audit.target_device(device),
         Command::Detail { device, .. }
         | Command::CollectionRun { device, .. }
@@ -469,6 +479,37 @@ async fn collection_items(
             offset: page.offset.unwrap_or(0),
             limit: page.limit.unwrap_or(100),
         },
+    )
+    .await
+}
+
+async fn retention_write(
+    State(app): State<Arc<HttpState>>,
+    Extension(auth): Extension<RequestAuth>,
+    Extension(audit): Extension<RequestAudit>,
+    payload: BodyInput<Operation<rss_mdm_inventory::RetentionPolicy>>,
+) -> std::result::Result<HttpResponse, Error> {
+    run(
+        &app,
+        &auth,
+        &audit,
+        Command::RetentionWrite {
+            change: body(payload)?,
+        },
+    )
+    .await
+}
+async fn retention_read(
+    State(app): State<Arc<HttpState>>,
+    Extension(auth): Extension<RequestAuth>,
+    Extension(audit): Extension<RequestAudit>,
+    Path((key, revision)): Path<(String, u64)>,
+) -> std::result::Result<HttpResponse, Error> {
+    run(
+        &app,
+        &auth,
+        &audit,
+        Command::RetentionRead { key, revision },
     )
     .await
 }

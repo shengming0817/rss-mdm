@@ -168,9 +168,11 @@ impl<'a> PublicationInput<'a> {
         })
     }
 }
-impl<'a> From<&'a Action> for PublicationInput<'a> {
-    fn from(action: &'a Action) -> Self {
-        match action {
+impl<'a> TryFrom<&'a Action> for PublicationInput<'a> {
+    type Error = crate::Error;
+    fn try_from(action: &'a Action) -> Result<Self, Self::Error> {
+        Ok(match action {
+            Action::TelemetryProfile { .. } => return Err(crate::Error::Unsupported),
             Action::UnmanageDevice {
                 schedule,
                 run_lifetime_seconds,
@@ -264,7 +266,7 @@ impl<'a> From<&'a Action> for PublicationInput<'a> {
                 schedule,
                 lifetime: *run_lifetime_seconds,
             },
-        }
+        })
     }
 }
 

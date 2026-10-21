@@ -4,7 +4,7 @@
 mod artifacts;
 mod codec;
 pub mod directory;
-pub use artifacts::{artifact_referenced_in, field_references_in};
+pub use artifacts::{artifact_referenced_in, profile_references_in};
 
 mod error;
 mod event;
@@ -24,11 +24,13 @@ pub(crate) const ADMISSION: Admission = Admission {
         "artifact_refs",
         "field_refs",
         "immutable",
+        "profile_refs",
         "requests",
     ],
     update_columns: &[
         "artifact_refs.archived",
         "field_refs.archived",
+        "profile_refs.archived",
         "aggregates.revision",
         "aggregates.document",
         "aggregates.digest",
@@ -42,3 +44,5 @@ pub const OUTBOX_MIGRATION_SQL: &str = include_str!("../migrations/0002_outbox_w
 /// Minimal validated resources for downstream integration prerequisites.
 #[cfg(feature = "integration")]
 pub mod fixture;
+
+pub use artifacts::field_reference_details_in;

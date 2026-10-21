@@ -23,6 +23,7 @@ pub use model::{AttemptPhase, Change, Create, DispatchV3, NativeTarget, Task};
 use rss_mdm_authorization_service as authorization;
 
 mod agent_collection_eligibility;
+pub use agent_collection_eligibility::matches as native_collection_supported;
 mod payload;
 pub mod script_eligibility;
 pub mod self_service;

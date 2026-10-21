@@ -15,6 +15,12 @@ fn main() {
             "Acknowledgement": schemars::schema_for!(pki::Acknowledgement),
         },
         "runtime": {
+            "TelemetryCurrentStatus": schemars::schema_for!(runtime::TelemetryCurrentStatus),
+            "TelemetryDirectory": schemars::schema_for!(runtime::TelemetryDirectory),
+            "SignedTelemetryConfiguration": schemars::schema_for!(runtime::SignedTelemetryConfiguration),
+            "TelemetryConfiguration": schemars::schema_for!(runtime::TelemetryConfiguration),
+            "TelemetryUpload": schemars::schema_for!(runtime::TelemetryUpload),
+            "TelemetryReceipt": schemars::schema_for!(runtime::TelemetryReceipt),
             "BindingProfile": schemars::schema_for!(runtime::BindingProfile),
             "ReportRequest": schemars::schema_for!(runtime::ReportRequest),
             "ReportAck": schemars::schema_for!(runtime::ReportAck),

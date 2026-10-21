@@ -211,3 +211,51 @@ macOS UID 查询可以返回该 UID 下多个独立历史范围，不能据此�
 
 System 标准字段保持规范映射，不能将 subject 改写为 owner、替换 store、将安装存在映射为健康，
 或把缺失观察改成删除。需要派生解释时使用自定义字段。Windows 系统服务账户不能作为用户采集的交互绑定。
+
+## 遥测配置与历史查询
+
+先用 `POST /api/v1/asset-retention-policies` 发布保留策略，再在字段定义的
+`timeSeries` 中引用精确 key/revision。发布请求沿用 `Operation`，`expectedRevision`
+为前一版本；`GET /api/v1/asset-retention-policies/{key}/{revision}` 读取该历史版本。
+策略的原始数据、汇总及删除恢复时长互相约束，已发布版本不可原位改写。资产当前值仍无 TTL。
+字段类型、单位、Counter 含义变化须使用新字段身份。引用检查区分活跃采集模板、遥测
+Profile 与归档资源版本；归档引用只解释历史。
+
+Resource 的 `telemetry_profile` 版本绑定一个精确的原生、脚本或 osquery 模板，冻结字段
+定义、采样/上传周期、执行与输出预算，并选择 current/history/both 投影。字段绑定持有
+保留策略，Profile 不能覆盖。数组必须声明稳定 item key；标量值和维度使用显式属性路径，
+维度值域必须有限。提频使用绝对 UTC 到期时间，读取配置不会续期。
+
+Policy 的 `telemetry_profile` action 使用精确 Resource 版本和现有设备 Scope。
+Agent 在现有 mTLS runtime 边界读取
+`/telemetry/configurations/{policy}/{version}`，通过 `POST /telemetry/batches` 上传，
+再用 `GET /telemetry/batches/{id}` 查询原身份结果。相同身份异内容冲突；提交未知时保留
+原批次 ID，不生成替代 ID。只有已声明 `telemetry.collect.v1` 且平台/架构匹配的主 Agent
+注册可调用。周期采样和离线缓存由 Agent 后续实现，本服务端契约不代表真机采样已验收。
+
+批次的 `published` 表示所需后端或当前资产 inbox 已确认接收。当前资产是否完成投影，
+使用 `GET /telemetry/batches/{id}/observations/{observation}` 单独查询。历史数据是否仍
+可查询由查询结果的 unavailable 范围表达；指定汇总窗口的进度也独立于批次接收。
+
+管理端使用以下受现有会话/设备 Scope 保护的接口：
+
+| 接口 | 用途 |
+| --- | --- |
+| POST /api/v1/telemetry/history | 精确设备、字段、资源的历史或 latest；历史续页重新授权 |
+| POST /api/v1/telemetry/aggregate | 精确字段历史版本、来源代际、维度及窗口的聚合 |
+| POST /api/v1/telemetry/health | 接收时间窗口内的批次状态及 valid/missing/failed 计数 |
+| POST /api/v1/telemetry/maintenance | 原身份下执行有界重算、保留边界、清理、删除或恢复步骤 |
+
+查询观察时间使用 UTC Unix 微秒，窗口为左闭右开。latest 按活跃注册、来源优先级及观察
+顺序选择；相同优先级的冲突被显式报告。latest 需要在有界资源范围内完成来源比较，预算
+不足时返回失败；历史查询使用游标。Counter 必须携带累计重置起点或增量区间；缺失、失败、
+边界和覆盖缺口不补成零。
+
+敏感字段在历史、聚合和健康读取中都要求额外权限。维护操作还要求设备范围内的
+`telemetry_maintain`，删除/恢复要求 `telemetry_delete`。维护请求的 ID 绑定完整内容，
+每次调用重新授权；`more` 需要以相同请求继续，`blocked` 表示依赖尚未满足，不能当作成功。
+删除恢复使用原 selection、窗口和 fence；后台存储继续保护恢复期、汇总边界与幂等承诺。
+
+Agent 从 runtime 的 `GET /telemetry/configurations` 发现当前授权分配，再获取精确 Policy/version 配置。目录是有界完整集合，超出容量明确失败，不把部分结果当作撤销清单；当前最多扫描 256 个启用的遥测 Policy。目录中的 `supported=false` 表示现有能力或环境不满足，不能降级执行。配置含原生计划或脚本字面量输入、显式映射、字段定义与配置绑定；上传必须原样回传绑定。脚本内容从该精确配置的 `/content` 路径获取，重新检查注册、Scope 和发布者权限并验证字节摘要。
+
+Profile 参数经精确模板校验，不做文本插值；当前设备遥测仅接受 Device/System 模板。临时提频到达 UTC 到期时间后恢复正常周期，不因重新拉取配置而续期。历史补传同时受 Profile backfill 与字段绑定保留期限约束；旧定义继续按原版本解释。

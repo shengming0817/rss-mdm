@@ -38,34 +38,11 @@ impl FrozenAction {
         deadline: i64,
         context: &wire::SoftwareExecutionContext,
     ) -> Result<wire::TaskPayload, Error> {
-        self.definition
-            .validate_parameters(&serde_json::json!(parameters))
-            .map_err(|_| Error::Malformed)?;
         let spec = self.definition.spec();
-        let mut positional = BTreeMap::new();
-        let mut arguments = Vec::new();
-        let mut environment = BTreeMap::new();
-        for (name, binding) in &spec.bindings {
-            let value = parameters.get(name).ok_or(Error::Malformed)?;
-            let literal = match value {
-                Value::String(v) => v.clone(),
-                Value::Bool(_) | Value::Number(_) => value.to_string(),
-                _ => return Err(Error::Malformed),
-            };
-            match binding {
-                r::ParameterBinding::Positional { index } => {
-                    positional.insert(*index, literal);
-                }
-                r::ParameterBinding::Named { name } => {
-                    arguments.push(format!("-{name}"));
-                    arguments.push(literal);
-                }
-                r::ParameterBinding::Environment { name } => {
-                    environment.insert(name.clone(), literal);
-                }
-            }
-        }
-        arguments.extend(positional.into_values());
+        let (arguments, environment) = self
+            .definition
+            .prepare_parameters(&parameters)
+            .map_err(|_| Error::Malformed)?;
         wire::TaskSpec {
             wire_version: wire::WIRE_VERSION,
             tenant_id: tenant,

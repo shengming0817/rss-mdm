@@ -1,0 +1,294 @@
+{
+  "$defs": {
+    "Scalar": {
+      "description": "Explicitly typed asset scalar. Times are UTC Unix seconds, never validity windows.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "description": "Nonblank bounded text.",
+          "properties": {
+            "kind": {
+              "const": "string",
+              "type": "string"
+            },
+            "value": {
+              "maxLength": 65536,
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "value"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Signed integer.",
+          "properties": {
+            "kind": {
+              "const": "integer",
+              "type": "string"
+            },
+            "value": {
+              "format": "int64",
+              "maximum": 9223372036854775807,
+              "minimum": -9223372036854775808,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "kind",
+            "value"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Finite numeric observation.",
+          "properties": {
+            "kind": {
+              "const": "number",
+              "type": "string"
+            },
+            "value": {
+              "format": "double",
+              "type": "number"
+            }
+          },
+          "required": [
+            "kind",
+            "value"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Ordered bounded collection.",
+          "properties": {
+            "kind": {
+              "const": "array",
+              "type": "string"
+            },
+            "value": {
+              "items": {
+                "$ref": "#/$defs/Scalar"
+              },
+              "maxItems": 100000,
+              "type": "array"
+            }
+          },
+          "required": [
+            "kind",
+            "value"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Declared structured attributes.",
+          "properties": {
+            "kind": {
+              "const": "object",
+              "type": "string"
+            },
+            "value": {
+              "additionalProperties": {
+                "$ref": "#/$defs/Scalar"
+              },
+              "maxProperties": 64,
+              "propertyNames": {
+                "maxLength": 64,
+                "pattern": "^[a-z][a-z0-9_]*$",
+                "type": "string"
+              },
+              "type": "object"
+            }
+          },
+          "required": [
+            "kind",
+            "value"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Boolean value, including false.",
+          "properties": {
+            "kind": {
+              "const": "boolean",
+              "type": "string"
+            },
+            "value": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "kind",
+            "value"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "UTC Unix seconds.",
+          "properties": {
+            "kind": {
+              "const": "time",
+              "type": "string"
+            },
+            "value": {
+              "format": "int64",
+              "type": "integer"
+            }
+          },
+          "required": [
+            "kind",
+            "value"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "TelemetryObservation": {
+      "additionalProperties": false,
+      "description": "One immutable sampling instant. Missing readings remain explicit.",
+      "properties": {
+        "id": {
+          "description": "Tenant-wide sampling identity; reuse fixes the original configuration and content.",
+          "format": "uuid",
+          "type": "string"
+        },
+        "observedAt": {
+          "description": "UTC Unix microseconds when sampled, independent of receipt time.",
+          "format": "int64",
+          "type": "integer"
+        },
+        "sequence": {
+          "description": "Monotonic producer sequence within the admitted source incarnation.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "values": {
+          "additionalProperties": false,
+          "description": "Exact configured field keys and typed source output.",
+          "patternProperties": {
+            "^(device|custom|channel)\\.[a-z][a-z0-9_]*(\\.[a-z][a-z0-9_]*)*$": {
+              "$ref": "#/$defs/TelemetryReading"
+            }
+          },
+          "type": "object"
+        }
+      },
+      "required": [
+        "id",
+        "sequence",
+        "observedAt",
+        "values"
+      ],
+      "type": "object"
+    },
+    "TelemetryReading": {
+      "description": "Sampling failures do not invent values or tombstones.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "description": "Typed producer output; explicit paths select the stored scalar.",
+          "properties": {
+            "intervalStart": {
+              "description": "Scalar Counter interval/reset start in UTC microseconds; each field is independent.\nStructured counters use their declared per-item path and leave this absent.",
+              "format": "int64",
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "quality": {
+              "const": "valid",
+              "type": "string"
+            },
+            "value": {
+              "$ref": "#/$defs/Scalar",
+              "description": "Typed collector output."
+            }
+          },
+          "required": [
+            "quality",
+            "value"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "No observation at this instant.",
+          "properties": {
+            "quality": {
+              "const": "missing",
+              "type": "string"
+            }
+          },
+          "required": [
+            "quality"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Collection failed at this instant.",
+          "properties": {
+            "quality": {
+              "const": "failed",
+              "type": "string"
+            }
+          },
+          "required": [
+            "quality"
+          ],
+          "type": "object"
+        }
+      ]
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Batch identity fixes ordered observations and the exact Policy version.",
+  "properties": {
+    "batchId": {
+      "description": "Fixed logical upload identity.",
+      "format": "uuid",
+      "type": "string"
+    },
+    "binding": {
+      "description": "Exact server configuration binding. It fences cached batches across registration changes.",
+      "type": "string"
+    },
+    "observations": {
+      "description": "Fixed observation order.",
+      "items": {
+        "$ref": "#/$defs/TelemetryObservation"
+      },
+      "type": "array"
+    },
+    "policy": {
+      "description": "Server-authored assignment identity, not an authorization assertion.",
+      "format": "uuid",
+      "type": "string"
+    },
+    "policyVersion": {
+      "description": "Exact version previously obtained from the authenticated configuration endpoint.",
+      "format": "uuid",
+      "type": "string"
+    }
+  },
+  "required": [
+    "batchId",
+    "policy",
+    "policyVersion",
+    "binding",
+    "observations"
+  ],
+  "title": "TelemetryUpload",
+  "type": "object",
+  "$id": "https://rss.example/mdm/agent/runtime/v1/payload/v1/telemetry-upload.schema.json"
+}

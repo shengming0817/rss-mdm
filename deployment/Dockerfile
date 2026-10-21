@@ -1,6 +1,8 @@
 ARG RUST_IMAGE
 ARG RUNTIME_IMAGE
 ARG POSTGRES_IMAGE
+ARG TELEMETRY_POSTGRES_IMAGE
+FROM ${TELEMETRY_POSTGRES_IMAGE} AS telemetry-tools
 FROM ${RUST_IMAGE} AS build
 ARG TARGETPLATFORM
 ARG CACHE_NAMESPACE
@@ -34,6 +36,8 @@ ENTRYPOINT ["/usr/local/bin/rss-mdm"]
 
 # One-shot initialization and maintenance; no container runtime client.
 FROM ${POSTGRES_IMAGE} AS installer
+COPY --from=telemetry-tools /usr/lib/postgresql/16/bin/pg_dump /usr/local/bin/pg_dump16
+COPY --from=telemetry-tools /usr/lib/postgresql/16/bin/pg_restore /usr/local/bin/pg_restore16
 USER 0:0
 RUN apt-get update && apt-get install -y --no-install-recommends libxml2 python3 openssl && rm -rf /var/lib/apt/lists/*
 COPY --from=build /out/rss-mdm /usr/local/bin/rss-mdm-installer

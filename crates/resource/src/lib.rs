@@ -135,6 +135,8 @@ pub enum Kind {
     NativeCollection,
     /// Agent-native declarative inventory collection.
     AgentCollection,
+    /// Versioned periodic sampling configuration.
+    TelemetryProfile,
 }
 #[derive(
     Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, serde::Serialize, serde::Deserialize,
@@ -229,6 +231,13 @@ pub enum Declaration {
         /// Validated immutable plan and mappings.
         definition: AgentCollectionDefinition,
     },
+    /// Periodic sampling configuration with an exact template reference.
+    TelemetryProfile {
+        /// Exact canonical profile bytes.
+        artifact: Artifact,
+        /// Validated immutable profile.
+        definition: TelemetryProfile,
+    },
     /// Configuration metadata; construction does not apply it.
     Configuration {
         /// Expected immutable artifact; construction does not load its bytes.
@@ -244,6 +253,7 @@ impl Declaration {
             Self::Configuration { .. } => Kind::Configuration,
             Self::NativeCollection { .. } => Kind::NativeCollection,
             Self::AgentCollection { .. } => Kind::AgentCollection,
+            Self::TelemetryProfile { .. } => Kind::TelemetryProfile,
         }
     }
     /// Borrow the expected artifact shared by every declaration family.
@@ -253,7 +263,8 @@ impl Declaration {
             Self::Script { artifact, .. }
             | Self::Configuration { artifact, .. }
             | Self::NativeCollection { artifact, .. }
-            | Self::AgentCollection { artifact, .. } => artifact,
+            | Self::AgentCollection { artifact, .. }
+            | Self::TelemetryProfile { artifact, .. } => artifact,
         }
     }
 }
@@ -368,6 +379,17 @@ impl Version {
                     return Err(Error::InvalidInput);
                 }
             }
+            if let Declaration::TelemetryProfile {
+                artifact,
+                definition,
+            } = &variant.declaration
+            {
+                definition.validate_target(variant.platform, variant.architecture)?;
+                if definition.spec().template.resource == resource.as_str() {
+                    return Err(Error::InvalidInput);
+                }
+                artifact.verify(&definition.canonical())?;
+            }
             if let Declaration::Script { definition, .. } = &variant.declaration {
                 definition.validate_platform(variant.platform)?;
             }
@@ -467,6 +489,8 @@ impl Version {
     fn canonical(&self) -> Vec<u8> {
         let mut e = Encoding(if self.kind == Kind::Software {
             b"rss-mdm-resource-software-v5\0".to_vec()
+        } else if self.kind == Kind::TelemetryProfile {
+            b"rss-mdm-resource-telemetry-profile-v1\0".to_vec()
         } else if self.kind == Kind::Script {
             b"rss-mdm-resource-script-v2\0".to_vec()
         } else if self.kind == Kind::AgentCollection {
@@ -485,6 +509,7 @@ impl Version {
             Kind::Configuration => 3,
             Kind::NativeCollection => 4,
             Kind::AgentCollection => 5,
+            Kind::TelemetryProfile => 6,
         });
         e.0.extend((self.variants.len() as u32).to_be_bytes());
         for v in &self.variants {
@@ -518,6 +543,11 @@ impl Version {
                     e.0.extend(bytes);
                 }
                 Declaration::AgentCollection { definition, .. } => {
+                    let bytes = definition.canonical();
+                    e.0.extend((bytes.len() as u32).to_be_bytes());
+                    e.0.extend(bytes);
+                }
+                Declaration::TelemetryProfile { definition, .. } => {
                     let bytes = definition.canonical();
                     e.0.extend((bytes.len() as u32).to_be_bytes());
                     e.0.extend(bytes);
@@ -845,3 +875,9 @@ pub use collection_scope::TemplateScope;
 
 mod applicability;
 pub use applicability::{Applicability, CollectionEnvironment};
+
+mod telemetry;
+pub use telemetry::{
+    TelemetryBoost, TelemetryBudget, TelemetryProfile, TelemetryProfileSpec, TelemetryProjection,
+    TelemetryTemplate,
+};

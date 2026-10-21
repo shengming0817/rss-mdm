@@ -43,7 +43,7 @@ impl Scalar {
     pub fn validate(&self) -> Result<()> {
         fn visit(value: &Scalar, depth: usize, nodes: &mut usize, bytes: &mut usize) -> Result<()> {
             *nodes += 1;
-            if depth > 5 || *nodes > 200000 {
+            if depth > 6 || *nodes > 200000 {
                 return Err(Invalid::Value);
             }
             match value {

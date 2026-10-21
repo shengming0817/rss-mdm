@@ -126,6 +126,11 @@ pub enum Kind {
     deny_unknown_fields
 )]
 pub enum ValueType {
+    /// Record with explicit required and optional properties.
+    Record {
+        /// Declared members.
+        properties: BTreeMap<String, Property>,
+    },
     /// Bounded text; empty text is a legitimate value when allowed.
     String {
         /// Character budget.
@@ -163,6 +168,15 @@ pub enum ValueType {
         properties: BTreeMap<String, ValueType>,
     },
 }
+/// One explicitly declared record member.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct Property {
+    /// Exact type when present.
+    pub value_type: ValueType,
+    /// Whether the producer must include this member.
+    pub required: bool,
+}
 impl ValueType {
     /// Primitive/collection discriminant.
     pub fn kind(&self) -> Kind {
@@ -173,7 +187,7 @@ impl ValueType {
             Self::Boolean => Kind::Boolean,
             Self::Time => Kind::Time,
             Self::Array { .. } => Kind::Array,
-            Self::Object { .. } => Kind::Object,
+            Self::Object { .. } | Self::Record { .. } => Kind::Object,
         }
     }
     /// Bound both schema depth and its cumulative node count.
@@ -182,7 +196,7 @@ impl ValueType {
     }
     fn check(&self, depth: usize, nodes: &mut usize) -> Result<()> {
         *nodes += 1;
-        if depth > 4 || *nodes > 128 {
+        if depth > 6 || *nodes > 128 {
             return Err(WireError::InvalidValue);
         }
         match self {
@@ -206,6 +220,18 @@ impl ValueType {
                     return Err(WireError::InvalidValue);
                 }
                 items.check(depth + 1, nodes)
+            }
+            Self::Record { properties } => {
+                if properties.is_empty() || properties.len() > 64 {
+                    return Err(WireError::InvalidValue);
+                }
+                for (key, member) in properties {
+                    if !property(key) {
+                        return Err(WireError::InvalidValue);
+                    }
+                    member.value_type.check(depth + 1, nodes)?;
+                }
+                Ok(())
             }
             Self::Object { properties } => {
                 if properties.is_empty() || properties.len() > 64 {
@@ -234,6 +260,18 @@ impl ValueType {
                 Scalar::String(s),
             ) if (*allow_empty || !s.is_empty()) && s.chars().count() <= *max_length as usize => {
                 Ok(())
+            }
+            (Self::Record { properties }, Scalar::Object(values)) => {
+                if values.keys().any(|k| !properties.contains_key(k)) {
+                    return Err(WireError::InvalidValue);
+                }
+                properties
+                    .iter()
+                    .try_for_each(|(k, p)| match values.get(k) {
+                        Some(v) => p.value_type.validate_value(v),
+                        None if !p.required => Ok(()),
+                        None => Err(WireError::InvalidValue),
+                    })
             }
             (Self::Enum { values }, Scalar::String(s)) if values.contains(s) => Ok(()),
             (Self::Integer, Scalar::Integer(_))
@@ -290,6 +328,8 @@ pub enum Sensitivity {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct FieldDefinition {
+    /// Optional history binding; absence means this field has no time-series capability.
+    pub time_series: Option<super::TimeSeriesBinding>,
     /// Stable field identity.
     #[schemars(extend("maxLength" = 128, "pattern" = "^(device|custom|channel)\\.[a-z][a-z0-9_]*(\\.[a-z][a-z0-9_]*)*$"))]
     pub key: FieldKey,
@@ -339,6 +379,9 @@ impl FieldDefinition {
     /// Validate definitions before publication or reconstruction.
     pub fn validate(&self) -> Result<()> {
         self.value_type.validate()?;
+        if let Some(binding) = &self.time_series {
+            binding.validate()?;
+        }
         if self.version == 0
             || self.version > i64::MAX as u64
             || self.sources.is_empty()
@@ -355,11 +398,16 @@ impl FieldDefinition {
             let ValueType::Array { items, .. } = &self.value_type else {
                 return Err(WireError::InvalidValue);
             };
-            let ValueType::Object { properties } = items.as_ref() else {
-                return Err(WireError::InvalidValue);
+            let identity = match items.as_ref() {
+                ValueType::Object { properties } => properties.get(key),
+                ValueType::Record { properties } => properties
+                    .get(key)
+                    .filter(|p| p.required)
+                    .map(|p| &p.value_type),
+                _ => None,
             };
             if !matches!(
-                properties.get(key),
+                identity,
                 Some(
                     ValueType::String {
                         allow_empty: false,
@@ -438,7 +486,7 @@ impl Scalar {
     pub fn validate(&self) -> Result<()> {
         fn visit(value: &Scalar, depth: usize, nodes: &mut usize, bytes: &mut usize) -> Result<()> {
             *nodes += 1;
-            if depth > 5 || *nodes > 200000 {
+            if depth > 6 || *nodes > 200000 {
                 return Err(WireError::InvalidValue);
             }
             match value {

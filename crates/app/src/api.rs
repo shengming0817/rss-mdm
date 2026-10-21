@@ -17,6 +17,7 @@ use serde_json::Value;
 use serde_json::json;
 use std::sync::Arc;
 pub(crate) struct Assembly {
+    pub(crate) telemetry: Option<Arc<rss_mdm_telemetry_service::Service>>,
     pub(crate) runtime_observation: crate::setup::host::Observation,
     pub(crate) apple_material_roots: Arc<Vec<Vec<u8>>>,
     pub(crate) webhooks: Arc<crate::webhooks::Backend>,
@@ -158,12 +159,27 @@ pub(crate) async fn application_fixture(
             .initialize()
             .await
             .map_err(|_| Error::Unavailable(crate::Failure::Database))?;
+        let telemetry = match &compiled.config.telemetry {
+            Some(config) => {
+                let service = config.open(&planning, execution.service.clone()).await?;
+                resources.resource(crate::telemetry::Resource(service.clone()));
+                resources.resource(crate::telemetry::fixture_task(
+                    service.clone(),
+                    runtime.clone(),
+                    compiled.config.access_options()?,
+                    planning.planning.tenant,
+                )?);
+                Some(service)
+            }
+            None => None,
+        };
         let plan_runtime = planning.runtime.clone();
         let fixture_planning = planning.planning.clone();
         let execution_service = execution.clone();
         let mut fixture_routers = from_compiled(
             compiled,
             AssemblyDependencies {
+                telemetry,
                 certificate_archive: crate::certificate_archive::assemble(
                     &access,
                     audit_store.clone(),
@@ -217,6 +233,7 @@ pub(crate) async fn application_fixture(
     }
 }
 pub(crate) struct AssemblyDependencies {
+    pub(crate) telemetry: Option<Arc<rss_mdm_telemetry_service::Service>>,
     pub(crate) certificate_archive: Arc<rss_mdm_certificate_archive_service::Archive>,
     pub(crate) timeline: Arc<rss_mdm_timeline_service::Timeline>,
     pub(crate) associations: Arc<rss_mdm_device_service::Associations>,
@@ -238,6 +255,7 @@ pub(crate) async fn from_compiled(
         identity_management,
     } = compiled;
     let AssemblyDependencies {
+        telemetry,
         certificate_archive,
         timeline,
         associations,
@@ -430,6 +448,7 @@ pub(crate) async fn from_compiled(
         .set(webhooks.clone())
         .map_err(|_| Error::Conflict)?;
     let state = Arc::new(Assembly {
+        telemetry,
         runtime_observation: crate::setup::host::Observation::new(
             &config.runtime_binding,
             identity.tenant.to_string(),
@@ -523,6 +542,7 @@ pub(crate) fn from_state(
         windows: state.windows.as_ref().map(|w| w.channel.clone()),
     });
     let diagnostics = Arc::new(crate::runtime_diagnostics::RuntimeDiagnostics {
+        telemetry: state.telemetry.clone(),
         execution: state.execution.clone(),
         inventory: state.inventory.clone(),
         identity_audit: state.identity.audit_readiness.clone(),
@@ -651,6 +671,7 @@ pub(crate) fn from_state(
             }),
             settings,
             webhooks: state.webhooks.clone(),
+            telemetry: state.telemetry.clone(),
             registration_channels: channels,
             windows_entra: state
                 .windows
@@ -769,10 +790,12 @@ pub(crate) fn from_state(
         envelope.host = pki.origin.trim_start_matches("https://").to_string();
         let runtime = rss_mdm_agent_channel::router(
             Arc::new(crate::agent::HttpState {
+                content: state.content_writer.clone(),
                 enrollment: service.clone(),
                 audit_store: state.audit_store.clone(),
                 access: Arc::new(state.access.agent_store()),
                 inventory: state.inventory.clone(),
+                telemetry: state.telemetry.clone(),
             }),
             envelope.clone(),
         )
@@ -861,6 +884,7 @@ pub(crate) fn from_state(
         )
         .layer(DefaultBodyLimit::max(16384));
     crate::native::Routers {
+        telemetry: state.telemetry.clone(),
         webhooks: state.webhooks.clone(),
         apple_control: apple_state,
         pki: state.pki.clone(),

@@ -309,3 +309,13 @@ docker compose -p rss-mdm -f /absolute/candidate/deployment/production.compose.y
 PostgreSQL 和网关服务器证书由部署方签发、保管与续期。替换 PostgreSQL 输入后用 Compose 重建 postgres，保留原 CA 信任及数据库秘密。网关使用 `configure-host` 的 `change.kind=gateway_tls`，提交新证书、匹配私钥和信任文件；运维重建 server/gateway，再用原操作核验实际 HTTPS。没有内置证书签发器或续期后台任务。
 
 CA 联合备份的每个 authority 提供 purpose、issuer、configuration_file、online_directory、offline_directory、root_private_key_file、root_password_file；所有路径是维护容器中明确挂载的文件。运维先停止相应 CA，再运行备份/恢复；产品校验实际 issuer 与根钥关系并归档文件，不持有容器 ID、镜像、网络或 Docker 卷元数据。离线根材料只交给受控维护，不进入在线 CA 或业务服务。
+
+## 遥测积压、维护与恢复
+
+遥测批次回执区分产品已接收、目的端已准入和结果未知；当前资产投影、历史可见性和聚合窗口进度分别查询。`published` 不表示当前资产已经更新，也不表示指定汇总窗口已完成。结果未知时使用原 batch ID 和原始内容查询或重放；同 ID 不同内容会冲突。凭据或策略变化阻止新输入，已经原子接收的内容继续按封存上下文结清。
+
+ready 状态同时检查遥测 worker 和实际后端。诊断提供待交付、未知、受阻和维护积压数量；设备字段健康 API 提供采样质量计数、保留维护时间及阻塞原因。自动维护固定每个精确历史序列的策略版本和操作身份，按有界步骤推进 cutoff 与裁剪；已经接收的批次未结清时暂不推进。维护结果未知继续原身份，缺失和失败不补零。手动重算、删除恢复及流关闭通过同一 RSS 维护接口执行，调用时重新检查设备 Scope 和敏感字段权限。
+
+联合备份请求必须列出全部启用的遥测安装请求。产品主库、遥测 PG 数据库与 ClickHouse 数据先停写；备份清单包含每个数据库子归档、安装身份、原生 ClickHouse 归档以及原配置和秘密。ClickHouse PG 控制库和数据必须成套备份、成套恢复。恢复使用同址、原操作身份和受校验清单，完成数据恢复后重新准入，失败重新停写。不要单独恢复控制库、删除未知备份回执或替换服务器配置来绕过冲突。
+
+恢复窗口由字段绑定的不可变保留策略限制，普通资产值没有 TTL。现有实现不承诺在线存储切换、HA 或未经实测的 RPO/RTO；真机采样与离线缓存由终端实现提供独立验收。

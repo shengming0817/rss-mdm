@@ -122,6 +122,20 @@ async fn resolve_in(
                 definition.primary().clone()
             }
         }
+        r::Declaration::TelemetryProfile {
+            artifact,
+            definition,
+        } => {
+            if artifact.digest() != r::Digest::of(&definition.canonical())
+                || input
+                    .artifact
+                    .as_ref()
+                    .is_some_and(|id| id != artifact.reference().as_str())
+            {
+                return Err(Error::Malformed.into());
+            }
+            artifact.clone()
+        }
         r::Declaration::AgentCollection {
             artifact,
             definition,

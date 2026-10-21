@@ -84,8 +84,8 @@ pub async fn verify_watermark_fence(
 mod catalog;
 pub use catalog::{
     catalog_at_in, catalog_in, collection_in, collection_version_in, datasets_in,
-    initialize_fields_in, publish_field_in, register_collection_in, retire_field_in,
-    tenant_seed_sql,
+    historical_field_in, initialize_fields_in, publish_field_in, register_collection_in,
+    retire_field_in, tenant_seed_sql, time_series_versions_in,
 };
 /// Single current field/collection format for fresh installations.
 pub const UNIFIED_COLLECTION_SQL: &str = include_str!("../migrations/0007_unified_collection.sql");
@@ -95,3 +95,10 @@ pub use results::{CollectionCompletion, collection_result_in, seal_collection_in
 
 /// Required per-field namespace installation; rejects incompatible stored evidence.
 pub const FIELD_SCOPES_SQL: &str = include_str!("../migrations/0008_field_scopes.sql");
+
+pub use catalog::admit_time_series_fields_in;
+
+mod retention;
+pub use retention::{publish_retention_policy_in, retention_policy_in};
+
+pub use retention::minimum_restore_seconds_in;

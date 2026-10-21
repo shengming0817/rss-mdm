@@ -226,3 +226,5 @@ mod webhook_tests;
 mod settings;
 
 mod first_use;
+
+pub mod telemetry;

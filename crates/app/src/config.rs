@@ -131,6 +131,7 @@ impl NativeProtection {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
+    pub telemetry: Option<crate::telemetry::Config>,
     pub runtime_binding: crate::setup::host::Binding,
     #[serde(default)]
     pub apple_material_roots: Vec<PathBuf>,
@@ -243,6 +244,19 @@ impl Config {
             return Err(Error::Configuration(ConfigIssue::Execution));
         }
         self.flow.validate(&self.access_database)?;
+        if let Some(telemetry) = &self.telemetry {
+            telemetry.validate(
+                rss_request_context::TenantId::parse(&self.identity.tenant_id)
+                    .map_err(|_| Error::Malformed)?,
+            )?;
+            let database = telemetry.database();
+            if database.host == self.access_database.host
+                && database.port == self.access_database.port
+                && database.name == self.access_database.name
+            {
+                return Err(Error::Malformed);
+            }
+        }
         if let Some(windows) = &self.native_protocols.windows {
             windows.validate(self.listen)?;
         }

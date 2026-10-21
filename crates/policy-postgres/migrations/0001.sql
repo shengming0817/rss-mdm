@@ -11,7 +11,7 @@ CREATE TABLE mdm_policy.policies (
 );
 CREATE TABLE mdm_policy.versions (
  tenant_id uuid NOT NULL,id uuid NOT NULL,policy uuid NOT NULL,number bigint NOT NULL CHECK(number>0),
- action_kind text NOT NULL CHECK(action_kind IN ('credential','execution','agent_collection','native_collection','configuration','software','ensure_agent_installed','request_mdm_enrollment','unmanage_device')),
+ action_kind text NOT NULL CHECK(action_kind IN ('credential','execution','agent_collection','telemetry_profile','native_collection','configuration','software','ensure_agent_installed','request_mdm_enrollment','unmanage_device')),
  resource text,resource_version text,
  CHECK((resource IS NULL) = (resource_version IS NULL)),
  CHECK((action_kind IN ('credential','ensure_agent_installed','request_mdm_enrollment','unmanage_device')) = (resource IS NULL)),

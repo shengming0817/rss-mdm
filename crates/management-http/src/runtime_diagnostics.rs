@@ -52,6 +52,7 @@ pub struct Component {
 #[derive(Clone, Copy, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ComponentName {
+    Telemetry,
     Inventory,
     IdentityAudit,
     Apple,
@@ -113,6 +114,7 @@ pub struct Dependency {
 #[derive(Clone, Copy, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DependencyName {
+    TelemetryStorage,
     InventoryDelivery,
     ObservationJournal,
     FlowStorage,
@@ -133,6 +135,9 @@ pub struct Queue {
 #[derive(Clone, Copy, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum QueueName {
+    DeliveryUnknown,
+    DeliveryBlocked,
+    MaintenancePending,
     DeliveryPending,
     Pending,
     Running,

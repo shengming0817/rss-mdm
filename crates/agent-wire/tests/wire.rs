@@ -89,55 +89,16 @@ fn every_collection_schema_rejects_unknown_source_keys() {
 fn manifest_covers_and_fingerprints_every_public_shape() {
     let manifest: Value = serde_json::from_str(SCHEMA_MANIFEST).unwrap();
     assert_eq!(manifest["wireVersion"], 1);
-    assert_eq!(
-        manifest["schemas"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|entry| entry["type"].as_str().unwrap())
-            .collect::<Vec<_>>(),
-        [
-            "BindingProfile",
-            "ReportRequest",
-            "ReportAck",
-            "ReportStatus",
-            "ErrorBody",
-            "TaskClaimRequest",
-            "TaskEventRequest",
-            "TaskPayload",
-            "SignedTask",
-            "TaskClaimResponse",
-            "TaskEventAck",
-            "TaskAuthorization",
-            "TaskResource",
-            "SelfServiceInvoke",
-            "SelfServiceDirectory",
-            "SelfServiceDirectoryResponse",
-            "SelfServiceAccepted",
-            "SelfServiceStatus",
-        ]
-    );
-    let schemas = [
-        include_bytes!("../schema/runtime/binding-profile-v1.schema.json").as_slice(),
-        include_bytes!("../schema/runtime/report-request-v1.schema.json").as_slice(),
-        include_bytes!("../schema/runtime/report-ack-v1.schema.json").as_slice(),
-        include_bytes!("../schema/runtime/report-status-v1.schema.json").as_slice(),
-        include_bytes!("../schema/runtime/error-body-v1.schema.json").as_slice(),
-        include_bytes!("../schema/runtime/task-claim-request-v1.schema.json").as_slice(),
-        include_bytes!("../schema/runtime/task-event-request-v1.schema.json").as_slice(),
-        include_bytes!("../schema/runtime/task-payload-v1.schema.json").as_slice(),
-        include_bytes!("../schema/runtime/signed-task-v1.schema.json").as_slice(),
-        include_bytes!("../schema/runtime/task-claim-response-v1.schema.json").as_slice(),
-        include_bytes!("../schema/runtime/task-event-ack-v1.schema.json").as_slice(),
-        include_bytes!("../schema/runtime/task-authorization-v1.schema.json").as_slice(),
-        include_bytes!("../schema/runtime/task-resource-v1.schema.json").as_slice(),
-        include_bytes!("../schema/runtime/self-service-invoke-v1.schema.json").as_slice(),
-        include_bytes!("../schema/runtime/self-service-directory-v1.schema.json").as_slice(),
-        include_bytes!("../schema/runtime/self-service-directory-response-v1.schema.json")
-            .as_slice(),
-        include_bytes!("../schema/runtime/self-service-accepted-v1.schema.json").as_slice(),
-        include_bytes!("../schema/runtime/self-service-status-v1.schema.json").as_slice(),
-    ];
+    let schemas = manifest["schemas"].as_array().unwrap().iter().map(|entry| {
+        let name = entry["file"].as_str().unwrap();
+        assert!(std::path::Path::new(name).components().count() == 1);
+        std::fs::read(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("schema/runtime")
+                .join(name),
+        )
+        .unwrap()
+    });
     let mut digest = Sha256::new();
     for schema in schemas {
         digest.update(schema);

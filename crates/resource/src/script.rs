@@ -259,6 +259,38 @@ impl ScriptDefinition {
         }
         Ok(())
     }
+    /// Prepare literal argv and environment once for every execution consumer.
+    pub fn prepare_parameters(
+        &self,
+        parameters: &BTreeMap<String, Value>,
+    ) -> Result<(Vec<String>, BTreeMap<String, String>), Error> {
+        self.validate_parameters(&serde_json::json!(parameters))?;
+        let mut positional = BTreeMap::new();
+        let mut arguments = Vec::new();
+        let mut environment = BTreeMap::new();
+        for (name, binding) in &self.0.bindings {
+            let value = parameters.get(name).ok_or(Error::InvalidInput)?;
+            let literal = match value {
+                Value::String(v) => v.clone(),
+                Value::Bool(_) | Value::Number(_) => value.to_string(),
+                _ => return Err(Error::InvalidInput),
+            };
+            match binding {
+                ParameterBinding::Positional { index } => {
+                    positional.insert(*index, literal);
+                }
+                ParameterBinding::Named { name } => {
+                    arguments.push(format!("-{name}"));
+                    arguments.push(literal);
+                }
+                ParameterBinding::Environment { name } => {
+                    environment.insert(name.clone(), literal);
+                }
+            }
+        }
+        arguments.extend(positional.into_values());
+        Ok((arguments, environment))
+    }
     /// Validate only supplied fixed values using the same canonical parameter constraints.
     /// Missing arguments remain explicitly unresolved until complete execution preparation.
     pub fn validate_fixed_parameters(&self, value: &Value) -> Result<(), Error> {
