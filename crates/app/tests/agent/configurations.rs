@@ -16,6 +16,9 @@ fn profile(windows: bool) -> Value {
     json!({"capabilities":["inventory.collect.v1"],"platform":if windows{"windows"}else{"macos"},"architecture":if windows{"x86_64"}else{"aarch64"},"executionContext":software_execution::context(if windows{software_execution::Platform::Windows}else{software_execution::Platform::MacOs})})
 }
 async fn fixture() -> Result<Fixture> {
+    fixture_with(&[]).await
+}
+async fn fixture_with(extra: &[&str]) -> Result<Fixture> {
     let f = Fixture::with_peer_and_uploads(None, Some(1)).await?;
     let tenant = [
         "resource_read",
@@ -29,6 +32,7 @@ async fn fixture() -> Result<Fixture> {
     ];
     let mut grants = tenant
         .into_iter()
+        .chain(extra.iter().copied())
         .map(|name| {
             Ok(crate::authorization::Grant {
                 operation: serde_json::from_value(json!(name))?,
@@ -476,7 +480,11 @@ async fn enroll(
 #[tokio::test]
 #[ignore = "MODULE=agent.configurations: four independent peers, explicit quota and representative mTLS HTTP"]
 async fn fixed_packages_and_configurations_activate_beyond_self_quota() -> Result<()> {
-    let f = fixture().await?;
+    let f = fixture_with(&[
+        "registration_configuration_read",
+        "registration_configuration_write",
+    ])
+    .await?;
     let mut user = f.user.clone();
     let windows = publish(&f, &mut user, true).await?;
     let settings = user
@@ -490,9 +498,32 @@ async fn fixed_packages_and_configurations_activate_beyond_self_quota() -> Resul
         .find(|item| item["id"] == "agent-package")
         .context("package capability")?;
     ensure!(
-        capability["ready"] == true
+        capability["status"] == "configured"
             && capability["configuredCount"] == 1
-            && capability["lifecycle"] == "business_configuration"
+            && capability["lifecycle"] == "business_configuration",
+        "single package projection {capability:?}"
+    );
+    let path = "/api/v1/settings/first-use";
+    let initial = user.call(&f.router, Method::GET, path, None).await?;
+    ensure!(initial.0 == StatusCode::OK);
+    let previous = user.operation.replace(Uuid::new_v4());
+    let selected = user.call(&f.router, Method::PUT, path, Some(json!({"expectedRevision":initial.1["saved"]["revision"],"intent":{"channels":["agent"],"capabilities":{"agent_package":{"kind":"configure"}},"completionRequested":false}}))).await?;
+    user.operation = previous;
+    ensure!(
+        selected.0 == StatusCode::OK,
+        "first use selection {selected:?}"
+    );
+    let progress = user.call(&f.router, Method::GET, path, None).await?;
+    ensure!(progress.0 == StatusCode::OK);
+    let step = progress.1["steps"]
+        .as_array()
+        .context("first use steps")?
+        .iter()
+        .find(|step| step["id"] == "agent_package")
+        .context("package readiness")?;
+    ensure!(
+        step["status"] == "ready",
+        "single package first use {step:?}"
     );
 
     let macos = publish(&f, &mut user, false).await?;
