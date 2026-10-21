@@ -230,7 +230,7 @@ impl GroupStore {
                     ) hit
                     UNION
                     (SELECT id FROM mdm_group.groups WHERE tenant_id=$1::uuid
-                        AND $3 AND kind='dynamic' AND NOT deleted
+                        AND $3 AND kind IN ('dynamic','system') AND NOT deleted
                         AND ($4::uuid IS NULL OR id>$4::uuid)
                      ORDER BY id LIMIT $5)
                 ) affected ORDER BY id LIMIT $5
@@ -468,6 +468,82 @@ impl GroupStore {
         self.store_page_in(tx, id, ids, matches, evidence, fingerprint)
             .await
     }
+    /// Persist one lifecycle page using the same cursor, recovery and publication as rule builds.
+    /// The product supplies fixed-watermark decisions; no manual patch may enter this path.
+    pub async fn append_system_page_in(
+        &self,
+        tx: &mut PgTransaction<'_>,
+        id: OperationId,
+        after: Option<&str>,
+        decisions: &[crate::DecisionRecord],
+    ) -> InTransaction<MemberBuild> {
+        input!(self.check_transaction(tx)?);
+        let build = input!(self.build_in(tx, id).await?);
+        let group = input!(
+            db::group(tx, build.request.group, true)
+                .await?
+                .ok_or(Rejection::NotFound)
+        );
+        let build = input!(self.build_in(tx, id).await?);
+        input!(check_build(&group, &build.request));
+        if group.kind != GroupKind::System
+            || decisions.is_empty()
+            || decisions.len() > 1000
+            || decisions.windows(2).any(|v| v[0].device >= v[1].device)
+            || decisions.iter().any(|d| {
+                d.origin != crate::DecisionOrigin::System
+                    || d.device.len() > 256
+                    || after.is_some_and(|a| d.device.as_str() <= a)
+                    || build
+                        .request
+                        .changed_devices
+                        .as_ref()
+                        .is_some_and(|v| v.binary_search(&d.device).is_err())
+            })
+        {
+            return Ok(Err(Rejection::InvalidInput));
+        }
+        let bytes = input!(
+            serde_json::to_vec(&(after, decisions)).map_err(|_| Rejection::PageBudgetExceeded)
+        );
+        let fingerprint = digest(&bytes);
+        let tenant = self.tenant.to_string();
+        let first = decisions[0].device.clone();
+        let old = tx.with_connection(move|c|Box::pin(async move {
+            sqlx::query_scalar::<_,Vec<u8>>("SELECT fingerprint FROM mdm_group.member_pages WHERE tenant_id=$1::uuid AND run_id=$2::uuid AND first_id=$3")
+                .bind(tenant).bind(id.to_string()).bind(first).fetch_optional(c).await
+        })).await?;
+        if let Some(old) = old {
+            return Ok(if old == fingerprint {
+                Ok(build)
+            } else {
+                Err(Rejection::IdentityConflict)
+            });
+        }
+        if build.input_sealed || build.cursor.as_deref() != after {
+            return Ok(Err(Rejection::InvalidInput));
+        }
+        if build.request.changed_devices.is_none() && !page_fits(build.objects, decisions.len()) {
+            return Ok(Err(Rejection::CapacityExceeded));
+        }
+        let evidence = decisions
+            .iter()
+            .map(|d| data(serde_json::to_vec(d)))
+            .collect::<Result<Vec<_>, _>>()?;
+        self.store_page_in(
+            tx,
+            id,
+            decisions.iter().map(|d| d.device.clone()).collect(),
+            decisions
+                .iter()
+                .map(|d| d.decision == crate::DecisionValue::Match)
+                .collect(),
+            evidence,
+            fingerprint,
+        )
+        .await
+    }
+
     async fn store_page_in(
         &self,
         tx: &mut PgTransaction<'_>,

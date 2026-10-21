@@ -47,6 +47,7 @@ impl crate::GroupStore {
         let kind = q.kind.map(|v| match v {
             GroupKind::Static => "static",
             GroupKind::Dynamic => "dynamic",
+            GroupKind::System => "system",
         });
         let rows=tx.with_connection(move|c|Box::pin(async move {
             sqlx::query("SELECT * FROM mdm_group.groups WHERE tenant_id=$1::uuid AND ($2::uuid IS NULL OR CASE WHEN $3 THEN id<$2 ELSE id>$2 END) AND ($4::text IS NULL OR kind=$4) AND deleted=$5 AND ($8::text IS NULL OR asset_context=$8) AND ($6::text IS NULL OR strpos(lower(presentation->>'name'),lower($6))>0) ORDER BY CASE WHEN NOT $3 THEN id END ASC,CASE WHEN $3 THEN id END DESC LIMIT $7")
@@ -62,6 +63,10 @@ impl crate::GroupStore {
                     kind: storage::data(serde_json::from_value(serde_json::json!(
                         r.try_get::<String, _>("kind")?
                     )))?,
+                    system_selector: r
+                        .try_get::<Option<String>, _>("system_selector")?
+                        .map(|s| storage::data(serde_json::from_value(serde_json::json!(s))))
+                        .transpose()?,
                     asset_context: storage::data(serde_json::from_value(serde_json::json!(
                         r.try_get::<String, _>("asset_context")?
                     )))?,

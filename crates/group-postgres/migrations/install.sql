@@ -4,7 +4,10 @@ REVOKE ALL ON SCHEMA mdm_group FROM PUBLIC;
 CREATE TABLE mdm_group.groups (
  tenant_id uuid NOT NULL,
  id uuid NOT NULL CHECK(id <> '00000000-0000-0000-0000-000000000000'),
- kind text NOT NULL CHECK(kind IN ('static','dynamic')),
+ kind text NOT NULL CHECK(kind IN ('static','dynamic','system')),
+ system_selector text CHECK(system_selector IN ('all_active','windows','macos')),
+ CONSTRAINT groups_system_selector_check CHECK((kind='system')=(system_selector IS NOT NULL)),
+ UNIQUE(tenant_id,system_selector),
  presentation jsonb NOT NULL CHECK(jsonb_typeof(presentation)='object' AND presentation ?& ARRAY['name','description'] AND octet_length(presentation::text)<=131072
    AND jsonb_typeof(presentation->'name')='string' AND octet_length(presentation->>'name') BETWEEN 1 AND 4096
    AND jsonb_typeof(presentation->'description')='string' AND octet_length(presentation->>'description')<=4096),
@@ -18,7 +21,7 @@ CREATE TABLE mdm_group.groups (
  asset_context text NOT NULL CONSTRAINT groups_asset_context_check CHECK(asset_context IN ('endpoint','associated_device')),
  CONSTRAINT groups_context_kind_check CHECK(kind='dynamic' OR asset_context='endpoint'),
  PRIMARY KEY(tenant_id,id),
- CHECK((kind='static' AND rule_version IS NULL) OR (kind='dynamic' AND rule_version IS NOT NULL))
+ CHECK((kind IN ('static','system') AND rule_version IS NULL) OR (kind='dynamic' AND rule_version IS NOT NULL))
 );
 CREATE TABLE mdm_group.rules (
  tenant_id uuid NOT NULL, group_id uuid NOT NULL,
@@ -109,4 +112,4 @@ GRANT UPDATE(member_set) ON mdm_group.groups TO mdm_group_runtime;
 
 
 CREATE INDEX member_changes_object ON mdm_group.member_changes(tenant_id,object_id,group_id,revision DESC);
-CREATE INDEX groups_dynamic ON mdm_group.groups(tenant_id,id) WHERE kind='dynamic' AND NOT deleted;
+CREATE INDEX groups_dynamic ON mdm_group.groups(tenant_id,id) WHERE kind IN ('dynamic','system') AND NOT deleted;

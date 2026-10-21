@@ -70,11 +70,16 @@ pub(crate) async fn group(
         let kind = match r.try_get::<&str, _>("kind")? {
             "static" => GroupKind::Static,
             "dynamic" => GroupKind::Dynamic,
+            "system" => GroupKind::System,
             _ => return Err(stored_shape()),
         };
         Ok(Group {
             id,
             kind,
+            system_selector: r
+                .try_get::<Option<String>, _>("system_selector")?
+                .map(|s| data(serde_json::from_value(serde_json::json!(s))))
+                .transpose()?,
             asset_context: data(serde_json::from_value(serde_json::json!(
                 r.try_get::<String, _>("asset_context")?
             )))?,
@@ -151,12 +156,12 @@ pub(crate) async fn save_group(
     let tenant = tx.tenant_id().to_string();
     let n=tx.with_connection(move |c|Box::pin(async move {
         let query=if create {
-            "INSERT INTO mdm_group.groups(tenant_id,id,kind,presentation,revision,member_version,member_count,rule_version,deleted,calculation_revision,asset_context) VALUES($1::uuid,$2::uuid,$3,$4,$5,$6,$7,$8,$9,$10,$11)"
+            "INSERT INTO mdm_group.groups(tenant_id,id,kind,presentation,revision,member_version,member_count,rule_version,deleted,calculation_revision,asset_context,system_selector) VALUES($1::uuid,$2::uuid,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)"
         }else {
-            "UPDATE mdm_group.groups SET presentation=$4,revision=$5,member_version=$6,member_count=$7,rule_version=$8,deleted=$9,calculation_revision=$10 WHERE tenant_id=$1::uuid AND id=$2::uuid AND kind=$3 AND asset_context=$11"
+            "UPDATE mdm_group.groups SET presentation=$4,revision=$5,member_version=$6,member_count=$7,rule_version=$8,deleted=$9,calculation_revision=$10 WHERE tenant_id=$1::uuid AND id=$2::uuid AND kind=$3 AND asset_context=$11 AND system_selector IS NOT DISTINCT FROM $12"
         };
-        sqlx::query(query).bind(tenant).bind(g.id.to_string()).bind(match g.kind {GroupKind::Static=>"static",GroupKind::Dynamic=>"dynamic"})
-        .bind(serde_json::Value::Object(g.presentation)).bind(g.revision.get()).bind(g.member_version).bind(g.member_count as i64).bind(g.rule_version).bind(g.deleted).bind(g.calculation_revision).bind(g.asset_context.as_str()).execute(c).await.map(|r|r.rows_affected())
+        sqlx::query(query).bind(tenant).bind(g.id.to_string()).bind(match g.kind {GroupKind::Static=>"static",GroupKind::Dynamic=>"dynamic",GroupKind::System=>"system"})
+        .bind(serde_json::Value::Object(g.presentation)).bind(g.revision.get()).bind(g.member_version).bind(g.member_count as i64).bind(g.rule_version).bind(g.deleted).bind(g.calculation_revision).bind(g.asset_context.as_str()).bind(g.system_selector.map(|s|s.as_str())).execute(c).await.map(|r|r.rows_affected())
     })).await?;
     if n != 1 {
         return Err(StorageFault::RowCount.error());

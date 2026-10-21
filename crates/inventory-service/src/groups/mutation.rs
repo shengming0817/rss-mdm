@@ -92,6 +92,20 @@ impl Groups {
             _ => vec![],
         };
         let command = match &op.input {
+            GroupChange::CreateSystem {
+                presentation,
+                selector,
+            } => {
+                if op.expected_revision != 0 {
+                    return Err(Error::Conflict.into());
+                }
+                pg::Command::Create {
+                    group,
+                    presentation: presentation.clone(),
+                    asset_context: pg::AssetContext::Endpoint,
+                    definition: pg::Definition::System(*selector),
+                }
+            }
             GroupChange::Create {
                 presentation,
                 criteria,
@@ -219,6 +233,25 @@ impl Groups {
             _ => None,
         };
         let mut response = json(&receipt)?;
+        if matches!(op.input, GroupChange::CreateSystem { .. }) {
+            flow.changed(tx, id, receipt.group.revision.get() as u64)
+                .await?;
+            let accepted = flow
+                .start(
+                    tx,
+                    GroupStart {
+                        id,
+                        task: Uuid::new_v4(),
+                        expected: receipt.group.revision.get() as u64,
+                        patch: None,
+                        publish: true,
+                        automatic: true,
+                        at,
+                    },
+                )
+                .await?;
+            response["task"] = accepted["task"].clone();
+        }
         if let Some(criteria) = criteria {
             self.register_fields_in(tx, id, criteria.map(|c| &c.criteria))
                 .await?;

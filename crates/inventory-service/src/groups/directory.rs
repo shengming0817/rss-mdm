@@ -91,7 +91,7 @@ impl Groups {
                 query.after=last;
             }
             let more=groups.len()>q.limit;groups.truncate(q.limit);let next=if more{groups.last().map(|g|g.id.to_string())}else{None};
-            let items=groups.iter().map(|g|serde_json::json!({"id":g.id,"kind":g.kind,"assetContext":g.asset_context,"presentation":g.presentation,"revision":g.revision,"calculationRevision":g.calculation_revision,"memberVersion":g.member_version,"memberCount":g.member_count,"ruleVersion":g.rule_version,"deleted":g.deleted})).collect::<Vec<_>>();
+            let items=groups.iter().map(|g|serde_json::json!({"id":g.id,"kind":g.kind,"systemSelector":g.system_selector,"assetContext":g.asset_context,"presentation":g.presentation,"revision":g.revision,"calculationRevision":g.calculation_revision,"memberVersion":g.member_version,"memberCount":g.member_count,"ruleVersion":g.rule_version,"deleted":g.deleted})).collect::<Vec<_>>();
             p.check_live()?;s.audit_store.append_request_in(tx,audit,200,"success").await?;
             Ok(serde_json::json!({"items":items,"nextCursor":next}))
         }),crate::transaction::TransactionOwner::Assets).await

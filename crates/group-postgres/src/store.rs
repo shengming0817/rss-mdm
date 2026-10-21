@@ -356,7 +356,7 @@ fn command_document(t: TenantId, c: &Command) -> CommandOutcome<Vec<u8>> {
                     .ok_or(Rejection::InvalidInput)?,
                 true,
             )?;
-            json!({"kind":"create","asset_context":asset_context,"presentation":presentation,"rule":match definition {Definition::Static=>None,Definition::Dynamic(r)=>Some(rule_doc(t,r)?)}})
+            json!({"kind":"create","system_selector":match definition {Definition::System(s)=>Some(s),_=>None},"asset_context":asset_context,"presentation":presentation,"rule":match definition {Definition::Static|Definition::System(_)=>None,Definition::Dynamic(r)=>Some(rule_doc(t,r)?)}})
         }
         Command::Edit { presentation, .. } => {
             if !crate::presentation::valid(presentation, 65536) {
@@ -403,18 +403,23 @@ fn command_group(command: &Command, existing: Option<Group>) -> CommandOutcome<(
             None,
         ) => {
             if *asset_context == AssetContext::AssociatedDevice
-                && matches!(definition, Definition::Static)
+                && !matches!(definition, Definition::Dynamic(_))
             {
                 return Err(Rejection::KindMismatch);
             }
             let (kind, version) = match definition {
                 Definition::Static => (GroupKind::Static, None),
+                Definition::System(_) => (GroupKind::System, None),
                 Definition::Dynamic(r) => (GroupKind::Dynamic, Some(r.view().version.into())),
             };
             (
                 Group {
                     id: *group,
                     kind,
+                    system_selector: match definition {
+                        Definition::System(s) => Some(*s),
+                        _ => None,
+                    },
                     asset_context: *asset_context,
                     presentation: presentation.clone(),
                     revision: Revision::new(1)?,
