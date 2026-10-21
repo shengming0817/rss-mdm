@@ -19,6 +19,49 @@ CREATE FUNCTION mdm_planning.policy_lock(p_policy uuid) RETURNS void
  SELECT FROM mdm_policy.policies WHERE tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid AND id=p_policy FOR SHARE;
 $$;
 
+CREATE FUNCTION mdm_planning.group_current(p_group uuid) RETURNS boolean
+    LANGUAGE sql SECURITY DEFINER
+    SET search_path TO 'pg_catalog'
+    AS $$
+WITH RECURSIVE reach(id,depth) AS (
+ SELECT p_group,1
+ UNION
+ SELECT ref,r.depth+1 FROM reach r
+ JOIN mdm_group.groups g ON g.tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid AND g.id=r.id
+ JOIN mdm_assets.group_selections s ON(s.tenant_id,s.group_id,s.rule_version)=(g.tenant_id,g.id,g.rule_version)
+ CROSS JOIN LATERAL unnest(s.group_ids) ref WHERE r.depth<16
+), bounded AS (SELECT * FROM reach LIMIT 4097)
+SELECT count(*)<=4096 AND coalesce(bool_and(
+ g.id IS NOT NULL AND NOT g.deleted
+ AND NOT (r.depth=16 AND cardinality(coalesce(selection.group_ids,ARRAY[]::uuid[]))>0)
+ AND (g.kind='static' OR (b.phase='published' AND b.rule_version=g.rule_version))
+ AND NOT EXISTS(
+  SELECT 1 FROM jsonb_array_elements(coalesce(convert_from(b.input,'UTF8')::jsonb->'sources','[]'::jsonb)) src
+  LEFT JOIN mdm_group.groups target ON target.tenant_id=g.tenant_id AND target.id=(src->>'group')::uuid
+  LEFT JOIN mdm_planning.source_heads def ON def.tenant_id=g.tenant_id AND def.id='group-definition.'||(src->>'group')
+  LEFT JOIN mdm_planning.source_heads auth ON auth.tenant_id=g.tenant_id AND auth.id='group-authority.'||(src->>'group')
+  WHERE target.id IS NULL OR target.deleted OR target.member_set IS DISTINCT FROM (src->'coordinates'->>'memberSet')::uuid
+   OR target.member_version IS DISTINCT FROM (src->'coordinates'->>'memberVersion')::bigint
+   OR def.revision IS DISTINCT FROM (src->'coordinates'->>'definitionVersion')::bigint
+   OR auth.revision IS DISTINCT FROM (src->'coordinates'->>'authorityVersion')::bigint
+ )
+ AND (g.kind='static' AND b.id IS NULL OR (
+  head.id IS NOT NULL AND head.observed_input>=head.required_input
+  AND NOT EXISTS(SELECT 1 FROM mdm.asset_changes c WHERE c.tenant_id=g.tenant_id AND c.revision>head.observed_input
+   AND ((c.kind IN('device','registration','source','credential') AND (g.kind='dynamic' OR coalesce((
+    SELECT m.added FROM mdm_group.member_changes m JOIN mdm_group.member_runs history ON(history.tenant_id,history.id)=(m.tenant_id,m.run_id)
+    WHERE m.tenant_id=g.tenant_id AND m.group_id=g.id AND history.phase='published'
+      AND m.object_id=coalesce(c.identity->>'device',(SELECT h.device FROM mdm_access.asset_authority_history h WHERE h.tenant_id=c.tenant_id AND h.kind='registration' AND h.identity=c.identity->>'registration' ORDER BY h.revision DESC LIMIT 1))
+    ORDER BY m.revision DESC LIMIT 1),false))) OR EXISTS(
+    SELECT 1 FROM mdm_assets.group_fields f WHERE f.tenant_id=g.tenant_id AND f.group_id=g.id AND f.field=ANY(c.fields))))
+ )),false)
+FROM bounded r
+LEFT JOIN mdm_group.groups g ON g.tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid AND g.id=r.id
+LEFT JOIN mdm_group.member_runs b ON(b.tenant_id,b.id)=(g.tenant_id,g.member_set)
+LEFT JOIN mdm_assets.group_selections selection ON(selection.tenant_id,selection.group_id,selection.rule_version)=(g.tenant_id,g.id,g.rule_version)
+LEFT JOIN mdm_planning.source_heads head ON head.tenant_id=g.tenant_id AND head.id='group-members.'||g.id::text;
+$$;
+
 CREATE FUNCTION mdm_planning.scope_admission(p_scope uuid, p_device text) RETURNS jsonb
     LANGUAGE plpgsql SECURITY DEFINER
     SET search_path TO 'pg_catalog'
@@ -30,8 +73,9 @@ BEGIN
  WHERE x.tenant_id=tenant AND x.id=p_scope FOR SHARE OF x;
  IF NOT FOUND OR s.deleted THEN RETURN jsonb_build_object('state','excluded'); END IF;
  IF s.phase IS DISTINCT FROM 'published' OR s.definition_revision IS DISTINCT FROM s.revision THEN RETURN jsonb_build_object('state','pending'); END IF;
+ IF EXISTS(SELECT 1 FROM jsonb_array_elements(s.input->'sources') src WHERE src->'reference'->>'kind'='group' AND NOT mdm_planning.group_current((src->'reference'->>'id')::uuid)) THEN RETURN jsonb_build_object('state','pending'); END IF;
  FOR token IN
-  SELECT 'group-'||v.kind||'.'||(src->'reference'->>'id') AS id,(src->>v.field)::bigint AS revision
+  SELECT 'group-'||v.kind||'.'||(src->'reference'->>'id') AS id,(src->'coordinates'->>v.field)::bigint AS revision
   FROM jsonb_array_elements(s.input->'sources') src
   CROSS JOIN (VALUES('definition','definitionVersion'),('members','memberVersion'),('authority','authorityVersion')) v(kind,field)
   WHERE src->'reference'->>'kind'='group' ORDER BY id

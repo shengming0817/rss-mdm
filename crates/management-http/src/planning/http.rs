@@ -22,6 +22,7 @@ pub fn routes() -> Router<Arc<HttpState>> {
         .route("/devices/{device}/groups", get(device_groups))
         .route("/scopes", get(scope_directory))
         .route("/groups/{id}", get(group_read).post(group_write))
+        .route("/groups/{id}/references", get(group_references))
         .route("/groups/{id}/previews", post(group_preview))
         .route("/groups/{group}/results/{result}/{kind}", get(group_page))
         .route("/scopes/{scope}/results/{result}/{kind}", get(scope_page))
@@ -64,6 +65,11 @@ async fn run(
     }
     let authorize = || {
         auth.proof.manage(permission)?;
+        if let Command::Scope { change, .. } = &command
+            && matches!(&change.input, ScopeChange::Put { definition } if definition.references().iter().any(|r|matches!(r,Reference::Group(_))))
+        {
+            auth.proof.manage(Permission::GroupRead)?;
+        }
         if matches!(
             command,
             Command::ScopePage { .. } | Command::TaskRead { .. }
@@ -352,6 +358,7 @@ async fn run_group(
     });
     let authorize = || {
         auth.proof.manage(permission)?;
+        auth.proof.manage(Permission::GroupRead)?;
         assets::ReadScope::from_proof(&auth.proof)?
             .full()
             .map_err(rss_mdm_inventory_service::Error::from)?;
@@ -384,6 +391,25 @@ async fn device_groups(
     Ok(Json(
         s.groups
             .memberships(&auth.proof, &device, &query, &audit)
+            .await?,
+    ))
+}
+
+async fn group_references(
+    State(s): State<Arc<HttpState>>,
+    Extension(auth): Extension<RequestAuth>,
+    Extension(audit): Extension<RequestAudit>,
+    Path(id): Path<Uuid>,
+    query: Result<
+        Query<rss_mdm_inventory_service::groups::references::Query>,
+        axum::extract::rejection::QueryRejection,
+    >,
+) -> Result<Json<Value>, Error> {
+    audit.set_action("management_read");
+    let Query(q) = query.map_err(|_| Error::Malformed)?;
+    Ok(Json(
+        s.groups
+            .references(&auth.proof, id, &q, &audit, s.planning.as_ref())
             .await?,
     ))
 }

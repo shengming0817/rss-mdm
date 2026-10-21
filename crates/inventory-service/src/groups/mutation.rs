@@ -1,9 +1,14 @@
+use super::criteria::rule;
 use super::*;
-use crate::assets::rule;
 use rss_mdm_group_postgres as pg;
 use serde_json::json;
 impl Groups {
-    pub async fn group_read(&self, tx: &mut PgTransaction<'_>, id: Uuid) -> Result<Value> {
+    pub async fn group_read(
+        &self,
+        tx: &mut PgTransaction<'_>,
+        id: Uuid,
+        flow: &dyn Flow,
+    ) -> Result<Value> {
         let id = checked_input(pg::GroupId::parse(&id.to_string()))?;
         let group = group_checked(self.groups.lock_reference_target_in(tx, id).await?)?;
         let member_set = checked(self.groups.current_member_set_in(tx, id).await?)?;
@@ -22,7 +27,7 @@ impl Groups {
             None
         };
         Ok(
-            json!({"group":group,"criteria":criteria,"member_set":member_set.map(|id|id.to_string())}),
+            json!({"group":group,"criteria":criteria,"member_set":member_set.map(|id|id.to_string()),"freshness":if flow.current(tx,checked_input(Uuid::parse_str(&id.to_string()))?).await? {references::Freshness::Current}else{references::Freshness::Pending}}),
         )
     }
     pub async fn group_change(
@@ -48,10 +53,44 @@ impl Groups {
             }
             | GroupChange::Rule { criteria: c } => {
                 c.validate()?;
-                assets::filter::require_visible(&catalog, &c.criteria, sensitive)?
+                assets::filter::require_visible_rule(
+                    &catalog,
+                    &rule(self.tenant, op.operation_id, &c.criteria, &catalog)?,
+                    sensitive,
+                )?
             }
             _ => (),
         }
+        let references = match &op.input {
+            GroupChange::Create {
+                criteria: Some(c),
+                asset_context,
+                ..
+            } => {
+                self.validate_references_in(
+                    tx,
+                    id,
+                    *asset_context,
+                    &rule(self.tenant, op.operation_id, &c.criteria, &catalog)?,
+                    sensitive,
+                )
+                .await?
+            }
+            GroupChange::Rule { criteria: c } => {
+                let context =
+                    group_checked(self.groups.lock_reference_target_in(tx, group).await?)?
+                        .asset_context;
+                self.validate_references_in(
+                    tx,
+                    id,
+                    context,
+                    &rule(self.tenant, op.operation_id, &c.criteria, &catalog)?,
+                    sensitive,
+                )
+                .await?
+            }
+            _ => vec![],
+        };
         let command = match &op.input {
             GroupChange::Create {
                 presentation,
@@ -128,6 +167,13 @@ impl Groups {
             GroupChange::Delete => {
                 group_checked(self.groups.lock_reference_target_in(tx, group).await?)?;
                 flow.assert_unused(tx, id).await?;
+                if dependencies::graph_in(tx)
+                    .await?
+                    .values()
+                    .any(|refs| refs.contains(&id))
+                {
+                    return Err(Error::Conflict.into());
+                }
                 let tenant = self.tenant;
                 if tx
                     .with_connection(move |c| {
@@ -189,8 +235,8 @@ impl Groups {
                 )))?;
                 let tenant = self.tenant.to_string();
                 tx.with_connection(move |c| Box::pin(async move {
-                    sqlx::query("INSERT INTO mdm_assets.group_selections(tenant_id,group_id,rule_version,selection) VALUES($1::uuid,$2,$3,$4::jsonb) ON CONFLICT DO NOTHING")
-                        .bind(tenant).bind(id).bind(version).bind(selection).execute(c).await?; Ok(())
+                    sqlx::query("INSERT INTO mdm_assets.group_selections(tenant_id,group_id,rule_version,selection,group_ids) VALUES($1::uuid,$2,$3,$4::jsonb,$5) ON CONFLICT DO NOTHING")
+                        .bind(tenant).bind(id).bind(version).bind(selection).bind(references).execute(c).await?; Ok(())
                 })).await?;
             }
             flow.changed(tx, id, receipt.group.revision.get() as u64)
@@ -247,23 +293,18 @@ impl Groups {
         &self,
         tx: &mut PgTransaction<'_>,
         id: Uuid,
-        criteria: Option<&assets::Criteria>,
+        criteria: Option<&criteria::Criteria>,
     ) -> Result<()> {
         let mut fields = std::collections::BTreeSet::new();
-        fn collect(c: &assets::Criteria, out: &mut std::collections::BTreeSet<String>) {
-            match c {
-                assets::Criteria::Predicate { field, .. } => {
-                    out.insert(field.as_str().to_owned());
-                }
-                assets::Criteria::And { children } | assets::Criteria::Or { children } => {
-                    for c in children {
-                        collect(c, out);
-                    }
-                }
-            }
-        }
+        let catalog = assets::catalog_in(tx, self.tenant, i64::MAX).await?;
         if let Some(criteria) = criteria {
-            collect(criteria, &mut fields);
+            fields.extend(
+                rule(self.tenant, id, criteria, &catalog)?
+                    .view()
+                    .fields
+                    .keys()
+                    .cloned(),
+            );
         }
         let catalog = assets::catalog_in(tx, self.tenant, i64::MAX).await?;
         let fields = fields

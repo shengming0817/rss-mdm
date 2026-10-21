@@ -42,7 +42,7 @@ fn kind(value: rss_mdm_inventory::Kind) -> Result<g::ScalarType> {
         rss_mdm_inventory::Kind::Time => g::ScalarType::Time,
     })
 }
-fn criteria(
+pub(crate) fn criteria(
     c: &Criteria,
     catalog: &Catalog,
     fields: &mut BTreeMap<String, g::Field>,
@@ -113,7 +113,7 @@ fn criteria(
         }
     }
 }
-fn dictionary_field(key: FieldKey, path: &FieldPath<'_>) -> Result<g::Field> {
+pub(crate) fn dictionary_field(key: FieldKey, path: &FieldPath<'_>) -> Result<g::Field> {
     if !path.root.searchable {
         return Err(Error::Malformed.into());
     }
@@ -179,6 +179,7 @@ pub fn criteria_view(c: &g::Criteria) -> Result<Criteria> {
         g::CriteriaView::Or(cs) => Criteria::Or {
             children: cs.iter().map(criteria_view).collect::<Result<_>>()?,
         },
+        g::CriteriaView::Membership { .. } => return Err(Error::Malformed.into()),
         g::CriteriaView::Predicate(p) => {
             let field = checked_input(FieldKey::parse(&p.field))?;
             let operation = match p.op {
@@ -393,6 +394,20 @@ pub fn require_visible(catalog: &Catalog, criteria: &Criteria, sensitive: bool) 
                 }
                 pending.extend(children.iter().map(|c| (c, depth + 1)));
             }
+        }
+    }
+    Ok(())
+}
+
+/// Check the actual field dependencies of a compiled rule, including a group rule.
+pub fn require_visible_rule(catalog: &Catalog, rule: &g::Rule, sensitive: bool) -> Result<()> {
+    for name in rule.view().fields.keys() {
+        let key = checked_input(FieldKey::parse(name))?;
+        if !sensitive
+            && checked_input(catalog.path(key))?.root.sensitivity
+                == rss_mdm_inventory::Sensitivity::Sensitive
+        {
+            return Err(Error::Forbidden.into());
         }
     }
     Ok(())

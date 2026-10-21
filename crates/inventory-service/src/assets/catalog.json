@@ -245,6 +245,15 @@
     ],
     [
       "group_selections",
+      "group_ids",
+      "uuid[]",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "group_selections",
       "selection",
       "jsonb",
       true,
@@ -502,6 +511,13 @@
     ],
     [
       "group_selections",
+      "group_selections_group_ids_check",
+      "c",
+      "CHECK ((cardinality(group_ids) <= 256))",
+      true
+    ],
+    [
+      "group_selections",
       "group_selections_pkey",
       "p",
       "PRIMARY KEY (tenant_id, group_id, rule_version)",
@@ -632,6 +648,14 @@
       "group_selections",
       "group_selections_pkey",
       "CREATE UNIQUE INDEX group_selections_pkey ON mdm_assets.group_selections USING btree (tenant_id, group_id, rule_version)",
+      true,
+      true,
+      true
+    ],
+    [
+      "group_selections",
+      "group_selections_references",
+      "CREATE INDEX group_selections_references ON mdm_assets.group_selections USING gin (group_ids)",
       true,
       true,
       true

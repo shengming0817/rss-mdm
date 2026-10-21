@@ -10,14 +10,14 @@ use serde::{Deserialize, Serialize};
 pub enum GroupChange {
     Create {
         presentation: serde_json::Map<String, serde_json::Value>,
-        criteria: Option<assets::InventoryCondition>,
+        criteria: Option<criteria::Condition>,
         asset_context: rss_mdm_group_postgres::AssetContext,
     },
     Edit {
         presentation: serde_json::Map<String, serde_json::Value>,
     },
     Rule {
-        criteria: assets::InventoryCondition,
+        criteria: criteria::Condition,
     },
     Members {
         add: Vec<crate::objects::ObjectRef>,

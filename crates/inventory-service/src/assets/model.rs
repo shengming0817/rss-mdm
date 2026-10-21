@@ -24,12 +24,12 @@ pub enum ScopeQuantifier {
 }
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct InventoryCondition {
+pub struct InventoryCondition<C = Criteria> {
     pub selector: ScopeSelector,
     pub quantifier: ScopeQuantifier,
-    pub criteria: Criteria,
+    pub criteria: C,
 }
-impl InventoryCondition {
+impl<C> InventoryCondition<C> {
     pub fn validate(&self) -> Result<()> {
         match &self.selector {
             ScopeSelector::Device => {

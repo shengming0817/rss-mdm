@@ -247,7 +247,39 @@ mod receipts;
 
 pub mod error;
 
+mod group_references;
 impl rss_mdm_inventory_service::groups::Flow for Planning {
+    fn current<'a, 'tx>(
+        &'a self,
+        tx: &'a mut PgTransaction<'tx>,
+        id: Uuid,
+    ) -> rss_mdm_inventory_service::tasks::Pending<'a, bool> {
+        Box::pin(async move {
+            let source = self
+                .capture_group_source_in(tx, id)
+                .await
+                .map_err(crate::automation::inventory_tasks::failure)?;
+            self.source_current_in(tx, &source)
+                .await
+                .map_err(crate::automation::inventory_tasks::failure)
+        })
+    }
+
+    fn references<'a, 'tx>(
+        &'a self,
+        tx: &'a mut PgTransaction<'tx>,
+        id: Uuid,
+    ) -> rss_mdm_inventory_service::tasks::Pending<
+        'a,
+        Vec<rss_mdm_inventory_service::groups::references::Entry>,
+    > {
+        Box::pin(async move {
+            self.group_references_in(tx, id)
+                .await
+                .map_err(crate::automation::inventory_tasks::failure)
+        })
+    }
+
     fn task<'a, 'tx>(
         &'a self,
         tx: &'a mut PgTransaction<'tx>,

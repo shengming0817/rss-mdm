@@ -115,7 +115,7 @@ impl Groups {
                             s.group_change(tx, *id, change, (at, *sensitive), flow)
                                 .await?
                         }
-                        Command::GroupRead { id } => s.group_read(tx, *id).await?,
+                        Command::GroupRead { id } => s.group_read(tx, *id, flow).await?,
                         Command::GroupPreview {
                             id,
                             operation,
@@ -130,7 +130,7 @@ impl Groups {
                             projection,
                             query,
                         } => {
-                            s.group_page_in(tx, *group, *result, *projection, query)
+                            s.group_page_in(tx, *group, *result, *projection, query, flow)
                                 .await?
                         }
                         Command::TaskRead { id, target } => flow.task(tx, *id, target).await?,
