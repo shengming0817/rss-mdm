@@ -452,21 +452,6 @@ pub(super) fn msix(
     }
     Ok(())
 }
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn identity_names_require_the_real_namespace_and_parent() {
-        for xml in [
-            "<Package><Identity Name=\"Acme\"/></Package>",
-            "<Package xmlns=\"urn:forged\"><Identity Name=\"Acme\"/></Package>",
-            "<Package xmlns=\"http://schemas.microsoft.com/appx/manifest/foundation/windows10\"><Properties><Identity Name=\"Acme\"/></Properties></Package>",
-        ] {
-            assert!(facts(xml.as_bytes()).is_err(), "accepted {xml}");
-        }
-    }
-}
-
 /// Discover the same namespace-checked MSIX identity used by publication verification.
 pub(super) fn inspect_msix(
     file: &mut File,
@@ -501,4 +486,19 @@ pub(super) fn inspect_msix(
             bundle_id: None,
         },
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn identity_names_require_the_real_namespace_and_parent() {
+        for xml in [
+            "<Package><Identity Name=\"Acme\"/></Package>",
+            "<Package xmlns=\"urn:forged\"><Identity Name=\"Acme\"/></Package>",
+            "<Package xmlns=\"http://schemas.microsoft.com/appx/manifest/foundation/windows10\"><Properties><Identity Name=\"Acme\"/></Properties></Package>",
+        ] {
+            assert!(facts(xml.as_bytes()).is_err(), "accepted {xml}");
+        }
+    }
 }
