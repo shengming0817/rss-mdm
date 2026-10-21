@@ -21,6 +21,14 @@ fn merge(out: &mut BTreeMap<(Kind, Uuid, Relation), Entry>, mut entry: Entry) {
     entry.roles.dedup();
     let key = entry.key();
     if let Some(old) = out.get_mut(&key) {
+        old.freshness =
+            if old.freshness == Freshness::Current && entry.freshness == Freshness::Current {
+                Freshness::Current
+            } else {
+                Freshness::Pending
+            };
+        old.effective &= entry.effective;
+        old.blocks_deletion |= entry.blocks_deletion;
         old.roles.extend(entry.roles);
         old.roles.sort();
         old.roles.dedup();
@@ -84,7 +92,7 @@ impl Planning {
             }
         }
         let mut out = BTreeMap::new();
-        for ((id, _), path) in &paths {
+        for ((id, relation), path) in &paths {
             let gid = checked_input(rss_mdm_group_postgres::GroupId::parse(&id.to_string()))?;
             let group =
                 group_checked(self.groups.get_in(tx, gid).await?)?.ok_or(Error::NotFound)?;
@@ -98,7 +106,17 @@ impl Planning {
                     .await?,
             )?
             .ok_or(Error::Conflict)?;
-            let target = path[path.len() - 2].id.to_string();
+            let targets: BTreeSet<_> = if *relation == Relation::Direct {
+                [root.to_string()].into()
+            } else {
+                graph
+                    .get(id)
+                    .into_iter()
+                    .flatten()
+                    .filter(|child| **child != root && paths.keys().any(|(id, _)| id == *child))
+                    .map(ToString::to_string)
+                    .collect()
+            };
             let mut roles = BTreeSet::new();
             fn collect(
                 c: &rss_mdm_group_postgres::core::Criteria,
@@ -125,7 +143,9 @@ impl Planning {
                     _ => {}
                 }
             }
-            collect(rule.view().criteria, &target, &mut roles);
+            for target in targets {
+                collect(rule.view().criteria, &target, &mut roles);
+            }
             let frozen = self.capture_group_source_in(tx, *id).await?;
             let current = self.source_current_in(tx, &frozen).await?;
             merge(
@@ -211,7 +231,7 @@ impl Planning {
         if !scopes.is_empty() {
             let tenant = self.tenant.to_string();
             let rows=tx.with_connection(move|c|Box::pin(async move {
-                sqlx::query("SELECT id,revision,state,definition::text FROM mdm_policy.policies WHERE tenant_id=$1::uuid AND ((definition->>'scope')::uuid=ANY($2) OR EXISTS(SELECT 1 FROM jsonb_array_elements(coalesce(definition->'action'->'rollout'->'stages','[]'::jsonb)) stage WHERE (stage->>'scope')::uuid=ANY($2))) ORDER BY id LIMIT 4097").bind(tenant).bind(scopes).fetch_all(c).await
+                sqlx::query("SELECT p.id,p.revision,p.state,p.definition::text,NOT EXISTS(SELECT 1 FROM (SELECT (p.definition->>'scope')::uuid AS id UNION SELECT (stage->>'scope')::uuid FROM jsonb_array_elements(coalesce(p.definition->'action'->'rollout'->'stages','[]'::jsonb)) stage) refs LEFT JOIN mdm_planning.scopes s ON s.tenant_id=p.tenant_id AND s.id=refs.id WHERE s.id IS NULL OR s.deleted OR mdm_planning.scope_admission(s.id,NULL)->>'state'<>'fresh') AS current FROM mdm_policy.policies p WHERE tenant_id=$1::uuid AND ((definition->>'scope')::uuid=ANY($2) OR EXISTS(SELECT 1 FROM jsonb_array_elements(coalesce(definition->'action'->'rollout'->'stages','[]'::jsonb)) stage WHERE (stage->>'scope')::uuid=ANY($2))) ORDER BY id LIMIT 4097").bind(tenant).bind(scopes).fetch_all(c).await
             })).await?;
             if rows.len() > dependencies::MAX_GRAPH {
                 return Err(Error::Malformed.into());
@@ -252,7 +272,7 @@ impl Planning {
                             path,
                             roles,
                             state,
-                            source.freshness == Freshness::Current,
+                            row.try_get("current")?,
                         ),
                     );
                 }
@@ -298,5 +318,45 @@ impl Planning {
             return Err(Error::Malformed.into());
         }
         Ok(out.into_values().collect())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn merged_policy_state_is_conservative_and_independent_of_scope_order() {
+        let id = Uuid::new_v4();
+        let root = Uuid::new_v4();
+        let make = |scope, current| {
+            entry(
+                Kind::Policy,
+                id,
+                1,
+                vec![
+                    object(Kind::Group, root),
+                    object(Kind::Scope, scope),
+                    object(Kind::Policy, id),
+                ],
+                vec!["rollout_stage".into()],
+                Lifecycle::Enabled,
+                current,
+            )
+        };
+        let a = Uuid::new_v4();
+        let b = Uuid::new_v4();
+        for values in [
+            [make(a, true), make(b, false)],
+            [make(b, false), make(a, true)],
+        ] {
+            let mut out = BTreeMap::new();
+            for value in values {
+                merge(&mut out, value);
+            }
+            let item = out.values().next().unwrap();
+            assert_eq!(item.freshness, Freshness::Pending);
+            assert!(!item.effective);
+            assert!(item.blocks_deletion);
+        }
     }
 }

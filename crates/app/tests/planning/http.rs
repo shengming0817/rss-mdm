@@ -986,12 +986,26 @@ async fn nested_groups_sources_references_and_authorized_pages() -> Result<()> {
             call(&mut browser,&router,&path(unknown),1,json!({"action":"rule","criteria":condition(json!({"kind":"predicate","field":"device.model","op":"eq","value":{"kind":"string","value":"never"}}))})).await?;
             await_ingress().await?;
             let (_,after)=browser.call(&router,Method::GET,&path(negative),None).await?;ensure!(after["group"]["memberCount"]==2,"NoMatch did not propagate: {after}");
+            let right=Uuid::new_v4();let diamond=Uuid::new_v4();
+            call(&mut browser,&router,&path(right),0,json!({"action":"create","assetContext":"endpoint","presentation":{"name":"diamond-right"},"criteria":condition(reference(source,"member_of"))})).await?;
+            call(&mut browser,&router,&path(diamond),0,json!({"action":"create","assetContext":"endpoint","presentation":{"name":"diamond-top"},"criteria":condition(json!({"kind":"and","children":[reference(nested,"member_of"),reference(right,"not_member_of")]}))})).await?;
+            await_ingress().await?;
+            let (_,diamond_refs)=browser.call(&router,Method::GET,&format!("{refs}?kind=group&relation=indirect"),None).await?;
+            let diamond_entry=diamond_refs["items"].as_array().context("diamond items")?.iter().find(|i|i["source"]["id"]==diamond.to_string()).context("diamond reference missing")?;
+            ensure!(diamond_entry["roles"]==json!(["member_of","not_member_of"]),"lost diamond role: {diamond_entry}");
+            // Obtain a valid cursor after every graph mutation, then change only authority.
+            let (status,fresh)=browser.call(&router,Method::GET,&format!("{refs}?limit=1"),None).await?;
+            ensure!(status==StatusCode::OK);let live_token=fresh["nextCursor"].as_str().context("fresh cursor missing")?.to_owned();
+            ensure!(browser.call(&router,Method::GET,&format!("{refs}?limit=1&cursor={live_token}"),None).await?.0==StatusCode::OK);
+            // Adding an unrelated grant leaves visible entries unchanged: view binding alone cannot reject this token.
+            set_management_grants(&subject,json!(["group_read","group_write","group_recompute","scope_read","scope_write","compliance_rule_read","compliance_write","policy_read","policy_write","resource_read","resource_write","inventory_fields_write"])).await?;
+            ensure!(browser.call(&router,Method::GET,&format!("{refs}?limit=1&cursor={live_token}"),None).await?.0==StatusCode::CONFLICT);
             // Current authority is checked on each page; absent category grants hide identities.
             set_management_grants(&subject,json!(["group_read","group_write","group_recompute"])).await?;
             let (status,filtered)=browser.call(&router,Method::GET,&refs,None).await?;
-            ensure!(status==StatusCode::OK&&filtered["items"].as_array().unwrap().len()==2&&filtered["deletionBlocked"]==true,"filtered references: {status} {filtered}");
+            ensure!(status==StatusCode::OK&&filtered["items"].as_array().unwrap().len()==4&&filtered["deletionBlocked"]==true,"filtered references: {status} {filtered}");
             ensure!(browser.call(&router,Method::GET,&format!("{refs}?kind=compliance_rule"),None).await?.0==StatusCode::FORBIDDEN);
-            ensure!(browser.call(&router,Method::GET,&format!("{refs}?cursor={token}"),None).await?.0==StatusCode::CONFLICT);
+            ensure!(browser.call(&router,Method::GET,&format!("{refs}?cursor={live_token}"),None).await?.0==StatusCode::CONFLICT);
             ensure!(browser.call(&router,Method::GET,&format!("{}/references",path(Uuid::new_v4())),None).await?.0==StatusCode::NOT_FOUND);
             Ok(())
         }).await?;

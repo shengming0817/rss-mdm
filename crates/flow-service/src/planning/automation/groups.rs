@@ -375,8 +375,18 @@ impl Planning {
                         },
                     )
                     .await?;
-                self.fill_group_sources_in(tx, &build.request.sources, &mut data.objects)
-                    .await?;
+                match self
+                    .fill_group_sources_in(tx, &build.request.sources, &mut data.objects)
+                    .await
+                {
+                    Err(crate::transaction::Fault::Request(Error::Unavailable(
+                        Failure::AssetBytesLimit,
+                    ))) if limit > 1 => {
+                        limit = (limit / 2).max(1);
+                        continue;
+                    }
+                    result => result?,
+                }
                 let after = build
                     .cursor
                     .as_ref()
@@ -495,8 +505,18 @@ impl Planning {
                         },
                     )
                     .await?;
-                self.fill_group_sources_in(tx, &build.request.sources, &mut data.objects)
-                    .await?;
+                match self
+                    .fill_group_sources_in(tx, &build.request.sources, &mut data.objects)
+                    .await
+                {
+                    Err(crate::transaction::Fault::Request(Error::Unavailable(
+                        Failure::AssetBytesLimit,
+                    ))) if limit > 1 => {
+                        limit = (limit / 2).max(1);
+                        continue;
+                    }
+                    result => result?,
+                }
                 if !data.objects.is_empty() {
                     let page_input = g::core::PageInput {
                         tenant: self.tenant,

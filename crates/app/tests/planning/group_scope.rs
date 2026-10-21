@@ -1047,3 +1047,461 @@ async fn concurrent_opposite_group_references_never_commit_a_cycle() {
     first.runtime.close().await;
     second.runtime.close().await;
 }
+
+#[tokio::test]
+#[ignore = "MODULE=planning.group_scope: real frozen source restart"]
+async fn nested_checkpoint_supersedes_changed_source_after_restart() {
+    use rss_mdm_inventory_service::groups::criteria::{Criteria, MembershipOp};
+    use rss_reconcile::{DurableStore, Reconciler};
+    let first = Arc::new(planning(tenant()).await);
+    let worker = crate::automation::Automation::connect(
+        first.clone(),
+        assets(&first).await,
+        compliance(&first).await,
+        options(),
+    )
+    .await
+    .unwrap();
+    let prefix = format!("nested-restart-{}", Uuid::new_v4());
+    sql(&format!(
+        "INSERT INTO mdm_access.devices SELECT '{}','{prefix}-'||lpad(n::text,4,'0') FROM generate_series(1,1000) n",
+        tenant()
+    ));
+    let last = format!("{prefix}-1001");
+    seed_device(&last);
+    let source = Uuid::new_v4();
+    let target = Uuid::new_v4();
+    execute(
+        &first,
+        &GroupCommand::Group {
+            id: source,
+            sensitive: true,
+            change: Box::new(group_operation(
+                0,
+                GroupChange::Create {
+                    asset_context: rss_mdm_group_postgres::AssetContext::Endpoint,
+                    presentation: json!({"name":"restart-static"})
+                        .as_object()
+                        .unwrap()
+                        .clone(),
+                    criteria: None,
+                },
+            )),
+        },
+    )
+    .await
+    .unwrap();
+    let created = execute(
+        &first,
+        &GroupCommand::Group {
+            id: target,
+            sensitive: true,
+            change: Box::new(group_operation(
+                0,
+                GroupChange::Create {
+                    asset_context: rss_mdm_group_postgres::AssetContext::Endpoint,
+                    presentation: json!({"name":"restart-target"})
+                        .as_object()
+                        .unwrap()
+                        .clone(),
+                    criteria: Some(assets::InventoryCondition {
+                        selector: assets::ScopeSelector::Device,
+                        quantifier: assets::ScopeQuantifier::One,
+                        criteria: Criteria::Group {
+                            group_id: source,
+                            op: MembershipOp::NotMemberOf,
+                        },
+                    }),
+                },
+            )),
+        },
+    )
+    .await
+    .unwrap();
+    let task = Uuid::parse_str(created["task"].as_str().unwrap()).unwrap();
+    crate::automation::jobs::forward_jobs(&first.runtime, first.tenant, &first.audit_store)
+        .await
+        .unwrap();
+    let claim = claim_job(&worker, task, Duration::from_secs(300)).await;
+    let timer = automation::Timer::new();
+    let cancel = tokio_util::sync::CancellationToken::new();
+    let control = rss_reconcile::Control::new(&timer, Duration::from_secs(120), &cancel);
+    let diff = worker.observe(&claim, &control).await.unwrap();
+    worker.apply(&claim, diff, &control).await.unwrap();
+    let checkpoint = sql(&format!(
+        "SELECT jsonb_build_array(processed_count,phase,encode(input,'hex')) FROM mdm_group.member_runs WHERE tenant_id='{}' AND id='{task}'",
+        tenant()
+    ));
+    let saved: Value = serde_json::from_str(&checkpoint).unwrap();
+    assert_eq!(saved[0], 1000);
+    assert_eq!(saved[1], "reading");
+    let changed = execute(
+        &first,
+        &GroupCommand::Group {
+            id: source,
+            sensitive: true,
+            change: Box::new(group_operation(
+                1,
+                GroupChange::Members {
+                    add: vec![rss_mdm_inventory_service::objects::ObjectRef::Endpoint(
+                        last.clone(),
+                    )],
+                    remove: vec![],
+                },
+            )),
+        },
+    )
+    .await
+    .unwrap();
+    let source_task = Uuid::parse_str(changed["task"].as_str().unwrap()).unwrap();
+    crate::automation::jobs::forward_jobs(&first.runtime, first.tenant, &first.audit_store)
+        .await
+        .unwrap();
+    let source_claim = claim_job(&worker, source_task, Duration::from_secs(300)).await;
+    for _ in 0..16 {
+        let diff = worker.observe(&source_claim, &control).await.unwrap();
+        if diff.drift() == rss_reconcile::DriftKind::Converged {
+            break;
+        }
+        worker.apply(&source_claim, diff, &control).await.unwrap();
+    }
+    assert_eq!(
+        worker
+            .observe(&source_claim, &control)
+            .await
+            .unwrap()
+            .drift(),
+        rss_reconcile::DriftKind::Converged
+    );
+    worker
+        .finish(
+            &source_claim,
+            rss_reconcile::Completion::Converged,
+            &control,
+        )
+        .await
+        .unwrap();
+    rss_runtime::ManagedResource::shutdown(&crate::automation::Resource(worker.clone()))
+        .await
+        .unwrap();
+    sql(&format!(
+        "UPDATE rss_reconcile.targets SET lease_until=clock_timestamp()-interval '1 second' WHERE tenant_id='{}' AND entity='job:{task}'",
+        tenant()
+    ));
+    let second = Arc::new(planning(tenant()).await);
+    let resumed = crate::automation::Automation::connect(
+        second.clone(),
+        assets(&second).await,
+        compliance(&second).await,
+        options(),
+    )
+    .await
+    .unwrap();
+    let restored = claim_job(&resumed, task, Duration::from_secs(300)).await;
+    let diff = resumed.observe(&restored, &control).await.unwrap();
+    resumed.apply(&restored, diff, &control).await.unwrap();
+    assert_eq!(
+        sql(&format!(
+            "SELECT receipt IS NULL AND processed_count=1000 AND encode(input,'hex')='{}' FROM mdm_group.member_runs WHERE tenant_id='{}' AND id='{task}'",
+            saved[2].as_str().unwrap(),
+            tenant()
+        )),
+        "t"
+    );
+    let replacement = sql(&format!(
+        "SELECT replacement_task::text FROM mdm_automation.automation_jobs WHERE tenant_id='{}' AND id='{task}' AND failure='superseded'",
+        tenant()
+    ));
+    let replacement = Uuid::parse_str(&replacement).unwrap();
+    resumed
+        .finish(&restored, rss_reconcile::Completion::Converged, &control)
+        .await
+        .unwrap();
+    crate::automation::jobs::forward_jobs(&second.runtime, second.tenant, &second.audit_store)
+        .await
+        .unwrap();
+    let current = claim_job(&resumed, replacement, Duration::from_secs(300)).await;
+    for _ in 0..20 {
+        let diff = resumed.observe(&current, &control).await.unwrap();
+        if diff.drift() == rss_reconcile::DriftKind::Converged {
+            break;
+        }
+        resumed.apply(&current, diff, &control).await.unwrap();
+    }
+    assert_eq!(
+        resumed.observe(&current, &control).await.unwrap().drift(),
+        rss_reconcile::DriftKind::Converged
+    );
+    let read = execute(&second, &GroupCommand::GroupRead { id: target })
+        .await
+        .unwrap();
+    assert_eq!(read["group"]["member_count"], 1000);
+    assert_eq!(read["freshness"], "current");
+    assert_eq!(
+        sql(&format!(
+            "SELECT member_set='{replacement}'::uuid FROM mdm_group.groups WHERE tenant_id='{}' AND id='{target}'",
+            tenant()
+        )),
+        "t"
+    );
+    resumed
+        .finish(&current, rss_reconcile::Completion::Converged, &control)
+        .await
+        .unwrap();
+    rss_runtime::ManagedResource::shutdown(&crate::automation::Resource(resumed))
+        .await
+        .unwrap();
+    first.runtime.close().await;
+    second.runtime.close().await;
+}
+
+#[tokio::test]
+#[ignore = "MODULE=planning.group_scope: real large source evidence pages"]
+async fn nested_large_source_evidence_retries_with_smaller_pages() {
+    use rss_mdm_group_postgres::{self as pg, core as g};
+    use rss_reconcile::{DurableStore, Reconciler};
+    use std::collections::{BTreeMap, BTreeSet};
+    let service = Arc::new(planning(tenant()).await);
+    let prefix = format!("large-source-{}", Uuid::new_v4());
+    sql(&format!(
+        "INSERT INTO mdm_access.devices SELECT '{}','{prefix}-'||lpad(n::text,4,'0') FROM generate_series(1,600) n",
+        tenant()
+    ));
+    let source = Uuid::new_v4();
+    let created = execute(
+        &service,
+        &GroupCommand::Group {
+            id: source,
+            sensitive: true,
+            change: Box::new(group_operation(
+                0,
+                GroupChange::Create {
+                    asset_context: pg::AssetContext::Endpoint,
+                    presentation: json!({"name":"large-evidence-source"})
+                        .as_object()
+                        .unwrap()
+                        .clone(),
+                    criteria: Some(assets::InventoryCondition {
+                        selector: assets::ScopeSelector::AllAuthorized,
+                        quantifier: assets::ScopeQuantifier::Any,
+                        criteria:
+                            rss_mdm_inventory_service::groups::criteria::Criteria::Predicate {
+                                field: rss_mdm_inventory::builtin::MODEL,
+                                op: assets::Operator::Eq,
+                                value: Some(assets::Scalar::String("model".into())),
+                                values: None,
+                            },
+                    }),
+                },
+            )),
+        },
+    )
+    .await
+    .unwrap();
+    let task = Uuid::parse_str(created["task"].as_str().unwrap()).unwrap();
+    let run = pg::OperationId::parse(&task.to_string()).unwrap();
+    let build = service
+        .runtime
+        .local_tx_with_context(tenant(), deadline(), &service, |s, tx| {
+            Box::pin(async move { s.groups.build_in(tx, run).await })
+        })
+        .await
+        .fold(
+            |v| v.unwrap(),
+            |e| panic!("{e:?}"),
+            |e| panic!("{e:?}"),
+            |e| panic!("{e:?}"),
+            |e| panic!("{e:?}"),
+            |e| panic!("{e:?}"),
+        );
+    // The upstream owner supplies valid frozen core input. The tested action is reading its
+    // persisted evidence through the real nested worker, not reconstructing inventory ingress.
+    let objects: Vec<_> = (1..=600)
+        .map(|n| g::ObjectSnapshot {
+            key: g::ObjectKey::new(tenant(), format!("{prefix}-{n:04}")).unwrap(),
+            memberships: BTreeMap::new(),
+            quantifier: g::Quantifier::Any,
+            complete: true,
+            contexts: (0..4)
+                .map(|c| {
+                    (
+                        format!("context-{c}"),
+                        BTreeMap::from([(
+                            "device.model".into(),
+                            g::Fact {
+                                state: g::FactState::Known(g::Value::Scalar(g::Scalar::String(
+                                    "model".into(),
+                                ))),
+                                source: "s".repeat(4000),
+                                snapshot_id: "p".repeat(4000),
+                                observed_at: build.request.as_of,
+                            },
+                        )]),
+                    )
+                })
+                .collect(),
+        })
+        .collect();
+    let coverage = BTreeSet::from(["device.model".into()]);
+    for start in (0..600).step_by(100) {
+        let page = g::PageInput {
+            tenant: tenant(),
+            id: "assets",
+            version: &build.request.input_version,
+            dictionary_version: rss_mdm_inventory::DICTIONARY,
+            coverage: &coverage,
+            objects: &objects[start..start + 100],
+            after: if start == 0 {
+                None
+            } else {
+                Some(&objects[start - 1].key)
+            },
+        };
+        service
+            .runtime
+            .local_tx_with_context(tenant(), deadline(), (&service, &page), |ctx, tx| {
+                Box::pin(async move { ctx.0.groups.append_build_page_in(tx, run, ctx.1).await })
+            })
+            .await
+            .fold(
+                |v| {
+                    v.unwrap();
+                },
+                |e| panic!("{e:?}"),
+                |e| panic!("{e:?}"),
+                |e| panic!("{e:?}"),
+                |e| panic!("{e:?}"),
+                |e| panic!("{e:?}"),
+            );
+    }
+    service
+        .runtime
+        .local_tx_with_context(tenant(), deadline(), &service, |s, tx| {
+            Box::pin(async move { s.groups.seal_build_in(tx, run, 600).await })
+        })
+        .await
+        .fold(
+            |v| {
+                v.unwrap();
+            },
+            |e| panic!("{e:?}"),
+            |e| panic!("{e:?}"),
+            |e| panic!("{e:?}"),
+            |e| panic!("{e:?}"),
+            |e| panic!("{e:?}"),
+        );
+    let worker = crate::automation::Automation::connect(
+        service.clone(),
+        assets(&service).await,
+        compliance(&service).await,
+        options(),
+    )
+    .await
+    .unwrap();
+    crate::automation::jobs::forward_jobs(&service.runtime, service.tenant, &service.audit_store)
+        .await
+        .unwrap();
+    let claim = claim_job(&worker, task, Duration::from_secs(300)).await;
+    let timer = automation::Timer::new();
+    let cancel = tokio_util::sync::CancellationToken::new();
+    let control = rss_reconcile::Control::new(&timer, Duration::from_secs(120), &cancel);
+    for _ in 0..16 {
+        let diff = worker.observe(&claim, &control).await.unwrap();
+        if diff.drift() == rss_reconcile::DriftKind::Converged {
+            break;
+        }
+        worker.apply(&claim, diff, &control).await.unwrap();
+    }
+    assert_eq!(
+        worker.observe(&claim, &control).await.unwrap().drift(),
+        rss_reconcile::DriftKind::Converged
+    );
+    assert!(
+        sql(&format!(
+            "SELECT sum(octet_length(evidence))>16777216 FROM mdm_group.member_rows WHERE tenant_id='{}' AND run_id='{task}'",
+            tenant()
+        )) == "t"
+    );
+    worker
+        .finish(&claim, rss_reconcile::Completion::Converged, &control)
+        .await
+        .unwrap();
+    let target = Uuid::new_v4();
+    let accepted = execute(
+        &service,
+        &GroupCommand::Group {
+            id: target,
+            sensitive: true,
+            change: Box::new(group_operation(
+                0,
+                GroupChange::Create {
+                    asset_context: pg::AssetContext::Endpoint,
+                    presentation: json!({"name":"small-leaf-large-source"})
+                        .as_object()
+                        .unwrap()
+                        .clone(),
+                    criteria: Some(assets::InventoryCondition {
+                        selector: assets::ScopeSelector::Device,
+                        quantifier: assets::ScopeQuantifier::One,
+                        criteria: rss_mdm_inventory_service::groups::criteria::Criteria::Group {
+                            group_id: source,
+                            op: rss_mdm_inventory_service::groups::criteria::MembershipOp::MemberOf,
+                        },
+                    }),
+                },
+            )),
+        },
+    )
+    .await
+    .unwrap();
+    let task = Uuid::parse_str(accepted["task"].as_str().unwrap()).unwrap();
+    crate::automation::jobs::forward_jobs(&service.runtime, service.tenant, &service.audit_store)
+        .await
+        .unwrap();
+    let claim = claim_job(&worker, task, Duration::from_secs(300)).await;
+    let diff = worker.observe(&claim, &control).await.unwrap();
+    worker.apply(&claim, diff, &control).await.unwrap();
+    let processed: i64 = sql(&format!(
+        "SELECT processed_count FROM mdm_group.member_runs WHERE tenant_id='{}' AND id='{task}'",
+        tenant()
+    ))
+    .parse()
+    .unwrap();
+    assert!(
+        processed > 0 && processed < 600,
+        "oversized source page was not retried: {processed}"
+    );
+    for _ in 0..24 {
+        let diff = worker.observe(&claim, &control).await.unwrap();
+        if diff.drift() == rss_reconcile::DriftKind::Converged {
+            break;
+        }
+        worker.apply(&claim, diff, &control).await.unwrap();
+    }
+    assert_eq!(
+        worker.observe(&claim, &control).await.unwrap().drift(),
+        rss_reconcile::DriftKind::Converged
+    );
+    assert_eq!(
+        sql(&format!(
+            "SELECT member_count FROM mdm_group.groups WHERE tenant_id='{}' AND id='{target}'",
+            tenant()
+        )),
+        "600"
+    );
+    assert_eq!(
+        sql(&format!(
+            "SELECT coalesce(failure,'ok') FROM mdm_automation.automation_jobs WHERE tenant_id='{}' AND id='{task}'",
+            tenant()
+        )),
+        "ok"
+    );
+    worker
+        .finish(&claim, rss_reconcile::Completion::Converged, &control)
+        .await
+        .unwrap();
+    rss_runtime::ManagedResource::shutdown(&crate::automation::Resource(worker))
+        .await
+        .unwrap();
+    service.runtime.close().await;
+}

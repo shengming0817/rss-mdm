@@ -2194,3 +2194,6 @@ consume(('crates/inventory-service/src/groups/criteria.rs',
          'crates/flow-service/src/planning/automation/group_sources.rs',
          'crates/inventory-service/schema/group-selections.sql'),
         'planning.group_scope planning.http planning.scope compliance.group_input group.generations')
+
+case_fixtures('planning.group_scope', 'planning::t2::group_scope::nested_checkpoint_supersedes_changed_source_after_restart', None)
+case_fixtures('planning.group_scope', 'planning::t2::group_scope::nested_large_source_evidence_retries_with_smaller_pages', None)
