@@ -1,0 +1,61 @@
+{
+  "$defs": {
+    "TelemetryDelivery": {
+      "description": "Closed delivery observations. Unknown outcomes must be resolved using the original identity.",
+      "oneOf": [
+        {
+          "const": "pending",
+          "description": "Persisted product input awaits bounded delivery.",
+          "type": "string"
+        },
+        {
+          "const": "published",
+          "description": "History storage and/or the current-asset inbox confirmed admission.\nCurrent asset projection and query/summary availability remain separate observations.",
+          "type": "string"
+        },
+        {
+          "const": "unknown",
+          "description": "A destination outcome is uncertain.",
+          "type": "string"
+        },
+        {
+          "const": "blocked",
+          "description": "Current authorization prevents further delivery.",
+          "type": "string"
+        }
+      ]
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Product reception does not assert backend visibility or aggregate freshness.",
+  "properties": {
+    "batchId": {
+      "description": "Stable logical batch identity.",
+      "format": "uuid",
+      "type": "string"
+    },
+    "delivery": {
+      "$ref": "#/$defs/TelemetryDelivery",
+      "description": "Backend publication state, independent of receipt durability."
+    },
+    "receivedAt": {
+      "description": "First durable receipt time in UTC Unix microseconds.",
+      "format": "int64",
+      "type": "integer"
+    },
+    "replayed": {
+      "description": "Whether the original input was already received.",
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "batchId",
+    "receivedAt",
+    "replayed",
+    "delivery"
+  ],
+  "title": "TelemetryReceipt",
+  "type": "object",
+  "$id": "https://rss.example/mdm/agent/runtime/v1/payload/v1/telemetry-receipt.schema.json"
+}

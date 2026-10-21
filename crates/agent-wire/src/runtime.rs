@@ -21,6 +21,10 @@ pub use tasks::*;
 mod recovery_credentials;
 pub use recovery_credentials::*;
 
+#[path = "telemetry.rs"]
+mod telemetry;
+pub use telemetry::*;
+
 use base64::Engine;
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de::Error as _};
 use uuid::Uuid;
@@ -36,7 +40,7 @@ pub const MAX_REQUEST_BYTES: usize = 1024 * 1024;
 pub const SCHEMA_MANIFEST: &str = include_str!("../schema/runtime/agent-v1.schema-manifest.json");
 /// SHA-256 of the ordered schema payloads named by [`SCHEMA_MANIFEST`].
 pub const SCHEMA_FINGERPRINT: &str =
-    "f853e02fc5b8ab5b02c89c552268a5e161ef6eed03367f9a2d1e0cb264379868";
+    "3aeba0240d907a287e6631e3caf6a5cd502d59561d23da919602243d812e7929";
 
 /// Closed validation failure without retaining input values.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -186,6 +190,9 @@ pub enum Capability {
     /// Native Windows recovery material execution and encrypted escrow.
     #[serde(rename = "credentials.windows.v1")]
     CredentialsWindowsV1,
+    /// Periodic typed observations using published telemetry profiles.
+    #[serde(rename = "telemetry.collect.v1")]
+    TelemetryCollectV1,
 }
 impl Capability {
     /// Software support always refers to one concrete native/script scope profile.
@@ -198,6 +205,7 @@ impl Capability {
                 | Self::DeviceUnmanageV1
                 | Self::InventoryNativeV1
                 | Self::CredentialsWindowsV1
+                | Self::TelemetryCollectV1
         )
     }
     /// Canonical persisted and queryable capability identity.
@@ -226,13 +234,14 @@ impl Capability {
             Self::DeviceUnmanageV1 => "device.unmanage.v1",
             Self::InventoryNativeV1 => "inventory.native.v1",
             Self::CredentialsWindowsV1 => "credentials.windows.v1",
+            Self::TelemetryCollectV1 => "telemetry.collect.v1",
         }
     }
 }
 /// The only supported ordered capability sets for Agent V1.
 pub fn supported_capabilities(value: &[Capability]) -> bool {
     value.first() == Some(&Capability::InventoryCollectionV1)
-        && value.len() <= 23
+        && value.len() <= 24
         && value.windows(2).all(|pair| pair[0] < pair[1])
 }
 
@@ -606,8 +615,8 @@ pub struct ErrorBody {
 #[path = "collection.rs"]
 mod collection;
 pub use collection::{
-    CollectedValue, CollectionDefinition, FieldDefinition, FieldKey, Kind, Platform, Scalar,
-    Sensitivity, Source, ValueType,
+    CollectedValue, CollectionDefinition, FieldDefinition, FieldKey, Kind, Platform, Property,
+    Scalar, Sensitivity, Source, ValueType,
 };
 
 #[path = "chunks.rs"]

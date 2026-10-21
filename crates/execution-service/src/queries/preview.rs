@@ -36,7 +36,7 @@ pub async fn preview(
         proof.manage(Permission::ResourceRead)?;
     }
     authorize_policy_snapshot(proof.authorization()?, proof, &input.definition)?;
-    let request = PublicationInput::from(&input.definition.action);
+    let request = PublicationInput::try_from(&input.definition.action)?;
     let verified = s.inputs.prepare_resource(request.resource()).await?;
     run(&s.audit_store,&s.runtime,s.tenant,audit,(s,proof,audit,input,verified.as_ref()),|ctx,tx|Box::pin(async move {
         let (s,proof,audit,input,verified)=*ctx;
@@ -49,7 +49,7 @@ pub async fn preview(
             s.audit_store.append_request_in(tx,audit,200,"success").await?;
             return Ok(preview);
         }
-        let prepared = s.inputs.preview_in(tx, &PublicationInput::from(&input.definition.action), verified, proof, &authorization).await?;
+        let prepared = s.inputs.preview_in(tx, &PublicationInput::try_from(&input.definition.action)?, verified, proof, &authorization).await?;
         let software = if let PreviewInputs::Software(action) = &prepared {
             let Action::Software { rollout, .. } = &input.definition.action else { return Err(Error::Malformed.into()); };
             Some(software::SoftwareAssignment::draft(input.definition.scope, rollout.clone(), (**action).clone()))

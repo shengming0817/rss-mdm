@@ -54,6 +54,19 @@ pub async fn publish_field_in(
         .bind(format!("{tenant}:field-catalog"))
         .execute(&mut *c)
         .await?;
+    if let Some(binding) = &field.time_series {
+        ensure!(
+            crate::retention_policy_in(
+                c,
+                tenant,
+                &binding.retention.key,
+                binding.retention.revision
+            )
+            .await?
+            .is_some(),
+            "retention policy does not exist"
+        );
+    }
     let catalog = catalog_in(c, tenant).await?;
     let old = catalog.definition(field.key).ok();
     let latest: Option<i64> = sqlx::query_scalar(
@@ -97,7 +110,8 @@ pub async fn publish_field_in(
     }
     if let Some(old) = old {
         ensure!(
-            old.value_type == field.value_type
+            field.time_series_extends(old)
+                && field.value_type.extends(&old.value_type)
                 && old.item_key == field.item_key
                 && old.unit == field.unit
                 && old.sensitivity == field.sensitivity,
@@ -158,6 +172,7 @@ pub async fn retire_field_in(
     Ok(true)
 }
 /// Register a frozen collector definition before accepting its first report.
+/// Fields must match authoritative versions and remain active for this source.
 /// Replay compares the entire definition; the same version cannot change its content.
 pub async fn register_collection_in(
     c: &mut PgConnection,
@@ -177,10 +192,18 @@ pub async fn register_collection_in(
     }
     let catalog = catalog_in(c, tenant).await?;
     for field in definition.fields() {
+        let current = catalog.definition(field.key)?;
         ensure!(
-            catalog.definition(field.key)? == field,
-            "collection field version is not current"
-        )
+            current.sources.contains_key(&definition.source()),
+            "collection source is not currently allowed"
+        );
+        ensure!(
+            field_version_in(c, tenant, field.key, field.version)
+                .await?
+                .as_ref()
+                == Some(field),
+            "collection field differs from authoritative version"
+        );
     }
     sqlx::query("INSERT INTO mdm.collection_definitions VALUES($1::uuid,$2,$3,$4,$5,$6,$7::jsonb) ON CONFLICT DO NOTHING")
         .bind(tenant.to_string()).bind(definition.dataset()).bind(definition.version()).bind(definition.source().as_str()).bind(&fingerprint).bind(&coverage).bind(body).execute(&mut *c).await?;
@@ -286,4 +309,94 @@ pub fn tenant_seed_sql() -> &'static str {
         }).collect::<Vec<_>>().join("\n");
         format!("CREATE FUNCTION mdm.seed_tenant_catalog(t uuid) RETURNS void LANGUAGE plpgsql SET search_path=pg_catalog,pg_temp AS $seed$ BEGIN {statements} END; $seed$; REVOKE ALL ON FUNCTION mdm.seed_tenant_catalog(uuid) FROM PUBLIC;")
     })
+}
+
+/// Bounded ordered field history for synchronizing an external time-series definition projection.
+/// This is the existing catalog history, not another editable metric registry.
+pub async fn time_series_versions_in(
+    c: &mut PgConnection,
+    tenant: TenantId,
+    key: FieldKey,
+    after: u64,
+    through: u64,
+) -> Result<Vec<FieldDefinition>> {
+    crate::reader::assert_tenant(c, tenant).await?;
+    ensure!(
+        after <= through && through <= i64::MAX as u64,
+        "invalid field history range"
+    );
+    let rows: Vec<String> = sqlx::query_scalar("SELECT definition::text FROM mdm.field_versions WHERE tenant_id=$1::uuid AND field=$2 AND version>$3 AND version<=$4 AND definition IS NOT NULL AND definition->'timeSeries' IS NOT NULL AND definition->'timeSeries'<>'null'::jsonb ORDER BY version LIMIT 64")
+        .bind(tenant.to_string()).bind(key.as_str()).bind(after as i64).bind(through as i64).fetch_all(c).await?;
+    rows.into_iter()
+        .map(|value| {
+            let field: FieldDefinition = serde_json::from_str(&value)?;
+            field.validate()?;
+            ensure!(
+                field.key == key && field.version > after && field.version <= through,
+                "field history identity"
+            );
+            Ok(field)
+        })
+        .collect()
+}
+
+/// Resolve one immutable definition; the caller independently checks current activation.
+pub async fn field_version_in(
+    c: &mut PgConnection,
+    tenant: TenantId,
+    key: FieldKey,
+    version: u64,
+) -> Result<Option<FieldDefinition>> {
+    crate::reader::assert_tenant(c, tenant).await?;
+    ensure!(
+        version > 0 && version <= i64::MAX as u64,
+        "invalid field version"
+    );
+    let value: Option<String> = sqlx::query_scalar("SELECT definition::text FROM mdm.field_versions WHERE tenant_id=$1::uuid AND field=$2 AND version=$3 AND definition IS NOT NULL")
+        .bind(tenant.to_string()).bind(key.as_str()).bind(version as i64).fetch_optional(c).await?;
+    value
+        .map(|value| {
+            let field: FieldDefinition = serde_json::from_str(&value)?;
+            field.validate()?;
+            ensure!(
+                field.key == key && field.version == version,
+                "field version identity"
+            );
+            Ok(field)
+        })
+        .transpose()
+}
+
+/// Read the last declared field meaning, including retained history after retirement.
+/// The boolean reports retirement separately; this does not reactivate the field.
+pub async fn historical_field_in(
+    c: &mut PgConnection,
+    tenant: TenantId,
+    key: FieldKey,
+) -> Result<Option<(FieldDefinition, bool)>> {
+    crate::reader::assert_tenant(c, tenant).await?;
+    let row = sqlx::query("SELECT (SELECT definition::text FROM mdm.field_versions d WHERE d.tenant_id=v.tenant_id AND d.field=v.field AND d.definition IS NOT NULL ORDER BY version DESC LIMIT 1) AS definition,definition IS NULL AS retired FROM mdm.field_versions v WHERE tenant_id=$1::uuid AND field=$2 ORDER BY version DESC LIMIT 1")
+        .bind(tenant.to_string()).bind(key.as_str()).fetch_optional(c).await?;
+    row.map(|row| {
+        let field: FieldDefinition = serde_json::from_str(row.try_get("definition")?)?;
+        field.validate()?;
+        ensure!(field.key == key, "historical field identity");
+        Ok((field, row.try_get("retired")?))
+    })
+    .transpose()
+}
+
+/// Stop new telemetry admission at retirement while allowing already sealed work to drain.
+pub async fn admit_time_series_fields_in(
+    c: &mut PgConnection,
+    tenant: TenantId,
+    keys: &[FieldKey],
+) -> Result<bool> {
+    crate::reader::assert_tenant(c, tenant).await?;
+    sqlx::query("SELECT pg_advisory_xact_lock_shared(hashtextextended($1,2554))")
+        .bind(format!("{tenant}:field-catalog"))
+        .execute(&mut *c)
+        .await?;
+    let catalog = catalog_in(c, tenant).await?;
+    Ok(keys.iter().all(|key| catalog.definition(*key).is_ok()))
 }

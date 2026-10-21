@@ -72,6 +72,30 @@
     {
       "type": "SelfServiceStatus",
       "file": "self-service-status-v1.schema.json"
+    },
+    {
+      "type": "TelemetryUpload",
+      "file": "telemetry-upload-v1.schema.json"
+    },
+    {
+      "type": "TelemetryReceipt",
+      "file": "telemetry-receipt-v1.schema.json"
+    },
+    {
+      "type": "TelemetryConfiguration",
+      "file": "telemetry-configuration-v1.schema.json"
+    },
+    {
+      "type": "TelemetryCurrentStatus",
+      "file": "telemetry-current-status-v1.schema.json"
+    },
+    {
+      "type": "TelemetryDirectory",
+      "file": "telemetry-directory-v1.schema.json"
+    },
+    {
+      "type": "SignedTelemetryConfiguration",
+      "file": "signed-telemetry-configuration-v1.schema.json"
     }
   ],
   "apiVersion": 1

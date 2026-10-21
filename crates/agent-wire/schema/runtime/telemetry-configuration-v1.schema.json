@@ -1,0 +1,2595 @@
+{
+  "$defs": {
+    "AccountSection": {
+      "description": "Local account evidence families. Membership is direct, not transitive permission.",
+      "oneOf": [
+        {
+          "const": "accounts",
+          "description": "Stable account identity, type and enabled state.",
+          "type": "string"
+        },
+        {
+          "const": "administrators",
+          "description": "Direct members of the local administrators group; no recursive expansion.",
+          "type": "string"
+        },
+        {
+          "const": "sessions",
+          "description": "Sessions necessary to explain local execution, never personal activity.",
+          "type": "string"
+        }
+      ]
+    },
+    "AccountSelection": {
+      "description": "Approved local account set; never a directory recursion or effective authorization query.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "description": "All local accounts, including disabled and system accounts.",
+          "properties": {
+            "kind": {
+              "const": "local",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Only these stable SIDs (Windows) or GeneratedUIDs (macOS).",
+          "properties": {
+            "identities": {
+              "description": "Nonempty bounded stable account identities.",
+              "items": {
+                "type": "string"
+              },
+              "type": "array",
+              "uniqueItems": true
+            },
+            "kind": {
+              "const": "selected",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "identities"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "ApplicationPermission": {
+      "description": "Only permissions needed by the explicitly selected application, never a TCC dump.",
+      "oneOf": [
+        {
+          "const": "full_disk_access",
+          "description": "Probe only the selected application’s required Full Disk Access.",
+          "type": "string"
+        },
+        {
+          "const": "accessibility",
+          "description": "Probe only the selected application’s accessibility permission.",
+          "type": "string"
+        },
+        {
+          "const": "screen_capture",
+          "description": "Probe only the selected application’s screen-capture permission.",
+          "type": "string"
+        }
+      ]
+    },
+    "CimType": {
+      "description": "WMI property CIM type, with native widths preserved in the declaration.",
+      "oneOf": [
+        {
+          "const": "string",
+          "description": "CIM_STRING.",
+          "type": "string"
+        },
+        {
+          "const": "boolean",
+          "description": "CIM_BOOLEAN.",
+          "type": "string"
+        },
+        {
+          "const": "sint8",
+          "description": "CIM_SINT8.",
+          "type": "string"
+        },
+        {
+          "const": "sint16",
+          "description": "CIM_SINT16.",
+          "type": "string"
+        },
+        {
+          "const": "sint32",
+          "description": "CIM_SINT32.",
+          "type": "string"
+        },
+        {
+          "const": "sint64",
+          "description": "CIM_SINT64.",
+          "type": "string"
+        },
+        {
+          "const": "uint8",
+          "description": "CIM_UINT8.",
+          "type": "string"
+        },
+        {
+          "const": "uint16",
+          "description": "CIM_UINT16.",
+          "type": "string"
+        },
+        {
+          "const": "uint32",
+          "description": "CIM_UINT32.",
+          "type": "string"
+        },
+        {
+          "const": "uint64",
+          "description": "CIM_UINT64.",
+          "type": "string"
+        },
+        {
+          "const": "real32",
+          "description": "CIM_REAL32.",
+          "type": "string"
+        },
+        {
+          "const": "real64",
+          "description": "CIM_REAL64.",
+          "type": "string"
+        },
+        {
+          "const": "datetime",
+          "description": "CIM_DATETIME.",
+          "type": "string"
+        }
+      ]
+    },
+    "CollectionScope": {
+      "description": "Exact namespace of collected values. Only device-wide projection is currently executable.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "description": "Complete device-wide namespace.",
+          "properties": {
+            "kind": {
+              "const": "device",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "One explicitly identified user; never merged into device-wide facts.",
+          "properties": {
+            "identity": {
+              "description": "Stable account identity.",
+              "type": "string"
+            },
+            "kind": {
+              "const": "user",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "identity"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "One provider-specific namespace.",
+          "properties": {
+            "identity": {
+              "description": "Stable provider identity.",
+              "type": "string"
+            },
+            "kind": {
+              "const": "source",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "identity"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "One stable volume identity, independent of drive letter.",
+          "properties": {
+            "identity": {
+              "description": "Stable volume identity.",
+              "type": "string"
+            },
+            "kind": {
+              "const": "volume",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "identity"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "One explicit path prefix.",
+          "properties": {
+            "kind": {
+              "const": "prefix",
+              "type": "string"
+            },
+            "path": {
+              "description": "Exact path prefix.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "path"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "ExecutorProfile": {
+      "description": "Fixed executor identity. There is no arbitrary command string.",
+      "oneOf": [
+        {
+          "const": "power_shell7",
+          "description": "PowerShell 7 on Windows.",
+          "type": "string"
+        },
+        {
+          "const": "posix_sh",
+          "description": "POSIX sh on macOS.",
+          "type": "string"
+        },
+        {
+          "const": "bash",
+          "description": "Bash on macOS.",
+          "type": "string"
+        },
+        {
+          "const": "osquery",
+          "description": "Bound query from a published read-only SQL template.",
+          "type": "string"
+        }
+      ]
+    },
+    "FieldDefinition": {
+      "additionalProperties": false,
+      "description": "A published field version. No time-based expiry and no execution permission.",
+      "properties": {
+        "itemKey": {
+          "description": "Optional stable item-key property for a structured inventory list.",
+          "maxLength": 64,
+          "pattern": "^[a-z][a-z0-9_]*$",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "key": {
+          "$ref": "#/$defs/FieldKey",
+          "description": "Stable field identity.",
+          "maxLength": 128,
+          "pattern": "^(device|custom|channel)\\.[a-z][a-z0-9_]*(\\.[a-z][a-z0-9_]*)*$"
+        },
+        "manual": {
+          "description": "Whether management assignment is permitted.",
+          "type": "boolean"
+        },
+        "nullable": {
+          "description": "Accept explicit null as distinct from deletion.",
+          "type": "boolean"
+        },
+        "platforms": {
+          "description": "Supported platforms.",
+          "items": {
+            "$ref": "#/$defs/Platform"
+          },
+          "maxItems": 2,
+          "minItems": 1,
+          "type": "array",
+          "uniqueItems": true
+        },
+        "searchable": {
+          "description": "Whether this field participates in conditions/search.",
+          "type": "boolean"
+        },
+        "sensitivity": {
+          "$ref": "#/$defs/Sensitivity",
+          "description": "Read/filter visibility classification."
+        },
+        "sources": {
+          "additionalProperties": {
+            "format": "uint16",
+            "maximum": 65535,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "description": "Allowed sources with priority; lower numbers win, equal numbers require consensus.",
+          "minProperties": 1,
+          "propertyNames": {
+            "$ref": "#/$defs/Source"
+          },
+          "type": "object"
+        },
+        "timeSeries": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TimeSeriesBinding"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Optional history binding; absence means this field has no time-series capability."
+        },
+        "unit": {
+          "description": "Exact optional unit; no implicit conversion.",
+          "maxLength": 64,
+          "minLength": 1,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "valueType": {
+          "$ref": "#/$defs/ValueType",
+          "description": "Exact bounded type."
+        },
+        "version": {
+          "description": "Monotonic published version.",
+          "format": "uint64",
+          "maximum": 9223372036854775807,
+          "minimum": 1,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "key",
+        "version",
+        "valueType",
+        "nullable",
+        "manual",
+        "sources",
+        "platforms",
+        "sensitivity",
+        "unit",
+        "searchable",
+        "itemKey"
+      ],
+      "type": "object"
+    },
+    "FieldKey": {
+      "description": "Bounded protocol field identity; parsing grants no catalog or source authority.",
+      "maxLength": 128,
+      "pattern": "^(device|custom|channel)\\.[a-z][a-z0-9_]*(\\.[a-z][a-z0-9_]*)*$",
+      "type": "string"
+    },
+    "MacosApplicationRoot": {
+      "description": "Approved application root. Resolve the user's home through the bound live identity.\nNever traverse symlinks outside the root or recurse into discovered .app bundles.",
+      "oneOf": [
+        {
+          "const": "local_applications",
+          "description": "/Applications.",
+          "type": "string"
+        },
+        {
+          "const": "system_applications",
+          "description": "/System/Applications.",
+          "type": "string"
+        },
+        {
+          "const": "user_applications",
+          "description": "Applications below the explicitly bound user's home.",
+          "type": "string"
+        }
+      ]
+    },
+    "MacosApplicationTarget": {
+      "description": "The running product or one explicitly approved macOS signed bundle.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "description": "The running, registered product itself.",
+          "properties": {
+            "kind": {
+              "const": "agent",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "One explicitly approved signing and application identity.",
+          "properties": {
+            "bundle_id": {
+              "description": "Exact bundle identifier.",
+              "type": "string"
+            },
+            "kind": {
+              "const": "signed",
+              "type": "string"
+            },
+            "team_id": {
+              "description": "Approved signing team.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "bundle_id",
+            "team_id"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "MacosBrewPackage": {
+      "description": "Distinct installed Homebrew record kinds; casks do not prove an application exists.",
+      "oneOf": [
+        {
+          "const": "formula",
+          "description": "Installed formula records.",
+          "type": "string"
+        },
+        {
+          "const": "cask",
+          "description": "Installed cask records.",
+          "type": "string"
+        }
+      ]
+    },
+    "MacosCertificateStore": {
+      "description": "Approved macOS keychain. Never prompts, unlocks a keychain or traverses arbitrary paths.",
+      "oneOf": [
+        {
+          "const": "system",
+          "description": "Machine System keychain.",
+          "type": "string"
+        },
+        {
+          "const": "system_roots",
+          "description": "System root certificate keychain.",
+          "type": "string"
+        },
+        {
+          "const": "login",
+          "description": "Only the bound user’s login keychain.",
+          "type": "string"
+        }
+      ]
+    },
+    "MacosHardwareSection": {
+      "description": "One fixed hardware section; never a program name or system_profiler argument.",
+      "oneOf": [
+        {
+          "const": "identity",
+          "description": "Hardware UUID, serial and model.",
+          "type": "string"
+        },
+        {
+          "const": "os",
+          "description": "OS name, version, build and native architecture.",
+          "type": "string"
+        },
+        {
+          "const": "cpu",
+          "description": "Chip model and physical/logical cores.",
+          "type": "string"
+        },
+        {
+          "const": "memory",
+          "description": "Installed memory in bytes.",
+          "type": "string"
+        },
+        {
+          "const": "firmware",
+          "description": "Firmware version; unavailable versions are Missing.",
+          "type": "string"
+        },
+        {
+          "const": "disks",
+          "description": "Physical disks, counted independently of logical volumes.",
+          "type": "string"
+        },
+        {
+          "const": "apfs_containers",
+          "description": "APFS capacity belongs to each container once, not to each sharing volume.",
+          "type": "string"
+        },
+        {
+          "const": "volumes",
+          "description": "Logical volumes and their container association; capacities are not additive.",
+          "type": "string"
+        },
+        {
+          "const": "network",
+          "description": "Network interfaces and addresses; no location or traffic collection.",
+          "type": "string"
+        },
+        {
+          "const": "battery",
+          "description": "Battery charge percentage; no battery is Missing, never a fabricated zero.",
+          "type": "string"
+        }
+      ]
+    },
+    "MacosSecuritySection": {
+      "description": "macOS states remain distinct; local token evidence never proves server escrow.",
+      "oneOf": [
+        {
+          "const": "gatekeeper",
+          "description": "Assessment configuration, component presence and observable availability.",
+          "type": "string"
+        },
+        {
+          "const": "xprotect",
+          "description": "Component/version presence and observable protection state.",
+          "type": "string"
+        },
+        {
+          "const": "system_extensions",
+          "description": "Extension signing identity, configuration and activation evidence.",
+          "type": "string"
+        },
+        {
+          "const": "filevault",
+          "description": "Local FileVault state, independent from key escrow.",
+          "type": "string"
+        },
+        {
+          "const": "firewall",
+          "description": "Local application firewall state.",
+          "type": "string"
+        },
+        {
+          "const": "sip",
+          "description": "System integrity protection observation.",
+          "type": "string"
+        },
+        {
+          "const": "hardware_encryption",
+          "description": "Hardware encryption observation, independent from FileVault.",
+          "type": "string"
+        },
+        {
+          "const": "secure_token",
+          "description": "Bound user’s local Secure Token observation.",
+          "type": "string"
+        },
+        {
+          "const": "bootstrap_token",
+          "description": "Local Bootstrap Token observation, never server escrow success.",
+          "type": "string"
+        }
+      ]
+    },
+    "NativeBudget": {
+      "additionalProperties": false,
+      "description": "Frozen bounds, shared by collection and query scopes.",
+      "properties": {
+        "maxRows": {
+          "description": "Maximum rows.",
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "outputBytes": {
+          "description": "Canonical result byte bound.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "timeoutSeconds": {
+          "description": "Wall-clock bound.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "timeoutSeconds",
+        "outputBytes",
+        "maxRows"
+      ],
+      "type": "object"
+    },
+    "NativeCardinality": {
+      "description": "Query row cardinality.",
+      "oneOf": [
+        {
+          "const": "exactly_one",
+          "description": "Exactly one row; zero is Missing.",
+          "type": "string"
+        },
+        {
+          "const": "list",
+          "description": "Complete bounded list, including zero rows.",
+          "type": "string"
+        }
+      ]
+    },
+    "NativeCollectionPlan": {
+      "additionalProperties": false,
+      "description": "Validated immutable plan. Field names and priorities remain server-owned.",
+      "properties": {
+        "budget": {
+          "$ref": "#/$defs/NativeBudget",
+          "description": "Cumulative execution bounds."
+        },
+        "queries": {
+          "additionalProperties": {
+            "$ref": "#/$defs/NativeQuery"
+          },
+          "description": "Stable query IDs, executed once each.",
+          "type": "object"
+        },
+        "scope": {
+          "$ref": "#/$defs/CollectionScope",
+          "description": "Namespace of facts, independent of Policy target scope."
+        },
+        "version": {
+          "description": "Exact native plan format.",
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "version",
+        "scope",
+        "queries",
+        "budget"
+      ],
+      "type": "object"
+    },
+    "NativeComparison": {
+      "description": "Closed comparison operators.",
+      "oneOf": [
+        {
+          "const": "eq",
+          "description": "Equal.",
+          "type": "string"
+        },
+        {
+          "const": "ne",
+          "description": "Not equal.",
+          "type": "string"
+        },
+        {
+          "const": "lt",
+          "description": "Less than.",
+          "type": "string"
+        },
+        {
+          "const": "le",
+          "description": "Less than or equal.",
+          "type": "string"
+        },
+        {
+          "const": "gt",
+          "description": "Greater than.",
+          "type": "string"
+        },
+        {
+          "const": "ge",
+          "description": "Greater than or equal.",
+          "type": "string"
+        }
+      ]
+    },
+    "NativeQuery": {
+      "additionalProperties": false,
+      "description": "One frozen query, reusable by several server-side field mappings.",
+      "properties": {
+        "budget": {
+          "$ref": "#/$defs/NativeBudget",
+          "description": "Query-local bounds."
+        },
+        "cardinality": {
+          "$ref": "#/$defs/NativeCardinality",
+          "description": "Row semantics."
+        },
+        "definition": {
+          "$ref": "#/$defs/NativeQueryDefinition",
+          "description": "Read recipe."
+        },
+        "instanceKeys": {
+          "description": "Stable row properties identifying instances.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "version": {
+          "description": "Exact engine contract version.",
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "version",
+        "definition",
+        "cardinality",
+        "instanceKeys",
+        "budget"
+      ],
+      "type": "object"
+    },
+    "NativeQueryDefinition": {
+      "description": "Closed read recipes. Output properties are derived from this declaration.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "description": "Closed platform security, identity, certificate or update read.",
+          "properties": {
+            "kind": {
+              "const": "system",
+              "type": "string"
+            },
+            "query": {
+              "$ref": "#/$defs/NativeSystemQuery",
+              "description": "Closed read recipe."
+            }
+          },
+          "required": [
+            "kind",
+            "query"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Read local WMI instances.",
+          "properties": {
+            "class": {
+              "description": "Existing class, never created by collection.",
+              "type": "string"
+            },
+            "filter": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/WmiFilter"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Optional structured predicate."
+            },
+            "kind": {
+              "const": "windows_wmi",
+              "type": "string"
+            },
+            "namespace": {
+              "description": "Local namespace, for example root\\\\cimv2.",
+              "type": "string"
+            },
+            "properties": {
+              "additionalProperties": {
+                "$ref": "#/$defs/WmiProperty"
+              },
+              "description": "Explicit properties; SELECT * is impossible.",
+              "type": "object"
+            }
+          },
+          "required": [
+            "kind",
+            "namespace",
+            "class",
+            "properties"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Read one key or enumerate its immediate children once.",
+          "properties": {
+            "enumerateSubkeys": {
+              "description": "True enumerates only immediate subkeys; row key is `key`.",
+              "type": "boolean"
+            },
+            "hive": {
+              "$ref": "#/$defs/RegistryHive",
+              "description": "Local hive identity."
+            },
+            "kind": {
+              "const": "windows_registry",
+              "type": "string"
+            },
+            "path": {
+              "description": "Fixed relative key path.",
+              "type": "string"
+            },
+            "values": {
+              "additionalProperties": {
+                "$ref": "#/$defs/RegistryValue"
+              },
+              "description": "Output property to exact value read.",
+              "type": "object"
+            },
+            "view": {
+              "$ref": "#/$defs/RegistryView",
+              "description": "Explicit registry view."
+            }
+          },
+          "required": [
+            "kind",
+            "hive",
+            "view",
+            "path",
+            "enumerateSubkeys",
+            "values"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Native multi-CPU summary; model is present only when all processors agree.",
+          "properties": {
+            "kind": {
+              "const": "windows_cpu",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Complete installation list over device and all existing user profiles.",
+          "properties": {
+            "kind": {
+              "const": "windows_software",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Complete interface enumeration.",
+          "properties": {
+            "kind": {
+              "const": "windows_network",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Aggregate battery charge (energy-weighted), or Missing when absent.",
+          "properties": {
+            "kind": {
+              "const": "windows_battery",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Fixed native macOS hardware section, with no executable parameters.",
+          "properties": {
+            "kind": {
+              "const": "macos_hardware",
+              "type": "string"
+            },
+            "section": {
+              "$ref": "#/$defs/MacosHardwareSection",
+              "description": "Closed section and its canonical output shape."
+            }
+          },
+          "required": [
+            "kind",
+            "section"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "One approved application root; partial roots cannot replace a device inventory.",
+          "properties": {
+            "kind": {
+              "const": "macos_applications",
+              "type": "string"
+            },
+            "maxDepth": {
+              "description": "Maximum directory descent (1 through 8); reaching the bound is Truncated.",
+              "format": "uint8",
+              "maximum": 255,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "root": {
+              "$ref": "#/$defs/MacosApplicationRoot",
+              "description": "Fixed root selector, resolved by the trusted Agent."
+            }
+          },
+          "required": [
+            "kind",
+            "root",
+            "maxDepth"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Device package receipts, never application-existence evidence.",
+          "properties": {
+            "kind": {
+              "const": "macos_pkg_receipts",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Installed package metadata; the executor must be a bound non-root logged-in user.\nVersion 2 reads bounded Cellar/Caskroom installation records and recognized JSON\nmetadata beneath the approved prefix. Treat all contents as untrusted data;\nnever invoke brew, Ruby, shell commands or evaluate formula/cask definitions.\nEnumerate installed versions, not current catalog versions or linked binaries.\nResolve tap identity from installation metadata, never by guessing a default tap.\nAn unreadable, changed, unsupported or incomplete record is not an empty inventory;\nuse the corresponding non-Complete status. Do not follow links outside the prefix.",
+          "properties": {
+            "kind": {
+              "const": "macos_brew",
+              "type": "string"
+            },
+            "package": {
+              "$ref": "#/$defs/MacosBrewPackage",
+              "description": "Distinct package evidence kind."
+            },
+            "prefix": {
+              "description": "Approved absolute data prefix, not a command or executable path.",
+              "type": "string"
+            },
+            "taps": {
+              "description": "Exact lowercase owner/tap selectors; empty requests all taps in this prefix.",
+              "items": {
+                "type": "string"
+              },
+              "type": "array",
+              "uniqueItems": true
+            }
+          },
+          "required": [
+            "kind",
+            "prefix",
+            "package",
+            "taps"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "NativeSystemQuery": {
+      "description": "Fixed native reads; output schemas and instance identity are owned by this enum.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "description": "Read-only GetConversionStatus/GetLockStatus/etc., never arbitrary WMI methods.",
+          "properties": {
+            "kind": {
+              "const": "windows_bitlocker",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Domain, private and public profiles individually, not one aggregate switch.",
+          "properties": {
+            "kind": {
+              "const": "windows_firewall",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Defender configuration, mode and observed protection health.",
+          "properties": {
+            "kind": {
+              "const": "windows_defender",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Secure Boot firmware observation, independent from TPM presence.",
+          "properties": {
+            "kind": {
+              "const": "windows_secure_boot",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Local AD/Entra/MDM observations, never server management authority.",
+          "properties": {
+            "kind": {
+              "const": "windows_join",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Approved local Windows identity facts.",
+          "properties": {
+            "kind": {
+              "const": "windows_accounts",
+              "type": "string"
+            },
+            "section": {
+              "$ref": "#/$defs/AccountSection",
+              "description": "Closed evidence section."
+            },
+            "selection": {
+              "$ref": "#/$defs/AccountSelection",
+              "description": "Approved account universe."
+            }
+          },
+          "required": [
+            "kind",
+            "section",
+            "selection"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Read-only metadata from one approved machine or current-user store.",
+          "properties": {
+            "kind": {
+              "const": "windows_certificates",
+              "type": "string"
+            },
+            "store": {
+              "$ref": "#/$defs/WindowsCertificateStore",
+              "description": "Exact approved store."
+            },
+            "user": {
+              "description": "True requires the current signed user session.",
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "kind",
+            "store",
+            "user"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Use the currently configured WUA source. Always disable automatic WUA upgrade;\nnever register a service, change its selection, download, install or reboot.",
+          "properties": {
+            "kind": {
+              "const": "windows_updates",
+              "type": "string"
+            },
+            "mode": {
+              "$ref": "#/$defs/UpdateScanMode",
+              "description": "Explicit read mode; never a deployment action."
+            },
+            "section": {
+              "$ref": "#/$defs/UpdateSection",
+              "description": "Closed evidence section."
+            }
+          },
+          "required": [
+            "kind",
+            "section",
+            "mode"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "One fixed local macOS security observation.",
+          "properties": {
+            "kind": {
+              "const": "macos_security",
+              "type": "string"
+            },
+            "section": {
+              "$ref": "#/$defs/MacosSecuritySection",
+              "description": "Closed evidence section."
+            }
+          },
+          "required": [
+            "kind",
+            "section"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Approved local macOS identity facts.",
+          "properties": {
+            "kind": {
+              "const": "macos_accounts",
+              "type": "string"
+            },
+            "section": {
+              "$ref": "#/$defs/AccountSection",
+              "description": "Closed evidence section."
+            },
+            "selection": {
+              "$ref": "#/$defs/AccountSelection",
+              "description": "Approved account universe."
+            }
+          },
+          "required": [
+            "kind",
+            "section",
+            "selection"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Read-only metadata from one approved keychain.",
+          "properties": {
+            "kind": {
+              "const": "macos_certificates",
+              "type": "string"
+            },
+            "store": {
+              "$ref": "#/$defs/MacosCertificateStore",
+              "description": "Exact approved store."
+            }
+          },
+          "required": [
+            "kind",
+            "store"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Version-probed read-only queries; no install/download/restart or silent shell fallback.",
+          "properties": {
+            "kind": {
+              "const": "macos_updates",
+              "type": "string"
+            },
+            "mode": {
+              "$ref": "#/$defs/UpdateScanMode",
+              "description": "Explicit read mode; never a deployment action."
+            },
+            "section": {
+              "$ref": "#/$defs/UpdateSection",
+              "description": "Closed evidence section."
+            }
+          },
+          "required": [
+            "kind",
+            "section",
+            "mode"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Exact service identity and signer; no executable path or invocation parameters.",
+          "properties": {
+            "kind": {
+              "const": "windows_application",
+              "type": "string"
+            },
+            "target": {
+              "$ref": "#/$defs/WindowsApplicationTarget",
+              "description": "Approved application identity."
+            }
+          },
+          "required": [
+            "kind",
+            "target"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Exact signed application identity; no all-application privacy scan.",
+          "properties": {
+            "kind": {
+              "const": "macos_application",
+              "type": "string"
+            },
+            "permissions": {
+              "description": "Exact required permission probes, never global privacy inventory.",
+              "items": {
+                "$ref": "#/$defs/ApplicationPermission"
+              },
+              "type": "array",
+              "uniqueItems": true
+            },
+            "target": {
+              "$ref": "#/$defs/MacosApplicationTarget",
+              "description": "Approved application identity."
+            }
+          },
+          "required": [
+            "kind",
+            "target",
+            "permissions"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "Platform": {
+      "description": "Platform applicable to a field or collector.",
+      "oneOf": [
+        {
+          "const": "windows",
+          "description": "Windows.",
+          "type": "string"
+        },
+        {
+          "const": "macos",
+          "description": "macOS.",
+          "type": "string"
+        }
+      ]
+    },
+    "Property": {
+      "additionalProperties": false,
+      "description": "One explicitly declared record member.",
+      "properties": {
+        "required": {
+          "description": "Whether the producer must include this member.",
+          "type": "boolean"
+        },
+        "valueType": {
+          "$ref": "#/$defs/ValueType",
+          "description": "Exact type when present."
+        }
+      },
+      "required": [
+        "valueType",
+        "required"
+      ],
+      "type": "object"
+    },
+    "RegistryHive": {
+      "description": "Exact local hive; HKCU is intentionally absent.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "description": "HKEY_LOCAL_MACHINE.",
+          "properties": {
+            "kind": {
+              "const": "local_machine",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Already loaded HKEY_USERS SID; never mount an offline hive.",
+          "properties": {
+            "kind": {
+              "const": "users",
+              "type": "string"
+            },
+            "sid": {
+              "description": "Canonical Windows SID.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "sid"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "RegistryType": {
+      "description": "Native registry value type.",
+      "oneOf": [
+        {
+          "const": "sz",
+          "description": "REG_SZ.",
+          "type": "string"
+        },
+        {
+          "const": "expand_sz",
+          "description": "REG_EXPAND_SZ, without environment expansion.",
+          "type": "string"
+        },
+        {
+          "const": "dword",
+          "description": "REG_DWORD.",
+          "type": "string"
+        },
+        {
+          "const": "qword",
+          "description": "REG_QWORD.",
+          "type": "string"
+        },
+        {
+          "const": "multi_sz",
+          "description": "REG_MULTI_SZ.",
+          "type": "string"
+        }
+      ]
+    },
+    "RegistryValue": {
+      "additionalProperties": false,
+      "description": "One registry value projected under a stable property identifier.",
+      "properties": {
+        "name": {
+          "description": "Literal value name; empty means the default value.",
+          "type": "string"
+        },
+        "valueType": {
+          "$ref": "#/$defs/RegistryType",
+          "description": "Exact expected registry type."
+        }
+      },
+      "required": [
+        "name",
+        "valueType"
+      ],
+      "type": "object"
+    },
+    "RegistryView": {
+      "description": "Explicit view independent of executor bitness.",
+      "oneOf": [
+        {
+          "const": "registry32",
+          "description": "KEY_WOW64_32KEY.",
+          "type": "string"
+        },
+        {
+          "const": "registry64",
+          "description": "KEY_WOW64_64KEY.",
+          "type": "string"
+        }
+      ]
+    },
+    "RetentionReference": {
+      "additionalProperties": false,
+      "description": "Product retention policy identity; duration is owned by its immutable policy version.",
+      "properties": {
+        "key": {
+          "description": "Tenant-local policy key.",
+          "type": "string"
+        },
+        "revision": {
+          "description": "Exact policy revision.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "key",
+        "revision"
+      ],
+      "type": "object"
+    },
+    "Sensitivity": {
+      "description": "Field visibility class, enforced by the product authorization boundary.",
+      "oneOf": [
+        {
+          "const": "standard",
+          "description": "Ordinary inventory.",
+          "type": "string"
+        },
+        {
+          "const": "sensitive",
+          "description": "Requires the sensitive inventory permission.",
+          "type": "string"
+        }
+      ]
+    },
+    "Source": {
+      "description": "All allowed asset sources. Serialized as their canonical stable identifier.",
+      "oneOf": [
+        {
+          "const": "agent.script",
+          "description": "Controlled collection script evidence.",
+          "type": "string"
+        },
+        {
+          "const": "agent.native",
+          "description": "Signed declarative native task evidence.",
+          "type": "string"
+        },
+        {
+          "const": "agent.osquery",
+          "description": "Published SQL template evidence.",
+          "type": "string"
+        },
+        {
+          "const": "mdm.apple",
+          "description": "Apple MDM evidence.",
+          "type": "string"
+        },
+        {
+          "const": "agent.builtin",
+          "description": "Built-in agent evidence.",
+          "type": "string"
+        },
+        {
+          "const": "manual",
+          "description": "Administrator assignment.",
+          "type": "string"
+        },
+        {
+          "const": "mdm.windows",
+          "description": "Windows MDM evidence.",
+          "type": "string"
+        }
+      ]
+    },
+    "TaskContent": {
+      "additionalProperties": false,
+      "description": "Signed, exact content coordinates. The task route supplies download authority.",
+      "properties": {
+        "length": {
+          "description": "Expected byte count.",
+          "format": "uint64",
+          "maximum": 16777216,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "sha256": {
+          "description": "SHA-256 of exact content bytes.",
+          "items": {
+            "format": "uint8",
+            "maximum": 255,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "maxItems": 32,
+          "minItems": 32,
+          "type": "array"
+        }
+      },
+      "required": [
+        "length",
+        "sha256"
+      ],
+      "type": "object"
+    },
+    "TaskResource": {
+      "additionalProperties": false,
+      "description": "Exact Resource identity accompanying its signed digest.",
+      "properties": {
+        "id": {
+          "description": "Logical Resource identity.",
+          "type": "string"
+        },
+        "variant": {
+          "description": "Exact selected variant.",
+          "type": "string"
+        },
+        "version": {
+          "description": "Immutable Resource version.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "version",
+        "variant"
+      ],
+      "type": "object"
+    },
+    "TelemetryAggregation": {
+      "description": "Operations are selected explicitly; missing data is never filled implicitly.",
+      "oneOf": [
+        {
+          "const": "min",
+          "description": "Minimum numeric reading.",
+          "type": "string"
+        },
+        {
+          "const": "max",
+          "description": "Maximum numeric reading.",
+          "type": "string"
+        },
+        {
+          "const": "sum",
+          "description": "Sum of Gauge readings or Delta contributions.",
+          "type": "string"
+        },
+        {
+          "const": "count",
+          "description": "Number of known readings.",
+          "type": "string"
+        },
+        {
+          "const": "mean",
+          "description": "Numeric arithmetic mean.",
+          "type": "string"
+        },
+        {
+          "const": "increase",
+          "description": "Cumulative increase between compatible boundaries.",
+          "type": "string"
+        },
+        {
+          "const": "rate",
+          "description": "Contribution divided by its actual duration.",
+          "type": "string"
+        },
+        {
+          "const": "timeline",
+          "description": "Finite state intervals.",
+          "type": "string"
+        },
+        {
+          "const": "transitions",
+          "description": "State changes.",
+          "type": "string"
+        },
+        {
+          "const": "coverage",
+          "description": "Explicitly covered duration.",
+          "type": "string"
+        }
+      ]
+    },
+    "TelemetryCollector": {
+      "description": "Collector instructions carried by the existing runtime family.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "description": "Native engine plan and exact output mappings.",
+          "properties": {
+            "kind": {
+              "const": "native",
+              "type": "string"
+            },
+            "mappings": {
+              "additionalProperties": {
+                "$ref": "#/$defs/TelemetryNativeMapping"
+              },
+              "description": "Only configured field projections.\nExact configured field projections.",
+              "type": "object"
+            },
+            "plan": {
+              "$ref": "#/$defs/NativeCollectionPlan",
+              "description": "Exact immutable native engine plan."
+            }
+          },
+          "required": [
+            "kind",
+            "plan",
+            "mappings"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Immutable script material served by the authenticated configuration content route.",
+          "properties": {
+            "arguments": {
+              "description": "Literal positional and named arguments.",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "content": {
+              "$ref": "#/$defs/TaskContent",
+              "description": "Expected immutable script bytes."
+            },
+            "environment": {
+              "additionalProperties": {
+                "type": "string"
+              },
+              "description": "Explicit bounded parameter environment.",
+              "type": "object"
+            },
+            "kind": {
+              "const": "script",
+              "type": "string"
+            },
+            "mappings": {
+              "additionalProperties": {
+                "$ref": "#/$defs/TelemetryValueMapping"
+              },
+              "description": "Exact configured field projections.",
+              "type": "object"
+            },
+            "maxRows": {
+              "description": "Maximum complete output rows.",
+              "format": "uint16",
+              "maximum": 65535,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "outputSchema": {
+              "description": "Published self-contained output schema."
+            },
+            "profile": {
+              "$ref": "#/$defs/ExecutorProfile",
+              "description": "Required installed executor; no fallback."
+            },
+            "sqlParameters": {
+              "additionalProperties": true,
+              "description": "Separate bound SQL parameters for osquery.",
+              "type": [
+                "object",
+                "null"
+              ]
+            },
+            "timeoutSeconds": {
+              "description": "Effective execution deadline in seconds.",
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "kind",
+            "content",
+            "profile",
+            "arguments",
+            "environment",
+            "outputSchema",
+            "timeoutSeconds",
+            "maxRows",
+            "mappings"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "TelemetryConversion": {
+      "description": "Closed conversions; unknown native codes never become a successful default value.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "description": "Preserve the native JSON type, including explicit null.",
+          "properties": {
+            "kind": {
+              "const": "identity",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Convert a fully specified CIM datetime with explicit offset to UTC Unix seconds.",
+          "properties": {
+            "kind": {
+              "const": "cim_time",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Parse an exact decimal integer string.",
+          "properties": {
+            "kind": {
+              "const": "integer",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Parse a finite JSON number or decimal number string.",
+          "properties": {
+            "kind": {
+              "const": "number",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Explicit source code to canonical scalar, including boolean values.",
+          "properties": {
+            "kind": {
+              "const": "enum",
+              "type": "string"
+            },
+            "values": {
+              "additionalProperties": true,
+              "description": "Finite exact source tokens. Unknown tokens are invalid.",
+              "type": "object"
+            }
+          },
+          "required": [
+            "kind",
+            "values"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Interpret membership in a complete integer array; never treat a numeric bitmask as a set.",
+          "properties": {
+            "absent": {
+              "description": "Value when absent from the complete set."
+            },
+            "kind": {
+              "const": "array_member",
+              "type": "string"
+            },
+            "member": {
+              "description": "Exact native enum member.",
+              "format": "int64",
+              "type": "integer"
+            },
+            "present": {
+              "description": "Value when present in the complete set."
+            }
+          },
+          "required": [
+            "kind",
+            "member",
+            "present",
+            "absent"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Convert nonnegative integral units using checked exact rational arithmetic.",
+          "properties": {
+            "denominator": {
+              "description": "Nonzero denominator; fractional output is rejected.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "kind": {
+              "const": "scale",
+              "type": "string"
+            },
+            "numerator": {
+              "description": "Numerator.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "kind",
+            "numerator",
+            "denominator"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Decode a finite nonnegative bitmask to a sorted list of declared flag names.",
+          "properties": {
+            "flags": {
+              "additionalProperties": {
+                "type": "string"
+              },
+              "description": "Keys are decimal single-bit masks. Undeclared set bits are invalid.",
+              "type": "object"
+            },
+            "kind": {
+              "const": "bitmask",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "flags"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "TelemetryDimension": {
+      "additionalProperties": false,
+      "description": "One bounded dimension extracted from a declared object property path.",
+      "properties": {
+        "path": {
+          "description": "Literal property names relative to each selected item, not executable expressions.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "values": {
+          "description": "Closed admitted vocabulary, including numeric dimensions rendered canonically.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array",
+          "uniqueItems": true
+        }
+      },
+      "required": [
+        "path",
+        "values"
+      ],
+      "type": "object"
+    },
+    "TelemetryKind": {
+      "description": "Numeric interpretation is immutable for a field identity.",
+      "oneOf": [
+        {
+          "const": "gauge",
+          "description": "Instantaneous numeric observation.",
+          "type": "string"
+        },
+        {
+          "const": "cumulative_counter",
+          "description": "Nonnegative value since an explicit reset boundary.",
+          "type": "string"
+        },
+        {
+          "const": "delta_counter",
+          "description": "Nonnegative contribution over an explicit interval.",
+          "type": "string"
+        },
+        {
+          "const": "state",
+          "description": "Boolean or declared finite string vocabulary.",
+          "type": "string"
+        }
+      ]
+    },
+    "TelemetryNativeMapping": {
+      "additionalProperties": false,
+      "description": "A native query's output path. Missing/failed queries remain explicit telemetry quality.",
+      "properties": {
+        "mapping": {
+          "$ref": "#/$defs/TelemetryValueMapping",
+          "description": "Explicit projection of that query's result."
+        },
+        "query": {
+          "description": "Stable query identifier from the supplied plan.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "query",
+        "mapping"
+      ],
+      "type": "object"
+    },
+    "TelemetryValueMapping": {
+      "additionalProperties": false,
+      "description": "Extraction relative to a response or list item. Empty pointer selects the whole value.",
+      "properties": {
+        "columns": {
+          "additionalProperties": {
+            "$ref": "#/$defs/TelemetryValueMapping"
+          },
+          "description": "Exact output properties for each array item. No undeclared attributes are copied.",
+          "type": "object"
+        },
+        "conversion": {
+          "$ref": "#/$defs/TelemetryConversion",
+          "description": "TelemetryConversion of a direct scalar; structured projections require identity."
+        },
+        "pointer": {
+          "description": "RFC 6901 pointer, never an expression.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "pointer",
+        "conversion",
+        "columns"
+      ],
+      "type": "object"
+    },
+    "TimeSeriesBinding": {
+      "additionalProperties": false,
+      "description": "A field's optional history capability, validated against the Inventory catalog.",
+      "properties": {
+        "aggregations": {
+          "description": "Explicit operations permitted for this field.",
+          "items": {
+            "$ref": "#/$defs/TelemetryAggregation"
+          },
+          "type": "array",
+          "uniqueItems": true
+        },
+        "dimensions": {
+          "additionalProperties": {
+            "$ref": "#/$defs/TelemetryDimension"
+          },
+          "description": "Closed dimensions. Device/resource/source identities are not arbitrary dimensions.",
+          "type": "object"
+        },
+        "intervalStartPath": {
+          "description": "Counter start in UTC microseconds, extracted per item for structured counters.",
+          "items": {
+            "type": "string"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "kind": {
+          "$ref": "#/$defs/TelemetryKind",
+          "description": "Numeric or finite-state interpretation."
+        },
+        "maxResources": {
+          "description": "Maximum expanded resources per device and field.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "retention": {
+          "$ref": "#/$defs/RetentionReference",
+          "description": "Versioned product policy, never an asset TTL."
+        },
+        "valuePath": {
+          "description": "Scalar property path; an array root is expanded using the field's stable item key.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "kind",
+        "valuePath",
+        "dimensions",
+        "aggregations",
+        "retention",
+        "maxResources"
+      ],
+      "type": "object"
+    },
+    "UpdateScanMode": {
+      "description": "Read mode is execution evidence, not an asset namespace or permission to install.",
+      "oneOf": [
+        {
+          "const": "local",
+          "description": "Read locally available evidence; no online refresh.",
+          "type": "string"
+        },
+        {
+          "const": "online",
+          "description": "Explicit read-only online discovery through the existing configured source.",
+          "type": "string"
+        }
+      ]
+    },
+    "UpdateSection": {
+      "description": "Independent evidence sets. History cannot prove the installed or applicable set.",
+      "oneOf": [
+        {
+          "const": "scan",
+          "description": "Availability, observed source, scan interval and coverage.",
+          "type": "string"
+        },
+        {
+          "const": "available",
+          "description": "Applicable updates, with source evidence.",
+          "type": "string"
+        },
+        {
+          "const": "installed",
+          "description": "Verified installed update set.",
+          "type": "string"
+        },
+        {
+          "const": "history",
+          "description": "Historical results; not an inventory of installed updates.",
+          "type": "string"
+        },
+        {
+          "const": "reboot",
+          "description": "Observed pending reboot, not permission to restart.",
+          "type": "string"
+        }
+      ]
+    },
+    "ValueType": {
+      "description": "Closed structural schema for one field; every property is explicit and required.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "description": "Record with explicit required and optional properties.",
+          "properties": {
+            "kind": {
+              "const": "record",
+              "type": "string"
+            },
+            "properties": {
+              "additionalProperties": {
+                "$ref": "#/$defs/Property"
+              },
+              "description": "Declared members.",
+              "type": "object"
+            }
+          },
+          "required": [
+            "kind",
+            "properties"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Bounded text; empty text is a legitimate value when allowed.",
+          "properties": {
+            "allowEmpty": {
+              "description": "Whether empty text is allowed.",
+              "type": "boolean"
+            },
+            "kind": {
+              "const": "string",
+              "type": "string"
+            },
+            "maxLength": {
+              "description": "Character budget.",
+              "format": "uint32",
+              "maximum": 65536,
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "kind",
+            "maxLength",
+            "allowEmpty"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Closed string vocabulary.",
+          "properties": {
+            "kind": {
+              "const": "enum",
+              "type": "string"
+            },
+            "values": {
+              "description": "Permitted nonempty values.",
+              "items": {
+                "maxLength": 256,
+                "minLength": 1,
+                "type": "string"
+              },
+              "maxItems": 128,
+              "minItems": 1,
+              "type": "array",
+              "uniqueItems": true
+            }
+          },
+          "required": [
+            "kind",
+            "values"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Signed 64-bit integer.",
+          "properties": {
+            "kind": {
+              "const": "integer",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Finite numeric value.",
+          "properties": {
+            "kind": {
+              "const": "number",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Boolean.",
+          "properties": {
+            "kind": {
+              "const": "boolean",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "UTC Unix seconds.",
+          "properties": {
+            "kind": {
+              "const": "time",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Ordered values sharing one schema.",
+          "properties": {
+            "items": {
+              "$ref": "#/$defs/ValueType",
+              "description": "Element schema."
+            },
+            "kind": {
+              "const": "array",
+              "type": "string"
+            },
+            "maxItems": {
+              "description": "Maximum number of values.",
+              "format": "uint32",
+              "maximum": 100000,
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "kind",
+            "items",
+            "maxItems"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Closed properties; undeclared and absent properties are rejected.",
+          "properties": {
+            "kind": {
+              "const": "object",
+              "type": "string"
+            },
+            "properties": {
+              "additionalProperties": {
+                "$ref": "#/$defs/ValueType"
+              },
+              "description": "Property schema by literal name.",
+              "maxProperties": 64,
+              "minProperties": 1,
+              "propertyNames": {
+                "maxLength": 64,
+                "pattern": "^[a-z][a-z0-9_]*$",
+                "type": "string"
+              },
+              "type": "object"
+            }
+          },
+          "required": [
+            "kind",
+            "properties"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "WindowsApplicationTarget": {
+      "description": "The running product or an explicitly approved Windows service and signer.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "description": "The running, registered product itself.",
+          "properties": {
+            "kind": {
+              "const": "agent",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "One explicitly approved signing and application identity.",
+          "properties": {
+            "kind": {
+              "const": "signed",
+              "type": "string"
+            },
+            "publisher": {
+              "description": "Approved signer.",
+              "type": "string"
+            },
+            "service": {
+              "description": "Exact approved service.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "service",
+            "publisher"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "WindowsCertificateStore": {
+      "description": "Approved Windows store; collection must not mount offline user hives.",
+      "oneOf": [
+        {
+          "const": "my",
+          "description": "Personal certificate metadata.",
+          "type": "string"
+        },
+        {
+          "const": "root",
+          "description": "Trusted root metadata.",
+          "type": "string"
+        },
+        {
+          "const": "ca",
+          "description": "Intermediate certificate metadata.",
+          "type": "string"
+        },
+        {
+          "const": "trusted_publisher",
+          "description": "Trusted publisher certificate metadata.",
+          "type": "string"
+        }
+      ]
+    },
+    "WmiFilter": {
+      "description": "Bounded structural filter; property names are never query expressions.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "description": "Compare one declared non-array property to a typed literal.",
+          "properties": {
+            "kind": {
+              "const": "compare",
+              "type": "string"
+            },
+            "operator": {
+              "$ref": "#/$defs/NativeComparison",
+              "description": "Operator."
+            },
+            "property": {
+              "description": "Selected property.",
+              "type": "string"
+            },
+            "value": {
+              "description": "Literal interpreted by the property's CIM type."
+            }
+          },
+          "required": [
+            "kind",
+            "property",
+            "operator",
+            "value"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "All predicates must hold.",
+          "properties": {
+            "kind": {
+              "const": "and",
+              "type": "string"
+            },
+            "terms": {
+              "description": "Nonempty bounded operands.",
+              "items": {
+                "$ref": "#/$defs/WmiFilter"
+              },
+              "type": "array"
+            }
+          },
+          "required": [
+            "kind",
+            "terms"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "At least one predicate must hold.",
+          "properties": {
+            "kind": {
+              "const": "or",
+              "type": "string"
+            },
+            "terms": {
+              "description": "Nonempty bounded operands.",
+              "items": {
+                "$ref": "#/$defs/WmiFilter"
+              },
+              "type": "array"
+            }
+          },
+          "required": [
+            "kind",
+            "terms"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "WmiProperty": {
+      "additionalProperties": false,
+      "description": "Selected property with explicit array shape.",
+      "properties": {
+        "array": {
+          "description": "Whether CIM_FLAG_ARRAY is required.",
+          "type": "boolean"
+        },
+        "cimType": {
+          "$ref": "#/$defs/CimType",
+          "description": "Exact CIM primitive."
+        }
+      },
+      "required": [
+        "cimType",
+        "array"
+      ],
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Authenticated configuration for one exact Policy version.",
+  "properties": {
+    "backfillSeconds": {
+      "description": "Oldest admitted observation age in seconds.",
+      "format": "uint32",
+      "minimum": 0,
+      "type": "integer"
+    },
+    "binding": {
+      "description": "Echo unchanged in uploads; it conveys no authority without the current mTLS principal.",
+      "type": "string"
+    },
+    "boostExpiresAt": {
+      "description": "Absolute UTC seconds; rereading does not extend the boost.",
+      "format": "int64",
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "collector": {
+      "$ref": "#/$defs/TelemetryCollector",
+      "description": "Exact collector plan and literal execution inputs."
+    },
+    "deviceId": {
+      "description": "Trusted device coordinate.",
+      "type": "string"
+    },
+    "executionMillis": {
+      "description": "Maximum execution duration for the referenced collector.",
+      "format": "uint32",
+      "minimum": 0,
+      "type": "integer"
+    },
+    "expiresAt": {
+      "description": "Stop starting collection when this signed lease expires; refresh through mTLS.",
+      "format": "int64",
+      "type": "integer"
+    },
+    "fields": {
+      "description": "Catalog definitions frozen at publication.",
+      "items": {
+        "$ref": "#/$defs/FieldDefinition"
+      },
+      "type": "array"
+    },
+    "generation": {
+      "description": "Exact registration generation.",
+      "format": "uint64",
+      "minimum": 0,
+      "type": "integer"
+    },
+    "issuedAt": {
+      "description": "Lease issue time in UTC Unix seconds.",
+      "format": "int64",
+      "type": "integer"
+    },
+    "maxBytes": {
+      "description": "Maximum complete decompressed request bytes admitted by every destination.",
+      "format": "uint32",
+      "minimum": 0,
+      "type": "integer"
+    },
+    "maxPoints": {
+      "description": "Maximum expanded points per request.",
+      "format": "uint32",
+      "minimum": 0,
+      "type": "integer"
+    },
+    "maxResources": {
+      "description": "Maximum expanded resources per request.",
+      "format": "uint32",
+      "minimum": 0,
+      "type": "integer"
+    },
+    "normalSampleMillis": {
+      "description": "Normal cadence to resume when the optional boost expires.",
+      "format": "uint32",
+      "minimum": 0,
+      "type": "integer"
+    },
+    "outputBytes": {
+      "description": "Maximum collector output bytes.",
+      "format": "uint32",
+      "minimum": 0,
+      "type": "integer"
+    },
+    "policy": {
+      "description": "Current immutable assignment identity.",
+      "format": "uuid",
+      "type": "string"
+    },
+    "policyVersion": {
+      "description": "Uploads must retain this exact version.",
+      "format": "uuid",
+      "type": "string"
+    },
+    "registrationId": {
+      "description": "Exact active registration incarnation.",
+      "format": "uuid",
+      "type": "string"
+    },
+    "sampleMillis": {
+      "description": "Effective cadence at the server's current UTC time.",
+      "format": "uint32",
+      "minimum": 0,
+      "type": "integer"
+    },
+    "source": {
+      "$ref": "#/$defs/Source",
+      "description": "Server-selected source; producer ordering is monotonic within this source incarnation."
+    },
+    "sourceEpoch": {
+      "description": "Exact source incarnation for producer sequence ownership.",
+      "format": "uuid",
+      "type": "string"
+    },
+    "template": {
+      "$ref": "#/$defs/TaskResource",
+      "description": "Exact existing collector template."
+    },
+    "tenantId": {
+      "description": "Trusted tenant coordinate; compare with the local enrollment before execution.",
+      "format": "uuid",
+      "type": "string"
+    },
+    "uploadMillis": {
+      "description": "Upload cadence.",
+      "format": "uint32",
+      "minimum": 0,
+      "type": "integer"
+    }
+  },
+  "required": [
+    "tenantId",
+    "deviceId",
+    "registrationId",
+    "generation",
+    "sourceEpoch",
+    "issuedAt",
+    "expiresAt",
+    "policy",
+    "policyVersion",
+    "source",
+    "binding",
+    "template",
+    "collector",
+    "fields",
+    "sampleMillis",
+    "normalSampleMillis",
+    "uploadMillis",
+    "maxBytes",
+    "maxPoints",
+    "maxResources",
+    "executionMillis",
+    "outputBytes",
+    "backfillSeconds"
+  ],
+  "title": "TelemetryConfiguration",
+  "type": "object",
+  "$id": "https://rss.example/mdm/agent/runtime/v1/payload/v1/telemetry-configuration.schema.json"
+}

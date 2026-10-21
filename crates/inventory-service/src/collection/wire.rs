@@ -29,7 +29,20 @@ fn to_wire_type(value: &d::ValueType) -> Result<w::ValueType, Error> {
     use d::ValueType as S;
     use w::ValueType as T;
     Ok(match value {
-        S::Record { .. } => return Err(Error::Malformed),
+        S::Record { properties } => T::Record {
+            properties: properties
+                .iter()
+                .map(|(k, p)| {
+                    Ok((
+                        k.clone(),
+                        w::Property {
+                            value_type: to_wire_type(&p.value_type)?,
+                            required: p.required,
+                        },
+                    ))
+                })
+                .collect::<Result<_, Error>>()?,
+        },
         S::String {
             max_length,
             allow_empty,
@@ -56,8 +69,10 @@ fn to_wire_type(value: &d::ValueType) -> Result<w::ValueType, Error> {
         },
     })
 }
-fn to_wire_field(value: &d::FieldDefinition) -> Result<w::FieldDefinition, Error> {
+/// Convert an Inventory definition to its current Agent DTO.
+pub fn to_wire_field(value: &d::FieldDefinition) -> Result<w::FieldDefinition, Error> {
     Ok(w::FieldDefinition {
+        time_series: value.time_series.as_ref().map(binding_to_wire),
         key: w::FieldKey::parse(value.key.as_str()).map_err(|_| Error::Malformed)?,
         version: value.version,
         value_type: to_wire_type(&value.value_type)?,
@@ -79,7 +94,8 @@ fn to_wire_field(value: &d::FieldDefinition) -> Result<w::FieldDefinition, Error
         item_key: value.item_key.clone(),
     })
 }
-pub(crate) fn to_wire(value: &d::CollectionDefinition) -> Result<w::CollectionDefinition, Error> {
+/// Convert a device-scoped collection without transferring publication authority.
+pub fn to_wire(value: &d::CollectionDefinition) -> Result<w::CollectionDefinition, Error> {
     if value
         .bindings()
         .iter()
@@ -125,6 +141,20 @@ fn to_domain_type(value: &w::ValueType) -> d::ValueType {
     use d::ValueType as T;
     use w::ValueType as S;
     match value {
+        S::Record { properties } => T::Record {
+            properties: properties
+                .iter()
+                .map(|(k, p)| {
+                    (
+                        k.clone(),
+                        d::Property {
+                            value_type: to_domain_type(&p.value_type),
+                            required: p.required,
+                        },
+                    )
+                })
+                .collect(),
+        },
         S::String {
             max_length,
             allow_empty,
@@ -151,8 +181,10 @@ fn to_domain_type(value: &w::ValueType) -> d::ValueType {
         },
     }
 }
-fn to_domain_field(value: &w::FieldDefinition) -> Result<d::FieldDefinition, Error> {
+/// Reconstruct domain field data; the collection/domain constructor validates its meaning.
+pub fn to_domain_field(value: &w::FieldDefinition) -> Result<d::FieldDefinition, Error> {
     Ok(d::FieldDefinition {
+        time_series: value.time_series.as_ref().map(binding_to_domain),
         key: d::FieldKey::parse(value.key.as_str()).map_err(|_| Error::Malformed)?,
         version: value.version,
         value_type: to_domain_type(&value.value_type),
@@ -174,7 +206,8 @@ fn to_domain_field(value: &w::FieldDefinition) -> Result<d::FieldDefinition, Err
         item_key: value.item_key.clone(),
     })
 }
-pub(crate) fn to_domain(value: &w::CollectionDefinition) -> Result<d::CollectionDefinition, Error> {
+/// Convert the Agent DTO through the Inventory collection constructor.
+pub fn to_domain(value: &w::CollectionDefinition) -> Result<d::CollectionDefinition, Error> {
     d::CollectionDefinition::new(
         value.dataset(),
         value.version(),
@@ -192,7 +225,8 @@ pub(crate) fn to_domain(value: &w::CollectionDefinition) -> Result<d::Collection
     )
     .map_err(|_| Error::Malformed)
 }
-fn scalar(value: &w::Scalar) -> d::Scalar {
+/// Preserve exact typed numbers, nulls and object/array structure.
+pub fn scalar(value: &w::Scalar) -> d::Scalar {
     match value {
         w::Scalar::String(v) => d::Scalar::String(v.clone()),
         w::Scalar::Integer(v) => d::Scalar::Integer(*v),
@@ -205,7 +239,8 @@ fn scalar(value: &w::Scalar) -> d::Scalar {
         }
     }
 }
-pub(crate) fn value(value: &w::CollectedValue) -> d::CollectedValue {
+/// Preserve explicit outcome distinctions at the Inventory boundary.
+pub fn value(value: &w::CollectedValue) -> d::CollectedValue {
     match value {
         w::CollectedValue::Value(v) => d::CollectedValue::Value(scalar(v)),
         w::CollectedValue::Null => d::CollectedValue::Null,
@@ -214,11 +249,105 @@ pub(crate) fn value(value: &w::CollectedValue) -> d::CollectedValue {
     }
 }
 
+fn binding_to_wire(value: &d::TimeSeriesBinding) -> w::TimeSeriesBinding {
+    w::TimeSeriesBinding {
+        kind: match value.kind {
+            d::TelemetryKind::Gauge => w::TelemetryKind::Gauge,
+            d::TelemetryKind::CumulativeCounter => w::TelemetryKind::CumulativeCounter,
+            d::TelemetryKind::DeltaCounter => w::TelemetryKind::DeltaCounter,
+            d::TelemetryKind::State => w::TelemetryKind::State,
+        },
+        value_path: value.value_path.clone(),
+        interval_start_path: value.interval_start_path.clone(),
+        dimensions: value
+            .dimensions
+            .iter()
+            .map(|(k, v)| {
+                (
+                    k.clone(),
+                    w::TelemetryDimension {
+                        path: v.path.clone(),
+                        values: v.values.clone(),
+                    },
+                )
+            })
+            .collect(),
+        aggregations: value
+            .aggregations
+            .iter()
+            .map(|v| match v {
+                d::TelemetryAggregation::Min => w::TelemetryAggregation::Min,
+                d::TelemetryAggregation::Max => w::TelemetryAggregation::Max,
+                d::TelemetryAggregation::Sum => w::TelemetryAggregation::Sum,
+                d::TelemetryAggregation::Count => w::TelemetryAggregation::Count,
+                d::TelemetryAggregation::Mean => w::TelemetryAggregation::Mean,
+                d::TelemetryAggregation::Increase => w::TelemetryAggregation::Increase,
+                d::TelemetryAggregation::Rate => w::TelemetryAggregation::Rate,
+                d::TelemetryAggregation::Timeline => w::TelemetryAggregation::Timeline,
+                d::TelemetryAggregation::Transitions => w::TelemetryAggregation::Transitions,
+                d::TelemetryAggregation::Coverage => w::TelemetryAggregation::Coverage,
+            })
+            .collect(),
+        retention: w::RetentionReference {
+            key: value.retention.key.clone(),
+            revision: value.retention.revision,
+        },
+        max_resources: value.max_resources,
+    }
+}
+
+fn binding_to_domain(value: &w::TimeSeriesBinding) -> d::TimeSeriesBinding {
+    d::TimeSeriesBinding {
+        kind: match value.kind {
+            w::TelemetryKind::Gauge => d::TelemetryKind::Gauge,
+            w::TelemetryKind::CumulativeCounter => d::TelemetryKind::CumulativeCounter,
+            w::TelemetryKind::DeltaCounter => d::TelemetryKind::DeltaCounter,
+            w::TelemetryKind::State => d::TelemetryKind::State,
+        },
+        value_path: value.value_path.clone(),
+        interval_start_path: value.interval_start_path.clone(),
+        dimensions: value
+            .dimensions
+            .iter()
+            .map(|(k, v)| {
+                (
+                    k.clone(),
+                    d::TelemetryDimension {
+                        path: v.path.clone(),
+                        values: v.values.clone(),
+                    },
+                )
+            })
+            .collect(),
+        aggregations: value
+            .aggregations
+            .iter()
+            .map(|v| match v {
+                w::TelemetryAggregation::Min => d::TelemetryAggregation::Min,
+                w::TelemetryAggregation::Max => d::TelemetryAggregation::Max,
+                w::TelemetryAggregation::Sum => d::TelemetryAggregation::Sum,
+                w::TelemetryAggregation::Count => d::TelemetryAggregation::Count,
+                w::TelemetryAggregation::Mean => d::TelemetryAggregation::Mean,
+                w::TelemetryAggregation::Increase => d::TelemetryAggregation::Increase,
+                w::TelemetryAggregation::Rate => d::TelemetryAggregation::Rate,
+                w::TelemetryAggregation::Timeline => d::TelemetryAggregation::Timeline,
+                w::TelemetryAggregation::Transitions => d::TelemetryAggregation::Transitions,
+                w::TelemetryAggregation::Coverage => d::TelemetryAggregation::Coverage,
+            })
+            .collect(),
+        retention: d::RetentionReference {
+            key: value.retention.key.clone(),
+            revision: value.retention.revision,
+        },
+        max_resources: value.max_resources,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     #[test]
-    fn published_collection_conversion_preserves_bytes_fingerprint_and_coverage() {
+    fn collection_conversion_preserves_domain_meaning_and_coverage() {
         let fields = d::builtin::fields()
             .into_iter()
             .filter(|field| field.sources.contains_key(&d::Source::AgentBuiltin))

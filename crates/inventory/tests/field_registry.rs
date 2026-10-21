@@ -28,6 +28,7 @@ fn malformed_field_identities_are_rejected() {
 fn definition() -> rss_mdm_inventory::FieldDefinition {
     use rss_mdm_inventory::*;
     FieldDefinition {
+        time_series: None,
         key: FieldKey::parse("custom.security_agent.healthy").unwrap(),
         version: 1,
         value_type: ValueType::Boolean,

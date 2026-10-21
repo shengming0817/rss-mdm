@@ -40,7 +40,7 @@ GRANT SELECT ON TABLE mdm_access.asset_authority_history TO mdm_flow_runtime,mdm
 GRANT SELECT,INSERT ON TABLE mdm_access.credentials TO mdm_access;
 GRANT SELECT ON TABLE mdm_access.credentials TO mdm_command_runtime;
 
-GRANT SELECT(tenant_id) ON TABLE mdm_access.credentials TO mdm_flow_runtime;
+GRANT SELECT(tenant_id,id) ON TABLE mdm_access.credentials TO mdm_flow_runtime;
 
 GRANT SELECT(registration) ON TABLE mdm_access.credentials TO mdm_flow_runtime;
 
@@ -99,5 +99,5 @@ GRANT SELECT,INSERT ON mdm_access.agent_grants,mdm_access.agent_issuances TO mdm
 GRANT UPDATE(actor,instance,state,device) ON mdm_access.agent_grants TO mdm_access;
 GRANT UPDATE(state,certificate_chain,metadata,fingerprint,activation_operation,activation_digest,activation_result,credential) ON mdm_access.agent_issuances TO mdm_access;
 GRANT SELECT,INSERT ON mdm_access.agent_grants TO mdm_command_runtime;
-GRANT SELECT(tenant_id,credential,not_after) ON mdm_access.agent_issuances TO mdm_command_runtime;
+GRANT SELECT(tenant_id,credential,not_after) ON mdm_access.agent_issuances TO mdm_command_runtime,mdm_flow_runtime;
 COMMIT;

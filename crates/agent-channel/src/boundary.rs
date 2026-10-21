@@ -169,7 +169,9 @@ async fn body(request: Request, next: Next, requests: Arc<tokio::sync::Semaphore
         .get::<axum::extract::MatchedPath>()
         .map(|p| p.as_str())
         .unwrap_or("");
-    let limit = if route.contains("/self-service/") {
+    let limit = if route.contains("/telemetry/") {
+        4 * 1024 * 1024
+    } else if route.contains("/self-service/") {
         131072
     } else if route.ends_with("/tasks/{id}/events") {
         rss_mdm_agent_wire::runtime::MAX_TASK_REQUEST_BYTES

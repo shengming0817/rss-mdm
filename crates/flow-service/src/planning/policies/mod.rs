@@ -16,6 +16,7 @@ pub mod lifecycle;
 pub mod reconcile;
 pub mod rerun;
 pub mod storage;
+pub mod telemetry;
 
 use rss_mdm_execution_service::{
     authorize_policy_snapshot,
@@ -73,9 +74,13 @@ impl Policies {
             definition.validate()?;
             authorize_policy_snapshot(proof.authorization()?, proof, definition)
                 .map_err(Error::from)?;
-            self.inputs
-                .prepare_resource(PublicationInput::from(&definition.action).resource())
-                .await?
+            if matches!(definition.action, Action::TelemetryProfile { .. }) {
+                None
+            } else {
+                self.inputs
+                    .prepare_resource(PublicationInput::try_from(&definition.action)?.resource())
+                    .await?
+            }
         } else {
             None
         };
@@ -123,11 +128,16 @@ impl Policies {
                     if policy.state.is_enabled() { s.inputs.admit_software_channel(&policy.definition.action)?; }
                     authorize_policy_snapshot(&authorization, p, &policy.definition).map_err(Error::from)?;
                     if changed {
-                        let frozen = s.inputs.publish_in(tx, &PublicationInput::from(&policy.definition.action), verified, &PublicationAuthority {
+                        let frozen = if let Action::TelemetryProfile { resource } = &policy.definition.action {
+                            telemetry::freeze(tx, resource, p, &authorization, policy.id, policy.version).await?
+                        } else {
+                        let frozen = s.inputs.publish_in(tx, &PublicationInput::try_from(&policy.definition.action)?, verified, &PublicationAuthority {
                             proof: p, snapshot: &authorization,
                             owner: rss_mdm_execution_service::configuration::Owner::Policy { policy: policy.id, version: policy.version },
                             devices: None,
                         }).await?;
+                        checked_input(serde_json::to_value(frozen))?
+                        };
                         storage::write_in(
                             &s.policy_store,
                             tx,

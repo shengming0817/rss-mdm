@@ -3,6 +3,7 @@ mod accounts;
 pub(super) mod archive;
 mod ledger;
 pub(super) mod storage;
+mod telemetry;
 use super::{Error, Result, installation::Input, local::Journal, snapshot_tree};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -34,6 +35,7 @@ pub struct Request {
     pub operation_id: Uuid,
     pub directory: PathBuf,
     pub authorities: Vec<Authority>,
+    pub telemetry: Vec<super::providers::telemetry::Request>,
 }
 #[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -369,9 +371,25 @@ pub async fn restore(input: Restore) -> Result<Receipt> {
         sqlx::PgConnection::connect_with(&input.administrator.options().map_err(|_| Error::Input)?)
             .await
             .map_err(|_| Error::Storage)?;
-    connection_fence(&mut c, &journal, false).await?;
-    c.close().await.map_err(|_| Error::Storage)?;
-    activate_restored(&input, &frozen, &journal, &root).await?;
+    if let Err(error) = async {
+        connection_fence(&mut c, &journal, false).await?;
+        c.close().await.map_err(|_| Error::Storage)?;
+        telemetry::release(&frozen, &journal).await?;
+        telemetry::admit(&frozen).await?;
+        activate_restored(&input, &frozen, &journal, &root).await
+    }
+    .await
+    {
+        let _ = telemetry::fence(&frozen, &journal).await;
+        let mut c = sqlx::PgConnection::connect_with(
+            &input.administrator.options().map_err(|_| Error::Input)?,
+        )
+        .await
+        .map_err(|_| Error::Storage)?;
+        connection_fence(&mut c, &journal, true).await?;
+        c.close().await.map_err(|_| Error::Storage)?;
+        return Err(error);
+    }
     progress.stage = RestoreStage::Complete;
     journal.save("restore-progress.json", &progress)?;
     root.save("backup-operation.json", &Option::<Uuid>::None)?;
@@ -433,6 +451,7 @@ async fn freeze_backup(input: Request, root: &Journal, journal: &Journal) -> Res
         hosts,
         installation,
     };
+    telemetry::validate(&frozen)?;
     journal.secret(
         "restore-source.json",
         &serde_json::to_vec(&frozen).map_err(|_| Error::Input)?,
@@ -489,6 +508,7 @@ async fn capture_stopped(frozen: &Frozen, journal: &Journal, progress: &mut Rece
         .map_err(|_| Error::Storage)?;
     connection_fence(&mut c, journal, true).await?;
     no_writers(&mut c).await?;
+    telemetry::capture(frozen, journal).await?;
     capture_ledger_heads(&mut c, frozen, journal).await?;
     for host in &frozen.hosts {
         let deployment = match host.slot {
@@ -524,6 +544,15 @@ async fn capture_stopped(frozen: &Frozen, journal: &Journal, progress: &mut Rece
     let mut inputs =
         vec![serde_json::to_value(&frozen.request.installation).map_err(|_| Error::Corrupt)?];
     inputs.extend(frozen.hosts.iter().map(|h| h.runtime.clone()));
+    inputs.extend(
+        frozen
+            .request
+            .telemetry
+            .iter()
+            .map(serde_json::to_value)
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(|_| Error::Input)?,
+    );
     snapshot_tree::capture_inputs(journal, &inputs)?;
     snapshot_tree::capture(
         journal,
@@ -553,6 +582,7 @@ async fn resume_capture(
     )
     .await
     .map_err(|_| Error::Storage)?;
+    telemetry::release(frozen, journal).await?;
     connection_fence(&mut c, journal, false).await?;
     c.close().await.map_err(|_| Error::Storage)?;
 
@@ -592,6 +622,7 @@ async fn restore_stopped(
     }
     c.close().await.map_err(|_| Error::Storage)?;
     if progress.stage == RestoreStage::Database {
+        telemetry::restore(input, frozen, journal).await?;
         restore_contents(input, frozen, journal, progress).await?;
     }
 
@@ -843,3 +874,7 @@ async fn restore_database_snapshot(
 #[cfg(test)]
 #[path = "../../tests/setup/backup.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "../../tests/setup/telemetry_backup.rs"]
+pub(crate) mod telemetry_fixture;

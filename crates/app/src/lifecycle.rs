@@ -256,6 +256,19 @@ pub async fn serve(
                         startup.stage_resource(DynManagedResource::new_box(
                             rss_mdm_execution_service::Resource(execution.service.clone()),
                         ));
+                        let telemetry = match &compiled.config.telemetry {
+                            Some(config) => {
+                                let service = config
+                                    .open(&planning, execution.service.clone())
+                                    .await
+                                    .map_err(|e| ProcessError::at("startup.telemetry", e))?;
+                                startup.stage_resource(DynManagedResource::new_box(
+                                    crate::telemetry::Resource(service.clone()),
+                                ));
+                                Some(service)
+                            }
+                            None => None,
+                        };
                         let automation = crate::automation::Automation::connect(
                             planning.planning.clone(),
                             planning.assets.clone(),
@@ -314,6 +327,7 @@ pub async fn serve(
                         let mut app = crate::api::from_compiled(
                             compiled,
                             crate::api::AssemblyDependencies {
+                                telemetry: telemetry.clone(),
                                 certificate_archive: archive.clone(),
                                 timeline: timeline.clone(),
                                 associations: associations.clone(),
@@ -393,6 +407,12 @@ pub async fn serve(
                     })??;
                     let signals = notifications.signals.clone();
                     let mut launch = startup.commit();
+                    if let Some(service) = app.telemetry.clone() {
+                        launch.stage_deferred_task_with_token(
+                            crate::telemetry::registration(service, execution.runtime.clone())
+                                .critical(),
+                        );
+                    }
                     launch.stage_deferred_task_with_token(
                         app.webhooks.clone().registration().critical(),
                     );

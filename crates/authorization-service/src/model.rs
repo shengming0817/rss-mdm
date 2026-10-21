@@ -37,6 +37,10 @@ pub enum Permission {
     ComplianceRecompute,
     InventoryCollect,
     InventoryAssign,
+    /// Delete or restore historical telemetry within granted device scopes.
+    TelemetryDelete,
+    /// Schedule bounded telemetry maintenance within granted device scopes.
+    TelemetryMaintain,
     Enrollment,
     AgentEnrollmentRead,
     AgentEnrollmentWrite,
@@ -104,6 +108,8 @@ impl Permission {
             | Self::ComplianceRead
             | Self::InventoryCollect
             | Self::InventoryAssign
+            | Self::TelemetryDelete
+            | Self::TelemetryMaintain
             | Self::Enrollment
             | Self::Credentials
             | Self::DeviceUnmanage
@@ -411,6 +417,8 @@ pub fn tenant_administrator_rule(user: User) -> Rule {
         Permission::ComplianceRecompute,
         Permission::InventoryCollect,
         Permission::InventoryAssign,
+        Permission::TelemetryDelete,
+        Permission::TelemetryMaintain,
         Permission::Enrollment,
         Permission::AgentEnrollmentRead,
         Permission::AgentEnrollmentWrite,

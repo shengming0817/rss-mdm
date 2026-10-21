@@ -7,6 +7,10 @@ rust-version.workspace = true
 publish.workspace = true
 
 [dependencies]
+rss-mdm-telemetry-service.workspace = true
+rss-timeseries.workspace = true
+rss-timeseries-postgres.workspace = true
+rss-timeseries-clickhouse.workspace = true
 openssl.workspace = true
 rss-mdm-mail-service.workspace = true
 aws-sigv4.workspace = true

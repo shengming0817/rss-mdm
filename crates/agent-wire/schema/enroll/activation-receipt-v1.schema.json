@@ -204,6 +204,11 @@
           "const": "credentials.windows.v1",
           "description": "Native Windows recovery material execution and encrypted escrow.",
           "type": "string"
+        },
+        {
+          "const": "telemetry.collect.v1",
+          "description": "Periodic typed observations using published telemetry profiles.",
+          "type": "string"
         }
       ]
     },
@@ -407,6 +412,17 @@
           },
           "type": "object"
         },
+        "timeSeries": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TimeSeriesBinding"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Optional history binding; absence means this field has no time-series capability."
+        },
         "unit": {
           "description": "Exact optional unit; no implicit conversion.",
           "maxLength": 64,
@@ -464,6 +480,25 @@
         }
       ]
     },
+    "Property": {
+      "additionalProperties": false,
+      "description": "One explicitly declared record member.",
+      "properties": {
+        "required": {
+          "description": "Whether the producer must include this member.",
+          "type": "boolean"
+        },
+        "valueType": {
+          "$ref": "#/$defs/ValueType",
+          "description": "Exact type when present."
+        }
+      },
+      "required": [
+        "valueType",
+        "required"
+      ],
+      "type": "object"
+    },
     "ReportSource": {
       "description": "Server-owned report source returned after registration.",
       "oneOf": [
@@ -473,6 +508,27 @@
           "type": "string"
         }
       ]
+    },
+    "RetentionReference": {
+      "additionalProperties": false,
+      "description": "Product retention policy identity; duration is owned by its immutable policy version.",
+      "properties": {
+        "key": {
+          "description": "Tenant-local policy key.",
+          "type": "string"
+        },
+        "revision": {
+          "description": "Exact policy revision.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "key",
+        "revision"
+      ],
+      "type": "object"
     },
     "Sensitivity": {
       "description": "Field visibility class, enforced by the product authorization boundary.",
@@ -529,9 +585,198 @@
         }
       ]
     },
+    "TelemetryAggregation": {
+      "description": "Operations are selected explicitly; missing data is never filled implicitly.",
+      "oneOf": [
+        {
+          "const": "min",
+          "description": "Minimum numeric reading.",
+          "type": "string"
+        },
+        {
+          "const": "max",
+          "description": "Maximum numeric reading.",
+          "type": "string"
+        },
+        {
+          "const": "sum",
+          "description": "Sum of Gauge readings or Delta contributions.",
+          "type": "string"
+        },
+        {
+          "const": "count",
+          "description": "Number of known readings.",
+          "type": "string"
+        },
+        {
+          "const": "mean",
+          "description": "Numeric arithmetic mean.",
+          "type": "string"
+        },
+        {
+          "const": "increase",
+          "description": "Cumulative increase between compatible boundaries.",
+          "type": "string"
+        },
+        {
+          "const": "rate",
+          "description": "Contribution divided by its actual duration.",
+          "type": "string"
+        },
+        {
+          "const": "timeline",
+          "description": "Finite state intervals.",
+          "type": "string"
+        },
+        {
+          "const": "transitions",
+          "description": "State changes.",
+          "type": "string"
+        },
+        {
+          "const": "coverage",
+          "description": "Explicitly covered duration.",
+          "type": "string"
+        }
+      ]
+    },
+    "TelemetryDimension": {
+      "additionalProperties": false,
+      "description": "One bounded dimension extracted from a declared object property path.",
+      "properties": {
+        "path": {
+          "description": "Literal property names relative to each selected item, not executable expressions.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "values": {
+          "description": "Closed admitted vocabulary, including numeric dimensions rendered canonically.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array",
+          "uniqueItems": true
+        }
+      },
+      "required": [
+        "path",
+        "values"
+      ],
+      "type": "object"
+    },
+    "TelemetryKind": {
+      "description": "Numeric interpretation is immutable for a field identity.",
+      "oneOf": [
+        {
+          "const": "gauge",
+          "description": "Instantaneous numeric observation.",
+          "type": "string"
+        },
+        {
+          "const": "cumulative_counter",
+          "description": "Nonnegative value since an explicit reset boundary.",
+          "type": "string"
+        },
+        {
+          "const": "delta_counter",
+          "description": "Nonnegative contribution over an explicit interval.",
+          "type": "string"
+        },
+        {
+          "const": "state",
+          "description": "Boolean or declared finite string vocabulary.",
+          "type": "string"
+        }
+      ]
+    },
+    "TimeSeriesBinding": {
+      "additionalProperties": false,
+      "description": "A field's optional history capability, validated against the Inventory catalog.",
+      "properties": {
+        "aggregations": {
+          "description": "Explicit operations permitted for this field.",
+          "items": {
+            "$ref": "#/$defs/TelemetryAggregation"
+          },
+          "type": "array",
+          "uniqueItems": true
+        },
+        "dimensions": {
+          "additionalProperties": {
+            "$ref": "#/$defs/TelemetryDimension"
+          },
+          "description": "Closed dimensions. Device/resource/source identities are not arbitrary dimensions.",
+          "type": "object"
+        },
+        "intervalStartPath": {
+          "description": "Counter start in UTC microseconds, extracted per item for structured counters.",
+          "items": {
+            "type": "string"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "kind": {
+          "$ref": "#/$defs/TelemetryKind",
+          "description": "Numeric or finite-state interpretation."
+        },
+        "maxResources": {
+          "description": "Maximum expanded resources per device and field.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "retention": {
+          "$ref": "#/$defs/RetentionReference",
+          "description": "Versioned product policy, never an asset TTL."
+        },
+        "valuePath": {
+          "description": "Scalar property path; an array root is expanded using the field's stable item key.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "kind",
+        "valuePath",
+        "dimensions",
+        "aggregations",
+        "retention",
+        "maxResources"
+      ],
+      "type": "object"
+    },
     "ValueType": {
       "description": "Closed structural schema for one field; every property is explicit and required.",
       "oneOf": [
+        {
+          "additionalProperties": false,
+          "description": "Record with explicit required and optional properties.",
+          "properties": {
+            "kind": {
+              "const": "record",
+              "type": "string"
+            },
+            "properties": {
+              "additionalProperties": {
+                "$ref": "#/$defs/Property"
+              },
+              "description": "Declared members.",
+              "type": "object"
+            }
+          },
+          "required": [
+            "kind",
+            "properties"
+          ],
+          "type": "object"
+        },
         {
           "additionalProperties": false,
           "description": "Bounded text; empty text is a legitimate value when allowed.",

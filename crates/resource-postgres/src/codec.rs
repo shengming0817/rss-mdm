@@ -25,6 +25,7 @@ pub(crate) fn kind(k: Kind) -> u8 {
         Kind::Configuration => 2,
         Kind::NativeCollection => 3,
         Kind::AgentCollection => 4,
+        Kind::TelemetryProfile => 5,
     }
 }
 fn read_kind(v: &Value) -> Result<Kind, PgError> {
@@ -34,6 +35,7 @@ fn read_kind(v: &Value) -> Result<Kind, PgError> {
         2 => Ok(Kind::Configuration),
         3 => Ok(Kind::NativeCollection),
         4 => Ok(Kind::AgentCollection),
+        5 => Ok(Kind::TelemetryProfile),
         _ => Err(STORAGE.fault("codec::read_kind")),
     }
 }
@@ -56,6 +58,10 @@ fn read_artifact(v: &Value) -> Result<Artifact, PgError> {
 fn declaration(d: &Declaration) -> Value {
     match d {
         Declaration::Software { definition } => json!([4, definition]),
+        Declaration::TelemetryProfile {
+            artifact: a,
+            definition,
+        } => json!([8, artifact(a), definition]),
         Declaration::AgentCollection {
             artifact: a,
             definition,
@@ -79,6 +85,16 @@ fn read_declaration(v: &Value) -> Result<Declaration, PgError> {
         .first()
         .ok_or_else(|| STORAGE.fault("codec::read_declaration"))?)?
     {
+        8 => {
+            let a = array(v, 3)?;
+            Ok(Declaration::TelemetryProfile {
+                artifact: read_artifact(&a[1])?,
+                definition: STORAGE.json(
+                    "codec::telemetry_profile",
+                    serde_json::from_value(a[2].clone()),
+                )?,
+            })
+        }
         7 => {
             let a = array(v, 3)?;
             Ok(Declaration::AgentCollection {
@@ -130,6 +146,7 @@ pub(crate) fn version(v: &Version) -> Result<Vec<u8>, PgError> {
             Kind::Configuration => 5,
             Kind::NativeCollection => 5,
             Kind::AgentCollection => 6,
+            Kind::TelemetryProfile => 1,
         },
         v.tenant().to_string(),
         v.resource().as_str(),
@@ -163,6 +180,7 @@ pub(crate) fn read_version(bytes: &[u8]) -> Result<Version, PgError> {
             Kind::Configuration => 5,
             Kind::NativeCollection => 5,
             Kind::AgentCollection => 6,
+            Kind::TelemetryProfile => 1,
         }
     {
         return Err(STORAGE.fault("codec::read_version"));
@@ -358,6 +376,7 @@ pub(crate) fn directory_header(
         Kind::Configuration => "configuration",
         Kind::NativeCollection => "native_collection",
         Kind::AgentCollection => "agent_collection",
+        Kind::TelemetryProfile => "telemetry_profile",
     };
     if !a[4].is_null() {
         STORAGE.invalid(

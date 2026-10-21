@@ -58,7 +58,7 @@ async fn management_admission_rejects_schema_and_privilege_drift() {
         ),
         (
             "GRANT SELECT ON mdm_access.credentials TO mdm_flow_runtime",
-            "REVOKE SELECT ON mdm_access.credentials FROM mdm_flow_runtime; GRANT SELECT(tenant_id,registration,state) ON mdm_access.credentials TO mdm_flow_runtime",
+            "REVOKE SELECT ON mdm_access.credentials FROM mdm_flow_runtime; GRANT SELECT(tenant_id,id,registration,state) ON mdm_access.credentials TO mdm_flow_runtime",
         ),
         (
             "GRANT SELECT(material) ON mdm_apple.channels TO mdm_flow_runtime",

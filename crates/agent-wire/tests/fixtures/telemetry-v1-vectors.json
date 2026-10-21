@@ -1,0 +1,176 @@
+{
+  "seed": [
+    42,
+    42,
+    42,
+    42,
+    42,
+    42,
+    42,
+    42,
+    42,
+    42,
+    42,
+    42,
+    42,
+    42,
+    42,
+    42,
+    42,
+    42,
+    42,
+    42,
+    42,
+    42,
+    42,
+    42,
+    42,
+    42,
+    42,
+    42,
+    42,
+    42,
+    42,
+    42
+  ],
+  "signed": {
+    "configuration": {
+      "backfillSeconds": 3600,
+      "binding": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "boostExpiresAt": null,
+      "collector": {
+        "arguments": [
+          "literal; $(ignored)"
+        ],
+        "content": {
+          "length": 4,
+          "sha256": [
+            7,
+            7,
+            7,
+            7,
+            7,
+            7,
+            7,
+            7,
+            7,
+            7,
+            7,
+            7,
+            7,
+            7,
+            7,
+            7,
+            7,
+            7,
+            7,
+            7,
+            7,
+            7,
+            7,
+            7,
+            7,
+            7,
+            7,
+            7,
+            7,
+            7,
+            7,
+            7
+          ]
+        },
+        "environment": {
+          "RSS_PARAM_DIR": "/Library"
+        },
+        "kind": "script",
+        "mappings": {
+          "custom.load": {
+            "columns": {},
+            "conversion": {
+              "kind": "identity"
+            },
+            "pointer": "/load"
+          }
+        },
+        "maxRows": 1,
+        "outputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "load": {
+              "type": "integer"
+            }
+          },
+          "required": [
+            "load"
+          ],
+          "type": "object"
+        },
+        "profile": "posix_sh",
+        "sqlParameters": null,
+        "timeoutSeconds": 1
+      },
+      "deviceId": "telemetry-vector",
+      "executionMillis": 1000,
+      "expiresAt": 1300,
+      "fields": [
+        {
+          "itemKey": null,
+          "key": "custom.load",
+          "manual": false,
+          "nullable": false,
+          "platforms": [
+            "macos"
+          ],
+          "searchable": true,
+          "sensitivity": "standard",
+          "sources": {
+            "agent.script": 0
+          },
+          "timeSeries": {
+            "aggregations": [
+              "mean"
+            ],
+            "dimensions": {},
+            "intervalStartPath": null,
+            "kind": "gauge",
+            "maxResources": 1,
+            "retention": {
+              "key": "standard",
+              "revision": 1
+            },
+            "valuePath": []
+          },
+          "unit": "percent",
+          "valueType": {
+            "kind": "integer"
+          },
+          "version": 1
+        }
+      ],
+      "generation": 1,
+      "issuedAt": 1000,
+      "maxBytes": 65536,
+      "maxPoints": 64,
+      "maxResources": 1,
+      "normalSampleMillis": 5000,
+      "outputBytes": 4096,
+      "policy": "11111111-2222-4333-8444-555555555555",
+      "policyVersion": "11111111-2222-4333-8444-555555555555",
+      "registrationId": "11111111-2222-4333-8444-555555555555",
+      "sampleMillis": 5000,
+      "source": "agent.script",
+      "sourceEpoch": "11111111-2222-4333-8444-555555555555",
+      "template": {
+        "id": "metric-script",
+        "variant": "default",
+        "version": "v1"
+      },
+      "tenantId": "11111111-2222-4333-8444-555555555555",
+      "uploadMillis": 10000
+    },
+    "keyId": "vector-key",
+    "signature": "6S3qK09aT4bO9c_4B2MdAtZxTCXHng22vmoeL7y_LzPDadhi-jTeRsnEAZTGolAKL1PzzSCPeztTPz7PmrTPBA"
+  },
+  "signingBytesLength": 1678,
+  "signingBytesSha256": "29866998df76d1edc3dea32ca823e52319ddc838f64e1bf58b7f7d048ae37b19"
+}

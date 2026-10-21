@@ -410,6 +410,12 @@ async fn admit_storage_in(
     }
     let contracts = [
         (
+            "telemetry",
+            rss_mdm_telemetry_service::CATALOG_SQL,
+            rss_mdm_telemetry_service::CATALOG_JSON,
+            rss_mdm_telemetry_service::ADMISSION_SQL,
+        ),
+        (
             "software",
             rss_mdm_software_service::catalog::CATALOG_SQL,
             rss_mdm_software_service::catalog::CATALOG_JSON,

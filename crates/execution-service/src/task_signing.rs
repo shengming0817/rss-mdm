@@ -56,6 +56,21 @@ impl Signer {
             key,
         })
     }
+    /// Sign the current periodic configuration after the caller's live issue/ACK check.
+    pub fn sign_telemetry(
+        &self,
+        configuration: rss_mdm_agent_wire::runtime::TelemetryConfiguration,
+    ) -> Result<rss_mdm_agent_wire::runtime::SignedTelemetryConfiguration, Error> {
+        let bytes = configuration
+            .signing_bytes(&self.key_id)
+            .map_err(|_| Error::Malformed)?;
+        Ok(rss_mdm_agent_wire::runtime::SignedTelemetryConfiguration {
+            configuration,
+            key_id: self.key_id.clone(),
+            signature: base64::engine::general_purpose::URL_SAFE_NO_PAD
+                .encode(self.key.sign(&bytes).as_ref()),
+        })
+    }
     pub fn sign(&self, payload: TaskPayload) -> Result<SignedTask, Error> {
         if let TaskPayload::Software(task) = &payload {
             rss_mdm_software_service::preparation::execution::validate_task_admission(task)
@@ -77,3 +92,27 @@ pub mod service;
 pub mod trust;
 
 pub mod observations;
+
+impl crate::ExecutionService {
+    /// Reuse the active task authority and durable device ACK for periodic collection.
+    pub async fn sign_telemetry_on(
+        &self,
+        c: &mut sqlx::PgConnection,
+        p: &crate::device::DevicePrincipal,
+        configuration: rss_mdm_agent_wire::runtime::TelemetryConfiguration,
+    ) -> Result<rss_mdm_agent_wire::runtime::SignedTelemetryConfiguration, Error> {
+        if p.tenant() != self.tenant
+            || p.channel() != rss_mdm_inventory::Channel::Agent
+            || p.purpose() != crate::device::Purpose::Primary
+            || configuration.tenant_id.to_string() != p.tenant().to_string()
+            || configuration.device_id != p.device()
+            || configuration.registration_id != p.registration()
+            || configuration.generation != p.generation() as u64
+        {
+            return Err(Error::Forbidden);
+        }
+        let signer = self.signer.as_ref().ok_or(Error::Unsupported)?;
+        trust::require_issue(c, p, signer.key_id()).await?;
+        signer.sign_telemetry(configuration)
+    }
+}
