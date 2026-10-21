@@ -16,7 +16,9 @@ pub mod channel;
 pub mod filter;
 
 mod directory;
+mod field_layout;
 mod fields;
+pub use field_layout::{FieldDisplayGroup, FieldLayout, FieldLayoutAccess};
 mod lists;
 mod runs;
 pub use fields::{FieldChange, FieldImpact};
@@ -44,6 +46,8 @@ impl AssetService {
         at: Timepoint,
     ) -> Result<Value> {
         let response = match command {
+            Command::FieldLayoutRead { access } => self.field_layout_read(tx, access).await?,
+            Command::FieldLayoutWrite { change } => self.field_layout_write(tx, change).await?,
             Command::RetentionWrite { change } => {
                 checked_input(change.input.validate())?;
                 if change.expected_revision.checked_add(1) != Some(change.input.revision) {
