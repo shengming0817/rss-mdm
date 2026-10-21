@@ -40,7 +40,12 @@ async fn fixture_with(extra: &[&str]) -> Result<Fixture> {
             })
         })
         .collect::<Result<Vec<_>>>()?;
-    for name in ["enrollment", "credentials", "software_deploy"] {
+    for name in [
+        "enrollment",
+        "credentials",
+        "software_deploy",
+        "inventory_read",
+    ] {
         grants.push(crate::authorization::Grant {
             operation: serde_json::from_value(json!(name))?,
             scope: crate::authorization::Scope::AllDevices,
