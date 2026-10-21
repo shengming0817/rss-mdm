@@ -92,6 +92,25 @@ pub(super) async fn interrupt_after_backend_write(
     .await??;
     history_is_unique(&mut f.author, &f.router, &body).await?;
     ensure!(pg(&format!("SELECT count(*) FROM mdm_access.collection_runs WHERE tenant_id='{}' AND id='{observation}'",case_tenant()))?.trim()=="0","current effect committed despite local interruption");
+    // Make this series genuinely due while its accepted batch is still unsettled.
+    let due = original["observations"][0]["observedAt"].as_i64().unwrap() + 1_000_000;
+    let target = retention_target();
+    ensure!(
+        pg(&format!(
+            "SELECT count(*) FROM mdm_telemetry.retention_targets WHERE {target}"
+        ))?
+        .trim()
+            == "1"
+    );
+    pg(&format!(
+        "UPDATE mdm_telemetry.retention_targets SET due_at={due},next_check=0 WHERE {target}"
+    ))?;
+    wait_retention("result->>'reason'='accepted_batches_pending' AND phase=0").await?;
+    history_is_unique(&mut f.author, &f.router, &body).await?;
+    // Keep the frozen due time but hold the next attempt until restart assertions finish.
+    pg(&format!(
+        "UPDATE mdm_telemetry.retention_targets SET next_check=9223372036854775807 WHERE {target}"
+    ))?;
     Ok(body)
 }
 pub(super) fn release_interruption() -> Result<()> {
@@ -149,4 +168,70 @@ pub(super) async fn foreign_session_cannot_read(f: &mut Fixture, query: &Value) 
             Ok(())
         })
         .await
+}
+
+fn retention_target() -> String {
+    format!(
+        "tenant_id='{}' AND device='{}' AND field='custom.corporate_agent.healthy' AND resource='device'",
+        case_tenant(),
+        case_device_id()
+    )
+}
+async fn wait_retention(condition: &str) -> Result<()> {
+    tokio::time::timeout(Duration::from_secs(45), async {
+        loop {
+            if pg(&format!(
+                "SELECT count(*) FROM mdm_telemetry.retention_targets WHERE {} AND ({condition})",
+                retention_target()
+            ))?
+            .trim()
+                == "1"
+            {
+                return Ok::<_, anyhow::Error>(());
+            }
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+    })
+    .await??;
+    Ok(())
+}
+/// Drive the real background scheduler through cutoff and prune after the pending batch settles.
+pub(super) async fn retention_finishes(
+    author: &mut Browser,
+    router: &Router,
+    old: &Value,
+    recent: &Value,
+) -> Result<()> {
+    let target = retention_target();
+    let due = pg(&format!(
+        "SELECT due_at FROM mdm_telemetry.retention_targets WHERE {target}"
+    ))?;
+    let due: i64 = due.trim().parse()?;
+    for phase in [1, 0] {
+        pg(&format!(
+            "UPDATE mdm_telemetry.retention_targets SET next_check=0 WHERE {target}"
+        ))?;
+        let condition = if phase == 1 {
+            format!("phase=1 AND due_at={due} AND result->>'state'='complete'")
+        } else {
+            format!(
+                "phase=0 AND due_at>{due} AND next_check=due_at AND result->>'state'='complete'"
+            )
+        };
+        wait_retention(&condition).await?;
+    }
+    let time = old["observations"][0]["observedAt"].as_i64().unwrap();
+    let expired=post(author,router,"/api/v1/telemetry/history",json!({"device":case_device_id(),"field":"custom.corporate_agent.healthy","resource":"device","startMicros":time,"endMicros":time+1,"maxPoints":64,"mode":"history","after":null})).await?;
+    ensure!(
+        expired["rows"].as_array().is_some_and(Vec::is_empty),
+        "expired sample survived automatic retention: {expired}"
+    );
+    let retained = post(author, router, "/api/v1/telemetry/history", recent.clone()).await?;
+    ensure!(
+        retained["rows"]
+            .as_array()
+            .is_some_and(|rows| rows.len() == 2),
+        "automatic retention removed unexpired samples: {retained}"
+    );
+    Ok(())
 }

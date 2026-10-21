@@ -172,6 +172,7 @@ pub async fn retire_field_in(
     Ok(true)
 }
 /// Register a frozen collector definition before accepting its first report.
+/// Fields must match authoritative versions and remain active for this source.
 /// Replay compares the entire definition; the same version cannot change its content.
 pub async fn register_collection_in(
     c: &mut PgConnection,
@@ -191,10 +192,18 @@ pub async fn register_collection_in(
     }
     let catalog = catalog_in(c, tenant).await?;
     for field in definition.fields() {
+        let current = catalog.definition(field.key)?;
         ensure!(
-            catalog.definition(field.key)? == field,
-            "collection field version is not current"
-        )
+            current.sources.contains_key(&definition.source()),
+            "collection source is not currently allowed"
+        );
+        ensure!(
+            field_version_in(c, tenant, field.key, field.version)
+                .await?
+                .as_ref()
+                == Some(field),
+            "collection field differs from authoritative version"
+        );
     }
     sqlx::query("INSERT INTO mdm.collection_definitions VALUES($1::uuid,$2,$3,$4,$5,$6,$7::jsonb) ON CONFLICT DO NOTHING")
         .bind(tenant.to_string()).bind(definition.dataset()).bind(definition.version()).bind(definition.source().as_str()).bind(&fingerprint).bind(&coverage).bind(body).execute(&mut *c).await?;

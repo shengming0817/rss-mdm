@@ -102,7 +102,8 @@ pub(crate) fn prepare(
                     .validate_scalar(&domain_value)
                     .map_err(|_| Error::Invalid)?;
             }
-            if spec.projection == TelemetryProjection::Current && field.time_series.is_none() {
+            // Current projection has no historical resource or interval contract.
+            if spec.projection == TelemetryProjection::Current {
                 continue;
             }
             let binding = field.time_series.as_ref().ok_or(Error::Invalid)?;

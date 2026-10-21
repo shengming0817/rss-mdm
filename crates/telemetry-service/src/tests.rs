@@ -224,6 +224,7 @@ fn counter_requires_explicit_nonnegative_interval_and_reset_boundary() {
     binding.kind = d::TelemetryKind::CumulativeCounter;
     binding.aggregations = [d::TelemetryAggregation::Rate].into();
     spec.fields = references(&definitions);
+    failed_current_needs_no_historical_context(&definitions, &spec);
     let profile = TelemetryProfile::new(spec).unwrap();
     let mut point = input();
     assert!(
@@ -398,6 +399,7 @@ fn array_counters_use_declared_per_resource_reset_paths() {
     binding.max_resources = 2;
     spec.budget.resources = 2;
     spec.fields = references(&definitions);
+    failed_current_needs_no_historical_context(&definitions, &spec);
     let profile = TelemetryProfile::new(spec).unwrap();
     let mut point = input();
     let item = |key: &str, reset| {
@@ -542,4 +544,64 @@ fn query_recovery_errors_remain_client_actionable() {
     ));
     assert!(matches!(Error::from(Backend::Unauthorized), Error::Denied));
     assert!(matches!(Error::from(Backend::Unavailable), Error::Storage));
+}
+
+// The same conversion serves admission and delivery; verify both projections at that owner.
+fn failed_current_needs_no_historical_context(
+    definitions: &[d::FieldDefinition],
+    spec: &TelemetryProfileSpec,
+) {
+    for mode in [
+        TelemetryProjection::Current,
+        TelemetryProjection::History,
+        TelemetryProjection::Both,
+    ] {
+        let mut spec = spec.clone();
+        spec.projection = mode;
+        let profile = TelemetryProfile::new(spec).unwrap();
+        let mut point = input();
+        for value in point.observations[0].values.values_mut() {
+            *value = w::TelemetryReading::Failed {
+                interval_start: None,
+                context: None,
+            };
+        }
+        let accepted = crate::admission::Accepted {
+            tenant: "11111111-1111-4111-8111-111111111111".into(),
+            device: "device".into(),
+            registration: uuid::Uuid::new_v4(),
+            credential: uuid::Uuid::new_v4(),
+            generation: 1,
+            source: d::Source::AgentNative,
+            epoch: uuid::Uuid::new_v4(),
+            received_at: 3_000_000,
+            profile,
+            fields: definitions.to_vec(),
+            input: point,
+        };
+        if mode == TelemetryProjection::Current {
+            assert!(accepted.history().unwrap().is_none());
+            let (_, batches) = crate::current::prepare(&accepted).unwrap();
+            assert!(matches!(
+                batches[0].body(),
+                rss_observation::Body::Failed { .. }
+            ));
+            let mut invalid = accepted;
+            invalid.input.observations[0].observed_at = 4_000_000;
+            assert!(invalid.history().is_err());
+            invalid.input.observations[0].observed_at = 2_000_000;
+            invalid.input.observations[0]
+                .values
+                .values_mut()
+                .for_each(|v| {
+                    *v = w::TelemetryReading::Valid {
+                        value: w::Scalar::Boolean(true),
+                        interval_start: None,
+                    }
+                });
+            assert!(invalid.history().is_err());
+        } else {
+            assert!(accepted.history().is_err());
+        }
+    }
 }
