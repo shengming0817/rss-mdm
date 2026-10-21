@@ -129,8 +129,6 @@ async fn configuration_on(
     .await
     .map_err(|_| Error::Denied)?;
     let keys = frozen
-        .profile
-        .spec()
         .fields
         .iter()
         .map(|f| rss_mdm_inventory::FieldKey::parse(f.key.as_str()).map_err(|_| Error::Storage))
@@ -199,7 +197,7 @@ async fn configuration_on(
             variant: spec.template.variant.clone(),
         },
         collector: collector(&frozen)?,
-        fields: spec
+        fields: frozen
             .fields
             .iter()
             .map(rss_mdm_inventory_service::collection::wire::to_wire_field)
@@ -243,7 +241,7 @@ fn collector(
     use rss_mdm_agent_wire::runtime as w;
     use rss_mdm_flow_service::planning::policies::telemetry::FrozenCollector as F;
     use rss_mdm_resource as r;
-    let fields = &frozen.profile.spec().fields;
+    let fields = &frozen.fields;
     Ok(match &frozen.collector {
         F::Native { definition } => w::TelemetryCollector::Native {
             plan: definition.spec().plan.clone(),
@@ -400,8 +398,6 @@ async fn directory_on(
             continue;
         }
         let keys = frozen
-            .profile
-            .spec()
             .fields
             .iter()
             .map(|f| rss_mdm_inventory::FieldKey::parse(f.key.as_str()).map_err(|_| Error::Storage))

@@ -5,7 +5,7 @@ pub(crate) async fn validate(
     tenant: TenantId,
     catalog: &rss_mdm_inventory::Catalog,
     profile: &r::TelemetryProfile,
-) -> Result<()> {
+) -> Result<Vec<rss_mdm_inventory::FieldDefinition>> {
     let spec = profile.spec();
     let (template, state) = checked(
         pg::lock_reference_in(
@@ -64,20 +64,39 @@ pub(crate) async fn validate(
         r::Platform::Windows => rss_mdm_inventory::Platform::Windows,
         r::Platform::MacOS => rss_mdm_inventory::Platform::Macos,
     };
+    let mut fields = Vec::new();
+    let mut resources = 0u32;
     for frozen in &spec.fields {
-        let field = checked_input(catalog.definition(checked_input(
-            rss_mdm_inventory::FieldKey::parse(frozen.key.as_str()),
-        )?))?;
-        // These are field-schema data, never sampled numbers or trusted identities.
-        let snapshot = frozen;
-        checked_input(snapshot.validate())?;
-        if field != snapshot
+        let key = checked_input(rss_mdm_inventory::FieldKey::parse(&frozen.key))?;
+        checked_input(catalog.definition(key))?;
+        let version = frozen.version;
+        let field = tx
+            .with_connection(move |c| {
+                Box::pin(async move {
+                    rss_mdm_inventory_postgres::field_version_in(c, tenant, key, version)
+                        .await
+                        .map_err(|_| sqlx::Error::Protocol("field snapshot unavailable".into()))
+                })
+            })
+            .await?
+            .ok_or(Error::Conflict)?;
+        if field.version != frozen.version
             || !keys.iter().any(|key| key.as_str() == field.key.as_str())
             || !field.sources.contains_key(&source)
             || !field.platforms.contains(&platform)
         {
             return Err(Error::Conflict.into());
         }
+        if spec.projection != r::TelemetryProjection::Current && field.time_series.is_none() {
+            return Err(Error::Malformed.into());
+        }
+        resources = resources
+            .checked_add(field.time_series.as_ref().map_or(1, |b| b.max_resources))
+            .ok_or(Error::Malformed)?;
+        fields.push(field.clone());
     }
-    Ok(())
+    if resources > spec.budget.resources || resources > spec.budget.points {
+        return Err(Error::Malformed.into());
+    }
+    Ok(fields)
 }

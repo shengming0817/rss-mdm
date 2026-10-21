@@ -3,6 +3,42 @@ use rss_mdm_agent_wire::runtime as w;
 use rss_mdm_inventory as d;
 use rss_mdm_resource::*;
 use rss_timeseries::{Id, Scope, Stream};
+pub(super) fn fields() -> Vec<d::FieldDefinition> {
+    vec![d::FieldDefinition {
+        key: d::FieldKey::parse("custom.load").unwrap(),
+        version: 1,
+        value_type: d::ValueType::Integer,
+        nullable: false,
+        manual: false,
+        sources: [(d::Source::AgentNative, 0)].into(),
+        platforms: [d::Platform::Windows].into(),
+        sensitivity: d::Sensitivity::Standard,
+        unit: Some("percent".into()),
+        searchable: true,
+        item_key: None,
+        time_series: Some(d::TimeSeriesBinding {
+            kind: d::TelemetryKind::Gauge,
+            value_path: vec![],
+            interval_start_path: None,
+            dimensions: Default::default(),
+            aggregations: [d::TelemetryAggregation::Mean].into(),
+            retention: d::RetentionReference {
+                key: "standard".into(),
+                revision: 1,
+            },
+            max_resources: 1,
+        }),
+    }]
+}
+pub(super) fn references(fields: &[d::FieldDefinition]) -> Vec<TelemetryFieldReference> {
+    fields
+        .iter()
+        .map(|f| TelemetryFieldReference {
+            key: f.key.as_str().into(),
+            version: f.version,
+        })
+        .collect()
+}
 pub(super) fn profile(projection: TelemetryProjection) -> TelemetryProfile {
     TelemetryProfile::new(TelemetryProfileSpec {
         parameters: Default::default(),
@@ -13,31 +49,7 @@ pub(super) fn profile(projection: TelemetryProjection) -> TelemetryProfile {
             platform: Platform::Windows,
             architecture: Architecture::X86_64,
         },
-        fields: vec![d::FieldDefinition {
-            key: d::FieldKey::parse("custom.load").unwrap(),
-            version: 1,
-            value_type: d::ValueType::Integer,
-            nullable: false,
-            manual: false,
-            sources: [(d::Source::AgentNative, 0)].into(),
-            platforms: [d::Platform::Windows].into(),
-            sensitivity: d::Sensitivity::Standard,
-            unit: Some("percent".into()),
-            searchable: true,
-            item_key: None,
-            time_series: Some(d::TimeSeriesBinding {
-                kind: d::TelemetryKind::Gauge,
-                value_path: vec![],
-                interval_start_path: None,
-                dimensions: Default::default(),
-                aggregations: [d::TelemetryAggregation::Mean].into(),
-                retention: d::RetentionReference {
-                    key: "standard".into(),
-                    revision: 1,
-                },
-                max_resources: 1,
-            }),
-        }],
+        fields: references(&fields()),
         projection,
         sample_millis: 1000,
         upload_millis: 10000,
@@ -87,16 +99,31 @@ fn stream() -> Stream {
 }
 #[test]
 fn replay_keeps_sample_identity_and_large_integer_exact_across_batch_ids() {
+    let definitions = fields();
     let profile = profile(TelemetryProjection::History);
     let first = input();
-    let a = samples::prepare(&profile, &first, stream(), "device", 3_000_000)
-        .unwrap()
-        .unwrap();
+    let a = samples::prepare(
+        &profile,
+        &definitions,
+        &first,
+        stream(),
+        "device",
+        3_000_000,
+    )
+    .unwrap()
+    .unwrap();
     let mut second = first.clone();
     second.batch_id = uuid::Uuid::new_v4();
-    let b = samples::prepare(&profile, &second, stream(), "device", 4_000_000)
-        .unwrap()
-        .unwrap();
+    let b = samples::prepare(
+        &profile,
+        &definitions,
+        &second,
+        stream(),
+        "device",
+        4_000_000,
+    )
+    .unwrap()
+    .unwrap();
     assert_eq!(a.samples(), b.samples());
     assert_ne!(a.id(), b.id());
     assert_eq!(
@@ -114,13 +141,24 @@ fn three_destinations_validate_input_and_do_not_turn_failure_into_zero() {
         TelemetryProjection::History,
         TelemetryProjection::Both,
     ] {
+        let definitions = fields();
         let profile = profile(mode);
         let mut point = input();
-        point.observations[0]
-            .values
-            .values_mut()
-            .for_each(|v| *v = w::TelemetryReading::Failed);
-        let batch = samples::prepare(&profile, &point, stream(), "device", 3_000_000).unwrap();
+        point.observations[0].values.values_mut().for_each(|v| {
+            *v = w::TelemetryReading::Failed {
+                interval_start: None,
+                context: None,
+            }
+        });
+        let batch = samples::prepare(
+            &profile,
+            &definitions,
+            &point,
+            stream(),
+            "device",
+            3_000_000,
+        )
+        .unwrap();
         if mode == TelemetryProjection::Current {
             assert!(batch.is_none());
         } else {
@@ -131,39 +169,89 @@ fn three_destinations_validate_input_and_do_not_turn_failure_into_zero() {
         }
         point.observations[0].observed_at = 4_000_000;
         assert!(matches!(
-            samples::prepare(&profile, &point, stream(), "device", 3_000_000),
+            samples::prepare(
+                &profile,
+                &definitions,
+                &point,
+                stream(),
+                "device",
+                3_000_000
+            ),
             Err(crate::Error::Invalid)
         ));
     }
 }
 #[test]
 fn unknown_fields_and_expired_backfill_fail_before_durable_admission() {
+    let definitions = fields();
     let profile = profile(TelemetryProjection::Both);
     let mut point = input();
-    assert!(samples::prepare(&profile, &point, stream(), "device", 4_000_000_000).is_err());
+    assert!(
+        samples::prepare(
+            &profile,
+            &definitions,
+            &point,
+            stream(),
+            "device",
+            4_000_000_000
+        )
+        .is_err()
+    );
     point.observations[0].values.insert(
         w::FieldKey::parse("custom.unknown").unwrap(),
-        w::TelemetryReading::Missing,
+        w::TelemetryReading::Missing {
+            interval_start: None,
+            context: None,
+        },
     );
-    assert!(samples::prepare(&profile, &point, stream(), "device", 3_000_000).is_err());
+    assert!(
+        samples::prepare(
+            &profile,
+            &definitions,
+            &point,
+            stream(),
+            "device",
+            3_000_000
+        )
+        .is_err()
+    );
 }
 #[test]
 fn counter_requires_explicit_nonnegative_interval_and_reset_boundary() {
+    let mut definitions = fields();
     let mut spec = profile(TelemetryProjection::History).spec().clone();
-    let binding = spec.fields[0].time_series.as_mut().unwrap();
+    let binding = definitions[0].time_series.as_mut().unwrap();
     binding.kind = d::TelemetryKind::CumulativeCounter;
     binding.aggregations = [d::TelemetryAggregation::Rate].into();
+    spec.fields = references(&definitions);
     let profile = TelemetryProfile::new(spec).unwrap();
     let mut point = input();
-    assert!(samples::prepare(&profile, &point, stream(), "device", 3_000_000).is_err());
+    assert!(
+        samples::prepare(
+            &profile,
+            &definitions,
+            &point,
+            stream(),
+            "device",
+            3_000_000
+        )
+        .is_err()
+    );
     for reading in point.observations[0].values.values_mut() {
         if let w::TelemetryReading::Valid { interval_start, .. } = reading {
             *interval_start = Some(1_000_000);
         }
     }
-    let batch = samples::prepare(&profile, &point, stream(), "device", 3_000_000)
-        .unwrap()
-        .unwrap();
+    let batch = samples::prepare(
+        &profile,
+        &definitions,
+        &point,
+        stream(),
+        "device",
+        3_000_000,
+    )
+    .unwrap()
+    .unwrap();
     assert_eq!(
         batch.samples()[0].input().interval.unwrap().width_micros(),
         1_000_000
@@ -174,19 +262,31 @@ fn counter_requires_explicit_nonnegative_interval_and_reset_boundary() {
             interval_start: Some(1_000_000),
         }
     });
-    assert!(samples::prepare(&profile, &point, stream(), "device", 3_000_000).is_err());
+    assert!(
+        samples::prepare(
+            &profile,
+            &definitions,
+            &point,
+            stream(),
+            "device",
+            3_000_000
+        )
+        .is_err()
+    );
 }
 
 #[test]
 fn independent_counters_keep_each_fields_reset_and_missing_does_not_invent_interval() {
+    let mut definitions = fields();
     let mut spec = profile(TelemetryProjection::History).spec().clone();
-    let binding = spec.fields[0].time_series.as_mut().unwrap();
+    let binding = definitions[0].time_series.as_mut().unwrap();
     binding.kind = d::TelemetryKind::CumulativeCounter;
     binding.aggregations = [d::TelemetryAggregation::Rate].into();
-    let mut other = spec.fields[0].clone();
+    let mut other = definitions[0].clone();
     other.key = d::FieldKey::parse("custom.other").unwrap();
-    spec.fields.push(other);
+    definitions.push(other);
     spec.budget.resources = 2;
+    spec.fields = references(&definitions);
     let profile = TelemetryProfile::new(spec).unwrap();
     let mut point = input();
     point.observations[0].values.insert(
@@ -203,9 +303,16 @@ fn independent_counters_keep_each_fields_reset_and_missing_does_not_invent_inter
             interval_start: Some(1_500_000),
         },
     );
-    let batch = samples::prepare(&profile, &point, stream(), "device", 3_000_000)
-        .unwrap()
-        .unwrap();
+    let batch = samples::prepare(
+        &profile,
+        &definitions,
+        &point,
+        stream(),
+        "device",
+        3_000_000,
+    )
+    .unwrap()
+    .unwrap();
     let intervals: std::collections::BTreeMap<_, _> = batch
         .samples()
         .iter()
@@ -218,21 +325,53 @@ fn independent_counters_keep_each_fields_reset_and_missing_does_not_invent_inter
         .collect();
     assert_eq!(intervals["custom.load"], 500_000);
     assert_eq!(intervals["custom.other"], 1_500_000);
-    point.observations[0]
-        .values
-        .values_mut()
-        .for_each(|v| *v = w::TelemetryReading::Failed);
+    point.observations[0].values.values_mut().for_each(|v| {
+        *v = w::TelemetryReading::Failed {
+            interval_start: None,
+            context: None,
+        }
+    });
     assert!(
-        samples::prepare(&profile, &point, stream(), "device", 3_000_000)
-            .unwrap()
-            .is_none()
+        samples::prepare(
+            &profile,
+            &definitions,
+            &point,
+            stream(),
+            "device",
+            3_000_000
+        )
+        .is_err()
+    );
+    for reading in point.observations[0].values.values_mut() {
+        *reading = w::TelemetryReading::Failed {
+            interval_start: Some(500_000),
+            context: None,
+        };
+    }
+    let failures = samples::prepare(
+        &profile,
+        &definitions,
+        &point,
+        stream(),
+        "device",
+        3_000_000,
+    )
+    .unwrap()
+    .unwrap();
+    assert_eq!(failures.samples().len(), 2);
+    assert!(
+        failures
+            .samples()
+            .iter()
+            .all(|s| s.input().reading == rss_timeseries::Reading::Failed)
     );
 }
 
 #[test]
 fn array_counters_use_declared_per_resource_reset_paths() {
+    let mut definitions = fields();
     let mut spec = profile(TelemetryProjection::History).spec().clone();
-    let field = &mut spec.fields[0];
+    let field = &mut definitions[0];
     field.value_type = d::ValueType::Array {
         items: Box::new(d::ValueType::Object {
             properties: [
@@ -258,6 +397,7 @@ fn array_counters_use_declared_per_resource_reset_paths() {
     binding.interval_start_path = Some(vec!["reset".into()]);
     binding.max_resources = 2;
     spec.budget.resources = 2;
+    spec.fields = references(&definitions);
     let profile = TelemetryProfile::new(spec).unwrap();
     let mut point = input();
     let item = |key: &str, reset| {
@@ -277,9 +417,16 @@ fn array_counters_use_declared_per_resource_reset_paths() {
             interval_start: None,
         },
     );
-    let batch = samples::prepare(&profile, &point, stream(), "device", 3_000_000)
-        .unwrap()
-        .unwrap();
+    let batch = samples::prepare(
+        &profile,
+        &definitions,
+        &point,
+        stream(),
+        "device",
+        3_000_000,
+    )
+    .unwrap()
+    .unwrap();
     let starts: std::collections::BTreeSet<_> = batch
         .samples()
         .iter()
@@ -297,14 +444,25 @@ fn array_counters_use_declared_per_resource_reset_paths() {
             interval_start: None,
         },
     );
-    assert!(samples::prepare(&profile, &point, stream(), "device", 3_000_000).is_err());
+    assert!(
+        samples::prepare(
+            &profile,
+            &definitions,
+            &point,
+            stream(),
+            "device",
+            3_000_000
+        )
+        .is_err()
+    );
 }
 
 #[test]
 fn current_destination_encoding_is_bounded_even_when_the_wire_body_fits() {
+    let mut definitions = fields();
     let mut spec = profile(TelemetryProjection::Current).spec().clone();
-    let seed = spec.fields[0].clone();
-    spec.fields = (0..32)
+    let seed = definitions[0].clone();
+    definitions = (0..32)
         .map(|index| {
             let mut field = seed.clone();
             field.key = d::FieldKey::parse(&format!("custom.large_{index}")).unwrap();
@@ -320,6 +478,7 @@ fn current_destination_encoding_is_bounded_even_when_the_wire_body_fits() {
     spec.budget.resources = 32;
     spec.budget.bytes = 4 * 1024 * 1024;
     spec.budget.output_bytes = 4 * 1024 * 1024;
+    spec.fields = references(&definitions);
     let profile = TelemetryProfile::new(spec).unwrap();
     let mut point = input();
     point.observations[0].values = profile
@@ -347,12 +506,14 @@ fn current_destination_encoding_is_bounded_even_when_the_wire_body_fits() {
         epoch: uuid::Uuid::new_v4(),
         received_at: 3_000_000,
         profile,
+        fields: definitions,
         input: point,
     };
     assert!(accepted.history().unwrap().is_none());
     assert!(crate::current::prepare(&accepted).is_err());
     let mut smaller = accepted.profile.spec().clone();
     smaller.fields.truncate(16);
+    accepted.fields.truncate(16);
     accepted.input.observations[0].values.retain(|key, _| {
         smaller
             .fields

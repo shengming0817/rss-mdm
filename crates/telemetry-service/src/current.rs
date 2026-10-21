@@ -12,8 +12,6 @@ pub(crate) fn prepare(input: &Accepted) -> Result<(CollectionDefinition, Vec<Bat
         input.input.policy_version.to_string(),
         input.source,
         input
-            .profile
-            .spec()
             .fields
             .iter()
             .map(|f| {

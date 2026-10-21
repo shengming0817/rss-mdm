@@ -183,3 +183,5 @@ Agent→MDM 复用 `request_mdm_enrollment` 的签名任务和 Start permit。�
 和完整内容摘要。扩展 key 不改变全局协议版本，schema 指纹只标识实际生成制品。
 
 Agent/Web 从最终固定公开 rev 一次切换；此处不要求读取服务端私有 checkout。
+
+遥测 Profile 只引用 Inventory 的精确字段键和版本；发布组合层解析并冻结该版本，后续配置与已接收批次继续使用原定义。历史 Counter 的 `missing`/`failed` 同样携带真实 `intervalStart`，结构化读数通过 `context` 提供稳定资源键、有限维度和声明路径上的区间起点。`context` 不产生有效数值；必要上下文未知时拒绝该历史输入，不按接收时间伪造起点，也不静默删除质量事实。

@@ -83,7 +83,7 @@ pub async fn verify_watermark_fence(
 
 mod catalog;
 pub use catalog::{
-    catalog_at_in, catalog_in, collection_in, collection_version_in, datasets_in,
+    catalog_at_in, catalog_in, collection_in, collection_version_in, datasets_in, field_version_in,
     historical_field_in, initialize_fields_in, publish_field_in, register_collection_in,
     retire_field_in, tenant_seed_sql, time_series_versions_in,
 };

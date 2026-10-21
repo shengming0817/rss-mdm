@@ -22,6 +22,8 @@ pub(crate) struct Accepted {
     pub epoch: Uuid,
     pub received_at: i64,
     pub profile: rss_mdm_resource::TelemetryProfile,
+    #[schemars(with = "Vec<rss_mdm_agent_wire::runtime::FieldDefinition>")]
+    pub fields: Vec<rss_mdm_inventory::FieldDefinition>,
     pub input: TelemetryUpload,
 }
 impl Accepted {
@@ -38,6 +40,7 @@ impl Accepted {
     pub fn history(&self) -> Result<Option<rss_timeseries::Batch>, Error> {
         samples::prepare(
             &self.profile,
+            &self.fields,
             &self.input,
             self.stream()?,
             &self.device,
@@ -114,8 +117,6 @@ pub(crate) async fn receive_on(
         return Ok(TelemetryReceipt { batch_id: input.batch_id, received_at: row.try_get("received_at")?, replayed: true, delivery: delivery(row.try_get("delivery")?)? });
     }
     let keys = frozen
-        .profile
-        .spec()
         .fields
         .iter()
         .map(|f| rss_mdm_inventory::FieldKey::parse(f.key.as_str()).map_err(|_| Error::Invalid))
@@ -133,7 +134,7 @@ pub(crate) async fn receive_on(
     // The immutable field policy also bounds late arrival. Maintenance holds the
     // same device fence, so no accepted work can appear behind an advanced cutoff.
     if frozen.profile.spec().projection != rss_mdm_resource::TelemetryProjection::Current {
-        for field in &frozen.profile.spec().fields {
+        for field in &frozen.fields {
             let reference = &field.time_series.as_ref().ok_or(Error::Invalid)?.retention;
             let policy = rss_mdm_inventory_postgres::retention_policy_in(
                 c,
@@ -161,6 +162,7 @@ pub(crate) async fn receive_on(
         epoch,
         received_at: now,
         profile: frozen.profile,
+        fields: frozen.fields,
         input: input.clone(),
     };
     if accepted.profile.spec().projection != rss_mdm_resource::TelemetryProjection::History {
@@ -197,8 +199,6 @@ pub(crate) async fn receive_on(
         return Err(Error::Capacity);
     }
     let fields: Vec<_> = accepted
-        .profile
-        .spec()
         .fields
         .iter()
         .map(|f| f.key.as_str().to_owned())
@@ -220,8 +220,8 @@ pub(crate) async fn receive_on(
         for (field, reading) in &observation.values {
             let index = match reading {
                 rss_mdm_agent_wire::runtime::TelemetryReading::Valid { .. } => 0,
-                rss_mdm_agent_wire::runtime::TelemetryReading::Missing => 1,
-                rss_mdm_agent_wire::runtime::TelemetryReading::Failed => 2,
+                rss_mdm_agent_wire::runtime::TelemetryReading::Missing { .. } => 1,
+                rss_mdm_agent_wire::runtime::TelemetryReading::Failed { .. } => 2,
             };
             quality.entry(field.as_str().into()).or_default()[index] += 1;
         }

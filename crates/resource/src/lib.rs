@@ -896,6 +896,6 @@ pub use applicability::{Applicability, CollectionEnvironment};
 
 mod telemetry;
 pub use telemetry::{
-    TelemetryBoost, TelemetryBudget, TelemetryProfile, TelemetryProfileSpec, TelemetryProjection,
-    TelemetryTemplate,
+    TelemetryBoost, TelemetryBudget, TelemetryFieldReference, TelemetryProfile,
+    TelemetryProfileSpec, TelemetryProjection, TelemetryTemplate,
 };

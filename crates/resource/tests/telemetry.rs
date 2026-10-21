@@ -1,4 +1,3 @@
-use rss_mdm_inventory as w;
 use rss_mdm_resource::*;
 fn spec() -> TelemetryProfileSpec {
     TelemetryProfileSpec {
@@ -10,30 +9,9 @@ fn spec() -> TelemetryProfileSpec {
             platform: Platform::Windows,
             architecture: Architecture::X86_64,
         },
-        fields: vec![w::FieldDefinition {
-            key: w::FieldKey::parse("custom.load").unwrap(),
+        fields: vec![TelemetryFieldReference {
+            key: "custom.load".into(),
             version: 1,
-            value_type: w::ValueType::Integer,
-            nullable: false,
-            manual: false,
-            sources: [(w::Source::AgentNative, 0)].into(),
-            platforms: [w::Platform::Windows].into(),
-            sensitivity: w::Sensitivity::Standard,
-            unit: Some("percent".into()),
-            searchable: true,
-            item_key: None,
-            time_series: Some(w::TimeSeriesBinding {
-                kind: w::TelemetryKind::Gauge,
-                value_path: vec![],
-                interval_start_path: None,
-                dimensions: Default::default(),
-                aggregations: [w::TelemetryAggregation::Mean].into(),
-                retention: w::RetentionReference {
-                    key: "standard".into(),
-                    revision: 1,
-                },
-                max_resources: 1,
-            }),
         }],
         projection: TelemetryProjection::Both,
         sample_millis: 10000,
@@ -68,7 +46,7 @@ fn boost_expires_without_renewing_and_metadata_roundtrips() {
     );
 }
 #[test]
-fn reject_impossible_budget_duplicate_fields_and_undeclared_history() {
+fn reject_impossible_budget_duplicate_and_invalid_references() {
     let mut input = spec();
     input.budget.resources = 0;
     assert!(TelemetryProfile::new(input).is_err());
@@ -76,9 +54,9 @@ fn reject_impossible_budget_duplicate_fields_and_undeclared_history() {
     input.fields.push(input.fields[0].clone());
     assert!(TelemetryProfile::new(input).is_err());
     let mut input = spec();
-    input.fields[0].time_series = None;
+    input.fields[0].version = 0;
     assert!(TelemetryProfile::new(input.clone()).is_err());
-    input.projection = TelemetryProjection::Current;
+    input.fields[0].version = 1;
     assert!(TelemetryProfile::new(input).is_ok());
     let mut input = spec();
     input.boost.as_mut().unwrap().sample_millis = 10;

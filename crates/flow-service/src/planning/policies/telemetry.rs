@@ -34,7 +34,9 @@ pub async fn prepare_in(
         return Err(Error::Malformed.into());
     };
     let catalog = crate::assets::catalog_in(tx, tx.tenant_id(), i64::MAX).await?;
-    crate::resource_catalog::telemetry::validate(tx, tx.tenant_id(), &catalog, definition).await?;
+    let fields =
+        crate::resource_catalog::telemetry::validate(tx, tx.tenant_id(), &catalog, definition)
+            .await?;
     let referenced = &definition.spec().template;
     let (template, template_state) = checked(
         rss_mdm_resource_postgres::lock_reference_in(
@@ -79,6 +81,7 @@ pub async fn prepare_in(
         .collect::<std::result::Result<Vec<_>, _>>()?;
     Ok(FrozenProfile {
         profile: definition.clone(),
+        fields,
         collector: match variant.declaration() {
             r::Declaration::AgentCollection { definition, .. } => FrozenCollector::Native {
                 definition: definition.clone(),
@@ -104,6 +107,7 @@ pub async fn prepare_in(
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct FrozenProfile {
     pub profile: rss_mdm_resource::TelemetryProfile,
+    pub fields: Vec<rss_mdm_inventory::FieldDefinition>,
     pub collector: FrozenCollector,
     pub source: rss_mdm_inventory::Source,
     pub grants: Vec<rss_mdm_authorization_service::OperationAuthority>,
@@ -200,8 +204,7 @@ pub(super) async fn freeze(
             &format!("telemetry.{policy}"),
             version_id.to_string(),
             source,
-            definition
-                .spec()
+            frozen
                 .fields
                 .iter()
                 .map(|f| {

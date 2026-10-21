@@ -51,6 +51,7 @@ fn resource(key: &Scalar) -> Result<Id, Error> {
 }
 pub(crate) fn prepare(
     profile: &TelemetryProfile,
+    definitions: &[rss_mdm_inventory::FieldDefinition],
     input: &TelemetryUpload,
     stream: Stream,
     device: &str,
@@ -68,8 +69,15 @@ pub(crate) fn prepare(
     {
         return Err(Error::Capacity);
     }
-    let fields = spec
-        .fields
+    if definitions.len() != spec.fields.len()
+        || definitions
+            .iter()
+            .zip(&spec.fields)
+            .any(|(d, r)| d.key.as_str() != r.key || d.version != r.version)
+    {
+        return Err(Error::Invalid);
+    }
+    let fields = definitions
         .iter()
         .map(|f| {
             f.validate().map_err(|_| Error::Invalid)?;
@@ -103,23 +111,23 @@ pub(crate) fn prepare(
                 TelemetryKind::CumulativeCounter | TelemetryKind::DeltaCounter
             );
             let reading_start = match value {
-                TelemetryReading::Valid { interval_start, .. } => *interval_start,
-                _ => None,
+                TelemetryReading::Valid { interval_start, .. }
+                | TelemetryReading::Missing { interval_start, .. }
+                | TelemetryReading::Failed { interval_start, .. } => *interval_start,
             };
             if reading_start.is_some() && (!counter || binding.interval_start_path.is_some()) {
                 return Err(Error::Invalid);
             }
-            if counter && !matches!(value, TelemetryReading::Valid { .. }) {
-                continue;
-            }
             let definition = field
                 .time_series_definition(stream.scope().clone())
                 .map_err(|_| Error::Invalid)?;
-            let values: Vec<(Id, Option<&Scalar>)> = match value {
-                TelemetryReading::Valid {
-                    value: Scalar::Array(items),
-                    ..
-                } => {
+            let context = match value {
+                TelemetryReading::Valid { value, .. } => Some(value),
+                TelemetryReading::Missing { context, .. }
+                | TelemetryReading::Failed { context, .. } => context.as_ref(),
+            };
+            let values: Vec<(Id, Option<&Scalar>)> = match context {
+                Some(Scalar::Array(items)) if field.item_key.is_some() => {
                     if items.len() > binding.max_resources as usize {
                         return Err(Error::Capacity);
                     }
@@ -134,9 +142,11 @@ pub(crate) fn prepare(
                         })
                         .collect::<Result<_, Error>>()?
                 }
-                TelemetryReading::Valid { value, .. } => vec![(id("device")?, Some(value))],
-                _ if field.item_key.is_some() || !binding.dimensions.is_empty() => Vec::new(),
-                _ => vec![(id("device")?, None)],
+                _ if field.item_key.is_some() => return Err(Error::Invalid),
+                None if !binding.dimensions.is_empty() || binding.interval_start_path.is_some() => {
+                    return Err(Error::Invalid);
+                }
+                other => vec![(id("device")?, other)],
             };
             let mut local_resources = BTreeSet::new();
             for (resource, scalar) in values {
@@ -162,8 +172,8 @@ pub(crate) fn prepare(
                     (TelemetryReading::Valid { .. }, Some(scalar)) => {
                         reading(path(scalar, &binding.value_path)?)?
                     }
-                    (TelemetryReading::Missing, _) => Reading::Missing,
-                    (TelemetryReading::Failed, _) => Reading::Failed,
+                    (TelemetryReading::Missing { .. }, _) => Reading::Missing,
+                    (TelemetryReading::Failed { .. }, _) => Reading::Failed,
                     _ => return Err(Error::Invalid),
                 };
                 let observed_at = Timestamp::new(observation.observed_at)?;

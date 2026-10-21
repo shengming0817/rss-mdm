@@ -331,6 +331,33 @@ pub async fn time_series_versions_in(
         .collect()
 }
 
+/// Resolve one immutable definition; the caller independently checks current activation.
+pub async fn field_version_in(
+    c: &mut PgConnection,
+    tenant: TenantId,
+    key: FieldKey,
+    version: u64,
+) -> Result<Option<FieldDefinition>> {
+    crate::reader::assert_tenant(c, tenant).await?;
+    ensure!(
+        version > 0 && version <= i64::MAX as u64,
+        "invalid field version"
+    );
+    let value: Option<String> = sqlx::query_scalar("SELECT definition::text FROM mdm.field_versions WHERE tenant_id=$1::uuid AND field=$2 AND version=$3 AND definition IS NOT NULL")
+        .bind(tenant.to_string()).bind(key.as_str()).bind(version as i64).fetch_optional(c).await?;
+    value
+        .map(|value| {
+            let field: FieldDefinition = serde_json::from_str(&value)?;
+            field.validate()?;
+            ensure!(
+                field.key == key && field.version == version,
+                "field version identity"
+            );
+            Ok(field)
+        })
+        .transpose()
+}
+
 /// Read the last declared field meaning, including retained history after retirement.
 /// The boolean reports retirement separately; this does not reactivate the field.
 pub async fn historical_field_in(

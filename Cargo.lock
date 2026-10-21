@@ -4434,7 +4434,6 @@ dependencies = [
  "jsonschema",
  "rss-contract",
  "rss-mdm-agent-wire",
- "rss-mdm-inventory",
  "rss-request-context",
  "schemars 1.2.2",
  "serde",

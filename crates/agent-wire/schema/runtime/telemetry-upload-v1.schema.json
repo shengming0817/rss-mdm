@@ -223,6 +223,25 @@
           "additionalProperties": false,
           "description": "No observation at this instant.",
           "properties": {
+            "context": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/Scalar"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Structured resource keys, finite dimensions and per-item Counter starts.\nNo value from this context is treated as a valid measurement."
+            },
+            "intervalStart": {
+              "description": "Known scalar Counter start; never inferred from receipt time.",
+              "format": "int64",
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
             "quality": {
               "const": "missing",
               "type": "string"
@@ -237,6 +256,25 @@
           "additionalProperties": false,
           "description": "Collection failed at this instant.",
           "properties": {
+            "context": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/Scalar"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Same exact identity context as Missing; omitted for dimensionless scalars."
+            },
+            "intervalStart": {
+              "description": "Known scalar Counter start; required for historical scalar counters.",
+              "format": "int64",
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
             "quality": {
               "const": "failed",
               "type": "string"

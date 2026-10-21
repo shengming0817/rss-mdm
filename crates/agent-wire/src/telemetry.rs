@@ -181,9 +181,20 @@ pub enum TelemetryReading {
         interval_start: Option<i64>,
     },
     /// No observation at this instant.
-    Missing,
+    Missing {
+        /// Known scalar Counter start; never inferred from receipt time.
+        interval_start: Option<i64>,
+        /// Structured resource keys, finite dimensions and per-item Counter starts.
+        /// No value from this context is treated as a valid measurement.
+        context: Option<super::Scalar>,
+    },
     /// Collection failed at this instant.
-    Failed,
+    Failed {
+        /// Known scalar Counter start; required for historical scalar counters.
+        interval_start: Option<i64>,
+        /// Same exact identity context as Missing; omitted for dimensionless scalars.
+        context: Option<super::Scalar>,
+    },
 }
 /// Batch identity fixes ordered observations and the exact Policy version.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
@@ -232,14 +243,24 @@ impl TelemetryUpload {
                 return Err(WireError::InvalidValue);
             }
             for value in point.values.values() {
-                if let TelemetryReading::Valid {
-                    value,
-                    interval_start,
-                } = value
-                {
-                    if interval_start.is_some_and(|t| t < 0 || t > point.observed_at) {
-                        return Err(WireError::InvalidValue);
+                let (interval_start, scalar) = match value {
+                    TelemetryReading::Valid {
+                        value,
+                        interval_start,
+                    } => (interval_start, Some(value)),
+                    TelemetryReading::Missing {
+                        interval_start,
+                        context,
                     }
+                    | TelemetryReading::Failed {
+                        interval_start,
+                        context,
+                    } => (interval_start, context.as_ref()),
+                };
+                if interval_start.is_some_and(|t| t < 0 || t > point.observed_at) {
+                    return Err(WireError::InvalidValue);
+                }
+                if let Some(value) = scalar {
                     value.validate()?;
                 }
             }

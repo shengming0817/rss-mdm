@@ -1,6 +1,5 @@
 //! Immutable periodic sampling configuration; execution remains owned by referenced templates.
 use crate::{Architecture, Error, Id, Platform};
-use rss_mdm_inventory::FieldDefinition;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
@@ -64,9 +63,8 @@ pub struct TelemetryProfileSpec {
     pub template: TelemetryTemplate,
     /// Literal inputs validated by the exact script template; empty for native collection.
     pub parameters: BTreeMap<String, serde_json::Value>,
-    /// Frozen field versions, checked against Inventory by the publishing application.
-    #[schemars(with = "Vec<rss_mdm_agent_wire::runtime::FieldDefinition>")]
-    pub fields: Vec<FieldDefinition>,
+    /// Exact field versions, resolved by the publishing application.
+    pub fields: Vec<TelemetryFieldReference>,
     /// Current and/or historical effects.
     pub projection: TelemetryProjection,
     /// Normal sampling cadence.
@@ -81,6 +79,15 @@ pub struct TelemetryProfileSpec {
     pub backfill_seconds: u32,
     /// Bounded display/vendor metadata with no execution or authorization meaning.
     pub metadata: BTreeMap<String, String>,
+}
+/// Exact Inventory identity. The composition owner resolves and freezes its definition.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct TelemetryFieldReference {
+    /// Stable key owned by the Inventory catalog.
+    pub key: String,
+    /// Exact immutable definition version.
+    pub version: u64,
 }
 /// Validated profile; deserialization uses the same constructor as publication.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
@@ -135,21 +142,11 @@ impl TelemetryProfile {
             return Err(bad());
         }
         let mut keys = std::collections::BTreeSet::new();
-        let mut resources = 0u32;
         for field in &spec.fields {
-            field.validate().map_err(|_| bad())?;
-            if !keys.insert(field.key) {
+            Id::new(&field.key)?;
+            if field.version == 0 || field.version > i64::MAX as u64 || !keys.insert(&field.key) {
                 return Err(bad());
             }
-            if spec.projection != TelemetryProjection::Current && field.time_series.is_none() {
-                return Err(bad());
-            }
-            resources = resources
-                .checked_add(field.time_series.as_ref().map_or(1, |b| b.max_resources))
-                .ok_or_else(bad)?;
-        }
-        if resources > spec.budget.resources || resources > spec.budget.points {
-            return Err(bad());
         }
         if spec.metadata.iter().any(|(k, v)| {
             k.is_empty() || k.len() > 128 || v.len() > 1024 || k.chars().any(char::is_control)

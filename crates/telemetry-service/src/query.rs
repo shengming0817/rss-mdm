@@ -598,9 +598,16 @@ mod tests {
             Id::new(format!("{registration}:{}", source.as_str())).unwrap(),
             Id::new(epoch.to_string()).unwrap(),
         );
-        let batch = crate::samples::prepare(&profile, &input, stream, "device", 3_000_000)
-            .unwrap()
-            .unwrap();
+        let batch = crate::samples::prepare(
+            &profile,
+            &crate::tests::fields(),
+            &input,
+            stream,
+            "device",
+            3_000_000,
+        )
+        .unwrap()
+        .unwrap();
         ObservedSample {
             sample: batch.samples()[0].clone(),
             received_at: Timestamp::new(3_000_000).unwrap(),
@@ -611,10 +618,7 @@ mod tests {
         use rss_mdm_inventory::Source::{AgentNative, AgentScript};
         let registration = uuid::Uuid::new_v4();
         let epoch = uuid::Uuid::new_v4();
-        let profile = crate::tests::profile(rss_mdm_resource::TelemetryProjection::History);
-        let mut field: rss_mdm_inventory::FieldDefinition =
-            serde_json::from_value(serde_json::to_value(&profile.spec().fields[0]).unwrap())
-                .unwrap();
+        let mut field = crate::tests::fields().remove(0);
         field.sources.insert(AgentNative, 0);
         field.sources.insert(AgentScript, 1);
         let live = vec![

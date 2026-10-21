@@ -110,7 +110,7 @@ impl Publisher<Vec<u8>> for PublisherService {
             return uncertain();
         };
         if history.is_some() {
-            for field in &input.profile.spec().fields {
+            for field in &input.fields {
                 match self.0.synchronize(field.clone(), cutoff).await {
                     Ok(true) => {}
                     result => {
