@@ -45,6 +45,69 @@ items 经过当前权限过滤，空列表不能作为删除许可；deletionBlo
 先编辑来源移除引用再删除，历史版本不阻塞。Scope 删除也检查策略主范围与软件灰度阶段引用。
 规则写入、删除及重试沿用 operationId/expectedRevision；提交未知时重试原身份和原请求。
 
+例如向 `POST /api/v1/groups/22222222-2222-4222-8222-222222222222` 保存纯组规则：
+
+```json
+{
+  "operationId": "33333333-3333-4333-8333-333333333333",
+  "expectedRevision": 0,
+  "input": {
+    "action": "create",
+    "assetContext": "endpoint",
+    "presentation": { "name": "来源组成员", "description": "" },
+    "criteria": {
+      "selector": { "kind": "device" },
+      "quantifier": "one",
+      "criteria": { "kind": "group", "groupId": "11111111-1111-4111-8111-111111111111", "op": "member_of" }
+    }
+  }
+}
+```
+
+写入返回任务身份及 statusUrl。等待任务完成后，读取
+`GET /api/v1/groups/{id}/results/{task}/members?limit=64`，结果页结构如下。
+`memberSet` 是来源的不可变结果身份；其余坐标描述本次计算使用的定义、成员语义和授权。
+
+```json
+{
+  "result": "33333333-3333-4333-8333-333333333333",
+  "group": "22222222-2222-4222-8222-222222222222",
+  "current": true,
+  "sources": [{
+    "group": "11111111-1111-4111-8111-111111111111",
+    "coordinates": {
+      "definitionVersion": 1, "memberVersion": 1, "authorityVersion": 0,
+      "memberSet": "44444444-4444-4444-8444-444444444444", "assetContext": "endpoint"
+    }
+  }],
+  "totalObjects": 1, "totalMembers": 1,
+  "page": { "kind": "members", "items": [{ "kind": "endpoint", "id": "device-1" }] },
+  "nextCursor": null
+}
+```
+
+对来源组查询 `GET /api/v1/groups/11111111-1111-4111-8111-111111111111/references?relation=all&limit=64`：
+
+```json
+{
+  "items": [{
+    "source": { "kind": "group", "id": "22222222-2222-4222-8222-222222222222" },
+    "revision": 1, "relation": "direct", "roles": ["member_of"],
+    "via": [
+      { "kind": "group", "id": "11111111-1111-4111-8111-111111111111" },
+      { "kind": "group", "id": "22222222-2222-4222-8222-222222222222" }
+    ],
+    "lifecycleState": "active", "freshness": "current", "effective": true, "blocksDeletion": true
+  }],
+  "nextCursor": null, "deletionBlocked": true
+}
+```
+
+有 nextCursor 时将原值传入同一查询的 cursor；409 后丢弃旧游标，从首页重查。
+组引用保存除 GroupWrite 及全设备 InventoryRead 外还要求 GroupRead，并重新验证引用链的敏感字段权限。
+`POST /api/v1/groups/{id}/previews` 使用 `{operationId, expectedRevision, input:{}}`；
+预览结果沿用同一 sources 证据和分页结构，current 为 false，不发布正式成员。
+
 编辑 revision、计算发布版本、成员语义 memberVersion 各自独立。无差分重算不改变编辑 CAS 或成员语义版本。Scope 也分别记录定义、计算与目标语义版本；持续匹配设备保留入组坐标，退出后重入取得新坐标。历史结果不会被新事实改写。
 
 Scope 结果页必须指定 `channel=agent|mdm`，游标绑定该通道。每个来源先归一到选定的原始通道，再进行并集、限制与排除；显式终端排除也阻断关联组映射出的同一终端，直接终端来源不会扩展到关联端。Scope 的 `limitations:null` 表示不限制，空数组表示没有匹配限制。Unknown 目标、限制或排除依据会留下逐设备阻断原因；Unknown 排除不能当作“不属于排除组”。来源尚未发布、规则不一致或水位落后时，所有执行消费者通过同一个准入合同阻止新执行。

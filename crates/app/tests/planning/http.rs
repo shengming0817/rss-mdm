@@ -918,20 +918,31 @@ async fn nested_groups_sources_references_and_authorized_pages() -> Result<()> {
             for name in ["group_read","group_write","group_recompute","scope_read","scope_write","compliance_rule_read","compliance_write","policy_read","policy_write","resource_read","resource_write"] {
                 grants.push(crate::authorization::Grant {operation:serde_json::from_value(json!(name))?,scope:crate::authorization::Scope::Tenant});
             }
-            identity::set_grants(case_tenant(),&subject,grants).await?;
+            identity::set_grants(case_tenant(),&subject,grants.clone()).await?;
             let source=Uuid::new_v4();let nested=Uuid::new_v4();let grandparent=Uuid::new_v4();let scope=Uuid::new_v4();let compliance=Uuid::new_v4();
             let path=|id|format!("/api/v1/groups/{id}");
             let condition=|criteria:Value|json!({"selector":{"kind":"device"},"quantifier":"one","criteria":criteria});
             let reference=|id,op|json!({"kind":"group","groupId":id,"op":op});
-            call(&mut browser,&router,&path(source),0,json!({"action":"create","assetContext":"endpoint","presentation":{"name":"nested-source"},"criteria":condition(json!({"kind":"predicate","field":"device.model","op":"eq","value":{"kind":"string","value":"Model-A"}}))})).await?;
+            call(&mut browser,&router,&path(source),0,json!({"action":"create","assetContext":"endpoint","presentation":{"name":"nested-source","description":""},"criteria":condition(json!({"kind":"predicate","field":"device.model","op":"eq","value":{"kind":"string","value":"Model-A"}}))})).await?;
+            let without_read: Vec<_> = grants.iter().filter(|g| g.operation != crate::authorization::Permission::GroupRead).cloned().collect();
+            identity::set_grants(case_tenant(),&subject,without_read).await?;
+            let rejected=browser.call(&router,Method::POST,&path(nested),Some(json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"create","assetContext":"endpoint","presentation":{"name":"denied-reference","description":""},"criteria":condition(reference(source,"member_of"))}}))).await?;
+            ensure!(rejected.0==StatusCode::FORBIDDEN,"group reference without GroupRead: {rejected:?}");
+            identity::set_grants(case_tenant(),&subject,grants.clone()).await?;
             for (id,target) in [(nested,source),(grandparent,nested)] {
-                call(&mut browser,&router,&path(id),0,json!({"action":"create","assetContext":"endpoint","presentation":{"name":"nested-parent"},"criteria":condition(reference(target,"member_of"))})).await?;
+                call(&mut browser,&router,&path(id),0,json!({"action":"create","assetContext":"endpoint","presentation":{"name":"nested-parent","description":""},"criteria":condition(reference(target,"member_of"))})).await?;
                 let (_,read)=browser.call(&router,Method::GET,&path(id),None).await?;
                 ensure!(read["group"]["memberCount"]==1,"nested result: {read}");
                 ensure!(read["criteria"]["criteria"]["groupId"]==target.to_string());
             }
+            let before_preview=browser.call(&router,Method::GET,&path(nested),None).await?.1["memberSet"].clone();
+            let preview=call(&mut browser,&router,&format!("{}/previews",path(nested)),1,json!({})).await?;
+            let result=preview["task"].as_str().context("preview task")?;
+            let page=browser.call(&router,Method::GET,&format!("{}/results/{result}/members",path(nested)),None).await?;
+            ensure!(page.0==StatusCode::OK && page.1["totalMembers"]==1 && page.1["current"]==false && page.1["sources"][0]["group"]==source.to_string(),"nested preview source evidence: {page:?}");
+            ensure!(browser.call(&router,Method::GET,&path(nested),None).await?.1["memberSet"]==before_preview,"preview published membership");
             call(&mut browser,&router,&format!("/api/v1/scopes/{scope}"),0,json!({"action":"put","definition":{"targets":[{"kind":"group","id":grandparent}],"limitations":null,"exclusions":[]}})).await?;
-            let definition=json!({"presentation":{"name":"disabled-reference"},"severity":"high","enabled":false,"platform":"all","target":{"kind":"groups","ids":[source]},"criteria":condition(json!({"kind":"predicate","field":"device.model","op":"eq","value":{"kind":"string","value":"Model-A"}}))});
+            let definition=json!({"presentation":{"name":"disabled-reference","description":""},"severity":"high","enabled":false,"platform":"all","target":{"kind":"groups","ids":[source]},"criteria":condition(json!({"kind":"predicate","field":"device.model","op":"eq","value":{"kind":"string","value":"Model-A"}}))});
             let result=browser.call(&router,Method::PUT,&format!("/api/v1/compliance-rules/{compliance}"),Some(json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":definition}))).await?;
             ensure!(result.0==StatusCode::OK,"compliance setup: {result:?}");
             await_ingress().await?;
@@ -959,7 +970,7 @@ async fn nested_groups_sources_references_and_authorized_pages() -> Result<()> {
             ensure!(status==StatusCode::OK,"reference selector {status} {select}");
             ensure!(!select["items"].as_array().unwrap().iter().any(|g|[source.to_string(),nested.to_string(),grandparent.to_string()].iter().any(|id|g["id"]==*id)));
             // Saved cycles and cross-context references are rejected transactionally.
-            for (id,revision,input) in [(source,1,json!({"action":"rule","criteria":condition(reference(grandparent,"member_of"))})),(Uuid::new_v4(),0,json!({"action":"create","assetContext":"associated_device","presentation":{"name":"wrong-context"},"criteria":condition(reference(source,"member_of"))}))] {
+            for (id,revision,input) in [(source,1,json!({"action":"rule","criteria":condition(reference(grandparent,"member_of"))})),(Uuid::new_v4(),0,json!({"action":"create","assetContext":"associated_device","presentation":{"name":"wrong-context","description":""},"criteria":condition(reference(source,"member_of"))}))] {
                 ensure!(browser.call(&router,Method::POST,&path(id),Some(json!({"operationId":Uuid::new_v4(),"expectedRevision":revision,"input":input}))).await?.0==StatusCode::BAD_REQUEST);
             }
             ensure!(browser.call(&router,Method::POST,&path(source),Some(json!({"operationId":Uuid::new_v4(),"expectedRevision":1,"input":{"action":"delete"}}))).await?.0==StatusCode::CONFLICT);
@@ -973,22 +984,22 @@ async fn nested_groups_sources_references_and_authorized_pages() -> Result<()> {
             let (_,members)=browser.call(&router,Method::GET,&format!("{}/results/{result}/members",path(grandparent)),None).await?;
             ensure!(members["page"]["items"]==json!([{"kind":"endpoint","id":devices[1]}]),"negative membership identity: {members}");
             let manual=Uuid::new_v4();let manual_negative=Uuid::new_v4();
-            call(&mut browser,&router,&path(manual),0,json!({"action":"create","assetContext":"endpoint","presentation":{"name":"manual-source"},"criteria":null})).await?;
+            call(&mut browser,&router,&path(manual),0,json!({"action":"create","assetContext":"endpoint","presentation":{"name":"manual-source","description":""},"criteria":null})).await?;
             call(&mut browser,&router,&path(manual),1,json!({"action":"members","add":[{"kind":"endpoint","id":devices[0]}],"remove":[]})).await?;
-            call(&mut browser,&router,&path(manual_negative),0,json!({"action":"create","assetContext":"endpoint","presentation":{"name":"negative-manual"},"criteria":condition(reference(manual,"not_member_of"))})).await?;
+            call(&mut browser,&router,&path(manual_negative),0,json!({"action":"create","assetContext":"endpoint","presentation":{"name":"negative-manual","description":""},"criteria":condition(reference(manual,"not_member_of"))})).await?;
             let (_,manual_read)=browser.call(&router,Method::GET,&path(manual_negative),None).await?;
             ensure!(manual_read["group"]["memberCount"]==1,"static source complement: {manual_read}");
             // No positive member diff: Unknown becomes NoMatch and must still wake a negated dependent.
             let unknown=Uuid::new_v4();let negative=Uuid::new_v4();
-            call(&mut browser,&router,&path(unknown),0,json!({"action":"create","assetContext":"endpoint","presentation":{"name":"unknown-source"},"criteria":condition(json!({"kind":"predicate","field":"device.os.version","op":"eq","value":{"kind":"string","value":"never"}}))})).await?;
-            call(&mut browser,&router,&path(negative),0,json!({"action":"create","assetContext":"endpoint","presentation":{"name":"negative-unknown"},"criteria":condition(reference(unknown,"not_member_of"))})).await?;
+            call(&mut browser,&router,&path(unknown),0,json!({"action":"create","assetContext":"endpoint","presentation":{"name":"unknown-source","description":""},"criteria":condition(json!({"kind":"predicate","field":"device.os.version","op":"eq","value":{"kind":"string","value":"never"}}))})).await?;
+            call(&mut browser,&router,&path(negative),0,json!({"action":"create","assetContext":"endpoint","presentation":{"name":"negative-unknown","description":""},"criteria":condition(reference(unknown,"not_member_of"))})).await?;
             let (_,before)=browser.call(&router,Method::GET,&path(negative),None).await?;ensure!(before["group"]["memberCount"]==0,"Unknown was negated: {before}");
             call(&mut browser,&router,&path(unknown),1,json!({"action":"rule","criteria":condition(json!({"kind":"predicate","field":"device.model","op":"eq","value":{"kind":"string","value":"never"}}))})).await?;
             await_ingress().await?;
             let (_,after)=browser.call(&router,Method::GET,&path(negative),None).await?;ensure!(after["group"]["memberCount"]==2,"NoMatch did not propagate: {after}");
             let right=Uuid::new_v4();let diamond=Uuid::new_v4();
-            call(&mut browser,&router,&path(right),0,json!({"action":"create","assetContext":"endpoint","presentation":{"name":"diamond-right"},"criteria":condition(reference(source,"member_of"))})).await?;
-            call(&mut browser,&router,&path(diamond),0,json!({"action":"create","assetContext":"endpoint","presentation":{"name":"diamond-top"},"criteria":condition(json!({"kind":"and","children":[reference(nested,"member_of"),reference(right,"not_member_of")]}))})).await?;
+            call(&mut browser,&router,&path(right),0,json!({"action":"create","assetContext":"endpoint","presentation":{"name":"diamond-right","description":""},"criteria":condition(reference(source,"member_of"))})).await?;
+            call(&mut browser,&router,&path(diamond),0,json!({"action":"create","assetContext":"endpoint","presentation":{"name":"diamond-top","description":""},"criteria":condition(json!({"kind":"and","children":[reference(nested,"member_of"),reference(right,"not_member_of")]}))})).await?;
             await_ingress().await?;
             let (_,diamond_refs)=browser.call(&router,Method::GET,&format!("{refs}?kind=group&relation=indirect"),None).await?;
             let diamond_entry=diamond_refs["items"].as_array().context("diamond items")?.iter().find(|i|i["source"]["id"]==diamond.to_string()).context("diamond reference missing")?;

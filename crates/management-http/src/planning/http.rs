@@ -358,7 +358,13 @@ async fn run_group(
     });
     let authorize = || {
         auth.proof.manage(permission)?;
-        auth.proof.manage(Permission::GroupRead)?;
+        if let GroupCommand::Group { change, .. } = &command
+            && matches!(&change.input,
+                GroupChange::Create { criteria: Some(c), .. } | GroupChange::Rule { criteria: c }
+                    if c.criteria.references_groups())
+        {
+            auth.proof.manage(Permission::GroupRead)?;
+        }
         assets::ReadScope::from_proof(&auth.proof)?
             .full()
             .map_err(rss_mdm_inventory_service::Error::from)?;

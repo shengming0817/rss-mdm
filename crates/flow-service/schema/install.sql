@@ -55,7 +55,7 @@ SELECT count(*)<=4096 AND coalesce(bool_and(coalesce(
       AND m.object_id=coalesce(c.identity->>'device',(SELECT h.device FROM mdm_access.asset_authority_history h WHERE h.tenant_id=c.tenant_id AND h.kind='registration' AND h.identity=c.identity->>'registration' ORDER BY h.revision DESC LIMIT 1))
     ORDER BY m.revision DESC LIMIT 1),false))) OR EXISTS(
     SELECT 1 FROM mdm_assets.group_fields f WHERE f.tenant_id=g.tenant_id AND f.group_id=g.id AND f.field=ANY(c.fields))))
- ),false)),false)
+ )),false)),false)
 FROM bounded r
 LEFT JOIN mdm_group.groups g ON g.tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid AND g.id=r.id
 LEFT JOIN mdm_group.member_runs b ON(b.tenant_id,b.id)=(g.tenant_id,g.member_set)

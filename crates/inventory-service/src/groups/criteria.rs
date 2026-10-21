@@ -26,6 +26,18 @@ pub enum Criteria {
         children: Vec<Criteria>,
     },
 }
+impl Criteria {
+    pub fn references_groups(&self) -> bool {
+        match self {
+            Self::Group { .. } => true,
+            Self::And { children } | Self::Or { children } => {
+                children.iter().any(Self::references_groups)
+            }
+            Self::Predicate { .. } => false,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum MembershipOp {

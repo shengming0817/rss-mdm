@@ -2,12 +2,37 @@ use super::*;
 use rss_mdm_audit_integration::RequestAudit;
 use rss_mdm_authorization_service::{Permission, context::AuthorizedPrincipal};
 #[derive(Clone, Debug, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct DirectoryQuery {
     pub referenceable_for: Option<Uuid>,
-    #[serde(flatten)]
-    pub selection: rss_mdm_group_postgres::directory::DirectoryQuery,
+    pub after: Option<Uuid>,
+    #[serde(default = "limit")]
+    pub limit: usize,
+    #[serde(default)]
+    pub descending: bool,
+    pub kind: Option<rss_mdm_group_postgres::GroupKind>,
+    pub asset_context: Option<rss_mdm_group_postgres::AssetContext>,
+    #[serde(default)]
+    pub deleted: bool,
+    pub name: Option<String>,
 }
+fn limit() -> usize {
+    64
+}
+impl DirectoryQuery {
+    fn selection(&self) -> rss_mdm_group_postgres::directory::DirectoryQuery {
+        rss_mdm_group_postgres::directory::DirectoryQuery {
+            after: self.after,
+            limit: self.limit,
+            descending: self.descending,
+            kind: self.kind,
+            asset_context: self.asset_context,
+            deleted: self.deleted,
+            name: self.name.clone(),
+        }
+    }
+}
+
 impl Groups {
     pub async fn directory(
         &self,
@@ -22,7 +47,7 @@ impl Groups {
         proof.require_all_devices(Permission::InventoryRead)?;
         crate::transaction::run(&self.audit_store,&self.runtime,self.tenant,audit,(self,proof,q,audit),|ctx,tx|Box::pin(async move {
             let (s,p,q,audit)=*ctx;p.manage(Permission::GroupRead)?;p.require_all_devices(Permission::InventoryRead)?;
-            let mut query=q.selection.clone();
+            let mut query=q.selection();
             let mut graph=if q.referenceable_for.is_some() {Some(dependencies::graph_in(tx).await?)}else{None};
             if let Some(id)=q.referenceable_for {
                 let gid=checked_input(rss_mdm_group_postgres::GroupId::parse(&id.to_string()))?;
@@ -60,12 +85,12 @@ impl Groups {
                         }
                     }
                     groups.push(group);
-                    if groups.len()>q.selection.limit {break;}
+                    if groups.len()>q.limit {break;}
                 }
-                if groups.len()>q.selection.limit || count<=query.limit {break;}
+                if groups.len()>q.limit || count<=query.limit {break;}
                 query.after=last;
             }
-            let more=groups.len()>q.selection.limit;groups.truncate(q.selection.limit);let next=if more{groups.last().map(|g|g.id.to_string())}else{None};
+            let more=groups.len()>q.limit;groups.truncate(q.limit);let next=if more{groups.last().map(|g|g.id.to_string())}else{None};
             let items=groups.iter().map(|g|serde_json::json!({"id":g.id,"kind":g.kind,"assetContext":g.asset_context,"presentation":g.presentation,"revision":g.revision,"calculationRevision":g.calculation_revision,"memberVersion":g.member_version,"memberCount":g.member_count,"ruleVersion":g.rule_version,"deleted":g.deleted})).collect::<Vec<_>>();
             p.check_live()?;s.audit_store.append_request_in(tx,audit,200,"success").await?;
             Ok(serde_json::json!({"items":items,"nextCursor":next}))
