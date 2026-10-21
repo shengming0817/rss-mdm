@@ -136,7 +136,7 @@ applicability 包含 minimumOsVersion、minimumBuild、editions、enrollments、
 
 Windows Firewall CSP 状态与 WSC health 使用不同字段；BitLocker conversion、protection、lock 分列。软件安装实例、receipts 与包管理器记录也分别建模。标准 seed 不代表每个平台已有采集器，支持面以可执行模板为准。
 
-持续采集使用 Policy action `native_collection`，绑定精确 Resource、Schedule、Frequency 和 runLifetimeSeconds；脚本/SQL 使用现有 execution action。按需读取使用现有 remote-operation 的 `collect_native` action，脚本/SQL 使用 `execute`，目标为设备集合或 Scope 的冻结结果。有 inventory_collect、resource_write、policy_write 等对应权限的管理员直接启用，无新增审批状态。周期采集选择 EveryTrigger；重采使用显式 rerun。发布 Resource 新版本不会自动改动 Policy 的精确绑定。一次性操作不生成长期 Policy。Agent 注册只冻结通道维护采集，Windows 会话不再自动采集固定 model/OS，Apple 旧 collection-runs 创建入口已删除；注册认证与通道维护仍由原 owner 执行。
+标准采集使用 Policy action `native_collection` 或 `agent_collection`，绑定精确 Resource 版本。每个包使用可调整的 interval 周期，默认为一小时；Frequency 固定为 every_trigger，misfire 固定为 coalesce_one，离线恢复只处理最近到期周期。启用持续采集，停用停止新增运行并保留可信事实；不接受手动触发或 rerun。页面刷新只读取已有资产和运行状态。符合既有授权与冻结定义的 Agent 主动报告继续由原报告入口接收。脚本/SQL 仍使用现有 execution action，一次性运维执行使用原 remote-operation `execute`；不改变其执行语义。管理员需要 inventory_collect、resource_write、policy_write 等对应权限，无新增审批状态。发布 Resource 新版本不会自动改动 Policy 的精确绑定。Agent 注册只冻结通道维护采集，Windows 会话不再自动采集固定 model/OS，Apple 旧 collection-runs 创建入口已删除；注册认证与通道维护仍由原 owner 执行。
 
 `GET /api/v1/devices/{id}/collections/{run}` 返回统一进度、来源、模板版本和逐字段质量。列表字段另有 itemCount/invalidItems，终态 run 可通过 `GET /api/v1/devices/{id}/collections/{run}/fields/{field}/items?offset=0&limit=100` 分页读取逐条质量，最多1000条。无效列表保留旧可信值，质量页不回传不可信原文。
 

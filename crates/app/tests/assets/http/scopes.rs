@@ -87,6 +87,12 @@ async fn inventory_scopes_preserve_history_and_hide_sensitive_namespaces() -> Re
         let path = format!("/api/v1/devices/{device}/inventory-scopes");
         let (registration, epoch) = crate::test_support::inventory::seed_source(device, "agent", "agent.native", "device")?;
         let model = rss_mdm_inventory::Catalog::new(rss_mdm_inventory::builtin::fields())?.definition(rss_mdm_inventory::builtin::MODEL)?.clone();
+        // Unrelated device partitions must not contribute to this device's directory.
+        let (other_registration, other_epoch) = crate::test_support::inventory::seed_source(case::name("unrelated-directory"), "agent", "agent.native", "outside")?;
+        seed(other_registration, other_epoch, 400, model.clone(), Some("unrelated"))?;
+        // A deleted partition remains fenced by its tombstone, not its older value.
+        let deleted = seed(registration, epoch, 504, model.clone(), Some("removed"))?;
+        pg(&format!("DELETE FROM mdm_access.collection_runs WHERE tenant_id='{}' AND id='{deleted}'; DELETE FROM mdm.inventory WHERE tenant_id='{}' AND batch_id='{deleted}'", case_tenant(), case_tenant()))?;
         let first_run = seed(registration, epoch, 501, model.clone(), Some("first"))?;
         seed(registration, epoch, 502, model.clone(), Some("second"))?;
         let first = f.author.call(&f.router, Method::GET, &format!("{path}?limit=1"), None).await?;

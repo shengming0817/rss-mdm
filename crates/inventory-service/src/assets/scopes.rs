@@ -66,6 +66,43 @@ impl AssetService {
                 }))
             })
             .collect::<Result<Vec<_>>>()?;
+        // Definitions are immutable and shared by facts and attempts. Resolve exact
+        // stream keys before reading history so tombstones remain in each partition.
+        let tenant = self.tenant.to_string();
+        let datasets = tx.with_connection(move |c| Box::pin(async move {
+            sqlx::query("SELECT DISTINCT source,dataset FROM mdm.collection_definitions WHERE tenant_id=$1::uuid ORDER BY source,dataset LIMIT 4097")
+                .bind(tenant).fetch_all(c).await
+        })).await?;
+        if datasets.len() > 4096 {
+            return Err(Error::Unavailable(Failure::AssetSourceLimit).into());
+        }
+        let mut streams = Vec::new();
+        for source in &sources {
+            for dataset in &datasets {
+                if dataset.try_get::<&str, _>("source")?
+                    != source["source"].as_str().ok_or(Error::Malformed)?
+                {
+                    continue;
+                }
+                streams.push(stored(
+                    crate::device::scope_dataset(
+                        self.tenant,
+                        stored(Uuid::parse_str(
+                            source["registration"].as_str().ok_or(Error::Malformed)?,
+                        ))?,
+                        source["source"].as_str().ok_or(Error::Malformed)?,
+                        stored(Uuid::parse_str(
+                            source["epoch"].as_str().ok_or(Error::Malformed)?,
+                        ))?,
+                        dataset.try_get("dataset")?,
+                    )?
+                    .encode(),
+                )?);
+            }
+        }
+        if streams.len() > 20_000 {
+            return Err(Error::Unavailable(Failure::AssetSourceLimit).into());
+        }
         let catalog = catalog_in(tx, self.tenant, current).await?;
         let visible = catalog
             .fields()
@@ -104,6 +141,7 @@ impl AssetService {
                         .bind((limit + 1) as i64)
                         .bind(projection.source().source())
                         .bind(projection.generation())
+                        .bind(streams)
                         .fetch_all(c)
                         .await
                 })
@@ -171,10 +209,13 @@ const SCOPES: &str = r#"
 WITH authority AS (
  SELECT registration,source,epoch FROM jsonb_to_recordset($2::jsonb)
  AS a(registration text,source text,epoch text)
+), requested AS (
+ SELECT sha256(convert_to(jsonb_build_array($7::text,$8::text,s)::text,'UTF8')) AS digest
+ FROM unnest($9::text[]) s
 ), inventory AS (
  SELECT DISTINCT ON(h.scope_digest,h.field,h.field_scope)
    h.field_scope,h.document
- FROM mdm.inventory_history h
+ FROM mdm.inventory_history h JOIN requested q ON q.digest=h.scope_digest
  WHERE h.tenant_id=$1::uuid AND h.revision<=$3 AND h.field=ANY($4::text[])
  ORDER BY h.scope_digest,h.field,h.field_scope,h.revision DESC
 ), facts AS (
@@ -186,7 +227,7 @@ WITH authority AS (
 ), runs AS (
  SELECT DISTINCT ON(h.scope,h.run) h.scope,h.run,h.sequence,h.document
  FROM mdm_access.collection_history h
- WHERE h.tenant_id=$1::uuid AND h.revision<=$3
+ WHERE h.tenant_id=$1::uuid AND h.scope=ANY($9::text[]) AND h.revision<=$3
  ORDER BY h.scope,h.run,h.revision DESC
 ), attempts AS (
  SELECT DISTINCT ON(h.scope,f->'definition'->>'key',f->'scope')
