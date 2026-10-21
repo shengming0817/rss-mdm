@@ -7,9 +7,9 @@ pub use error::*;
 pub use rss_mdm_policy as core;
 pub use store::*;
 /// Initialization schema for a new deployment; no old lifecycle tables are retained.
-pub const MIGRATION_SQL: &str = include_str!("../migrations/0001.sql");
+pub const MIGRATION_SQL: &str = include_str!("../migrations/install.sql");
 /// Existing RSS runtime writer capability used to bind borrowed transactions.
-pub const OUTBOX_MIGRATION_SQL: &str = include_str!("../migrations/0002_outbox_writer.sql");
+pub const OUTBOX_MIGRATION_SQL: &str = include_str!("../migrations/outbox.sql");
 use rss_mdm_backend_postgres_support::{Admission, BackendKind, BackendStorage};
 const STORAGE: BackendStorage = BackendStorage::new(BackendKind::Policy);
 const ADMISSION: Admission = Admission {

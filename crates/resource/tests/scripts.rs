@@ -33,7 +33,7 @@ fn script_contract_validates_parameters_output_and_platform() {
 }
 
 #[test]
-fn script_contract_rejects_legacy_external_schema_and_hidden_arguments() {
+fn script_contract_rejects_external_schema_and_hidden_arguments() {
     for mutate in [
         |v: &mut Value| {
             v.as_object_mut().unwrap().remove("purpose");
@@ -91,7 +91,7 @@ fn version_with_artifact(value: Value, artifact: Artifact) -> Version {
 }
 
 #[test]
-fn frozen_digest_covers_execution_interface_and_rejects_old_script() {
+fn frozen_digest_covers_execution_interface() {
     let base = version(definition());
     for mutate in [
         |v: &mut Value| {
@@ -128,12 +128,6 @@ fn frozen_digest_covers_execution_interface_and_rejects_old_script() {
     }
     let decoded: Value = serde_json::from_str(&definition().to_string()).unwrap();
     assert_eq!(base.digest(), version(decoded).digest());
-    assert!(
-        serde_json::from_value::<ScriptDefinition>(
-            json!({"interpreter":"sh","detect":"exit-code"})
-        )
-        .is_err()
-    );
 }
 
 #[test]

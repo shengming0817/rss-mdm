@@ -45,7 +45,7 @@ fn security_codes_and_capacity_have_exact_native_meanings() {
     let fields = builtin::fields();
     rss_mdm_inventory::Catalog::new(fields.clone()).unwrap();
     let read = |pack: &str, key: &str, raw: &str| {
-        let b = blueprints::get(pack, "2").unwrap();
+        let b = blueprints::get(pack, "1").unwrap();
         let blueprints::Definition::NativeCollection { template } = &b.definition else {
             panic!("native pack");
         };
@@ -206,7 +206,7 @@ fn authorization_targets_do_not_inherit_single_message_budget() {
         Architecture, Platform,
         schedule::{Misfire, Schedule, Trigger},
     };
-    let blueprint = blueprints::get("windows.software.store", "2").unwrap();
+    let blueprint = blueprints::get("windows.software.store", "1").unwrap();
     let blueprints::Definition::NativeCollection { template } = &blueprint.definition else {
         panic!("native pack");
     };

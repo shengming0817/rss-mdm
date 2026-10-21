@@ -599,11 +599,7 @@ async fn native_inventory_case(
     } {
         let r::blueprints::Definition::AgentCollection { template } = r::blueprints::get(
             id,
-            if id == "windows.agent.software" {
-                "2"
-            } else {
-                "1"
-            },
+            "1",
         )
         .unwrap()
         .definition
@@ -614,7 +610,7 @@ async fn native_inventory_case(
     }
     if !macos {
         let r::blueprints::Definition::AgentCollection { template } =
-            r::blueprints::get("windows.agent.identity", "2")
+            r::blueprints::get("windows.agent.identity", "1")
                 .unwrap()
                 .definition
         else {
@@ -1202,7 +1198,7 @@ async fn macos_user_applications_and_brew_keep_other_users_after_complete_empty(
     let mut specs = Vec::new();
     for (name, version) in [
         ("macos.agent.applications_user", "1"),
-        ("macos.agent.brew_arm_formula", "2"),
+        ("macos.agent.brew_arm_formula", "1"),
     ] {
         let r::blueprints::Definition::AgentCollection { template } =
             r::blueprints::get(name, version).unwrap().definition

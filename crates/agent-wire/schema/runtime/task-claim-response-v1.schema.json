@@ -1557,7 +1557,7 @@
         },
         {
           "additionalProperties": false,
-          "description": "Installed package metadata; the executor must be a bound non-root logged-in user.\nVersion 2 reads bounded Cellar/Caskroom installation records and recognized JSON\nmetadata beneath the approved prefix. Treat all contents as untrusted data;\nnever invoke brew, Ruby, shell commands or evaluate formula/cask definitions.\nEnumerate installed versions, not current catalog versions or linked binaries.\nResolve tap identity from installation metadata, never by guessing a default tap.\nAn unreadable, changed, unsupported or incomplete record is not an empty inventory;\nuse the corresponding non-Complete status. Do not follow links outside the prefix.",
+          "description": "Installed package metadata; the executor must be a bound non-root logged-in user.\nReads bounded Cellar/Caskroom installation records and recognized JSON\nmetadata beneath the approved prefix. Treat all contents as untrusted data;\nnever invoke brew, Ruby, shell commands or evaluate formula/cask definitions.\nEnumerate installed versions, not current catalog versions or linked binaries.\nResolve tap identity from installation metadata, never by guessing a default tap.\nAn unreadable, changed, unsupported or incomplete record is not an empty inventory;\nuse the corresponding non-Complete status. Do not follow links outside the prefix.",
           "properties": {
             "kind": {
               "const": "macos_brew",

@@ -178,7 +178,7 @@ impl Registry {
         canonical.sort_by(|a, b| a.issuer.cmp(&b.issuer));
         let fingerprint = Sha256::digest(
             serde_json::to_vec(&(
-                "device-pki-publication/v2",
+                "device-pki-publication/v1",
                 requested_purpose,
                 operation,
                 canonical,

@@ -19,7 +19,7 @@ pub mod worker_wake;
 pub use error::Error;
 mod diagnostic;
 pub use diagnostic::{ConfigIssue, Failure};
-pub use model::{AttemptPhase, Change, Create, DispatchV3, NativeTarget, Task};
+pub use model::{AttemptPhase, Change, Create, DispatchV1, NativeTarget, Task};
 use rss_mdm_authorization_service as authorization;
 
 mod agent_collection_eligibility;
@@ -70,7 +70,7 @@ use std::{
 };
 use uuid::Uuid;
 
-const DOMAIN: &str = "mdm.commands.v3";
+const DOMAIN: &str = "mdm.commands.v1";
 pub fn messaging_domain() -> rss_transactional_messaging::message::MessagingDomain {
     rss_transactional_messaging::message::MessagingDomain::parse(DOMAIN).expect("fixed domain")
 }

@@ -71,7 +71,3 @@ fn successful_zero_fields_is_distinct_from_failure_and_unattempted() {
     );
     assert!(unattempted.body().unwrap().is_none());
 }
-#[test]
-fn legacy_positional_progress_cannot_be_restored() {
-    assert!(serde_json::from_str::<Attempts>(r#"{"fields":[{"status":200,"quality":"success","received_at":1,"value":"model","value_digest":null}]}"#).is_err());
-}

@@ -230,7 +230,7 @@ async fn projected_script_fact_is_queryable_group_input() -> Result<()> {
     let value = serde_json::to_string(&rss_mdm_inventory::Scalar::Boolean(true))?;
     pg(&format!("INSERT INTO mdm_access.report_sources(tenant_id,registration,source,epoch,enabled) VALUES('{TENANT}','{registration}','agent.script','{epoch}',true);
         INSERT INTO mdm.inventory(field_scope,tenant_id,journal,generation,scope,coverage,field,value,batch_id,observed_at,received_at,state,last_known,last_known_batch,last_known_observed,last_known_received,registration,source,epoch,collection_sequence)
-        VALUES(replace(jsonb_build_object('kind','device')::text,' ',''),'{TENANT}','mdm.observation.v1','inventory-v7','{scope}','{coverage}','custom.corporate_agent.healthy','{value}','script-fixture',1,2,'known','{value}','script-fixture',1,2,'{registration}','agent.script','{epoch}',0);", TENANT = case_tenant()))?;
+        VALUES(replace(jsonb_build_object('kind','device')::text,' ',''),'{TENANT}','mdm.observation.v1','inventory-projection-v1','{scope}','{coverage}','custom.corporate_agent.healthy','{value}','script-fixture',1,2,'known','{value}','script-fixture',1,2,'{registration}','agent.script','{epoch}',0);", TENANT = case_tenant()))?;
     let criteria = predicate("custom.corporate_agent.healthy", "boolean", json!(true));
     let query = ok(
         &mut browser,

@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 
 /// Current product dictionary contract; catalog revisions are separate business versions.
-pub const DICTIONARY: &str = "assets-v3";
+pub const DICTIONARY: &str = "assets-v1";
 /// Validated field identity. Admission requires lookup in the tenant's catalog.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct FieldKey {

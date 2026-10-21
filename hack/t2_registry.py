@@ -212,7 +212,7 @@ MODULES['agent.pki'] = replace(MODULES['agent.pki'], scope='tenant', policies=(
     CasePolicy('agent_pki_tests::management_rotation_accepts_direct_activation_and_rejects_retired_action', 'reuse', 'tenant', ('identity','windows','agent_pki','pki_rotation')),
 ))
 
-add('installation.migration', selectors=('migration::tests::failed_unit_rolls_back_schema_and_can_resume_original_name','migration::tests::ledger_installation_rejects_audit_privilege_drift','migration::tests::fresh_installation_replay_and_mismatch_rejection','migration::tests::field_scope_migration_rejects_hidden_state_and_restores_rls','tenant_registry::tests::rollback_failure_preserves_primary_reason_and_cleanup_evidence'), profile='empty',
+add('installation.migration', selectors=('migration::tests::failed_unit_rolls_back_schema_and_can_resume_original_name','migration::tests::ledger_installation_rejects_audit_privilege_drift','migration::tests::fresh_installation_replay_and_mismatch_rejection','tenant_registry::tests::rollback_failure_preserves_primary_reason_and_cleanup_evidence'), profile='empty',
     sources=('crates/app/src/migration.rs','crates/app/src/tenant_registry.rs','crates/app/src/tenant_use.rs','crates/app/schema/installation.sql'), tests=('crates/app/tests/migration/mod.rs','crates/app/tests/tenant_registry/mod.rs',),
     python='installation', support=('hack/t2_modules/installation.py',))
 add('installation.registry', selectors=('tenant_registry::tests::business::',), profile='product',
@@ -451,8 +451,8 @@ for part in ('cms', 'apns', 'scep', 'collection', 'profile', 'policy', 'onboardi
 MODULES['apple.cms'] = replace(MODULES['apple.cms'], production_inputs=(*MODULES['apple.cms'].production_inputs, 'crates/certificate/src/apple/account.rs'))
 add('apple.ade', selectors=('apple::tests::ade::',), profile='product',
     fixtures=('apple','identity','oracle','scep'),
-    sources=('crates/apple-channel/src/ade/*','crates/apple-channel/schema/ade.sql','crates/apple-channel/schema/organizations.sql','crates/apple-channel/src/organizations.rs',
-             'crates/certificate/src/apple/ade.rs','crates/certificate/fixtures/*','crates/registration-service/schema/apple-ade.sql',
+    sources=('crates/apple-channel/src/ade/*','crates/apple-channel/schema/ade.sql','crates/apple-channel/schema/account-enrollment.sql','crates/apple-channel/src/organizations.rs',
+             'crates/certificate/src/apple/ade.rs','crates/certificate/fixtures/*',
              'crates/registration-service/src/enrollment/native.rs','crates/registration-service/src/enrollment/read.rs',
              'crates/apple-channel/src/enrollment.rs','crates/apple-channel/src/renewal.rs','crates/apple-channel/src/lib.rs',
              'crates/apple-channel/src/access-admission.sql','crates/app/src/api.rs','crates/app/src/lifecycle.rs','crates/app/src/enrollment_progress.rs',
@@ -462,8 +462,8 @@ add('apple.ade', selectors=('apple::tests::ade::',), profile='product',
 MODULES['apple.ade'] = replace(MODULES['apple.ade'], scope='tenant')
 add('apple.account_enrollment', selectors=('apple::tests::account_enrollment::',), profile='product',
     fixtures=('apple','identity','oracle','scep'),
-    sources=('crates/apple-channel/src/account_enrollment/*', 'crates/apple-channel/schema/account-enrollment.sql','crates/apple-channel/schema/organizations.sql',
-             'crates/registration-service/src/enrollment/native.rs', 'crates/registration-service/schema/apple-account.sql',
+    sources=('crates/apple-channel/src/account_enrollment/*', 'crates/apple-channel/schema/account-enrollment.sql',
+             'crates/registration-service/src/enrollment/native.rs',
              'crates/certificate/src/apple/account.rs', 'crates/app/src/enrollment_progress.rs',
              'crates/apple-channel/src/lib.rs','crates/apple-channel/src/checkin.rs','crates/apple-channel/src/enrollment.rs',
              'crates/apple-channel/src/renewal.rs','crates/registration-service/src/device.rs','crates/registration-service/src/device/store.rs',
@@ -1183,7 +1183,7 @@ consume(('crates/execution-service/src/queries.rs',
          'crates/execution-service/src/queries/error.rs'), QUERY_CONSUMERS)
 consume(('crates/execution-service/src/queries/assignments.rs',), 'planning.http planning.agent_policy')
 consume(('crates/execution-service/src/queries/preview.rs',), 'planning.agent_policy planning.software planning.policy')
-consume(('crates/execution-service/src/service.rs', 'crates/execution-service/src/dispatch-v3.json'), COMMAND_CONSUMERS)
+consume(('crates/execution-service/src/service.rs', 'crates/execution-service/src/dispatch-v1.json'), COMMAND_CONSUMERS)
 consume(('crates/execution-service/src/apple.rs',), 'apple.profile apple.onboarding execution.commands.admission')
 consume(('crates/execution-service/src/apple_push.rs',), 'apple.push apple.fairness apple.host')
 consume(('crates/execution-service/src/protocol.rs',), 'windows.management windows.commands execution.commands.windows execution.commands.configuration execution.commands.onboarding')
@@ -1645,7 +1645,6 @@ consume(('crates/agent-wire/src/self_service.rs','crates/agent-wire/schema/runti
 consume(('crates/policy/src/self_service.rs','crates/execution-service/src/script_eligibility.rs'), TASK_CONSUMERS)
 
 consume(('crates/execution-service/src/self_service/*', 'crates/execution-service/src/actions/evidence.rs'), TASK_CONSUMERS)
-consume(('crates/app/schema/self-service-access.sql',), 'installation.migration catalog.contract planning.self_service execution.software.offer execution.software.content execution.software.recovery')
 consume(('crates/registration-service/src/enrollment.rs','crates/registration-service/src/enrollment/*','crates/registration-service/src/agent/grants.rs','crates/management-http/src/agent_enrollment.rs','crates/authorization-service/src/context.rs'), 'enrollment.quotas')
 
 consume(('crates/windows-channel/src/protocol_device.rs',), 'windows.issuance windows.enrollment windows.management windows.declared')
@@ -1671,7 +1670,6 @@ for name in PKI_CONSUMERS:
     MODULES[name] = replace(module, support_inputs=tuple(dict.fromkeys((*module.support_inputs,'hack/pki_fixtures.py','hack/pki_ca.py'))))
 
 consume(('crates/app/src/enrollment_progress.rs',), 'enrollment.http windows.enrollment windows.management apple.scep apple.identity')
-consume(('crates/registration-service/schema/enrollment-progress.sql',), 'installation.migration catalog.contract enrollment.http windows.enrollment windows.management')
 consume(('crates/registration-service/src/database.rs',), 'enrollment.http enrollment.recovery enrollment.quotas device.binding device.revocation device.recovery agent.registration agent.pki')
 
 MODULES['agent.configurations'] = replace(MODULES['agent.configurations'], fixtures=('identity','agent_pki'), scope='tenant', support_inputs=(*MODULES['agent.configurations'].support_inputs,*AGENT_FIXTURE_INPUTS,'crates/app/tests/support/software.rs','crates/app/tests/support/agent_http.rs','tests/support/software/mod.rs'))
@@ -1967,7 +1965,7 @@ for owner in ('agent-channel', 'apple-channel', 'windows-channel',
     if owner not in {'pki-service', 'device-service', 'timeline-service', 'certificate-archive-service'}:
         consume((f'crates/{owner}/schema/relations.sql',), consumers)
 
-consume(('crates/inventory-service/schema/field-scopes.sql',),
+consume(('crates/inventory-service/schema/group-selections.sql',),
         'assets.http assets.queries assets.sources assets.group_input inventory.runtime '
         'agent.reports windows.management apple.collection planning.onboarding')
 consume(('crates/app/schema/audit-runtime.sql',), AUDITED_MODULES + ' installation.tenants deployment.management-tenant')
@@ -1992,18 +1990,11 @@ consume(('crates/app/schema/software-publication-roles.sql',),
 # Installation binding is read by both request and worker tenant admission.
 consume(('crates/app/schema/installation.sql',),
         [name for name, module in MODULES.items() if module.build == APP and module.profile == 'product'])
-# Enrollment progress is read by enrollment management and channel admission.
-consume(('crates/registration-service/schema/enrollment-progress.sql',),
-        'enrollment.http enrollment.recovery agent.registration agent.configurations agent.pki '
-        'windows.enrollment windows.issuance windows.management apple.scep apple.account_enrollment apple.ade')
 
 
 consume(('crates/app/src/migration.rs',),
         'installation.migration installation.tenants deployment.management-tenant catalog.contract api.identity_context')
 
-# Channel maintenance preserves the last sealed fact while a new query is pending.
-consume(('crates/inventory-service/schema/channel-maintenance.sql',),
-        'execution.commands.onboarding apple.onboarding agent.reports inventory.runtime planning.onboarding planning.group_scope')
 
 # Context preparation is consumed directly by these six protocol modules.
 consume(('crates/apple-channel/src/native.rs',),

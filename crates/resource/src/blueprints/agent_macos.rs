@@ -65,7 +65,7 @@ fn pack(
     }
     Blueprint {
         id: format!("macos.agent.{id}"),
-        version: if id.starts_with("brew_") { "2" } else { "1" }.into(),
+        version: "1".into(),
         presentation: serde_json::json!({"category": if id == "receipts" || id.starts_with("applications") || id.starts_with("brew") { "software" } else { "hardware" }}).as_object().unwrap().clone(),
         platform: Platform::MacOS,
         definition: Definition::AgentCollection {

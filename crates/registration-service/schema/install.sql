@@ -119,7 +119,7 @@ CREATE TABLE mdm_access.agent_grants (
  tenant_id uuid NOT NULL,
  id uuid NOT NULL,
  operation_id uuid NOT NULL,
- source text NOT NULL CHECK(source IN('download','browser','native','recovery','renewal')),
+ source text NOT NULL,
  actor text,
  instance text,
  device text NOT NULL CHECK(octet_length(device) BETWEEN 1 AND 256 AND device !~ '[[:cntrl:]]'),
@@ -138,7 +138,14 @@ CREATE TABLE mdm_access.agent_grants (
  CONSTRAINT agent_grant_subject CHECK((state IN('pending','revoked') AND source='browser' AND actor IS NULL AND instance IS NULL AND spki IS NOT NULL) OR (state<>'pending' AND actor IS NOT NULL AND instance IS NOT NULL)),
  CONSTRAINT agent_grant_target CHECK((source IN('recovery','renewal'))=(target_registration IS NOT NULL AND predecessor IS NOT NULL)),
  PRIMARY KEY(tenant_id,id),
- UNIQUE(tenant_id,source,operation_id)
+ UNIQUE(tenant_id,source,operation_id),
+ configuration_id uuid,
+ configuration_binding jsonb CHECK(octet_length(configuration_binding::text)<=32768),
+ CONSTRAINT configuration_authority
+ CHECK((source='configuration' AND configuration_id IS NOT NULL AND configuration_binding IS NOT NULL AND spki IS NOT NULL) OR (source<>'configuration' AND configuration_id IS NULL AND configuration_binding IS NULL)),
+ CONSTRAINT agent_grants_source_check CHECK(source IN('download','browser','native','recovery','renewal','configuration')),
+ CONSTRAINT configuration_device_key UNIQUE(tenant_id,configuration_id,spki)
+
 );
 CREATE TABLE mdm_access.agent_issuances (
  tenant_id uuid NOT NULL,
@@ -167,7 +174,9 @@ CREATE TABLE mdm_access.agent_issuances (
  UNIQUE(tenant_id,grant_id),
  UNIQUE(tenant_id,operation_id),
  UNIQUE(tenant_id,fingerprint),
- FOREIGN KEY(tenant_id,grant_id) REFERENCES mdm_access.agent_grants(tenant_id,id)
+ FOREIGN KEY(tenant_id,grant_id) REFERENCES mdm_access.agent_grants(tenant_id,id),
+ signing_issuer text CHECK(signing_issuer ~ '^[0-9a-f]{64}$')
+
 );
 ALTER TABLE mdm_access.agent_grants ENABLE ROW LEVEL SECURITY;
 ALTER TABLE mdm_access.agent_grants FORCE ROW LEVEL SECURITY;
@@ -178,25 +187,27 @@ CREATE POLICY insert_only ON mdm_access.agent_grants AS RESTRICTIVE FOR INSERT W
 CREATE POLICY tenant ON mdm_access.agent_issuances USING(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid) WITH CHECK(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid);
 CREATE INDEX agent_quota ON mdm_access.agent_grants(tenant_id,actor,instance,expires_at);
 CREATE TABLE mdm_access.registrations (
-    purpose text NOT NULL CHECK(purpose IN('primary','windows_declared')),
-    epoch uuid NOT NULL,
-    next_command bigint DEFAULT 1024 NOT NULL CHECK(next_command BETWEEN 1024 AND 4294967296),
-    parent_id uuid,
-    parent_generation bigint,
-    ready boolean NOT NULL DEFAULT false,
-    CONSTRAINT linked_shape CHECK((purpose='primary' AND parent_id IS NULL AND parent_generation IS NULL) OR (purpose='windows_declared' AND channel='mdm' AND parent_id IS NOT NULL AND parent_generation IS NOT NULL AND parent_generation>0)),
-    tenant_id uuid NOT NULL,
-    id uuid NOT NULL,
-    device text NOT NULL,
-    channel text NOT NULL,
-    generation bigint NOT NULL,
-    request_id uuid,
-    agent_grant_id uuid,
-    CONSTRAINT registration_origin CHECK((channel='mdm' AND request_id IS NOT NULL AND agent_grant_id IS NULL) OR (channel='agent' AND request_id IS NULL AND agent_grant_id IS NOT NULL)),
-    state text NOT NULL,
-    CONSTRAINT registrations_channel_check CHECK ((channel = ANY (ARRAY['agent'::text, 'mdm'::text]))),
-    CONSTRAINT registrations_generation_check CHECK ((generation > 0)),
-    CONSTRAINT registrations_state_check CHECK ((state = ANY (ARRAY['active'::text, 'superseded'::text, 'revoked'::text])))
+ purpose text NOT NULL CHECK(purpose IN('primary','windows_declared')),
+ epoch uuid NOT NULL,
+ next_command bigint DEFAULT 1024 NOT NULL CHECK(next_command BETWEEN 1024 AND 4294967296),
+ parent_id uuid,
+ parent_generation bigint,
+ ready boolean NOT NULL DEFAULT false,
+ CONSTRAINT linked_shape CHECK((purpose='primary' AND parent_id IS NULL AND parent_generation IS NULL) OR (purpose='windows_declared' AND channel='mdm' AND parent_id IS NOT NULL AND parent_generation IS NOT NULL AND parent_generation>0)),
+ tenant_id uuid NOT NULL,
+ id uuid NOT NULL,
+ device text NOT NULL,
+ channel text NOT NULL,
+ generation bigint NOT NULL,
+ request_id uuid,
+ agent_grant_id uuid,
+ CONSTRAINT registration_origin CHECK((channel='mdm' AND request_id IS NOT NULL AND agent_grant_id IS NULL) OR (channel='agent' AND request_id IS NULL AND agent_grant_id IS NOT NULL)),
+ state text NOT NULL,
+ CONSTRAINT registrations_channel_check CHECK ((channel = ANY (ARRAY['agent'::text, 'mdm'::text]))),
+ CONSTRAINT registrations_generation_check CHECK ((generation > 0)),
+ CONSTRAINT registrations_state_check CHECK ((state = ANY (ARRAY['active'::text, 'superseded'::text, 'revoked'::text]))),
+ first_authenticated_at timestamptz
+
 );
 
 ALTER TABLE ONLY mdm_access.registrations FORCE ROW LEVEL SECURITY;
@@ -215,33 +226,48 @@ CREATE TABLE mdm_access.report_sources (
 ALTER TABLE ONLY mdm_access.report_sources FORCE ROW LEVEL SECURITY;
 
 CREATE TABLE mdm_access.requests (
-    authority_kind text NOT NULL DEFAULT 'password' CHECK(authority_kind IN('password','parent_certificate')),
-    tenant_id uuid NOT NULL,
-    id uuid NOT NULL,
-    grant_id uuid,
-    parent_id uuid,
-    parent_generation bigint,
-    parent_credential uuid,
-    state text DEFAULT 'cancelled'::text NOT NULL,
-    expected_generation bigint,
-    password_digest text,
-    password_version bigint DEFAULT 0 NOT NULL,
-    credential_ref uuid,
-    expires_at timestamp with time zone,
-    issuance_operation uuid,
-    source text NOT NULL,
-    windows_profile text,
-    CONSTRAINT requests_windows_profile_check CHECK ((source='mdm.windows' AND windows_profile IS NOT NULL AND windows_profile IN ('Full','Device')) OR (source<>'mdm.windows' AND windows_profile IS NULL)),
-    CONSTRAINT enrollment_shape CHECK ((state = 'cancelled') OR (expected_generation IS NOT NULL AND expires_at IS NOT NULL AND issuance_operation IS NOT NULL AND ((authority_kind='password' AND grant_id IS NOT NULL AND parent_id IS NULL AND password_digest IS NOT NULL AND password_version>0 AND credential_ref IS NOT NULL) OR (authority_kind='parent_certificate' AND grant_id IS NULL AND source='mdm.windows' AND parent_id IS NOT NULL AND parent_generation IS NOT NULL AND parent_generation>0 AND parent_credential IS NOT NULL AND password_digest IS NULL AND password_version=0 AND credential_ref IS NULL)))),
-    CONSTRAINT requests_expected_generation_check CHECK ((expected_generation >= 0)),
-    CONSTRAINT requests_password_digest_check CHECK ((password_digest ~ '^[0-9a-f]{64}$'::text)),
-    CONSTRAINT requests_password_version_check CHECK ((password_version >= 0)),
-    CONSTRAINT requests_source_check CHECK ((source = ANY (ARRAY['mdm.windows'::text, 'mdm.apple'::text]))),
-    CONSTRAINT requests_state_check CHECK ((state = ANY (ARRAY['pending'::text, 'bound'::text, 'cancelled'::text])))
+ authority_kind text NOT NULL DEFAULT 'password',
+ tenant_id uuid NOT NULL,
+ id uuid NOT NULL,
+ grant_id uuid,
+ parent_id uuid,
+ parent_generation bigint,
+ parent_credential uuid,
+ state text DEFAULT 'cancelled'::text NOT NULL,
+ expected_generation bigint,
+ password_digest text,
+ password_version bigint DEFAULT 0 NOT NULL,
+ credential_ref uuid,
+ expires_at timestamp with time zone,
+ issuance_operation uuid,
+ source text NOT NULL,
+ windows_profile text,
+ CONSTRAINT requests_windows_profile_check CHECK ((source='mdm.windows' AND windows_profile IS NOT NULL AND windows_profile IN ('Full','Device')) OR (source<>'mdm.windows' AND windows_profile IS NULL)),
+ CONSTRAINT requests_expected_generation_check CHECK ((expected_generation >= 0)),
+ CONSTRAINT requests_password_digest_check CHECK ((password_digest ~ '^[0-9a-f]{64}$'::text)),
+ CONSTRAINT requests_password_version_check CHECK ((password_version >= 0)),
+ CONSTRAINT requests_source_check CHECK ((source = ANY (ARRAY['mdm.windows'::text, 'mdm.apple'::text]))),
+ CONSTRAINT requests_state_check CHECK ((state = ANY (ARRAY['pending'::text, 'bound'::text, 'cancelled'::text]))),
+ self_service boolean NOT NULL DEFAULT false,
+ account_version bigint NOT NULL DEFAULT 0 CHECK(account_version>=0),
+ account_reference jsonb,
+ account_challenge text CHECK(account_challenge ~ '^[0-9a-f]{64}$'),
+ organization_version bigint NOT NULL DEFAULT 0 CHECK(organization_version>=0),
+ organization_challenge text CHECK(organization_challenge ~ '^[0-9a-f]{64}$'),
+ CONSTRAINT requests_authority_kind_check CHECK(authority_kind IN('password','parent_certificate','apple_account','apple_ade','windows_entra','agent_policy')),
+ CONSTRAINT enrollment_shape CHECK(
+ state='cancelled' OR (expected_generation IS NOT NULL AND expires_at IS NOT NULL AND issuance_operation IS NOT NULL AND (
+ (authority_kind='password' AND grant_id IS NOT NULL AND parent_id IS NULL AND password_digest IS NOT NULL AND password_version>0 AND credential_ref IS NOT NULL AND account_version=0 AND account_reference IS NULL AND account_challenge IS NULL AND organization_version=0 AND organization_challenge IS NULL) OR
+ (authority_kind='parent_certificate' AND grant_id IS NULL AND source='mdm.windows' AND parent_id IS NOT NULL AND parent_generation IS NOT NULL AND parent_generation>0 AND parent_credential IS NOT NULL AND password_digest IS NULL AND password_version=0 AND credential_ref IS NULL AND account_version=0 AND account_reference IS NULL AND account_challenge IS NULL AND organization_version=0 AND organization_challenge IS NULL) OR
+ (authority_kind='apple_account' AND grant_id IS NOT NULL AND source='mdm.apple' AND self_service AND parent_id IS NULL AND password_digest IS NULL AND password_version=0 AND credential_ref IS NULL AND account_version>0 AND account_reference IS NOT NULL AND account_challenge IS NOT NULL AND organization_version=0 AND organization_challenge IS NULL) OR
+ (authority_kind='apple_ade' AND grant_id IS NOT NULL AND source='mdm.apple' AND NOT self_service AND parent_id IS NULL AND password_digest IS NULL AND password_version=0 AND credential_ref IS NULL AND account_version=0 AND account_reference IS NULL AND account_challenge IS NULL AND organization_version>0 AND organization_challenge IS NOT NULL) OR
+ (authority_kind='windows_entra' AND grant_id IS NOT NULL AND source='mdm.windows' AND NOT self_service AND parent_id IS NULL AND password_digest IS NULL AND password_version=0 AND credential_ref IS NULL AND account_version=0 AND account_reference IS NULL AND account_challenge IS NULL AND organization_version>0 AND organization_challenge IS NULL) OR
+ (authority_kind='agent_policy' AND grant_id IS NOT NULL AND NOT self_service AND parent_id IS NULL AND password_digest IS NOT NULL AND password_version=1 AND credential_ref IS NULL AND account_version=0 AND account_reference IS NULL AND account_challenge IS NULL AND organization_version=0 AND organization_challenge IS NULL)
+ )))
+
 );
 
 CREATE UNIQUE INDEX parent_certificate_enrollment ON mdm_access.requests(tenant_id,issuance_operation) WHERE authority_kind='parent_certificate';
-
 
 ALTER TABLE ONLY mdm_access.requests FORCE ROW LEVEL SECURITY;
 

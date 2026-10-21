@@ -85,7 +85,7 @@ impl Health {
 pub fn protocol_identity(config: &Config) -> [u8; 32] {
     Sha256::digest(
         serde_json::to_vec(&(
-            "mdm.apple.enrollment/v3",
+            "mdm.apple.enrollment/v1",
             &config.management.origin,
             &config.apns_topic,
             &config.identity_seed.challenge_id,
@@ -459,8 +459,6 @@ impl Apple {
 /// This capability's closed privileges in the shared access connection.
 pub const ACCESS_CONTRACT: &str = include_str!("access-contract.json");
 
-/// Forward migration for account-driven protocol state and general SCEP authority revision.
-pub const ORGANIZATIONS_SQL: &str = include_str!("../schema/organizations.sql");
 pub const ACCOUNT_ENROLLMENT_SQL: &str = include_str!("../schema/account-enrollment.sql");
 
 pub const ADE_SQL: &str = include_str!("../schema/ade.sql");
@@ -484,7 +482,7 @@ mod identity_seed_tests {
         use sha2::Digest;
         let original: [u8; 32] = sha2::Sha256::digest(
             serde_json::to_vec(&(
-                "mdm.apple.enrollment/v3",
+                "mdm.apple.enrollment/v1",
                 "https://mdm.example.test",
                 "com.apple.mgmt.example",
                 "original-challenge",

@@ -209,7 +209,7 @@ pub(crate) fn read_attempt(v: &Value) -> Result<Attempt, PgError> {
 pub(crate) fn snapshot(p: &Publication) -> Result<Vec<u8>, PgError> {
     let s = p.snapshot();
     STORAGE.encode(&json!([
-        4,
+        1,
         publication_key(&s.id),
         s.revision,
         s.at.unix_seconds(),
@@ -221,7 +221,7 @@ pub(crate) fn snapshot(p: &Publication) -> Result<Vec<u8>, PgError> {
 pub(crate) fn read_snapshot(bytes: &[u8]) -> Result<Publication, PgError> {
     let v: Value = STORAGE.decode(bytes)?;
     let a = array(&v, 7)?;
-    if n(&a[0])? != 4 {
+    if n(&a[0])? != 1 {
         return Err(STORAGE.fault("codec::snapshot"));
     }
     crate::error::decode_domain(
@@ -252,7 +252,7 @@ pub(crate) fn request(p: &PublicationKey, r: &Request) -> Result<Vec<u8>, PgErro
         Operation::Withdraw => json!([2]),
     };
     STORAGE.encode(&json!([
-        4,
+        1,
         publication_key(p),
         request_id(&r.id),
         actor(&r.actor),
@@ -263,7 +263,7 @@ pub(crate) fn request(p: &PublicationKey, r: &Request) -> Result<Vec<u8>, PgErro
 }
 pub(crate) fn receipt(r: &Receipt) -> Value {
     json!([
-        4,
+        1,
         publication_key(&r.publication),
         request_id(&r.request),
         r.fingerprint.bytes(),
@@ -274,7 +274,7 @@ pub(crate) fn receipt(r: &Receipt) -> Value {
 }
 pub(crate) fn read_receipt(v: &Value) -> Result<Receipt, PgError> {
     let a = array(v, 7)?;
-    if n(&a[0])? != 4 {
+    if n(&a[0])? != 1 {
         return Err(STORAGE.fault("codec::receipt"));
     }
     Ok(Receipt {
@@ -294,11 +294,11 @@ pub(crate) fn material(c: &Content) -> Result<(String, Vec<u8>), PgError> {
 }
 pub(crate) fn read_request(bytes: &[u8]) -> Result<Option<(PublicationKey, Request)>, PgError> {
     let v: Value = STORAGE.decode(bytes)?;
-    if v.as_array().and_then(|a| a.first()).and_then(Value::as_str) == Some("publish-v4") {
+    if v.as_array().and_then(|a| a.first()).and_then(Value::as_str) == Some("publish-v1") {
         return Ok(None);
     }
     let a = array(&v, 7)?;
-    if n(&a[0])? != 4 {
+    if n(&a[0])? != 1 {
         return Err(STORAGE.fault("codec::request"));
     }
     let o = a[6]

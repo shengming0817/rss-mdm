@@ -127,7 +127,7 @@ mod tests {
         assert_eq!(
             identity(&first),
             enrollment::digest(&(
-                "mdm.windows.profile.v3",
+                "mdm.windows.profile.v1",
                 &poll,
                 "https://enroll.example",
                 "https://manage.example",

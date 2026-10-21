@@ -2,11 +2,11 @@
 
 服务端接入使用 [agent-wire](../../crates/agent-wire/README.md) 的闭合协议，版本、schema 和能力形态由协议包唯一持有。Agent 实现位于独立仓库；本指南不证明终端采集或执行已验收。
 
-协议 crate 按私有 Git 的完整 rev 独立消费，最低 Rust 为 `1.96.0`，生产依赖闭包仅包含公共基础库。包含 PKI 制品的最终 rev 和三族 schema 指纹见 #2688 合入后的交付记录；独立 Agent #2685 在固定候选可实际获取后消费该版本，实现自己的密钥、可信时钟、签名校验和 OS 执行边界。协议包提供 `TaskPayload::signing_bytes` 与 `Trust::installation_digest`，不提供客户端验证器、执行决策或服务端业务模型。采集 DTO 在服务端 ingress 显式转成 Inventory 值；执行条件及软件证据判定仍由产品 owner 持有。
+协议 crate 按私有 Git 的完整 rev 独立消费，最低 Rust 为 `1.96.0`，生产依赖闭包仅包含公共基础库。最终完整 rev 和四族 schema 指纹以当前候选交付记录为准；独立 Agent 在固定候选可实际获取后消费该版本，实现自己的密钥、可信时钟、签名校验和 OS 执行边界。协议包提供 `TaskPayload::signing_bytes` 与 `Trust::installation_digest`，不提供客户端验证器、执行决策或服务端业务模型。采集 DTO 在服务端 ingress 显式转成 Inventory 值；执行条件及软件证据判定仍由产品 owner 持有。
 
 ## API 版本与注册授权
 
-注册生命周期为 `/api/v1/agent/enroll`，运行请求为 `/api/v1/agent/runtime`，二者独立演进。本次运行 JSON 的 `wireVersion: 1`、capability `*.v1` 和各任务签名域共同重建为新 V1。新 V1 继承当前 V6 的业务和安全语义，拒绝历史 V1 shape、V2–V6、旧 capability 与签名；未来由各族 owner 明确演进。[agent-wire](../../crates/agent-wire/README.md) 分别发布 `enroll`、`runtime`、`pki` schema 清单与指纹。PKI 保持独立的 `version: 1`；共享 Purpose 支持原生通道，Agent 必须显式拒绝非 Agent purpose，并继续核对 origin、租户、设备、注册、证书/CRL、时钟与防回滚。仅通过静态解码不授予安装或执行权限。
+注册生命周期为 `/api/v1/agent/enroll`，运行请求为 `/api/v1/agent/runtime`，二者独立演进。本次运行 JSON 的 `wireVersion: 1`、capability `*.v1` 和各任务签名域共同重建为新 V1。仅维护当前 V1 结构及其业务、安全与恢复语义，不提供历史格式兼容。[agent-wire](../../crates/agent-wire/README.md) 分别发布 `enroll`、`runtime`、`task_trust`、`pki` schema 清单与指纹。PKI 保持独立的 `version: 1`；共享 Purpose 支持原生通道，Agent 必须显式拒绝非 Agent purpose，并继续核对 origin、租户、设备、注册、证书/CRL、时钟与防回滚。仅通过静态解码不授予安装或执行权限。
 
 所有已认证租户用户可注册自己的设备，Agent 默认每用户 20 台，Windows 与 macOS 共用 Agent 额度；有效授权预留也计入占用。租户默认值与可空的个人覆盖见 [自助注册与个人额度](device-enrollment.md#自助注册与个人额度)，0 禁止新增并保留既有注册。授权默认 24 小时，最多 7 天；数据库只保存租户隔离的秘密摘要。
 
@@ -88,7 +88,7 @@ Agent HTTPS 监听器公开 `GET /api/v1/agent/enroll/packages`、`GET .../packa
 
 原生声明式采集使用 `agent_collection` 资源及 Collection 任务，协议形态、引擎要求和固定签名向量见 [wire 契约](../../crates/agent-wire/README.md#原生采集契约2739)，配置及质量语义见[资产指南](assets.md#windows-agent-声明式采集)。当前 task payload 显式携带 kind/task，claim environment 必须包含 nativeEngines；不兼容旧包络，不使用脚本兜底。
 
-安全、账户、证书和更新由同一原生 Collection V3 契约承载，见 [wire 契约](../../crates/agent-wire/README.md#安全账户证书与更新)
+安全、账户、证书和更新由同一原生 Collection V1 契约承载，见 [wire 契约](../../crates/agent-wire/README.md#安全账户证书与更新)
 和 [标准包操作](assets.md#agent-安全账户证书与更新标准包)。Agent 必须固定交付的完整 revision，
 更新当前用户 GeneratedUID、精确引擎声明及 scan 证据；不沿用旧 Collection V2 或省略新增必填成员。
 本候选只接纳匹配的精确安装 manifest，不承诺旧数据库原地升级。旧实例按原版本结算任务并保留注册、journal、审计和历史资产，不清库或重新注册绕过安装拒绝；任务排空不等于持久格式迁移完成。

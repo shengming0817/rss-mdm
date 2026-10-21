@@ -12,7 +12,6 @@ ALTER TABLE mdm_windows.linked_enrollments ENABLE ROW LEVEL SECURITY;
 ALTER TABLE mdm_windows.linked_enrollments FORCE ROW LEVEL SECURITY;
 CREATE POLICY tenant ON mdm_windows.linked_enrollments USING(tenant_id=NULLIF(current_setting('rss.tenant_id',true),'')::uuid) WITH CHECK(tenant_id=NULLIF(current_setting('rss.tenant_id',true),'')::uuid);
 
-
 CREATE TABLE mdm_windows.unenrollment_receipts (
     tenant_id uuid NOT NULL, registration uuid NOT NULL, generation bigint NOT NULL CHECK(generation>0),
     credential uuid NOT NULL, session bigint NOT NULL CHECK(session BETWEEN 1 AND 65535),
@@ -73,22 +72,23 @@ CREATE TABLE mdm_access.enrollment_certificates (
 ALTER TABLE ONLY mdm_access.enrollment_certificates FORCE ROW LEVEL SECURITY;
 
 CREATE TABLE mdm_access.enrollment_intents (
-    protocol_device text CHECK(length(protocol_device) BETWEEN 1 AND 256),
-    tenant_id uuid NOT NULL,
-    request_id uuid NOT NULL,
-    csr bytea NOT NULL,
-    tbs bytea NOT NULL,
-    issuer bytea NOT NULL,
-    configuration text NOT NULL,
-    registration uuid NOT NULL,
-    credential uuid NOT NULL,
-    epoch uuid NOT NULL,
-    secrets bytea NOT NULL,
-    CONSTRAINT enrollment_intents_configuration_check CHECK ((configuration ~ '^[0-9a-f]{64}$'::text)),
-    CONSTRAINT enrollment_intents_csr_check CHECK (((octet_length(csr) >= 1) AND (octet_length(csr) <= 32768))),
-    CONSTRAINT enrollment_intents_issuer_check CHECK (((octet_length(issuer) >= 1) AND (octet_length(issuer) <= 32768))),
-    CONSTRAINT enrollment_intents_secrets_check CHECK (((octet_length(secrets) >= 28) AND (octet_length(secrets) <= 4096))),
-    CONSTRAINT enrollment_intents_tbs_check CHECK (((octet_length(tbs) >= 1) AND (octet_length(tbs) <= 32768)))
+ protocol_device text CHECK(length(protocol_device) BETWEEN 1 AND 256),
+ tenant_id uuid NOT NULL,
+ request_id uuid NOT NULL,
+ csr bytea NOT NULL,
+ profile bytea NOT NULL,
+ issuer bytea NOT NULL,
+ configuration text NOT NULL,
+ registration uuid NOT NULL,
+ credential uuid NOT NULL,
+ epoch uuid NOT NULL,
+ secrets bytea NOT NULL,
+ CONSTRAINT enrollment_intents_configuration_check CHECK ((configuration ~ '^[0-9a-f]{64}$'::text)),
+ CONSTRAINT enrollment_intents_csr_check CHECK (((octet_length(csr) >= 1) AND (octet_length(csr) <= 32768))),
+ CONSTRAINT enrollment_intents_issuer_check CHECK (((octet_length(issuer) >= 1) AND (octet_length(issuer) <= 32768))),
+ CONSTRAINT enrollment_intents_secrets_check CHECK (((octet_length(secrets) >= 28) AND (octet_length(secrets) <= 4096))),
+ CONSTRAINT enrollment_profile_size CHECK(octet_length(profile) BETWEEN 1 AND 4096)
+
 );
 
 ALTER TABLE ONLY mdm_access.enrollment_intents FORCE ROW LEVEL SECURITY;
@@ -129,8 +129,6 @@ CREATE TABLE mdm_access.management_sessions (
 
 ALTER TABLE ONLY mdm_access.management_sessions FORCE ROW LEVEL SECURITY;
 
-
-
 ALTER TABLE ONLY mdm_access.enrollment_certificates
     ADD CONSTRAINT enrollment_certificates_pkey PRIMARY KEY (tenant_id, request_id);
 
@@ -142,7 +140,6 @@ ALTER TABLE ONLY mdm_access.management_messages
 
 ALTER TABLE ONLY mdm_access.management_sessions
     ADD CONSTRAINT management_sessions_pkey PRIMARY KEY (tenant_id, registration, session_id);
-
 
 CREATE INDEX management_retention ON mdm_access.management_sessions USING btree (tenant_id, expires_at, registration, session_id);
 
@@ -169,7 +166,6 @@ CREATE POLICY tenant ON mdm_access.enrollment_intents USING ((tenant_id = (NULLI
 CREATE POLICY tenant ON mdm_access.management_messages USING ((tenant_id = (NULLIF(current_setting('rss.tenant_id'::text, true), ''::text))::uuid)) WITH CHECK ((tenant_id = (NULLIF(current_setting('rss.tenant_id'::text, true), ''::text))::uuid));
 
 CREATE POLICY tenant ON mdm_access.management_sessions USING ((tenant_id = (NULLIF(current_setting('rss.tenant_id'::text, true), ''::text))::uuid)) WITH CHECK ((tenant_id = (NULLIF(current_setting('rss.tenant_id'::text, true), ''::text))::uuid));
-
 
 CREATE TABLE mdm_windows.collections (
  tenant_id uuid NOT NULL,

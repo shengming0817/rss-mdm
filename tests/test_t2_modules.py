@@ -59,7 +59,7 @@ class ModuleImpactTests(unittest.TestCase):
                 self.assertTrue(selected.isdisjoint({'apple.apns','sources.brew_git','identity.oidc'}),selected)
 
     def test_shared_apple_organization_schema_selects_both_enrollment_consumers(self):
-        selected=select_inputs(['crates/apple-channel/schema/organizations.sql'])
+        selected=select_inputs(['crates/apple-channel/schema/account-enrollment.sql'])
         self.assertTrue({'apple.ade','apple.account_enrollment'} <= set(selected.modules))
 
     def test_configuration_inputs_select_their_real_consumers(self):
@@ -517,8 +517,7 @@ class ModuleImpactTests(unittest.TestCase):
                          {'apple.apns','apple.push','apple.host'})
 
     def test_local_schema_selects_installation_and_real_consumers(self):
-        self.assertEqual(self.selected('crates/app/schema/self-service-access.sql'),
-                         {'installation.migration', 'catalog.contract', 'planning.self_service', 'execution.software.offer', 'execution.software.content', 'execution.software.recovery'})
+        self.assertTrue({'installation.migration', 'catalog.contract', 'planning.self_service', 'execution.software.offer', 'execution.software.content', 'execution.software.recovery'} <= self.selected('crates/execution-service/schema/install.sql'))
         self.assertEqual(self.selected('crates/windows-channel/schema/entra.sql'),
                          {'installation.migration', 'catalog.contract', 'windows.entra'})
         selected = self.selected('crates/flow-service/schema/install.sql')

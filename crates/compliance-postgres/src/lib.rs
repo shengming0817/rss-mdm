@@ -7,7 +7,7 @@ use serde_json::Value;
 use sqlx::{PgConnection, Row};
 use uuid::Uuid;
 /// Immutable installation unit.
-pub const MIGRATION_SQL: &str = include_str!("../migrations/0001_compliance.sql");
+pub const MIGRATION_SQL: &str = include_str!("../migrations/install.sql");
 type Result<T> = std::result::Result<T, sqlx::Error>;
 fn corrupt() -> sqlx::Error {
     sqlx::Error::Protocol("compliance storage invariant".into())

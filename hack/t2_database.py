@@ -256,7 +256,7 @@ class DatabasePool:
                         if profile == 'backend':
                             sql += '\n' + '\n'.join((ROOT / f'crates/{kind}-postgres/migrations/{unit}').read_text()
                                                      for kind in ('resource', 'software-release')
-                                                     for unit in ('0001.sql', '0002_outbox_writer.sql'))
+                                                     for unit in ('install.sql', 'outbox.sql'))
                         role = 'mdm_group_owner' if profile == 'group' else 'mdm_owner'
                         owner.sql(f'BEGIN; SET ROLE {role}; {sql} COMMIT;', name)
                         owner.sql("INSERT INTO rss_transactional_messaging.storage_lineage(target,lineage) VALUES(decode(repeat('01',16),'hex'),decode(repeat('02',16),'hex'));", name)

@@ -16,15 +16,6 @@ fn enrollment_action_has_no_fictitious_resource() {
 }
 
 #[test]
-fn old_split_resource_behavior_contract_is_rejected() {
-    let old = json!({"scope":Uuid::new_v4(),"resource":{
-        "id":"firewall","version":"v1","platform":"windows",
-        "architecture":"x86_64","variant":"default"
-    },"behavior":{"kind":"configuration","exit":"retain"}});
-    assert!(serde_json::from_value::<Definition>(old).is_err());
-}
-
-#[test]
 fn onboarding_requires_organization_and_bounded_lifetime() {
     for (organization, lifetime) in [
         (Uuid::nil(), 3600),

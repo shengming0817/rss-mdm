@@ -361,7 +361,7 @@ fn brew_identity_requires_nonroot_live_session_and_exact_context() {
     );
 }
 #[test]
-fn signed_macos_collection_binds_identity_plan_and_permit_without_old_decode() {
+fn signed_macos_collection_binds_identity_plan_and_permit() {
     use ring::signature::{ED25519, Ed25519KeyPair, KeyPair, UnparsedPublicKey};
     let plan = plan(brew("/opt/homebrew"));
     let id = uuid::Uuid::from_u128(1);
@@ -466,13 +466,13 @@ fn macos_software_rows_bind_closed_provenance_and_brew_selectors() {
 }
 
 #[test]
-fn brew_data_recipe_rejects_old_versions_and_negotiates_exactly() {
+fn brew_data_recipe_requires_current_engine_contract() {
     let current = query(brew("/opt/homebrew"));
-    assert_eq!(current.version, 2);
+    assert_eq!(current.version, 1);
     current.validate().unwrap();
     let plan = plan(current.definition.clone());
-    assert!(plan.supported_by(&[(NativeEngine::MacosBrew, 2)].into()));
-    for version in [0, 1, 3] {
+    assert!(plan.supported_by(&[(NativeEngine::MacosBrew, 1)].into()));
+    for version in [0, 2] {
         assert!(!plan.supported_by(&[(NativeEngine::MacosBrew, version)].into()));
         let mut unsupported = current.clone();
         unsupported.version = version;

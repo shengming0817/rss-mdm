@@ -39,16 +39,3 @@ fn native_templates_are_read_only_bounded_and_platform_specific() {
             .is_err()
     );
 }
-
-#[test]
-fn old_windows_strings_and_adapter_are_rejected() {
-    let definition =
-        NativeCollectionDefinition::new(spec(NativeAdapter::WindowsRead, "./DevInfo/Mod")).unwrap();
-    let mut value = serde_json::to_value(&definition).unwrap();
-    value["mappings"]["device.model"]["query"] = serde_json::json!("./DevInfo/Mod");
-    assert!(serde_json::from_value::<NativeCollectionDefinition>(value).is_err());
-    let mut value = serde_json::to_value(&definition).unwrap();
-    value["adapter"] = serde_json::json!("windows_csp");
-    assert!(serde_json::from_value::<NativeCollectionDefinition>(value).is_err());
-    assert!(blueprints::get("windows.os", "1").is_none());
-}

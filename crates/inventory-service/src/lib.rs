@@ -42,7 +42,4 @@ pub async fn admit_storage_in(
 /// This capability's closed privileges in the shared access connection.
 pub const ACCESS_CONTRACT: &str = include_str!("access-contract.json");
 
-pub const FIELD_SCOPES_SQL: &str = include_str!("../schema/field-scopes.sql");
-
-/// Upgrade channel maintenance history without changing completed report identities.
-pub const CHANNEL_MAINTENANCE_SQL: &str = include_str!("../schema/channel-maintenance.sql");
+pub const GROUP_SELECTIONS_SQL: &str = include_str!("../schema/group-selections.sql");

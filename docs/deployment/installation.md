@@ -1,6 +1,8 @@
 # 候选构建与安装
 
-## 构建 V6 候选
+## 构建当前候选
+
+候选格式为 V1。自有 SQL 直接建立最终结构，安装清单由二进制 `--describe` 唯一派生；服务与安装器必须输出同一清单。V1 是当前格式标识，具体内容由完整 Git revision、schema 指纹和候选摘要固定。
 
 构建使用当前工作区源码，包含未提交修改、已加入 Git 索引的新文件及删除；源码路径由 workspace 成员与构建输入限定。范围内未跟踪文件默认拒绝，新增源码须先逐项检查并加入索引，不要求 commit 或 clean HEAD。复制前后核对文件内容与状态，变化则终止构建；candidate 记录实际复制输入的摘要，运行验收不依赖源码 checkout。构建机需要 Docker Buildx 和私有 Git 只读凭据。部署宿主使用 macOS 或 Linux，arm64 或 amd64；容器平台显式选择 `linux/arm64` 或 `linux/amd64`，不要求宿主安装 Rust、nginx、systemd 或使用 sudo。后端可独立发布；前后端一起交付时，额外提供不可变 rss-web MDM image ID/repository digest。
 
@@ -14,7 +16,7 @@ python3 hack/build_run.py -- python3 hack/candidate_smoke.py --candidate artifac
 
 授权头文件须为 owner 独占普通文件，只以 BuildKit secret 供依赖获取使用。构建从一次源码副本生成正式 OCI，复用正常缓存；失败不发布候选目录，已有输出不覆盖。
 
-V6 候选包含 server.oci.tar、installer.oci.tar、candidate.json、正式 `deployment/production.compose.yaml`、卷输入准备程序、角色 SQL、网关配置和设备证书模板。`--web-image` 固定并归档真实 MDM 控制台；正式控制台部署必须包含它。用 `--platform linux/arm64` 或 `--platform linux/amd64` 指定容器架构，服务、安装器和 UI 必须一致；省略时使用 Docker 默认平台并核验实际 OCI。macOS arm64 上运行 amd64 容器属于仿真，不能作为 amd64 宿主已验收的证据。
+V1 候选包含 server.oci.tar、installer.oci.tar、candidate.json、正式 `deployment/production.compose.yaml`、卷输入准备程序、角色 SQL、网关配置和设备证书模板。`--web-image` 固定并归档真实 MDM 控制台；正式控制台部署必须包含它。用 `--platform linux/arm64` 或 `--platform linux/amd64` 指定容器架构，服务、安装器和 UI 必须一致；省略时使用 Docker 默认平台并核验实际 OCI。macOS arm64 上运行 amd64 容器属于仿真，不能作为 amd64 宿主已验收的证据。
 
 安装器只以容器镜像交付，不再交付宿主 Linux 二进制。服务和安装器默认 UID/GID 10001。manifest 固定实际镜像身份、平台、归档和部署输入摘要；旧候选须重建，不提供旧 systemd 安装目录转换。恢复前核验归档和部署输入，不以 tag 替换已交付镜像。
 
@@ -330,7 +332,7 @@ docker compose -p rss-mdm -f /absolute/candidate/deployment/production.compose.y
 
 ## 时间线索引恢复
 
-时间线索引是产品派生数据，`rss_audit` 持久事实仍是唯一来源。当前全新安装包含 `timeline-service-schema-v2`，checkpoint 不持有后台健康状态；旧安装清单不能用于当前候选，启动和安装校验会拒绝不匹配的清单，不提供旧结构自动升级。授权访问设备时间线或管理审计检索时才从 checkpoint 有界追赶，故障返回不可用，后续请求重新尝试。
+时间线索引是产品派生数据，`rss_audit` 持久事实仍是唯一来源。当前全新安装包含 `timeline-service-schema-v1`，checkpoint 不持有后台健康状态；旧安装清单不能用于当前候选，启动和安装校验会拒绝不匹配的清单，不提供旧结构自动升级。授权访问设备时间线或管理审计检索时才从 checkpoint 有界追赶，故障返回不可用，后续请求重新尝试。
 
 需要重建时先停止本安装的所有服务实例，由数据库 owner 在一个事务内设置目标租户上下文，删除该租户的 `mdm_timeline.facts`，将其 checkpoint 的 `position`、`source_through` 置为 -1，并为 `generation` 设置新的 UUID。保留既有游标签名秘密和全部 Audit/Ledger 数据，再启动服务并通过授权查询触发追赶。旧游标因世代变化被拒绝；历史追赶完成前，API 明确返回覆盖进度。不得删除 Audit 事实、修补审计回执或改写迁移清单来恢复索引。
 

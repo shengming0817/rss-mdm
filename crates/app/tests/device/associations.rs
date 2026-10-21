@@ -77,7 +77,7 @@ pub(crate) fn hardware(
     let coverage = serde_json::to_string(&definition.coverage()?)?;
     let value = serde_json::to_string(&rss_mdm_inventory::Scalar::String(serial.into()))?;
     crate::test_support::pg(&format!(
-        "INSERT INTO mdm.inventory(field_scope,tenant_id,journal,generation,scope,coverage,field,value,batch_id,observed_at,received_at,state,last_known,last_known_batch,last_known_observed,last_known_received,registration,source,epoch,collection_sequence) VALUES(replace(jsonb_build_object('kind','device')::text,' ',''),'{}','mdm.observation.v1','inventory-v7','{}','{}','device.serial_number','{}','hardware-fixture',1,2,'known','{}','hardware-fixture',1,2,'{}','{}','{}',0)",
+        "INSERT INTO mdm.inventory(field_scope,tenant_id,journal,generation,scope,coverage,field,value,batch_id,observed_at,received_at,state,last_known,last_known_batch,last_known_observed,last_known_received,registration,source,epoch,collection_sequence) VALUES(replace(jsonb_build_object('kind','device')::text,' ',''),'{}','mdm.observation.v1','inventory-projection-v1','{}','{}','device.serial_number','{}','hardware-fixture',1,2,'known','{}','hardware-fixture',1,2,'{}','{}','{}',0)",
         case_a(),
         scope.replace('\'', "''"),
         coverage.replace('\'', "''"),

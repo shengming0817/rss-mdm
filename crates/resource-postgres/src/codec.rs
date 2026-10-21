@@ -140,14 +140,7 @@ fn read_declaration(v: &Value) -> Result<Declaration, PgError> {
 }
 pub(crate) fn version(v: &Version) -> Result<Vec<u8>, PgError> {
     STORAGE.encode(&json!([
-        match v.kind() {
-            Kind::Software => 4,
-            Kind::Script => 2,
-            Kind::Configuration => 5,
-            Kind::NativeCollection => 5,
-            Kind::AgentCollection => 6,
-            Kind::TelemetryProfile => 1,
-        },
+        1,
         v.tenant().to_string(),
         v.resource().as_str(),
         v.label().as_str(),
@@ -173,16 +166,7 @@ pub(crate) fn version(v: &Version) -> Result<Vec<u8>, PgError> {
 pub(crate) fn read_version(bytes: &[u8]) -> Result<Version, PgError> {
     let v: Value = STORAGE.decode(bytes)?;
     let a = array(&v, 7)?;
-    if n(&a[0])?
-        != match read_kind(&a[4])? {
-            Kind::Software => 4,
-            Kind::Script => 2,
-            Kind::Configuration => 5,
-            Kind::NativeCollection => 5,
-            Kind::AgentCollection => 6,
-            Kind::TelemetryProfile => 1,
-        }
-    {
+    if n(&a[0])? != 1 {
         return Err(STORAGE.fault("codec::read_version"));
     }
     let t = STORAGE.invalid("codec::read_version", TenantId::parse(s(&a[1])?))?;
@@ -245,7 +229,7 @@ fn read_state(v: &Value) -> Result<State, PgError> {
 pub(crate) fn header(r: &Resource) -> Result<Vec<u8>, PgError> {
     let s = r.snapshot();
     STORAGE.encode(&json!([
-        2,
+        1,
         s.tenant.to_string(),
         s.key.as_str(),
         kind(s.kind),
@@ -264,7 +248,7 @@ pub(crate) fn restore(
 ) -> Result<Resource, PgError> {
     let v: Value = STORAGE.decode(bytes)?;
     let a = array(&v, 8)?;
-    if n(&a[0])? != 2 {
+    if n(&a[0])? != 1 {
         return Err(STORAGE.fault("codec::restore"));
     }
     let states = a[5]
@@ -321,7 +305,7 @@ pub(crate) fn software_header(
 ) -> Result<bool, PgError> {
     let value: Value = STORAGE.decode(bytes)?;
     let a = array(&value, 8)?;
-    if n(&a[0])? != 2
+    if n(&a[0])? != 1
         || s(&a[1])? != tenant.to_string()
         || s(&a[2])? != resource.as_str()
         || read_kind(&a[3])? != Kind::Software
@@ -363,7 +347,7 @@ pub(crate) fn directory_header(
 ) -> Result<Value, PgError> {
     let value: Value = STORAGE.decode(bytes)?;
     let a = array(&value, 8)?;
-    if n(&a[0])? != 2
+    if n(&a[0])? != 1
         || s(&a[1])? != tenant.to_string()
         || id(&a[2])?.as_str() != resource
         || revision < 0

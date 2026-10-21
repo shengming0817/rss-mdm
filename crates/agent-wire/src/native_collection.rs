@@ -77,10 +77,7 @@ pub enum NativeEngine {
 impl NativeEngine {
     /// The only supported recipe version. Older semantics are not executed as a fallback.
     pub const fn contract_version(self) -> u16 {
-        match self {
-            Self::MacosBrew => 2,
-            _ => 1,
-        }
+        1
     }
 }
 /// Exact supported contract versions, not executable names.
@@ -396,7 +393,7 @@ pub enum NativeQueryDefinition {
     /// Device package receipts, never application-existence evidence.
     MacosPkgReceipts {},
     /// Installed package metadata; the executor must be a bound non-root logged-in user.
-    /// Version 2 reads bounded Cellar/Caskroom installation records and recognized JSON
+    /// Reads bounded Cellar/Caskroom installation records and recognized JSON
     /// metadata beneath the approved prefix. Treat all contents as untrusted data;
     /// never invoke brew, Ruby, shell commands or evaluate formula/cask definitions.
     /// Enumerate installed versions, not current catalog versions or linked binaries.

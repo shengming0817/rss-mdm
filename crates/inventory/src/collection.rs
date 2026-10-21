@@ -126,7 +126,7 @@ impl CollectionDefinition {
             id(self.dataset())?,
             id(self.version())?,
             id(&self.fingerprint()?)?,
-            id("typed-fields-v4")?,
+            id("typed-fields-v1")?,
         ))
     }
     /// Validate authenticated stream coordinates against this definition.

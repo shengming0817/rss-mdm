@@ -14,7 +14,7 @@ pub use event::EVENT_SCHEMA;
 pub use rss_mdm_resource as core;
 pub use store::*;
 /// Exact final schema migration. Execute only through the privileged host migrator after RSS messaging prerequisites.
-pub const MIGRATION_SQL: &str = include_str!("../migrations/0001.sql");
+pub const MIGRATION_SQL: &str = include_str!("../migrations/install.sql");
 
 use rss_mdm_backend_postgres_support::{Admission, BackendKind, BackendStorage};
 pub(crate) const STORAGE: BackendStorage = BackendStorage::new(BackendKind::Resource);
@@ -39,7 +39,7 @@ pub(crate) const ADMISSION: Admission = Admission {
 };
 
 /// Public Outbox function permissions, installed after the immutable initial product schema.
-pub const OUTBOX_MIGRATION_SQL: &str = include_str!("../migrations/0002_outbox_writer.sql");
+pub const OUTBOX_MIGRATION_SQL: &str = include_str!("../migrations/outbox.sql");
 
 /// Minimal validated resources for downstream integration prerequisites.
 #[cfg(feature = "integration")]

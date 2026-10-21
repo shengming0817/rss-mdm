@@ -423,7 +423,7 @@ pub(crate) fn encode_page(s: &PageInput<'_>) -> Result<Vec<u8>> {
         })
         .collect();
     encode(&PageDoc {
-        v: 3,
+        v: 1,
         tenant: s.tenant.to_string(),
         id: s.id.to_owned(),
         version: s.version.to_owned(),

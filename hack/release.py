@@ -187,6 +187,9 @@ def build_staged(out, header, web_image=None, target_platform=None):
         if platform(operator_config)!=platform(config):raise ValueError("installer platform mismatch")
         subprocess.run(["docker","load","--input",str(operator_archive)],check=True)
         migrations = json.loads(run(["docker", "run", "--rm", "--network", "none", image, "--describe"]))
+        installer_migrations = json.loads(run(["docker", "run", "--rm", "--network", "none", operator_image, "--describe"]))
+        if installer_migrations != migrations:
+            raise ValueError("server and installer installation manifests differ")
         version = run(["docker", "run", "--rm", "--network", "none", image, "--version"])
         deployment = {}
         for name in DEPLOYMENT_FILES:
@@ -208,7 +211,7 @@ def build_staged(out, header, web_image=None, target_platform=None):
             shutil.copy(ROOT / "hack" / tool, target)
             tools[tool] = sha(target)
         manifest = {
-            "format_version": 6,
+            "format_version": 1,
             "installer": {"image":operator_image+"@"+operator_digest,
                           "archive":{"file":operator_archive.name,"sha256":sha(operator_archive),"manifest_digest":operator_digest}},
             "source": {"inputs_sha256": inputs_sha256},

@@ -21,7 +21,7 @@ fn dispatch(
     now: i64,
 ) -> Result<PendingMessage<Vec<u8>>> {
     let payload = checked_input(serde_json::to_vec(
-        &json!({"version":2,"source":source,"taskId":id,"device":target.device,"registrationId":target.registration,"generation":target.generation}),
+        &json!({"version":1,"source":source,"taskId":id,"device":target.device,"registrationId":target.registration,"generation":target.generation}),
     ))?;
     Ok(PendingMessage::new(MessageEnvelope::new(
         checked_input(MessageId::parse(&format!("action.{id}")))?,
@@ -36,7 +36,7 @@ fn dispatch(
                     ContractVersion::from_static_major(2),
                     checked_input(SchemaDigest::parse(&format!(
                         "sha256:{:x}",
-                        Sha256::digest(include_bytes!("dispatch-v2.json"))
+                        Sha256::digest(include_bytes!("dispatch-v1.json"))
                     )))?,
                 ),
             ),

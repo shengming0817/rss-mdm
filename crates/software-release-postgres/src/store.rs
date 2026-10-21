@@ -166,7 +166,7 @@ impl ReleaseStore {
         }
         let document = codec::snapshot(c)?;
         let request = STORAGE.encode(&json!([
-            "publish-v4",
+            "publish-v1",
             id.tenant().to_string(),
             id.value(),
             STORAGE.decode::<Value>(&document)?

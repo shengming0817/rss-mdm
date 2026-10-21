@@ -230,7 +230,7 @@ def load_ui(directory, ui):
 
 def verify_candidate(directory):
     manifest=json.loads((directory/"candidate.json").read_text())
-    require(manifest.get("format_version")==6,"candidate V6 required; rebuild the candidate")
+    require(manifest.get("format_version")==1,"candidate V1 required; rebuild the candidate")
     archive=directory/manifest["archive"]["file"]
     require(archive.parent==directory and not archive.is_symlink() and sha(archive)==manifest["archive"]["sha256"],"candidate archive mismatch")
     digest,config=oci_identity(archive)

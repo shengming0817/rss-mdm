@@ -74,7 +74,7 @@ fn desired<'a>(
             &service.protection,
             service.tenant,
             device,
-            "native-configuration/v3",
+            "native-configuration/v1",
             &(&native.target, &native.apply),
         )?,
         objects,
@@ -544,7 +544,7 @@ impl ExecutionService {
                     &self.protection,
                     self.tenant,
                     device,
-                    "native-configuration/v3",
+                    "native-configuration/v1",
                     &(&desired.native.target, task),
                 )
             })
@@ -560,7 +560,7 @@ impl ExecutionService {
                 &self.protection,
                 self.tenant,
                 device,
-                "native-configuration/v3",
+                "native-configuration/v1",
                 &(&operation.request.target, &operation.request.task),
             )?;
             // A co-owner can replace one object's operation. The immutable whole task
@@ -585,7 +585,7 @@ impl ExecutionService {
             &self.protection,
             self.tenant,
             &old.device,
-            "native-configuration/v3",
+            "native-configuration/v1",
             &(&old.request.target, &old.request.task),
         )?;
         let command = self.required_command(tx, &old).await?;
@@ -715,7 +715,7 @@ impl ExecutionService {
             &self.protection,
             self.tenant,
             device,
-            "configuration-command/v3",
+            "configuration-command/v1",
             &(input, policy.id, policy.version, remove),
         )?;
         let fact_audit = audit.transaction_copy();

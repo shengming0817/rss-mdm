@@ -117,7 +117,7 @@ async fn checkin_sweep_coalesces_and_resumes_after_interrupted_item() -> Result<
         .bind(case_tenant())
         .execute(&mut pg)
         .await?;
-    sqlx::query("SELECT rss_reconcile.wake($1::uuid,'mdm.commands.v3',$2)")
+    sqlx::query("SELECT rss_reconcile.wake($1::uuid,'mdm.commands.v1',$2)")
         .bind(case_tenant())
         .bind(&entity)
         .execute(&mut pg)
@@ -196,7 +196,7 @@ async fn checkin_sweep_coalesces_and_resumes_after_interrupted_item() -> Result<
     );
     tokio::time::timeout(Duration::from_secs(60), async {
         loop {
-            let (runs, targets, events): (i64,i64,i64) = sqlx::query_as("SELECT count(*),count(t.entity),count(r.triggered_at) FROM mdm_commands.action_runs r JOIN mdm_policy.versions v ON(v.tenant_id,v.id)=(r.tenant_id,r.policy_version) LEFT JOIN rss_reconcile.targets t ON t.tenant_id=r.tenant_id AND t.reconciler='mdm.commands.v3' AND t.entity='native-run:'||r.id::text WHERE r.tenant_id=$1::uuid AND v.policy=ANY($2)")
+            let (runs, targets, events): (i64,i64,i64) = sqlx::query_as("SELECT count(*),count(t.entity),count(r.triggered_at) FROM mdm_commands.action_runs r JOIN mdm_policy.versions v ON(v.tenant_id,v.id)=(r.tenant_id,r.policy_version) LEFT JOIN rss_reconcile.targets t ON t.tenant_id=r.tenant_id AND t.reconciler='mdm.commands.v1' AND t.entity='native-run:'||r.id::text WHERE r.tenant_id=$1::uuid AND v.policy=ANY($2)")
                 .bind(case_tenant()).bind(&policies).fetch_one(&mut pg).await?;
             let drained: bool = sqlx::query_scalar("SELECT active_event IS NULL AND pending_event IS NULL FROM mdm_commands.native_checkins WHERE tenant_id=$1::uuid AND registration=$2 AND generation=$3")
                 .bind(case_tenant()).bind(registration).bind(generation).fetch_one(&mut pg).await?;

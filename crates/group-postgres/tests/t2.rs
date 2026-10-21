@@ -393,7 +393,7 @@ async fn admission_rejects_catalog_and_security_drift() {
         let result = GroupStore::new(runtime.clone(), tenant(), deadline()).await;
         // Restore before asserting so a failing case cannot contaminate later tests.
         admin(&format!(
-            "ALTER ROLE mdm_group_runtime NOBYPASSRLS; UPDATE pg_index SET indisvalid=true,indisready=true,indislive=true WHERE indexrelid=to_regclass('mdm_group.member_changes_history'); DROP SCHEMA mdm_group CASCADE; SET ROLE mdm_group_owner; {MIGRATION_SQL} {OUTBOX_MIGRATION_SQL} {GENERATIONS_MIGRATION_SQL} {REVERSE_INDEX_MIGRATION_SQL}"
+            "ALTER ROLE mdm_group_runtime NOBYPASSRLS; UPDATE pg_index SET indisvalid=true,indisready=true,indislive=true WHERE indexrelid=to_regclass('mdm_group.member_changes_history'); DROP SCHEMA mdm_group CASCADE; SET ROLE mdm_group_owner; {MIGRATION_SQL} {OUTBOX_MIGRATION_SQL}"
         ));
         assert!(
             matches!(result, Err(rss_mdm_group_postgres::Error::RolledBack(ref e)) if e.kind() == rss_transactional_messaging::error::MessagingErrorKind::Invariant),
