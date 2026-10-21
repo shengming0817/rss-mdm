@@ -48,7 +48,7 @@ async fn run(expected: &str, projection: r::TelemetryProjection) -> Result<()> {
         resource(&mut f.author,&f.router,profile_id,0,json!({"action":"create","kind":"telemetry_profile"})).await?;
         resource(&mut f.author,&f.router,profile_id,1,json!({"action":"version","version":"v1","kind":"telemetry_profile","variants":[{"platform":"macos","architecture":"aarch64","key":"default","declaration":{"kind":"telemetry_profile","artifact":{"reference":"profile","length":bytes.len(),"sha256":digest},"definition":profile}}]})).await?;
         ensure!(upload(&f.author,&f.router,profile_id,&bytes).await?==StatusCode::CREATED);
-        let published_profile=resource(&mut f.author,&f.router,profile_id,2,json!({"action":"activate","version":"v1"})).await?;
+        resource(&mut f.author,&f.router,profile_id,2,json!({"action":"activate","version":"v1"})).await?;
         // The immutable Profile must remain publishable after a compatible catalog upgrade.
         let mut upgraded=field.clone();upgraded.version+=1;upgraded.sources.insert(rss_mdm_inventory::Source::AgentOsquery,1);
         put(&mut f.author,&f.router,"/api/v1/asset-fields/custom.corporate_agent.healthy",json!({"operationId":Uuid::new_v4(),"expectedRevision":field.version,"input":{"action":"put","definition":upgraded}})).await?;
@@ -73,10 +73,14 @@ async fn run(expected: &str, projection: r::TelemetryProjection) -> Result<()> {
         ring::signature::UnparsedPublicKey::new(&ring::signature::ED25519,f.key.public_key().as_ref()).verify(&signed.configuration.signing_bytes(&signed.key_id)?,&base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(&signed.signature)?).map_err(|_|anyhow::anyhow!("configuration signature"))?;
         let configuration=signed.configuration;
         if expected=="postgres" && projection==r::TelemetryProjection::Both {
+            let resource_path=format!("/api/v1/resources/{profile_id}");
+            let (status,before)=f.author.call(&f.router,Method::GET,&resource_path,None).await?;
+            ensure!(status==StatusCode::OK && before["versions"].as_array().is_some_and(|v|v.len()==1),"resource before edit: {status} {before}");
             let presentation=json!({"name":"Telemetry display", "vendor":{"labels":["preserved", "nested"]}});
-            let edited=resource(&mut f.author,&f.router,profile_id,3,json!({"action":"present","presentation":presentation})).await?;
-            ensure!(edited["revision"]==4 && edited["presentation"]==presentation);
-            ensure!(edited["versions"]==published_profile["versions"],"display edit changed executable version");
+            resource(&mut f.author,&f.router,profile_id,3,json!({"action":"present","presentation":presentation})).await?;
+            let (status,edited)=f.author.call(&f.router,Method::GET,&resource_path,None).await?;
+            ensure!(status==StatusCode::OK && edited["revision"]==4 && edited["presentation"]==presentation,"resource after edit: {status} {edited}");
+            ensure!(edited["versions"]==before["versions"],"display edit changed executable version");
             let (status,after)=agent_call(&f.router,Method::GET,&config_path,Some(case_credential()),None).await?;
             ensure!(status==StatusCode::OK && after["configuration"]["binding"]==configuration.binding,"display edit changed upload binding");
         }
