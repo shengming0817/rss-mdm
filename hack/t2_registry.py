@@ -2038,7 +2038,7 @@ for relative, consumers in APP_HELPER_CONSUMERS.items():
 
 # Enterprise current-user binding has its own HTTP/Identity/PG seam; OS collection is unrelated.
 add('agent.current_user', selectors=('agent::t2::current_user::',), fixtures=('identity','agent_pki'),
-    sources=('crates/registration-service/src/agent/current_user.rs','crates/registration-service/src/device/registration_user.rs','crates/agent-channel/src/tasks.rs','crates/agent-wire/src/current_user.rs','crates/registration-service/schema/install.sql'),
+    sources=('crates/registration-service/src/agent/current_user.rs','crates/registration-service/src/device/registration_user.rs','crates/agent-channel/src/tasks.rs','crates/agent-wire/src/current_user.rs','crates/agent-wire/schema/runtime/current-user-v1.schema.json','crates/agent-wire/schema/runtime/current-user-change-v1.schema.json','crates/registration-service/schema/install.sql'),
     tests=('crates/app/tests/agent/current_user.rs',),
     support=('crates/app/tests/agent/mod.rs',*MODULES['planning.self_service'].support_inputs), actors=(('tenant','admin'),('tenant','other')))
 MODULES['agent.current_user'] = replace(MODULES['agent.current_user'], scope='tenant')
