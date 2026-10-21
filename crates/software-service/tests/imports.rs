@@ -200,8 +200,8 @@ fn downloaded_source_fixtures_preserve_conversion_and_original_evidence() {
         };
         let input: ImportRequest = serde_json::from_value(request).unwrap();
         let prepared = prepare(tenant, &source, &input, &documents).unwrap();
-        let value = serde_json::to_value(&prepared.version).unwrap();
-        let definition = &value["variants"][0]["declaration"]["definition"];
+        let value = serde_json::to_value(prepared.version.variants()[0].declaration()).unwrap();
+        let definition = &value["definition"];
         assert_eq!(definition["source"], json!(source.snapshot().unwrap()));
         assert_eq!(definition["provenance"]["kind"], "imported");
         let files = definition["provenance"]["files"].as_array().unwrap();
