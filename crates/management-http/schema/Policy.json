@@ -118,12 +118,12 @@
         },
         {
           "additionalProperties": false,
-          "description": "A native Agent read template using the same schedule and membership frequency.",
+          "description": "A native Agent read template collected at a fixed interval.",
           "properties": {
             "frequency": {
               "$ref": "#/$defs/Frequency",
-              "default": "once_per_version",
-              "description": "Existing Policy execution frequency."
+              "default": "every_trigger",
+              "description": "Every distinct interval, independently of the immutable resource version."
             },
             "kind": {
               "const": "agent_collection",
@@ -148,13 +148,14 @@
                 },
                 "notBefore": 0,
                 "trigger": {
-                  "kind": "check_in",
-                  "minimumSeconds": 60
+                  "anchor": 0,
+                  "kind": "interval",
+                  "seconds": 3600
                 },
                 "until": null,
                 "window": null
               },
-              "description": "Calendar and check-in trigger."
+              "description": "Fixed interval; missed offline periods coalesce into the latest occurrence."
             }
           },
           "required": [
@@ -166,12 +167,12 @@
         },
         {
           "additionalProperties": false,
-          "description": "A native MDM read template using the same schedule and membership frequency.",
+          "description": "A native MDM read template collected at a fixed interval.",
           "properties": {
             "frequency": {
               "$ref": "#/$defs/Frequency",
-              "default": "once_per_version",
-              "description": "Existing Policy execution frequency."
+              "default": "every_trigger",
+              "description": "Every distinct interval, independently of the immutable resource version."
             },
             "kind": {
               "const": "native_collection",
@@ -196,13 +197,14 @@
                 },
                 "notBefore": 0,
                 "trigger": {
-                  "kind": "check_in",
-                  "minimumSeconds": 60
+                  "anchor": 0,
+                  "kind": "interval",
+                  "seconds": 3600
                 },
                 "until": null,
                 "window": null
               },
-              "description": "Calendar and check-in trigger."
+              "description": "Fixed interval; missed offline periods coalesce into the latest occurrence."
             }
           },
           "required": [

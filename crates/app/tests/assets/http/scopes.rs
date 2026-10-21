@@ -99,8 +99,9 @@ async fn inventory_scopes_preserve_history_and_hide_sensitive_namespaces() -> Re
         ensure!(second.0 == StatusCode::OK && second.1["asset"]["watermark"] == first.1["asset"]["watermark"]);
         ensure!(second.1["asset"]["items"][0]["scope"]["uid"] == 502 && second.1["asset"]["nextCursor"].is_null());
         let wrong = format!("/api/v1/devices/{}/inventory-scopes", case::name("outside-scope-directory"));
+        crate::test_support::inventory::seed_source(case::name("outside-scope-directory"), "agent", "agent.native", "outside")?;
         let foreign = f.author.call(&f.router, Method::GET, &next(&wrong, cursor), None).await?;
-        ensure!(foreign.0 == StatusCode::NOT_FOUND || foreign.0 == StatusCode::CONFLICT);
+        ensure!(foreign.0 == StatusCode::CONFLICT);
         // Retaining a fact is sufficient after the original run was pruned.
         pg(&format!("DELETE FROM mdm_access.collection_runs WHERE tenant_id='{}' AND id='{first_run}'", case_tenant()))?;
         let retained = f.author.call(&f.router, Method::GET, &path, None).await?;
