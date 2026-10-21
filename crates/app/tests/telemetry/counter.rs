@@ -1,7 +1,7 @@
 //! Counter gaps and sensitive access are product seams, not a provider arithmetic matrix.
 use super::*;
 
-pub(super) async fn quality_and_sensitive_reads(f: &mut Fixture) -> Result<()> {
+async fn published_counter(f: &mut Fixture) -> Result<(Uuid, rss_mdm_inventory::FieldDefinition)> {
     use rss_mdm_inventory as d;
     f.grants.push(crate::authorization::Grant {
         operation: crate::authorization::Permission::InventorySensitiveRead,
@@ -168,6 +168,12 @@ pub(super) async fn quality_and_sensitive_reads(f: &mut Fixture) -> Result<()> {
         "profile reference: {references:?}"
     );
     ensure!(f.author.call(&f.router,Method::PUT,field_path,Some(json!({"operationId":Uuid::new_v4(),"expectedRevision":1,"input":{"action":"delete"}}))).await?.0==StatusCode::CONFLICT);
+    Ok((id, field))
+}
+
+pub(super) async fn quality_and_sensitive_reads(f: &mut Fixture) -> Result<()> {
+    use rss_mdm_inventory as d;
+    let (id, field) = published_counter(f).await?;
     let scope = Uuid::from_u128(case::id("telemetry-counter-scope"));
     let policy = Uuid::new_v4();
     let policy=post(&mut f.author,&f.router,&format!("/api/v1/policies/{policy}"),json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"put","enabled":true,"definition":{"scope":scope,"action":{"kind":"telemetry_profile","resource":{"id":id,"version":"v1","platform":"macos","architecture":"aarch64","variant":"default"}}}}})).await?;
@@ -188,9 +194,7 @@ pub(super) async fn quality_and_sensitive_reads(f: &mut Fixture) -> Result<()> {
         "counter config: {status} {signed}"
     );
     let config: wire::SignedTelemetryConfiguration = serde_json::from_value(signed)?;
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)?
-        .as_micros() as i64;
+    let now = f.planning.clock.unix_seconds()? * 1_000_000;
     let start = (now / 10_000_000 - 1) * 10_000_000;
     let make = |reading: Value, offset: i64| json!({"batchId":Uuid::new_v4(),"policy":policy["id"],"policyVersion":policy["versionId"],"binding":config.configuration.binding,"observations":[{"id":Uuid::new_v4(),"sequence":offset,"observedAt":start+offset*1_000_000,"values":{"custom.telemetry_counter":reading}}]});
     for (offset, reading) in [

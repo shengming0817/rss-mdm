@@ -1,6 +1,6 @@
 //! Bounded host observations, distinct from sampling or maintenance success.
 use crate::{Error, Service};
-use rss_request_context::Deadline;
+use rss_request_context::{Clock, Deadline};
 use rss_timeseries::*;
 use std::{num::NonZeroU32, sync::Arc};
 pub struct Diagnostics {
@@ -26,7 +26,7 @@ impl Service {
         cutoff: std::time::Instant,
     ) -> Result<Diagnostics, Error> {
         let remaining = cutoff
-            .checked_duration_since(std::time::Instant::now())
+            .checked_duration_since(crate::backend::SystemClock.now())
             .ok_or(Error::Storage)?;
         let deadline = Deadline::from_timeout(&crate::backend::SystemClock, remaining)
             .map_err(|_| Error::Storage)?;
@@ -56,7 +56,7 @@ impl Service {
         let tenant = self.tenant;
         let budget = rss_transactional_messaging::policy::OperationDeadline::from_remaining(
             cutoff
-                .checked_duration_since(std::time::Instant::now())
+                .checked_duration_since(crate::backend::SystemClock.now())
                 .ok_or(Error::Storage)?,
         );
         let counts=self.runtime.local_tx(tenant,budget,move|tx|Box::pin(async move {

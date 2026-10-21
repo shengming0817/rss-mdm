@@ -438,7 +438,7 @@ pub(crate) async fn current_on(
     if run.scope != expected {
         return Err(Error::Storage);
     }
-    Ok(crate::CurrentObservation::Admitted(run))
+    Ok(crate::CurrentObservation::Admitted(Box::new(run)))
 }
 
 /// A descriptive equality fence, never an authentication token or a client-selectable source.

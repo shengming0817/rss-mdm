@@ -35,10 +35,10 @@ pub(super) fn validate(frozen: &Frozen) -> Result<()> {
         {
             return Err(Error::Input);
         }
-        if let Some(ch) = &profile.clickhouse {
-            if !ch.backup_directory.is_absolute() || ch.server_configuration_files.is_empty() {
-                return Err(Error::Input);
-            }
+        if let Some(ch) = &profile.clickhouse
+            && (!ch.backup_directory.is_absolute() || ch.server_configuration_files.is_empty())
+        {
+            return Err(Error::Input);
         }
     }
     let mut required = BTreeSet::new();
@@ -98,13 +98,13 @@ async fn ch_fence_all(frozen: &Frozen, profile: &StorageRequest, enable: bool) -
         return Ok(());
     }
     for host in &frozen.hosts {
-        if let Some(config) = configured(host)? {
-            if coordinate(config.database()) == coordinate(profile.configuration.database()) {
-                let mut current = profile.clone();
-                current.tenant = host.tenant.to_string();
-                current.configuration = config;
-                ch_fence(&current, enable).await?;
-            }
+        if let Some(config) = configured(host)?
+            && coordinate(config.database()) == coordinate(profile.configuration.database())
+        {
+            let mut current = profile.clone();
+            current.tenant = host.tenant.to_string();
+            current.configuration = config;
+            ch_fence(&current, enable).await?;
         }
     }
     Ok(())
@@ -319,67 +319,86 @@ async fn release_inner(frozen: &Frozen, journal: &Journal) -> Result<()> {
 pub(super) async fn restore(input: &Restore, frozen: &Frozen, journal: &Journal) -> Result<()> {
     validate(frozen)?;
     for (index, profile) in frozen.request.telemetry.iter().enumerate() {
-        let storage = target(journal, index)?;
-        recovery_administrator(&profile.administrator).await?;
-        snapshot_tree::restore(&storage, "provisioning")?;
-        let expected: (Uuid, Vec<u8>) = storage.load("installation.json")?.ok_or(Error::Corrupt)?;
-        crate::setup::providers::telemetry::restore_roles(profile, expected.0).await?;
-        let mut c = sqlx::PgConnection::connect_with(
-            &profile.administrator.options().map_err(|_| Error::Input)?,
-        )
-        .await
-        .map_err(|_| Error::Storage)?;
-        no_writers(&mut c).await?;
-        reserve_restore(&mut c, input.operation_id, &input.backup_manifest_sha256).await?;
-        connection_fence(&mut c, &storage, true).await?;
-        let restored: bool = sqlx::query_scalar(
-            "SELECT to_regclass('public.mdm_telemetry_installation') IS NOT NULL",
-        )
-        .fetch_one(&mut c)
-        .await
-        .map_err(|_| Error::Storage)?;
-        let timescale = matches!(
-            profile.configuration.backend,
-            Storage::TimescaleShared { .. } | Storage::TimescaleDedicated { .. }
-        );
-        if !restored {
-            if timescale {
-                sqlx::raw_sql("CREATE EXTENSION IF NOT EXISTS timescaledb WITH VERSION '2.30.2'; SELECT public.timescaledb_pre_restore()").execute(&mut c).await.map_err(|_|Error::Storage)?;
-            }
-            archive::restore_database(&storage, &profile.administrator).await?;
-        }
-        if timescale {
-            sqlx::query("SELECT public.timescaledb_post_restore()")
-                .execute(&mut c)
-                .await
-                .map_err(|_| Error::Storage)?;
-        }
-        let expected: (Uuid, Vec<u8>) = storage.load("installation.json")?.ok_or(Error::Corrupt)?;
-        let actual: (Uuid, Vec<u8>) =
-            sqlx::query_as("SELECT id,binding FROM public.mdm_telemetry_installation")
-                .fetch_one(&mut c)
-                .await
-                .map_err(|_| Error::Storage)?;
-        if actual != expected {
-            return Err(Error::Conflict);
-        }
-        let control_instance = if profile.clickhouse.is_some() {
-            Some(
-                sqlx::query_scalar::<_, String>("SELECT id::text FROM rss_ts_ch.installation")
-                    .fetch_one(&mut c)
-                    .await
-                    .map_err(|_| Error::Storage)?,
-            )
-        } else {
-            None
-        };
-        c.close().await.map_err(|_| Error::Storage)?;
-        if let Some(instance) = control_instance {
-            restore_clickhouse(input, frozen, journal, index, profile, &storage, &instance).await?;
-        }
+        restore_profile(input, frozen, journal, index, profile).await?;
     }
     Ok(())
 }
+async fn restore_profile(
+    input: &Restore,
+    frozen: &Frozen,
+    journal: &Journal,
+    index: usize,
+    profile: &StorageRequest,
+) -> Result<()> {
+    let storage = target(journal, index)?;
+    recovery_administrator(&profile.administrator).await?;
+    snapshot_tree::restore(&storage, "provisioning")?;
+    let expected: (Uuid, Vec<u8>) = storage.load("installation.json")?.ok_or(Error::Corrupt)?;
+    crate::setup::providers::telemetry::restore_roles(profile, expected.0).await?;
+    let mut c = sqlx::PgConnection::connect_with(
+        &profile.administrator.options().map_err(|_| Error::Input)?,
+    )
+    .await
+    .map_err(|_| Error::Storage)?;
+    no_writers(&mut c).await?;
+    reserve_restore(&mut c, input.operation_id, &input.backup_manifest_sha256).await?;
+    connection_fence(&mut c, &storage, true).await?;
+    restore_postgres_data(&mut c, profile, &storage).await?;
+    let expected: (Uuid, Vec<u8>) = storage.load("installation.json")?.ok_or(Error::Corrupt)?;
+    let actual: (Uuid, Vec<u8>) =
+        sqlx::query_as("SELECT id,binding FROM public.mdm_telemetry_installation")
+            .fetch_one(&mut c)
+            .await
+            .map_err(|_| Error::Storage)?;
+    if actual != expected {
+        return Err(Error::Conflict);
+    }
+    let control_instance = if profile.clickhouse.is_some() {
+        Some(
+            sqlx::query_scalar::<_, String>("SELECT id::text FROM rss_ts_ch.installation")
+                .fetch_one(&mut c)
+                .await
+                .map_err(|_| Error::Storage)?,
+        )
+    } else {
+        None
+    };
+    c.close().await.map_err(|_| Error::Storage)?;
+    if let Some(instance) = control_instance {
+        restore_clickhouse(input, frozen, journal, index, profile, &storage, &instance).await?;
+    }
+    Ok(())
+}
+
+async fn restore_postgres_data(
+    c: &mut sqlx::PgConnection,
+    profile: &StorageRequest,
+    storage: &Journal,
+) -> Result<()> {
+    let restored: bool =
+        sqlx::query_scalar("SELECT to_regclass('public.mdm_telemetry_installation') IS NOT NULL")
+            .fetch_one(&mut *c)
+            .await
+            .map_err(|_| Error::Storage)?;
+    let timescale = matches!(
+        profile.configuration.backend,
+        Storage::TimescaleShared { .. } | Storage::TimescaleDedicated { .. }
+    );
+    if !restored {
+        if timescale {
+            sqlx::raw_sql("CREATE EXTENSION IF NOT EXISTS timescaledb WITH VERSION '2.30.2'; SELECT public.timescaledb_pre_restore()").execute(&mut *c).await.map_err(|_|Error::Storage)?;
+        }
+        archive::restore_database(storage, &profile.administrator).await?;
+    }
+    if timescale {
+        sqlx::query("SELECT public.timescaledb_post_restore()")
+            .execute(&mut *c)
+            .await
+            .map_err(|_| Error::Storage)?;
+    }
+    Ok(())
+}
+
 async fn restore_clickhouse(
     input: &Restore,
     frozen: &Frozen,
@@ -448,14 +467,14 @@ async fn restore_clickhouse(
         .await?;
     }
     for host in &frozen.hosts {
-        if let Some(config) = configured(host)? {
-            if coordinate(config.database()) == coordinate(profile.configuration.database()) {
-                let mut tenant_profile = profile.clone();
-                tenant_profile.tenant = host.tenant.to_string();
-                tenant_profile.configuration = config;
-                clickhouse::provision_users(&tenant_profile).await?;
-                ch_fence(&tenant_profile, true).await?;
-            }
+        if let Some(config) = configured(host)?
+            && coordinate(config.database()) == coordinate(profile.configuration.database())
+        {
+            let mut tenant_profile = profile.clone();
+            tenant_profile.tenant = host.tenant.to_string();
+            tenant_profile.configuration = config;
+            clickhouse::provision_users(&tenant_profile).await?;
+            ch_fence(&tenant_profile, true).await?;
         }
     }
     Ok(())

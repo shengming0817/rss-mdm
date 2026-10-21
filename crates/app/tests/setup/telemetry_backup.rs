@@ -96,17 +96,18 @@ pub(crate) async fn roundtrip(
     let hash = archive::seal(&journal, frozen.request.operation_id)?;
     archive::verify(&journal, &hash)?;
 
-    // Only case-owned fresh databases are replaced, after proving that no host remains.
-    recreate(&administrator).await?;
-    recreate(&profile.administrator).await?;
-    if profile.clickhouse.is_some() {
-        super::super::providers::telemetry::clickhouse::execute(
-            &profile,
-            "fixture-drop-owned-data",
-            "DROP DATABASE rss_ts_ch SYNC",
-        )
-        .await?;
-    }
+    restore_and_readmit(&journal, &frozen, &administrator, &profile, &root, hash).await
+}
+
+async fn restore_and_readmit(
+    journal: &Journal,
+    frozen: &Frozen,
+    administrator: &crate::config::Database,
+    profile: &super::super::providers::telemetry::Request,
+    root: &std::path::Path,
+    hash: String,
+) -> anyhow::Result<()> {
+    empty_targets(administrator, profile).await?;
     let restore = Restore {
         directory: root.join("bundle"),
         operation_id: Uuid::new_v4(),
@@ -116,24 +117,42 @@ pub(crate) async fn roundtrip(
     };
     let mut c = sqlx::PgConnection::connect_with(&administrator.options()?).await?;
     reserve_restore(&mut c, restore.operation_id, &hash).await?;
-    connection_fence(&mut c, &journal, true).await?;
-    archive::restore_database(&journal, &administrator).await?;
+    connection_fence(&mut c, journal, true).await?;
+    archive::restore_database(journal, administrator).await?;
     crate::migration::verify_identity(&mut c, &frozen.installation).await?;
     c.close().await?;
-    telemetry::restore(&restore, &frozen, &journal)
+    telemetry::restore(&restore, frozen, journal)
         .await
         .context("restore telemetry")?;
     // Replaying the same recovery identity must preserve the restored data.
-    telemetry::restore(&restore, &frozen, &journal)
+    telemetry::restore(&restore, frozen, journal)
         .await
         .context("restore telemetry")?;
-    telemetry::release(&frozen, &journal).await?;
+    telemetry::release(frozen, journal).await?;
     let mut c = sqlx::PgConnection::connect_with(&administrator.options()?).await?;
-    connection_fence(&mut c, &journal, false).await?;
+    connection_fence(&mut c, journal, false).await?;
     c.close().await?;
-    telemetry::admit(&frozen)
+    telemetry::admit(frozen)
         .await
         .context("readmit telemetry")?;
+    Ok(())
+}
+
+async fn empty_targets(
+    administrator: &crate::config::Database,
+    profile: &super::super::providers::telemetry::Request,
+) -> anyhow::Result<()> {
+    // Only case-owned fresh databases are replaced, after proving that no host remains.
+    recreate(administrator).await?;
+    recreate(&profile.administrator).await?;
+    if profile.clickhouse.is_some() {
+        super::super::providers::telemetry::clickhouse::execute(
+            profile,
+            "fixture-drop-owned-data",
+            "DROP DATABASE rss_ts_ch SYNC",
+        )
+        .await?;
+    }
     Ok(())
 }
 

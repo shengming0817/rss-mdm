@@ -364,7 +364,7 @@ impl Config {
                 )
                 .await
                 {
-                    Ok(store) => Backend::ClickHouse(store),
+                    Ok(store) => Backend::ClickHouse(Box::new(store)),
                     Err(_) => {
                         runtime.close().await;
                         return Err(unavailable());

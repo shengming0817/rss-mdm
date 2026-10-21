@@ -72,7 +72,7 @@ async fn run(expected: &str, projection: r::TelemetryProjection) -> Result<()> {
         ensure!(configuration.device_id==case_device_id() && configuration.expires_at>configuration.issued_at);
 
         ensure!(matches!(configuration.collector,wire::TelemetryCollector::Script {..}));
-        let now=std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?.as_micros() as i64;
+        let now=f.planning.clock.unix_seconds()? * 1_000_000;
         let id=Uuid::new_v4();let observation=Uuid::new_v4();
         let body=json!({"batchId":id,"policy":policy["id"],"policyVersion":policy["versionId"],"binding":configuration.binding,"observations":[{"id":observation,"sequence":10,"observedAt":now-1_000_000,"values":{"custom.corporate_agent.healthy":{"quality":"valid","value":{"kind":"boolean","value":true},"intervalStart":null}}}]});
         let other_device=if expected=="postgres" && projection==r::TelemetryProjection::Both {Some(signing_gate(&mut f,&config_path,&body,secondary.as_ref().unwrap()).await?)} else {None};

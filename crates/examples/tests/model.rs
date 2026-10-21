@@ -56,7 +56,12 @@ fn operation_and_both_cleanup_failures_remain_visible_without_secrets() {
 #[test]
 fn committed_fixture_uses_public_batch_encoding() {
     let batch = Batch::decode(include_bytes!("../../../fixtures/snapshot.json")).unwrap();
-    definition().validate(&batch).unwrap();
+    definition().validate(&batch).unwrap_or_else(|error| {
+        panic!(
+            "fixture coverage must match {}: {error:?}",
+            definition().fingerprint().unwrap()
+        )
+    });
 }
 
 #[test]

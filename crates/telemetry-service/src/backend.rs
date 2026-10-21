@@ -5,6 +5,10 @@ use rss_timeseries::*;
 #[derive(Clone, Copy)]
 pub struct SystemClock;
 impl Clock for SystemClock {
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "host monotonic clock provider selected at storage assembly"
+    )]
     fn now(&self) -> std::time::Instant {
         std::time::Instant::now()
     }
@@ -15,7 +19,7 @@ pub enum Backend {
     /// An explicitly configured PostgreSQL-family store.
     Postgres(rss_timeseries_postgres::PgStore<SystemClock>),
     /// A tenant-bound ClickHouse store with its PostgreSQL control plane.
-    ClickHouse(rss_timeseries_clickhouse::ChStore<SystemClock>),
+    ClickHouse(Box<rss_timeseries_clickhouse::ChStore<SystemClock>>),
 }
 macro_rules! dispatch {
     ($self:ident,$method:ident,$($arg:expr),*) => { match $self {

@@ -248,7 +248,7 @@ mod tests;
 pub enum CurrentObservation {
     NotRequested,
     Pending,
-    Admitted(rss_mdm_inventory_service::collection::store::Run),
+    Admitted(Box<rss_mdm_inventory_service::collection::store::Run>),
 }
 impl Service {
     /// Read one observation only after verifying original batch membership and live device credentials.

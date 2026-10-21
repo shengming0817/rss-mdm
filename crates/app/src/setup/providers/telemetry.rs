@@ -109,16 +109,15 @@ impl Request {
         if let Some(ch) = &self.clickhouse {
             identifier(&ch.guard.user)?;
         }
-        if let Some(ch) = &self.clickhouse {
-            if ch.guard.user != "ch_guard"
+        if let Some(ch) = &self.clickhouse
+            && (ch.guard.user != "ch_guard"
                 || !ch.backup_directory.is_absolute()
                 || ch.server_configuration_files.is_empty()
                 || ch.server_configuration_files.len() > 16
                 || ch.guard.user == self.owner
-                || ch.guard.user == self.configuration.database().user
-            {
-                return Err(Error::Input);
-            }
+                || ch.guard.user == self.configuration.database().user)
+        {
+            return Err(Error::Input);
         }
         Ok(tenant)
     }
@@ -226,14 +225,81 @@ async fn install_postgres(input: &Request, identity: Uuid, binding: &[u8]) -> Re
             .map_err(|_| Error::Storage)?;
     let mut tx = c.begin().await.map_err(|_| Error::Storage)?;
     sql(&mut tx,"SET LOCAL statement_timeout='60s';SET LOCAL lock_timeout='6s'; SELECT pg_advisory_xact_lock(2815,1)").await?;
+    admit_postgres_server(&mut tx, input).await?;
+    if !installation_replayed(&mut tx, identity, binding).await? {
+        install_new_postgres(&mut tx, input, identity, binding).await?;
+    }
+    tx.commit().await.map_err(|_| Error::Storage)?;
+    c.close().await.map_err(|_| Error::Storage)
+}
+
+async fn install_new_postgres(
+    c: &mut PgConnection,
+    input: &Request,
+    identity: Uuid,
+    binding: &[u8],
+) -> Result<()> {
+    install_roles(&mut *c, input, identity).await?;
+    let runtime = input.configuration.database();
+    sql(
+        &mut *c,
+        &format!(
+            "GRANT CREATE ON DATABASE {} TO {}; SET LOCAL ROLE {}",
+            identifier(&runtime.name)?,
+            identifier(&input.owner)?,
+            identifier(&input.owner)?
+        ),
+    )
+    .await?;
+    install_objects(&mut *c, input).await?;
+    grant_runtime(&mut *c, input).await?;
+    sql(&mut *c, "RESET ROLE").await?;
+    sql(
+        &mut *c,
+        &format!(
+            "GRANT SELECT(id) ON public.mdm_telemetry_installation TO {}",
+            identifier(&input.configuration.database().user)?
+        ),
+    )
+    .await?;
+    sqlx::query("INSERT INTO public.mdm_telemetry_installation VALUES($1,$2)")
+        .bind(identity)
+        .bind(binding)
+        .execute(&mut *c)
+        .await
+        .map_err(|_| Error::Storage)?;
+    Ok(())
+}
+
+async fn installation_replayed(
+    c: &mut PgConnection,
+    identity: Uuid,
+    binding: &[u8],
+) -> Result<bool> {
+    sql(&mut *c,"CREATE TABLE IF NOT EXISTS public.mdm_telemetry_installation(id uuid PRIMARY KEY,binding bytea NOT NULL CHECK(octet_length(binding)=32)); REVOKE ALL ON public.mdm_telemetry_installation FROM PUBLIC").await?;
+    let previous: Vec<(Uuid, Vec<u8>)> =
+        sqlx::query_as("SELECT id,binding FROM public.mdm_telemetry_installation")
+            .fetch_all(&mut *c)
+            .await
+            .map_err(|_| Error::Storage)?;
+    if previous.is_empty() {
+        return Ok(false);
+    }
+    if previous != vec![(identity, binding.to_vec())] {
+        return Err(Error::Conflict);
+    }
+    Ok(true)
+}
+
+async fn admit_postgres_server(c: &mut PgConnection, input: &Request) -> Result<()> {
     let version: i32 =
         sqlx::query_scalar("SELECT current_setting('server_version_num')::int/10000")
-            .fetch_one(&mut *tx)
+            .fetch_one(&mut *c)
             .await
             .map_err(|_| Error::Storage)?;
     let admin: bool =
         sqlx::query_scalar("SELECT rolsuper FROM pg_roles WHERE rolname=current_user")
-            .fetch_one(&mut *tx)
+            .fetch_one(&mut *c)
             .await
             .map_err(|_| Error::Storage)?;
     if version != 16 || !admin {
@@ -245,38 +311,28 @@ async fn install_postgres(input: &Request, identity: Uuid, binding: &[u8]) -> Re
     ) {
         let version: Option<String> =
             sqlx::query_scalar("SELECT extversion FROM pg_extension WHERE extname='timescaledb'")
-                .fetch_optional(&mut *tx)
+                .fetch_optional(&mut *c)
                 .await
                 .map_err(|_| Error::Storage)?;
         if version.as_deref() != Some("2.30.2") {
             return Err(Error::Input);
         }
     }
-    sql(&mut tx,"CREATE TABLE IF NOT EXISTS public.mdm_telemetry_installation(id uuid PRIMARY KEY,binding bytea NOT NULL CHECK(octet_length(binding)=32)); REVOKE ALL ON public.mdm_telemetry_installation FROM PUBLIC").await?;
-    let previous: Vec<(Uuid, Vec<u8>)> =
-        sqlx::query_as("SELECT id,binding FROM public.mdm_telemetry_installation")
-            .fetch_all(&mut *tx)
-            .await
-            .map_err(|_| Error::Storage)?;
-    if !previous.is_empty() {
-        if previous != vec![(identity, binding.to_vec())] {
-            return Err(Error::Conflict);
-        }
-        tx.commit().await.map_err(|_| Error::Storage)?;
-        c.close().await.map_err(|_| Error::Storage)?;
-        return Ok(());
-    }
+    Ok(())
+}
+
+async fn install_roles(c: &mut PgConnection, input: &Request, identity: Uuid) -> Result<()> {
     let tag = format!("rss-mdm-telemetry:{identity}");
-    role(&mut tx, &input.owner, None, &tag).await?;
+    role(&mut *c, &input.owner, None, &tag).await?;
     let runtime = input.configuration.database();
     let password = crate::config::secret(&runtime.password_file).map_err(|_| Error::Input)?;
-    role(&mut tx, &runtime.user, Some(&password), &tag).await?;
+    role(&mut *c, &runtime.user, Some(&password), &tag).await?;
     if let Storage::TimescaleDedicated { maintenance, .. } = &input.configuration.backend {
         let password =
             crate::config::secret(&maintenance.password_file).map_err(|_| Error::Input)?;
-        role(&mut tx, &maintenance.user, Some(&password), &tag).await?;
+        role(&mut *c, &maintenance.user, Some(&password), &tag).await?;
         sql(
-            &mut tx,
+            &mut *c,
             &format!(
                 "GRANT {} TO {} WITH INHERIT FALSE, SET TRUE",
                 identifier(&input.owner)?,
@@ -287,18 +343,11 @@ async fn install_postgres(input: &Request, identity: Uuid, binding: &[u8]) -> Re
     }
     if let Some(ch) = &input.clickhouse {
         let password = crate::config::secret(&ch.guard.password_file).map_err(|_| Error::Input)?;
-        role(&mut tx, &ch.guard.user, Some(&password), &tag).await?;
+        role(&mut *c, &ch.guard.user, Some(&password), &tag).await?;
     }
-    sql(
-        &mut tx,
-        &format!(
-            "GRANT CREATE ON DATABASE {} TO {}; SET LOCAL ROLE {}",
-            identifier(&runtime.name)?,
-            identifier(&input.owner)?,
-            identifier(&input.owner)?
-        ),
-    )
-    .await?;
+    Ok(())
+}
+async fn install_objects(c: &mut PgConnection, input: &Request) -> Result<()> {
     let source = match input
         .configuration
         .profile(rss_request_context::TenantId::parse(&input.tenant).map_err(|_| Error::Input)?)
@@ -309,30 +358,33 @@ async fn install_postgres(input: &Request, identity: Uuid, binding: &[u8]) -> Re
     };
     for body in crate::migration::transaction_body(&source).map_err(|_| Error::Input)? {
         if !body.trim().is_empty() {
-            sql(&mut tx, body).await?;
+            sql(&mut *c, body).await?;
         }
     }
     for partition in &input.partitions {
         sqlx::query("SELECT rss_timeseries.create_partition($1,$2)")
             .bind(partition.start_micros)
             .bind(partition.end_micros)
-            .execute(&mut *tx)
+            .execute(&mut *c)
             .await
             .map_err(|_| Error::Storage)?;
     }
-    let runtime = identifier(&runtime.user)?;
+    Ok(())
+}
+async fn grant_runtime(c: &mut PgConnection, input: &Request) -> Result<()> {
+    let runtime = identifier(&input.configuration.database().user)?;
     if let Some(ch) = &input.clickhouse {
         let guard = identifier(&ch.guard.user)?;
-        sql(&mut tx,&format!("GRANT USAGE ON SCHEMA rss_ts_ch TO {runtime},{guard}; GRANT SELECT ON rss_ts_ch.installation TO {runtime}; GRANT SELECT,INSERT,UPDATE,DELETE ON rss_ts_ch.namespaces,rss_ts_ch.definitions,rss_ts_ch.streams,rss_ts_ch.batches,rss_ts_ch.identities,rss_ts_ch.attempts,rss_ts_ch.fences,rss_ts_ch.plans,rss_ts_ch.summaries,rss_ts_ch.ranges TO {runtime}; GRANT SELECT ON rss_ts_ch.active_attempts,rss_ts_ch.guard_identity TO {guard}")).await?;
+        sql(&mut *c,&format!("GRANT USAGE ON SCHEMA rss_ts_ch TO {runtime},{guard}; GRANT SELECT ON rss_ts_ch.installation TO {runtime}; GRANT SELECT,INSERT,UPDATE,DELETE ON rss_ts_ch.namespaces,rss_ts_ch.definitions,rss_ts_ch.streams,rss_ts_ch.batches,rss_ts_ch.identities,rss_ts_ch.attempts,rss_ts_ch.fences,rss_ts_ch.plans,rss_ts_ch.summaries,rss_ts_ch.ranges TO {runtime}; GRANT SELECT ON rss_ts_ch.active_attempts,rss_ts_ch.guard_identity TO {guard}")).await?;
     } else {
-        sql(&mut tx,&format!("GRANT USAGE ON SCHEMA rss_timeseries TO {runtime}; GRANT SELECT ON ALL TABLES IN SCHEMA rss_timeseries TO {runtime}; GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA rss_timeseries TO {runtime}")).await?;
+        sql(&mut *c,&format!("GRANT USAGE ON SCHEMA rss_timeseries TO {runtime}; GRANT SELECT ON ALL TABLES IN SCHEMA rss_timeseries TO {runtime}; GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA rss_timeseries TO {runtime}")).await?;
         let privileged = if matches!(input.configuration.backend, Storage::Postgres { .. }) {
             "create_partition(bigint,bigint)"
         } else {
             "integer_now()"
         };
         sql(
-            &mut tx,
+            &mut *c,
             &format!("REVOKE EXECUTE ON FUNCTION rss_timeseries.{privileged} FROM {runtime}"),
         )
         .await?;
@@ -341,7 +393,7 @@ async fn install_postgres(input: &Request, identity: Uuid, binding: &[u8]) -> Re
             Storage::TimescaleDedicated { .. }
         ) {
             sql(
-                &mut tx,
+                &mut *c,
                 &format!(
                     "REVOKE EXECUTE ON FUNCTION rss_timeseries.project_gauge() FROM {runtime}"
                 ),
@@ -349,23 +401,7 @@ async fn install_postgres(input: &Request, identity: Uuid, binding: &[u8]) -> Re
             .await?;
         }
     }
-    sql(&mut tx, "RESET ROLE").await?;
-    sql(
-        &mut tx,
-        &format!(
-            "GRANT SELECT(id) ON public.mdm_telemetry_installation TO {}",
-            identifier(&input.configuration.database().user)?
-        ),
-    )
-    .await?;
-    sqlx::query("INSERT INTO public.mdm_telemetry_installation VALUES($1,$2)")
-        .bind(identity)
-        .bind(binding)
-        .execute(&mut *tx)
-        .await
-        .map_err(|_| Error::Storage)?;
-    tx.commit().await.map_err(|_| Error::Storage)?;
-    c.close().await.map_err(|_| Error::Storage)
+    Ok(())
 }
 pub(in crate::setup) mod clickhouse;
 
@@ -443,63 +479,7 @@ async fn maintain_inner(input: PhysicalRequest) -> Result<serde_json::Value> {
     }
     let result = match &input.action {
         PhysicalAction::PreparePartitions { partitions } => {
-            if !matches!(
-                input.installation.configuration.backend,
-                Storage::Postgres { .. }
-            ) || partitions.is_empty()
-                || partitions.len() > 32
-                || partitions
-                    .iter()
-                    .any(|p| p.start_micros < 0 || p.end_micros <= p.start_micros)
-            {
-                return Err(Error::Input);
-            }
-            let mut tx = connection.begin().await.map_err(|_| Error::Storage)?;
-            sql(&mut tx,"SET LOCAL statement_timeout='30s';SET LOCAL lock_timeout='6s';SELECT pg_advisory_xact_lock(2815,1);CREATE TABLE IF NOT EXISTS public.mdm_telemetry_partition_operations(id uuid PRIMARY KEY,binding bytea NOT NULL CHECK(octet_length(binding)=32));REVOKE ALL ON public.mdm_telemetry_partition_operations FROM PUBLIC").await?;
-            let stored: Option<Vec<u8>> = sqlx::query_scalar(
-                "SELECT binding FROM public.mdm_telemetry_partition_operations WHERE id=$1",
-            )
-            .bind(input.operation_id)
-            .fetch_optional(&mut *tx)
-            .await
-            .map_err(|_| Error::Storage)?;
-            let binding =
-                Sha256::digest(serde_json::to_vec(&input).map_err(|_| Error::Input)?).to_vec();
-            if let Some(stored) = stored {
-                if stored != binding {
-                    return Err(Error::Conflict);
-                }
-            } else {
-                sql(
-                    &mut tx,
-                    &format!("SET LOCAL ROLE {}", identifier(&input.installation.owner)?),
-                )
-                .await?;
-                for p in partitions {
-                    sqlx::query("SELECT rss_timeseries.create_partition($1,$2)")
-                        .bind(p.start_micros)
-                        .bind(p.end_micros)
-                        .execute(&mut *tx)
-                        .await
-                        .map_err(|_| Error::Storage)?;
-                }
-                sql(
-                    &mut tx,
-                    &format!(
-                        "GRANT SELECT ON ALL TABLES IN SCHEMA rss_timeseries TO {}; RESET ROLE",
-                        identifier(&input.installation.configuration.database().user)?
-                    ),
-                )
-                .await?;
-                sqlx::query("INSERT INTO public.mdm_telemetry_partition_operations VALUES($1,$2)")
-                    .bind(input.operation_id)
-                    .bind(binding)
-                    .execute(&mut *tx)
-                    .await
-                    .map_err(|_| Error::Storage)?;
-            }
-            tx.commit().await.map_err(|_| Error::Storage)?;
-            serde_json::json!({"operationId":input.operation_id,"state":"complete","partitions":partitions.len()})
+            prepare_partitions(&mut connection, &input, partitions).await?
         }
         PhysicalAction::ConvertChunks {
             start_micros,
@@ -507,61 +487,15 @@ async fn maintain_inner(input: PhysicalRequest) -> Result<serde_json::Value> {
             max_chunks,
             columnstore,
         } => {
-            if !matches!(
-                input.installation.configuration.backend,
-                Storage::TimescaleDedicated { .. }
-            ) || max_chunks.get() > 32
-            {
-                return Err(Error::Input);
-            }
-            let window = rss_timeseries::Interval::new(
-                rss_timeseries::Timestamp::new(*start_micros).map_err(|_| Error::Input)?,
-                rss_timeseries::Timestamp::new(*end_micros).map_err(|_| Error::Input)?,
+            convert_chunks(
+                &input,
+                tenant,
+                *start_micros,
+                *end_micros,
+                *max_chunks,
+                *columnstore,
             )
-            .map_err(|_| Error::Input)?;
-            let backend = input
-                .installation
-                .configuration
-                .open_backend(tenant)
-                .await
-                .map_err(|_| Error::Storage)?;
-            let deadline = rss_request_context::Deadline::from_timeout(
-                &rss_mdm_telemetry_service::backend::SystemClock,
-                std::time::Duration::from_secs(30),
-            )
-            .map_err(|_| Error::Storage)?;
-            let result = match &backend {
-                rss_mdm_telemetry_service::backend::Backend::Postgres(store) => {
-                    store
-                        .convert_raw_chunks(
-                            window,
-                            *max_chunks,
-                            if *columnstore {
-                                rss_timeseries_postgres::timescale::StorageFormat::Columnstore
-                            } else {
-                                rss_timeseries_postgres::timescale::StorageFormat::Rowstore
-                            },
-                            deadline,
-                        )
-                        .await
-                }
-                _ => return Err(Error::Input),
-            };
-            let close = rss_request_context::Deadline::from_timeout(
-                &rss_mdm_telemetry_service::backend::SystemClock,
-                std::time::Duration::from_secs(10),
-            )
-            .map_err(|_| Error::Storage)?;
-            backend.close(close).await.map_err(|_| Error::Storage)?;
-            match result.map_err(|_| Error::Storage)? {
-                rss_timeseries::Outcome::Accepted(count)
-                | rss_timeseries::Outcome::Replay(count) => {
-                    serde_json::json!({"operationId":input.operation_id,"state":if count==max_chunks.get(){"more"}else{"complete"},"converted":count})
-                }
-                rss_timeseries::Outcome::Unknown => {
-                    serde_json::json!({"operationId":input.operation_id,"state":"unknown"})
-                }
-            }
+            .await?
         }
     };
     connection.close().await.map_err(|_| Error::Storage)?;
@@ -572,6 +506,135 @@ async fn maintain_inner(input: PhysicalRequest) -> Result<serde_json::Value> {
     Ok(result)
 }
 
+async fn prepare_partitions(
+    connection: &mut PgConnection,
+    input: &PhysicalRequest,
+    partitions: &[Partition],
+) -> Result<serde_json::Value> {
+    if !matches!(
+        input.installation.configuration.backend,
+        Storage::Postgres { .. }
+    ) || partitions.is_empty()
+        || partitions.len() > 32
+        || partitions
+            .iter()
+            .any(|p| p.start_micros < 0 || p.end_micros <= p.start_micros)
+    {
+        return Err(Error::Input);
+    }
+    let mut tx = connection.begin().await.map_err(|_| Error::Storage)?;
+    sql(&mut tx,"SET LOCAL statement_timeout='30s';SET LOCAL lock_timeout='6s';SELECT pg_advisory_xact_lock(2815,1);CREATE TABLE IF NOT EXISTS public.mdm_telemetry_partition_operations(id uuid PRIMARY KEY,binding bytea NOT NULL CHECK(octet_length(binding)=32));REVOKE ALL ON public.mdm_telemetry_partition_operations FROM PUBLIC").await?;
+    let stored: Option<Vec<u8>> = sqlx::query_scalar(
+        "SELECT binding FROM public.mdm_telemetry_partition_operations WHERE id=$1",
+    )
+    .bind(input.operation_id)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(|_| Error::Storage)?;
+    let binding = Sha256::digest(serde_json::to_vec(&input).map_err(|_| Error::Input)?).to_vec();
+    if let Some(stored) = stored {
+        if stored != binding {
+            return Err(Error::Conflict);
+        }
+    } else {
+        sql(
+            &mut tx,
+            &format!("SET LOCAL ROLE {}", identifier(&input.installation.owner)?),
+        )
+        .await?;
+        for p in partitions {
+            sqlx::query("SELECT rss_timeseries.create_partition($1,$2)")
+                .bind(p.start_micros)
+                .bind(p.end_micros)
+                .execute(&mut *tx)
+                .await
+                .map_err(|_| Error::Storage)?;
+        }
+        sql(
+            &mut tx,
+            &format!(
+                "GRANT SELECT ON ALL TABLES IN SCHEMA rss_timeseries TO {}; RESET ROLE",
+                identifier(&input.installation.configuration.database().user)?
+            ),
+        )
+        .await?;
+        sqlx::query("INSERT INTO public.mdm_telemetry_partition_operations VALUES($1,$2)")
+            .bind(input.operation_id)
+            .bind(binding)
+            .execute(&mut *tx)
+            .await
+            .map_err(|_| Error::Storage)?;
+    }
+    tx.commit().await.map_err(|_| Error::Storage)?;
+    Ok(
+        serde_json::json!({"operationId":input.operation_id,"state":"complete","partitions":partitions.len()}),
+    )
+}
+
+async fn convert_chunks(
+    input: &PhysicalRequest,
+    tenant: rss_request_context::TenantId,
+    start_micros: i64,
+    end_micros: i64,
+    max_chunks: std::num::NonZeroU32,
+    columnstore: bool,
+) -> Result<serde_json::Value> {
+    if !matches!(
+        input.installation.configuration.backend,
+        Storage::TimescaleDedicated { .. }
+    ) || max_chunks.get() > 32
+    {
+        return Err(Error::Input);
+    }
+    let window = rss_timeseries::Interval::new(
+        rss_timeseries::Timestamp::new(start_micros).map_err(|_| Error::Input)?,
+        rss_timeseries::Timestamp::new(end_micros).map_err(|_| Error::Input)?,
+    )
+    .map_err(|_| Error::Input)?;
+    let backend = input
+        .installation
+        .configuration
+        .open_backend(tenant)
+        .await
+        .map_err(|_| Error::Storage)?;
+    let deadline = rss_request_context::Deadline::from_timeout(
+        &rss_mdm_telemetry_service::backend::SystemClock,
+        std::time::Duration::from_secs(30),
+    )
+    .map_err(|_| Error::Storage)?;
+    let result = match &backend {
+        rss_mdm_telemetry_service::backend::Backend::Postgres(store) => {
+            store
+                .convert_raw_chunks(
+                    window,
+                    max_chunks,
+                    if columnstore {
+                        rss_timeseries_postgres::timescale::StorageFormat::Columnstore
+                    } else {
+                        rss_timeseries_postgres::timescale::StorageFormat::Rowstore
+                    },
+                    deadline,
+                )
+                .await
+        }
+        _ => return Err(Error::Input),
+    };
+    let close = rss_request_context::Deadline::from_timeout(
+        &rss_mdm_telemetry_service::backend::SystemClock,
+        std::time::Duration::from_secs(10),
+    )
+    .map_err(|_| Error::Storage)?;
+    backend.close(close).await.map_err(|_| Error::Storage)?;
+    Ok(match result.map_err(|_| Error::Storage)? {
+        rss_timeseries::Outcome::Accepted(count) | rss_timeseries::Outcome::Replay(count) => {
+            serde_json::json!({"operationId":input.operation_id,"state":if count==max_chunks.get(){"more"}else{"complete"},"converted":count})
+        }
+        rss_timeseries::Outcome::Unknown => {
+            serde_json::json!({"operationId":input.operation_id,"state":"unknown"})
+        }
+    })
+}
+
 /// Recreate only this installation's original restricted roles from authenticated backup material.
 pub(in crate::setup) async fn restore_roles(input: &Request, identity: Uuid) -> Result<()> {
     input.validate()?;
@@ -580,29 +643,8 @@ pub(in crate::setup) async fn restore_roles(input: &Request, identity: Uuid) -> 
             .await
             .map_err(|_| Error::Storage)?;
     let mut tx = c.begin().await.map_err(|_| Error::Storage)?;
-    let tag = format!("rss-mdm-telemetry:{identity}");
-    role(&mut tx, &input.owner, None, &tag).await?;
+    install_roles(&mut tx, input, identity).await?;
     let database = input.configuration.database();
-    let password = crate::config::secret(&database.password_file).map_err(|_| Error::Input)?;
-    role(&mut tx, &database.user, Some(&password), &tag).await?;
-    if let Storage::TimescaleDedicated { maintenance, .. } = &input.configuration.backend {
-        let password =
-            crate::config::secret(&maintenance.password_file).map_err(|_| Error::Input)?;
-        role(&mut tx, &maintenance.user, Some(&password), &tag).await?;
-        sql(
-            &mut tx,
-            &format!(
-                "GRANT {} TO {} WITH INHERIT FALSE, SET TRUE",
-                identifier(&input.owner)?,
-                identifier(&maintenance.user)?
-            ),
-        )
-        .await?;
-    }
-    if let Some(ch) = &input.clickhouse {
-        let password = crate::config::secret(&ch.guard.password_file).map_err(|_| Error::Input)?;
-        role(&mut tx, &ch.guard.user, Some(&password), &tag).await?;
-    }
     sql(
         &mut tx,
         &format!(

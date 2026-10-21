@@ -25,7 +25,7 @@ pub struct HistoryRequest {
 }
 enum ReadKind {
     History,
-    Aggregate(AggregateRequest),
+    Aggregate(Box<AggregateRequest>),
     Health,
     Resources,
 }
@@ -103,7 +103,7 @@ impl Service {
         self.execute(
             proof,
             &input.query,
-            ReadKind::Aggregate(input.clone()),
+            ReadKind::Aggregate(Box::new(input.clone())),
             audit,
         )
         .await

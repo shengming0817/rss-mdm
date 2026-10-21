@@ -404,14 +404,12 @@ async fn authorize(
                 summaries_before_micros,
                 ..
             } = input.action
-            {
-                if summaries_before_micros
+                && summaries_before_micros
                     > now
                         .saturating_sub(i64::from(policy.summary_seconds) * 1_000_000)
                         .max(0)
-                {
-                    return Err(Error::Denied);
-                }
+            {
+                return Err(Error::Denied);
             }
         }
         Action::Restore { .. } => {}
@@ -548,11 +546,11 @@ async fn step_on(
         },
     };
     proof.check_live().map_err(|_| Error::Denied)?;
-    if result["state"] == "complete" {
-        if let Action::Reclaim { target } = &input.action {
-            sqlx::query("UPDATE mdm_telemetry.retention_targets SET phase=2,result=$3 WHERE tenant_id=$1::uuid AND stream=$2")
+    if result["state"] == "complete"
+        && let Action::Reclaim { target } = &input.action
+    {
+        sqlx::query("UPDATE mdm_telemetry.retention_targets SET phase=2,result=$3 WHERE tenant_id=$1::uuid AND stream=$2")
                 .bind(service.tenant.to_string()).bind(serde_json::to_value(target.stream(service.tenant)?)?).bind(&result).execute(&mut *c).await?;
-        }
     }
     sqlx::query(
         "UPDATE mdm_telemetry.maintenance SET result=$3 WHERE tenant_id=$1::uuid AND id=$2",

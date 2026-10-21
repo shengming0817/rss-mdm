@@ -44,10 +44,10 @@ fn resource(key: &Scalar) -> Result<Id, Error> {
     if !matches!(key, Scalar::String(_) | Scalar::Integer(_)) {
         return Err(Error::Invalid);
     }
-    Ok(id(format!(
+    id(format!(
         "item:{:x}",
         Sha256::digest(serde_json::to_vec(key)?)
-    ))?)
+    ))
 }
 pub(crate) fn prepare(
     profile: &TelemetryProfile,

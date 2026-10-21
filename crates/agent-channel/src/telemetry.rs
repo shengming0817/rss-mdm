@@ -174,42 +174,6 @@ fn decode(headers: &HeaderMap, bytes: &Bytes, limit: usize) -> Result<Vec<u8>, A
     };
     Ok(decoded)
 }
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::io::Write;
-    #[test]
-    fn gzip_is_bounded_and_rejects_trailing_members_or_damaged_crc() {
-        let mut compressor =
-            flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
-        compressor.write_all(&vec![b'a'; 8192]).unwrap();
-        let bytes = compressor.finish().unwrap();
-        let mut headers = HeaderMap::new();
-        headers.insert(
-            header::CONTENT_ENCODING,
-            axum::http::HeaderValue::from_static("gzip"),
-        );
-        assert!(decode(&headers, &Bytes::from(bytes.clone()), 1024).is_err());
-        assert_eq!(
-            decode(&headers, &Bytes::from(bytes.clone()), 16384)
-                .map_err(|_| "gzip decode failed")
-                .unwrap(),
-            vec![b'a'; 8192]
-        );
-        let mut trailing = bytes.clone();
-        trailing.extend_from_slice(&bytes);
-        assert!(decode(&headers, &Bytes::from(trailing), 32768).is_err());
-        let mut damaged = bytes;
-        let last = damaged.len() - 8;
-        damaged[last] ^= 1;
-        assert!(decode(&headers, &Bytes::from(damaged), 16384).is_err());
-        headers.append(
-            header::CONTENT_ENCODING,
-            axum::http::HeaderValue::from_static("identity"),
-        );
-        assert!(decode(&headers, &Bytes::from_static(b"{}"), 1024).is_err());
-    }
-}
 
 async fn material(
     State(app): State<Arc<HttpState>>,
@@ -255,4 +219,41 @@ async fn directory(
             .map_err(failure)
     })
     .await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+    #[test]
+    fn gzip_is_bounded_and_rejects_trailing_members_or_damaged_crc() {
+        let mut compressor =
+            flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        compressor.write_all(&vec![b'a'; 8192]).unwrap();
+        let bytes = compressor.finish().unwrap();
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            header::CONTENT_ENCODING,
+            axum::http::HeaderValue::from_static("gzip"),
+        );
+        assert!(decode(&headers, &Bytes::from(bytes.clone()), 1024).is_err());
+        assert_eq!(
+            decode(&headers, &Bytes::from(bytes.clone()), 16384)
+                .map_err(|_| "gzip decode failed")
+                .unwrap(),
+            vec![b'a'; 8192]
+        );
+        let mut trailing = bytes.clone();
+        trailing.extend_from_slice(&bytes);
+        assert!(decode(&headers, &Bytes::from(trailing), 32768).is_err());
+        let mut damaged = bytes;
+        let last = damaged.len() - 8;
+        damaged[last] ^= 1;
+        assert!(decode(&headers, &Bytes::from(damaged), 16384).is_err());
+        headers.append(
+            header::CONTENT_ENCODING,
+            axum::http::HeaderValue::from_static("identity"),
+        );
+        assert!(decode(&headers, &Bytes::from_static(b"{}"), 1024).is_err());
+    }
 }

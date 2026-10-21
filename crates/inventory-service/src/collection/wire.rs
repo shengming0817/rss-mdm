@@ -249,54 +249,6 @@ pub fn value(value: &w::CollectedValue) -> d::CollectedValue {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn collection_conversion_preserves_domain_meaning_and_coverage() {
-        let fields = d::builtin::fields()
-            .into_iter()
-            .filter(|field| field.sources.contains_key(&d::Source::AgentBuiltin))
-            .collect();
-        let original = d::CollectionDefinition::new("inventory", "1", d::Source::AgentBuiltin, {
-            let scope = d::CollectionScope::Device;
-            let fields: Vec<rss_mdm_inventory::FieldDefinition> = fields;
-            fields
-                .into_iter()
-                .map(|definition| rss_mdm_inventory::CollectionField {
-                    definition,
-                    scope: scope.clone(),
-                })
-                .collect()
-        })
-        .unwrap();
-        let wire = to_wire(&original).unwrap();
-        assert_ne!(original.fingerprint().unwrap(), wire.fingerprint().unwrap());
-        let restored = to_domain(&wire).unwrap();
-        assert_eq!(original, restored);
-        assert_eq!(original.coverage().unwrap(), restored.coverage().unwrap());
-    }
-    #[test]
-    fn field_outcomes_keep_explicit_null_deletion_unsupported_and_numeric_encoding() {
-        for json in [
-            r#"{"kind":"null"}"#,
-            r#"{"kind":"deleted"}"#,
-            r#"{"kind":"unsupported"}"#,
-            r#"{"kind":"value","value":{"kind":"number","value":1.0}}"#,
-            r#"{"kind":"value","value":{"kind":"array","value":[{"kind":"integer","value":2},{"kind":"integer","value":1}]}}"#,
-            r#"{"kind":"value","value":{"kind":"object","value":{"z":{"kind":"boolean","value":false},"a":{"kind":"string","value":""}}}}"#,
-        ] {
-            let wire: w::CollectedValue = serde_json::from_str(json).unwrap();
-            let original: d::CollectedValue = serde_json::from_str(json).unwrap();
-            assert_eq!(value(&wire), original);
-            assert_eq!(
-                serde_json::to_vec(&wire).unwrap(),
-                serde_json::to_vec(&original).unwrap()
-            );
-        }
-    }
-}
-
 fn binding_to_wire(value: &d::TimeSeriesBinding) -> w::TimeSeriesBinding {
     w::TimeSeriesBinding {
         kind: match value.kind {
@@ -388,5 +340,53 @@ fn binding_to_domain(value: &w::TimeSeriesBinding) -> d::TimeSeriesBinding {
             revision: value.retention.revision,
         },
         max_resources: value.max_resources,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn collection_conversion_preserves_domain_meaning_and_coverage() {
+        let fields = d::builtin::fields()
+            .into_iter()
+            .filter(|field| field.sources.contains_key(&d::Source::AgentBuiltin))
+            .collect();
+        let original = d::CollectionDefinition::new("inventory", "1", d::Source::AgentBuiltin, {
+            let scope = d::CollectionScope::Device;
+            let fields: Vec<rss_mdm_inventory::FieldDefinition> = fields;
+            fields
+                .into_iter()
+                .map(|definition| rss_mdm_inventory::CollectionField {
+                    definition,
+                    scope: scope.clone(),
+                })
+                .collect()
+        })
+        .unwrap();
+        let wire = to_wire(&original).unwrap();
+        assert_ne!(original.fingerprint().unwrap(), wire.fingerprint().unwrap());
+        let restored = to_domain(&wire).unwrap();
+        assert_eq!(original, restored);
+        assert_eq!(original.coverage().unwrap(), restored.coverage().unwrap());
+    }
+    #[test]
+    fn field_outcomes_keep_explicit_null_deletion_unsupported_and_numeric_encoding() {
+        for json in [
+            r#"{"kind":"null"}"#,
+            r#"{"kind":"deleted"}"#,
+            r#"{"kind":"unsupported"}"#,
+            r#"{"kind":"value","value":{"kind":"number","value":1.0}}"#,
+            r#"{"kind":"value","value":{"kind":"array","value":[{"kind":"integer","value":2},{"kind":"integer","value":1}]}}"#,
+            r#"{"kind":"value","value":{"kind":"object","value":{"z":{"kind":"boolean","value":false},"a":{"kind":"string","value":""}}}}"#,
+        ] {
+            let wire: w::CollectedValue = serde_json::from_str(json).unwrap();
+            let original: d::CollectedValue = serde_json::from_str(json).unwrap();
+            assert_eq!(value(&wire), original);
+            assert_eq!(
+                serde_json::to_vec(&wire).unwrap(),
+                serde_json::to_vec(&original).unwrap()
+            );
+        }
     }
 }
