@@ -1,5 +1,5 @@
 //! Synthetic Windows source evidence; device API behavior requires separate T3 evidence.
-use crate::test_support::*;
+use crate::test_support::{process::*, runtime::*, *};
 use std::collections::BTreeMap;
 
 pub(super) fn rows(query: &str, stage: i32) -> Option<Vec<BTreeMap<String, Value>>> {

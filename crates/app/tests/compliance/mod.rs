@@ -1,4 +1,4 @@
-use crate::test_support::*;
+use crate::test_support::{http::*, process::*, runtime::*, *};
 use uuid::Uuid;
 fn request(revision: u64, input: Value) -> Value {
     json!({"operationId":Uuid::new_v4(),"expectedRevision":revision,"input":input})
@@ -102,7 +102,7 @@ async fn task_phase(b: &mut Browser, router: &Router, path: &str, phase: &str) -
     .await?
 }
 struct Fixture {
-    resources: crate::test_support::Resources,
+    resources: crate::test_support::runtime::Resources,
     base: Value,
     router: Router,
     browser: Browser,

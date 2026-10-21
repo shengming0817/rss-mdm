@@ -1,6 +1,6 @@
 use crate::test_support::software::write;
 use crate::test_support::software_execution::*;
-use crate::test_support::*;
+use crate::test_support::{http::*, process::*, runtime::*, *};
 use anyhow::Context;
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 #[ignore = "make t2 MODULE=planning.software"]
@@ -17,7 +17,7 @@ async fn rollout_time_success_gates_and_stage_evidence() -> Result<()> {
     resources.finish(async {
     let empty_scope = prepared_scope(&fixture.planning, &[]).await?;
     let first_device = case::name("rollout-first");
-    let first_credential = crate::test_support::credential("rollout-first");
+    let first_credential = crate::test_support::runtime::credential("rollout-first");
     crate::test_support::agent::seed_profile(&fixture.base, fixture.execution.clone(), &first_credential, first_device,
         json!({"capabilities":["inventory.collect.v1","software.pkg.system.v1"],"platform":"macos","architecture":"aarch64","executionContext":context(Platform::MacOs)})).await?;
     let first_scope = prepared_scope(&fixture.planning, &[first_device]).await?;
@@ -221,7 +221,7 @@ async fn rollout_time_success_gates_and_stage_evidence() -> Result<()> {
             && reordered_status.1["stages"][1]["verifiedSuccess"] == 0,
         "stage edit reused another scope's evidence: {reordered_status:?}"
     );
-    crate::test_support::stop_worker(stack).await?;
+    crate::test_support::runtime::stop_worker(stack).await?;
     Ok(())
     }).await
 }
@@ -437,7 +437,7 @@ async fn rollout_statistics_checkpoint_excluded_pages_and_reject_stale_inputs() 
         ),
     )
     .await?;
-    crate::test_support::stop_worker(automation).await?;
+    crate::test_support::runtime::stop_worker(automation).await?;
     let unchanged = f
         .author
         .call(

@@ -1,5 +1,5 @@
 //! Real HTTP, Identity, PostgreSQL isolation and encrypted history recovery.
-use crate::test_support::*;
+use crate::test_support::{http::*, process::*, runtime::*, *};
 use rss_mdm_authorization_service::{Grant, Permission, Scope};
 use rss_mdm_certificate_archive_service::{Archive, Clock, Error};
 use sqlx::Acquire;

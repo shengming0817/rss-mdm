@@ -72,8 +72,8 @@ impl Jwt {
         Ok(format!("{input}.{}", URL_SAFE_NO_PAD.encode(signature)))
     }
 }
-fn browser(host: &Host) -> crate::test_support::Browser {
-    crate::test_support::Browser {
+fn browser(host: &Host) -> crate::test_support::http::Browser {
+    crate::test_support::http::Browser {
         cookies: BTreeMap::from([(
             "__Host-identity-session".into(),
             host.secret.expose().into(),
@@ -86,7 +86,7 @@ async fn start_tou(
     host: &Host,
     token: &str,
     join: bool,
-) -> anyhow::Result<(String, crate::test_support::Browser, Value)> {
+) -> anyhow::Result<(String, crate::test_support::http::Browser, Value)> {
     use axum::{body::Body, http::Request};
     use tower::ServiceExt;
     let mut path = format!(
@@ -134,7 +134,7 @@ async fn start_tou(
         .next()
         .unwrap()
         .to_owned();
-    let mut flow = crate::test_support::Browser::default();
+    let mut flow = crate::test_support::http::Browser::default();
     let (key, value) = cookie.split_once('=').unwrap();
     flow.cookies.insert(key.into(), value.into());
     let (status, context) = flow
@@ -918,7 +918,7 @@ async fn management_policy_body_replay_and_audit_faults() -> anyhow::Result<()> 
 
     // A real tenant member without management authority cannot update the policy.
     let secret = crate::test_support::identity::credential(&host.app.identity, "other")?;
-    let mut member = crate::test_support::Browser {
+    let mut member = crate::test_support::http::Browser {
         cookies: BTreeMap::from([("__Host-identity-session".into(), secret.expose().into())]),
         csrf: Some(secret.csrf()),
         ..Default::default()

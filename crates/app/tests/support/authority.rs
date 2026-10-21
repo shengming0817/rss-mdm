@@ -1,9 +1,9 @@
 //! Minimal real authority and protected routes, without Flow or application assembly.
-use super::*;
+use super::{http::*, runtime::*, *};
 use axum::middleware;
 
 pub(crate) struct Authority {
-    pub(crate) resources: super::Resources,
+    pub(crate) resources: super::runtime::Resources,
     pub(crate) base: Value,
     pub(crate) access: Arc<crate::Database>,
     pub(crate) identity: Arc<crate::identity::Identity>,
@@ -17,37 +17,38 @@ impl Authority {
         Self::from_config(base).await
     }
     pub(crate) async fn from_config(base: Value) -> Result<Self> {
-        let (resources, mut fixture) = crate::test_support::Resources::build(move |resources| {
-            Box::pin(async move {
-                let config: Config = serde_json::from_value(base.clone())?;
-                let access = database(&base).await?;
-                let policy = Arc::new(
-                    crate::authorization::identity_management::IdentityManagementPolicy::new(
-                        INSTANCE,
-                    )?,
-                );
-                resources.resource(crate::lifecycle::AccessResource(access.clone()));
-                let identity = Arc::new(
-                    crate::identity::Identity::connect(&config, policy, |resource| {
-                        resources.acquire(resource)
+        let (resources, mut fixture) =
+            crate::test_support::runtime::Resources::build(move |resources| {
+                Box::pin(async move {
+                    let config: Config = serde_json::from_value(base.clone())?;
+                    let access = database(&base).await?;
+                    let policy = Arc::new(
+                        crate::authorization::identity_management::IdentityManagementPolicy::new(
+                            INSTANCE,
+                        )?,
+                    );
+                    resources.resource(crate::lifecycle::AccessResource(access.clone()));
+                    let identity = Arc::new(
+                        crate::identity::Identity::connect(&config, policy, |resource| {
+                            resources.acquire(resource)
+                        })
+                        .await?,
+                    );
+                    let audit = access.audit_store(&config.audit).await?;
+                    Ok(Self {
+                        resources: Default::default(),
+                        base,
+                        access,
+                        identity,
+                        audit,
+                        credentials: Arc::new(crate::enrollment::credentials::Credentials::new(
+                            monotonic(),
+                            16,
+                        )),
                     })
-                    .await?,
-                );
-                let audit = access.audit_store(&config.audit).await?;
-                Ok(Self {
-                    resources: Default::default(),
-                    base,
-                    access,
-                    identity,
-                    audit,
-                    credentials: Arc::new(crate::enrollment::credentials::Credentials::new(
-                        monotonic(),
-                        16,
-                    )),
                 })
             })
-        })
-        .await?;
+            .await?;
         fixture.resources = resources;
         Ok(fixture)
     }

@@ -213,7 +213,7 @@ async fn durable_report_recovery_and_projection() -> Result<()> {
     ensure!(runtime.readiness.health().is_ready());
     runtime.readiness.stop();
     ensure!(!runtime.readiness.health().is_ready());
-    crate::test_support::stop_worker(owner).await?;
+    crate::test_support::runtime::stop_worker(owner).await?;
     let reader =
         Arc::new(rss_mdm_inventory_postgres::InventoryReader::connect(options("mdm_api")?).await?);
     let projected = reader
@@ -261,7 +261,7 @@ async fn durable_report_recovery_and_projection() -> Result<()> {
                 "Unconfirmed".into()
             ))
     );
-    crate::test_support::stop_worker(owner).await?;
+    crate::test_support::runtime::stop_worker(owner).await?;
     runtime.close_fixture().await?;
 
     // A borrowed repeatable-read snapshot never mixes a concurrently committed projection.
@@ -302,7 +302,7 @@ async fn durable_report_recovery_and_projection() -> Result<()> {
             .iter()
             .all(|f| f.fact.evidence.snapshot_id == newer_run.id.to_string())
     );
-    crate::test_support::stop_worker(owner).await?;
+    crate::test_support::runtime::stop_worker(owner).await?;
     runtime.close_fixture().await?;
 
     let mut root = PgConnection::connect_with(&options("postgres")?).await?;
@@ -376,7 +376,7 @@ async fn durable_report_recovery_and_projection() -> Result<()> {
                 "After-failure".into()
             ))
     );
-    crate::test_support::stop_worker(owner).await?;
+    crate::test_support::runtime::stop_worker(owner).await?;
 
     let before_exhaustion: i64 = sqlx::query_scalar(
         "SELECT count(*) FROM mdm_access.collection_runs WHERE tenant_id=$1::uuid",

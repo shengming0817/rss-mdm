@@ -1,5 +1,6 @@
 //! Real native transport with controlled bytes; no OS installation claim.
 use super::*;
+use crate::test_support::http::await_task;
 use crate::test_support::{software as content_setup, software_execution};
 use sha2::{Digest, Sha256};
 #[tokio::test]
@@ -99,7 +100,7 @@ async fn native_case(agent_unknown: bool, unsupported_architecture: bool) -> Res
         .context("enable reviewed fixture resource")?;
     }
     let scope = if agent_unknown {
-        let label = crate::test_support::credential("native-conflicting-agent");
+        let label = crate::test_support::runtime::credential("native-conflicting-agent");
         let device = crate::test_support::case::name("native-conflicting-agent");
         let registered=crate::test_support::agent::seed_service(host.app.agent_enrollment.as_ref().context("agent enrollment")?,&label,device,json!({"platform":"windows","architecture":"x86_64","capabilities":["inventory.collect.v1","software.msi.system.v1"],"executionContext":software_execution::context(software_execution::Platform::Windows)})).await.context("seed conflicting Agent peer")?;
         let device = registered["deviceId"].as_str().context("agent device")?;

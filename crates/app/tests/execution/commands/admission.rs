@@ -546,7 +546,8 @@ impl Client {
         crate::device::test_support::bind(&self.app.devices, &proof, &credential, &other, 0)
             .await?;
         self.known_windows_capability(&other).await?;
-        let subject = crate::test_support::browser_subject(&self.browser, &self.router).await?;
+        let subject =
+            crate::test_support::http::browser_subject(&self.browser, &self.router).await?;
         let mut grants = crate::test_support::identity::device_grants(
             None,
             &["device_control", "operation_read", "operation_cancel"],
@@ -558,11 +559,11 @@ impl Client {
         crate::test_support::identity::set_grants(case_tenant(), &subject, grants).await?;
         let request = |id| json!({"operationId":id,"action":{"kind":"restart"},"deadline":self.app.clock.unix_seconds().unwrap()+300});
         let id = Uuid::new_v4();
-        let mut other_browser = crate::test_support::Browser::default();
+        let mut other_browser = crate::test_support::http::Browser::default();
         let login = other_browser.call(&self.router,Method::POST,&format!("/api/v1/identity/tenants/{}/login",case_tenant()),Some(json!({"login":crate::test_support::case::login("other"),"password":crate::test_support::identity::PASSWORD}))).await?;
         ensure!(login.0 == StatusCode::OK, "other login: {login:?}");
         let other_subject =
-            crate::test_support::browser_subject(&other_browser, &self.router).await?;
+            crate::test_support::http::browser_subject(&other_browser, &self.router).await?;
         crate::test_support::identity::set_grants(
             case_tenant(),
             &other_subject,

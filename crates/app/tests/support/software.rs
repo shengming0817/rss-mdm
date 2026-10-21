@@ -1,5 +1,5 @@
 //! Real HTTP preparation for content and software adapters; no behavior matrix runs here.
-use super::*;
+use super::{http::*, runtime::*, *};
 use uuid::Uuid;
 // Only fixture preparation is serialized; business contention tests use the API directly.
 // The file belongs to the shared content environment and coordinates separate test processes.
@@ -33,7 +33,7 @@ impl Drop for HttpServer {
     }
 }
 pub(crate) struct Fixture {
-    pub(crate) resources: super::Resources,
+    pub(crate) resources: super::runtime::Resources,
     pub(crate) directory: std::path::PathBuf,
     pub(crate) router: Router,
     pub(crate) execution: Arc<rss_mdm_execution_service::ExecutionService>,
@@ -78,7 +78,7 @@ impl Fixture {
         storage: Option<Value>,
         transfer_seconds: Option<u64>,
     ) -> Result<Self> {
-        let (resources, mut fixture) = crate::test_support::Resources::build(move |resources| Box::pin(async move {
+        let (resources, mut fixture) = crate::test_support::runtime::Resources::build(move |resources| Box::pin(async move {
         let mut base: Value =
             serde_json::from_slice(&std::fs::read(std::env::var("MDM_TEST_CONFIG")?)?)?;
         let directory =

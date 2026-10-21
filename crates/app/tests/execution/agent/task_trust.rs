@@ -1,5 +1,5 @@
 use crate::test_support::agent_execution::{Fixture, case_credential};
-use crate::test_support::*;
+use crate::test_support::{agent::*, process::*, runtime::*, *};
 use rss_mdm_agent_wire::task_trust::{Acknowledgement, KeyState, Trust};
 
 #[tokio::test]

@@ -446,7 +446,7 @@ async fn durable_wns_rotation_keeps_channel_identity_and_original_operation() ->
             case_tenant(),
             1,
             &key,
-            crate::test_support::monotonic(),
+            crate::test_support::runtime::monotonic(),
             true
         )
         .await
@@ -476,7 +476,7 @@ async fn durable_wns_rotation_keeps_channel_identity_and_original_operation() ->
         case_tenant(),
         1,
         &key,
-        crate::test_support::monotonic(),
+        crate::test_support::runtime::monotonic(),
         true,
     )
     .await?;
@@ -537,7 +537,7 @@ async fn durable_wns_rotation_keeps_channel_identity_and_original_operation() ->
         case_tenant(),
         2,
         &next,
-        crate::test_support::monotonic(),
+        crate::test_support::runtime::monotonic(),
         true,
     )
     .await?;
@@ -549,7 +549,7 @@ async fn durable_wns_rotation_keeps_channel_identity_and_original_operation() ->
             &other,
             2,
             &next,
-            crate::test_support::monotonic(),
+            crate::test_support::runtime::monotonic(),
             true
         )
         .await
@@ -593,7 +593,7 @@ async fn durable_wns_rotation_keeps_channel_identity_and_original_operation() ->
             case_tenant(),
             2,
             &next,
-            crate::test_support::monotonic(),
+            crate::test_support::runtime::monotonic(),
             true
         )
         .await

@@ -7,13 +7,6 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 
 
-@dataclass(frozen=True)
-class DependencyInput:
-    owner_manifest: str
-    dependency: str
-    kind: str = 'normal'
-
-
 @dataclass(frozen=True, order=True)
 class Build:
     package: str
@@ -64,7 +57,6 @@ class Module:
     python: str | None = None
     children: tuple[str, ...] = ()
     expected_cases: int | None = None
-    dependency_inputs: tuple[DependencyInput, ...] = ()
 
     actors: tuple[tuple[str, str], ...] = ()
     configuration_devices: int = 0

@@ -380,7 +380,7 @@ async fn template_flow(
             | Completion::RevokedInventory
     ) {
         // The request must settle its own result without assistance from recovery.
-        crate::test_support::stop_worker(owner.take()).await?;
+        crate::test_support::runtime::stop_worker(owner.take()).await?;
         dynamic_result(
             &host,
             &mut f,
@@ -391,7 +391,7 @@ async fn template_flow(
             (completion, agent_source.unwrap()),
         )
         .await?;
-        crate::test_support::stop_worker(owner.take()).await?;
+        crate::test_support::runtime::stop_worker(owner.take()).await?;
         host.close().await?;
         return Ok(());
     }
@@ -411,7 +411,7 @@ async fn template_flow(
             .bind(case_tenant()).bind(policy).bind(peer.intent.registration)
             .bind(wire.header.session_id.to_string()).bind(i64::from(request_message))
             .fetch_one(&mut pg).await?;
-        crate::test_support::stop_worker(owner.take()).await?;
+        crate::test_support::runtime::stop_worker(owner.take()).await?;
         terminated_template_result(&peer, &mut pg, packet, run).await?;
         pg.close().await?;
         host.close().await?;
@@ -429,7 +429,7 @@ async fn template_flow(
             ensure!(changed.rows_affected() == 1);
         }
         denied_template_result(&peer, &mut pg, packet, run, revoke_after_first).await?;
-        crate::test_support::stop_worker(owner.take()).await?;
+        crate::test_support::runtime::stop_worker(owner.take()).await?;
         host.close().await?;
         return Ok(());
     }
@@ -450,7 +450,7 @@ async fn template_flow(
     ensure!(runs.len() == 1, "native Policy runs: {runs:?}");
     let pending:bool=sqlx::query_scalar("SELECT sealed_at IS NULL FROM mdm_access.collection_runs WHERE tenant_id=$1::uuid AND id=$2").bind(case_tenant()).bind(runs[0]).fetch_one(&mut pg).await?;
     ensure!(pending, "non-Final template results sealed early");
-    crate::test_support::stop_worker(owner.take()).await?;
+    crate::test_support::runtime::stop_worker(owner.take()).await?;
     let browser = f.browser.clone();
     drop(f);
     host = host.restart().await?;
@@ -565,7 +565,7 @@ async fn template_flow(
         id: 2,
         alert: s::Alert::UnenrollmentRequested,
     }];
-    crate::test_support::stop_worker(owner.take()).await?;
+    crate::test_support::runtime::stop_worker(owner.take()).await?;
     authenticate_during_recovery(&host, &peer, &mut pg, next).await?;
     ensure!(
         native::post(&peer.mutual, &peer.url, &notification)
@@ -1144,7 +1144,7 @@ async fn dynamic_result(
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
     }).await??;
-    crate::test_support::stop_worker(Some(recovery)).await?;
+    crate::test_support::runtime::stop_worker(Some(recovery)).await?;
     let after: serde_json::Value = sqlx::query_scalar("SELECT jsonb_build_array(state,result) FROM mdm_commands.action_runs WHERE tenant_id=$1::uuid AND id=$2")
         .bind(case_tenant()).bind(run).fetch_one(&mut *pg).await?;
     ensure!(

@@ -44,7 +44,7 @@ impl Fixture {
             }
         })
         .await;
-        crate::test_support::stop_worker(Some(owner)).await?;
+        crate::test_support::runtime::stop_worker(Some(owner)).await?;
         let preview = preview??;
         let items = preview["items"]
             .as_array()
@@ -243,7 +243,7 @@ impl Fixture {
         let definition = self.collection_template().await?;
         let owner = self.policy_worker().await?;
         let queued = self.pending_collections(&definition, 65, peer).await;
-        crate::test_support::stop_worker(Some(owner)).await?;
+        crate::test_support::runtime::stop_worker(Some(owner)).await?;
         let runs = queued?;
         let run = runs[64];
         let mut pending_reader =
@@ -355,7 +355,7 @@ async fn token_is_required_before_management() -> Result<()> {
         .await?;
     ensure!(reply.0 == StatusCode::OK);
     ensure!(
-        crate::test_support::audit_count(|r| r.action() == "apple_management"
+        crate::audit_test_support::audit_count(|r| r.action() == "apple_management"
             && r.status() == 200
             && r.actor()
                 == r.payload["registration"]

@@ -1,5 +1,5 @@
 use crate::test_support::planning_http::*;
-use crate::test_support::*;
+use crate::test_support::{http::*, process::*, runtime::*, *};
 #[tokio::test]
 #[ignore = "make t2 MODULE=planning.policy"]
 async fn assignment_pagination_uses_published_scope_without_eager_execution() -> Result<()> {
@@ -98,7 +98,7 @@ async fn assignment_pagination_uses_published_scope_without_eager_execution() ->
     .await?;
     // Scope publication is the fixture prerequisite. Stop its producer before the
     // bounded read/CAS checks, which do not measure background reconciliation throughput.
-    crate::test_support::stop_worker(automation).await?;
+    crate::test_support::runtime::stop_worker(automation).await?;
     let membership_path=format!("/api/v1/devices/{}-1/groups?limit=1",prefix);
     let (status,memberships)=browser.call(router,Method::GET,&membership_path,None).await?;
     ensure!(status==StatusCode::OK && memberships["items"].as_array().is_some_and(|items|items.iter().any(|item|item["id"]==group.to_string())),"reverse memberships: {status} {memberships}");

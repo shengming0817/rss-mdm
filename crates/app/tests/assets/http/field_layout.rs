@@ -1,6 +1,7 @@
 //! Real HTTP/PG proofs for tenant-shared display metadata, not device membership.
 use super::*;
 use crate::authorization::{Grant, Permission, Scope};
+use crate::test_support::http::browser_subject;
 const PATH: &str = "/api/v1/asset-field-layout";
 
 fn operation(revision: u64, groups: Value) -> Value {

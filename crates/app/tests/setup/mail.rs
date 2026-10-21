@@ -138,7 +138,7 @@ async fn real_tls_authentication_and_unknown_submission_are_distinct() -> Result
 #[ignore = "MODULE=installation.smtp: original operation, encrypted credentials and unknown DATA receipt survive replay"]
 async fn unknown_submission_is_not_requeued_and_materials_rewrap() -> Result<()> {
     runtime_role_cannot_insert_provider_success().await?;
-    let tenant = crate::test_support::case_tenant();
+    let tenant = crate::test_support::runtime::case_tenant();
     let mut c = PgConnection::connect_with(
         &std::env::var("MDM_OWNER_URL")?
             .parse::<sqlx::postgres::PgConnectOptions>()?

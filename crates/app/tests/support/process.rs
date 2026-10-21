@@ -1,5 +1,5 @@
 //! Capture process diagnostics in the Rust owner test, without a Python test-name roster.
-use super::*;
+use super::{runtime::*, *};
 
 pub(crate) async fn captured_test(
     name: &str,
@@ -31,4 +31,52 @@ pub(crate) async fn captured_test(
         "test subprocess did not run exactly one case"
     );
     Ok(Some(output))
+}
+
+pub(crate) fn command(args: &[&str], input: Option<&str>) -> Result<String> {
+    let mut c = Command::new("docker");
+    c.args(args).stdout(Stdio::piped()).stderr(Stdio::piped());
+    if input.is_some() {
+        c.stdin(Stdio::piped());
+    }
+    let mut child = c.spawn()?;
+    if let Some(input) = input {
+        child.stdin.take().unwrap().write_all(input.as_bytes())?;
+    }
+    let result = child.wait_with_output()?;
+    ensure!(
+        result.status.success(),
+        "owned fixture command failed: {}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    Ok(String::from_utf8(result.stdout)?)
+}
+
+pub(crate) fn pg(sql: &str) -> Result<String> {
+    pg_tenant(case_tenant(), sql)
+}
+
+pub(crate) fn pg_tenant(tenant: &str, sql: &str) -> Result<String> {
+    uuid::Uuid::parse_str(tenant)?;
+    let config: Config =
+        serde_json::from_slice(&std::fs::read(std::env::var("MDM_TEST_CONFIG")?)?)?;
+    command(
+        &[
+            "exec",
+            "-i",
+            &std::env::var("MDM_TEST_PG_CONTAINER")?,
+            "psql",
+            "-X",
+            "-U",
+            "postgres",
+            "-d",
+            &config.access_database.name,
+            "-qAt",
+            "-v",
+            "ON_ERROR_STOP=1",
+        ],
+        Some(&format!(
+            "BEGIN; SET LOCAL rss.tenant_id='{tenant}'; {sql}; COMMIT;"
+        )),
+    )
 }

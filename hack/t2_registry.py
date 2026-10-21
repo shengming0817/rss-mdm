@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 from pathlib import Path
-from t2_model import Build, Module, CasePolicy, DependencyInput
+from t2_model import Build, Module, CasePolicy
 
 ROOT = Path(__file__).resolve().parents[1]
 APP = Build('rss-mdm-app', features=('integration',))
@@ -888,10 +888,6 @@ for name, module in tuple(MODULES.items()):
     support = ()
     if 'tls' in module.fixtures:
         support += ('hack/source_fixtures.py',)
-    if 'identity' in module.fixtures or name == 'installation.migration':
-        support += ('crates/app/tests/support/identity.rs',)
-    if 'identity' in module.fixtures or name == 'installation.migration':
-        support += ('crates/app/tests/support/mod.rs', 'crates/app/tests/support/authority.rs', 'crates/app/tests/support/http.rs')
     MODULES[name] = replace(MODULES[name], support_inputs=MODULES[name].support_inputs + support)
 
 
@@ -1002,45 +998,148 @@ MODULES['execution.commands.dispatch'] = replace(
 MODULES['assets.group_input'] = replace(MODULES['assets.group_input'], support_inputs=MODULES['assets.group_input'].support_inputs+('crates/app/tests/assets/group_support.rs',))
 
 # Verified helper call sites. These edges select tests, never production consumers.
+# Direct test callers only. A setup helper does not expand into its callers.
 APP_HELPER_CONSUMERS = {
-    'support/software_execution.rs': ('execution.commands.onboarding','apple.onboarding','software.http','planning.software','execution.software.offer','execution.software.content','execution.software.recovery'),
+    'support/software_execution.rs': (
+        'agent.configurations', 'agent.pki', 'agent.registration', 'agent.reports',
+        'apple.onboarding', 'execution.agent.delivery', 'execution.agent.poll', 'execution.commands.onboarding',
+        'execution.software.content', 'execution.software.offer', 'execution.software.recovery', 'planning.agent_policy',
+        'planning.self_service', 'planning.software', 'software.http',
+        'telemetry.ingress.click_house', 'telemetry.ingress.postgres',
+        'telemetry.ingress.timescale_dedicated', 'telemetry.ingress.timescale_shared',
+    ),
     'support/software.rs': (
-        'software.http','content.http','content.mirror','content.gc','content.storage','planning.software',
-        'execution.software.offer','execution.software.content','execution.software.recovery'),
-    'support/process.rs': ('inventory.runtime','execution.commands.recovery'),
+        'agent.configurations', 'content.gc', 'content.http', 'content.mirror',
+        'content.storage', 'execution.commands.onboarding', 'execution.software.content', 'execution.software.offer',
+        'execution.software.recovery', 'planning.agent_policy', 'planning.self_service', 'planning.software',
+        'software.http', 'enrollment.quotas', 'windows.enrollment',
+    ),
+    'support/process.rs': (
+        'agent.configurations', 'agent.pki', 'agent.registration', 'agent.reports',
+        'api.identity_context', 'apple.onboarding', 'assets.group_input', 'assets.http',
+        'assets.queries', 'assets.sources', 'authorization.admission', 'authorization.capacity',
+        'authorization.initialization', 'authorization.programmatic', 'authorization.rules', 'certificate-archive.http',
+        'compliance.evaluation', 'compliance.group_input', 'compliance.http', 'compliance.recovery',
+        'content.gc', 'content.http', 'content.mirror', 'content.storage',
+        'device.associations', 'device.revocation', 'diagnostics.http', 'execution.agent.delivery',
+        'execution.agent.history', 'execution.agent.poll', 'execution.agent.recovery', 'execution.agent.task_trust',
+        'execution.commands.onboarding', 'execution.commands.recovery', 'execution.commands.windows', 'execution.software.offer',
+        'execution.software.recovery', 'identity.local', 'inventory.runtime', 'planning.agent_policy',
+        'planning.frequency', 'planning.group_scope', 'planning.http', 'planning.onboarding',
+        'planning.policy', 'planning.self_service', 'planning.software', 'recovery-credentials.http',
+        'software.http', 'telemetry.ingress.click_house', 'telemetry.ingress.postgres', 'telemetry.ingress.timescale_dedicated',
+        'telemetry.ingress.timescale_shared', 'timeline.http', 'webhooks.product',
+    ),
     'execution/support.rs': (
-        'execution.commands.admission','execution.commands.dispatch','execution.commands.recovery',
-        'execution.commands.windows','execution.commands.configuration','execution.commands.onboarding','windows.commands','windows.declared'),
+        'execution.commands.admission', 'execution.commands.dispatch', 'execution.commands.recovery', 'execution.commands.windows',
+        'execution.commands.configuration', 'execution.commands.onboarding', 'windows.commands', 'windows.declared',
+    ),
     'device/support.rs': (
-        'device.associations','device.views','diagnostics.http',
-        'device.binding','device.revocation','device.recovery','device.admission',
-        'agent.reports','inventory.runtime','assets.group_input','assets.sources','compliance.evaluation',
-        'execution.agent.delivery','authorization.admission','enrollment.recovery','native.tls',
-        'planning.http','software.http','execution.software.offer','execution.software.content',
-        'execution.software.recovery','execution.commands.admission','execution.commands.dispatch',
-        'execution.commands.recovery','execution.commands.windows','execution.commands.configuration','execution.commands.onboarding',
-        'windows.commands','windows.enrollment','windows.issuance','windows.limits','windows.management','windows.retention','windows.declared','windows.entra',
-        'apple.collection','apple.profile','apple.policy','apple.onboarding','apple.renewal','apple.identity','apple.push',
-        'apple.fairness','apple.host','apple.scep','apple.commands','apple.users','apple.ddm'),
+        'device.associations', 'device.views', 'diagnostics.http', 'device.binding',
+        'device.revocation', 'device.recovery', 'device.admission', 'agent.reports',
+        'inventory.runtime', 'assets.group_input', 'assets.sources', 'compliance.evaluation',
+        'execution.agent.delivery', 'authorization.admission', 'enrollment.recovery', 'native.tls',
+        'planning.http', 'software.http', 'execution.software.offer', 'execution.software.content',
+        'execution.software.recovery', 'execution.commands.admission', 'execution.commands.dispatch', 'execution.commands.recovery',
+        'execution.commands.windows', 'execution.commands.configuration', 'execution.commands.onboarding', 'windows.commands',
+        'windows.enrollment', 'windows.issuance', 'windows.limits', 'windows.management',
+        'windows.retention', 'windows.declared', 'windows.entra', 'apple.collection',
+        'apple.profile', 'apple.policy', 'apple.onboarding', 'apple.renewal',
+        'apple.identity', 'apple.push', 'apple.fairness', 'apple.host',
+        'apple.scep', 'apple.commands', 'apple.users', 'apple.ddm',
+    ),
     'support/audit.rs': (
-        'diagnostics.http',
-        'audit.receipts','audit.integrity','audit.recovery','audit.budget',
-        'api.diagnostics','device.recovery','device.revocation','execution.commands.admission','execution.commands.onboarding',
-        'execution.commands.dispatch','windows.enrollment','windows.issuance','windows.limits',
-        'apple.policy','apple.identity','planning.scope','planning.group_scope','planning.assets',
-        'planning.recovery','planning.resource_archive','planning.agent_policy','assets.http',
-        'enrollment.http','content.http','compliance.http','compliance.recovery','compliance.group_input',
-        'authorization.capacity','authorization.rules','execution.agent.history','execution.agent.content','software.http'),
+        'agent.pki', 'api.diagnostics', 'apple.collection', 'apple.identity',
+        'apple.policy', 'apple.profile', 'assets.http', 'audit.budget',
+        'audit.integrity', 'audit.receipts', 'audit.recovery', 'authorization.capacity',
+        'authorization.initialization', 'authorization.programmatic', 'authorization.rules', 'compliance.group_input',
+        'compliance.http', 'compliance.recovery', 'content.http', 'device.recovery',
+        'device.revocation', 'diagnostics.http', 'enrollment.http', 'enrollment.quotas',
+        'execution.agent.content', 'execution.agent.history', 'execution.commands.admission', 'execution.commands.dispatch',
+        'execution.commands.onboarding', 'execution.commands.windows', 'planning.agent_policy', 'planning.assets',
+        'planning.group_scope', 'planning.recovery', 'planning.resource_archive', 'planning.scope',
+        'planning.self_service', 'settings.first_use', 'software.http', 'timeline.http',
+        'windows.enrollment', 'windows.issuance', 'windows.limits',
+    ),
+    'support/runtime.rs': (
+        'agent.configurations', 'agent.pki', 'agent.registration', 'agent.reports',
+        'api.identity_context', 'apple.account_enrollment', 'apple.collection', 'apple.fairness',
+        'apple.identity', 'apple.onboarding', 'apple.policy', 'assets.group_input',
+        'assets.http', 'assets.queries', 'assets.sources', 'authorization.admission',
+        'authorization.capacity', 'authorization.initialization', 'authorization.programmatic', 'authorization.rules',
+        'certificate-archive.http', 'compliance.evaluation', 'compliance.group_input', 'compliance.http',
+        'compliance.recovery', 'content.gc', 'content.http', 'content.mirror',
+        'content.storage', 'device.associations', 'device.revocation', 'diagnostics.http',
+        'enrollment.quotas', 'execution.agent.content', 'execution.agent.delivery', 'execution.agent.history',
+        'execution.agent.poll', 'execution.agent.recovery', 'execution.agent.task_trust', 'execution.commands.configuration',
+        'execution.commands.onboarding', 'execution.commands.recovery', 'execution.commands.windows', 'execution.software.content',
+        'execution.software.offer', 'execution.software.recovery', 'identity.audit', 'identity.local',
+        'identity.sso', 'installation.smtp', 'installation.smtp_transport', 'installation.storage_reconcile',
+        'inventory.runtime', 'planning.agent_policy', 'planning.frequency', 'planning.group_scope',
+        'planning.http', 'planning.onboarding', 'planning.policy', 'planning.self_service',
+        'planning.software', 'recovery-credentials.http', 'settings.first_use', 'software.http',
+        'telemetry.ingress.click_house', 'telemetry.ingress.postgres', 'telemetry.ingress.timescale_dedicated', 'telemetry.ingress.timescale_shared',
+        'timeline.http', 'webhooks.product', 'windows.declared', 'windows.management',
+    ),
+    'support/http.rs': (
+        'agent.configurations', 'agent.pki', 'agent.registration', 'agent.reports',
+        'api.identity_context', 'apple.account_enrollment', 'apple.ade', 'apple.collection',
+        'apple.commands', 'apple.ddm', 'apple.identity', 'apple.policy',
+        'apple.push', 'apple.renewal', 'apple.scep', 'assets.group_input',
+        'assets.http', 'assets.queries', 'assets.sources', 'authorization.admission',
+        'authorization.capacity', 'authorization.membership', 'authorization.programmatic', 'authorization.rules',
+        'certificate-archive.http', 'compliance.group_input', 'compliance.http',
+        'compliance.recovery', 'content.gc', 'content.http', 'content.mirror',
+        'content.storage', 'device.revocation', 'device.views', 'diagnostics.http',
+        'enrollment.http', 'enrollment.quotas', 'execution.agent.delivery', 'execution.agent.history',
+        'execution.agent.task_trust', 'execution.commands.admission', 'execution.commands.configuration', 'execution.commands.onboarding',
+        'execution.commands.windows', 'execution.software.offer', 'execution.software.recovery', 'identity.local',
+        'identity.sso', 'planning.agent_policy', 'planning.frequency', 'planning.group_scope',
+        'planning.http', 'planning.onboarding', 'planning.policy', 'planning.self_service',
+        'planning.software', 'recovery-credentials.http', 'settings.first_use', 'software.http',
+        'telemetry.ingress.click_house', 'telemetry.ingress.postgres', 'telemetry.ingress.timescale_dedicated', 'telemetry.ingress.timescale_shared',
+        'timeline.http', 'webhooks.product', 'windows.enrollment', 'windows.entra',
+        'windows.management',
+    ),
+    'support/agent.rs': (
+        'agent.configurations', 'agent.pki', 'agent.registration', 'agent.reports',
+        'apple.onboarding', 'diagnostics.http', 'execution.agent.content', 'execution.agent.delivery',
+        'execution.agent.poll', 'execution.agent.task_trust', 'execution.commands.onboarding', 'execution.software.content',
+        'execution.software.offer', 'execution.software.recovery', 'planning.agent_policy', 'planning.onboarding',
+        'planning.self_service', 'planning.software', 'software.http', 'telemetry.ingress.click_house',
+        'telemetry.ingress.postgres', 'telemetry.ingress.timescale_dedicated', 'telemetry.ingress.timescale_shared',
+    ),
+    'support/authority.rs': (
+        'agent.configurations', 'agent.registration', 'agent.reports', 'api.identity_context',
+        'apple.ade', 'assets.http', 'authorization.initialization', 'authorization.rules',
+        'certificate-archive.http', 'device.revocation', 'device.views', 'diagnostics.http',
+        'enrollment.http', 'enrollment.quotas', 'execution.software.recovery', 'identity.local',
+        'planning.group_scope', 'planning.http', 'planning.policy', 'recovery-credentials.http',
+        'settings.first_use', 'telemetry.ingress.click_house', 'telemetry.ingress.postgres', 'telemetry.ingress.timescale_dedicated',
+        'telemetry.ingress.timescale_shared', 'timeline.http',
+    ),
+    'support/identity.rs': (
+        'agent.configurations', 'agent.pki', 'api.identity_context', 'apple.account_enrollment',
+        'apple.ade', 'apple.collection', 'apple.ddm', 'apple.host',
+        'apple.onboarding', 'apple.policy', 'apple.scep', 'assets.group_input',
+        'assets.http', 'audit.receipts', 'authorization.admission', 'authorization.capacity',
+        'authorization.initialization', 'authorization.programmatic', 'authorization.rules', 'certificate-archive.http',
+        'compliance.http', 'content.http', 'content.storage', 'device.associations',
+        'device.revocation', 'device.views', 'diagnostics.http', 'enrollment.quotas',
+        'execution.agent.delivery', 'execution.agent.history', 'execution.agent.recovery', 'execution.agent.task_trust',
+        'execution.commands.admission', 'execution.commands.configuration', 'execution.commands.onboarding', 'execution.commands.recovery',
+        'execution.commands.windows', 'identity.audit', 'identity.local', 'identity.sso',
+        'installation.migration', 'installation.registry', 'installation.storage_reconcile', 'installation.webhook',
+        'planning.agent_policy', 'planning.group_scope', 'planning.http', 'planning.onboarding',
+        'planning.policy', 'planning.recovery', 'planning.resource_archive', 'planning.self_service',
+        'planning.software', 'recovery-credentials.http', 'settings.first_use', 'software.http',
+        'telemetry.ingress.click_house', 'telemetry.ingress.postgres', 'telemetry.ingress.timescale_dedicated', 'telemetry.ingress.timescale_shared',
+        'timeline.http', 'webhooks.product', 'windows.declared', 'windows.enrollment',
+        'windows.entra', 'windows.issuance', 'windows.management',
+    ),
 }
 APP_HELPER_CONSUMERS['execution/support/configuration.rs'] = ('execution.commands.configuration', 'windows.declared')
 APP_HELPER_CONSUMERS['execution/support/native.rs'] = APP_HELPER_CONSUMERS['execution/support.rs']
-for relative, consumers in APP_HELPER_CONSUMERS.items():
-    path = 'crates/app/tests/' + relative
-    for name, module in list(MODULES.items()):
-        inputs = tuple(value for value in module.support_inputs if value != path)
-        if name in consumers:
-            inputs += (path,)
-        MODULES[name] = replace(module, support_inputs=inputs)
 
 for name, module in list(MODULES.items()):
     if module.build and module.postgres:
@@ -1299,279 +1398,11 @@ CONTROL_INPUTS = {
         },
     },
 }
-DEPENDENCY_POLICIES = {}
-
-# Cargo cannot distinguish App seams. Supplemental dependency declarations
-# reuse the same owners; they never traverse App's entire dependency graph.
-PG_CONSUMERS = {n for n, m in MODULES.items() if m.postgres}
-APP_CONSUMERS = {n for n, m in MODULES.items() if m.build == APP}
-
-
-def consume_dependencies(names, *, normal='', dev=''):
-    if isinstance(names, str):
-        names = names.split()
-    entries = tuple(DependencyInput('crates/app/Cargo.toml', alias, kind)
-                    for kind, aliases in (('normal', normal), ('dev', dev))
-                    for alias in aliases.split())
-    for name in sorted(names):
-        module = MODULES[name]
-        MODULES[name] = replace(module, dependency_inputs=(*module.dependency_inputs, *entries))
-
-
-# App's integration-enabled Flow dev dependency exercises the same declared seams.
-consume_dependencies(
-    {name for name, module in MODULES.items()
-     if any(path.startswith('crates/flow-service/src/') for path in module.production_inputs)},
-    dev='rss-mdm-flow-service',
-)
-
-
-consume_dependencies(
-    PG_CONSUMERS,
-    normal=(
-               'rss-audit-postgres rss-ledger-postgres rss-identity-postgres rss-observation-postgres rss-'
-               'projection-postgres rss-request-context sha2 sqlx rss-transactional-messaging rss-transactional-'
-               'messaging-postgres rss-device-command-postgres rss-reconcile-postgres'
-           ),
-)
-
-consume_dependencies(
-    APP_CONSUMERS,
-    normal='rss-ledger url zeroize libc',
-)
-
-consume_dependencies(
-    PG_CONSUMERS | {'apple.cms', 'apple.apns'},
-    normal='rss-identity-core thiserror serde serde_json',
-)
-
-consume_dependencies(
-    (APP_CONSUMERS | {'host.lifecycle'}) - set((
-                                                   'audit.receipts worker.wake apple.cms api.diagnostics audit.budget audit.integrity native.tls '
-                                                   'apple.apns audit.recovery'
-                                               ).split()),
-    normal='rss-identity-http-axum rand base64',
-    dev='http-body-util',
-)
-
-consume_dependencies(
-    (APP_CONSUMERS | set((
-                             'inventory.process inventory.reader inventory.recovery inventory.manual inventory.projection '
-                             'host.lifecycle'
-                         ).split())) - set('audit.receipts worker.wake apple.cms audit.budget audit.integrity apple.apns audit.recovery'.split()),
-    normal='rss-observation',
-)
-
-consume_dependencies(
-    (APP_CONSUMERS | {'host.lifecycle'}) - set('audit.receipts apple.cms audit.budget apple.apns audit.recovery'.split()),
-    normal='rss-runtime',
-)
-
-consume_dependencies(
-    APP_CONSUMERS | {'host.lifecycle'},
-    normal='axum uuid anyhow',
-)
-
-consume_dependencies(
-    (APP_CONSUMERS | {'host.lifecycle'}) - set((
-                                                   'audit.receipts worker.wake apple.cms api.diagnostics audit.budget audit.integrity native.tls '
-                                                   'audit.recovery'
-                                               ).split()),
-    normal='reqwest',
-    dev='reqwest',
-)
-
-consume_dependencies(
-    (APP_CONSUMERS | {'host.lifecycle'}) - set('audit.receipts worker.wake apple.cms api.diagnostics audit.budget audit.recovery'.split()),
-    normal='ring',
-)
-
-consume_dependencies(
-    (
-        'agent.pki apple.collection apple.commands apple.ddm apple.fairness apple.host apple.identity '
-        'apple.onboarding apple.policy apple.profile apple.push apple.renewal apple.scep '
-        'apple.users execution.commands.admission execution.commands.configuration '
-        'execution.commands.dispatch execution.commands.onboarding execution.commands.recovery '
-        'execution.commands.windows windows.commands windows.declared windows.enrollment windows.issuance'
-        ' windows.limits windows.management windows.retention'
-    ),
-    normal='x509-cert',
-)
-
-consume_dependencies(
-    (
-        'agent.pki apple.apns apple.collection apple.commands apple.ddm apple.fairness apple.host '
-        'apple.identity apple.onboarding apple.policy apple.profile apple.push apple.renewal apple.scep '
-        'apple.users execution.commands.admission execution.commands.configuration '
-        'execution.commands.dispatch execution.commands.onboarding execution.commands.recovery '
-        'execution.commands.windows native.tls windows.commands windows.declared windows.enrollment '
-        'windows.issuance windows.limits windows.management windows.retention'
-    ),
-    normal='tokio-rustls',
-)
-
-consume_dependencies(
-    PG_CONSUMERS | {'apple.apns'},
-    normal='time tokio',
-    dev='time tokio',
-)
-
-consume_dependencies(
-    (APP_CONSUMERS | {'host.lifecycle'}) - set((
-                                                   'audit.receipts worker.wake apple.cms audit.budget audit.integrity native.tls apple.apns '
-                                                   'audit.recovery'
-                                               ).split()),
-    normal='tower',
-    dev='tower',
-)
-
-consume_dependencies(
-    (
-        'apple.apns apple.cms apple.collection apple.commands apple.ddm apple.fairness apple.host '
-        'apple.identity apple.onboarding apple.policy apple.profile apple.push apple.renewal apple.scep '
-        'apple.users certificate-archive.http identity.sso windows.declared windows.issuance'
-    ),
-    dev='tempfile',
-)
-
-consume_dependencies(
-    (
-        'api.diagnostics apple.identity apple.policy assets.http audit.budget audit.integrity '
-        'audit.receipts audit.recovery authorization.capacity authorization.rules compliance.group_input '
-        'compliance.http compliance.recovery content.http device.recovery device.revocation '
-        'diagnostics.http enrollment.http execution.agent.content execution.agent.history '
-        'execution.commands.admission execution.commands.dispatch execution.commands.onboarding '
-        'planning.agent_policy planning.assets planning.group_scope planning.recovery '
-        'planning.resource_archive planning.scope software.http timeline.http windows.enrollment '
-        'windows.issuance windows.limits windows.management'
-    ),
-    normal='rss-audit-core',
-)
-
-consume_dependencies(
-    'content.gc timeline.http',
-    normal='rss-contract',
-    dev='rss-contract',
-)
-
-consume_dependencies(
-    (
-        'api.diagnostics apple.apns apple.host apple.identity apple.policy apple.push assets.http '
-        'audit.budget audit.integrity audit.receipts audit.recovery authorization.capacity '
-        'authorization.rules compliance.group_input compliance.http compliance.recovery content.http '
-        'device.recovery device.revocation diagnostics.http enrollment.http execution.agent.content '
-        'execution.agent.history execution.commands.admission execution.commands.configuration '
-        'execution.commands.dispatch execution.commands.onboarding execution.commands.recovery '
-        'host.lifecycle identity.audit inventory.manual inventory.process inventory.projection '
-        'inventory.reader inventory.recovery inventory.runtime planning.agent_policy planning.assets '
-        'planning.group_scope planning.recovery planning.resource_archive planning.scope software.http '
-        'windows.enrollment windows.issuance windows.limits windows.management worker.wake'
-    ),
-    normal='tokio-util',
-)
-
-consume_dependencies(
-    (
-        'assets.http audit.integrity diagnostics.http execution.commands.configuration '
-        'execution.commands.recovery planning.assets planning.group_scope planning.recovery '
-        'planning.resource_archive planning.scope'
-    ),
-    normal='rss-reconcile',
-)
-
-consume_dependencies(
-    'api.identity_context diagnostics.http identity.audit identity.local identity.sso windows.entra',
-    normal='rss-identity-oidc',
-)
-
-consume_dependencies(
-    (
-        'api.diagnostics api.identity_context diagnostics.http execution.commands.admission '
-        'execution.commands.configuration execution.commands.dispatch execution.commands.onboarding '
-        'execution.commands.recovery execution.commands.windows host.lifecycle identity.audit '
-        'identity.local identity.sso native.tls windows.commands windows.declared windows.enrollment '
-        'windows.issuance windows.limits windows.management windows.retention'
-    ),
-    normal='rss-axum',
-)
-
-consume_dependencies(
-    'diagnostics.http identity.audit',
-    normal='rss-transactional-messaging-runtime',
-)
-
-consume_dependencies(
-    (
-        'apple.collection apple.commands apple.ddm apple.fairness apple.host apple.identity '
-        'apple.onboarding apple.policy apple.profile apple.push apple.renewal apple.scep '
-        'apple.users diagnostics.http host.lifecycle inventory.manual inventory.process '
-        'inventory.projection inventory.reader inventory.recovery inventory.runtime'
-    ),
-    normal='rss-projection',
-)
-
-consume_dependencies(
-    'content.http diagnostics.http worker.wake',
-    normal='futures',
-)
-
-consume_dependencies(
-    'api.diagnostics',
-    normal='tracing-subscriber',
-)
-
-consume_dependencies(
-    'execution.software.offer software.http',
-    normal='zip',
-)
-
-consume_dependencies(
-    'native.tls',
-    normal='tracing',
-)
-
-consume_dependencies(
-    'apple.apns apple.host apple.push windows.management',
-    dev='h2',
-)
-
-consume_dependencies(
-    (
-        'apple.collection apple.commands apple.ddm apple.fairness apple.host apple.identity '
-        'apple.onboarding apple.policy apple.profile apple.push apple.renewal apple.scep '
-        'apple.users'
-    ),
-    normal='plist cms',
-)
-
-# Embedded unit tests have Cargo carriers and no external T2 inputs.
-for owner, dependencies in {
-    'audit-integration': 'tokio',
-    'flow-service': 'jsonschema tempfile',
-    'timeline-service': 'rss-contract',
-    'apple-channel': 'anyhow',
-    'windows-channel': 'anyhow',
-}.items():
-    DEPENDENCY_POLICIES[f'crates/{owner}/Cargo.toml'] = {
-        'dev:' + dependency: {'cargoOnly': True} for dependency in dependencies.split()
-    }
-# Offline schema dependencies are checked by the native-schema Cargo gate.
-DEPENDENCY_POLICIES['crates/native-schema/Cargo.toml'] = {
-    'normal:' + dependency: {'cargoOnly': True}
-    for dependency in 'cab msi quick-xml regex serde serde_json sha2 yaml-rust2'.split()
-}
-
-DEPENDENCY_POLICIES['crates/app/Cargo.toml'] = {
-    'normal:jiff': {'cargoOnly': True},
-    'normal:subtle': {'cargoOnly': True},
-    'normal:md-5': {'cargoOnly': True},
-    'normal:rss-device-command': {'cargoOnly': True},
-    'dev:jsonschema': {'cargoOnly': True},
-}
-
 # Execution mechanism owns its behavior proof. These paths are not business
 # helper inputs even when historical descriptions listed them as shared support.
 TOOL_ONLY_INPUTS = (
+    'crates/app/tests/support/mod.rs',
+    'crates/app/tests/support/pki.rs',
     'hack/t2_model.py',
     'hack/t2_registry.py',
     'hack/ci_impact.py',
@@ -1593,6 +1424,7 @@ TOOL_ONLY_INPUTS = (
 # covered by tool tests; none of these declarations adds a business matrix.
 PG_REPRESENTATIVES = ('api.identity_context', 'group.persistence', 'policy.persistence')
 REPRESENTATIVE_INPUTS = {
+    'crates/app/tests/support/pki.rs': ('agent.registration',),
     'hack/t2_execution.py': ('policy.persistence',),
     'hack/t2_python.py': ('host.lifecycle', 'gateway.admission'),
     'hack/t2_processes.py': ('host.lifecycle',),
@@ -1615,20 +1447,6 @@ consume(('crates/windows-channel/src/error.rs',), 'windows.enrollment windows.ma
 consume(('crates/apple-channel/src/error.rs', 'crates/apple-channel/src/diagnostic.rs'), 'apple.ade apple.account_enrollment apple.profile apple.onboarding apple.collection api.diagnostics')
 consume(('crates/inventory-service/src/error.rs',), 'agent.reports planning.onboarding assets.http api.diagnostics')
 
-consume_dependencies('api.diagnostics apple.onboarding apple.push apple.users', dev='rss-mdm-apple-channel')
-consume_dependencies('api.diagnostics windows.declared execution.commands.onboarding', dev='rss-mdm-windows-channel')
-consume_dependencies('agent.registration agent.reports agent.pki device.binding device.revocation device.recovery', dev='rss-mdm-registration-service')
-consume_dependencies((*AGENT_FIXTURE_CONSUMERS, *AGENT_FIXTURE_CASES), normal='x509-cert tokio-rustls')
-
-consume_dependencies(TASK_CONSUMERS + ' execution.commands.admission execution.commands.configuration execution.commands.dispatch execution.commands.onboarding execution.commands.recovery execution.commands.windows', dev='rss-mdm-execution-service')
-
-# App test composition enables provider-owned integration/test-support features.
-for provider in ('flow-service','inventory-service','authorization-service','audit-integration'):
-    prefix=f'crates/{provider}/'
-    consumers={name for name,module in MODULES.items() if any(path.startswith(prefix) for path in module.production_inputs)}
-    consume_dependencies(consumers, dev=f'rss-mdm-{provider}')
-
-
 
 MODULES['execution.commands.windows'] = replace(MODULES['execution.commands.windows'],
     selectors=(*MODULES['execution.commands.windows'].selectors, 'execution::t2::commands::control::'),
@@ -1641,7 +1459,6 @@ add('content.s3', build=Build('rss-mdm-content-s3'), selectors=('s3_tests::',), 
 consume(('crates/content-service/src/backend.rs','crates/content-service/src/journal.rs','crates/content-service/src/reader.rs','crates/content-service/schema/*.sql'),
         'content.storage content.http content.mirror content.gc catalog.contract software.http execution.agent.content execution.software.content execution.commands.configuration execution.commands.windows planning.agent_policy')
 
-consume_dependencies('content.storage', normal='rss-mdm-content-s3 tokio-util', dev='tempfile')
 
 MODULES['planning.self_service'] = replace(MODULES['planning.self_service'], fixtures=('identity','local_worker','agent_pki'), scope='tenant', support_inputs=(*MODULES['planning.self_service'].support_inputs,'crates/app/tests/support/agent_execution.rs','crates/app/tests/support/software.rs','crates/app/tests/support/software_execution.rs'))
 consume(('crates/agent-wire/src/self_service.rs','crates/agent-wire/schema/runtime/task-authorization-v1.schema.json','crates/agent-wire/schema/runtime/task-resource-v1.schema.json','crates/agent-wire/schema/runtime/self-service-*.json','crates/management-http/schema/*','crates/agent-wire/examples/*','crates/management-http/examples/*'), TASK_CONSUMERS)
@@ -1747,7 +1564,6 @@ consume(("crates/execution-service/src/agent_collection_eligibility.rs", "crates
 
 consume(("crates/resource/src/agent_collection.rs", "crates/resource/src/blueprints/agent_windows.rs",
         "crates/resource/src/blueprints/agent_macos.rs", "crates/resource/src/blueprints/agent_system.rs", "crates/agent-wire/src/native_collection.rs", "crates/agent-wire/src/native_collection/*.rs"), "planning.http planning.agent_policy execution.agent.delivery execution.agent.history execution.agent.recovery assets.sources assets.queries")
-consume_dependencies("planning.http planning.agent_policy execution.agent.delivery execution.agent.history execution.agent.recovery assets.sources assets.queries", normal="rss-mdm-agent-wire time")
 
 consume(("crates/examples/examples/fixture_snapshot.rs",), "examples.cli")
 
@@ -1923,10 +1739,6 @@ module = MODULES['apple.identity']
 MODULES[module.id] = replace(module, policies=tuple(replace(p, fixtures=tuple(f for f in module.fixtures if f != 'scep'))
     if p.selector.endswith('token_is_required_before_management') else p for p in module.policies))
 
-for name, module in tuple(MODULES.items()):
-    if any(path in module.support_inputs for path in ('crates/app/tests/support/agent.rs', 'crates/app/tests/windows/support.rs', 'crates/app/tests/apple/mod.rs', 'crates/app/tests/support/mod.rs')):
-        MODULES[name] = replace(module, support_inputs=(*module.support_inputs, 'crates/app/tests/support/pki.rs'))
-
 # Derive input consumers only after all module and case fixture declarations are complete.
 for name, module in tuple(MODULES.items()):
     fixtures = set(module.fixtures).union(*(policy.fixtures or () for policy in module.policies))
@@ -2079,7 +1891,6 @@ consume(('crates/registration-service/src/lifecycle.rs',),
 consume(('crates/app/schema/webhook-roles.sql',), 'webhooks.product installation.migration catalog.contract')
 consume(('crates/registration-service/src/agent/activation.rs','crates/registration-service/src/device/store.rs','crates/registration-service/src/device/linked.rs','crates/execution-service/src/actions/storage.rs','crates/inventory-service/src/compliance/evaluation.rs','crates/authorization-service/src/model.rs'), 'webhooks.product')
 
-consume_dependencies("webhooks.product", normal="ipnet rss-mdm-webhook-service rss-transactional-messaging-recovery")
 
 consume(('crates/apple-channel/src/runtime_materials/*','crates/apple-channel/schema/runtime-materials.sql'), 'apple.host')
 consume(('crates/app/src/setup/host.rs',), 'api.diagnostics apple.host')
@@ -2135,9 +1946,6 @@ T1_INPUTS += ('crates/app/src/setup/local.rs','crates/app/src/setup/mod.rs','cra
               'crates/app/tests/setup/postgres.rs','crates/app/tests/setup/public_configuration.rs',
               'crates/mail-service/examples/mail_schema.rs','crates/webhook-service/examples/materials_schema.rs','crates/windows-channel/examples/wns_schema.rs')
 TOOL_INPUTS['deployment/Dockerfile'] = ('test_release',)
-consume_dependencies('installation.providers', normal='aws-credential-types aws-sigv4')
-consume_dependencies('installation.ca installation.native_rewrap', normal='openssl')
-consume_dependencies('installation.backup installation.migration', normal='libc')
 
 
 # This no-write assertion observes all tenant facts, not just one operation.
@@ -2174,7 +1982,6 @@ add('telemetry.storage', selectors=('telemetry::tests::explicit_installations_re
     sources=('crates/app/src/telemetry.rs','crates/app/src/setup/providers/telemetry.rs','crates/app/src/setup/providers/telemetry/*'),
     tests=('crates/app/tests/telemetry/storage.rs',), support=('hack/telemetry_fixtures.py','deployment/providers.lock.json'))
 
-consume_dependencies('telemetry.storage', normal='rss-mdm-telemetry-service rss-timeseries rss-timeseries-postgres rss-timeseries-clickhouse sqlx tokio')
 
 for backend in ('postgres','timescale_shared','timescale_dedicated','click_house'):
     name='telemetry.ingress.'+backend
@@ -2183,11 +1990,13 @@ for backend in ('postgres','timescale_shared','timescale_dedicated','click_house
         sources=('crates/app/src/telemetry.rs','crates/app/src/setup/providers/telemetry.rs','crates/app/src/setup/providers/telemetry/*','crates/app/src/setup/backup.rs','crates/app/src/setup/backup/archive.rs','crates/app/src/setup/backup/telemetry.rs','crates/telemetry-service/src/*','crates/agent-channel/src/telemetry.rs','crates/management-http/src/telemetry.rs','crates/flow-service/src/planning/policies/telemetry.rs','crates/flow-service/src/resource_catalog/telemetry.rs'),
         tests=('crates/app/tests/telemetry/ingress.rs','crates/app/tests/telemetry/counter.rs','crates/app/tests/telemetry/recovery.rs',*(('crates/app/tests/telemetry/gaps.rs','crates/app/tests/telemetry/performance.rs') if backend=='postgres' else ())),support=(*base.support_inputs,'hack/telemetry_fixtures.py','hack/telemetry_pg_client.py','crates/app/tests/setup/telemetry_backup.rs','crates/app/tests/support/agent_execution.rs','crates/app/tests/support/agent.rs'))
     MODULES[name]=replace(MODULES[name],scope='pair' if backend=='postgres' else 'tenant',db_mode='fresh',materials=base.materials,actors=tuple(dict.fromkeys((*base.actors,*( (('peer','admin'),) if backend=='postgres' else () )))))
-    consume_dependencies(name,normal='rss-mdm-telemetry-service rss-timeseries rss-timeseries-postgres rss-timeseries-clickhouse rss-mdm-agent-channel rss-mdm-flow-service rss-mdm-inventory-service rss-mdm-registration-service rss-mdm-resource rss-mdm-agent-wire sqlx tokio')
 
 consume(('crates/agent-wire/src/telemetry.rs','crates/agent-wire/src/telemetry_gap.rs','crates/agent-wire/schema/runtime/telemetry-*.schema.json','crates/agent-wire/schema/runtime/signed-telemetry-configuration-v1.schema.json'),
         'telemetry.ingress.postgres telemetry.ingress.timescale_shared telemetry.ingress.timescale_dedicated telemetry.ingress.click_house')
 
+# The shared entry point contains declarations only; Rust checks its composition.
+TOOL_INPUTS['crates/app/tests/support/mod.rs'] = ('test_t2_modules',)
+TOOL_INPUTS['crates/app/tests/support/pki.rs'] = ('test_t2_modules',)
 consume(('crates/agent-wire/src/native_collection.rs','crates/agent-wire/src/native_collection/*.rs'),
         'telemetry.ingress.postgres')
 
@@ -2217,3 +2026,12 @@ for name in ('agent.configurations', 'execution.commands.onboarding', 'apple.onb
 
 consume(('crates/software-service/src/imports.rs',), 'software.catalog software.http')
 T1_INPUTS += ('crates/software-service/tests/export.rs',)
+
+# Apply direct helper ownership after every module and derived proof is registered.
+for relative, consumers in APP_HELPER_CONSUMERS.items():
+    path = 'crates/app/tests/' + relative
+    for name, module in list(MODULES.items()):
+        inputs = tuple(value for value in module.support_inputs if value != path)
+        if name in consumers:
+            inputs += (path,)
+        MODULES[name] = replace(module, support_inputs=inputs)

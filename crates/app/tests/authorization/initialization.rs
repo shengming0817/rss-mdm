@@ -1,4 +1,5 @@
 use super::*;
+use crate::audit_test_support::audit_count;
 
 #[tokio::test]
 #[ignore = "MODULE=authorization.initialization: real authorization contract"]

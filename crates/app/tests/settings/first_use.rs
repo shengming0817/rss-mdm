@@ -1,5 +1,6 @@
 use super::*;
-use crate::test_support::*;
+use crate::audit_test_support::audit_count;
+use crate::test_support::{http::*, runtime::*, *};
 use uuid::Uuid;
 const PATH: &str = "/api/v1/settings/first-use";
 const ADMISSION: &str = "/api/v1/registration-channels/windows_mdm/admission";

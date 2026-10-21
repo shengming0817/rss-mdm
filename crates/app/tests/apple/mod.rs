@@ -20,7 +20,7 @@ use crate::{
     api::Assembly,
     clock::Clock,
     native::{self, tls},
-    test_support::Browser,
+    test_support::http::Browser,
 };
 use anyhow::{Result, ensure};
 use axum::{
@@ -40,7 +40,7 @@ fn case_device() -> &'static str {
     crate::test_support::case::name("apple-native-mac")
 }
 struct Fixture {
-    resources: crate::test_support::Resources,
+    resources: crate::test_support::runtime::Resources,
     app: Arc<Assembly>,
     browser: Browser,
     router: Router,
@@ -85,7 +85,7 @@ impl Fixture {
         mdm_software: bool,
     ) -> Result<Self> {
         let _ = agent;
-        let (resources, mut fixture) = crate::test_support::Resources::build(move |resources| Box::pin(async move {
+        let (resources, mut fixture) = crate::test_support::runtime::Resources::build(move |resources| Box::pin(async move {
         let root = PathBuf::from(std::env::var("MDM_APPLE_FIXTURES")?);
         let manage =
             tokio::net::TcpListener::bind(address.unwrap_or("127.0.0.1:0".parse()?)).await?;
@@ -140,7 +140,7 @@ impl Fixture {
                 .await?,
         )
         .await?;
-        resources.resource(crate::test_support::InventoryFixtureResource(
+        resources.resource(crate::test_support::runtime::InventoryFixtureResource(
             runtime.clone(),
         ));
         let management = config
@@ -735,7 +735,7 @@ mod renewal;
 
 impl Fixture {
     async fn stop_execution_worker(&mut self) -> Result<()> {
-        crate::test_support::stop_worker(self.execution_owner.take()).await
+        crate::test_support::runtime::stop_worker(self.execution_owner.take()).await
     }
     async fn close(self) -> Result<()> {
         let Self {
@@ -748,7 +748,7 @@ impl Fixture {
         resources
             .finish(async move {
                 let report = owner.shutdown().join().await?;
-                crate::test_support::stop_worker(execution_owner).await?;
+                crate::test_support::runtime::stop_worker(execution_owner).await?;
                 if !report.is_clean() {
                     let diagnostics = app
                         .inventory

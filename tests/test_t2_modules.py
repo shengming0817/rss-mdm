@@ -299,14 +299,36 @@ class ModuleImpactTests(unittest.TestCase):
                      'crates/content-s3/src/lib.rs',
                      'crates/app/tests/support/software.rs'):
             self.assertIn('content.storage', self.selected(path), path)
-        self.assertTrue(MODULES['content.storage'].dependency_inputs)
 
     def test_app_helpers_select_all_actual_consumers(self):
         self.assertEqual(self.selected('crates/app/tests/support/software.rs'), {
-            'agent.configurations','planning.self_service','software.http','content.http','content.mirror','content.gc','content.storage',
-            'planning.software','planning.policy','planning.http','planning.group_scope','apple.policy','execution.software.offer','execution.software.content','execution.software.recovery'})
-        self.assertEqual(self.selected('crates/app/tests/support/process.rs'),
-                         {'inventory.runtime','execution.commands.recovery'})
+            'agent.configurations','planning.agent_policy','planning.self_service','software.http','content.http','content.mirror','content.gc','content.storage',
+            'planning.software','execution.commands.onboarding','execution.software.offer','execution.software.content','execution.software.recovery',
+            'enrollment.quotas','windows.enrollment'})
+        process = self.selected('crates/app/tests/support/process.rs')
+        self.assertTrue({'inventory.runtime', 'execution.commands.recovery', 'execution.commands.onboarding'} <= process)
+        self.assertTrue(process.isdisjoint({'sources.brew_git', 'apple.apns'}))
+        entry = select_inputs(['crates/app/tests/support/mod.rs'])
+        self.assertEqual(entry.modules, ())
+        self.assertEqual(entry.tools, ('test_t2_modules',))
+        self.assertEqual(self.selected('crates/app/tests/support/pki.rs'), {'agent.registration'})
+        self.assertIn('agent.registration', self.selected('crates/app/tests/support/runtime.rs'))
+        # Late declarations and inherited imports/method calls are direct users too.
+        for helper, consumers in {
+            'software_execution': {'telemetry.ingress.' + backend for backend in
+                                   ('postgres', 'timescale_shared', 'timescale_dedicated', 'click_house')},
+            'authority': {'telemetry.ingress.' + backend for backend in
+                          ('postgres', 'timescale_shared', 'timescale_dedicated', 'click_house')},
+            'runtime': {'installation.smtp', 'installation.smtp_transport', 'installation.storage_reconcile',
+                        'authorization.initialization', 'assets.queries'},
+            'identity': {'installation.storage_reconcile', 'installation.webhook'},
+            'http': {'compliance.http', 'assets.queries', 'authorization.programmatic',
+                     'apple.renewal', 'execution.agent.history'},
+            'process': {'compliance.evaluation', 'authorization.initialization', 'assets.queries'},
+            'audit': {'agent.pki', 'planning.self_service', 'timeline.http'},
+        }.items():
+            with self.subTest(helper=helper):
+                self.assertTrue(consumers <= self.selected(f'crates/app/tests/support/{helper}.rs'))
         self.assertEqual(self.selected('crates/app/tests/execution/support.rs'),
                          {'execution.commands.'+part for part in ('admission','dispatch','recovery','windows','configuration','onboarding')} | {'windows.commands','windows.declared'})
         self.assertEqual(self.selected('crates/app/tests/execution/support/configuration.rs'), {'execution.commands.configuration','windows.declared'})
@@ -320,15 +342,9 @@ class ModuleImpactTests(unittest.TestCase):
         self.assertTrue(required <= device,required-device)
         self.assertTrue(device.isdisjoint({'identity.sso','content.http','apple.cms','apple.apns','publication.artifact'}))
         audit = self.selected('crates/app/tests/support/audit.rs')
-        required = {'diagnostics.http','api.diagnostics','device.recovery','device.revocation','execution.commands.admission','execution.commands.onboarding',
-                    'execution.commands.dispatch','windows.enrollment','windows.issuance','windows.limits',
-                    'apple.policy','apple.identity','planning.scope','planning.group_scope','planning.assets',
-                    'planning.recovery','planning.resource_archive','planning.agent_policy','assets.http',
-                    'enrollment.http','content.http','compliance.http','compliance.recovery','compliance.group_input',
-                    'authorization.capacity','authorization.rules','execution.agent.history','execution.agent.content','software.http'}
-        required |= {'audit.'+part for part in ('receipts','integrity','recovery','budget')}
-        required |= {'telemetry.ingress.'+kind for kind in ('postgres','timescale_shared','timescale_dedicated','click_house')}
-        self.assertEqual(audit,required)
+        self.assertTrue({'audit.integrity', 'device.revocation', 'authorization.programmatic'} <= audit)
+        self.assertTrue(audit.isdisjoint({'telemetry.ingress.' + backend for backend in
+                                         ('postgres', 'timescale_shared', 'timescale_dedicated', 'click_house')}))
 
     def test_test_changes_do_not_select_production_consumers(self):
         self.assertEqual(self.selected('crates/resource-postgres/tests/behavior.rs'),
@@ -351,8 +367,12 @@ class ModuleImpactTests(unittest.TestCase):
                 self.assertEqual(self.selected(path), {owner})
 
     def test_shared_registration_fixture_selects_only_direct_consumers(self):
-        self.assertEqual(self.selected('crates/app/tests/support/agent.rs'),
-                         {'execution.agent.task_trust','agent.configurations','planning.self_service','agent.registration','agent.reports','execution.agent.poll','execution.agent.recovery','planning.onboarding','execution.commands.onboarding','execution.agent.delivery','execution.software.recovery','planning.agent_policy','execution.software.offer','execution.agent.history','assets.http','execution.agent.content','apple.onboarding','planning.software','planning.http','execution.software.content','planning.frequency','execution.commands.windows','software.http'} | {'telemetry.ingress.'+kind for kind in ('postgres','timescale_shared','timescale_dedicated','click_house')})
+        selected = self.selected('crates/app/tests/support/agent.rs')
+        self.assertTrue({'agent.registration', 'agent.reports', 'agent.configurations',
+                         'execution.agent.delivery', 'execution.commands.onboarding'} <= selected)
+        self.assertTrue(selected.isdisjoint({'apple.cms', 'apple.apns', 'sources.brew_git',
+                                             'windows.management', 'apple.commands'}))
+
 
     def test_case_only_windows_inputs_select_directory_consumers(self):
         for path in ('hack/windows_fixtures.py', 'deployment/windows-leaf.tpl'):

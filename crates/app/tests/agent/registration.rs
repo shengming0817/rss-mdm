@@ -1,5 +1,5 @@
 //! Persistent grants, candidate possession, activation ACK recovery and same-identity rotation.
-use crate::test_support::*;
+use crate::test_support::{agent::*, process::*, runtime::*, *};
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use rss_mdm_agent_wire::enroll as wire;
 use rss_mdm_audit_integration::RequestAudit;

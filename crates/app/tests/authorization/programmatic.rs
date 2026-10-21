@@ -4,6 +4,7 @@
     reason = "distinct authentication and lifecycle denial assertions"
 )]
 use super::*;
+use crate::audit_test_support::audit_count;
 use rss_mdm_authorization_service::{
     OperationAuthority, Permission,
     context::AuthorizedPrincipal,

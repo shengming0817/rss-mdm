@@ -2,7 +2,7 @@
     clippy::cognitive_complexity,
     reason = "test scenarios preserve distinct recovery assertions"
 )]
-use crate::test_support::*;
+use crate::test_support::{http::*, process::*, runtime::*, *};
 pub(crate) async fn host_context_matrix(
     base: &Value,
     browser: &Browser,

@@ -205,7 +205,7 @@ async fn fixed_controls_preserve_uncertainty() -> anyhow::Result<()> {
             authority["confirmation"] = confirmation.clone();
         }
         let stored = || {
-            crate::test_support::pg(&format!(
+            crate::test_support::process::pg(&format!(
                 "SELECT jsonb_build_array(revision,authority) FROM mdm_commands.operations WHERE tenant_id='{}' AND id='{id}'",
                 case_tenant()
             ))
@@ -247,11 +247,11 @@ async fn fixed_controls_preserve_uncertainty() -> anyhow::Result<()> {
                 && after.1["observation"]["effect"] == "unverifiable",
             "received command reauthorization changed state: {after:?}"
         );
-        ensure!(crate::test_support::pg(&format!(
+        ensure!(crate::test_support::process::pg(&format!(
             "SELECT count(*) FROM mdm_commands.requests WHERE tenant_id='{}' AND id='{request_id}'", case_tenant()))?.trim() == "0",
             "rejected reauthorization persisted a success receipt");
         ensure!(
-            crate::test_support::audit_count(|r| r.source() == "mdm.business"
+            crate::audit_test_support::audit_count(|r| r.source() == "mdm.business"
                 && r.operation() == Some(request_id.to_string().as_str())
                 && r.result() == "success")?
                 == 0,

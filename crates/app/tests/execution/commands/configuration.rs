@@ -424,7 +424,7 @@ async fn native_object_sets_share_a_device_and_withdraw_only_their_own_objects()
     let config = crate::test_support::identity::config(case_tenant())?;
     let audit = client.app.audit_store.clone();
     let identity = client.app.identity.clone();
-    let (resources, restarted) = crate::test_support::Resources::build(move |resources| {
+    let (resources, restarted) = crate::test_support::runtime::Resources::build(move |resources| {
         Box::pin(async move {
             let content =
                 crate::execution_assembly::open_content(&config, config.native_protector()?)
@@ -602,7 +602,7 @@ async fn associated_agent_health_executes_only_original_mdm_and_missing_channel_
     .collect();
     let reply=client.browser.call(&client.router,Method::PUT,&format!("/api/v1/authorization/rules/{}",Uuid::new_v4()),Some(json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"value":{"subject":{"kind":"user","user":crate::test_support::identity::user(case_tenant(),crate::test_support::case::admin())},"grants":grants}}))).await?;
     ensure!(reply.0 == StatusCode::OK, "{reply:?}");
-    let automation = crate::test_support::start_automation(&serde_json::from_slice(
+    let automation = crate::test_support::runtime::start_automation(&serde_json::from_slice(
         &std::fs::read(std::env::var("MDM_TEST_CONFIG")?)?,
     )?)
     .await?;
@@ -730,7 +730,7 @@ async fn associated_agent_health_executes_only_original_mdm_and_missing_channel_
         "fresh owner proof rejected original target"
     );
     tx.rollback().await?;
-    crate::test_support::stop_worker(automation).await?;
+    crate::test_support::runtime::stop_worker(automation).await?;
     crate::device::t2::associations::seed(
         crate::test_support::case::name("native-health-duplicate"),
         "agent",

@@ -87,7 +87,8 @@ async fn receipt(
 #[tokio::test]
 #[ignore = "MODULE=installation.storage_reconcile: failed windows rotate fairly and expired cached qualification does not block peers"]
 async fn failed_candidates_and_expired_evidence_do_not_block_later_work() -> Result<()> {
-    let config = crate::test_support::identity::config(crate::test_support::case_tenant())?;
+    let config =
+        crate::test_support::identity::config(crate::test_support::runtime::case_tenant())?;
     let protection = config.native_protector()?;
     let fixture: Value = serde_json::from_slice(&std::fs::read(std::env::var("MDM_S3_FIXTURE")?)?)?;
     let temp = tempfile::tempdir()?;
@@ -98,7 +99,7 @@ async fn failed_candidates_and_expired_evidence_do_not_block_later_work() -> Res
         .ssl_root_cert(std::env::var("PG_CA_FILE")?);
     let mut c = PgConnection::connect_with(&options).await?;
     let mut tenants = [
-        Uuid::parse_str(crate::test_support::case_tenant())?,
+        Uuid::parse_str(crate::test_support::runtime::case_tenant())?,
         Uuid::parse_str(crate::test_support::case::peer())?,
     ];
     tenants.sort();

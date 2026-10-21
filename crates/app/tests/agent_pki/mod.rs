@@ -272,7 +272,7 @@ async fn renewal_grant_lookup_survives_expired_identity_without_writing_authorit
         secret: renewal.secret.clone(),
     };
     let snapshot = || {
-        crate::test_support::pg_tenant(
+        crate::test_support::process::pg_tenant(
             case_a(),
             &format!(
                 "SELECT (SELECT jsonb_agg(to_jsonb(g) ORDER BY id) FROM mdm_access.agent_grants g WHERE tenant_id='{tenant}'),(SELECT jsonb_agg(to_jsonb(i) ORDER BY id) FROM mdm_access.agent_issuances i WHERE tenant_id='{tenant}'),(SELECT jsonb_agg(to_jsonb(k) ORDER BY id) FROM mdm_access.credentials k WHERE tenant_id='{tenant}')",
@@ -323,7 +323,7 @@ async fn renewal_grant_lookup_survives_expired_identity_without_writing_authorit
     assert_eq!(revoked.1["expiresAt"], recovered["expiresAt"]);
     let another = grant()?;
     let retained = original.renew(&evidence, &another, &audit()).await?;
-    crate::test_support::pg_tenant(
+    crate::test_support::process::pg_tenant(
         case_a(),
         &format!(
             "UPDATE mdm_access.agent_grants SET created_at=clock_timestamp()-interval '25 hours',expires_at=clock_timestamp()-interval '1 hour' WHERE tenant_id='{}' AND id='{}'",
@@ -534,7 +534,7 @@ async fn envelope(host: &str) -> anyhow::Result<rss_mdm_agent_channel::boundary:
     Ok(rss_mdm_agent_channel::boundary::Envelope {
         admission: Arc::new(tokio::sync::Semaphore::new(32)),
         host: host.into(),
-        clock: crate::test_support::monotonic(),
+        clock: crate::test_support::runtime::monotonic(),
         audit_store: db.audit_store(&crate::config::AuditConfig::Plain).await?,
         requests: Arc::new(tokio::sync::Semaphore::new(4)),
         tenant: case_a().into(),
@@ -657,7 +657,7 @@ async fn production_agent_listener_bootstraps_activates_and_rechecks_revocation(
     let routers = crate::api::from_state(
         host.app.clone(),
         "mdm.example.test".into(),
-        crate::test_support::monotonic(),
+        crate::test_support::runtime::monotonic(),
     );
     let (_, router) = routers
         .listeners
@@ -796,7 +796,7 @@ async fn production_agent_listener_bootstraps_activates_and_rechecks_revocation(
         200
     );
     let secret = crate::test_support::identity::login(&host.app.identity, "other").await?;
-    let mut observer = crate::test_support::Browser {
+    let mut observer = crate::test_support::http::Browser {
         cookies: std::collections::BTreeMap::from([(
             "__Host-identity-session".into(),
             secret.expose().into(),
@@ -804,7 +804,7 @@ async fn production_agent_listener_bootstraps_activates_and_rechecks_revocation(
         csrf: Some(secret.csrf()),
         ..Default::default()
     };
-    let subject = crate::test_support::browser_subject(&observer, &host.browser).await?;
+    let subject = crate::test_support::http::browser_subject(&observer, &host.browser).await?;
     let query_path = format!(
         "/api/v1/pki/agent/trust/devices/{}/observation",
         active.runtime.device_id
@@ -1075,7 +1075,7 @@ async fn rotation_requires_installed_trust_and_published_revocation_before_retir
             .await,
         Err(rss_mdm_pki_service::Error::Conflict)
     ));
-    let state = crate::test_support::pg(&format!(
+    let state = crate::test_support::process::pg(&format!(
         "SELECT jsonb_build_array((SELECT state FROM mdm_pki.rotations WHERE tenant_id='{tenant}' AND id='{rotation}'),(SELECT count(*) FROM mdm_pki.installations WHERE tenant_id='{tenant}' AND purpose='agent' AND registration='{registration}'))::text",
         tenant = case_a(),
         rotation = rotation.id,
@@ -1190,7 +1190,7 @@ async fn rotation_requires_installed_trust_and_published_revocation_before_retir
     );
     pending_ack.rollback().await?;
     s.acknowledge_trust(&evidence, &ack, &audit()).await?;
-    let before = crate::test_support::pg(&format!(
+    let before = crate::test_support::process::pg(&format!(
         "SELECT state FROM mdm_pki.rotations WHERE tenant_id='{}' AND id='{}'",
         case_a(),
         rotation.id
@@ -1242,7 +1242,7 @@ async fn rotation_requires_installed_trust_and_published_revocation_before_retir
             .iter()
             .any(|g| g.digest == previous.issuers[0].digest && g.mode == Mode::VerifyOnly)
     );
-    assert_eq!(crate::test_support::pg(&format!(
+    assert_eq!(crate::test_support::process::pg(&format!(
         "SELECT count(*) FROM mdm_pki.operations WHERE tenant_id='{}' AND operation='{}' AND phase='activated'",
         case_a(), rotation.id
     ))?.trim(), "1");
@@ -1284,7 +1284,7 @@ async fn rotation_requires_installed_trust_and_published_revocation_before_retir
         ),
         "live old certificate cannot retire"
     );
-    assert_eq!(crate::test_support::pg(&format!("SELECT count(*) FROM mdm_pki.certificates WHERE tenant_id='{}' AND issuer='{}' AND registration='{}' AND not_after>{}",case_a(),previous.issuers[0].digest,receipt.runtime.registration_id,now()))?.trim(), "1");
+    assert_eq!(crate::test_support::process::pg(&format!("SELECT count(*) FROM mdm_pki.certificates WHERE tenant_id='{}' AND issuer='{}' AND registration='{}' AND not_after>{}",case_a(),previous.issuers[0].digest,receipt.runtime.registration_id,now()))?.trim(), "1");
     let devices =
         crate::device::DeviceService::new(db.registration(), case_a().into(), audit_store.clone());
     devices
@@ -1304,7 +1304,7 @@ async fn rotation_requires_installed_trust_and_published_revocation_before_retir
         ),
         "revoke submission is not publication"
     );
-    let pending = crate::test_support::pg(&format!(
+    let pending = crate::test_support::process::pg(&format!(
         "SELECT count(*) FROM mdm_pki.revocations WHERE tenant_id='{}' AND issuer='{}' AND state<>'published'",
         case_a(),
         previous.issuers[0].digest
@@ -1598,7 +1598,7 @@ async fn multiple_expired_publications_require_one_atomic_set_and_replay_exactly
             root_crl: publication_fixture(&owner, &issuer.root_crl, true, later, None).await?,
         });
     }
-    let durable_before = crate::test_support::pg(&format!(
+    let durable_before = crate::test_support::process::pg(&format!(
         "SELECT encode(body,'hex') FROM mdm_pki.trust WHERE tenant_id='{}' AND purpose='agent'",
         case_a()
     ))?;
@@ -1617,7 +1617,7 @@ async fn multiple_expired_publications_require_one_atomic_set_and_replay_exactly
     ));
     assert_eq!(registry.trust(Purpose::Agent)?, trust);
     assert_eq!(
-        crate::test_support::pg(&format!(
+        crate::test_support::process::pg(&format!(
             "SELECT encode(body,'hex') FROM mdm_pki.trust WHERE tenant_id='{}' AND purpose='agent'",
             case_a()
         ))?,
@@ -1632,7 +1632,7 @@ async fn multiple_expired_publications_require_one_atomic_set_and_replay_exactly
     registry.publish(&p, &input, &audit(), later).await?;
     let accepted = registry.trust(Purpose::Agent)?;
     rss_mdm_device_trust::DeviceTrust::new(accepted.clone(), Purpose::Agent, later)?;
-    let durable: Trust = serde_json::from_str(&crate::test_support::pg(&format!(
+    let durable: Trust = serde_json::from_str(&crate::test_support::process::pg(&format!(
         "SELECT convert_from(body,'UTF8') FROM mdm_pki.trust WHERE tenant_id='{}' AND purpose='agent'",
         case_a()
     ))?)?;
@@ -1717,7 +1717,7 @@ async fn unknown_original_ca_result_blocks_retirement_after_rotation() -> anyhow
         .await?;
     let active = registry.trust(Purpose::Agent)?;
     assert_eq!(s.trust().trust.active()?.digest, second.issuers[0].digest);
-    let durable_before = crate::test_support::pg(&format!(
+    let durable_before = crate::test_support::process::pg(&format!(
         "SELECT jsonb_build_array((SELECT jsonb_agg(to_jsonb(s) ORDER BY attempt) FROM mdm_pki.signing s WHERE tenant_id='{tenant}'),(SELECT to_jsonb(r) FROM mdm_pki.rotations r WHERE tenant_id='{tenant}' AND id='{id}'))::text",
         tenant = case_a()
     ))?;
@@ -1744,7 +1744,7 @@ async fn unknown_original_ca_result_blocks_retirement_after_rotation() -> anyhow
     ));
     assert_eq!(registry.trust(Purpose::Agent)?, active);
     assert_eq!(
-        crate::test_support::pg(&format!(
+        crate::test_support::process::pg(&format!(
             "SELECT jsonb_build_array((SELECT jsonb_agg(to_jsonb(s) ORDER BY attempt) FROM mdm_pki.signing s WHERE tenant_id='{tenant}'),(SELECT to_jsonb(r) FROM mdm_pki.rotations r WHERE tenant_id='{tenant}' AND id='{id}'))::text",
             tenant = case_a()
         ))?,
@@ -1771,7 +1771,7 @@ pub(crate) async fn authorize_request(
 #[ignore = "make t2 MODULE=agent.pki"]
 async fn management_crl_publication_accepts_large_signed_material_and_rejects_overflow()
 -> anyhow::Result<()> {
-    use crate::test_support::{Body, Browser, Method, Request, StatusCode};
+    use crate::test_support::{Body, Method, Request, StatusCode, http::Browser};
     use rss_mdm_agent_wire::pki::Purpose;
     use tower::ServiceExt;
     let host = crate::windows::test_support::Host::open().await?;
@@ -2026,7 +2026,7 @@ async fn frozen_signing_uses_original_issuer_after_direct_activation() -> anyhow
 #[ignore = "make t2 MODULE=agent.pki: session-authorized rotation HTTP contract"]
 async fn management_rotation_accepts_direct_activation_and_rejects_retired_action()
 -> anyhow::Result<()> {
-    use crate::test_support::{Browser, Method, StatusCode};
+    use crate::test_support::{Method, StatusCode, http::Browser};
     use rss_mdm_agent_wire::pki::{Mode, Purpose, Trust};
     let host = crate::windows::test_support::Host::open().await?;
     let mut browser = Browser::default();

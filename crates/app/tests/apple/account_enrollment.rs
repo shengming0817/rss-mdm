@@ -808,7 +808,7 @@ async fn user_asset(
         peer.client.get(&url).send().await?.status() == StatusCode::UNAUTHORIZED,
         "asset accepted missing account bearer"
     );
-    crate::test_support::stop_worker(Some(worker)).await?;
+    crate::test_support::runtime::stop_worker(Some(worker)).await?;
     Ok(url)
 }
 

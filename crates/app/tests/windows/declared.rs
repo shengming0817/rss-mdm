@@ -523,7 +523,7 @@ async fn mi_effect(
     )
     .await;
     for worker in workers {
-        crate::test_support::stop_worker(Some(worker)).await?;
+        crate::test_support::runtime::stop_worker(Some(worker)).await?;
     }
     result
 }

@@ -2,7 +2,7 @@
     clippy::cognitive_complexity,
     reason = "test scenarios preserve distinct recovery assertions"
 )]
-use crate::test_support::*;
+use crate::test_support::{http::*, process::*, runtime::*, *};
 use anyhow::Context;
 #[tokio::test]
 #[ignore = "MODULE=identity.local: real authority and PostgreSQL"]

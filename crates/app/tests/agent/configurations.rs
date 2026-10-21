@@ -3,7 +3,7 @@
     clippy::cognitive_complexity,
     reason = "integration matrices preserve independent authority and recovery assertions"
 )]
-use crate::test_support::*;
+use crate::test_support::{http::*, process::*, runtime::*, *};
 use anyhow::Context;
 use base64::{Engine, engine::general_purpose::STANDARD};
 use rss_mdm_agent_wire::{enroll as w, runtime as r};

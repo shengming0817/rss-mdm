@@ -1,5 +1,5 @@
 //! Product callback facts and provider isolation with real HTTPS Keycloak.
-use crate::test_support::*;
+use crate::test_support::{http::*, runtime::*, *};
 #[path = "sso/authorization.rs"]
 mod authorization;
 const CALLBACK: &str = "https://mdm.example.test/api/v1/identity/oidc/callback";
@@ -139,7 +139,7 @@ async fn product_callback_facts_and_provider_isolation() -> Result<()> {
     let policy = Arc::new(
         crate::authorization::identity_management::IdentityManagementPolicy::new(INSTANCE)?,
     );
-    let mut identity_resources = crate::test_support::Resources::default();
+    let mut identity_resources = crate::test_support::runtime::Resources::default();
     let fact_time = rss_identity_postgres::ControlledFactTime::default();
     let identity = crate::identity::Identity::for_oidc_fixture(
         &config,

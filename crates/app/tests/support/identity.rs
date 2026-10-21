@@ -20,14 +20,18 @@ fn configured(tenant: &str) -> Result<Config> {
     value["identity"]["tenant_id"] = tenant.into();
     Ok(serde_json::from_value(value)?)
 }
-pub(crate) async fn identity(tenant: &str) -> Result<(Identity, super::Resources)> {
+pub(crate) async fn identity(tenant: &str) -> Result<(Identity, super::runtime::Resources)> {
     let config = config(tenant)?;
-    let (resources, identity) =
-        super::Resources::build(move |resources| Box::pin(identity_with(config, resources)))
-            .await?;
+    let (resources, identity) = super::runtime::Resources::build(move |resources| {
+        Box::pin(identity_with(config, resources))
+    })
+    .await?;
     Ok((identity, resources))
 }
-async fn identity_with(config: Config, resources: &mut super::Resources) -> Result<Identity> {
+async fn identity_with(
+    config: Config,
+    resources: &mut super::runtime::Resources,
+) -> Result<Identity> {
     let policy = Arc::new(
         crate::authorization::identity_management::IdentityManagementPolicy::new(INSTANCE)?,
     );
@@ -73,7 +77,7 @@ pub(crate) fn credential_for(tenant: &str, login: &str) -> Result<SessionSecret>
 }
 pub(crate) fn age_prepared_admin_session() -> Result<()> {
     // Model a case waiting in the run queue beyond Recent(300s), only for its own actor.
-    super::pg(&format!(
+    super::process::pg(&format!(
         "UPDATE identity_authority.sessions SET auth_time=auth_time-301,absolute_expires_at=absolute_expires_at-301 WHERE tenant_id='{}' AND principal_id='{}'",
         super::case::tenant(),
         super::case::admin()
@@ -180,7 +184,7 @@ async fn prepare_environment(root: &std::path::Path) -> Result<()> {
 
 async fn refresh_management(root: &std::path::Path) -> Result<()> {
     let root = root.to_path_buf();
-    let (resources, ()) = super::Resources::build(move |resources| {
+    let (resources, ()) = super::runtime::Resources::build(move |resources| {
         Box::pin(async move {
             let value: Config = serde_json::from_slice(&std::fs::read(root.join("runtime.json"))?)?;
             let authority = identity_with(value, resources).await?;
@@ -264,7 +268,7 @@ async fn prepare_accounts(
         let mut costs = vec![serde_json::json!({"phase":"case-reads","count":paths.len()})];
         for (tenant, coordinates) in members {
             super::task_signing::seed(&tenant,&config).await?;
-            let timer = super::monotonic();
+            let timer = super::runtime::monotonic();
             let started = timer.now();
             let mut prepared = Vec::new();
             let mut logins = BTreeSet::new();
@@ -409,7 +413,7 @@ async fn prepare_sessions(paths: &[std::path::PathBuf]) -> Result<Vec<serde_json
     use super::case::{CaseContext, Phase};
     use std::collections::BTreeMap;
     let paths = paths.to_vec();
-    let (resources, costs) = super::Resources::build(move |resources| Box::pin(async move {    let mut costs = Vec::new();
+    let (resources, costs) = super::runtime::Resources::build(move |resources| Box::pin(async move {    let mut costs = Vec::new();
     let mut authorities = BTreeMap::new();
     let mut sessions = BTreeMap::new();
     for path in &paths {
@@ -429,7 +433,7 @@ async fn prepare_sessions(paths: &[std::path::PathBuf]) -> Result<Vec<serde_json
                 {
                     entry.insert(identity_with(configured(&actor.tenant)?, resources).await?);
                 }
-                let timer = super::monotonic();
+                let timer = super::runtime::monotonic();
                 let started = timer.now();
                 let issued = issue_named(&authorities[&actor.tenant], &actor.login)
                     .await

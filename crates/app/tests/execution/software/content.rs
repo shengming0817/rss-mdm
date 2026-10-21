@@ -110,7 +110,7 @@ async fn expiry_dependency_paths_and_withdrawal_fence() -> Result<()> {
         .body(Body::empty())?;
     ensure!(router.clone().oneshot(denied).await?.status() == StatusCode::FORBIDDEN);
     ensure!(event(&router, &task, json!({"kind":"start"})).await?.0 == StatusCode::FORBIDDEN);
-    crate::test_support::stop_worker(stack).await?;
+    crate::test_support::runtime::stop_worker(stack).await?;
     Ok(())
     }).await
 }
@@ -166,7 +166,7 @@ async fn uninstall_content_selection() -> Result<()> {
                 content.status()
             );
             ensure!(content.into_body().collect().await?.to_bytes() == removal);
-            crate::test_support::stop_worker(stack).await?;
+            crate::test_support::runtime::stop_worker(stack).await?;
             Ok(())
         })
         .await

@@ -1,7 +1,7 @@
 use crate::test_support::software::write;
 use crate::test_support::software_execution::case_device;
 use crate::test_support::software_execution::*;
-use crate::test_support::*;
+use crate::test_support::{agent::*, http::*, process::*, runtime::*, *};
 use sqlx::Connection;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
@@ -75,7 +75,7 @@ async fn successful_removal_invalidates_prior_installation_across_policies() -> 
     let after_reinstall = Uuid::new_v4();
     write(&mut f.author, &f.router, &format!("/api/v1/policies/{after_reinstall}"), 0, json!({"action":"put","enabled":true,"definition":authored(f.resource,f.scope,"required_install")})).await?;
     assert_no_software_run(&f.router, after_reinstall).await?;
-    crate::test_support::stop_worker(stack).await?;
+    crate::test_support::runtime::stop_worker(stack).await?;
     Ok(())
     }).await
 }
@@ -165,7 +165,7 @@ async fn unresolved_installation_blocks_removal_and_other_versions() -> Result<(
     );
     assert_no_software_run(&f.router, removal).await?;
     assert_no_software_run(&f.router, replacement).await?;
-    crate::test_support::stop_worker(stack).await?;
+    crate::test_support::runtime::stop_worker(stack).await?;
     Ok(())
     }).await
 }
@@ -346,7 +346,7 @@ async fn known_failure_has_bounded_retries() -> Result<()> {
         json!({"action":"disable"}),
     )
     .await?;
-    crate::test_support::stop_worker(stack).await?;
+    crate::test_support::runtime::stop_worker(stack).await?;
     Ok(())
     }).await
 }
@@ -444,7 +444,7 @@ async fn reboot_waits_for_detection() -> Result<()> {
         json!({"action":"disable"}),
     )
     .await?;
-    crate::test_support::stop_worker(stack).await?;
+    crate::test_support::runtime::stop_worker(stack).await?;
     Ok(())
     }).await
 }
@@ -564,7 +564,7 @@ async fn unknown_effect_survives_credential_recovery() -> Result<()> {
 
     Ok(())
     }).await?;
-    crate::test_support::stop_worker(stack).await?;
+    crate::test_support::runtime::stop_worker(stack).await?;
     Ok(())
     }).await
 }
@@ -649,7 +649,7 @@ async fn unknown_result_replay_and_late_detection() -> Result<()> {
         resolved.1["stages"][0]["unknown"] == 0 && resolved.1["stages"][0]["verifiedSuccess"] == 1,
         "late detection did not resolve unknown: {resolved:?}"
     );
-    crate::test_support::stop_worker(stack).await?;
+    crate::test_support::runtime::stop_worker(stack).await?;
     Ok(())
     }).await
 }
@@ -716,7 +716,7 @@ async fn withdrawn_software_does_not_poison_claims_for_other_policies_or_outside
             && page.1["items"][0]["taskAdmission"]["state"] == "authorization_withdrawn",
         "withdrawal diagnosis: {page:?}"
     );
-    crate::test_support::stop_worker(stack).await?;
+    crate::test_support::runtime::stop_worker(stack).await?;
     Ok(())
     }).await
 }

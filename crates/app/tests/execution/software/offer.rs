@@ -1,7 +1,7 @@
 mod formats;
 use crate::test_support::software::write;
 use crate::test_support::software_execution::*;
-use crate::test_support::*;
+use crate::test_support::{process::*, runtime::*, *};
 use sqlx::Connection;
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 #[ignore = "make t2 MODULE=execution.software.offer"]
@@ -196,7 +196,7 @@ async fn required_available_and_uninstall_delivery() -> Result<()> {
         json!({"action":"disable"}),
     )
     .await?;
-    crate::test_support::stop_worker(stack).await?;
+    crate::test_support::runtime::stop_worker(stack).await?;
     Ok(())
     }).await
 }
@@ -293,7 +293,7 @@ async fn windows_variant_delivery_and_detection() -> Result<()> {
         windows_rollout.1["stages"][0]["verifiedSuccess"] == 1,
         "windows verification: {windows_rollout:?}"
     );
-    crate::test_support::stop_worker(stack).await?;
+    crate::test_support::runtime::stop_worker(stack).await?;
     Ok(())
     }).await
 }

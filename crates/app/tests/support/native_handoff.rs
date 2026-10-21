@@ -1,5 +1,5 @@
 //! Native consumers begin with an actual signed Agent task and its start authorization.
-use super::*;
+use super::{agent::*, runtime::*, *};
 use rss_mdm_resource::Platform;
 pub(crate) struct Handoff {
     pub fixture: agent_execution::Fixture,

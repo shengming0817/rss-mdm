@@ -136,7 +136,6 @@ def baseline_tree(root, base):
 REGISTRY_ATTRIBUTES = {
     't1': 'T1_INPUTS',
     'tools': 'TOOL_INPUTS',
-    'dependencies': 'DEPENDENCY_POLICIES',
     'controls': 'CONTROL_INPUTS',
     'toolOnly': 'TOOL_ONLY_INPUTS',
     'representatives': 'REPRESENTATIVE_INPUTS',
@@ -172,7 +171,6 @@ class Registry:
     modules: dict
     t1: tuple
     tools: dict
-    dependencies: dict
     controls: dict
     tool_only: tuple
     representatives: dict
@@ -185,17 +183,9 @@ def validate_registry(data):
         for name, module in modules.items():
             if module['id'] != name:
                 raise ValueError('module id mismatch')
-            module.setdefault('dependency_inputs', [])
             for field in ('production_inputs', 'test_inputs', 'support_inputs'):
                 if not all(valid_path(path) for path in module[field]):
                     raise ValueError('invalid input path')
-            for dep in module['dependency_inputs']:
-                if (
-                    not valid_path(dep['owner_manifest'])
-                    or not dep['dependency']
-                    or dep['kind'] not in {'normal', 'dev', 'build'}
-                ):
-                    raise ValueError('invalid dependency ownership')
         if not all(valid_path(path) for path in data['t1']):
             raise ValueError('invalid T1 input')
         for path, tests in data['tools'].items():
@@ -210,7 +200,6 @@ def validate_registry(data):
             modules,
             tuple(data['t1']),
             data['tools'],
-            data['dependencies'],
             data['controls'],
             tuple(data['toolOnly']),
             data['representatives'],
@@ -448,16 +437,6 @@ def metadata(root, version='current'):
         raise analysis_failure('metadata-invalid', version, 'metadata', result) from error
 
 
-def package_consumers(graph, registry, key, kind='normal'):
-    if graph.packages[key]['name'] == 'rss-mdm-app':
-        return set()  # App is an assembly package, not a semantic dependency seed.
-    prefix = str(PurePosixPath(graph.manifests[key]).parent) + '/'
-    fields = ('test_inputs', 'support_inputs') if kind == 'dev' else ('production_inputs',)
-    return {
-        name for name, m in registry.modules.items() if any(p.startswith(prefix) for field in fields for p in m[field])
-    }
-
-
 def dependency_alias(graph, key, dep, kind):
     # Cargo has already resolved workspace inheritance and package renames.
     declarations = [d for d in graph.packages[key]['dependencies'] if (d['kind'] or 'normal') == kind]
@@ -473,70 +452,6 @@ def dependency_alias(graph, key, dep, kind):
     if len(aliases) != 1:
         raise SelectionError('dependency-alias-unavailable', graph.manifests[key], dep['name'])
     return aliases.pop()
-
-
-def optional_active(graph, key, dep, alias, kind, module, explicit):
-    declarations = graph.packages[key].get('dependencies', ())
-    optional = any(
-        (d.get('rename') or d['name']) == alias and (d['kind'] or 'normal') == kind and d.get('optional')
-        for d in declarations
-    )
-    if not optional:
-        return True
-    build = module['build']
-    if not build or build['package'] != graph.packages[key]['name']:
-        if explicit:
-            return True  # An explicit seam includes forwarded/fixture features.
-        raise SelectionError('optional-dependency-ownership', graph.manifests[key], alias)
-    features = graph.packages[key]['features']
-    pending = [*build['features'], *(['default'] if 'default' in features else [])]
-    seen = set()
-    while pending:
-        feature = pending.pop()
-        if feature in seen:
-            continue
-        seen.add(feature)
-        if feature == 'dep:' + alias or feature.startswith(alias + '/') or feature == alias and feature not in features:
-            return True
-        pending.extend(features.get(feature, ()))
-    return False
-
-
-def dependency_consumers(graph, registry, key, dep, kind, registrations=()):
-    manifest = graph.manifests[key]
-    alias = dependency_alias(graph, key, dep, kind)
-    # A dependency seam can be registered in the same change that moves/removes
-    # its implementation. Merge explicit ownership across revisions, as for paths;
-    # retain only modules present in this revision and still fail unknown seams.
-    explicit = {
-        name
-        for source in (registry, *registrations)
-        for name, module in source.modules.items()
-        if name in registry.modules and any(
-            d['owner_manifest'] == manifest and d['dependency'] == alias and d['kind'] == kind
-            for d in module['dependency_inputs']
-        )
-    }
-    policies = [source.dependencies.get(manifest, {}).get(kind + ':' + alias)
-                for source in (registry, *registrations)]
-    if graph.packages[key]['name'] == 'rss-mdm-app':
-        implicit = package_consumers(graph, registry, dep['pkg'], kind) if dep['pkg'] in graph.members else set()
-    else:
-        implicit = package_consumers(graph, registry, key, kind)
-    claimed = explicit | implicit
-    consumers = {
-        name
-        for name in claimed
-        if optional_active(graph, key, dep, alias, kind, registry.modules[name], name in explicit)
-    }
-    owned_tools = {tool for policy in policies if isinstance(policy, dict)
-                   for tool in policy.get('tools', ())}
-    prefix = str(PurePosixPath(manifest).parent) + '/'
-    t1_owned = kind == 'dev' and any(path.startswith(prefix) for path in registry.t1)
-    cargo_only = t1_owned or any(isinstance(policy, dict) and policy.get('cargoOnly') is True for policy in policies)
-    if not claimed and not (cargo_only or owned_tools):
-        raise SelectionError('unowned-dependency', manifest, kind + ':' + alias)
-    return consumers, set(owned_tools)
 
 
 def lock_entries(root):
@@ -607,9 +522,9 @@ PACKAGE_DOC_FIELDS = {
 WORKSPACE_CARGO_FIELDS = {'members', 'default-members', 'exclude', 'resolver', 'lints', 'metadata'}
 
 
-def analyze_dependencies(oldroot, root, changes, graphs, registries):
-    """Compare declarations and resolved dependencies, retaining both owners."""
-    packages, modules, tools, reasons = set(), set(), set(), []
+def analyze_dependencies(oldroot, root, changes, graphs):
+    """Select Cargo checks only; dependencies do not imply business T2."""
+    packages, reasons = set(), []
     paths = {p for c in changes for p in (c.old, c.new) if p}
     entries = [lock_entries(tree) for tree in (oldroot, root)] if 'Cargo.lock' in paths else [{}, {}]
     changed_lock = {key for key in entries[0].keys() | entries[1].keys() if entries[0].get(key) != entries[1].get(key)}
@@ -618,7 +533,7 @@ def analyze_dependencies(oldroot, root, changes, graphs, registries):
     }
     root_fields = manifest_fields.get('Cargo.toml', ())
     inherited = {f[2] for f in root_fields if len(f) > 2 and f[:2] == ('workspace', 'dependencies')}
-    runtime_common, cargo_common = False, False
+    cargo_common = False
     for field in root_fields:
         if field[:2] == ('workspace', 'dependencies'):
             continue
@@ -627,7 +542,7 @@ def analyze_dependencies(oldroot, root, changes, graphs, registries):
             or field[:2] == ('workspace', 'package')
             and field[2] in {'version', 'edition', 'rust-version'}
         ):
-            runtime_common = True
+            cargo_common = True
         elif (
             field[0] in {'lints', 'patch', 'replace'}
             or field[0] == 'workspace'
@@ -642,17 +557,8 @@ def analyze_dependencies(oldroot, root, changes, graphs, registries):
     changed_nodes = {
         key for key in features[0].keys() | features[1].keys() if features[0].get(key) != features[1].get(key)
     }
-    for g, reg in zip(graphs, registries):
-        seeds = set()
-        if runtime_common:
-            consumers = runtime_consumers(reg)
-            modules.update(consumers)
-            seeds.update(g.members)
-            reasons.append(
-                dict(
-                    kind='business', input='Cargo.toml', modules=sorted(consumers), detail='shared-compiler-environment'
-                )
-            )
+    for g in graphs:
+        seeds = set(g.members) if cargo_common else set()
         for key, manifest in g.manifests.items():
             fields = manifest_fields.get(manifest, ())
             behavioral = any(
@@ -661,23 +567,8 @@ def analyze_dependencies(oldroot, root, changes, graphs, registries):
                 for f in fields
             )
             if behavioral:
-                consumers = package_consumers(g, reg, key)
-                if g.packages[key]['name'] == 'rss-mdm-app':
-                    consumers = {
-                        n for n, m in reg.modules.items() if m['build'] and m['build']['package'] == 'rss-mdm-app'
-                    }
                 seeds.add(key)
-                modules.update(consumers)
-                reasons.append(
-                    dict(
-                        kind='business',
-                        input=manifest if behavioral else 'Cargo.toml',
-                        modules=sorted(consumers),
-                        detail='build-description',
-                    )
-                )
-            if cargo_common:
-                seeds.add(key)
+                reasons.append(dict(kind='tool', input=manifest, modules=[], detail='build-description'))
             # Parse only changed/inheriting manifests, once per revision and owner.
             document = tomllib.loads((g.root / manifest).read_text()) if inherited else {}
             for dep in g.nodes[key]['deps']:
@@ -712,21 +603,11 @@ def analyze_dependencies(oldroot, root, changes, graphs, registries):
                     )
                     if not changed_declaration and not resolved_change:
                         continue
-                    consumers, owned_tools = dependency_consumers(g, reg, key, dep, kind, registries)
                     seeds.add(key)
-                    modules.update(consumers)
-                    tools.update(owned_tools)
-                    reasons.append(
-                        dict(
-                            kind='tool' if owned_tools and not consumers else 'business',
-                            input=manifest + ':' + kind + ':' + alias,
-                            modules=sorted(consumers),
-                            tools=sorted(owned_tools),
-                            detail='dependency',
-                        )
-                    )
+                    reasons.append(dict(kind='tool', input=manifest + ':' + kind + ':' + alias,
+                                        modules=[], detail='dependency'))
         packages.update(g.names(g.closure(seeds, reverse=True)))
-    return packages & graphs[1].names(graphs[1].members), modules, tools, reasons
+    return packages & graphs[1].names(graphs[1].members), reasons
 
 
 def runtime_consumers(registry):
@@ -799,7 +680,7 @@ def analyze_controls(oldroot, root, changes, registries):
 # Ownership changes are verified by tooling and by changed inputs. They do not
 # themselves change the executable scenario. Fields come from the current model;
 # historical snapshot-only fields cannot restore retired selection policies.
-OWNERSHIP_FIELDS = {'id', 'production_inputs', 'test_inputs', 'support_inputs', 'dependency_inputs'}
+OWNERSHIP_FIELDS = {'id', 'production_inputs', 'test_inputs', 'support_inputs'}
 
 
 def module_behavior(module):
@@ -905,7 +786,7 @@ def select(root, base):
                 continue
             # Treat each rename/copy endpoint independently. A stable path may
             # retain its old owner after a mapping is removed or migrated.
-            owners = [(after, None)] if path in after.tool_only else zip((before, after), graphs)
+            owners = [(after, graphs[1])] if path in after.tool_only else zip((before, after), graphs)
             claimed = False
             for registry, graph in owners:
                 try:
@@ -931,13 +812,15 @@ def select(root, base):
                     owner = graph.owner(path)
                     if owner:
                         packages.update(graph.names(graph.closure({owner}, reverse=True)))
+                        if path in after.tool_only:
+                            checks.extend(ownership_builds(
+                                [module for module in after.modules.values() if module['build']
+                                 and module['build']['package'] == graph.packages[owner]['name']], graph))
             if not claimed:
                 raise SelectionError('unmapped-input', path)
         if cargo_inputs:
-            p, m, t, r = analyze_dependencies(oldroot, root, changes, graphs, (before, after))
+            p, r = analyze_dependencies(oldroot, root, changes, graphs)
             packages.update(p)
-            modules.update(m)
-            tools.update(t)
             reasons.extend(r)
             packages &= graphs[1].names(graphs[1].members)
         all_cargo, m, t, r = analyze_controls(oldroot, root, changes, (before, after))
@@ -958,7 +841,7 @@ def select(root, base):
             tools,
             reasons,
             removed=sorted(removed, key=lambda item: item['module']),
-            ownership_checks=checks,
+            ownership_checks=[json.loads(key) for key in sorted({json.dumps(check, sort_keys=True) for check in checks})],
         )
 
 

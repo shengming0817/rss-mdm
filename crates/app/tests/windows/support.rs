@@ -105,7 +105,7 @@ async fn admin_session(
 }
 
 pub(crate) struct Host {
-    resources: crate::test_support::Resources,
+    resources: crate::test_support::runtime::Resources,
     pub(crate) root: PathBuf,
     pub(crate) app: Arc<Assembly>,
     pub(crate) notifications: crate::worker_wake::Listener,
@@ -227,7 +227,7 @@ impl Host {
         mdm_software: bool,
     ) -> anyhow::Result<Self> {
         let ca = ca.map(str::to_owned);
-        let (resources, mut fixture) = crate::test_support::Resources::build(move |resources| Box::pin(async move {
+        let (resources, mut fixture) = crate::test_support::runtime::Resources::build(move |resources| Box::pin(async move {
         let ca = ca.as_deref();
         let root = root()?;
         let enroll =
@@ -338,7 +338,7 @@ impl Host {
                 .await?,
         )
         .await?;
-        resources.resource(crate::test_support::InventoryFixtureResource(runtime.clone()));
+        resources.resource(crate::test_support::runtime::InventoryFixtureResource(runtime.clone()));
         let (management, timeline) =
             management(&config, &store, runtime.clone(), resources).await?;
         let command_audit = store
@@ -399,7 +399,7 @@ impl Host {
                 rss_mdm_windows_channel::wns_materials::prepare(&mut tx,case_tenant(),Uuid::new_v4(),"controlled-protocol-fixture",&rss_mdm_windows_channel::wns_materials::Request{expected_revision:0,package_family_name:"fixture.pfn".into(),sid:"fixture-sid".to_owned().into(),client_secret:"fixture-secret".to_owned().into()},&material_key).await?;
                 rss_mdm_windows_channel::wns_materials::qualify(&mut tx,case_tenant(),1,now()).await?;
             }
-            let value=rss_mdm_windows_channel::wns_materials::load(&mut tx,case_tenant(),1,&material_key,crate::test_support::monotonic(),true).await?;
+            let value=rss_mdm_windows_channel::wns_materials::load(&mut tx,case_tenant(),1,&material_key,crate::test_support::runtime::monotonic(),true).await?;
             tx.commit().await?;owner.close().await?;Some(value)
         }else{None};
         let mut windows = Windows::load(
@@ -715,7 +715,7 @@ impl Host {
             crate::test_support::identity::set_grants(case_tenant(), proof.principal_id(), vec![])
                 .await?;
             let secret = crate::test_support::identity::credential(&self.app.identity, "other")?;
-            let mut browser = crate::test_support::Browser {
+            let mut browser = crate::test_support::http::Browser {
                 cookies: std::collections::BTreeMap::from([(
                     "__Host-identity-session".into(),
                     secret.expose().into(),
@@ -1123,7 +1123,7 @@ async fn management(
     config: &crate::config::Config,
     access: &Database,
     inventory: Arc<crate::inventory_runtime::InventoryRuntime>,
-    resources: &mut crate::test_support::Resources,
+    resources: &mut crate::test_support::runtime::Resources,
 ) -> anyhow::Result<(
     Arc<crate::flow::Flow>,
     Arc<rss_mdm_timeline_service::Timeline>,

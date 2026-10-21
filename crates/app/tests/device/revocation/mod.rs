@@ -2,7 +2,8 @@
     clippy::cognitive_complexity,
     reason = "test scenarios preserve distinct recovery assertions"
 )]
-use crate::test_support::*;
+use crate::audit_test_support::audit_count;
+use crate::test_support::{http::*, process::*, runtime::*, *};
 pub(crate) async fn revoke_http_matrix(session: &Browser) -> Result<()> {
     let (grant, request, registration, credential, epoch) = (
         uuid::Uuid::new_v4(),
@@ -12,7 +13,7 @@ pub(crate) async fn revoke_http_matrix(session: &Browser) -> Result<()> {
         uuid::Uuid::new_v4(),
     );
     let device = case::name("revoke-device");
-    let locator = crate::test_support::secret("revoke-device")
+    let locator = crate::test_support::runtime::secret("revoke-device")
         .iter()
         .map(|b| format!("{b:02x}"))
         .collect::<String>();

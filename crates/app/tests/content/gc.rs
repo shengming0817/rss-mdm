@@ -1,5 +1,5 @@
 use crate::test_support::software::Fixture;
-use crate::test_support::*;
+use crate::test_support::{http::*, process::*, runtime::*, *};
 fn assert_volume_removed(artifact: &rss_mdm_resource::Artifact) -> Result<()> {
     let digest = artifact
         .digest()

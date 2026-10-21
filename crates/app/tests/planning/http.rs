@@ -3,7 +3,11 @@
     reason = "test scenarios retain distinct authorization, failure and recovery assertions"
 )]
 use crate::test_support::planning_http::*;
-use crate::test_support::*;
+use crate::test_support::{
+    http::Browser, http::await_task, http::browser_subject, http::set_device_grants,
+    http::set_management_grants,
+};
+use crate::test_support::{process::*, runtime::*, *};
 #[tokio::test]
 #[ignore = "make t2 MODULE=planning.http"]
 async fn console_collection_routes_reuse_current_policy() -> Result<()> {
@@ -162,7 +166,7 @@ async fn console_directory_pages_registered_revoked_and_pending() -> Result<()> 
         rss_mdm_inventory::ReportSource::MdmWindows,
         rss_mdm_registration_service::Purpose::Primary,
     )
-    .credential(crate::test_support::secret("console-agent"))?;
+    .credential(crate::test_support::runtime::secret("console-agent"))?;
     let (_, receipt) =
         crate::device::test_support::bind(&service, &principal, &credential, revoked, 0).await?;
     service
@@ -614,7 +618,7 @@ async fn planning_routes_and_derived_result_authorization() -> Result<()> {
             derived_result_authorization(&mut browser,&router,&member,&group_path,accepted["task"].as_str().unwrap(),scope,scoped["task"].as_str().unwrap(),&policy_path).await?;
             Ok(())
         }).await?;
-        crate::test_support::stop_worker(automation).await?;
+        crate::test_support::runtime::stop_worker(automation).await?;
         Ok(())
     }).await
 }

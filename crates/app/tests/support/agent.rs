@@ -1,5 +1,5 @@
 //! Fixture peers use real signed certificates and a real TLS handshake.
-use super::*;
+use super::{http::*, process::*, runtime::*, *};
 use base64::{Engine, engine::general_purpose::STANDARD};
 use rss_mdm_certificate::HandshakePeer;
 use rss_mdm_registration_service::agent::{Assembly, NativeAdmission, Pending, Service};
@@ -253,7 +253,7 @@ pub(crate) async fn enroll_profile(
     label: &str,
     profile: Value,
 ) -> Result<(Value, Value, Value)> {
-    let secret = super::credential(&Uuid::new_v4().to_string());
+    let secret = super::runtime::credential(&Uuid::new_v4().to_string());
     let op = Uuid::new_v4();
     let (status,pending)=agent_call(router,Method::POST,"/api/v1/agent/enroll/requests",None,Some(json!({"wireVersion":1,"operationId":op,"secret":secret,"platform":profile["platform"],"csr":csr()?}))).await?;
     ensure!(status.is_success(), "request {status} {pending}");
@@ -324,7 +324,7 @@ pub(crate) async fn enroll_profile(
     Ok((request, candidate, registration))
 }
 pub(crate) async fn register(router: &Router, browser: &mut Browser) -> Result<Agent> {
-    let label = Box::leak(super::credential(&Uuid::new_v4().to_string()).into_boxed_str());
+    let label = Box::leak(super::runtime::credential(&Uuid::new_v4().to_string()).into_boxed_str());
     let (request,candidate,registration)=enroll_profile(router,browser,label,json!({"capabilities":["inventory.collect.v1"],"platform":"macos","architecture":"aarch64","executionContext":software_execution::context(software_execution::Platform::MacOs)})).await?;
     let device = registration["deviceId"].as_str().unwrap();
     set_device_grants(browser, router, device, &["inventory_read", "credentials"]).await?;
@@ -452,4 +452,109 @@ pub(crate) fn fixture_signing_input() -> Result<Value> {
     Ok(serde_json::from_slice(&std::fs::read(
         config.parent().unwrap().join("task-signing-fixture.json"),
     )?)?)
+}
+
+pub(crate) async fn agent_call(
+    router: &Router,
+    method: Method,
+    path: &str,
+    bearer: Option<&str>,
+    body: Option<Value>,
+) -> Result<(StatusCode, Value)> {
+    let mut request = Request::builder()
+        .method(method)
+        .uri(path)
+        .header("host", "mdm.example.test:9445");
+    if let Some(label) = bearer {
+        if let Some(peer) = agent::evidence(label) {
+            request = request.extension(peer)
+        } else {
+            request = request.header("authorization", format!("Bearer {label}"))
+        }
+    }
+    let body = if let Some(value) = body {
+        request = request.header("content-type", "application/json");
+        Body::from(serde_json::to_vec(&value)?)
+    } else {
+        Body::empty()
+    };
+    let response = tokio::spawn(router.clone().oneshot(request.body(body)?)).await??;
+    let status = response.status();
+    let content_type = response
+        .headers()
+        .get("content-type")
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_owned);
+    let bytes = response.into_body().collect().await?.to_bytes();
+    let value = if bytes.is_empty() {
+        Value::Null
+    } else {
+        serde_json::from_slice(&bytes)?
+    };
+    if status.is_client_error() || status.is_server_error() {
+        ensure!(
+            content_type.as_deref() == Some("application/json"),
+            "Agent error escaped JSON content type: {status} {content_type:?}"
+        );
+        if path.starts_with("/api/v1/agent/enroll/") {
+            let _: rss_mdm_agent_wire::enroll::ErrorBody = serde_json::from_value(value.clone())?;
+        } else {
+            let _: rss_mdm_agent_wire::runtime::ErrorBody = serde_json::from_value(value.clone())?;
+        }
+    }
+    Ok((status, value))
+}
+
+pub(crate) async fn wait_agent_status(
+    router: &Router,
+    credential: &str,
+    report_id: uuid::Uuid,
+    observation: &str,
+    projection: &str,
+) -> Result<Value> {
+    let mut last = Value::Null;
+    let settled = tokio::time::timeout(Duration::from_secs(8), async {
+        loop {
+            let (status, body) = agent_call(
+                router,
+                Method::GET,
+                &format!("/api/v1/agent/runtime/reports/{report_id}"),
+                Some(credential),
+                None,
+            )
+            .await?;
+            ensure!(
+                status == StatusCode::OK,
+                "Agent status failed: {status} {body}"
+            );
+            if body["observation"] == observation && body["projection"] == projection {
+                return Ok::<_, anyhow::Error>(body);
+            }
+            last = body;
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await;
+    settled.map_err(|_| {
+        anyhow::anyhow!(
+            "Agent report {report_id} did not settle at {observation}/{projection}; last={last}"
+        )
+    })?
+}
+
+pub(crate) async fn agent_runtime(
+    config: &Value,
+) -> Result<Arc<crate::inventory_runtime::InventoryRuntime>> {
+    let access = database(config).await?;
+    let config: Config = serde_json::from_value(config.clone())?;
+    Ok(crate::inventory_runtime::InventoryRuntime::fixture(
+        config.runtime_database.options()?,
+        access.inventory(),
+        rss_request_context::TenantId::parse(case_tenant())?,
+        monotonic(),
+        access
+            .audit_store(&crate::config::AuditConfig::Plain)
+            .await?,
+    )
+    .await?)
 }
