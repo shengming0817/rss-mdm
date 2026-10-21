@@ -200,8 +200,12 @@ fn downloaded_source_fixtures_preserve_conversion_and_original_evidence() {
         };
         let input: ImportRequest = serde_json::from_value(request).unwrap();
         let prepared = prepare(tenant, &source, &input, &documents).unwrap();
-        let value = serde_json::to_value(prepared.version.variants()[0].declaration()).unwrap();
-        let definition = &value["definition"];
+        let rss_mdm_resource::Declaration::Software { definition } =
+            prepared.version.variants()[0].declaration()
+        else {
+            panic!("{revision}: imported a non-software declaration");
+        };
+        let definition = serde_json::to_value(definition).unwrap();
         assert_eq!(definition["source"], json!(source.snapshot().unwrap()));
         assert_eq!(definition["provenance"]["kind"], "imported");
         let files = definition["provenance"]["files"].as_array().unwrap();
