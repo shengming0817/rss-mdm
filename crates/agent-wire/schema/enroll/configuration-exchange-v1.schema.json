@@ -120,37 +120,10 @@
         }
       ]
     },
-    "Channel": {
-      "description": "Release channel selected explicitly by the product.",
-      "oneOf": [
-        {
-          "const": "test",
-          "description": "Test releases.",
-          "type": "string"
-        },
-        {
-          "const": "pilot",
-          "description": "Pilot releases.",
-          "type": "string"
-        },
-        {
-          "const": "production",
-          "description": "Production releases.",
-          "type": "string"
-        }
-      ]
-    },
     "Configuration": {
       "additionalProperties": false,
       "description": "Server-frozen metadata; read responses never contain the configuration secret.",
       "properties": {
-        "channels": {
-          "description": "Allowed release channels; no implicit latest-version pin.",
-          "items": {
-            "$ref": "#/$defs/Channel"
-          },
-          "type": "array"
-        },
         "configurationId": {
           "description": "Reusable configuration identity.",
           "format": "uuid",
@@ -204,7 +177,6 @@
         "tenantId",
         "origin",
         "targets",
-        "channels",
         "expiresAt",
         "quantity",
         "keyId"

@@ -1,25 +1,5 @@
 {
   "$defs": {
-    "Channel": {
-      "description": "Release channel selected explicitly by the product.",
-      "oneOf": [
-        {
-          "const": "test",
-          "description": "Test releases.",
-          "type": "string"
-        },
-        {
-          "const": "pilot",
-          "description": "Pilot releases.",
-          "type": "string"
-        },
-        {
-          "const": "production",
-          "description": "Production releases.",
-          "type": "string"
-        }
-      ]
-    },
     "InstallerFormat": {
       "description": "Package format is part of the immutable release identity, never inferred from a URL.",
       "oneOf": [
@@ -111,10 +91,6 @@
       "minItems": 32,
       "type": "array"
     },
-    "channel": {
-      "$ref": "#/$defs/Channel",
-      "description": "Explicit release channel."
-    },
     "filename": {
       "description": "Secret-free installer filename.",
       "type": "string"
@@ -182,7 +158,6 @@
   "required": [
     "releaseId",
     "tenantId",
-    "channel",
     "target",
     "version",
     "format",

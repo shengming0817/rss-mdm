@@ -9,7 +9,7 @@ use std::collections::BTreeMap;
 use uuid::Uuid;
 
 /// Published package identity binds the reviewed artifact to its native detector.
-/// Production package signature/notarization verification belongs to package publication/T3.
+/// Signing metadata is optional; the native installer owns platform installation decisions.
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(tag = "platform", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Identity {
@@ -25,6 +25,7 @@ pub enum Identity {
     Macos {
         receipt: String,
         bundle: String,
+        #[serde(default, skip_serializing_if = "String::is_empty")]
         team: String,
     },
 }
@@ -49,10 +50,8 @@ impl Identity {
             } => {
                 bounded(receipt)
                     && bounded(bundle)
-                    && team.len() == 10
-                    && team
-                        .bytes()
-                        .all(|b| b.is_ascii_uppercase() || b.is_ascii_digit())
+                    && team.len() <= 256
+                    && !team.chars().any(char::is_control)
             }
         };
         if valid { Ok(()) } else { Err(Error::Malformed) }

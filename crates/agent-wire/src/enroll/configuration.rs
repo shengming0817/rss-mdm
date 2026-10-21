@@ -25,17 +25,6 @@ pub enum Quantity {
     /// No configuration count ceiling; all other admission conditions still apply.
     Unlimited,
 }
-/// Release channel selected explicitly by the product.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
-#[serde(rename_all = "snake_case")]
-pub enum Channel {
-    /// Test releases.
-    Test,
-    /// Pilot releases.
-    Pilot,
-    /// Production releases.
-    Production,
-}
 /// Immutable identity of an installation candidate, distinct from installer bytes.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -67,8 +56,6 @@ pub struct Configuration {
     pub origin: String,
     /// Allowed native targets.
     pub targets: Vec<Target>,
-    /// Allowed release channels; no implicit latest-version pin.
-    pub channels: Vec<Channel>,
     /// Final frozen Unix expiry, unrelated to device certificate lifetime.
     pub expires_at: i64,
     /// Explicit finite or unlimited count.
@@ -90,7 +77,7 @@ pub struct ConfigurationFile {
 impl Configuration {
     /// Validate producer values and freeze a closed canonical signature domain.
     pub fn signing_bytes(&self, secret: &Secret) -> Result<Vec<u8>, WireError> {
-        validate_scope(&self.targets, &self.channels)?;
+        validate_scope(&self.targets)?;
         let origin = url::Url::parse(&self.origin).map_err(|_| WireError::InvalidValue)?;
         if self.wire_version != 1
             || self.configuration_id.is_nil()
@@ -119,20 +106,14 @@ impl Configuration {
         Ok(out)
     }
 }
-/// Validate an explicit bounded target/channel scope without defaults or duplicate alternatives.
-pub fn validate_scope(targets: &[Target], channels: &[Channel]) -> Result<(), WireError> {
+/// Validate explicit bounded native targets without duplicate alternatives.
+pub fn validate_scope(targets: &[Target]) -> Result<(), WireError> {
     if targets.is_empty()
         || targets.len() > 4
-        || channels.is_empty()
-        || channels.len() > 3
         || targets
             .iter()
             .enumerate()
             .any(|(i, v)| targets[..i].contains(v))
-        || channels
-            .iter()
-            .enumerate()
-            .any(|(i, v)| channels[..i].contains(v))
     {
         return Err(WireError::InvalidValue);
     }
@@ -236,8 +217,6 @@ pub struct Package {
     #[serde(with = "strict_uuid")]
     #[schemars(schema_with = "crate::runtime::uuid_schema")]
     pub tenant_id: Uuid,
-    /// Explicit release channel.
-    pub channel: Channel,
     /// Supported native target.
     pub target: Target,
     /// Frozen product version.

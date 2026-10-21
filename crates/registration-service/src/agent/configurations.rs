@@ -110,7 +110,6 @@ pub struct Create {
     pub lifetime_seconds: Option<u32>,
     pub quantity: wire_config::Quantity,
     pub targets: Vec<wire_config::Target>,
-    pub channels: Vec<wire_config::Channel>,
 }
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -126,7 +125,14 @@ pub struct Read {
     pub remaining: Option<u64>,
 }
 async fn read_on(c: &mut PgConnection, tenant: &str, row: &PgRow) -> Result<Read, Error> {
-    let configuration = document(row)?;
+    // Historical signed documents remain unchanged; this read-only view is not a signed file.
+    let mut metadata: serde_json::Value = row.try_get("document").map_err(db)?;
+    metadata
+        .as_object_mut()
+        .ok_or(Error::Corrupt)?
+        .remove("channels");
+    let configuration: wire_config::Configuration =
+        serde_json::from_value(metadata).map_err(|_| Error::Corrupt)?;
     let (reserved, consumed) = usage(c, tenant, configuration.configuration_id).await?;
     let state = if row.try_get::<String, _>("state").map_err(db)? == "revoked" {
         "revoked"
@@ -222,8 +228,7 @@ impl Service {
         self.proof(p, a)?;
         p.manage(Permission::AgentEnrollmentWrite)?;
         version(wire::API_VERSION, input.operation_id)?;
-        wire_config::validate_scope(&input.targets, &input.channels)
-            .map_err(|_| Error::Malformed)?;
+        wire_config::validate_scope(&input.targets).map_err(|_| Error::Malformed)?;
         let d = digest(&(
             "agent_configuration.v1",
             input.operation_id,
@@ -231,7 +236,6 @@ impl Service {
             input.lifetime_seconds,
             &input.quantity,
             &input.targets,
-            &input.channels,
         ))?;
         a.operation(input.operation_id, "agent_configuration_create");
         let config=self.write(a,(self,p,input,d),|ctx,c|Box::pin(async move {
@@ -252,7 +256,7 @@ impl Service {
             if !(1..=settings::CONFIGURATION_MAX_SECONDS).contains(&seconds){return Err(Error::Malformed);}
             service.installations.verify_signer(c,&tenant,&service.configuration_signer.key_id).await?;
             let id=Uuid::new_v4();let expires_at=now(c).await?+i64::from(seconds);
-            let config=wire_config::Configuration{wire_version:1,configuration_id:id,tenant_id:Uuid::parse_str(&tenant).map_err(|_|Error::Configuration)?,origin:service.origin.clone(),targets:input.targets.clone(),channels:input.channels.clone(),expires_at,quantity:input.quantity.clone(),key_id:service.configuration_signer.key_id.clone()};
+            let config=wire_config::Configuration{wire_version:1,configuration_id:id,tenant_id:Uuid::parse_str(&tenant).map_err(|_|Error::Configuration)?,origin:service.origin.clone(),targets:input.targets.clone(),expires_at,quantity:input.quantity.clone(),key_id:service.configuration_signer.key_id.clone()};
             config.signing_bytes(&input.secret).map_err(|_|Error::Configuration)?;
             let signature=service.configuration_signer.sign(config.clone(),input.secret.clone())?.signature;
             let quantity=match input.quantity{wire_config::Quantity::Finite{count}=>Some(i64::from(count.get())),wire_config::Quantity::Unlimited=>None};
@@ -368,7 +372,7 @@ impl Service {
             let package=service.installations.verify(c,&tenant,&input.installation).await?;
             let target=wire_config::Target{platform:input.runtime.platform,architecture:input.runtime.architecture};
             let trusted=service.configuration_signer.trusted_keys.get(&cfg.key_id).ok_or(Error::Forbidden)?;
-            if package.tenant_id!=cfg.tenant_id || package.origin!=cfg.origin || package.target!=target || !cfg.targets.contains(&target) || !cfg.channels.contains(&package.channel)
+            if package.tenant_id!=cfg.tenant_id || package.origin!=cfg.origin || package.target!=target || !cfg.targets.contains(&target)
                 || package.signing_keys.get(&cfg.key_id)!=Some(trusted){return Err(Error::Forbidden);}
             let reused:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_access.agent_grants WHERE tenant_id=$1::uuid AND configuration_id=$2 AND spki=$3)").bind(&tenant).bind(cfg.configuration_id).bind(&*spki).fetch_one(&mut *c).await.map_err(db)?;
             if reused{return Err(Error::Conflict);}
@@ -440,7 +444,6 @@ mod tests {
                 platform: runtime::TaskPlatform::Macos,
                 architecture: runtime::TaskArchitecture::Aarch64,
             }],
-            channels: vec![wire_config::Channel::Production],
             expires_at: 100,
             quantity: wire_config::Quantity::Unlimited,
             key_id: "current".into(),
@@ -453,7 +456,6 @@ mod tests {
             "expiresAt",
             "quantity",
             "tenantId",
-            "channels",
             "targets",
             "keyId",
             "secret",
@@ -467,7 +469,6 @@ mod tests {
                     "expiresAt" => serde_json::json!(101),
                     "quantity" => serde_json::json!({"kind":"finite","count":1}),
                     "tenantId" => serde_json::json!(Uuid::new_v4()),
-                    "channels" => serde_json::json!(["test"]),
                     "targets" => {
                         serde_json::json!([{"platform":"windows","architecture":"x86_64"}])
                     }
