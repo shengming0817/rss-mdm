@@ -570,13 +570,16 @@ impl NativeSystemQuery {
     /// Validate all present data, including partial/failed evidence, before persistence.
     pub fn accepts_row(&self, row: &BTreeMap<String, serde_json::Value>) -> bool {
         let schema = self.properties();
-        if row
-            .iter()
-            .any(|(k, v)| !schema.get(k).is_some_and(|t| t.accepts(v)))
+        if !super::bounded_row(row, true)
+            || row
+                .iter()
+                .any(|(k, v)| schema.get(k).is_some_and(|t| !t.accepts(v)))
         {
             return false;
         }
-        let vocab = |key: &str, values: &[&str]| text(row, key).is_none_or(|v| values.contains(&v));
+        let vocab = |key: &str, values: &[&str]| {
+            !schema.contains_key(key) || text(row, key).is_none_or(|v| values.contains(&v))
+        };
         if !vocab("presence", &["present", "absent", "unknown"])
             || !vocab("configured", &["enabled", "disabled", "unknown"])
             || !vocab("running", &["enabled", "disabled", "unknown"])

@@ -36,7 +36,7 @@ WITH candidates AS (
  AND EXISTS(SELECT 1 FROM mdm_group.member_runs b WHERE b.tenant_id=m.tenant_id AND b.id=m.run_id AND b.phase='published')
  ORDER BY m.group_id,m.object_id,m.revision DESC
 ), hits AS (SELECT group_id,jsonb_agg(object_id ORDER BY object_id) AS objects FROM candidates WHERE added GROUP BY group_id)
-SELECT jsonb_build_object('id',g.id,'name',g.name,'kind',g.kind,'assetContext',g.asset_context,
+SELECT jsonb_build_object('id',g.id,'presentation',g.presentation,'kind',g.kind,'assetContext',g.asset_context,
 'revision',g.revision,'memberVersion',g.member_version,'calculationRevision',g.calculation_revision,
 'memberSet',g.member_set,'currentRuleVersion',g.rule_version,'evaluatedRuleVersion',b.rule_version,
 'inputVersion',b.input_version,'asOf',b.as_of,'ruleCurrent',g.rule_version IS NOT DISTINCT FROM b.rule_version,'objects',h.objects)

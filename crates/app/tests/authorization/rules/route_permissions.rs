@@ -30,7 +30,7 @@ async fn each_route_requires_its_exact_capability() -> Result<()> {
             "group_write",
             Method::POST,
             format!("/api/v1/groups/{id}"),
-            op(json!({"action":"edit","name":"denied","description":""})),
+            op(json!({"action":"edit","presentation":{"name":"denied","description":""}})),
         ),
         (
             "group_recompute",

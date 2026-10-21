@@ -9,13 +9,14 @@ pub async fn accept_in(
     principal: &DevicePrincipal,
     scope: &Scope,
     batch: &Batch,
+    report: &rss_mdm_agent_wire::runtime::ReportRequest,
 ) -> Result<(i64, bool), Error> {
-    let digest = batch
-        .fingerprint(scope)
-        .map_err(|_| Error::Malformed)?
-        .iter()
-        .map(|b| format!("{b:02x}"))
-        .collect::<String>();
+    use sha2::{Digest, Sha256};
+    let canonical = report.canonical().map_err(|_| Error::Malformed)?;
+    let digest = format!("{:x}", Sha256::digest(&canonical));
+    // Preserve the canonical representation as text: JSONB expands exponent-form
+    // numbers and can otherwise inflate a legal 1 MiB report beyond the evidence budget.
+    let evidence = serde_json::json!({"agentReport": String::from_utf8(canonical).map_err(|_| Error::Malformed)?});
     let live_scope =
         crate::device::store::revalidate_source(tx, principal, InventorySource::AgentBuiltin)
             .await?;
@@ -97,11 +98,11 @@ pub async fn accept_in(
     .map_err(|_| Error::Malformed)?;
     let attempts = serde_json::to_string(&progress).map_err(|_| Error::Malformed)?;
     let stored_digest = super::store::fingerprint(&stored_batch, scope)?;
-    sqlx::query("INSERT INTO mdm_access.collection_runs(tenant_id,id,registration,source,epoch,scope,sequence,started_at,attempts,result,reason,batch,digest,sealed_at,delivery_pending,input_digest) VALUES($1::uuid,$4::uuid,$2::uuid,'agent.builtin',$3::uuid,$6,$5,$9,$11,$10,'complete',$7,$8,$9,true,$12)")
+    sqlx::query("INSERT INTO mdm_access.collection_runs(tenant_id,id,registration,source,epoch,scope,sequence,started_at,attempts,result,reason,batch,digest,sealed_at,delivery_pending,input_digest,evidence) VALUES($1::uuid,$4::uuid,$2::uuid,'agent.builtin',$3::uuid,$6,$5,$9,$11,$10,'complete',$7,$8,$9,true,$12,$13)")
         .bind(principal.tenant().to_string()).bind(principal.registration().to_string()).bind(scope.epoch().as_str()).bind(batch.id().as_str().to_string())
         .bind(i64::try_from(batch.sequence()).map_err(|_| Error::Malformed)?).bind(scope.encode().map_err(|_| Error::Malformed)?)
         .bind(stored_batch.encode()).bind(&stored_digest).bind(received_at).bind(result)
-        .bind(attempts).bind(&digest).execute(&mut *tx).await.map_err(db)?;
+        .bind(attempts).bind(&digest).bind(evidence).execute(&mut *tx).await.map_err(db)?;
     crate::wake::notify(tx).await.map_err(db)?;
     Ok((received_at, true))
 }

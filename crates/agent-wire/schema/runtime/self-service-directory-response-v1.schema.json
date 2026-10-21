@@ -164,28 +164,10 @@
           "description": "Effective administrator AI switch.",
           "type": "boolean"
         },
-        "category": {
-          "description": "Presentation category.",
-          "type": "string"
-        },
-        "description": {
-          "description": "Intended purpose.",
-          "type": "string"
-        },
-        "displayName": {
-          "description": "Directory display name.",
-          "type": "string"
-        },
-        "keywords": {
-          "description": "Search terms.",
-          "items": {
-            "type": "string"
-          },
-          "type": "array"
-        },
-        "prerequisites": {
-          "description": "Preconditions shown before invocation.",
-          "type": "string"
+        "presentation": {
+          "additionalProperties": true,
+          "description": "Open directory presentation; never used as authorization or executable input.",
+          "type": "object"
         },
         "published": {
           "description": "Whether this script is published for self service.",
@@ -198,20 +180,11 @@
             2
           ],
           "type": "integer"
-        },
-        "sideEffects": {
-          "description": "Expected effects shown before invocation.",
-          "type": "string"
         }
       },
       "required": [
         "published",
-        "displayName",
-        "description",
-        "prerequisites",
-        "sideEffects",
-        "category",
-        "keywords",
+        "presentation",
         "allowAi",
         "riskLevel"
       ],

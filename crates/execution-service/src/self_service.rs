@@ -662,12 +662,7 @@ async fn invocation_slot_in(
 fn metadata(config: &rss_mdm_policy::SelfService) -> Result<wire::SelfServiceMetadata> {
     Ok(wire::SelfServiceMetadata {
         published: config.published,
-        display_name: config.display_name.clone(),
-        description: config.description.clone(),
-        prerequisites: config.prerequisites.clone(),
-        side_effects: config.side_effects.clone(),
-        category: config.category.clone(),
-        keywords: config.keywords.clone(),
+        presentation: config.presentation.clone(),
         allow_ai: config.allow_ai.ok_or(Error::Malformed)?,
         risk_level: config.risk_level.ok_or(Error::Malformed)?.value(),
     })

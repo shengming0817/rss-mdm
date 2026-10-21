@@ -184,14 +184,17 @@ async fn report_inner(
     )
     .map_err(Error::from)?;
     let batch = batch(&input)?;
-    let fingerprint = batch.fingerprint(&scope).map_err(|_| Error::Malformed)?;
+    let fingerprint: [u8; 32] = {
+        use sha2::{Digest, Sha256};
+        Sha256::digest(input.canonical().map_err(|_| Error::Malformed)?).into()
+    };
     let budget = rss_mdm_audit_integration::budget::AuditBudget::new(Duration::from_secs(2));
     let control = budget.control();
     let attempt = app.audit_store.write(principal.tenant(), &control,
         (&app.audit_store, &principal, &scope, &input, &batch, audit, &fingerprint),
         |(store, principal, scope, input, batch, audit, fingerprint), tx| Box::pin(async move {
             let (received_at, fresh) = tx.with_connection_context(&mut (*principal, *scope, *input, *batch),
-                |(principal, scope, _input, batch), c| Box::pin(async move {crate::bindings::inventory_in(c,principal).await?;crate::collection::agent::accept_in(c,principal,scope,batch).await.map_err(Error::from)})).await?;
+                |(principal, scope, input, batch), c| Box::pin(async move {crate::bindings::inventory_in(c,principal).await?;crate::collection::agent::accept_in(c,principal,scope,batch,input).await.map_err(Error::from)})).await?;
             let result = match input.body() { wire::ReportBody::Snapshot(_) => "snapshot", wire::ReportBody::Partial(_) => "partial", wire::ReportBody::Failed { .. } => "failed" };
             let fact = rss_mdm_audit_integration::Fact::business(audit,
                 &format!("agent-report:{}", input.report_id()), fingerprint.as_slice(), 202, "success", None)
@@ -340,13 +343,23 @@ fn batch(input: &wire::ReportRequest) -> Result<Batch, AgentError> {
     let changes = input
         .values()
         .iter()
+        .filter(|item| input.collection().field(item.field).is_ok())
         .map(|item| {
+            let projected = item
+                .value
+                .project(
+                    input
+                        .collection()
+                        .field(item.field)
+                        .map_err(|_| Error::Malformed)?,
+                )
+                .map_err(|_| Error::Malformed)?;
             let key = rss_mdm_inventory::FieldKey::parse(item.field.as_str())
                 .map_err(|_| Error::Malformed)?;
             let field = definition.field(key).map_err(|_| Error::Malformed)?;
             Ok(Change::upsert(
                 Id::new(item.field.as_str()).map_err(|_| Error::Malformed)?,
-                inventory_wire::value(&item.value)
+                inventory_wire::value(&projected)
                     .encode(field)
                     .map_err(|_| Error::Malformed)?,
             ))

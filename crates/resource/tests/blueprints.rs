@@ -8,7 +8,11 @@ fn official_templates_are_nonempty_exact_versions_and_tenant_resources() {
     assert!(
         blueprints::CATEGORIES
             .iter()
-            .all(|category| catalog.iter().any(|b| &b.category == category))
+            .all(|category| catalog.iter().any(|b| b
+                .presentation
+                .get("category")
+                .and_then(serde_json::Value::as_str)
+                == Some(*category)))
     );
     for blueprint in catalog {
         let a = blueprint

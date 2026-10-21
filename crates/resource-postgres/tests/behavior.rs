@@ -122,10 +122,19 @@ async fn resource_immutable_versions_reopen_and_reference_rollback() {
         |_| false,
         |_| false
     ));
+    let presentation = serde_json::json!({"name":"renamed","vendor":{"help":"support"}})
+        .as_object()
+        .unwrap()
+        .clone();
+    let edit = req(&key, 3, Command::Present(presentation.clone()));
+    let edited = s.execute(&edit, deadline()).await.unwrap();
+    assert_eq!(edited, s.execute(&edit, deadline()).await.unwrap());
     let restarted = ResourceStore::new(runtime.clone(), tenant(), deadline())
         .await
         .unwrap();
     let resource = restarted.get(&key, deadline()).await.unwrap().unwrap();
+    assert_eq!(resource.resource.snapshot().presentation, presentation);
+    assert_eq!(resource.storage_revision, 4);
     assert_eq!(
         resource.resource.state(&id("one")).unwrap(),
         r::State::Active

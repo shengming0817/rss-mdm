@@ -7,14 +7,7 @@ fn input(profile: Profile) -> Generate {
     Generate {
         entry_id: uuid::Uuid::new_v4(),
         expected_revision: 0,
-        metadata: Metadata {
-            name: "Test certificate".into(),
-            category: "custom".into(),
-            labels: vec![],
-            usages: vec![],
-            owner: "test".into(),
-            notes: "".into(),
-        },
+        metadata: Metadata(serde_json::json!({"name":"Test certificate","category":"custom","labels":[],"usages":[],"owner":"test","notes":""}).as_object().unwrap().clone()),
         profile,
         algorithm: Algorithm::P256,
         common_name: "test.example".into(),
@@ -268,4 +261,17 @@ fn request_binding_rejects_another_generated_identity() {
             .iter()
             .all(|f| f.certificates.is_empty())
     );
+}
+
+#[test]
+fn descriptive_metadata_preserves_unknown_keys_without_changing_material_facts() {
+    let mut metadata: Metadata = serde_json::from_value(serde_json::json!({"name":"certificate","category":"custom","owner":"operator note","usages":[],"labels":[],"notes":"","vendor":{"link":"help"}})).unwrap();
+    metadata.validate().unwrap();
+    let bytes = serde_json::to_vec(&metadata).unwrap();
+    let restored: Metadata = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(restored.0, metadata.0);
+    metadata
+        .0
+        .insert("large".into(), serde_json::json!("x".repeat(16384)));
+    assert!(metadata.validate().is_err());
 }

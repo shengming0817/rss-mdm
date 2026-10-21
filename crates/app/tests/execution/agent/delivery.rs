@@ -814,7 +814,7 @@ async fn native_inventory_case(
         let now = crate::clock::Clock::unix_seconds(&crate::clock::SystemClock)?;
         let mut queries = std::collections::BTreeMap::new();
         for (id, q) in &spec.plan.spec().queries {
-            let rows = if id.starts_with("sys_") {
+            let mut rows = if id.starts_with("sys_") {
                 if stage>=2 {vec![]} else {vec![serde_json::from_value(match id.as_str() {
                     "sys_security"=>if macos {json!({"presence":"present","configured":"enabled","running":"unknown","version":"1"})}else{json!({"presence":"present","configured":"enabled","running":"disabled","mode":"passive","health":"passive","signature_version":"1"})},
                     "sys_accounts"=>if macos {json!({"id":"00000000-0000-0000-0000-000000000501","uid":501,"name":"sensitive-account","account_type":"local","enabled":"enabled"})}else{json!({"id":"S-1-5-21-1-2-3-1001","name":"sensitive-account","account_type":"local","enabled":"enabled"})},
@@ -894,6 +894,11 @@ async fn native_inventory_case(
                     .into(),
                 ]
             };
+            if stage == 0 {
+                for row in &mut rows {
+                    row.insert("vendor_detail".into(), json!({"note":"unregistered raw evidence"}));
+                }
+            }
             queries.insert(
                 id.clone(),
                 w::NativeQueryResult {
@@ -1119,7 +1124,8 @@ async fn native_inventory_case(
             .call(&f.router, Method::GET, &detail_path, None)
             .await?;
         ensure!(
-            denied.0 == StatusCode::FORBIDDEN && !denied.1.to_string().contains("private-software"),
+            denied.0 == StatusCode::FORBIDDEN && !denied.1.to_string().contains("private-software")
+                && !denied.1.to_string().contains("unregistered raw evidence"),
             "raw evidence read bypass: {denied:?}"
         );
         let limited = f

@@ -41,7 +41,10 @@ fn pack(id: &str, category: &str, build: u32, mappings: Vec<(String, NativeMappi
     Blueprint {
         id: format!("windows.{id}"),
         version: "2".into(),
-        category: category.into(),
+        presentation: serde_json::json!({"category":category})
+            .as_object()
+            .unwrap()
+            .clone(),
         platform: Platform::Windows,
         definition: NativeCollectionDefinition::new(NativeCollectionSpec {
             scope: TemplateScope::Device,

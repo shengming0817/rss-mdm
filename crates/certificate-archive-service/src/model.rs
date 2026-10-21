@@ -66,33 +66,41 @@ impl From<rss_mdm_authorization_service::Error> for Error {
 }
 
 #[derive(Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct Metadata {
-    pub name: String,
-    pub category: String,
-    pub labels: Vec<String>,
-    pub usages: Vec<String>,
-    pub owner: String,
-    pub notes: String,
-}
+#[serde(transparent)]
+pub struct Metadata(pub serde_json::Map<String, serde_json::Value>);
 impl Metadata {
     pub fn validate(&self) -> Result<(), Error> {
-        if self.name.trim().is_empty()
-            || self.name.len() > 256
-            || self.category.is_empty()
-            || self.category.len() > 128
-            || self.owner.len() > 256
-            || self.notes.len() > 4096
-            || self.labels.len() > 32
-            || self.usages.len() > 32
-            || self.labels.iter().any(|s| s.is_empty() || s.len() > 128)
-            || self.usages.iter().any(|s| s.is_empty() || s.len() > 512)
-            || serde_json::to_vec(self)
-                .map_err(|_| Error::Malformed)?
-                .len()
-                > 16384
-        {
+        if !crate::presentation::valid(&self.0, 16384) {
             return Err(Error::Malformed);
+        }
+        for (key, limit, required) in [
+            ("name", 256, true),
+            ("category", 128, true),
+            ("owner", 256, false),
+            ("notes", 4096, false),
+        ] {
+            let text = self
+                .0
+                .get(key)
+                .and_then(serde_json::Value::as_str)
+                .ok_or(Error::Malformed)?;
+            if text.len() > limit || (required && text.trim().is_empty()) {
+                return Err(Error::Malformed);
+            }
+        }
+        for (key, limit) in [("labels", 128), ("usages", 512)] {
+            let values = self
+                .0
+                .get(key)
+                .and_then(serde_json::Value::as_array)
+                .ok_or(Error::Malformed)?;
+            if values.len() > 32
+                || values
+                    .iter()
+                    .any(|v| v.as_str().is_none_or(|s| s.is_empty() || s.len() > limit))
+            {
+                return Err(Error::Malformed);
+            }
         }
         Ok(())
     }

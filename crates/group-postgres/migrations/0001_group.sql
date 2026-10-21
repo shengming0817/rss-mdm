@@ -5,8 +5,9 @@ CREATE TABLE mdm_group.groups (
  tenant_id uuid NOT NULL,
  id uuid NOT NULL CHECK(id <> '00000000-0000-0000-0000-000000000000'),
  kind text NOT NULL CHECK(kind IN ('static','dynamic')),
- name text NOT NULL CHECK(octet_length(name) BETWEEN 1 AND 4096),
- description text NOT NULL CHECK(octet_length(description)<=4096),
+ presentation jsonb NOT NULL CHECK(jsonb_typeof(presentation)='object' AND presentation ?& ARRAY['name','description'] AND octet_length(presentation::text)<=131072
+   AND jsonb_typeof(presentation->'name')='string' AND octet_length(presentation->>'name') BETWEEN 1 AND 4096
+   AND jsonb_typeof(presentation->'description')='string' AND octet_length(presentation->>'description')<=4096),
  revision bigint NOT NULL CHECK(revision>0),
  calculation_revision bigint NOT NULL DEFAULT 0 CHECK(calculation_revision>=0),
  member_version bigint NOT NULL CHECK(member_version>=0 AND member_version<=calculation_revision),
@@ -86,6 +87,6 @@ BEGIN
 END $ddl$;
 GRANT USAGE ON SCHEMA mdm_group TO mdm_group_runtime;
 GRANT SELECT,INSERT ON ALL TABLES IN SCHEMA mdm_group TO mdm_group_runtime;
-GRANT UPDATE(name,description,revision,member_version,member_count,rule_version,deleted,calculation_revision) ON mdm_group.groups TO mdm_group_runtime;
+GRANT UPDATE(presentation,revision,member_version,member_count,rule_version,deleted,calculation_revision) ON mdm_group.groups TO mdm_group_runtime;
 GRANT UPDATE(state,receipt,result,result_digest,failure,completed_at) ON mdm_group.operations TO mdm_group_runtime;
 GRANT DELETE ON mdm_group.members TO mdm_group_runtime;

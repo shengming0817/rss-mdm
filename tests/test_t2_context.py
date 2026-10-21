@@ -28,16 +28,19 @@ class ContextTests(unittest.TestCase):
         values = contexts('catalog-recovery', jobs)
         self.assertNotEqual(values[jobs[0].key]['tenant'], values[jobs[1].key]['tenant'])
 
-    def test_ca_installation_declares_only_provider_dependencies(self):
+    def test_ca_installation_keeps_provider_and_product_fixture_policies_distinct(self):
         from t2_model import resolve_cases
         module = MODULES['installation.ca']
-        name = module.selectors[0]
-        policy = resolve_cases(module, [name])[0]
-        invocation = Invocation(policy, Case(module.build, 'binary', '/binary', name))
-        value = contexts('ca-installation', [invocation])[invocation.key]
-        self.assertEqual(value['actors'], [])
-        self.assertFalse(policy.postgres)
-        self.assertEqual(set(policy.fixtures), {'agent_pki', 'ca_agent'})
+        names = module.selectors
+        policies = resolve_cases(module, names)
+        self.assertEqual(len(policies), 2)
+        for name, policy, expected in zip(names, policies, ({'agent_pki', 'ca_agent'}, {'windows', 'ca_windows'})):
+            invocation = Invocation(policy, Case(module.build, 'binary', '/binary', name))
+            value = contexts('ca-installation', [invocation])[invocation.key]
+            self.assertEqual(value['actors'], [])
+            self.assertTrue(policy.postgres)
+            self.assertEqual(set(policy.fixtures), expected)
+        self.assertEqual(policies[1].scope, 'tenant')
 
     def test_contract_rejects_missing_wrong_typed_and_unprepared_fields(self):
         from copy import deepcopy

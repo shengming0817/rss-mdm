@@ -104,7 +104,10 @@ fn pack(
             "1"
         }
         .into(),
-        category: category.into(),
+        presentation: serde_json::json!({"category":category})
+            .as_object()
+            .unwrap()
+            .clone(),
         platform: Platform::Windows,
         definition: Definition::AgentCollection {
             template: AgentCollectionDefinition::new(AgentCollectionSpec {

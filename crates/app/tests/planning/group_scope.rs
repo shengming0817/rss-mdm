@@ -61,8 +61,10 @@ async fn durable_asset_group_scope_pipeline() {
                 0,
                 GroupChange::Create {
                     asset_context: rss_mdm_group_postgres::AssetContext::Endpoint,
-                    name: "automation".into(),
-                    description: String::new(),
+                    presentation: serde_json::json!({"name":"automation","description":""})
+                        .as_object()
+                        .unwrap()
+                        .clone(),
                     criteria: Some(assets::InventoryCondition {
                         selector: assets::ScopeSelector::Device,
                         quantifier: assets::ScopeQuantifier::One,
@@ -327,8 +329,10 @@ async fn group_scope_replay_and_audit_atomicity() {
             0,
             GroupChange::Create {
                 asset_context: rss_mdm_group_postgres::AssetContext::Endpoint,
-                name: "fleet".into(),
-                description: String::new(),
+                presentation: serde_json::json!({"name":"fleet","description":""})
+                    .as_object()
+                    .unwrap()
+                    .clone(),
                 criteria: None,
             },
         )),
@@ -388,8 +392,10 @@ async fn group_scope_replay_and_audit_atomicity() {
                 0,
                 GroupChange::Create {
                     asset_context: rss_mdm_group_postgres::AssetContext::Endpoint,
-                    name: "denied".into(),
-                    description: String::new(),
+                    presentation: serde_json::json!({"name":"denied","description":""})
+                        .as_object()
+                        .unwrap()
+                        .clone(),
                     criteria: None,
                 },
             )),
@@ -432,8 +438,10 @@ async fn group_scope_revision_competition() {
                 0,
                 GroupChange::Create {
                     asset_context: rss_mdm_group_postgres::AssetContext::Endpoint,
-                    name: "empty".into(),
-                    description: "".into(),
+                    presentation: serde_json::json!({"name":"empty","description":""})
+                        .as_object()
+                        .unwrap()
+                        .clone(),
                     criteria: None,
                 },
             )),
@@ -511,8 +519,10 @@ async fn registration_replacement_invalidates_direct_and_group_admission() {
                 0,
                 GroupChange::Create {
                     asset_context: rss_mdm_group_postgres::AssetContext::Endpoint,
-                    name: "registration".into(),
-                    description: "".into(),
+                    presentation: serde_json::json!({"name":"registration","description":""})
+                        .as_object()
+                        .unwrap()
+                        .clone(),
                     criteria: None,
                 },
             )),
@@ -613,8 +623,10 @@ async fn group_delete_scope_reference_compete_without_dangling_references() {
                     0,
                     GroupChange::Create {
                         asset_context: rss_mdm_group_postgres::AssetContext::Endpoint,
-                        name: "reference-race".into(),
-                        description: "".into(),
+                        presentation: serde_json::json!({"name":"reference-race","description":""})
+                            .as_object()
+                            .unwrap()
+                            .clone(),
                         criteria: None,
                     },
                 )),
@@ -737,8 +749,10 @@ async fn ingress_batches_reuse_published_group_coverage() {
                 0,
                 GroupChange::Create {
                     asset_context: rss_mdm_group_postgres::AssetContext::Endpoint,
-                    name: "bounded-ingress".into(),
-                    description: String::new(),
+                    presentation: serde_json::json!({"name":"bounded-ingress","description":""})
+                        .as_object()
+                        .unwrap()
+                        .clone(),
                     criteria: Some(assets::InventoryCondition {
                         selector: assets::ScopeSelector::Device,
                         quantifier: assets::ScopeQuantifier::One,
@@ -855,8 +869,10 @@ async fn superseded_group_links_reused_successor() {
                 0,
                 GroupChange::Create {
                     asset_context: rss_mdm_group_postgres::AssetContext::Endpoint,
-                    name: "successor".into(),
-                    description: String::new(),
+                    presentation: serde_json::json!({"name":"successor","description":""})
+                        .as_object()
+                        .unwrap()
+                        .clone(),
                     criteria: Some(assets::InventoryCondition {
                         selector: assets::ScopeSelector::Device,
                         quantifier: assets::ScopeQuantifier::One,
