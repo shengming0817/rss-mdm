@@ -77,7 +77,7 @@ expectedRevision 和完整正文重试，返回原回执，随后重新 GET 当�
 
 ## 权限、分页与保存查询
 
-inventory_fields_write 管理目录；有权限管理员直接发布字段及启用模板，不增加申请或审批状态。删除检查引用，类型、单位、条目身份或敏感级别变化需要新字段身份。inventory_sensitive_read 控制敏感字段明文及敏感条件的配置。inventory_read 按 AllDevices/Device 并集限定候选集合，再计算匹配、总数和汇总；inventory_assign 独立授予 Manual 写。所有请求重取授权，运行中会话/来源失效会再次拒绝。Group 预览和重算还要求 inventory_read/all_devices，不能用部分设备集合替换全组成员。
+inventory_fields_write 管理目录并允许读取配置所需的字段定义，独立于设备资产值读取权限；有权限管理员直接发布字段及启用模板，不增加申请或审批状态。删除检查引用，类型、单位、条目身份或敏感级别变化需要新字段身份。inventory_sensitive_read 控制敏感字段明文及敏感条件的配置。inventory_read 按 AllDevices/Device 并集限定候选集合，再计算匹配、总数和汇总；inventory_assign 独立授予 Manual 写。所有请求重取授权，运行中会话/来源失效会再次拒绝。Group 预览和重算还要求 inventory_read/all_devices，不能用部分设备集合替换全组成员。
 
 个人保存查询使用当前 inventory_read，并按 tenant/instance/principal 限定本人。put 的 input 为 `{action:"put",definition:{name:"…",query:{…}}}`；不保存 cursor、结果或授权集合。删除 UUID 不复用；执行重新验证当前目录与权限。
 

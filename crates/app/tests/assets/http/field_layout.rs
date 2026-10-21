@@ -43,6 +43,39 @@ async fn publish(fixture: &mut AssetHttp, key: &str, sensitivity: &str) -> Resul
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "MODULE=assets.http: field management discovers layout inputs without asset value authority"]
+async fn field_manager_discovers_layout_inputs_without_asset_read() -> Result<()> {
+    let mut fixture = AssetHttp::open().await?;
+    let resources = std::mem::take(&mut fixture.resources);
+    resources.finish(async {
+        grants(&fixture.author_id, &[Permission::InventoryFieldsWrite]).await?;
+        let initial = fixture.author.call(&fixture.router, Method::GET, PATH, None).await?;
+        ensure!(initial.0 == StatusCode::OK && initial.1["asset"]["editable"] == true && initial.1["asset"]["groups"] == json!([]));
+        let catalog = fixture.author.call(&fixture.router, Method::GET, "/api/v1/asset-fields", None).await?;
+        ensure!(catalog.0 == StatusCode::OK, "configuration metadata rejected: {catalog:?}");
+        let fields = catalog.1["asset"]["fields"].as_array().unwrap();
+        let selected = fields.iter().find(|field| field["key"].as_str().is_some_and(|key| key.starts_with("custom."))).ok_or_else(|| anyhow::anyhow!("fixture must offer an existing custom field"))?;
+        let groups = json!([{ "id":Uuid::new_v4(),"name":"资产","fields":[selected["key"].clone()] }]);
+        let saved = fixture.author.call(&fixture.router, Method::PUT, PATH, Some(operation(0, groups.clone()))).await?;
+        ensure!(saved.0 == StatusCode::OK && saved.1["asset"]["revision"] == 1);
+        let layout = fixture.author.call(&fixture.router, Method::GET, PATH, None).await?;
+        ensure!(layout.1["asset"]["groups"] == groups);
+        let device = case::name("layout-values");
+        crate::test_support::inventory::seed_source(device, "mdm", "mdm.windows", "metadata-is-not-values")?;
+        let detail = format!("/api/v1/devices/{device}/inventory");
+        ensure!(fixture.author.call(&fixture.router, Method::GET, &detail, None).await?.0 == StatusCode::FORBIDDEN);
+        grants(&fixture.author_id, &[Permission::InventoryRead]).await?;
+        let reader_catalog = fixture.author.call(&fixture.router, Method::GET, "/api/v1/asset-fields", None).await?;
+        ensure!(reader_catalog.0 == StatusCode::OK);
+        let value = fixture.author.call(&fixture.router, Method::GET, &detail, None).await?;
+        ensure!(value.0 == StatusCode::OK && value.1["asset"]["device"]["fields"]["device.model"]["state"]["value"]["value"] == "metadata-is-not-values");
+        grants(&fixture.author_id, &[]).await?;
+        ensure!(fixture.author.call(&fixture.router, Method::GET, "/api/v1/asset-fields", None).await?.0 == StatusCode::FORBIDDEN);
+        Ok(())
+    }).await
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "MODULE=assets.http: shared layout HTTP authorization and persistence"]
 async fn shared_layout_round_trip_permissions_and_retired_fields() -> Result<()> {
     let mut fixture = AssetHttp::open().await?;

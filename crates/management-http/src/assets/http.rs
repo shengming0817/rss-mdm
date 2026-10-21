@@ -61,8 +61,9 @@ fn authorize(
     command: &Command,
 ) -> std::result::Result<(), rss_mdm_inventory_service::Error> {
     match command {
+        Command::Fields => field_access(auth).map(|_| ()),
         Command::FieldLayoutRead { access } => {
-            if &layout_access(auth)? == access {
+            if &field_access(auth)? == access {
                 Ok(())
             } else {
                 Err(rss_mdm_inventory_service::Error::Forbidden)
@@ -151,7 +152,7 @@ async fn run(
     };
     Ok((status, Json(envelope)).into_response())
 }
-fn layout_access(
+fn field_access(
     auth: &RequestAuth,
 ) -> std::result::Result<FieldLayoutAccess, rss_mdm_inventory_service::Error> {
     use rss_mdm_authorization_service::error::AuthorizationError;
@@ -172,7 +173,7 @@ async fn field_layout(
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
 ) -> std::result::Result<HttpResponse, Error> {
-    let access = layout_access(&auth)?;
+    let access = field_access(&auth)?;
     run(&app, &auth, &audit, Command::FieldLayoutRead { access }).await
 }
 async fn field_layout_write(
