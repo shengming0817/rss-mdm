@@ -192,7 +192,11 @@ fn resolve_membership(
                         id,
                         match (object, &source.reference) {
                             (Some((_, revision)), Reference::Device(_)) => revision,
-                            _ => source.member_version + source.authority_version + 1,
+                            _ => {
+                                source.coordinates.member_version
+                                    + source.coordinates.authority_version
+                                    + 1
+                            }
                         },
                         at,
                     )
@@ -633,11 +637,13 @@ mod lifecycle_mapping_tests {
                 .enumerate()
                 .map(|(i, reference)| SourceSet {
                     reference,
-                    member_set: None,
-                    member_version: i as u64 + 1,
-                    definition_version: 1,
-                    authority_version: i as u64,
-                    asset_context: rss_mdm_group_postgres::AssetContext::Endpoint,
+                    coordinates: rss_mdm_group_postgres::SourceCoordinates {
+                        member_set: None,
+                        member_version: i as u64 + 1,
+                        definition_version: 1,
+                        authority_version: i as u64,
+                        asset_context: rss_mdm_group_postgres::AssetContext::Endpoint,
+                    },
                     snapshot: None,
                 })
                 .collect(),

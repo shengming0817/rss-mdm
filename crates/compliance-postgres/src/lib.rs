@@ -227,10 +227,10 @@ pub async fn receipt(
         .await?;
     Ok(())
 }
-/// True when an enabled rule prevents deleting this group.
+/// Every retained current rule prevents deletion, including disabled rules.
 pub async fn group_used(c: &mut PgConnection, t: TenantId, id: Uuid) -> Result<bool> {
     tenant(c, t).await?;
-    sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_compliance.groups g JOIN mdm_compliance.rules r ON (r.tenant_id,r.id)=(g.tenant_id,g.rule_id) WHERE g.tenant_id=$1::uuid AND g.group_id=$2::uuid AND r.enabled)").bind(t.to_string()).bind(id.to_string()).fetch_one(c).await
+    sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_compliance.groups g JOIN mdm_compliance.rules r ON (r.tenant_id,r.id)=(g.tenant_id,g.rule_id) WHERE g.tenant_id=$1::uuid AND g.group_id=$2::uuid )").bind(t.to_string()).bind(id.to_string()).fetch_one(c).await
 }
 
 /// Compare structural and security contracts before using the adapter.

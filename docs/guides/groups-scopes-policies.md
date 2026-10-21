@@ -21,6 +21,93 @@ Policy 响应使用 `state: enabled | disabled | archived`，不返回 enabled �
 
 创建 Group 必须声明不可变 `assetContext: endpoint | associated_device`。静态组只接受 endpoint；成员、差分与决策使用 `{kind: endpoint | association, id}`。endpoint 组仍求值原始终端；associated_device 组以关联对象和独立终端为完整对象域，并保留原始注册、世代与字段来源。动态组创建或规则变化自动计算，相关事实按字段和设备增量求值，必要时全算。静态组使用 add/remove。预览保存独立计算结果，不发布正式成员、不产生执行。计算检查点固定输入水位并分页恢复；新输入合并到待处理水位，旧计算完成后自动追赶。
 
+动态 Group 条件还支持 `{ "kind":"group", "groupId":"<uuid>", "op":"member_of" }` 与
+`not_member_of`，可单独使用或嵌入现有 AND/OR。只能引用同租户、同 assetContext、已获授权的组；
+静态组仍只支持 endpoint。创建与保存拒绝自引用、循环、超过 16 层的依赖和超预算图遍历。
+组引用按对象身份求值，Unknown/Conflict 或来源全集外的对象不能因否定而成为成员。
+每次计算固定来源定义、成员语义、权限坐标及不可变结果；来源尚未完成时等待，变化后重算。
+详情返回 freshness，结果页返回 sources 来源坐标；过期结果的 current 为 false，历史证据仍可读取。
+字段、注册、关联或来源权限失效也会使嵌套组及其 Scope/Policy/Compliance 消费失效。
+
+引用选择复用 `GET /api/v1/groups?assetContext=endpoint|associated_device`；编辑时传
+`referenceableFor=<group-id>`，会排除本组、会产生循环和上下文不匹配的候选。保存仍执行事务内复核。
+
+`GET /api/v1/groups/{id}/references?kind&relation&limit&cursor` 查询当前依赖。
+kind 为 `group|scope|policy|compliance_rule`，省略时查询获授权类别；relation 为
+`direct|indirect|all`，默认 all。查询覆盖嵌套组、Scope 的 target/limitation/exclusion、
+策略主范围与软件灰度范围，以及合规规则。每项按来源对象及直接/间接关系归并，返回角色和
+确定性代表路径，分别展示生命周期、计算新鲜度、当前有效性及删除阻塞；代表路径不枚举全部路径。
+items 经过当前权限过滤，空列表不能作为删除许可；deletionBlocked 包括不可见的当前引用，
+但不透露其身份。显式查询无权类别返回 403，根组不存在返回 404。
+游标绑定租户、根组、筛选、当前权限及依赖视图；相关定义或展示状态变化返回 409，需要从首页重查。
+
+删除在原写事务内复核所有当前引用。停用的合规规则和保留的 Scope 引用同样阻止删除；
+先编辑来源移除引用再删除，历史版本不阻塞。Scope 删除也检查策略主范围与软件灰度阶段引用。
+规则写入、删除及重试沿用 operationId/expectedRevision；提交未知时重试原身份和原请求。
+
+例如向 `POST /api/v1/groups/22222222-2222-4222-8222-222222222222` 保存纯组规则：
+
+```json
+{
+  "operationId": "33333333-3333-4333-8333-333333333333",
+  "expectedRevision": 0,
+  "input": {
+    "action": "create",
+    "assetContext": "endpoint",
+    "presentation": { "name": "来源组成员", "description": "" },
+    "criteria": {
+      "selector": { "kind": "device" },
+      "quantifier": "one",
+      "criteria": { "kind": "group", "groupId": "11111111-1111-4111-8111-111111111111", "op": "member_of" }
+    }
+  }
+}
+```
+
+写入返回任务身份及 statusUrl。等待任务完成后，读取
+`GET /api/v1/groups/{id}/results/{task}/members?limit=64`，结果页结构如下。
+`memberSet` 是来源的不可变结果身份；其余坐标描述本次计算使用的定义、成员语义和授权。
+
+```json
+{
+  "result": "33333333-3333-4333-8333-333333333333",
+  "group": "22222222-2222-4222-8222-222222222222",
+  "current": true,
+  "sources": [{
+    "group": "11111111-1111-4111-8111-111111111111",
+    "coordinates": {
+      "definitionVersion": 1, "memberVersion": 1, "authorityVersion": 0,
+      "memberSet": "44444444-4444-4444-8444-444444444444", "assetContext": "endpoint"
+    }
+  }],
+  "totalObjects": 1, "totalMembers": 1,
+  "page": { "kind": "members", "items": [{ "kind": "endpoint", "id": "device-1" }] },
+  "nextCursor": null
+}
+```
+
+对来源组查询 `GET /api/v1/groups/11111111-1111-4111-8111-111111111111/references?relation=all&limit=64`：
+
+```json
+{
+  "items": [{
+    "source": { "kind": "group", "id": "22222222-2222-4222-8222-222222222222" },
+    "revision": 1, "relation": "direct", "roles": ["member_of"],
+    "via": [
+      { "kind": "group", "id": "11111111-1111-4111-8111-111111111111" },
+      { "kind": "group", "id": "22222222-2222-4222-8222-222222222222" }
+    ],
+    "lifecycleState": "active", "freshness": "current", "effective": true, "blocksDeletion": true
+  }],
+  "nextCursor": null, "deletionBlocked": true
+}
+```
+
+有 nextCursor 时将原值传入同一查询的 cursor；409 后丢弃旧游标，从首页重查。
+组引用保存除 GroupWrite 及全设备 InventoryRead 外还要求 GroupRead，并重新验证引用链的敏感字段权限。
+`POST /api/v1/groups/{id}/previews` 使用 `{operationId, expectedRevision, input:{}}`；
+预览结果沿用同一 sources 证据和分页结构，current 为 false，不发布正式成员。
+
 编辑 revision、计算发布版本、成员语义 memberVersion 各自独立。无差分重算不改变编辑 CAS 或成员语义版本。Scope 也分别记录定义、计算与目标语义版本；持续匹配设备保留入组坐标，退出后重入取得新坐标。历史结果不会被新事实改写。
 
 Scope 结果页必须指定 `channel=agent|mdm`，游标绑定该通道。每个来源先归一到选定的原始通道，再进行并集、限制与排除；显式终端排除也阻断关联组映射出的同一终端，直接终端来源不会扩展到关联端。Scope 的 `limitations:null` 表示不限制，空数组表示没有匹配限制。Unknown 目标、限制或排除依据会留下逐设备阻断原因；Unknown 排除不能当作“不属于排除组”。来源尚未发布、规则不一致或水位落后时，所有执行消费者通过同一个准入合同阻止新执行。

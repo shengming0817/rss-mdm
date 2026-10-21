@@ -7,6 +7,7 @@ pub use range::range;
 mod backend;
 mod bundle;
 mod cleanup;
+mod installer;
 mod journal;
 mod native;
 pub use cleanup::Garbage;

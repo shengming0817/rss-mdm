@@ -221,18 +221,6 @@
       "additionalProperties": false,
       "description": "Immutable identity of an installation candidate, distinct from installer bytes.",
       "properties": {
-        "candidateSha256": {
-          "description": "SHA-256 of the candidate's exact manifest bytes, not the EXE/PKG.",
-          "items": {
-            "format": "uint8",
-            "maximum": 255,
-            "minimum": 0,
-            "type": "integer"
-          },
-          "maxItems": 32,
-          "minItems": 32,
-          "type": "array"
-        },
         "releaseId": {
           "description": "Published release binding.",
           "format": "uuid",
@@ -244,8 +232,7 @@
         }
       },
       "required": [
-        "releaseId",
-        "candidateSha256"
+        "releaseId"
       ],
       "type": "object"
     },

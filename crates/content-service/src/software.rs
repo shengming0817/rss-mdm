@@ -54,6 +54,115 @@ impl ManagementContentPort for SoftwareContent {
     type Download = Verified;
     type StagedImport = StagedImport;
     type ImportEvidence = ImportEvidence;
+    async fn prepare_upload(
+        &self,
+        input: &software::content::PrepareUpload,
+        resource: &str,
+        upload: uuid::Uuid,
+        actor: &str,
+    ) -> Result<serde_json::Value, Error> {
+        let binding = Binding {
+            purpose: crate::Purpose::Software {
+                resource: resource.into(),
+                filename: input.filename.clone(),
+            },
+            reference: "installer".into(),
+            length: input.length,
+            sha256: input.sha256,
+            actor: actor.into(),
+        };
+        let result = self
+            .store
+            .begin(
+                upload,
+                binding,
+                self.now()?,
+                self.store.upload_budget().map_err(error)?,
+            )
+            .await
+            .map_err(error)?;
+        Ok(
+            serde_json::json!({"packageId":resource,"resource":resource,"upload":upload,"offset":result.offset,"length":result.binding.length,"complete":result.complete,
+            "href":format!("/api/v1/resources/{resource}/uploads/{upload}")}),
+        )
+    }
+    async fn inspect_upload(
+        &self,
+        upload: uuid::Uuid,
+        actor: &str,
+        resource: &str,
+    ) -> Result<software::content::InspectedUpload<Verified>, Error> {
+        let upload = self
+            .store
+            .status(actor, upload, self.now()?)
+            .await
+            .map_err(error)?;
+        let crate::Purpose::Software {
+            resource: owner,
+            filename,
+        } = &upload.binding.purpose
+        else {
+            return Err(Error::Malformed);
+        };
+        if owner != resource || !upload.complete {
+            return Err(Error::Conflict);
+        }
+        let artifact = upload.binding.artifact().map_err(error)?;
+        let pin = self.store.verify(&artifact).await.map_err(error)?;
+        let mut temp = pin.materialize(0).await.map_err(error)?;
+        let config = self.store.config.clone();
+        let timer = self.store.timer.clone();
+        let deadline = pin.deadline;
+        let filename = filename.clone();
+        let file_name = filename.clone();
+        let facts = tokio::task::spawn_blocking(move || {
+            crate::installer::inspect(
+                temp.file.as_file_mut(),
+                &file_name,
+                &config,
+                timer.as_ref(),
+                deadline,
+            )
+        })
+        .await
+        .map_err(|_| Error::Unavailable(Failure::ContentInvariant))?
+        .map_err(error)?;
+        Ok(software::content::InspectedUpload {
+            facts,
+            artifact: rss_mdm_resource::SoftwareArtifact {
+                reference: artifact.reference().as_str().into(),
+                origin: None,
+                length: artifact.length(),
+                sha256: artifact.digest().bytes(),
+            },
+            filename,
+            _pin: pin,
+        })
+    }
+    async fn inspect_installer(
+        &self,
+        artifact: &rss_mdm_resource::Artifact,
+        filename: &str,
+    ) -> Result<software::content::InstallerFacts, Error> {
+        let pin = self.store.verify(artifact).await.map_err(error)?;
+        let mut temp = pin.materialize(0).await.map_err(error)?;
+        let config = self.store.config.clone();
+        let timer = self.store.timer.clone();
+        let deadline = pin.deadline;
+        let filename = filename.to_owned();
+        tokio::task::spawn_blocking(move || {
+            crate::installer::inspect(
+                temp.file.as_file_mut(),
+                &filename,
+                &config,
+                timer.as_ref(),
+                deadline,
+            )
+        })
+        .await
+        .map_err(|_| Error::Unavailable(Failure::ContentInvariant))?
+        .map_err(error)
+    }
     async fn verify_artifact(
         &self,
         artifact: &rss_mdm_resource::Artifact,
@@ -139,48 +248,5 @@ fn error(error: crate::Error) -> software::Error {
         crate::Error::Deadline => Error::Unavailable(Failure::ContentDeadline),
         crate::Error::CommitUnknown => Error::CommitUnknown,
         crate::Error::Cleanup => Error::Unavailable(Failure::ContentCleanup),
-    }
-}
-
-impl rss_mdm_software_service::agent_packages::Materials for SoftwareContent {
-    async fn publication_materials(
-        &self,
-        installer: &rss_mdm_resource::Artifact,
-        manifest: &rss_mdm_resource::Artifact,
-    ) -> Result<rss_mdm_software_service::agent_packages::PublicationMaterials<Verified>, Error>
-    {
-        use futures::TryStreamExt;
-        if manifest.length() > 32768 {
-            return Err(Error::Malformed);
-        }
-        let mut files = self
-            .store
-            .verify_materials(&[
-                (installer.clone(), crate::StorageClass::Artifact),
-                (manifest.clone(), crate::StorageClass::Artifact),
-            ])
-            .await
-            .map_err(error)?;
-        let file = files
-            .pop()
-            .ok_or(Error::Unavailable(Failure::ContentInvariant))?;
-        let installer = files
-            .pop()
-            .ok_or(Error::Unavailable(Failure::ContentInvariant))?;
-        let mut stream = file.stream(0, manifest.length()).await.map_err(error)?;
-        let mut bytes = Vec::with_capacity(manifest.length() as usize);
-        while let Some(chunk) = stream
-            .try_next()
-            .await
-            .map_err(|_| Error::Unavailable(Failure::ContentStorage))?
-        {
-            bytes.extend_from_slice(&chunk);
-        }
-        Ok(
-            rss_mdm_software_service::agent_packages::PublicationMaterials {
-                installer,
-                manifest: bytes,
-            },
-        )
     }
 }

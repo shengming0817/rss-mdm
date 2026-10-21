@@ -2,9 +2,11 @@
 BEGIN;
 CREATE TABLE mdm_assets.group_selections (
  tenant_id uuid NOT NULL, group_id uuid NOT NULL, rule_version text NOT NULL,
+ group_ids uuid[] NOT NULL CHECK(cardinality(group_ids)<=256),
  selection jsonb NOT NULL CHECK(octet_length(selection::text)<=65536),
  PRIMARY KEY(tenant_id,group_id,rule_version)
 );
+CREATE INDEX group_selections_references ON mdm_assets.group_selections USING gin(group_ids);
 ALTER TABLE mdm_assets.group_selections ENABLE ROW LEVEL SECURITY;
 ALTER TABLE mdm_assets.group_selections FORCE ROW LEVEL SECURITY;
 CREATE POLICY tenant ON mdm_assets.group_selections

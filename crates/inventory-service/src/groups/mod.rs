@@ -6,9 +6,12 @@ use rss_transactional_messaging_postgres::PgTransaction;
 use serde_json::Value;
 use std::sync::Arc;
 use uuid::Uuid;
+pub mod criteria;
+pub mod dependencies;
 mod model;
 mod mutation;
 pub mod pages;
+pub mod references;
 pub use model::{GroupChange, GroupStart};
 pub struct Groups {
     pub objects: Arc<dyn crate::objects::ObjectReader>,
@@ -20,6 +23,18 @@ pub struct Groups {
     pub clock: Arc<dyn crate::clock::Clock>,
 }
 pub trait Flow: Send + Sync {
+    fn current<'a, 'tx>(
+        &'a self,
+        tx: &'a mut PgTransaction<'tx>,
+        id: Uuid,
+    ) -> crate::tasks::Pending<'a, bool>;
+
+    fn references<'a, 'tx>(
+        &'a self,
+        tx: &'a mut PgTransaction<'tx>,
+        id: Uuid,
+    ) -> crate::tasks::Pending<'a, Vec<references::Entry>>;
+
     fn task<'a, 'tx>(
         &'a self,
         tx: &'a mut PgTransaction<'tx>,
@@ -95,7 +110,7 @@ pub async fn condition_in(
     group: rss_mdm_group_postgres::GroupId,
     version: &str,
     rule: &rss_mdm_group_postgres::core::Rule,
-) -> Result<assets::InventoryCondition> {
+) -> Result<criteria::Condition> {
     let tenant = tenant.to_string();
     let group = group.to_string();
     let version = version.to_owned();
@@ -107,7 +122,7 @@ pub async fn condition_in(
     let condition = assets::InventoryCondition {
         selector,
         quantifier,
-        criteria: assets::criteria_view(rule.view().criteria)?,
+        criteria: criteria::view(rule.view().criteria)?,
     };
     condition.validate()?;
     Ok(condition)

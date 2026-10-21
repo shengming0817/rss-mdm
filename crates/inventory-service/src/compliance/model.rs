@@ -16,24 +16,7 @@ pub(super) fn validate_definition(
     }
     definition.criteria.validate()?;
     let rule = crate::assets::rule(t, id, &definition.criteria.criteria, catalog)?;
-    fn fields(
-        c: &rss_mdm_group_postgres::core::Criteria,
-        out: &mut std::collections::BTreeSet<String>,
-    ) {
-        use rss_mdm_group_postgres::core::CriteriaView;
-        match c.view() {
-            CriteriaView::Predicate(p) => {
-                out.insert(p.field.clone());
-            }
-            CriteriaView::And(cs) | CriteriaView::Or(cs) => {
-                for c in cs {
-                    fields(c, out)
-                }
-            }
-        }
-    }
-    let mut out = std::collections::BTreeSet::new();
-    fields(rule.view().criteria, &mut out);
+    let out: std::collections::BTreeSet<_> = rule.view().fields.keys().cloned().collect();
     out.into_iter()
         .map(|name| {
             let key = checked_input(rss_mdm_inventory::FieldKey::parse(&name))?;

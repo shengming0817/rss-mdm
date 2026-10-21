@@ -116,3 +116,5 @@ Agent 仅对本安装身份执行，Offer 不授权卸载，必须取得 Start�
 普通结果属性复用 rows/FieldValue，有界保留且不扩大采集授权；可信资产解释归 Inventory/Resource。
 SelfService 文案位于开放 presentation，核心授权、任务与签名结构保持明确。
 当前字段切换与未知 key 编辑要求见 [Agent 接入](../../docs/guides/agent-integration.md#当前扩展对象与一次性字段切换)。
+
+Agent 安装包目录描述安装文件与 releaseId；注册 installation 仅引用当前 releaseId。注册配置验签与 origin 仍归注册协议，不再消费构建期候选 manifest、包内公钥或候选摘要。安装器代码签名由目标操作系统策略决定。

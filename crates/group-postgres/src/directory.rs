@@ -16,6 +16,9 @@ pub struct DirectoryQuery {
     pub descending: bool,
     /// Exact kind, if selected.
     pub kind: Option<GroupKind>,
+    /// Exact object universe for a reference selector.
+    pub asset_context: Option<AssetContext>,
+
     /// Include only the selected tombstone state; current records by default.
     #[serde(default)]
     pub deleted: bool,
@@ -46,8 +49,8 @@ impl crate::GroupStore {
             GroupKind::Dynamic => "dynamic",
         });
         let rows=tx.with_connection(move|c|Box::pin(async move {
-            sqlx::query("SELECT * FROM mdm_group.groups WHERE tenant_id=$1::uuid AND ($2::uuid IS NULL OR CASE WHEN $3 THEN id<$2 ELSE id>$2 END) AND ($4::text IS NULL OR kind=$4) AND deleted=$5 AND ($6::text IS NULL OR strpos(lower(presentation->>'name'),lower($6))>0) ORDER BY CASE WHEN NOT $3 THEN id END ASC,CASE WHEN $3 THEN id END DESC LIMIT $7")
-                .bind(tenant).bind(q.after).bind(q.descending).bind(kind).bind(q.deleted).bind(q.name).bind((q.limit+1) as i64).fetch_all(c).await
+            sqlx::query("SELECT * FROM mdm_group.groups WHERE tenant_id=$1::uuid AND ($2::uuid IS NULL OR CASE WHEN $3 THEN id<$2 ELSE id>$2 END) AND ($4::text IS NULL OR kind=$4) AND deleted=$5 AND ($8::text IS NULL OR asset_context=$8) AND ($6::text IS NULL OR strpos(lower(presentation->>'name'),lower($6))>0) ORDER BY CASE WHEN NOT $3 THEN id END ASC,CASE WHEN $3 THEN id END DESC LIMIT $7")
+                .bind(tenant).bind(q.after).bind(q.descending).bind(kind).bind(q.deleted).bind(q.name).bind((q.limit+1) as i64).bind(q.asset_context.map(|c|c.as_str())).fetch_all(c).await
         })).await?;
         let groups = rows
             .into_iter()

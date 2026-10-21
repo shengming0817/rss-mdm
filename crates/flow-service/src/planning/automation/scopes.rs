@@ -33,9 +33,9 @@ pub fn references(
         match &source.reference {
             Reference::Group(id) => {
                 for (prefix, revision) in [
-                    ("group-definition", source.definition_version),
-                    ("group-members", source.member_version),
-                    ("group-authority", source.authority_version),
+                    ("group-definition", source.coordinates.definition_version),
+                    ("group-members", source.coordinates.member_version),
+                    ("group-authority", source.coordinates.authority_version),
                 ] {
                     refs.push(crate::planning::sources::SourceReference {
                         id: format!("{prefix}.{id}"),
@@ -45,7 +45,7 @@ pub fn references(
             }
             Reference::Device(id) => refs.push(crate::planning::sources::SourceReference {
                 id: device_reference(id),
-                revision: source.authority_version,
+                revision: source.coordinates.authority_version,
             }),
         }
     }
@@ -63,8 +63,18 @@ impl Planning {
         let input: Value = tx.with_connection(move|c|Box::pin(async move {sqlx::query_scalar("SELECT input FROM mdm_planning.scope_runs WHERE tenant_id=$1::uuid AND id=$2").bind(tenant).bind(run).fetch_one(c).await})).await?;
         let input: ScopeInput = stored(serde_json::from_value(input))?;
         for source in &input.sources {
+            if let Reference::Group(id) = source.reference {
+                let frozen = rss_mdm_group_postgres::GroupSource {
+                    group: checked_input(rss_mdm_group_postgres::GroupId::parse(&id.to_string()))?,
+                    coordinates: source.coordinates.clone(),
+                };
+                if !self.source_current_in(tx, &frozen).await? {
+                    return Ok(false);
+                }
+            }
             if let Some(snapshot) = &source.snapshot
-                && source.asset_context == rss_mdm_group_postgres::AssetContext::AssociatedDevice
+                && source.coordinates.asset_context
+                    == rss_mdm_group_postgres::AssetContext::AssociatedDevice
             {
                 let reader = self.objects.clone();
                 let tenant = self.tenant;
@@ -107,56 +117,24 @@ impl Planning {
         for reference in definition.references() {
             let mut source = SourceSet {
                 reference: reference.clone(),
-                member_set: None,
-                member_version: 0,
-                definition_version: 0,
-                authority_version: 0,
-                asset_context: rss_mdm_group_postgres::AssetContext::Endpoint,
+                coordinates: rss_mdm_group_postgres::SourceCoordinates {
+                    member_set: None,
+                    member_version: 0,
+                    definition_version: 0,
+                    authority_version: 0,
+                    asset_context: rss_mdm_group_postgres::AssetContext::Endpoint,
+                },
                 snapshot: None,
             };
             match reference {
                 Reference::Group(id) => {
-                    let gid =
-                        checked_input(rss_mdm_group_postgres::GroupId::parse(&id.to_string()))?;
-                    let group =
-                        group_checked(self.groups.lock_reference_target_in(tx, gid).await?)?;
-                    source.asset_context = group.asset_context;
-                    source.member_set = checked(self.groups.current_member_set_in(tx, gid).await?)?
-                        .map(|id| stored(Uuid::parse_str(&id.to_string())))
-                        .transpose()?;
-                    if group.kind == rss_mdm_group_postgres::GroupKind::Dynamic {
-                        let run = source
-                            .member_set
-                            .ok_or(Error::Unavailable(Failure::PlanningStorage))?;
-                        let build = checked(
-                            self.groups
-                                .build_in(
-                                    tx,
-                                    checked_input(rss_mdm_group_postgres::OperationId::parse(
-                                        &run.to_string(),
-                                    ))?,
-                                )
-                                .await?,
-                        )?;
+                    let frozen = self.capture_group_source_in(tx, id).await?;
+                    source.coordinates = frozen.coordinates;
+                    if let Some(run) = source.coordinates.member_set {
+                        let build = checked(self.groups.build_in(tx, run).await?)?;
                         source.snapshot =
                             super::groups::object_snapshot(&build.request.input_version)?;
-                        if build.request.rule_version != group.rule_version {
-                            return Err(Error::Unavailable(Failure::PlanningStorage).into());
-                        }
                     }
-                    source.member_version = group.member_version as u64;
-                    source.definition_version = checked(
-                        self.sources
-                            .reference_in(tx, &format!("group-definition.{id}"))
-                            .await?,
-                    )?
-                    .ok_or(Error::Conflict)?;
-                    source.authority_version = checked(
-                        self.sources
-                            .reference_in(tx, &format!("group-authority.{id}"))
-                            .await?,
-                    )?
-                    .ok_or(Error::Conflict)?;
                 }
                 Reference::Device(device) => {
                     let tenant = self.tenant.to_string();
@@ -165,13 +143,13 @@ impl Planning {
                         sqlx::query_scalar("SELECT coalesce(max(revision),0) FROM mdm_access.asset_authority_history WHERE tenant_id=$1::uuid AND device=$2 AND revision<=$3")
                             .bind(tenant).bind(name).bind(watermark).fetch_one(c).await
                     })).await?;
-                    source.authority_version = version as u64;
+                    source.coordinates.authority_version = version as u64;
                     checked(
                         self.sources
                             .advance_reference_in(
                                 tx,
                                 &device_reference(&device),
-                                source.authority_version,
+                                source.coordinates.authority_version,
                             )
                             .await?,
                     )?;
@@ -218,7 +196,27 @@ impl Planning {
             return Err(Error::Unavailable(Failure::PlanningStorage).into());
         }
         let watermark: i64 = row.try_get("asset_watermark")?;
-        match row.try_get::<&str, _>("phase")? {
+        let phase = row.try_get::<&str, _>("phase")?;
+        if !matches!(phase, "published" | "superseded") {
+            // A definition update must not remain behind an unavailable old source.
+            if self.scope_definition(tx, scope).await?.0 != revision {
+                return Err(Error::Conflict.into());
+            }
+            for source in &frozen.sources {
+                if let Reference::Group(id) = source.reference {
+                    let source = rss_mdm_group_postgres::GroupSource {
+                        group: checked_input(rss_mdm_group_postgres::GroupId::parse(
+                            &id.to_string(),
+                        ))?,
+                        coordinates: source.coordinates.clone(),
+                    };
+                    if !self.source_ready_in(tx, &source).await? {
+                        return Ok(());
+                    }
+                }
+            }
+        }
+        match phase {
             "sources" => {
                 let tenant = self.tenant;
                 let current = tx
@@ -252,7 +250,7 @@ impl Planning {
                             vec![]
                         }
                     }
-                    Reference::Group(_) => match source.member_set {
+                    Reference::Group(_) => match source.coordinates.member_set {
                         None => vec![],
                         Some(set) => {
                             let operation = checked_input(
@@ -291,7 +289,7 @@ impl Planning {
                     }
                     let object =
                         group_checked(rss_mdm_inventory_service::objects::ObjectRef::from_key(
-                            source.asset_context,
+                            source.coordinates.asset_context,
                             &key,
                         ))?;
                     let reader = self.objects.clone();

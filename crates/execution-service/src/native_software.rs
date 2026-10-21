@@ -43,69 +43,73 @@ impl Package {
         {
             return Err(Error::Unsupported);
         }
-        let (key, identity, invocation, mechanism) = match &spec.behavior {
-            r::SoftwareBehavior::Msi(native) | r::SoftwareBehavior::Pkg(native) => {
-                if native.scope != r::SoftwareScope::System
-                    || native.upgrade != r::SoftwareUpgrade::InPlace
-                    || native.install != native.upgrade_invocation
-                {
-                    return Err(Error::Unsupported);
-                }
-                let (identity, mechanism) = match (&spec.behavior, &native.detect) {
-                    (
-                        r::SoftwareBehavior::Msi(_),
-                        r::SoftwareDetection::MsiProduct {
-                            product_code,
-                            version,
-                        },
-                    ) => (
-                        Identity::Msi {
-                            product: Uuid::parse_str(product_code.trim_matches(['{', '}']))
-                                .map_err(|_| Error::Unsupported)?,
-                            version: version.clone(),
-                        },
-                        r::SignatureMechanism::Authenticode,
-                    ),
-                    (
-                        r::SoftwareBehavior::Pkg(_),
-                        r::SoftwareDetection::PkgReceipt { receipt, version },
-                    ) => (
-                        Identity::Pkg {
-                            receipt: receipt.clone(),
-                            version: version.clone(),
-                        },
-                        r::SignatureMechanism::AppleDeveloperId,
-                    ),
-                    _ => return Err(Error::Unsupported),
-                };
-                (&native.installer, identity, &native.install, mechanism)
-            }
-            r::SoftwareBehavior::Msix(msix) => {
-                let r::MsixContainer::Package { installer } = &msix.container else {
-                    return Err(Error::Unsupported);
-                };
-                if msix.allow_unsigned
-                    || !msix.dependencies.is_empty()
-                    || msix.deployment != r::MsixDeployment::DeviceProvisioning
-                    || msix.upgrade != r::SoftwareUpgrade::InPlace
-                {
-                    return Err(Error::Unsupported);
-                }
-                (
-                    installer,
-                    Identity::Msix {
-                        family: crate::agent_preparation::family(
-                            &msix.identity.name,
-                            &msix.identity.publisher,
+        let (key, identity, invocation, mechanism) =
+            match spec.behavior.as_ref().ok_or(Error::Unsupported)? {
+                r::SoftwareBehavior::Msi(native) | r::SoftwareBehavior::Pkg(native) => {
+                    if native.scope != r::SoftwareScope::System
+                        || native.upgrade != r::SoftwareUpgrade::InPlace
+                        || native.install != native.upgrade_invocation
+                    {
+                        return Err(Error::Unsupported);
+                    }
+                    let (identity, mechanism) = match (
+                        spec.behavior.as_ref().ok_or(Error::Unsupported)?,
+                        &native.detect,
+                    ) {
+                        (
+                            r::SoftwareBehavior::Msi(_),
+                            r::SoftwareDetection::MsiProduct {
+                                product_code,
+                                version,
+                            },
+                        ) => (
+                            Identity::Msi {
+                                product: Uuid::parse_str(product_code.trim_matches(['{', '}']))
+                                    .map_err(|_| Error::Unsupported)?,
+                                version: version.clone(),
+                            },
+                            r::SignatureMechanism::Authenticode,
                         ),
-                        identity: msix.identity.clone(),
-                    },
-                    &msix.invocation,
-                    r::SignatureMechanism::Msix,
-                )
-            }
-            _ => return Err(Error::Unsupported),
-        };
+                        (
+                            r::SoftwareBehavior::Pkg(_),
+                            r::SoftwareDetection::PkgReceipt { receipt, version },
+                        ) => (
+                            Identity::Pkg {
+                                receipt: receipt.clone(),
+                                version: version.clone(),
+                            },
+                            r::SignatureMechanism::AppleDeveloperId,
+                        ),
+                        _ => return Err(Error::Unsupported),
+                    };
+                    (&native.installer, identity, &native.install, mechanism)
+                }
+                r::SoftwareBehavior::Msix(msix) => {
+                    let r::MsixContainer::Package { installer } = &msix.container else {
+                        return Err(Error::Unsupported);
+                    };
+                    if msix.allow_unsigned
+                        || !msix.dependencies.is_empty()
+                        || msix.deployment != r::MsixDeployment::DeviceProvisioning
+                        || msix.upgrade != r::SoftwareUpgrade::InPlace
+                    {
+                        return Err(Error::Unsupported);
+                    }
+                    (
+                        installer,
+                        Identity::Msix {
+                            family: crate::agent_preparation::family(
+                                &msix.identity.name,
+                                &msix.identity.publisher,
+                            ),
+                            identity: msix.identity.clone(),
+                        },
+                        &msix.invocation,
+                        r::SignatureMechanism::Msix,
+                    )
+                }
+                _ => return Err(Error::Unsupported),
+            };
         if invocation.run_as != r::RunAs::System
             || !invocation.environment.is_empty()
             || !invocation.arguments.is_empty()
@@ -134,7 +138,7 @@ impl Package {
             artifact: spec.artifacts.get(key).ok_or(Error::Malformed)?.clone(),
             origin,
             timeout_seconds: invocation.timeout_seconds,
-            minimum_os: match &spec.behavior {
+            minimum_os: match spec.behavior.as_ref().ok_or(Error::Unsupported)? {
                 r::SoftwareBehavior::Msix(m) => Some(m.minimum_os),
                 _ => None,
             },

@@ -53,7 +53,7 @@ SELECT
  AND has_table_privilege(current_user,c.oid,'SELECT') AND has_table_privilege(current_user,c.oid,'INSERT')
  AND NOT has_table_privilege(current_user,c.oid,'UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER')
  AND NOT has_any_column_privilege(current_user,c.oid,'UPDATE,REFERENCES'))
- AND NOT EXISTS(SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace WHERE n.nspname NOT LIKE 'pg_%' AND n.nspname<>'information_schema' AND p.oid NOT IN ('mdm.append_field_version(uuid,text,bigint,jsonb)'::regprocedure,'mdm.record_asset_change(uuid,text,jsonb,text[])'::regprocedure,'mdm.lock_asset_watermark(uuid)'::regprocedure,'rss_audit.reserve(uuid)'::regprocedure,'rss_audit.append(uuid,text,text,bigint,bytea,bigint)'::regprocedure,'rss_ledger.prepare_append(uuid,text,text,smallint)'::regprocedure,'rss_ledger.insert_entry(uuid,text,text,bigint,bytea,bytea,bytea,text,smallint)'::regprocedure,'mdm_planning.scope_admission(uuid,text)'::regprocedure,'mdm_planning.policy_lock(uuid)'::regprocedure,'mdm_content.reference_ready()'::regprocedure,'rss_reconcile.assert_tenant(uuid)'::regprocedure,'rss_reconcile.wake(uuid,text,text)'::regprocedure,'rss_reconcile.claim_due(uuid,text,integer,bigint)'::regprocedure,'rss_reconcile.lock_claim(uuid,text,text,uuid,bigint)'::regprocedure,'rss_reconcile.renew(uuid,text,text,uuid,bigint,bigint)'::regprocedure,'rss_reconcile.finish(uuid,text,text,uuid,bigint,bigint,text,bigint,bigint)'::regprocedure,'rss_reconcile.release(uuid,text,text,uuid,bigint)'::regprocedure,'rss_reconcile.mark_applied(uuid,text,text,uuid,bigint)'::regprocedure,'rss_transactional_messaging.check_execution()'::regprocedure,'rss_transactional_messaging.prepare_outbox_partitions(jsonb)'::regprocedure,'rss_transactional_messaging.append_outbox(bytea,jsonb)'::regprocedure) AND has_function_privilege(current_user,p.oid,'EXECUTE'))
+ AND NOT EXISTS(SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace WHERE n.nspname NOT LIKE 'pg_%' AND n.nspname<>'information_schema' AND p.oid NOT IN ('mdm.append_field_version(uuid,text,bigint,jsonb)'::regprocedure,'mdm.record_asset_change(uuid,text,jsonb,text[])'::regprocedure,'mdm.lock_asset_watermark(uuid)'::regprocedure,'rss_audit.reserve(uuid)'::regprocedure,'rss_audit.append(uuid,text,text,bigint,bytea,bigint)'::regprocedure,'rss_ledger.prepare_append(uuid,text,text,smallint)'::regprocedure,'rss_ledger.insert_entry(uuid,text,text,bigint,bytea,bytea,bytea,text,smallint)'::regprocedure,'mdm_planning.scope_admission(uuid,text)'::regprocedure,'mdm_planning.group_current(uuid)'::regprocedure,'mdm_planning.policy_lock(uuid)'::regprocedure,'mdm_content.reference_ready()'::regprocedure,'rss_reconcile.assert_tenant(uuid)'::regprocedure,'rss_reconcile.wake(uuid,text,text)'::regprocedure,'rss_reconcile.claim_due(uuid,text,integer,bigint)'::regprocedure,'rss_reconcile.lock_claim(uuid,text,text,uuid,bigint)'::regprocedure,'rss_reconcile.renew(uuid,text,text,uuid,bigint,bigint)'::regprocedure,'rss_reconcile.finish(uuid,text,text,uuid,bigint,bigint,text,bigint,bigint)'::regprocedure,'rss_reconcile.release(uuid,text,text,uuid,bigint)'::regprocedure,'rss_reconcile.mark_applied(uuid,text,text,uuid,bigint)'::regprocedure,'rss_transactional_messaging.check_execution()'::regprocedure,'rss_transactional_messaging.prepare_outbox_partitions(jsonb)'::regprocedure,'rss_transactional_messaging.append_outbox(bytea,jsonb)'::regprocedure) AND has_function_privilege(current_user,p.oid,'EXECUTE'))
  AND NOT EXISTS(SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE c.relkind='S' AND n.nspname NOT LIKE 'pg_%' AND has_sequence_privilege(current_user,c.oid,'SELECT,USAGE,UPDATE'))
  AND NOT EXISTS(SELECT 1 FROM tables t,LATERAL aclexplode(coalesce(t.relacl,acldefault('r',t.relowner))) a WHERE a.grantee=0 OR (a.grantee IN(SELECT oid FROM reachable) AND a.is_grantable))
  AND NOT EXISTS(SELECT 1 FROM tables t JOIN pg_attribute c ON c.attrelid=t.oid,LATERAL aclexplode(c.attacl) a WHERE a.grantee=0 OR (a.grantee IN(SELECT oid FROM reachable) AND a.is_grantable))
@@ -88,6 +88,7 @@ SELECT
  AND has_column_privilege(current_user,c.oid,a.attnum,'SELECT')<>(a.attname IN('tenant_id','id','registration','state'))))
 
  AND has_function_privilege(current_user,'mdm_planning.scope_admission(uuid,text)','EXECUTE')
+ AND has_function_privilege(current_user,'mdm_planning.group_current(uuid)','EXECUTE')
 
  AND EXISTS(SELECT 1 FROM pg_class c WHERE c.oid='mdm_apple.devices'::regclass
  AND c.relrowsecurity AND c.relforcerowsecurity AND c.relowner NOT IN(SELECT oid FROM reachable)
@@ -116,14 +117,12 @@ SELECT
  AND NOT EXISTS(SELECT 1 FROM package_reachable r WHERE has_schema_privilege(r.oid,c.relnamespace,'CREATE')
  OR has_table_privilege(r.oid,c.oid,'UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER'))
  AND (SELECT jsonb_agg(jsonb_build_array(attname,format_type(atttypid,atttypmod),attnotnull) ORDER BY attnum)
- FROM pg_attribute WHERE attrelid=c.oid AND attnum>0 AND NOT attisdropped)='[["tenant_id","uuid",true],["id","uuid",true],["operation_id","uuid",true],["request_digest","bytea",true],["document","jsonb",true],["binding","jsonb",true],["state","text",true]]'::jsonb
- AND (SELECT count(*)=6 AND bool_and(convalidated AND pg_get_constraintdef(oid)=CASE conname
+ FROM pg_attribute WHERE attrelid=c.oid AND attnum>0 AND NOT attisdropped)='[["tenant_id","uuid",true],["id","uuid",true],["document","jsonb",true],["binding","jsonb",true],["state","text",true]]'::jsonb
+ AND (SELECT count(*)=4 AND bool_and(convalidated AND pg_get_constraintdef(oid)=CASE conname
  WHEN 'releases_binding_check' THEN 'CHECK ((octet_length((binding)::text) <= 32768))'
  WHEN 'releases_document_check' THEN 'CHECK ((octet_length((document)::text) <= 32768))'
- WHEN 'releases_request_digest_check' THEN 'CHECK ((octet_length(request_digest) = 32))'
  WHEN 'releases_state_check' THEN 'CHECK ((state = ANY (ARRAY[''published''::text, ''withdrawn''::text])))'
- WHEN 'releases_pkey' THEN 'PRIMARY KEY (tenant_id, id)'
- WHEN 'releases_tenant_id_operation_id_key' THEN 'UNIQUE (tenant_id, operation_id)' ELSE '' END)
+ WHEN 'releases_pkey' THEN 'PRIMARY KEY (tenant_id, id)' ELSE '' END)
  FROM pg_constraint WHERE conrelid=c.oid)
  AND NOT EXISTS(SELECT 1 FROM pg_index WHERE indrelid=c.oid AND (NOT indisvalid OR NOT indisready OR NOT indislive))
  AND NOT EXISTS(SELECT 1 FROM pg_attribute a WHERE a.attrelid=c.oid AND a.attnum>0 AND NOT a.attisdropped

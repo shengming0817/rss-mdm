@@ -391,7 +391,7 @@ pub(crate) async fn claim_job(
     let timer = automation::Timer::new();
     let cancel = tokio_util::sync::CancellationToken::new();
     let control = rss_reconcile::Control::new(&timer, Duration::from_secs(6), &cancel);
-    worker
+    let claims = worker
         .claim_due(
             &rss_reconcile::Scope::new(tenant(), "mdm.assets").unwrap(),
             64,
@@ -399,10 +399,16 @@ pub(crate) async fn claim_job(
             &control,
         )
         .await
-        .unwrap()
-        .into_iter()
-        .find(|c| c.target().entity() == format!("job:{task}"))
-        .expect("job must be claimable")
+        .unwrap();
+    let mut selected = None;
+    for claim in claims {
+        if claim.target().entity() == format!("job:{task}") {
+            selected = Some(claim);
+        } else {
+            worker.release(&claim, &control).await.unwrap();
+        }
+    }
+    selected.expect("job must be claimable")
 }
 
 pub(crate) fn snapshot(task: Uuid) -> String {

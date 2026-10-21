@@ -639,11 +639,13 @@ async fn concurrent_inputs_rule_changes_and_kind_boundaries() {
     ));
     for invalid in [
         BuildRequest {
+            sources: vec![],
             id: op(),
             input_version: String::new(),
             ..request.clone()
         },
         BuildRequest {
+            sources: vec![],
             id: op(),
             patch: Some(MemberPatch {
                 add: vec![],

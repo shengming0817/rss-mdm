@@ -15,7 +15,10 @@ pub use decisions::{
     DecisionOrigin, DecisionRecord, DecisionValue, FieldEvidence, PredicateDecision,
 };
 mod model;
-pub use generations::{BuildRequest, DifferenceStep, MAX_MEMBERS, MemberBuild, MemberPatch};
+pub use generations::{
+    BuildRequest, DifferenceStep, GroupSource, MAX_MEMBERS, MemberBuild, MemberPatch,
+    SourceCoordinates,
+};
 pub mod directory;
 mod storage;
 mod store;

@@ -495,7 +495,9 @@ pub async fn installation_observation(
                 match &package.identity {
                     Identity::WindowsMsi { publisher, .. }
                         if fact.state == "installed"
-                            && e.publisher.as_ref() == Some(publisher)
+                            && publisher
+                                .as_ref()
+                                .is_none_or(|p| e.publisher.as_ref() == Some(p))
                             && e.version.as_deref() == Some(package.version.as_str()) =>
                     {
                         installation = "installed"

@@ -39,6 +39,7 @@ async fn staged_pages_publish_atomically_and_replay_without_duplicate_members() 
         .await
         .unwrap();
     let request = BuildRequest {
+        sources: vec![],
         id: op(),
         group,
         expected: created.group.revision,
@@ -224,6 +225,7 @@ async fn static_patches_use_the_same_sealed_publication_and_preserve_old_sets() 
         (vec!["c".into()], vec!["a".into()]),
     ] {
         let request = BuildRequest {
+            sources: vec![],
             id: op(),
             group,
             expected: current.group.revision,
@@ -532,6 +534,187 @@ async fn delta_evaluates_only_changed_devices_and_preserves_old_results() {
     assert_eq!(
         builds::members(&runtime, &store, full.id).await.unwrap(),
         vec!["device-1", "device-2"]
+    );
+    runtime.close().await;
+}
+
+#[tokio::test]
+#[ignore = "real PostgreSQL: make t2 MODULE=group.generations"]
+async fn frozen_group_decisions_survive_page_restart_without_negating_unknown() {
+    use std::collections::BTreeMap;
+    let runtime = connect_runtime().await;
+    let s = store(runtime.clone(), tenant()).await;
+    let (rule, mut source_page) = inputs();
+    let source = group_id();
+    let mut missing = source_page.objects[0].clone();
+    missing.key = ObjectKey::new(tenant(), "device-2").unwrap();
+    missing
+        .contexts
+        .get_mut("default")
+        .unwrap()
+        .get_mut("model")
+        .unwrap()
+        .state = FactState::Conflict;
+    let mut negative = source_page.objects[0].clone();
+    negative.key = ObjectKey::new(tenant(), "device-3").unwrap();
+    negative
+        .contexts
+        .get_mut("default")
+        .unwrap()
+        .get_mut("model")
+        .unwrap()
+        .state = FactState::Known(Value::Scalar(Scalar::String("desktop".into())));
+    source_page.objects.extend([missing, negative]);
+    let created = s
+        .execute(
+            op(),
+            at(),
+            &Command::Create {
+                group: source,
+                presentation: serde_json::json!({"name":"source","description":""})
+                    .as_object()
+                    .unwrap()
+                    .clone(),
+                asset_context: AssetContext::Endpoint,
+                definition: Definition::Dynamic(Box::new(rule)),
+            },
+            deadline(),
+        )
+        .await
+        .unwrap();
+    let source_request = builds::request(&created, None);
+    builds::prepare(&runtime, &s, &source_request, &source_page)
+        .await
+        .unwrap();
+    let published = builds::publish(&runtime, &s, &source_request)
+        .await
+        .unwrap();
+    let keys: Vec<_> = source_page
+        .objects
+        .iter()
+        .map(|o| o.key.id().to_string())
+        .collect();
+    let decisions = committed(
+        runtime
+            .local_tx_with_context(tenant(), deadline(), (&s, &keys), |ctx, tx| {
+                Box::pin(async move {
+                    ctx.0
+                        .source_decisions_in(tx, source_request.id, ctx.1)
+                        .await
+                })
+            })
+            .await,
+    );
+    assert_eq!(decisions["device-1"], Outcome::Match);
+    assert_eq!(
+        decisions["device-2"],
+        Outcome::Unknown(UnknownReason::Conflict)
+    );
+    assert_eq!(decisions["device-3"], Outcome::NoMatch);
+    let id = group_id();
+    let rule = Rule::new(
+        tenant(),
+        "nested-rule",
+        "dictionary-1",
+        vec![],
+        Criteria::membership(source.to_string(), true).unwrap(),
+    )
+    .unwrap();
+    let created = s
+        .execute(
+            op(),
+            at(),
+            &Command::Create {
+                group: id,
+                presentation: serde_json::json!({"name":"nested","description":""})
+                    .as_object()
+                    .unwrap()
+                    .clone(),
+                asset_context: AssetContext::Endpoint,
+                definition: Definition::Dynamic(Box::new(rule)),
+            },
+            deadline(),
+        )
+        .await
+        .unwrap();
+    let mut request = builds::request(&created, None);
+    request.sources = vec![GroupSource {
+        group: source,
+        coordinates: SourceCoordinates {
+            member_set: Some(source_request.id),
+            member_version: published.group.member_version as u64,
+            definition_version: 1,
+            authority_version: 0,
+            asset_context: AssetContext::Endpoint,
+        },
+    }];
+    builds::begin(&runtime, &s, &request).await.unwrap();
+    let objects: Vec<_> = keys
+        .iter()
+        .map(|key| {
+            let mut o =
+                ObjectSnapshot::single(ObjectKey::new(tenant(), key).unwrap(), BTreeMap::new());
+            o.memberships.insert(source.to_string(), decisions[key]);
+            o
+        })
+        .collect();
+    let coverage = std::collections::BTreeSet::new();
+    for (start, end) in [(0, 1), (1, 3)] {
+        let reloaded = store(runtime.clone(), tenant()).await;
+        let recovered = committed(
+            runtime
+                .local_tx_with_context(tenant(), deadline(), &reloaded, |s, tx| {
+                    Box::pin(async move { s.build_in(tx, request.id).await })
+                })
+                .await,
+        );
+        assert_eq!(recovered.request.sources, request.sources);
+        let page = PageInput {
+            tenant: tenant(),
+            id: "fixture",
+            version: &request.input_version,
+            dictionary_version: "dictionary-1",
+            coverage: &coverage,
+            objects: &objects[start..end],
+            after: if start == 0 {
+                None
+            } else {
+                Some(&objects[start - 1].key)
+            },
+        };
+        committed(
+            runtime
+                .local_tx_with_context(tenant(), deadline(), (&reloaded, &page), |ctx, tx| {
+                    Box::pin(async move { ctx.0.append_build_page_in(tx, request.id, ctx.1).await })
+                })
+                .await,
+        );
+        assert_eq!(
+            committed(
+                runtime
+                    .local_tx_with_context(tenant(), deadline(), &reloaded, |s, tx| Box::pin(
+                        async move { s.current_member_set_in(tx, id).await }
+                    ))
+                    .await
+            ),
+            None
+        );
+    }
+    let sealed = committed(
+        runtime
+            .local_tx_with_context(tenant(), deadline(), &s, |s, tx| {
+                Box::pin(async move { s.seal_build_in(tx, request.id, 3).await })
+            })
+            .await,
+    );
+    builds::resume(&runtime, &s, sealed, &FixturePage { coverage, objects })
+        .await
+        .unwrap();
+    let result = builds::publish(&runtime, &s, &request).await.unwrap();
+    assert_eq!(result.group.member_count, 1);
+    assert_eq!(
+        builds::members(&runtime, &s, request.id).await.unwrap(),
+        vec!["device-3".to_string()]
     );
     runtime.close().await;
 }

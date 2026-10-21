@@ -34,6 +34,7 @@ pub struct GroupPage {
     pub result: Uuid,
     pub group: Uuid,
     pub current: bool,
+    pub sources: Vec<rss_mdm_group_postgres::GroupSource>,
     pub total_objects: usize,
     pub total_members: usize,
     pub page: GroupPageItems,
@@ -90,6 +91,7 @@ impl Groups {
         result: Uuid,
         kind: GroupPageKind,
         query: &PageQuery,
+        flow: &dyn Flow,
     ) -> Result<Value> {
         use rss_mdm_group_postgres as pg;
         if !(1..=1000).contains(&query.limit) {
@@ -210,10 +212,12 @@ impl Groups {
             Err(pg::Rejection::NotFound | pg::Rejection::Deleted) => false,
             Err(error) => return group_checked(Err(error)),
         };
+        let current = current && flow.current(tx, group).await?;
         json(&GroupPage {
             result,
             group,
             current,
+            sources: build.request.sources,
             total_objects: build.objects,
             total_members: build.members,
             page,

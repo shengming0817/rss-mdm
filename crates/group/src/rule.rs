@@ -4,6 +4,7 @@ use std::collections::{BTreeMap, BTreeSet};
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum Node {
     Predicate(Predicate),
+    Membership { group: String, negated: bool },
     And(Vec<Criteria>),
     Or(Vec<Criteria>),
 }
@@ -19,6 +20,13 @@ pub struct Criteria {
 pub enum CriteriaView<'a> {
     /// One leaf comparison.
     Predicate(&'a Predicate),
+    /// Membership in a frozen source group, with optional three-valued negation.
+    Membership {
+        /// Frozen source identity.
+        group: &'a str,
+        /// Reverse only known membership decisions.
+        negated: bool,
+    },
     /// Nonempty conjunction; any NoMatch dominates Unknown.
     And(&'a [Criteria]),
     /// Nonempty disjunction; any Match dominates Unknown.
@@ -29,9 +37,23 @@ impl Criteria {
     pub fn view(&self) -> CriteriaView<'_> {
         match &self.node {
             Node::Predicate(p) => CriteriaView::Predicate(p),
+            Node::Membership { group, negated } => CriteriaView::Membership {
+                group,
+                negated: *negated,
+            },
             Node::And(children) => CriteriaView::And(children),
             Node::Or(children) => CriteriaView::Or(children),
         }
+    }
+    /// Build an object membership leaf. The host supplies authorized frozen decisions.
+    pub fn membership(group: impl Into<String>, negated: bool) -> Result<Self> {
+        let group = group.into();
+        Budget::new(LimitKind::RuleBytes).identity(&group)?;
+        Ok(Self {
+            node: Node::Membership { group, negated },
+            count: 1,
+            depth: 1,
+        })
     }
     /// Build one bounded leaf; dictionary/operator compatibility is checked by Rule::new.
     /// Rejects invalid identifiers, heterogeneous sets and string/collection budget overflow.
@@ -121,13 +143,32 @@ impl Rule {
         for index in path {
             current = match &current.node {
                 Node::And(children) | Node::Or(children) => children.get(*index)?,
-                Node::Predicate(_) => return None,
+                Node::Predicate(_) | Node::Membership { .. } => return None,
             };
         }
         match &current.node {
             Node::Predicate(p) => Some(p),
             _ => None,
         }
+    }
+    /// Distinct frozen group inputs required by this rule.
+    pub fn groups(&self) -> BTreeSet<String> {
+        fn collect(c: &Criteria, out: &mut BTreeSet<String>) {
+            match &c.node {
+                Node::Membership { group, .. } => {
+                    out.insert(group.clone());
+                }
+                Node::And(cs) | Node::Or(cs) => {
+                    for c in cs {
+                        collect(c, out);
+                    }
+                }
+                Node::Predicate(_) => {}
+            }
+        }
+        let mut out = BTreeSet::new();
+        collect(&self.criteria, &mut out);
+        out
     }
     /// Bind a tenant and immutable evidence versions to a fully validated dictionary/AST.
     /// Rejects duplicate/unknown fields, incompatible operators/types/units and budget overflow.
@@ -195,6 +236,7 @@ fn validate(
     budget: &mut Budget,
 ) -> Result<()> {
     match &c.node {
+        Node::Membership { group, .. } => budget.identity(group)?,
         Node::And(children) | Node::Or(children) => {
             for c in children {
                 validate(c, fields, required, budget)?;

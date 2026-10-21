@@ -23,6 +23,7 @@ pub fn settle<T>(
 }
 pub fn request(receipt: &Receipt, patch: Option<MemberPatch>) -> BuildRequest {
     BuildRequest {
+        sources: vec![],
         id: op(),
         group: receipt.group.id,
         expected: receipt.group.revision,
