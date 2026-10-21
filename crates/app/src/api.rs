@@ -165,6 +165,7 @@ pub(crate) async fn application_fixture(
                 resources.resource(crate::telemetry::Resource(service.clone()));
                 resources.resource(crate::telemetry::fixture_task(
                     service.clone(),
+                    execution.runtime.clone(),
                     runtime.clone(),
                     compiled.config.access_options()?,
                     planning.planning.tenant,

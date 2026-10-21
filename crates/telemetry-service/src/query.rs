@@ -224,11 +224,7 @@ async fn read_on(
         .ok_or(Error::Invalid)?;
     if field.sensitivity == rss_mdm_inventory::Sensitivity::Sensitive {
         authorization
-            .require(
-                proof,
-                Permission::InventorySensitiveRead,
-                Some(&input.device),
-            )
+            .require(proof, Permission::InventorySensitiveRead, None)
             .map_err(|_| Error::Denied)?;
     }
     if field.time_series.is_none() && !matches!(kind, ReadKind::Health) {

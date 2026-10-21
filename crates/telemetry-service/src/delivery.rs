@@ -255,6 +255,7 @@ impl Service {
     /// Use the existing RSS relay, its ownership fences, retry deadlines and dead-letter state.
     pub async fn run(
         self: Arc<Self>,
+        relay_runtime: Arc<rss_transactional_messaging_postgres::PgRuntime>,
         cancel: tokio_util::sync::CancellationToken,
     ) -> Result<(), Error> {
         struct Running(Arc<Service>);
@@ -277,7 +278,7 @@ impl Service {
         .map_err(|_| Error::Invalid)?;
         let store = Arc::new(
             PgOutboxStore::<Published>::new(
-                self.runtime.clone(),
+                relay_runtime,
                 MessagingDomain::parse(DOMAIN).map_err(|_| Error::Invalid)?,
                 budget,
             )

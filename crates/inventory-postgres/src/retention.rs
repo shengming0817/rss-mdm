@@ -15,10 +15,10 @@ pub async fn retention_policy_in(
         revision > 0 && revision <= i64::MAX as u64,
         "invalid retention revision"
     );
-    let body:Option<serde_json::Value>=sqlx::query_scalar("SELECT definition FROM mdm.retention_policies WHERE tenant_id=$1::uuid AND key=$2 AND revision=$3")
+    let body:Option<String>=sqlx::query_scalar("SELECT definition::text FROM mdm.retention_policies WHERE tenant_id=$1::uuid AND key=$2 AND revision=$3")
         .bind(tenant.to_string()).bind(key).bind(revision as i64).fetch_optional(c).await?;
     body.map(|v| {
-        let policy: RetentionPolicy = serde_json::from_value(v)?;
+        let policy: RetentionPolicy = serde_json::from_str(&v)?;
         policy.validate()?;
         ensure!(
             policy.key == key && policy.revision == revision,
@@ -53,11 +53,11 @@ pub async fn publish_retention_policy_in(
     if latest.unwrap_or(0) as u64 != policy.revision - 1 {
         return Ok(false);
     }
-    sqlx::query("INSERT INTO mdm.retention_policies VALUES($1::uuid,$2,$3,$4)")
+    sqlx::query("INSERT INTO mdm.retention_policies VALUES($1::uuid,$2,$3,$4::jsonb)")
         .bind(tenant.to_string())
         .bind(&policy.key)
         .bind(policy.revision as i64)
-        .bind(serde_json::to_value(policy)?)
+        .bind(serde_json::to_string(policy)?)
         .execute(c)
         .await?;
     Ok(true)

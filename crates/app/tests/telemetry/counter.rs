@@ -5,7 +5,7 @@ pub(super) async fn quality_and_sensitive_reads(f: &mut Fixture) -> Result<()> {
     use rss_mdm_inventory as d;
     f.grants.push(crate::authorization::Grant {
         operation: crate::authorization::Permission::InventorySensitiveRead,
-        scope: crate::authorization::Scope::AllDevices,
+        scope: crate::authorization::Scope::Tenant,
     });
     identity::set_grants(case_tenant(), &f.author_id, f.grants.clone()).await?;
     let field = d::FieldDefinition {
@@ -97,6 +97,7 @@ pub(super) async fn quality_and_sensitive_reads(f: &mut Fixture) -> Result<()> {
     .await?;
     let version = json!({"operationId":Uuid::new_v4(),"expectedRevision":1,"input":{"action":"version","version":"v1","kind":"telemetry_profile","variants":[{"platform":"macos","architecture":"aarch64","key":"default","declaration":{"kind":"telemetry_profile","artifact":{"reference":"counter-profile","length":bytes.len(),"sha256":digest},"definition":profile}}]}});
     let mut invalid = version.clone();
+    invalid["operationId"] = json!(Uuid::new_v4());
     invalid["input"]["variants"][0]["declaration"]["definition"]["fields"][0]["version"] =
         json!(999);
     ensure!(
@@ -167,9 +168,7 @@ pub(super) async fn quality_and_sensitive_reads(f: &mut Fixture) -> Result<()> {
         "profile reference: {references:?}"
     );
     ensure!(f.author.call(&f.router,Method::PUT,field_path,Some(json!({"operationId":Uuid::new_v4(),"expectedRevision":1,"input":{"action":"delete"}}))).await?.0==StatusCode::CONFLICT);
-    let scope = Uuid::new_v4();
-    f.scope(scope, json!([{"kind":"device","id":case_device_id()}]))
-        .await?;
+    let scope = Uuid::from_u128(case::id("telemetry-counter-scope"));
     let policy = Uuid::new_v4();
     let policy=post(&mut f.author,&f.router,&format!("/api/v1/policies/{policy}"),json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"put","enabled":true,"definition":{"scope":scope,"action":{"kind":"telemetry_profile","resource":{"id":id,"version":"v1","platform":"macos","architecture":"aarch64","variant":"default"}}}}})).await?;
     let (status, signed) = agent_call(
@@ -267,7 +266,7 @@ pub(super) async fn quality_and_sensitive_reads(f: &mut Fixture) -> Result<()> {
         },
     )
     .await?;
-    let aggregate = json!({"query":query,"definitionVersion":1,"registration":config.configuration.registration_id,"source":"agent_script","epoch":config.configuration.source_epoch,"dimensions":{},"resolutionMicros":10_000_000,"operation":"rate","coverage":{"coverage":"observedOnly"},"maxGapMicros":10_000_000});
+    let aggregate = json!({"query":query,"definitionVersion":1,"registration":config.configuration.registration_id,"source":d::Source::AgentScript,"epoch":config.configuration.source_epoch,"dimensions":{},"resolutionMicros":10_000_000,"operation":"rate","coverage":{"coverage":"observedOnly"},"maxGapMicros":10_000_000});
     let result = post(
         &mut f.author,
         &f.router,

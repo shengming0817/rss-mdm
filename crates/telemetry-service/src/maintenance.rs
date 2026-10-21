@@ -241,11 +241,7 @@ async fn authorize(
         .ok_or(Error::Invalid)?;
     if field.sensitivity == rss_mdm_inventory::Sensitivity::Sensitive {
         snapshot
-            .require(
-                proof,
-                Permission::InventorySensitiveRead,
-                Some(&input.device),
-            )
+            .require(proof, Permission::InventorySensitiveRead, None)
             .map_err(|_| Error::Denied)?;
     }
     field.time_series.as_ref().ok_or(Error::Invalid)?;
@@ -266,11 +262,7 @@ async fn authorize(
                     .ok_or(Error::Storage)?;
                 if field.sensitivity == rss_mdm_inventory::Sensitivity::Sensitive {
                     snapshot
-                        .require(
-                            proof,
-                            Permission::InventorySensitiveRead,
-                            Some(&input.device),
-                        )
+                        .require(proof, Permission::InventorySensitiveRead, None)
                         .map_err(|_| Error::Denied)?;
                 }
             }
@@ -444,26 +436,42 @@ impl Service {
         let actor = proof.clone();
         let intent = input.clone();
         let audit = audit.clone();
+        let fact = rss_mdm_audit_integration::Fact::business(
+            &audit,
+            &format!("telemetry-maintenance:{}", input.id),
+            &binding,
+            202,
+            "success",
+            None,
+        )
+        .and_then(|fact| {
+            fact.with_details(
+                json!({"phase":"intent_accepted","deviceId":input.device,"field":input.field}),
+            )
+        })
+        .map_err(|_| Error::Storage)?;
+        let settlement_audit = audit.clone();
         let rejection = Arc::new(Mutex::new(None));
         let rejected = rejection.clone();
         self.runtime.local_tx(self.tenant,crate::deadline(),move|tx|Box::pin(async move {
             service.planning.audit_store.lock_in(tx).await.map_err(crate::storage_error)?;
             let tenant=service.tenant;
-            tx.with_connection(move|c|Box::pin(async move {
+            let replayed = tx.with_connection(move|c|Box::pin(async move {
                 let result=async {
                     authorize(c,tenant,&actor,&intent).await?;
-                    sqlx::query("INSERT INTO mdm_telemetry.maintenance(tenant_id,id,binding) VALUES($1::uuid,$2,$3) ON CONFLICT DO NOTHING")
-                        .bind(tenant.to_string()).bind(intent.id).bind(binding.as_slice()).execute(&mut *c).await?;
+                    let inserted=sqlx::query("INSERT INTO mdm_telemetry.maintenance(tenant_id,id,binding) VALUES($1::uuid,$2,$3) ON CONFLICT DO NOTHING")
+                        .bind(tenant.to_string()).bind(intent.id).bind(binding.as_slice()).execute(&mut *c).await?.rows_affected();
                     let stored:Vec<u8>=sqlx::query_scalar("SELECT binding FROM mdm_telemetry.maintenance WHERE tenant_id=$1::uuid AND id=$2 FOR UPDATE")
                         .bind(tenant.to_string()).bind(intent.id).fetch_one(c).await?;
                     if stored.as_slice()!=binding.as_slice() {return Err(Error::Conflict);}
-                    Ok(())
+                    Ok(inserted==0)
                 }.await;
                 result.map_err(|e|{*rejected.lock().expect("maintenance intent")=Some(e);sqlx::Error::Protocol("maintenance intent rejected".into())})
             })).await?;
-            service.planning.audit_store.append_request_in(tx,&audit,202,"accepted").await.map_err(crate::storage_error)?;
+            service.planning.audit_store.append_in(tx,&fact,replayed).await.map_err(crate::storage_error)?;
+            audit.mark_commit_started();
             Ok(())
-        })).await.fold(Ok,|_|Err(Error::Storage),|_|Err(rejection.lock().expect("maintenance intent").unwrap_or(Error::Storage)),|_|Err(Error::Unknown),|_|Err(Error::Unknown),|_|Err(Error::Storage))?;
+        })).await.fold(|v|{settlement_audit.mark_committed();Ok(v)},|_|Err(Error::Storage),|_|{settlement_audit.mark_rolled_back();Err(rejection.lock().expect("maintenance intent").unwrap_or(Error::Storage))},|_|{settlement_audit.mark_rollback_failed();Err(Error::Unknown)},|_|Err(Error::Unknown),|_|Err(Error::Storage))?;
         let service = self.clone();
         let proof = proof.clone();
         let input = input.clone();

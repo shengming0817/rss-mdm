@@ -1,7 +1,7 @@
 //! Exercises the joint stopped-data seam with an actual published host projection.
 //! Installation/control-plane publication is covered by its own installation T2 cases.
 use super::*;
-use anyhow::ensure;
+use anyhow::{Context, ensure};
 use std::os::unix::fs::PermissionsExt;
 
 pub(crate) async fn roundtrip(
@@ -83,13 +83,15 @@ pub(crate) async fn roundtrip(
             },
         },
     };
-    telemetry::validate(&frozen)?;
+    telemetry::validate(&frozen).context("validate joint backup")?;
     journal.save("restore-source.json", &frozen)?;
     connection_fence(&mut c, &journal, true).await?;
     no_writers(&mut c).await?;
     capture_ledger_heads(&mut c, &frozen, &journal).await?;
     c.close().await?;
-    telemetry::capture(&frozen, &journal).await?;
+    telemetry::capture(&frozen, &journal)
+        .await
+        .context("capture telemetry")?;
     archive::capture(&journal, &administrator).await?;
     let hash = archive::seal(&journal, frozen.request.operation_id)?;
     archive::verify(&journal, &hash)?;
@@ -118,14 +120,20 @@ pub(crate) async fn roundtrip(
     archive::restore_database(&journal, &administrator).await?;
     crate::migration::verify_identity(&mut c, &frozen.installation).await?;
     c.close().await?;
-    telemetry::restore(&restore, &frozen, &journal).await?;
+    telemetry::restore(&restore, &frozen, &journal)
+        .await
+        .context("restore telemetry")?;
     // Replaying the same recovery identity must preserve the restored data.
-    telemetry::restore(&restore, &frozen, &journal).await?;
+    telemetry::restore(&restore, &frozen, &journal)
+        .await
+        .context("restore telemetry")?;
     telemetry::release(&frozen, &journal).await?;
     let mut c = sqlx::PgConnection::connect_with(&administrator.options()?).await?;
     connection_fence(&mut c, &journal, false).await?;
     c.close().await?;
-    telemetry::admit(&frozen).await?;
+    telemetry::admit(&frozen)
+        .await
+        .context("readmit telemetry")?;
     Ok(())
 }
 
@@ -150,7 +158,7 @@ async fn recreate(database: &crate::config::Database) -> anyhow::Result<()> {
     .execute(&mut c)
     .await?;
     sqlx::raw_sql(sqlx::AssertSqlSafe(format!(
-        "CREATE DATABASE {} OWNER {}",
+        "CREATE DATABASE {} OWNER {} TEMPLATE template0",
         quote(&database.name),
         quote(&owner)
     )))

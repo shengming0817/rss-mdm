@@ -503,7 +503,7 @@ Native 保护轮换重加密运行凭据及 Apple 的 ADE、账户开通、设�
 
 遥测数据库与产品主库分开。PostgreSQL 模式在安装请求中显式提供 UTC 微秒分区边界；Timescale 模式先由部署方安装要求的扩展版本。dedicated 模式为每个租户配置独立数据库、运行角色、维护登录与池，维护登录只能切换到该库的 NOLOGIN owner。运行启动只做准入，不创建对象，不自动选择或回退存储模式。支持版本与预算由安装器及固定 RSS adapter 校验，不能用“能连接”替代准入结果。
 
-ClickHouse 使用固定 HTTPS origin 和显式 CA，运行读、写、维护及部署管理员凭据分离。部署方须提供固定的 `rss_ts_ch_guard` named collection，连接对应 PG 控制库并验证 TLS；不得把控制库替换为产品主库。原生备份使用名为 `mdm_backup` 的本地磁盘，挂载目录须与请求的 `backup_directory` 一致，`server_configuration_files` 列出实际配置、named collection 和 libpq 信任材料。安装器验证服务版本、账户权限和实际 adapter，配置缺失时拒绝启用。
+ClickHouse 使用固定 HTTPS origin 和显式 CA，运行读、写、维护及部署管理员凭据分离。部署安装账户须获准使用 named collection（XML 管理账户显式启用 `named_collection_control`）；运行账户不继承安装权限。部署方须提供固定的 `rss_ts_ch_guard` named collection，连接对应 PG 控制库并验证 TLS；不得把控制库替换为产品主库。原生备份使用名为 `mdm_backup` 的本地磁盘，挂载目录须与请求的 `backup_directory` 一致，`server_configuration_files` 列出实际配置、named collection 和 libpq 信任材料。安装器验证服务版本、账户权限和实际 adapter，配置缺失时拒绝启用。
 
 分区准备及 dedicated 原生列存转换使用 `maintain-telemetry-storage`，传入原安装请求和固定维护操作 UUID。操作要求停写，并核对原安装身份；返回 `more` 时沿用原请求继续，`unknown` 时不得生成新操作身份。该入口不提供在线后端迁移。
 

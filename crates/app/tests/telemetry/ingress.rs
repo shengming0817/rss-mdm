@@ -27,7 +27,7 @@ async fn run(expected: &str, projection: r::TelemetryProjection) -> Result<()> {
     let resources = std::mem::take(&mut f.resources);
     let (body,query,receipt_path,other_device,interrupted)=resources.finish(async {
         f.grants.push(crate::authorization::Grant {operation:crate::authorization::Permission::InventoryFieldsWrite,scope:crate::authorization::Scope::Tenant});
-        for operation in [crate::authorization::Permission::InventoryRead,crate::authorization::Permission::ScriptExecute,crate::authorization::Permission::InventoryCollect,crate::authorization::Permission::TelemetryMaintain,crate::authorization::Permission::TelemetryDelete] {
+        for operation in [crate::authorization::Permission::InventoryCollect,crate::authorization::Permission::TelemetryMaintain,crate::authorization::Permission::TelemetryDelete] {
             f.grants.push(crate::authorization::Grant {operation,scope:crate::authorization::Scope::AllDevices});
         }
         identity::set_grants(case_tenant(),&f.author_id,f.grants.clone()).await?;
@@ -49,10 +49,16 @@ async fn run(expected: &str, projection: r::TelemetryProjection) -> Result<()> {
         resource(&mut f.author,&f.router,profile_id,1,json!({"action":"version","version":"v1","kind":"telemetry_profile","variants":[{"platform":"macos","architecture":"aarch64","key":"default","declaration":{"kind":"telemetry_profile","artifact":{"reference":"profile","length":bytes.len(),"sha256":digest},"definition":profile}}]})).await?;
         ensure!(upload(&f.author,&f.router,profile_id,&bytes).await?==StatusCode::CREATED);
         resource(&mut f.author,&f.router,profile_id,2,json!({"action":"activate","version":"v1"})).await?;
-        let scope=Uuid::new_v4();f.scope(scope,json!([{"kind":"device","id":case_device_id()}])).await?;
+        let scope=Uuid::new_v4();
+        let secondary=if expected=="postgres" && projection==r::TelemetryProjection::Both {Some(secondary_peer(&f.base).await?)} else {None};
+        let mut targets=vec![json!({"kind":"device","id":case_device_id()})];
+        if let Some((_,device))=&secondary {targets.push(json!({"kind":"device","id":device}));}
+        f.scope(scope,json!(targets)).await?;
+        if secondary.is_some() {f.scope(Uuid::from_u128(case::id("telemetry-counter-scope")),json!([{"kind":"device","id":case_device_id()}])).await?;}
+
         let definition=json!({"scope":scope,"action":{"kind":"telemetry_profile","resource":{"id":profile_id,"version":"v1","platform":"macos","architecture":"aarch64","variant":"default"}}});
         let preview=post(&mut f.author,&f.router,"/api/v1/policies/previews",json!({"definition":definition,"after":null,"scopeResult":null})).await?;
-        ensure!(preview["items"].as_array().is_some_and(|v|v.len()==1) && preview["items"][0]["collectionSupported"]==true,"preview: {preview}");
+        ensure!(preview["items"].as_array().is_some_and(|v|v.len()==1+usize::from(secondary.is_some()) && v.iter().any(|item|item["target"]["device"]==case_device_id() && item["collectionSupported"]==true)),"preview: {preview}");
         let policy=Uuid::new_v4();
         let policy=post(&mut f.author,&f.router,&format!("/api/v1/policies/{policy}"),json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"put","enabled":true,"definition":{"scope":scope,"action":{"kind":"telemetry_profile","resource":{"id":profile_id,"version":"v1","platform":"macos","architecture":"aarch64","variant":"default"}}}}})).await?;
         let config_path=format!("/api/v1/agent/runtime/telemetry/configurations/{}/{}",policy["id"].as_str().unwrap(),policy["versionId"].as_str().unwrap());
@@ -68,8 +74,8 @@ async fn run(expected: &str, projection: r::TelemetryProjection) -> Result<()> {
         ensure!(matches!(configuration.collector,wire::TelemetryCollector::Script {..}));
         let now=std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?.as_micros() as i64;
         let id=Uuid::new_v4();let observation=Uuid::new_v4();
-        let body=json!({"batchId":id,"policy":policy["id"],"policyVersion":policy["versionId"],"binding":configuration.binding,"observations":[{"id":observation,"sequence":1,"observedAt":now-1_000_000,"values":{"custom.corporate_agent.healthy":{"quality":"valid","value":{"kind":"boolean","value":true},"intervalStart":null}}}]});
-        let other_device=if expected=="postgres" && projection==r::TelemetryProjection::Both {Some(signing_gate(&mut f,scope,&config_path,&body).await?)} else {None};
+        let body=json!({"batchId":id,"policy":policy["id"],"policyVersion":policy["versionId"],"binding":configuration.binding,"observations":[{"id":observation,"sequence":10,"observedAt":now-1_000_000,"values":{"custom.corporate_agent.healthy":{"quality":"valid","value":{"kind":"boolean","value":true},"intervalStart":null}}}]});
+        let other_device=if expected=="postgres" && projection==r::TelemetryProjection::Both {Some(signing_gate(&mut f,&config_path,&body,secondary.as_ref().unwrap()).await?)} else {None};
         if expected=="postgres" && projection==r::TelemetryProjection::Both { recovery::receive_commit_unknown(&mut f,&body).await?; }
         let path="/api/v1/agent/runtime/telemetry/batches";
         for (key,value) in [("tenantId",json!(case::peer())),("source",json!("manual")),("registrationId",json!(Uuid::new_v4()))] {
@@ -107,7 +113,7 @@ async fn run(expected: &str, projection: r::TelemetryProjection) -> Result<()> {
         } else { None };
         let mut late=body.clone();let late_batch=Uuid::new_v4();let late_observation=Uuid::new_v4();
         late["batchId"]=json!(late_batch);late["observations"][0]["id"]=json!(late_observation);
-        late["observations"][0]["sequence"]=json!(0);late["observations"][0]["observedAt"]=json!(now-1_500_000);
+        late["observations"][0]["sequence"]=json!(5);late["observations"][0]["observedAt"]=json!(now-1_500_000);
         late["observations"][0]["values"]["custom.corporate_agent.healthy"]["value"]["value"]=json!(false);
         ensure!(agent_call(&f.router,Method::POST,path,Some(case_credential()),Some(late)).await?.0==StatusCode::ACCEPTED);
         if let Some(before_late)=before_late {
@@ -123,8 +129,8 @@ async fn run(expected: &str, projection: r::TelemetryProjection) -> Result<()> {
         let query=json!({"device":case_device_id(),"field":"custom.corporate_agent.healthy","resource":"device","startMicros":now-2_000_000,"endMicros":now+1_000_000,"maxPoints":64,"mode":"history","after":null});
         let history=post(&mut f.author,&f.router,"/api/v1/telemetry/history",query.clone()).await?;
         ensure!(history["rows"].as_array().is_some_and(|v|v.len()==expected_rows),"history: {history}");
-        let interrupted=if expected=="postgres" && projection==r::TelemetryProjection::Both { Some(recovery::interrupt_after_backend_write(&mut f,&body).await?) } else { None };
         if expected=="postgres" { recovery::foreign_session_cannot_read(&mut f,&query).await?; }
+        let interrupted=if expected=="postgres" && projection==r::TelemetryProjection::Both { Some(recovery::interrupt_after_backend_write(&mut f,&body).await?) } else { None };
         Ok((body,query,receipt_path,other_device,interrupted))
     }).await?;
     if interrupted.is_some() {
@@ -333,7 +339,7 @@ async fn run(expected: &str, projection: r::TelemetryProjection) -> Result<()> {
                     Some(body.clone())
                 )
                 .await?
-                .0 == StatusCode::FORBIDDEN
+                .0 == StatusCode::UNAUTHORIZED
             );
             let receipt = agent_call(
                 &router,
@@ -420,13 +426,11 @@ async fn settle(
 ) -> Result<Value> {
     tokio::time::timeout(Duration::from_secs(30), async {
         loop {
-            let result = post(
-                author,
-                router,
-                "/api/v1/telemetry/maintenance",
-                serde_json::to_value(input)?,
-            )
-            .await?;
+            let (status,result) = author.call(router,Method::POST,"/api/v1/telemetry/maintenance",Some(serde_json::to_value(input)?)).await?;
+            if !status.is_success() {
+                let receipt=pg(&format!("SELECT count(*)::text||':'||coalesce(max(result::text),'null') FROM mdm_telemetry.maintenance WHERE tenant_id='{}' AND id='{}'",case_tenant(),input.id))?;
+                anyhow::bail!("maintenance {status} {result}; durable product receipt: {receipt}");
+            }
             if result["state"] == "complete" {
                 return Ok(result);
             }
@@ -456,26 +460,24 @@ async fn published(router: &Router, receipt: &str) -> Result<()> {
 
 async fn signing_gate(
     f: &mut Fixture,
-    scope: Uuid,
     configuration: &str,
     original: &Value,
+    secondary: &(String, String),
 ) -> Result<String> {
     let mut authority = authority::Authority::from_config(f.base.clone()).await?;
     let resources = std::mem::take(&mut authority.resources);
     resources.finish(async {
         let service=agent::service(&authority).await?;
-        let label=case::name("telemetry-unacknowledged");let device=case::name("telemetry-new-device");
+        let label=secondary.0.as_str();
         let context=software_execution::context(software_execution::Platform::MacOs);
-        let registration=agent::seed_unacknowledged(&service,label,device,json!({"capabilities":["inventory.collect.v1","task.execute.v1","telemetry.collect.v1"],"platform":"macos","architecture":"aarch64","executionContext":context})).await?;
-        f.scope(scope,json!([{"kind":"device","id":case_device_id()},{"kind":"device","id":registration["deviceId"]}])).await?;
         let claim=agent_call(&f.router,Method::POST,"/api/v1/agent/runtime/tasks/claim",Some(label),Some(json!({"wireVersion":1,"executionContext":context,"environment":{"edition":null,"tools":{},"nativeEngines":{}},"profiles":["posix_sh"],"operationId":Uuid::new_v4()}))).await?;
         ensure!(claim.0==StatusCode::OK,"capability announcement: {claim:?}");
-        ensure!(agent_call(&f.router,Method::GET,configuration,Some(label),None).await?.0==StatusCode::FORBIDDEN);
+        ensure!(agent_call(&f.router,Method::GET,configuration,Some(label),None).await?.0==StatusCode::UNAUTHORIZED);
         let peer=agent::evidence(label).unwrap();
         crate::test_support::task_signing::acknowledge(&service,&peer).await?;
         let (status, signed)=agent_call(&f.router,Method::GET,configuration,Some(label),None).await?;
         ensure!(status==StatusCode::OK);
-        ensure!(agent_call(&f.router,Method::POST,"/api/v1/agent/runtime/telemetry/batches",Some(label),Some(original.clone())).await?.0==StatusCode::FORBIDDEN);
+        ensure!(agent_call(&f.router,Method::POST,"/api/v1/agent/runtime/telemetry/batches",Some(label),Some(original.clone())).await?.0==StatusCode::UNAUTHORIZED);
         let mut own=original.clone();
         let batch=Uuid::new_v4();
         own["binding"]=signed["configuration"]["binding"].clone();
@@ -491,7 +493,7 @@ async fn signing_gate(
             }
             Ok::<_,anyhow::Error>(())
         }).await??;
-        Ok(registration["deviceId"].as_str().unwrap().to_owned())
+        Ok(secondary.1.clone())
     }).await
 }
 
@@ -537,3 +539,14 @@ mod counter;
 
 #[path = "recovery.rs"]
 mod recovery;
+
+async fn secondary_peer(base: &Value) -> Result<(String, String)> {
+    let mut authority = authority::Authority::from_config(base.clone()).await?;
+    let resources = std::mem::take(&mut authority.resources);
+    resources.finish(async {
+        let service=agent::service(&authority).await?;
+        let label=case::name("telemetry-unacknowledged");
+        let registration=agent::seed_unacknowledged(&service,label,case::name("telemetry-new-device"),json!({"capabilities":["inventory.collect.v1","task.execute.v1","telemetry.collect.v1"],"platform":"macos","architecture":"aarch64","executionContext":software_execution::context(software_execution::Platform::MacOs)})).await?;
+        Ok((label.into(),registration["deviceId"].as_str().unwrap().into()))
+    }).await
+}

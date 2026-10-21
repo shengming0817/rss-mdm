@@ -15,6 +15,7 @@ _OWNER_LOCK = threading.RLock()
 
 @contextmanager
 def telemetry_profiles(root, tenant, selected=None, primary=None):
+    root = root.resolve()
     # Installation/fault cases own whole providers. Serialize reuse of these named owners.
     with _OWNER_LOCK, _profiles(root, tenant, selected, primary) as environment:
         yield environment
@@ -136,6 +137,7 @@ def clickhouse_profile(root, owner, tenant, base):
             (directory/leaf).mkdir(mode=0o700)
         owner.issue_leaf(directory/'tls',['localhost'])
         shutil.copyfile(owner.root/'ca.crt',directory/'tls'/'ca.crt')
+        private(directory/'users'/'telemetry-installer.xml', '<clickhouse><users><mdm_test_admin><named_collection_control>1</named_collection_control></mdm_test_admin></users></clickhouse>')
         administrator=secrets.token_hex(24)
         guard=secrets.token_hex(24)
         admin_file=private(directory/'administrator-password',administrator)

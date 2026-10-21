@@ -54,7 +54,7 @@ pub(super) async fn interrupt_after_backend_write(
     let observation = Uuid::new_v4();
     body["batchId"] = json!(id);
     body["observations"][0]["id"] = json!(observation);
-    body["observations"][0]["sequence"] = json!(0);
+    body["observations"][0]["sequence"] = json!(3);
     body["observations"][0]["observedAt"] =
         json!(original["observations"][0]["observedAt"].as_i64().unwrap() - 10_000_000);
     pg(&format!(
@@ -121,12 +121,19 @@ pub(super) async fn foreign_session_cannot_read(f: &mut Fixture, query: &Value) 
     base["identity"]["tenant_id"] = json!(case::peer());
     let authority = authority::Authority::from_config(base).await?;
     let mut browser = authority.browser("admin")?;
-    let own_router = authority.router(authority.authorization())?;
+    let foreign_identity = authority.identity.clone();
     authority
         .resources
         .finish(async {
             // The foreign session is live and valid in its own tenant.
-            ensure!(!browser_subject(&browser, &own_router).await?.is_empty());
+            foreign_identity
+                .authority
+                .inspect_session(
+                    foreign_identity.tenant,
+                    identity::credential(&foreign_identity, "admin")?,
+                    crate::identity::deadline(),
+                )
+                .await?;
             let response = browser
                 .call(
                     &f.router,

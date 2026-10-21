@@ -72,7 +72,7 @@ async fn maintenance(
     >,
 ) -> Result<Json<serde_json::Value>, Error> {
     let input = input.map_err(Error::from)?.0;
-    audit.set_action("telemetry_maintenance");
+    audit.operation(input.id, "telemetry_maintenance");
     audit.target_device(&input.device);
     let service = app.as_ref().as_ref().ok_or(Error::Unsupported)?;
     service

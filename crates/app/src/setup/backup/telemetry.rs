@@ -169,10 +169,27 @@ pub(super) async fn fence(frozen: &Frozen, journal: &Journal) -> Result<()> {
         )
         .await
         .map_err(|_| Error::Storage)?;
+        if let Some(ch) = &profile.clickhouse {
+            let owned: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM pg_roles r CROSS JOIN public.mdm_telemetry_installation i WHERE r.rolname=$1 AND NOT r.rolsuper AND NOT r.rolbypassrls AND shobj_description(r.oid,'pg_authid')='rss-mdm-telemetry:'||i.id::text)")
+                .bind(&ch.guard.user).fetch_one(&mut c).await.map_err(|_| Error::Storage)?;
+            if !owned {
+                return Err(Error::Conflict);
+            }
+        }
+        ch_fence_all(frozen, profile, true).await?;
         connection_fence(&mut c, &storage, true).await?;
+        if let Some(ch) = &profile.clickhouse {
+            // ClickHouse retains read-only PostgreSQL engine connections after its
+            // writers stop. Fence reconnects first, then drain only this installation's
+            // guard login; all other clients still fail the stopped-writer check.
+            let drained: Vec<bool> = sqlx::query_scalar("SELECT pg_terminate_backend(pid,1000) FROM pg_stat_activity WHERE datname=current_database() AND usename=$1 AND pid<>pg_backend_pid() AND backend_type='client backend'")
+                .bind(&ch.guard.user).fetch_all(&mut c).await.map_err(|_| Error::Storage)?;
+            if drained.iter().any(|done| !done) {
+                return Err(Error::Busy);
+            }
+        }
         no_writers(&mut c).await?;
         c.close().await.map_err(|_| Error::Storage)?;
-        ch_fence_all(frozen, profile, true).await?;
     }
     Ok(())
 }

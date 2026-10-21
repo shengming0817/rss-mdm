@@ -392,11 +392,14 @@ impl rss_runtime::ManagedResource for Resource {
         Duration::from_secs(10)
     }
 }
-pub(crate) fn registration(service: Arc<Service>) -> rss_runtime::ManagedTaskRegistration {
+pub(crate) fn registration(
+    service: Arc<Service>,
+    relay_runtime: Arc<rss_transactional_messaging_postgres::PgRuntime>,
+) -> rss_runtime::ManagedTaskRegistration {
     let (task, _) = rss_runtime::ManagedTask::prepare("telemetry-relay", Duration::from_secs(15));
     task.into_registration(move |cancel| async move {
         service
-            .run(cancel)
+            .run(relay_runtime, cancel)
             .await
             .map_err(rss_runtime::ShutdownError::new)
     })
@@ -445,6 +448,7 @@ pub(crate) struct FixtureTask(tokio::sync::Mutex<Option<rss_runtime::ShutdownSta
 #[cfg(test)]
 pub(crate) fn fixture_task(
     service: Arc<Service>,
+    relay_runtime: Arc<rss_transactional_messaging_postgres::PgRuntime>,
     inventory: Arc<crate::inventory_runtime::InventoryRuntime>,
     options: sqlx::postgres::PgConnectOptions,
     tenant: TenantId,
@@ -465,7 +469,7 @@ pub(crate) fn fixture_task(
             .registration(signals.handle(crate::worker_wake::Work::Inventory))
             .critical(),
     );
-    launch.stage_deferred_task_with_token(registration(service).critical());
+    launch.stage_deferred_task_with_token(registration(service, relay_runtime).critical());
     launch.finish();
     Ok(FixtureTask(tokio::sync::Mutex::new(Some(stack))))
 }
