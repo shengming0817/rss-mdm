@@ -34,6 +34,7 @@ pub const INSTALL_SQL: &str = include_str!("../schema/install.sql");
 /// Cross-owner references and exact runtime privileges; apply after all owner tables.
 pub const RELATIONS_SQL: &str = include_str!("../schema/relations.sql");
 
+pub mod baseline;
 pub mod initialization;
 
 /// This capability's closed privileges in the shared access connection.

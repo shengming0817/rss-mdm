@@ -284,16 +284,59 @@ impl AssetService {
         audit: &RequestAudit,
         authorize: &(dyn Fn() -> std::result::Result<(), Error> + Sync),
     ) -> std::result::Result<Value, Error> {
+        self.execute_with_initialization(command, audit, authorize, None)
+            .await
+    }
+    /// Baseline fields and retention use the ordinary asset mutation and receipt owner.
+    pub async fn execute_initialization(
+        &self,
+        command: &Command,
+        audit: &RequestAudit,
+        proof: &rss_mdm_authorization_service::context::AuthorizedPrincipal,
+    ) -> std::result::Result<Value, Error> {
+        self.execute_with_initialization(
+            command,
+            audit,
+            &|| {
+                proof
+                    .manage(rss_mdm_authorization_service::Permission::InventoryFieldsWrite)
+                    .map_err(Error::from)
+            },
+            Some(proof),
+        )
+        .await
+    }
+    async fn execute_with_initialization(
+        &self,
+        command: &Command,
+        audit: &RequestAudit,
+        authorize: &(dyn Fn() -> std::result::Result<(), Error> + Sync),
+        initialization: Option<&rss_mdm_authorization_service::context::AuthorizedPrincipal>,
+    ) -> std::result::Result<Value, Error> {
         authorize()?;
         crate::transaction::run(
             &self.audit_store,
             &self.runtime,
             self.tenant,
             audit,
-            &(self, command, audit, authorize),
+            &(self, command, audit, authorize, initialization),
             |ctx, tx| {
                 Box::pin(async move {
-                    let (service, command, audit, authorize) = *ctx;
+                    let (service, command, audit, authorize, initialization) = *ctx;
+                    if let Some(proof) = initialization {
+                        let target = match command {
+                            Command::FieldWrite { field, .. } => field.as_str(),
+                            Command::RetentionWrite { change } => change.input.key.as_str(),
+                            _ => return Err(Error::Forbidden.into()),
+                        };
+                        rss_mdm_authorization_service::baseline::check_in(
+                            tx,
+                            proof,
+                            rss_mdm_authorization_service::Permission::InventoryFieldsWrite,
+                            target,
+                        )
+                        .await?;
+                    }
                     service.execute_in(tx, command, audit, authorize).await
                 })
             },

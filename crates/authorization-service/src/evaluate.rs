@@ -22,7 +22,7 @@ pub struct Snapshot {
 pub struct EffectiveGrant {
     pub(super) rule_id: Uuid,
     pub(super) rule_revision: u64,
-    subject: Subject,
+    pub(crate) subject: Subject,
     #[serde(flatten)]
     pub(super) grant: Grant,
     pub(super) observation: Option<Observation>,
@@ -138,6 +138,11 @@ impl Snapshot {
         proof
             .check_live()
             .map_err(|_| AuthorizationError::Unauthorized)?;
+        if let Some(authority) = proof.initialization_authority() {
+            return authority
+                .effective(self)
+                .map_err(|_| AuthorizationError::Forbidden);
+        }
         proof.session().map_err(|_| AuthorizationError::Forbidden)?;
         let mut grants = Vec::new();
         for record in &self.rules {
@@ -181,6 +186,17 @@ impl Snapshot {
                 .grants
                 .iter()
                 .any(|g| g.covers(operation, device))
+            {
+                Ok(())
+            } else {
+                Err(AuthorizationError::Forbidden)
+            };
+        }
+        if proof.initialization_authority().is_some() {
+            return if self
+                .effective(proof)?
+                .iter()
+                .any(|g| g.grant.covers(operation, device))
             {
                 Ok(())
             } else {
@@ -261,6 +277,17 @@ impl Snapshot {
                 Err(AuthorizationError::Forbidden)
             } else {
                 Ok(Some(devices))
+            };
+        }
+        if proof.initialization_authority().is_some() {
+            return if self
+                .effective(proof)?
+                .iter()
+                .any(|g| g.grant.operation == permission && g.grant.scope == Scope::AllDevices)
+            {
+                Ok(None)
+            } else {
+                Err(AuthorizationError::Forbidden)
             };
         }
         let mut devices = std::collections::BTreeSet::new();

@@ -22,12 +22,42 @@ impl AuthorizedPrincipal {
         if audit.tenant() != self.tenant_id() {
             return Err(Error::Forbidden);
         }
-        audit.set_authenticated(
-            self.principal_id(),
-            self.instance_id(),
-            self.identity.audit_kind(),
-        );
+        if let Some(kind) = self.identity.audit_kind() {
+            audit.set_authenticated(self.principal_id(), self.instance_id(), kind);
+        } else {
+            audit.set_principal(self.principal_id(), self.instance_id());
+        }
         Ok(())
+    }
+    pub(crate) fn from_initialization(authority: Arc<crate::baseline::Authority>) -> Self {
+        let user = authority.user().clone();
+        Self {
+            identity: Principal {
+                subject: user.principal_id.clone(),
+                actor: crate::Actor::Account { user },
+                proof: Authentication::Initialization {
+                    authority,
+                    deadline: std::time::Instant::now() + std::time::Duration::from_secs(60),
+                },
+            },
+            authorization: None,
+        }
+    }
+    /// Durable attempts cannot leave their fixed initialization object set.
+    pub fn require_initialization_target(&self, target: &str) -> Result<(), Error> {
+        if self
+            .initialization_authority()
+            .is_some_and(|a| !a.allows_target(target))
+        {
+            return Err(Error::Forbidden);
+        }
+        self.check_live()
+    }
+    pub fn initialization_authority(&self) -> Option<&crate::baseline::Authority> {
+        match &self.identity.proof {
+            Authentication::Initialization { authority, .. } => Some(authority),
+            _ => None,
+        }
     }
     pub fn shared_session(&self) -> Result<Arc<AuthenticatedSession>, Error> {
         self.identity.shared_session()
@@ -152,6 +182,10 @@ pub struct Principal {
 enum Authentication {
     Account(Arc<AuthenticatedSession>),
     ApiKey(crate::api_key::KeyProof),
+    Initialization {
+        authority: Arc<crate::baseline::Authority>,
+        deadline: std::time::Instant,
+    },
 }
 impl Principal {
     pub fn new(session: AuthenticatedSession) -> Result<Self, Error> {
@@ -182,13 +216,17 @@ impl Principal {
     pub fn session(&self) -> Result<&AuthenticatedSession, Error> {
         match &self.proof {
             Authentication::Account(session) => Ok(session),
-            Authentication::ApiKey(_) => Err(Error::Forbidden),
+            Authentication::ApiKey(_) | Authentication::Initialization { .. } => {
+                Err(Error::Forbidden)
+            }
         }
     }
     fn shared_session(&self) -> Result<Arc<AuthenticatedSession>, Error> {
         match &self.proof {
             Authentication::Account(session) => Ok(session.clone()),
-            Authentication::ApiKey(_) => Err(Error::Forbidden),
+            Authentication::ApiKey(_) | Authentication::Initialization { .. } => {
+                Err(Error::Forbidden)
+            }
         }
     }
     fn key_proof(&self) -> Option<&crate::api_key::KeyProof> {
@@ -197,14 +235,15 @@ impl Principal {
             _ => None,
         }
     }
-    fn audit_kind(&self) -> rss_mdm_audit_integration::AuthenticationKind {
+    fn audit_kind(&self) -> Option<rss_mdm_audit_integration::AuthenticationKind> {
         use rss_mdm_audit_integration::AuthenticationKind;
         match &self.proof {
-            Authentication::ApiKey(_) => AuthenticationKind::ApiKey,
-            Authentication::Account(proof) => match proof.view().credential_kind {
+            Authentication::ApiKey(_) => Some(AuthenticationKind::ApiKey),
+            Authentication::Initialization { .. } => None,
+            Authentication::Account(proof) => Some(match proof.view().credential_kind {
                 rss_identity_core::session::CredentialKind::Cookie => AuthenticationKind::Cookie,
                 rss_identity_core::session::CredentialKind::Bearer => AuthenticationKind::Bearer,
-            },
+            }),
         }
     }
     pub fn check_live(&self) -> Result<(), Error> {
@@ -215,6 +254,12 @@ impl Principal {
                 .map_err(|_| Error::Unauthorized),
             Authentication::ApiKey(proof) if proof.clock.now() < proof.deadline => Ok(()),
             Authentication::ApiKey(_) => Err(Error::Unauthorized),
+            Authentication::Initialization { deadline, .. }
+                if std::time::Instant::now() < *deadline =>
+            {
+                Ok(())
+            }
+            Authentication::Initialization { .. } => Err(Error::Unauthorized),
         }
     }
     pub fn instance_id(&self) -> &str {
@@ -235,6 +280,9 @@ impl Principal {
             ),
             Authentication::ApiKey(proof) => {
                 format!("api-key:{}:{}", proof.id, proof.credential_revision)
+            }
+            Authentication::Initialization { .. } => {
+                format!("initialization:{}", self.principal_id())
             }
         }
     }
