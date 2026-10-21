@@ -23,7 +23,13 @@ for name in ('database-password','platform-password','administrator-password','p
         shutil.copyfile(source, target)
     target.chmod(0o600)
     os.chown(target, 10001, 10001)
-for directory in (root, inputs):
+content = Path('/var/lib/rss-mdm-content')
+if content.is_symlink():
+    raise ValueError('content volume must be a real directory')
+content.mkdir(parents=True, exist_ok=True, mode=0o700)
+if not content.is_dir():
+    raise ValueError('content volume must be a directory')
+for directory in (root, inputs, content):
     directory.chmod(0o700)
     os.chown(directory, 10001, 10001)
 config = dict(directory=str(root/'installation'),

@@ -85,13 +85,7 @@ pub(crate) async fn resume(state: &crate::api::Assembly) -> Result<(), Error> {
                     .bind(&tenant).bind(Value::Object(completed.clone())).execute(&mut *c).await.map_err(|_|Error::CommitUnknown)?;
             }
             Err(error) => {
-                let reason = match error {
-                    Error::Forbidden | Error::Unauthorized => "authorization",
-                    Error::Unsupported => "content",
-                    Error::Conflict => "conflict",
-                    Error::CommitUnknown | Error::RollbackFailed => "outcome_unknown",
-                    _ => "storage",
-                };
+                let reason = blocked_reason(&error);
                 sqlx::query("UPDATE mdm_initialization.baselines SET phase='blocked',blocked=$2 WHERE tenant_id=$1::uuid").bind(&tenant).bind(reason).execute(&mut *c).await.map_err(|_|Error::CommitUnknown)?;
                 return Err(error);
             }
@@ -112,6 +106,76 @@ pub(crate) async fn resume(state: &crate::api::Assembly) -> Result<(), Error> {
     .await
     .map_err(|_| Error::CommitUnknown)?;
     Ok(())
+}
+// Owner wrappers retain the semantic category at this orchestration boundary.
+fn blocked_reason(error: &Error) -> &'static str {
+    use rss_mdm_authorization_service::Error as A;
+    use rss_mdm_content_service::{Error as C, service::Error as U};
+    use rss_mdm_flow_service::Error as F;
+    use rss_mdm_inventory_service::Error as I;
+    match error {
+        Error::Forbidden
+        | Error::Unauthorized
+        | Error::Authorization(A::Forbidden | A::Unauthorized)
+        | Error::Flow(F::Forbidden | F::Unauthorized)
+        | Error::Inventory(I::Forbidden | I::Unauthorized)
+        | Error::ContentRequest(U::Forbidden | U::Authorization(A::Forbidden | A::Unauthorized)) => {
+            "authorization"
+        }
+        Error::Conflict
+        | Error::Authorization(A::Conflict)
+        | Error::Flow(F::Conflict)
+        | Error::Inventory(I::Conflict)
+        | Error::Content(C::Conflict)
+        | Error::ContentRequest(U::Conflict | U::Missing | U::Content(C::Conflict))
+        | Error::Flow(F::NotFound | F::Planning(_) | F::Resource(_))
+        | Error::Inventory(I::NotFound | I::Group(_)) => "conflict",
+        Error::Unsupported
+        | Error::Flow(F::Unsupported)
+        | Error::ContentRequest(U::Unsupported) => "content",
+        Error::CommitUnknown
+        | Error::RollbackFailed
+        | Error::Authorization(A::CommitUnknown | A::RollbackFailed)
+        | Error::Flow(F::CommitUnknown | F::RollbackFailed)
+        | Error::Inventory(I::CommitUnknown | I::RollbackFailed)
+        | Error::Content(C::CommitUnknown)
+        | Error::ContentRequest(
+            U::CommitUnknown | U::RollbackFailed | U::Content(C::CommitUnknown),
+        ) => "outcome_unknown",
+        _ => "storage",
+    }
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn owner_errors_keep_actionable_initialization_diagnostics() {
+        assert_eq!(
+            blocked_reason(&rss_mdm_authorization_service::Error::Forbidden.into()),
+            "authorization"
+        );
+        assert_eq!(
+            blocked_reason(&rss_mdm_flow_service::Error::Conflict.into()),
+            "conflict"
+        );
+        assert_eq!(
+            blocked_reason(&rss_mdm_inventory_service::Error::Conflict.into()),
+            "conflict"
+        );
+        assert_eq!(
+            blocked_reason(&rss_mdm_content_service::service::Error::Unsupported.into()),
+            "content"
+        );
+        assert_eq!(
+            blocked_reason(
+                &rss_mdm_content_service::service::Error::Content(
+                    rss_mdm_content_service::Error::CommitUnknown
+                )
+                .into()
+            ),
+            "outcome_unknown"
+        );
+    }
 }
 async fn execute(
     state: &crate::api::Assembly,

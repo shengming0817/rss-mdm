@@ -309,7 +309,11 @@ async fn admit_postgres_server(c: &mut PgConnection, input: &Request) -> Result<
             .fetch_one(&mut *c)
             .await
             .map_err(|_| Error::Storage)?;
-    if version != 16 || !admin {
+    let supported = match input.configuration.backend {
+        Storage::Postgres { .. } => matches!(version, 16 | 17),
+        _ => version == 16,
+    };
+    if !supported || !admin {
         return Err(Error::Input);
     }
     if matches!(

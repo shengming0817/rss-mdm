@@ -613,6 +613,11 @@ async fn postgres_baseline_recovers_original_receipts_without_overwriting_edits(
     let mut base: Value =
         serde_json::from_slice(&std::fs::read(std::env::var("MDM_TEST_CONFIG")?)?)?;
     base["telemetry"] = serde_json::to_value(&installation.configuration)?;
+    let mut initial = Fixture::from_config(base.clone()).await?;
+    let resources = std::mem::take(&mut initial.resources);
+    resources
+        .finish(partial_initialization_content(&mut initial))
+        .await?;
     let manifest = crate::baseline::manifest::build(Uuid::parse_str(case_tenant())?)?;
     // This tenant's real provisioned administrator creates the grant and App intent
     // in the same transaction, exactly as target account provisioning does.
@@ -664,4 +669,130 @@ async fn postgres_baseline_recovers_original_receipts_without_overwriting_edits(
         ensure!(pg(&format!("SELECT count(*) FROM mdm_group.groups WHERE tenant_id='{}' AND kind='system'",case_tenant()))?.trim()=="3");
         Ok(())
     }).await
+}
+
+async fn partial_initialization_content(f: &mut Fixture) -> Result<()> {
+    use rss_mdm_content_service::service as content;
+    use sqlx::Connection;
+    let target = Uuid::new_v4();
+    let blueprint = r::blueprints::catalog()
+        .into_iter()
+        .find(|b| {
+            matches!(
+                b.definition,
+                r::blueprints::Definition::NativeCollection { .. }
+            )
+        })
+        .unwrap();
+    resource(
+        &mut f.author,
+        &f.router,
+        target,
+        0,
+        json!({"action":"instantiate","blueprint":blueprint.id,"version":blueprint.version}),
+    )
+    .await?;
+    let mut identity =
+        crate::test_support::authority::Authority::from_config(f.base.clone()).await?;
+    let resources = std::mem::take(&mut identity.resources);
+    resources
+        .finish(async {
+            let mut c = sqlx::PgConnection::connect_with(
+                &serde_json::from_value::<Config>(f.base.clone())?.access_options()?,
+            )
+            .await?;
+            let mut tx = c.begin().await?;
+            sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
+                .bind(case_tenant())
+                .execute(&mut *tx)
+                .await?;
+            let (_, authority) = crate::authorization::baseline::grant_administrator_on(
+                &mut tx,
+                identity::user(case_tenant(), case_admin()),
+                Uuid::new_v4(),
+                [target.to_string()].into(),
+            )
+            .await?;
+            tx.commit().await?;
+            c.close().await?;
+            let proof = authority
+                .principal(&identity.access.authorization_store())
+                .await?;
+            let audit = rss_mdm_audit_integration::RequestAudit::new(
+                case_tenant().into(),
+                "baseline_initialize",
+            );
+            proof.bind_audit(&audit)?;
+            let store = f.content.as_ref().unwrap();
+            let app = content::Access {
+                sessions: crate::authorization::session::SessionAuthority::new(
+                    identity.identity.authority.clone(),
+                    identity.identity.tenant,
+                ),
+                authorization: identity.access.authorization_store(),
+                runtime: f.plan_runtime.clone(),
+                audit_store: identity.audit.clone(),
+                tenant: identity.identity.tenant,
+                content: f.content.clone(),
+                clock: Arc::new(crate::clock::ContentClock(Arc::new(
+                    crate::clock::SystemClock,
+                ))),
+                catalog: Arc::new(rss_mdm_software_service::catalog::Reader::new(
+                    identity.identity.tenant,
+                )),
+            };
+            let operation = Uuid::new_v4();
+            let selection = content::Selection {
+                version: blueprint.label(),
+                variant: "x86_64".into(),
+                platform: blueprint.platform,
+                architecture: r::Architecture::X86_64,
+                artifact: Some(blueprint.definition.reference().into()),
+                operation: Some(operation),
+            };
+            let bytes = blueprint.definition.canonical();
+            let staged = content::begin_upload(
+                &app,
+                &proof,
+                &audit,
+                &target.to_string(),
+                operation,
+                &selection,
+                store.upload_budget()?,
+            )
+            .await?;
+            let now = crate::clock::Clock::unix_seconds(&crate::clock::SystemClock)?;
+            ensure!(
+                store
+                    .append(
+                        &staged.binding.actor,
+                        operation,
+                        0,
+                        now,
+                        &bytes[..3],
+                        store.upload_budget()?
+                    )
+                    .await?
+                    .offset
+                    == 3
+            );
+            content::upload(
+                &app,
+                content::UploadAuthority::initialization(&proof)?,
+                &audit,
+                &target.to_string(),
+                &selection,
+                bytes.as_slice(),
+            )
+            .await?;
+            let done = store.status(&staged.binding.actor, operation, now).await?;
+            ensure!(
+                done.complete
+                    && done.offset == bytes.len() as u64
+                    && done.binding.sha256 == staged.binding.sha256
+            );
+            audit.finalize(None);
+            Ok(())
+        })
+        .await
 }

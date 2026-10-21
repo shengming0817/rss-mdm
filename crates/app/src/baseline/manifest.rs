@@ -430,7 +430,7 @@ fn performance(
     let budget = w::NativeBudget {
         timeout_seconds: 10,
         output_bytes: 262144,
-        max_rows: 64,
+        max_rows: 66,
     };
     let queries = [
         ("cpu", w::PerformanceSection::Cpu),
@@ -458,7 +458,10 @@ fn performance(
                 } else {
                     vec![]
                 },
-                budget,
+                budget: w::NativeBudget {
+                    max_rows: if name == "filesystems" { 64 } else { 1 },
+                    ..budget
+                },
             },
         )
     })
@@ -532,6 +535,70 @@ fn performance(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn performance_accepts_64_filesystems_and_rejects_65() {
+        for platform in [r::Platform::Windows, r::Platform::MacOS] {
+            let template = performance(platform, &fields().unwrap()).unwrap();
+            let plan = &template.spec().plan;
+            let queries = plan
+                .spec()
+                .queries
+                .iter()
+                .map(|(key, q)| {
+                    let rows = match key.as_str() {
+                        "cpu" => vec![BTreeMap::from([("busy_percent".into(), json!(20))])],
+                        "memory" => vec![BTreeMap::from([
+                            ("total_bytes".into(), json!("1000")),
+                            ("available_bytes".into(), json!("500")),
+                        ])],
+                        _ => (0..64)
+                            .map(|i| {
+                                BTreeMap::from([
+                                    ("id".into(), json!(format!("volume-{i}"))),
+                                    ("total_bytes".into(), json!("1000")),
+                                    ("free_bytes".into(), json!("500")),
+                                ])
+                            })
+                            .collect(),
+                    };
+                    (
+                        key.clone(),
+                        w::NativeQueryResult {
+                            scan: None,
+                            query_digest: q.digest(),
+                            collected_at: 1,
+                            status: w::NativeQueryStatus::Complete,
+                            enumeration_complete: true,
+                            row_count: rows.len() as u32,
+                            rows,
+                            users: None,
+                        },
+                    )
+                })
+                .collect();
+            let mut result = w::NativeCollectionResult {
+                plan_digest: plan.digest(),
+                collected_at: 1,
+                queries,
+            };
+            assert!(result.validate_for(plan, 1).is_ok());
+            assert!(
+                result
+                    .queries
+                    .iter()
+                    .all(|(key, r)| r.complete_for(&plan.spec().queries[key], 1))
+            );
+            let fs = result.queries.get_mut("filesystems").unwrap();
+            fs.rows.push(BTreeMap::from([
+                ("id".into(), json!("volume-65")),
+                ("total_bytes".into(), json!("1000")),
+                ("free_bytes".into(), json!("500")),
+            ]));
+            fs.row_count += 1;
+            assert!(!fs.complete_for(&plan.spec().queries["filesystems"], 1));
+            assert!(result.validate_for(plan, 1).is_err());
+        }
+    }
     #[test]
     fn frozen_baseline_has_unique_operations_and_exact_current_contracts() {
         let tenant = Uuid::from_u128(2863);
