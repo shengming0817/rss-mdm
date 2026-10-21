@@ -7,6 +7,7 @@ use crate::test_support::*;
 use base64::{Engine, engine::general_purpose::STANDARD};
 use rss_mdm_agent_wire::{enroll as w, runtime as r};
 use software::{Fixture, write};
+use sqlx::Connection;
 use uuid::Uuid;
 fn root() -> std::path::PathBuf {
     std::env::var("MDM_AGENT_PKI_FIXTURES").unwrap().into()
@@ -91,7 +92,7 @@ async fn publish_version(
     };
     let bytes = vec![if windows { 0x4e } else { 0x50 }; 128 * 1024 + 3];
     let candidate = serde_json::to_vec(
-        &json!({"wireVersion":1,"tenantId":case_tenant(),"target":{"platform":platform,"architecture":architecture},"version":version,"origin":"https://mdm.example.test:9445","signingKeys":crate::test_support::agent::fixture_signing_input()?["trusted_keys"],"packaging":if windows{json!({"kind":"nsis_exe","publisher":"RSS Test Publisher","signature_evidence":"external-signed-build:1"})}else{json!({"kind":"macos_pkg","bundle":"com.rss.agent","team":"ABCDEFGHIJ","notarization_evidence":"external-notarized-build:1"})}}),
+        &json!({"wireVersion":1,"tenantId":case_tenant(),"target":{"platform":platform,"architecture":architecture},"version":version,"origin":"https://mdm.example.test:9445","signingKeys":crate::test_support::agent::fixture_signing_input()?["trusted_keys"],"packaging":if windows{json!({"kind":"nsis_exe","publisher":"RSS Test Publisher"})}else{json!({"kind":"macos_pkg","bundle":"com.rss.agent"})}}),
     )?;
     let mut definition =
         publication_support::private_definition(f.registered["snapshot"].clone(), &bytes);
@@ -147,7 +148,7 @@ async fn publish_version(
         json!({"action":"enable"}),
     )
     .await?;
-    let input = json!({"operationId":Uuid::new_v4(),"resource":id,"version":"v1","variant":"default","target":{"platform":platform,"architecture":architecture},"channel":"production","manifestArtifact":"candidate"});
+    let input = json!({"operationId":Uuid::new_v4(),"resource":id,"version":"v1","variant":"default","target":{"platform":platform,"architecture":architecture},"manifestArtifact":"candidate"});
     let (status, document) = user
         .call(
             &f.router,
@@ -171,7 +172,7 @@ async fn configuration(
     quantity: Value,
     lifetime: Option<u32>,
 ) -> Result<(w::configuration::ConfigurationFile, Value)> {
-    let mut input = json!({"operationId":Uuid::new_v4(),"secret":credential(&Uuid::new_v4().to_string()),"quantity":quantity,"targets":[{"platform":"windows","architecture":"x86_64"},{"platform":"macos","architecture":"aarch64"}],"channels":["production"]});
+    let mut input = json!({"operationId":Uuid::new_v4(),"secret":credential(&Uuid::new_v4().to_string()),"quantity":quantity,"targets":[{"platform":"windows","architecture":"x86_64"},{"platform":"macos","architecture":"aarch64"}]});
     if let Some(seconds) = lifetime {
         input["lifetimeSeconds"] = json!(seconds);
     }
@@ -375,6 +376,9 @@ async fn fixed_packages_and_configurations_activate_beyond_self_quota() -> Resul
     let (file, _) = configuration(&f, &mut user, json!({"kind":"finite","count":2}), None).await?;
     let (unlimited, _) = configuration(&f, &mut user, json!({"kind":"unlimited"}), None).await?;
     let tls = Tls::start(&authority).await?;
+    let mut legacy_owner = sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?).await?;
+    sqlx::query("UPDATE mdm_agent_packages.releases SET document=jsonb_set(document,'{channel}','\"production\"') WHERE tenant_id=$1::uuid AND id=ANY($2)")
+        .bind(case_tenant()).bind(&[windows.release_id, macos.release_id][..]).execute(&mut legacy_owner).await?;
     let mut devices = std::collections::BTreeSet::new();
     for (index, config) in [&file, &unlimited].into_iter().enumerate() {
         for (offset, package) in [&windows, &macos].into_iter().enumerate() {
@@ -385,6 +389,18 @@ async fn fixed_packages_and_configurations_activate_beyond_self_quota() -> Resul
     }
     ensure!(devices.len() == 4);
     ensure!(machine(&f, "/api/v1/agent/enroll/configurations/exchange", &exchange(&file, &macos, 2)?).await?.0 == StatusCode::TOO_MANY_REQUESTS);
+    // Historical authority stays byte-for-byte intact; management projects current metadata only.
+    let mut legacy = legacy_owner.begin().await?;
+    sqlx::query("UPDATE mdm_access.agent_configurations SET document=jsonb_set(document,'{channels}','[\"production\"]') WHERE tenant_id=$1::uuid AND id=$2")
+        .bind(case_tenant()).bind(file.configuration.configuration_id).execute(&mut *legacy).await?;
+    legacy.commit().await?;
+    let historical = read(&f, &mut user, file.configuration.configuration_id).await?;
+    ensure!(historical["configuration"].get("channels").is_none() && historical["consumed"] == 2);
+    let mut legacy = legacy_owner.begin().await?;
+    let retained: bool = sqlx::query_scalar("SELECT document ? 'channels' FROM mdm_access.agent_configurations WHERE tenant_id=$1::uuid AND id=$2")
+        .bind(case_tenant()).bind(file.configuration.configuration_id).fetch_one(&mut *legacy).await?;
+    ensure!(retained);
+    legacy.commit().await?;
     let me = user
         .call(
             &f.router,
@@ -420,6 +436,7 @@ async fn fixed_packages_and_configurations_activate_beyond_self_quota() -> Resul
         live == 4,
         "configuration revoke deactivated existing devices"
     );
+    legacy_owner.close().await?;
     ensure!(tls.owner.shutdown().join().await?.is_clean());
     Ok(())
 
@@ -433,12 +450,12 @@ async fn finite_reservations_and_frozen_authority_survive_revoke() -> Result<()>
     let package = publish(&f, &mut user, false).await?;
     let (file, _) = configuration(&f, &mut user, json!({"kind":"finite","count":2}), None).await?;
     let mut other = authority::Authority::prepared_browser("other").await?;
-    ensure!(other.call(&f.router,Method::POST,"/api/v1/agent-configurations",Some(json!({"operationId":Uuid::new_v4(),"secret":credential("forbidden"),"quantity":{"kind":"unlimited"},"targets":[{"platform":"macos","architecture":"aarch64"}],"channels":["production"]}))).await?.0==StatusCode::FORBIDDEN);
+    ensure!(other.call(&f.router,Method::POST,"/api/v1/agent-configurations",Some(json!({"operationId":Uuid::new_v4(),"secret":credential("forbidden"),"quantity":{"kind":"unlimited"},"targets":[{"platform":"macos","architecture":"aarch64"}]}))).await?.0==StatusCode::FORBIDDEN);
     for quantity in [
         json!({"kind":"finite","count":0}),
         json!({"kind":"finite","count":-1}),
     ] {
-        ensure!(user.call(&f.router,Method::POST,"/api/v1/agent-configurations",Some(json!({"operationId":Uuid::new_v4(),"secret":credential("invalid-count"),"quantity":quantity,"targets":[{"platform":"macos","architecture":"aarch64"}],"channels":["production"]}))).await?.0==StatusCode::BAD_REQUEST);
+        ensure!(user.call(&f.router,Method::POST,"/api/v1/agent-configurations",Some(json!({"operationId":Uuid::new_v4(),"secret":credential("invalid-count"),"quantity":quantity,"targets":[{"platform":"macos","architecture":"aarch64"}]}))).await?.0==StatusCode::BAD_REQUEST);
     }
     let mut bad = exchange(&file, &package, 0)?;
     bad.file.configuration.origin = "https://untrusted.example".into();
@@ -1003,6 +1020,33 @@ async fn configuration_scope_follows_current_candidate_admission() -> Result<()>
     ensure!(original.0 == StatusCode::OK);
     let (current, publication_input) = publish_version(&f, &mut user, true, "2+enterprise").await?;
     ensure!(current.version != old.version && current.candidate_sha256 != old.candidate_sha256);
+    let mut anonymous = Browser::default();
+    let catalogue = anonymous
+        .call(
+            &f.router,
+            Method::GET,
+            "/api/v1/public-agent/packages",
+            None,
+        )
+        .await?;
+    ensure!(
+        catalogue.0 == StatusCode::OK
+            && catalogue.1.as_array().is_some_and(|items| items
+                .iter()
+                .any(|item| item["releaseId"] == current.release_id.to_string()))
+    );
+    ensure!(
+        anonymous
+            .call(
+                &f.router,
+                Method::POST,
+                "/api/v1/public-agent/packages",
+                Some(json!({}))
+            )
+            .await?
+            .0
+            == StatusCode::METHOD_NOT_ALLOWED
+    );
     // These are the representative creation-replay checks; ordinary preparation
     // only creates the material required by each scenario.
     let count_sql = format!(

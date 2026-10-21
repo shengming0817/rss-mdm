@@ -32,25 +32,30 @@ pub struct Manifest {
     pub signing_keys: std::collections::BTreeMap<String, String>,
     pub packaging: Packaging,
 }
-/// External builders own signing and notarization. Publication freezes their reviewed evidence.
+/// Optional builder signing metadata is recorded without imposing platform signing policy.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Packaging {
     NsisExe {
         publisher: String,
+        #[serde(default, skip_serializing_if = "String::is_empty")]
         signature_evidence: String,
     },
     WindowsMsi {
         publisher: String,
+        #[serde(default, skip_serializing_if = "String::is_empty")]
         signature_evidence: String,
     },
     WindowsMsix {
         publisher: String,
+        #[serde(default, skip_serializing_if = "String::is_empty")]
         signature_evidence: String,
     },
     MacosPkg {
         bundle: String,
+        #[serde(default, skip_serializing_if = "String::is_empty")]
         team: String,
+        #[serde(default, skip_serializing_if = "String::is_empty")]
         notarization_evidence: String,
     },
 }
@@ -72,7 +77,6 @@ pub struct Publish {
     pub version: String,
     pub variant: String,
     pub target: w::Target,
-    pub channel: w::Channel,
     pub manifest_artifact: String,
 }
 #[derive(Clone, Serialize, Deserialize)]
@@ -146,7 +150,6 @@ fn definition<'a>(v: &'a r::Version, i: &Publish) -> Result<&'a r::SoftwareDefin
                 && matches!(x.deployment, r::MsixDeployment::DeviceProvisioning)
                 && x.dependencies.is_empty()
                 && definition.spec().dependencies.is_empty()
-                && !x.allow_unsigned
         }
         r::SoftwareBehavior::Pkg(x) => {
             i.target.platform == TaskPlatform::Macos && x.scope == r::SoftwareScope::System
@@ -167,6 +170,7 @@ fn metadata(
     id: Uuid,
 ) -> Result<w::Package, Error> {
     let bounded = |s: &str| !s.is_empty() && s.len() <= 1024 && !s.chars().any(char::is_control);
+    let optional = |s: &str| s.len() <= 1024 && !s.chars().any(char::is_control);
     let packaging = match &manifest.packaging {
         Packaging::NsisExe {
             publisher,
@@ -182,7 +186,7 @@ fn metadata(
         } => {
             i.target.platform == TaskPlatform::Windows
                 && bounded(publisher)
-                && bounded(signature_evidence)
+                && optional(signature_evidence)
         }
         Packaging::MacosPkg {
             bundle,
@@ -191,11 +195,9 @@ fn metadata(
         } => {
             i.target.platform == TaskPlatform::Macos
                 && bounded(bundle)
-                && team.len() == 10
-                && team
-                    .bytes()
-                    .all(|b| b.is_ascii_uppercase() || b.is_ascii_digit())
-                && bounded(notarization_evidence)
+                && team.len() <= 256
+                && optional(team)
+                && optional(notarization_evidence)
         }
     };
     let origin = url::Url::parse(&manifest.origin).map_err(|_| invalid())?;
@@ -228,7 +230,6 @@ fn metadata(
     Ok(w::Package {
         release_id: id,
         tenant_id: manifest.tenant_id,
-        channel: i.channel,
         target: i.target,
         version: manifest.version.clone(),
         format: manifest.packaging.format(),
@@ -265,7 +266,7 @@ async fn replay_in(
 ) -> transaction::Result<Option<w::Package>> {
     let tenant = tx.tenant_id().to_string();
     let old=tx.with_connection(move|c|Box::pin(async move {
-  sqlx::query("SELECT request_digest,document FROM mdm_agent_packages.releases WHERE tenant_id=$1::uuid AND operation_id=$2").bind(tenant).bind(operation).fetch_optional(c).await
+  sqlx::query("SELECT request_digest,document - 'channel' AS document FROM mdm_agent_packages.releases WHERE tenant_id=$1::uuid AND operation_id=$2").bind(tenant).bind(operation).fetch_optional(c).await
  })).await?;
     old.map(|row| {
         if row.try_get::<Vec<u8>, _>("request_digest")? != hash {
@@ -510,7 +511,7 @@ pub async fn admitted_on(
         .execute(&mut *c)
         .await
         .map_err(|_| storage())?;
-    let row=sqlx::query("SELECT document,binding,state FROM mdm_agent_packages.releases WHERE tenant_id=$1::uuid AND id=$2").bind(tenant.to_string()).bind(i.release_id).fetch_optional(&mut *c).await.map_err(|_|storage())?.ok_or(Error::ResourceMissing)?;
+    let row=sqlx::query("SELECT document - 'channel' AS document,binding,state FROM mdm_agent_packages.releases WHERE tenant_id=$1::uuid AND id=$2").bind(tenant.to_string()).bind(i.release_id).fetch_optional(&mut *c).await.map_err(|_|storage())?.ok_or(Error::ResourceMissing)?;
     let package: w::Package =
         serde_json::from_value(row.try_get("document").map_err(|_| storage())?)
             .map_err(|_| storage())?;
@@ -538,7 +539,7 @@ async fn current_on(
     tenant: TenantId,
     id: Uuid,
 ) -> Result<(w::Package, Binding), Error> {
-    let row=sqlx::query("SELECT document,binding FROM mdm_agent_packages.releases WHERE tenant_id=$1::uuid AND id=$2 AND state='published'").bind(tenant.to_string()).bind(id).fetch_optional(&mut *c).await.map_err(|_|storage())?.ok_or(Error::ResourceMissing)?;
+    let row=sqlx::query("SELECT document - 'channel' AS document,binding FROM mdm_agent_packages.releases WHERE tenant_id=$1::uuid AND id=$2 AND state='published'").bind(tenant.to_string()).bind(id).fetch_optional(&mut *c).await.map_err(|_|storage())?.ok_or(Error::ResourceMissing)?;
     let package: w::Package =
         serde_json::from_value(row.try_get("document").map_err(|_| storage())?)
             .map_err(|_| storage())?;
@@ -684,7 +685,7 @@ pub async fn known_in(
     c: &mut sqlx::PgConnection,
     tenant: TenantId,
 ) -> Result<Vec<AdmittedPackage>, Error> {
-    let rows = sqlx::query("SELECT document,binding FROM mdm_agent_packages.releases WHERE tenant_id=$1::uuid ORDER BY id")
+    let rows = sqlx::query("SELECT document - 'channel' AS document,binding FROM mdm_agent_packages.releases WHERE tenant_id=$1::uuid ORDER BY id")
         .bind(tenant.to_string()).fetch_all(c).await.map_err(|_| storage())?;
     rows.into_iter()
         .map(|row| {
@@ -705,4 +706,74 @@ pub async fn known_in(
             })
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn macos_publication_accepts_unsigned_metadata_and_still_binds_the_native_target() {
+        let tenant = Uuid::new_v4();
+        let target = w::Target {
+            platform: TaskPlatform::Macos,
+            architecture: TaskArchitecture::Aarch64,
+        };
+        let mut manifest = Manifest {
+            wire_version: 1,
+            tenant_id: tenant,
+            target,
+            version: "0.1.0".into(),
+            origin: "https://mdm.example.test:9445".into(),
+            signing_keys: [("test-key".into(), "A".repeat(43))].into(),
+            packaging: Packaging::MacosPkg {
+                bundle: "com.rss.mdmagent".into(),
+                team: "development-ad-hoc".into(),
+                notarization_evidence: "not-notarized:package-manifest:build-1".into(),
+            },
+        };
+        let input = Publish {
+            operation_id: Uuid::new_v4(),
+            resource: "resource".into(),
+            version: "v1".into(),
+            variant: "default".into(),
+            target,
+            manifest_artifact: "candidate".into(),
+        };
+        let artifact =
+            r::Artifact::new(r::Id::new("installer").unwrap(), 1, r::Digest::of(b"x")).unwrap();
+        let check = |manifest: &Manifest, input: &Publish| {
+            metadata(
+                manifest,
+                input,
+                TenantId::parse(&tenant.to_string()).unwrap(),
+                &artifact,
+                &serde_json::to_vec(manifest).unwrap(),
+                Uuid::new_v4(),
+            )
+            .is_ok()
+        };
+        assert!(check(&manifest, &input));
+        let Packaging::MacosPkg {
+            team,
+            notarization_evidence,
+            ..
+        } = &mut manifest.packaging
+        else {
+            unreachable!()
+        };
+        team.clear();
+        notarization_evidence.clear();
+        assert!(check(&manifest, &input));
+        if let Packaging::MacosPkg { team, .. } = &mut manifest.packaging {
+            *team = "x".repeat(257);
+        }
+        assert!(!check(&manifest, &input));
+        if let Packaging::MacosPkg { team, .. } = &mut manifest.packaging {
+            *team = "x".repeat(256);
+        }
+        assert!(check(&manifest, &input));
+        manifest.target.platform = TaskPlatform::Windows;
+        assert!(!check(&manifest, &input));
+    }
 }

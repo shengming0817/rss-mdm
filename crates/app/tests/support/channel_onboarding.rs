@@ -136,7 +136,7 @@ async fn publish_format(
         );
     }
     software_execution::seed_enabled(planning, content, &version).await?;
-    let (status,published)=user.call(router,Method::POST,"/api/v1/agent-packages",Some(json!({"operationId":Uuid::new_v4(),"resource":resource,"version":"v1","variant":"default","target":{"platform":platform,"architecture":arch},"channel":"test","manifestArtifact":"candidate"}))).await?;
+    let (status,published)=user.call(router,Method::POST,"/api/v1/agent-packages",Some(json!({"operationId":Uuid::new_v4(),"resource":resource,"version":"v1","variant":"default","target":{"platform":platform,"architecture":arch},"manifestArtifact":"candidate"}))).await?;
     ensure!(
         status == StatusCode::OK,
         "Agent publication: {status} {published}"

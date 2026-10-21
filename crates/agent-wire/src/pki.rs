@@ -9,7 +9,7 @@ pub const API_VERSION: u8 = 1;
 pub const SCHEMA_MANIFEST: &str = include_str!("../schema/pki/manifest.json");
 /// SHA-256 of the ordered schema file bytes named by [`SCHEMA_MANIFEST`].
 pub const SCHEMA_FINGERPRINT: &str =
-    "614b0b26997524524677fd86f4e1fdc3179b3ee40d66981679f82ff6181ed835";
+    "9b2028ab74968866f0973ce8d2084deee5a98afcb20be2791e5167ee40400594";
 
 const MAX_REVISION: u64 = i64::MAX as u64;
 const MAX_ISSUERS: usize = 16;
@@ -282,7 +282,8 @@ pub struct Observation {
 pub enum ObservationState {
     /// Target received but not durably installed.
     Received,
-    /// Commit and readback completed.
+    /// The purpose owner committed and independently read back its applied trust material.
+    /// Agent applies private trust; this is not a claim about global OS root settings.
     Applied,
     /// Attempt failed; prior installed state may remain usable.
     Failed,
@@ -301,7 +302,7 @@ pub enum ObservationReason {
     Storage,
     /// Device credential unavailable or rejected.
     Credential,
-    /// Local machine trust installation failed.
+    /// The purpose owner could not apply its local trust material.
     Installation,
     /// Restart requires a fresh observation.
     Restart,

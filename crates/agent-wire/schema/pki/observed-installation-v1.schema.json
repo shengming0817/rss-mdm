@@ -142,7 +142,7 @@
         },
         {
           "const": "installation",
-          "description": "Local machine trust installation failed.",
+          "description": "The purpose owner could not apply its local trust material.",
           "type": "string"
         },
         {
@@ -162,7 +162,7 @@
         },
         {
           "const": "applied",
-          "description": "Commit and readback completed.",
+          "description": "The purpose owner committed and independently read back its applied trust material.\nAgent applies private trust; this is not a claim about global OS root settings.",
           "type": "string"
         },
         {

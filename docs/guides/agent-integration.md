@@ -13,7 +13,7 @@
 三种来源统一进入独立 Agent 证书链路：
 
 1. 普通用户在 Agent 内登录企业会话。Agent 先通过 `POST /api/v1/agent/enroll/requests` 提交稳定 operationId、独立随机 secret、platform 与本机私钥签名的 base64 DER CSR；桌面会话调用 `POST /api/v1/agent-requests/{id}/authorize` 授权这一个请求。Agent 和网页消费由各自仓库交付；服务端不提供网页注册、确认页或深链接。所有新请求都必须绑定 CSR，客户端不能选择期限、数量或不限量。
-2. 管理员调用 `POST /api/v1/agent-configurations` 创建一个完整签名 JSON 文件，必须明确 `quantity:{"kind":"finite","count":N}`（N > 0）或 `quantity:{"kind":"unlimited"}`，指定 targets 与 channels；可选 lifetimeSeconds 最多 365 天，默认后台 24 小时。管理客户端生成并保留 32 字节随机 secret；响应文件包含 configuration 元数据、secret 与 signature。相同创建 operation 和完整输入可重新取得原文件，数据库与审计不保存 secret。网页在请求提交后清除本地 secret；响应丢失时用原 operationId 调用 `GET /api/v1/agent-configuration-operations/{operationId}`，仅原创建主体和实例可读到无秘密元数据。返回 null 表示仍未知（原创建可能迟到提交），不得自动重新创建或恢复 secret；找到旧配置后先确认撤销成功，再创建新配置。`GET /api/v1/agent-configurations/{id}` 只返回元数据、状态、reserved、consumed 和 remaining；有限数量的 remaining 为 count−reserved−consumed，无限数量为 null，期限和撤销状态仍独立生效；`POST .../{id}/revoke` 禁止新交换。独立权限为 `agent_enrollment_read` / `agent_enrollment_write`。
+2. 管理员调用 `POST /api/v1/agent-configurations` 创建一个完整签名 JSON 文件，必须明确 `quantity:{"kind":"finite","count":N}`（N > 0）或 `quantity:{"kind":"unlimited"}`，指定原生 targets；可选 lifetimeSeconds 最多 365 天，默认后台 24 小时。管理客户端生成并保留 32 字节随机 secret；响应文件包含 configuration 元数据、secret 与 signature。相同创建 operation 和完整输入可重新取得原文件，数据库与审计不保存 secret。网页在请求提交后清除本地 secret；响应丢失时用原 operationId 调用 `GET /api/v1/agent-configuration-operations/{operationId}`，仅原创建主体和实例可读到无秘密元数据。返回 null 表示仍未知（原创建可能迟到提交），不得自动重新创建或恢复 secret；找到旧配置后先确认撤销成功，再创建新配置。`GET /api/v1/agent-configurations/{id}` 只返回元数据、状态、reserved、consumed 和 remaining；有限数量的 remaining 为 count−reserved−consumed，无限数量为 null，期限和撤销状态仍独立生效；`POST .../{id}/revoke` 禁止新交换。独立权限为 `agent_enrollment_read` / `agent_enrollment_write`。
 3. 原生 MDM 安装使用专用短期引导证书，在 Agent TLS 监听器调用 `POST /api/v1/agent/enroll/native-grants`。提交 installationOperation、operationId、secret、独立日常密钥的 CSR 和 runtime；服务端从引导证书记录恢复来源注册、安装和 release，复查当前授权后返回 grant。原生 Windows / Apple 监听器不再挂载此入口，MDM 日常证书不能交换授权。
 
 管理员配置使用配置自身的租户额度，默认责任人为 null；创建者仅作为审计身份，不占用其普通用户 20 台额度，也不构成终端 ownership。每台设备独立生成私钥、CSR、operation 和 grant secret，调用 `POST /api/v1/agent/enroll/configurations/exchange`，提交完整 file、runtime 和 installation（releaseId、candidateSha256）。同一 operation 的精确重试只返回原授权；同一配置下换 operation 重用 CSR 公钥被拒绝。`POST .../configurations/status` 使用原 configurationId、operationId 和独立设备 secret 查回授权，不重新分配。
@@ -74,11 +74,15 @@ snapshot、partial、failed 分别表达完整快照、部分结果和失败。�
 
 ## 固定安装包发布与匿名下载
 
-服务器消费外部构建、签名和 notarization 完成的 Windows NSIS EXE、MSI、MSIX / macOS PKG，不在 Linux 构建或签名。固定包及候选 manifest 通过现有 Software Resource 和 Content 上传，来源注册即启用，版本由启用或安装包发布完成技术校验；候选 manifest 是独立、摘要校验的 Resource artifact。它冻结 wireVersion、tenantId、原生 target、version、HTTPS origin、signingKeys，以及 `packaging` 的 nsis_exe（publisher、signature_evidence）、windows_msi / windows_msix（publisher、signature_evidence）或 macos_pkg（bundle、team、notarization_evidence）外部证据。Windows EXE 的 Resource layout 仅声明固定 EXE 与该 manifest；PKG 同样拥有两份材料。公开下载返回被准入格式的固定包；响应的 format 与文件后缀必须一致。
+服务器消费外部构建的 Windows NSIS EXE、MSI、MSIX / macOS PKG，不在 Linux 构建或签名。固定包及候选 manifest 通过现有 Software Resource 和 Content 上传，来源注册即启用，版本由启用或安装包发布完成技术校验；候选 manifest 是独立、摘要校验的 Resource artifact。它冻结 wireVersion、tenantId、原生 target、version、HTTPS origin、signingKeys，以及 `packaging` 的 nsis_exe（publisher、signature_evidence）、windows_msi / windows_msix（publisher、signature_evidence）或 macos_pkg（bundle、team、notarization_evidence）可选构建信息。Windows EXE 的 Resource layout 仅声明固定 EXE 与该 manifest；PKG 同样拥有两份材料。公开下载返回被准入格式的固定包；响应的 format 与文件后缀必须一致。
 
-`POST /api/v1/agent-packages` 要求 release_publish；草稿自动启用还要求 software_write，输入 operationId、resource、version、variant、target、channel、manifestArtifact。服务端验证两份材料的长度和摘要、完整当前软件生命周期与依赖闭包及系统安装范围，冻结 installerSha256 与独立 candidateSha256；服务器按 target 生成固定文件名，不接收包含秘密的名称或安装 argv。`POST /api/v1/agent-packages/{id}/withdraw` 要求 software_withdraw，阻止该候选的新交换和下载。外部打包及真实签名、notarization、导入、服务安装效果由产品 T3 验收；这些声明和受控服务端测试不代替平台证据。
+`POST /api/v1/agent-packages` 要求 release_publish；草稿自动启用还要求 software_write，输入 operationId、resource、version、variant、target、manifestArtifact。服务端验证两份材料的长度和摘要、完整当前软件生命周期与依赖闭包及系统安装范围，冻结 installerSha256 与独立 candidateSha256；服务器按 target 生成固定文件名，不接收包含秘密的名称或安装 argv。`POST /api/v1/agent-packages/{id}/withdraw` 要求 software_withdraw，阻止该候选的新交换和下载。外部打包及真实签名、notarization、导入、服务安装效果由产品 T3 验收；这些声明和受控服务端测试不代替平台证据。
 
-Agent HTTPS 监听器公开 `GET /api/v1/agent/enroll/packages`、`GET .../packages/{id}` 与 `GET .../packages/{id}/content`，复用内容校验和 Range / ETag 下载。路径仅含公开 releaseId。配置不绑定一个固定软件版本；每次新交换检查当前发布、原生 target、允许 channel、可信 origin / key 和精确候选摘要。文件自身不能添加新的信任根。配置文件、共享 secret、设备 secret 和 CSR 不进入 URL、文件名或命令行。
+后台允许发布未签名、ad-hoc 或未公证的安装包，不再区分测试、试点与生产发布环。签名、公证及发布者信息为构建器可选记录，不能伪造；管理员授权、原始材料摘要、当前软件生命周期与原生目标校验仍必需。目标系统的安装提示和允许条件由实际平台处理，不把后台上传成功解释为系统一定允许安装。
+
+Agent HTTPS 监听器公开 `GET /api/v1/agent/enroll/packages`、`GET .../packages/{id}` 与 `GET .../packages/{id}/content`，复用内容校验和 Range / ETag 下载。路径仅含公开 releaseId。配置不绑定一个固定软件版本；每次新交换检查当前发布、原生 target、可信 origin / key 和精确候选摘要。文件自身不能添加新的信任根。配置文件、共享 secret、设备 secret 和 CSR 不进入 URL、文件名或命令行。
+
+随附网关在网页同源地址仅代理上述安装包路径的 GET / HEAD，复用软件目录 owner 的内部管理只读路由，保留 Range / ETag，不转发浏览器会话，不要求网页和 Agent TLS 使用同一 CA；网页可直接使用 `/downloads/agent`。注册、签发、激活和运行接口仍通过独立 Agent TLS 监听器，网页网关不代理这些接口。
 
 本次移除旧 agent-grants 创建、管理状态、preview / approve 路由和普通请求 lifetimeSeconds / 可选 CSR，不提供别名或兼容解码；保留的是既有设备身份、不可变回执和 Unknown 恢复事实。
 
@@ -153,6 +157,8 @@ Agent→MDM 复用 `request_mdm_enrollment` 的签名任务和 Start permit。�
 失联时只能展示最后观察及时间，不能据此宣称当前在线或仍然已应用。
 这些接口不创建成功 ACK，也不满足密钥激活门槛；PKI 安装摘要不包含 CRL 刷新内容，不能作为 CRL 新鲜度证明。
 离线设备可让轮换继续待完成，但无需等待其 ACK 才能部署、启动或开通租户。
+
+升级保留现有注册、设备证书、发布包与配置的原始历史记录。新下载的注册文件不含发布环；已用完或旧格式文件不转换、不重签，后续设备由管理员生成当前格式文件。Agent 的 trust Applied/ACK 表示其私有信任集合已持久应用并读回，不要求将设备 CA 安装为宿主的全局根信任。
 
 ## 周期遥测配置
 

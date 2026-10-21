@@ -197,7 +197,7 @@ async fn withdraw_agent(
     .await?;
     Ok(axum::http::StatusCode::NO_CONTENT)
 }
-/// Anonymous, secret-free catalogue on the Agent HTTPS listener.
+/// Anonymous, secret-free catalogue shared by Agent HTTPS and browser download ingress.
 pub fn agent_packages_public(app: Arc<HttpState>) -> Router {
     Router::new()
         .route("/packages", get(agent_package_list))
