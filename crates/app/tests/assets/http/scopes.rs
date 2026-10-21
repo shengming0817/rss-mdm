@@ -52,7 +52,7 @@ fn seed(
         "'pending',NULL,NULL"
     };
     pg(&format!(
-        "INSERT INTO mdm_access.collection_runs(tenant_id,id,registration,source,epoch,scope,sequence,started_at,attempts,result,reason,sealed_at) VALUES('{}','{run}','{registration}','agent.native','{epoch}','{scope}',1,1,'{attempts}',{terminal})",
+        "INSERT INTO mdm_access.collection_runs(tenant_id,id,registration,source,epoch,scope,sequence,started_at,attempts,result,reason,sealed_at) VALUES('{}','{run}','{registration}','agent.native','{epoch}','{scope}',{uid},1,'{attempts}',{terminal})",
         case_tenant()
     ))?;
     if let Some(value) = value {
@@ -60,7 +60,7 @@ fn seed(
         let coverage = serde_json::to_string(&definition.coverage()?)?;
         let namespace = namespace.canonical()?;
         pg(&format!(
-            "INSERT INTO mdm.inventory(tenant_id,journal,generation,scope,coverage,field,field_scope,value,batch_id,observed_at,received_at,state,registration,source,epoch,collection_sequence) VALUES('{}','mdm.observation.v1','inventory-projection-v1','{scope}','{coverage}','{}','{namespace}','{value}','{run}',1,2,'known','{registration}','agent.native','{epoch}',1)",
+            "INSERT INTO mdm.inventory(tenant_id,journal,generation,scope,coverage,field,field_scope,value,batch_id,observed_at,received_at,state,registration,source,epoch,collection_sequence) VALUES('{}','mdm.observation.v1','inventory-projection-v1','{scope}','{coverage}','{}','{namespace}','{value}','{run}',1,2,'known','{registration}','agent.native','{epoch}',{uid})",
             case_tenant(),
             field.key.as_str()
         ))?;
@@ -123,7 +123,7 @@ async fn inventory_scopes_preserve_history_and_hide_sensitive_namespaces() -> Re
         seed(registration, epoch, 900, secret, None)?;
         let hidden = f.author.call(&f.router, Method::GET, &path, None).await?;
         ensure!(hidden.0 == StatusCode::OK && hidden.1["asset"]["items"].as_array().unwrap().len() == 3 && !hidden.1.to_string().contains("900"));
-        grants.push(crate::authorization::Grant { operation: crate::authorization::Permission::InventorySensitiveRead, scope: crate::authorization::Scope::AllDevices });
+        grants.push(crate::authorization::Grant { operation: crate::authorization::Permission::InventorySensitiveRead, scope: crate::authorization::Scope::Tenant });
         crate::test_support::identity::set_grants(case_tenant(), &f.author_id, grants).await?;
         let visible = f.author.call(&f.router, Method::GET, &path, None).await?;
         ensure!(visible.0 == StatusCode::OK && visible.1["asset"]["items"].as_array().unwrap().len() == 4, "pending authorized scope missing: {visible:?}");
