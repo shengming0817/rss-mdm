@@ -190,14 +190,7 @@ pub(crate) async fn receive_on(
     if pending >= i64::from(service.limits.pending_batches) {
         return Err(Error::Capacity);
     }
-    let window = now / 60_000_000;
-    let row = sqlx::query("INSERT INTO mdm_telemetry.rate_windows VALUES($1::uuid,$2,1,$3) ON CONFLICT(tenant_id) DO UPDATE SET minute=excluded.minute,batches=CASE WHEN mdm_telemetry.rate_windows.minute=excluded.minute THEN mdm_telemetry.rate_windows.batches+1 ELSE 1 END,bytes=CASE WHEN mdm_telemetry.rate_windows.minute=excluded.minute THEN mdm_telemetry.rate_windows.bytes+excluded.bytes ELSE excluded.bytes END RETURNING batches,bytes")
-        .bind(service.tenant.to_string()).bind(window).bind(accounted as i64).fetch_one(&mut *c).await?;
-    if row.try_get::<i64, _>("batches")? > i64::from(service.limits.batches_per_minute)
-        || row.try_get::<i64, _>("bytes")? > i64::from(service.limits.bytes_per_minute)
-    {
-        return Err(Error::Capacity);
-    }
+    admit_rate_on(service, c, now, accounted).await?;
     let fields: Vec<_> = accepted
         .fields
         .iter()
@@ -500,6 +493,24 @@ async fn admit_observations_on(
             .any(|(id, digest)| receipts.get(id) != Some(digest))
     {
         return Err(Error::Conflict);
+    }
+    Ok(())
+}
+
+/// Shared tenant ingress quota; callers must roll back every rejection.
+pub(crate) async fn admit_rate_on(
+    service: &Service,
+    c: &mut PgConnection,
+    now: i64,
+    accounted: usize,
+) -> Result<(), Error> {
+    let window = now / 60_000_000;
+    let row = sqlx::query("INSERT INTO mdm_telemetry.rate_windows VALUES($1::uuid,$2,1,$3) ON CONFLICT(tenant_id) DO UPDATE SET minute=excluded.minute,batches=CASE WHEN mdm_telemetry.rate_windows.minute=excluded.minute THEN mdm_telemetry.rate_windows.batches+1 ELSE 1 END,bytes=CASE WHEN mdm_telemetry.rate_windows.minute=excluded.minute THEN mdm_telemetry.rate_windows.bytes+excluded.bytes ELSE excluded.bytes END RETURNING batches,bytes")
+        .bind(service.tenant.to_string()).bind(window).bind(accounted as i64).fetch_one(&mut *c).await?;
+    if row.try_get::<i64, _>("batches")? > i64::from(service.limits.batches_per_minute)
+        || row.try_get::<i64, _>("bytes")? > i64::from(service.limits.bytes_per_minute)
+    {
+        return Err(Error::Capacity);
     }
     Ok(())
 }

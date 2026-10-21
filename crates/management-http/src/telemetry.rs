@@ -15,12 +15,14 @@ pub fn routes(service: Option<Arc<Service>>) -> Router {
         .route("/telemetry/aggregate", post(aggregate))
         .route("/telemetry/maintenance", post(maintenance))
         .route("/telemetry/health", post(health))
+        .route("/telemetry/gaps/query", post(gaps))
         .with_state(Arc::new(service))
 }
 pub(crate) fn error(e: rss_mdm_telemetry_service::Error) -> Error {
     use rss_mdm_telemetry_service::Error as T;
     match e {
         T::Unsupported => Error::Unsupported,
+        T::NotFound => Error::NotFound,
         T::Invalid => Error::Malformed,
         T::Denied => Error::Forbidden,
         T::Conflict => Error::Conflict,
@@ -112,6 +114,27 @@ async fn resources(
         .as_ref()
         .ok_or(Error::Unsupported)?
         .resources(&auth.proof, &input, &audit)
+        .await
+        .map(Json)
+        .map_err(error)
+}
+
+async fn gaps(
+    State(app): State<App>,
+    Extension(auth): Extension<RequestAuth>,
+    Extension(audit): Extension<RequestAudit>,
+    input: Result<
+        Json<rss_mdm_telemetry_service::gap_query::Request>,
+        axum::extract::rejection::JsonRejection,
+    >,
+) -> Result<Json<rss_mdm_telemetry_service::gap_query::Page>, Error> {
+    let input = input.map_err(Error::from)?.0;
+    audit.set_action("telemetry_gaps_read");
+    audit.target_device(&input.device);
+    app.as_ref()
+        .as_ref()
+        .ok_or(Error::Unsupported)?
+        .gaps(&auth.proof, &input, &audit)
         .await
         .map(Json)
         .map_err(error)
