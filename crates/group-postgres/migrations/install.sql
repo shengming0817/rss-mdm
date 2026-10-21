@@ -6,7 +6,7 @@ CREATE TABLE mdm_group.groups (
  id uuid NOT NULL CHECK(id <> '00000000-0000-0000-0000-000000000000'),
  kind text NOT NULL CHECK(kind IN ('static','dynamic','system')),
  system_selector text CHECK(system_selector IN ('all_active','windows','macos')),
- CONSTRAINT groups_system_selector_check CHECK((kind='system')=(system_selector IS NOT NULL)),
+ CONSTRAINT groups_system_shape_check CHECK((kind='system')=(system_selector IS NOT NULL)),
  UNIQUE(tenant_id,system_selector),
  presentation jsonb NOT NULL CHECK(jsonb_typeof(presentation)='object' AND presentation ?& ARRAY['name','description'] AND octet_length(presentation::text)<=131072
    AND jsonb_typeof(presentation->'name')='string' AND octet_length(presentation->>'name') BETWEEN 1 AND 4096

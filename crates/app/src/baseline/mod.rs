@@ -145,38 +145,6 @@ fn blocked_reason(error: &Error) -> &'static str {
         _ => "storage",
     }
 }
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn owner_errors_keep_actionable_initialization_diagnostics() {
-        assert_eq!(
-            blocked_reason(&rss_mdm_authorization_service::Error::Forbidden.into()),
-            "authorization"
-        );
-        assert_eq!(
-            blocked_reason(&rss_mdm_flow_service::Error::Conflict.into()),
-            "conflict"
-        );
-        assert_eq!(
-            blocked_reason(&rss_mdm_inventory_service::Error::Conflict.into()),
-            "conflict"
-        );
-        assert_eq!(
-            blocked_reason(&rss_mdm_content_service::service::Error::Unsupported.into()),
-            "content"
-        );
-        assert_eq!(
-            blocked_reason(
-                &rss_mdm_content_service::service::Error::Content(
-                    rss_mdm_content_service::Error::CommitUnknown
-                )
-                .into()
-            ),
-            "outcome_unknown"
-        );
-    }
-}
 async fn execute(
     state: &crate::api::Assembly,
     authority: &rss_mdm_authorization_service::baseline::Authority,
@@ -522,4 +490,37 @@ pub(crate) fn registration(
             tokio::select! {_=cancel.cancelled()=>return Ok(()),_=tokio::time::sleep(std::time::Duration::from_secs(60))=>{}}
         }
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn owner_errors_keep_actionable_initialization_diagnostics() {
+        assert_eq!(
+            blocked_reason(&rss_mdm_authorization_service::Error::Forbidden.into()),
+            "authorization"
+        );
+        assert_eq!(
+            blocked_reason(&rss_mdm_flow_service::Error::Conflict.into()),
+            "conflict"
+        );
+        assert_eq!(
+            blocked_reason(&rss_mdm_inventory_service::Error::Conflict.into()),
+            "conflict"
+        );
+        assert_eq!(
+            blocked_reason(&rss_mdm_content_service::service::Error::Unsupported.into()),
+            "content"
+        );
+        assert_eq!(
+            blocked_reason(
+                &rss_mdm_content_service::service::Error::Content(
+                    rss_mdm_content_service::Error::CommitUnknown
+                )
+                .into()
+            ),
+            "outcome_unknown"
+        );
+    }
 }

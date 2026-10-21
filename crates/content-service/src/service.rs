@@ -735,12 +735,16 @@ pub async fn upload<R: tokio::io::AsyncRead + Unpin + Send>(
     let staged = begin_upload(app, proof, audit, id, operation, input, budget).await?;
     if !staged.complete && staged.offset != staged.binding.length {
         use tokio::io::AsyncReadExt;
-        let skipped = tokio::io::copy(
-            &mut (&mut reader).take(staged.offset),
-            &mut tokio::io::sink(),
-        )
-        .await
-        .map_err(|_| Error::Malformed)?;
+        let skipped = budget
+            .work(async {
+                tokio::io::copy(
+                    &mut (&mut reader).take(staged.offset),
+                    &mut tokio::io::sink(),
+                )
+                .await
+                .map_err(|_| Error::Malformed)
+            })
+            .await?;
         if skipped != staged.offset {
             return Err(Error::Malformed);
         }

@@ -104,9 +104,10 @@ impl Authority {
     }
     /// Rehydrate a bounded attempt from trusted product state and current authorization facts.
     pub async fn principal(&self, store: &crate::Store) -> Result<AuthorizedPrincipal, Error> {
-        let principal = AuthorizedPrincipal::from_initialization(Arc::new(self.clone()))
-            .load_authorization(store)
-            .await?;
+        let principal =
+            AuthorizedPrincipal::from_initialization(Arc::new(self.clone()), store.clock.clone())
+                .load_authorization(store)
+                .await?;
         self.grants(principal.authorization()?)?;
         Ok(principal)
     }

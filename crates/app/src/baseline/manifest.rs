@@ -636,6 +636,9 @@ mod tests {
                 .count(),
             5
         );
+        assert_current_resources(&a);
+    }
+    fn assert_current_resources(a: &Manifest) {
         let mut profiles = 0;
         let mut blueprints = 0;
         for step in &a.steps {

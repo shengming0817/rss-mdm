@@ -29,6 +29,15 @@
     ],
     [
       "groups",
+      "system_selector",
+      "text",
+      false,
+      null,
+      "",
+      ""
+    ],
+    [
+      "groups",
       "presentation",
       "jsonb",
       true,
@@ -585,7 +594,7 @@
       "groups",
       "groups_check1",
       "c",
-      "CHECK ((((kind = 'static'::text) AND (rule_version IS NULL)) OR ((kind = 'dynamic'::text) AND (rule_version IS NOT NULL))))",
+      "CHECK ((((kind = ANY (ARRAY['static'::text, 'system'::text])) AND (rule_version IS NULL)) OR ((kind = 'dynamic'::text) AND (rule_version IS NOT NULL))))",
       true
     ],
     [
@@ -606,7 +615,7 @@
       "groups",
       "groups_kind_check",
       "c",
-      "CHECK ((kind = ANY (ARRAY['static'::text, 'dynamic'::text])))",
+      "CHECK ((kind = ANY (ARRAY['static'::text, 'dynamic'::text, 'system'::text])))",
       true
     ],
     [
@@ -646,6 +655,20 @@
     ],
     [
       "groups",
+      "groups_system_selector_check",
+      "c",
+      "CHECK ((system_selector = ANY (ARRAY['all_active'::text, 'windows'::text, 'macos'::text])))",
+      true
+    ],
+    [
+      "groups",
+      "groups_system_shape_check",
+      "c",
+      "CHECK (((kind = 'system'::text) = (system_selector IS NOT NULL)))",
+      true
+    ],
+    [
+      "groups",
       "groups_tenant_id_id_member_set_fkey",
       "f",
       "FOREIGN KEY (tenant_id, id, member_set) REFERENCES mdm_group.member_runs(tenant_id, group_id, id) DEFERRABLE INITIALLY DEFERRED",
@@ -656,6 +679,13 @@
       "groups_tenant_id_id_rule_version_fkey",
       "f",
       "FOREIGN KEY (tenant_id, id, rule_version) REFERENCES mdm_group.rules(tenant_id, group_id, version) DEFERRABLE INITIALLY DEFERRED",
+      true
+    ],
+    [
+      "groups",
+      "groups_tenant_id_system_selector_key",
+      "u",
+      "UNIQUE (tenant_id, system_selector)",
       true
     ],
     [
@@ -943,7 +973,7 @@
     [
       "groups",
       "groups_dynamic",
-      "CREATE INDEX groups_dynamic ON mdm_group.groups USING btree (tenant_id, id) WHERE ((kind = 'dynamic'::text) AND (NOT deleted))",
+      "CREATE INDEX groups_dynamic ON mdm_group.groups USING btree (tenant_id, id) WHERE ((kind = ANY (ARRAY['dynamic'::text, 'system'::text])) AND (NOT deleted))",
       true,
       true,
       true
@@ -952,6 +982,14 @@
       "groups",
       "groups_pkey",
       "CREATE UNIQUE INDEX groups_pkey ON mdm_group.groups USING btree (tenant_id, id)",
+      true,
+      true,
+      true
+    ],
+    [
+      "groups",
+      "groups_tenant_id_system_selector_key",
+      "CREATE UNIQUE INDEX groups_tenant_id_system_selector_key ON mdm_group.groups USING btree (tenant_id, system_selector)",
       true,
       true,
       true

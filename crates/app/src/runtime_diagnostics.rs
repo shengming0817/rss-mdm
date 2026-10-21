@@ -79,91 +79,11 @@ impl RuntimeDiagnostics {
         }
         let execution = execution_component(self.execution.health());
         let mut components = vec![inventory, audit, apple, automation, execution];
-        if let Some(service) = &self.telemetry {
-            let mut telemetry = component(ComponentName::Telemetry, false);
-            match service.diagnostics(cutoff).await {
-                Ok(state) => {
-                    telemetry = component(ComponentName::Telemetry, state.running);
-                    if !state.running {
-                        telemetry.reasons.push(Reason::WorkerNotRunning);
-                    }
-                    if state.unknown > 0 || state.blocked > 0 {
-                        telemetry.health = Health::Degraded;
-                        telemetry.reasons.push(Reason::DeliveryRetrying);
-                    }
-                    telemetry
-                        .dependencies
-                        .push(dependency(DependencyName::TelemetryStorage, None));
-                    if detailed {
-                        telemetry.queues = [
-                            (QueueName::DeliveryPending, state.pending),
-                            (QueueName::DeliveryUnknown, state.unknown),
-                            (QueueName::DeliveryBlocked, state.blocked),
-                            (QueueName::MaintenancePending, state.maintenance),
-                        ]
-                        .into_iter()
-                        .map(|(name, count)| Queue {
-                            name,
-                            count: Some(count.min(4096)),
-                            truncated: Some(count > 4096),
-                        })
-                        .collect();
-                    }
-                }
-                Err(_) => {
-                    telemetry.health = Health::Degraded;
-                    telemetry.dependencies.push(dependency(
-                        DependencyName::TelemetryStorage,
-                        Some(Reason::DependencyUnavailable),
-                    ));
-                }
-            }
+        if let Some(telemetry) = self.telemetry_component(cutoff, detailed).await {
             components.push(telemetry);
         }
-        {
-            match tokio::time::timeout_at(
-                cutoff.into(),
-                crate::baseline::status(&self.access, &self.tenant.to_string()),
-            )
-            .await
-            {
-                Ok(Ok(Some((phase, blocked, assets, telemetry)))) => {
-                    let mut initialization =
-                        component(ComponentName::Initialization, phase == "configured");
-                    initialization.queues = vec![
-                        Queue {
-                            name: QueueName::InitializationAssetsPending,
-                            count: Some(assets),
-                            truncated: Some(false),
-                        },
-                        Queue {
-                            name: QueueName::InitializationTelemetryPending,
-                            count: Some(telemetry),
-                            truncated: Some(false),
-                        },
-                    ];
-                    if phase != "configured" {
-                        initialization.health = Health::Degraded;
-                        initialization.reasons.push(match blocked.as_deref() {
-                            Some("authorization") => Reason::InitializationAuthorization,
-                            Some("content") => Reason::InitializationContent,
-                            Some("conflict") => Reason::InitializationConflict,
-                            Some("telemetry_backend") => Reason::InitializationTelemetryBackend,
-                            Some("outcome_unknown") => Reason::SettlementUnknown,
-                            Some(_) => Reason::DependencyUnavailable,
-                            None => Reason::Initializing,
-                        });
-                    }
-                    components.push(initialization);
-                }
-                Ok(Ok(None)) => {}
-                _ => {
-                    let mut initialization = component(ComponentName::Initialization, false);
-                    initialization.health = Health::Unknown;
-                    initialization.reasons.push(Reason::DependencyUnavailable);
-                    components.push(initialization);
-                }
-            }
+        if let Some(initialization) = self.initialization_component(cutoff).await {
+            components.push(initialization);
         }
         Snapshot {
             alive: true,
@@ -171,6 +91,93 @@ impl RuntimeDiagnostics {
                 .iter()
                 .all(|c| c.readiness != Readiness::NotReady),
             components,
+        }
+    }
+    async fn telemetry_component(&self, cutoff: Instant, detailed: bool) -> Option<Component> {
+        let service = self.telemetry.as_ref()?;
+        let mut telemetry = component(ComponentName::Telemetry, false);
+        match service.diagnostics(cutoff).await {
+            Ok(state) => {
+                telemetry = component(ComponentName::Telemetry, state.running);
+                if !state.running {
+                    telemetry.reasons.push(Reason::WorkerNotRunning);
+                }
+                if state.unknown > 0 || state.blocked > 0 {
+                    telemetry.health = Health::Degraded;
+                    telemetry.reasons.push(Reason::DeliveryRetrying);
+                }
+                telemetry
+                    .dependencies
+                    .push(dependency(DependencyName::TelemetryStorage, None));
+                if detailed {
+                    telemetry.queues = [
+                        (QueueName::DeliveryPending, state.pending),
+                        (QueueName::DeliveryUnknown, state.unknown),
+                        (QueueName::DeliveryBlocked, state.blocked),
+                        (QueueName::MaintenancePending, state.maintenance),
+                    ]
+                    .into_iter()
+                    .map(|(name, count)| Queue {
+                        name,
+                        count: Some(count.min(4096)),
+                        truncated: Some(count > 4096),
+                    })
+                    .collect();
+                }
+            }
+            Err(_) => {
+                telemetry.health = Health::Degraded;
+                telemetry.dependencies.push(dependency(
+                    DependencyName::TelemetryStorage,
+                    Some(Reason::DependencyUnavailable),
+                ));
+            }
+        }
+        Some(telemetry)
+    }
+    async fn initialization_component(&self, cutoff: Instant) -> Option<Component> {
+        match tokio::time::timeout_at(
+            cutoff.into(),
+            crate::baseline::status(&self.access, &self.tenant.to_string()),
+        )
+        .await
+        {
+            Ok(Ok(Some((phase, blocked, assets, telemetry)))) => {
+                let mut initialization =
+                    component(ComponentName::Initialization, phase == "configured");
+                initialization.queues = vec![
+                    Queue {
+                        name: QueueName::InitializationAssetsPending,
+                        count: Some(assets),
+                        truncated: Some(false),
+                    },
+                    Queue {
+                        name: QueueName::InitializationTelemetryPending,
+                        count: Some(telemetry),
+                        truncated: Some(false),
+                    },
+                ];
+                if phase != "configured" {
+                    initialization.health = Health::Degraded;
+                    initialization.reasons.push(match blocked.as_deref() {
+                        Some("authorization") => Reason::InitializationAuthorization,
+                        Some("content") => Reason::InitializationContent,
+                        Some("conflict") => Reason::InitializationConflict,
+                        Some("telemetry_backend") => Reason::InitializationTelemetryBackend,
+                        Some("outcome_unknown") => Reason::SettlementUnknown,
+                        Some(_) => Reason::DependencyUnavailable,
+                        None => Reason::Initializing,
+                    });
+                }
+                Some(initialization)
+            }
+            Ok(Ok(None)) => None,
+            _ => {
+                let mut initialization = component(ComponentName::Initialization, false);
+                initialization.health = Health::Unknown;
+                initialization.reasons.push(Reason::DependencyUnavailable);
+                Some(initialization)
+            }
         }
     }
     async fn enrich(&self, cutoff: Instant, inventory: &mut Component, automation: &mut Component) {

@@ -20,7 +20,7 @@
   "mdm_access.requests": "97b9598a1c5ed0e1593b53a99e0db651b66bf4ebd930317c68c7c86443adf4a4",
   "mdm_access.user_groups": "9518c6f5e4cb7ac01e023e175be071fbace883e7a9c7091b0e6fbe7999ce4ce8",
   "mdm_agent.bindings": "fe6ec4dfb9868886176b1af114852b51a07f1e89c4232d486d54e0eeb1c699b8",
-  "mdm_agent_packages.releases": "3b150ead90ceda446613d50bf852f5d77844c3b2ea3376008ed4b316b949f201",
+  "mdm_agent_packages.releases": "2e9827e80e2688ca2d0603cc3cdf05cf1a8bc530640e10190a8f9655bcc42b23",
   "mdm_apple.account_bindings": "4b90d93ff72ec7f07b4de6f113ff42c210d3884448d5099fe23a2f75187223f7",
   "mdm_apple.account_configuration": "770b1abf28b6640743fe382ffe01c6277cab7b6bc697fb5ff74f82771db6f9d6",
   "mdm_apple.account_current(p_tenant uuid, p_enrollment uuid, p_version bigint, p_flow uuid, p_hash text)": "e4ac84984b51169b1ad54a3f692ec879c0a511cfe904d5bbdfd917cf04f8a8ac",

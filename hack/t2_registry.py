@@ -2048,3 +2048,5 @@ consume(('crates/registration-service/src/agent/current_user.rs',), 'device.view
 # Tenant defaults remain App orchestration over the existing owners.
 consume(('crates/app/src/baseline/*.rs','crates/app/schema/baseline.sql','crates/authorization-service/src/baseline.rs'), 'telemetry.ingress.postgres authorization.initialization catalog.contract')
 consume(('crates/app/src/setup/default_telemetry.rs',), 'telemetry.storage deployment.management-tenant')
+
+MODULES['planning.group_scope']=replace(MODULES['planning.group_scope'],policies=(*MODULES['planning.group_scope'].policies,CasePolicy('planning::t2::group_scope::system_lifecycle_snapshot_pages_before_collection_and_preserves_old_authority','fresh','tenant')))

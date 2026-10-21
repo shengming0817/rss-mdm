@@ -29,7 +29,10 @@ impl AuthorizedPrincipal {
         }
         Ok(())
     }
-    pub(crate) fn from_initialization(authority: Arc<crate::baseline::Authority>) -> Self {
+    pub(crate) fn from_initialization(
+        authority: Arc<crate::baseline::Authority>,
+        clock: Arc<dyn rss_request_context::Clock>,
+    ) -> Self {
         let user = authority.user().clone();
         Self {
             identity: Principal {
@@ -37,7 +40,8 @@ impl AuthorizedPrincipal {
                 actor: crate::Actor::Account { user },
                 proof: Authentication::Initialization {
                     authority,
-                    deadline: std::time::Instant::now() + std::time::Duration::from_secs(60),
+                    deadline: clock.now() + std::time::Duration::from_secs(60),
+                    clock,
                 },
             },
             authorization: None,
@@ -185,6 +189,7 @@ enum Authentication {
     Initialization {
         authority: Arc<crate::baseline::Authority>,
         deadline: std::time::Instant,
+        clock: Arc<dyn rss_request_context::Clock>,
     },
 }
 impl Principal {
@@ -254,11 +259,9 @@ impl Principal {
                 .map_err(|_| Error::Unauthorized),
             Authentication::ApiKey(proof) if proof.clock.now() < proof.deadline => Ok(()),
             Authentication::ApiKey(_) => Err(Error::Unauthorized),
-            Authentication::Initialization { deadline, .. }
-                if std::time::Instant::now() < *deadline =>
-            {
-                Ok(())
-            }
+            Authentication::Initialization {
+                deadline, clock, ..
+            } if clock.now() < *deadline => Ok(()),
             Authentication::Initialization { .. } => Err(Error::Unauthorized),
         }
     }
