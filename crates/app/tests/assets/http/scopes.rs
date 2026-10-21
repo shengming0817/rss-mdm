@@ -90,6 +90,18 @@ async fn inventory_scopes_preserve_history_and_hide_sensitive_namespaces() -> Re
         // Unrelated device partitions must not contribute to this device's directory.
         let (other_registration, other_epoch) = crate::test_support::inventory::seed_source(case::name("unrelated-directory"), "agent", "agent.native", "outside")?;
         seed(other_registration, other_epoch, 400, model.clone(), Some("unrelated"))?;
+        // Regression: unrelated retained definitions cannot impose a tenant-wide
+        // 4096-dataset availability gate on a single authorized device (PR #1379 F1).
+        let mut unrelated = Vec::new();
+        for index in 0..4097 {
+            let definition = CollectionDefinition::new(
+                &format!("unrelated-directory-{index}"), "v1",
+                rss_mdm_inventory::Source::AgentNative,
+                vec![CollectionField { definition: model.clone(), scope: CollectionScope::MacosApplications { root: ApplicationRoot::User, uid: Some(10000 + index) } }],
+            )?;
+            unrelated.push(crate::test_support::inventory::definition_sql(case_tenant(), &definition)?);
+        }
+        pg(&unrelated.join(";"))?;
         // A deleted partition remains fenced by its tombstone, not its older value.
         let deleted = seed(registration, epoch, 504, model.clone(), Some("removed"))?;
         pg(&format!("DELETE FROM mdm_access.collection_runs WHERE tenant_id='{}' AND id='{deleted}'; DELETE FROM mdm.inventory WHERE tenant_id='{}' AND batch_id='{deleted}'", case_tenant(), case_tenant()))?;

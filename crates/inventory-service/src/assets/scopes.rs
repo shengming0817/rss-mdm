@@ -1,5 +1,6 @@
 //! Device-authorized discovery from existing immutable asset and collection history.
 //! ref: sqlx v0.8.6 sqlx-core/src/transaction.rs (borrowed transaction, no commit owner).
+//! ref: SeaORM 1.1.17 src/executor/paginator.rs (filter the selected working set before pagination).
 use super::*;
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use serde::{Deserialize, Serialize};
@@ -66,43 +67,6 @@ impl AssetService {
                 }))
             })
             .collect::<Result<Vec<_>>>()?;
-        // Definitions are immutable and shared by facts and attempts. Resolve exact
-        // stream keys before reading history so tombstones remain in each partition.
-        let tenant = self.tenant.to_string();
-        let datasets = tx.with_connection(move |c| Box::pin(async move {
-            sqlx::query("SELECT DISTINCT source,dataset FROM mdm.collection_definitions WHERE tenant_id=$1::uuid ORDER BY source,dataset LIMIT 4097")
-                .bind(tenant).fetch_all(c).await
-        })).await?;
-        if datasets.len() > 4096 {
-            return Err(Error::Unavailable(Failure::AssetSourceLimit).into());
-        }
-        let mut streams = Vec::new();
-        for source in &sources {
-            for dataset in &datasets {
-                if dataset.try_get::<&str, _>("source")?
-                    != source["source"].as_str().ok_or(Error::Malformed)?
-                {
-                    continue;
-                }
-                streams.push(stored(
-                    crate::device::scope_dataset(
-                        self.tenant,
-                        stored(Uuid::parse_str(
-                            source["registration"].as_str().ok_or(Error::Malformed)?,
-                        ))?,
-                        source["source"].as_str().ok_or(Error::Malformed)?,
-                        stored(Uuid::parse_str(
-                            source["epoch"].as_str().ok_or(Error::Malformed)?,
-                        ))?,
-                        dataset.try_get("dataset")?,
-                    )?
-                    .encode(),
-                )?);
-            }
-        }
-        if streams.len() > 20_000 {
-            return Err(Error::Unavailable(Failure::AssetSourceLimit).into());
-        }
         let catalog = catalog_in(tx, self.tenant, current).await?;
         let visible = catalog
             .fields()
@@ -141,7 +105,6 @@ impl AssetService {
                         .bind((limit + 1) as i64)
                         .bind(projection.source().source())
                         .bind(projection.generation())
-                        .bind(streams)
                         .fetch_all(c)
                         .await
                 })
@@ -209,9 +172,20 @@ const SCOPES: &str = r#"
 WITH authority AS (
  SELECT registration,source,epoch FROM jsonb_to_recordset($2::jsonb)
  AS a(registration text,source text,epoch text)
+), streams AS (
+ SELECT h.scope FROM mdm_access.collection_history h
+ JOIN authority a ON a.registration=h.scope::jsonb->>'registration'
+   AND a.source=h.scope::jsonb->>'source' AND a.epoch=h.scope::jsonb->>'epoch'
+ WHERE h.tenant_id=$1::uuid AND h.revision<=$3
+ UNION
+ SELECT c.identity->>'scope' FROM mdm.asset_changes c
+ JOIN authority a ON a.registration=c.identity->>'registration'
+   AND a.source=(c.identity->>'scope')::jsonb->>'source'
+   AND a.epoch=(c.identity->>'scope')::jsonb->>'epoch'
+ WHERE c.tenant_id=$1::uuid AND c.kind='inventory' AND c.revision<=$3
 ), requested AS (
- SELECT sha256(convert_to(jsonb_build_array($7::text,$8::text,s)::text,'UTF8')) AS digest
- FROM unnest($9::text[]) s
+ SELECT sha256(convert_to(jsonb_build_array($7::text,$8::text,s.scope)::text,'UTF8')) AS digest
+ FROM streams s
 ), inventory AS (
  SELECT DISTINCT ON(h.scope_digest,h.field,h.field_scope)
    h.field_scope,h.document
@@ -227,7 +201,7 @@ WITH authority AS (
 ), runs AS (
  SELECT DISTINCT ON(h.scope,h.run) h.scope,h.run,h.sequence,h.document
  FROM mdm_access.collection_history h
- WHERE h.tenant_id=$1::uuid AND h.scope=ANY($9::text[]) AND h.revision<=$3
+ WHERE h.tenant_id=$1::uuid AND h.scope IN(SELECT scope FROM streams) AND h.revision<=$3
  ORDER BY h.scope,h.run,h.revision DESC
 ), attempts AS (
  SELECT DISTINCT ON(h.scope,f->'definition'->>'key',f->'scope')
