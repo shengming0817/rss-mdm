@@ -118,7 +118,7 @@ async fn absent_agent_group_installs_fixed_package_and_registers_independently()
         axum::body::to_bytes(package.into_body(), 1024)
             .await?
             .as_ref()
-            == &setup::bytes()[..4]
+            == &installer_fixtures::pkg("1.2.3")[..4]
     );
 
     // Bootstrap provisioning can proceed while package delivery is deferred.

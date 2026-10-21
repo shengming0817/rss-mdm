@@ -351,7 +351,7 @@ async fn windows_policy_install_register_and_replay_use_independent_identity() -
         axum::body::to_bytes(package.into_body(), 1024)
             .await?
             .as_ref()
-            == &setup::bytes()[..4]
+            == &installer_fixtures::msi(Some("1.2.3"), false)[..4]
     );
     // Stop producers before fault injection, then restart the existing command runtime.
     ensure!(commands.shutdown().join().await?.is_clean());

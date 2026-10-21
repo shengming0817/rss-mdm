@@ -645,3 +645,46 @@ fn unsigned_native_installers_are_observed_without_signature_evidence() {
         );
     }
 }
+
+#[test]
+fn msi_rejects_oversized_string_claims_before_parser_allocation() {
+    use std::io::Write;
+    for summary in [false, true] {
+        let bytes = installer_fixtures::msi(Some("1.2.3"), false);
+        let mut compound = cfb::CompoundFile::open(std::io::Cursor::new(bytes)).unwrap();
+        if summary {
+            // A summary LPSTR with a four GiB length but no body.
+            let mut header = vec![0u8; 68];
+            header[44..48].copy_from_slice(&48u32.to_le_bytes());
+            header[52..56].copy_from_slice(&1u32.to_le_bytes());
+            header[60..64].copy_from_slice(&16u32.to_le_bytes());
+            header[64..68].copy_from_slice(&30u32.to_le_bytes());
+            header.extend(u32::MAX.to_le_bytes());
+            let mut stream = compound.open_stream("\u{5}SummaryInformation").unwrap();
+            stream.set_len(0).unwrap();
+            stream.write_all(&header).unwrap();
+        } else {
+            let pool = "\u{4840}\u{3f3f}\u{4577}\u{446c}\u{3e6a}\u{44b2}\u{482f}";
+            let mut stream = compound.open_stream(pool).unwrap();
+            stream.set_len(0).unwrap();
+            stream.write_all(&[0xe4, 4, 0, 0, 0, 0, 1, 0]).unwrap();
+            stream.write_all(&u32::MAX.to_le_bytes()).unwrap();
+        }
+        let bytes = compound.into_inner().into_inner();
+        let dir = tempfile::tempdir().unwrap();
+        let mut file = tempfile::tempfile().unwrap();
+        file.write_all(&bytes).unwrap();
+        let deadline =
+            Deadline::from_timeout(&RuntimeTimer, std::time::Duration::from_secs(60)).unwrap();
+        assert!(
+            super::installer::inspect(
+                &mut file,
+                "bad.msi",
+                &config(dir.path().to_owned()),
+                &RuntimeTimer,
+                deadline
+            )
+            .is_err()
+        );
+    }
+}

@@ -1,11 +1,6 @@
 //! Approved controlled samples: these bytes prove server admission, not OS signing or installation.
 use super::*;
 use sha2::{Digest, Sha256};
-pub(crate) fn bytes() -> Vec<u8> {
-    case::name("controlled-rss-agent-installer")
-        .as_bytes()
-        .to_vec()
-}
 pub(crate) async fn grants(user: &Browser, router: &Router) -> Result<()> {
     let subject = browser_subject(user, router).await?;
     let mut grants = identity::device_grants(

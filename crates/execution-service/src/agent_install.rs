@@ -495,6 +495,12 @@ pub async fn detection_on(
     let known = rss_mdm_software_service::agent_packages::known_in(c, tenant)
         .await
         .map_err(crate::agent_preparation::publication_error)?;
+    detection_catalog(known, platform)
+}
+fn detection_catalog(
+    known: Vec<rss_mdm_software_service::agent_packages::AdmittedPackage>,
+    platform: rss_mdm_agent_wire::runtime::TaskPlatform,
+) -> std::result::Result<DetectionCatalog, Error> {
     let mut catalog = DetectionCatalog {
         identities: Vec::new(),
         win32: Vec::new(),
@@ -502,7 +508,9 @@ pub async fn detection_on(
     };
     for release in known
         .into_iter()
-        .filter(|r| r.metadata.target.platform == platform)
+        // Only execution definitions can have been installed through this native path.
+        // Material-only downloads carry no detection claim and do not invalidate absence.
+        .filter(|r| r.metadata.target.platform == platform && r.software.behavior.is_some())
     {
         if let Some(resource::SoftwareBehavior::Exe(exe)) = &release.software.behavior {
             let resource::SoftwareDetection::Registry {

@@ -96,13 +96,15 @@ async fn publish_bytes(
         )
         .await?;
     ensure!(response.0 == StatusCode::OK, "prepare {response:?}");
+    let id: Uuid = serde_json::from_value(response.1["packageId"].clone())?;
+    let upload_href = response.1["href"].as_str().context("upload href")?;
     let cookie = user
         .cookies
         .iter()
         .map(|(k, v)| format!("{k}={v}"))
         .collect::<Vec<_>>()
         .join("; ");
-    let session = format!("{}/api/v1/resources/{id}/uploads/{id}", f.origin);
+    let session = format!("{}{upload_href}", f.origin);
     let request = |method, url: &str| {
         f.client
             .request(method, url)

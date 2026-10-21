@@ -82,7 +82,7 @@ impl ManagementContentPort for SoftwareContent {
             .await
             .map_err(error)?;
         Ok(
-            serde_json::json!({"resource":resource,"upload":upload,"offset":result.offset,"length":result.binding.length,"complete":result.complete,
+            serde_json::json!({"packageId":resource,"resource":resource,"upload":upload,"offset":result.offset,"length":result.binding.length,"complete":result.complete,
             "href":format!("/api/v1/resources/{resource}/uploads/{upload}")}),
         )
     }

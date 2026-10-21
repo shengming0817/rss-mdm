@@ -73,7 +73,103 @@ fn exe(file: &mut File) -> Result<InstallerFacts, Error> {
         bundle_id: None,
     })
 }
+// MSI table stream names use the encoding defined by rust-msi's internal/streamname.rs.
+const STRING_POOL: &str = "\u{4840}\u{3f3f}\u{4577}\u{446c}\u{3e6a}\u{44b2}\u{482f}";
+const STRING_DATA: &str = "\u{4840}\u{3f3f}\u{4577}\u{446c}\u{3b6a}\u{45e4}\u{4824}";
+fn msi_budget(file: &mut File) -> Result<(), Error> {
+    let mut compound = cfb::CompoundFile::open(&mut *file).map_err(|_| invalid())?;
+    let mut total = 0u64;
+    let mut count = 0usize;
+    for entry in compound.walk().filter(|entry| entry.is_stream()) {
+        // Tables and summary properties are parsed eagerly by Package::open; embedded cabinets
+        // are payload and are never decoded here.
+        if entry.name().starts_with(['\u{4840}', '\u{5}']) {
+            total = total.checked_add(entry.len()).ok_or_else(invalid)?;
+            count += 1;
+            if total > METADATA || count > 4096 {
+                return Err(invalid());
+            }
+        }
+    }
+    let mut summary = Vec::new();
+    compound
+        .open_stream("\u{5}SummaryInformation")
+        .map_err(|_| invalid())?
+        .take(METADATA + 1)
+        .read_to_end(&mut summary)
+        .map_err(|_| invalid())?;
+    summary_budget(&summary)?;
+    let data_length = compound.entry(STRING_DATA).map_err(|_| invalid())?.len();
+    let mut pool = Vec::new();
+    compound
+        .open_stream(STRING_POOL)
+        .map_err(|_| invalid())?
+        .take(METADATA + 1)
+        .read_to_end(&mut pool)
+        .map_err(|_| invalid())?;
+    if pool.len() < 4 || pool.len() as u64 > METADATA {
+        return Err(invalid());
+    }
+    let mut at = 4;
+    let mut strings = 0;
+    let mut declared = 0u64;
+    while at < pool.len() {
+        let entry = pool.get(at..at + 4).ok_or_else(invalid)?;
+        let short = u16::from_le_bytes([entry[0], entry[1]]);
+        let refs = u16::from_le_bytes([entry[2], entry[3]]);
+        at += 4;
+        let length = if short == 0 && refs > 0 {
+            let bytes = pool.get(at..at + 4).ok_or_else(invalid)?;
+            at += 4;
+            u32::from_le_bytes(bytes.try_into().map_err(|_| invalid())?)
+        } else {
+            u32::from(short)
+        };
+        declared = declared
+            .checked_add(u64::from(length))
+            .ok_or_else(invalid)?;
+        strings += 1;
+        if declared > data_length || declared > METADATA || strings > 4096 {
+            return Err(invalid());
+        }
+    }
+    drop(compound);
+    file.rewind().map_err(|_| invalid())
+}
+// The property reader also allocates LPSTR capacity from the declared length before reading.
+fn summary_budget(bytes: &[u8]) -> Result<(), Error> {
+    let number = |at: usize| -> Result<usize, Error> {
+        let value = bytes
+            .get(at..at.checked_add(4).ok_or_else(invalid)?)
+            .ok_or_else(invalid)?;
+        Ok(u32::from_le_bytes(value.try_into().map_err(|_| invalid())?) as usize)
+    };
+    let section = number(44)?;
+    let count = number(section.checked_add(4).ok_or_else(invalid)?)?;
+    if count > 4096 {
+        return Err(invalid());
+    }
+    let mut strings = 0usize;
+    for i in 0..count {
+        let offset = number(section.checked_add(12 + i * 8).ok_or_else(invalid)?)?;
+        let start = section.checked_add(offset).ok_or_else(invalid)?;
+        if number(start)? == 30 {
+            let length = number(start.checked_add(4).ok_or_else(invalid)?)?;
+            strings = strings.checked_add(length).ok_or_else(invalid)?;
+            if strings as u64 > METADATA
+                || start
+                    .checked_add(8)
+                    .and_then(|v| v.checked_add(length))
+                    .is_none_or(|end| end > bytes.len())
+            {
+                return Err(invalid());
+            }
+        }
+    }
+    Ok(())
+}
 fn msi(file: &mut File) -> Result<InstallerFacts, Error> {
+    msi_budget(file)?;
     let mut package = msi::Package::open(file).map_err(|_| invalid())?;
     if package.package_type() != msi::PackageType::Installer {
         return Err(invalid());

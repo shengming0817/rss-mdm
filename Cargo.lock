@@ -3927,6 +3927,7 @@ version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
  "bytes",
+ "cfb",
  "flate2",
  "futures",
  "libc",
