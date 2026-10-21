@@ -527,6 +527,8 @@ journal 必须保留：新布局使用新建实例，不能修改旧安装账本
 
 性能默认每 60 秒采样、5 分钟上传，同时投影当前值和历史；原始保留 7 天、汇总 30 天，恢复及补传窗口各 24 小时。预算为 4096 points、1 MiB、128 resources、执行 10 秒、输出 256 KiB，文件系统最多 64 项。仅发布 CPU busy%、内存 total/available、文件系统 total/free；不默认启用 boost、用户活动、SMART 或网络速率。MDM-only 通道不支持 Agent 遥测。
 
+每个宿主使用自身 `deployment.content_volume`；未显式设置时使用该宿主 `deployment.directory/content`。运行配置与冷备份、恢复校验同一内容位置；共用存储时在各宿主显式声明相同卷路径。
+
 标准安装自动准备独立 PostgreSQL 遥测数据库、受限 runtime 角色和持久内容卷。Compose 的 `content` 卷由初始化进程和服务共用，内容键按租户隔离；供应方管理凭据保存在安装状态卷，业务服务没有 DDL 权限。保留安装目录及其中的遥测请求、密钥和回执，恢复使用原材料，不能重新生成后冒充原安装。
 
 运行诊断的 `initialization` 分量区分资产待配置、遥测待配置和依赖阻塞；`configured` 只表示配置发布完成，设备是否产出数据应查看 CollectionRun、Observation、Inventory 和遥测历史。完成步骤不会因对象被编辑、禁用或删除而重建；未完成步骤若遇到 CAS 冲突，应按原对象和操作回执诊断，不能强制覆盖管理员变更。授权被撤销时恢复必须重新验证原授权依据，不能替换成服务管理员。

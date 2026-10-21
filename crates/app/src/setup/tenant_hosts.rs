@@ -214,37 +214,7 @@ async fn provision_pending(
             // Reserve the runtime output position before writing files; retries retain the binding.
             reservations.insert(progress.host_id, index);
             journal.save("host-reservations.json", reservations)?;
-            let mut candidate = runtime.clone();
-            candidate["native_protocols"] = serde_json::json!({});
-            candidate["agent_pki"] = serde_json::json!({"mode":"disabled"});
-            candidate["device_pki"] = serde_json::json!([]);
-            for field in ["task_signing", "recovery_credentials"] {
-                candidate[field] = Value::Null;
-            }
-            candidate["identity"]["oidc"] = Value::Null;
-            candidate["webhooks"]["networks"] = serde_json::json!([]);
-            candidate["identity"]["tenant_id"] = serde_json::json!(progress.tenant_id);
-            candidate["product_origin"] = serde_json::json!(slot.origin);
-            candidate["listen"] = serde_json::json!(slot.listen);
-            candidate["trusted_gateway"] = serde_json::json!(slot.listen.ip());
-            let digest = {
-                use sha2::{Digest, Sha256};
-                format!(
-                    "{:x}",
-                    Sha256::digest(
-                        serde_json::to_vec(&(
-                            progress.operation_id,
-                            progress.host_id,
-                            progress.tenant_id,
-                            &slot.origin,
-                            slot.listen,
-                            &candidate
-                        ))
-                        .map_err(|_| Error::Input)?
-                    )
-                )
-            };
-            candidate["runtime_binding"] = serde_json::json!({"host_id":progress.host_id,"operation_id":progress.operation_id,"revision":1,"material_digest":digest});
+            let candidate = additional_runtime(runtime, slot, progress)?;
             if activate(&input.directory, &slot.deployment, &candidate, progress)
                 .await
                 .is_ok()
@@ -266,6 +236,47 @@ async fn provision_pending(
     }
 
     Ok(completed == 1)
+}
+
+// ref: compose-spec/compose-go loader/normalize.go (target service owns its volumes).
+pub(super) fn additional_runtime(
+    runtime: &Value,
+    slot: &Slot,
+    progress: &super::model::Provisioning,
+) -> Result<Value> {
+    let mut candidate = runtime.clone();
+    candidate["content"]["storage"] = slot.deployment.prepare_content_storage()?;
+    candidate["native_protocols"] = serde_json::json!({});
+    candidate["agent_pki"] = serde_json::json!({"mode":"disabled"});
+    candidate["device_pki"] = serde_json::json!([]);
+    for field in ["task_signing", "recovery_credentials"] {
+        candidate[field] = Value::Null;
+    }
+    candidate["identity"]["oidc"] = Value::Null;
+    candidate["webhooks"]["networks"] = serde_json::json!([]);
+    candidate["identity"]["tenant_id"] = serde_json::json!(progress.tenant_id);
+    candidate["product_origin"] = serde_json::json!(slot.origin);
+    candidate["listen"] = serde_json::json!(slot.listen);
+    candidate["trusted_gateway"] = serde_json::json!(slot.listen.ip());
+    let digest = {
+        use sha2::{Digest, Sha256};
+        format!(
+            "{:x}",
+            Sha256::digest(
+                serde_json::to_vec(&(
+                    progress.operation_id,
+                    progress.host_id,
+                    progress.tenant_id,
+                    &slot.origin,
+                    slot.listen,
+                    &candidate
+                ))
+                .map_err(|_| Error::Input)?
+            )
+        )
+    };
+    candidate["runtime_binding"] = serde_json::json!({"host_id":progress.host_id,"operation_id":progress.operation_id,"revision":1,"material_digest":digest});
+    Ok(candidate)
 }
 
 async fn operator_connection(
@@ -308,3 +319,7 @@ async fn operator_connection(
     }
     Ok(c)
 }
+
+#[cfg(test)]
+#[path = "../../tests/setup/tenant_hosts.rs"]
+mod tests;
