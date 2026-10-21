@@ -31,12 +31,13 @@ WITH RECURSIVE reach(id,depth) AS (
  JOIN mdm_assets.group_selections s ON(s.tenant_id,s.group_id,s.rule_version)=(g.tenant_id,g.id,g.rule_version)
  CROSS JOIN LATERAL unnest(s.group_ids) ref WHERE r.depth<16
 ), bounded AS (SELECT * FROM reach LIMIT 4097)
-SELECT count(*)<=4096 AND coalesce(bool_and(
+SELECT count(*)<=4096 AND coalesce(bool_and(coalesce(
  g.id IS NOT NULL AND NOT g.deleted
  AND NOT (r.depth=16 AND cardinality(coalesce(selection.group_ids,ARRAY[]::uuid[]))>0)
  AND (g.kind='static' OR (b.phase='published' AND b.rule_version=g.rule_version))
+ AND (b.id IS NULL OR jsonb_typeof(convert_from(b.input,'UTF8')::jsonb->'sources')='array')
  AND NOT EXISTS(
-  SELECT 1 FROM jsonb_array_elements(coalesce(convert_from(b.input,'UTF8')::jsonb->'sources','[]'::jsonb)) src
+  SELECT 1 FROM jsonb_array_elements(convert_from(b.input,'UTF8')::jsonb->'sources') src
   LEFT JOIN mdm_group.groups target ON target.tenant_id=g.tenant_id AND target.id=(src->>'group')::uuid
   LEFT JOIN mdm_planning.source_heads def ON def.tenant_id=g.tenant_id AND def.id='group-definition.'||(src->>'group')
   LEFT JOIN mdm_planning.source_heads auth ON auth.tenant_id=g.tenant_id AND auth.id='group-authority.'||(src->>'group')
@@ -54,7 +55,7 @@ SELECT count(*)<=4096 AND coalesce(bool_and(
       AND m.object_id=coalesce(c.identity->>'device',(SELECT h.device FROM mdm_access.asset_authority_history h WHERE h.tenant_id=c.tenant_id AND h.kind='registration' AND h.identity=c.identity->>'registration' ORDER BY h.revision DESC LIMIT 1))
     ORDER BY m.revision DESC LIMIT 1),false))) OR EXISTS(
     SELECT 1 FROM mdm_assets.group_fields f WHERE f.tenant_id=g.tenant_id AND f.group_id=g.id AND f.field=ANY(c.fields))))
- )),false)
+ ),false)),false)
 FROM bounded r
 LEFT JOIN mdm_group.groups g ON g.tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid AND g.id=r.id
 LEFT JOIN mdm_group.member_runs b ON(b.tenant_id,b.id)=(g.tenant_id,g.member_set)

@@ -571,7 +571,7 @@ async fn frozen_group_decisions_survive_page_restart_without_negating_unknown() 
             at(),
             &Command::Create {
                 group: source,
-                presentation: serde_json::json!({"name":"source"})
+                presentation: serde_json::json!({"name":"source","description":""})
                     .as_object()
                     .unwrap()
                     .clone(),
@@ -626,7 +626,7 @@ async fn frozen_group_decisions_survive_page_restart_without_negating_unknown() 
             at(),
             &Command::Create {
                 group: id,
-                presentation: serde_json::json!({"name":"nested"})
+                presentation: serde_json::json!({"name":"nested","description":""})
                     .as_object()
                     .unwrap()
                     .clone(),

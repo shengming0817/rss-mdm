@@ -85,8 +85,8 @@ impl Planning {
                     return Err(Error::Malformed.into());
                 }
                 let key = (*parent, relation(&next));
-                if !paths.contains_key(&key) {
-                    paths.insert(key, next.clone());
+                if let std::collections::btree_map::Entry::Vacant(entry) = paths.entry(key) {
+                    entry.insert(next.clone());
                     queue.push_back((*parent, next));
                 }
             }

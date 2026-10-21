@@ -84,6 +84,60 @@ fn check_build(group: &Group, request: &BuildRequest) -> CommandOutcome<()> {
     }
     Ok(())
 }
+fn check_sources(
+    group: &Group,
+    request: &BuildRequest,
+    rule: &rss_mdm_group::Rule,
+) -> CommandOutcome<()> {
+    if request.sources.len() > rss_mdm_group::limits::NODES
+        || request.sources.windows(2).any(|s| s[0].group >= s[1].group)
+        || request
+            .sources
+            .iter()
+            .any(|s| s.group == group.id || s.coordinates.asset_context != group.asset_context)
+        || rule.groups()
+            != request
+                .sources
+                .iter()
+                .map(|s| s.group.to_string())
+                .collect()
+    {
+        return Err(Rejection::InvalidInput);
+    }
+    Ok(())
+}
+
+fn check_page_selection(
+    tenant: rss_request_context::TenantId,
+    request: &BuildRequest,
+) -> CommandOutcome<()> {
+    if let Some(patch) = &request.patch {
+        if patch.add.len() + patch.remove.len() > 1000
+            || patch.add.iter().any(|id| patch.remove.contains(id))
+        {
+            return Err(Rejection::InvalidInput);
+        }
+        for id in patch.add.iter().chain(&patch.remove) {
+            if id.len() > 256 {
+                return Err(Rejection::InvalidInput);
+            }
+            rss_mdm_group::ObjectKey::new(tenant, id).map_err(crate::store::core_rejection)?;
+        }
+    }
+    if let Some(devices) = &request.changed_devices {
+        if request.patch.is_some()
+            || devices.len() > 1000
+            || devices.windows(2).any(|v| v[0] >= v[1])
+        {
+            return Err(Rejection::InvalidInput);
+        }
+        for device in devices {
+            rss_mdm_group::ObjectKey::new(tenant, device).map_err(crate::store::core_rejection)?;
+        }
+    }
+    Ok(())
+}
+
 mod time {
     use super::*;
     pub fn serialize<S: serde::Serializer>(value: &Timepoint, s: S) -> Result<S::Ok, S::Error> {
@@ -249,54 +303,12 @@ impl GroupStore {
         input!(check_build(&group, request));
         if let Some(version) = &request.rule_version {
             let rule = db::rule(tx, group.id, version.clone()).await?;
-            if request.sources.len() > rss_mdm_group::limits::NODES
-                || request.sources.windows(2).any(|s| s[0].group >= s[1].group)
-                || request.sources.iter().any(|s| {
-                    s.group == group.id || s.coordinates.asset_context != group.asset_context
-                })
-                || rule.groups()
-                    != request
-                        .sources
-                        .iter()
-                        .map(|s| s.group.to_string())
-                        .collect()
-            {
-                return Ok(Err(Rejection::InvalidInput));
-            }
+            input!(check_sources(&group, request, &rule));
         } else if !request.sources.is_empty() {
             return Ok(Err(Rejection::InvalidInput));
         }
 
-        if let Some(patch) = &request.patch {
-            if patch.add.len() + patch.remove.len() > 1000
-                || patch.add.iter().any(|id| patch.remove.contains(id))
-            {
-                return Ok(Err(Rejection::InvalidInput));
-            }
-            for id in patch.add.iter().chain(&patch.remove) {
-                if id.len() > 256 {
-                    return Ok(Err(Rejection::InvalidInput));
-                }
-                input!(
-                    rss_mdm_group::ObjectKey::new(self.tenant, id)
-                        .map_err(crate::store::core_rejection)
-                );
-            }
-        }
-        if let Some(devices) = &request.changed_devices {
-            if request.patch.is_some()
-                || devices.len() > 1000
-                || devices.windows(2).any(|v| v[0] >= v[1])
-            {
-                return Ok(Err(Rejection::InvalidInput));
-            }
-            for device in devices {
-                input!(
-                    rss_mdm_group::ObjectKey::new(self.tenant, device)
-                        .map_err(crate::store::core_rejection)
-                );
-            }
-        }
+        input!(check_page_selection(self.tenant, request));
         let tenant = self.tenant.to_string();
         let r = request.clone();
         let base_members = if request.changed_devices.is_some() {

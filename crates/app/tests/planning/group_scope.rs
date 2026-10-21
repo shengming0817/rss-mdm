@@ -643,7 +643,7 @@ async fn group_delete_scope_reference_compete_without_dangling_references() {
         let reference = async {
             match kind {
                 "scope"=>execute(&second,&Command::Scope {id:scope_id,change:operation(0,ScopeChange::Put {definition:scope(group)})}).await,
-                "group"=>execute(&second,&GroupCommand::Group {sensitive:true,id:scope_id,change:Box::new(group_operation(0,GroupChange::Create {asset_context:rss_mdm_group_postgres::AssetContext::Endpoint,presentation:json!({"name":"nested-race"}).as_object().unwrap().clone(),criteria:Some(assets::InventoryCondition {selector:assets::ScopeSelector::Device,quantifier:assets::ScopeQuantifier::One,criteria:rss_mdm_inventory_service::groups::criteria::Criteria::Group {group_id:group,op:rss_mdm_inventory_service::groups::criteria::MembershipOp::MemberOf}})}))}).await,
+                "group"=>execute(&second,&GroupCommand::Group {sensitive:true,id:scope_id,change:Box::new(group_operation(0,GroupChange::Create {asset_context:rss_mdm_group_postgres::AssetContext::Endpoint,presentation:json!({"name":"nested-race","description":""}).as_object().unwrap().clone(),criteria:Some(assets::InventoryCondition {selector:assets::ScopeSelector::Device,quantifier:assets::ScopeQuantifier::One,criteria:rss_mdm_inventory_service::groups::criteria::Criteria::Group {group_id:group,op:rss_mdm_inventory_service::groups::criteria::MembershipOp::MemberOf}})}))}).await,
                 _=>{
                     let s=compliance(&second).await;let audit=RequestAudit::new(second.tenant.to_string(),"compliance_write");audit.set_principal("operator",crate::test_support::INSTANCE);
                     let input=serde_json::from_value(json!({"presentation":{"name":"disabled-race"},"severity":"high","enabled":false,"platform":"all","target":{"kind":"groups","ids":[group]},"criteria":{"selector":{"kind":"device"},"quantifier":"one","criteria":{"kind":"predicate","field":"device.model","op":"eq","value":{"kind":"string","value":"any"}}}})).unwrap();
@@ -979,7 +979,10 @@ async fn concurrent_opposite_group_references_never_commit_a_cycle() {
                     0,
                     GroupChange::Create {
                         asset_context: rss_mdm_group_postgres::AssetContext::Endpoint,
-                        presentation: json!({"name":"cycle-race"}).as_object().unwrap().clone(),
+                        presentation: json!({"name":"cycle-race","description":""})
+                            .as_object()
+                            .unwrap()
+                            .clone(),
                         criteria: Some(assets::InventoryCondition {
                             selector: assets::ScopeSelector::Device,
                             quantifier: assets::ScopeQuantifier::One,
@@ -1080,7 +1083,7 @@ async fn nested_checkpoint_supersedes_changed_source_after_restart() {
                 0,
                 GroupChange::Create {
                     asset_context: rss_mdm_group_postgres::AssetContext::Endpoint,
-                    presentation: json!({"name":"restart-static"})
+                    presentation: json!({"name":"restart-static","description":""})
                         .as_object()
                         .unwrap()
                         .clone(),
@@ -1091,6 +1094,42 @@ async fn nested_checkpoint_supersedes_changed_source_after_restart() {
     )
     .await
     .unwrap();
+    // An unpublished dynamic group must remain pending even when its static
+    // descendant is a valid initial empty set (SQL bool_and must not skip NULL).
+    let pending = Uuid::new_v4();
+    execute(
+        &first,
+        &GroupCommand::Group {
+            id: pending,
+            sensitive: true,
+            change: Box::new(group_operation(
+                0,
+                GroupChange::Create {
+                    asset_context: rss_mdm_group_postgres::AssetContext::Endpoint,
+                    presentation: json!({"name":"unpublished-source","description":""})
+                        .as_object()
+                        .unwrap()
+                        .clone(),
+                    criteria: Some(assets::InventoryCondition {
+                        selector: assets::ScopeSelector::Device,
+                        quantifier: assets::ScopeQuantifier::One,
+                        criteria: Criteria::Group {
+                            group_id: source,
+                            op: MembershipOp::MemberOf,
+                        },
+                    }),
+                },
+            )),
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        sql(&format!(
+            "SELECT mdm_planning.group_current('{source}'),mdm_planning.group_current('{pending}')"
+        )),
+        "t|f"
+    );
     let created = execute(
         &first,
         &GroupCommand::Group {
@@ -1100,7 +1139,7 @@ async fn nested_checkpoint_supersedes_changed_source_after_restart() {
                 0,
                 GroupChange::Create {
                     asset_context: rss_mdm_group_postgres::AssetContext::Endpoint,
-                    presentation: json!({"name":"restart-target"})
+                    presentation: json!({"name":"restart-target","description":""})
                         .as_object()
                         .unwrap()
                         .clone(),
@@ -1277,7 +1316,7 @@ async fn nested_large_source_evidence_retries_with_smaller_pages() {
                 0,
                 GroupChange::Create {
                     asset_context: pg::AssetContext::Endpoint,
-                    presentation: json!({"name":"large-evidence-source"})
+                    presentation: json!({"name":"large-evidence-source","description":""})
                         .as_object()
                         .unwrap()
                         .clone(),
@@ -1436,7 +1475,7 @@ async fn nested_large_source_evidence_retries_with_smaller_pages() {
                 0,
                 GroupChange::Create {
                     asset_context: pg::AssetContext::Endpoint,
-                    presentation: json!({"name":"small-leaf-large-source"})
+                    presentation: json!({"name":"small-leaf-large-source","description":""})
                         .as_object()
                         .unwrap()
                         .clone(),
