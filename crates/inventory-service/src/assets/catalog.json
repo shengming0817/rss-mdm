@@ -145,6 +145,33 @@
       ""
     ],
     [
+      "field_layouts",
+      "tenant_id",
+      "uuid",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "field_layouts",
+      "revision",
+      "bigint",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "field_layouts",
+      "document",
+      "jsonb",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
       "group_fields",
       "tenant_id",
       "uuid",
@@ -475,6 +502,27 @@
       true
     ],
     [
+      "field_layouts",
+      "field_layouts_document_check",
+      "c",
+      "CHECK ((octet_length((document)::text) <= 16384))",
+      true
+    ],
+    [
+      "field_layouts",
+      "field_layouts_pkey",
+      "p",
+      "PRIMARY KEY (tenant_id)",
+      true
+    ],
+    [
+      "field_layouts",
+      "field_layouts_revision_check",
+      "c",
+      "CHECK ((revision > 0))",
+      true
+    ],
+    [
       "group_fields",
       "group_fields_pkey",
       "p",
@@ -616,6 +664,14 @@
       "asset_query_runs",
       "asset_query_runs_pkey",
       "CREATE UNIQUE INDEX asset_query_runs_pkey ON mdm_assets.asset_query_runs USING btree (tenant_id, id)",
+      true,
+      true,
+      true
+    ],
+    [
+      "field_layouts",
+      "field_layouts_pkey",
+      "CREATE UNIQUE INDEX field_layouts_pkey ON mdm_assets.field_layouts USING btree (tenant_id)",
       true,
       true,
       true
