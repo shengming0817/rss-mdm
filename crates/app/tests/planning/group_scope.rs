@@ -68,12 +68,13 @@ async fn durable_asset_group_scope_pipeline() {
                     criteria: Some(assets::InventoryCondition {
                         selector: assets::ScopeSelector::Device,
                         quantifier: assets::ScopeQuantifier::One,
-                        criteria: assets::Criteria::Predicate {
-                            field: rss_mdm_inventory::builtin::IS_LOANER,
-                            op: assets::Operator::Eq,
-                            value: Some(assets::Scalar::Boolean(true)),
-                            values: None,
-                        },
+                        criteria:
+                            rss_mdm_inventory_service::groups::criteria::Criteria::Predicate {
+                                field: rss_mdm_inventory::builtin::IS_LOANER,
+                                op: assets::Operator::Eq,
+                                value: Some(assets::Scalar::Boolean(true)),
+                                values: None,
+                            },
                     }),
                 },
             )),
@@ -611,7 +612,7 @@ async fn registration_replacement_invalidates_direct_and_group_admission() {
 async fn group_delete_scope_reference_compete_without_dangling_references() {
     let first = planning(tenant()).await;
     let second = planning(tenant()).await;
-    {
+    for kind in ["scope", "group", "compliance"] {
         let group = Uuid::new_v4();
         let scope_id = Uuid::new_v4();
         execute(
@@ -639,14 +640,17 @@ async fn group_delete_scope_reference_compete_without_dangling_references() {
             id: group,
             change: Box::new(group_operation(1, GroupChange::Delete)),
         };
-        let reference = Command::Scope {
-            id: scope_id,
-            change: operation(
-                0,
-                ScopeChange::Put {
-                    definition: scope(group),
-                },
-            ),
+        let reference = async {
+            match kind {
+                "scope"=>execute(&second,&Command::Scope {id:scope_id,change:operation(0,ScopeChange::Put {definition:scope(group)})}).await,
+                "group"=>execute(&second,&GroupCommand::Group {sensitive:true,id:scope_id,change:Box::new(group_operation(0,GroupChange::Create {asset_context:rss_mdm_group_postgres::AssetContext::Endpoint,presentation:json!({"name":"nested-race"}).as_object().unwrap().clone(),criteria:Some(assets::InventoryCondition {selector:assets::ScopeSelector::Device,quantifier:assets::ScopeQuantifier::One,criteria:rss_mdm_inventory_service::groups::criteria::Criteria::Group {group_id:group,op:rss_mdm_inventory_service::groups::criteria::MembershipOp::MemberOf}})}))}).await,
+                _=>{
+                    let s=compliance(&second).await;let audit=RequestAudit::new(second.tenant.to_string(),"compliance_write");audit.set_principal("operator",crate::test_support::INSTANCE);
+                    let input=serde_json::from_value(json!({"presentation":{"name":"disabled-race"},"severity":"high","enabled":false,"platform":"all","target":{"kind":"groups","ids":[group]},"criteria":{"selector":{"kind":"device"},"quantifier":"one","criteria":{"kind":"predicate","field":"device.model","op":"eq","value":{"kind":"string","value":"any"}}}})).unwrap();
+                    let command=rss_mdm_inventory_service::compliance::Command::Put {sensitive:true,id:scope_id,request:Box::new(rss_mdm_inventory_service::operation::Operation {operation_id:Uuid::new_v4(),expected_revision:0,input})};
+                    let result=s.execute(&command,&audit,&||Ok(())).await.map_err(Into::into);audit.finalize(None);result
+                }
+            }
         };
         use sqlx::Connection;
         let mut holder = sqlx::PgConnection::connect_with(
@@ -671,13 +675,23 @@ async fn group_delete_scope_reference_compete_without_dangling_references() {
             }).await.expect("delete and reference never overlapped");
             sqlx::query("ROLLBACK").execute(&mut holder).await.unwrap();
         };
-        let (a, b, ()) = tokio::join!(
-            execute(&first, &delete),
-            execute(&second, &reference),
-            release
-        );
+        let (a, b, ()) = tokio::join!(execute(&first, &delete), reference, release);
         holder.close().await.unwrap();
         assert_ne!(a.is_ok(), b.is_ok());
+        assert_eq!(
+            sql(&format!(
+                "SELECT count(*) FROM mdm_group.groups g JOIN mdm_assets.group_selections s ON(s.tenant_id,s.group_id,s.rule_version)=(g.tenant_id,g.id,g.rule_version) JOIN mdm_group.groups target ON target.tenant_id=g.tenant_id AND s.group_ids @> ARRAY[target.id] WHERE g.tenant_id='{}' AND NOT g.deleted AND target.deleted",
+                tenant()
+            )),
+            "0"
+        );
+        assert_eq!(
+            sql(&format!(
+                "SELECT count(*) FROM mdm_compliance.groups edge JOIN mdm_group.groups target ON(target.tenant_id,target.id)=(edge.tenant_id,edge.group_id) WHERE edge.tenant_id='{}' AND target.deleted",
+                tenant()
+            )),
+            "0"
+        );
         assert_eq!(
             sql(&format!(
                 "SELECT count(*) FROM mdm_planning.scopes s JOIN mdm_planning.scope_versions v USING(tenant_id,id,revision) JOIN mdm_group.groups g ON g.tenant_id=s.tenant_id AND g.id='{group}' WHERE s.id='{scope_id}' AND g.deleted AND NOT s.deleted"
@@ -756,12 +770,13 @@ async fn ingress_batches_reuse_published_group_coverage() {
                     criteria: Some(assets::InventoryCondition {
                         selector: assets::ScopeSelector::Device,
                         quantifier: assets::ScopeQuantifier::One,
-                        criteria: assets::Criteria::Predicate {
-                            field: rss_mdm_inventory::builtin::IS_LOANER,
-                            op: assets::Operator::Eq,
-                            value: Some(assets::Scalar::Boolean(true)),
-                            values: None,
-                        },
+                        criteria:
+                            rss_mdm_inventory_service::groups::criteria::Criteria::Predicate {
+                                field: rss_mdm_inventory::builtin::IS_LOANER,
+                                op: assets::Operator::Eq,
+                                value: Some(assets::Scalar::Boolean(true)),
+                                values: None,
+                            },
                     }),
                 },
             )),
@@ -876,12 +891,13 @@ async fn superseded_group_links_reused_successor() {
                     criteria: Some(assets::InventoryCondition {
                         selector: assets::ScopeSelector::Device,
                         quantifier: assets::ScopeQuantifier::One,
-                        criteria: assets::Criteria::Predicate {
-                            field: rss_mdm_inventory::builtin::IS_LOANER,
-                            op: assets::Operator::Eq,
-                            value: Some(assets::Scalar::Boolean(true)),
-                            values: None,
-                        },
+                        criteria:
+                            rss_mdm_inventory_service::groups::criteria::Criteria::Predicate {
+                                field: rss_mdm_inventory::builtin::IS_LOANER,
+                                op: assets::Operator::Eq,
+                                value: Some(assets::Scalar::Boolean(true)),
+                                values: None,
+                            },
                     }),
                 },
             )),
@@ -943,4 +959,91 @@ async fn superseded_group_links_reused_successor() {
         "1"
     );
     service.runtime.close().await;
+}
+
+#[tokio::test]
+#[ignore = "MODULE=planning.group_scope: real dependency transactions"]
+async fn concurrent_opposite_group_references_never_commit_a_cycle() {
+    use rss_mdm_inventory_service::groups::criteria::{Criteria, MembershipOp};
+    let first = planning(tenant()).await;
+    let second = planning(tenant()).await;
+    let a = Uuid::new_v4();
+    let b = Uuid::new_v4();
+    for id in [a, b] {
+        execute(
+            &first,
+            &GroupCommand::Group {
+                id,
+                sensitive: true,
+                change: Box::new(group_operation(
+                    0,
+                    GroupChange::Create {
+                        asset_context: rss_mdm_group_postgres::AssetContext::Endpoint,
+                        presentation: json!({"name":"cycle-race"}).as_object().unwrap().clone(),
+                        criteria: Some(assets::InventoryCondition {
+                            selector: assets::ScopeSelector::Device,
+                            quantifier: assets::ScopeQuantifier::One,
+                            criteria: Criteria::Predicate {
+                                field: rss_mdm_inventory::builtin::MODEL,
+                                op: assets::Operator::Eq,
+                                value: Some(assets::Scalar::String("any".into())),
+                                values: None,
+                            },
+                        }),
+                    },
+                )),
+            },
+        )
+        .await
+        .unwrap();
+    }
+    let change = |id, target| GroupCommand::Group {
+        id,
+        sensitive: true,
+        change: Box::new(group_operation(
+            1,
+            GroupChange::Rule {
+                criteria: assets::InventoryCondition {
+                    selector: assets::ScopeSelector::Device,
+                    quantifier: assets::ScopeQuantifier::One,
+                    criteria: Criteria::Group {
+                        group_id: target,
+                        op: MembershipOp::MemberOf,
+                    },
+                },
+            },
+        )),
+    };
+    let left = change(a, b);
+    let right = change(b, a);
+    use sqlx::Connection;
+    let mut holder =
+        sqlx::PgConnection::connect_with(&options().username("postgres").password("local-fixture"))
+            .await
+            .unwrap();
+    sqlx::query("BEGIN").execute(&mut holder).await.unwrap();
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,2390))")
+        .bind(tenant().to_string())
+        .execute(&mut holder)
+        .await
+        .unwrap();
+    let release = async {
+        tokio::time::timeout(Duration::from_secs(8),async {
+            loop {
+                let waiting:i64=sqlx::query_scalar("WITH RECURSIVE blocked(pid) AS (SELECT pid FROM pg_stat_activity WHERE datname=current_database() AND pg_backend_pid()=ANY(pg_blocking_pids(pid)) UNION SELECT a.pid FROM pg_stat_activity a JOIN blocked b ON b.pid=ANY(pg_blocking_pids(a.pid)) WHERE a.datname=current_database()) SELECT count(*) FROM blocked").fetch_one(&mut holder).await.unwrap();
+                if waiting>=2 {break;}tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        }).await.expect("opposite graph writes never overlapped");
+        sqlx::query("ROLLBACK").execute(&mut holder).await.unwrap();
+    };
+    let (left, right, ()) = tokio::join!(execute(&first, &left), execute(&second, &right), release);
+    assert_ne!(left.is_ok(), right.is_ok());
+    let count = sql(&format!(
+        "SELECT count(*) FROM mdm_group.groups g JOIN mdm_assets.group_selections s ON(s.tenant_id,s.group_id,s.rule_version)=(g.tenant_id,g.id,g.rule_version) WHERE g.tenant_id='{}' AND g.id IN('{a}','{b}') AND cardinality(s.group_ids)>0",
+        tenant()
+    ));
+    assert_eq!(count, "1");
+    holder.close().await.unwrap();
+    first.runtime.close().await;
+    second.runtime.close().await;
 }

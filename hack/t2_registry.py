@@ -2185,3 +2185,12 @@ for backend in ('postgres','timescale_shared','timescale_dedicated','click_house
 
 consume(('crates/agent-wire/src/telemetry.rs','crates/agent-wire/schema/runtime/telemetry-*.schema.json','crates/agent-wire/schema/runtime/signed-telemetry-configuration-v1.schema.json'),
         'telemetry.ingress.postgres telemetry.ingress.timescale_shared telemetry.ingress.timescale_dedicated telemetry.ingress.click_house')
+
+# Nested group inputs and dependency reads reuse the existing product owners.
+consume(('crates/inventory-service/src/groups/criteria.rs',
+         'crates/inventory-service/src/groups/dependencies.rs',
+         'crates/inventory-service/src/groups/references.rs',
+         'crates/flow-service/src/planning/group_references.rs',
+         'crates/flow-service/src/planning/automation/group_sources.rs',
+         'crates/inventory-service/schema/group-selections.sql'),
+        'planning.group_scope planning.http planning.scope compliance.group_input group.generations')
