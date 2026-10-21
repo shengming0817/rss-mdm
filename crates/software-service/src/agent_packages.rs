@@ -20,88 +20,30 @@ use sqlx::Row;
 use uuid::Uuid;
 pub const INSTALL_SQL: &str = include_str!("agent_packages.sql");
 pub const ACCESS_CONTRACT: &str = include_str!("agent_packages_access.json");
-/// Candidate metadata is itself an immutable, digest-verified Resource artifact.
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct Manifest {
-    pub wire_version: u8,
-    pub tenant_id: Uuid,
-    pub target: w::Target,
-    pub version: String,
-    pub origin: String,
-    pub signing_keys: std::collections::BTreeMap<String, String>,
-    pub packaging: Packaging,
-}
-/// Optional builder signing metadata is recorded without imposing platform signing policy.
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
-pub enum Packaging {
-    NsisExe {
-        publisher: String,
-        #[serde(default, skip_serializing_if = "String::is_empty")]
-        signature_evidence: String,
-    },
-    WindowsMsi {
-        publisher: String,
-        #[serde(default, skip_serializing_if = "String::is_empty")]
-        signature_evidence: String,
-    },
-    WindowsMsix {
-        publisher: String,
-        #[serde(default, skip_serializing_if = "String::is_empty")]
-        signature_evidence: String,
-    },
-    MacosPkg {
-        bundle: String,
-        #[serde(default, skip_serializing_if = "String::is_empty")]
-        team: String,
-        #[serde(default, skip_serializing_if = "String::is_empty")]
-        notarization_evidence: String,
-    },
-}
-impl Packaging {
-    fn format(&self) -> w::InstallerFormat {
-        match self {
-            Self::NsisExe { .. } => w::InstallerFormat::NsisExe,
-            Self::WindowsMsi { .. } => w::InstallerFormat::WindowsMsi,
-            Self::WindowsMsix { .. } => w::InstallerFormat::WindowsMsix,
-            Self::MacosPkg { .. } => w::InstallerFormat::MacosPkg,
-        }
-    }
-}
+/// Publish a previously saved software version. Internal coordinates are returned by preparation.
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Publish {
     pub operation_id: Uuid,
+    pub package_id: Uuid,
+}
+#[derive(Clone)]
+struct Selection {
     pub resource: String,
     pub version: String,
     pub variant: String,
     pub target: w::Target,
-    pub manifest_artifact: String,
 }
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct Binding {
     variant: String,
     software: r::SoftwareSpec,
-    packaging: Packaging,
     resource: String,
     version: String,
     digest: [u8; 32],
     lifecycle: [u8; 32],
     installer: r::SoftwareArtifact,
-}
-pub struct PublicationMaterials<D> {
-    pub installer: D,
-    pub manifest: Vec<u8>,
-}
-/// Content adapter pins both originals while this owner publishes their exact binding.
-pub trait Materials: ManagementContentPort {
-    fn publication_materials(
-        &self,
-        installer: &r::Artifact,
-        manifest: &r::Artifact,
-    ) -> impl std::future::Future<Output = Result<PublicationMaterials<Self::Download>, Error>> + Send;
 }
 fn invalid() -> Error {
     Error::Malformed
@@ -124,7 +66,7 @@ fn target(t: w::Target) -> (r::Platform, r::Architecture) {
         },
     )
 }
-fn definition<'a>(v: &'a r::Version, i: &Publish) -> Result<&'a r::SoftwareDefinition, Error> {
+fn definition<'a>(v: &'a r::Version, i: &Selection) -> Result<&'a r::SoftwareDefinition, Error> {
     let (p, a) = target(i.target);
     let selected = v
         .variants()
@@ -134,118 +76,28 @@ fn definition<'a>(v: &'a r::Version, i: &Publish) -> Result<&'a r::SoftwareDefin
     let r::Declaration::Software { definition } = selected.declaration() else {
         return Err(invalid());
     };
-    let system = match &definition.spec().behavior {
-        r::SoftwareBehavior::Exe(x) => {
-            i.target.platform == TaskPlatform::Windows
-                && x.scope == r::SoftwareScope::System
-                && x.layout.len() == 2
-                && x.layout.values().any(|key| key == &i.manifest_artifact)
-        }
-        r::SoftwareBehavior::Msi(x) => {
-            i.target.platform == TaskPlatform::Windows && x.scope == r::SoftwareScope::System
-        }
-        r::SoftwareBehavior::Msix(x) => {
-            i.target.platform == TaskPlatform::Windows
-                && matches!(x.container, r::MsixContainer::Package { .. })
-                && matches!(x.deployment, r::MsixDeployment::DeviceProvisioning)
-                && x.dependencies.is_empty()
-                && definition.spec().dependencies.is_empty()
-        }
-        r::SoftwareBehavior::Pkg(x) => {
-            i.target.platform == TaskPlatform::Macos && x.scope == r::SoftwareScope::System
-        }
-        _ => false,
-    };
-    if !system {
-        return Err(invalid());
+    match (definition.spec().material.format, i.target.platform) {
+        (
+            r::SoftwareFormat::Exe | r::SoftwareFormat::Msi | r::SoftwareFormat::Msix,
+            TaskPlatform::Windows,
+        )
+        | (r::SoftwareFormat::Pkg, TaskPlatform::Macos) => Ok(definition),
+        _ => Err(invalid()),
     }
-    Ok(definition)
 }
-fn metadata(
-    manifest: &Manifest,
-    i: &Publish,
-    tenant: TenantId,
-    installer: &r::Artifact,
-    bytes: &[u8],
-    id: Uuid,
-) -> Result<w::Package, Error> {
-    let bounded = |s: &str| !s.is_empty() && s.len() <= 1024 && !s.chars().any(char::is_control);
-    let optional = |s: &str| s.len() <= 1024 && !s.chars().any(char::is_control);
-    let packaging = match &manifest.packaging {
-        Packaging::NsisExe {
-            publisher,
-            signature_evidence,
-        }
-        | Packaging::WindowsMsi {
-            publisher,
-            signature_evidence,
-        }
-        | Packaging::WindowsMsix {
-            publisher,
-            signature_evidence,
-        } => {
-            i.target.platform == TaskPlatform::Windows
-                && bounded(publisher)
-                && optional(signature_evidence)
-        }
-        Packaging::MacosPkg {
-            bundle,
-            team,
-            notarization_evidence,
-        } => {
-            i.target.platform == TaskPlatform::Macos
-                && bounded(bundle)
-                && team.len() <= 256
-                && optional(team)
-                && optional(notarization_evidence)
-        }
-    };
-    let origin = url::Url::parse(&manifest.origin).map_err(|_| invalid())?;
-    if manifest.wire_version != 1
-        || manifest.tenant_id.to_string() != tenant.to_string()
-        || manifest.target != i.target
-        || !bounded(&manifest.version)
-        || manifest.signing_keys.is_empty()
-        || manifest.signing_keys.len() > 16
-        || manifest.signing_keys.iter().any(|(id, key)| {
-            id.is_empty()
-                || id.len() > 128
-                || !id
-                    .bytes()
-                    .all(|b| b.is_ascii_alphanumeric() || b"._-".contains(&b))
-                || key.len() != 43
-                || !key
-                    .bytes()
-                    .all(|b| b.is_ascii_alphanumeric() || b"_-".contains(&b))
-        })
-        || manifest.origin.len() > 2048
-        || !packaging
-        || origin.scheme() != "https"
-        || origin.origin().ascii_serialization() != manifest.origin
-        || !origin.username().is_empty()
-        || origin.password().is_some()
-    {
-        return Err(invalid());
+fn format(format: r::SoftwareFormat) -> Result<w::InstallerFormat, Error> {
+    match format {
+        r::SoftwareFormat::Exe => Ok(w::InstallerFormat::WindowsExe),
+        r::SoftwareFormat::Msi => Ok(w::InstallerFormat::WindowsMsi),
+        r::SoftwareFormat::Msix => Ok(w::InstallerFormat::WindowsMsix),
+        r::SoftwareFormat::Pkg => Ok(w::InstallerFormat::MacosPkg),
+        _ => Err(invalid()),
     }
-    Ok(w::Package {
-        release_id: id,
-        tenant_id: manifest.tenant_id,
-        target: i.target,
-        version: manifest.version.clone(),
-        format: manifest.packaging.format(),
-        filename: filename(i.target, manifest.packaging.format()),
-        length: installer.length(),
-        installer_sha256: installer.digest().bytes(),
-        candidate_sha256: Sha256::digest(bytes).into(),
-        origin: manifest.origin.clone(),
-        signing_keys: manifest.signing_keys.clone(),
-    })
 }
-struct Prepared<D> {
+struct Prepared {
     version: r::Version,
     package: w::Package,
     binding: Binding,
-    _materials: PublicationMaterials<D>,
     verified: Box<dyn crate::catalog::VerifiedContent>,
 }
 fn filename(target: w::Target, format: w::InstallerFormat) -> String {
@@ -264,23 +116,17 @@ async fn replay_in(
     operation: Uuid,
     hash: &[u8],
 ) -> transaction::Result<Option<w::Package>> {
-    let tenant = tx.tenant_id().to_string();
-    let old=tx.with_connection(move|c|Box::pin(async move {
-  sqlx::query("SELECT request_digest,document - 'channel' AS document FROM mdm_agent_packages.releases WHERE tenant_id=$1::uuid AND operation_id=$2").bind(tenant).bind(operation).fetch_optional(c).await
- })).await?;
-    old.map(|row| {
-        if row.try_get::<Vec<u8>, _>("request_digest")? != hash {
-            return Err(Error::Conflict.into());
-        }
-        serde_json::from_value(row.try_get("document")?).map_err(|_| storage().into())
-    })
-    .transpose()
+    crate::catalog::Reader::new(tx.tenant_id())
+        .operation_receipt_in(tx, operation, hash)
+        .await?
+        .map(|value| serde_json::from_value(value).map_err(|_| storage().into()))
+        .transpose()
 }
-async fn prepare<C: Materials>(
+async fn prepare<C: ManagementContentPort>(
     app: &management::catalog::Access<C>,
     p: &AuthorizedPrincipal,
-    i: &Publish,
-) -> Result<Prepared<C::Download>, Error> {
+    i: &Selection,
+) -> Result<Prepared, Error> {
     let version = transaction::inspect(
         &app.runtime,
         app.tenant,
@@ -309,54 +155,34 @@ async fn prepare<C: Materials>(
         .await
         .map_err(|_| invalid())?;
     let def = definition(&version, i)?;
-    let candidate = def
-        .spec()
-        .artifacts
-        .get(&i.manifest_artifact)
-        .ok_or_else(invalid)?
-        .artifact()
-        .map_err(|_| invalid())?;
-    if candidate == *def.primary() || candidate.length() > 32768 {
-        return Err(invalid());
-    }
-    let materials = app
-        .content
-        .as_ref()
-        .ok_or(Error::Unsupported)?
-        .publication_materials(def.primary(), &candidate)
+    let content = app.content.as_ref().ok_or(Error::Unsupported)?;
+    let native_format = format(def.spec().material.format)?;
+    let facts = content
+        .inspect_installer(def.primary(), &filename(i.target, native_format))
         .await?;
-    candidate
-        .verify(&materials.manifest)
-        .map_err(|_| invalid())?;
-    let manifest: Manifest = serde_json::from_slice(&materials.manifest).map_err(|_| invalid())?;
-    let format_matches = matches!(
-        (&manifest.packaging, &def.spec().behavior),
-        (Packaging::NsisExe { .. }, r::SoftwareBehavior::Exe(_))
-            | (Packaging::WindowsMsi { .. }, r::SoftwareBehavior::Msi(_))
-            | (Packaging::WindowsMsix { .. }, r::SoftwareBehavior::Msix(_))
-            | (Packaging::MacosPkg { .. }, r::SoftwareBehavior::Pkg(_))
-    );
-    if let (Packaging::WindowsMsix { publisher, .. }, r::SoftwareBehavior::Msix(native)) =
-        (&manifest.packaging, &def.spec().behavior)
-        && publisher != &native.identity.publisher
+    let (_, architecture) = target(i.target);
+    if facts.format != def.spec().material.format
+        || facts
+            .version
+            .as_ref()
+            .is_some_and(|v| v != &def.spec().version)
+        || (!facts.architectures.is_empty() && !facts.architectures.contains(&architecture))
     {
         return Err(invalid());
     }
-    if !format_matches || manifest.version != def.spec().version {
-        return Err(invalid());
-    }
-    let package = metadata(
-        &manifest,
-        i,
-        app.tenant,
-        def.primary(),
-        &materials.manifest,
-        Uuid::new_v4(),
-    )?;
+    let package = w::Package {
+        release_id: Uuid::new_v4(),
+        tenant_id: Uuid::parse_str(&app.tenant.to_string()).map_err(|_| invalid())?,
+        target: i.target,
+        version: def.spec().version.clone(),
+        format: native_format,
+        filename: filename(i.target, native_format),
+        length: def.primary().length(),
+        installer_sha256: def.primary().digest().bytes(),
+    };
     let binding = Binding {
         variant: i.variant.clone(),
         software: def.spec().clone(),
-        packaging: manifest.packaging.clone(),
         resource: i.resource.clone(),
         version: i.version.clone(),
         digest: version.digest().bytes(),
@@ -372,33 +198,58 @@ async fn prepare<C: Materials>(
         version,
         package,
         binding,
-        _materials: materials,
         verified,
     })
 }
 async fn insert_in(
     tx: &mut rss_transactional_messaging_postgres::PgTransaction<'_>,
-    i: &Publish,
-    hash: &[u8],
     package: &w::Package,
     binding: &Binding,
 ) -> transaction::Result<()> {
     let tenant = tx.tenant_id();
-    let op = i.operation_id;
-    let hash = hash.to_vec();
     let package = package.clone();
     let mut binding = binding.clone();
-    let admitted=tx.with_connection(move|c|Box::pin(async move {
-  binding.lifecycle=match crate::catalog::binding_on(c,tenant,&binding.resource,&binding.version,binding.digest).await { Ok(Some(value))=>value,Ok(None)=>return Ok(Ok(false)),Err(e)=>return Ok(Err(e)) };
-  sqlx::query("INSERT INTO mdm_agent_packages.releases VALUES($1::uuid,$2,$3,$4,$5,$6,'published')").bind(tenant.to_string()).bind(package.release_id).bind(op).bind(hash).bind(serde_json::to_value(&package).map_err(|_|sqlx::Error::Protocol("package metadata".into()))?).bind(serde_json::to_value(&binding).map_err(|_|sqlx::Error::Protocol("package binding".into()))?).execute(c).await?;
-  Ok(Ok(true))
- })).await??;
+    let admitted = tx
+        .with_connection(move |c| {
+            Box::pin(async move {
+                binding.lifecycle = match crate::catalog::binding_on(
+                    c,
+                    tenant,
+                    &binding.resource,
+                    &binding.version,
+                    binding.digest,
+                )
+                .await
+                {
+                    Ok(Some(value)) => value,
+                    Ok(None) => return Ok(Ok(false)),
+                    Err(e) => return Ok(Err(e)),
+                };
+                sqlx::query(
+                    "INSERT INTO mdm_agent_packages.releases VALUES($1::uuid,$2,$3,$4,'published')",
+                )
+                .bind(tenant.to_string())
+                .bind(package.release_id)
+                .bind(
+                    serde_json::to_value(&package)
+                        .map_err(|_| sqlx::Error::Protocol("package metadata".into()))?,
+                )
+                .bind(
+                    serde_json::to_value(&binding)
+                        .map_err(|_| sqlx::Error::Protocol("package binding".into()))?,
+                )
+                .execute(c)
+                .await?;
+                Ok(Ok(true))
+            })
+        })
+        .await??;
     if !admitted {
         return Err(Error::Forbidden.into());
     }
     Ok(())
 }
-pub async fn publish<C: Materials>(
+pub async fn publish<C: ManagementContentPort>(
     app: &management::catalog::Access<C>,
     p: &AuthorizedPrincipal,
     i: &Publish,
@@ -406,7 +257,7 @@ pub async fn publish<C: Materials>(
 ) -> Result<w::Package, Error> {
     p.manage(Permission::ReleasePublish)?;
     p.bind_audit(a)?;
-    if p.tenant_id() != app.tenant.to_string() || i.operation_id.is_nil() {
+    if p.tenant_id() != app.tenant.to_string() || i.operation_id.is_nil() || i.package_id.is_nil() {
         return Err(invalid());
     }
     a.operation(i.operation_id, "agent_package_publish");
@@ -429,7 +280,50 @@ pub async fn publish<C: Materials>(
     )
     .await?;
     let prepared = if replay.is_none() {
-        Some(prepare(app, p, i).await?)
+        let resource = i.package_id.to_string();
+        let version = transaction::inspect(
+            &app.runtime,
+            app.tenant,
+            (app, p, &resource),
+            |ctx, tx| {
+                Box::pin(async move {
+                    let (app, p, resource) = *ctx;
+                    let snapshot = transaction::current(tx, p).await?;
+                    snapshot.require(p, Permission::ReleasePublish, None)?;
+                    app.catalog.reader().lock_in(tx).await?;
+                    Ok(app.catalog.reader().version_in(tx, resource, "v1").await?)
+                })
+            },
+            TransactionOwner::SoftwareCatalog,
+        )
+        .await?;
+        if version.variants().len() != 1 {
+            return Err(invalid());
+        }
+        let selected = &version.variants()[0];
+        let target = w::Target {
+            platform: match selected.platform() {
+                r::Platform::Windows => TaskPlatform::Windows,
+                r::Platform::MacOS => TaskPlatform::Macos,
+            },
+            architecture: match selected.architecture() {
+                r::Architecture::X86_64 => TaskArchitecture::X86_64,
+                r::Architecture::Aarch64 => TaskArchitecture::Aarch64,
+            },
+        };
+        Some(
+            prepare(
+                app,
+                p,
+                &Selection {
+                    resource,
+                    version: "v1".into(),
+                    variant: selected.key().as_str().into(),
+                    target,
+                },
+            )
+            .await?,
+        )
     } else {
         None
     };
@@ -479,7 +373,16 @@ pub async fn publish<C: Materials>(
                             i.operation_id,
                         )
                         .await?;
-                    insert_in(tx, i, hash, &prepared.package, &prepared.binding).await?;
+                    insert_in(tx, &prepared.package, &prepared.binding).await?;
+                    app.catalog
+                        .reader()
+                        .save_operation_in(
+                            tx,
+                            i.operation_id,
+                            hash,
+                            &serde_json::to_value(&prepared.package).map_err(|_| storage())?,
+                        )
+                        .await?;
                     prepared.package.clone()
                 };
                 let fact = Fact::business(
@@ -511,14 +414,13 @@ pub async fn admitted_on(
         .execute(&mut *c)
         .await
         .map_err(|_| storage())?;
-    let row=sqlx::query("SELECT document - 'channel' AS document,binding,state FROM mdm_agent_packages.releases WHERE tenant_id=$1::uuid AND id=$2").bind(tenant.to_string()).bind(i.release_id).fetch_optional(&mut *c).await.map_err(|_|storage())?.ok_or(Error::ResourceMissing)?;
+    let row=sqlx::query("SELECT document,binding,state FROM mdm_agent_packages.releases WHERE tenant_id=$1::uuid AND id=$2").bind(tenant.to_string()).bind(i.release_id).fetch_optional(&mut *c).await.map_err(|_|storage())?.ok_or(Error::ResourceMissing)?;
     let package: w::Package =
         serde_json::from_value(row.try_get("document").map_err(|_| storage())?)
             .map_err(|_| storage())?;
     let binding: Binding = serde_json::from_value(row.try_get("binding").map_err(|_| storage())?)
         .map_err(|_| storage())?;
     if row.try_get::<String, _>("state").map_err(|_| storage())? != "published"
-        || i.candidate_sha256 != package.candidate_sha256
         || !crate::catalog::admitted_on(
             c,
             tenant,
@@ -539,21 +441,13 @@ async fn current_on(
     tenant: TenantId,
     id: Uuid,
 ) -> Result<(w::Package, Binding), Error> {
-    let row=sqlx::query("SELECT document - 'channel' AS document,binding FROM mdm_agent_packages.releases WHERE tenant_id=$1::uuid AND id=$2 AND state='published'").bind(tenant.to_string()).bind(id).fetch_optional(&mut *c).await.map_err(|_|storage())?.ok_or(Error::ResourceMissing)?;
+    let row=sqlx::query("SELECT document,binding FROM mdm_agent_packages.releases WHERE tenant_id=$1::uuid AND id=$2 AND state='published'").bind(tenant.to_string()).bind(id).fetch_optional(&mut *c).await.map_err(|_|storage())?.ok_or(Error::ResourceMissing)?;
     let package: w::Package =
         serde_json::from_value(row.try_get("document").map_err(|_| storage())?)
             .map_err(|_| storage())?;
     let binding: Binding = serde_json::from_value(row.try_get("binding").map_err(|_| storage())?)
         .map_err(|_| storage())?;
-    admitted_on(
-        c,
-        tenant,
-        &w::Installation {
-            release_id: id,
-            candidate_sha256: package.candidate_sha256,
-        },
-    )
-    .await?;
+    admitted_on(c, tenant, &w::Installation { release_id: id }).await?;
     Ok((package, binding))
 }
 pub async fn list<C: ManagementContentPort>(
@@ -609,6 +503,13 @@ pub async fn download<C: ManagementContentPort>(
         .ok_or(Error::Unsupported)?
         .verify_artifact(&artifact)
         .await?;
+    // File verification performs I/O outside the lifecycle transaction; recheck before exposing it.
+    let (current, current_binding) = inspect_package(app, id).await?;
+    if current.installer_sha256 != package.installer_sha256
+        || current_binding.digest != binding.digest
+    {
+        return Err(Error::Conflict);
+    }
     Ok((package, file))
 }
 pub async fn withdraw<C: ManagementContentPort>(
@@ -640,7 +541,7 @@ pub async fn withdraw<C: ManagementContentPort>(
    if let Some(row)=sqlx::query("SELECT fingerprint FROM mdm_software.operations WHERE tenant_id=$1::uuid AND id=$2").bind(&tenant).bind(op).fetch_optional(&mut *c).await?{return Ok(Some(row.try_get::<Vec<u8>,_>("fingerprint")?));}
    let n=sqlx::query("UPDATE mdm_agent_packages.releases SET state='withdrawn' WHERE tenant_id=$1::uuid AND id=$2").bind(&tenant).bind(id).execute(&mut *c).await?.rows_affected();
    if n!=1{return Err(sqlx::Error::RowNotFound);}
-   sqlx::query("INSERT INTO mdm_software.operations VALUES($1::uuid,$2,$3,'null')").bind(&tenant).bind(op).bind(d).execute(c).await?;
+   sqlx::query("INSERT INTO mdm_software.operations VALUES($1::uuid,$2,$3,jsonb_build_object('withdrawn',$4::uuid))").bind(&tenant).bind(op).bind(d).bind(id).execute(c).await?;
    Ok(None)
   })).await?;
   if old.as_ref().is_some_and(|v|v!=hash){return Err(Error::Conflict.into());}
@@ -658,7 +559,6 @@ pub struct AdmittedPackage {
     pub digest: [u8; 32],
     pub lifecycle: [u8; 32],
     pub software: r::SoftwareSpec,
-    pub packaging: Packaging,
 }
 /// Resolve an explicit release; ordinary Software resources cannot authorize Agent bootstrap.
 pub async fn resolve_in(
@@ -675,7 +575,6 @@ pub async fn resolve_in(
         digest: binding.digest,
         lifecycle: binding.lifecycle,
         software: binding.software,
-        packaging: binding.packaging,
     })
 }
 
@@ -685,7 +584,7 @@ pub async fn known_in(
     c: &mut sqlx::PgConnection,
     tenant: TenantId,
 ) -> Result<Vec<AdmittedPackage>, Error> {
-    let rows = sqlx::query("SELECT document - 'channel' AS document,binding FROM mdm_agent_packages.releases WHERE tenant_id=$1::uuid ORDER BY id")
+    let rows = sqlx::query("SELECT document,binding FROM mdm_agent_packages.releases WHERE tenant_id=$1::uuid ORDER BY id")
         .bind(tenant.to_string()).fetch_all(c).await.map_err(|_| storage())?;
     rows.into_iter()
         .map(|row| {
@@ -702,78 +601,7 @@ pub async fn known_in(
                 digest: binding.digest,
                 lifecycle: binding.lifecycle,
                 software: binding.software,
-                packaging: binding.packaging,
             })
         })
         .collect()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn macos_publication_accepts_unsigned_metadata_and_still_binds_the_native_target() {
-        let tenant = Uuid::new_v4();
-        let target = w::Target {
-            platform: TaskPlatform::Macos,
-            architecture: TaskArchitecture::Aarch64,
-        };
-        let mut manifest = Manifest {
-            wire_version: 1,
-            tenant_id: tenant,
-            target,
-            version: "0.1.0".into(),
-            origin: "https://mdm.example.test:9445".into(),
-            signing_keys: [("test-key".into(), "A".repeat(43))].into(),
-            packaging: Packaging::MacosPkg {
-                bundle: "com.rss.mdmagent".into(),
-                team: "development-ad-hoc".into(),
-                notarization_evidence: "not-notarized:package-manifest:build-1".into(),
-            },
-        };
-        let input = Publish {
-            operation_id: Uuid::new_v4(),
-            resource: "resource".into(),
-            version: "v1".into(),
-            variant: "default".into(),
-            target,
-            manifest_artifact: "candidate".into(),
-        };
-        let artifact =
-            r::Artifact::new(r::Id::new("installer").unwrap(), 1, r::Digest::of(b"x")).unwrap();
-        let check = |manifest: &Manifest, input: &Publish| {
-            metadata(
-                manifest,
-                input,
-                TenantId::parse(&tenant.to_string()).unwrap(),
-                &artifact,
-                &serde_json::to_vec(manifest).unwrap(),
-                Uuid::new_v4(),
-            )
-            .is_ok()
-        };
-        assert!(check(&manifest, &input));
-        let Packaging::MacosPkg {
-            team,
-            notarization_evidence,
-            ..
-        } = &mut manifest.packaging
-        else {
-            unreachable!()
-        };
-        team.clear();
-        notarization_evidence.clear();
-        assert!(check(&manifest, &input));
-        if let Packaging::MacosPkg { team, .. } = &mut manifest.packaging {
-            *team = "x".repeat(257);
-        }
-        assert!(!check(&manifest, &input));
-        if let Packaging::MacosPkg { team, .. } = &mut manifest.packaging {
-            *team = "x".repeat(256);
-        }
-        assert!(check(&manifest, &input));
-        manifest.target.platform = TaskPlatform::Windows;
-        assert!(!check(&manifest, &input));
-    }
 }

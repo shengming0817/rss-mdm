@@ -323,13 +323,7 @@ impl Inputs {
                         })
                     })
                     .await??;
-                bindings.push((
-                    *target,
-                    id,
-                    package.metadata.candidate_sha256,
-                    package.digest,
-                    package.lifecycle,
-                ));
+                bindings.push((*target, id, package.digest, package.lifecycle));
             }
             return Ok(Some(
                 crate::transaction::fingerprint(&bindings)?

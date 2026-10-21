@@ -2187,3 +2187,14 @@ for backend in ('postgres','timescale_shared','timescale_dedicated','click_house
 
 consume(('crates/agent-wire/src/telemetry.rs','crates/agent-wire/schema/runtime/telemetry-*.schema.json','crates/agent-wire/schema/runtime/signed-telemetry-configuration-v1.schema.json'),
         'telemetry.ingress.postgres telemetry.ingress.timescale_shared telemetry.ingress.timescale_dedicated telemetry.ingress.click_house')
+
+# Installer preparation consumes the same content journal and catalog transaction.
+consume(('crates/software-service/src/management/installers.rs', 'crates/software-service/src/catalog/installers.rs',
+         'crates/content-service/src/installer.rs','crates/content-service/src/installer/cfb_budget.rs', 'crates/content-service/src/native.rs'), 'agent.configurations')
+for name in ('agent.configurations', 'execution.commands.onboarding', 'apple.onboarding'):
+    module = MODULES[name]
+    MODULES[name] = replace(module, support_inputs=tuple(dict.fromkeys((*module.support_inputs,
+        'crates/content-service/tests/fixtures/installers.rs'))))
+
+consume(('crates/software-service/src/imports.rs',), 'software.catalog software.http')
+T1_INPUTS += ('crates/software-service/tests/export.rs',)

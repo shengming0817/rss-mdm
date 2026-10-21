@@ -37,7 +37,6 @@ pub enum Lifecycle {
     ExternalCertificate,
     ProviderCredential,
     BusinessConfiguration,
-    SignedPackage,
     DeviceGenerated,
 }
 #[derive(Clone, Copy, Debug, Serialize, schemars::JsonSchema)]
@@ -383,7 +382,7 @@ pub const CATALOG: &[Item] = &[
         Tenant,
         "software-service",
         DomainService,
-        SignedPackage,
+        BusinessConfiguration,
         AgentEnrollmentRead
     ),
     item!(
@@ -617,6 +616,8 @@ mod tests {
             .map(|v| v.id)
             .collect::<std::collections::BTreeSet<_>>();
         assert_eq!(ids.len(), 43);
+        let package = CATALOG.iter().find(|v| v.id == "agent-package").unwrap();
+        assert_eq!(package.lifecycle, Lifecycle::BusinessConfiguration);
         let ledger = CATALOG.iter().find(|v| v.id == "ledger").unwrap();
         assert_eq!(ledger.lifecycle, Lifecycle::FixedLedgerKey);
         let device = CATALOG.iter().find(|v| v.id == "device-key").unwrap();

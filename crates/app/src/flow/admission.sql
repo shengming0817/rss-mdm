@@ -116,14 +116,12 @@ SELECT
  AND NOT EXISTS(SELECT 1 FROM package_reachable r WHERE has_schema_privilege(r.oid,c.relnamespace,'CREATE')
  OR has_table_privilege(r.oid,c.oid,'UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER'))
  AND (SELECT jsonb_agg(jsonb_build_array(attname,format_type(atttypid,atttypmod),attnotnull) ORDER BY attnum)
- FROM pg_attribute WHERE attrelid=c.oid AND attnum>0 AND NOT attisdropped)='[["tenant_id","uuid",true],["id","uuid",true],["operation_id","uuid",true],["request_digest","bytea",true],["document","jsonb",true],["binding","jsonb",true],["state","text",true]]'::jsonb
- AND (SELECT count(*)=6 AND bool_and(convalidated AND pg_get_constraintdef(oid)=CASE conname
+ FROM pg_attribute WHERE attrelid=c.oid AND attnum>0 AND NOT attisdropped)='[["tenant_id","uuid",true],["id","uuid",true],["document","jsonb",true],["binding","jsonb",true],["state","text",true]]'::jsonb
+ AND (SELECT count(*)=4 AND bool_and(convalidated AND pg_get_constraintdef(oid)=CASE conname
  WHEN 'releases_binding_check' THEN 'CHECK ((octet_length((binding)::text) <= 32768))'
  WHEN 'releases_document_check' THEN 'CHECK ((octet_length((document)::text) <= 32768))'
- WHEN 'releases_request_digest_check' THEN 'CHECK ((octet_length(request_digest) = 32))'
  WHEN 'releases_state_check' THEN 'CHECK ((state = ANY (ARRAY[''published''::text, ''withdrawn''::text])))'
- WHEN 'releases_pkey' THEN 'PRIMARY KEY (tenant_id, id)'
- WHEN 'releases_tenant_id_operation_id_key' THEN 'UNIQUE (tenant_id, operation_id)' ELSE '' END)
+ WHEN 'releases_pkey' THEN 'PRIMARY KEY (tenant_id, id)' ELSE '' END)
  FROM pg_constraint WHERE conrelid=c.oid)
  AND NOT EXISTS(SELECT 1 FROM pg_index WHERE indrelid=c.oid AND (NOT indisvalid OR NOT indisready OR NOT indislive))
  AND NOT EXISTS(SELECT 1 FROM pg_attribute a WHERE a.attrelid=c.oid AND a.attnum>0 AND NOT a.attisdropped

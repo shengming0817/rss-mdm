@@ -54,23 +54,23 @@ impl Inputs {
             };
             if metadata.target.platform != expected_platform
                 || metadata.target.architecture != expected_arch
-                || metadata.origin != self.agent_origin
             {
                 return Err(Error::Unsupported.into());
             }
             let spec = &release.software;
+            let behavior = spec.behavior.as_ref().ok_or(Error::Unsupported)?;
             if !spec.dependencies.is_empty()
                 || spec.downgrade != resource::SoftwareDowngrade::Deny
-                || !spec.behavior.invocation().arguments.is_empty()
-                || !spec.behavior.invocation().environment.is_empty()
-                || spec.behavior.invocation().run_as != resource::RunAs::System
+                || !behavior.invocation().arguments.is_empty()
+                || !behavior.invocation().environment.is_empty()
+                || behavior.invocation().run_as != resource::RunAs::System
             {
                 return Err(Error::Unsupported.into());
             }
             let identity = identity(&release)?;
             let artifact = spec
                 .artifacts
-                .get(spec.behavior.installer())
+                .get(&spec.material.installer)
                 .ok_or(Error::Malformed)?
                 .clone();
             if artifact.sha256 != metadata.installer_sha256 || artifact.length != metadata.length {
@@ -81,7 +81,6 @@ impl Inputs {
                 Package {
                     release: rss_mdm_agent_wire::enroll::configuration::Installation {
                         release_id: id,
-                        candidate_sha256: metadata.candidate_sha256,
                     },
                     identity,
                     target: *target,
@@ -144,9 +143,8 @@ pub fn identity(
 ) -> std::result::Result<Identity, Error> {
     let spec = &release.software;
     let metadata = &release.metadata;
-    use rss_mdm_software_service::agent_packages::Packaging;
-    let identity = match (&spec.behavior, &release.packaging) {
-        (resource::SoftwareBehavior::Msi(native), Packaging::WindowsMsi { publisher, .. }) => {
+    let identity = match spec.behavior.as_ref().ok_or(Error::Unsupported)? {
+        resource::SoftwareBehavior::Msi(native) => {
             let resource::SoftwareDetection::MsiProduct {
                 product_code,
                 version,
@@ -160,20 +158,15 @@ pub fn identity(
             Identity::WindowsMsi {
                 product: Uuid::parse_str(product_code.trim_matches(['{', '}']))
                     .map_err(|_| Error::Malformed)?,
-                publisher: publisher.clone(),
+                publisher: None,
             }
         }
-        (resource::SoftwareBehavior::Msix(native), Packaging::WindowsMsix { publisher, .. }) => {
-            if publisher != &native.identity.publisher {
-                return Err(Error::Unsupported);
-            }
-            Identity::WindowsMsix {
-                family: family(&native.identity.name, publisher),
-                identity: native.identity.clone(),
-                minimum_os: native.minimum_os,
-            }
-        }
-        (resource::SoftwareBehavior::Pkg(native), Packaging::MacosPkg { bundle, team, .. }) => {
+        resource::SoftwareBehavior::Msix(native) => Identity::WindowsMsix {
+            family: family(&native.identity.name, &native.identity.publisher),
+            identity: native.identity.clone(),
+            minimum_os: native.minimum_os,
+        },
+        resource::SoftwareBehavior::Pkg(native) => {
             let resource::SoftwareDetection::PkgReceipt { receipt, version } = &native.detect
             else {
                 return Err(Error::Unsupported);
@@ -181,10 +174,11 @@ pub fn identity(
             if version != &metadata.version {
                 return Err(Error::Unsupported);
             }
+            let bundle = spec.material.bundle_id.as_ref().ok_or(Error::Unsupported)?;
             Identity::Macos {
                 receipt: receipt.clone(),
                 bundle: bundle.clone(),
-                team: team.clone(),
+                team: String::new(),
             }
         }
         _ => return Err(Error::Unsupported),
