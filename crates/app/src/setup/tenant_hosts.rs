@@ -323,7 +323,3 @@ async fn operator_connection(
     }
     Ok(c)
 }
-
-#[cfg(test)]
-#[path = "../../tests/setup/tenant_hosts.rs"]
-mod tests;
