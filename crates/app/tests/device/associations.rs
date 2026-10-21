@@ -35,6 +35,8 @@ pub(crate) async fn setup() -> anyhow::Result<(
 }
 pub(super) fn query(limit: usize) -> ViewQuery {
     ViewQuery {
+        search: None,
+        platform: None,
         asset_state: None,
         cursor: None,
         limit,
@@ -105,6 +107,13 @@ fn audit(action: &'static str) -> RequestAudit {
 #[tokio::test]
 #[ignore = "MODULE=device.associations: real tenant transaction and authority"]
 async fn automatic_match_duplicate_detection_and_revocation_suppression() -> anyhow::Result<()> {
+    let mut authority = crate::test_support::authority::Authority::open().await?;
+    let resources = std::mem::take(&mut authority.resources);
+    let sessions = rss_mdm_authorization_service::session::SessionAuthority::new(
+        authority.identity.authority.clone(),
+        authority.identity.tenant,
+    );
+    resources.finish(async {
     let (access, s, admin, mut c) = setup().await?;
     let mdm = crate::test_support::case::name("association-mdm");
     let agent = crate::test_support::case::name("association-agent");
@@ -112,7 +121,7 @@ async fn automatic_match_duplicate_detection_and_revocation_suppression() -> any
     seed(agent, "agent", "00-TEST.SERIAL")?;
     assert_eq!(s.reconcile().await.context("reconcile changed")?, 1);
     assert_eq!(s.reconcile().await.context("reconcile unchanged")?, 0);
-    let page = s.views(&admin, &query(64)).await.context("device views")?;
+    let page = s.views(&admin, &query(64), &sessions).await.context("device views")?;
     assert_eq!(
         page["statistics"],
         json!({"endpointCount":2,"deviceViewCount":1})
@@ -146,7 +155,7 @@ async fn automatic_match_duplicate_detection_and_revocation_suppression() -> any
     sqlx::query("UPDATE mdm_access.registrations SET state='revoked' WHERE tenant_id=$1::uuid AND device=$2").bind(case_a()).bind(duplicate).execute(&mut c).await?;
     assert_eq!(s.reconcile().await.context("reconcile unchanged")?, 0);
     assert_eq!(
-        s.views(&admin, &query(64)).await.context("device views")?["statistics"]["deviceViewCount"],
+        s.views(&admin, &query(64), &sessions).await.context("device views")?["statistics"]["deviceViewCount"],
         3
     );
     let restore = Confirm {
@@ -179,19 +188,31 @@ async fn automatic_match_duplicate_detection_and_revocation_suppression() -> any
     ));
     access.close().await;
     Ok(())
+
+    }).await
 }
 
 #[tokio::test]
 #[ignore = "MODULE=device.associations: real tenant transaction and authority"]
 async fn generation_continues_after_delayed_report_and_keeps_members_pending() -> anyhow::Result<()>
 {
+    let mut authority = crate::test_support::authority::Authority::open().await?;
+    let resources = std::mem::take(&mut authority.resources);
+    let sessions = rss_mdm_authorization_service::session::SessionAuthority::new(
+        authority.identity.authority.clone(),
+        authority.identity.tenant,
+    );
+    resources.finish(async {
     let (access, s, admin, mut c) = setup().await?;
     let mdm = crate::test_support::case::name("generation-mdm");
     let agent = crate::test_support::case::name("generation-agent");
     seed(mdm, "mdm", "generation-serial")?;
     let old = seed(agent, "agent", "GENERATION-SERIAL")?;
     s.reconcile().await?;
-    let page = s.views(&admin, &query(64)).await.context("device views")?;
+    let page = s
+        .views(&admin, &query(64), &sessions)
+        .await
+        .context("device views")?;
     let id: Uuid = serde_json::from_value(page["items"][0]["reference"]["id"].clone())?;
     let new = Uuid::new_v4();
     let epoch = Uuid::new_v4();
@@ -210,7 +231,9 @@ async fn generation_continues_after_delayed_report_and_keeps_members_pending() -
     let pending = s.get(&admin, id).await?;
     assert!(pending.members.iter().any(|m| m.registration_id == old));
     assert_eq!(
-        s.views(&admin, &query(64)).await.context("device views")?["statistics"]["deviceViewCount"],
+        s.views(&admin, &query(64), &sessions)
+            .await
+            .context("device views")?["statistics"]["deviceViewCount"],
         1
     );
     hardware(agent, new, epoch, "agent.builtin", "generation-serial")?;
@@ -226,6 +249,8 @@ async fn generation_continues_after_delayed_report_and_keeps_members_pending() -
     assert_eq!(s.reconcile().await.context("reconcile unchanged")?, 0);
     access.close().await;
     Ok(())
+
+    }).await
 }
 
 #[tokio::test]

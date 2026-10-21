@@ -5,110 +5,120 @@ use serde_json::json;
 #[tokio::test]
 #[ignore = "MODULE=device.views: real tenant transaction and authority"]
 async fn permission_projection_deduplication_and_cursor_invalidation() -> anyhow::Result<()> {
-    let (access, s, admin, mut c) = setup().await?;
-    let mdm = crate::test_support::case::name("view-mdm");
-    let agent = crate::test_support::case::name("view-agent");
-    let other = crate::test_support::case::name("view-other");
-    seed(mdm, "mdm", "view-serial")?;
-    seed(agent, "agent", "VIEW-SERIAL")?;
-    seed(other, "mdm", "different")?;
-    s.reconcile().await?;
-    let page = s.views(&admin, &query(1)).await?;
-    assert_eq!(
-        page["statistics"],
-        json!({"endpointCount":3,"deviceViewCount":2})
+    let mut authority = crate::test_support::authority::Authority::open().await?;
+    let resources = std::mem::take(&mut authority.resources);
+    let sessions = rss_mdm_authorization_service::session::SessionAuthority::new(
+        authority.identity.authority.clone(),
+        authority.identity.tenant,
     );
-    let reference: ViewRef = serde_json::from_value(page["items"][0]["reference"].clone())?;
-    let token = page["nextCursor"]
-        .as_str()
-        .context("page token")?
-        .to_owned();
-    let mut next = query(1);
-    next.cursor = Some(token.clone());
-    let last = s.views(&admin, &next).await?;
-    assert_eq!(last["items"].as_array().unwrap().len(), 1);
-    let view = s.view(&admin, &reference).await?;
-    assert_eq!(
-        view["fields"]["device.model"]["sources"]
-            .as_array()
-            .unwrap()
-            .len(),
-        2
-    );
-    let id = match reference {
-        ViewRef::Association(id) => id,
-        _ => anyhow::bail!("association sorts first"),
-    };
-    let a = s.get(&admin, id).await?;
-    let confirm = Confirm {
-        operation_id: Uuid::new_v4(),
-        association_id: Some(id),
-        expected_version: a.version,
-        mdm: member(&mut c, mdm, Channel::Mdm).await?,
-        agent: member(&mut c, agent, Channel::Agent).await?,
-        evidence: "physical verification".into(),
-    };
-    s.confirm(
-        &admin,
-        &confirm,
-        &RequestAudit::new(case_a().into(), "device_association_confirm"),
-    )
-    .await?;
-    assert!(matches!(
-        s.views(&admin, &next).await,
-        Err(rss_mdm_device_service::Error::CursorInvalidated)
-    ));
-    let fresh = s.views(&admin, &query(1)).await?;
-    let mut next = query(1);
-    next.cursor = Some(fresh["nextCursor"].as_str().context("fresh cursor")?.into());
-    let next_page = s.views(&admin, &next).await?;
-    assert_ne!(
-        fresh["items"][0]["reference"],
-        next_page["items"][0]["reference"]
-    );
-    crate::test_support::identity::set_grants(
-        case_a(),
-        admin.principal_id(),
-        crate::test_support::identity::device_grants(
-            Some(mdm),
-            &["inventory_read", "device_association_write"],
-        )?,
-    )
-    .await?;
-    let hidden = s.views(&admin, &query(64)).await?;
-    assert_eq!(
-        hidden["statistics"],
-        json!({"endpointCount":1,"deviceViewCount":1})
-    );
-    let serialized = serde_json::to_string(&hidden)?;
-    assert!(!serialized.contains(agent));
-    assert!(!serialized.contains(&id.to_string()));
-    assert!(hidden["items"][0]["association"].is_null());
-    assert!(matches!(
-        s.get(&admin, id).await,
-        Err(rss_mdm_device_service::Error::NotFound)
-    ));
-    assert!(matches!(
-        s.confirm(
-            &admin,
-            &confirm,
-            &RequestAudit::new(case_a().into(), "device_association_confirm")
-        )
-        .await,
-        Err(rss_mdm_device_service::Error::Forbidden)
-    ));
-    assert!(matches!(
-        s.views(&admin, &next).await,
-        Err(rss_mdm_device_service::Error::CursorInvalidated)
-    ));
-    assert!(
-        s.changes(&admin, None).await?["items"]
-            .as_array()
-            .unwrap()
-            .is_empty()
-    );
-    access.close().await;
-    Ok(())
+    resources
+        .finish(async {
+            let (access, s, admin, mut c) = setup().await?;
+            let mdm = crate::test_support::case::name("view-mdm");
+            let agent = crate::test_support::case::name("view-agent");
+            let other = crate::test_support::case::name("view-other");
+            seed(mdm, "mdm", "view-serial")?;
+            seed(agent, "agent", "VIEW-SERIAL")?;
+            seed(other, "mdm", "different")?;
+            s.reconcile().await?;
+            let page = s.views(&admin, &query(1), &sessions).await?;
+            assert_eq!(
+                page["statistics"],
+                json!({"endpointCount":3,"deviceViewCount":2})
+            );
+            let reference: ViewRef = serde_json::from_value(page["items"][0]["reference"].clone())?;
+            let token = page["nextCursor"]
+                .as_str()
+                .context("page token")?
+                .to_owned();
+            let mut next = query(1);
+            next.cursor = Some(token.clone());
+            let last = s.views(&admin, &next, &sessions).await?;
+            assert_eq!(last["items"].as_array().unwrap().len(), 1);
+            let view = s.view(&admin, &reference, &sessions).await?;
+            assert_eq!(
+                view["fields"]["device.model"]["sources"]
+                    .as_array()
+                    .unwrap()
+                    .len(),
+                2
+            );
+            let id = match reference {
+                ViewRef::Association(id) => id,
+                _ => anyhow::bail!("association sorts first"),
+            };
+            let a = s.get(&admin, id).await?;
+            let confirm = Confirm {
+                operation_id: Uuid::new_v4(),
+                association_id: Some(id),
+                expected_version: a.version,
+                mdm: member(&mut c, mdm, Channel::Mdm).await?,
+                agent: member(&mut c, agent, Channel::Agent).await?,
+                evidence: "physical verification".into(),
+            };
+            s.confirm(
+                &admin,
+                &confirm,
+                &RequestAudit::new(case_a().into(), "device_association_confirm"),
+            )
+            .await?;
+            assert!(matches!(
+                s.views(&admin, &next, &sessions).await,
+                Err(rss_mdm_device_service::Error::CursorInvalidated)
+            ));
+            let fresh = s.views(&admin, &query(1), &sessions).await?;
+            let mut next = query(1);
+            next.cursor = Some(fresh["nextCursor"].as_str().context("fresh cursor")?.into());
+            let next_page = s.views(&admin, &next, &sessions).await?;
+            assert_ne!(
+                fresh["items"][0]["reference"],
+                next_page["items"][0]["reference"]
+            );
+            crate::test_support::identity::set_grants(
+                case_a(),
+                admin.principal_id(),
+                crate::test_support::identity::device_grants(
+                    Some(mdm),
+                    &["inventory_read", "device_association_write"],
+                )?,
+            )
+            .await?;
+            let hidden = s.views(&admin, &query(64), &sessions).await?;
+            assert_eq!(
+                hidden["statistics"],
+                json!({"endpointCount":1,"deviceViewCount":1})
+            );
+            let serialized = serde_json::to_string(&hidden)?;
+            assert!(!serialized.contains(agent));
+            assert!(!serialized.contains(&id.to_string()));
+            assert!(hidden["items"][0]["association"].is_null());
+            assert!(matches!(
+                s.get(&admin, id).await,
+                Err(rss_mdm_device_service::Error::NotFound)
+            ));
+            assert!(matches!(
+                s.confirm(
+                    &admin,
+                    &confirm,
+                    &RequestAudit::new(case_a().into(), "device_association_confirm")
+                )
+                .await,
+                Err(rss_mdm_device_service::Error::Forbidden)
+            ));
+            assert!(matches!(
+                s.views(&admin, &next, &sessions).await,
+                Err(rss_mdm_device_service::Error::CursorInvalidated)
+            ));
+            assert!(
+                s.changes(&admin, None).await?["items"]
+                    .as_array()
+                    .unwrap()
+                    .is_empty()
+            );
+            access.close().await;
+            Ok(())
+        })
+        .await
 }
 
 #[tokio::test]
@@ -176,7 +186,7 @@ async fn http_lists_manual_conflicts_and_signed_source_pagination() -> anyhow::R
     authority_resources.finish(async {
     let routes = Router::new().nest(
         "/api/v1",
-        rss_mdm_management_http::device_views::routes().with_state(Arc::new(s)),
+        rss_mdm_management_http::device_views::routes(Arc::new(rss_mdm_authorization_service::session::SessionAuthority::new(authority.identity.authority.clone(),authority.identity.tenant))).with_state(Arc::new(s)),
     );
     let router = authority.router(routes)?;
     let mut browser = authority.browser("admin")?;
@@ -245,6 +255,13 @@ async fn http_lists_manual_conflicts_and_signed_source_pagination() -> anyhow::R
 #[tokio::test]
 #[ignore = "MODULE=device.views: pending targets and higher-generation child registrations"]
 async fn pending_targets_filter_by_source_and_child_never_replaces_primary() -> anyhow::Result<()> {
+    let mut authority = crate::test_support::authority::Authority::open().await?;
+    let resources = std::mem::take(&mut authority.resources);
+    let sessions = rss_mdm_authorization_service::session::SessionAuthority::new(
+        authority.identity.authority.clone(),
+        authority.identity.tenant,
+    );
+    resources.finish(async {
     let (access, s, admin, mut c) = setup().await?;
     let device = crate::test_support::case::name("pending-view");
     let registration = DeviceService::new(
@@ -261,7 +278,7 @@ async fn pending_targets_filter_by_source_and_child_never_replaces_primary() -> 
     filter.status = Some("pending".into());
     filter.channel = Some("mdm".into());
     filter.source = Some("mdm.windows".into());
-    let page = s.views(&admin, &filter).await?;
+    let page = s.views(&admin, &filter, &sessions).await?;
     assert_eq!(
         page["statistics"],
         json!({"endpointCount":1,"deviceViewCount":1})
@@ -269,7 +286,7 @@ async fn pending_targets_filter_by_source_and_child_never_replaces_primary() -> 
     assert_eq!(page["items"][0]["endpoints"][0]["id"], device);
     filter.source = Some("mdm.apple".into());
     assert_eq!(
-        s.views(&admin, &filter).await?["statistics"]["deviceViewCount"],
+        s.views(&admin, &filter, &sessions).await?["statistics"]["deviceViewCount"],
         0
     );
     let _ = request;
@@ -288,7 +305,7 @@ async fn pending_targets_filter_by_source_and_child_never_replaces_primary() -> 
         parent
     );
     let detail = s
-        .view(&admin, &ViewRef::Endpoint(registered.into()))
+        .view(&admin, &ViewRef::Endpoint(registered.into()), &sessions)
         .await?;
     assert_eq!(
         detail["endpoints"][0]["primaryMdmRegistration"]["registrationId"],
@@ -314,7 +331,7 @@ async fn pending_targets_filter_by_source_and_child_never_replaces_primary() -> 
     .await?;
     sqlx::query("UPDATE mdm_access.requests SET windows_profile='Full' WHERE tenant_id=$1::uuid AND id=(SELECT request_id FROM mdm_access.registrations WHERE tenant_id=$1::uuid AND id=$2)").bind(case_a()).bind(parent).execute(&mut c).await?;
     let updated = s
-        .view(&admin, &ViewRef::Endpoint(registered.into()))
+        .view(&admin, &ViewRef::Endpoint(registered.into()), &sessions)
         .await?;
     let channel = &updated["endpoints"][0]["channels"][0];
     assert_eq!(channel["registrationId"], parent.to_string());
@@ -328,4 +345,67 @@ async fn pending_targets_filter_by_source_and_child_never_replaces_primary() -> 
     assert_eq!(endpoint["channels"], updated["endpoints"][0]["channels"]);
     access.close().await;
     Ok(())
+
+    }).await
+}
+
+#[tokio::test]
+#[ignore = "MODULE=device.views: authorized full-set search, batched projection and visibility-bound cursors"]
+async fn directory_search_and_cursor_ignore_hidden_facts() -> anyhow::Result<()> {
+    let mut authority = crate::test_support::authority::Authority::open().await?;
+    let resources = std::mem::take(&mut authority.resources);
+    let sessions = rss_mdm_authorization_service::session::SessionAuthority::new(
+        authority.identity.authority.clone(),
+        authority.identity.tenant,
+    );
+    resources.finish(async {
+        let (access,s,admin,mut c)=setup().await?;
+        let needle=crate::test_support::case::name("zzz-directory-needle");
+        let peer=crate::test_support::case::name("zzz-directory-peer");
+        let hidden=crate::test_support::case::name("zzz-directory-hidden");
+        let first=seed(needle,"mdm","Search-Needle-Serial")?;
+        let second=seed(peer,"mdm","Peer-Serial")?;
+        let secret=seed(hidden,"mdm","Hidden-Serial")?;
+        let prefix=crate::test_support::case::name("aaa-directory-filler");
+        sqlx::query("INSERT INTO mdm_access.devices(tenant_id,id) SELECT $1::uuid,$2||'-'||lpad(n::text,4,'0') FROM generate_series(1,251) n").bind(case_a()).bind(prefix).execute(&mut c).await?;
+        let registration=DeviceService::new(access.registration(),case_a().into(),authority.audit.clone());
+        let owned=registration.assign_registration_user(&admin,needle,&rss_mdm_registration_service::device::registration_user::RegistrationUserChange{expected_revision:0,user:Some(admin.user()?)},Uuid::new_v4(),&RequestAudit::new(case_a().into(),"registration_user_change")).await?;
+        let mut filter=query(1);filter.search=Some("search-NEEDLE".into());filter.platform=Some(rss_mdm_inventory::Platform::Windows);
+        let found=s.views(&admin,&filter,&sessions).await?;
+        assert_eq!(found["statistics"],json!({"endpointCount":1,"deviceViewCount":1}));
+        assert_eq!(found["items"][0]["endpoints"][0]["id"],needle);
+        assert_eq!(found["items"][0]["endpoints"][0]["registrationUser"]["user"]["principalId"],admin.principal_id());
+        assert!(found["nextCursor"].is_null());
+        let detail=s.view(&admin,&ViewRef::Endpoint(needle.into()),&sessions).await?;
+        assert_eq!(detail["endpoints"],found["items"][0]["endpoints"]);
+        filter.platform=Some(rss_mdm_inventory::Platform::Macos);
+        assert_eq!(s.views(&admin,&filter,&sessions).await?["statistics"]["deviceViewCount"],0);
+        filter.platform=None;filter.search=Some(admin.principal_id().into());
+        assert_eq!(s.views(&admin,&filter,&sessions).await?["statistics"]["deviceViewCount"],1);
+        let mut grants=crate::test_support::identity::device_grants(Some(needle),&["inventory_read"])?;
+        grants.extend(crate::test_support::identity::device_grants(Some(peer),&["inventory_read"])?);
+        crate::test_support::identity::set_grants(case_a(),admin.principal_id(),grants).await?;
+        assert_eq!(s.views(&admin,&filter,&sessions).await?["statistics"]["deviceViewCount"],0,"unreadable ownership participated in search");
+        let first_page=s.views(&admin,&query(1),&sessions).await?;
+        assert_eq!(first_page["statistics"],json!({"endpointCount":2,"deviceViewCount":2}));
+        let token=first_page["nextCursor"].as_str().context("two visible endpoints")?;
+        use base64::Engine;
+        let payload=base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(token)?;
+        let text=String::from_utf8_lossy(&payload[..payload.len()-32]);
+        assert!(!text.contains(needle)&&!text.contains(hidden)&&!text.contains(admin.principal_id()));
+        let mut next=query(1);next.cursor=Some(token.into());
+        sqlx::query("UPDATE mdm.inventory SET value=$3,last_known=$3 WHERE tenant_id=$1::uuid AND registration=$2 AND field='device.serial_number'").bind(case_a()).bind(secret).bind(json!({"kind":"string","value":"hidden-changed"})).execute(&mut c).await?;
+        let tail=s.views(&admin,&next,&sessions).await?;
+        assert_eq!(tail["items"].as_array().unwrap().len(),1);assert!(tail["nextCursor"].is_null());
+        // Even a real manual assignment is unobservable without its read permission.
+        registration.assign_registration_user(&admin,needle,&rss_mdm_registration_service::device::registration_user::RegistrationUserChange{expected_revision:owned.revision,user:None},Uuid::new_v4(),&RequestAudit::new(case_a().into(),"registration_user_change")).await.err().context("stale authority must not write after grant removal")?;
+        sqlx::query("UPDATE mdm_access.registration_users SET revision=revision+1,instance=NULL,principal=NULL WHERE tenant_id=$1::uuid AND device=$2").bind(case_a()).bind(needle).execute(&mut c).await?;
+        assert!(s.views(&admin,&next,&sessions).await.is_ok());
+        sqlx::query("UPDATE mdm.inventory SET value=$3,last_known=$3 WHERE tenant_id=$1::uuid AND registration=$2 AND field='device.serial_number'").bind(case_a()).bind(second).bind(json!({"kind":"string","value":"visible-changed"})).execute(&mut c).await?;
+        assert!(matches!(s.views(&admin,&next,&sessions).await,Err(rss_mdm_device_service::Error::CursorInvalidated)));
+        let mut malformed=query(1);malformed.search=Some(" ".into());
+        assert!(matches!(s.views(&admin,&malformed,&sessions).await,Err(rss_mdm_device_service::Error::Malformed)));
+        let _=first;
+        access.close().await;Ok(())
+    }).await
 }

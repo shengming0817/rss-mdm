@@ -1,5 +1,6 @@
 use crate::*;
 use rss_mdm_audit_integration::budget::AuditBudget;
+use rss_mdm_authorization_service::session::SessionAuthority;
 use rss_mdm_authorization_service::{Permission, Snapshot, context::AuthorizedPrincipal};
 use rss_mdm_inventory::{
     EndpointSourceFact, FieldKey, Scalar, Sensitivity, State as FieldState, ValueType,
@@ -15,6 +16,8 @@ use std::{
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ViewQuery {
+    pub search: Option<String>,
+    pub platform: Option<rss_mdm_inventory::Platform>,
     pub cursor: Option<String>,
     #[serde(default = "limit")]
     pub limit: usize,
@@ -55,6 +58,9 @@ async fn groups(
     tenant: &str,
     allowed: Option<BTreeSet<String>>,
     world: &identity::World,
+    snapshot: &Snapshot,
+    proof: &AuthorizedPrincipal,
+    sessions: &SessionAuthority,
 ) -> Result<Vec<Group>> {
     let mut after = None;
     let mut rows = BTreeMap::new();
@@ -88,6 +94,21 @@ async fn groups(
     for (id, endpoint) in &mut rows {
         endpoint["assetState"] = json!(states.get(id).map(String::as_str).unwrap_or("active"));
     }
+    let mut projected = rows.into_values().collect::<Vec<_>>();
+    crate::presentation::endpoints(
+        c,
+        TenantId::parse(tenant).map_err(|_| Error::Storage)?,
+        world.watermark,
+        snapshot,
+        proof,
+        &mut projected,
+        sessions,
+    )
+    .await?;
+    let mut rows = projected
+        .into_iter()
+        .map(|e| (e["id"].as_str().unwrap().to_owned(), e))
+        .collect::<BTreeMap<_, _>>();
     let mut result = Vec::new();
     for a in &world.associations {
         if a.state == State::Revoked || !a.members.iter().all(|m| rows.contains_key(&m.device)) {
@@ -123,11 +144,18 @@ fn scope(snapshot: &Snapshot, proof: &AuthorizedPrincipal) -> Result<(bool, Stri
     Ok((sensitive, snapshot.query_binding(proof)?))
 }
 impl Associations {
-    pub async fn views(&self, proof: &AuthorizedPrincipal, query: &ViewQuery) -> Result<Value> {
+    pub async fn views(
+        &self,
+        proof: &AuthorizedPrincipal,
+        query: &ViewQuery,
+        sessions: &SessionAuthority,
+    ) -> Result<Value> {
         if proof.tenant_id() != self.tenant.to_string() {
             return Err(Error::Forbidden);
         }
-        if !(1..=100).contains(&query.limit)
+        if query.search.as_ref().is_some_and(|s| {
+            s.trim().is_empty() || s.len() > 256 || s.chars().any(char::is_control)
+        }) || !(1..=100).contains(&query.limit)
             || query
                 .channel
                 .as_deref()
@@ -148,14 +176,14 @@ impl Associations {
             return Err(Error::Malformed);
         }
         let budget = AuditBudget::new(Duration::from_secs(15));
-        self.audit.write(self.tenant,&budget.control(),(self,proof,query),|(service,proof,query),tx|Box::pin(async move {
-            tx.with_connection_context(&mut (*service,*proof,*query),|(service,proof,query),c|Box::pin(async move {
+        self.audit.write(self.tenant,&budget.control(),(self,proof,query,sessions),|(service,proof,query,sessions),tx|Box::pin(async move {
+            tx.with_connection_context(&mut (*service,*proof,*query,*sessions),|(service,proof,query,sessions),c|Box::pin(async move {
                 let snapshot=read::authorization(c,proof).await?;
                 let (_,grants)=scope(&snapshot,proof)?;
                 let world=identity::world(c,service.tenant).await?;
-                let mut groups=groups(c,proof.tenant_id(),snapshot.inventory_devices(proof)?,&world).await?;
+                let mut groups=groups(c,proof.tenant_id(),snapshot.inventory_devices(proof)?,&world,&snapshot,proof,sessions).await?;
                 let version=cursor::digest(&groups.iter().map(|g|g.summary()).collect::<Vec<_>>())?;
-                let context=json!({"kind":"device-directory","tenant":proof.tenant_id(),"instance":proof.instance_id(),"principal":proof.principal_id(),"scope":grants,"watermark":world.watermark,"version":version,"query":{"status":query.status,"channel":query.channel,"source":query.source,"assetState":query.asset_state,"descending":query.descending}});
+                let context=json!(cursor::digest(&json!({"kind":"device-directory-v1","tenant":proof.tenant_id(),"instance":proof.instance_id(),"principal":proof.principal_id(),"scope":grants,"version":version,"query":{"status":query.status,"channel":query.channel,"source":query.source,"assetState":query.asset_state,"descending":query.descending,"search":query.search,"platform":query.platform}}))?);
                 let offset=if let Some(cursor)=&query.cursor {let cursor=service.decode(cursor)?;if cursor.context!=context{return Err(Error::CursorInvalidated);}cursor.offset}else{0};
                 groups.retain(|g|g.endpoints.iter().any(|e|matches_query(e,query)));
                 if query.descending{groups.reverse();}
@@ -168,8 +196,13 @@ impl Associations {
             })).await
         })).await.fold(|v|Ok(v.into_value()),|e|Err(model::transaction_error(e)),|e|Err(model::transaction_error(e)),|_|Err(Error::RollbackFailed),|_|Err(Error::CommitUnknown),|e|Err(model::transaction_error(e)))
     }
-    pub async fn view(&self, proof: &AuthorizedPrincipal, reference: &ViewRef) -> Result<Value> {
-        self.read_view(proof, reference, None).await
+    pub async fn view(
+        &self,
+        proof: &AuthorizedPrincipal,
+        reference: &ViewRef,
+        sessions: &SessionAuthority,
+    ) -> Result<Value> {
+        self.read_view(proof, reference, None, sessions).await
     }
     pub async fn list_items(
         &self,
@@ -178,11 +211,12 @@ impl Associations {
         field: FieldKey,
         cursor: &str,
         limit: usize,
+        sessions: &SessionAuthority,
     ) -> Result<Value> {
         if !(1..=200).contains(&limit) {
             return Err(Error::Malformed);
         }
-        self.read_view(proof, reference, Some((field, cursor, limit)))
+        self.read_view(proof, reference, Some((field, cursor, limit)), sessions)
             .await
     }
     async fn read_view(
@@ -190,17 +224,18 @@ impl Associations {
         proof: &AuthorizedPrincipal,
         reference: &ViewRef,
         list: Option<(FieldKey, &str, usize)>,
+        sessions: &SessionAuthority,
     ) -> Result<Value> {
         if proof.tenant_id() != self.tenant.to_string() {
             return Err(Error::Forbidden);
         }
         let budget = AuditBudget::new(Duration::from_secs(15));
-        self.audit.write(self.tenant,&budget.control(),(self,proof,reference,list),|(service,proof,reference,list),tx|Box::pin(async move {
-            tx.with_connection_context(&mut (*service,*proof,*reference,*list),|(service,proof,reference,list),c|Box::pin(async move {
+        self.audit.write(self.tenant,&budget.control(),(self,proof,reference,list,sessions),|(service,proof,reference,list,sessions),tx|Box::pin(async move {
+            tx.with_connection_context(&mut (*service,*proof,*reference,*list,*sessions),|(service,proof,reference,list,sessions),c|Box::pin(async move {
                 let snapshot=read::authorization(c,proof).await?;
                 let (sensitive,grants)=scope(&snapshot,proof)?;
                 let world=identity::world(c,service.tenant).await?;
-                let mut groups=groups(c,proof.tenant_id(),snapshot.inventory_devices(proof)?,&world).await?;
+                let mut groups=groups(c,proof.tenant_id(),snapshot.inventory_devices(proof)?,&world,&snapshot,proof,sessions).await?;
                 // Explicit endpoint reads retain their original semantics, even when both are visible.
                 let group=match reference {
                     ViewRef::Association(_)=>groups.into_iter().find(|g|g.reference==**reference).ok_or(Error::NotFound)?,
@@ -254,6 +289,9 @@ fn list_state(state: &FieldState) -> Result<Value> {
 }
 
 fn matches_query(endpoint: &Value, query: &ViewQuery) -> bool {
+    if !crate::presentation::matches(endpoint, query.search.as_deref(), query.platform) {
+        return false;
+    }
     let sources = endpoint["channels"]
         .as_array()
         .into_iter()

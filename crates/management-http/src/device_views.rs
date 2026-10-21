@@ -10,7 +10,9 @@ use serde::Deserialize;
 use serde_json::Value;
 use std::sync::Arc;
 use uuid::Uuid;
-pub fn routes() -> Router<Arc<Associations>> {
+pub fn routes(
+    sessions: Arc<rss_mdm_authorization_service::session::SessionAuthority>,
+) -> Router<Arc<Associations>> {
     Router::new()
         .route("/device-views", get(list))
         .route("/device-retirements/{id}", get(retirement))
@@ -29,6 +31,7 @@ pub fn routes() -> Router<Arc<Associations>> {
         .route("/device-associations/{id}", get(association))
         .route("/device-associations/{id}/revoke", post(revoke))
         .route("/devices/{device}/association-candidates", get(candidates))
+        .layer(Extension(sessions))
 }
 fn reference(kind: String, id: String) -> Result<ViewRef, Error> {
     match kind.as_str() {
@@ -41,18 +44,20 @@ fn reference(kind: String, id: String) -> Result<ViewRef, Error> {
 }
 async fn list(
     State(s): State<Arc<Associations>>,
+    Extension(sessions): Extension<Arc<rss_mdm_authorization_service::session::SessionAuthority>>,
     Extension(a): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
     query: Result<Query<ViewQuery>, axum::extract::rejection::QueryRejection>,
 ) -> Result<Json<Value>, Error> {
     audit.set_action("device_view_read");
     Ok(Json(
-        s.views(&a.proof, &query.map_err(|_| Error::Malformed)?.0)
+        s.views(&a.proof, &query.map_err(|_| Error::Malformed)?.0, &sessions)
             .await?,
     ))
 }
 async fn detail(
     State(s): State<Arc<Associations>>,
+    Extension(sessions): Extension<Arc<rss_mdm_authorization_service::session::SessionAuthority>>,
     Extension(a): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
     Path((kind, id)): Path<(String, String)>,
@@ -63,7 +68,7 @@ async fn detail(
         ViewRef::Endpoint(id) => audit.target_device(id),
         ViewRef::Association(id) => audit.target(&id.to_string()),
     }
-    Ok(Json(s.view(&a.proof, &reference).await?))
+    Ok(Json(s.view(&a.proof, &reference, &sessions).await?))
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -77,6 +82,7 @@ fn limit() -> usize {
 }
 async fn items(
     State(s): State<Arc<Associations>>,
+    Extension(sessions): Extension<Arc<rss_mdm_authorization_service::session::SessionAuthority>>,
     Extension(a): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
     Path((kind, id, field)): Path<(String, String, String)>,
@@ -91,6 +97,7 @@ async fn items(
             rss_mdm_inventory::FieldKey::parse(&field).map_err(|_| Error::Malformed)?,
             &q.cursor,
             q.limit,
+            &sessions,
         )
         .await?,
     ))

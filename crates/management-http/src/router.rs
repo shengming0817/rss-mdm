@@ -56,6 +56,12 @@ pub struct Services {
     pub apple: bool,
 }
 pub fn router(state: Services, envelope: crate::boundary::Envelope) -> Router {
+    let sessions = Arc::new(
+        rss_mdm_authorization_service::session::SessionAuthority::new(
+            state.identity.authority.clone(),
+            state.identity.tenant,
+        ),
+    );
     let software_content = Router::new()
         .route(
             "/api/v1/software/installations/{id}/package",
@@ -164,7 +170,7 @@ pub fn router(state: Services, envelope: crate::boundary::Envelope) -> Router {
         .merge(crate::enrollment::http::routes().with_state(enrollment))
         .merge(crate::enrollment::directory::routes().with_state(directory))
         .merge(crate::timeline::routes().with_state(state.timeline))
-        .merge(crate::device_views::routes().with_state(state.associations));
+        .merge(crate::device_views::routes(sessions).with_state(state.associations));
     let host_context = Router::new()
         .route(
             "/api/v1/identity-host/tenants/{tenant}/context",

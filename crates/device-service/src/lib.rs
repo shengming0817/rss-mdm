@@ -6,6 +6,7 @@ pub mod lifecycle;
 pub mod lifecycle_management;
 mod model;
 pub mod planning;
+mod presentation;
 mod views;
 pub use views::{ViewQuery, ViewRef};
 mod identity;

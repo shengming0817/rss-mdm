@@ -2035,3 +2035,12 @@ for relative, consumers in APP_HELPER_CONSUMERS.items():
         if name in consumers:
             inputs += (path,)
         MODULES[name] = replace(module, support_inputs=inputs)
+
+# Enterprise current-user binding has its own HTTP/Identity/PG seam; OS collection is unrelated.
+add('agent.current_user', selectors=('agent::t2::current_user::',), fixtures=('identity','agent_pki'),
+    sources=('crates/registration-service/src/agent/current_user.rs','crates/registration-service/src/device/registration_user.rs','crates/agent-channel/src/tasks.rs','crates/agent-wire/src/current_user.rs','crates/registration-service/schema/install.sql'),
+    tests=('crates/app/tests/agent/current_user.rs',),
+    support=('crates/app/tests/agent/mod.rs',*MODULES['planning.self_service'].support_inputs), actors=(('tenant','admin'),('tenant','other')))
+MODULES['agent.current_user'] = replace(MODULES['agent.current_user'], scope='tenant')
+consume(('crates/registration-service/src/device/registration_user.rs','crates/management-http/src/enrollment/registration_user.rs'), 'enrollment.quotas device.views')
+consume(('crates/registration-service/src/agent/current_user.rs',), 'device.views')
