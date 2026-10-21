@@ -4,6 +4,7 @@
     reason = "integration matrices preserve independent authority and recovery assertions"
 )]
 use crate::test_support::*;
+use anyhow::Context;
 use base64::{Engine, engine::general_purpose::STANDARD};
 use rss_mdm_agent_wire::{enroll as w, runtime as r};
 use software::Fixture;
@@ -85,71 +86,40 @@ async fn publish_bytes(
     version: Option<&str>,
     bytes: &[u8],
 ) -> Result<(w::configuration::Package, Value)> {
-    let id = Uuid::new_v4();
-    let begin = json!({"operationId":id,"filename":format!("agent.{suffix}"),"length":bytes.len(),"sha256":rss_mdm_resource::Digest::of(bytes).bytes()});
-    let response = user
+    let id = stage_upload(f, user, suffix, bytes).await?;
+    let inspected = user
         .call(
             &f.router,
-            Method::POST,
-            "/api/v1/agent-packages/uploads",
-            Some(begin),
+            Method::GET,
+            &format!("/api/v1/agent-packages/uploads/{id}"),
+            None,
         )
         .await?;
-    ensure!(response.0 == StatusCode::OK, "prepare {response:?}");
-    let id: Uuid = serde_json::from_value(response.1["packageId"].clone())?;
-    let upload_href = response.1["href"].as_str().context("upload href")?;
-    let cookie = user
-        .cookies
-        .iter()
-        .map(|(k, v)| format!("{k}={v}"))
-        .collect::<Vec<_>>()
-        .join("; ");
-    let session = format!("{}{upload_href}", f.origin);
-    let request = |method, url: &str| {
-        f.client
-            .request(method, url)
-            .header("host", "mdm.example.test")
-            .header("origin", "https://mdm.example.test")
-            .header("x-identity-request", "1")
-            .header("x-csrf-token", user.csrf.as_ref().unwrap())
-            .header("cookie", &cookie)
-            .header("content-type", "application/octet-stream")
-    };
-    let half = if suffix == "exe" { bytes.len() / 2 } else { 0 };
-    if half > 0 {
-        let first = request(Method::PATCH, &format!("{session}?offset=0"))
-            .body(bytes[..half].to_vec())
-            .send()
-            .await?;
-        ensure!(
-            first.status() == StatusCode::OK,
-            "first chunk {}",
-            first.text().await?
-        );
-        let resumed: Value = request(Method::GET, &session).send().await?.json().await?;
-        ensure!(resumed["offset"] == half);
-        let stale = request(Method::PATCH, &format!("{session}?offset=0"))
-            .body(vec![0])
-            .send()
-            .await?;
-        ensure!(stale.status() == StatusCode::CONFLICT);
+    ensure!(inspected.0 == StatusCode::OK && inspected.1["facts"]["format"] == suffix);
+    if suffix == "exe" {
+        ensure!(inspected.1["facts"]["version"].is_null());
     }
-    let uploaded = request(Method::PATCH, &format!("{session}?offset={half}"))
-        .body(bytes[half..].to_vec())
-        .send()
-        .await?;
+    let invalid = json!({"operationId":Uuid::new_v4(),"packageId":id,"version":if suffix == "exe" {Value::Null}else{json!("mismatch")},"target":{"platform":platform,"architecture":architecture}});
     ensure!(
-        uploaded.status() == StatusCode::OK,
-        "upload {}",
-        uploaded.text().await?
+        user.call(
+            &f.router,
+            Method::POST,
+            "/api/v1/agent-packages/save",
+            Some(invalid)
+        )
+        .await?
+        .0 == StatusCode::BAD_REQUEST
     );
-    let completed = request(Method::POST, &format!("{session}/complete"))
-        .send()
-        .await?;
+    let wrong_target = json!({"operationId":Uuid::new_v4(),"packageId":id,"version":version,"target":{"platform":if platform == "windows" {"macos"} else {"windows"},"architecture":architecture}});
     ensure!(
-        completed.status() == StatusCode::CREATED,
-        "complete {}",
-        completed.text().await?
+        user.call(
+            &f.router,
+            Method::POST,
+            "/api/v1/agent-packages/save",
+            Some(wrong_target)
+        )
+        .await?
+        .0 == StatusCode::BAD_REQUEST
     );
     let input = json!({"operationId":Uuid::new_v4(),"packageId":id,"version":version,"target":{"platform":platform,"architecture":architecture}});
     let saved = user
@@ -206,9 +176,114 @@ async fn publish_bytes(
         )
         .await?;
     ensure!(response.0 == StatusCode::OK, "publish {response:?}");
+    let receipt = user
+        .call(
+            &f.router,
+            Method::GET,
+            &format!(
+                "/api/v1/agent-packages/operations/{}",
+                publication["operationId"].as_str().unwrap()
+            ),
+            None,
+        )
+        .await?;
+    ensure!(receipt == response, "publication operation recovery");
     let package: w::configuration::Package = serde_json::from_value(response.1)?;
     ensure!(package.installer_sha256 == rss_mdm_resource::Digest::of(bytes).bytes());
     Ok((package, publication))
+}
+async fn stage_upload(f: &Fixture, user: &mut Browser, suffix: &str, bytes: &[u8]) -> Result<Uuid> {
+    let id = Uuid::new_v4();
+    let begin = json!({"operationId":id,"filename":format!("agent.{suffix}"),"length":bytes.len(),"sha256":rss_mdm_resource::Digest::of(bytes).bytes()});
+    let response = user
+        .call(
+            &f.router,
+            Method::POST,
+            "/api/v1/agent-packages/uploads",
+            Some(begin.clone()),
+        )
+        .await?;
+    ensure!(response.0 == StatusCode::OK, "prepare {response:?}");
+    let id: Uuid = serde_json::from_value(response.1["packageId"].clone())?;
+    let upload_href = response.1["href"].as_str().context("upload href")?;
+    if suffix == "exe" {
+        ensure!(
+            user.call(
+                &f.router,
+                Method::POST,
+                "/api/v1/agent-packages/uploads",
+                Some(begin.clone())
+            )
+            .await?
+                == response
+        );
+        let mut conflict = begin;
+        conflict["length"] = json!(bytes.len() + 1);
+        ensure!(
+            user.call(
+                &f.router,
+                Method::POST,
+                "/api/v1/agent-packages/uploads",
+                Some(conflict)
+            )
+            .await?
+            .0 == StatusCode::CONFLICT
+        );
+    }
+    let cookie = user
+        .cookies
+        .iter()
+        .map(|(k, v)| format!("{k}={v}"))
+        .collect::<Vec<_>>()
+        .join("; ");
+    let session = format!("{}{upload_href}", f.origin);
+    let request = |method, url: &str| {
+        f.client
+            .request(method, url)
+            .header("host", "mdm.example.test")
+            .header("origin", "https://mdm.example.test")
+            .header("x-identity-request", "1")
+            .header("x-csrf-token", user.csrf.as_ref().unwrap())
+            .header("cookie", &cookie)
+            .header("content-type", "application/octet-stream")
+    };
+    let half = if suffix == "exe" { bytes.len() / 2 } else { 0 };
+    if half > 0 {
+        let first = request(Method::PATCH, &format!("{session}?offset=0"))
+            .body(bytes[..half].to_vec())
+            .send()
+            .await?;
+        ensure!(
+            first.status() == StatusCode::OK,
+            "first chunk {}",
+            first.text().await?
+        );
+        let resumed: Value = request(Method::GET, &session).send().await?.json().await?;
+        ensure!(resumed["offset"] == half);
+        let stale = request(Method::PATCH, &format!("{session}?offset=0"))
+            .body(vec![0])
+            .send()
+            .await?;
+        ensure!(stale.status() == StatusCode::CONFLICT);
+    }
+    let uploaded = request(Method::PATCH, &format!("{session}?offset={half}"))
+        .body(bytes[half..].to_vec())
+        .send()
+        .await?;
+    ensure!(
+        uploaded.status() == StatusCode::OK,
+        "upload {}",
+        uploaded.text().await?
+    );
+    let completed = request(Method::POST, &format!("{session}/complete"))
+        .send()
+        .await?;
+    ensure!(
+        completed.status() == StatusCode::CREATED,
+        "complete {}",
+        completed.text().await?
+    );
+    Ok(id)
 }
 async fn configuration(
     f: &Fixture,
@@ -1050,6 +1125,27 @@ async fn backend_settings_are_the_only_grant_lifetime_authority() -> Result<()> 
 async fn configuration_scope_follows_current_candidate_admission() -> Result<()> {
     let f = fixture().await?;
     let mut user = f.user.clone();
+    let bad = stage_upload(&f, &mut user, "msi", b"broken").await?;
+    ensure!(
+        user.call(
+            &f.router,
+            Method::GET,
+            &format!("/api/v1/agent-packages/uploads/{bad}"),
+            None
+        )
+        .await?
+        .0 == StatusCode::BAD_REQUEST
+    );
+    ensure!(user.call(&f.router, Method::POST, "/api/v1/agent-packages/save", Some(json!({"operationId":Uuid::new_v4(),"packageId":bad,"version":"1","target":{"platform":"windows","architecture":"x86_64"}}))).await?.0 == StatusCode::BAD_REQUEST);
+    let unknown = user
+        .call(
+            &f.router,
+            Method::GET,
+            &format!("/api/v1/agent-packages/operations/{}", Uuid::new_v4()),
+            None,
+        )
+        .await?;
+    ensure!(unknown == (StatusCode::OK, Value::Null));
     let old = publish(&f, &mut user, true).await?;
     let (file, configuration_input) = configuration(
         &f,
@@ -1133,15 +1229,25 @@ async fn configuration_scope_follows_current_candidate_admission() -> Result<()>
     ensure!(download.status() == StatusCode::PARTIAL_CONTENT);
     ensure!(download.bytes().await?.as_ref() == &installer_fixtures::exe("1+enterprise")[..5]);
 
+    let withdrawal_operation = Uuid::new_v4();
     let withdrawn = user
         .call(
             &f.router,
             Method::POST,
             &format!("/api/v1/agent-packages/{}/withdraw", old.release_id),
-            Some(json!({"operationId":Uuid::new_v4()})),
+            Some(json!({"operationId":withdrawal_operation})),
         )
         .await?;
     ensure!(withdrawn.0 == StatusCode::NO_CONTENT);
+    let receipt = user
+        .call(
+            &f.router,
+            Method::GET,
+            &format!("/api/v1/agent-packages/operations/{withdrawal_operation}"),
+            None,
+        )
+        .await?;
+    ensure!(receipt == (StatusCode::OK, json!({"withdrawn":old.release_id})));
     let anonymous = f
         .client
         .get(format!(

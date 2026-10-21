@@ -1,4 +1,5 @@
 //! Controlled PKG and real Apple mTLS, observation, dynamic Group and independent enrollment.
+use crate::test_support::installer_fixtures;
 mod native_software;
 use super::*;
 use crate::test_support::{channel_onboarding as setup, credential, pg};

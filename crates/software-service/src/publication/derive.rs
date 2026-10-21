@@ -66,7 +66,7 @@ fn filename(variant: &r::Variant, d: &r::SoftwareDefinition, key: &str) -> Resul
             ));
         }
     }
-    if key != &d.spec().material.installer {
+    if key != d.spec().material.installer {
         return Err(Error::Unsupported);
     }
     match d.spec().behavior.as_ref().ok_or(Error::Unsupported)? {
