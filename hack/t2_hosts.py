@@ -30,7 +30,7 @@ def compatibility(path):
 
 
 class Host:
-    def __init__(self, builds, config_path, output):
+    def __init__(self, builds, config_path, output, *, require_ready=True):
         self.processes = builds.processes
         self.stopping = threading.Event()
         self.failed = threading.Event()
@@ -65,7 +65,7 @@ class Host:
                 try:
                     if self.address is None:
                         raise OSError('listener receipt pending')
-                    request = urllib.request.Request('http://' + self.address + '/readyz',
+                    request = urllib.request.Request('http://' + self.address + ('/readyz' if require_ready else '/livez'),
                                                      headers={'Host': urlsplit(config['product_origin']).netloc})
                     with opener.open(request, timeout=1) as response:
                         if response.status == 200:

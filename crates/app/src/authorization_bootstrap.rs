@@ -189,7 +189,7 @@ async fn initialize_owned(
         &authority, &store, input, audit, targets,
     )
     .await?;
-    crate::baseline::reserve(&store, frozen).await?;
+    crate::baseline::reserve(&pool, &store, frozen).await?;
     Ok(receipt)
 }
 

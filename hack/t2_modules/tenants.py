@@ -165,7 +165,7 @@ def execute(fixture):
     with ExitStack() as stack:
         hosts = []
         for index,path in enumerate(configs):
-            host=Host(builds,path,root/('host-'+str(index)))
+            host=Host(builds,path,root/('host-'+str(index)),require_ready=False)
             stack.callback(host.close)
             hosts.append(host)
         command('tenant-update',dict(**common,tenant_id=b,expected_revision=1,operation_id=str(uuid.uuid4()),name='正在使用的租户'))

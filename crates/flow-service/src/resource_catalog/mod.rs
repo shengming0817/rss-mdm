@@ -549,8 +549,7 @@ impl ResourceCatalog {
         audit: &RequestAudit,
         authorize: &(dyn Fn() -> std::result::Result<(), Error> + Sync),
     ) -> std::result::Result<Value, Error> {
-        self.execute_with_initialization(command, audit, authorize, None)
-            .await
+        Box::pin(self.execute_with_initialization(command, audit, authorize, None)).await
     }
     /// Initialization is fenced by the original tenant rule in the mutation transaction.
     pub async fn execute_initialization(
@@ -559,7 +558,7 @@ impl ResourceCatalog {
         audit: &RequestAudit,
         proof: &crate::authorization::context::AuthorizedPrincipal,
     ) -> std::result::Result<Value, Error> {
-        self.execute_with_initialization(
+        Box::pin(self.execute_with_initialization(
             command,
             audit,
             &|| {
@@ -568,7 +567,7 @@ impl ResourceCatalog {
                     .map_err(Error::from)
             },
             Some(proof),
-        )
+        ))
         .await
     }
     async fn execute_with_initialization(

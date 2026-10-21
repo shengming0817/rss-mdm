@@ -13,13 +13,13 @@ use manifest::{Action, Manifest, Step};
 pub(crate) async fn reserve_on(
     c: &mut sqlx::PgConnection,
     authority: &rss_mdm_authorization_service::baseline::Authority,
-) -> Result<(), Error> {
+) -> Result<bool, Error> {
     let tenant = Uuid::parse_str(&authority.user().tenant_id).map_err(|_| Error::Malformed)?;
     let manifest = manifest::build(tenant)?;
-    sqlx::query("INSERT INTO mdm_initialization.baselines(tenant_id,authority,manifest) VALUES($1,$2,$3) ON CONFLICT DO NOTHING")
+    let inserted=sqlx::query("INSERT INTO mdm_initialization.baselines(tenant_id,authority,manifest) VALUES($1,$2,$3) ON CONFLICT DO NOTHING")
         .bind(tenant).bind(serde_json::to_value(authority).map_err(|_|Error::Malformed)?).bind(serde_json::to_value(manifest).map_err(|_|Error::Malformed)?)
-        .execute(c).await.map_err(|_|Error::Unavailable(crate::Failure::Database))?;
-    Ok(())
+        .execute(c).await.map_err(|_|Error::Unavailable(crate::Failure::Database))?.rows_affected()==1;
+    Ok(inserted)
 }
 /// Resume only existing initialization intent; serve never seeds an arbitrary or historical tenant.
 pub(crate) async fn resume(state: &crate::api::Assembly) -> Result<(), Error> {
@@ -86,6 +86,7 @@ pub(crate) async fn resume(state: &crate::api::Assembly) -> Result<(), Error> {
             }
             Err(error) => {
                 let reason = blocked_reason(&error);
+                eprintln!("baseline step {} blocked: {}", step.key, error);
                 sqlx::query("UPDATE mdm_initialization.baselines SET phase='blocked',blocked=$2 WHERE tenant_id=$1::uuid").bind(&tenant).bind(reason).execute(&mut *c).await.map_err(|_|Error::CommitUnknown)?;
                 return Err(error);
             }
@@ -353,10 +354,16 @@ async fn execute_owned(
 
 /// Persist the first-install intent with its own audited transaction and original authority.
 pub(crate) async fn reserve(
+    pool: &sqlx::PgPool,
     store: &rss_mdm_audit_integration::AuditStore,
     authority: rss_mdm_authorization_service::baseline::Authority,
 ) -> Result<(), Error> {
     let tenant = Uuid::parse_str(&authority.user().tenant_id).map_err(|_| Error::Malformed)?;
+    // Repeated deployment retains the original immutable intent, even when the
+    // bundled catalog has changed. The original provisioning owner already audited it.
+    if status(pool, &tenant.to_string()).await?.is_some() {
+        return Ok(());
+    }
     let operation = manifest::id(tenant, "intent");
     let audit = RequestAudit::new(tenant.to_string(), "baseline_initialize");
     audit.set_principal(
@@ -383,15 +390,16 @@ pub(crate) async fn reserve(
             |(store, authority, fact), tx| {
                 Box::pin(async move {
                     let authority = authority.clone();
-                    tx.with_connection(move |c| {
-                        Box::pin(async move {
-                            reserve_on(c, &authority)
-                                .await
-                                .map_err(|_| sqlx::Error::Protocol("baseline intent".into()))
+                    let inserted = tx
+                        .with_connection(move |c| {
+                            Box::pin(async move {
+                                reserve_on(c, &authority)
+                                    .await
+                                    .map_err(|_| sqlx::Error::Protocol("baseline intent".into()))
+                            })
                         })
-                    })
-                    .await?;
-                    store.append(tx, fact, false).await?;
+                        .await?;
+                    store.append(tx, fact, !inserted).await?;
                     Ok::<_, rss_mdm_audit_integration::Error>(())
                 })
             },

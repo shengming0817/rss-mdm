@@ -1552,11 +1552,11 @@ async fn system_lifecycle_snapshot_pages_before_collection_and_preserves_old_aut
     let prefix = format!("zzz-system-{}-", Uuid::new_v4());
     let t = tenant();
     let rows = format!(
-        "SELECT '{prefix}'||lpad(i::text,4,'0') AS device,md5('{prefix}grant'||i)::uuid AS grant,md5('{prefix}request'||i)::uuid AS request,md5('{prefix}registration'||i)::uuid AS registration  ,i AS ordinal FROM generate_series(0,1001)i"
+        "SELECT '{prefix}'||lpad(i::text,4,'0') AS device,md5('{prefix}grant'||i)::uuid AS grant_id,md5('{prefix}request'||i)::uuid AS request,md5('{prefix}registration'||i)::uuid AS registration  ,i AS ordinal FROM generate_series(0,1001)i"
     );
     sql(&format!("SET rss.tenant_id='{t}';
-        WITH x AS ({rows}) INSERT INTO mdm_access.grants(tenant_id,id,actor,instance,device,purpose,state,expires_at) SELECT '{t}',grant,'operator','mdm',device,'enrollment','consumed',clock_timestamp()+interval '60s' FROM x;
-        WITH x AS ({rows}) INSERT INTO mdm_access.requests(tenant_id,id,grant_id,source,windows_profile) SELECT '{t}',request,grant,CASE WHEN ordinal=1001 THEN 'mdm.apple' ELSE 'mdm.windows' END,CASE WHEN ordinal=1001 THEN NULL ELSE 'Device' END FROM x;
+        WITH x AS ({rows}) INSERT INTO mdm_access.grants(tenant_id,id,actor,instance,device,purpose,state,expires_at) SELECT '{t}',grant_id,'operator','mdm',device,'enrollment','consumed',clock_timestamp()+interval '60s' FROM x;
+        WITH x AS ({rows}) INSERT INTO mdm_access.requests(tenant_id,id,grant_id,source,windows_profile) SELECT '{t}',request,grant_id,CASE WHEN ordinal=1001 THEN 'mdm.apple' ELSE 'mdm.windows' END,CASE WHEN ordinal=1001 THEN NULL ELSE 'Device' END FROM x;
         WITH x AS ({rows}) INSERT INTO mdm_access.devices(tenant_id,id) SELECT '{t}',device FROM x;
         WITH x AS ({rows}) INSERT INTO mdm_access.registrations(tenant_id,id,device,channel,generation,request_id,state,purpose,epoch) SELECT '{t}',registration,device,'mdm',1,request,'active','primary',gen_random_uuid() FROM x;
         WITH x AS ({rows}) INSERT INTO mdm_access.credentials(tenant_id,id,registration,channel,locator,state) SELECT '{t}',gen_random_uuid(),registration,'mdm',encode(sha256(convert_to(device,'UTF8')),'hex'),'active' FROM x;

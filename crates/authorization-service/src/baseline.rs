@@ -25,6 +25,8 @@ const PERMISSIONS: &[Permission] = &[
     Permission::ResourceRead,
     Permission::ResourceWrite,
     Permission::InventoryRead,
+    // Native publication retains full raw query evidence, including unmapped properties.
+    Permission::InventorySensitiveRead,
     Permission::InventoryCollect,
     Permission::InventoryFieldsWrite,
 ];
