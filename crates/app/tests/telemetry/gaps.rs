@@ -306,6 +306,7 @@ pub(super) async fn reopened(f: &mut Fixture, router: &Router, evidence: &Eviden
                 == StatusCode::BAD_REQUEST
         );
     }
+    bounded_store(f, router, evidence).await?;
     Ok(())
 }
 
@@ -352,5 +353,236 @@ pub(super) async fn revoked(router: &Router, evidence: &Evidence) -> Result<()> 
             "revoked registration accessed gap diagnostics: {status}"
         );
     }
+    Ok(())
+}
+
+// SQL prepares capacity states only; all admission, rollback, expiry reads and pruning
+// below use the running product and its real PostgreSQL transactions.
+async fn bounded_store(f: &Fixture, router: &Router, evidence: &Evidence) -> Result<()> {
+    let tenant = case_tenant();
+    let registration = evidence.body["registrationId"].as_str().unwrap();
+    let generation = evidence.body["generation"].as_u64().unwrap();
+    let mut expiring = evidence.body.clone();
+    let expires = database_now()? + 20_000_000;
+    let created = expires - 7 * 86400 * 1_000_000;
+    expiring["reportId"] = json!(Uuid::new_v4());
+    expiring["createdAt"] = json!(created);
+    expiring["gaps"][0]["first"] = json!(created - 2_000_000);
+    expiring["gaps"][0]["last"] = json!(created - 1_000_000);
+    let (status, _) = agent_call(
+        router,
+        Method::POST,
+        UPLOAD,
+        Some(case_credential()),
+        Some(expiring.clone()),
+    )
+    .await?;
+    ensure!(
+        status == StatusCode::ACCEPTED,
+        "near-expiry legitimate gap report: {status}"
+    );
+    let expiring_id = expiring["reportId"].as_str().unwrap();
+    let mut candidate = evidence.body.clone();
+    candidate["reportId"] = json!(Uuid::new_v4());
+    let candidate_id = candidate["reportId"].as_str().unwrap().to_owned();
+    // A different registration must not count toward this registration's 4096 limit.
+    let registration_seed = Uuid::new_v4();
+    let registered: i64 = pg(&format!("SELECT count(*) FROM mdm_telemetry.gap_reports WHERE tenant_id='{tenant}' AND registration='{registration}'"))?.trim().parse()?;
+    seed_reports(
+        registration_seed,
+        4096 - registered,
+        registration,
+        generation,
+        false,
+        &evidence.body,
+    )?;
+    denied_without_writes(router, &candidate).await?;
+    let (status, _) = agent_call(
+        router,
+        Method::GET,
+        &format!("{UPLOAD}/{expiring_id}"),
+        Some(case_credential()),
+        None,
+    )
+    .await?;
+    ensure!(
+        status == StatusCode::OK,
+        "expiry fixture must first be readable"
+    );
+    let remaining = expires.saturating_sub(database_now()?).max(0) as u64;
+    tokio::time::sleep(Duration::from_micros(remaining + 100_000)).await;
+    ensure!(
+        agent_call(
+            router,
+            Method::GET,
+            &format!("{UPLOAD}/{expiring_id}"),
+            Some(case_credential()),
+            None
+        )
+        .await?
+        .0 == StatusCode::NOT_FOUND,
+        "expired receipt remained readable"
+    );
+    tokio::time::timeout(Duration::from_secs(45),async {
+        loop {
+            if pg(&format!("SELECT count(*) FROM mdm_telemetry.gap_reports WHERE tenant_id='{tenant}' AND id='{expiring_id}'"))?.trim()=="0" {break;}
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+        Ok::<_,anyhow::Error>(())
+    }).await??;
+    ensure!(pg(&format!("SELECT count(*) FROM mdm_telemetry.gap_reports WHERE tenant_id='{tenant}' AND registration='{registration}'"))?.trim()=="4095","prune removed valid capacity rows");
+    replay(router, evidence).await?;
+    let (status, _) = agent_call(
+        router,
+        Method::POST,
+        UPLOAD,
+        Some(case_credential()),
+        Some(candidate.clone()),
+    )
+    .await?;
+    ensure!(
+        status == StatusCode::ACCEPTED,
+        "prune failed to release registration capacity: {status}"
+    );
+    clear_seed(registration_seed, 4096 - registered)?;
+    pg(&format!(
+        "DELETE FROM mdm_telemetry.gap_reports WHERE tenant_id='{tenant}' AND id='{candidate_id}'"
+    ))?;
+
+    // Keep every synthetic registration below 4096 so only the tenant bound can reject.
+    let tenant_seed = Uuid::new_v4();
+    let count: i64 = pg(&format!(
+        "SELECT count(*) FROM mdm_telemetry.gap_reports WHERE tenant_id='{tenant}'"
+    ))?
+    .trim()
+    .parse()?;
+    seed_reports(
+        tenant_seed,
+        100_000 - count,
+        registration,
+        generation,
+        true,
+        &evidence.body,
+    )?;
+    ensure!(pg(&format!("SELECT max(n) FROM (SELECT count(*) n FROM mdm_telemetry.gap_reports WHERE tenant_id='{tenant}' GROUP BY registration) x"))?.trim().parse::<i64>()?<4096);
+    denied_without_writes(router, &candidate).await?;
+    clear_seed(tenant_seed, 100_000 - count)?;
+
+    // Avoid straddling a minute: no mocked clock or rate transaction is involved.
+    let remainder = database_now()? % 60_000_000;
+    if remainder > 45_000_000 {
+        tokio::time::sleep(Duration::from_micros(
+            (60_000_000 - remainder + 100_000) as u64,
+        ))
+        .await;
+    }
+    let saved = pg(&format!(
+        "SELECT row_to_json(r)::text FROM mdm_telemetry.rate_windows r WHERE tenant_id='{tenant}'"
+    ))?;
+    let saved: Value = serde_json::from_str(saved.trim())?;
+    let minute = database_now()? / 60_000_000;
+    let limit = f.base["telemetry"]["ingress"]["batchesPerMinute"]
+        .as_u64()
+        .ok_or_else(|| anyhow::anyhow!("missing ingress limit"))?;
+    pg(&format!(
+        "UPDATE mdm_telemetry.rate_windows SET minute={minute},batches={limit},bytes=1 WHERE tenant_id='{tenant}'"
+    ))?;
+    denied_without_writes(router, &candidate).await?;
+    ensure!(
+        database_now()? / 60_000_000 == minute,
+        "rate check crossed its minute window"
+    );
+    pg(&format!(
+        "UPDATE mdm_telemetry.rate_windows SET minute={},batches={},bytes={} WHERE tenant_id='{tenant}'",
+        saved["minute"].as_i64().unwrap(),
+        saved["batches"].as_i64().unwrap(),
+        saved["bytes"].as_i64().unwrap()
+    ))?;
+    let (status, _) = agent_call(
+        router,
+        Method::POST,
+        UPLOAD,
+        Some(case_credential()),
+        Some(candidate),
+    )
+    .await?;
+    ensure!(
+        status == StatusCode::ACCEPTED,
+        "rate rejection left a partial report or admission state: {status}"
+    );
+    pg(&format!(
+        "DELETE FROM mdm_telemetry.gap_reports WHERE tenant_id='{tenant}' AND id='{candidate_id}'"
+    ))?;
+    Ok(())
+}
+
+fn database_now() -> Result<i64> {
+    Ok(
+        pg("SELECT floor(extract(epoch FROM clock_timestamp())*1000000)::bigint")?
+            .trim()
+            .parse()?,
+    )
+}
+
+async fn denied_without_writes(router: &Router, body: &Value) -> Result<()> {
+    let tenant = case_tenant();
+    let state = || {
+        pg(&format!(
+            "SELECT (SELECT count(*) FROM mdm_telemetry.gap_reports WHERE tenant_id='{tenant}')::text||':'||(SELECT row_to_json(r)::text FROM mdm_telemetry.rate_windows r WHERE tenant_id='{tenant}')"
+        ))
+    };
+    let before = state()?;
+    let (status, result) = agent_call(
+        router,
+        Method::POST,
+        UPLOAD,
+        Some(case_credential()),
+        Some(body.clone()),
+    )
+    .await?;
+    ensure!(
+        status == StatusCode::SERVICE_UNAVAILABLE,
+        "capacity/rate admission: {status} {result}"
+    );
+    ensure!(
+        state()? == before,
+        "rejected gap changed rows or shared rate accounting"
+    );
+    let id = body["reportId"].as_str().unwrap();
+    ensure!(pg(&format!("SELECT count(*) FROM mdm_telemetry.gap_reports WHERE tenant_id='{tenant}' AND id='{id}'"))?.trim()=="0","rejected report persisted");
+    Ok(())
+}
+
+fn seed_reports(
+    seed: Uuid,
+    count: i64,
+    registration: &str,
+    generation: u64,
+    spread: bool,
+    template: &Value,
+) -> Result<()> {
+    ensure!(count > 0);
+    let now = database_now()?;
+    let registration_sql = if spread {
+        format!("md5('{seed}:registration:'||(n/1000)::text)::uuid")
+    } else {
+        format!("'{registration}'::uuid")
+    };
+    // Preserve canonical wire member order when calculating each report's exact digest.
+    let typed: wire::TelemetryGapReport = serde_json::from_value(template.clone())?;
+    let gaps = serde_json::to_string(&typed.gaps)?;
+    let device = case_device_id().replace('\'', "''");
+    pg(&format!(
+        "WITH identities AS (SELECT md5('{seed}:'||n::text)::uuid id,{registration_sql} registration FROM generate_series(1,{count}) n), documents AS (SELECT *,format('{{\"reportId\":\"%s\",\"registrationId\":\"%s\",\"generation\":{generation},\"createdAt\":{now},\"gaps\":{gaps}}}',id,registration) body FROM identities) INSERT INTO mdm_telemetry.gap_reports SELECT '{}'::uuid,id,'{device}',registration,{generation},sha256(convert_to(body,'UTF8')),body::jsonb,{now},{now}+604800000000 FROM documents",
+        case_tenant()
+    ))?;
+    Ok(())
+}
+
+fn clear_seed(seed: Uuid, count: i64) -> Result<()> {
+    pg(&format!(
+        "DELETE FROM mdm_telemetry.gap_reports WHERE tenant_id='{}' AND id IN (SELECT md5('{seed}:'||n::text)::uuid FROM generate_series(1,{count}) n)",
+        case_tenant()
+    ))?;
     Ok(())
 }

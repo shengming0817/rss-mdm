@@ -2188,3 +2188,6 @@ consume(('crates/agent-wire/src/telemetry.rs','crates/agent-wire/src/telemetry_g
 
 consume(('crates/agent-wire/src/native_collection.rs','crates/agent-wire/src/native_collection/*.rs'),
         'telemetry.ingress.postgres')
+
+consume(('crates/telemetry-service/src/schema.sql',), 'installation.migration catalog.contract')
+consume(('crates/telemetry-service/src/catalog.json','crates/telemetry-service/src/admission.sql'), 'catalog.contract')
