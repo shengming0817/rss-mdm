@@ -75,6 +75,14 @@ pub async fn check_in(
     architecture: Architecture,
     definition: &rss_mdm_resource::AgentCollectionDefinition,
 ) -> Result<bool> {
+    if definition
+        .spec()
+        .mappings
+        .values()
+        .any(|m| m.counter_normalization.is_some())
+    {
+        return Ok(false);
+    }
     let targets = channels::agent_targets_in(tx, store, vec![target.device.clone()]).await?;
     let Some(agent) = targets
         .into_iter()

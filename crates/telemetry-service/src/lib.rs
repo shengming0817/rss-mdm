@@ -3,12 +3,16 @@
 pub mod backend;
 mod current;
 pub mod diagnostics;
+pub mod gap_query;
 pub mod maintenance;
 pub mod query;
 mod samples;
 /// Closed failures never retain sampled values, credentials or provider diagnostics.
 #[derive(Clone, Copy, Debug, thiserror::Error)]
 pub enum Error {
+    /// No diagnostic report belongs to this current registration.
+    #[error("telemetry not found")]
+    NotFound,
     /// The bound Agent does not implement this configuration.
     #[error("telemetry unsupported")]
     Unsupported,
@@ -65,6 +69,7 @@ mod admission;
 mod configuration;
 mod definitions;
 mod delivery;
+mod gaps;
 mod preview;
 mod retention;
 use rss_mdm_agent_wire::runtime::{TelemetryReceipt, TelemetryUpload};

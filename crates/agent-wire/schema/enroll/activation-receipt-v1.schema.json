@@ -209,6 +209,11 @@
           "const": "telemetry.collect.v1",
           "description": "Periodic typed observations using published telemetry profiles.",
           "type": "string"
+        },
+        {
+          "const": "telemetry.counter.local.v1",
+          "description": "Durable local baselines for explicitly signed native cumulative counters.",
+          "type": "string"
         }
       ]
     },

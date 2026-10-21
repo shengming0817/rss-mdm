@@ -2181,12 +2181,18 @@ for backend in ('postgres','timescale_shared','timescale_dedicated','click_house
     base=MODULES['planning.agent_policy']
     add(name,selectors=(('telemetry::ingress::postgres','telemetry::ingress::postgres_current','telemetry::ingress::postgres_history') if backend=='postgres' else ('telemetry::ingress::'+backend,)),fixtures=tuple(dict.fromkeys((*(f for f in base.fixtures if f!='shared_worker'),'telemetry'))),actors=base.actors,
         sources=('crates/app/src/telemetry.rs','crates/app/src/setup/providers/telemetry.rs','crates/app/src/setup/providers/telemetry/*','crates/app/src/setup/backup.rs','crates/app/src/setup/backup/archive.rs','crates/app/src/setup/backup/telemetry.rs','crates/telemetry-service/src/*','crates/agent-channel/src/telemetry.rs','crates/management-http/src/telemetry.rs','crates/flow-service/src/planning/policies/telemetry.rs','crates/flow-service/src/resource_catalog/telemetry.rs'),
-        tests=('crates/app/tests/telemetry/ingress.rs','crates/app/tests/telemetry/counter.rs','crates/app/tests/telemetry/recovery.rs'),support=(*base.support_inputs,'hack/telemetry_fixtures.py','hack/telemetry_pg_client.py','crates/app/tests/setup/telemetry_backup.rs','crates/app/tests/support/agent_execution.rs','crates/app/tests/support/agent.rs'))
+        tests=('crates/app/tests/telemetry/ingress.rs','crates/app/tests/telemetry/counter.rs','crates/app/tests/telemetry/recovery.rs',*(('crates/app/tests/telemetry/gaps.rs','crates/app/tests/telemetry/performance.rs') if backend=='postgres' else ())),support=(*base.support_inputs,'hack/telemetry_fixtures.py','hack/telemetry_pg_client.py','crates/app/tests/setup/telemetry_backup.rs','crates/app/tests/support/agent_execution.rs','crates/app/tests/support/agent.rs'))
     MODULES[name]=replace(MODULES[name],scope='pair' if backend=='postgres' else 'tenant',db_mode='fresh',materials=base.materials,actors=tuple(dict.fromkeys((*base.actors,*( (('peer','admin'),) if backend=='postgres' else () )))))
     consume_dependencies(name,normal='rss-mdm-telemetry-service rss-timeseries rss-timeseries-postgres rss-timeseries-clickhouse rss-mdm-agent-channel rss-mdm-flow-service rss-mdm-inventory-service rss-mdm-registration-service rss-mdm-resource rss-mdm-agent-wire sqlx tokio')
 
-consume(('crates/agent-wire/src/telemetry.rs','crates/agent-wire/schema/runtime/telemetry-*.schema.json','crates/agent-wire/schema/runtime/signed-telemetry-configuration-v1.schema.json'),
+consume(('crates/agent-wire/src/telemetry.rs','crates/agent-wire/src/telemetry_gap.rs','crates/agent-wire/schema/runtime/telemetry-*.schema.json','crates/agent-wire/schema/runtime/signed-telemetry-configuration-v1.schema.json'),
         'telemetry.ingress.postgres telemetry.ingress.timescale_shared telemetry.ingress.timescale_dedicated telemetry.ingress.click_house')
+
+consume(('crates/agent-wire/src/native_collection.rs','crates/agent-wire/src/native_collection/*.rs'),
+        'telemetry.ingress.postgres')
+
+consume(('crates/telemetry-service/src/schema.sql',), 'installation.migration catalog.contract')
+consume(('crates/telemetry-service/src/catalog.json','crates/telemetry-service/src/admission.sql'), 'catalog.contract')
 
 # Nested group inputs and dependency reads reuse the existing product owners.
 consume(('crates/inventory-service/src/groups/criteria.rs',

@@ -2,10 +2,11 @@ WITH tables AS (SELECT c.* FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnam
 execution_roles AS (SELECT oid FROM pg_roles WHERE rolname=current_user OR pg_has_role(session_user,oid,'SET')),
 reachable AS (SELECT r.* FROM pg_roles r WHERE EXISTS(SELECT 1 FROM execution_roles e WHERE pg_has_role(e.oid,r.oid,'USAGE')))
 SELECT
- (SELECT array_agg(relname::text ORDER BY relname)=ARRAY['batches','definition_progress','maintenance','observation_receipts','rate_windows','resources','retention_targets','storage_binding'] FROM tables)
+ (SELECT array_agg(relname::text ORDER BY relname)=ARRAY['batches','definition_progress','gap_reports','maintenance','observation_receipts','rate_windows','resources','retention_targets','storage_binding'] FROM tables)
  AND NOT EXISTS(SELECT 1 FROM reachable WHERE rolsuper OR rolbypassrls OR rolcreaterole OR rolcreatedb OR rolreplication OR oid IN(SELECT relowner FROM tables))
  AND NOT EXISTS(SELECT 1 FROM tables t WHERE NOT relrowsecurity OR NOT relforcerowsecurity OR NOT has_table_privilege(current_user,t.oid,'SELECT') OR NOT has_table_privilege(current_user,t.oid,'INSERT')
- OR EXISTS(SELECT 1 FROM reachable r WHERE has_table_privilege(r.oid,t.oid,'DELETE,TRUNCATE,REFERENCES,TRIGGER') OR (t.relname<>'rate_windows' AND has_table_privilege(r.oid,t.oid,'UPDATE'))))
+ OR (has_table_privilege(current_user,t.oid,'DELETE')<>(t.relname='gap_reports'))
+ OR EXISTS(SELECT 1 FROM reachable r WHERE has_table_privilege(r.oid,t.oid,'TRUNCATE,REFERENCES,TRIGGER') OR (t.relname<>'gap_reports' AND has_table_privilege(r.oid,t.oid,'DELETE')) OR (t.relname<>'rate_windows' AND has_table_privilege(r.oid,t.oid,'UPDATE'))))
  AND NOT EXISTS(SELECT 1 FROM tables t JOIN pg_attribute a ON a.attrelid=t.oid WHERE a.attnum>0 AND NOT a.attisdropped
  AND (has_column_privilege(current_user,t.oid,a.attnum,'UPDATE') <> (t.relname='rate_windows' OR (t.relname='batches' AND a.attname='delivery') OR (t.relname='maintenance' AND a.attname='result') OR (t.relname='definition_progress' AND a.attname IN('version','digest','retired_through')) OR (t.relname='retention_targets' AND a.attname IN('due_at','next_check','phase','result')))
  OR EXISTS(SELECT 1 FROM reachable r WHERE has_column_privilege(r.oid,t.oid,a.attnum,'REFERENCES') OR (has_column_privilege(r.oid,t.oid,a.attnum,'UPDATE') AND NOT (t.relname='rate_windows' OR (t.relname='batches' AND a.attname='delivery') OR (t.relname='maintenance' AND a.attname='result') OR (t.relname='definition_progress' AND a.attname IN('version','digest','retired_through')) OR (t.relname='retention_targets' AND a.attname IN('due_at','next_check','phase','result')))))))

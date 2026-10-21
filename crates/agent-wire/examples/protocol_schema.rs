@@ -21,6 +21,8 @@ fn main() {
             "TelemetryConfiguration": schemars::schema_for!(runtime::TelemetryConfiguration),
             "TelemetryUpload": schemars::schema_for!(runtime::TelemetryUpload),
             "TelemetryReceipt": schemars::schema_for!(runtime::TelemetryReceipt),
+            "TelemetryGapReport": schemars::schema_for!(runtime::TelemetryGapReport),
+            "TelemetryGapReceipt": schemars::schema_for!(runtime::TelemetryGapReceipt),
             "BindingProfile": schemars::schema_for!(runtime::BindingProfile),
             "ReportRequest": schemars::schema_for!(runtime::ReportRequest),
             "ReportAck": schemars::schema_for!(runtime::ReportAck),

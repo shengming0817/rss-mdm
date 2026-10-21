@@ -1,0 +1,135 @@
+{
+  "$defs": {
+    "TelemetryGap": {
+      "additionalProperties": false,
+      "description": "A count with a time span, not a claim of continuous absence or exact field coverage.",
+      "properties": {
+        "count": {
+          "description": "Missed or discarded observation count; reasons need not represent disjoint windows.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "first": {
+          "description": "Earliest known UTC microsecond.",
+          "format": "int64",
+          "type": "integer"
+        },
+        "last": {
+          "description": "Latest known UTC microsecond.",
+          "format": "int64",
+          "type": "integer"
+        },
+        "reason": {
+          "$ref": "#/$defs/TelemetryGapReason",
+          "description": "Loss category."
+        }
+      },
+      "required": [
+        "reason",
+        "count",
+        "first",
+        "last"
+      ],
+      "type": "object"
+    },
+    "TelemetryGapReason": {
+      "description": "Closed loss causes; no caller-authored descriptions or sampled values.",
+      "oneOf": [
+        {
+          "const": "expired",
+          "description": "Buffered observations exceeded their retention window.",
+          "type": "string"
+        },
+        {
+          "const": "capacity",
+          "description": "Storage or execution capacity prevented sampling or preservation.",
+          "type": "string"
+        },
+        {
+          "const": "lease",
+          "description": "The sampling lease expired.",
+          "type": "string"
+        },
+        {
+          "const": "power",
+          "description": "Local power policy suspended sampling.",
+          "type": "string"
+        },
+        {
+          "const": "suspended",
+          "description": "Sleep or scheduling delay skipped sampling instants.",
+          "type": "string"
+        },
+        {
+          "const": "clock",
+          "description": "UTC continuity was lost.",
+          "type": "string"
+        },
+        {
+          "const": "collection",
+          "description": "The collector was unavailable, unsupported or failed.",
+          "type": "string"
+        },
+        {
+          "const": "rejected",
+          "description": "A permanently rejected sample batch was isolated.",
+          "type": "string"
+        },
+        {
+          "const": "registration",
+          "description": "The original registration incarnation was retired.",
+          "type": "string"
+        },
+        {
+          "const": "configuration",
+          "description": "Configuration withdrawal or replacement interrupted sampling.",
+          "type": "string"
+        }
+      ]
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Frozen report retried byte-for-byte until its durable receipt or acceptance expiry.\nTenant/device come from mTLS, not this input. Registration fields prevent rebinding old loss.",
+  "properties": {
+    "createdAt": {
+      "description": "Immutable report creation UTC microsecond; never renewed on retry.",
+      "format": "int64",
+      "type": "integer"
+    },
+    "gaps": {
+      "description": "At most one aggregate per closed reason.",
+      "items": {
+        "$ref": "#/$defs/TelemetryGap"
+      },
+      "type": "array"
+    },
+    "generation": {
+      "description": "Original registration generation.",
+      "format": "uint64",
+      "minimum": 0,
+      "type": "integer"
+    },
+    "registrationId": {
+      "description": "Original registration, including during credential renewal.",
+      "format": "uuid",
+      "type": "string"
+    },
+    "reportId": {
+      "description": "Stable idempotency identity.",
+      "format": "uuid",
+      "type": "string"
+    }
+  },
+  "required": [
+    "reportId",
+    "registrationId",
+    "generation",
+    "createdAt",
+    "gaps"
+  ],
+  "title": "TelemetryGapReport",
+  "type": "object",
+  "$id": "https://rss.example/mdm/agent/runtime/v1/payload/v1/telemetry-gap-report.schema.json"
+}

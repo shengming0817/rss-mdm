@@ -84,6 +84,7 @@ fn pack(
                         (
                             field.into(),
                             AgentCollectionMapping {
+                                counter_normalization: None,
                                 query: id.into(),
                                 mapping,
                                 missing: NativeMissing::Missing,

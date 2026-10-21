@@ -226,6 +226,87 @@
       ""
     ],
     [
+      "gap_reports",
+      "tenant_id",
+      "uuid",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "gap_reports",
+      "id",
+      "uuid",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "gap_reports",
+      "device",
+      "text",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "gap_reports",
+      "registration",
+      "uuid",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "gap_reports",
+      "generation",
+      "bigint",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "gap_reports",
+      "input_digest",
+      "bytea",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "gap_reports",
+      "report",
+      "jsonb",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "gap_reports",
+      "received_at",
+      "bigint",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "gap_reports",
+      "expires_at",
+      "bigint",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
       "maintenance",
       "tenant_id",
       "uuid",
@@ -594,6 +675,48 @@
       true
     ],
     [
+      "gap_reports",
+      "gap_reports_check",
+      "c",
+      "CHECK ((expires_at > received_at))",
+      true
+    ],
+    [
+      "gap_reports",
+      "gap_reports_generation_check",
+      "c",
+      "CHECK ((generation > 0))",
+      true
+    ],
+    [
+      "gap_reports",
+      "gap_reports_input_digest_check",
+      "c",
+      "CHECK ((octet_length(input_digest) = 32))",
+      true
+    ],
+    [
+      "gap_reports",
+      "gap_reports_pkey",
+      "p",
+      "PRIMARY KEY (tenant_id, id)",
+      true
+    ],
+    [
+      "gap_reports",
+      "gap_reports_received_at_check",
+      "c",
+      "CHECK ((received_at >= 0))",
+      true
+    ],
+    [
+      "gap_reports",
+      "gap_reports_report_check",
+      "c",
+      "CHECK ((jsonb_typeof(report) = 'object'::text))",
+      true
+    ],
+    [
       "maintenance",
       "maintenance_binding_check",
       "c",
@@ -727,6 +850,38 @@
       "definition_progress",
       "definition_progress_pkey",
       "CREATE UNIQUE INDEX definition_progress_pkey ON mdm_telemetry.definition_progress USING btree (tenant_id, field)",
+      true,
+      true,
+      true
+    ],
+    [
+      "gap_reports",
+      "gap_device_receipt",
+      "CREATE INDEX gap_device_receipt ON mdm_telemetry.gap_reports USING btree (tenant_id, device, received_at, id)",
+      true,
+      true,
+      true
+    ],
+    [
+      "gap_reports",
+      "gap_expiry",
+      "CREATE INDEX gap_expiry ON mdm_telemetry.gap_reports USING btree (tenant_id, expires_at, id)",
+      true,
+      true,
+      true
+    ],
+    [
+      "gap_reports",
+      "gap_registration",
+      "CREATE INDEX gap_registration ON mdm_telemetry.gap_reports USING btree (tenant_id, registration)",
+      true,
+      true,
+      true
+    ],
+    [
+      "gap_reports",
+      "gap_reports_pkey",
+      "CREATE UNIQUE INDEX gap_reports_pkey ON mdm_telemetry.gap_reports USING btree (tenant_id, id)",
       true,
       true,
       true

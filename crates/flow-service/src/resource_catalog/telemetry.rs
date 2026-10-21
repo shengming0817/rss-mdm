@@ -90,6 +90,18 @@ pub(crate) async fn validate(
         if spec.projection != r::TelemetryProjection::Current && field.time_series.is_none() {
             return Err(Error::Malformed.into());
         }
+        if let r::Declaration::AgentCollection { definition, .. } = variant.declaration() {
+            let mapping = &definition.spec().mappings[field.key.as_str()];
+            rss_mdm_inventory_service::collection::native::validate_agent_mapping(
+                &field, definition, mapping,
+            )
+            .map_err(|_| Error::Malformed)?;
+            if mapping.counter_normalization.is_some()
+                && spec.projection == r::TelemetryProjection::Current
+            {
+                return Err(Error::Malformed.into());
+            }
+        }
         resources = resources
             .checked_add(field.time_series.as_ref().map_or(1, |b| b.max_resources))
             .ok_or(Error::Malformed)?;

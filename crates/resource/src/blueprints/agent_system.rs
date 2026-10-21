@@ -126,6 +126,7 @@ fn pack(
                         (
                             field.into(),
                             AgentCollectionMapping {
+                                counter_normalization: None,
                                 query: "facts".into(),
                                 mapping,
                                 missing: NativeMissing::Missing,
