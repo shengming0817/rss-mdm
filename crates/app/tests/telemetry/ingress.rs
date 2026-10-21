@@ -653,7 +653,9 @@ async fn postgres_baseline_recovers_original_receipts_without_overwriting_edits(
         let last=manifest.steps.last().unwrap();
         let policy=Uuid::parse_str(&last.target)?;
         let crate::baseline::manifest::Action::Policy {definition}=&last.action else {anyhow::bail!("last policy");};
-        let changed=post(&mut f.author,&f.router,&format!("/api/v1/policies/{policy}"),json!({"operationId":Uuid::new_v4(),"expectedRevision":1,"input":{"action":"put","enabled":false,"definition":definition}})).await?;
+        let mut administrator=Browser::default();
+        ensure!(administrator.login(&f.router,"admin").await?==StatusCode::OK);
+        let changed=post(&mut administrator,&f.router,&format!("/api/v1/policies/{policy}"),json!({"operationId":Uuid::new_v4(),"expectedRevision":1,"input":{"action":"put","enabled":false,"definition":definition}})).await?;
         ensure!(changed["revision"]==2);
         // Lost App checkpoint after owner COMMIT; recovery must use the original
         // operation's receipt even when the user has since disabled this Policy.
