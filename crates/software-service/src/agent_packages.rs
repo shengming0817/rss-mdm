@@ -25,6 +25,10 @@ pub const ACCESS_CONTRACT: &str = include_str!("agent_packages_access.json");
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Publish {
     pub operation_id: Uuid,
+    pub package_id: Uuid,
+}
+#[derive(Clone)]
+struct Selection {
     pub resource: String,
     pub version: String,
     pub variant: String,
@@ -62,7 +66,7 @@ fn target(t: w::Target) -> (r::Platform, r::Architecture) {
         },
     )
 }
-fn definition<'a>(v: &'a r::Version, i: &Publish) -> Result<&'a r::SoftwareDefinition, Error> {
+fn definition<'a>(v: &'a r::Version, i: &Selection) -> Result<&'a r::SoftwareDefinition, Error> {
     let (p, a) = target(i.target);
     let selected = v.variants().iter().find(|x| x.platform() == p && x.architecture() == a && x.key().as_str() == i.variant).ok_or_else(invalid)?;
     let r::Declaration::Software { definition } = selected.declaration() else { return Err(invalid()); };
@@ -81,11 +85,10 @@ fn format(format: r::SoftwareFormat) -> Result<w::InstallerFormat, Error> {
         _ => Err(invalid()),
     }
 }
-struct Prepared<D> {
+struct Prepared {
     version: r::Version,
     package: w::Package,
     binding: Binding,
-    _installer: D,
     verified: Box<dyn crate::catalog::VerifiedContent>,
 }
 fn filename(target: w::Target, format: w::InstallerFormat) -> String {
@@ -119,8 +122,8 @@ async fn replay_in(
 async fn prepare<C: ManagementContentPort>(
     app: &management::catalog::Access<C>,
     p: &AuthorizedPrincipal,
-    i: &Publish,
-) -> Result<Prepared<C::Download>, Error> {
+    i: &Selection,
+) -> Result<Prepared, Error> {
     let version = transaction::inspect(
         &app.runtime,
         app.tenant,
@@ -150,8 +153,12 @@ async fn prepare<C: ManagementContentPort>(
         .map_err(|_| invalid())?;
     let def = definition(&version, i)?;
     let content = app.content.as_ref().ok_or(Error::Unsupported)?;
-    let installer = content.verify_artifact(def.primary()).await?;
     let native_format = format(def.spec().material.format)?;
+    let facts = content.inspect_installer(def.primary(), &filename(i.target, native_format)).await?;
+    let (_, architecture) = target(i.target);
+    if facts.format != def.spec().material.format
+        || facts.version.as_ref().is_some_and(|v| v != &def.spec().version)
+        || (!facts.architectures.is_empty() && !facts.architectures.contains(&architecture)) { return Err(invalid()); }
     let package = w::Package {
         release_id: Uuid::new_v4(),
         tenant_id: Uuid::parse_str(&app.tenant.to_string()).map_err(|_| invalid())?,
@@ -180,7 +187,6 @@ async fn prepare<C: ManagementContentPort>(
         version,
         package,
         binding,
-        _installer: installer,
         verified,
     })
 }
@@ -214,7 +220,7 @@ pub async fn publish<C: ManagementContentPort>(
 ) -> Result<w::Package, Error> {
     p.manage(Permission::ReleasePublish)?;
     p.bind_audit(a)?;
-    if p.tenant_id() != app.tenant.to_string() || i.operation_id.is_nil() {
+    if p.tenant_id() != app.tenant.to_string() || i.operation_id.is_nil() || i.package_id.is_nil() {
         return Err(invalid());
     }
     a.operation(i.operation_id, "agent_package_publish");
@@ -237,7 +243,20 @@ pub async fn publish<C: ManagementContentPort>(
     )
     .await?;
     let prepared = if replay.is_none() {
-        Some(prepare(app, p, i).await?)
+        let resource = i.package_id.to_string();
+        let version = transaction::inspect(&app.runtime, app.tenant, (app, p, &resource), |ctx, tx| Box::pin(async move {
+            let (app, p, resource) = *ctx; let snapshot = transaction::current(tx, p).await?;
+            snapshot.require(p, Permission::ReleasePublish, None)?;
+            app.catalog.reader().lock_in(tx).await?;
+            Ok(app.catalog.reader().version_in(tx, resource, "v1").await?)
+        }), TransactionOwner::SoftwareCatalog).await?;
+        if version.variants().len() != 1 { return Err(invalid()); }
+        let selected = &version.variants()[0];
+        let target = w::Target {
+            platform: match selected.platform() { r::Platform::Windows => TaskPlatform::Windows, r::Platform::MacOS => TaskPlatform::Macos },
+            architecture: match selected.architecture() { r::Architecture::X86_64 => TaskArchitecture::X86_64, r::Architecture::Aarch64 => TaskArchitecture::Aarch64 },
+        };
+        Some(prepare(app, p, &Selection { resource, version: "v1".into(), variant: selected.key().as_str().into(), target }).await?)
     } else {
         None
     };
@@ -446,7 +465,7 @@ pub async fn withdraw<C: ManagementContentPort>(
    if let Some(row)=sqlx::query("SELECT fingerprint FROM mdm_software.operations WHERE tenant_id=$1::uuid AND id=$2").bind(&tenant).bind(op).fetch_optional(&mut *c).await?{return Ok(Some(row.try_get::<Vec<u8>,_>("fingerprint")?));}
    let n=sqlx::query("UPDATE mdm_agent_packages.releases SET state='withdrawn' WHERE tenant_id=$1::uuid AND id=$2").bind(&tenant).bind(id).execute(&mut *c).await?.rows_affected();
    if n!=1{return Err(sqlx::Error::RowNotFound);}
-   sqlx::query("INSERT INTO mdm_software.operations VALUES($1::uuid,$2,$3,'null')").bind(&tenant).bind(op).bind(d).execute(c).await?;
+   sqlx::query("INSERT INTO mdm_software.operations VALUES($1::uuid,$2,$3,jsonb_build_object('withdrawn',$4::uuid))").bind(&tenant).bind(op).bind(d).bind(id).execute(c).await?;
    Ok(None)
   })).await?;
   if old.as_ref().is_some_and(|v|v!=hash){return Err(Error::Conflict.into());}

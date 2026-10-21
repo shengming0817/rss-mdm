@@ -2,6 +2,7 @@ mod binding;
 pub use binding::{admitted_on, binding_on};
 // Borrowed-transaction software lifecycle; external publication is a separate capability.
 mod imports;
+mod installers;
 mod model;
 pub use model::*;
 mod event;
@@ -520,7 +521,7 @@ fn actor(audit: &RequestAudit) -> Result<String> {
     Ok(format!("{instance}:{actor}"))
 }
 
-fn fingerprint(v: &impl serde::Serialize) -> Result<Vec<u8>> {
+pub(crate) fn fingerprint(v: &impl serde::Serialize) -> Result<Vec<u8>> {
     Ok(Sha256::digest(serde_json::to_vec(v).map_err(|_| Error::Input)?).to_vec())
 }
 fn check_operation(id: uuid::Uuid, revision: u64) -> Result<()> {
