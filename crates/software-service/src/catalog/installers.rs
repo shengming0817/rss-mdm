@@ -49,7 +49,7 @@ impl Catalog {
                     Sha256::digest([operation.as_bytes().as_slice(), b"source"].concat());
                 bytes[6] = (bytes[6] & 15) | 64;
                 bytes[8] = (bytes[8] & 63) | 128;
-                self.source_in(
+                self.source_prepared_in(
                     tx,
                     audit,
                     "private-upload",

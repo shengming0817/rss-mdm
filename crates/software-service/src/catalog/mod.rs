@@ -396,6 +396,18 @@ impl Catalog {
         r::Id::new(revision).map_err(|_| Error::Input)?;
         let key = format!("source/{id}/{revision}");
         self.begin(tx, &key).await?;
+        self.source_prepared_in(tx, audit, id, revision, op).await
+    }
+    /// The composing catalog operation has declared all partitions and acquired catalog locks.
+    async fn source_prepared_in(
+        &self,
+        tx: &mut PgTransaction<'_>,
+        audit: &RequestAudit,
+        id: &str,
+        revision: &str,
+        op: &Operation<SourceChange>,
+    ) -> Result<Value> {
+        let key = format!("source/{id}/{revision}");
         let actor = actor(audit)?;
         let hash = fingerprint(&(self.tenant.to_string(), &actor, id, revision, op))?;
         if let Some(value) = storage::replay(tx, op.operation_id, &hash).await? {

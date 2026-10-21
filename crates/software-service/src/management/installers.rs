@@ -186,6 +186,15 @@ pub async fn save<C: ManagementContentPort>(
         TaskArchitecture::X86_64 => r::Architecture::X86_64,
         TaskArchitecture::Aarch64 => r::Architecture::Aarch64,
     };
+    if !matches!(
+        (file.facts.format, platform),
+        (
+            r::SoftwareFormat::Exe | r::SoftwareFormat::Msi | r::SoftwareFormat::Msix,
+            r::Platform::Windows
+        ) | (r::SoftwareFormat::Pkg, r::Platform::MacOS)
+    ) {
+        return Err(Error::Malformed);
+    }
     if !file.facts.architectures.is_empty() && !file.facts.architectures.contains(&arch) {
         return Err(Error::Malformed);
     }
