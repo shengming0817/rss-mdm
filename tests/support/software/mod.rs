@@ -22,7 +22,7 @@ use tokio::{
 };
 #[derive(Default)]
 pub struct State {
-    pub source_documents: BTreeMap<String, Vec<u8>>,
+    pub import_manifest: Option<Vec<u8>>,
     pub manifests: BTreeMap<String, serde_json::Value>,
     pub posts: usize,
     pub deletes: usize,
@@ -50,17 +50,9 @@ impl Drop for Server {
 }
 impl Server {
     pub async fn new() -> Self {
-        Self::at_port(0).await
-    }
-    pub async fn at_port(port: u16) -> Self {
         let root = PathBuf::from(std::env::var("SOURCE_T2_TLS").unwrap());
         let address = std::env::var("SOURCE_T2_ADDRESS").unwrap().parse().unwrap();
-        let bind_address = if port == 443 {
-            "0.0.0.0".parse().unwrap()
-        } else {
-            address
-        };
-        let listener = TcpListener::bind((bind_address, port)).await.unwrap();
+        let listener = TcpListener::bind((address, 0)).await.unwrap();
         let port = listener.local_addr().unwrap().port();
         let certs =
             tokio_rustls::rustls::pki_types::CertificateDer::pem_file_iter(root.join("server.pem"))
@@ -176,14 +168,17 @@ fn respond(
 ) -> Option<(u16, Vec<u8>)> {
     let mut s = state.lock().unwrap();
     let lower = header.to_ascii_lowercase();
-    if let Some(document) = s.source_documents.get(path) {
-        assert!(
-            !lower.contains("authorization:")
-                && !lower.contains("cookie:")
-                && !lower.contains("x-functions-key:")
-        );
-        return Some((200, document.clone()));
+    if path.starts_with("/import/") {
+        let Some(manifest) = &s.import_manifest else {
+            return Some((404, vec![]));
+        };
+        return Some(match path {
+            "/import/information" => (200, serde_json::to_vec(&serde_json::json!({"Data":{"SourceIdentifier":format!("{logical}-import"),"ServerSupportedVersions":["1.0.0"]}})).unwrap()),
+            "/import/packageManifests/Acme.App?Version=1.2" => (200, manifest.clone()),
+            _ => (404, vec![]),
+        });
     }
+
     if path.starts_with("/artifacts/") {
         s.artifact_auth_leaked |= lower.contains("authorization:")
             || lower.contains("cookie:")

@@ -99,10 +99,8 @@ impl Fixture {
 
         if let Some(peer) = &peer {
             base["content"]["imports"][&peer.logical] = json!([{"base":format!("{}artifacts/",peer.base),"addresses":[peer.address],"private_ca":peer.ca}]);
-            if !peer.state.lock().unwrap().source_documents.is_empty() {
-                for protocol in ["rest", "community", "brew", "bottle"] {
-                    base["content"]["imports"][format!("{}-{protocol}", peer.logical)] = json!([{"base":peer.base,"addresses":[peer.address],"private_ca":peer.ca},{"base":"https://raw.githubusercontent.com/","addresses":[peer.address],"private_ca":peer.ca}]);
-                }
+            if peer.state.lock().unwrap().import_manifest.is_some() {
+                base["content"]["imports"][format!("{}-import", peer.logical)] = json!([{"base":format!("{}import/",peer.base),"addresses":[peer.address],"private_ca":peer.ca}]);
             }
         }
         crate::test_support::storage::seed(&serde_json::from_value(base.clone())?).await?;
