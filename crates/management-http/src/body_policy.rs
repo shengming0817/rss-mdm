@@ -9,7 +9,7 @@ pub(crate) enum BodyPolicy {
     Streaming,
 }
 
-/// Completion verifies the stored stream, so it shares the content lifecycle budget.
+/// Completion and package publication verify stored streams under the content lifecycle budget.
 pub(crate) fn content_owned(route: &str, method: &Method) -> bool {
     matches!(for_route(route, method), BodyPolicy::Streaming)
         || (method == Method::POST
@@ -17,6 +17,7 @@ pub(crate) fn content_owned(route: &str, method: &Method) -> bool {
                 route,
                 "/api/v1/resources/{id}/uploads/{upload}/complete"
                     | "/api/v1/resources/{id}/content/mirror"
+                    | "/api/v1/agent-packages"
             ))
 }
 
@@ -150,6 +151,12 @@ mod tests {
 
     #[test]
     fn budgets_match_methods_and_matched_paths() {
+        assert!(content_owned("/api/v1/agent-packages", &Method::POST));
+        assert!(!content_owned("/api/v1/agent-packages", &Method::GET));
+        assert_eq!(
+            for_route("/api/v1/agent-packages", &Method::POST),
+            BodyPolicy::Buffered(1024 * 1024)
+        );
         assert_eq!(
             for_route("/api/v1/policies/{id}", &Method::POST),
             BodyPolicy::Buffered(8 * 1024 * 1024)
