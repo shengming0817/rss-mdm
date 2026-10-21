@@ -66,11 +66,15 @@ Policy 引用精确资源版本/variant；它消费完整操作权限和多对�
 
 ## 跨通道设备视图
 
-`GET /api/v1/device-views` 在服务端按当前可见关联归并，再执行 status/channel/source 筛选、计数和分页。统计分别提供 endpointCount 和 deviceViewCount。详情使用 `/api/v1/device-views/endpoint/{device}` 或 `/api/v1/device-views/association/{id}`；原 `/devices` 继续表达注册端点。主通道的 children 展示当前父注册下各 purpose 的最新子注册，保留父子注册、代次、生命周期和 ready；撤销子注册不替换或撤销主通道。Windows Full 的 userContext 保留原生用户上下文及其父注册状态，不表示用户在线或动作可执行。仅看见一个成员时返回普通端点，不披露关联、另一成员或其数量。
+`GET /api/v1/device-views` 在服务端按当前可见关联归并，再执行 search/platform/status/channel/source/assetState 组合筛选、计数和分页。统计分别提供 endpointCount 和 deviceViewCount。详情使用 `/api/v1/device-views/endpoint/{device}` 或 `/api/v1/device-views/association/{id}`；原 `/devices` 继续表达注册端点。主通道的 children 展示当前父注册下各 purpose 的最新子注册，保留父子注册、代次、生命周期和 ready；撤销子注册不替换或撤销主通道。Windows Full 的 userContext 保留原生用户上下文及其父注册状态，不表示用户在线或动作可执行。仅看见一个成员时返回普通端点，不披露关联、另一成员或其数量。
 
 后台按当前已认证采集来源的序列号或硬件 UUID 自动关联同租户的 MDM、Agent 主注册。值须有效、匹配、无其他有效字段矛盾且在当前实例中唯一；大小写与外围空白归一，序列号前导零和标点保留。占位值、主机名、MAC、登录用户和 Manual 赋值不参与自动确认。已关联的两个端点算一个实例。新注册代际有相同证据时自动延续；暂未上报时保留成员和历史，后续上报重新判断。重复、冲突或失效的注册显示 needs_verification。
 
 异常通过 `GET /devices/{device}/association-candidates?channel=mdm|agent` 选定当前主通道，使用 `POST /device-associations` 明确确认。请求携带 operationId、associationId（新建为 null）、expectedVersion、mdm/agent 的 device、channel、registrationId、generation，以及核实记录 evidence。两个端点均须有当前 inventory_read 和 device_association_write。撤销用 `POST /device-associations/{id}/revoke`，携带 operationId、expectedVersion 和 reason；成员立即释放，同一对端点不会自动合回，显式确认可恢复。重试保持相同 operationId 和请求内容。变化历史从 `GET /device-associations/changes` 读取原审计事实。`nextCursor` 继续当前固定上界的分页，末页返回 `checkpoint`；后续将 checkpoint 作为 cursor 参数传回，即从已扫描位置读取新变化，空页也保留 checkpoint。两者均绑定租户、用户与实时权限；权限变化后须重新查询。每条可见变化的 position 用于消费去重。
+
+目录和详情的 endpoints 共用 displayName、serialNumber、platform、registrationUser 和 currentUser 投影。名称按 Windows device.name、Apple HostName/LocalHostName 的现有字段来源选择，序列号复用 Inventory 解析；未采集和来源冲突保留实际状态。platform 使用注册来源及 Agent 注册平台，未知或冲突不猜测。search 对可读取的名称、序列号及两类后端人员 principalId 执行去首尾空白、忽略大小写的字面子串匹配，最多 256 UTF-8 字节，空白查询和控制字符拒绝；姓名/login 搜索尚无正式补全合同。多个过滤条件在同一可见端点命中，关联设备只计一次视图，端点数量单独计数。
+
+registrationUser 沿用 enrollment 读取权限，currentUser 要求目标设备 inventory_sensitive_read；Inventory 标量遵循字段敏感性与相同设备范围。无权字段不返回，也不参与搜索、计数或目录游标绑定。目录游标只携带认证的上下文摘要和位置，绑定当前主体、查询、权限和可见投影；隐藏设备和不可读字段变化不导致游标失效。详情仍保留逐端点所有人，关联不会创建或批量覆盖第二份人员关系。
 
 字段沿用原有字段优先级策略，各端点的 Manual 值独立保留，同优先级不同值为 Conflict。列表显示每个端点来源的状态、证据及 cursor；以详情返回的来源 cursor 调用 `GET /device-views/{kind}/{id}/inventory-lists/{field}?cursor=...&limit=...`。分页不对不同来源的列表做集合拼接，采集完整性和失败信息保留在 inventorySources。游标签名绑定用户、权限和查询快照；响应 `device_view_cursor_invalidated` 时从第一页重新查询。
 
