@@ -2,7 +2,7 @@
 use crate::setup::{Error, Result};
 use serde::{Deserialize, Serialize};
 use zeroize::Zeroizing;
-#[derive(Default, Serialize, Deserialize)]
+#[derive(Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(super) struct Provisioner {
     #[serde(default, skip_serializing_if = "String::is_empty")]
@@ -28,7 +28,7 @@ pub(super) struct Provisioner {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub webhooks: Vec<Webhook>,
 }
-#[derive(Default, Serialize, Deserialize)]
+#[derive(Clone, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct Details {
     #[serde(rename = "JWK", default, skip_serializing_if = "Option::is_none")]
@@ -36,14 +36,14 @@ pub(super) struct Details {
     #[serde(rename = "SCEP", default, skip_serializing_if = "Option::is_none")]
     pub scep: Option<Scep>,
 }
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(super) struct Jwk {
     pub public_key: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub encrypted_private_key: Option<Zeroizing<String>>,
 }
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(super) struct Scep {
     #[serde(default)]
@@ -60,7 +60,7 @@ pub(super) struct Scep {
     #[serde(default)]
     pub exclude_intermediate: bool,
 }
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(super) struct Decrypter {
     pub certificate: String,
@@ -70,7 +70,7 @@ pub(super) struct Decrypter {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub key_password: Option<Zeroizing<String>>,
 }
-#[derive(Default, Serialize, Deserialize)]
+#[derive(Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(super) struct Claims {
     #[serde(default)]
@@ -84,7 +84,7 @@ pub(super) struct Claims {
     #[serde(default)]
     pub disable_smallstep_extensions: bool,
 }
-#[derive(Default, Serialize, Deserialize)]
+#[derive(Clone, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct X509Claims {
     #[serde(default)]
@@ -92,7 +92,7 @@ pub(super) struct X509Claims {
     #[serde(default)]
     pub durations: Durations,
 }
-#[derive(Default, Serialize, Deserialize)]
+#[derive(Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(super) struct SshClaims {
     #[serde(default)]
@@ -102,7 +102,7 @@ pub(super) struct SshClaims {
     #[serde(default)]
     pub host_durations: Durations,
 }
-#[derive(Default, Serialize, Deserialize)]
+#[derive(Clone, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct Durations {
     #[serde(default)]
@@ -112,7 +112,7 @@ pub(super) struct Durations {
     #[serde(default)]
     pub max: String,
 }
-#[derive(Default, Serialize, Deserialize)]
+#[derive(Clone, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct Template {
     #[serde(default)]
@@ -120,7 +120,7 @@ pub(super) struct Template {
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub data: String,
 }
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(super) struct Webhook {
     pub name: String,
@@ -139,12 +139,12 @@ pub(super) struct Webhook {
     #[serde(default)]
     pub cert_type: String,
 }
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(super) struct Bearer {
     pub bearer_token: Zeroizing<String>,
 }
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct Basic {
     pub username: String,

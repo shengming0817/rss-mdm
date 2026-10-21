@@ -167,7 +167,7 @@ pub enum Selection {
 #[derive(Clone, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Settings {
-    pub name: String,
+    pub presentation: serde_json::Map<String, serde_json::Value>,
     pub endpoint: String,
     pub event_types: Vec<EventType>,
     pub selection: Selection,
@@ -179,7 +179,12 @@ impl Settings {
         let text = |s: &str, max: usize| {
             !s.is_empty() && s.len() <= max && s.trim() == s && !s.chars().any(char::is_control)
         };
-        if !text(&self.name, 128)
+        if !crate::presentation::valid(&self.presentation, 65536)
+            || !self
+                .presentation
+                .get("name")
+                .and_then(serde_json::Value::as_str)
+                .is_some_and(|name| text(name, 128))
             || !text(&self.key_reference, 128)
             || !text(&self.network_reference, 128)
             || self.endpoint.len() > 2048
@@ -256,7 +261,10 @@ mod tests {
     use super::*;
     fn settings() -> Settings {
         Settings {
-            name: "receiver".into(),
+            presentation: serde_json::json!({"name":"receiver"})
+                .as_object()
+                .unwrap()
+                .clone(),
             endpoint: "https://receiver.example/hooks".into(),
             event_types: vec![EventType::Registered],
             selection: Selection::AllDevices,
@@ -268,8 +276,15 @@ mod tests {
     fn name_is_not_a_delivery_change() {
         let a = settings();
         let mut b = a.clone();
-        b.name = "renamed".into();
+        b.presentation
+            .insert("name".into(), serde_json::json!("renamed"));
         assert!(a.same_delivery(&b));
+        b.presentation
+            .insert("vendorHelp".into(), serde_json::json!({"text":"support"}));
+        b.validate().unwrap();
+        assert!(a.same_delivery(&b));
+        let restored: Settings = serde_json::from_slice(&serde_json::to_vec(&b).unwrap()).unwrap();
+        assert_eq!(restored.presentation, b.presentation);
         b.endpoint = "https://other.example/hooks".into();
         assert!(!a.same_delivery(&b));
     }

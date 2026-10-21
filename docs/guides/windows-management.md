@@ -70,7 +70,7 @@ CollectionRun 拥有命令关联、完整性与报告封存。Status 或 Final �
 
 ## 设备信任轮换
 
-服务端在已有认证 SyncML 会话中通过 RootCATrustedCertificates CSP 安装完整重叠集合：根进入 Device/Root，中间证书进入 Device/CA。SHA1 只用作 Windows CSP 节点定位；代次、安装回执与证书身份使用 SHA256。每条证书均以关联的 Get 回读 exact DER 确认，分条投递遵守设备消息预算；Add 的成功状态不能代替安装证明。安装完成后才记录对应 trust revision 的回执，允许管理员批准并激活新 issuer。旧 CA 退役后删除其 CSP 节点，并用关联 Get 的 404 确认移除。注册、代际、证书、会话与消息关联继续由原 owner 校验。
+服务端在已有认证 SyncML 会话中通过 RootCATrustedCertificates CSP 安装完整重叠集合：根进入 Device/Root，中间证书进入 Device/CA。SHA1 只用作 Windows CSP 节点定位；代次、安装回执与证书身份使用 SHA256。每条证书均以关联的 Get 回读 exact DER 确认，分条投递遵守设备消息预算；Add 的成功状态不能代替安装证明。安装完成后才记录对应 trust revision 的回执，管理员取得必需设备回执后可一次激活新 issuer。旧 CA 退役后删除其 CSP 节点，并用关联 Get 的 404 确认移除。注册、代际、证书、会话与消息关联继续由原 owner 校验。
 
 签发默认完整 90 天，冻结 CSR/SPKI、注册 CN、issuer 与绝对有效期后才调用 CA；初始、关联注册与续期共用该路径。未知结果只能找回原 CA 的原证书，不重复签发。迁移与管理接口见[安装](../deployment/installation.md#设备-pki-升级)和[运维](../deployment/operations.md#设备-pki-轮换与撤销)。真实 Windows 的 Root/CA 安装、续期和退役需要独立 T3 证据。
 

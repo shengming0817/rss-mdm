@@ -24,7 +24,7 @@ smoke 启动实际 OCI、自有 TLS PostgreSQL 与 HTTPS 网关，验证迁移�
 
 ## 全新实例安装
 
-Compose 直接声明 PostgreSQL、一次性 `init`、`server` 和 `gateway`，不挂 Docker socket、不使用宿主 systemd/root/host 网络。产品初始化只建立真实 schema、稳定安装身份、独立平台/业务管理员、首业务租户和基础授权，并导出运行配置；不创建或管理容器，不写模拟设备或业务成功记录。
+基础 Compose 声明 PostgreSQL、一次性 `init`、`server` 和 `gateway`，提供可登录的管理环境；完整服务端 SIT 还须完成[下文的 CA、内容存储与通道接线](#服务端-sit-部署)。不挂 Docker socket、不使用宿主 systemd/root/host 网络。产品初始化只建立真实 schema、稳定安装身份、独立平台/业务管理员、首业务租户和基础授权，并导出运行配置；不创建或管理容器，不写模拟设备或业务成功记录。
 
 部署方准备私有目录，提供：`database-password`、`platform-password`、`administrator-password`、`postgres-ca.crt`、`postgres.crt`、`postgres.key`、`gateway-ca.crt`、`gateway.crt`、`gateway.key`。PostgreSQL 证书覆盖 DNS `postgres`；网关证书覆盖公开 HTTPS 域名。密码由组织秘密管理提供，不使用公共默认密码。目录与秘密文件分别设为 0700/0600。
 
@@ -68,9 +68,80 @@ docker compose -p rss-mdm -f /absolute/candidate/deployment/production.compose.y
 docker compose -p rss-mdm -f /absolute/candidate/deployment/production.compose.yaml run --rm --no-deps --user 10001:10001 --entrypoint /usr/local/bin/rss-mdm-installer init prepare-hosts --config /var/lib/rss-mdm/installation-input.json
 ```
 
-平台开通回执中的首租户必须从 `host_pending` 变为 `enabled`，再配置通道、轮换材料、备份和开始 T3；此命令只观察已启动服务，不管理容器。平台登录名为 `platform`，业务登录名为 `administrator`，密码分别取自部署 secrets。将 `gateway-ca.crt` 的公共证书加入专用浏览器/设备信任；CA 私钥不交付客户端。
+平台开通回执中的首租户必须从 `host_pending` 变为 `enabled`，再进行业务通道设置、轮换材料、备份和开始 T3；此命令只观察已启动服务，不管理容器。平台登录名为 `platform`，业务登录名为 `administrator`，密码分别取自部署 secrets。将 `gateway-ca.crt` 的公共证书加入专用浏览器/设备信任；CA 私钥不交付客户端。
 
 用相同 secrets、相同卷重复 `docker compose ... run --rm init` 保持原 tenant/principal/instance/operation、密码和密钥。安装已完成时不覆盖后续配置。停止、重建、重启与升级都使用普通 Compose 命令；`down` 保留卷，`down -v` 删除数据，不能用来恢复故障。没有常驻 operator 或自动创建子 Compose 的进程。
+
+### 服务端 SIT 部署
+
+服务端 SIT 交付包含可登录的基础环境、真实设备 CA、内容存储、任务签名、注册设置、已启用通道和运行检查。真实 Mac/Windows、Agent 安装、系统权限与设备注册结果属于后续测试准备和测试结果，不作为服务端部署完成条件。服务健康也不表示设备测试已经通过。
+
+本地基础设施使用交付的 `deployment/sit.compose.yaml` 叠加基础 Compose，复用准备好的持久卷；已有外部 CA/S3 则沿本节的产品接线流程使用其真实地址和信任，不再启动本地副本。两种方式都不消费 `make dev`、T2 fixture 或受控假后端。
+
+| 本地服务 / 卷 | 部署方已有材料与持久状态 |
+|---|---|
+| `step-ca` / `MDM_CA_VOLUME` | `/home/step/config/ca.json`、公开根/issuer、加密中间 CA 密钥、原 CA 数据库、`/home/step/password`；DNS 覆盖 `step-ca`，监听 9000；Agent、Windows、Apple 使用各自 provisioner |
+| `rustfs` / `MDM_RUSTFS_VOLUME` | 原 RustFS 数据，服务 UID/GID 10001 可读写 |
+| `MDM_RUSTFS_TLS_VOLUME` | `rustfs_cert.pem`、匹配的 `rustfs_key.pem`、`ca.crt`、`access-key`、`secret-key`；证书覆盖内部 DNS `rustfs`，凭据文件为部署管理员专用 |
+
+这些是外部卷，模板不会创建空目录冒充材料、覆盖原数据或生成新的 CA 身份。新建 SIT 时先由基础设施运维使用固定 step-ca 官方 CLI 初始化 CA 卷、配置 remote management 和签名 CRL，并将根私钥及独立解密密码转移到未挂载的离线目录；普通重放直接复用原卷。CA 目录与秘密须由容器 UID10001 读取，文件 0600、目录 0700；属主准备在一次性维护容器内完成，不在 macOS/Linux 宿主执行 chown 或 systemd 操作。在线 CA 不挂载离线根钥，MDM 运行容器不挂载 CA 管理凭据或 RustFS 管理员凭据。
+
+SIT 的原 CA 配置 `/home/step/config/ca.json` 使用以下 CRL 策略；只修改该节，保留原证书、密钥、数据库、provisioner 和其余配置：
+
+```json
+"crl": {
+  "enabled": true,
+  "generateOnRevoke": true,
+  "cacheDuration": "168h",
+  "renewPeriod": "1h"
+}
+```
+
+这是 step-ca 的基础设施配置，由原 CA 卷持有；MDM 的 `step-ca.json` 接入输入保持不变。有效期为 7 天，每小时生成新 CRL，吊销时立即生成；产品每 60 秒获取并验证。已有 CA 修改后用普通 Compose 重启 `step-ca`，核对实际 CRL 的 `thisUpdate` / `nextUpdate` 及各已启用用途的接收结果；重启本身不能证明新策略已发布。停机维护和恢复见[设备 PKI 运维](operations.md#设备-pki-轮换与撤销)。
+
+`sit.compose.yaml` 的 CA 仅开放容器网络，RustFS 禁用控制台且不发布宿主端口。CA 官方二进制携带绑定端口的文件 capability，服务只保留 `NET_BIND_SERVICE`，仍以 UID10001 运行。RustFS 使用独立受信 TLS，不能关闭校验。数据和 TLS 卷名默认见模板；不同部署设置各自的 `MDM_*_VOLUME`，不能共享可写 CA 数据库或 RustFS 数据目录。
+
+从固定候选 `deployment/providers.lock.json` 设置 `MDM_STEP_CA_IMAGE` 和 `MDM_RUSTFS_IMAGE`，沿用基础安装的环境文件与项目名：
+
+```sh
+# compose.env 保留原镜像、输入目录、域名、项目名及持久卷配置。
+# 两个新增镜像分别取 providers.lock.json 的 step-ca / rustfs，不使用 latest。
+# 将基础 Compose、原有卷 override 和 SIT 文件的绝对路径加入 COMPOSE_FILE。
+docker compose --env-file /absolute/sit/compose.env config --quiet
+docker compose --env-file /absolute/sit/compose.env up -d step-ca rustfs
+```
+
+接线按下面顺序执行一次，保留维护输入、操作 UUID 和回执。变更通过原领域 API/维护 CLI 完成；不能修改生成的 `runtime.json` 或写 SQL 伪造就绪。
+
+1. **基础初始化**：沿上节启动一次性 `init` 和管理服务，取得原安装回执及首租户身份，使用真实业务管理员登录。后续维护从原 `installation-input.json` 派生独立输入，不修改首次安装输入。
+2. **内容存储**：确认实际桶存在并开启版本控制，在维护输入的 `storage_profiles` 登记真实 endpoint、region、bucket、namespace、CA 和部署管理员文件引用。业务管理员向 `POST /api/v1/storage/connections` 提交 `{"expectedRevision":0,"profile":"sit-rustfs","source":{"kind":"generate"}}` 及稳定 `Idempotency-Key`。初始 revision 仅适用于未创建连接的租户；已有连接先读目录。执行原 `prepare-hosts`，完成受限工作负载身份、真实版本化读写/删除及跨租户前缀拒绝检查，回执须为 `qualified` 且被选中。运行端只取得加密持久化的工作负载版本，不使用管理员身份。
+3. **任务签名**：通过 `POST /api/v1/task-signing/trust` 提交 `{"action":"prepare","expectedRevision":0,"origin":"https://你的域名:9445"}` 及稳定 `Idempotency-Key`。无已注册 Agent 的首把密钥由原 owner 生成并加密保存为 active；重放原操作，不再生成另一把钥。已有权威遵循原轮换流程。执行 `prepare-hosts` 导出期望版本，按下方命令重建服务并复验。
+4. **设备 CA**：只准备下方的一份 `step-ca.json`。SIT 的一次性 `init` 自动调用统一初始化，发现真实签发者、准备所有用途、安装固定模板及回调、生成或复用凭据并导出网关。无需填写 purpose、provisioner、kid、模板、回调或每用途操作 ID。已有管理员、租户、设备、历史信任和签发材料保留。
+5. **通道**：使用原 `configure-host` 的 `channels` 变更，CA 信任和回调从统一初始化结果自动接入，不再手填 trust/provider；Agent 标准证书期限为 `{"mode":"standard"}`，Windows 为 `{"mode":"production"}`。Agent 使用独立 HTTPS/mTLS 9445，Windows 注册与管理分别为 8443/8444；三个 HTTPS 证书均须覆盖公开域名，私钥提供 PKCS#8 DER。Windows 配置显式轮询计划，可在无 WNS 时使用轮询。服务端口和公开 origin 必须与 Compose 发布一致；不把 Agent/MDM 接口转发到浏览器 nginx。
+6. **恢复材料与注册**：需要凭据托管的 SIT 使用原 `configure-host` 的 `recovery` / `recipient.kind=generate`，幂等保存独立加密保护材料及接收证书。核对 `/api/v1/agent-enrollment-settings` 启用 Windows/macOS，并核对 `/api/v1/registration-channels` 的已选通道准入；已有租户规则保留，修改须使用当前 revision。Group/Scope/Policy 等测试业务对象由测试场景创建，不预置假设备或完成记录。
+
+配置导出后，运维重建服务，再复验原操作：
+
+```sh
+docker compose --env-file /absolute/sit/compose.env up -d --no-deps --force-recreate server gateway
+# 复用已导入卷内的原请求，保留原 operation_id / expected_revision。
+docker compose --env-file /absolute/sit/compose.env run --rm --no-deps --user 10001:10001 \
+  --entrypoint /usr/local/bin/rss-mdm-installer init configure-host --config /var/lib/rss-mdm/channels-request.json
+docker compose --env-file /absolute/sit/compose.env run --rm --no-deps --user 10001:10001 \
+  --entrypoint /usr/local/bin/rss-mdm-installer init prepare-hosts --config /var/lib/rss-mdm/maintenance.json
+```
+
+维护输入、证书和秘密导入命名卷的方法见[Compose 维护材料](operations.md#compose-维护材料与数据库-tls-续期)。每次配置变更单独完成导出、重建、原操作复验，再进入下一项；`applied=null`、仅文件保存或历史观察均不能算已加载。
+
+服务端 SIT 部署检查必须覆盖：
+
+- PostgreSQL、CA、RustFS 健康；`/readyz` 中当前进程观察与期望 revision、材料摘要、原租户/实例匹配。
+- 原平台/业务管理员均能登录并取得各自授权；匿名管理请求被拒绝，设备保护接口要求真实客户端证书。Agent 公开 trust 可经真实域名 HTTPS 读取，Windows 管理入口无客户端证书时 TLS 拒绝。
+- Agent 与 Windows 通道分别返回 `availability=ready`，准入符合租户设置；内容连接为 `qualified` 且实际运行加载对应 revision，任务签名存在 active key，所选恢复材料已加载；正式 `/api/v1/audit-events` 可查询。
+- 用相同输入至少重放一次 `init`，租户、管理员、instance、operation、密码与保护材料不变；重放 CA 准备保持原 issuer/kid；重启依赖并按上述顺序重建 server/gateway 后再次通过运行观察。
+- 保存 Compose 环境、固定镜像、维护操作回执和一致数据库/材料备份；不把运行中的卷简单打包作为一致备份。备份和恢复边界见[运维指南](operations.md#当前安装联合冷备)。
+
+Apple 原生 MDM、ADE、WNS 推送、OIDC、邮件与 Webhook 按所选集成准备各自真实外部材料并单独启用；未选能力明确关闭或未配置，不阻塞上述服务端 SIT。Agent 安装包发布、终端注册和真实任务效果在环境交付后测试，不通过 fixture 或手动勾选状态补成成功。
 
 ### 后续租户与运行容量
 
@@ -101,7 +172,7 @@ Docker Desktop/Engine 可承载 MDM 后端、HTTPS 网关、PostgreSQL，以及�
 | Apple SCEP | CA 的受控 HTTPS SCEP 路径；产品 challenge/notify 回调、CA TLS 信任、设备 SCEP 服务信任分别核对，不开放 CA 管理/签发路径给普通客户端 |
 | PostgreSQL、RustFS、CA 管理 | 仅允许实际受控消费者访问；有独立服务证书、凭据与存储，不因同机部署关闭 TLS/主机名验证 |
 
-Windows、Apple、Agent 共用一个 step-ca/root/issuer 是需要单独实施与验收的部署设计选项。路由按用途和 issuer 区分，即使共用签发者也须保留独立用途模板、JWK/SCEP 凭据和三份用途绑定 trust；Agent bootstrap 另有自己的用途与前置条件。共享 CA 会扩大密钥泄露、CRL、数据库和停机的影响范围，不能直接继承当前按 purpose/issuer 隔离的 CA 基线结论。CA 基础设施由运维声明，产品备份校验明确提供的用途、issuer 和材料目录；共享 CA 的实际恢复仍需独立验收，见[单机恢复边界](operations.md#单机部署的重启与恢复边界)，用途授权见[设备 PKI 运维](operations.md#设备-pki-轮换与撤销)。
+SIT 默认共用一个 step-ca/root/issuer，按用途配置独立 provisioner：Agent 为 `rss-agent` JWK，Windows 为 `rss-windows` JWK，Apple 为 `rss` SCEP 及独立的 `rss-apple-revocation` 撤销凭据。各用途保留自己的模板、授权、信任与证书记录，不能只凭共享 issuer 接受其它通道身份。CA 数据库和 CRL 属于同一物理签发者，按一套基础设施停写、备份和恢复；产品的用途记录仍分别保留。原分离部署通过现有 PKI 轮换与退役接口收敛，不清库或替换现有设备身份。相关边界见[设备 PKI 运维](operations.md#设备-pki-轮换与撤销)。
 
 | 输入或产物 | 当前 owner 与操作入口 |
 |---|---|
@@ -110,10 +181,10 @@ Windows、Apple、Agent 共用一个 step-ca/root/issuer 是需要单独实施�
 | 运行快照、网关配置、公开宿主 JSON 与应用摘要 | 由安装/宿主应用 owner 派生；原操作冻结实际文件字节，不能编辑生成文件绕过期望版本及进程观察 |
 | 用户、授权、注册设置、Group/Scope/Policy、软件与 Apple 组织 | 真实租户会话调用原领域 API；平台会话不自动获得业务数据权限，目录查询不成为第二个写 owner |
 | APNs/Profile/Managed Apple Account、WNS、任务签名、SMTP、Webhook、S3 凭据 | 原领域 API 管理加密材料、版本与适用校验；部分变更直接生效，需运行应用的变更由部署 owner 执行，分别核对 requested/applied 与真实效果，见[运维指南](operations.md) |
-| 设备 CA、OIDC 宿主准入、通道和恢复材料的部署设置 | 使用 `prepare-ca`、`configure-host` 及各领域接口；密钥轮换使用对应流程，不把原始 CA 私钥或任意内网准入交给租户 |
+| 设备 CA、OIDC 宿主准入、通道和恢复材料的部署设置 | 使用 `initialize-ca`、`configure-host` 及各领域接口；密钥轮换使用对应流程，不把原始 CA 私钥或任意内网准入交给租户 |
 | 设备私钥、CSR、注册回执、Agent 本机 trust 与运行 journal | 由设备/注册 owner 生成持久保存；服务端只授权并分发所需公开材料，端侧部署由 [Agent 指南](https://dev.azure.com/shengming0923/rss/_git/rss-mdm-agent?path=/docs/guides/local-service-lab.md&version=GBdevelop)维护 |
 
-安装目录及数据库/材料秘密位于源码仓之外。私有目录、普通秘密文件和读取者权限按现有安装与 CA 规则设置，不使用符号链接或将整个部署根目录挂入运行容器。根私钥及离线根密码独立保管，在线 CA 只取得必要中间签发材料；`prepare-ca` 的管理凭据、SCEP 解密私钥不进入 MDM 运行宿主。服务 TLS 根、设备 issuer、Profile 签名身份和 APNs 身份分别校验，不能互相替代。
+安装目录及数据库/材料秘密位于源码仓之外。私有目录、普通秘密文件和读取者权限按现有安装与 CA 规则设置，不使用符号链接或将整个部署根目录挂入运行容器。根私钥及离线根密码独立保管，在线 CA 只取得必要中间签发材料；初始化的 CA 管理凭据、SCEP 解密私钥不进入 MDM 运行宿主。服务 TLS 根、设备 issuer、Profile 签名身份和 APNs 身份分别校验，不能互相替代。
 
 先安装可登录的基础管理宿主，再由授权会话导入组织材料，经原领域校验和受控宿主应用启用通道。缺少 APNs 等外部材料时明确保持相应通道关闭；材料保存、CA 准备通过、当前进程已加载与设备实际生效分别记录。S3 通过受限 `storage_profiles` 和下节连接流程准备，工作负载凭据不使用 RustFS root 身份，必须验证真实版本化及跨租户前缀拒绝。
 
@@ -285,37 +356,48 @@ docker compose -p rss-mdm -f /absolute/candidate/deployment/production.compose.y
 
 启用 Agent 时，`task_signing` 只引用已持久化权威的 `revision`；私钥由任务签名 owner 加密保管，不再接受 private_key_file、key_id 或 trusted_keys 启动字段。注册 owner 使用同一受控签名权威及独立签名域签发配置文件；Agent 包仍须预置相应公开验证密钥。授权期限和平台启用设置只由数据库后台接口持有，旧 `agent_pki.policy` 被拒绝，见 [Agent 接入](../guides/agent-integration.md)。
 
-使用独立 purpose/issuer 数据库的 step-ca（固定验证版本 0.30.2），创建独立 `rss-agent` JWK provisioner。MDM 只加载其 RSA PKCS#8 DER 私钥、CA TLS 根证书和叶证书直接签发者的公开证书；CA 根/中间私钥及管理员凭据只归 CA 运维。私钥为服务账户独占读取的普通文件（0600/0400），禁止符号链接、公开权限、环境正文和源码提交。CA 网络只允许受控服务调用 `/sign`；MDM 固定 HTTPS origin、固定根、禁用代理和重定向。
-
-在受控目录生成 RSA 2048–8192 位 provisioner 密钥，并从同一密钥导出 public JWK 与 PKCS#8 DER，保持 kid 一致。将 public JWK 导入 provisioner，**不要**上传私钥或设置 encryptedKey，以免 CA 对外分发签发凭据。用部署的 CA 管理凭据执行：
-
-```sh
-step ca provisioner add rss-agent --type JWK --public-key agent-provisioner.pub.json \
-  --x509-template deployment/agent-leaf.tpl --disable-renewal --ssh=false \
-  --x509-default-dur 8760h --x509-max-dur 8760h
-```
-
-模板唯一使用已验签 token 的 `.SANs`，固定 CN、非 CA、digitalSignature 和 clientAuth；不得换成 `.Insecure.CR` 或增加 serverAuth/其它目的。默认叶证书为 365 天。根 CA 可以设为十年；直接签发者须覆盖**完整**叶证书窗口，剩余不足拒绝签发，不截短期限。开发部署可显式改为 `{"mode":"development","days":3650}` 并将此 Agent provisioner 的 max/default 同步改至 87600h；上限 3650 天，直接签发者及根必须留出完整窗口。此设置不修改 Windows/Apple provisioner 的期限，也不启用自动 renewal。
-
-服务端已经提供持久 Agent 授权、候选签发、真实 mTLS 激活、在线撤销及人工恢复；旧 Bearer 注册与业务入口退出。Agent 通过公开 HTTP API 消费设备信任与 PKI 生命周期，设备侧部署操作见上文链接的 rss-mdm-agent 服务部署指南；真实设备、安装方式和平台支持由独立 T3 验收。
-
-Agent 注册与运行共用独立 Rust TLS 监听器，匿名 bootstrap 可无客户端证书，激活和运行必须有真实 TLS 客户端证书。不得经终止 TLS 的 HTTP 代理转发，不能信任证书头。浏览器 nginx 明确拒绝 `/api/v1/agent/`；Agent 直接访问配置的 endpoint origin。
+Agent 证书由统一 step-ca 初始化准备，默认有效期 365 天；Windows 为 90 天。签发者必须覆盖完整证书窗口，剩余不足会拒绝签发。私钥留在设备，产品运行端只取得受限用途凭据，CA 根/中间私钥及管理员凭据不进入运行容器。任务签名仍由原产品 owner 管理，不与设备 CA 混用。
 
 ## 设备 PKI 配置
 
-所有设备 CA 路由由必填顶层 `device_pki` 持有，不保留旧 CA 字段别名或本地 Windows signer。每项固定 `purpose`（windows/apple/agent）、`issuer`（确切 issuer DER 的小写 SHA256）、CA HTTPS `origin`、`tls_root_file`、`provisioner`、`kid` 和 `provisioner_key_file`；Apple 另有同 CA origin 下的 `scep_url`。最多 48 项；每个 purpose/issuer 只有一条路线。准备新代次前先提供对应 provider，然后通过管理接口分发信任并激活。
+普通部署只维护一套 step-ca。将以下内容保存为输入目录中的 `step-ca.json`，文件引用可以相对于此 JSON；完整字段由 [Settings](../../crates/app/src/setup/providers/step_ca/initialize.rs) 持有。
 
-Windows/Apple 的 `native_protocols.<purpose>.trust_file`、Agent 的 `agent_pki.trust_file` 是可信部署渠道提供的公开 JSON。格式来自 `rss-mdm-agent-wire::pki::Trust`：version=1，绑定精确 HTTPS origin、tenant、purpose、单调 revision，包含完整 issuer 集合与 active/prepared/verify_only 状态；每个 issuer 包含确切 DER digest、base64 DER certificate/root/issuer CRL/root CRL、provisioner/kid。恰好一个 active，最多 16 代。不能把 HTTPS/APNs/Profile 签名证书当作设备 CA。公共材料可读，但初始部署来源必须受保护；私钥文件只归对应 owner。
-
-Windows 使用独立 `rss-windows` JWK provisioner 和随候选交付的 `deployment/windows-leaf.tpl`：
-
-```sh
-step ca provisioner add rss-windows --type JWK --public-key windows-provisioner.pub.json \
-  --x509-template deployment/windows-leaf.tpl --disable-renewal --ssh=false \
-  --x509-default-dur 2160h --x509-max-dur 2160h
+```json
+{
+  "origin": "https://step-ca:9000",
+  "root_certificate_file": "ca-root.crt",
+  "root_crl_file": "ca-root.crl",
+  "administrator_certificate_file": "ca-admin.crt",
+  "administrator_key_file": "ca-admin.key"
+}
 ```
 
-其私钥按同一受保护 PKCS#8 流程配置到 Windows provider。模板只从已验签令牌的 `.Token.sub` 生成登记 CN，不复制 CSR 的主体、SAN 或扩展；服务端冻结原 CSR/SPKI 和授权登记，并校验签发结果。令牌中的 CSR 输入名称仅供 step-ca 的前置校验，原 CSR 指纹绑定仍必须验证。不要替换为默认模板或 `.Insecure.CR`。生产叶证书完整 90 天；开发时同步配置明确的有效期和 CA max/default。Docker 候选将 Windows 与 Agent 模板一并哈希交付，运行夹具也消费这份模板。
+这四份材料分别是公开 CA 根证书、离线根发布的公开 CRL，以及仅供初始化使用的管理证书和私钥。不提供 CA 根或中间签发私钥。管理员证书的主体和 CA 当前内部地址自动发现，不填写容器 IP。管理证书须有该 CA 的 provisioner 管理权限；根 CRL 由根 CA 运维续发；管理身份续期与根 CRL 更新后沿原文件重跑 `init`。SCEP 解密身份在剩余不足 30 天时由该次初始化自动续期，保留原回调和设备身份。
+
+SIT Compose 已设置 `MDM_STEP_CA_CONFIG=/inputs/step-ca.json`，`init` 等待 CA 健康后执行一次性初始化。使用外置 step-ca 时，在基础 Compose 的 `init.environment` 设置同一变量并提供该文件。内部地址只需能从初始化和服务容器访问；不要求公网解析或宿主 Linux。
+
+首次接入步骤如下；已有部署使用原项目名、卷、秘密和输入目录：
+
+```sh
+docker compose --env-file /absolute/sit/compose.env run --rm init
+# step-ca 0.30.2 首次增加 SCEP 后需要重新挂载其协议路由；不重新初始化 CA。
+docker compose --env-file /absolute/sit/compose.env restart step-ca
+docker compose --env-file /absolute/sit/compose.env up -d --force-recreate server gateway
+```
+
+重复运行 `init` 复用同一 CA 初始化操作，核验远端 provisioner、模板和原回调身份；不重新生成原密钥或追加配置版本。首次没有运行进程时，配置回执可以处于待观察状态；按前文 `prepare-hosts` 读取实际进程观察，不能把初始化成功当成设备注册成功。
+
+统一初始化自动处理 Agent、Windows、Apple 和可选 Agent bootstrap 所需资源。首次为缺失资源生成受限密钥；已有资源从当前部署材料及认证 CA 管理接口核对、复用。产品内部仍保留各通道授权、证书用途和租户隔离。其他租户由维护命令 `initialize-ca` 指定原 `host_id` 绑定同一份 settings，需要租户回调的资源名称按租户自动隔离；Agent 沿原客户端契约共用受限签发入口，以证书 SAN 和注册授权绑定租户，不覆盖首租户材料。原逐用途准备入口已移除，初始化只使用这一套输入；旧维护记录与材料继续保留。
+
+通道启用时只提供该通道自身的监听、TLS 和必要业务材料，省略 `providers`、CA `trust_file` 和回调配置。首次启用时按实际 endpoint/management 地址绑定信任，并在同一维护操作内同步尚未使用的 bootstrap 回调，支持非默认公开端口；不把 CA 准备阶段的默认端口当作最终地址。原有已启用通道的协议密钥与信任历史保持不变。Apple 的 APNs/Profile 属于独立业务材料，未提供时只完成 CA 准备，不伪造 Apple MDM 就绪。
+
+### Apple SCEP 与内部 CA 地址
+
+SCEP 是设备向 CA 申请证书的协议，由同一套 step-ca 直接提供。设备地址默认使用当前租户的产品 HTTPS 域名；需要独立入口时只在 `step-ca.json` 设置 `public_scep_origin`。内部 `origin` 与公开入口独立。
+
+同域名时，网关自动生成精确的 SCEP 路径及 `/pkiclient.exe` 兼容路径，只转发 GetCACert、GetCACaps、PKIOperation，验证内部 CA TLS，不转发浏览器 Cookie/Authorization。其余 SCEP 路径与 CA 管理 API 拒绝访问，不发布整个 CA 端口。独立入口由运维设置同样的路径限制。
+
+SCEP 解密身份、模板和 challenge/notify 回调由初始化自动处理，秘密留在 CA 和受保护的维护目录；运行容器只取得原业务所需回调验证凭据。Mac 从描述文件读取自动生成的 SCEP 地址，在本机生成私钥，CA 经产品后端校验本次注册授权后签发。APNs 负责唤醒，Profile 身份负责签名描述文件，均不替代设备 CA。
 
 ### 恢复凭据密钥与接收证书
 
@@ -373,7 +455,7 @@ Native 保护轮换重加密运行凭据及 Apple 的 ADE、账户开通、设�
 
 - 保存候选 manifest 摘要、后端/UI/Agent 制品实际镜像或包摘要、依赖 lock 和实际镜像身份、实际宿主 OS/CPU、容器 OS/架构、原生或仿真方式及 Docker/Compose 版本。含控制台的验收必须使用真实 MDM 前端；Agent 包按平台提供正式签名/公证及匹配 wire 和信任材料。
 - 从设备网络检查域名、公开端口、TLS 完整链、主机名及设备时间；从实际服务身份检查 PostgreSQL/RustFS/CA TLS、权限、持久目录与可恢复空间。容器内部可达不代表设备可达，不使用跳过证书验证的参数。
-- 按所选能力提供真实 APNs/Profile、ABM/ASM/Entra/IdP 等组织资格、CA 模板/CRL/webhook 和受控签名材料。冻结设备 OS edition/build、架构、注册方式、用户/系统执行身份、浏览器及 Agent 版本；不从一次注册推断所有平台或权限组合可用。
+- 按所选能力提供真实 APNs/Profile、ABM/ASM/Entra/IdP 等组织资格和受控签名材料；CA 模板与回调由上述统一初始化准备，根 CRL 沿原输入更新。冻结设备 OS edition/build、架构、注册方式、用户/系统执行身份、浏览器及 Agent 版本；不从一次注册推断所有平台或权限组合可用。
 - 准备平台管理员、独立业务管理员、只读/受限账户及合法第二租户宿主；通过领域 API 发布测试资源、软件版本、Group/Scope/Policy。安装器不制造业务成功数据，跨租户场景不能只修改请求中的 tenant。
 - Windows/macOS 的服务、桌面/helper 及 PowerShell、osquery、Node/worker 等运行依赖按实际 Agent 包和所选动作准备；它们属于端侧，不能误列为服务器常驻容器。
 - 每项能力在开测前明确 required 或 excluded，写明需求编号与理由；缺组织资格、设备或实现时对必选项记 blocked/unknown，不以临时改为 excluded 获得通过。输入变化开新轮次并重测受影响项。
@@ -392,7 +474,7 @@ Native 保护轮换重加密运行凭据及 Apple 的 ADE、账户开通、设�
 | 策略与资产闭环 | Group/Scope/Policy、三类采集和合规按需求产生分配、设备效果及投影；旧结果/空值/来源冲突不误覆盖或误删，不把服务端入队当作设备完成 |
 | 跨通道与结果未知 | MDM 与 Agent 的重复副作用保护；超时、断网、晚到结果和重启沿原身份恢复，未知操作不自动换 ID 或双发 |
 | CA 与撤销 | 各用途模板/期限/凭据正确，跨用途证书不能取得设备身份；撤销持久生效并在签名 CRL 实际发布，既有 TLS/恢复会话仍受当前凭据校验 |
-| 共享 CA 专项 | 选择共用 CA 时分别验证三用途签发、SCEP/JWK、共享 CRL 传播、单用途撤销与其它合法用途继续工作；保留隔离基线之外的独立结果 |
+| 共享 CA 专项 | 在同一套 CA 上分别验证三用途签发、SCEP/JWK、共享 CRL 传播、单用途撤销与其它合法用途继续工作；保留同一物理 CA 上的实际结果 |
 | 故障与联合恢复 | 服务/宿主重启、PG/CA/RustFS 不可用、原操作续跑及同址冷恢复；原账户、设备凭据、密钥、对象版本和审计关联可核验，见[单机恢复边界](operations.md#单机部署的重启与恢复边界) |
 
 ### 按发布能力补齐的外部条件
@@ -430,3 +512,7 @@ ClickHouse 使用固定 HTTPS origin 和显式 CA，运行读、写、维护及�
 联合备份由安装器携带的匹配主版本客户端执行；PG 16 使用 `pg_dump16`/`pg_restore16`，产品主库使用 PG 17 客户端。缺少或不匹配的客户端明确失败。ClickHouse 的备份磁盘和配置恢复仍遵循原 UID/GID 与权限约束，部署时应使其与恢复执行身份兼容，不能依靠恢复命令隐式 chown。
 
 首个启用遥测的宿主会在产品控制库登记该租户的存储安装身份、接收限额、存储保证和游标密钥摘要。后续副本必须匹配，不能通过增加副本、换一份配置或在原地址新建空库把已接收工作转移到另一个后端。接收速率在租户内共享；待交付批次数仍按注册身份限制。当前安装的这些保证固定不变，只有本地连接池规模可独立调整；Profile 内的较低预算仍可按业务版本发布。恢复须同时恢复产品控制库和对应存储安装身份。
+
+当前开发基线的自有布局直接替换；不提供历史库迁移或兼容 reader。已有开发数据库、凭据和
+journal 必须保留：新布局使用新建实例，不能修改旧安装账本的版本或摘要来绕过检查。
+同一当前制品的重复安装、失败恢复及权限检查仍须成立。

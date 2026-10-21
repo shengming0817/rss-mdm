@@ -564,7 +564,7 @@ async fn template_flow(
         alert: s::Alert::UnenrollmentRequested,
     }];
     crate::test_support::stop_worker(owner.take()).await?;
-    authenticate_during_recovery(&host, &peer, &mut pg).await?;
+    authenticate_during_recovery(&host, &peer, &mut pg, next).await?;
     ensure!(
         native::post(&peer.mutual, &peer.url, &notification)
             .await?
@@ -582,16 +582,20 @@ async fn template_flow(
     host.close().await
 }
 
-/// Hold a later row so the actual recovery transaction retains the channel fence.
+/// Hold the real pending run so its recovery transaction retains the channel fence.
 /// Authentication must finish while the real writer still holds this device's fence.
 async fn authenticate_during_recovery(
     host: &Host,
     peer: &crate::windows::test_support::Peer,
     observer: &mut sqlx::PgConnection,
+    row: Uuid,
 ) -> anyhow::Result<()> {
     use sqlx::Connection;
-    let row: Uuid = sqlx::query_scalar("SELECT id FROM mdm_commands.action_runs WHERE tenant_id=$1::uuid AND registration=$2 AND state->>'execution' IN('not_started','running','waiting_reboot','unknown') AND state->>'cancellation'='none' ORDER BY id OFFSET 1 LIMIT 1")
-        .bind(case_tenant()).bind(peer.intent.registration).fetch_one(&mut *observer).await?;
+    // UUID ordering may select synthetic historical rows whose dispatch identity
+    // belongs to the original run. Recover only the actual newly admitted run.
+    let actual: Uuid = sqlx::query_scalar("SELECT id FROM mdm_commands.action_runs WHERE tenant_id=$1::uuid AND registration=$2 AND id=$3 AND state->>'cancellation'='none'")
+        .bind(case_tenant()).bind(peer.intent.registration).bind(row).fetch_one(&mut *observer).await?;
+    ensure!(actual == row);
     let mut connection =
         sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?)
             .await?;

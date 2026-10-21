@@ -118,8 +118,10 @@ async fn dynamic_group(s: &GroupStore) -> (GroupId, Receipt, FixturePage) {
             &Command::Create {
                 asset_context: rss_mdm_group_postgres::AssetContext::Endpoint,
                 group,
-                name: "dynamic".into(),
-                description: String::new(),
+                presentation: serde_json::json!({"name":"dynamic","description":""})
+                    .as_object()
+                    .unwrap()
+                    .clone(),
                 definition: Definition::Dynamic(Box::new(rule)),
             },
             deadline(),
@@ -371,7 +373,7 @@ async fn admission_rejects_catalog_and_security_drift() {
         "CREATE POLICY extra ON mdm_group.groups USING (true)",
         "ALTER ROLE mdm_group_runtime BYPASSRLS",
         "ALTER TABLE mdm_group.operations DROP COLUMN receipt_digest CASCADE",
-        "ALTER TABLE mdm_group.groups ALTER COLUMN name TYPE varchar",
+        "ALTER TABLE mdm_group.groups ADD COLUMN unexpected text",
         "ALTER TABLE mdm_group.operations ALTER COLUMN request DROP NOT NULL",
         "ALTER TABLE mdm_group.groups ALTER COLUMN deleted SET DEFAULT true",
         "ALTER TABLE mdm_group.operations DROP CONSTRAINT operations_as_of_check",
@@ -417,8 +419,10 @@ async fn standalone_delete_requires_companion_transaction() {
             &Command::Create {
                 asset_context: rss_mdm_group_postgres::AssetContext::Endpoint,
                 group: id,
-                name: "delete-boundary".into(),
-                description: String::new(),
+                presentation: serde_json::json!({"name":"delete-boundary","description":""})
+                    .as_object()
+                    .unwrap()
+                    .clone(),
                 definition: Definition::Static,
             },
             deadline(),
@@ -539,14 +543,16 @@ async fn distinct_runs_compete_on_one_revision_and_preserve_event_contract() {
             &Command::Edit {
                 group: id,
                 expected: saved.group.revision,
-                name: "edited".into(),
-                description: String::new(),
+                presentation: serde_json::json!({"name":"edited","description":"","vendor":{"help":"retained"}}).as_object().unwrap().clone(),
             },
             deadline(),
         )
         .await
         .unwrap();
     assert_event(&changed, "edited");
+    assert_eq!(changed.group.member_version, saved.group.member_version);
+    assert_eq!(changed.group.presentation["vendor"]["help"], "retained");
+
     let deleted = execute_companion(
         &runtime,
         &s,
@@ -695,8 +701,10 @@ async fn atomic_event_failure_rls_and_large_member_ids() {
             &Command::Create {
                 asset_context: rss_mdm_group_postgres::AssetContext::Endpoint,
                 group: id,
-                name: "static".into(),
-                description: String::new(),
+                presentation: serde_json::json!({"name":"static","description":""})
+                    .as_object()
+                    .unwrap()
+                    .clone(),
                 definition: Definition::Static,
             },
             deadline(),
@@ -811,8 +819,10 @@ async fn admitted_input_and_command_commit_unknown_recover_by_original_identity(
     let command = Command::Create {
         asset_context: rss_mdm_group_postgres::AssetContext::Endpoint,
         group: id,
-        name: "unknown".into(),
-        description: String::new(),
+        presentation: serde_json::json!({"name":"unknown","description":""})
+            .as_object()
+            .unwrap()
+            .clone(),
         definition: Definition::Static,
     };
     runtime.inject_next_transaction_fault(PgTransactionFault::CommitUnknownAfterAck);
@@ -899,8 +909,10 @@ async fn process_death_after_admission_recovers_without_caller_snapshot() {
             &Command::Create {
                 asset_context: rss_mdm_group_postgres::AssetContext::Endpoint,
                 group: id,
-                name: "restart".into(),
-                description: String::new(),
+                presentation: serde_json::json!({"name":"restart","description":""})
+                    .as_object()
+                    .unwrap()
+                    .clone(),
                 definition: Definition::Static,
             },
             deadline(),

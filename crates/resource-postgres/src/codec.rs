@@ -254,7 +254,8 @@ pub(crate) fn header(r: &Resource) -> Result<Vec<u8>, PgError> {
             .iter()
             .map(|v| json!([v.version.label().as_str(), state(v.state)]))
             .collect::<Vec<_>>(),
-        s.origin
+        s.origin,
+        s.presentation
     ]))
 }
 pub(crate) fn restore(
@@ -262,7 +263,7 @@ pub(crate) fn restore(
     mut versions: std::collections::BTreeMap<String, Version>,
 ) -> Result<Resource, PgError> {
     let v: Value = STORAGE.decode(bytes)?;
-    let a = array(&v, 7)?;
+    let a = array(&v, 8)?;
     if n(&a[0])? != 2 {
         return Err(STORAGE.fault("codec::restore"));
     }
@@ -300,6 +301,8 @@ pub(crate) fn restore(
     crate::error::decode_domain(
         "codec::restore",
         Resource::restore(ResourceSnapshot {
+            presentation: STORAGE
+                .json("codec::presentation", serde_json::from_value(a[7].clone()))?,
             origin: STORAGE.json("codec::origin", serde_json::from_value(a[6].clone()))?,
             tenant: STORAGE.invalid("codec::restore", TenantId::parse(s(&a[1])?))?,
             key: id(&a[2])?,
@@ -317,7 +320,7 @@ pub(crate) fn software_header(
     version: &Id,
 ) -> Result<bool, PgError> {
     let value: Value = STORAGE.decode(bytes)?;
-    let a = array(&value, 7)?;
+    let a = array(&value, 8)?;
     if n(&a[0])? != 2
         || s(&a[1])? != tenant.to_string()
         || s(&a[2])? != resource.as_str()
@@ -325,6 +328,13 @@ pub(crate) fn software_header(
     {
         return Err(STORAGE.fault("codec::software_header"));
     }
+    let mut descriptive = Resource::new(tenant, id(&a[2])?, read_kind(&a[3])?);
+    STORAGE.invalid(
+        "codec::presentation",
+        descriptive.set_presentation(
+            STORAGE.json("codec::presentation", serde_json::from_value(a[7].clone()))?,
+        ),
+    )?;
     let states = a[5]
         .as_array()
         .filter(|v| v.len() <= 10000)
@@ -352,7 +362,7 @@ pub(crate) fn directory_header(
     revision: i64,
 ) -> Result<Value, PgError> {
     let value: Value = STORAGE.decode(bytes)?;
-    let a = array(&value, 7)?;
+    let a = array(&value, 8)?;
     if n(&a[0])? != 2
         || s(&a[1])? != tenant.to_string()
         || id(&a[2])?.as_str() != resource
@@ -377,6 +387,13 @@ pub(crate) fn directory_header(
             ),
         )?;
     }
+    let mut descriptive = Resource::new(tenant, id(&a[2])?, read_kind(&a[3])?);
+    STORAGE.invalid(
+        "codec::presentation",
+        descriptive.set_presentation(
+            STORAGE.json("codec::presentation", serde_json::from_value(a[7].clone()))?,
+        ),
+    )?;
     let states = a[5]
         .as_array()
         .filter(|v| v.len() <= 10000)
@@ -400,7 +417,9 @@ pub(crate) fn directory_header(
             State::Archived => (),
         };
     }
-    Ok(json!({"id":resource,"revision":revision,"kind":kind,"activeVersion":active}))
+    Ok(
+        json!({"id":resource,"revision":revision,"kind":kind,"activeVersion":active,"presentation":a[7]}),
+    )
 }
 
 #[cfg(test)]
@@ -429,12 +448,13 @@ mod directory_tests {
             1,
             null,
             [["old", 2], ["current", 1], ["next", 0]],
-            null
+            null,
+            {}
         ]))
         .unwrap();
         assert_eq!(
             directory_header(&header, tenant, "script", 3).unwrap(),
-            json!({"id":"script","revision":3,"kind":"script","activeVersion":"current"})
+            json!({"id":"script","revision":3,"kind":"script","activeVersion":"current","presentation":{}})
         );
         assert!(directory_header(&header, tenant, "other", 3).is_err());
         let conflicting = serde_json::to_vec(&json!([
@@ -444,7 +464,8 @@ mod directory_tests {
             1,
             null,
             [["one", 1], ["two", 1]],
-            null
+            null,
+            {}
         ]))
         .unwrap();
         assert!(directory_header(&conflicting, tenant, "script", 3).is_err());

@@ -11,6 +11,28 @@ pub struct Provider {
 pub struct Providers {
     entries: Vec<Provider>,
 }
+/// Device-facing SCEP address, independent of the private CA API origin.
+pub fn scep_endpoint(value: &str) -> Result<url::Url, Error> {
+    let url = url::Url::parse(value).map_err(|_| Error::Configuration)?;
+    let name = url
+        .path()
+        .strip_prefix("/scep/")
+        .ok_or(Error::Configuration)?;
+    if url.scheme() != "https"
+        || url.host_str().is_none()
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.query().is_some()
+        || url.fragment().is_some()
+        || name.is_empty()
+        || !name
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b"-_".contains(&b))
+    {
+        return Err(Error::Configuration);
+    }
+    Ok(url)
+}
 impl Providers {
     pub fn new(entries: Vec<Provider>) -> Result<Self, Error> {
         if entries.len() > 48 {
@@ -18,18 +40,10 @@ impl Providers {
         }
         for (i, p) in entries.iter().enumerate() {
             if let Some(endpoint) = &p.scep_url {
-                let url = url::Url::parse(endpoint).map_err(|_| Error::Configuration)?;
-                if !matches!(p.purpose, Purpose::Apple | Purpose::AgentBootstrap)
-                    || url.origin() != p.client.origin.origin()
-                    || !url.username().is_empty()
-                    || url.password().is_some()
-                    || url.query().is_some()
-                    || url.fragment().is_some()
-                    || !url.path().starts_with("/scep/")
-                    || url.path().len() <= 6
-                {
+                if !matches!(p.purpose, Purpose::Apple | Purpose::AgentBootstrap) {
                     return Err(Error::Configuration);
                 }
+                scep_endpoint(endpoint)?;
             } else if matches!(p.purpose, Purpose::Apple | Purpose::AgentBootstrap) {
                 return Err(Error::Configuration);
             }
@@ -70,5 +84,28 @@ impl Providers {
     }
     pub fn entries(&self) -> &[Provider] {
         &self.entries
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn device_scep_address_has_no_private_ca_origin_dependency() {
+        let url = scep_endpoint("https://mdm.example.test/scep/rss").unwrap();
+        assert_eq!(url.path(), "/scep/rss");
+        assert_ne!(url.origin().ascii_serialization(), "https://step-ca:9000");
+        for value in [
+            "http://mdm.example.test/scep/rss",
+            "https://u:p@mdm.example.test/scep/rss",
+            "https://mdm.example.test/scep/rss?operation=GetCACert",
+            "https://mdm.example.test/scep/rss#x",
+            "https://mdm.example.test/scep/",
+            "https://mdm.example.test/scep/rss/admin",
+            "https://mdm.example.test/scep/rss%2fadmin",
+            "https://mdm.example.test/admin",
+        ] {
+            assert!(scep_endpoint(value).is_err(), "{value}");
+        }
     }
 }

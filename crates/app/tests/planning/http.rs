@@ -379,7 +379,7 @@ async fn console_metadata_filters_and_selectors() -> Result<()> {
     let mut groups = [Uuid::new_v4(), Uuid::new_v4()];
     groups.sort();
     for (i, id) in groups.iter().enumerate() {
-        call(&mut browser,&router,&format!("/api/v1/groups/{id}"),0,json!({"action":"create","assetContext":"endpoint","name":format!("console-{i}"),"description":"","criteria":null})).await?;
+        call(&mut browser,&router,&format!("/api/v1/groups/{id}"),0,json!({"action":"create","assetContext":"endpoint","presentation":{"name":format!("console-{i}"),"description":""},"criteria":null})).await?;
     }
     let (_, first) = browser
         .call(
@@ -593,7 +593,7 @@ async fn planning_routes_and_derived_result_authorization() -> Result<()> {
             let policy = uuid::Uuid::new_v4();
             let resource = uuid::Uuid::new_v4();
             let group_path = format!("/api/v1/groups/{group}");
-            call(&mut browser,&router,&group_path,0,json!({"action":"create","assetContext":"endpoint","name":"authorized-results","description":"","criteria":{"selector":{"kind":"device"},"quantifier":"one","criteria":{"kind":"predicate","field":"device.model","op":"eq","value":{"kind":"string","value":"Model-A"}}}})).await?;
+            call(&mut browser,&router,&group_path,0,json!({"action":"create","assetContext":"endpoint","presentation":{"name":"authorized-results","description":""},"criteria":{"selector":{"kind":"device"},"quantifier":"one","criteria":{"kind":"predicate","field":"device.model","op":"eq","value":{"kind":"string","value":"Model-A"}}}})).await?;
             let accepted = call(&mut browser, &router, &format!("{group_path}/previews"), 1, json!({})).await?;
             let scoped = call(&mut browser,&router,&format!("/api/v1/scopes/{scope}"),0,json!({"action":"put","definition":{"targets":devices.map(|id|json!({"kind":"device","id":id})),"limitations":null,"exclusions":[]}})).await?;
             native_configuration_resource(&mut browser, &router, resource, "windows", "x86_64", windows_configuration()).await?;

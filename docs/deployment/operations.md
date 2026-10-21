@@ -156,20 +156,25 @@ S3 凭据由内容连接领域加密持久化；按[安装指南](installation.m
 
 ## 设备 PKI 轮换与撤销
 
-管理接口要求全设备 Credentials 权限，使用当前会话授权并在原 Audit 事务内复核。`GET /api/v1/pki/{purpose}/trust` 取得当前完整公开 revision；`POST /api/v1/pki/rotations` 提交 id、purpose、expected_revision 和包含一个 prepared issuer 的完整 candidate（revision+1），旧代次的公开身份与状态保持一致。先部署 prepared provider，再分发重叠信任。Windows 关联 CSP Get、Apple 关联 ManagedOnly ProfileList、Agent 认证信道的安装 ACK 形成对应设备回执；活跃登记仍缺回执时 approve/activate 返回 conflict。
+管理接口要求全设备 Credentials 权限，使用当前会话授权并在原 Audit 事务内复核。`GET /api/v1/pki/{purpose}/trust` 取得当前完整公开 revision；`POST /api/v1/pki/rotations` 提交 id、purpose、expected_revision 和包含一个 prepared issuer 的完整 candidate（revision+1），旧代次的公开身份与状态保持一致。先部署 prepared provider，再分发重叠信任。Windows 关联 CSP Get、Apple 关联 ManagedOnly ProfileList、Agent 认证信道的安装 ACK 形成对应设备回执；活跃登记仍缺回执时 activate 返回 conflict，原轮换保持 distributing。
 
-`POST /api/v1/pki/{purpose}/rotations` 的 id 为原 rotation id，expected_revision 为当前 revision，action 依次为 approve、activate、retire。每个阶段保留稳定回执，未知提交沿原 id/phase 重试。每个 purpose 同时最多一个未完成轮换。激活后旧代次仅验证，新授权使用新代次；已冻结的签发/恢复沿原 CA。旧 issuer 仍有未知签发，或仍有未过期且未取得撤销发布证明的已签发证书时，不能 retire。重叠期由实际迁移/过期/撤销事实决定，不用固定等待时间绕过门禁。
+`POST /api/v1/pki/{purpose}/rotations` 的 id 为原 rotation id，expected_revision 为当前 revision，action 依次为 activate、retire。prepare 返回 distributing；安装回执就绪后，一次 activate 完成校验与签发者切换，返回 activated；retire 返回 retired。各步骤仅递增一次 revision，不要求独立批准或批准后的第二轮 ACK。每个阶段保留稳定回执，未知提交沿原 id、action、expected_revision 和完整请求重试；先用公开 trust 核对现行事实，读取现行版本不替代原操作回执。每个 purpose 同时最多一个未完成轮换。激活后旧代次仅验证，新授权使用新代次；已冻结的签发/恢复沿原 CA。旧 issuer 仍有未知签发，或仍有未过期且未取得撤销发布证明的已签发证书时，不能 retire。重叠期由实际迁移/过期/撤销事实决定，不用固定等待时间绕过门禁。
 
 Windows 未知签发通过 `POST /api/v1/pki/signing/recover` 提交原 attempt 与原 certificate chain；Agent 仅通过原 `agent-issuances/{id}/recover` 在原 owner 事务中一并恢复候选和公共签发记录。SCEP 沿原 attempt/notify 路径处理，不重新授权 consumed challenge。任何恢复均核对原 CSR/SPKI、CN/SAN、purpose、issuer、签发窗口和链，不换 CA、不换 jti、不创建替代证书。
 
-在线撤销先在原登记/凭据 Audit 事务中立即生效，并写入实际 serial 的持久撤销队列。维护任务每 60 秒从各代次 CA 拉取 signed CRL，离开业务锁后调用 `/revoke`，失败保留 bounded backoff 任务。CA 接受 passive revoke 只表示 submitted；只有 serial 出现在经批准 issuer 签名的新鲜 CRL 中才记为 published。issuer CRL 的 nextUpdate 默认为 10 分钟，根 CRL 30 天并在到期前 7 天由离线 owner 更新；缺失、过期、号码/时间回滚或同号异内容均拒绝认证。保留连接及 TLS 恢复仍逐次检查当前凭据映射。
+在线撤销先在原登记/凭据 Audit 事务中立即生效，并写入实际 serial 的持久撤销队列。维护任务每 60 秒从各代次 CA 拉取 signed CRL，离开业务锁后调用 `/revoke`，失败保留 bounded backoff 任务。CA 接受 passive revoke 只表示 submitted；只有 serial 出现在经批准 issuer 签名的新鲜 CRL 中才记为 published。正式 SIT 的 issuer CRL 有效期为 168 小时、step-ca 每小时重新生成，吊销时立即生成，配置见[服务端 SIT 部署](installation.md#服务端-sit-部署)。根 CRL 30 天并在到期前 7 天由离线 owner 更新；缺失、过期、号码/时间回滚或同号异内容均拒绝认证。保留连接及 TLS 恢复仍逐次检查当前凭据映射。
+
+
+共享 CA 的同一份 CRL 分别更新各用途记录；自动维护操作按用途区分，重放只更新公开吊销材料，不改变设备身份、信任 revision 或原签发回执。短周期 CRL 可用于专项测试，不作为正式 SIT 默认值。
+
+维护前核对所有已启用用途已接收到 CA 最新 CRL，剩余有效期须覆盖预计停机及恢复余量；168 小时不是任意时刻都剩余 7 天。只停止 CA 时，已有有效证书可在原 CRL 有效窗口内继续通过产品校验，签发、续期及吊销发布暂停；产品内已撤销登记仍立即拒绝。整个环境停机时设备管理通信暂停。恢复先启动原 CA 和数据库，再启动产品服务；原维护任务从签名历史恢复并自动获取新 CRL，核对所有已启用用途就绪及原身份、撤销记录。即使旧 CRL 已过期，也不清库、重新注册或放宽过期/回滚检查。预计超过有效窗口时提前制定更长窗口或可用性方案，不能把过期清单当作宽限授权。
 
 离线根或 legacy issuer 的 CRL 使用 `POST /api/v1/pki/crls` 发布单一 operation、purpose 和 publications 数组（1–16 项，每项 issuer、crl、root_crl，base64 DER）。同 root 的所有代次共同采用同一 root CRL，集合内冲突拒绝；不把根私钥带入在线宿主。刷新按同 purpose 完整集合校验、原子发布；停机造成多个 issuer CRL 过期后可整组恢复。备份/恢复必须保留 CA 数据库、原密钥身份、serial/token 使用记录、MDM 数据库和 Audit/Ledger；成功签发与撤销发布的未知结果仍沿原记录恢复。
 
 
-设备 CA 使用 `deployment/compose.yaml` 的 `pki` profile。每个 purpose/issuer 独立 project、数据库目录和 provisioner；在线 `MDM_PKI_ROOT` 只含中间 CA 加密密钥、公开根、配置、模板及 CA 数据库，根私钥和独立解密秘密放在未挂载的离线目录。step-ca 原生 `kms` 配置选择加密文件 SoftKMS 基线，`key` 可替换为受支持 KMS/HSM URI，由 CA 部署 owner 提供对应访问凭据与验收；MDM 不读取 KMS 或根私钥。非 step-ca 企业 CA 路线登记为 #2680。
+设备 CA 在正式 SIT 使用 `deployment/sit.compose.yaml` 的 `step-ca`；开发/T2 使用 `deployment/compose.yaml` 的 `pki` profile。SIT 使用一个 CA 实例及数据库，各 purpose 保留独立 provisioner 和产品记录；在线 `MDM_PKI_ROOT` 只含中间 CA 加密密钥、公开根、配置、模板及 CA 数据库，根私钥和独立解密秘密放在未挂载的离线目录。step-ca 原生 `kms` 配置选择加密文件 SoftKMS 基线，`key` 可替换为受支持 KMS/HSM URI，由 CA 部署 owner 提供对应访问凭据与验收；MDM 不读取 KMS 或根私钥。非 step-ca 企业 CA 路线登记为 #2680。
 
-每份 CA 数据库同一时间只允许一个写入者。冷备接管先停止并移除旧 `step-ca` 容器，核对 `compose ps --all --quiet step-ca` 为空并确认旧主机被隔离，再以同一绝对存储路径和 `MDM_PKI_PUBLISH` 原端口启动独立 standby project。持久 provider origin、issuer、kid、数据库和 token 记录保持原身份；无法证明旧主隔离时不能启动新写入者。候选验证复用这份 Compose，产品 profile 暴露原生 enrollment/management/Agent 的独立 TLS 端口，网关仍只承载控制台流量。
+每份 CA 数据库同一时间只允许一个写入者。冷备接管先停止并移除旧 `step-ca` 容器，核对 `compose ps --all --quiet step-ca` 为空并确认旧主机被隔离，再以同一绝对存储路径和 `MDM_PKI_PUBLISH` 原端口启动独立 standby project。持久 provider origin、issuer、kid、数据库和 token 记录保持原身份；无法证明旧主隔离时不能启动新写入者。候选验证复用这份 Compose，产品 profile 暴露原生 enrollment/management/Agent 的独立 TLS 端口，网关承载控制台及精确配置的 SCEP 路径，不代理其它 CA API 或设备 mTLS 通道。
 
 Apple 的 challenge/notify webhook ID 和 HMAC 秘密属于稳定协议配置。新 CA 代次须沿用该 purpose 的受控 webhook 身份、回调地址和签名模板，先验证原生回调再准备/激活；不能直接采用新建 provisioner 随机产生的 webhook 身份替换已有部署配置。HTTPS、SCEP 解密、Profile 签名及 APNs 密钥仍各归原 owner。
 
@@ -225,9 +230,17 @@ Windows 保护配置现在使用 `protocol_protection`，包含 `active_file`、
 
 ### CA 准备及回调身份
 
-`prepare-ca` 是部署操作，不是业务 HTTP 任意 CA 管理入口。输入绑定安装、租户、用途、operation_id、expected_revision、确切 CA 地址/TLS 根及管理 X509 身份。`create` 只创建固定名字和固定模板；`import` 仅接受原 kid、原私钥及完全匹配的远端用途、有效链、签名 CRL 和权限配置。原操作目录保存请求、材料及外部副作用检查点；重新执行相同输入恢复未知创建结果。已有同名但不同配置的资源拒绝覆盖。
+普通部署使用一份 `step-ca.json`，由 Compose 的一次性 `init` 调用 `initialize-ca`；输入及命令见[设备 PKI 配置](installation.md#设备-pki-配置)。只管理内部 CA 地址、公开信任材料和初始化管理身份；用途名称、密钥、模板、SCEP 解密身份及回调自动准备。管理员凭据不会导出到服务或网关。
 
-SCEP 使用独立 RSA 解密叶证书，核对用途、签名、有效期、撤销和私钥匹配；MDM 运行宿主不读取其私钥。管理返回的两个 webhook ID/secret 分开绑定到确切 issuer 与 challenge/notify 阶段。`runtime-callbacks.json` 是受保护部署输入，不能作为公开 API 返回。`verified` 只说明 CA 身份与准备结果通过核对，`pending_channel_observation` 仍需真实 SCEP 双向回调，不表示设备注册通过。实现依据 [固定 step-ca admin client](https://github.com/smallstep/certificates/blob/v0.30.2/ca/adminClient.go) 和 [linkedca 合同](https://github.com/smallstep/linkedca/blob/v0.25.0/spec/linkedca/provisioners.proto)。
+初始化将原操作、生成密钥及远端结果保存在受保护的配置目录，重放复用原操作，并通过认证 CA 接口重新核验 provisioner、模板及 webhook ID/secret。已存在但不同的资源拒绝覆盖，不删除重建。已有租户、设备、签发记录、协议保护材料和信任轮换状态不被初始化重置；新增 CA 代次仍须通过业务 PKI 发布、设备确认和激活流程。
+
+管理证书和私钥续期、根 CRL 续发后，更新输入目录的原文件并重跑 `init`；管理凭据刷新不改变设备 CA 身份，根 CRL 更新作为一次配置导出，保留原信任 revision 和设备历史。根证书替换仍须显式 CA 轮换，不能当普通刷新。
+
+SCEP 解密证书距到期不足 30 天时，同一 `init` 自动准备新解密身份并更新原 provisioner，保留原 webhook ID/secret、设备信任和设备证书。更新前核验原用途策略，持久保存新材料；结果未知时重放从原材料及认证 readback 恢复。运行服务不持有更新权限；运维按证书健康状态执行一次性 `init`，不新增常驻控制器。
+
+首次创建 SCEP 解密身份使用 CA 的受限签发凭据，不读取 CA 签发私钥。签发意图先持久化；响应不确定时保留原申请并停止，禁止重新生成密钥或自动重签。运维从原 CA 记录找回匹配原 CSR 的证书，核对签发者及公钥后恢复到原操作的 `scep-encryption/identity.pem`，再重放。该目录及 CA 数据库属于同一冷备恢复集。
+
+SCEP 公开域名与内部 CA 地址独立；网关只代理实际生成的精确 SCEP 路径，管理接口保持内网。step-ca 0.30.2 首次增加 SCEP 后用普通 Compose 重启一次 CA。初始化及 GetCACaps/GetCACert 通过只证明服务端配置，不代表真实设备注册或回调交付已经通过。实现依据 [固定 step-ca admin client](https://github.com/smallstep/certificates/blob/v0.30.2/ca/adminClient.go)。
 
 Apple 的 `identity_seed` 永久保留原 challenge/notify ID，实际凭据放在 issuer 绑定的 `webhooks` 集合。Agent bootstrap 冻结签发者，切换活跃 CA 后原请求仍沿原 CA 完成；新请求在事务内复核当前活跃 CA。未知签发不因超时或设备清理完成而解除退役门禁。
 
@@ -241,7 +254,7 @@ Apple 的 `identity_seed` 永久保留原 challenge/notify ID，实际凭据放�
 
 两种变更均先持久保存候选和原操作，再重启真实宿主并核对 HTTPS 观察。开通回执记录 requested/applied revision、当前观察和失败原因；失败保留原有效宿主并沿原配置操作恢复，不能把写入配置文件当成启用成功。
 
-`configure-host` 的 `{"kind":"ca","preparation":"<prepare-ca operation UUID>"}` 将已核验的用途 provider 和回调凭据装入现有通道，保持原 trust、原协议种子和旧凭据。之后由真实业务管理会话通过原 PKI API 发布 prepared trust、等待安装确认并激活。该部署动作不替代信任授权，不自动启用尚缺其他材料的设备通道。Agent bootstrap 在创建事务内选择数据库当前 active issuer，并从已装入的精确 issuer→SCEP 地址集合选路；重启不会把旧配置文件里的 active 标记重新当作权威。
+`initialize-ca` 将所有已核验的 CA 材料作为一次宿主配置导出，重复执行不增加 revision。后续启用通道自动接入这些材料，保留原协议种子与旧凭据。原逐用途部署命令已移除，既有操作目录和材料仍纳入备份与恢复。新增 CA 代次由真实业务管理会话通过原 PKI API 发布、等待设备确认并激活。缺少其他材料的设备通道不会被自动标为就绪。Agent bootstrap 在创建事务内选择数据库当前 active issuer，并从已装入的精确 issuer→SCEP 地址集合选路；重启不会把旧配置文件里的 active 标记重新当作权威。
 
 ### 当前安装联合冷备
 
@@ -282,11 +295,15 @@ rss-mdm.webhook-key/v1
 
 Compose 拓扑与配置归属见[安装指南](installation.md#单机部署设计与配置归属)。正式 server 使用 bridge，gateway 共享该租户 server 的网络命名空间；运维重建 server 时同时重建 gateway，保留内部回环管理边界。进程生命周期由 Compose 管理，宿主不安装 systemd unit 或部署二进制。宿主配置变更沿原 `configure-host` 导出配置、运维重建服务、原操作复验执行，核对 requested/applied revision、材料摘要、宿主/租户/operation 以及新的进程观察；直接改生成文件或仅重启进程不构成应用成功。
 
+完整服务端 SIT 使用[安装指南的 SIT 流程](installation.md#服务端-sit-部署)与 `production.compose.yaml` + `sit.compose.yaml`；基础四服务启动不代表 CA、内容存储与设备通道已接通。CA/RustFS 已存在时保留其卷、身份、桶与凭据，不重新生成。测试设备准备和设备效果不纳入服务端部署完成判据。
+
+不要并行执行 `docker compose restart server gateway`：gateway 可能在 server 尚未重新运行时加入其网络命名空间而失败。使用 `docker compose ... up -d --no-deps --force-recreate server gateway` 按依赖关系重建这一对服务，随后执行原 `prepare-hosts`。PostgreSQL、CA、RustFS 重启后先确认各自健康，再重建这一对服务；不通过反复执行初始化或修改密钥来处理启动顺序。
+
 服务 TLS 变更后分别检查网关与原生设备入口的证书链、主机名及实际连接；设备证书仍由后端验证，不借助代理头。CA、SCEP/webhook 和根/issuer CRL 变化按各自原 owner 验证，单机上的 DNS/容器健康不替代外部设备网络检查。APNs/Profile/WNS 等材料使用领域版本与受控应用流程，不恢复启动秘密文件 loader。
 
 备份使用上节 `backup-installation` 的停写与联合归档流程，恢复使用 `restore-installation`，不把正在运行的数据库/对象目录简单打包当作一致备份。CA 原数据库同时只能有一个写入者；停机、备份和接管均须证明旧写入者已隔离。归档、独立 manifest 摘要及秘密保存在异机受控介质，单机本地副本不能覆盖整机丢失风险。
 
-当前恢复只支持上节明确的同址条件，不提供 HA、异址自动灾备或未经实测的 RPO/RTO。CA 镜像和数据库由原运维声明恢复，产品输入覆盖每个 `(purpose, issuer)` 并验证材料；共享 CA、跨机和外部供应方恢复需要各自独立演练，不能从基础种子安装结果推导通过。
+当前恢复只支持上节明确的同址条件，不提供 HA、异址自动灾备或未经实测的 RPO/RTO。CA 镜像和数据库由原运维声明恢复，产品输入覆盖每个 `(purpose, issuer)` 并验证材料；共享 CA 的用途记录与物理 CA 必须一致恢复；跨机和外部供应方恢复需要独立演练，不能从基础种子安装结果推导通过。
 
 恢复测试保留原账户、设备、issuer/kid、内容版本及 Ledger/保护材料，不能用换钥、重新注册、清库或重置密码代替核验。
 
@@ -319,3 +336,7 @@ ready 状态同时检查遥测 worker 和实际后端。诊断提供待交付、
 联合备份请求必须列出全部启用的遥测安装请求。产品主库、遥测 PG 数据库与 ClickHouse 数据先停写；备份清单包含每个数据库子归档、安装身份、原生 ClickHouse 归档以及原配置和秘密。ClickHouse PG 控制库和数据必须成套备份、成套恢复。恢复使用同址、原操作身份和受校验清单，完成数据恢复后重新准入，失败重新停写。不要单独恢复控制库、删除未知备份回执或替换服务器配置来绕过冲突。
 
 恢复窗口由字段绑定的不可变保留策略限制，普通资产值没有 TTL。现有实现不承诺在线存储切换、HA 或未经实测的 RPO/RTO；真机采样与离线缓存由终端实现提供独立验收。
+
+当前开发基线的自有布局直接替换；不提供历史库迁移或兼容 reader。已有开发数据库、凭据和
+journal 必须保留：新布局使用新建实例，不能修改旧安装账本的版本或摘要来绕过检查。
+同一当前制品的重复安装、失败恢复及权限检查仍须成立。

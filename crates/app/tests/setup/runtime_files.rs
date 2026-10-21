@@ -1,6 +1,50 @@
 use super::*;
 
 #[test]
+fn scep_gateway_publishes_exact_device_paths_with_private_upstream_tls() {
+    let mut config: crate::config::Config =
+        serde_json::from_str(include_str!("../../../../fixtures/mdm-config.example.json")).unwrap();
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().canonicalize().unwrap();
+    let ca = root.join("ca.pem");
+    std::fs::write(&ca, b"public CA certificate").unwrap();
+    config.product_origin = "https://mdm.example.test".into();
+    config.device_pki = vec![crate::device_pki::Provider {
+        purpose: rss_mdm_agent_wire::pki::Purpose::Apple,
+        issuer: "a".repeat(64),
+        origin: "https://step-ca:9000".into(),
+        tls_root_file: ca,
+        provisioner: "rss-apple-revocation".into(),
+        kid: "apple".into(),
+        provisioner_key_file: root.join("not-exported.key"),
+        scep_url: Some("https://mdm.example.test/scep/rss".into()),
+    }];
+    let gateway = Journal::open(&root.join("gateway")).unwrap();
+    let rendered = scep_locations(&config, &gateway).unwrap();
+    assert!(rendered.contains("location = /scep/rss {"));
+    assert!(rendered.contains("location = /scep/rss/pkiclient.exe {"));
+    assert!(rendered.contains("proxy_pass https://step-ca:9000/scep/rss;"));
+    assert!(rendered.contains("proxy_ssl_verify on;"));
+    assert!(rendered.contains("proxy_ssl_name step-ca;"));
+    assert!(rendered.contains("proxy_pass_request_headers off;"));
+    assert!(!rendered.contains("not-exported.key"));
+    assert!(!rendered.contains("location /scep"));
+    let duplicate =
+        serde_json::from_value(serde_json::to_value(&config.device_pki[0]).unwrap()).unwrap();
+    config.device_pki.push(duplicate);
+    assert_eq!(scep_locations(&config, &gateway).unwrap(), rendered);
+    config.device_pki[1].origin = "https://other-ca:9000".into();
+    assert!(scep_locations(&config, &gateway).is_err());
+    config.device_pki.pop();
+    config.device_pki[0].scep_url = Some("https://mdm.example.test/scep/rss-tenant".into());
+    let namespaced = scep_locations(&config, &gateway).unwrap();
+    assert!(namespaced.contains("proxy_pass https://step-ca:9000/scep/rss-tenant;"));
+    assert!(!namespaced.contains("proxy_pass https://step-ca:9000/scep/rss;"));
+    config.device_pki[0].scep_url = Some("https://mdm.example.test/scep/rss%2fadmin".into());
+    assert!(scep_locations(&config, &gateway).is_err());
+}
+
+#[test]
 fn runtime_listeners_cannot_take_the_shared_gateway_port() {
     let mut config: crate::config::Config =
         serde_json::from_str(include_str!("../../../../fixtures/mdm-config.example.json")).unwrap();

@@ -1006,7 +1006,7 @@ fn fixture_providers() -> anyhow::Result<Arc<rss_mdm_pki_service::providers::Pro
 async fn rotation_requires_installed_trust_and_published_revocation_before_retirement()
 -> anyhow::Result<()> {
     use rss_mdm_agent_wire::pki::{Acknowledgement, Mode, Purpose, Trust};
-    use rss_mdm_pki_service::registry::{Action, Registry, Rotation, Transition};
+    use rss_mdm_pki_service::registry::{Action, Registry, Rotation, RotationState, Transition};
     let s = service(deployment()).await?;
     let p = admin(case_a(), "admin-a").await?;
     let g = grant()?;
@@ -1064,14 +1064,14 @@ async fn rotation_requires_installed_trust_and_published_revocation_before_retir
         candidate: proposal,
     };
     registry.prepare(&p, &rotation, &audit(), now()).await?;
-    let mut approve = Transition {
+    let activate = Transition {
         id: rotation.id,
         expected_revision: registry.trust(Purpose::Agent)?.revision,
-        action: Action::Approve,
+        action: Action::Activate,
     };
     assert!(matches!(
         registry
-            .transition(&p, Purpose::Agent, &approve, &audit(), now())
+            .transition(&p, Purpose::Agent, &activate, &audit(), now())
             .await,
         Err(rss_mdm_pki_service::Error::Conflict)
     ));
@@ -1085,39 +1085,177 @@ async fn rotation_requires_installed_trust_and_published_revocation_before_retir
         serde_json::from_str::<serde_json::Value>(&state)?,
         serde_json::json!(["distributing", 0])
     );
+    let foreign = admin(case_b(), "admin-b").await?;
+    assert!(matches!(
+        registry
+            .transition(
+                &foreign,
+                Purpose::Agent,
+                &activate,
+                &RequestAudit::new(case_b().into(), "pki_rotation"),
+                now()
+            )
+            .await,
+        Err(rss_mdm_pki_service::Error::Conflict)
+    ));
+    assert!(
+        registry
+            .transition(&p, Purpose::Apple, &activate, &audit(), now())
+            .await
+            .is_err()
+    );
+    let stale = Transition {
+        expected_revision: activate.expected_revision - 1,
+        ..activate
+    };
+    assert!(matches!(
+        registry
+            .transition(&p, Purpose::Agent, &stale, &audit(), now())
+            .await,
+        Err(rss_mdm_pki_service::Error::Conflict)
+    ));
+    let providers = fixture_providers()?;
+    let misbound = rss_mdm_pki_service::providers::Provider {
+        purpose: Purpose::Agent,
+        issuer: new_digest.clone(),
+        client: providers
+            .get(Purpose::Agent, &previous.issuers[0].digest)?
+            .clone(),
+        scep_url: None,
+    };
+    for entries in [vec![], vec![misbound]] {
+        let unavailable = Registry::new(
+            db.archive_pool(),
+            audit_store.clone(),
+            vec![binding.clone()],
+            Arc::new(rss_mdm_pki_service::providers::Providers::new(entries)?),
+        );
+        assert!(matches!(
+            unavailable
+                .transition(&p, Purpose::Agent, &activate, &audit(), now())
+                .await,
+            Err(rss_mdm_pki_service::Error::Configuration)
+        ));
+    }
+    let crl = x509_cert::crl::CertificateList::from_der(&STANDARD.decode(&next.issuers[0].crl)?)?;
+    let expired = crl
+        .tbs_cert_list
+        .next_update
+        .unwrap()
+        .to_unix_duration()
+        .as_secs() as i64
+        + 1;
+    assert!(
+        registry
+            .transition(&p, Purpose::Agent, &activate, &audit(), expired)
+            .await
+            .is_err()
+    );
+    assert_eq!(
+        registry.trust(Purpose::Agent)?.revision,
+        activate.expected_revision
+    );
+    assert_eq!(binding.active()?.digest, previous.issuers[0].digest);
+
     let trust = registry.trust(Purpose::Agent)?;
-    s.acknowledge_trust(
-        &evidence,
-        &Acknowledgement {
-            operation: Uuid::new_v4(),
-            version: 1,
-            revision: trust.revision,
-            digest: trust.installation_digest(),
-        },
-        &audit(),
+    let ack = Acknowledgement {
+        operation: Uuid::new_v4(),
+        version: 1,
+        revision: trust.revision,
+        digest: trust.installation_digest(),
+    };
+    // Keep the production ACK write uncommitted while activation reads from a different transaction.
+    s.authenticate(&evidence).await?;
+    let mut pending_ack = db.archive_pool().begin().await?;
+    sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
+        .bind(case_a())
+        .execute(&mut *pending_ack)
+        .await?;
+    Registry::acknowledge_in(
+        &mut pending_ack,
+        case_a(),
+        receipt.runtime.registration_id,
+        &trust,
+        &ack,
     )
     .await?;
-    registry
-        .transition(&p, Purpose::Agent, &approve, &audit(), now())
-        .await?;
-    let trust = registry.trust(Purpose::Agent)?;
-    s.acknowledge_trust(
-        &evidence,
-        &Acknowledgement {
-            operation: Uuid::new_v4(),
-            version: 1,
-            revision: trust.revision,
-            digest: trust.installation_digest(),
+    assert!(
+        matches!(
+            registry
+                .transition(&p, Purpose::Agent, &activate, &audit(), now())
+                .await,
+            Err(rss_mdm_pki_service::Error::Conflict)
+        ),
+        "an uncommitted installation ACK must not permit activation"
+    );
+    pending_ack.rollback().await?;
+    s.acknowledge_trust(&evidence, &ack, &audit()).await?;
+    let before = crate::test_support::pg(&format!(
+        "SELECT state FROM mdm_pki.rotations WHERE tenant_id='{}' AND id='{}'",
+        case_a(),
+        rotation.id
+    ))?;
+    assert_eq!(
+        before.trim(),
+        "distributing",
+        "the fault must target the first activation mutation"
+    );
+    // The first mutation commits but loses its ACK; exact competing callers can recover it.
+    audit_store.inject_next_fault(rss_audit_postgres::PgFault::CommitUnknownAfterAck);
+    let gate = tokio::sync::Barrier::new(2);
+    let first_audit = audit();
+    let second_audit = audit();
+    let (first, second) = tokio::join!(
+        async {
+            gate.wait().await;
+            registry
+                .transition(&p, Purpose::Agent, &activate, &first_audit, now())
+                .await
         },
-        &audit(),
-    )
-    .await?;
-    approve.expected_revision = trust.revision;
-    approve.action = Action::Activate;
-    registry
-        .transition(&p, Purpose::Agent, &approve, &audit(), now())
+        async {
+            gate.wait().await;
+            registry
+                .transition(&p, Purpose::Agent, &activate, &second_audit, now())
+                .await
+        },
+    );
+    assert_eq!([&first, &second].into_iter().filter(|r| matches!(r, Err(rss_mdm_pki_service::Error::Unknown { attempt }) if *attempt == rotation.id)).count(), 1);
+    for result in [first, second] {
+        assert!(matches!(
+            result,
+            Ok(_)
+                | Err(rss_mdm_pki_service::Error::Unknown { .. }
+                    | rss_mdm_pki_service::Error::Conflict)
+        ));
+    }
+    let activated = registry
+        .transition(&p, Purpose::Agent, &activate, &audit(), now())
         .await?;
+    assert_eq!(activated.operation, rotation.id);
+    assert_eq!(activated.state, RotationState::Activated);
+    assert_eq!(activated.revision, previous.revision + 2);
     assert_eq!(binding.active()?.digest, new_digest);
+    assert!(
+        registry
+            .trust(Purpose::Agent)?
+            .issuers
+            .iter()
+            .any(|g| g.digest == previous.issuers[0].digest && g.mode == Mode::VerifyOnly)
+    );
+    assert_eq!(crate::test_support::pg(&format!(
+        "SELECT count(*) FROM mdm_pki.operations WHERE tenant_id='{}' AND operation='{}' AND phase='activated'",
+        case_a(), rotation.id
+    ))?.trim(), "1");
+    let changed = Transition {
+        expected_revision: activated.revision,
+        ..activate
+    };
+    assert!(matches!(
+        registry
+            .transition(&p, Purpose::Agent, &changed, &audit(), now())
+            .await,
+        Err(rss_mdm_pki_service::Error::Conflict)
+    ));
     // An actual CA request follows the newly active generation.
     let newer = grant()?;
     let grant_receipt = authorize_request(&s, &p, &newer, &audit()).await?;
@@ -1208,6 +1346,33 @@ async fn rotation_requires_installed_trust_and_published_revocation_before_retir
             .await?
             .revision,
         previous.revision + 1
+    );
+    let replayed = restored
+        .transition(&p, Purpose::Agent, &activate, &audit(), now())
+        .await?;
+    assert_eq!(
+        serde_json::to_value(&replayed)?,
+        serde_json::to_value(&activated)?
+    );
+    assert_eq!(
+        restored.trust(Purpose::Agent)?,
+        final_trust,
+        "replay must not revert retirement"
+    );
+    crate::test_support::identity::set_grants(
+        case_a(),
+        p.principal_id(),
+        crate::test_support::identity::device_grants(None, &["inventory_read"])?,
+    )
+    .await?;
+    assert!(
+        matches!(
+            restored
+                .transition(&p, Purpose::Agent, &activate, &audit(), now())
+                .await,
+            Err(rss_mdm_pki_service::Error::Forbidden)
+        ),
+        "cached authorization must not permit replay after Credentials is revoked"
     );
     db.close().await;
     Ok(())
@@ -1537,21 +1702,19 @@ async fn unknown_original_ca_result_blocks_retirement_after_rotation() -> anyhow
             now(),
         )
         .await?;
-    for action in [Action::Approve, Action::Activate] {
-        registry
-            .transition(
-                &p,
-                Purpose::Agent,
-                &Transition {
-                    id,
-                    expected_revision: registry.trust(Purpose::Agent)?.revision,
-                    action,
-                },
-                &audit(),
-                now(),
-            )
-            .await?;
-    }
+    registry
+        .transition(
+            &p,
+            Purpose::Agent,
+            &Transition {
+                id,
+                expected_revision: registry.trust(Purpose::Agent)?.revision,
+                action: Action::Activate,
+            },
+            &audit(),
+            now(),
+        )
+        .await?;
     let active = registry.trust(Purpose::Agent)?;
     assert_eq!(s.trust().trust.active()?.digest, second.issuers[0].digest);
     let durable_before = crate::test_support::pg(&format!(
@@ -1734,5 +1897,227 @@ async fn bootstrap_sources_select_current_issuer_and_reject_missing_application(
     assert!(Deployment::select(previous, &old_only, now()).is_err());
     // A pre-existing operation retains its original issuer after the new selection.
     assert_eq!(frozen.issuer, old);
+    Ok(())
+}
+
+#[tokio::test]
+#[ignore = "make t2 MODULE=agent.pki: original CA dispatch after direct rotation"]
+async fn frozen_signing_uses_original_issuer_after_direct_activation() -> anyhow::Result<()> {
+    use rss_mdm_agent_wire::pki::{Mode, Purpose, Trust};
+    use rss_mdm_pki_service::{
+        Sign,
+        registry::{Action, Registry, Rotation, Transition},
+        signing::{SigningStore, authorize_in, require_active_in},
+    };
+    let s = service(deployment()).await?;
+    let p = admin(case_a(), "admin-a").await?;
+    let db = Database::connect(options("mdm_access")?).await?;
+    let audit_store = db.audit_store(&crate::config::AuditConfig::Plain).await?;
+    let providers = fixture_providers()?;
+    let binding = s.trust().trust.clone();
+    let registry = Registry::new(
+        db.archive_pool(),
+        audit_store.clone(),
+        vec![binding.clone()],
+        providers.clone(),
+    );
+    let previous = registry.trust(Purpose::Agent)?;
+    let old = &previous.issuers[0].digest;
+    let provider = providers.get(Purpose::Agent, old)?;
+    let tenant = Uuid::parse_str(case_a())?;
+    let csr = VerifiedAgentCsr::verify(&std::fs::read(root().join("agent.der"))?)?;
+    let pem = csr.pem()?;
+    let digest = csr.digest();
+    let identities = [rss_mdm_certificate::agent::identity(
+        tenant,
+        "frozen-rotation",
+    )?];
+    let start = now();
+    let intent = Sign {
+        attempt: Uuid::new_v4(),
+        csr_pem: &pem,
+        csr_digest: &digest,
+        subject: "rss-mdm-agent",
+        sans: &identities,
+        start,
+        end: start + 3600,
+        deadline: start + 60,
+    };
+    // Minimum legitimate precondition: use the production authorization seam in a real transaction.
+    let mut tx = db.archive_pool().begin().await?;
+    sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
+        .bind(case_a())
+        .execute(&mut *tx)
+        .await?;
+    authorize_in(&mut tx, tenant, "agent", old, provider, intent).await?;
+    tx.commit().await?;
+    let next_root = PathBuf::from(std::env::var("MDM_AGENT_PKI_CANDIDATE_FIXTURES")?);
+    let next: Trust = serde_json::from_slice(&std::fs::read(next_root.join("agent-trust.json"))?)?;
+    let mut proposal = previous.clone();
+    proposal.revision += 1;
+    let mut added = next.issuers[0].clone();
+    added.mode = Mode::Prepared;
+    proposal.issuers.push(added);
+    let id = Uuid::new_v4();
+    registry
+        .prepare(
+            &p,
+            &Rotation {
+                id,
+                purpose: Purpose::Agent,
+                expected_revision: previous.revision,
+                candidate: proposal,
+            },
+            &audit(),
+            now(),
+        )
+        .await?;
+    registry
+        .transition(
+            &p,
+            Purpose::Agent,
+            &Transition {
+                id,
+                expected_revision: previous.revision + 1,
+                action: Action::Activate,
+            },
+            &audit(),
+            now(),
+        )
+        .await?;
+    let mut tx = db.archive_pool().begin().await?;
+    sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
+        .bind(case_a())
+        .execute(&mut *tx)
+        .await?;
+    assert!(
+        matches!(
+            require_active_in(&mut tx, tenant, "agent", old).await,
+            Err(rss_mdm_pki_service::Error::Conflict)
+        ),
+        "new authorization must reject the old issuer"
+    );
+    tx.rollback().await?;
+    let signing = SigningStore::new(audit_store);
+    let validate = |chain: &[Vec<u8>]| {
+        let chain = chain
+            .iter()
+            .map(|der| tokio_rustls::rustls::pki_types::CertificateDer::from(der.as_slice()))
+            .collect::<Vec<_>>();
+        binding
+            .verify(&chain, now())
+            .is_ok_and(|issuer| issuer.digest == *old)
+    };
+    let chain = signing
+        .issue(tenant, ("agent", old), provider, intent, now(), validate)
+        .await?;
+    assert_eq!(
+        signing
+            .issue(tenant, ("agent", old), provider, intent, now(), validate)
+            .await?,
+        chain
+    );
+    assert_eq!(binding.active()?.digest, next.issuers[0].digest);
+    db.close().await;
+    Ok(())
+}
+
+#[tokio::test]
+#[ignore = "make t2 MODULE=agent.pki: session-authorized rotation HTTP contract"]
+async fn management_rotation_accepts_direct_activation_and_rejects_retired_action()
+-> anyhow::Result<()> {
+    use crate::test_support::{Browser, Method, StatusCode};
+    use rss_mdm_agent_wire::pki::{Mode, Purpose, Trust};
+    let host = crate::windows::test_support::Host::open().await?;
+    let mut browser = Browser::default();
+    let path = "/api/v1/pki/agent/rotations";
+    let id = Uuid::new_v4();
+    let trust = host.app.pki.trust(Purpose::Agent)?;
+    let activate =
+        serde_json::json!({"id":id,"expected_revision":trust.revision+1,"action":"activate"});
+    assert_eq!(
+        browser
+            .call(&host.browser, Method::POST, path, Some(activate.clone()))
+            .await?
+            .0,
+        StatusCode::UNAUTHORIZED
+    );
+    let secret = crate::test_support::identity::login(&host.app.identity, "admin").await?;
+    browser
+        .cookies
+        .insert("__Host-identity-session".into(), secret.expose().into());
+    browser.csrf = Some(secret.csrf());
+    let next_root = PathBuf::from(std::env::var("MDM_AGENT_PKI_CANDIDATE_FIXTURES")?);
+    let next: Trust = serde_json::from_slice(&std::fs::read(next_root.join("agent-trust.json"))?)?;
+    let mut proposal = trust.clone();
+    proposal.revision += 1;
+    let mut added = next.issuers[0].clone();
+    added.mode = Mode::Prepared;
+    proposal.issuers.push(added);
+    let (status, prepared) = browser.call(&host.browser, Method::POST, "/api/v1/pki/rotations", Some(serde_json::json!({"id":id,"purpose":"agent","expected_revision":trust.revision,"candidate":proposal}))).await?;
+    assert_eq!(status, StatusCode::OK, "{prepared}");
+    assert_eq!(prepared["state"], "distributing");
+    let mut invalid = activate.clone();
+    invalid["action"] = "approve".into();
+    assert_eq!(
+        browser
+            .call(&host.browser, Method::POST, path, Some(invalid))
+            .await?
+            .0,
+        StatusCode::BAD_REQUEST
+    );
+    let reader = admin(case_a(), "other-a").await?;
+    crate::test_support::identity::set_grants(
+        case_a(),
+        reader.principal_id(),
+        crate::test_support::identity::device_grants(None, &["inventory_read"])?,
+    )
+    .await?;
+    let secret = crate::test_support::identity::login(&host.app.identity, "other").await?;
+    let mut reader = Browser {
+        cookies: std::collections::BTreeMap::from([(
+            "__Host-identity-session".into(),
+            secret.expose().into(),
+        )]),
+        csrf: Some(secret.csrf()),
+        ..Default::default()
+    };
+    assert_eq!(
+        reader
+            .call(&host.browser, Method::POST, path, Some(activate.clone()))
+            .await?
+            .0,
+        StatusCode::FORBIDDEN
+    );
+    let (status, activated) = browser
+        .call(&host.browser, Method::POST, path, Some(activate.clone()))
+        .await?;
+    assert_eq!(status, StatusCode::OK, "{activated}");
+    assert_eq!(
+        activated,
+        serde_json::json!({"operation":id,"revision":trust.revision+2,"state":"activated"})
+    );
+    assert_eq!(
+        browser
+            .call(&host.browser, Method::POST, path, Some(activate))
+            .await?,
+        (StatusCode::OK, activated)
+    );
+    let active = host.app.pki.trust(Purpose::Agent)?;
+    assert_eq!(active.revision, trust.revision + 2);
+    assert!(
+        active
+            .issuers
+            .iter()
+            .any(|issuer| issuer.digest == next.issuers[0].digest && issuer.mode == Mode::Active)
+    );
+    assert!(
+        active
+            .issuers
+            .iter()
+            .any(|issuer| issuer.digest == trust.issuers[0].digest
+                && issuer.mode == Mode::VerifyOnly)
+    );
+    host.close().await?;
     Ok(())
 }

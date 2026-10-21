@@ -33,7 +33,10 @@ fn platform_evidence_preserves_all_valid_agent_sources() {
         watermark: 1,
         evaluated_at: 1,
         definition: Definition {
-            name: "Agent policy".into(),
+            presentation: serde_json::json!({"name":"Agent policy"})
+                .as_object()
+                .unwrap()
+                .clone(),
             severity: Severity::High,
             enabled: true,
             platform: Platform::All,
@@ -75,7 +78,10 @@ fn validation_errors_are_closed_and_do_not_echo_inputs() {
         Target,
     };
     let mut definition = Definition {
-        name: "secret\nvalue".into(),
+        presentation: serde_json::json!({"name":"secret\nvalue"})
+            .as_object()
+            .unwrap()
+            .clone(),
         severity: Severity::High,
         enabled: true,
         platform: Platform::All,
@@ -87,7 +93,9 @@ fn validation_errors_are_closed_and_do_not_echo_inputs() {
         definition.validate().unwrap_err().to_string(),
         "invalid compliance definition"
     );
-    definition.name = "policy".into();
+    definition
+        .presentation
+        .insert("name".into(), serde_json::json!("policy"));
     let mut input = Input {
         rule: uuid::Uuid::nil(),
         revision: 1,

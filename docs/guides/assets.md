@@ -83,7 +83,7 @@ inventory_fields_write 管理目录；有权限管理员直接发布字段及启
 规则 input 示例：
 
 ```json
-{"name":"企业 Agent 健康","severity":"high","enabled":true,"platform":"all","target":{"kind":"all"},"criteria":{"selector":{"kind":"device"},"quantifier":"one","criteria":{"kind":"predicate","field":"custom.corporate_agent.healthy","op":"eq","value":{"kind":"boolean","value":true}}}}
+{"presentation":{"name":"企业 Agent 健康"},"severity":"high","enabled":true,"platform":"all","target":{"kind":"all"},"criteria":{"selector":{"kind":"device"},"quantifier":"one","criteria":{"kind":"predicate","field":"custom.corporate_agent.healthy","op":"eq","value":{"kind":"boolean","value":true}}}}
 ```
 
 severity 为 low/medium/high/critical，仅用于解释；platform 为 all/windows/macos。平台选择使用冻结资产来源中的原生 Windows/Apple 注册证据，只有 Agent 或来源矛盾时为 unknown，不能按型号/版本字符串猜测平台。target 可为 `{ "kind":"groups", "ids":["组 UUID"] }`，取多个智能组的并集。每租户最多 100 条规则，每条最多 16 个组；条件沿用 Group 预算。规则停用保留历史；启用规则引用的组必须先解除分配才能删除。

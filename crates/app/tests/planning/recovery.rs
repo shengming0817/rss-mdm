@@ -227,8 +227,10 @@ async fn expired_guard_after_lock_rejects_mutation_and_replay() {
                 0,
                 GroupChange::Create {
                     asset_context: rss_mdm_group_postgres::AssetContext::Endpoint,
-                    name: "guarded".into(),
-                    description: String::new(),
+                    presentation: serde_json::json!({"name":"guarded","description":""})
+                        .as_object()
+                        .unwrap()
+                        .clone(),
                     criteria: None,
                 },
             )),
@@ -315,8 +317,10 @@ async fn result_cursors_survive_instances_restart_and_group_deletion() {
                 0,
                 GroupChange::Create {
                     asset_context: rss_mdm_group_postgres::AssetContext::Endpoint,
-                    name: "cursor".into(),
-                    description: String::new(),
+                    presentation: serde_json::json!({"name":"cursor","description":""})
+                        .as_object()
+                        .unwrap()
+                        .clone(),
                     criteria: None,
                 },
             )),

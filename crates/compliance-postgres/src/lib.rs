@@ -78,17 +78,26 @@ pub async fn rule<C: DeserializeOwned>(
 }
 /// Write one immutable version and replace only the current dependency indexes.
 /// The caller holds its product transaction lock and checks expected revision.
+/// Returns false, without writes, when the complete definition exceeds the storage budget.
 pub async fn put<C: Serialize>(
     c: &mut PgConnection,
     t: TenantId,
     r: &Rule<C>,
     fields: &[String],
     groups: &[Uuid],
-) -> Result<()> {
+) -> Result<bool> {
     tenant(c, t).await?;
     r.definition.validate().map_err(|_| corrupt())?;
     if r.enabled != r.definition.enabled {
         return Err(corrupt());
+    }
+    let document = serde_json::to_string(&r.definition).map_err(|_| corrupt())?;
+    let fits: bool = sqlx::query_scalar("SELECT octet_length(($1::jsonb)::text)<=65536")
+        .bind(&document)
+        .fetch_one(&mut *c)
+        .await?;
+    if document.len() > 65536 || !fits {
+        return Ok(false);
     }
     sqlx::query("INSERT INTO mdm_compliance.rules(tenant_id,id,revision,enabled) VALUES($1::uuid,$2::uuid,$3,$4) ON CONFLICT(tenant_id,id) DO UPDATE SET revision=excluded.revision,enabled=excluded.enabled,desired=NULL")
  .bind(t.to_string()).bind(r.id.to_string()).bind(r.revision).bind(r.enabled).execute(&mut *c).await?;
@@ -96,7 +105,7 @@ pub async fn put<C: Serialize>(
         .bind(t.to_string())
         .bind(r.id.to_string())
         .bind(r.revision)
-        .bind(serde_json::to_string(&r.definition).map_err(|_| corrupt())?)
+        .bind(&document)
         .execute(&mut *c)
         .await?;
     for statement in [
@@ -125,7 +134,7 @@ pub async fn put<C: Serialize>(
             .execute(&mut *c)
             .await?;
     }
-    Ok(())
+    Ok(true)
 }
 /// Bind the only publishable task to a rule revision.
 pub async fn desired(

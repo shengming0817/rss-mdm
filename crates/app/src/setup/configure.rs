@@ -28,6 +28,7 @@ pub struct Windows {
     pub entra: Option<rss_mdm_windows_channel::entra::Config>,
     pub enrollment: crate::native::TlsEndpoint,
     pub management: crate::native::TlsEndpoint,
+    #[serde(default)]
     pub trust_file: PathBuf,
     /// Omitted only in deployment input: preserve an existing identity or generate on first enablement.
     pub protocol_protection: Option<crate::config::NativeProtection>,
@@ -44,6 +45,7 @@ pub struct Channels {
     pub windows: Option<Windows>,
     pub apple: Option<crate::apple::config::Config>,
     pub agent: crate::agent_pki::Config,
+    #[serde(default)]
     pub providers: Vec<crate::device_pki::Provider>,
     pub apple_material_roots: Vec<PathBuf>,
 }
@@ -70,8 +72,8 @@ pub enum Change {
     Recovery {
         recipient: Recipient,
     },
-    Ca {
-        preparation: Uuid,
+    StepCa {
+        settings: Box<super::providers::step_ca::initialize::Settings>,
     },
 }
 #[derive(Serialize, Deserialize)]
@@ -348,8 +350,19 @@ fn channels(journal: &Journal, runtime: &mut Value, settings: &Channels) -> Resu
         native["windows"] = config;
     }
     if let Some(apple) = &settings.apple {
-        let config = serde_json::to_value(apple).map_err(|_| Error::Input)?;
+        let mut config = serde_json::to_value(apple).map_err(|_| Error::Input)?;
         let original = &runtime["native_protocols"]["apple"]["identity_seed"];
+        if apple.identity_seed.challenge_id.is_empty() && apple.identity_seed.notify_id.is_empty() {
+            config["identity_seed"] = if original.is_object() {
+                original.clone()
+            } else {
+                let seed = journal.load::<Value>("apple-seed.json")?.unwrap_or_else(
+                    || json!({"challengeId":Uuid::new_v4(),"notifyId":Uuid::new_v4()}),
+                );
+                journal.save("apple-seed.json", &seed)?;
+                seed
+            };
+        }
         if original.is_object() && original != &config["identity_seed"] {
             return Err(Error::Conflict);
         }
@@ -357,84 +370,13 @@ fn channels(journal: &Journal, runtime: &mut Value, settings: &Channels) -> Resu
     }
     runtime["native_protocols"] = native;
     runtime["agent_pki"] = serde_json::to_value(&settings.agent).map_err(|_| Error::Input)?;
-    runtime["device_pki"] = serde_json::to_value(&settings.providers).map_err(|_| Error::Input)?;
+    if !settings.providers.is_empty() {
+        runtime["device_pki"] =
+            serde_json::to_value(&settings.providers).map_err(|_| Error::Input)?;
+    }
     runtime["apple_material_roots"] = json!(settings.apple_material_roots);
     Ok(())
 }
-fn ca(input: &Input, runtime: &mut Value, operation: Uuid) -> Result<()> {
-    use rss_mdm_agent_wire::pki::Purpose;
-    if operation.is_nil() {
-        return Err(Error::Input);
-    }
-    let journal = Journal::open(&input.directory.join(format!("ca-{operation}")))?;
-    let receipt: super::providers::step_ca::Receipt =
-        journal.load("receipt.json")?.ok_or(Error::Corrupt)?;
-    if receipt.operation_id != operation
-        || receipt.stage != super::providers::step_ca::Stage::Verified
-        || runtime["identity"]["tenant_id"] != json!(receipt.tenant_id)
-    {
-        return Err(Error::Conflict);
-    }
-    let trust = crate::config::read(&journal.path("trust.json")?, 64 * 1024 * 1024, true)
-        .map_err(|_| Error::Corrupt)?;
-    if receipt.trust_digest.as_deref() != Some(rss_mdm_device_trust::digest(&trust).as_str()) {
-        return Err(Error::Corrupt);
-    }
-    let path = match receipt.purpose {
-        Purpose::Windows => "/native_protocols/windows",
-        Purpose::Apple => "/native_protocols/apple",
-        Purpose::Agent => "/agent_pki",
-        Purpose::AgentBootstrap => "/agent_pki/bootstrap",
-    };
-    let channel = runtime
-        .pointer(path)
-        .filter(|v| v.is_object())
-        .ok_or(Error::Conflict)?;
-    if channel.get("trust_file").and_then(Value::as_str).is_none() {
-        return Err(Error::Conflict);
-    }
-    let provider: Value = journal
-        .load("runtime-provider.json")?
-        .ok_or(Error::Corrupt)?;
-    // The runtime decoder enforces the exact provider contract before any host side effect.
-    serde_json::from_value::<crate::device_pki::Provider>(provider.clone())
-        .map_err(|_| Error::Corrupt)?;
-    let providers = runtime["device_pki"].as_array_mut().ok_or(Error::Corrupt)?;
-    if let Some(existing) = providers
-        .iter()
-        .find(|p| p["purpose"] == provider["purpose"] && p["issuer"] == provider["issuer"])
-    {
-        if existing != &provider {
-            return Err(Error::Conflict);
-        }
-    } else {
-        providers.push(provider);
-    }
-    if matches!(receipt.purpose, Purpose::Apple | Purpose::AgentBootstrap) {
-        let callbacks: Value = journal
-            .load("runtime-callbacks.json")?
-            .ok_or(Error::Corrupt)?;
-        if callbacks["issuer"] != json!(receipt.issuer) {
-            return Err(Error::Corrupt);
-        }
-        let entries = runtime.pointer_mut(path).ok_or(Error::Corrupt)?["webhooks"]
-            .as_array_mut()
-            .ok_or(Error::Corrupt)?;
-        if let Some(existing) = entries
-            .iter()
-            .find(|entry| entry["issuer"] == callbacks["issuer"])
-        {
-            if existing != &callbacks {
-                return Err(Error::Conflict);
-            }
-        } else {
-            entries.push(callbacks);
-        }
-    }
-    // Trust remains with the PKI registry. The real business session publishes/ACKs/activates it.
-    Ok(())
-}
-
 pub async fn run(request: Request) -> Result<Receipt> {
     if request.operation_id.is_nil() || request.host_id.is_nil() {
         return Err(Error::Input);
@@ -451,16 +393,7 @@ pub async fn run(request: Request) -> Result<Receipt> {
         "request.json",
         &serde_json::to_vec(&request).map_err(|_| Error::Input)?,
     )?;
-    if let Some(receipt) = journal.load::<Receipt>("receipt.json")?
-        && receipt.applied.is_some()
-    {
-        if root
-            .load::<Option<Uuid>>("configuration-operation.json")?
-            .flatten()
-            == Some(request.operation_id)
-        {
-            root.save("configuration-operation.json", &Option::<Uuid>::None)?;
-        }
+    if let Some(receipt) = completed(&root, &journal, request.operation_id)? {
         return Ok(receipt);
     }
     let base: Value = root.load("runtime.json")?.ok_or(Error::Corrupt)?;
@@ -501,8 +434,8 @@ pub async fn run(request: Request) -> Result<Receipt> {
     if !locked {
         return Err(Error::Busy);
     }
-    let mut original:Value=sqlx::query_scalar("SELECT receipt FROM public.mdm_tenant_operations WHERE action='provision' AND receipt->'result'->>'hostId'=$1 AND receipt->'result'->>'phase'='enabled'")
-        .bind(request.host_id.to_string()).fetch_optional(&mut c).await.map_err(|_|Error::Storage)?.ok_or(Error::Conflict)?;
+    let mut original:Value=sqlx::query_scalar("SELECT receipt FROM public.mdm_tenant_operations WHERE action='provision' AND receipt->'result'->>'hostId'=$1 AND (receipt->'result'->>'phase'='enabled' OR ($2 AND receipt->'result'->>'phase'='host_pending'))")
+        .bind(request.host_id.to_string()).bind(matches!(&request.change,Change::StepCa {..})).fetch_optional(&mut c).await.map_err(|_|Error::Storage)?.ok_or(Error::Conflict)?;
     let mut receipt: crate::tenant_registry::Receipt =
         serde_json::from_value(original.clone()).map_err(|_| Error::Corrupt)?;
     let crate::tenant_registry::ReceiptResult::Provisioning(progress) = &mut receipt.result else {
@@ -534,54 +467,7 @@ pub async fn run(request: Request) -> Result<Receipt> {
         {
             return Err(Error::Conflict);
         }
-        match &request.change {
-            Change::Telemetry { settings } => {
-                let value = serde_json::to_value(settings).map_err(|_| Error::Input)?;
-                if runtime["telemetry"].is_object()
-                    && (runtime["telemetry"]["backend"] != value["backend"]
-                        || runtime["telemetry"]["cursor_key_file"] != value["cursor_key_file"]
-                        || runtime["telemetry"]["ingress"] != value["ingress"]
-                        || runtime["telemetry"]["limits"] != value["limits"])
-                {
-                    return Err(Error::Conflict);
-                }
-                runtime["telemetry"] = value;
-            }
-            Change::GatewayTls {
-                certificate_file,
-                private_key_file,
-                trust_file,
-            } => {
-                let tls = super::runtime_files::GatewayTls::prepare(
-                    &journal,
-                    certificate_file,
-                    private_key_file,
-                    trust_file,
-                )?;
-                journal.secret(
-                    "gateway.json",
-                    &serde_json::to_vec(&tls).map_err(|_| Error::Input)?,
-                )?;
-            }
-            Change::Oidc { settings } => oidc(&journal, &mut runtime, settings)?,
-            Change::WebhookNetworks { networks } => {
-                let tenant = runtime["identity"]["tenant_id"]
-                    .as_str()
-                    .ok_or(Error::Corrupt)?;
-                if networks.iter().any(|n| n.tenant.to_string() != tenant) {
-                    return Err(Error::Input);
-                }
-                runtime["webhooks"]["networks"] =
-                    serde_json::to_value(networks).map_err(|_| Error::Input)?;
-                serde_json::from_value::<crate::webhooks::Config>(runtime["webhooks"].clone())
-                    .map_err(|_| Error::Input)?
-                    .material_configuration()
-                    .map_err(|_| Error::Input)?;
-            }
-            Change::Channels { settings } => channels(&journal, &mut runtime, settings)?,
-            Change::Recovery { recipient } => recovery(&journal, &mut runtime, recipient)?,
-            Change::Ca { preparation } => ca(input, &mut runtime, *preparation)?,
-        }
+        apply_change(&root, &journal, &mut c, &mut runtime, &request.change).await?;
         super::runtime_files::freeze(&mut runtime, &journal)?;
         let revision = request
             .expected_revision
@@ -725,6 +611,86 @@ fn record_application(
                 observation.failure = Some(super::model::BlockedReason::HostUnavailable);
                 observation.observed_at = now;
             }
+        }
+    }
+    Ok(())
+}
+
+fn completed(root: &Journal, journal: &Journal, operation: Uuid) -> Result<Option<Receipt>> {
+    let receipt = journal
+        .load::<Receipt>("receipt.json")?
+        .filter(|r| r.applied.is_some());
+    if receipt.is_some()
+        && root
+            .load::<Option<Uuid>>("configuration-operation.json")?
+            .flatten()
+            == Some(operation)
+    {
+        root.save("configuration-operation.json", &Option::<Uuid>::None)?;
+    }
+    Ok(receipt)
+}
+
+async fn apply_change(
+    root: &Journal,
+    journal: &Journal,
+    c: &mut sqlx::PgConnection,
+    runtime: &mut Value,
+    change: &Change,
+) -> Result<()> {
+    match change {
+            Change::Telemetry { settings } => {
+                let value = serde_json::to_value(settings).map_err(|_| Error::Input)?;
+                if runtime["telemetry"].is_object()
+                    && (runtime["telemetry"]["backend"] != value["backend"]
+                        || runtime["telemetry"]["cursor_key_file"] != value["cursor_key_file"]
+                        || runtime["telemetry"]["ingress"] != value["ingress"]
+                        || runtime["telemetry"]["limits"] != value["limits"])
+                {
+                    return Err(Error::Conflict);
+                }
+                runtime["telemetry"] = value;
+            }
+
+        Change::GatewayTls {
+            certificate_file,
+            private_key_file,
+            trust_file,
+        } => {
+            let tls = super::runtime_files::GatewayTls::prepare(
+                journal,
+                certificate_file,
+                private_key_file,
+                trust_file,
+            )?;
+            journal.secret(
+                "gateway.json",
+                &serde_json::to_vec(&tls).map_err(|_| Error::Input)?,
+            )?;
+        }
+        Change::Oidc { settings } => oidc(journal, runtime, settings)?,
+        Change::WebhookNetworks { networks } => {
+            let tenant = runtime["identity"]["tenant_id"]
+                .as_str()
+                .ok_or(Error::Corrupt)?;
+            if networks.iter().any(|n| n.tenant.to_string() != tenant) {
+                return Err(Error::Input);
+            }
+            runtime["webhooks"]["networks"] =
+                serde_json::to_value(networks).map_err(|_| Error::Input)?;
+            serde_json::from_value::<crate::webhooks::Config>(runtime["webhooks"].clone())
+                .map_err(|_| Error::Input)?
+                .material_configuration()
+                .map_err(|_| Error::Input)?;
+        }
+        Change::Channels { settings } => {
+            channels(journal, runtime, settings)?;
+            super::providers::step_ca::initialize::attach(root, journal, c, runtime).await?;
+        }
+        Change::Recovery { recipient } => recovery(journal, runtime, recipient)?,
+        Change::StepCa { settings } => {
+            super::providers::step_ca::initialize::prepare(root, journal, c, runtime, settings)
+                .await?;
         }
     }
     Ok(())

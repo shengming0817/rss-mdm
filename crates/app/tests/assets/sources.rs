@@ -223,7 +223,7 @@ async fn historical_users_are_isolated_and_conditions_never_join_their_facts() -
         "cross-user match: {query}"
     );
     let group = format!("/api/v1/groups/{}", Uuid::new_v4());
-    ok(&mut browser, &fixture.router, Method::POST, &group, Some(request(0,json!({"action":"create","assetContext":"endpoint","name":"scope isolation","description":"","criteria":condition})))).await?;
+    ok(&mut browser, &fixture.router, Method::POST, &group, Some(request(0,json!({"action":"create","assetContext":"endpoint","presentation":{"name":"scope isolation","description":""},"criteria":condition})))).await?;
     let evidence = preview(&mut browser, &fixture.router, &group).await?;
     ensure!(
         evidence.members["page"]["items"] == json!([]),

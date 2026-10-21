@@ -40,7 +40,7 @@ pub enum Target {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Definition<C> {
-    pub name: String,
+    pub presentation: serde_json::Map<String, serde_json::Value>,
     pub severity: Severity,
     pub enabled: bool,
     pub platform: Platform,
@@ -55,7 +55,13 @@ impl<C> Definition<C> {
         }
     }
     pub fn validate(&self) -> Result<(), Invalid> {
-        if !text(&self.name, 128) {
+        if !crate::presentation::valid(&self.presentation, 65536)
+            || !self
+                .presentation
+                .get("name")
+                .and_then(serde_json::Value::as_str)
+                .is_some_and(|name| text(name, 128))
+        {
             return Err(Invalid::Definition);
         }
         if let Target::Groups { ids } = &self.target

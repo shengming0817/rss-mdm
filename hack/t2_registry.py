@@ -205,9 +205,11 @@ MODULES['agent.pki'] = replace(MODULES['agent.pki'], scope='tenant', policies=(
                'reuse', 'pair'),
     CasePolicy('agent_pki_tests::agent_ingress_holds_one_global_permit_per_request', 'reuse', 'tenant'),
     CasePolicy('agent_pki_tests::production_agent_listener_bootstraps_activates_and_rechecks_revocation', 'reuse', 'tenant',('identity','windows','agent_pki')),
-    CasePolicy('agent_pki_tests::rotation_requires_installed_trust_and_published_revocation_before_retirement', 'reuse', 'tenant',('identity','agent_pki','pki_rotation')),
+    CasePolicy('agent_pki_tests::rotation_requires_installed_trust_and_published_revocation_before_retirement', 'reuse', 'pair',('identity','agent_pki','pki_rotation')),
     CasePolicy('agent_pki_tests::multiple_expired_publications_require_one_atomic_set_and_replay_exactly', 'reuse', 'tenant',('identity','agent_pki','pki_rotation')),
     CasePolicy('agent_pki_tests::unknown_original_ca_result_blocks_retirement_after_rotation', 'reuse', 'tenant',('identity','agent_pki','pki_rotation')),
+    CasePolicy('agent_pki_tests::frozen_signing_uses_original_issuer_after_direct_activation', 'reuse', 'tenant', ('identity','agent_pki','pki_rotation')),
+    CasePolicy('agent_pki_tests::management_rotation_accepts_direct_activation_and_rejects_retired_action', 'reuse', 'tenant', ('identity','windows','agent_pki','pki_rotation')),
 ))
 
 add('installation.migration', selectors=('migration::tests::failed_unit_rolls_back_schema_and_can_resume_original_name','migration::tests::ledger_installation_rejects_audit_privilege_drift','migration::tests::fresh_installation_replay_and_mismatch_rejection','migration::tests::field_scope_migration_rejects_hidden_state_and_restores_rls','tenant_registry::tests::rollback_failure_preserves_primary_reason_and_cleanup_evidence'), profile='empty',
@@ -744,6 +746,7 @@ consume(('crates/execution-service/src/input_preparation.rs',
         'execution.commands.configuration')
 consume(('crates/execution-service/src/freeze_inputs.rs', 'crates/flow-service/src/resource_catalog/mod.rs'),
         'planning.agent_policy planning.onboarding')
+consume(('crates/policy/src/presentation.rs',), 'planning.self_service')
 TASK_CONSUMERS = 'planning.self_service planning.onboarding planning.policy planning.agent_policy planning.frequency planning.software execution.agent.delivery execution.agent.poll execution.agent.content execution.agent.history execution.agent.recovery execution.software.offer execution.software.content execution.software.recovery'
 consume(('crates/agent-wire/src/collection.rs', 'crates/agent-wire/src/collection_scope.rs', 'crates/inventory-service/src/collection/wire.rs'),
         TASK_CONSUMERS + ' agent.registration agent.reports')
@@ -2106,7 +2109,8 @@ add('installation.ca_admin', selectors=('setup::providers::step_ca::tests::authe
 MODULES['agent.pki'] = replace(MODULES['agent.pki'], policies=(*MODULES['agent.pki'].policies, CasePolicy('agent_pki_tests::bootstrap_sources_select_current_issuer_and_reject_missing_application', 'reuse', 'tenant', ('identity','agent_pki','pki_rotation'))))
 add('installation.backup', selectors=('setup::backup::tests::database_connection_fence_replays_and_restores_original_grants',), profile='empty', sources=('crates/app/src/setup/backup.rs','crates/app/src/setup/snapshot_tree.rs','crates/app/src/setup/backup/archive.rs','crates/app/src/setup/backup/ledger.rs','crates/app/src/setup/backup/accounts.rs'), tests=('crates/app/tests/setup/backup.rs',))
 MODULES['installation.backup'] = replace(MODULES['installation.backup'], db_mode='instance', scope='objects')
-add('installation.ca', selectors=('setup::providers::step_ca::tests::actual_ca_creates_and_imports_exact_purpose_resources',), profile='none', fixtures=('agent_pki','ca_agent'), sources=('crates/app/src/setup/providers/step_ca/*',), tests=('crates/app/tests/setup/ca_admin.rs',))
+add('installation.ca', selectors=('setup::providers::step_ca::tests::actual_ca_creates_and_imports_exact_purpose_resources','setup::providers::step_ca::tests::unified_ca_initialization_replays_and_isolates_tenants'), profile='product', fixtures=('agent_pki','ca_agent'), sources=('crates/app/src/setup/providers/step_ca/*',), tests=('crates/app/tests/setup/ca_admin.rs',))
+MODULES['installation.ca'] = replace(MODULES['installation.ca'], policies=(CasePolicy('setup::providers::step_ca::tests::unified_ca_initialization_replays_and_isolates_tenants','reuse','tenant',('windows','ca_windows')),))
 add('installation.webhook', selectors=('setup::providers::webhook::tests::receiver_possession_gates_activation_and_old_ciphertexts_remain_readable',), fixtures=('windows','runtime_config'), sources=('crates/app/src/setup/providers/webhook.rs','crates/app/src/webhooks/*','crates/webhook-service/src/materials.rs','crates/webhook-service/schema/materials.sql'), tests=('crates/app/tests/setup/webhook.rs',))
 add('installation.native_rewrap', selectors=('setup::protection::tests::ade_original_material_survives_rotation_and_corrupt_rows_roll_back',), sources=('crates/apple-channel/src/rewrap.rs','crates/app/src/setup/protection.rs'), tests=('crates/app/tests/setup/native_rewrap.rs',))
 
@@ -2157,10 +2161,12 @@ consume(('crates/pki-service/src/observations.rs','crates/pki-service/schema/obs
 module = MODULES['agent.pki']
 MODULES['agent.pki'] = replace(module, policies=tuple(
     replace(policy, actors=(*module.actors, ('tenant', 'other')))
-    if policy.selector == 'agent_pki_tests::production_agent_listener_bootstraps_activates_and_rechecks_revocation'
+    if policy.selector in ('agent_pki_tests::production_agent_listener_bootstraps_activates_and_rechecks_revocation',
+                           'agent_pki_tests::management_rotation_accepts_direct_activation_and_rejects_retired_action')
     else policy for policy in module.policies))
 
 TOOL_INPUTS['deployment/production.compose.yaml'] = ('test_release',)
+TOOL_INPUTS['deployment/sit.compose.yaml'] = ('test_release',)
 TOOL_INPUTS['deployment/initialize.py'] = ('test_release',)
 TOOL_INPUTS['deployment/tenant.compose.yaml'] = ('test_release',)
 

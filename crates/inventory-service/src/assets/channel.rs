@@ -71,7 +71,15 @@ pub async fn detail_in(
     let evidence: Option<crate::collection::channel::AgentEvidence> = latest
         .try_get::<Option<String>, _>("evidence")
         .map_err(db)?
-        .map(|s| serde_json::from_str(&s))
+        .map(|s| {
+            let value: serde_json::Value = serde_json::from_str(&s)?;
+            // Raw device reports are not server-verified installation evidence.
+            if source == ReportSource::AgentBuiltin && value.get("agentReport").is_some() {
+                Ok(None)
+            } else {
+                serde_json::from_value(value)
+            }
+        })
         .transpose()
         .map_err(|_| Error::Malformed)?
         .flatten();

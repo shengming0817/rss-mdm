@@ -492,7 +492,10 @@ impl Scalar {
             match value {
                 Scalar::String(s) => {
                     *bytes = bytes.checked_add(s.len()).ok_or(WireError::InvalidValue)?;
-                    if s.chars().any(|c| c == '\0') || *bytes > 16 * 1024 * 1024 {
+                    if s.chars().count() > 65536
+                        || s.chars().any(|c| c == '\0')
+                        || *bytes > 16 * 1024 * 1024
+                    {
                         return Err(WireError::InvalidValue);
                     }
                 }
@@ -503,11 +506,17 @@ impl Scalar {
                     return Err(WireError::InvalidValue);
                 }
                 Scalar::Array(values) => {
+                    if values.len() > 100000 {
+                        return Err(WireError::InvalidValue);
+                    }
                     for v in values {
                         visit(v, depth + 1, nodes, bytes)?
                     }
                 }
                 Scalar::Object(values) => {
+                    if values.len() > 64 || values.keys().any(|key| !property(key)) {
+                        return Err(WireError::InvalidValue);
+                    }
                     for (key, v) in values {
                         *bytes += key.len();
                         visit(v, depth + 1, nodes, bytes)?
@@ -539,6 +548,41 @@ pub enum CollectedValue {
     Unsupported,
 }
 impl CollectedValue {
+    /// Validate declared properties and project only those properties for trusted consumption.
+    /// Additional observations remain in the original report, never in field coverage.
+    pub fn project(&self, definition: &FieldDefinition) -> Result<Self> {
+        fn declared(value: &Scalar, schema: &ValueType) -> Result<Scalar> {
+            Ok(match (value, schema) {
+                (Scalar::Object(values), ValueType::Object { properties }) => Scalar::Object(
+                    properties
+                        .iter()
+                        .map(|(key, ty)| {
+                            Ok((
+                                key.clone(),
+                                declared(values.get(key).ok_or(WireError::InvalidValue)?, ty)?,
+                            ))
+                        })
+                        .collect::<Result<_>>()?,
+                ),
+                (Scalar::Array(values), ValueType::Array { items, .. }) => Scalar::Array(
+                    values
+                        .iter()
+                        .map(|v| declared(v, items))
+                        .collect::<Result<_>>()?,
+                ),
+                _ => value.clone(),
+            })
+        }
+        let projected = match self {
+            Self::Value(value) => {
+                value.validate()?;
+                Self::Value(declared(value, &definition.value_type)?)
+            }
+            _ => self.clone(),
+        };
+        projected.validate(definition)?;
+        Ok(projected)
+    }
     /// Encode only the current schema after checking its frozen field definition.
     pub fn encode(&self, definition: &FieldDefinition) -> Result<Vec<u8>> {
         self.validate(definition)?;

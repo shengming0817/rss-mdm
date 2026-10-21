@@ -46,7 +46,7 @@ impl crate::GroupStore {
             GroupKind::Dynamic => "dynamic",
         });
         let rows=tx.with_connection(move|c|Box::pin(async move {
-            sqlx::query("SELECT * FROM mdm_group.groups WHERE tenant_id=$1::uuid AND ($2::uuid IS NULL OR CASE WHEN $3 THEN id<$2 ELSE id>$2 END) AND ($4::text IS NULL OR kind=$4) AND deleted=$5 AND ($6::text IS NULL OR strpos(lower(name),lower($6))>0) ORDER BY CASE WHEN NOT $3 THEN id END ASC,CASE WHEN $3 THEN id END DESC LIMIT $7")
+            sqlx::query("SELECT * FROM mdm_group.groups WHERE tenant_id=$1::uuid AND ($2::uuid IS NULL OR CASE WHEN $3 THEN id<$2 ELSE id>$2 END) AND ($4::text IS NULL OR kind=$4) AND deleted=$5 AND ($6::text IS NULL OR strpos(lower(presentation->>'name'),lower($6))>0) ORDER BY CASE WHEN NOT $3 THEN id END ASC,CASE WHEN $3 THEN id END DESC LIMIT $7")
                 .bind(tenant).bind(q.after).bind(q.descending).bind(kind).bind(q.deleted).bind(q.name).bind((q.limit+1) as i64).fetch_all(c).await
         })).await?;
         let groups = rows
@@ -62,8 +62,9 @@ impl crate::GroupStore {
                     asset_context: storage::data(serde_json::from_value(serde_json::json!(
                         r.try_get::<String, _>("asset_context")?
                     )))?,
-                    name: r.try_get("name")?,
-                    description: r.try_get("description")?,
+                    presentation: crate::storage::data(serde_json::from_value(
+                        r.try_get("presentation")?,
+                    ))?,
                     revision: storage::data(Revision::new(r.try_get("revision")?))?,
                     calculation_revision: r.try_get("calculation_revision")?,
                     member_version: r.try_get("member_version")?,
