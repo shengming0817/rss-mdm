@@ -29,7 +29,7 @@ for directory in (root, inputs):
 config = dict(directory=str(root/'installation'),
     deployment=dict(directory=str(root/'runtime/primary'), probe_address='primary-server:8445',
         certificate_file=str(inputs/'gateway.crt'), private_key_file=str(inputs/'gateway.key'),
-        trust_file=str(inputs/'gateway-ca.crt'), content_volume=None),
+        trust_file=str(inputs/'gateway-ca.crt'), content_volume='/var/lib/rss-mdm-content'),
     database=dict(name='mdm',administrator=dict(host='postgres',port=5432,name='postgres',user='postgres',
         password_file=str(inputs/'database-password'),ca_file=str(inputs/'postgres-ca.crt'))),
     audit_mode='ledger',organization_name=os.environ.get('MDM_ORGANIZATION','My organization'),

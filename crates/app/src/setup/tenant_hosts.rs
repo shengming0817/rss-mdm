@@ -218,7 +218,7 @@ async fn provision_pending(
             candidate["native_protocols"] = serde_json::json!({});
             candidate["agent_pki"] = serde_json::json!({"mode":"disabled"});
             candidate["device_pki"] = serde_json::json!([]);
-            for field in ["task_signing", "recovery_credentials", "content"] {
+            for field in ["task_signing", "recovery_credentials"] {
                 candidate[field] = Value::Null;
             }
             candidate["identity"]["oidc"] = Value::Null;

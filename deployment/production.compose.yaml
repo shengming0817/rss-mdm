@@ -32,7 +32,18 @@ services:
       MDM_ORGANIZATION: ${MDM_ORGANIZATION:-My organization}
     volumes:
       - state:/var/lib/rss-mdm
+      - content:/var/lib/rss-mdm-content
       - ${MDM_INPUT_DIRECTORY:?}:/inputs:ro
+  maintenance:
+    image: ${MDM_INSTALLER_IMAGE:?initializer image required}
+    user: "10001:10001"
+    depends_on:
+      init: {condition: service_completed_successfully}
+    entrypoint: [sh, -ec]
+    command: ['while true; do if /usr/local/bin/rss-mdm-installer maintain-default-telemetry --config /var/lib/rss-mdm/installation-input.json; then sleep 3600; else sleep 60; fi; done']
+    volumes:
+      - state:/var/lib/rss-mdm
+    restart: unless-stopped
   server:
     image: ${MDM_SERVER_IMAGE:?server image required}
     user: "10001:10001"
@@ -49,6 +60,7 @@ services:
         target: /run/mdm
         read_only: true
         volume: {subpath: runtime/primary/server, nocopy: true}
+      - content:/var/lib/rss-mdm-content
     networks:
       default: {aliases: [primary-server]}
     ports:
@@ -73,4 +85,5 @@ services:
     restart: unless-stopped
 volumes:
   state:
+  content:
   pg:

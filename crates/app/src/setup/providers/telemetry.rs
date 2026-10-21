@@ -239,6 +239,13 @@ async fn install_new_postgres(
     identity: Uuid,
     binding: &[u8],
 ) -> Result<()> {
+    // A fresh installation may use an empty database (including provider extensions),
+    // but must never adopt unrelated user data. Replay was checked before this point.
+    let occupied: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname !~ '^pg_' AND n.nspname<>'information_schema' AND c.relkind IN('r','p','v','m','S','f') AND NOT EXISTS(SELECT 1 FROM pg_depend d WHERE d.classid='pg_namespace'::regclass AND d.objid=n.oid AND d.deptype='e') AND NOT (n.nspname='public' AND c.relname='mdm_telemetry_installation') AND NOT EXISTS(SELECT 1 FROM pg_depend d WHERE d.classid='pg_class'::regclass AND d.objid=c.oid AND d.deptype='e'))")
+        .fetch_one(&mut *c).await.map_err(|_| Error::Storage)?;
+    if occupied {
+        return Err(Error::Conflict);
+    }
     install_roles(&mut *c, input, identity).await?;
     let runtime = input.configuration.database();
     sql(
@@ -425,7 +432,7 @@ pub struct PhysicalRequest {
     pub operation_id: Uuid,
     pub action: PhysicalAction,
 }
-/// Deployment-only physical changes require stopped writers and the original installation journal.
+/// Physical changes require the original journal; chunk conversion additionally requires stopped writers.
 pub async fn maintain(input: PhysicalRequest) -> Result<serde_json::Value> {
     tokio::time::timeout(std::time::Duration::from_secs(180), maintain_inner(input))
         .await
@@ -473,9 +480,11 @@ async fn maintain_inner(input: PhysicalRequest) -> Result<serde_json::Value> {
     if actual != (installation.installation_id, expected) {
         return Err(Error::Conflict);
     }
-    let writers:i64=sqlx::query_scalar("SELECT count(*) FROM pg_stat_activity WHERE datname=current_database() AND pid<>pg_backend_pid() AND backend_type='client backend'").fetch_one(&mut connection).await.map_err(|_|Error::Storage)?;
-    if writers != 0 {
-        return Err(Error::Busy);
+    if matches!(input.action, PhysicalAction::ConvertChunks { .. }) {
+        let writers:i64=sqlx::query_scalar("SELECT count(*) FROM pg_stat_activity WHERE datname=current_database() AND pid<>pg_backend_pid() AND backend_type='client backend'").fetch_one(&mut connection).await.map_err(|_|Error::Storage)?;
+        if writers != 0 {
+            return Err(Error::Busy);
+        }
     }
     let result = match &input.action {
         PhysicalAction::PreparePartitions { partitions } => {
@@ -543,6 +552,19 @@ async fn prepare_partitions(
         )
         .await?;
         for p in partitions {
+            let name = format!("samples_{}_{}", p.start_micros, p.end_micros);
+            let bound:Option<String>=sqlx::query_scalar("SELECT pg_get_expr(c.relpartbound,c.oid) FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace JOIN pg_inherits i ON i.inhrelid=c.oid WHERE n.nspname='rss_timeseries' AND c.relname=$1 AND i.inhparent='rss_timeseries.samples'::regclass").bind(&name).fetch_optional(&mut *tx).await.map_err(|_|Error::Storage)?;
+            if let Some(bound) = bound {
+                if bound
+                    != format!(
+                        "FOR VALUES FROM ('{}') TO ('{}')",
+                        p.start_micros, p.end_micros
+                    )
+                {
+                    return Err(Error::Conflict);
+                }
+                continue;
+            }
             sqlx::query("SELECT rss_timeseries.create_partition($1,$2)")
                 .bind(p.start_micros)
                 .bind(p.end_micros)
