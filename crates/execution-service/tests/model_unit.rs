@@ -68,12 +68,12 @@ fn native_deadlines_and_request_identity_remain_bounded() {
     assert!(serde_json::from_value::<Create>(value).is_err());
 }
 #[test]
-fn dispatch_v3_matches_its_native_wire_without_old_payload_fallback() {
+fn dispatch_matches_current_schema_and_ownership() {
     let validator = jsonschema::validator_for(
-        &serde_json::from_str(include_str!("../src/dispatch-v3.json")).unwrap(),
+        &serde_json::from_str(include_str!("../src/dispatch-v1.json")).unwrap(),
     )
     .unwrap();
-    let wire = serde_json::to_value(DispatchV3 {
+    let wire = serde_json::to_value(DispatchV1 {
         device: "device".into(),
         operation_id: request().operation_id,
         generation: 2,
@@ -85,15 +85,15 @@ fn dispatch_v3_matches_its_native_wire_without_old_payload_fallback() {
         "native input must remain with the operation owner, not in Outbox"
     );
     assert!(validator.is_valid(&wire));
-    assert!(serde_json::from_value::<DispatchV3>(wire.clone()).is_ok());
+    assert!(serde_json::from_value::<DispatchV1>(wire.clone()).is_ok());
     let mut unknown = wire.clone();
     unknown["request"] = serde_json::to_value(request()).unwrap();
     assert!(!validator.is_valid(&unknown));
-    assert!(serde_json::from_value::<DispatchV3>(unknown).is_err());
+    assert!(serde_json::from_value::<DispatchV1>(unknown).is_err());
     let mut invalid = wire;
     invalid["operationId"] = json!(3);
     assert!(!validator.is_valid(&invalid));
-    assert!(serde_json::from_value::<DispatchV3>(invalid).is_err());
+    assert!(serde_json::from_value::<DispatchV1>(invalid).is_err());
 }
 #[test]
 fn atomic_children_require_each_real_operation_permission() {
@@ -162,7 +162,7 @@ fn native_input_digest_is_not_a_keyless_pin_verifier() {
     let mut input = request();
     input.task = serde_json::from_value(json!({"platform":"macos","request":{"kind":"command","command":{"requestType":"DeviceLock","fields":{"PIN":{"type":"string","value":"1234"}}}}})).unwrap();
     let canonical = serde_json::to_vec(&(
-        "mdm.native-input/v3",
+        "mdm.native-input/v1",
         tenant().to_string(),
         "device",
         &input.input_version,

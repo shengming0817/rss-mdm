@@ -40,7 +40,7 @@ fn scalar(field: &str, uri: &str, conversion: Conversion) -> (String, NativeMapp
 fn pack(id: &str, category: &str, build: u32, mappings: Vec<(String, NativeMapping)>) -> Blueprint {
     Blueprint {
         id: format!("windows.{id}"),
-        version: "2".into(),
+        version: "1".into(),
         presentation: serde_json::json!({"category":category})
             .as_object()
             .unwrap()

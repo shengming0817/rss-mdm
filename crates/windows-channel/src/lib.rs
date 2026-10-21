@@ -69,7 +69,7 @@ pub fn protocol_identity(
 ) -> Result<String, Error> {
     poll.validate().map_err(|_| Error::Malformed)?;
     Ok(enrollment::digest(&(
-        "mdm.windows.profile.v3",
+        "mdm.windows.profile.v1",
         poll,
         enrollment_origin,
         management_origin,

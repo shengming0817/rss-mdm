@@ -505,7 +505,7 @@ async fn artifact_reference_index_covers_reuse_without_another_upload_and_archiv
 
 #[tokio::test]
 #[ignore = "real PostgreSQL: make t2 MODULE=resource.persistence"]
-async fn software_storage_v4_rejects_v3_without_rewriting_immutable_bytes() {
+async fn storage_rejects_invalid_format_without_rewriting_immutable_bytes() {
     let runtime = runtime().await;
     let store = ResourceStore::new(runtime, tenant(), deadline())
         .await
@@ -532,9 +532,8 @@ async fn software_storage_v4_rejects_v3_without_rewriting_immutable_bytes() {
     );
     let original = sql(&read);
     let mut document: serde_json::Value = serde_json::from_str(&original).unwrap();
-    assert_eq!(document[0], 4);
-    assert!(document[5][0][3][1].get("ownership").is_none());
-    document[0] = serde_json::json!(3);
+    assert_eq!(document[0], 1);
+    document[0] = serde_json::json!(0);
     let old = serde_json::to_string(&document).unwrap();
     // Deliberately install an intact outer digest so rejection exercises the format boundary.
     // The damaged material belongs to this case's disposable database.

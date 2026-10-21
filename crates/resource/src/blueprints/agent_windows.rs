@@ -98,12 +98,7 @@ fn pack(
 ) -> Blueprint {
     Blueprint {
         id: format!("windows.agent.{id}"),
-        version: if matches!(id, "identity" | "software") {
-            "2"
-        } else {
-            "1"
-        }
-        .into(),
+        version: "1".into(),
         presentation: serde_json::json!({"category":category})
             .as_object()
             .unwrap()

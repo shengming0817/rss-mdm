@@ -83,19 +83,6 @@ fn signatures_bind_attempt_artifact_and_permission_and_fail_closed() {
         signature: base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(signature.as_ref()),
     };
     support::verify_signature(&signed, key.public_key().as_ref()).unwrap();
-    let current_bytes = signed.payload.signing_bytes(&signed.key_id).unwrap();
-    let separator = current_bytes.iter().position(|byte| *byte == 0).unwrap();
-    let domain = std::str::from_utf8(&current_bytes[..separator]).unwrap();
-    assert!(domain.ends_with("-v1-ed25519"));
-    let mut old_bytes = domain.replace("-v1-ed25519", "-v6-ed25519").into_bytes();
-    old_bytes.extend_from_slice(&current_bytes[separator..]);
-    let mut old = signed.clone();
-    old.signature =
-        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(key.sign(&old_bytes).as_ref());
-    assert!(
-        support::verify_signature(&old, key.public_key().as_ref()).is_err(),
-        "retired V6 signature domain accepted"
-    );
     for mutate in [
         |s: &mut TaskSpec| {
             s.resource.variant = "other".into();
@@ -251,19 +238,6 @@ fn software_task_binds_approved_definition_and_artifacts_without_script_fallback
         payload,
     };
     support::verify_signature(&signed, key.public_key().as_ref()).unwrap();
-    let current_bytes = signed.payload.signing_bytes(&signed.key_id).unwrap();
-    let separator = current_bytes.iter().position(|byte| *byte == 0).unwrap();
-    let domain = std::str::from_utf8(&current_bytes[..separator]).unwrap();
-    assert!(domain.ends_with("-v1-ed25519"));
-    let mut old_bytes = domain.replace("-v1-ed25519", "-v6-ed25519").into_bytes();
-    old_bytes.extend_from_slice(&current_bytes[separator..]);
-    let mut old = signed.clone();
-    old.signature =
-        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(key.sign(&old_bytes).as_ref());
-    assert!(
-        support::verify_signature(&old, key.public_key().as_ref()).is_err(),
-        "retired V6 signature domain accepted"
-    );
     let mut altered = spec;
     altered.steps[0].action.package = "other.editor".into();
     altered.definition_digest = ring::digest::digest(

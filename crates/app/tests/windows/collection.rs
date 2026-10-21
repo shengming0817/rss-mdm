@@ -196,7 +196,7 @@ async fn template_flow(
             | Completion::RevokedInventory
     ) {
         let mut spec = template.spec().clone();
-        let builtin = rss_mdm_resource::blueprints::get("windows.software.win32", "2").unwrap();
+        let builtin = rss_mdm_resource::blueprints::get("windows.software.win32", "1").unwrap();
         let rss_mdm_resource::blueprints::Definition::NativeCollection { template } =
             builtin.definition
         else {
@@ -1136,7 +1136,7 @@ async fn dynamic_result(
     launch.finish();
     tokio::time::timeout(Duration::from_secs(20), async {
         loop {
-            let converged: bool = sqlx::query_scalar("SELECT result='converged' FROM rss_reconcile.targets WHERE tenant_id=$1::uuid AND reconciler='mdm.commands.v3' AND entity='native-run:'||$2::text")
+            let converged: bool = sqlx::query_scalar("SELECT result='converged' FROM rss_reconcile.targets WHERE tenant_id=$1::uuid AND reconciler='mdm.commands.v1' AND entity='native-run:'||$2::text")
                 .bind(case_tenant()).bind(run).fetch_one(&mut *pg).await?;
             if converged { return Ok::<_,anyhow::Error>(()); }
             tokio::time::sleep(Duration::from_millis(50)).await;
@@ -1160,7 +1160,7 @@ async fn seed_prior_list(
     key: rss_mdm_inventory::FieldKey,
     value: &rss_mdm_inventory::Scalar,
 ) -> anyhow::Result<()> {
-    sqlx::query("INSERT INTO mdm.inventory(field_scope,tenant_id,journal,generation,scope,coverage,field,value,batch_id,observed_at,received_at,state,last_known,last_known_batch,last_known_observed,last_known_received,registration,source,epoch,collection_sequence) VALUES(replace(jsonb_build_object('kind','device')::text,' ',''),$1::uuid,'mdm.observation.v1','inventory-v7',$2,$3,$4,$5,'prior-list',1,2,'known',$5,'prior-list',1,2,$6::uuid,$7,$8::uuid,0)")
+    sqlx::query("INSERT INTO mdm.inventory(field_scope,tenant_id,journal,generation,scope,coverage,field,value,batch_id,observed_at,received_at,state,last_known,last_known_batch,last_known_observed,last_known_received,registration,source,epoch,collection_sequence) VALUES(replace(jsonb_build_object('kind','device')::text,' ',''),$1::uuid,'mdm.observation.v1','inventory-projection-v1',$2,$3,$4,$5,'prior-list',1,2,'known',$5,'prior-list',1,2,$6::uuid,$7,$8::uuid,0)")
         .bind(scope.tenant().to_string()).bind(scope.encode()?).bind(serde_json::to_string(&definition.coverage()?)?).bind(key.as_str()).bind(serde_json::to_string(value)?).bind(scope.registration().as_str()).bind(scope.source().as_str()).bind(scope.epoch().as_str()).execute(pg).await?;
     Ok(())
 }

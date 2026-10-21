@@ -200,6 +200,8 @@ GRANT SELECT ON mdm_commands.action_runs TO mdm_access;
 GRANT EXECUTE ON FUNCTION mdm_commands.windows_pending_operations(uuid,bigint,uuid) TO mdm_access;
 GRANT EXECUTE ON FUNCTION mdm_commands.retirement_commands(uuid,text),mdm_commands.save_retired_command(uuid,uuid,bigint,bigint) TO mdm_access,mdm_command_runtime;
 GRANT EXECUTE ON FUNCTION mdm_commands.save_retired_action(uuid,uuid,jsonb,jsonb) TO mdm_access,mdm_command_runtime;
+GRANT UPDATE(software_effect) ON mdm_commands.action_runs TO mdm_command_runtime;
+GRANT UPDATE(execution_material) ON mdm_commands.action_attempts TO mdm_command_runtime;
 COMMIT;
 
 ALTER TABLE mdm_commands.attempt_frames ADD CONSTRAINT attempt_frames_attempt_fkey FOREIGN KEY(tenant_id,attempt) REFERENCES mdm_commands.attempts(tenant_id,id);

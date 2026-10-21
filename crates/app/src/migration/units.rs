@@ -19,10 +19,10 @@ pub(super) fn units() -> Vec<(&'static str, &'static str)> {
             rss_transactional_messaging_postgres::MIGRATION_SQL,
         ),
         ("group-v1", rss_mdm_group_postgres::MIGRATION_SQL),
-        ("policy-v2", rss_mdm_policy_postgres::MIGRATION_SQL),
+        ("policy-v1", rss_mdm_policy_postgres::MIGRATION_SQL),
         ("resource-v1", rss_mdm_resource_postgres::MIGRATION_SQL),
         (
-            "software-release-v2",
+            "software-release-v1",
             rss_mdm_software_release_postgres::MIGRATION_SQL,
         ),
         (
@@ -30,7 +30,7 @@ pub(super) fn units() -> Vec<(&'static str, &'static str)> {
             rss_mdm_registration_service::INSTALL_SQL,
         ),
         (
-            "software-publication-v2",
+            "software-publication-v1",
             rss_mdm_software_service::publication::MIGRATION_SQL,
         ),
         (
@@ -58,7 +58,7 @@ pub(super) fn units() -> Vec<(&'static str, &'static str)> {
             include_str!("../../schema/identity-audit-runtime.sql"),
         ),
         (
-            "installation-binding-v2",
+            "installation-binding-v1",
             include_str!("../../schema/installation.sql"),
         ),
         (
@@ -71,44 +71,16 @@ pub(super) fn units() -> Vec<(&'static str, &'static str)> {
         ),
         ("reconcile-v1", rss_reconcile_postgres::MIGRATION_SQL),
         (
-            "inventory-v2",
-            rss_mdm_inventory_postgres::ASSETS_MIGRATION_SQL,
-        ),
-        (
-            "group-generations-v1",
-            rss_mdm_group_postgres::GENERATIONS_MIGRATION_SQL,
-        ),
-        (
-            "asset-history-v1",
-            rss_mdm_inventory_postgres::HISTORY_MIGRATION_SQL,
-        ),
-        (
-            "group-reverse-index-v1",
-            rss_mdm_group_postgres::REVERSE_INDEX_MIGRATION_SQL,
-        ),
-        (
-            "inventory-enterprise-v1",
-            rss_mdm_inventory_postgres::ENTERPRISE_MIGRATION_SQL,
-        ),
-        (
-            "software-catalog-v2",
+            "software-catalog-v1",
             rss_mdm_software_service::catalog::INSTALL_SQL,
         ),
         (
             "asset-watermark-fence-v1",
             rss_mdm_inventory_postgres::WATERMARK_FENCE_MIGRATION_SQL,
         ),
-        (
-            "inventory-unified-v2",
-            rss_mdm_inventory_postgres::UNIFIED_COLLECTION_SQL,
-        ),
-        (
-            "inventory-field-scopes-v1",
-            rss_mdm_inventory_postgres::FIELD_SCOPES_SQL,
-        ),
         ("compliance-v1", rss_mdm_compliance_postgres::MIGRATION_SQL),
         (
-            "authorization-service-schema-v2",
+            "authorization-service-schema-v1",
             rss_mdm_authorization_service::INSTALL_SQL,
         ),
         (
@@ -116,7 +88,7 @@ pub(super) fn units() -> Vec<(&'static str, &'static str)> {
             rss_mdm_inventory_service::INSTALL_SQL,
         ),
         (
-            "content-service-schema-v2",
+            "content-service-schema-v1",
             rss_mdm_content_service::INSTALL_SQL,
         ),
         ("flow-service-schema-v1", rss_mdm_flow_service::INSTALL_SQL),
@@ -125,7 +97,7 @@ pub(super) fn units() -> Vec<(&'static str, &'static str)> {
             rss_mdm_telemetry_service::SCHEMA_SQL,
         ),
         (
-            "execution-service-schema-v5",
+            "execution-service-schema-v1",
             rss_mdm_execution_service::INSTALL_SQL,
         ),
         (
@@ -137,7 +109,7 @@ pub(super) fn units() -> Vec<(&'static str, &'static str)> {
             rss_mdm_agent_channel::INSTALL_SQL,
         ),
         (
-            "windows-channel-schema-v2",
+            "windows-channel-schema-v1",
             rss_mdm_windows_channel::INSTALL_SQL,
         ),
         (
@@ -145,7 +117,7 @@ pub(super) fn units() -> Vec<(&'static str, &'static str)> {
             rss_mdm_registration_service::WINDOWS_RECEIPTS_SQL,
         ),
         (
-            "apple-channel-schema-v2",
+            "apple-channel-schema-v1",
             rss_mdm_apple_channel::INSTALL_SQL,
         ),
         (
@@ -153,7 +125,7 @@ pub(super) fn units() -> Vec<(&'static str, &'static str)> {
             rss_mdm_registration_service::RELATIONS_SQL,
         ),
         (
-            "authorization-service-relations-v3",
+            "authorization-service-relations-v1",
             rss_mdm_authorization_service::RELATIONS_SQL,
         ),
         (
@@ -161,11 +133,11 @@ pub(super) fn units() -> Vec<(&'static str, &'static str)> {
             rss_mdm_inventory_service::RELATIONS_SQL,
         ),
         (
-            "content-service-relations-v2",
+            "content-service-relations-v1",
             rss_mdm_content_service::RELATIONS_SQL,
         ),
         (
-            "execution-service-relations-v4",
+            "execution-service-relations-v1",
             rss_mdm_execution_service::RELATIONS_SQL,
         ),
         (
@@ -173,7 +145,7 @@ pub(super) fn units() -> Vec<(&'static str, &'static str)> {
             rss_mdm_audit_integration::OPERATION_RECEIPT_RELATIONS_SQL,
         ),
         (
-            "flow-service-relations-v3",
+            "flow-service-relations-v1",
             rss_mdm_flow_service::RELATIONS_SQL,
         ),
         (
@@ -181,11 +153,11 @@ pub(super) fn units() -> Vec<(&'static str, &'static str)> {
             rss_mdm_agent_channel::RELATIONS_SQL,
         ),
         (
-            "windows-channel-relations-v2",
+            "windows-channel-relations-v1",
             rss_mdm_windows_channel::RELATIONS_SQL,
         ),
         (
-            "apple-channel-relations-v2",
+            "apple-channel-relations-v1",
             rss_mdm_apple_channel::RELATIONS_SQL,
         ),
         (
@@ -197,7 +169,7 @@ pub(super) fn units() -> Vec<(&'static str, &'static str)> {
             rss_mdm_registration_service::ADMISSION_SQL,
         ),
         (
-            "timeline-service-schema-v2",
+            "timeline-service-schema-v1",
             rss_mdm_timeline_service::INSTALL_SQL,
         ),
         (
@@ -205,7 +177,7 @@ pub(super) fn units() -> Vec<(&'static str, &'static str)> {
             rss_mdm_recovery_credentials::INSTALL_SQL,
         ),
         (
-            "certificate-archive-schema-v2",
+            "certificate-archive-schema-v1",
             rss_mdm_certificate_archive_service::INSTALL_SQL,
         ),
         (
@@ -213,18 +185,6 @@ pub(super) fn units() -> Vec<(&'static str, &'static str)> {
             rss_mdm_device_service::INSTALL_SQL,
         ),
         ("device-pki-v1", rss_mdm_pki_service::INSTALL_SQL),
-        (
-            "self-service-access-v1",
-            include_str!("../../schema/self-service-access.sql"),
-        ),
-        (
-            "enrollment-progress-v1",
-            rss_mdm_registration_service::ENROLLMENT_PROGRESS_SQL,
-        ),
-        (
-            "apple-account-authority-v1",
-            rss_mdm_registration_service::APPLE_ACCOUNT_SQL,
-        ),
         (
             "apple-account-channel-v1",
             rss_mdm_apple_channel::ACCOUNT_ENROLLMENT_SQL,
@@ -241,29 +201,17 @@ pub(super) fn units() -> Vec<(&'static str, &'static str)> {
             "registration-agent-bootstrap-v1",
             rss_mdm_registration_service::AGENT_BOOTSTRAP_SQL,
         ),
-        (
-            "apple-organizations-v1",
-            rss_mdm_apple_channel::ORGANIZATIONS_SQL,
-        ),
-        (
-            "apple-ade-authority-v1",
-            rss_mdm_registration_service::APPLE_ADE_SQL,
-        ),
         ("apple-ade-channel-v1", rss_mdm_apple_channel::ADE_SQL),
-        (
-            "windows-entra-authority-v1",
-            rss_mdm_registration_service::WINDOWS_ENTRA_SQL,
-        ),
         (
             "windows-entra-policy-v1",
             rss_mdm_registration_service::WINDOWS_ENTRA_POLICY_SQL,
         ),
         (
-            "windows-entra-channel-v2",
+            "windows-entra-channel-v1",
             rss_mdm_windows_channel::ENTRA_SQL,
         ),
         (
-            "windows-entra-web-v2",
+            "windows-entra-web-v1",
             rss_mdm_windows_channel::ENTRA_WEB_SQL,
         ),
         (
@@ -271,8 +219,8 @@ pub(super) fn units() -> Vec<(&'static str, &'static str)> {
             rss_mdm_registration_service::AGENT_NATIVE_SQL,
         ),
         (
-            "asset-condition-scopes-v1",
-            rss_mdm_inventory_service::FIELD_SCOPES_SQL,
+            "asset-group-selections-v1",
+            rss_mdm_inventory_service::GROUP_SELECTIONS_SQL,
         ),
         (
             "inventory-tenant-seed-v1",
@@ -283,14 +231,10 @@ pub(super) fn units() -> Vec<(&'static str, &'static str)> {
             rss_mdm_registration_service::agent::settings::tenant_seed_sql(),
         ),
         (
-            "tenant-administration-v2",
+            "tenant-administration-v1",
             include_str!("../../schema/tenant-administration.sql"),
         ),
         ("webhook-v1", rss_mdm_webhook_service::INSTALL_SQL),
-        (
-            "channel-maintenance-history-v1",
-            rss_mdm_inventory_service::CHANNEL_MAINTENANCE_SQL,
-        ),
         (
             "tenant-provisioning-v1",
             include_str!("../../schema/provisioning.sql"),

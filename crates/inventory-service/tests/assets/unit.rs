@@ -28,23 +28,6 @@ fn asset_fingerprint_binds_explicit_collection_scope() {
     audit.finalize(None);
 }
 #[test]
-fn closed_manual_and_query_wire_rejects_legacy_deadlines() {
-    for input in [
-        serde_json::json!({"action":"delete","ttl":1}),
-        serde_json::json!({"action":"null","validUntil":1}),
-        serde_json::json!({"action":"set","value":{"kind":"integer","value":3},"expiresAt":1}),
-    ] {
-        assert!(serde_json::from_value::<ManualChange>(input).is_err());
-    }
-    assert!(serde_json::from_value::<Query>(serde_json::json!({"validUntil":1})).is_err());
-    assert!(
-        serde_json::from_value::<Criteria>(
-            serde_json::json!({"kind":"eq","field":"device.model","value":"old"})
-        )
-        .is_err()
-    );
-}
-#[test]
 fn one_typed_condition_round_trips_through_the_existing_group_core() {
     let tenant = TenantId::parse("11111111-1111-4111-8111-111111111111").unwrap();
     let c = Criteria::Predicate {

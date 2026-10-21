@@ -121,15 +121,14 @@ fn brew_blueprints_publish_only_the_data_recipe_revision() {
         "macos.agent.brew_intel_formula",
         "macos.agent.brew_intel_cask",
     ] {
-        assert!(blueprints::get(id, "1").is_none());
         let blueprints::Definition::AgentCollection { template } =
-            blueprints::get(id, "2").unwrap().definition
+            blueprints::get(id, "1").unwrap().definition
         else {
             panic!("native blueprint expected")
         };
         assert_eq!(
             template.spec().plan.requirements(),
-            [(w::NativeEngine::MacosBrew, 2)].into()
+            [(w::NativeEngine::MacosBrew, 1)].into()
         );
         template.validate_platform(Platform::MacOS).unwrap();
     }

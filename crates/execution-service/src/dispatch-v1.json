@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "mdm.command-dispatch/v3",
+  "$id": "mdm.command-dispatch/v1",
   "type": "object",
   "properties": {
     "device": {

@@ -581,9 +581,8 @@ mod mapping_tests {
     fn windows_identity_and_software_blueprints_project_current_asset_semantics() {
         use rss_mdm_resource::blueprints;
         for name in ["windows.agent.identity", "windows.agent.software"] {
-            assert!(blueprints::get(name, "1").is_none());
             let blueprints::Definition::AgentCollection { template } =
-                blueprints::get(name, "2").unwrap().definition
+                blueprints::get(name, "1").unwrap().definition
             else {
                 unreachable!()
             };
@@ -759,7 +758,7 @@ mod mapping_tests {
     fn standard_software_requires_whole_device_coverage_but_custom_subsets_remain_valid() {
         use rss_mdm_agent_wire::runtime as w;
         use rss_mdm_resource::{AgentCollectionDefinition, blueprints};
-        let blueprint = blueprints::get("windows.agent.software", "2").unwrap();
+        let blueprint = blueprints::get("windows.agent.software", "1").unwrap();
         let blueprints::Definition::AgentCollection { template } = blueprint.definition else {
             panic!("native software template");
         };

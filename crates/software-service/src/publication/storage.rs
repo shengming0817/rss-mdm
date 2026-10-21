@@ -187,7 +187,7 @@ pub(super) fn request_fingerprint(
         rel::Operation::Withdraw => json!(["withdraw"]),
     };
     encode(&json!([
-        "mdm.software.audit.request/v2",
+        "mdm.software.audit.request/v1",
         record,
         r.id.tenant().to_string(),
         r.id.value(),

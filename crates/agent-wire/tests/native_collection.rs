@@ -237,7 +237,7 @@ fn fixed_native_vectors_bind_permit_plan_and_domain() {
     use ring::signature::{ED25519, Ed25519KeyPair, KeyPair, UnparsedPublicKey};
     use sha2::{Digest, Sha256};
     let vectors: serde_json::Value =
-        serde_json::from_str(include_str!("fixtures/native-v3-vectors.json")).unwrap();
+        serde_json::from_str(include_str!("fixtures/native-v1-vectors.json")).unwrap();
     for vectors in vectors.as_array().unwrap() {
         let key = Ed25519KeyPair::from_seed_unchecked(&[42; 32]).unwrap();
         let plan: NativeCollectionPlan = serde_json::from_value(vectors["plan"].clone()).unwrap();

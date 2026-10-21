@@ -43,11 +43,8 @@ fn unsigned_offline_exe_is_valid_and_every_behavior_change_is_frozen() {
 }
 
 #[test]
-fn old_shape_mixed_payload_and_undeclared_offline_content_are_rejected() {
+fn mixed_payload_and_undeclared_offline_content_are_rejected() {
     for mutate in [
-        |v: &mut Value| {
-            v["format"] = json!("exe");
-        },
         |v: &mut Value| {
             v["behavior"]["executor"] = json!("powershell7");
         },

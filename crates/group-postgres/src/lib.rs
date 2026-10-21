@@ -25,19 +25,12 @@ pub use model::*;
 pub use rss_mdm_group as core;
 pub use store::GroupStore;
 /// One-time owner migration; not executable by the runtime role. No legacy upgrade path.
-pub const MIGRATION_SQL: &str = include_str!("../migrations/0001_group.sql");
+pub const MIGRATION_SQL: &str = include_str!("../migrations/install.sql");
 #[cfg(test)]
 mod codec_tests;
 
 /// Public Outbox function permissions, installed after the immutable initial product schema.
-pub const OUTBOX_MIGRATION_SQL: &str = include_str!("../migrations/0002_outbox_writer.sql");
-/// Immutable paged member results and atomic current-set publication.
-pub const GENERATIONS_MIGRATION_SQL: &str =
-    include_str!("../migrations/0003_member_generations.sql");
-
-/// Reverse lookup of affected groups without host access to private membership tables.
-pub const REVERSE_INDEX_MIGRATION_SQL: &str =
-    include_str!("../migrations/0004_member_reverse_index.sql");
+pub const OUTBOX_MIGRATION_SQL: &str = include_str!("../migrations/outbox.sql");
 
 mod delta;
 mod history;

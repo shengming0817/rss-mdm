@@ -1,4 +1,4 @@
--- Product device PKI; immutable original owner migrations stay unchanged.
+-- Product device PKI and cross-owner trust relationships.
 BEGIN;
 CREATE SCHEMA mdm_pki;
 GRANT USAGE ON SCHEMA mdm_pki TO mdm_access;
@@ -46,9 +46,7 @@ GRANT SELECT,INSERT ON mdm_pki.crls TO mdm_access;
 GRANT UPDATE(number,this_update,next_update,der) ON mdm_pki.crls TO mdm_access;
 CREATE UNIQUE INDEX one_open_rotation ON mdm_pki.rotations(tenant_id,purpose) WHERE state<>'retired';
 CREATE UNIQUE INDEX one_active_issuer ON mdm_pki.issuers(tenant_id,purpose) WHERE state='active';
-ALTER TABLE mdm_access.enrollment_intents RENAME COLUMN tbs TO profile;
-ALTER TABLE mdm_access.enrollment_intents DROP CONSTRAINT enrollment_intents_tbs_check;
-ALTER TABLE mdm_access.enrollment_intents ADD CONSTRAINT enrollment_profile_size CHECK(octet_length(profile) BETWEEN 1 AND 4096);
+
 CREATE TABLE mdm_windows.renewal_intents (
  tenant_id uuid NOT NULL, id uuid NOT NULL, registration uuid NOT NULL,
  generation bigint NOT NULL CHECK(generation>0), previous_credential uuid NOT NULL,
@@ -62,7 +60,7 @@ ALTER TABLE mdm_windows.renewal_intents ENABLE ROW LEVEL SECURITY;
 ALTER TABLE mdm_windows.renewal_intents FORCE ROW LEVEL SECURITY;
 CREATE POLICY tenant ON mdm_windows.renewal_intents USING(tenant_id=NULLIF(current_setting('rss.tenant_id',true),'')::uuid) WITH CHECK(tenant_id=NULLIF(current_setting('rss.tenant_id',true),'')::uuid);
 GRANT SELECT,INSERT ON mdm_windows.renewal_intents TO mdm_access;
-ALTER TABLE mdm_access.agent_issuances ADD COLUMN signing_issuer text CHECK(signing_issuer ~ '^[0-9a-f]{64}$');
+
 CREATE TABLE mdm_pki.trust (tenant_id uuid NOT NULL,purpose text NOT NULL,revision bigint NOT NULL CHECK(revision>0),body bytea NOT NULL CHECK(octet_length(body) BETWEEN 1 AND 67108864),PRIMARY KEY(tenant_id,purpose));
 ALTER TABLE mdm_pki.trust ENABLE ROW LEVEL SECURITY;
 ALTER TABLE mdm_pki.trust FORCE ROW LEVEL SECURITY;
@@ -74,8 +72,7 @@ ALTER TABLE mdm_pki.operations ENABLE ROW LEVEL SECURITY;
 ALTER TABLE mdm_pki.operations FORCE ROW LEVEL SECURITY;
 CREATE POLICY tenant ON mdm_pki.operations USING(tenant_id=NULLIF(current_setting('rss.tenant_id',true),'')::uuid) WITH CHECK(tenant_id=NULLIF(current_setting('rss.tenant_id',true),'')::uuid);
 GRANT SELECT,INSERT ON mdm_pki.operations TO mdm_access;
-ALTER TABLE mdm_apple.scep_attempts ADD COLUMN scep_url text CHECK(length(scep_url) BETWEEN 1 AND 2048);
-ALTER TABLE mdm_apple.scep_attempts ADD COLUMN scep_provisioner text CHECK(length(scep_provisioner) BETWEEN 1 AND 128);
+
 ALTER TABLE mdm_pki.certificates ADD CONSTRAINT issuer_generation FOREIGN KEY(tenant_id,purpose,issuer) REFERENCES mdm_pki.issuers(tenant_id,purpose,digest);
 ALTER TABLE mdm_pki.signing ADD CONSTRAINT issuer_generation FOREIGN KEY(tenant_id,purpose,issuer) REFERENCES mdm_pki.issuers(tenant_id,purpose,digest);
 ALTER TABLE mdm_pki.revocations ADD CONSTRAINT issued_certificate FOREIGN KEY(tenant_id,purpose,issuer,serial) REFERENCES mdm_pki.certificates(tenant_id,purpose,issuer,serial);
@@ -108,12 +105,9 @@ ALTER TABLE mdm_apple.trust_deliveries ENABLE ROW LEVEL SECURITY;
 ALTER TABLE mdm_apple.trust_deliveries FORCE ROW LEVEL SECURITY;
 CREATE POLICY tenant ON mdm_apple.trust_deliveries USING(tenant_id=NULLIF(current_setting('rss.tenant_id',true),'')::uuid) WITH CHECK(tenant_id=NULLIF(current_setting('rss.tenant_id',true),'')::uuid);
 GRANT SELECT,INSERT ON mdm_apple.trust_deliveries TO mdm_access;
-ALTER TABLE mdm_apple.attempts ADD COLUMN trust uuid;
+
 ALTER TABLE mdm_apple.attempts ADD CONSTRAINT trust_delivery FOREIGN KEY(tenant_id,trust) REFERENCES mdm_apple.trust_deliveries(tenant_id,id);
-ALTER TABLE mdm_apple.attempts DROP CONSTRAINT attempts_check;
-ALTER TABLE mdm_apple.attempts DROP CONSTRAINT attempts_phase_check;
-ALTER TABLE mdm_apple.attempts ADD CONSTRAINT attempts_check CHECK (trust IS NULL AND ((((phase = ANY(ARRAY['collect'::text,'collect_device'::text,'collect_security'::text,'collect_agent_platform'::text,'collect_agent'::text])) AND (collection IS NOT NULL) AND (operation IS NULL) AND (certificate IS NULL)) OR ((phase = ANY (ARRAY['execute'::text, 'observe'::text, 'resolve_device'::text, 'resolve_security'::text])) AND (operation IS NOT NULL) AND (collection IS NULL) AND (certificate IS NULL)) OR ((phase = 'renew'::text) AND (certificate IS NOT NULL) AND (collection IS NULL) AND (operation IS NULL)))) OR (trust IS NOT NULL AND phase IN ('trust_install','trust_verify') AND operation IS NULL AND collection IS NULL AND certificate IS NULL));
-ALTER TABLE mdm_apple.attempts ADD CONSTRAINT attempts_phase_check CHECK(phase IN ('collect','collect_device','collect_security','collect_agent_platform','collect_agent','execute','observe','resolve_device','resolve_security','renew','trust_install','trust_verify'));
+
 -- Native participants borrow the Execution transaction; only trust delivery and
 -- installation acknowledgements are available to that role.
 GRANT USAGE ON SCHEMA mdm_pki TO mdm_command_runtime;

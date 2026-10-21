@@ -1,2 +1,2 @@
--- Administrator bootstrap for new installations and the #2465 forward upgrade.
+-- Administrator role bootstrap for the current installation.
 CREATE ROLE mdm_command_runtime NOLOGIN NOSUPERUSER NOBYPASSRLS NOCREATEROLE NOCREATEDB NOREPLICATION;

@@ -1,9 +1,5 @@
 -- Fresh installation: inventory-service owns these objects.
 BEGIN;
--- Inventory publishes collection changes through the SDK history contract.
-ALTER TABLE mdm.asset_changes DROP CONSTRAINT asset_changes_kind_check;
-ALTER TABLE mdm.asset_changes ADD CONSTRAINT asset_changes_kind_check
- CHECK(kind IN ('inventory','manual','device','registration','source','credential','collection','catalog'));
 SET LOCAL check_function_bodies = false;
 
 CREATE TRIGGER collection_history AFTER INSERT OR DELETE OR UPDATE ON mdm_access.collection_runs FOR EACH ROW EXECUTE FUNCTION mdm_access.capture_collection_history();
@@ -188,7 +184,6 @@ GRANT SELECT,INSERT ON TABLE mdm_group.groups TO mdm_group_runtime;
 
 GRANT UPDATE(presentation) ON TABLE mdm_group.groups TO mdm_group_runtime;
 
-
 GRANT UPDATE(revision) ON TABLE mdm_group.groups TO mdm_group_runtime;
 
 GRANT UPDATE(calculation_revision) ON TABLE mdm_group.groups TO mdm_group_runtime;
@@ -248,21 +243,6 @@ GRANT SELECT ON TABLE rss_projection.events TO mdm_runtime;
 GRANT SELECT ON TABLE rss_projection.receipts TO mdm_runtime;
 
 GRANT SELECT ON TABLE rss_projection.sources TO mdm_runtime;
-
-CREATE OR REPLACE FUNCTION mdm.record_asset_change(t uuid,k text,i jsonb,f text[]) RETURNS bigint
-LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog,mdm AS $$
-DECLARE v bigint;
-BEGIN
- IF t IS DISTINCT FROM nullif(current_setting('rss.tenant_id',true),'')::uuid THEN
-  RAISE EXCEPTION 'asset tenant mismatch' USING ERRCODE='42501';
- END IF;
- INSERT INTO mdm.asset_clock(tenant_id,revision) VALUES(t,1)
- ON CONFLICT(tenant_id) DO UPDATE SET revision=mdm.asset_clock.revision+1
- RETURNING revision INTO v;
- INSERT INTO mdm.asset_changes(tenant_id,revision,kind,identity,fields) VALUES(t,v,k,i,f);
- PERFORM pg_catalog.pg_notify('mdm_work_' || replace(t::text,'-',''),'automation_input');
- RETURN v;
-END $$;
 
 GRANT USAGE ON SCHEMA mdm TO mdm_access,mdm_command_runtime;
 GRANT SELECT ON mdm.field_versions TO mdm_access,mdm_command_runtime;

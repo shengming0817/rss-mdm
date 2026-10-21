@@ -271,7 +271,7 @@ fn macos_plans_are_wire_valid_without_granting_inventory_scope_authority() {
 }
 
 #[test]
-fn engine_map_is_bounded_by_closed_keys_not_a_stale_windows_count() {
+fn engine_map_accepts_declared_engines_and_rejects_unknown_keys() {
     let engines = [
         NativeEngine::WindowsWmi,
         NativeEngine::WindowsRegistry,
@@ -284,7 +284,7 @@ fn engine_map_is_bounded_by_closed_keys_not_a_stale_windows_count() {
         NativeEngine::MacosPkgReceipts,
         NativeEngine::MacosBrew,
     ];
-    let mut environment = CollectionEnvironment {
+    let environment = CollectionEnvironment {
         edition: None,
         tools: Default::default(),
         native_engines: engines
@@ -293,10 +293,6 @@ fn engine_map_is_bounded_by_closed_keys_not_a_stale_windows_count() {
             .collect(),
     };
     environment.validate().unwrap();
-    environment
-        .native_engines
-        .insert(NativeEngine::MacosBrew, 1);
-    assert!(environment.validate().is_err());
     assert!(serde_json::from_value::<NativeEngines>(json!({"macos.command":1})).is_err());
 }
 
@@ -361,7 +357,7 @@ fn brew_identity_requires_nonroot_live_session_and_exact_context() {
     );
 }
 #[test]
-fn signed_macos_collection_binds_identity_plan_and_permit_without_old_decode() {
+fn signed_macos_collection_binds_identity_plan_and_permit() {
     use ring::signature::{ED25519, Ed25519KeyPair, KeyPair, UnparsedPublicKey};
     let plan = plan(brew("/opt/homebrew"));
     let id = uuid::Uuid::from_u128(1);
@@ -425,9 +421,6 @@ fn signed_macos_collection_binds_identity_plan_and_permit_without_old_decode() {
         );
     }
     let payload = TaskPayload::Collection(Box::new(task));
-    let mut old = serde_json::to_value(&payload).unwrap();
-    old["task"]["wireVersion"] = json!(1);
-    assert!(serde_json::from_value::<TaskPayload>(old).is_err());
     let mut missing = serde_json::to_value(&payload).unwrap();
     missing["task"].as_object_mut().unwrap().remove("execution");
     assert!(serde_json::from_value::<TaskPayload>(missing).is_err());
@@ -466,13 +459,13 @@ fn macos_software_rows_bind_closed_provenance_and_brew_selectors() {
 }
 
 #[test]
-fn brew_data_recipe_rejects_old_versions_and_negotiates_exactly() {
+fn brew_data_recipe_requires_current_engine_contract() {
     let current = query(brew("/opt/homebrew"));
-    assert_eq!(current.version, 2);
+    assert_eq!(current.version, 1);
     current.validate().unwrap();
     let plan = plan(current.definition.clone());
-    assert!(plan.supported_by(&[(NativeEngine::MacosBrew, 2)].into()));
-    for version in [0, 1, 3] {
+    assert!(plan.supported_by(&[(NativeEngine::MacosBrew, 1)].into()));
+    for version in [0, 2] {
         assert!(!plan.supported_by(&[(NativeEngine::MacosBrew, version)].into()));
         let mut unsupported = current.clone();
         unsupported.version = version;

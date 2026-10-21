@@ -496,7 +496,7 @@ impl ExecutionService {
             let permissions=if reauthorize {op.authority.required().to_vec()}else{vec![Permission::OperationCancel]};
             let auth=storage::authorized_native(tx,proof,device,&permissions).await?;
             storage::lock(tx,&format!("request:{}",change.request_id)).await?;storage::lock(tx,device).await?;
-            let fingerprint=Sha256::digest(checked_input(serde_json::to_vec(&("mdm.command-change/v4",proof.actor(),device,id,change,reauthorization)))?).to_vec();
+            let fingerprint=Sha256::digest(checked_input(serde_json::to_vec(&("mdm.command-change/v1",proof.actor(),device,id,change,reauthorization)))?).to_vec();
             let event_key = format!("command-change:{}:{}", audit.snapshot().actor.ok_or(Error::Malformed)?, change.request_id);
             if let Some(value)=replay(tx,change.request_id,&fingerprint,audit).await? {audit.management_result(rss_mdm_audit_integration::ManagementResult::Replayed);let fact = Fact::business(audit, &event_key, &fingerprint, 200, "success", None)?; service.audit_store.append_in(tx, &fact, true).await?;return Ok(value);}
             let op=storage::load(tx,&service.protection,id).await?;
@@ -581,7 +581,7 @@ fn dispatch(
     coordinate: dc::Coordinate,
     now: i64,
 ) -> Result<PendingMessage<Vec<u8>>> {
-    let payload = checked_input(serde_json::to_vec(&DispatchV3 {
+    let payload = checked_input(serde_json::to_vec(&DispatchV1 {
         device: device.into(),
         operation_id: input.operation_id,
         generation: coordinate.generation(),
@@ -600,10 +600,10 @@ fn dispatch(
                 checked_input(MessageRoute::parse("device.command"))?,
                 ContractIdentity::new(
                     checked_input(ContractId::parse("mdm.command-dispatch"))?,
-                    checked_input(ContractVersion::from_major(3))?,
+                    checked_input(ContractVersion::from_major(1))?,
                     checked_input(SchemaDigest::parse(&format!(
                         "sha256:{:x}",
-                        Sha256::digest(include_bytes!("dispatch-v3.json"))
+                        Sha256::digest(include_bytes!("dispatch-v1.json"))
                     )))?,
                 ),
             ),

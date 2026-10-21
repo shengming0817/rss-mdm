@@ -599,11 +599,7 @@ async fn native_inventory_case(
     } {
         let r::blueprints::Definition::AgentCollection { template } = r::blueprints::get(
             id,
-            if id == "windows.agent.software" {
-                "2"
-            } else {
-                "1"
-            },
+            "1",
         )
         .unwrap()
         .definition
@@ -614,7 +610,7 @@ async fn native_inventory_case(
     }
     if !macos {
         let r::blueprints::Definition::AgentCollection { template } =
-            r::blueprints::get("windows.agent.identity", "2")
+            r::blueprints::get("windows.agent.identity", "1")
                 .unwrap()
                 .definition
         else {
@@ -1202,7 +1198,7 @@ async fn macos_user_applications_and_brew_keep_other_users_after_complete_empty(
     let mut specs = Vec::new();
     for (name, version) in [
         ("macos.agent.applications_user", "1"),
-        ("macos.agent.brew_arm_formula", "2"),
+        ("macos.agent.brew_arm_formula", "1"),
     ] {
         let r::blueprints::Definition::AgentCollection { template } =
             r::blueprints::get(name, version).unwrap().definition
@@ -1264,7 +1260,7 @@ async fn macos_user_applications_and_brew_keep_other_users_after_complete_empty(
         post(&mut f.author,&f.router,&format!("/api/v1/policies/{policy}"),json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"put","enabled":true,"definition":{"scope":case_task_scope(),"action":{"kind":"agent_collection","resource":{"id":resource_id,"version":"v1","platform":"macos","architecture":"aarch64","variant":"default"},"runLifetimeSeconds":300}}}})).await?;
         let task = tokio::time::timeout(Duration::from_secs(30), async {
             loop {
-                let response = agent_call(&f.router,Method::POST,"/api/v1/agent/runtime/tasks/claim",Some(case_credential()),Some(json!({"wireVersion":1,"operationId":Uuid::new_v4(),"profiles":[],"environment":{"edition":null,"tools":{},"nativeEngines":{"macos.applications":1,"macos.brew":2}},"executionContext":context}))).await?;
+                let response = agent_call(&f.router,Method::POST,"/api/v1/agent/runtime/tasks/claim",Some(case_credential()),Some(json!({"wireVersion":1,"operationId":Uuid::new_v4(),"profiles":[],"environment":{"edition":null,"tools":{},"nativeEngines":{"macos.applications":1,"macos.brew":1}},"executionContext":context}))).await?;
                 ensure!(response.0 == StatusCode::OK, "scoped claim: {response:?}");
                 if !response.1["task"].is_null() { break Ok::<_,anyhow::Error>(serde_json::from_value::<w::SignedTask>(response.1["task"].clone())?); }
                 tokio::time::sleep(Duration::from_millis(50)).await;

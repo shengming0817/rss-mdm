@@ -1,6 +1,6 @@
 -- Quota configuration and organization responsibility are registration-owned.
 BEGIN;
-ALTER TABLE mdm_access.requests ADD COLUMN self_service boolean NOT NULL DEFAULT false;
+
 CREATE TABLE mdm_access.registration_quota_settings (
     tenant_id uuid NOT NULL,
     subject text NOT NULL CHECK(length(subject) BETWEEN 1 AND 256),

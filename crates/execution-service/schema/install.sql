@@ -75,16 +75,18 @@ $$;
 REVOKE ALL ON FUNCTION mdm_commands.save_retired_action(uuid,uuid,jsonb,jsonb) FROM PUBLIC;
 
 CREATE TABLE mdm_commands.action_attempts (
-    tenant_id uuid NOT NULL,
-    id uuid NOT NULL,
-    run uuid NOT NULL,
-    registration uuid NOT NULL,
-    claimed_at bigint NOT NULL,
-    offer jsonb NOT NULL,
-    permit jsonb,
-    CONSTRAINT action_attempts_claimed_at_check CHECK ((claimed_at >= 0)),
-    CONSTRAINT action_attempts_offer_check CHECK ((octet_length((offer)::text) <= 6291456)),
-    CONSTRAINT action_attempts_permit_check CHECK (((permit IS NULL) OR (octet_length((permit)::text) <= 6291456)))
+ tenant_id uuid NOT NULL,
+ id uuid NOT NULL,
+ run uuid NOT NULL,
+ registration uuid NOT NULL,
+ claimed_at bigint NOT NULL,
+ offer jsonb NOT NULL,
+ permit jsonb,
+ CONSTRAINT action_attempts_claimed_at_check CHECK ((claimed_at >= 0)),
+ CONSTRAINT action_attempts_offer_check CHECK ((octet_length((offer)::text) <= 6291456)),
+ CONSTRAINT action_attempts_permit_check CHECK (((permit IS NULL) OR (octet_length((permit)::text) <= 6291456))),
+ execution_material jsonb CHECK (execution_material IS NULL OR (jsonb_typeof(execution_material)='object' AND octet_length(execution_material::text)<=6291456))
+
 );
 
 ALTER TABLE ONLY mdm_commands.action_attempts FORCE ROW LEVEL SECURITY;
@@ -135,34 +137,37 @@ CREATE TABLE mdm_commands.action_receipts (
 ALTER TABLE ONLY mdm_commands.action_receipts FORCE ROW LEVEL SECURITY;
 
 CREATE TABLE mdm_commands.action_runs (
-    source_objects jsonb NOT NULL,
-    tenant_id uuid NOT NULL,
-    id uuid NOT NULL,
-    source_kind text DEFAULT 'policy'::text NOT NULL,
-    policy_version uuid,
-    device text NOT NULL,
-    registration uuid NOT NULL,
-    generation bigint NOT NULL,
-    occurrence text NOT NULL,
-    triggered_at bigint CHECK (triggered_at IS NULL OR triggered_at >= 0),
-    created_at bigint NOT NULL,
-    available_at bigint NOT NULL,
-    deadline bigint NOT NULL,
-    state jsonb NOT NULL,
-    gateway_accepted boolean DEFAULT false NOT NULL,
-    dispatch_fingerprint bytea NOT NULL,
-    dispatch_failure jsonb CHECK (dispatch_failure IS NULL OR (jsonb_typeof(dispatch_failure)='object' AND octet_length(dispatch_failure::text)<=8192)),
-    result jsonb,
-    invocation jsonb CHECK (invocation IS NULL OR (jsonb_typeof(invocation)='object' AND octet_length(invocation::text)<=131072)),
-    CONSTRAINT action_runs_available_at_check CHECK ((available_at >= 0)),
-    CONSTRAINT action_runs_check CHECK ((source_kind = 'policy'::text) AND (policy_version IS NOT NULL)),
-    CONSTRAINT action_runs_check1 CHECK ((deadline > available_at)),
-    CONSTRAINT action_runs_created_at_check CHECK ((created_at >= 0)),
-    CONSTRAINT action_runs_dispatch_fingerprint_check CHECK ((octet_length(dispatch_fingerprint) = 32)),
-    CONSTRAINT action_runs_generation_check CHECK ((generation > 0)),
-    CONSTRAINT action_runs_occurrence_check CHECK (((octet_length(occurrence) >= 1) AND (octet_length(occurrence) <= 256))),
-    CONSTRAINT action_runs_result_check CHECK ((octet_length((result)::text) <= 1114112)),
-    CONSTRAINT action_runs_state_check CHECK ((octet_length((state)::text) <= 4096))
+ source_objects jsonb NOT NULL,
+ tenant_id uuid NOT NULL,
+ id uuid NOT NULL,
+ source_kind text DEFAULT 'policy'::text NOT NULL,
+ policy_version uuid,
+ device text NOT NULL,
+ registration uuid NOT NULL,
+ generation bigint NOT NULL,
+ occurrence text NOT NULL,
+ triggered_at bigint CHECK (triggered_at IS NULL OR triggered_at >= 0),
+ created_at bigint NOT NULL,
+ available_at bigint NOT NULL,
+ deadline bigint NOT NULL,
+ state jsonb NOT NULL,
+ gateway_accepted boolean DEFAULT false NOT NULL,
+ dispatch_fingerprint bytea NOT NULL,
+ dispatch_failure jsonb CHECK (dispatch_failure IS NULL OR (jsonb_typeof(dispatch_failure)='object' AND octet_length(dispatch_failure::text)<=8192)),
+ result jsonb,
+ invocation jsonb CHECK (invocation IS NULL OR (jsonb_typeof(invocation)='object' AND octet_length(invocation::text)<=131072)),
+ CONSTRAINT action_runs_available_at_check CHECK ((available_at >= 0)),
+ CONSTRAINT action_runs_check CHECK ((source_kind = 'policy'::text) AND (policy_version IS NOT NULL)),
+ CONSTRAINT action_runs_check1 CHECK ((deadline > available_at)),
+ CONSTRAINT action_runs_created_at_check CHECK ((created_at >= 0)),
+ CONSTRAINT action_runs_dispatch_fingerprint_check CHECK ((octet_length(dispatch_fingerprint) = 32)),
+ CONSTRAINT action_runs_generation_check CHECK ((generation > 0)),
+ CONSTRAINT action_runs_occurrence_check CHECK (((octet_length(occurrence) >= 1) AND (octet_length(occurrence) <= 256))),
+ CONSTRAINT action_runs_result_check CHECK ((octet_length((result)::text) <= 1114112)),
+ CONSTRAINT action_runs_state_check CHECK ((octet_length((state)::text) <= 4096)),
+ software_effect jsonb CHECK (software_effect IS NULL OR (jsonb_typeof(software_effect)='object' AND octet_length(software_effect::text)<=4096)),
+ invocation_archive jsonb CHECK (invocation_archive IS NULL OR octet_length(invocation_archive::text)<=196608)
+
 );
 
 ALTER TABLE ONLY mdm_commands.action_runs FORCE ROW LEVEL SECURITY;
@@ -489,8 +494,6 @@ ALTER TABLE mdm_commands.attempt_frames ENABLE ROW LEVEL SECURITY;
 ALTER TABLE mdm_commands.attempt_frames FORCE ROW LEVEL SECURITY;
 CREATE POLICY tenant ON mdm_commands.attempt_frames USING (tenant_id=NULLIF(current_setting('rss.tenant_id',true),'')::uuid) WITH CHECK (tenant_id=NULLIF(current_setting('rss.tenant_id',true),'')::uuid);
 
-
-
 -- Wake eligibility reads published work without giving the Windows role access
 -- to shared command storage. Reauthorization and user scope remain checked in Rust.
 CREATE FUNCTION mdm_commands.windows_pending_operations(p_registration uuid, p_generation bigint, p_after uuid) RETURNS SETOF mdm_commands.operations
@@ -508,6 +511,7 @@ CREATE FUNCTION mdm_commands.windows_pending_operations(p_registration uuid, p_g
 $$;
 REVOKE ALL ON FUNCTION mdm_commands.windows_pending_operations(uuid,bigint,uuid) FROM PUBLIC;
 
+CREATE INDEX action_software_effect ON mdm_commands.action_runs(tenant_id,device) WHERE software_effect IS NOT NULL;
 COMMIT;
 
 CREATE TABLE mdm_commands.software_stage_stats (

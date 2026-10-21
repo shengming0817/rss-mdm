@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 const JOURNAL: &str = "mdm.observation.v1";
 const PROJECTION: &str = "inventory";
-const GENERATION: &str = "inventory-v7";
+const GENERATION: &str = "inventory-projection-v1";
 
 /// The product's canonical journal and read-model generation, shared by writer and reader.
 pub fn projection_scope(tenant: rss_request_context::TenantId) -> ProjectionScope {
@@ -24,13 +24,8 @@ pub fn projection_scope(tenant: rss_request_context::TenantId) -> ProjectionScop
 pub fn definition() -> DefinitionIdentity {
     let mut digest = Sha256::new();
     digest.update(GENERATION);
-    digest.update(":registered-collection:typed-fields-v4:exact-scope:observed-received:");
-    digest.update(include_str!("../migrations/0007_unified_collection.sql"));
-    digest.update(include_str!("../migrations/0008_field_scopes.sql"));
-    digest.update(include_str!("../migrations/0001_inventory.sql"));
-    digest.update(include_str!("../migrations/0003_assets.sql"));
-    digest.update(include_str!("../migrations/0004_history.sql"));
-    digest.update(include_str!("../migrations/0005_enterprise.sql"));
+    digest.update(":registered-collection:typed-fields-v1:exact-scope:observed-received:");
+    digest.update(crate::MIGRATION_SQL);
     DefinitionIdentity::new(digest.finalize().into())
 }
 /// Inventory effect consumes a source without exposing its internal handle.
@@ -195,7 +190,10 @@ mod tests {
     fn canonical_scope_binds_the_current_definition() {
         let tenant =
             rss_request_context::TenantId::parse("11111111-1111-4111-8111-111111111111").unwrap();
-        assert_eq!(projection_scope(tenant).generation(), "inventory-v7");
+        assert_eq!(
+            projection_scope(tenant).generation(),
+            "inventory-projection-v1"
+        );
         assert_ne!(definition().as_bytes(), &[0; 32]);
     }
     #[test]

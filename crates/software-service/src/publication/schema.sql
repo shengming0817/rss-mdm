@@ -26,10 +26,20 @@ CREATE TABLE mdm_software_composition.slots (
  PRIMARY KEY(tenant_id,binding,coordinate), FOREIGN KEY(tenant_id,binding) REFERENCES mdm_software_composition.bindings(tenant_id,identity)
 );
 CREATE TABLE mdm_software_composition.targets (
- tenant_id uuid NOT NULL, id text NOT NULL CHECK(octet_length(id) BETWEEN 1 AND 128), record text NOT NULL,
- document bytea NOT NULL CHECK(octet_length(document) BETWEEN 1 AND 1048576), digest bytea NOT NULL CHECK(octet_length(digest)=32),
- call_generation bigint NOT NULL DEFAULT 0 CHECK(call_generation>=0), attempted boolean NOT NULL DEFAULT false, acknowledged boolean NOT NULL DEFAULT false,
- PRIMARY KEY(tenant_id,id), FOREIGN KEY(tenant_id,record) REFERENCES mdm_software_composition.subjects(tenant_id,record),CHECK(NOT acknowledged OR attempted)
+ tenant_id uuid NOT NULL,
+ id text NOT NULL CHECK(octet_length(id) BETWEEN 1 AND 128),
+ record text NOT NULL,
+ document bytea NOT NULL CHECK(octet_length(document) BETWEEN 1 AND 1048576),
+ digest bytea NOT NULL CHECK(octet_length(digest)=32),
+ call_generation bigint NOT NULL DEFAULT 0 CHECK(call_generation>=0),
+ attempted boolean NOT NULL DEFAULT false,
+ acknowledged boolean NOT NULL DEFAULT false,
+ PRIMARY KEY(tenant_id,id),
+ FOREIGN KEY(tenant_id,record) REFERENCES mdm_software_composition.subjects(tenant_id,record),
+ CHECK(NOT acknowledged OR attempted),
+ withdrawal_id text,
+ CHECK((left(id,2)='p:' AND withdrawal_id IS NULL) OR (left(id,2)='w:' AND withdrawal_id=id))
+
 );
 CREATE TABLE mdm_software_composition.withdrawals (
  tenant_id uuid NOT NULL, id text NOT NULL CHECK(octet_length(id) BETWEEN 1 AND 128), record text NOT NULL,
@@ -37,9 +47,9 @@ CREATE TABLE mdm_software_composition.withdrawals (
  complete boolean NOT NULL DEFAULT false,
  PRIMARY KEY(tenant_id,id), FOREIGN KEY(tenant_id,record) REFERENCES mdm_software_composition.subjects(tenant_id,record)
 );
-ALTER TABLE mdm_software_composition.targets ADD COLUMN withdrawal_id text;
+
 ALTER TABLE mdm_software_composition.targets ADD FOREIGN KEY(tenant_id,withdrawal_id) REFERENCES mdm_software_composition.withdrawals(tenant_id,id);
-ALTER TABLE mdm_software_composition.targets ADD CHECK((left(id,2)='p:' AND withdrawal_id IS NULL) OR (left(id,2)='w:' AND withdrawal_id=id));
+
 CREATE TABLE mdm_software_composition.projections (
  tenant_id uuid NOT NULL, binding bytea NOT NULL, coordinate text NOT NULL CHECK(octet_length(coordinate) BETWEEN 1 AND 512), publication bytea NOT NULL CHECK(octet_length(publication)=32),
  PRIMARY KEY(tenant_id,binding,coordinate), FOREIGN KEY(tenant_id,binding) REFERENCES mdm_software_composition.bindings(tenant_id,identity)

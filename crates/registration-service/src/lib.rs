@@ -32,18 +32,8 @@ pub const ACCESS_CONTRACT: &str = include_str!("access-contract.json");
 /// Current quota schema; installation remains fresh-only.
 pub const QUOTAS_SQL: &str = include_str!("../schema/quotas.sql");
 
-/// Adds durable native management contact without guessing historical evidence.
-pub const ENROLLMENT_PROGRESS_SQL: &str = include_str!("../schema/enrollment-progress.sql");
-
-/// Durable Apple account authorization on the existing request lifecycle.
-pub const APPLE_ACCOUNT_SQL: &str = include_str!("../schema/apple-account.sql");
-
-pub const APPLE_ADE_SQL: &str = include_str!("../schema/apple-ade.sql");
-
 /// Registration settings and reusable administrator configurations.
 pub const AGENT_CONFIGURATIONS_SQL: &str = include_str!("../schema/agent-configurations.sql");
-
-pub const WINDOWS_ENTRA_SQL: &str = include_str!("../schema/windows-entra.sql");
 
 /// Windows operation receipts owned by registration; install after the Windows schema namespace.
 pub const WINDOWS_RECEIPTS_SQL: &str = include_str!("../schema/windows-receipts.sql");

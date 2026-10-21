@@ -13,7 +13,7 @@ pub use admission::{verify as verify_admission, verify_collections};
 pub use inventory::{Inventory, definition, projection_scope};
 /// Owner-executed Inventory table, identity and tenant-isolation migration SQL.
 /// Embedding the SQL does not apply it; runtime credentials must not own the schema.
-pub const MIGRATION_SQL: &str = include_str!("../migrations/0001_inventory.sql");
+pub const MIGRATION_SQL: &str = include_str!("../migrations/install.sql");
 
 mod reader;
 pub use reader::{InventoryField, InventoryReader, read_in};
@@ -30,23 +30,15 @@ pub async fn directory_presence_in(
     Ok(row)
 }
 /// Owner-executed migration defining the restricted Inventory API reader role.
-pub const READER_MIGRATION_SQL: &str = include_str!("../migrations/0002_inventory_api_reader.sql");
+pub const READER_MIGRATION_SQL: &str = include_str!("../migrations/reader.sql");
 
-/// Fresh-install asset schema, applied after the original Inventory units.
-pub const ASSETS_MIGRATION_SQL: &str = include_str!("../migrations/0003_assets.sql");
-/// Atomic asset history and durable input records; no scheduling or lease ownership.
-pub const HISTORY_MIGRATION_SQL: &str = include_str!("../migrations/0004_history.sql");
 mod manual;
 pub use manual::{Assignment, assign_in, manual_in};
 mod history;
 pub use history::{manual_at_in, read_at_in, watermark_in};
 
-/// Fixed enterprise task field catalog and typed storage bounds.
-pub const ENTERPRISE_MIGRATION_SQL: &str = include_str!("../migrations/0005_enterprise.sql");
-
 /// Consumer publication fencing; grants no ability to change canonical facts.
-pub const WATERMARK_FENCE_MIGRATION_SQL: &str =
-    include_str!("../migrations/0006_watermark_fence.sql");
+pub const WATERMARK_FENCE_MIGRATION_SQL: &str = include_str!("../migrations/watermark.sql");
 /// Lock the tenant's committed asset watermark until the caller transaction settles.
 /// Must be called before consumer publication locks and input validation.
 pub async fn lock_watermark_in(
@@ -87,14 +79,9 @@ pub use catalog::{
     historical_field_in, initialize_fields_in, publish_field_in, register_collection_in,
     retire_field_in, tenant_seed_sql, time_series_versions_in,
 };
-/// Single current field/collection format for fresh installations.
-pub const UNIFIED_COLLECTION_SQL: &str = include_str!("../migrations/0007_unified_collection.sql");
 
 mod results;
 pub use results::{CollectionCompletion, collection_result_in, seal_collection_in};
-
-/// Required per-field namespace installation; rejects incompatible stored evidence.
-pub const FIELD_SCOPES_SQL: &str = include_str!("../migrations/0008_field_scopes.sql");
 
 pub use catalog::admit_time_series_fields_in;
 

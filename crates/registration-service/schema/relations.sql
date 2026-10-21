@@ -100,4 +100,7 @@ GRANT UPDATE(actor,instance,state,device) ON mdm_access.agent_grants TO mdm_acce
 GRANT UPDATE(state,certificate_chain,metadata,fingerprint,activation_operation,activation_digest,activation_result,credential) ON mdm_access.agent_issuances TO mdm_access;
 GRANT SELECT,INSERT ON mdm_access.agent_grants TO mdm_command_runtime;
 GRANT SELECT(tenant_id,credential,not_after) ON mdm_access.agent_issuances TO mdm_command_runtime,mdm_flow_runtime;
+GRANT UPDATE(first_authenticated_at) ON mdm_access.registrations TO mdm_access, mdm_command_runtime;
+GRANT UPDATE(account_version,account_reference,account_challenge) ON mdm_access.requests TO mdm_access;
+GRANT UPDATE(organization_version,organization_challenge) ON mdm_access.requests TO mdm_access;
 COMMIT;

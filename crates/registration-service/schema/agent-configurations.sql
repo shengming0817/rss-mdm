@@ -17,14 +17,9 @@ CREATE TABLE mdm_access.agent_configurations (
  expires_at timestamptz NOT NULL CHECK(expires_at>created_at AND expires_at<=created_at+interval '365 days'),
  PRIMARY KEY(tenant_id,id), UNIQUE(tenant_id,operation_id)
 );
-ALTER TABLE mdm_access.agent_grants ADD COLUMN configuration_id uuid;
-ALTER TABLE mdm_access.agent_grants ADD COLUMN configuration_binding jsonb CHECK(octet_length(configuration_binding::text)<=32768);
-ALTER TABLE mdm_access.agent_grants ADD CONSTRAINT configuration_authority
- CHECK((source='configuration' AND configuration_id IS NOT NULL AND configuration_binding IS NOT NULL AND spki IS NOT NULL) OR (source<>'configuration' AND configuration_id IS NULL AND configuration_binding IS NULL));
-ALTER TABLE mdm_access.agent_grants ADD CONSTRAINT configuration_device_key UNIQUE(tenant_id,configuration_id,spki);
+
 ALTER TABLE mdm_access.agent_grants ADD FOREIGN KEY(tenant_id,configuration_id) REFERENCES mdm_access.agent_configurations(tenant_id,id);
-ALTER TABLE mdm_access.agent_grants DROP CONSTRAINT agent_grants_source_check;
-ALTER TABLE mdm_access.agent_grants ADD CONSTRAINT agent_grants_source_check CHECK(source IN('download','browser','native','recovery','renewal','configuration'));
+
 CREATE INDEX agent_configuration_usage ON mdm_access.agent_grants(tenant_id,configuration_id);
 ALTER TABLE mdm_access.agent_enrollment_settings ENABLE ROW LEVEL SECURITY;
 ALTER TABLE mdm_access.agent_enrollment_settings FORCE ROW LEVEL SECURITY;

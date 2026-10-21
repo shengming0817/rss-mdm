@@ -106,7 +106,7 @@ impl Create {
             protector,
             tenant,
             device,
-            "native-input/v3",
+            "native-input/v1",
             &(&self.input_version, &self.target, &self.task),
         )?;
         Ok(StateDigest::from_bytes(
@@ -165,7 +165,7 @@ impl Create {
 }
 #[derive(Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct DispatchV3 {
+pub struct DispatchV1 {
     pub device: String,
     pub operation_id: Uuid,
     pub generation: i64,

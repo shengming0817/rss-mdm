@@ -78,7 +78,7 @@ impl ExecutionService {
                     &self.protection,
                     self.tenant,
                     device,
-                    "agent-install-command/v3",
+                    "agent-install-command/v1",
                     &(&input, policy, version),
                 )?,
                 &fact_audit,

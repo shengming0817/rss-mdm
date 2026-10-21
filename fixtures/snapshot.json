@@ -132,7 +132,7 @@
   },
   "coverage": {
     "definition": "284e0216d50136e0dcb683b321e48b64b94129ff176f0af8923ed0f75eb3b768",
-    "format": "typed-fields-v4",
+    "format": "typed-fields-v1",
     "id": "inventory",
     "version": "fixture-v1"
   },

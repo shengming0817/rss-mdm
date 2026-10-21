@@ -182,7 +182,7 @@ async fn historical_users_are_isolated_and_conditions_never_join_their_facts() -
             let field = field.as_str();
             let value = serde_json::to_string(&Scalar::String(value.into()))?;
             pg(&format!(
-                "INSERT INTO mdm.inventory(tenant_id,journal,generation,scope,coverage,field,field_scope,value,batch_id,observed_at,received_at,state,registration,source,epoch,collection_sequence) VALUES('{tenant}','mdm.observation.v1','inventory-v7','{scope}','{coverage}','{field}','{field_scope}','{value}','{run}',1,2,'known','{registration}','agent.native','{epoch}',{uid})"
+                "INSERT INTO mdm.inventory(tenant_id,journal,generation,scope,coverage,field,field_scope,value,batch_id,observed_at,received_at,state,registration,source,epoch,collection_sequence) VALUES('{tenant}','mdm.observation.v1','inventory-projection-v1','{scope}','{coverage}','{field}','{field_scope}','{value}','{run}',1,2,'known','{registration}','agent.native','{epoch}',{uid})"
             ))?;
         }
         let query = url::form_urlencoded::Serializer::new(String::new())

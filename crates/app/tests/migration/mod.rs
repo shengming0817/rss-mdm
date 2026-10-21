@@ -35,12 +35,12 @@ async fn fresh_installation_replay_and_mismatch_rejection() -> Result<()> {
             .fetch_all(&mut owner)
             .await?;
     ensure!(replay == before);
-    owner.execute("UPDATE public.mdm_migrations SET name='windows-channel-schema-v1' WHERE name='windows-channel-schema-v2'").await?;
+    owner.execute("UPDATE public.mdm_migrations SET name='unrecognized-unit' WHERE name='windows-channel-schema-v1'").await?;
     rejected(
         migrate_on(&mut owner, &installation).await,
         "existing ledger differs or is incomplete",
     );
-    owner.execute("UPDATE public.mdm_migrations SET name='windows-channel-schema-v2' WHERE name='windows-channel-schema-v1'").await?;
+    owner.execute("UPDATE public.mdm_migrations SET name='windows-channel-schema-v1' WHERE name='unrecognized-unit'").await?;
     migrate_on(&mut owner, &installation).await?;
     for field in ["instance_id", "target", "lineage", "audit_mode"] {
         let mut changed = serde_json::to_value(&installation)?;
@@ -121,7 +121,7 @@ async fn fresh_installation_replay_and_mismatch_rejection() -> Result<()> {
     }
     // Missing current schema units must fail without repairing the ledger.
     owner
-        .execute("DELETE FROM public.mdm_migrations WHERE name IN ('inventory-v2','inventory-service-schema-v1')")
+        .execute("DELETE FROM public.mdm_migrations WHERE name IN ('inventory-v1','inventory-service-schema-v1')")
         .await?;
     rejected(
         migrate_on(&mut owner, &installation).await,
@@ -140,7 +140,7 @@ async fn fresh_installation_replay_and_mismatch_rejection() -> Result<()> {
             == "preserve"
     );
     for (name, digest, complete) in &before {
-        if name == "inventory-v2" || name == "inventory-service-schema-v1" {
+        if name == "inventory-v1" || name == "inventory-service-schema-v1" {
             sqlx::query("INSERT INTO public.mdm_migrations VALUES($1,$2,$3)")
                 .bind(name)
                 .bind(digest)
@@ -186,64 +186,6 @@ fn installation_validates_stable_coordinates() {
     assert!(installation.validate().is_ok());
     installation.target = [0; 16];
     assert!(installation.validate().is_err());
-}
-
-#[tokio::test]
-#[ignore = "MODULE=installation.migration: incompatible state rejection across forced RLS"]
-async fn field_scope_migration_rejects_hidden_state_and_restores_rls() -> Result<()> {
-    let options = PgConnectOptions::from_str(&std::env::var("MDM_OWNER_URL")?)?
-        .ssl_mode(sqlx::postgres::PgSslMode::VerifyFull)
-        .ssl_root_cert(std::env::var("PG_CA_FILE")?);
-    let installation = Installation {
-        audit_mode: AuditMode::Plain,
-        instance_id: crate::test_support::identity::INSTANCE.into(),
-        target: [1; 16],
-        lineage: [2; 16],
-    };
-    let mut owner = PgConnection::connect_with(&options).await?;
-    migrate_on(&mut owner, &installation).await?;
-    let tenant = uuid::Uuid::new_v4().to_string();
-    sqlx::query("SELECT set_config('rss.tenant_id',$1,false)")
-        .bind(&tenant)
-        .execute(&mut owner)
-        .await?;
-    owner.execute("INSERT INTO mdm.manual_assignments VALUES(current_setting('rss.tenant_id')::uuid,'old-device','custom.old',1,'{}')").await?;
-    owner
-        .execute("SELECT set_config('rss.tenant_id','',false)")
-        .await?;
-    let error = sqlx::raw_sql(rss_mdm_inventory_postgres::FIELD_SCOPES_SQL)
-        .execute(&mut owner)
-        .await
-        .expect_err("occupied legacy state must reject the field-scope migration");
-    let database_error = error
-        .as_database_error()
-        .expect("migration rejection must be a database error");
-    ensure!(database_error.code().as_deref() == Some("P0001"));
-    ensure!(
-        database_error.message()
-            == "incompatible state in mdm.manual_assignments; matching fresh installation required"
-    );
-    owner.execute("ROLLBACK").await?;
-    ensure!(
-        sqlx::query_scalar::<_, bool>(
-            "SELECT relforcerowsecurity FROM pg_class WHERE oid='mdm.manual_assignments'::regclass"
-        )
-        .fetch_one(&mut owner)
-        .await?
-    );
-    sqlx::query("SELECT set_config('rss.tenant_id',$1,false)")
-        .bind(&tenant)
-        .execute(&mut owner)
-        .await?;
-    ensure!(
-        sqlx::query_scalar::<_, i64>(
-            "SELECT count(*) FROM mdm.manual_assignments WHERE device='old-device'"
-        )
-        .fetch_one(&mut owner)
-        .await?
-            == 1
-    );
-    Ok(())
 }
 
 async fn audit_privilege_drift(

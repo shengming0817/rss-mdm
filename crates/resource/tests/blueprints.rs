@@ -46,7 +46,7 @@ fn mdm_templates_cannot_claim_unverified_architecture_constraints() {
     use rss_mdm_resource::{Architecture, Kind, Variant, Version};
     let tenant =
         rss_request_context::TenantId::parse("11111111-1111-4111-8111-111111111111").unwrap();
-    let blueprint = blueprints::get("windows.hardware", "2").unwrap();
+    let blueprint = blueprints::get("windows.hardware", "1").unwrap();
     let version = blueprint
         .instantiate(tenant, Id::new("native").unwrap())
         .unwrap();
@@ -62,7 +62,7 @@ fn mdm_templates_cannot_claim_unverified_architecture_constraints() {
         .is_err()
     );
     let mut distinct = variants.clone();
-    let other = blueprints::get("windows.identity", "2")
+    let other = blueprints::get("windows.identity", "1")
         .unwrap()
         .instantiate(tenant, Id::new("other").unwrap())
         .unwrap();
@@ -99,5 +99,4 @@ fn origin_survives_snapshot_restore_without_catalog_lookup() {
     assert!(resource.set_origin(origin.clone()).is_err());
     let restored = Resource::restore(resource.snapshot()).unwrap();
     assert_eq!(restored.snapshot().origin, Some(origin));
-    assert!(blueprints::get("macos.identity", "1").is_none());
 }

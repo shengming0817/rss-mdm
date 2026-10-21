@@ -179,7 +179,7 @@ impl Content {
     }
     /// Canonical identity of the complete immutable export content.
     pub fn digest(&self) -> Digest {
-        let mut e = Encoding::new(b"rss-mdm-software-release/content/v2");
+        let mut e = Encoding::new(b"rss-mdm-software-release/content/v1");
         for part in self.software.fields().values() {
             e.bytes(part.as_bytes());
         }
@@ -232,7 +232,7 @@ pub struct PublicationBinding {
 impl PublicationBinding {
     /// Stable effect identity; retries and other targets cannot change it.
     pub fn publication_id(&self) -> PublicationId {
-        let mut e = Encoding::new(b"rss-mdm-software-release/publication/v4");
+        let mut e = Encoding::new(b"rss-mdm-software-release/publication/v1");
         e.object(self.publication.tenant(), self.publication.value());
         e.digest(self.content);
         e.object(self.target.tenant(), self.target.value());

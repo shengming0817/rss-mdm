@@ -3,7 +3,7 @@ use super::*;
 fn pack(id: &str, category: &str, adapter: NativeAdapter, fields: &[(&str, &str)]) -> Blueprint {
     Blueprint {
         id: format!("macos.{id}"),
-        version: "2".into(),
+        version: "1".into(),
         presentation: serde_json::json!({"category":category})
             .as_object()
             .unwrap()
@@ -194,7 +194,7 @@ fn status_pack(id: &str, category: &str, items: &[&str]) -> Blueprint {
         .collect::<Vec<_>>();
     Blueprint {
         id: format!("macos.ddm.{id}"),
-        version: "2".into(),
+        version: "1".into(),
         presentation: serde_json::json!({"category":category})
             .as_object()
             .unwrap()

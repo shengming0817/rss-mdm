@@ -65,7 +65,7 @@ pub async fn create_enrollment(
         return Err(Error::Malformed);
     }
     let digest = digest(&(
-        "enrollment_create.v4",
+        "enrollment_create.v1",
         device,
         source,
         windows_profile,
@@ -255,7 +255,7 @@ pub async fn change_enrollment(
     } else {
         "enrollment_cancel"
     };
-    let digest = digest(&("enrollment_change.v3", action, id, &password_digest));
+    let digest = digest(&("enrollment_change.v1", action, id, &password_digest));
     let op = Operation {
         actor: Actor::from_authorized(proof),
         key,
