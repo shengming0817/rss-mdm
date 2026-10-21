@@ -158,7 +158,7 @@ Windows Firewall CSP 状态与 WSC health 使用不同字段；BitLocker convers
 
 ## Windows Agent 声明式采集
 
-Agent 原生采集使用独立的 `agent_collection` Resource 和同名 Policy action。官方 `windows.agent.*` 模板覆盖身份/OS、CPU、内存、固件、磁盘、卷、网络、电池和软件；identity/software 当前为修订 2，其余为修订 1，经现有蓝图接口实例化为普通 Resource；选择后发布、激活并绑定精确 Policy 版本。按需使用 Policy rerun，周期使用既有 Schedule/Frequency。能力不足不派发，失败不会改派 PowerShell；MDM CSP 模板、企业显式脚本和 osquery 各自保留。
+Agent 原生采集使用独立的 `agent_collection` Resource 和同名 Policy action。官方 `windows.agent.*` 模板覆盖身份/OS、CPU、内存、固件、磁盘、卷、网络、电池和软件；identity/software 当前为修订 2，其余为修订 1，经现有蓝图接口实例化为普通 Resource；选择后发布、激活并绑定精确 Policy 版本。采集固定按包周期重复：Schedule 使用 interval、Frequency 为 every_trigger、misfire 为 coalesce_one，默认每小时一次，可调整 interval.seconds。采集不接受 manual、每版本一次、维护窗口或截止日期，也不接受 Policy rerun；停用停止新增采集但保留可信资产。客户端离线后只处理最近到期周期，不堆积补跑历史周期。页面刷新只重新读取已上报的数据。能力不足不派发，失败不会改派 PowerShell；MDM CSP 模板、企业显式脚本和 osquery 各自保留。
 
 定义包含唯一 wire plan 和服务端字段映射。WMI 只查询本机已有 namespace/class 的明确属性和结构化过滤条件；不能执行方法、远程查询或 Win32_Product。注册表明确 HKLM/HKU-SID、32/64 位视图、路径、值名和类型，只读取指定值或枚举直接子键；不使用 System HKCU，不加载离线 hive，EXPAND_SZ 不展开。UInt64/QWORD 按精确十进制文本传输，可映为字符串或受检整数；不能转换成浮点。`cim_time` 只转换日期与 UTC offset 完整的 CIM 时间。
 
@@ -201,6 +201,8 @@ APFS container 原始证据与卷关联保留在受限运行详情中，共享�
 用户应用与 Brew 只在可信执行上下文的当前非 root 登录用户下派发；固定 UID 等待该用户匹配。历史用户的事实仍可按 scope 查询、用于规则，读取不要求该用户现在登录。Offer 只构建一次 payload，从同一执行绑定冻结 UID/字段 scope、预留 CollectionRun，再签名；发布阶段不注册未绑定用户的完整采集定义。
 
 字段 scope 支持 `device`、`apple_user`、`macos_applications`、`macos_brew`。应用 scope 包含 root（local/system/user）和 uid（仅 user 非空）；Brew 包含 uid、prefix、package（formula/cask）、taps。dataset 绑定 Resource/variant/实际用户及稳定 GeneratedUID（适用时），不包含版本、会话或预算；变更某字段 root/prefix/taps 只创建该字段的新范围，不自动删除旧范围。
+
+设备已有的非 Device 范围通过 `GET /api/v1/devices/{id}/inventory-scopes?limit&cursor` 发现，响应为资产 envelope 的 `inventory_scopes {device,watermark,items:[{scope}],nextCursor}`。目录仅列当前有效来源的冻结采集尝试或保留事实，先按当前敏感字段权限过滤，再按固定水位和不透明游标分页；运行清理不隐藏仍保留的可信事实。权限、来源或注册世代变化使旧游标冲突，应从第一页重取。空目录不证明设备没有其它真实用户；Device 范围独立读取。
 
 详情、清单和运行详情通过 `scope=<URL 编码的 scope JSON>` 显式选择范围，省略则 Device。运行详情提供 frozen fingerprint/coverage、逐字段 scope/reason、完整性，以及实时 Observation receipt/projection 状态。固定水位质量记录不会被实时状态改写；quality.runId 是最近尝试，sources.evidence.snapshotId 是当前可信事实的原始 run，lastKnown 继续保留原始证据。失败和部分尝试不清空此前 Known；显式 Unknown 不通过规则。
 

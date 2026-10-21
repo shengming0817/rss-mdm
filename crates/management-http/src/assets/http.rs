@@ -43,6 +43,7 @@ pub fn routes() -> Router<Arc<HttpState>> {
         .route("/device-queries/{id}/items", get(query_items))
         .route("/device-queries/{id}/facets/{facet}", get(query_facets))
         .route("/devices/{id}/inventory", get(detail))
+        .route("/devices/{id}/inventory-scopes", get(inventory_scopes))
         .route("/devices/{id}/collections/{run}", get(collection_run))
         .route("/devices/{id}/inventory-lists/{field}", get(list_items))
         .route("/devices/{id}/manual-fields/{field}", put(manual))
@@ -82,6 +83,7 @@ fn authorize(
             .require(Permission::InventoryAssign, Some(device))
             .map_err(rss_mdm_inventory_service::Error::from),
         Command::Detail { device, .. }
+        | Command::InventoryScopes { device, .. }
         | Command::CollectionRun { device, .. }
         | Command::CollectionItems { device, .. }
         | Command::ListItems { device, .. } => auth
@@ -121,6 +123,7 @@ async fn run(
         Command::RetentionRead { key, .. } => audit.target(key),
         Command::Manual { device, .. } => audit.target_device(device),
         Command::Detail { device, .. }
+        | Command::InventoryScopes { device, .. }
         | Command::CollectionRun { device, .. }
         | Command::CollectionItems { device, .. }
         | Command::ListItems { device, .. } => audit.target_device(device),
@@ -441,6 +444,33 @@ async fn field_references(
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct CollectionSelector {
     scope: Option<String>,
+}
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ScopePage {
+    cursor: Option<String>,
+    limit: Option<usize>,
+}
+async fn inventory_scopes(
+    State(app): State<Arc<HttpState>>,
+    Extension(auth): Extension<RequestAuth>,
+    Extension(audit): Extension<RequestAudit>,
+    Path(device): Path<String>,
+    parameters: ParamInput<ScopePage>,
+) -> std::result::Result<HttpResponse, Error> {
+    let page = params(parameters)?;
+    run(
+        &app,
+        &auth,
+        &audit,
+        Command::InventoryScopes {
+            device,
+            scope: ReadScope::from_proof(&auth.proof)?,
+            limit: page.limit.unwrap_or(50),
+            cursor: page.cursor,
+        },
+    )
+    .await
 }
 fn read_scope(auth: &RequestAuth, scope: Option<String>) -> std::result::Result<ReadScope, Error> {
     let mut read = ReadScope::from_proof(&auth.proof)?;
