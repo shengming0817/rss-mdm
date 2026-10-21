@@ -74,6 +74,15 @@
     ],
     [
       "groups",
+      "member_set",
+      "uuid",
+      false,
+      null,
+      "",
+      ""
+    ],
+    [
+      "groups",
       "rule_version",
       "text",
       false,
@@ -95,15 +104,6 @@
       "asset_context",
       "text",
       true,
-      null,
-      "",
-      ""
-    ],
-    [
-      "groups",
-      "member_set",
-      "uuid",
-      false,
       null,
       "",
       ""

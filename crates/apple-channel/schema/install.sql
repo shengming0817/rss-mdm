@@ -163,7 +163,7 @@ CREATE TABLE mdm_apple.scep_attempts (
  CONSTRAINT scep_attempts_fingerprint_check CHECK ((octet_length(fingerprint) = 32)),
  CONSTRAINT scep_attempts_generation_check CHECK ((generation > 0)),
  CONSTRAINT scep_attempts_issuer_check CHECK ((octet_length(issuer) = 32)),
- CONSTRAINT scep_attempts_password_version_check CHECK ((authorization_version > 0)),
+ CONSTRAINT scep_attempts_authorization_version_check CHECK ((authorization_version > 0)),
  CONSTRAINT scep_attempts_spki_check CHECK ((octet_length(spki) = 32)),
  CONSTRAINT scep_attempts_state_check CHECK ((state = ANY (ARRAY['prepared'::text, 'consumed'::text, 'bound'::text, 'superseded'::text]))),
  CONSTRAINT scep_attempts_transaction_id_check CHECK (((length(transaction_id) >= 1) AND (length(transaction_id) <= 255))),
@@ -193,7 +193,7 @@ ALTER TABLE ONLY mdm_apple.scep_attempts
     ADD CONSTRAINT scep_attempts_pkey PRIMARY KEY (tenant_id, id);
 
 ALTER TABLE ONLY mdm_apple.scep_attempts
-    ADD CONSTRAINT scep_attempts_tenant_id_enrollment_password_version_key UNIQUE (tenant_id, enrollment, password_version);
+    ADD CONSTRAINT scep_attempts_tenant_id_enrollment_authorization_version_key UNIQUE (tenant_id, enrollment, authorization_version);
 
 ALTER TABLE ONLY mdm_apple.scep_attempts
     ADD CONSTRAINT scep_attempts_tenant_id_fingerprint_key UNIQUE (tenant_id, fingerprint);
