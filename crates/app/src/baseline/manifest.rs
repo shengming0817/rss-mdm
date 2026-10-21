@@ -250,102 +250,106 @@ pub fn build(tenant: Uuid) -> Result<Manifest, Error> {
         } else {
             "macos"
         };
-        let template = performance(platform, &fields)?;
-        let template_id = id(tenant, &format!("performance:{label}"));
-        resource(
-            &mut steps,
-            &format!("performance:{label}"),
-            template_id,
-            "agent_collection",
-            platform,
-            serde_json::to_value(&template).map_err(|_| Error::Malformed)?,
-            template.canonical(),
-        );
-        for (arch, architecture) in [
-            ("x86_64", r::Architecture::X86_64),
-            ("aarch64", r::Architecture::Aarch64),
-        ] {
-            let key = format!("profile:{label}:{arch}");
-            let target = id(tenant, &key);
-            let profile = r::TelemetryProfile::new(r::TelemetryProfileSpec {
-                template: r::TelemetryTemplate {
-                    resource: template_id.to_string(),
-                    version: "v1".into(),
-                    variant: arch.into(),
-                    platform,
-                    architecture,
-                },
-                parameters: BTreeMap::new(),
-                fields: fields
-                    .iter()
-                    .map(|f| r::TelemetryFieldReference {
-                        key: f.key.as_str().to_owned(),
-                        version: 1,
-                    })
-                    .collect(),
-                projection: r::TelemetryProjection::Both,
-                sample_millis: 60000,
-                upload_millis: 300000,
-                budget: r::TelemetryBudget {
-                    points: 4096,
-                    bytes: 1048576,
-                    resources: 128,
-                    execution_millis: 10000,
-                    output_bytes: 262144,
-                },
-                boost: None,
-                backfill_seconds: 86400,
-            })
-            .map_err(|_| Error::Malformed)?;
-            // A profile's exact template target must match its enclosing variant.
-            let bytes = profile.canonical();
-            step(
+        // Scalar fields expand to 3 resources; the two 64-filesystem fields
+        // expand to 128. Each ordinary Profile keeps the requested 128-resource budget.
+        for (section, fields) in [("device", &fields[..3]), ("filesystems", &fields[3..])] {
+            let template = performance(platform, fields)?;
+            let template_id = id(tenant, &format!("performance:{label}:{section}"));
+            resource(
                 &mut steps,
-                format!("{key}:create"),
-                target,
-                Action::Resource {
-                    expected: 0,
-                    input: json!({"action":"create","kind":"telemetry_profile"}),
-                },
+                &format!("performance:{label}:{section}"),
+                template_id,
+                "agent_collection",
+                platform,
+                serde_json::to_value(&template).map_err(|_| Error::Malformed)?,
+                template.canonical(),
             );
-            step(
-                &mut steps,
-                format!("{key}:version"),
-                target,
-                Action::Resource {
-                    expected: 1,
-                    input: json!({"action":"version","version":"v1","kind":"telemetry_profile","variants":[{"platform":platform,"architecture":architecture,"key":arch,"declaration":{"kind":"telemetry_profile","artifact":{"reference":"definition.json","length":bytes.len(),"sha256":r::Digest::of(&bytes).bytes()},"definition":profile}}]}),
-                },
-            );
-            step(
-                &mut steps,
-                format!("{key}:content"),
-                target,
-                Action::Upload {
-                    version: "v1".into(),
-                    reference: "definition.json".into(),
-                    platform,
-                    architecture,
-                    bytes,
-                },
-            );
-            step(
-                &mut steps,
-                format!("{key}:activate"),
-                target,
-                Action::Resource {
-                    expected: 2,
-                    input: json!({"action":"activate","version":"v1"}),
-                },
-            );
-            let definition=serde_json::from_value(json!({"scope":id(tenant,&format!("scope:{label}")),"action":{"kind":"telemetry_profile","resource":{"id":target,"version":"v1","platform":platform,"architecture":architecture,"variant":arch}}})).map_err(|_|Error::Malformed)?;
-            let policy_key = format!("{key}:policy");
-            step(
-                &mut steps,
-                &policy_key,
-                id(tenant, &policy_key),
-                Action::Policy { definition },
-            );
+            for (arch, architecture) in [
+                ("x86_64", r::Architecture::X86_64),
+                ("aarch64", r::Architecture::Aarch64),
+            ] {
+                let key = format!("profile:{label}:{section}:{arch}");
+                let target = id(tenant, &key);
+                let profile = r::TelemetryProfile::new(r::TelemetryProfileSpec {
+                    template: r::TelemetryTemplate {
+                        resource: template_id.to_string(),
+                        version: "v1".into(),
+                        variant: arch.into(),
+                        platform,
+                        architecture,
+                    },
+                    parameters: BTreeMap::new(),
+                    fields: fields
+                        .iter()
+                        .map(|f| r::TelemetryFieldReference {
+                            key: f.key.as_str().to_owned(),
+                            version: 1,
+                        })
+                        .collect(),
+                    projection: r::TelemetryProjection::Both,
+                    sample_millis: 60000,
+                    upload_millis: 300000,
+                    budget: r::TelemetryBudget {
+                        points: 4096,
+                        bytes: 1048576,
+                        resources: 128,
+                        execution_millis: 10000,
+                        output_bytes: 262144,
+                    },
+                    boost: None,
+                    backfill_seconds: 86400,
+                })
+                .map_err(|_| Error::Malformed)?;
+                // A profile's exact template target must match its enclosing variant.
+                let bytes = profile.canonical();
+                step(
+                    &mut steps,
+                    format!("{key}:create"),
+                    target,
+                    Action::Resource {
+                        expected: 0,
+                        input: json!({"action":"create","kind":"telemetry_profile"}),
+                    },
+                );
+                step(
+                    &mut steps,
+                    format!("{key}:version"),
+                    target,
+                    Action::Resource {
+                        expected: 1,
+                        input: json!({"action":"version","version":"v1","kind":"telemetry_profile","variants":[{"platform":platform,"architecture":architecture,"key":arch,"declaration":{"kind":"telemetry_profile","artifact":{"reference":"definition.json","length":bytes.len(),"sha256":r::Digest::of(&bytes).bytes()},"definition":profile}}]}),
+                    },
+                );
+                step(
+                    &mut steps,
+                    format!("{key}:content"),
+                    target,
+                    Action::Upload {
+                        version: "v1".into(),
+                        reference: "definition.json".into(),
+                        platform,
+                        architecture,
+                        bytes,
+                    },
+                );
+                step(
+                    &mut steps,
+                    format!("{key}:activate"),
+                    target,
+                    Action::Resource {
+                        expected: 2,
+                        input: json!({"action":"activate","version":"v1"}),
+                    },
+                );
+                let definition=serde_json::from_value(json!({"scope":id(tenant,&format!("scope:{label}")),"action":{"kind":"telemetry_profile","resource":{"id":target,"version":"v1","platform":platform,"architecture":architecture,"variant":arch}}})).map_err(|_|Error::Malformed)?;
+                let policy_key = format!("{key}:policy");
+                step(
+                    &mut steps,
+                    &policy_key,
+                    id(tenant, &policy_key),
+                    Action::Policy { definition },
+                );
+            }
         }
     }
     if steps.is_empty() || steps.len() > 512 {
@@ -427,10 +431,12 @@ fn performance(
     platform: r::Platform,
     fields: &[d::FieldDefinition],
 ) -> Result<r::AgentCollectionDefinition, Error> {
+    let device = fields.iter().any(|f| f.item_key.is_none());
+    let filesystem = fields.iter().any(|f| f.item_key.is_some());
     let budget = w::NativeBudget {
         timeout_seconds: 10,
         output_bytes: 262144,
-        max_rows: 66,
+        max_rows: (if device { 2 } else { 0 }) + (if filesystem { 64 } else { 0 }),
     };
     let queries = [
         ("cpu", w::PerformanceSection::Cpu),
@@ -438,6 +444,13 @@ fn performance(
         ("filesystems", w::PerformanceSection::FileSystems),
     ]
     .into_iter()
+    .filter(|(name, _)| {
+        if *name == "filesystems" {
+            filesystem
+        } else {
+            device
+        }
+    })
     .map(|(name, section)| {
         (
             name.into(),
@@ -475,61 +488,66 @@ fn performance(
     .map_err(|_| Error::Malformed)?;
     let mappings = fields
         .iter()
-        .zip([
-            ("cpu", "/busy_percent"),
-            ("memory", "/total_bytes"),
-            ("memory", "/available_bytes"),
-            ("filesystems", "/total_bytes"),
-            ("filesystems", "/free_bytes"),
-        ])
-        .map(|(f, (query, path))| {
-            let array = f.item_key.is_some();
-            let scalar = r::ValueMapping {
-                pointer: path.into(),
-                conversion: if query == "cpu" {
-                    r::Conversion::Identity
-                } else {
-                    r::Conversion::Integer
-                },
-                columns: BTreeMap::new(),
-            };
-            let mapping = if array {
-                r::ValueMapping {
-                    pointer: String::new(),
-                    conversion: r::Conversion::Identity,
-                    columns: [
-                        (
-                            "id".into(),
-                            r::ValueMapping {
-                                pointer: "/id".into(),
-                                conversion: r::Conversion::Identity,
-                                columns: BTreeMap::new(),
-                            },
-                        ),
-                        ("value".into(), scalar),
-                    ]
-                    .into(),
-                }
-            } else {
-                scalar
-            };
-            (
-                f.key.as_str().to_owned(),
-                r::AgentCollectionMapping {
-                    query: query.into(),
-                    mapping,
-                    missing: r::NativeMissing::Missing,
-                    counter_normalization: None,
-                },
-            )
-        })
-        .collect();
+        .map(performance_mapping)
+        .collect::<Result<BTreeMap<_, _>, Error>>()?;
     r::AgentCollectionDefinition::new(r::AgentCollectionSpec {
         applicability: Default::default(),
         plan,
         mappings,
     })
     .map_err(|_| Error::Malformed)
+}
+
+fn performance_mapping(
+    f: &d::FieldDefinition,
+) -> Result<(String, r::AgentCollectionMapping), Error> {
+    let (query, path) = match f.key.as_str() {
+        "custom.baseline.cpu_busy_percent" => ("cpu", "/busy_percent"),
+        "custom.baseline.memory_total_bytes" => ("memory", "/total_bytes"),
+        "custom.baseline.memory_available_bytes" => ("memory", "/available_bytes"),
+        "custom.baseline.filesystem_total_bytes" => ("filesystems", "/total_bytes"),
+        "custom.baseline.filesystem_free_bytes" => ("filesystems", "/free_bytes"),
+        _ => return Err(Error::Malformed),
+    };
+    let array = f.item_key.is_some();
+    let scalar = r::ValueMapping {
+        pointer: path.into(),
+        conversion: if query == "cpu" {
+            r::Conversion::Identity
+        } else {
+            r::Conversion::Integer
+        },
+        columns: BTreeMap::new(),
+    };
+    let mapping = if array {
+        r::ValueMapping {
+            pointer: String::new(),
+            conversion: r::Conversion::Identity,
+            columns: [
+                (
+                    "id".into(),
+                    r::ValueMapping {
+                        pointer: "/id".into(),
+                        conversion: r::Conversion::Identity,
+                        columns: BTreeMap::new(),
+                    },
+                ),
+                ("value".into(), scalar),
+            ]
+            .into(),
+        }
+    } else {
+        scalar
+    };
+    Ok((
+        f.key.as_str().to_owned(),
+        r::AgentCollectionMapping {
+            query: query.into(),
+            mapping,
+            missing: r::NativeMissing::Missing,
+            counter_normalization: None,
+        },
+    ))
 }
 
 #[cfg(test)]
@@ -657,12 +675,29 @@ mod tests {
                     assert_eq!(value["projection"], "both");
                     assert_eq!(value["budget"]["points"], 4096);
                     assert_eq!(value["backfillSeconds"], 86400);
+                    let field_definitions = fields().unwrap();
+                    let expanded: u32 = value["fields"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .map(|f| {
+                            field_definitions
+                                .iter()
+                                .find(|d| d.key.as_str() == f["key"].as_str().unwrap())
+                                .unwrap()
+                                .time_series
+                                .as_ref()
+                                .unwrap()
+                                .max_resources
+                        })
+                        .sum();
+                    assert!(expanded <= 128);
                     profiles += 1;
                 }
                 _ => {}
             }
         }
         assert!(blueprints >= 6);
-        assert_eq!(profiles, 4);
+        assert_eq!(profiles, 8);
     }
 }

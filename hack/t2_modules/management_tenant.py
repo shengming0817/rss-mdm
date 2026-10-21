@@ -208,7 +208,7 @@ def execute(fixture):
         require(operations(admin) == CRUD | {'authorization_read', 'authorization_write', 'identity_accounts_manage', 'tenant_administrator_create'}, 'password recovery changed grants')
         # Restart preserves persisted identity, grants and active management session.
         host.close()
-        host = Host(builds, path, root / 'restarted')
+        host = Host(builds, path, root / 'restarted',require_ready=False)
         stack.callback(host.close)
         admin.host = host
         require(operations(admin) == CRUD | {'authorization_read', 'authorization_write', 'identity_accounts_manage', 'tenant_administrator_create'}, 'restart lost management admission')

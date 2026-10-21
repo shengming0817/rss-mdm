@@ -729,48 +729,51 @@ pub async fn upload<R: tokio::io::AsyncRead + Unpin + Send>(
     input: &Selection,
     mut reader: R,
 ) -> Result<(), Error> {
-    let proof = session.proof;
-    let budget = store(app)?.upload_budget()?;
-    let operation = input.operation.ok_or(Error::Malformed)?;
-    let staged = begin_upload(app, proof, audit, id, operation, input, budget).await?;
-    if !staged.complete && staged.offset != staged.binding.length {
-        use tokio::io::AsyncReadExt;
-        let skipped = budget
-            .work(async {
-                tokio::io::copy(
-                    &mut (&mut reader).take(staged.offset),
-                    &mut tokio::io::sink(),
+    Box::pin(async move {
+        let proof = session.proof;
+        let budget = store(app)?.upload_budget()?;
+        let operation = input.operation.ok_or(Error::Malformed)?;
+        let staged = begin_upload(app, proof, audit, id, operation, input, budget).await?;
+        if !staged.complete && staged.offset != staged.binding.length {
+            use tokio::io::AsyncReadExt;
+            let skipped = budget
+                .work(async {
+                    tokio::io::copy(
+                        &mut (&mut reader).take(staged.offset),
+                        &mut tokio::io::sink(),
+                    )
+                    .await
+                    .map_err(|_| Error::Malformed)
+                })
+                .await?;
+            if skipped != staged.offset {
+                return Err(Error::Malformed);
+            }
+            let written = store(app)?
+                .append(
+                    &staged.binding.actor,
+                    operation,
+                    staged.offset,
+                    app.clock.unix_seconds().ok_or(Error::Clock)?,
+                    reader,
+                    budget,
                 )
-                .await
-                .map_err(|_| Error::Malformed)
-            })
-            .await?;
-        if skipped != staged.offset {
-            return Err(Error::Malformed);
+                .await?;
+            if written.offset != written.binding.length {
+                return Err(Error::Malformed);
+            }
         }
-        let written = store(app)?
-            .append(
+        let complete = store(app)?
+            .finish(
                 &staged.binding.actor,
                 operation,
-                staged.offset,
                 app.clock.unix_seconds().ok_or(Error::Clock)?,
-                reader,
                 budget,
             )
             .await?;
-        if written.offset != written.binding.length {
-            return Err(Error::Malformed);
-        }
-    }
-    let complete = store(app)?
-        .finish(
-            &staged.binding.actor,
-            operation,
-            app.clock.unix_seconds().ok_or(Error::Clock)?,
-            budget,
-        )
-        .await?;
-    record(app, session, audit, &complete, None, budget).await
+        record(app, session, audit, &complete, None, budget).await
+    })
+    .await
 }
 
 pub trait Clock: Send + Sync {

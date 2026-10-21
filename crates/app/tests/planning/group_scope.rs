@@ -1644,43 +1644,59 @@ async fn system_lifecycle_snapshot_pages_before_collection_and_preserves_old_aut
             .critical(),
     );
     launch.finish();
+    let access_config = crate::test_support::identity::config(&t.to_string()).unwrap();
+    let access = crate::Database::connect(access_config.access_options().unwrap())
+        .await
+        .unwrap();
     let mut windows_group = None;
     for (selector, count) in [
         (rss_mdm_group_postgres::SystemSelector::Windows, 1001),
         (rss_mdm_group_postgres::SystemSelector::Macos, 1),
     ] {
         let group = Uuid::new_v4();
-        let created = service
-            .groups
-            .execute(
-                rss_mdm_group_postgres::OperationId::parse(&Uuid::new_v4().to_string()).unwrap(),
-                rss_contract::Timepoint::try_from(crate::windows::test_support::now()).unwrap(),
-                &rss_mdm_group_postgres::Command::Create {
-                    group: rss_mdm_group_postgres::GroupId::parse(&group.to_string()).unwrap(),
-                    asset_context: rss_mdm_group_postgres::AssetContext::Endpoint,
+        let mut conn = access.archive_pool().acquire().await.unwrap();
+        let mut tx = (*conn).begin().await.unwrap();
+        sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
+            .bind(t.to_string())
+            .execute(&mut *tx)
+            .await
+            .unwrap();
+        let (_, capability) = crate::authorization::baseline::grant_administrator_on(
+            &mut tx,
+            crate::test_support::identity::user(&t.to_string(), crate::test_support::case::admin()),
+            Uuid::new_v4(),
+            [group.to_string()].into(),
+        )
+        .await
+        .unwrap();
+        tx.commit().await.unwrap();
+        drop(conn);
+        let proof = capability
+            .principal(&access.authorization_store())
+            .await
+            .unwrap();
+        let audit = RequestAudit::new(t.to_string(), "baseline_initialize");
+        proof.bind_audit(&audit).unwrap();
+        let command = GroupCommand::Group {
+            id: group,
+            sensitive: false,
+            change: Box::new(group_operation(
+                0,
+                GroupChange::CreateSystem {
+                    selector,
                     presentation: json!({"name":"system","description":""})
                         .as_object()
                         .unwrap()
                         .clone(),
-                    definition: rss_mdm_group_postgres::Definition::System(selector),
                 },
-                deadline(),
-            )
+            )),
+        };
+        let receipt = groups(&service)
+            .await
+            .execute_initialization(&command, &audit, &proof, service.as_ref())
             .await
             .unwrap();
-        let receipt = execute(
-            &service,
-            &GroupCommand::Group {
-                id: group,
-                sensitive: false,
-                change: Box::new(group_operation(
-                    created.group.revision.get() as u64,
-                    GroupChange::Recompute {},
-                )),
-            },
-        )
-        .await
-        .unwrap();
+        audit.finalize(None);
         let task = Uuid::parse_str(receipt["task"].as_str().unwrap()).unwrap();
         assert_eq!(
             wait_task(
@@ -1773,5 +1789,6 @@ async fn system_lifecycle_snapshot_pages_before_collection_and_preserves_old_aut
     .expect("credential lifecycle delta removes system membership");
     c.close().await.unwrap();
     assert!(stack.shutdown().join().await.unwrap().is_clean());
+    access.close().await;
     service.runtime.close().await;
 }

@@ -59,7 +59,7 @@ def exercise(admin, normal, delegate, config, management, business, password, sq
     target_config = deepcopy(config)
     target_config['identity']['tenant_id'] = tenant
     target_config['identity']['oidc'] = None
-    target_host = Host(builds,private(root/'target-runtime.json',target_config),root/'target-host')
+    target_host = Host(builds,private(root/'target-runtime.json',target_config),root/'target-host',require_ready=False)
     stack.callback(target_host.close)
     target_admin = Browser(target_host,config['product_origin'])
     login(target_admin,tenant,'tenant-admin-one')
