@@ -24,6 +24,10 @@ pub fn routes() -> Router<Arc<HttpState>> {
     Router::new()
         .route("/asset-fields", get(fields))
         .route(
+            "/asset-field-layout",
+            get(field_layout).put(field_layout_write),
+        )
+        .route(
             "/devices/{id}/collections/{run}/fields/{field}/items",
             get(collection_items),
         )
@@ -57,7 +61,15 @@ fn authorize(
     command: &Command,
 ) -> std::result::Result<(), rss_mdm_inventory_service::Error> {
     match command {
-        Command::FieldWrite { .. }
+        Command::FieldLayoutRead { access } => {
+            if &layout_access(auth)? == access {
+                Ok(())
+            } else {
+                Err(rss_mdm_inventory_service::Error::Forbidden)
+            }
+        }
+        Command::FieldLayoutWrite { .. }
+        | Command::FieldWrite { .. }
         | Command::FieldReferences { .. }
         | Command::RetentionWrite { .. }
         | Command::RetentionRead { .. } => auth
@@ -101,6 +113,9 @@ async fn run(
         "inventory_read"
     });
     match &command {
+        Command::FieldLayoutRead { .. } | Command::FieldLayoutWrite { .. } => {
+            audit.target("asset-field-layout")
+        }
         Command::RetentionWrite { change } => audit.target(&change.input.key),
         Command::RetentionRead { key, .. } => audit.target(key),
         Command::Manual { device, .. } => audit.target_device(device),
@@ -135,6 +150,46 @@ async fn run(
         StatusCode::OK
     };
     Ok((status, Json(envelope)).into_response())
+}
+fn layout_access(
+    auth: &RequestAuth,
+) -> std::result::Result<FieldLayoutAccess, rss_mdm_inventory_service::Error> {
+    use rss_mdm_authorization_service::error::AuthorizationError;
+    match auth
+        .proof
+        .authorization()?
+        .require(&auth.proof, Permission::InventoryFieldsWrite, None)
+    {
+        Ok(()) => Ok(FieldLayoutAccess::Edit),
+        Err(AuthorizationError::Forbidden) => Ok(FieldLayoutAccess::Read {
+            scope: ReadScope::from_proof(&auth.proof)?,
+        }),
+        Err(error) => Err(error.into()),
+    }
+}
+async fn field_layout(
+    State(app): State<Arc<HttpState>>,
+    Extension(auth): Extension<RequestAuth>,
+    Extension(audit): Extension<RequestAudit>,
+) -> std::result::Result<HttpResponse, Error> {
+    let access = layout_access(&auth)?;
+    run(&app, &auth, &audit, Command::FieldLayoutRead { access }).await
+}
+async fn field_layout_write(
+    State(app): State<Arc<HttpState>>,
+    Extension(auth): Extension<RequestAuth>,
+    Extension(audit): Extension<RequestAudit>,
+    payload: BodyInput<Operation<FieldLayout>>,
+) -> std::result::Result<HttpResponse, Error> {
+    run(
+        &app,
+        &auth,
+        &audit,
+        Command::FieldLayoutWrite {
+            change: body(payload)?,
+        },
+    )
+    .await
 }
 async fn fields(
     State(app): State<Arc<HttpState>>,
