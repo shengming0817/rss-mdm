@@ -16,6 +16,8 @@ known/null/missing/unsupported/deleted/conflict 是明确状态。同级来源�
 
 | 方法、路径 | 内容 |
 | --- | --- |
+| GET /asset-field-layout | 本租户共享布局、revision 与当前 editable 能力 |
+| PUT /asset-field-layout | Operation 包装的完整布局替换，expectedRevision 为布局版本 |
 | GET /asset-fields | 唯一版本化目录、类型、来源优先级、敏感级别及可用操作 |
 | PUT /asset-fields/{field} | Operation 包装的 put/delete，expectedRevision 为字段版本 |
 | GET /asset-fields/{field}/references | Group、模板、合规及保存查询引用计数 |
@@ -49,6 +51,29 @@ known/null/missing/unsupported/deleted/conflict 是明确状态。同级来源�
 ```
 
 AND/OR 为 `{kind:"and|or",children:[…]}`；in/not_in 使用同类型 `values` 数组；is_null/is_not_null 不带操作数。Group create/rule 直接使用该 criteria；preview 异步生成成员与类型化解释页，旧同步接口和 assets 元组已移除。
+
+## 共享扩展字段分组
+
+`GET /api/v1/asset-field-layout` 返回 `asset.kind=field_layout`、`revision`、`editable` 和有序 `groups`。
+每组包含稳定 UUID `id`、`name` 和有序真实字段键 `fields`。无配置为 revision 0、空分组。
+具有租户 `inventory_fields_write` 时读取完整有效映射元数据；普通资产读者只取得当前权限允许的映射，
+过滤后无字段的组不返回。管理员能编辑敏感字段引用，不因此获得敏感资产值读取权限。
+
+PUT 的 `input` 为 `{ "groups": [{ "id": "<uuid>", "name": "采购", "fields": ["custom.asset_tag"] }] }`，
+使用已有 Operation 的 operationId/expectedRevision。数组顺序就是展示顺序；同一字段可出现在多个组，
+同组不重复。名称去首尾空白后为 1–40 字符；每个保存的组至少选择一个当前有效的 custom 字段。
+请求及持久化文档有界，超限明确拒绝。PUT 返回 `asset.kind=field_layout_written` 和新 revision。
+
+只有字段管理者能保存共享布局；应使用其完整配置读取结果编辑，不能把普通读者的过滤投影当作完整配置覆盖。
+空 groups 清空布局并递增 revision。布局只改变展示，不改变字段来源、人工资格、资产值或设备组计算；
+未映射字段仍可由前端在默认扩展分类中展示。
+字段退役不受展示引用阻止，GET 忽略失效引用且不改 revision；管理员下一次保存须补选或移除空组，
+完整替换后自然清理失效引用。移除分组或映射不会删除字段及资产值。
+
+保存、操作回执和业务审计同事务提交。旧 revision 或同 operationId 异正文返回冲突。
+网络错误或 `operation_unknown` 不能由当前 GET 证明原写结果；用户明确恢复时沿原 operationId、
+expectedRevision 和完整正文重试，返回原回执，随后重新 GET 当前布局。禁止自动换 ID 或覆盖冲突。
+回执仅含 revision，重放仍重新授权。
 
 ## 权限、分页与保存查询
 
