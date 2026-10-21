@@ -748,6 +748,44 @@
       "oneOf": [
         {
           "additionalProperties": false,
+          "description": "Fixed Windows performance observation; no command or counter path input.",
+          "properties": {
+            "kind": {
+              "const": "windows_performance",
+              "type": "string"
+            },
+            "section": {
+              "$ref": "#/$defs/PerformanceSection",
+              "description": "Closed section and canonical output shape."
+            }
+          },
+          "required": [
+            "kind",
+            "section"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Fixed macOS performance observation; no executable parameters.",
+          "properties": {
+            "kind": {
+              "const": "macos_performance",
+              "type": "string"
+            },
+            "section": {
+              "$ref": "#/$defs/PerformanceSection",
+              "description": "Closed section and canonical output shape."
+            }
+          },
+          "required": [
+            "kind",
+            "section"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
           "description": "Closed platform security, identity, certificate or update read.",
           "properties": {
             "kind": {
@@ -1278,6 +1316,31 @@
             "permissions"
           ],
           "type": "object"
+        }
+      ]
+    },
+    "PerformanceSection": {
+      "description": "Fixed performance sections shared by platform-specific native engines.",
+      "oneOf": [
+        {
+          "const": "cpu",
+          "description": "Device-wide busy percentage: 100 * delta busy / delta total, normalized across CPUs.\nRead twice within one query, at least PERFORMANCE_CPU_SAMPLE_MILLIS apart.\nA changed boot/counter domain, regressing counters, zero total delta or busy delta\nabove total is Missing, never a fabricated zero or a clamped percentage.",
+          "type": "string"
+        },
+        {
+          "const": "memory",
+          "description": "Physical total and currently available memory in bytes; available does not exceed total.",
+          "type": "string"
+        },
+        {
+          "const": "file_systems",
+          "description": "Complete bounded filesystem enumeration, not physical disks or additive APFS capacity.\nPreserve the provider's stable volume identity; never use enumeration position.\nShared-container capacities are observations per filesystem and must not be summed.",
+          "type": "string"
+        },
+        {
+          "const": "network",
+          "description": "Complete bounded interface enumeration with cumulative received/sent byte counters.\nPreserve stable native interface identities; never use enumeration position or counters\nas identity. Counters may reset on reboot/interface recreation; they are not byte rates.",
+          "type": "string"
         }
       ]
     },

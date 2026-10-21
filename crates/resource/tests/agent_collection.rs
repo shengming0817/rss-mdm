@@ -64,6 +64,66 @@ fn decimal_strings_can_be_converted_but_uint64_cannot_lose_precision() {
     );
     assert!(Conversion::Number.apply(&serde_json::json!("NaN")).is_err());
 }
+
+#[test]
+fn performance_templates_publish_through_existing_checked_native_mappings() {
+    for platform in [Platform::Windows, Platform::MacOS] {
+        let mut input = spec(w::CimType::String);
+        let mut plan = input.plan.spec().clone();
+        plan.queries.get_mut("sample").unwrap().definition = match platform {
+            Platform::Windows => w::NativeQueryDefinition::WindowsPerformance {
+                section: w::PerformanceSection::Memory,
+            },
+            Platform::MacOS => w::NativeQueryDefinition::MacosPerformance {
+                section: w::PerformanceSection::Memory,
+            },
+        };
+        input.plan = w::NativeCollectionPlan::new(plan).unwrap();
+        let mapping = &mut input
+            .mappings
+            .get_mut("custom.temperature")
+            .unwrap()
+            .mapping;
+        mapping.pointer = "/available_bytes".into();
+        mapping.conversion = Conversion::Integer;
+        let definition = AgentCollectionDefinition::new(input.clone()).unwrap();
+        definition.validate_platform(platform).unwrap();
+        let other = if platform == Platform::Windows {
+            Platform::MacOS
+        } else {
+            Platform::Windows
+        };
+        assert!(definition.validate_platform(other).is_err());
+        let restored: AgentCollectionDefinition =
+            serde_json::from_slice(&definition.canonical()).unwrap();
+        assert_eq!(restored, definition);
+        assert_eq!(
+            Conversion::Integer
+                .apply(&serde_json::json!(i64::MAX.to_string()))
+                .unwrap(),
+            serde_json::json!(i64::MAX)
+        );
+        assert!(
+            Conversion::Integer
+                .apply(&serde_json::json!(u64::MAX.to_string()))
+                .is_err()
+        );
+        input
+            .mappings
+            .get_mut("custom.temperature")
+            .unwrap()
+            .mapping
+            .conversion = Conversion::Number;
+        assert!(AgentCollectionDefinition::new(input.clone()).is_err());
+        input
+            .mappings
+            .get_mut("custom.temperature")
+            .unwrap()
+            .mapping
+            .pointer = "/undeclared".into();
+        assert!(AgentCollectionDefinition::new(input).is_err());
+    }
+}
 #[test]
 fn one_query_can_bind_multiple_fields_and_unknown_queries_are_rejected() {
     let mut spec = spec(w::CimType::String);

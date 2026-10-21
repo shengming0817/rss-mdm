@@ -3,6 +3,9 @@
 use crate::runtime::{ExecutionIdentity, OUTPUT_MAX_BYTES, TaskPlatform, WireError};
 #[path = "native_collection/macos.rs"]
 mod macos;
+#[path = "native_collection/performance.rs"]
+mod performance;
+pub use performance::{PERFORMANCE_CPU_SAMPLE_MILLIS, PerformanceSection};
 #[path = "native_collection/system.rs"]
 mod system;
 pub use macos::{MacosApplicationRoot, MacosBrewPackage, MacosHardwareSection};
@@ -19,6 +22,12 @@ pub const NATIVE_SYSTEM_MAX_BYTES: u32 = 1024 * 1024;
     Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, schemars::JsonSchema,
 )]
 pub enum NativeEngine {
+    /// Closed Windows performance observations.
+    #[serde(rename = "windows.performance")]
+    WindowsPerformance,
+    /// Closed macOS performance observations.
+    #[serde(rename = "macos.performance")]
+    MacosPerformance,
     /// Closed Windows security reads.
     #[serde(rename = "windows.security")]
     WindowsSecurity,
@@ -341,6 +350,16 @@ pub struct RegistryValue {
     deny_unknown_fields
 )]
 pub enum NativeQueryDefinition {
+    /// Fixed Windows performance observation; no command or counter path input.
+    WindowsPerformance {
+        /// Closed section and canonical output shape.
+        section: PerformanceSection,
+    },
+    /// Fixed macOS performance observation; no executable parameters.
+    MacosPerformance {
+        /// Closed section and canonical output shape.
+        section: PerformanceSection,
+    },
     /// Closed platform security, identity, certificate or update read.
     System {
         /// Closed read recipe.
@@ -429,6 +448,8 @@ impl NativeQueryDefinition {
     pub fn engine(&self) -> NativeEngine {
         match self {
             Self::System { query } => query.engine(),
+            Self::WindowsPerformance { .. } => NativeEngine::WindowsPerformance,
+            Self::MacosPerformance { .. } => NativeEngine::MacosPerformance,
             Self::WindowsWmi { .. } => NativeEngine::WindowsWmi,
             Self::WindowsRegistry { .. } => NativeEngine::WindowsRegistry,
             Self::WindowsCpu => NativeEngine::WindowsCpu,
@@ -445,11 +466,13 @@ impl NativeQueryDefinition {
     pub fn platform(&self) -> TaskPlatform {
         match self {
             Self::System { query } => query.platform(),
-            Self::MacosHardware { .. }
+            Self::MacosPerformance { .. }
+            | Self::MacosHardware { .. }
             | Self::MacosApplications { .. }
             | Self::MacosPkgReceipts {}
             | Self::MacosBrew { .. } => TaskPlatform::Macos,
-            Self::WindowsWmi { .. }
+            Self::WindowsPerformance { .. }
+            | Self::WindowsWmi { .. }
             | Self::WindowsRegistry { .. }
             | Self::WindowsCpu
             | Self::WindowsSoftware
@@ -466,7 +489,9 @@ impl NativeQueryDefinition {
                 root: MacosApplicationRoot::UserApplications,
                 ..
             } => ExecutionIdentity::LoggedInUser,
-            Self::WindowsWmi { .. }
+            Self::WindowsPerformance { .. }
+            | Self::MacosPerformance { .. }
+            | Self::WindowsWmi { .. }
             | Self::WindowsRegistry { .. }
             | Self::WindowsCpu
             | Self::WindowsSoftware
@@ -486,6 +511,9 @@ impl NativeQueryDefinition {
         use NativeType::*;
         match self {
             Self::System { query } => query.properties(),
+            Self::WindowsPerformance { section } | Self::MacosPerformance { section } => {
+                section.properties()
+            }
             Self::WindowsWmi { properties, .. } => properties
                 .iter()
                 .map(|(k, p)| {
@@ -581,6 +609,9 @@ impl NativeQueryDefinition {
     pub fn accepts_row(&self, row: &BTreeMap<String, serde_json::Value>) -> bool {
         match self {
             Self::System { query } => query.accepts_row(row),
+            Self::WindowsPerformance { section } | Self::MacosPerformance { section } => {
+                section.accepts_row(row)
+            }
             Self::WindowsWmi { properties, .. } => row.iter().all(|(k, v)| {
                 properties.get(k).is_none_or(|p| {
                     if p.array {
@@ -778,6 +809,13 @@ impl NativeQuery {
         }
         let required = match &self.definition {
             NativeQueryDefinition::System { query } => Some(query.cardinality()),
+            NativeQueryDefinition::WindowsPerformance { section }
+            | NativeQueryDefinition::MacosPerformance { section } => {
+                if !section.instance_keys_match(&self.instance_keys) {
+                    return Err(WireError::InvalidValue);
+                }
+                Some(section.cardinality())
+            }
             NativeQueryDefinition::WindowsRegistry {
                 enumerate_subkeys, ..
             } => Some(if *enumerate_subkeys {
@@ -1288,6 +1326,8 @@ impl NativeCollectionResult {
                 (matches!(
                     p.spec().queries[k].definition,
                     NativeQueryDefinition::System { .. }
+                        | NativeQueryDefinition::WindowsPerformance { .. }
+                        | NativeQueryDefinition::MacosPerformance { .. }
                 ) && r.users.is_some())
                     || r.rows.iter().any(|row| {
                         !bounded_row(
@@ -1302,6 +1342,8 @@ impl NativeCollectionResult {
                     || (matches!(
                         p.spec().queries[k].definition,
                         NativeQueryDefinition::System { .. }
+                            | NativeQueryDefinition::WindowsPerformance { .. }
+                            | NativeQueryDefinition::MacosPerformance { .. }
                     ) && r
                         .rows
                         .iter()

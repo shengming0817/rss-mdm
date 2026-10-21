@@ -369,7 +369,9 @@ fn field_scope(
         | wire::NativeQueryDefinition::WindowsNetwork
         | wire::NativeQueryDefinition::WindowsBattery
         | wire::NativeQueryDefinition::MacosHardware { .. }
-        | wire::NativeQueryDefinition::MacosPkgReceipts {} => S::Device,
+        | wire::NativeQueryDefinition::MacosPkgReceipts {}
+        | wire::NativeQueryDefinition::WindowsPerformance { .. }
+        | wire::NativeQueryDefinition::MacosPerformance { .. } => S::Device,
     };
     checked_input(scope.validate_executable())?;
     Ok(scope)

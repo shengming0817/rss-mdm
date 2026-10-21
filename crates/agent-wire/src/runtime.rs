@@ -24,6 +24,9 @@ pub use recovery_credentials::*;
 #[path = "telemetry.rs"]
 mod telemetry;
 pub use telemetry::*;
+#[path = "telemetry_gap.rs"]
+mod telemetry_gap;
+pub use telemetry_gap::*;
 
 use base64::Engine;
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de::Error as _};
@@ -40,7 +43,7 @@ pub const MAX_REQUEST_BYTES: usize = 1024 * 1024;
 pub const SCHEMA_MANIFEST: &str = include_str!("../schema/runtime/agent-v1.schema-manifest.json");
 /// SHA-256 of the ordered schema payloads named by [`SCHEMA_MANIFEST`].
 pub const SCHEMA_FINGERPRINT: &str =
-    "cd72cf4e9eb837db3232f57dcfee5d71dee5e510195909427008a5ba3730f70a";
+    "3d311f9054e61b736ea779f2bb7cc1e8bb7b313d716b28ad39a8e7fa292114ec";
 
 /// Closed validation failure without retaining input values.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

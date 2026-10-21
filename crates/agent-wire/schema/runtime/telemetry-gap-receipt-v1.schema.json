@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Only a committed diagnostic receipt; it does not confirm any sample or Inventory update.",
+  "properties": {
+    "receivedAt": {
+      "description": "First durable receipt UTC microsecond.",
+      "format": "int64",
+      "type": "integer"
+    },
+    "replayed": {
+      "description": "The same report was already stored within its acceptance window.",
+      "type": "boolean"
+    },
+    "reportId": {
+      "description": "Original immutable report identity.",
+      "format": "uuid",
+      "type": "string"
+    }
+  },
+  "required": [
+    "reportId",
+    "receivedAt",
+    "replayed"
+  ],
+  "title": "TelemetryGapReceipt",
+  "type": "object",
+  "$id": "https://rss.example/mdm/agent/runtime/v1/payload/v1/telemetry-gap-receipt.schema.json"
+}
