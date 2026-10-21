@@ -194,7 +194,7 @@ async fn directory_people_are_verified_and_authorized_before_search() -> Result<
             ensure!(invalid.0==StatusCode::OK && invalid.1["endpoints"][0]["currentUser"]["state"]=="invalidated" && invalid.1["endpoints"][0]["currentUser"]["user"].is_null());
             let next=f.author.call(&f.router,Method::GET,&format!("/api/v1/device-views?limit=1&cursor={cursor}"),None).await?;
             ensure!(next.1["code"]=="device_view_cursor_invalidated","revoked cursor: {next:?}");
-            let mut grant=f.grants.clone();grant.extend(crate::test_support::identity::device_grants(Some(device),&["enrollment"])?);
+            let grant=f.grants.clone();
             crate::test_support::identity::set_grants(case_tenant(),&f.author_id,grant).await?;
             ensure!(owner(&mut f,None).await?["user"]==owner_before["user"]);
             Ok(())
