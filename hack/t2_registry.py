@@ -1001,26 +1001,32 @@ MODULES['assets.group_input'] = replace(MODULES['assets.group_input'], support_i
 # Direct test callers only. A setup helper does not expand into its callers.
 APP_HELPER_CONSUMERS = {
     'support/software_execution.rs': (
-        'execution.commands.onboarding', 'apple.onboarding', 'software.http', 'planning.software',
-        'execution.software.offer', 'execution.software.content', 'execution.software.recovery',
+        'agent.configurations', 'agent.pki', 'agent.registration', 'agent.reports',
+        'apple.onboarding', 'execution.agent.delivery', 'execution.agent.poll', 'execution.commands.onboarding',
+        'execution.software.content', 'execution.software.offer', 'execution.software.recovery', 'planning.agent_policy',
+        'planning.self_service', 'planning.software', 'software.http',
     ),
     'support/software.rs': (
-        'software.http', 'content.http', 'content.mirror', 'content.gc',
-        'content.storage', 'planning.software', 'execution.software.offer', 'execution.software.content',
-        'execution.software.recovery',
+        'agent.configurations', 'content.gc', 'content.http', 'content.mirror',
+        'content.storage', 'execution.commands.onboarding', 'execution.software.content', 'execution.software.offer',
+        'execution.software.recovery', 'planning.agent_policy', 'planning.self_service', 'planning.software',
+        'software.http',
     ),
     'support/process.rs': (
         'agent.configurations', 'agent.pki', 'agent.registration', 'agent.reports',
-        'api.identity_context', 'apple.onboarding', 'assets.http', 'authorization.rules',
-        'certificate-archive.http', 'content.gc', 'content.http', 'content.mirror',
-        'content.storage', 'device.associations', 'device.revocation', 'diagnostics.http',
-        'execution.agent.delivery', 'execution.agent.history', 'execution.agent.poll', 'execution.agent.recovery',
-        'execution.agent.task_trust', 'execution.commands.onboarding', 'execution.commands.recovery', 'execution.commands.windows',
-        'execution.software.offer', 'execution.software.recovery', 'identity.local', 'inventory.runtime',
-        'planning.agent_policy', 'planning.frequency', 'planning.group_scope', 'planning.http',
-        'planning.onboarding', 'planning.policy', 'planning.self_service', 'planning.software',
-        'recovery-credentials.http', 'software.http', 'telemetry.ingress.click_house', 'telemetry.ingress.postgres',
-        'telemetry.ingress.timescale_dedicated', 'telemetry.ingress.timescale_shared', 'timeline.http', 'webhooks.product',
+        'api.identity_context', 'apple.onboarding', 'assets.group_input', 'assets.http',
+        'assets.queries', 'assets.sources', 'authorization.admission', 'authorization.capacity',
+        'authorization.initialization', 'authorization.programmatic', 'authorization.rules', 'certificate-archive.http',
+        'compliance.evaluation', 'compliance.group_input', 'compliance.http', 'compliance.recovery',
+        'content.gc', 'content.http', 'content.mirror', 'content.storage',
+        'device.associations', 'device.revocation', 'diagnostics.http', 'execution.agent.delivery',
+        'execution.agent.history', 'execution.agent.poll', 'execution.agent.recovery', 'execution.agent.task_trust',
+        'execution.commands.onboarding', 'execution.commands.recovery', 'execution.commands.windows', 'execution.software.offer',
+        'execution.software.recovery', 'identity.local', 'inventory.runtime', 'planning.agent_policy',
+        'planning.frequency', 'planning.group_scope', 'planning.http', 'planning.onboarding',
+        'planning.policy', 'planning.self_service', 'planning.software', 'recovery-credentials.http',
+        'software.http', 'telemetry.ingress.click_house', 'telemetry.ingress.postgres', 'telemetry.ingress.timescale_dedicated',
+        'telemetry.ingress.timescale_shared', 'timeline.http', 'webhooks.product',
     ),
     'execution/support.rs': (
         'execution.commands.admission', 'execution.commands.dispatch', 'execution.commands.recovery', 'execution.commands.windows',
@@ -1041,46 +1047,57 @@ APP_HELPER_CONSUMERS = {
         'apple.scep', 'apple.commands', 'apple.users', 'apple.ddm',
     ),
     'support/audit.rs': (
-        'diagnostics.http', 'audit.receipts', 'audit.integrity', 'audit.recovery',
-        'audit.budget', 'api.diagnostics', 'device.recovery', 'device.revocation',
-        'execution.commands.admission', 'execution.commands.onboarding', 'execution.commands.dispatch', 'windows.enrollment',
-        'windows.issuance', 'windows.limits', 'apple.policy', 'apple.identity',
-        'planning.scope', 'planning.group_scope', 'planning.assets', 'planning.recovery',
-        'planning.resource_archive', 'planning.agent_policy', 'assets.http', 'enrollment.http',
-        'content.http', 'compliance.http', 'compliance.recovery', 'compliance.group_input',
-        'authorization.capacity', 'authorization.rules', 'execution.agent.history', 'execution.agent.content',
-        'software.http',
+        'agent.pki', 'api.diagnostics', 'apple.collection', 'apple.identity',
+        'apple.policy', 'apple.profile', 'assets.http', 'audit.budget',
+        'audit.integrity', 'audit.receipts', 'audit.recovery', 'authorization.capacity',
+        'authorization.initialization', 'authorization.programmatic', 'authorization.rules', 'compliance.group_input',
+        'compliance.http', 'compliance.recovery', 'content.http', 'device.recovery',
+        'device.revocation', 'diagnostics.http', 'enrollment.http', 'enrollment.quotas',
+        'execution.agent.content', 'execution.agent.history', 'execution.commands.admission', 'execution.commands.dispatch',
+        'execution.commands.onboarding', 'execution.commands.windows', 'planning.agent_policy', 'planning.assets',
+        'planning.group_scope', 'planning.recovery', 'planning.resource_archive', 'planning.scope',
+        'planning.self_service', 'settings.first_use', 'software.http', 'timeline.http',
+        'windows.enrollment', 'windows.issuance', 'windows.limits',
     ),
     'support/runtime.rs': (
         'agent.configurations', 'agent.pki', 'agent.registration', 'agent.reports',
         'api.identity_context', 'apple.account_enrollment', 'apple.collection', 'apple.fairness',
         'apple.identity', 'apple.onboarding', 'apple.policy', 'assets.group_input',
-        'assets.http', 'authorization.rules', 'certificate-archive.http', 'compliance.evaluation',
-        'compliance.group_input', 'compliance.http', 'compliance.recovery', 'content.gc',
-        'content.http', 'content.mirror', 'content.storage', 'device.associations',
-        'device.revocation', 'diagnostics.http', 'enrollment.quotas', 'execution.agent.content',
-        'execution.agent.delivery', 'execution.agent.history', 'execution.agent.poll', 'execution.agent.recovery',
-        'execution.agent.task_trust', 'execution.commands.configuration', 'execution.commands.onboarding', 'execution.commands.recovery',
-        'execution.commands.windows', 'execution.software.content', 'execution.software.offer', 'execution.software.recovery',
-        'identity.audit', 'identity.local', 'identity.sso', 'installation.smtp',
-        'installation.smtp_transport', 'installation.storage_reconcile', 'inventory.runtime', 'planning.agent_policy',
-        'planning.frequency', 'planning.group_scope', 'planning.http', 'planning.onboarding',
-        'planning.policy', 'planning.self_service', 'planning.software', 'recovery-credentials.http',
-        'settings.first_use', 'software.http', 'telemetry.ingress.click_house', 'telemetry.ingress.postgres',
-        'telemetry.ingress.timescale_dedicated', 'telemetry.ingress.timescale_shared', 'timeline.http', 'webhooks.product',
-        'windows.declared', 'windows.management',
+        'assets.http', 'assets.queries', 'assets.sources', 'authorization.admission',
+        'authorization.capacity', 'authorization.initialization', 'authorization.programmatic', 'authorization.rules',
+        'certificate-archive.http', 'compliance.evaluation', 'compliance.group_input', 'compliance.http',
+        'compliance.recovery', 'content.gc', 'content.http', 'content.mirror',
+        'content.storage', 'device.associations', 'device.revocation', 'diagnostics.http',
+        'enrollment.quotas', 'execution.agent.content', 'execution.agent.delivery', 'execution.agent.history',
+        'execution.agent.poll', 'execution.agent.recovery', 'execution.agent.task_trust', 'execution.commands.configuration',
+        'execution.commands.onboarding', 'execution.commands.recovery', 'execution.commands.windows', 'execution.software.content',
+        'execution.software.offer', 'execution.software.recovery', 'identity.audit', 'identity.local',
+        'identity.sso', 'installation.smtp', 'installation.smtp_transport', 'installation.storage_reconcile',
+        'inventory.runtime', 'planning.agent_policy', 'planning.frequency', 'planning.group_scope',
+        'planning.http', 'planning.onboarding', 'planning.policy', 'planning.self_service',
+        'planning.software', 'recovery-credentials.http', 'settings.first_use', 'software.http',
+        'telemetry.ingress.click_house', 'telemetry.ingress.postgres', 'telemetry.ingress.timescale_dedicated', 'telemetry.ingress.timescale_shared',
+        'timeline.http', 'webhooks.product', 'windows.declared', 'windows.management',
     ),
     'support/http.rs': (
-        'agent.configurations', 'agent.pki', 'agent.reports', 'api.identity_context',
-        'assets.http', 'authorization.rules', 'certificate-archive.http', 'compliance.group_input',
-        'content.gc', 'content.http', 'content.mirror', 'device.revocation',
-        'device.views', 'diagnostics.http', 'enrollment.http', 'enrollment.quotas',
-        'execution.commands.admission', 'execution.commands.onboarding', 'execution.software.recovery', 'identity.local',
+        'agent.configurations', 'agent.pki', 'agent.registration', 'agent.reports',
+        'api.identity_context', 'apple.account_enrollment', 'apple.ade', 'apple.collection',
+        'apple.commands', 'apple.ddm', 'apple.identity', 'apple.policy',
+        'apple.push', 'apple.renewal', 'apple.scep', 'assets.group_input',
+        'assets.http', 'assets.queries', 'assets.sources', 'authorization.admission',
+        'authorization.capacity', 'authorization.membership', 'authorization.programmatic', 'authorization.rules',
+        'certificate-archive.http', 'compliance.group_input', 'compliance.http',
+        'compliance.recovery', 'content.gc', 'content.http', 'content.mirror',
+        'content.storage', 'device.revocation', 'device.views', 'diagnostics.http',
+        'enrollment.http', 'enrollment.quotas', 'execution.agent.delivery', 'execution.agent.history',
+        'execution.agent.task_trust', 'execution.commands.admission', 'execution.commands.configuration', 'execution.commands.onboarding',
+        'execution.commands.windows', 'execution.software.offer', 'execution.software.recovery', 'identity.local',
         'identity.sso', 'planning.agent_policy', 'planning.frequency', 'planning.group_scope',
         'planning.http', 'planning.onboarding', 'planning.policy', 'planning.self_service',
         'planning.software', 'recovery-credentials.http', 'settings.first_use', 'software.http',
         'telemetry.ingress.click_house', 'telemetry.ingress.postgres', 'telemetry.ingress.timescale_dedicated', 'telemetry.ingress.timescale_shared',
         'timeline.http', 'webhooks.product', 'windows.enrollment', 'windows.entra',
+        'windows.management',
     ),
     'support/agent.rs': (
         'agent.configurations', 'agent.pki', 'agent.registration', 'agent.reports',
@@ -1121,13 +1138,6 @@ APP_HELPER_CONSUMERS = {
 }
 APP_HELPER_CONSUMERS['execution/support/configuration.rs'] = ('execution.commands.configuration', 'windows.declared')
 APP_HELPER_CONSUMERS['execution/support/native.rs'] = APP_HELPER_CONSUMERS['execution/support.rs']
-for relative, consumers in APP_HELPER_CONSUMERS.items():
-    path = 'crates/app/tests/' + relative
-    for name, module in list(MODULES.items()):
-        inputs = tuple(value for value in module.support_inputs if value != path)
-        if name in consumers:
-            inputs += (path,)
-        MODULES[name] = replace(module, support_inputs=inputs)
 
 for name, module in list(MODULES.items()):
     if module.build and module.postgres:
@@ -2014,3 +2024,12 @@ for name in ('agent.configurations', 'execution.commands.onboarding', 'apple.onb
 
 consume(('crates/software-service/src/imports.rs',), 'software.catalog software.http')
 T1_INPUTS += ('crates/software-service/tests/export.rs',)
+
+# Apply direct helper ownership after every module and derived proof is registered.
+for relative, consumers in APP_HELPER_CONSUMERS.items():
+    path = 'crates/app/tests/' + relative
+    for name, module in list(MODULES.items()):
+        inputs = tuple(value for value in module.support_inputs if value != path)
+        if name in consumers:
+            inputs += (path,)
+        MODULES[name] = replace(module, support_inputs=inputs)

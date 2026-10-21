@@ -302,8 +302,8 @@ class ModuleImpactTests(unittest.TestCase):
 
     def test_app_helpers_select_all_actual_consumers(self):
         self.assertEqual(self.selected('crates/app/tests/support/software.rs'), {
-            'agent.configurations','planning.self_service','software.http','content.http','content.mirror','content.gc','content.storage',
-            'planning.software','planning.policy','planning.http','planning.group_scope','apple.policy','execution.software.offer','execution.software.content','execution.software.recovery'})
+            'agent.configurations','planning.agent_policy','planning.self_service','software.http','content.http','content.mirror','content.gc','content.storage',
+            'planning.software','execution.commands.onboarding','execution.software.offer','execution.software.content','execution.software.recovery'})
         process = self.selected('crates/app/tests/support/process.rs')
         self.assertTrue({'inventory.runtime', 'execution.commands.recovery', 'execution.commands.onboarding'} <= process)
         self.assertTrue(process.isdisjoint({'sources.brew_git', 'apple.apns'}))
@@ -312,6 +312,20 @@ class ModuleImpactTests(unittest.TestCase):
         self.assertEqual(entry.tools, ('test_t2_modules',))
         self.assertEqual(self.selected('crates/app/tests/support/pki.rs'), {'agent.registration'})
         self.assertIn('agent.registration', self.selected('crates/app/tests/support/runtime.rs'))
+        # Late declarations and inherited imports/method calls are direct users too.
+        for helper, consumers in {
+            'authority': {'telemetry.ingress.' + backend for backend in
+                          ('postgres', 'timescale_shared', 'timescale_dedicated', 'click_house')},
+            'runtime': {'installation.smtp', 'installation.smtp_transport', 'installation.storage_reconcile',
+                        'authorization.initialization', 'assets.queries'},
+            'identity': {'installation.storage_reconcile', 'installation.webhook'},
+            'http': {'compliance.http', 'assets.queries', 'authorization.programmatic',
+                     'apple.renewal', 'execution.agent.history'},
+            'process': {'compliance.evaluation', 'authorization.initialization', 'assets.queries'},
+            'audit': {'agent.pki', 'planning.self_service', 'timeline.http'},
+        }.items():
+            with self.subTest(helper=helper):
+                self.assertTrue(consumers <= self.selected(f'crates/app/tests/support/{helper}.rs'))
         self.assertEqual(self.selected('crates/app/tests/execution/support.rs'),
                          {'execution.commands.'+part for part in ('admission','dispatch','recovery','windows','configuration','onboarding')} | {'windows.commands','windows.declared'})
         self.assertEqual(self.selected('crates/app/tests/execution/support/configuration.rs'), {'execution.commands.configuration','windows.declared'})
