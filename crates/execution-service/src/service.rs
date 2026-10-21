@@ -600,7 +600,7 @@ fn dispatch(
                 checked_input(MessageRoute::parse("device.command"))?,
                 ContractIdentity::new(
                     checked_input(ContractId::parse("mdm.command-dispatch"))?,
-                    checked_input(ContractVersion::from_major(3))?,
+                    checked_input(ContractVersion::from_major(1))?,
                     checked_input(SchemaDigest::parse(&format!(
                         "sha256:{:x}",
                         Sha256::digest(include_bytes!("dispatch-v1.json"))

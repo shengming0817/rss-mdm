@@ -33,7 +33,7 @@ fn dispatch(
                 checked_input(MessageRoute::parse("agent.task"))?,
                 ContractIdentity::new(
                     checked_input(ContractId::parse("mdm.action-dispatch"))?,
-                    ContractVersion::from_static_major(2),
+                    ContractVersion::from_static_major(1),
                     checked_input(SchemaDigest::parse(&format!(
                         "sha256:{:x}",
                         Sha256::digest(include_bytes!("dispatch-v1.json"))

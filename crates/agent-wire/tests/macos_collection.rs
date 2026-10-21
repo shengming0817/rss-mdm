@@ -425,9 +425,6 @@ fn signed_macos_collection_binds_identity_plan_and_permit() {
         );
     }
     let payload = TaskPayload::Collection(Box::new(task));
-    let mut old = serde_json::to_value(&payload).unwrap();
-    old["task"]["wireVersion"] = json!(1);
-    assert!(serde_json::from_value::<TaskPayload>(old).is_err());
     let mut missing = serde_json::to_value(&payload).unwrap();
     missing["task"].as_object_mut().unwrap().remove("execution");
     assert!(serde_json::from_value::<TaskPayload>(missing).is_err());

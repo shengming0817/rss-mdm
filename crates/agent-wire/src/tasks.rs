@@ -855,7 +855,7 @@ pub const COLLECTION_TASK_VERSION: u8 = 1;
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CollectionTaskSpec {
     /// Exact wire major.
-    #[schemars(extend("const" = 3))]
+    #[schemars(extend("const" = COLLECTION_TASK_VERSION))]
     pub wire_version: u8,
     /// Server-selected tenant.
     #[serde(with = "strict_uuid")]

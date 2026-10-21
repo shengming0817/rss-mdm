@@ -366,7 +366,7 @@
           "type": "string"
         },
         "wireVersion": {
-          "const": 3,
+          "const": 1,
           "description": "Exact wire major.",
           "format": "uint8",
           "maximum": 255,
