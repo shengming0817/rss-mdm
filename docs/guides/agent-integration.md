@@ -204,6 +204,6 @@ Agent/Web 从最终固定公开 rev 一次切换；此处不要求读取服务�
 
 Agent 登录使用现有后端 Identity 用户；设备绑定入口是 `GET/PUT/DELETE /api/v1/agent/runtime/current-user`。三个方法均要求当前有效设备 mTLS，PUT 还必须携带已有 `x-rss-user-session` 企业会话。PUT/DELETE 的请求与响应类型由 [当前 wire 源码](../../crates/agent-wire/src/current_user.rs) 和其生成 schema 唯一持有，使用稳定 operationId 与 GET 返回的 expectedRevision。客户端不能提交 user、device、tenant 或 SessionReference 来声明身份；仅库存能力的已注册 Agent 也可使用此入口。
 
-PUT 显式登录或切换当前用户，并在同一事务中填充仍为空的资产所有人；DELETE 使用设备身份和 CAS 退出，不依赖尚未过期的企业会话。未知结果保留原 operationId 和输入，精确重放返回原回执，不再次填充所有人；旧 revision 不能覆盖新登录或退出新用户。读取重新核验保留会话和注册世代，失效返回 invalidated，Identity 依赖故障返回不可用。confirmedAt 是服务器上次确认时间，active 表示会话有效，不证明设备在线。
+PUT 显式登录或切换当前用户，并在同一事务中填充仍为空的资产所有人；DELETE 使用设备身份和 CAS 退出，不依赖尚未过期的企业会话。未知结果保留原 operationId 和输入，精确重放返回原回执，不再次填充所有人；旧 revision 不能覆盖新登录或退出新用户。读取在释放设备事务后重新核验保留会话，再用短事务确认设备有效性和绑定 revision；核验期间发生切换或退出时返回 409，客户端应重新读取。失效返回 invalidated，Identity 依赖故障返回不可用。confirmedAt 是服务器上次确认时间，active 表示会话有效，不证明设备在线。
 
 此合同只保存不可用于认证的可信 SessionReference，不保存企业会话秘密或复制人员目录。桌面/Agent 后续需在登录、切换和退出生命周期接入这些端点；后台不会从普通网站登录或 OS 用户观察猜测设备当前使用者。
