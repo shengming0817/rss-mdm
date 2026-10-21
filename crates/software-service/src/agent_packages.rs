@@ -195,6 +195,7 @@ fn metadata(
         } => {
             i.target.platform == TaskPlatform::Macos
                 && bounded(bundle)
+                && team.len() <= 256
                 && optional(team)
                 && optional(notarization_evidence)
         }
@@ -763,6 +764,14 @@ mod tests {
         };
         team.clear();
         notarization_evidence.clear();
+        assert!(check(&manifest, &input));
+        if let Packaging::MacosPkg { team, .. } = &mut manifest.packaging {
+            *team = "x".repeat(257);
+        }
+        assert!(!check(&manifest, &input));
+        if let Packaging::MacosPkg { team, .. } = &mut manifest.packaging {
+            *team = "x".repeat(256);
+        }
         assert!(check(&manifest, &input));
         manifest.target.platform = TaskPlatform::Windows;
         assert!(!check(&manifest, &input));
