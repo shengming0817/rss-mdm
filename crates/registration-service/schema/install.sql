@@ -8,11 +8,14 @@ CREATE FUNCTION mdm_access.capture_asset_authority() RETURNS trigger
     LANGUAGE plpgsql SECURITY DEFINER
     SET search_path TO 'pg_catalog', 'mdm_access'
     AS $$
-DECLARE r jsonb; d jsonb; previous jsonb; k text; i text; dev text; reg uuid; v bigint; t uuid;
+DECLARE r jsonb; d jsonb; previous jsonb; k text; i text; dev text; reg uuid; v bigint; t uuid; platform text;
 BEGIN
  IF TG_OP='DELETE' THEN r=to_jsonb(OLD); ELSE r=to_jsonb(NEW); END IF;
  IF TG_OP='UPDATE' THEN previous=to_jsonb(OLD); END IF;
  t=(r->>'tenant_id')::uuid;
+ IF TG_TABLE_NAME='registrations' AND r->>'channel'='agent' THEN
+  SELECT g.platform INTO platform FROM mdm_access.agent_grants g WHERE g.tenant_id=t AND g.id=(r->>'agent_grant_id')::uuid;
+ END IF;
  CASE TG_TABLE_NAME
  WHEN 'devices' THEN
   k='device'; i=r->>'id'; dev=i; d=jsonb_build_object('id',i);
@@ -21,8 +24,8 @@ BEGIN
   IF previous IS NOT NULL AND d=jsonb_build_object('id',previous->>'id') THEN RETURN NULL; END IF;
  WHEN 'registrations' THEN
   k='registration'; i=r->>'id'; reg=i::uuid; dev=r->>'device';
-  d=jsonb_build_object('id',i,'device',dev,'channel',r->>'channel','purpose',r->>'purpose','generation',r->'generation','state',r->>'state');
-  IF previous IS NOT NULL AND d=jsonb_build_object('id',previous->>'id','device',previous->>'device','channel',previous->>'channel','purpose',previous->>'purpose','generation',previous->'generation','state',previous->>'state') THEN RETURN NULL; END IF;
+  d=jsonb_build_object('id',i,'device',dev,'channel',r->>'channel','purpose',r->>'purpose','generation',r->'generation','state',r->>'state','platform',platform);
+  IF previous IS NOT NULL AND d=jsonb_build_object('id',previous->>'id','device',previous->>'device','channel',previous->>'channel','purpose',previous->>'purpose','generation',previous->'generation','state',previous->>'state','platform',platform) THEN RETURN NULL; END IF;
  WHEN 'report_sources' THEN
   IF NOT EXISTS(SELECT 1 FROM mdm_access.registrations WHERE tenant_id=t AND id=(r->>'registration')::uuid AND purpose='primary') THEN RAISE EXCEPTION 'report source requires primary registration'; END IF;
   k='source'; reg=(r->>'registration')::uuid;
