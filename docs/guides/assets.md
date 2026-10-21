@@ -263,3 +263,18 @@ Agent 在现有 mTLS runtime 边界读取
 Agent 从 runtime 的 `GET /telemetry/configurations` 发现当前授权分配，再获取精确 Policy/version 配置。目录是有界完整集合，超出容量明确失败，不把部分结果当作撤销清单；当前最多扫描 256 个启用的遥测 Policy。目录中的 `supported=false` 表示现有能力或环境不满足，不能降级执行。配置含原生计划或脚本字面量输入、显式映射、字段定义与配置绑定；上传必须原样回传绑定。脚本内容从该精确配置的 `/content` 路径获取，重新检查注册、Scope 和发布者权限并验证字节摘要。
 
 Profile 参数经精确模板校验，不做文本插值；当前设备遥测仅接受 Device/System 模板。临时提频到达 UTC 到期时间后恢复正常周期，不因重新拉取配置而续期。历史补传同时受 Profile backfill 与字段绑定保留期限约束；旧定义继续按原版本解释。
+
+周期原生性能模板可使用 `windows_performance` / `macos_performance` query，声明对应
+`windows.performance` / `macos.performance` V1 engine；section 为 `cpu`、`memory`、`file_systems` 或 `network`。
+CPU `busy_percent` 是至少 250ms 双读窗口的百分比；内存与文件系统容量、网络累计字节均使用精确 UInt64 十进制字符串，
+数值字段通过显式受检 Integer 转换，超范围不截断。文件系统/网络以 `id` 为实例键；网络值是可重置累计计数，不是速率。
+沿已有 `agent_collection` Resource → `telemetry_profile` → Policy 发布，字段与保留策略仍由租户显式选择；不自动修改静态资产字段。
+
+Agent 可向 runtime 的 `POST /telemetry/gaps` 提交固定 `TelemetryGapReport`，未知结果用
+`GET /telemetry/gaps/{reportId}` 恢复。原 reportId、registrationId、generation、createdAt 与内容在重试期间保持不变，
+收到 durable receipt 后仅清除该快照；新缺口不能被旧回执清掉。原注册失效后不能将其缺口归入新注册。
+这类诊断不携带 Policy/field，也不证明连续缺失或真实覆盖率；时间跨度只给出首末观测界限。
+接收/幂等期限及容量见 [telemetry owner](../../crates/telemetry-service/README.md)。
+管理端 `POST /api/v1/telemetry/gaps/query` 接收 device、receivedFrom/receivedUntil（UTC 微秒）、limit（1–256）、
+after（上一页 next 或 null），返回 reports 与 next；每页按当前 `inventory_read` 设备范围授权。
+诊断查询不暴露采样值，也不替代 `/telemetry/health` 的批次质量统计。

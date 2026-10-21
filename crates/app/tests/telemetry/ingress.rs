@@ -25,13 +25,13 @@ async fn run(expected: &str, projection: r::TelemetryProjection) -> Result<()> {
     base["telemetry"] = serde_json::to_value(&installation.configuration)?;
     let mut f = Fixture::from_config(base.clone()).await?;
     let resources = std::mem::take(&mut f.resources);
-    let (body,query,receipt_path,other_device,interrupted)=resources.finish(async {
+    let (body,query,receipt_path,other_device,interrupted,gap_evidence)=resources.finish(async {
         f.grants.push(crate::authorization::Grant {operation:crate::authorization::Permission::InventoryFieldsWrite,scope:crate::authorization::Scope::Tenant});
         for operation in [crate::authorization::Permission::InventoryCollect,crate::authorization::Permission::TelemetryMaintain,crate::authorization::Permission::TelemetryDelete] {
             f.grants.push(crate::authorization::Grant {operation,scope:crate::authorization::Scope::AllDevices});
         }
         identity::set_grants(case_tenant(),&f.author_id,f.grants.clone()).await?;
-        f.register_profile(json!(["inventory.collect.v1","task.execute.v1","telemetry.collect.v1"])).await?;
+        f.register_profile(if expected=="postgres" && projection==r::TelemetryProjection::Both {json!(["inventory.collect.v1","inventory.native.v1","task.execute.v1","telemetry.collect.v1"])} else {json!(["inventory.collect.v1","task.execute.v1","telemetry.collect.v1"])}).await?;
         ensure!(claim_request(&f.router,Uuid::new_v4()).await?.0==StatusCode::OK);
         let (template,_,_)=f.resource().await?;
         post(&mut f.author,&f.router,"/api/v1/asset-retention-policies",json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"key":"telemetry_test","revision":1,"rawSeconds":if expected=="postgres" {30} else {86400},"summarySeconds":if expected=="postgres" {60} else {172800},"restoreSeconds":if expected=="postgres" {30} else {3600}}})).await?;
@@ -72,6 +72,8 @@ async fn run(expected: &str, projection: r::TelemetryProjection) -> Result<()> {
         use ring::signature::KeyPair;
         ring::signature::UnparsedPublicKey::new(&ring::signature::ED25519,f.key.public_key().as_ref()).verify(&signed.configuration.signing_bytes(&signed.key_id)?,&base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(&signed.signature)?).map_err(|_|anyhow::anyhow!("configuration signature"))?;
         let configuration=signed.configuration;
+        if expected=="postgres" && projection==r::TelemetryProjection::Both {performance::published_cpu(&mut f).await?;}
+        let gap_evidence=if expected=="postgres" && projection==r::TelemetryProjection::Both {Some(gaps::receive(&mut f,&configuration,&secondary.as_ref().unwrap().0).await?)} else {None};
         if expected=="postgres" && projection==r::TelemetryProjection::Both {
             let resource_path=format!("/api/v1/resources/{profile_id}");
             let (status,before)=f.author.call(&f.router,Method::GET,&resource_path,None).await?;
@@ -162,7 +164,7 @@ async fn run(expected: &str, projection: r::TelemetryProjection) -> Result<()> {
         ensure!(history["rows"].as_array().is_some_and(|v|v.len()==expected_rows),"history: {history}");
         if expected=="postgres" { recovery::foreign_session_cannot_read(&mut f,&query).await?; }
         let interrupted=if expected=="postgres" && projection==r::TelemetryProjection::Both { Some(recovery::interrupt_after_backend_write(&mut f,&body).await?) } else { None };
-        Ok((body,query,receipt_path,other_device,interrupted))
+        Ok((body,query,receipt_path,other_device,interrupted,gap_evidence))
     }).await?;
     if interrupted.is_some() {
         recovery::release_interruption()?;
@@ -202,6 +204,7 @@ async fn run(expected: &str, projection: r::TelemetryProjection) -> Result<()> {
     let (router, resources) = app(&base).await?;
     resources
         .finish(async {
+            if let Some(evidence)=&gap_evidence { gaps::reopened(&mut f,&router,evidence).await?; }
             if let Some(interrupted)=&interrupted {
                 let receipt=format!("/api/v1/agent/runtime/telemetry/batches/{}",interrupted["batchId"].as_str().unwrap());
                 published(&router,&receipt).await?;
@@ -384,12 +387,14 @@ async fn run(expected: &str, projection: r::TelemetryProjection) -> Result<()> {
             )
             .await?;
             ensure!(receipt.0 == StatusCode::OK && receipt.1["delivery"] == "published");
+            if let Some(evidence)=&gap_evidence { gaps::withdrawn(&mut f,&router,evidence,&body["policy"]).await?; }
             let registration=pg(&format!("SELECT registration::text FROM mdm_telemetry.batches WHERE tenant_id='{}' AND id='{}'",case_tenant(),body["batchId"].as_str().unwrap()))?;
             let registration:Uuid=registration.trim().parse()?;
             identity::set_grants(case_tenant(),&f.author_id,identity::device_grants(Some(case_device_id()), &["credentials","inventory_read"])?).await?;
             f.author.operation=Some(Uuid::new_v4());
             post(&mut f.author,&router,&format!("/api/v1/devices/{}/registrations/{registration}/revoke",case_device_id()),json!({})).await?;
             f.author.operation=None;
+            if let Some(evidence)=&gap_evidence { gaps::revoked(&router,evidence).await?; }
             for (method,path,payload) in [(Method::GET,receipt_path.as_str(),None),(Method::POST,"/api/v1/agent/runtime/telemetry/batches",Some(body))] {
                 let (status,_)=agent_call(&router,method,path,Some(case_credential()),payload).await?;
                 ensure!(matches!(status,StatusCode::UNAUTHORIZED|StatusCode::FORBIDDEN),"revoked credential accepted: {status}");
@@ -584,3 +589,9 @@ async fn secondary_peer(base: &Value) -> Result<(String, String)> {
         Ok((label.into(),registration["deviceId"].as_str().unwrap().into()))
     }).await
 }
+
+#[path = "gaps.rs"]
+mod gaps;
+
+#[path = "performance.rs"]
+mod performance;
