@@ -13,8 +13,33 @@ use sqlx::Row;
 
 /// Product capacity, independent of per-page evaluator budgets.
 pub const MAX_MEMBERS: usize = 1_000_000;
+/// Frozen group input, shared by Group and its product consumers.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct GroupSource {
+    /// Source identity in this transaction's tenant.
+    pub group: GroupId,
+    /// Shared source coordinates, also consumed by Scope.
+    pub coordinates: SourceCoordinates,
+}
+/// Semantic and immutable coordinates of one product group source.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SourceCoordinates {
+    /// Immutable result used for every page.
+    pub member_set: Option<OperationId>,
+    /// Definition coordinate, independent of calculation progress.
+    pub definition_version: u64,
+    /// Three-valued membership coordinate, including Unknown transitions.
+    pub member_version: u64,
+    /// Source authorization coordinate.
+    pub authority_version: u64,
+    /// Object universe; cross-context conversion is not implicit.
+    pub asset_context: AssetContext,
+}
 /// Immutable identity of a caller-frozen input. Contains no full asset collection.
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct BuildRequest {
     /// Idempotency and result identity.
     pub id: OperationId,
@@ -32,6 +57,8 @@ pub struct BuildRequest {
     pub patch: Option<MemberPatch>,
     /// Frozen host input identity, unchanged across all pages and retries.
     pub input_version: String,
+    /// Frozen source groups, in unique identity order; never filled from latest during recovery.
+    pub sources: Vec<GroupSource>,
     /// Explicit evaluation time, not a validity deadline.
     #[serde(with = "time")]
     pub as_of: Timepoint,
@@ -220,6 +247,26 @@ impl GroupStore {
             return Ok(Err(Rejection::VersionConflict));
         }
         input!(check_build(&group, request));
+        if let Some(version) = &request.rule_version {
+            let rule = db::rule(tx, group.id, version.clone()).await?;
+            if request.sources.len() > rss_mdm_group::limits::NODES
+                || request.sources.windows(2).any(|s| s[0].group >= s[1].group)
+                || request.sources.iter().any(|s| {
+                    s.group == group.id || s.coordinates.asset_context != group.asset_context
+                })
+                || rule.groups()
+                    != request
+                        .sources
+                        .iter()
+                        .map(|s| s.group.to_string())
+                        .collect()
+            {
+                return Ok(Err(Rejection::InvalidInput));
+            }
+        } else if !request.sources.is_empty() {
+            return Ok(Err(Rejection::InvalidInput));
+        }
+
         if let Some(patch) = &request.patch {
             if patch.add.len() + patch.remove.len() > 1000
                 || patch.add.iter().any(|id| patch.remove.contains(id))

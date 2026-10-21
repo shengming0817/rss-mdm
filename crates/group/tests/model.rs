@@ -55,6 +55,9 @@ fn borrowed_rule_views_preserve_structure_for_independent_persistence() {
     fn rebuild(c: &Criteria) -> Criteria {
         match c.view() {
             CriteriaView::Predicate(p) => Criteria::predicate(p.clone()).unwrap(),
+            CriteriaView::Membership { group, negated } => {
+                Criteria::membership(group, negated).unwrap()
+            }
             CriteriaView::And(children) => {
                 Criteria::and(children.iter().map(rebuild).collect()).unwrap()
             }
@@ -1145,4 +1148,105 @@ fn quantified_contexts_evaluate_the_whole_rule_without_cross_user_matches() {
     assert_eq!(evaluate(&r, &s, 1).decision, Decision::Unknown);
     s.objects[0].quantifier = Quantifier::Any;
     assert_eq!(evaluate(&r, &s, 1).decision, Decision::Unknown);
+}
+
+#[test]
+fn membership_negation_preserves_unknown_and_requires_complete_frozen_inputs() {
+    let source = "source-group";
+    let states = [
+        (Outcome::Match, Decision::Match, Decision::NoMatch),
+        (Outcome::NoMatch, Decision::NoMatch, Decision::Match),
+        (
+            Outcome::Unknown(UnknownReason::Missing),
+            Decision::Unknown,
+            Decision::Unknown,
+        ),
+        (
+            Outcome::Unknown(UnknownReason::Conflict),
+            Decision::Unknown,
+            Decision::Unknown,
+        ),
+    ];
+    for (outcome, positive, negative) in states {
+        for (negated, expected) in [(false, positive), (true, negative)] {
+            let rule = Rule::new(
+                tenant(),
+                "r",
+                "d",
+                vec![],
+                Criteria::membership(source, negated).unwrap(),
+            )
+            .unwrap();
+            let mut object = ObjectSnapshot::single(
+                ObjectKey::new(tenant(), "device").unwrap(),
+                BTreeMap::new(),
+            );
+            let coverage = BTreeSet::new();
+            let objects = [object.clone()];
+            let input = PageInput {
+                tenant: tenant(),
+                id: "snapshot",
+                version: "1",
+                dictionary_version: "d",
+                coverage: &coverage,
+                objects: &objects,
+                after: None,
+            };
+            assert_eq!(
+                rule.evaluate_page(&input, time(1)),
+                Err(Error::IncompleteSnapshot)
+            );
+            object.memberships.insert(source.into(), outcome);
+            let objects = [object];
+            let input = PageInput {
+                objects: &objects,
+                ..input
+            };
+            let evaluated = rule.evaluate_page(&input, time(1)).unwrap();
+            assert_eq!(evaluated.objects[0].decision, expected);
+            assert_eq!(
+                evaluated.objects[0].contexts["default"].explanations.len(),
+                1
+            );
+        }
+    }
+}
+#[test]
+fn field_and_membership_leaves_share_the_same_three_valued_composition() {
+    let mut input = snapshot(FactState::Known(string("a")));
+    input.dictionary_version = "d".into();
+    input.objects[0]
+        .memberships
+        .insert("source".into(), Outcome::Unknown(UnknownReason::Conflict));
+    for (criteria, expected) in [
+        (
+            Criteria::and(vec![
+                leaf(Op::Eq, Some(string("a"))),
+                Criteria::membership("source", true).unwrap(),
+            ])
+            .unwrap(),
+            Decision::Unknown,
+        ),
+        (
+            Criteria::or(vec![
+                leaf(Op::Eq, Some(string("a"))),
+                Criteria::membership("source", true).unwrap(),
+            ])
+            .unwrap(),
+            Decision::Match,
+        ),
+    ] {
+        let rule = Rule::new(
+            tenant(),
+            "r",
+            "d",
+            vec![field(FieldType::Scalar(ScalarType::String), &[Op::Eq])],
+            criteria,
+        )
+        .unwrap();
+        assert_eq!(
+            rule.evaluate_page(&input.input(), time(1)).unwrap().objects[0].decision,
+            expected
+        );
+    }
 }

@@ -184,6 +184,10 @@ struct OperandDoc {
 #[derive(Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 enum NodeDoc {
+    Membership {
+        group: String,
+        negated: bool,
+    },
     Predicate {
         field: String,
         op: String,
@@ -208,6 +212,10 @@ struct RuleDoc {
 }
 fn nodes(c: &Criteria, out: &mut Vec<NodeDoc>) -> usize {
     let node = match c.view() {
+        CriteriaView::Membership { group, negated } => NodeDoc::Membership {
+            group: group.into(),
+            negated,
+        },
         CriteriaView::Predicate(p) => NodeDoc::Predicate {
             field: p.field.clone(),
             op: op(p.op).into(),
@@ -291,6 +299,7 @@ pub(crate) fn decode_rule(bytes: &[u8]) -> Result<Rule> {
     let mut built: Vec<Option<Criteria>> = Vec::new();
     for n in d.nodes {
         let c = match n {
+            NodeDoc::Membership { group, negated } => Criteria::membership(group, negated),
             NodeDoc::Predicate { field, op, operand } => Criteria::predicate(Predicate {
                 field,
                 op: operation(&op)?,
@@ -354,6 +363,7 @@ struct FactDoc {
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ObjectDoc {
+    memberships: BTreeMap<String, crate::DecisionValue>,
     id: String,
     quantifier: String,
     complete: bool,
@@ -380,6 +390,11 @@ pub(crate) fn encode_page(s: &PageInput<'_>) -> Result<Vec<u8>> {
     let objects = unique
         .values()
         .map(|o| ObjectDoc {
+            memberships: o
+                .memberships
+                .iter()
+                .map(|(k, v)| (k.clone(), (*v).into()))
+                .collect(),
             id: o.key.id().into(),
             quantifier: match o.quantifier {
                 crate::core::Quantifier::One => "one",
