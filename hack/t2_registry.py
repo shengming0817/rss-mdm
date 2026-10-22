@@ -2063,3 +2063,6 @@ consume(('crates/app/src/setup/default_telemetry.rs',), 'telemetry.storage deplo
 MODULES['planning.group_scope']=replace(MODULES['planning.group_scope'],policies=(*MODULES['planning.group_scope'].policies,CasePolicy('planning::t2::group_scope::system_lifecycle_snapshot_pages_before_collection_and_preserves_old_authority','fresh','tenant')))
 
 consume(('crates/app/schema/user-profiles.sql',), 'settings.user_profiles installation.migration catalog.contract')
+
+# Personnel is consumed only by the authorized device directory/detail and its session seam.
+consume(('crates/device-service/src/personnel.rs',), 'device.views agent.current_user')

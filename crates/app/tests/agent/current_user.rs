@@ -230,7 +230,14 @@ async fn directory_releases_product_locks_before_identity_recheck() -> Result<()
             let blocker:i32=sqlx::query_scalar("SELECT pg_backend_pid()").fetch_one(&mut *hold).await?;
             sqlx::query("SELECT tenant_id FROM identity_authority.guard WHERE tenant_id=$1::uuid FOR UPDATE").bind(case_tenant()).fetch_one(&mut *hold).await?;
             let query=rss_mdm_device_service::ViewQuery{search:None,platform:None,cursor:None,limit:64,descending:false,status:None,channel:None,source:None,asset_state:None};
-            let task=tokio::spawn(async move {service.views(&proof,&query,&sessions).await});
+            let credential=rss_mdm_authorization_service::credential::RequestCredential::Cookie(rss_identity_core::session::SessionSecret::parse(f.author.cookies["__Host-identity-session"].clone())?);
+            let directory_identity=authority.identity.authority.clone();
+            let task=tokio::spawn(async move {
+                let timer=rss_mdm_audit_integration::budget::RuntimeTimer;
+                let deadline=rss_request_context::Clock::now(&timer)+Duration::from_secs(15);
+                let people=rss_mdm_device_service::personnel::Reader::new(&directory_identity,&credential,deadline,&timer);
+                service.views(&proof,&query,&sessions,&people).await
+            });
             let acquired=async {
                 tokio::time::timeout(Duration::from_secs(5),async {
                     loop {

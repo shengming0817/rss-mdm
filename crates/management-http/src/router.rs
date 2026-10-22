@@ -172,7 +172,10 @@ pub fn router(state: Services, envelope: crate::boundary::Envelope) -> Router {
         .merge(crate::enrollment::http::routes().with_state(enrollment))
         .merge(crate::enrollment::directory::routes().with_state(directory))
         .merge(crate::timeline::routes().with_state(state.timeline))
-        .merge(crate::device_views::routes(sessions).with_state(state.associations));
+        .merge(
+            crate::device_views::routes(sessions, state.identity.authority.clone())
+                .with_state(state.associations),
+        );
     let host_context = Router::new()
         .route(
             "/api/v1/identity-host/tenants/{tenant}/context",

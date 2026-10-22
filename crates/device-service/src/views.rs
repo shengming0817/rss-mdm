@@ -147,6 +147,7 @@ impl Associations {
         proof: &AuthorizedPrincipal,
         query: &ViewQuery,
         sessions: &SessionAuthority,
+        personnel: &crate::personnel::Reader<'_>,
     ) -> Result<Value> {
         if proof.tenant_id() != self.tenant.to_string() {
             return Err(Error::Forbidden);
@@ -225,6 +226,14 @@ impl Associations {
             )
             .await?;
         }
+        personnel
+            .project(
+                proof,
+                groups
+                    .iter_mut()
+                    .flat_map(|group| group.endpoints.iter_mut()),
+            )
+            .await?;
         self.confirm_scope(proof, &grants, &budget).await?;
         let version = cursor::digest(&groups.iter().map(|g| g.summary()).collect::<Vec<_>>())?;
         let context = json!(cursor::digest(
@@ -269,8 +278,10 @@ impl Associations {
         proof: &AuthorizedPrincipal,
         reference: &ViewRef,
         sessions: &SessionAuthority,
+        personnel: &crate::personnel::Reader<'_>,
     ) -> Result<Value> {
-        self.read_view(proof, reference, None, sessions).await
+        self.read_view(proof, reference, None, sessions, personnel)
+            .await
     }
     pub async fn list_items(
         &self,
@@ -280,12 +291,19 @@ impl Associations {
         cursor: &str,
         limit: usize,
         sessions: &SessionAuthority,
+        personnel: &crate::personnel::Reader<'_>,
     ) -> Result<Value> {
         if !(1..=200).contains(&limit) {
             return Err(Error::Malformed);
         }
-        self.read_view(proof, reference, Some((field, cursor, limit)), sessions)
-            .await
+        self.read_view(
+            proof,
+            reference,
+            Some((field, cursor, limit)),
+            sessions,
+            personnel,
+        )
+        .await
     }
     async fn read_view(
         &self,
@@ -293,6 +311,7 @@ impl Associations {
         reference: &ViewRef,
         list: Option<(FieldKey, &str, usize)>,
         sessions: &SessionAuthority,
+        personnel: &crate::personnel::Reader<'_>,
     ) -> Result<Value> {
         if proof.tenant_id() != self.tenant.to_string() {
             return Err(Error::Forbidden);
@@ -347,6 +366,7 @@ impl Associations {
         if let Some(rows) = value.get_mut("endpoints").and_then(Value::as_array_mut) {
             crate::presentation::current_users(rows, &bindings, sessions, &mut BTreeMap::new())
                 .await?;
+            personnel.project(proof, rows.iter_mut()).await?;
         }
         self.confirm_scope(proof, &grants, &budget).await?;
         Ok(value)
