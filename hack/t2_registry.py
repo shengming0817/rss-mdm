@@ -692,6 +692,7 @@ case_fixtures('execution.agent.delivery', 'execution::t2::agent::delivery::offer
 case_fixtures('execution.agent.delivery', 'execution::t2::agent::delivery::native_inventory_only_partial_empty_chunked_and_revoked', 'local_worker')
 case_fixtures('execution.agent.delivery', 'execution::t2::agent::delivery::native_unmapped_evidence_requires_sensitive_permission', 'local_worker')
 case_fixtures('execution.agent.delivery', 'execution::t2::agent::delivery::native_all_query_failures_preserve_execution_completion', 'local_worker')
+case_fixtures('execution.agent.delivery', 'execution::t2::agent::delivery::signing::collection_claim_requires_signer_and_recovers_without_republication', 'local_worker')
 for name in ('agent.reports', 'inventory.runtime', 'planning.assets', 'planning.scope',
              'planning.group_scope', 'planning.recovery', 'execution.commands.dispatch',
              'execution.commands.recovery', 'execution.commands.configuration', 'execution.commands.windows', 'execution.commands.onboarding', 'windows.retention',

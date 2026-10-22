@@ -50,6 +50,8 @@ async fn run(expected: &str, projection: r::TelemetryProjection) -> Result<()> {
         resource(&mut f.author,&f.router,profile_id,1,json!({"action":"version","version":"v1","kind":"telemetry_profile","variants":[{"platform":"macos","architecture":"aarch64","key":"default","declaration":{"kind":"telemetry_profile","artifact":{"reference":"profile","length":bytes.len(),"sha256":digest},"definition":profile}}]})).await?;
         ensure!(upload(&f.author,&f.router,profile_id,&bytes).await?==StatusCode::CREATED);
         resource(&mut f.author,&f.router,profile_id,2,json!({"action":"activate","version":"v1"})).await?;
+        let (status,directory)=f.author.call(&f.router,Method::GET,"/api/v1/resources?kind=telemetry_profile&active=true",None).await?;
+        ensure!(status==StatusCode::OK && directory["items"].as_array().is_some_and(|items| items.iter().any(|item| item["id"]==profile_id.to_string() && item["kind"]=="telemetry_profile" && item["activeVersion"]=="v1")),"telemetry resource directory: {status} {directory}");
         // The immutable Profile must remain publishable after a compatible catalog upgrade.
         let mut upgraded=field.clone();upgraded.version+=1;upgraded.sources.insert(rss_mdm_inventory::Source::AgentOsquery,1);
         put(&mut f.author,&f.router,"/api/v1/asset-fields/custom.corporate_agent.healthy",json!({"operationId":Uuid::new_v4(),"expectedRevision":field.version,"input":{"action":"put","definition":upgraded}})).await?;
@@ -623,6 +625,9 @@ async fn postgres_baseline_recovers_original_receipts_without_overwriting_edits(
     let mut base: Value =
         serde_json::from_slice(&std::fs::read(std::env::var("MDM_TEST_CONFIG")?)?)?;
     base["telemetry"] = serde_json::to_value(&installation.configuration)?;
+    // Ordinary installation completes its baseline before the administrator sets up signing.
+    base["task_signing"] = Value::Null;
+    base["agent_pki"] = json!({"mode":"disabled"});
     let mut initial = Fixture::from_config(base.clone()).await?;
     let resources = std::mem::take(&mut initial.resources);
     resources
@@ -657,6 +662,9 @@ async fn postgres_baseline_recovers_original_receipts_without_overwriting_edits(
         ensure!(pg(&format!("SELECT count(*) FROM mdm_group.groups WHERE tenant_id='{}' AND kind='system'",case_tenant()))?.trim()=="3");
         let completed=pg(&format!("SELECT (SELECT count(*) FROM jsonb_object_keys(completed)) FROM mdm_initialization.baselines WHERE tenant_id='{}'",case_tenant()))?;
         ensure!(completed.trim().parse::<usize>()?==manifest.steps.len());
+        let expected_policies=manifest.steps.iter().filter(|s|matches!(s.action,crate::baseline::manifest::Action::Policy{..})).count();
+        let persisted=pg(&format!("SELECT count(*) FROM mdm_policy.policies p JOIN mdm_policy.versions v ON (v.tenant_id,v.id)=(p.tenant_id,p.current_version) JOIN mdm_policy.requests r ON r.tenant_id=p.tenant_id AND r.receipt->>'id'=p.id::text WHERE p.tenant_id='{}'",case_tenant()))?;
+        ensure!(expected_policies>0 && persisted.trim().parse::<usize>()?==expected_policies,"baseline policies or original receipts missing");
         // A normal client cannot create system selectors.
         let (status,_)=f.author.call(&f.router,Method::POST,&format!("/api/v1/groups/{}",Uuid::new_v4()),Some(json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"create_system","selector":"all_active","presentation":{"name":"client","description":""}}}))).await?;
         ensure!(status.is_client_error());
@@ -665,6 +673,9 @@ async fn postgres_baseline_recovers_original_receipts_without_overwriting_edits(
         let crate::baseline::manifest::Action::Policy {definition}=&last.action else {anyhow::bail!("last policy");};
         let mut administrator=Browser::default();
         ensure!(administrator.login(&f.router,"admin").await?==StatusCode::OK);
+        let agent=manifest.steps.iter().find_map(|s|match &s.action {crate::baseline::manifest::Action::Policy{definition} if matches!(definition.action,rss_mdm_policy::Action::AgentCollection{..})=>Some(definition),_=>None}).unwrap();
+        let (status,_)=administrator.call(&f.router,Method::POST,"/api/v1/policies/previews",Some(json!({"definition":agent,"after":null,"scopeResult":null}))).await?;
+        ensure!(status==StatusCode::CONFLICT,"unsigned baseline preview claimed execution readiness");
         let changed=post(&mut administrator,&f.router,&format!("/api/v1/policies/{policy}"),json!({"operationId":Uuid::new_v4(),"expectedRevision":1,"input":{"action":"put","enabled":false,"definition":definition}})).await?;
         ensure!(changed["revision"]==2);
         // Lost App checkpoint after owner COMMIT; recovery must use the original

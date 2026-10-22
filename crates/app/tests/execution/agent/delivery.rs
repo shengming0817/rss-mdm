@@ -1,4 +1,6 @@
 use anyhow::Context;
+#[path = "delivery/signing.rs"]
+mod signing;
 #[path = "windows_assets.rs"]
 mod windows_assets;
 use crate::test_support::agent_execution::*;
