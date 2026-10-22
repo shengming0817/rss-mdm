@@ -1,0 +1,36 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Offline RSS recovery usage fact. It neither consumes a key nor authenticates a person.",
+  "properties": {
+    "material": {
+      "description": "Exact escrow entry.",
+      "format": "uuid",
+      "type": "string"
+    },
+    "operationId": {
+      "description": "Durable local event identity, preserved during upload retries.",
+      "format": "uuid",
+      "type": "string"
+    },
+    "usedAt": {
+      "description": "Device-observed UTC seconds; receipt time remains a separate server fact.",
+      "format": "int64",
+      "type": "integer"
+    },
+    "version": {
+      "description": "Exact material version used locally.",
+      "format": "int64",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "operationId",
+    "material",
+    "version",
+    "usedAt"
+  ],
+  "title": "AccessRecoveryUse",
+  "type": "object",
+  "$id": "https://rss.example/mdm/agent/runtime/v1/payload/v1/access-recovery-use.schema.json"
+}

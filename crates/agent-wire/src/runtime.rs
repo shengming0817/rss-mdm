@@ -4,6 +4,10 @@
 //! This package owns JSON values only. Device authority, persistence and HTTP authentication
 //! remain product responsibilities. V1 binds script and software tasks to one strict major.
 
+#[path = "device_access.rs"]
+mod device_access;
+pub use device_access::*;
+
 #[path = "unmanage.rs"]
 mod unmanage;
 pub use unmanage::*;
@@ -47,7 +51,7 @@ pub const MAX_REQUEST_BYTES: usize = 1024 * 1024;
 pub const SCHEMA_MANIFEST: &str = include_str!("../schema/runtime/agent-v1.schema-manifest.json");
 /// SHA-256 of the ordered schema payloads named by [`SCHEMA_MANIFEST`].
 pub const SCHEMA_FINGERPRINT: &str =
-    "40eb71a6ce879b8e405d4f7804dea6b7d84d18e379c959a06bc79abf7efaf719";
+    "7bd709790961a4ed54b8ffac6cd6a8cda17acbfcc08c4c85b283e99a9ab09c86";
 
 /// Closed validation failure without retaining input values.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -128,6 +132,9 @@ impl<'de> Deserialize<'de> for Secret {
     Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, schemars::JsonSchema,
 )]
 pub enum Capability {
+    /// Typed local-account Device Access operations.
+    #[serde(rename = "device_access.v1")]
+    DeviceAccessV1,
     /// Full/partial/failed reports for the two basic inventory fields.
     #[serde(rename = "inventory.collect.v1")]
     InventoryCollectionV1,
@@ -209,7 +216,8 @@ impl Capability {
     pub fn is_software(self) -> bool {
         !matches!(
             self,
-            Self::InventoryCollectionV1
+            Self::DeviceAccessV1
+                | Self::InventoryCollectionV1
                 | Self::TaskExecuteV1
                 | Self::MdmEnrollmentV1
                 | Self::DeviceUnmanageV1
@@ -244,6 +252,7 @@ impl Capability {
             Self::MdmEnrollmentV1 => "mdm.enrollment.v1",
             Self::DeviceUnmanageV1 => "device.unmanage.v1",
             Self::InventoryNativeV1 => "inventory.native.v1",
+            Self::DeviceAccessV1 => "device_access.v1",
             Self::CredentialsWindowsV1 => "credentials.windows.v1",
             Self::TelemetryCollectV1 => "telemetry.collect.v1",
             Self::TelemetryCounterLocalV1 => "telemetry.counter.local.v1",

@@ -12,12 +12,14 @@ use uuid::Uuid;
 #[derive(Clone, Copy, Debug, serde::Deserialize, serde::Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Source {
+    DeviceAccess { version: Uuid, delivery: Uuid },
     Policy { version: Uuid },
     RetirementSoftware { version: Uuid, retirement: Uuid },
 }
 impl Source {
     pub fn columns(self) -> (&'static str, Uuid) {
         match self {
+            Self::DeviceAccess { version, .. } => ("device_access", version),
             Self::Policy { version } | Self::RetirementSoftware { version, .. } => {
                 ("policy", version)
             }
@@ -45,6 +47,10 @@ pub async fn load_run(tx: &mut PgTransaction<'_>, id: Uuid) -> Result<Run> {
     Ok(Run {
         id,
         source: match row.try_get::<&str, _>("source_kind")? {
+            "device_access" => Source::DeviceAccess {
+                version: row.try_get("policy_version")?,
+                delivery: id,
+            },
             "policy" => {
                 if let Some(retirement) = row.try_get::<Option<Uuid>, _>("retirement")? {
                     Source::RetirementSoftware {
@@ -163,6 +169,7 @@ pub async fn audit_details(
 }
 
 pub enum ScheduledPolicy {
+    DeviceAccess(crate::device_access::Plan),
     Retirement(crate::unmanage::RetirementPlan),
     Credential(ExecutionPolicy<crate::credential_tasks::FrozenCredential>),
     AgentCollection(ExecutionPolicy<crate::action_contract::FrozenAgentCollection>),
@@ -180,6 +187,7 @@ pub struct TaskIssue {
 impl ScheduledPolicy {
     pub fn owner(&self) -> Uuid {
         match self {
+            Self::DeviceAccess(v) => v.owner,
             Self::Credential(v) => v.owner,
             Self::AgentCollection(v) => v.owner,
             Self::Script(v) => v.owner,
@@ -191,6 +199,7 @@ impl ScheduledPolicy {
     }
     pub fn timeout_seconds(&self) -> u32 {
         match self {
+            Self::DeviceAccess(_) => 600,
             Self::Credential(v) => v.frozen.input.run_lifetime_seconds,
             Self::AgentCollection(v) => {
                 v.frozen
@@ -254,6 +263,7 @@ impl ScheduledPolicy {
             return Ok(false);
         }
         match self {
+            Self::DeviceAccess(v) => v.allowed_in(service, tx, target).await,
             Self::Retirement(v) => v.allowed_in(tx, target, None).await,
             Self::Credential(v) => Ok(crate::credential_tasks::eligible(
                 service,
@@ -262,7 +272,7 @@ impl ScheduledPolicy {
                 v.frozen.input.architecture,
             )
             .await?
-                && v.frozen.authorized_in(tx, target, now).await?
+                && v.frozen.authorized_in(service, tx, target, now).await?
                 && v.authorized_in(&service.source, tx, &target.device, now)
                     .await?),
             Self::AgentCollection(v) => Ok(crate::agent_collection_eligibility::check_in(
@@ -410,7 +420,7 @@ impl ScheduledPolicy {
         now: i64,
     ) -> Result<bool> {
         if let Self::Credential(v) = self {
-            return Ok(v.frozen.authorized_in(tx, target, now).await?
+            return Ok(v.frozen.authorized_in(service, tx, target, now).await?
                 && v.authorized_in(&service.source, tx, &target.device, now)
                     .await?);
         }
@@ -463,9 +473,10 @@ impl ScheduledPolicy {
         now: i64,
     ) -> Result<bool> {
         match self {
+            Self::DeviceAccess(v) => Ok(!v.allowed_in(service, tx, target).await?),
             Self::Retirement(v) => Ok(!v.allowed_in(tx, target, None).await?),
             Self::Credential(v) => Ok(v.withdrawn_in(&service.source, tx, &target.device).await?
-                || !v.frozen.authorized_in(tx, target, now).await?),
+                || !v.frozen.authorized_in(service, tx, target, now).await?),
             Self::AgentCollection(v) => {
                 Ok(v.withdrawn_in(&service.source, tx, &target.device).await?
                     || !v.frozen.authorized_in(tx, target, now).await?)
@@ -485,6 +496,7 @@ impl ScheduledPolicy {
         issue: TaskIssue,
     ) -> Result<rss_mdm_agent_wire::runtime::TaskPayload> {
         match self {
+            Self::DeviceAccess(v) => v.task(service, tx, target, issue).await,
             Self::Retirement(v) => v.task(service, tx, target, issue).await,
             Self::Credential(v) => {
                 crate::credential_tasks::task(v, service, tx, target, issue).await
@@ -688,6 +700,7 @@ pub async fn load_policy_version(
 ) -> Result<ScheduledPolicy> {
     let (policy, frozen) = crate::sources::storage::version_in(reader, tx, id).await?;
     match frozen {
+        crate::frozen::Frozen::DeviceAccess { .. } => Err(Error::Unsupported.into()),
         crate::frozen::Frozen::UnmanageDevice {
             run_lifetime_seconds,
             ..
@@ -731,6 +744,9 @@ pub async fn load_source(
     source: Source,
 ) -> Result<ScheduledPolicy> {
     match source {
+        Source::DeviceAccess { delivery, .. } => Ok(ScheduledPolicy::DeviceAccess(
+            crate::device_access::load(tx, delivery).await?,
+        )),
         Source::Policy { version } => load_policy_version(reader, tx, version).await,
         Source::RetirementSoftware {
             version,

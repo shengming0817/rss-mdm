@@ -5,6 +5,8 @@ use serde::{Deserialize, Serialize};
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ActionKind {
+    /// Account association and native login configuration.
+    DeviceAccess,
     /// Server-owned retirement of all managed channels.
     UnmanageDevice,
     /// Native recovery material management.
@@ -29,6 +31,8 @@ pub enum ActionKind {
 /// Assignment driver selection, never a device authorization or capability proof.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum AssignmentBehavior {
+    /// Per-account desired revisions use the existing task lifecycle.
+    DeviceAccess,
     /// Server-owned execution independent of endpoint connectivity.
     DeviceLifecycle,
     /// Lazily admitted at Agent check-in.
@@ -42,7 +46,8 @@ pub enum AssignmentBehavior {
 }
 impl ActionKind {
     /// Complete closed set for deriving database predicates.
-    pub const ALL: [Self; 10] = [
+    pub const ALL: [Self; 11] = [
+        Self::DeviceAccess,
         Self::UnmanageDevice,
         Self::Credential,
         Self::Execution,
@@ -57,6 +62,7 @@ impl ActionKind {
     /// Persisted discriminator.
     pub const fn as_str(self) -> &'static str {
         match self {
+            Self::DeviceAccess => "device_access",
             Self::UnmanageDevice => "unmanage_device",
             Self::Credential => "credential",
             Self::Execution => "execution",
@@ -93,6 +99,7 @@ impl crate::Action {
     /// Select the existing driver using the complete authored input.
     pub const fn assignment_behavior(&self) -> AssignmentBehavior {
         match self {
+            crate::Action::DeviceAccess { .. } => AssignmentBehavior::DeviceAccess,
             crate::Action::UnmanageDevice { .. } => AssignmentBehavior::DeviceLifecycle,
             crate::Action::TelemetryProfile { .. } => AssignmentBehavior::TelemetrySampling,
             crate::Action::NativeCollection { .. } => AssignmentBehavior::NativeCollectionRecovery,
@@ -125,6 +132,7 @@ impl AssignmentBehavior {
     /// Fixed-channel kinds. Software additionally requires its authored channel predicate.
     pub fn kinds(self) -> Vec<&'static str> {
         match self {
+            Self::DeviceAccess => vec!["device_access"],
             Self::DeviceLifecycle => vec!["unmanage_device"],
             Self::TelemetrySampling => vec!["telemetry_profile"],
             Self::AgentCheckIn => vec![

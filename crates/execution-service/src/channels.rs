@@ -443,6 +443,9 @@ impl AgentBinding {
     pub fn task(&self) -> bool {
         self.capabilities
             .contains(&rss_mdm_agent_wire::runtime::Capability::DeviceUnmanageV1)
+            || self
+                .capabilities
+                .contains(&rss_mdm_agent_wire::runtime::Capability::DeviceAccessV1)
             || self.script()
             || self.software()
             || self.enrollment()

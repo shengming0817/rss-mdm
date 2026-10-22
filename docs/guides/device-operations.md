@@ -127,3 +127,22 @@ recoveryVersion，必须仍处于原自动投递窗口；`POST /deliveries/{id}/
 退休或停用的版本拒绝恢复，不自动改投新 URL。重试未知提交时复用原 operationId。
 `GET /api/v1/webhooks/health` 提供源/目标 Outbox 的规范状态计数，需要 WebhookRead；
 源 fanout 死信同样可见，不将无目标记录解释为发送成功。
+
+
+## Device Access 管理
+
+`GET /api/v1/devices/{device}/device-access` 分页列出绑定（`after` 为上页最后 ID）。
+`PUT /api/v1/devices/{device}/device-access/bindings/{id}` 使用 operationId、expectedRevision 和
+`put`/`unbind` 动作；新绑定 revision 为 0。Put 指定同一 Identity 实例的 principal、已分配 policy，
+以及 existing 稳定账号或 create 平台/账号名。已有绑定换本地目标须新增绑定，不根据名称接管。
+后续变更和读取要求当前设备 AccountWrite 权限；只持有本机管理员权限不能调用。
+响应丢失先读取 `/device-access/operations/{operationId}`，或精确重放原写入。
+
+Policy action `device_access` 持有 selfEnrollment 与可选 role（standard/administrator）；沿用 Scope 分配、
+排除和 Policy 启停。role 为 null 时保留已有账号权限，新账号默认 standard。
+serverState、receivedRevision、appliedRevision、effect 各自表达不同事实。
+撤销立即停止服务端授权；离线本机保持原效果直到实际执行清理，不将接口成功视为即时端侧撤销。
+
+RSS 登录恢复密钥沿用本页的恢复凭据列表/查阅入口及 Credentials 权限，轮换/核对使用现有 Credential Policy。
+它只恢复 Windows 的 RSS 附加因子，仍需正确系统密码；Mac 沿用原生系统及磁盘恢复。
+普通列表和事件不返回秘密，系统密码与 Secure Token 不作为可查阅 RSS 恢复材料。

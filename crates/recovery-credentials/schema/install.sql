@@ -61,6 +61,15 @@ ALTER TABLE mdm_recovery.versions ENABLE ROW LEVEL SECURITY;
 ALTER TABLE mdm_recovery.versions FORCE ROW LEVEL SECURITY;
 CREATE POLICY tenant ON mdm_recovery.entries USING(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid) WITH CHECK(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid);
 CREATE POLICY tenant ON mdm_recovery.versions USING(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid) WITH CHECK(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid);
+CREATE TABLE mdm_recovery.rss_login_uses (
+ tenant_id uuid NOT NULL, operation uuid NOT NULL, entry uuid NOT NULL, version bigint NOT NULL,
+ used_at bigint NOT NULL CHECK(used_at>0), received_at bigint NOT NULL CHECK(received_at>0),
+ PRIMARY KEY(tenant_id,operation),
+ FOREIGN KEY(tenant_id,entry,version) REFERENCES mdm_recovery.versions(tenant_id,entry,version)
+);
+ALTER TABLE mdm_recovery.rss_login_uses ENABLE ROW LEVEL SECURITY;
+ALTER TABLE mdm_recovery.rss_login_uses FORCE ROW LEVEL SECURITY;
+CREATE POLICY tenant ON mdm_recovery.rss_login_uses USING(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid) WITH CHECK(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid);
 REVOKE ALL ON ALL TABLES IN SCHEMA mdm_recovery FROM PUBLIC;
 GRANT USAGE ON SCHEMA mdm_recovery TO mdm_access,mdm_command_runtime;
 GRANT SELECT,INSERT ON ALL TABLES IN SCHEMA mdm_recovery TO mdm_access,mdm_command_runtime;

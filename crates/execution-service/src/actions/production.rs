@@ -192,7 +192,9 @@ pub async fn accept_for_device(
                 format!("scope:{}", definition.policy.definition.scope),
             )
         }
-        db::ScheduledPolicy::Retirement(_) | db::ScheduledPolicy::Software(_) => return Ok(()),
+        db::ScheduledPolicy::DeviceAccess(_)
+        | db::ScheduledPolicy::Retirement(_)
+        | db::ScheduledPolicy::Software(_) => return Ok(()),
     };
     let native = matches!(policy, db::ScheduledPolicy::Native(_));
     if native == matches!(trigger, AdmissionTrigger::Agent(_)) {

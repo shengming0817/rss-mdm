@@ -1,5 +1,299 @@
 {
   "$defs": {
+    "AccessAccount": {
+      "description": "Stable local account identity, never a display name or a transient Unix UID.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "description": "Windows local SAM account. Domain/cloud accounts are not admitted.",
+          "properties": {
+            "platform": {
+              "const": "windows",
+              "type": "string"
+            },
+            "sid": {
+              "description": "SID returned by the authenticated native account operation.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "platform",
+            "sid"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "macOS local directory account.",
+          "properties": {
+            "generatedUid": {
+              "description": "Persistent directory identity, distinct from numeric UID.",
+              "format": "uuid",
+              "type": "string"
+            },
+            "platform": {
+              "const": "macos",
+              "type": "string"
+            }
+          },
+          "required": [
+            "platform",
+            "generatedUid"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "AccessAction": {
+      "description": "Bounded native account action; system passwords are supplied only through local UI.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "description": "Associate or configure one exact existing local account.",
+          "properties": {
+            "account": {
+              "$ref": "#/$defs/AccessAccount",
+              "description": "Stable local identity."
+            },
+            "configuration": {
+              "$ref": "#/$defs/AccessConfiguration",
+              "description": "Desired integration and privilege."
+            },
+            "kind": {
+              "const": "apply",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "account",
+            "configuration"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Create an account through the authenticated native broker; never adopt an existing name.",
+          "properties": {
+            "configuration": {
+              "$ref": "#/$defs/AccessConfiguration",
+              "description": "New accounts default to standard privilege when role is absent."
+            },
+            "kind": {
+              "const": "create",
+              "type": "string"
+            },
+            "name": {
+              "description": "Requested local account name; collisions must fail.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "name",
+            "configuration"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Remove RSS integration, retaining the OS account, its data and Secure Token.",
+          "properties": {
+            "account": {
+              "$ref": "#/$defs/AccessAccount",
+              "description": "Exact account whose integration must be removed."
+            },
+            "kind": {
+              "const": "unbind",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "account"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "AccessConfiguration": {
+      "additionalProperties": false,
+      "description": "Common product configuration; Apple protocol payloads remain with the Apple owner.",
+      "properties": {
+        "enabled": {
+          "description": "Enable the platform's RSS login integration.",
+          "type": "boolean"
+        },
+        "role": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AccessRole"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Explicit role convergence; null preserves existing role, new accounts default standard."
+        },
+        "selfEnrollment": {
+          "description": "Permit the first association to the currently authenticated interactive local account.",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "selfEnrollment",
+        "enabled"
+      ],
+      "type": "object"
+    },
+    "AccessRole": {
+      "description": "Requested account privilege. Absence preserves an existing account's privilege.",
+      "oneOf": [
+        {
+          "const": "standard",
+          "description": "Ordinary local user.",
+          "type": "string"
+        },
+        {
+          "const": "administrator",
+          "description": "Local administrator, requiring explicit RSS device-account authorization.",
+          "type": "string"
+        }
+      ]
+    },
+    "AccessTaskSpec": {
+      "additionalProperties": false,
+      "description": "Signed task carried by the existing offer/received/start/result protocol.",
+      "properties": {
+        "action": {
+          "$ref": "#/$defs/AccessAction",
+          "description": "Closed native action."
+        },
+        "architecture": {
+          "$ref": "#/$defs/TaskArchitecture",
+          "description": "Required architecture."
+        },
+        "attemptId": {
+          "description": "Exact attempt.",
+          "format": "uuid",
+          "type": "string"
+        },
+        "authorization": {
+          "$ref": "#/$defs/TaskAuthorization",
+          "description": "Current product authorization."
+        },
+        "bindingGeneration": {
+          "description": "Monotonic association generation.",
+          "format": "int64",
+          "type": "integer"
+        },
+        "bindingId": {
+          "description": "Stable business binding.",
+          "format": "uuid",
+          "type": "string"
+        },
+        "deadline": {
+          "description": "Original operation deadline.",
+          "format": "int64",
+          "type": "integer"
+        },
+        "definitionDigest": {
+          "description": "Frozen owner definition digest.",
+          "items": {
+            "format": "uint8",
+            "maximum": 255,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "maxItems": 32,
+          "minItems": 32,
+          "type": "array"
+        },
+        "deviceId": {
+          "description": "Exact endpoint.",
+          "type": "string"
+        },
+        "expiresAt": {
+          "description": "Signed permission deadline.",
+          "format": "int64",
+          "type": "integer"
+        },
+        "generation": {
+          "description": "Registration generation, not binding revision.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "instanceId": {
+          "description": "Identity authority instance selected by the server.",
+          "format": "uuid",
+          "type": "string"
+        },
+        "permit": {
+          "$ref": "#/$defs/TaskPermit",
+          "description": "Offer or freshly authorized Start."
+        },
+        "platform": {
+          "$ref": "#/$defs/TaskPlatform",
+          "description": "Required operating system."
+        },
+        "principalId": {
+          "description": "RSS person selected by the authenticated ceremony or authorized administrator.",
+          "format": "uuid",
+          "type": "string"
+        },
+        "registrationId": {
+          "description": "Current registration.",
+          "format": "uuid",
+          "type": "string"
+        },
+        "revision": {
+          "description": "Exact desired state revision.",
+          "format": "int64",
+          "type": "integer"
+        },
+        "taskId": {
+          "description": "Existing durable task.",
+          "format": "uuid",
+          "type": "string"
+        },
+        "tenantId": {
+          "description": "Authenticated tenant.",
+          "format": "uuid",
+          "type": "string"
+        },
+        "wireVersion": {
+          "description": "Exact wire major.",
+          "format": "uint8",
+          "maximum": 255,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "wireVersion",
+        "tenantId",
+        "deviceId",
+        "registrationId",
+        "generation",
+        "platform",
+        "architecture",
+        "taskId",
+        "attemptId",
+        "permit",
+        "expiresAt",
+        "deadline",
+        "bindingId",
+        "instanceId",
+        "principalId",
+        "bindingGeneration",
+        "revision",
+        "definitionDigest",
+        "action",
+        "authorization"
+      ],
+      "type": "object"
+    },
     "AccountSection": {
       "description": "Local account evidence families. Membership is direct, not transitive permission.",
       "oneOf": [
@@ -401,6 +695,68 @@
       "oneOf": [
         {
           "additionalProperties": false,
+          "description": "Rotate the RSS offline additional-factor recovery secret for one current binding.",
+          "properties": {
+            "binding": {
+              "description": "Stable Device Access association.",
+              "format": "uuid",
+              "type": "string"
+            },
+            "bindingGeneration": {
+              "description": "Exact association generation.",
+              "format": "int64",
+              "type": "integer"
+            },
+            "kind": {
+              "const": "rotate_rss_login",
+              "type": "string"
+            },
+            "sid": {
+              "description": "Stable local Windows account.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "binding",
+            "bindingGeneration",
+            "sid"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Reconcile the original RSS recovery mutation without generating another candidate.",
+          "properties": {
+            "binding": {
+              "description": "Stable Device Access association.",
+              "format": "uuid",
+              "type": "string"
+            },
+            "bindingGeneration": {
+              "description": "Exact association generation.",
+              "format": "int64",
+              "type": "integer"
+            },
+            "kind": {
+              "const": "verify_rss_login",
+              "type": "string"
+            },
+            "sid": {
+              "description": "Stable local Windows account.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "binding",
+            "bindingGeneration",
+            "sid"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
           "description": "Read numerical recovery protectors from system and fixed data volumes.",
           "properties": {
             "kind": {
@@ -546,6 +902,37 @@
     "CredentialSubject": {
       "description": "An exact Windows object, never an account display name or drive letter.",
       "oneOf": [
+        {
+          "additionalProperties": false,
+          "description": "RSS additional-factor recovery material, separate from local-account passwords.",
+          "properties": {
+            "binding": {
+              "description": "Stable Device Access association.",
+              "format": "uuid",
+              "type": "string"
+            },
+            "bindingGeneration": {
+              "description": "Exact association generation.",
+              "format": "int64",
+              "type": "integer"
+            },
+            "kind": {
+              "const": "rss_login",
+              "type": "string"
+            },
+            "sid": {
+              "description": "Stable local account SID.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "binding",
+            "bindingGeneration",
+            "sid"
+          ],
+          "type": "object"
+        },
         {
           "additionalProperties": false,
           "description": "Numerical recovery protector on a stable volume.",
@@ -4698,6 +5085,23 @@
     "TaskPayload": {
       "description": "Validated immutable script or software task payload.",
       "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "device_access",
+              "type": "string"
+            },
+            "task": {
+              "$ref": "#/$defs/AccessTaskSpec"
+            }
+          },
+          "required": [
+            "kind",
+            "task"
+          ],
+          "type": "object"
+        },
         {
           "additionalProperties": false,
           "properties": {

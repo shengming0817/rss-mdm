@@ -393,3 +393,5 @@ impl Inputs {
 }
 
 mod native_software;
+
+pub mod device_access;

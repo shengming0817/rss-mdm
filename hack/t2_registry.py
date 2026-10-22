@@ -2070,3 +2070,12 @@ consume(('crates/device-service/src/personnel.rs',), 'device.views agent.current
 MODULES['device.views'] = replace(MODULES['device.views'], test_inputs=(*MODULES['device.views'].test_inputs, 'crates/app/tests/device/personnel.rs'))
 
 consume(('crates/device-service/src/personnel.rs',), 'identity.sso')
+
+# Device Access owns the joint human/device ceremony and exact application receipts.
+add('device-access.http',selectors=('agent::t2::device_access::',),fixtures=('identity','agent_pki'),
+    sources=('crates/registration-service/src/device_access.rs','crates/registration-service/src/device_access/*','crates/registration-service/schema/device-access.sql','crates/execution-service/src/device_access.rs','crates/agent-wire/src/device_access.rs','crates/management-http/src/device_access.rs','crates/agent-channel/src/tasks.rs','crates/app/src/registration_lifecycle.rs'),
+    tests=('crates/app/tests/agent/device_access.rs',),support=MODULES['agent.current_user'].support_inputs,actors=(('tenant','admin'),('tenant','other')))
+MODULES['device-access.http']=replace(MODULES['device-access.http'],scope='tenant')
+consume(('crates/registration-service/schema/device-access.sql',),'installation.migration catalog.contract device.admission')
+consume(('crates/agent-wire/src/device_access.rs','crates/execution-service/src/device_access.rs','crates/registration-service/src/device_access*','crates/registration-service/src/device_access/*'),'recovery-credentials.http execution.agent.delivery')
+T1_INPUTS += ('crates/agent-wire/tests/device_access.rs',)

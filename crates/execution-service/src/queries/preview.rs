@@ -75,6 +75,10 @@ pub async fn preview(
                         && !crate::script_eligibility::collection_requirements_in(tx, &crate::Target{device:device.clone(),registration:agent.registration,generation:agent.generation}, requirements).await?
                     { state = crate::script_eligibility::Eligibility::Ineligible; }
                     Some(software::TaskAdmission::new(match state {crate::script_eligibility::Eligibility::Eligible=>software::TaskAdmissionState::Eligible,crate::script_eligibility::Eligibility::Ineligible=>software::TaskAdmissionState::UnsupportedCapability,crate::script_eligibility::Eligibility::Unknown=>software::TaskAdmissionState::ChannelUnknown},None))
+                } else if matches!(prepared,PreviewInputs::DeviceAccess) {
+                    let binding=crate::channels::agent_binding_in(tx,s.agent_store.clone(),target.registration_id).await?;
+                    let allowed=binding.is_some_and(|b|b.capabilities.contains(&rss_mdm_agent_wire::runtime::Capability::DeviceAccessV1) && matches!((b.platform.as_str(),b.architecture.as_str()),("windows","x86_64")|("macos","aarch64")));
+                    Some(software::TaskAdmission::new(if allowed{software::TaskAdmissionState::Eligible}else{software::TaskAdmissionState::UnsupportedCapability},None))
                 } else if let PreviewInputs::Credential { architecture } = &prepared {
                     let binding=crate::channels::agent_binding_in(tx,s.agent_store.clone(),target.registration_id).await?;
                     let allowed=binding.is_some_and(|b|crate::credential_tasks::capable(&b,*architecture));

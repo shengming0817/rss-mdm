@@ -15,6 +15,10 @@ fn main() {
             "Acknowledgement": schemars::schema_for!(pki::Acknowledgement),
         },
         "runtime": {
+            "AccessBegin": schemars::schema_for!(runtime::AccessBegin),
+            "AccessChallenge": schemars::schema_for!(runtime::AccessChallenge),
+            "AccessConfirm": schemars::schema_for!(runtime::AccessConfirm),
+            "AccessRecoveryUse": schemars::schema_for!(runtime::AccessRecoveryUse),
             "CurrentUserChange": schemars::schema_for!(runtime::CurrentUserChange),
             "CurrentUser": schemars::schema_for!(runtime::CurrentUser),
             "TelemetryCurrentStatus": schemars::schema_for!(runtime::TelemetryCurrentStatus),

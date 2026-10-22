@@ -173,6 +173,10 @@ pub(super) fn units() -> Vec<(&'static str, &'static str)> {
             rss_mdm_registration_service::ADMISSION_SQL,
         ),
         (
+            "registration-device-access-v1",
+            rss_mdm_registration_service::device_access::INSTALL_SQL,
+        ),
+        (
             "timeline-service-schema-v1",
             rss_mdm_timeline_service::INSTALL_SQL,
         ),
