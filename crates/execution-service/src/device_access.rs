@@ -387,6 +387,25 @@ pub async fn reconcile_in(
     now: i64,
     audit: &RequestAudit,
 ) -> Result<()> {
+    // Retirement needs this poll to carry its accepted cleanup/unmanage work.
+    // Keep the existing lifecycle lock and propagate storage faults unchanged.
+    let tenant_name = tx.tenant_id().to_string();
+    let device_name = device.device().to_owned();
+    let work_allowed = tx
+        .with_connection(move |c| {
+            Box::pin(async move {
+                Ok(rss_mdm_registration_service::lifecycle::work_allowed_in(
+                    c,
+                    &tenant_name,
+                    &device_name,
+                )
+                .await)
+            })
+        })
+        .await??;
+    if !work_allowed {
+        return Ok(());
+    }
     let tenant = stored(Uuid::parse_str(&tx.tenant_id().to_string()))?;
     let name = device.device().to_owned();
     let registration = device.registration();

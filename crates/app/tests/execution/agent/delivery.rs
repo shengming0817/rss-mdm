@@ -1836,7 +1836,7 @@ async fn rss_login_recovery_uses_exact_binding_and_original_candidate() -> Resul
     resources.finish(async {
         let context=crate::test_support::software_execution::context(crate::test_support::software_execution::Platform::Windows);
         let sid="S-1-5-21-101-202-303-1001";
-        crate::test_support::agent::seed_profile(&f.base,f.execution.clone(),case_credential(),case_device_id(),json!({"capabilities":["inventory.collect.v1","task.execute.v1","credentials.windows.v1","device_access.v1"],"platform":"windows","architecture":"x86_64","executionContext":context})).await?;
+        let registration=crate::test_support::agent::seed_profile(&f.base,f.execution.clone(),case_credential(),case_device_id(),json!({"capabilities":["inventory.collect.v1","task.execute.v1","credentials.windows.v1","device_access.v1"],"platform":"windows","architecture":"x86_64","executionContext":context})).await?;
         f.grants.extend(identity::device_grants(None,&["account_write","credentials"])?);
         identity::set_grants(case_tenant(),&f.author_id,f.grants.clone()).await?;
         f.scope(case_task_scope(),json!([{"kind":"device","id":case_device_id()}])).await?;
@@ -1852,10 +1852,25 @@ async fn rss_login_recovery_uses_exact_binding_and_original_candidate() -> Resul
             tokio::time::sleep(Duration::from_millis(100)).await;
         }}).await??;
         ensure!(claim.0==StatusCode::OK,"access claim {claim:?}");
+        let signed:wire::SignedTask=serde_json::from_value(claim.1["task"].clone())?;
+        let verification=crate::test_support::task_signature::TaskVerification {
+            key_id:"t2",public_key:f.key.public_key().as_ref(),tenant_id:Uuid::parse_str(case_tenant())?,
+            device_id:registration["deviceId"].as_str().context("enrolled device")?,
+            platform:wire::TaskPlatform::Windows,architecture:wire::TaskArchitecture::X86_64,
+            registration_id:serde_json::from_value(registration["registrationId"].clone())?,generation:registration["generation"].as_u64().context("enrolled generation")?,
+            task_id:signed.payload.task_id(),attempt_id:signed.payload.attempt_id(),permit:wire::TaskPermit::Offer,
+            now:crate::clock::Clock::unix_seconds(&crate::clock::SystemClock)?,
+        };
+        crate::test_support::task_signature::verify(&signed,&verification)?;
         let spec=&claim.1["task"]["payload"]["task"];
         for event in [json!({"kind":"received"}),json!({"kind":"start"}),json!({"kind":"device_access_result","bindingId":binding,"bindingGeneration":1,"revision":1,"definitionDigest":spec["definitionDigest"],"effect":{"state":"applied","account":{"platform":"windows","sid":sid},"role":"standard","mac":null}})] {
+            let starting=event["kind"]=="start";
             let reply=agent_call(&f.router,Method::POST,&format!("/api/v1/agent/runtime/tasks/{}/events",spec["taskId"].as_str().context("access task")?),Some(case_credential()),Some(json!({"wireVersion":1,"operationId":Uuid::new_v4(),"attemptId":spec["attemptId"],"executionContext":context,"event":event}))).await?;
             ensure!(reply.0==StatusCode::OK,"access apply {reply:?}");
+            if starting {
+                let ack:wire::TaskEventAck=serde_json::from_value(reply.1)?;
+                crate::test_support::task_signature::verify(&ack.into_permit().context("access start permit")?,&crate::test_support::task_signature::TaskVerification{permit:wire::TaskPermit::Start,..verification})?;
+            }
         }
         credential_policy(&mut f,json!({"kind":"rotate_rss_login","binding":binding,"bindingGeneration":1,"sid":sid})).await?;
         let original=claim_credential(&f,&context).await?;

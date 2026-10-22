@@ -2088,3 +2088,6 @@ MODULES['recovery-credentials.http']=replace(MODULES['recovery-credentials.http'
 consume(('crates/authorization-service/src/authority.rs','crates/registration-service/src/operations.rs','crates/policy/src/*','crates/flow-service/src/planning/policies/*','crates/flow-service/src/planning/execution_source.rs','crates/flow-service/src/planning/targets.rs'), 'device-access.http')
 
 consume(('crates/agent-channel/schema/install.sql',), 'device-access.http')
+
+consume(('crates/registration-service/src/lifecycle.rs',), 'device-access.http')
+MODULES['device-access.http']=replace(MODULES['device-access.http'],support_inputs=tuple(dict.fromkeys((*MODULES['device-access.http'].support_inputs,'crates/app/tests/support/task_signature.rs'))))

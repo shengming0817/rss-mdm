@@ -271,6 +271,8 @@ class ModuleImpactTests(unittest.TestCase):
         for path in ('crates/execution-service/src/actions/agent.rs',
                      'crates/execution-service/src/actions/storage.rs',
                      'crates/authorization-service/src/authority.rs',
+                     'crates/registration-service/src/lifecycle.rs',
+                     'crates/app/tests/support/task_signature.rs',
                      'crates/execution-service/src/input_preparation.rs'):
             self.assertIn('device-access.http', self.selected(path), path)
 
